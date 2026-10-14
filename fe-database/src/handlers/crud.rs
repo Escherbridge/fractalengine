@@ -24,6 +24,7 @@ pub(crate) async fn create_verse_handler(
     local_did: &str,
     secret_store: Option<&std::sync::Arc<dyn fe_identity::SecretStore>>,
 ) -> anyhow::Result<(String, String)> {
+    crate::migration::mapping_inventory::record_bypass_for("CreateVerse");
     let verse_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -89,6 +90,7 @@ pub(crate) async fn create_fractal_handler(
     name: &str,
     local_did: &str,
 ) -> anyhow::Result<String> {
+    crate::migration::mapping_inventory::record_bypass_for("CreateFractal");
     let fractal_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let fractal_row = Fractal {
@@ -130,6 +132,7 @@ pub(crate) async fn create_petal_handler(
     name: &str,
     local_did: &str,
 ) -> anyhow::Result<String> {
+    crate::migration::mapping_inventory::record_bypass_for("CreatePetal");
     let petal_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let mut scope_result = db
@@ -361,6 +364,7 @@ pub(crate) async fn import_gltf_handler(
     file_path: &str,
     position: [f32; 3],
 ) -> anyhow::Result<(String, String, String)> {
+    crate::migration::mapping_inventory::record_bypass_for("ImportGltf");
     let path = std::path::Path::new(file_path);
     let bytes = std::fs::read(path)
         .map_err(|e| anyhow::anyhow!("Could not read file {}: {e}", path.display()))?;
@@ -1606,6 +1610,7 @@ pub(crate) async fn rename_node_handler(
     node_id: &str,
     new_name: &str,
 ) -> anyhow::Result<()> {
+    crate::migration::mapping_inventory::record_bypass_for("RenameNode");
     let update = db
         .query("UPDATE node SET display_name = $name WHERE node_id = $nid AND tombstone = NONE")
         .bind(("name", new_name.to_string()))
@@ -1672,6 +1677,7 @@ pub(crate) async fn duplicate_node_handler(
     db: &Db,
     node_id: &str,
 ) -> anyhow::Result<DuplicateNodeOutcome> {
+    crate::migration::mapping_inventory::record_bypass_for("DuplicateNode");
     let lookup = db
         .query("SELECT * FROM node WHERE node_id = $nid AND tombstone = NONE LIMIT 1")
         .bind(("nid", node_id.to_string()))

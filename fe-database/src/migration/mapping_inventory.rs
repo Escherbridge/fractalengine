@@ -210,3 +210,50 @@ pub fn record_bypass() {
 pub fn bypass_count() -> u64 {
     UNMAPPED_BYPASS_COUNT.load(Ordering::Relaxed)
 }
+
+// ---------------------------------------------------------------------------
+// D-CL20 per-kind bypass counters (CDL-W4 slice W4-1, AGENTS.md §bypass-counter).
+// One fixed slot per `D_CL20_MUTATION_KINDS` entry, index-matched to that array,
+// plus the existing global `UNMAPPED_BYPASS_COUNT` above, which keeps recording
+// every bypass regardless of kind so `bypass_count()`/`MeasurementReport` keep
+// their existing, broader meaning unchanged.
+// ---------------------------------------------------------------------------
+
+/// Per-kind counterpart to [`UNMAPPED_BYPASS_COUNT`], index-aligned with
+/// [`D_CL20_MUTATION_KINDS`]. Six fixed slots: this inventory never grows the
+/// D-CL20 set at runtime (§4.2.5 — the six are closed by spec, not configuration).
+static D_CL20_BYPASS_COUNTS: [AtomicU64; 6] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+
+/// Record a legacy-path bypass for one named D-CL20 mutation kind: increments
+/// that kind's own slot in [`D_CL20_BYPASS_COUNTS`] *and* the existing global
+/// [`UNMAPPED_BYPASS_COUNT`] (so every existing global-counter consumer keeps
+/// seeing every bypass). `kind` must be one of [`D_CL20_MUTATION_KINDS`]; any
+/// other value only increments the global counter (`debug_assert!` catches a
+/// caller typo in debug builds without changing release behavior).
+pub fn record_bypass_for(kind: &'static str) {
+    debug_assert!(
+        D_CL20_MUTATION_KINDS.contains(&kind),
+        "record_bypass_for called with a kind outside D_CL20_MUTATION_KINDS: {kind}"
+    );
+    if let Some(index) = D_CL20_MUTATION_KINDS.iter().position(|k| *k == kind) {
+        D_CL20_BYPASS_COUNTS[index].fetch_add(1, Ordering::Relaxed);
+    }
+    record_bypass();
+}
+
+/// Total bypasses recorded for one named D-CL20 mutation kind since process
+/// startup. Returns 0 for a `kind` outside [`D_CL20_MUTATION_KINDS`] (never
+/// recorded, so never incremented).
+pub fn bypass_count_for(kind: &str) -> u64 {
+    match D_CL20_MUTATION_KINDS.iter().position(|k| *k == kind) {
+        Some(index) => D_CL20_BYPASS_COUNTS[index].load(Ordering::Relaxed),
+        None => 0,
+    }
+}

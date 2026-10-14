@@ -70,6 +70,26 @@ pattern as `REPLICATION_DROPS` in `fe-database/src/lib.rs` (see
 **not** call it on shadow-ledger bound exhaustion, which is a distinct,
 orthogonal failure mode (a *mapped* kind can still hit a full ledger).
 
+**Per-kind counters (CDL-W4 slice W4-1).** `record_bypass_for(kind)` /
+`bypass_count_for(kind)` add a fixed `[AtomicU64; 6]`, index-aligned with
+`D_CL20_MUTATION_KINDS`, alongside the global counter above —
+`record_bypass_for` increments both its own kind's slot *and* the global
+`UNMAPPED_BYPASS_COUNT` in the same call, so `bypass_count()` and
+`MeasurementReport` keep exactly their existing, broader meaning; nothing
+reads the per-kind slots yet (§6.1 still reads the global accessor). Each of
+the six D-CL20 handlers (`create_verse_handler`, `create_fractal_handler`,
+`create_petal_handler`, `import_gltf_handler`, `rename_node_handler`,
+`duplicate_node_handler`, `handlers/crud.rs`) calls `record_bypass_for("<its
+exact D_CL20_MUTATION_KINDS string>")` as the FIRST statement in its body —
+before any lookup, authorization-adjacent query, or mutation — so a bypass is
+recorded even when the legacy op itself is later refused downstream (e.g. a
+`RenameNode` on an already-tombstoned node still counts: the call precedes
+the `tombstone = NONE` lookup). This is strictly additive: no `OpLogEntry` is
+built, `commit_operation_dual_emit` is not called, and no canonical payload
+is invented — `git diff` on `crud.rs` is exactly six `+` lines, zero `-`
+lines. A `kind` outside `D_CL20_MUTATION_KINDS` only increments the global
+counter (`debug_assert!` catches a caller typo in debug builds).
+
 ## §candidate-derivation
 
 `CandidateDerivation::derive(&self, intent: &dyn IntentSnapshot)` (`candidate.rs`)
@@ -166,9 +186,11 @@ local testing; that would defeat the entire point of §6.1's gate.
 ## §boundary
 
 `boundary::commit_operation_dual_emit` is not wired into any real handler
-call site (`handlers/crud.rs`, `op_log.rs`) — that wiring, along with the
-D-CL20 bypass-counter one-liners at each of the six deferred handlers, is
-serial integration-wave work that lands after every Wave 3 slice merges.
+call site (`handlers/crud.rs`, `op_log.rs`) — that wiring is serial
+integration-wave work still pending CANON-DUAL-EMIT ratification (the
+D-CL20 per-kind bypass-counter one-liners at each of the six deferred
+handlers landed in CDL-W4 slice W4-1, see §bypass-counter above; they are
+observation only and do not touch this boundary).
 Ordering inside `commit_dual_emit_shadow` is load-bearing and matches SPEC-8
 §4.1/§4.3 exactly: `derive()` runs before any legacy attempt; on success the
 candidate is appended to the shadow ledger (durable) *before* the legacy
