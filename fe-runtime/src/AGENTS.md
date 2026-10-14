@@ -69,6 +69,25 @@ cross-check hashes — that is why `fe-runtime` takes a direct `blake3`
 dependency despite the trait itself needing none. If that dep weight ever
 becomes an issue, move the mock into `fe-sync` instead.
 
+## §blob-transport (PAS-P3 S2, 2026-10-13)
+
+`blob_transport.rs` is the content-addressed transfer seam (decision D-77):
+`BlobTransport` speaks only BLAKE3 `Hash32` (= `BlobHash`), HashSeq roots
+(a blob of concatenated 32-byte child hashes, root = BLAKE3 of that blob),
+named tags and an opaque `ProviderRef` (an iroh `EndpointAddr` JSON string on
+the real transport). No iroh type (`RangeSpec`, `GetRequest`, `ChunkRanges`, …)
+appears in it, and there is no byte-range method because nothing consumes one
+yet (D-73 A3 is a later layout). It lives here, not in fe-sync, so PAS-P5's
+fe-hexon P2P impl needs no fe-sync edge (contract C-P3 #1, critic C3).
+`InMemoryNetwork`/`InMemoryTransport` is a production-compiled impl (tests,
+the harness, fe-sim): one store per peer name, plus `tamper`/`withhold`/
+`repair`/`set_online` hooks on the provider side. Like iroh, a fetch returns a
+complete local copy first and caches remote bytes only when they hash to the
+request, so tampered bytes reach the caller but never the store. Callers
+(fe-sync `TilesetTransfer`) re-hash everything they persist and never rely on
+a transport's verification. The iroh impl is `fe_sync::IrohBlobTransport`
+(`fe-sync/src/AGENTS.md` §tileset-transfer).
+
 ## §ktx2-guard (RUSTSEC-2026-0344 interim mitigation, 2026-10-13)
 
 `ktx2_guard.rs` refuses glTF assets that would reach bevy's KTX2 decoder,

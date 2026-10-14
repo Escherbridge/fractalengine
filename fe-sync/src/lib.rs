@@ -1,5 +1,6 @@
 pub mod bevy_asset_reader;
 pub mod blob_store;
+pub mod blob_transport;
 pub mod cache;
 pub mod compute;
 pub mod distributed_query;
@@ -17,12 +18,14 @@ pub mod replicator;
 pub mod sharding;
 pub mod status;
 pub mod sync_thread;
+pub mod tileset_transfer;
 pub mod verse_peers;
 pub mod virtual_transport;
 pub mod write_policy;
 
 pub use bevy_asset_reader::BlobAssetReader;
 pub use blob_store::FsBlobStore;
+pub use blob_transport::IrohBlobTransport;
 pub use docs_engine::{p2p_data_dir, DocsStack, P2P_DIR_ENV_VAR};
 pub use endpoint::bound_endpoint_count;
 pub use fe_database::invite::VerseInvite;
@@ -45,6 +48,10 @@ pub use status::{
     drain_sync_events, SyncCommandSenderRes, SyncEventReceiverRes, SyncStatus, TilesetEventBuffer,
 };
 pub use sync_thread::{spawn_sync_thread, spawn_sync_thread_with_transport};
+pub use tileset_transfer::{
+    CatalogEntry, ChunkError, CompletedDownload, DownloadReport, MetaResolved, ResumedDownload,
+    StoredChunk, TilesetTransfer, TransferError, TransferEvent,
+};
 pub use verse_peers::VersePeers;
 pub use virtual_transport::{
     VirtualGossipMessage, VirtualGossipTopic, VirtualReplica, VirtualTransportFactory,

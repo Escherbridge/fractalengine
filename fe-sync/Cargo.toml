@@ -30,6 +30,7 @@ noq-proto = { workspace = true }
 # migration-only (0.35 store v2->v3 file-format upgrade) — see src/AGENTS.md §store-migration
 redb_v2 = { workspace = true }
 bytes = { workspace = true }
+async-trait = "0.1"
 futures-lite = "2.3"
 # see workspace Cargo.toml — socket2/all shim for netwatch's macOS build
 socket2 = { workspace = true }

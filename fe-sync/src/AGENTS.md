@@ -1043,3 +1043,76 @@ open handler awaits it, so the ordering is unchanged):
   call (thread starvation). A self-healing join-retry monitor
   (`GossipTopic::joined()` + re-issue) is the follow-up shape if that window
   ever matters in production.
+
+## §tileset-transfer (PAS-P3 S2, 2026-10-13 — `blob_transport.rs`, `tileset_transfer.rs`)
+
+A tileset travels as one HashSeq `[index, bundle_0 … bundle_n]`: child 0 is
+the opaque bundle-index blob (fe-format `TilesetBundleIndex` JSON in this
+campaign step; PAS-P5 swaps in its signed header, critic C10), children
+1.. are the self-contained `.hexon` bundle archives fe-terrain's bundler
+writes. **fe-sync never parses fe-format types**: it verifies bytes against
+HashSeq children only.
+
+**Why a trait on iroh 1.3 (D-77 drift note).** Decision E2 said "build on
+0.35 behind a transport trait"; the stack is now iroh 1.3 / iroh-blobs
+0.103.1, and the trait stays for three reasons: tests run on the
+production-compiled `InMemoryNetwork` (no sockets), PAS-P5's HTTP
+partial-fetch impl plugs in behind the same seam, and iroh-blobs is pre-1.0
+(its API churns; only `IrohBlobTransport` absorbs that). The trait lives in
+fe-runtime (`fe-runtime/src/AGENTS.md` §blob-transport); this crate holds
+the iroh impl and the service.
+
+**`IrohBlobTransport`** (over the `DocsStack` fs store + endpoint; `from_stack`).
+`add` keeps a `TempTag` until `set_tag` covers the blob (the named tag is a
+`HashAndFormat::hash_seq`, so it protects root + children; the fs store has
+no GC by default, but everything we keep is tagged anyway). Fetches dial the
+provider with `Endpoint::connect(EndpointAddr, iroh_blobs::ALPN)` — the
+`ProviderRef` must parse as `EndpointAddr` JSON (never a URL), and a full
+`EndpointAddr` carries its own addresses, so no `add_peer_addr` round-trip
+through `SyncEndpoint` is needed — then `Remote::fetch(conn,
+HashAndFormat::raw(h))`, which skips locally complete content. A HashSeq
+root-only fetch is the root fetched as a raw blob (the same bytes the
+`GetRequest::builder().root(..)` form would ask for). One connection per
+provider is cached and evicted on failure. Every await is bounded:
+`CONNECT_TIMEOUT` 15 s, `FETCH_TIMEOUT` 60 s, `LOCAL_STORE_TIMEOUT` 30 s.
+
+**`TilesetTransfer`** (pure orchestration over `Arc<dyn BlobTransport>` and
+a download root):
+- `publish` → HashSeq + tag `fe/tileset/<id>` + catalog entry `{id, root,
+  total_chunks, bytes}`; `catalog_from_tags` rebuilds the catalog at start
+  (tags persist in the fs store); `unpublish` drops the tag.
+- `request_meta(providers, id, root)` resolves the root from the first
+  provider whose children hash back to it, tags `fe/download/<id>`, writes the
+  ledger, and fetches + verifies the index. The same root reuses the ledger
+  (providers merged); a new root restarts the download; an unreadable ledger
+  is discarded.
+- `fetch_chunk` / `download` store each bundle only when
+  `blake3(bytes) == chunk_hashes[seq]` and it fits `MAX_CHUNK_BYTES`, with an
+  atomic tmp + rename write. `download` runs `MAX_CONCURRENT_CHUNK_FETCHES` (4)
+  at once, tries providers in candidate order, and reports per-chunk
+  `TransferEvent`s plus a `DownloadReport`.
+- `pending_downloads` / `resume_all` re-verify files and fetch only missing
+  seqs; already complete downloads are listed, not re-run. `cancel` deletes
+  the ledger, the files and the download tag. A completed download stays on
+  disk until `cancel` (the host discards it after install; S7 keeps it as a
+  streaming cache).
+
+On-disk layout, under `<FE_P2P_DIR>/downloads/<id>/`: `download.json`
+(`{schema, tileset_id, root, provider_candidates, chunk_hashes, index_hash}`,
+hashes hex), `index.json` (child 0) and `<seq>.bundle`. **Invariant: "received"
+is derived, never stored.** It is recomputed from files whose BLAKE3 verifies,
+so the ledger can never claim a chunk the disk does not hold. A ledger read
+back from disk must re-prove `hash_seq_root([index] + chunks) == root`, or it
+is refused, so local corruption cannot redirect verification.
+
+**Untrusted input.** `tileset_id` arrives from advertisements and becomes a
+path component and a tag suffix, so `TilesetTransfer::download_dir` is the
+single choke point. Every public method validates the id through it before
+any join or tag write: the S1 charset `[A-Za-z0-9_.-]`, non-empty, not `.`/`..`,
+at most 128 bytes, and no Windows device stem (`CON`, `NUL`, `COM1`, …). A
+refused id is `TransferError::UnsafeTilesetId` and nothing is touched. Size
+caps (`MAX_INDEX_BYTES`, `MAX_CHUNK_BYTES`, `MAX_HASH_SEQ_CHILDREN`) are
+checked after a fetch, so an oversized advertised blob is refused before it
+reaches disk. On iroh it can still land in the blob store first (S8b scope).
+All filesystem work runs on `spawn_blocking` (§sync-thread-blocking-io / NFR-3).
+The sync-thread wiring (commands, events, advertisements) is S3.

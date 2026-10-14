@@ -5424,8 +5424,10 @@ name = "fe-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bevy",
  "blake3",
+ "bytes",
  "crossbeam",
  "fe-identity",
  "fe-sdk",
@@ -5473,6 +5475,7 @@ name = "fe-sync"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bevy",
  "blake3",
  "bytes",
