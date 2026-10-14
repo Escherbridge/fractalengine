@@ -1,7 +1,7 @@
 //! `TilesetTransfer`: publish / fetch / resume tilesets as a HashSeq of verified
 //! bundles over any `BlobTransport` — see `src/AGENTS.md` §tileset-transfer.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -48,6 +48,8 @@ pub const MAX_LEDGER_FILE_BYTES: u64 = 8 * 1024 * 1024;
 pub const MAX_STREAMED_CACHE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Per-download file recording when a streamed cache was last used (unix ms).
 pub const LAST_USED_FILE: &str = "last-used";
+/// Most install downloads awaiting confirmation at once (past it the oldest marks are dropped).
+pub const MAX_REQUESTED_DOWNLOADS: usize = 4096;
 
 /// Whether `id` is safe as a path component and tag suffix (the shared `safe_id` guard).
 pub fn is_safe_tileset_id(id: &str) -> bool {
@@ -185,6 +187,10 @@ pub enum TransferError {
     /// §partial-fetch-p2p). No bundle is ever fetched for an unconfirmed
     /// download, even across a restart.
     AwaitingConfirmation(String),
+    /// [`TilesetTransfer::confirm`] refused: no [`TilesetTransfer::request_download_meta`]
+    /// asked for this download in this process, so a streamed cache can never
+    /// be confirmed into a full download (`src/AGENTS.md` §partial-fetch-p2p).
+    NotRequested(String),
 }
 
 impl fmt::Display for TransferError {
@@ -207,6 +213,10 @@ impl fmt::Display for TransferError {
             Self::AwaitingConfirmation(id) => write!(
                 f,
                 "download {id:?} is awaiting host confirmation of its signed chunk index"
+            ),
+            Self::NotRequested(id) => write!(
+                f,
+                "no download of {id:?} was requested, so there is nothing to confirm"
             ),
         }
     }
@@ -499,6 +509,8 @@ pub struct TilesetTransfer {
     ledgers: Mutex<HashMap<String, Arc<Ledger>>>,
     /// Ids with a meta resolution or bundle fetch running (never evicted).
     active: Arc<Mutex<HashMap<String, usize>>>,
+    /// Ids a full download was requested for and not yet confirmed or cancelled.
+    requested: Mutex<HashSet<String>>,
 }
 
 /// Marks a download id busy for as long as it lives (cache eviction skips it).
@@ -614,6 +626,7 @@ impl TilesetTransfer {
             catalog: Mutex::new(BTreeMap::new()),
             ledgers: Mutex::new(HashMap::new()),
             active: Arc::new(Mutex::new(HashMap::new())),
+            requested: Mutex::new(HashSet::new()),
         }
     }
 
@@ -936,6 +949,29 @@ impl TilesetTransfer {
         })
     }
 
+    /// [`Self::request_meta`] for an install download: the only way a later
+    /// [`Self::confirm`] can succeed (a plain `request_meta` is a streamed cache).
+    pub async fn request_download_meta(
+        &self,
+        providers: &[ProviderRef],
+        tileset_id: &str,
+        root: Hash32,
+    ) -> Result<MetaResolved, TransferError> {
+        self.download_dir(tileset_id)?;
+        {
+            let mut requested = lock(&self.requested);
+            if requested.len() >= MAX_REQUESTED_DOWNLOADS && !requested.contains(tileset_id) {
+                tracing::warn!(
+                    pending = requested.len(),
+                    "Too many unconfirmed tileset downloads — dropping their confirmation marks"
+                );
+                requested.clear();
+            }
+            requested.insert(tileset_id.to_string());
+        }
+        self.request_meta(providers, tileset_id, root).await
+    }
+
     /// Record that the host has independently verified this download's
     /// signed header and matched `expected_chunk_hashes` against it — the
     /// PAS-P5 S7a two-phase gate (`src/AGENTS.md` §partial-fetch-p2p).
@@ -948,7 +984,8 @@ impl TilesetTransfer {
     /// the HashSeq — a bundle the signed index does not name can never be
     /// "confirmed" into a chunk this download will fetch. Idempotent: an
     /// already-confirmed download re-confirmed with the same hashes is a
-    /// no-op `Ok(())`.
+    /// no-op `Ok(())`. Refuses ([`TransferError::NotRequested`]) a download
+    /// no [`Self::request_download_meta`] asked for.
     pub async fn confirm(
         &self,
         tileset_id: &str,
@@ -965,11 +1002,15 @@ impl TilesetTransfer {
         if ledger.confirmed {
             return Ok(());
         }
+        if !lock(&self.requested).contains(tileset_id) {
+            return Err(TransferError::NotRequested(tileset_id.to_string()));
+        }
         let mut confirmed = (*ledger).clone();
         confirmed.confirmed = true;
         let confirmed = Arc::new(confirmed);
         self.persist_ledger(&confirmed).await?;
         lock(&self.ledgers).insert(tileset_id.to_string(), confirmed);
+        lock(&self.requested).remove(tileset_id);
         Ok(())
     }
 
@@ -1139,7 +1180,9 @@ impl TilesetTransfer {
         root: Hash32,
         events: Option<&UnboundedSender<TransferEvent>>,
     ) -> Result<DownloadReport, TransferError> {
-        let meta = self.request_meta(providers, tileset_id, root).await?;
+        let meta = self
+            .request_download_meta(providers, tileset_id, root)
+            .await?;
         self.confirm(tileset_id, &meta.chunk_hashes).await?;
         self.download(tileset_id, events).await
     }
@@ -1202,7 +1245,7 @@ impl TilesetTransfer {
         let ledgers = lock(&self.ledgers);
         pending
             .iter()
-            .filter(|p| p.full_download && p.index_present && p.received == p.total)
+            .filter(|p| p.full_download && p.confirmed && p.index_present && p.received == p.total)
             .filter_map(|p| ledgers.get(&p.tileset_id))
             .map(|ledger| CompletedDownload {
                 tileset_id: ledger.tileset_id.clone(),
@@ -1267,6 +1310,7 @@ impl TilesetTransfer {
     pub async fn cancel(&self, tileset_id: &str) -> Result<(), TransferError> {
         let dir = self.download_dir(tileset_id)?;
         lock(&self.ledgers).remove(tileset_id);
+        lock(&self.requested).remove(tileset_id);
         self.transport
             .delete_tag(&download_tag(tileset_id))
             .await

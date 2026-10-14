@@ -1298,7 +1298,23 @@ file); the host (`fractalengine::terrain_bridge`, which does parse
   and the sync thread cancels the download, so the untracked chunk is never
   reachable through `download`/`resume_all` at all, not merely unverified.
   On success it is idempotent and persists `Ledger.confirmed = true`
-  (`LEDGER_FILE`'s `confirmed` field).
+  (`LEDGER_FILE`'s `confirmed` field). **It also refuses
+  (`TransferError::NotRequested`) a download that no
+  `request_download_meta` asked for in this process.** `handle_download_tileset`
+  is the only production caller of `request_download_meta`, and a plain
+  `request_meta` (the streamed path) never qualifies. Final review
+  (2026-10-14): before this, a confirm for a streamed cache's id ran
+  `download`, wrote `FULL_DOWNLOAD_MARKER`, and turned the cache into a full
+  download that fe-ui auto-installed. The in-memory mark is bounded by
+  `MAX_REQUESTED_DOWNLOADS` and cleared by `confirm` or `cancel`. Test:
+  `a_streamed_cache_is_never_confirmed_into_a_full_download`.
+- **Start-up discards unconfirmed full downloads.** A ledger with
+  `FULL_DOWNLOAD_MARKER` that is not `confirmed` predates the gate (since
+  the gate shipped, the marker is only written after a confirm), and nothing
+  will ever confirm it. `report_and_resume_tileset_downloads` therefore
+  cancels it. It is never reported as `TilesetDownloadResumed`, and
+  `completed_from` never hands it back for install. Test:
+  `an_unconfirmed_full_download_is_discarded_at_startup_never_installed`.
 - **`download`/`resume_all` check `ledger.confirmed` before anything else** —
   before `ensure_index`, before the `FULL_DOWNLOAD_MARKER` is even written.
   An unconfirmed download therefore never becomes a `full_download` `pending_downloads`
@@ -1317,7 +1333,8 @@ file); the host (`fractalengine::terrain_bridge`, which does parse
   ungated.** `RequestTilesetMeta`/`RequestChunk` (fe-terrain's
   `StreamedTileSource`, via `fractalengine::terrain_bridge::drive_streamed_tilesets`)
   call `fetch_chunk` directly and never go through `confirm`. This is safe
-  by construction, not merely unaudited: `fetch_chunk` alone never writes
+  by construction (and `confirm` refuses a never-requested id, above):
+  `fetch_chunk` alone never writes
   `FULL_DOWNLOAD_MARKER`, so no amount of one-at-a-time streaming can ever
   make `pending_downloads` report a `full_download` (and so
   `completed_from`/auto-install never sees it) regardless of whether

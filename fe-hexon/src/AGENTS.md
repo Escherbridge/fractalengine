@@ -179,7 +179,9 @@ transport crate (plan §3.5, assumption A1).
   caller or from a P3 tileset ad (`insert_advertisement(tileset_id, root_hex,
   provider_addr)`). A lookup of `id@version` falls back to the bare `id`
   entry. `sources(transport, uri, priority)` builds one `P2pPartialFetch`
-  per provider.
+  per provider. Ads come from the network, so it is bounded (final review):
+  `MAX_LOCATOR_ENTRIES` uris (a new uri past it is dropped, known ones still
+  update) and `MAX_LOCATOR_PROVIDERS` providers per uri.
 - **`P2pPartialFetch { transport, locator, peer, priority }`** resolves a root
   once per fetcher (HashSeq root-only fetch plus child 0, cached by root,
   bounded), so a header fetch never touches a chunk. It still returns

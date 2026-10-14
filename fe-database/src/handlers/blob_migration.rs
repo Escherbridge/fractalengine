@@ -26,16 +26,29 @@ pub struct MigrationReport {
 
 /// Every BLAKE3 hex hash a live row in `db` still names: `asset.content_hash`,
 /// `crate_entry.asset_hash`, and a node's `properties.path_asset.asset_path`
-/// `blob://{hash}.{ext}` stamp — the same three queries
-/// `asset_gc::gc_unreferenced_assets` runs (there, restricted to its doomed
-/// subset via `$hashes`), run here over every row so migration knows the
-/// full referenced set.
+/// `blob://{hash}.{ext}` stamp (the full set migration copies).
 pub async fn referenced_asset_hashes(db: &Db) -> anyhow::Result<HashSet<String>> {
-    let mut out: HashSet<String> = strings(db, "SELECT VALUE content_hash FROM asset", None)
-        .await?
-        .into_iter()
-        .collect();
-    out.extend(strings(db, "SELECT VALUE asset_hash FROM crate_entry", None).await?);
+    referenced_hashes_among(db, None).await
+}
+
+/// [`referenced_asset_hashes`], restricted to `among` when given (asset GC's
+/// doomed subset) — the one copy of the three queries both callers share.
+pub(crate) async fn referenced_hashes_among(
+    db: &Db,
+    among: Option<&[String]>,
+) -> anyhow::Result<HashSet<String>> {
+    let (asset_sql, crate_sql) = match among {
+        Some(_) => (
+            "SELECT VALUE content_hash FROM asset WHERE content_hash IN $hashes",
+            "SELECT VALUE asset_hash FROM crate_entry WHERE asset_hash IN $hashes",
+        ),
+        None => (
+            "SELECT VALUE content_hash FROM asset",
+            "SELECT VALUE asset_hash FROM crate_entry",
+        ),
+    };
+    let mut out: HashSet<String> = strings(db, asset_sql, among).await?.into_iter().collect();
+    out.extend(strings(db, crate_sql, among).await?);
     // Path stamps name their GLB by `blob://{hash}.{ext}` (fe-sdk `path_asset`), not asset_id.
     out.extend(
         strings(

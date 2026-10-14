@@ -70,10 +70,9 @@ pub async fn gc_unreferenced_assets(
         .check()?;
 
     let hashes: Vec<String> = doomed_hashes.into_iter().collect();
-    // Same three queries as `blob_migration::referenced_asset_hashes` (S1b
-    // extracted it so neither copy drifts), run there over every row instead
-    // of this pass's doomed subset.
-    let still_named: HashSet<String> = super::blob_migration::referenced_asset_hashes(db).await?;
+    // The shared referenced-hash queries (blob_migration), restricted to this pass's doomed subset.
+    let still_named: HashSet<String> =
+        super::blob_migration::referenced_hashes_among(db, Some(&hashes)).await?;
 
     let mut removed_blobs = 0;
     for hex in hashes.iter().filter(|h| !still_named.contains(*h)) {
@@ -97,7 +96,7 @@ pub async fn gc_unreferenced_assets(
 }
 
 /// Run a `SELECT VALUE <string field>` (optionally bound to `$hashes`).
-/// `pub(crate)`: shared with `blob_migration::referenced_asset_hashes`.
+/// `pub(crate)`: shared with `blob_migration::referenced_hashes_among`.
 pub(crate) async fn strings(
     db: &Db,
     sql: &str,

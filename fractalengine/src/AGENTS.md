@@ -723,17 +723,37 @@ fe-sync `src/AGENTS.md` §partial-fetch-p2p). This binary is the one place
 that closes the loop, because it is the one place that both receives those
 `TilesetMetaReceived` events AND depends on `fe_format`.
 
-- **`drive_streamed_tilesets` grows a second branch.** Its existing
-  `state.meta_requested.remove(&tileset_id).is_none()` check — which used to
-  just `continue` past an install-flow reply — now routes that reply to
-  `verify_install_meta_and_confirm` instead. The STREAMED path (above) and
-  the INSTALL-flow path (here) share one system because they already share
-  one event feed (`StreamedTilesetEventBuffer`); splitting them into two
-  systems would mean draining that buffer twice, which Bevy would then have
-  to serialize anyway.
+- **`drive_streamed_tilesets` grows a second branch.** A meta reply that is
+  not one of its own streamed requests is an install-flow reply **only when
+  fe-ui's `TilesetDownloads` tracks that `tileset_id`** (fe-ui's
+  `start_download` seeds the tracker before it sends `DownloadTileset`).
+  Anything else is ignored. Final review (2026-10-14): before this check a
+  streamed reply that arrived after `STREAMED_REQUEST_TIMEOUT` fell into the
+  install branch, was confirmed, and turned a streamed cache into a full
+  download that fe-ui then auto-installed. fe-sync now refuses such a
+  confirm as well (`TransferError::NotRequested`, fe-sync `src/AGENTS.md`
+  §partial-fetch-p2p). The STREAMED path (above) and the INSTALL-flow path
+  (here) share one system because they already share one event feed
+  (`StreamedTilesetEventBuffer`).
+- **Verification runs on a worker thread.** The installed pin opens the
+  store's archive, and the header check hashes every header member, so
+  neither runs on the Bevy main thread. The worker resolves the pin, calls
+  `verify_install_meta_and_send`, which sends `ConfirmTilesetDownload` or
+  `CancelTilesetDownload`, and posts an `InstallMetaVerdict` on the
+  `InstallMetaVerdicts` channel. Next frame, `drive_streamed_tilesets` applies
+  it through `record_install_verdict`. A verified publisher becomes the TOFU
+  pin. A refusal is written onto the download's tracker as
+  `Failed("Integrity check failed: …")`, which fe-ui never downgrades back to
+  `Verifying`. Two replies for one never-pinned id that are verified at the
+  same moment can both pass first contact. The store's publisher-continuity
+  check is the backstop for that case. Test:
+  `install_flow_replies_are_verified_off_thread_and_untracked_ones_ignored`.
 - **`verify_install_meta(tileset_id, meta_json, ad_publisher_did, known_pin)`** is the
   pure decision core (no Bevy, no I/O — independently unit-tested): parse
-  `meta_json` as `fe_format::HeaderDoc`, verify it under
+  `meta_json` as `fe_format::HeaderDoc`, verify it with
+  `fe_hexon::partial::verify_fetched_header` (the one header check
+  `FetchStrategy` runs for every transport, so the P2P install path and the
+  conformance-tested hosted path share it — final review) under
   `IntegrityPolicy::RequireSealed { pin }` (pin = `known_pin`, else
   `ad_publisher_did` when non-empty, else `None` — first-contact TOFU), and
   on success return the verified publisher DID plus the exact chunk hashes a
@@ -745,16 +765,17 @@ that closes the loop, because it is the one place that both receives those
   always `Err`. **S8:** the signed manifest's `hexon_id` must equal
   `tileset_id` — the pin store is keyed by tileset_id, so a header signed for
   another hexon would otherwise pin its publisher under the wrong id.
-- **Pin precedence (S8).** `verify_install_meta_and_confirm` takes
-  `installed_pin` = `HexonStore::installed_publisher(tileset_id)` (looked up
-  by `drive_streamed_tilesets` through `SharedTilesetRegistry`) and uses
+- **Pin precedence (S8).** The worker takes
+  `installed_pin` = `HexonStore::installed_publisher(tileset_id)` (through
+  `SharedTilesetRegistry`, off the main thread) and uses
   installed pin → in-memory TOFU pin → ad hint, in that order. Before S8 a
   fresh process had an empty `KnownTilesetPublishers`, so the advertiser's
   own DID became the pin even for a tileset already installed from another
   publisher (pin provenance gap); the store-side continuity check is the
   backstop either way. Tests: `an_installed_tileset_pins_its_publisher_over_the_advertisers_hint`,
   `a_header_signed_for_another_tileset_is_refused_and_pins_nothing`.
-- **`verify_install_meta_and_confirm`** records a first-successful publisher
+- **`record_install_verdict`** (with `verify_install_meta_and_send`; the
+  test-only `verify_install_meta_and_confirm` composes both inline) records a first-successful publisher
   as this node's TOFU pin (`KnownTilesetPublishers`, in-memory, capped at
   `MAX_KNOWN_PUBLISHERS`) and sends `SyncCommand::ConfirmTilesetDownload` on
   success, or `SyncCommand::CancelTilesetDownload` on refusal — **no chunk is

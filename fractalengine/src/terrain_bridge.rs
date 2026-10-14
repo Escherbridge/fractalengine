@@ -749,23 +749,19 @@ fn verify_install_meta(
     let pin = known_pin
         .map(str::to_string)
         .or_else(|| (!ad_publisher_did.is_empty()).then(|| ad_publisher_did.to_string()));
-    let policy = fe_format::IntegrityPolicy::RequireSealed { pin };
-    let verified =
-        fe_format::verify_header(&doc, &policy).map_err(|e| format!("header refused: {e}"))?;
-    // S8: the pin is keyed by tileset_id, so the signed header must name it.
-    if verified.hexon_id != tileset_id {
-        return Err(format!(
-            "header refused: it is signed for {:?}, not the requested {tileset_id:?}",
-            verified.hexon_id
-        ));
-    }
-    let publisher_did = match &verified.status {
-        fe_format::IntegrityStatus::Sealed { publisher_did } => publisher_did.clone(),
-        fe_format::IntegrityStatus::Unsealed => {
-            return Err("header is unsealed — every network path requires a seal".to_string());
-        }
-    };
-    let coverage = verified
+    // The same header check `FetchStrategy` runs on every transport (final
+    // review): RequireSealed, signed hexon_id bound to `tileset_id` (the pin
+    // is keyed by it, S8), layout derived from the signed coverage.
+    let header = fe_hexon::partial::verify_fetched_header(tileset_id, doc, pin.as_deref())
+        .map_err(|e| match e {
+            fe_hexon::partial::PartialFetchError::Substituted { signed, .. } => format!(
+                "header refused: it is signed for {signed:?}, not the requested {tileset_id:?}"
+            ),
+            other => format!("header refused: {other}"),
+        })?;
+    let publisher_did = header.publisher_did().to_string();
+    let coverage = header
+        .verified
         .coverage()
         .ok_or_else(|| "sealed header carries no signed coverage".to_string())?;
     let hashes = match coverage.chunk_index() {
@@ -783,16 +779,101 @@ fn verify_install_meta(
     Ok((publisher_did, hashes))
 }
 
-/// Install-flow `TilesetMetaReceived` handling (PAS-P5 S7a): verify the
-/// signed header off the main-thread-blocking path (it is a cheap signature
-/// check, but kept out of the `drive_streamed_tilesets` system body itself
-/// via [`verify_install_meta`] so the decision is independently testable),
-/// then send `ConfirmTilesetDownload` on success or `CancelTilesetDownload`
-/// on refusal — **before any chunk is ever requested**. `resolved_chunk_hashes`
-/// is the event's own (HashSeq-resolved) hashes, used verbatim for a sealed
-/// MONOLITHIC archive (no signed per-chunk table exists to check against).
-/// `installed_pin` is the publisher of an already-installed sealed tileset of
-/// this id (`HexonStore::installed_publisher`).
+/// One install-flow header verdict, computed off the main thread:
+/// `Ok(verified publisher)` or `Err(refusal reason)`.
+struct InstallMetaVerdict {
+    tileset_id: String,
+    outcome: Result<String, String>,
+}
+
+/// Install-flow header verdicts from worker threads, applied by
+/// `drive_streamed_tilesets` (TOFU pin, or the refusal shown in the Downloads tab).
+#[derive(Resource)]
+pub struct InstallMetaVerdicts {
+    tx: crossbeam::channel::Sender<InstallMetaVerdict>,
+    rx: crossbeam::channel::Receiver<InstallMetaVerdict>,
+}
+
+impl Default for InstallMetaVerdicts {
+    fn default() -> Self {
+        let (tx, rx) = crossbeam::channel::unbounded();
+        Self { tx, rx }
+    }
+}
+
+/// Install-flow `TilesetMetaReceived` handling (PAS-P5 S7a), worker-thread
+/// half: verify the signed header under `pin` (installed, then TOFU, then the
+/// ad hint) and send `ConfirmTilesetDownload` on success or
+/// `CancelTilesetDownload` on refusal, before any chunk is requested.
+/// `resolved_chunk_hashes` is used verbatim for a sealed MONOLITHIC archive
+/// (no signed per-chunk table exists). See `src/AGENTS.md` §tileset-p2p.
+fn verify_install_meta_and_send(
+    sender: &fe_sync::SyncCommandSender,
+    tileset_id: &str,
+    meta_json: &str,
+    ad_publisher_did: &str,
+    pin: Option<&str>,
+    resolved_chunk_hashes: Vec<[u8; 32]>,
+) -> Result<String, String> {
+    match verify_install_meta(tileset_id, meta_json, ad_publisher_did, pin) {
+        Ok((publisher_did, signed_hashes)) => {
+            let expected_chunk_hashes = signed_hashes.unwrap_or(resolved_chunk_hashes);
+            if let Err(e) = sender.send(fe_sync::SyncCommand::ConfirmTilesetDownload {
+                tileset_id: tileset_id.to_string(),
+                expected_chunk_hashes,
+            }) {
+                tracing::warn!(tileset_id, "ConfirmTilesetDownload send failed: {e}");
+            }
+            Ok(publisher_did)
+        }
+        Err(reason) => {
+            tracing::warn!(
+                tileset_id,
+                reason,
+                "Tileset header verification refused — cancelling the download"
+            );
+            send_cancel(sender, tileset_id);
+            Err(reason)
+        }
+    }
+}
+
+/// `CancelTilesetDownload`, warning (never swallowing) a closed channel.
+fn send_cancel(sender: &fe_sync::SyncCommandSender, tileset_id: &str) {
+    if let Err(e) = sender.send(fe_sync::SyncCommand::CancelTilesetDownload {
+        tileset_id: tileset_id.to_string(),
+    }) {
+        tracing::warn!(tileset_id, "CancelTilesetDownload send failed: {e}");
+    }
+}
+
+/// Main-thread half: a verified publisher becomes this node's TOFU pin (never
+/// overwriting one); a refusal is shown on the download's tracker.
+fn record_install_verdict(
+    known: &mut KnownTilesetPublishers,
+    downloads: Option<&mut TilesetDownloads>,
+    tileset_id: &str,
+    outcome: Result<String, String>,
+) {
+    match outcome {
+        Ok(publisher_did) => {
+            if known.0.len() < MAX_KNOWN_PUBLISHERS {
+                known
+                    .0
+                    .entry(tileset_id.to_string())
+                    .or_insert(publisher_did);
+            }
+        }
+        Err(reason) => {
+            if let Some(dl) = downloads.and_then(|d| d.0.get_mut(tileset_id)) {
+                dl.status = DownloadStatus::Failed(format!("Integrity check failed: {reason}"));
+            }
+        }
+    }
+}
+
+/// Both halves inline (tests drive the pin semantics without a thread).
+#[cfg(test)]
 fn verify_install_meta_and_confirm(
     known: &mut KnownTilesetPublishers,
     installed_pin: Option<String>,
@@ -802,40 +883,16 @@ fn verify_install_meta_and_confirm(
     ad_publisher_did: &str,
     resolved_chunk_hashes: Vec<[u8; 32]>,
 ) {
-    // S8: an installed sealed tileset is the authoritative (restart-proof)
-    // pin, the in-memory TOFU pin next, the ad's hint only when neither exists.
-    let known_pin = installed_pin.or_else(|| known.0.get(&tileset_id).cloned());
-    match verify_install_meta(
+    let pin = installed_pin.or_else(|| known.0.get(&tileset_id).cloned());
+    let outcome = verify_install_meta_and_send(
+        &sender.0,
         &tileset_id,
         meta_json,
         ad_publisher_did,
-        known_pin.as_deref(),
-    ) {
-        Ok((publisher_did, signed_hashes)) => {
-            if known.0.len() < MAX_KNOWN_PUBLISHERS {
-                known.0.entry(tileset_id.clone()).or_insert(publisher_did);
-            }
-            let expected_chunk_hashes = signed_hashes.unwrap_or(resolved_chunk_hashes);
-            if let Err(e) = sender.0.send(fe_sync::SyncCommand::ConfirmTilesetDownload {
-                tileset_id: tileset_id.clone(),
-                expected_chunk_hashes,
-            }) {
-                tracing::warn!(tileset_id, "ConfirmTilesetDownload send failed: {e}");
-            }
-        }
-        Err(reason) => {
-            tracing::warn!(
-                tileset_id,
-                reason,
-                "Tileset header verification refused — cancelling the download"
-            );
-            if let Err(e) = sender.0.send(fe_sync::SyncCommand::CancelTilesetDownload {
-                tileset_id: tileset_id.clone(),
-            }) {
-                tracing::warn!(tileset_id, "CancelTilesetDownload send failed: {e}");
-            }
-        }
-    }
+        pin.as_deref(),
+        resolved_chunk_hashes,
+    );
+    record_install_verdict(known, None, &tileset_id, outcome);
 }
 
 /// Shortest wait before a failed streamed bundle is requested again.
@@ -956,6 +1013,7 @@ pub fn streamed_bundle_channel() -> (StreamedBundleResultSender, StreamedBundleR
 /// resolves a `StreamedTileSource` once an index WE asked for arrives, and
 /// hands each `ChunkReceived` we requested to a background thread for
 /// decoding. See `src/AGENTS.md` §tileset-p2p.
+#[allow(clippy::too_many_arguments)]
 pub fn drive_streamed_tilesets(
     mut events: ResMut<fe_sync::StreamedTilesetEventBuffer>,
     mut state: ResMut<StreamedTilesetState>,
@@ -964,7 +1022,19 @@ pub fn drive_streamed_tilesets(
     sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
     bundle_tx: Option<Res<StreamedBundleResultSender>>,
     tileset_registry: Option<Res<SharedTilesetRegistry>>,
+    mut downloads: Option<ResMut<TilesetDownloads>>,
+    verdicts: Option<Res<InstallMetaVerdicts>>,
 ) {
+    if let Some(verdicts) = verdicts.as_ref() {
+        while let Ok(verdict) = verdicts.rx.try_recv() {
+            record_install_verdict(
+                &mut known_publishers,
+                downloads.as_deref_mut(),
+                &verdict.tileset_id,
+                verdict.outcome,
+            );
+        }
+    }
     if !events.events.is_empty() {
         for evt in std::mem::take(&mut events.events) {
             match evt {
@@ -996,40 +1066,68 @@ pub fn drive_streamed_tilesets(
                     // here; the install flow's meta replies ride the same
                     // feed and are handled below instead (PAS-P5 S7a).
                     if state.meta_requested.remove(&tileset_id).is_none() {
-                        let Some(sender) = sync_sender.as_ref() else {
-                            continue;
-                        };
-                        if root_hash.is_empty() {
-                            // fe-sync's own honest-failure reply (no provider
-                            // / offline / over cap) — nothing to verify.
+                        // Only a download the Downloads tab tracks is an
+                        // install flow; anything else (a streamed reply that
+                        // arrived after its timeout) is ignored, never
+                        // confirmed into a full download.
+                        let tracked = downloads
+                            .as_ref()
+                            .is_some_and(|d| d.0.contains_key(&tileset_id));
+                        // An empty root is fe-sync's own honest-failure reply.
+                        if !tracked || root_hash.is_empty() {
                             continue;
                         }
-                        let Ok(resolved_chunk_hashes) = chunk_hashes
-                            .iter()
-                            .map(|h| fe_runtime::blob_store::hash_from_hex(h))
-                            .collect::<anyhow::Result<Vec<_>>>()
+                        let (Some(sender), Some(verdicts)) =
+                            (sync_sender.as_ref(), verdicts.as_ref())
                         else {
                             tracing::warn!(
                                 tileset_id,
-                                "Install-flow meta reply carried an unparsable chunk hash — cancelling"
+                                "Install-flow meta reply with no sync thread or verdict channel"
                             );
-                            let _ = sender
-                                .0
-                                .send(fe_sync::SyncCommand::CancelTilesetDownload { tileset_id });
                             continue;
                         };
-                        let installed_pin = tileset_registry
-                            .as_ref()
-                            .and_then(|r| r.0.store().installed_publisher(&tileset_id));
-                        verify_install_meta_and_confirm(
-                            &mut known_publishers,
-                            installed_pin,
-                            sender,
-                            tileset_id,
-                            &meta_json,
-                            &ad_publisher_did,
-                            resolved_chunk_hashes,
-                        );
+                        let sender = sender.0.clone();
+                        let verdict_tx = verdicts.tx.clone();
+                        let registry = tileset_registry.as_ref().map(|r| Arc::clone(&r.0));
+                        let known_pin = known_publishers.0.get(&tileset_id).cloned();
+                        // Off the main thread: the installed pin opens the
+                        // store's archive and the header check hashes every
+                        // header member.
+                        std::thread::spawn(move || {
+                            let outcome = match chunk_hashes
+                                .iter()
+                                .map(|h| fe_runtime::blob_store::hash_from_hex(h))
+                                .collect::<anyhow::Result<Vec<_>>>()
+                            {
+                                Ok(resolved_chunk_hashes) => {
+                                    // Pin precedence (S8): installed, then TOFU, then the ad hint.
+                                    let pin = registry
+                                        .and_then(|r| r.store().installed_publisher(&tileset_id))
+                                        .or(known_pin);
+                                    verify_install_meta_and_send(
+                                        &sender,
+                                        &tileset_id,
+                                        &meta_json,
+                                        &ad_publisher_did,
+                                        pin.as_deref(),
+                                        resolved_chunk_hashes,
+                                    )
+                                }
+                                Err(e) => {
+                                    send_cancel(&sender, &tileset_id);
+                                    Err(format!("unparsable chunk hash in the meta reply: {e}"))
+                                }
+                            };
+                            if verdict_tx
+                                .send(InstallMetaVerdict {
+                                    tileset_id,
+                                    outcome,
+                                })
+                                .is_err()
+                            {
+                                tracing::warn!("install-flow verdict channel closed");
+                            }
+                        });
                         continue;
                     }
                     if root_hash.is_empty() {
@@ -2005,6 +2103,7 @@ mod tests {
         app.init_resource::<fe_sync::StreamedTilesetEventBuffer>()
             .init_resource::<StreamedTilesetState>()
             .init_resource::<KnownTilesetPublishers>()
+            .init_resource::<InstallMetaVerdicts>()
             .init_resource::<fe_terrain::tiles::TileBundleDemand>()
             .insert_resource(ActiveTileSource::default())
             .insert_resource(fe_sync::SyncCommandSenderRes(cmd_tx));
@@ -2091,6 +2190,7 @@ mod tests {
         app.init_resource::<fe_sync::StreamedTilesetEventBuffer>()
             .init_resource::<StreamedTilesetState>()
             .init_resource::<KnownTilesetPublishers>()
+            .init_resource::<InstallMetaVerdicts>()
             .init_resource::<fe_runtime::diag15m::ResidencyStats>();
         let mut composite = fe_terrain::tiles::CompositeTileSource::new();
         composite.add_streamed_source(StreamedTileSource::new(
@@ -2188,6 +2288,7 @@ mod tests {
         app.init_resource::<fe_sync::StreamedTilesetEventBuffer>()
             .init_resource::<StreamedTilesetState>()
             .init_resource::<KnownTilesetPublishers>()
+            .init_resource::<InstallMetaVerdicts>()
             .init_resource::<fe_terrain::tiles::TileBundleDemand>()
             .insert_resource(ActiveTileSource {
                 composite,
@@ -2770,5 +2871,119 @@ mod tests {
             "the advertiser's self-chosen pin must not override the installed publisher"
         );
         assert!(known.0.is_empty());
+    }
+
+    /// Final review, through the real system: an install-flow meta reply the
+    /// Downloads tab tracks is verified off the main thread, then confirmed
+    /// (pinning its publisher) or cancelled (its tracker shows the failure);
+    /// an untracked reply, such as a streamed request answered after its
+    /// timeout, is never confirmed into a full download.
+    #[test]
+    fn install_flow_replies_are_verified_off_thread_and_untracked_ones_ignored() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[49u8; 32]);
+        let did = fe_format::verifying_key_to_did(&key.verifying_key());
+        let (mut app, cmd_rx) = streamed_app(None);
+        app.init_resource::<TilesetDownloads>();
+        let track = |app: &mut App, id: &str| {
+            app.world_mut().resource_mut::<TilesetDownloads>().0.insert(
+                id.to_string(),
+                DownloadProgress {
+                    tileset_id: id.to_string(),
+                    chunks_received: 0,
+                    total_chunks: 0,
+                    bytes_received: 0,
+                    total_bytes_estimate: 0,
+                    status: DownloadStatus::Queued,
+                },
+            );
+        };
+        let push_reply = |app: &mut App, id: &str, meta_json: String| {
+            app.world_mut()
+                .resource_mut::<fe_sync::StreamedTilesetEventBuffer>()
+                .events
+                .push(fe_sync::SyncEvent::TilesetMetaReceived {
+                    peer_id: String::new(),
+                    tileset_id: id.to_string(),
+                    meta_json,
+                    total_chunks: 1,
+                    approx_size_bytes: 0,
+                    root_hash: "ab".repeat(32),
+                    chunk_hashes: vec!["cd".repeat(32)],
+                    index_path: std::path::PathBuf::new(),
+                    ad_publisher_did: String::new(),
+                });
+        };
+        let settle = |app: &mut App, done: &dyn Fn(&App) -> bool| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !done(app) && std::time::Instant::now() < deadline {
+                app.update();
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+
+        push_reply(
+            &mut app,
+            "untracked",
+            sealed_monolithic_header_json(&key, "untracked"),
+        );
+        app.update();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        app.update();
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "an untracked reply sends neither Confirm nor Cancel"
+        );
+
+        track(&mut app, "good");
+        push_reply(
+            &mut app,
+            "good",
+            sealed_monolithic_header_json(&key, "good"),
+        );
+        settle(&mut app, &|app| {
+            app.world()
+                .resource::<KnownTilesetPublishers>()
+                .0
+                .contains_key("good")
+        });
+        match cmd_rx.try_recv() {
+            Ok(fe_sync::SyncCommand::ConfirmTilesetDownload { tileset_id, .. }) => {
+                assert_eq!(tileset_id, "good")
+            }
+            other => panic!("expected ConfirmTilesetDownload, got {other:?}"),
+        }
+        assert_eq!(
+            app.world()
+                .resource::<KnownTilesetPublishers>()
+                .0
+                .get("good"),
+            Some(&did)
+        );
+
+        track(&mut app, "bad");
+        push_reply(
+            &mut app,
+            "bad",
+            sealed_monolithic_header_json(&key, "someone-else"),
+        );
+        let failed = |app: &App| {
+            matches!(
+                app.world().resource::<TilesetDownloads>().0["bad"].status,
+                DownloadStatus::Failed(_)
+            )
+        };
+        settle(&mut app, &failed);
+        assert!(failed(&app), "the refusal reaches the Downloads tab");
+        match cmd_rx.try_recv() {
+            Ok(fe_sync::SyncCommand::CancelTilesetDownload { tileset_id }) => {
+                assert_eq!(tileset_id, "bad")
+            }
+            other => panic!("expected CancelTilesetDownload, got {other:?}"),
+        }
+        assert!(!app
+            .world()
+            .resource::<KnownTilesetPublishers>()
+            .0
+            .contains_key("bad"));
     }
 }

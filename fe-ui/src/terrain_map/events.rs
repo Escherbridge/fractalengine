@@ -120,8 +120,8 @@ pub(crate) fn drain_tileset_events(
                 // first `ChunkReceived` below flips it to `Downloading`. An
                 // empty `root_hash` is fe-sync's honest failure reply (no
                 // provider, offline, download stopped); a header refused by
-                // the host surfaces as `ChunkFailed`/cancellation instead —
-                // see `fractalengine::terrain_bridge` §tileset-p2p.
+                // the host is written straight onto this tracker as `Failed`
+                // by `fractalengine::terrain_bridge` (§tileset-p2p).
                 if let Some(dl) = downloads.0.get_mut(&tileset_id) {
                     if root_hash.is_empty() {
                         let reason = serde_json::from_str::<serde_json::Value>(&meta_json)
@@ -132,7 +132,10 @@ pub(crate) fn drain_tileset_events(
                     } else {
                         dl.total_chunks = total_chunks;
                         dl.total_bytes_estimate = approx_size_bytes;
-                        dl.status = DownloadStatus::Verifying;
+                        // Never mask the host's own integrity refusal.
+                        if !matches!(dl.status, DownloadStatus::Failed(_)) {
+                            dl.status = DownloadStatus::Verifying;
+                        }
                     }
                 }
             }

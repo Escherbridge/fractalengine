@@ -406,9 +406,10 @@ one sub-module per domain:
   `Error` would be delivered to the oldest API waiter
 - `asset_backfill` — one-time startup ingest of legacy `imported/` GLBs into
   the blob store (§asset-resolution)
-- `blob_migration` (OF-1/S1b, 2026-10-14) — `referenced_asset_hashes` (the
-  shared "every hash a live row still names" query `asset_gc` also calls, but
-  over every row, not just its doomed subset) and
+- `blob_migration` (OF-1/S1b, 2026-10-14) — `referenced_asset_hashes` (every
+  hash a live row still names; `asset_gc` shares the same three queries
+  through `referenced_hashes_among(db, Some(doomed))`, which binds its doomed
+  subset so a GC pass never loads every asset hash — final review) and
   `migrate_legacy_blob_store`: a marker-gated, copy-only, crash-safe one-time
   pass that backfills the per-install blob store from the pre-2026-10-14
   per-user one, called from the binaries' `main` right after the DB thread's

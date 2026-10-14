@@ -92,7 +92,7 @@ async fn a_published_tileset_downloads_verified_and_complete() {
 
     let fetcher = service(&bob, bob_dir.path());
     let meta = fetcher
-        .request_meta(&[alice.provider_ref()], "valley", entry.root)
+        .request_download_meta(&[alice.provider_ref()], "valley", entry.root)
         .await
         .unwrap();
     assert_eq!(
@@ -392,7 +392,7 @@ async fn a_download_over_its_total_byte_cap_stops_without_completing() {
     });
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let meta = fetcher
-        .request_meta(&[alice.provider_ref()], "sprawl", entry.root)
+        .request_download_meta(&[alice.provider_ref()], "sprawl", entry.root)
         .await
         .unwrap();
     fetcher.confirm("sprawl", &meta.chunk_hashes).await.unwrap();
@@ -815,7 +815,7 @@ async fn an_unconfirmed_download_never_fetches_a_chunk_even_across_a_restart() {
 
     {
         let bob = service(&network.transport("bob"), bob_dir.path());
-        bob.request_meta(&[alice.provider_ref()], "pending-seal", entry.root)
+        bob.request_download_meta(&[alice.provider_ref()], "pending-seal", entry.root)
             .await
             .unwrap();
         // Never confirmed: the (simulated) host's header verification is
@@ -861,7 +861,7 @@ async fn a_confirmation_disagreeing_with_the_resolved_hashseq_is_refused() {
 
     let fetcher = service(&bob, bob_dir.path());
     let meta = fetcher
-        .request_meta(&[alice.provider_ref()], "shrunk", entry.root)
+        .request_download_meta(&[alice.provider_ref()], "shrunk", entry.root)
         .await
         .unwrap();
 
@@ -884,5 +884,56 @@ async fn a_confirmation_disagreeing_with_the_resolved_hashseq_is_refused() {
     fetcher.confirm("shrunk", &meta.chunk_hashes).await.unwrap();
     assert!(fetcher.is_confirmed("shrunk").await.unwrap());
     let report = fetcher.download("shrunk", None).await.unwrap();
+    assert!(report.complete.is_some());
+}
+
+/// Final review: a streamed (not-installed) cache can never be confirmed into
+/// a full download. Before, any `ConfirmTilesetDownload` for an id with a
+/// ledger confirmed it, so a late streamed meta reply the host mistook for an
+/// install-flow reply turned the cache into a full download that then
+/// auto-installed. Now only `request_download_meta` makes `confirm` succeed.
+#[tokio::test]
+async fn a_streamed_cache_is_never_confirmed_into_a_full_download() {
+    let network = InMemoryNetwork::new();
+    let (alice, bob) = (network.transport("alice"), network.transport("bob"));
+    let (alice_dir, bob_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let source = SourceTileset::write(&alice_dir.path().join("bundles"), "streamed", 2);
+    let entry = service(&alice, alice_dir.path())
+        .publish("streamed", source.index_json.clone(), &source.bundle_paths)
+        .await
+        .unwrap();
+
+    let fetcher = service(&bob, bob_dir.path());
+    let meta = fetcher
+        .request_meta(&[alice.provider_ref()], "streamed", entry.root)
+        .await
+        .unwrap();
+    fetcher.fetch_chunk("streamed", 0).await.unwrap();
+
+    assert_eq!(
+        fetcher.confirm("streamed", &meta.chunk_hashes).await,
+        Err(TransferError::NotRequested("streamed".to_string()))
+    );
+    assert_eq!(
+        fetcher.download("streamed", None).await,
+        Err(TransferError::AwaitingConfirmation("streamed".to_string()))
+    );
+    let pending = fetcher.pending_downloads().await.unwrap();
+    assert!(
+        pending.iter().all(|p| !p.full_download),
+        "the cache never became a full download: {pending:?}"
+    );
+    assert!(fetcher.completed_from(&pending).is_empty());
+
+    // An explicit download request for the same id is what unlocks it.
+    let meta = fetcher
+        .request_download_meta(&[alice.provider_ref()], "streamed", entry.root)
+        .await
+        .unwrap();
+    fetcher
+        .confirm("streamed", &meta.chunk_hashes)
+        .await
+        .unwrap();
+    let report = fetcher.download("streamed", None).await.unwrap();
     assert!(report.complete.is_some());
 }

@@ -33,6 +33,10 @@ pub const MAX_WHOLE_ARCHIVE_BYTES: u64 = limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES;
 pub const MAX_HASH_SEQ_CHILDREN: usize = 1 + (1 << 16);
 /// Resolved roots one fetcher remembers before forgetting them all.
 const MAX_RESOLVED_ROOTS: usize = 64;
+/// Most uris a [`HexonLocator`] remembers (advertisements come from the network).
+pub const MAX_LOCATOR_ENTRIES: usize = 4096;
+/// Most providers a [`HexonLocator`] keeps per uri.
+pub const MAX_LOCATOR_PROVIDERS: usize = 64;
 
 /// What [`publish_to_transport`] stored and tagged.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,7 +156,8 @@ impl HexonLocator {
     }
 
     /// `providers` serve `uri` under `root`; the same root merges providers,
-    /// a new root replaces the entry.
+    /// a new root replaces the entry. Bounded by [`MAX_LOCATOR_ENTRIES`] and
+    /// [`MAX_LOCATOR_PROVIDERS`] (extra uris and providers are dropped).
     pub fn insert(
         &self,
         uri: &str,
@@ -160,6 +165,10 @@ impl HexonLocator {
         providers: impl IntoIterator<Item = ProviderRef>,
     ) {
         let mut entries = lock(&self.entries);
+        if entries.len() >= MAX_LOCATOR_ENTRIES && !entries.contains_key(uri) {
+            tracing::debug!(uri, "Hexon locator full — entry refused");
+            return;
+        }
         let entry = entries.entry(uri.to_string()).or_insert(LocatorEntry {
             root,
             providers: Vec::new(),
@@ -171,6 +180,9 @@ impl HexonLocator {
             };
         }
         for provider in providers {
+            if entry.providers.len() >= MAX_LOCATOR_PROVIDERS {
+                break;
+            }
             if !entry.providers.contains(&provider) {
                 entry.providers.push(provider);
             }
@@ -450,5 +462,42 @@ impl PartialHexonFetch for P2pPartialFetch {
 
     async fn fetch_blob(&self, hash: BlobHash) -> Result<Bytes, PartialFetchError> {
         self.blob(hash, MAX_CHUNK_BYTES, &hash_to_hex(&hash)).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Advertisements come from the network, so the locator stays bounded: a
+    /// new uri past the cap is refused while known uris still update, and a
+    /// uri keeps at most `MAX_LOCATOR_PROVIDERS` providers.
+    #[test]
+    fn the_locator_stays_bounded_under_an_advertisement_storm() {
+        let locator = HexonLocator::new();
+        for i in 0..MAX_LOCATOR_ENTRIES {
+            locator.insert(&format!("hexon-{i}"), [1; 32], [ProviderRef::new("p")]);
+        }
+        locator.insert("one-too-many", [1; 32], [ProviderRef::new("p")]);
+        assert!(locator.lookup("one-too-many").is_none());
+
+        locator.insert("hexon-0", [2; 32], [ProviderRef::new("q")]);
+        assert_eq!(
+            locator.lookup("hexon-0"),
+            Some(LocatorEntry {
+                root: [2; 32],
+                providers: vec![ProviderRef::new("q")],
+            })
+        );
+
+        locator.insert(
+            "hexon-1",
+            [1; 32],
+            (0..MAX_LOCATOR_PROVIDERS * 2).map(|i| ProviderRef::new(format!("peer-{i}"))),
+        );
+        assert_eq!(
+            locator.lookup("hexon-1").unwrap().providers.len(),
+            MAX_LOCATOR_PROVIDERS
+        );
     }
 }

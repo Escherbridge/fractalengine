@@ -2567,7 +2567,18 @@ async fn report_and_resume_tileset_downloads(transfer: Arc<TilesetTransfer>, evt
     }
     match transfer.pending_downloads().await {
         Ok(pending) => {
-            for resumed in pending.iter().filter(|p| p.full_download) {
+            // A full download that was never confirmed predates the S7a gate:
+            // nothing will ever confirm it, so it is discarded, never installed.
+            for stale in pending.iter().filter(|p| p.full_download && !p.confirmed) {
+                tracing::info!(
+                    tileset_id = %stale.tileset_id,
+                    "Discarding an unconfirmed tileset download (never re-trust an unverified header)"
+                );
+                if let Err(e) = transfer.cancel(&stale.tileset_id).await {
+                    tracing::warn!(tileset_id = %stale.tileset_id, "Discarding it failed: {e}");
+                }
+            }
+            for resumed in pending.iter().filter(|p| p.full_download && p.confirmed) {
                 tracing::info!(
                     tileset_id = %resumed.tileset_id,
                     received = resumed.received,
@@ -2749,7 +2760,10 @@ fn handle_download_tileset(
     let approx_size_bytes = providers_map.bytes_for(&tileset_id);
     let evt_tx = evt_tx.clone();
     tokio::spawn(async move {
-        match transfer.request_meta(&providers, &tileset_id, root).await {
+        match transfer
+            .request_download_meta(&providers, &tileset_id, root)
+            .await
+        {
             Ok(resolved) => {
                 send_sync_event(
                     &evt_tx,
@@ -2794,6 +2808,11 @@ fn handle_confirm_tileset_download(
     let evt_tx = evt_tx.clone();
     tokio::spawn(async move {
         if let Err(e) = transfer.confirm(&tileset_id, &expected_chunk_hashes).await {
+            if matches!(e, crate::tileset_transfer::TransferError::NotRequested(_)) {
+                // Not an install download (e.g. a streamed cache): leave it be.
+                tracing::debug!(tileset_id, "ConfirmTilesetDownload ignored: {e}");
+                return;
+            }
             tracing::warn!(tileset_id, "Tileset download confirmation refused: {e}");
             send_sync_event(
                 &evt_tx,
@@ -4045,6 +4064,64 @@ mod tests {
             assert_eq!(completed.len(), 1, "{events:?}");
             assert_eq!(completed[0].0, "full");
             assert_eq!(std::fs::read(&completed[0].1[0]).unwrap(), b"full bundle");
+        });
+    }
+
+    /// Final review: a full download whose ledger was never confirmed (it
+    /// predates the S7a gate) is neither reported nor handed back for
+    /// install at start-up — it is discarded, since nothing will ever confirm it.
+    #[test]
+    fn an_unconfirmed_full_download_is_discarded_at_startup_never_installed() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let network = fe_runtime::blob_transport::InMemoryNetwork::new();
+            let alice = network.transport("alice");
+            let index = alice.add(bytes::Bytes::from_static(b"{}")).await.unwrap();
+            let bundle = alice
+                .add(bytes::Bytes::from_static(b"pre-gate bundle"))
+                .await
+                .unwrap();
+            let root = alice.add_hash_seq(&[index, bundle]).await.unwrap();
+            let dir = tempfile::TempDir::new().unwrap();
+            let ledger_path = {
+                let bob = TilesetTransfer::new(Arc::new(network.transport("bob")), dir.path());
+                bob.start_download(&[alice.provider_ref()], "legacy", root, None)
+                    .await
+                    .unwrap();
+                bob.download_dir("legacy")
+                    .unwrap()
+                    .join(crate::tileset_transfer::LEDGER_FILE)
+            };
+            // A pre-S7a ledger has no `confirmed` field (serde default false).
+            let mut ledger: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&ledger_path).unwrap()).unwrap();
+            ledger.as_object_mut().unwrap().remove("confirmed");
+            std::fs::write(&ledger_path, serde_json::to_vec(&ledger).unwrap()).unwrap();
+
+            let restarted = Arc::new(TilesetTransfer::new(
+                Arc::new(network.transport("bob-restarted")),
+                dir.path(),
+            ));
+            let (evt_tx, evt_rx) = crossbeam::channel::unbounded();
+            report_and_resume_tileset_downloads(Arc::clone(&restarted), EventOutbox::new(evt_tx))
+                .await;
+            let events: Vec<SyncEvent> = evt_rx.try_iter().collect();
+            assert!(
+                events.iter().all(|e| !matches!(
+                    e,
+                    SyncEvent::TilesetDownloadComplete { .. }
+                        | SyncEvent::TilesetDownloadResumed { .. }
+                )),
+                "an unconfirmed download is never handed to the installer: {events:?}"
+            );
+            assert!(
+                !ledger_path.exists(),
+                "the stale download is discarded from disk"
+            );
+            assert!(restarted.pending_downloads().await.unwrap().is_empty());
         });
     }
 
