@@ -8,7 +8,6 @@ use axum::Extension;
 use axum_extra::extract::Multipart;
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
-use surrealdb::engine::local::Db;
 
 use crate::auth::require_role;
 
@@ -219,7 +218,7 @@ async fn read_multipart_archive(multipart: &mut Multipart) -> Option<Vec<u8>> {
 
 /// Load full ExportNode data including properties, rotation, scale, and node_log.
 async fn load_export_nodes(
-    db: &surrealdb::Surreal<Db>,
+    db: &crate::db_reader::ReadDb,
     petal_id: &str,
 ) -> Vec<fe_format::ExportNode> {
     // Load nodes with all fields
@@ -292,7 +291,10 @@ async fn load_export_nodes(
 }
 
 /// Load field_defs scoped to a petal (or global scope).
-async fn load_field_defs(db: &surrealdb::Surreal<Db>, petal_id: &str) -> Vec<fe_format::FieldDef> {
+async fn load_field_defs(
+    db: &crate::db_reader::ReadDb,
+    petal_id: &str,
+) -> Vec<fe_format::FieldDef> {
     let scope_pattern = format!("%PETAL#{}%", petal_id);
     let mut res = match db
         .query(

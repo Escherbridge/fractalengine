@@ -362,6 +362,61 @@ when `content_type` is the directory sentinel, falling through to today's
 single-blob behavior otherwise) — no route or RBAC changes needed, only that
 one branch grows.
 
+## §db-reader (DB-READER-RO, CDL-SPEC10 A3b — closes ledger precondition before A4/A5)
+
+`ApiState.db_reader` is `Option<Arc<db_reader::ReadDb>>`, not the raw
+`Surreal<engine::local::Db>` handle. `ReadDb` (`db_reader.rs`) is a guarded
+facade: it wraps the connection and exposes exactly one method,
+`ReadDb::query`, mirroring `Db::query`'s own signature. It never implements
+`Deref`/`DerefMut`, so none of SurrealDB's typed CRUD builders
+(`create`/`update`/`delete`/`insert`/`upsert`) are reachable through it.
+
+**Why not the usual "`Deref`, no `DerefMut`" guard (correction to the
+ledger's literal sketch).** That idiom blocks mutation only when the
+mutating methods require `&mut self`. SurrealDB's `Surreal<C>` is an async
+client handle over a channel (`inner: Arc<Inner>`), so `query`/`create`/
+`update`/`delete`/`insert`/`upsert` all take `&self` (verified against the
+vendored `surrealdb-3.0.5` source, `src/method/mod.rs`). A `Deref<Target =
+Db>` would make `.delete()` resolve through ordinary autoderef regardless of
+whether `DerefMut` exists — so this type guards by omitting `Deref`
+entirely and re-exposing only `query` as an inherent method. The
+`compile_fail` doctest on `ReadDb` proves this (E0599, no method and no
+`Deref` chain to one), which is the literal acceptance the ledger asked for.
+
+**What the guard does and does not cover.** `ReadDb::query` still executes
+whatever SurrealQL string it is given, including a hand-written `CREATE`/
+`DELETE` statement — the existing SELECT-only validator in `query_guard.rs`
+is the (unchanged) layer responsible for that, and a few in-crate tests
+seed fixtures with a raw `db.query("CREATE ...")` exactly as before. What
+`ReadDb` removes is the *typed* CRUD surface: grep confirms no `db_reader`
+call site anywhere (src or tests) ever called `.create()`/`.update()`/
+`.delete()`/`.insert()`/`.upsert()` — only `.query()` — so this costs zero
+behaviour and closes the surface a future handler could otherwise reach by
+habit (the typed API is the one most code in this crate uses against the
+DB-thread's own handle elsewhere).
+
+**The one write exception.** `iot.rs`'s `ingest_readings` writes directly
+through `db_reader` (§iot-ingest's append-only fast path, bypassing the DB
+thread). `ReadDb::writable(&self) -> &Db` is the single named escape hatch
+for that path — `insert_readings_with_replication` still takes the raw
+`&Db` the fe-database handler expects. Grep for `.writable()` before adding
+a second caller; a new write surface on `db_reader` should be a deliberate,
+reviewed decision, not an accidental one.
+
+**Migration (zero behaviour change).** All ~59 existing read call sites
+compile unchanged against `ReadDb` because every one of them already only
+called `.query(...)`. A handful of in-crate helper functions that took
+`db: &Surreal<engine::local::Db>` (the `direct_resolve_*_scope` family in
+`rest.rs`, `serve_asset_by_id`/`direct_load_asset_meta` in `assets.rs`,
+`load_export_nodes`/`load_field_defs` in `format.rs`,
+`load_gpx_export_nodes` in `gpx.rs`, `load_petal_nodes_direct` in `ws.rs`,
+`run_guarded_query` in `query_guard.rs`) now take `&ReadDb` — a few even
+via a local `type Db = crate::db_reader::ReadDb;` alias so the diff is a
+one-line retarget. Construction sites (`ApiState`/`ApiConfig`, the two
+binaries' `api_db_reader` hydration block, `fe-test-harness::ApiHarness`,
+and the in-crate/integration tests that build an `ApiState` directly) wrap
+the owned `Db` with `ReadDb::new(db)` before the `Arc`.
+
 ## §query-guard + §limits
 
 ## §analytics-query

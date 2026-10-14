@@ -64,7 +64,7 @@ fn test_state(db: Db) -> Arc<ApiState> {
         revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
         blob_store: None,
         cors_origins: vec![],
-        db_reader: Some(Arc::new(db)),
+        db_reader: Some(Arc::new(fe_api::db_reader::ReadDb::new(db))),
         query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         entity_store: None,
         tileset_registry: None,
@@ -251,7 +251,10 @@ async fn ingest_rejects_wrong_scope_role_and_foreign_anchor() {
     .await;
     assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-    assert_eq!(count_readings(state.db_reader.as_ref().unwrap()).await, 0);
+    assert_eq!(
+        count_readings(state.db_reader.as_ref().unwrap().writable()).await,
+        0
+    );
 }
 
 #[tokio::test]
@@ -273,7 +276,10 @@ async fn ingest_enforces_batch_cap_and_rejects_empty() {
     let resp = post_readings(&state, test_claims("VERSE#v1", "editor"), &pa, vec![]).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
-    assert_eq!(count_readings(state.db_reader.as_ref().unwrap()).await, 0);
+    assert_eq!(
+        count_readings(state.db_reader.as_ref().unwrap().writable()).await,
+        0
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -359,7 +365,7 @@ fn test_state_with_replication(
         revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
         blob_store: Some(Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new())),
         cors_origins: vec![],
-        db_reader: Some(Arc::new(db)),
+        db_reader: Some(Arc::new(fe_api::db_reader::ReadDb::new(db))),
         query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         entity_store: None,
         tileset_registry: None,
@@ -744,7 +750,7 @@ async fn direct_path_with_db_reader_never_sends_the_fallback_command() {
         revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
         blob_store: None,
         cors_origins: vec![],
-        db_reader: Some(Arc::new(db)),
+        db_reader: Some(Arc::new(fe_api::db_reader::ReadDb::new(db))),
         query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         entity_store: None,
         tileset_registry: None,

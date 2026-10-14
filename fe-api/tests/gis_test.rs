@@ -63,7 +63,7 @@ fn test_state(db: Db) -> Arc<ApiState> {
         revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
         blob_store: None,
         cors_origins: vec![],
-        db_reader: Some(Arc::new(db)),
+        db_reader: Some(Arc::new(fe_api::db_reader::ReadDb::new(db))),
         query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         entity_store: None,
         tileset_registry: None,

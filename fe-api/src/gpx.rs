@@ -216,7 +216,7 @@ pub async fn export_gpx(
 
 /// Load nodes with gpx_type property and reconstruct the hierarchy for GPX export.
 async fn load_gpx_export_nodes(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db_reader::ReadDb,
     petal_id: &str,
 ) -> Vec<fe_terrain::ExportNode> {
     // Load all nodes with gpx_type in their properties

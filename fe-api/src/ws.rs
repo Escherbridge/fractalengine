@@ -535,7 +535,7 @@ async fn load_petal_nodes(
 
 /// Query a direct reader without converting database failures into empty snapshots.
 async fn load_petal_nodes_direct(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db_reader::ReadDb,
     petal_id: &str,
 ) -> Result<Vec<crate::types::NodeDto>, SceneSnapshotLoadError> {
     let mut result = db

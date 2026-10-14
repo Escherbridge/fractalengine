@@ -28,9 +28,10 @@ pub struct ApiState {
     pub blob_store: Option<fe_runtime::blob_store::BlobStoreHandle>,
     /// Allowed CORS origins. Use `["*"]` to allow any origin.
     pub cors_origins: Vec<String>,
-    /// Read-only SurrealDB connection for direct API queries.
-    /// When `Some`, read handlers bypass the crossbeam→DB-thread round-trip.
-    pub db_reader: Option<std::sync::Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>>,
+    /// Read-only SurrealDB connection for direct API queries (guarded facade,
+    /// see `fe-api/AGENTS.md` §db-reader). When `Some`, read handlers bypass
+    /// the crossbeam→DB-thread round-trip.
+    pub db_reader: Option<std::sync::Arc<crate::db_reader::ReadDb>>,
     /// Per-token query rate limiter (jti → (count, window_start)).
     pub query_rate_limiter:
         tokio::sync::Mutex<std::collections::HashMap<String, (u32, std::time::Instant)>>,
@@ -45,9 +46,10 @@ pub struct ApiState {
         Option<std::sync::Arc<std::sync::Mutex<fe_hexon::p2p::AnnouncementStore>>>,
     /// Replication emit seam: the DB→sync bridge's event channel (A11).
     ///
-    /// The API ingestion path (IoT readings) writes directly on `db_reader`
-    /// (the §iot-readings append-only exception), so it needs its own way to
-    /// publish rows to peers. Handlers that own a `ReplicationEvent` push it
+    /// The API ingestion path (IoT readings) writes directly through
+    /// `db_reader`'s `writable()` escape hatch (the §iot-readings append-only
+    /// exception), so it needs its own way to publish rows to peers.
+    /// Handlers that own a `ReplicationEvent` push it
     /// here; `None` means the API thread is running without a replication
     /// bridge (harness/tests) and emission is skipped.
     pub replication_tx: Option<fe_database::ReplicationSender>,

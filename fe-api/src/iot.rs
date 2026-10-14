@@ -42,8 +42,8 @@ fn err(status: StatusCode, msg: &str) -> Response {
 
 /// POST /api/v1/petals/:petal_id/iot/readings — authenticated batch ingest.
 ///
-/// Write path: `db_reader` when configured (the §iot-readings append-only
-/// exception), else the DB-thread seam (`DbCommand::InsertIotReadings`, F24)
+/// Write path: `db_reader.writable()` when configured (the §iot-readings
+/// append-only exception), else the DB-thread seam (`DbCommand::InsertIotReadings`, F24)
 /// — never a 503. The guard pipeline (Editor+ role → ULID → petal scope →
 /// token containment → per-DID rate limit → batch caps) runs identically on
 /// both paths, before any write.
@@ -90,8 +90,8 @@ pub async fn ingest_readings(
     }
 
     // A11: publish each accepted row to the verse's replica. The API thread
-    // writes on `db_reader` (append-only exception, §iot-readings), so it
-    // carries its own emit seam: the shared blob store supplies the row's
+    // writes through `db_reader.writable()` (append-only exception,
+    // §iot-readings), so it carries its own emit seam: the shared blob store supplies the row's
     // content hash and `replication_tx` is the DB→sync bridge. Both are absent
     // in a replication-disabled deployment — the rows are still durable, they
     // simply are not published.
@@ -100,9 +100,11 @@ pub async fn ingest_readings(
         .map(|parts| parts.verse_id);
 
     match state.db_reader.as_ref() {
-        // Append-only insert — safe off the DB thread (fe-database AGENTS.md §iot-readings).
+        // Append-only insert — safe off the DB thread (fe-database AGENTS.md
+        // §iot-readings). The one call in this crate allowed through
+        // `ReadDb::writable()` (fe-api/AGENTS.md §db-reader).
         Some(db) => match insert_readings_with_replication(
-            db,
+            db.writable(),
             &petal_id,
             verse_id.as_deref(),
             &claims.sub,

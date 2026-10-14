@@ -14,11 +14,14 @@ use fe_identity::api_token::ApiClaims;
 use fe_runtime::blob_store::{hash_from_hex, BlobStoreHandle};
 
 use crate::auth::{require_role, require_scope};
+#[cfg(test)]
+use crate::db_reader::ReadDb;
 use crate::server::ApiState;
 use crate::types::is_valid_ulid;
 
-/// SurrealDB connection type used by the direct (channel-bypassing) read helpers below.
-type Db = surrealdb::Surreal<surrealdb::engine::local::Db>;
+/// Guarded read-only connection type used by the direct (channel-bypassing)
+/// read helpers below (fe-api/AGENTS.md §db-reader).
+type Db = crate::db_reader::ReadDb;
 
 /// Placeholder content-type for the planned "directory of files" asset shape
 /// (P2P bucket / "3D visual IPFS" — see AGENTS.md). Not servable as a single
@@ -612,7 +615,7 @@ mod tests {
             revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
             blob_store: Some(blob_store),
             cors_origins: vec![],
-            db_reader: Some(Arc::new(db)),
+            db_reader: Some(Arc::new(ReadDb::new(db))),
             query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             entity_store: None,
             tileset_registry: None,
@@ -731,7 +734,7 @@ mod tests {
             revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
             blob_store: Some(blob_store),
             cors_origins: vec![],
-            db_reader: Some(Arc::new(db)),
+            db_reader: Some(Arc::new(ReadDb::new(db))),
             query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             entity_store: None,
             tileset_registry: None,
@@ -818,7 +821,7 @@ mod tests {
             revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
             blob_store: Some(blob_store),
             cors_origins: vec![],
-            db_reader: Some(Arc::new(db)),
+            db_reader: Some(Arc::new(ReadDb::new(db))),
             query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             entity_store: None,
             tileset_registry: None,
@@ -884,7 +887,7 @@ mod tests {
             revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
             blob_store: Some(blob_store),
             cors_origins: vec![],
-            db_reader: Some(Arc::new(db)),
+            db_reader: Some(Arc::new(ReadDb::new(db))),
             query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             entity_store: None,
             tileset_registry: None,
@@ -921,7 +924,7 @@ mod tests {
             revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
             blob_store: Some(blob_store),
             cors_origins: vec![],
-            db_reader: Some(Arc::new(db)),
+            db_reader: Some(Arc::new(ReadDb::new(db))),
             query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             entity_store: None,
             tileset_registry: None,

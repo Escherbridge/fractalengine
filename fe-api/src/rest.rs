@@ -9,6 +9,8 @@ use fe_identity::api_token::ApiClaims;
 use fe_runtime::messages::{ApiCommand, DbCommand, DbResult, TransformUpdate};
 
 use crate::auth::{require_role, require_scope};
+#[cfg(test)]
+use crate::db_reader::ReadDb;
 use crate::types::{
     hierarchy_to_dto, is_valid_scope, is_valid_ulid, ApiResponse, CreateFieldDefRequest,
     CreateFractalRequest, CreateNodeRequest, CreatePetalRequest, CreateVerseRequest,
@@ -928,8 +930,9 @@ pub fn filter_hierarchy_by_scope(verses: Vec<VerseDto>, token_scope: &str) -> Ve
 // Direct DB read helpers (bypass crossbeam channel)
 // ---------------------------------------------------------------------------
 
-/// Type alias for the SurrealDB connection used by direct read helpers.
-type Db = surrealdb::Surreal<surrealdb::engine::local::Db>;
+/// Guarded read-only connection type used by direct read helpers
+/// (fe-api/AGENTS.md §db-reader).
+type Db = crate::db_reader::ReadDb;
 
 /// Direct DB query for a node's transform. Returns `None` if the node does not
 /// exist. Bypasses the crossbeam→DB-thread round-trip.
@@ -2038,7 +2041,7 @@ async fn load_petal_projection(
 }
 
 async fn direct_get_elevation_profile(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &Db,
     track_id: &str,
 ) -> anyhow::Result<Vec<crate::types::ElevationPointDto>> {
     // Read the node's properties which contain the route data
@@ -2088,7 +2091,7 @@ async fn direct_get_elevation_profile(
 }
 
 async fn direct_get_track_stats(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &Db,
     track_id: &str,
 ) -> anyhow::Result<crate::types::TrackStatsDto> {
     let mut res = db
@@ -2185,7 +2188,7 @@ async fn direct_get_track_stats(
 /// node's deviation from its route exceeds `deviation_threshold_m` (default 50m),
 /// also emit a `tracking_alert` property.
 async fn check_tracking_and_alert(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &Db,
     api_cmd_tx: &crossbeam::channel::Sender<ApiCommand>,
     node_id: &str,
     position: [f32; 3],
@@ -2412,7 +2415,7 @@ mod tests {
             revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
             blob_store: None,
             cors_origins: vec![],
-            db_reader: Some(Arc::new(db)),
+            db_reader: Some(Arc::new(ReadDb::new(db))),
             query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             entity_store: None,
             tileset_registry: None,

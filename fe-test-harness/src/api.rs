@@ -229,7 +229,8 @@ impl ApiHarness {
             revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
             blob_store: with_blob_store.then_some(blob_store),
             cors_origins: vec!["*".to_string()],
-            db_reader: with_db_reader.then(|| db.clone()),
+            db_reader: with_db_reader
+                .then(|| Arc::new(fe_api::db_reader::ReadDb::new((*db).clone()))),
             query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             entity_store: None,
             tileset_registry,

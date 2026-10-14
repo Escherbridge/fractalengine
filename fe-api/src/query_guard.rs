@@ -1002,7 +1002,7 @@ pub fn with_statement_timeout(sql: &str) -> String {
 
 /// Execute a guarded query with a DB-side `TIMEOUT 5s`, a client backstop, and a row cap.
 pub async fn run_guarded_query(
-    db: &Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>,
+    db: &Arc<crate::db_reader::ReadDb>,
     guarded: &GuardedQuery,
     vars: &std::collections::HashMap<String, serde_json::Value>,
     row_cap: usize,

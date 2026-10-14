@@ -10,6 +10,7 @@ pub mod assets;
 pub mod auth;
 pub mod canonical_ws;
 pub mod crs;
+pub mod db_reader;
 pub mod endpoint;
 pub mod entity_store_bridge;
 pub mod export;
@@ -53,7 +54,7 @@ pub struct ApiConfig {
     /// Entity change broadcast for scene graph streaming (CUD deltas).
     pub entity_change_tx: tokio::sync::broadcast::Sender<fe_runtime::messages::SceneChange>,
     /// Read-only SurrealDB connection for direct queries (bypasses crossbeam channel).
-    pub api_db_reader: Option<std::sync::Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>>,
+    pub api_db_reader: Option<std::sync::Arc<crate::db_reader::ReadDb>>,
     /// In-memory entity store for DataFusion analytics queries.
     pub entity_store: Option<std::sync::Arc<fe_entity_store::EntityStore>>,
     /// Tileset registry for hexon tile serving and management.

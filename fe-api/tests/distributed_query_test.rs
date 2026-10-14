@@ -516,7 +516,7 @@ fn analytics_state(
         revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
         blob_store: None,
         cors_origins: vec![],
-        db_reader: db.map(Arc::new),
+        db_reader: db.map(|d| Arc::new(fe_api::db_reader::ReadDb::new(d))),
         query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         entity_store: Some(store),
         tileset_registry: None,

@@ -403,7 +403,7 @@ fn main() {
     // Direct reader = clone of the DB thread's handle (never a second SurrealKV
     // open: the store lock refuses it, os error 33). Hydration failure leaves the
     // editor running with the analytics surface closed. See AGENTS.md §entity-store-analytics.
-    let api_db_reader: Option<Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>> = {
+    let api_db_reader: Option<Arc<fe_api::db_reader::ReadDb>> = {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -417,7 +417,7 @@ fn main() {
                     node_count,
                     "Hydrated EntityStore through the DB thread's shared SurrealKV handle"
                 );
-                Some(Arc::new(shared_db))
+                Some(Arc::new(fe_api::db_reader::ReadDb::new(shared_db)))
             }
             Err(error) => {
                 tracing::error!(

@@ -381,7 +381,7 @@ fn main() -> anyhow::Result<()> {
     // scene changes either way.
     let mut entity_store_for_api: Option<Arc<fe_entity_store::EntityStore>> =
         Some(Arc::clone(&entity_store));
-    let api_db_reader: Option<Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>> = {
+    let api_db_reader: Option<Arc<fe_api::db_reader::ReadDb>> = {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -402,7 +402,7 @@ fn main() -> anyhow::Result<()> {
                 entity_store_for_api = None;
             }
         }
-        Some(Arc::new(shared_db))
+        Some(Arc::new(fe_api::db_reader::ReadDb::new(shared_db)))
     };
 
     // Tileset registry: scan installed hexon tilesets and load into memory.

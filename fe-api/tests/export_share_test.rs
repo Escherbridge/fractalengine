@@ -70,7 +70,7 @@ fn test_state(db: Db) -> Arc<ApiState> {
         revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
         blob_store: None,
         cors_origins: vec![],
-        db_reader: Some(Arc::new(db)),
+        db_reader: Some(Arc::new(fe_api::db_reader::ReadDb::new(db))),
         query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         entity_store: None,
         tileset_registry: None,
@@ -582,7 +582,7 @@ async fn reading_row_cap_reuses_the_same_guarded_mechanism_as_nodes() {
     seed_node(&db, &pa, "anchor-a", 0.0, 0.0, 0.0).await;
     seed_reading(&db, &pa, "anchor-a", "temperature_c", 1.0).await;
     seed_reading(&db, &pa, "anchor-a", "temperature_c", 2.0).await;
-    let db = Arc::new(db);
+    let db = Arc::new(fe_api::db_reader::ReadDb::new(db));
     let guarded = fe_api::query_guard::GuardedQuery {
         sql: "SELECT * FROM iot_reading".into(),
     };
@@ -609,7 +609,7 @@ async fn row_cap_produces_clear_error() {
     for i in 0..3 {
         seed_node(&db, &pa, &format!("n{i}"), i as f64, 0.0, 0.0).await;
     }
-    let db = Arc::new(db);
+    let db = Arc::new(fe_api::db_reader::ReadDb::new(db));
     let guarded = fe_api::query_guard::GuardedQuery {
         sql: "SELECT * FROM node".into(),
     };
@@ -1355,7 +1355,7 @@ async fn db_side_statement_timeout_aborts_heavy_query() {
     let pa = ulid();
     seed_petal(&db, &pa, false).await;
     seed_node(&db, &pa, "n1", 0.0, 0.0, 0.0).await;
-    let db = Arc::new(db);
+    let db = Arc::new(fe_api::db_reader::ReadDb::new(db));
     let guarded = fe_api::query_guard::GuardedQuery {
         sql: "SELECT * FROM node WHERE sleep(30s) = NONE".into(),
     };
