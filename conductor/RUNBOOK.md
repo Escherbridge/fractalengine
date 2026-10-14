@@ -240,9 +240,11 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
   resumable downloads; residency ledger / lazy tiles / exit-ring eviction), PAS-P5 (partial
   hexon fetch), CDL Wave 4 integration, CDL SPEC-10 observation plane. Then role propagation,
   the decision backlog, pending tracks (all four streams are in scope).
-- **Role propagation:** *(admission scope + not-yet-authorized handling SUPERSEDED by R7
-  2026-10-13: any Manager within their own subtree; unauthorized-yet statements Deferred and
-  re-tried)* replicate the `role` table as ordinary replicated rows, admitted only when
+- **Role propagation:** *(SUPERSEDED in part by R7 2026-10-13 — grant authority is any Manager
+  within their own subtree, not "Manager+ at the verse scope"; not-yet-authorized statements are
+  held as durable Deferred and re-evaluated on every authority change; implemented in
+  `conductor/tracks/role_propagation_20261013/plan.md` §2.2/§2.4, decisions D-RP-1/D-RP-2 in §7)*
+  replicate the `role` table as ordinary replicated rows, admitted only when
   the author is Manager+ at the verse scope (owner bootstraps from `verse.created_by`). Chosen
   over signed role grants (simpler, no new signature format). After it lands: fix the
   distributed-query settlement race, then consider re-enabling responder filtering.
@@ -311,9 +313,17 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
   re-grounds A1's file:line citations after W4 lands · to reverse: none needed (docs).
 
 **Carried from 2026-10-12:**
-- Role-table replication semantics: last-writer-wins by HLC per (verse, peer) row; revocation =
-  tombstoned role row; the owner role is never replicated-in (derived from `created_by`) ·
-  default taken: as stated · to reverse: redesign before anything depends on it (moderate).
+- ~~Role-table replication semantics: LWW by HLC per (verse, peer) row …~~ SUPERSEDED by the
+  per-grantor statement model + R7 (role_propagation plan §0/§7). Replaced by:
+- **D-RP-1 (AC-1 agent, 2026-10-13):** deferred role statements are durable per plane — DB: a
+  persisted `role_statement_pending` table keyed (scope, peer, grantor) with a per-grantor budget
+  (1024/verse, refuse-new) and NO shared cap (no cross-author eviction → flood-proof); sync: a
+  per-author replica re-read (`Query::author(id).key_prefix`) when an author's authority rises ·
+  to reverse: redesign before RP-2 (moderate).
+- **D-RP-2 (AC-1 agent, security):** owner pins cut the subtree authority walk (a verse Manager the
+  owner pinned to viewer in petal P cannot appoint a Manager in P), and Managers only RAISE (a
+  Manager's `none` is a no-op — no shadow-demotion of a higher Manager) · to reverse: RP-1 is pure,
+  cheap before RP-2.
 - Order after the large phases = role propagation → implement the 2026-10-12 decisions → ratify
   backlog → pending tracks · default: as stated · to reverse: reorder §7 (cheap).
 - Legacy API tokens without a `client` claim are treated as node-level ownership · to reverse:
@@ -408,8 +418,14 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
   ammonia ×2 via surrealdb-core, ruzstd via bevy_image); build/test jobs green; publish SKIPPED.
 - In flight: W0b `wf_e727510a-f59` (lint → warnings not failure, advisory bumps, runnable release
   packages); critic tick 1 (background agent); SPEC-10 A1 spec draft (background agent, docs only).
-- Next: W0b gate → commit → push → watch CI → W1 PAS-P3+P4 (execute plan file, sequential slices,
-  per-slice local commits) with docs-only lanes in parallel.
+- Critic tick 1 (DRIFTING, 8 directives, all ACCEPTED → accountability-log). Docs lanes landed:
+  `0a702f1` SPEC-10 draft (PRE-APPROVED) + G3/G6 errata, `2c93499` A1 cross-slice items routed
+  into W4/SPEC-10 plans. W0b DONE `6a53a2b` (lint warn-only, runnable packages, advisories;
+  ruzstd ignored — reachable via KTX2 in peer GLBs).
+- In flight: W0c `wf_34174034-e00` (fuzz-crash still blocks publish, licences allow-list + CI,
+  KTX2 GLB intake guard, setup-python); AC-1 role-prop plan rewrite (docs agent).
+- Next: W0c commit → **scoped test gate** (W0+W0b+W0c test lists) → push → watch CI (first
+  packaged `latest`) → critic tick 2 → W1 PAS-P3+P4. No main pushes after that until the final sweep.
 
 ### 2026-10-12 — handoff after the completeness campaign
 - Done: retro (§1); 5-round grill loop → §3 decisions; pushed `a064144..4765bc5`; untracked

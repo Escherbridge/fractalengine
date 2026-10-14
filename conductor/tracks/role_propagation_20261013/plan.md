@@ -8,10 +8,8 @@ computed_at_commit: 877e801
 security_critical: true
 ---
 
-> **OWNER DECISIONS 2026-10-13 (R7, RUNBOOK §3) — supersede this plan wherever they differ:**
-> 1. A role statement whose author is not yet Manager+ is **held back as Deferred** (not stored-inactive). Deferred statements MUST be re-evaluated whenever any author's authority changes (promotion/revocation arrival), so the final role set stays independent of delivery order — add a reordering flow test proving convergence.
-> 2. **Any Manager may grant within their own subtree** (petal Manager → that petal and below; fractal Manager → that fractal and below; verse Manager/Owner → whole verse). Replace the critic's verse-only rule in RP-1 and its tests; a Manager may never grant above their own scope or grant Owner.
-> 3. Confirmed: petal creators no longer become petal Owners; migrate existing implicit owner rows.
+> **R7 applied 2026-10-13** (RUNBOOK §3; accountability AC-1): the body implements subtree grant
+> authority, durable Deferred role statements, and no implicit petal owners.
 
 # Implementation plan: role_propagation_20261013
 
@@ -67,15 +65,20 @@ literally, it fails in three ways:
 - **Owner statements override.** A grant sets the role. A revoke blocks the cell, and the
   peer then inherits from the enclosing scope.
 - **Manager statements combine by the maximum**, over statements whose grantor holds Manager+
-  authority in the least fixpoint.
+  authority **within their own subtree** (R7: at the statement's scope or an ancestor of it)
+  in the least fixpoint. Managers only raise; only the owner lowers.
 - **A Manager's revoke retracts only that Manager's own grant.** Only the owner can remove a
   grant that someone else issued.
 - **A grantor's grants lapse when the grantor loses authority.** That is a cascade, and it is
   what makes concurrent revocation converge.
+- **A statement whose grantor lacks authority is Deferred** (R7). It is held outside the
+  admitted set in a durable store that floods cannot evict, and it is re-evaluated whenever the
+  grantor's authority changes (§2.4).
 
 The materialization is a monotone operator on a finite lattice, so its least fixpoint exists,
-is unique, and does not depend on delivery order. This is recorded as an assumption in §7.
-The user can still override it; it is the top user decision.
+is unique, and does not depend on delivery order. Because held statements are re-evaluated on
+every authority change, the converged result equals that least fixpoint over every statement
+received (§2.2). §7 records the decisions.
 
 ---
 
@@ -91,6 +94,7 @@ The user can still override it; it is the top user decision.
 | Invitee owner (bug) | `join_verse_by_invite_handler` writes `created_by = invite.creator_node_addr`. That is the **inviter**, encoded as **hex**, not `did:key`. The real owner then never resolves to Owner on the invitee, and the owner's rows fall to `default_access` | `fe-database/src/handlers/invite.rs:167`; invite struct `fe-database/src/invite.rs:18-32` (no owner field) |
 | Implicit petal owner | `create_petal_handler` writes an explicit `role: "owner"` row at petal scope for the creator, who may be only an Editor. `seed.rs` does the same | `fe-database/src/handlers/crud.rs:182-190`, `fe-database/src/handlers/seed.rs:202-210` |
 | Owner assignable | `assign_role_checked` lets an Owner assign `Owner` (`role > caller_role` is false when they are equal). Revoke has no level check | `role_manager.rs:92`, `127-162` |
+| Local grant authority | Already subtree-shaped: the caller is resolved AT THE TARGET SCOPE (`resolve_role(db, caller_did, scope)`, which walks up), so a petal Manager may assign in that petal only. R7 keeps this; §2.2 makes it exact | `role_manager.rs:83-89` |
 | Role storage | `role {peer_did, scope, role}`, random record id, no HLC, grantor or tombstone; `assign_role` does a delete then an insert | `fe-database/src/schema.rs:119-127`, `fe-database/src/rbac.rs:106-125` |
 | Role resolution | Owner via `created_by`, then the most specific explicit row walking up the scope chain, then `default_access` | `role_manager.rs:44-68` |
 | Unknown role strings | `RoleLevel::from` maps unknown strings to `None` and `"public"` to Viewer | `fe-policy/src/role_level.rs:80-90` |
@@ -121,14 +125,20 @@ The user can still override it; it is the top user decision.
   Revocation is a **non-empty** payload with `revoked: true`. An empty entry (a `Doc::del`)
   on the `role` table is `NotApplicable`: it carries no HLC, and iroh's `del` is a prefix
   delete.
-- **DB table `role_grant`:** one row per `(scope, peer_did, grantor_did)`, holding `hlc`,
-  `revoked`, `role` and `updated_at`, with a UNIQUE index on the triple. Last-writer-wins by
-  `hlc` within the triple; on equal `hlc`, the lexicographically larger canonical payload hash
-  wins (deterministic).
+- **DB table `role_grant` (admitted statements):** one row per `(scope, peer_did, grantor_did)`,
+  holding `verse_id`, `hlc`, `revoked`, `role` and `updated_at`, with a UNIQUE index on the
+  triple and an index on `(verse_id, grantor_did)`. Last-writer-wins by `hlc` within the
+  triple; on equal `hlc`, the lexicographically larger canonical payload hash wins
+  (deterministic).
+- **DB table `role_statement_pending` (Deferred statements, R7):** the same columns and indexes
+  plus `received_at`. It holds the statements whose grantor does not yet have authority
+  (§2.4). A key has exactly one live version across the two tables: the latest by the rule
+  above.
 - **The existing `role` table** becomes a **materialized cache** that only the materializer
-  writes. `resolve_role` and `get_role` are unchanged (hot path untouched).
+  writes (the §2.2 step 4 projection). `resolve_role` and `get_role` are unchanged (hot path
+  untouched).
 
-### 2.2 Validity (the pure fe-policy model, one function shared by both planes)
+### 2.2 Validity, authority and the fixpoint (the pure fe-policy model, one function shared by both planes)
 
 `validate_statement(replica_verse, owner_did, key_parts, author_did, payload)` checks the
 following. Any failure is a **permanent deny**.
@@ -142,48 +152,102 @@ following. Any failure is a **permanent deny**.
 - Statements whose grantor is the owner are owner statements; all others are Manager
   statements.
 
-`materialize(owner, statements) -> EffectiveRoles` computes the effective roles in four steps:
+The two owner-dependent checks need the manifest. Before it lands, a statement that passes the
+other checks is held (§2.4), and the full check runs when it is promoted.
 
-1. **Owner statements are fixed.** A grant sets `eff(S,P) = R` and marks the cell
-   owner-pinned. A revoke marks the cell owner-blocked with no explicit value, so the peer
-   inherits from the enclosing scope.
-2. **Iterate to a fixpoint.** A Manager statement `(S,P,G,R)` that is not revoked and whose
-   cell is not owner-pinned or owner-blocked is valid iff `authority(G,S) ≥ Manager` and
-   `authority(G,S) ≥ R`.
-   - **(Critic — aligned with RUNBOOK §3, which says "admitted only when the author is Manager+
-     at the verse scope".)** `authority(G,S)` = `eff(VERSE#v, G)`, G's effective role **at the
-     verse scope** of S; the owner always has authority Owner. A petal- or fractal-scoped Manager
-     cell still grants Manager powers over content in that scope, but it does **not** confer
-     grant authority: such a grantor's statements are stored inert. *Reversal (cheap, RP-1 is
-     pure):* make it the maximum of `eff` over S and its ancestors, which was the planner's
-     original rule.
-   - A valid statement raises the cell: `eff(S,P) = max(eff(S,P), R)`.
-3. **Termination.** Stop when a full pass changes nothing (at most |statements| passes).
-4. **Properties.** The fixpoint is unique and order-free.
+**Resolution and authority (R7: any Manager, within their own subtree).** Write `chain(S)` for
+S followed by its parents up to the verse (`parent_scope`), and `mgr(S,P)` for the maximum
+valid Manager grant on cell `(S,P)` (⊥ if there is none).
+
+- `role_at(P, S)` is `Owner` if P is the owner. Otherwise it walks `chain(S)` upward:
+  - at an owner-pinned cell, it folds in the pin and stops (an owner pin is exact, so it cuts
+    the walk);
+  - at an owner-blocked cell, it skips that cell's Manager grants and continues;
+  - at any other cell, it folds in `mgr(S',P)` and continues.
+
+  The result is the maximum folded in, or ⊥ if there is none. Callers that gate content fall
+  back to `default_access` on ⊥.
+- `authority(G, S) = role_at(G, S)`. With no owner pin on the walk, this is exactly "the
+  maximum of G's effective role over S and its ancestors". So:
+  - a petal Manager has authority in that petal; a fractal Manager in that fractal and all of
+    its petals; a verse Manager, and the owner, everywhere in the verse;
+  - authority never reaches upward or sideways: a petal Manager has none at the enclosing
+    fractal or verse, or in a sibling petal;
+  - nobody can grant Owner (`owner` is structurally denied), and every valid grant has
+    `R ≤ Manager ≤ authority`.
+- Two refinements stop subtree authority from being turned against the owner, or against a
+  peer with a wider scope:
+  - **Owner pins cut the walk.** If the owner pins a verse Manager to `viewer` in petal P, that
+    Manager has no authority in P. Without the cut, they could appoint a petal Manager in P
+    and undo the owner's carve-out.
+  - **Managers only raise.** A Manager-issued `none` has no effect. Step 4 never writes a
+    Manager-sourced cache row that is not above the peer's inherited role. Without this rule, a
+    petal Manager could write an explicit `viewer` row for a verse Manager in their petal, and
+    `resolve_role` (most-specific row wins, `role_manager.rs:52-63`) would demote that verse
+    Manager there. Only owner statements lower anyone.
+
+`materialize(owner, statements) -> EffectiveRoles` takes the admitted statements (§2.4) and
+computes the effective roles in five steps:
+
+1. **Owner statements are fixed.** A grant pins cell `(S,P)` to `R`. A revoke marks the cell
+   owner-blocked with no explicit value, so the peer inherits from the enclosing scope.
+2. **Iterate to a fixpoint from `mgr ≡ ⊥`** (Kleene iteration). Take a Manager statement
+   `(S,P,G,R)` that is not revoked, has `R ≠ none`, and whose cell is neither owner-pinned nor
+   owner-blocked. It is valid iff `authority(G,S) ≥ Manager` under the current values. A
+   valid statement raises the cell: `mgr(S,P) = max(mgr(S,P), R)`.
+3. **Termination.** Stop when a full pass changes nothing. That takes at most |statements| + 1
+   passes.
+4. **Cache projection.** Write a `role` row for `(S,P)` when either:
+   - the cell is owner-pinned (value: the pin); or
+   - the cell is not blocked and `mgr(S,P) > role_at(P, parent(S))` (value: `mgr(S,P)`).
+
+   `resolve_role` walks to the most specific of these rows, which returns exactly `role_at`.
+   The hot path is unchanged.
+5. **Properties.** The fixpoint is unique and does not depend on order.
    - Owner cells never move.
-   - Manager grants only raise cells, and `authority` is monotone in `eff` because it is a
-     maximum over ancestors.
+   - Owner pins and blocks are constants, and `role_at` is a maximum over the walk of the
+     `mgr` values, so `authority` is monotone in `mgr`.
+   - Validity is monotone in `authority`, so the operator is monotone. Iteration from ⊥
+     therefore reaches its least fixpoint (Knaster–Tarski, on a finite lattice).
    - A cycle of grants with no root at the owner is never valid.
 
-**Admission versus effect.** A structurally valid statement is **stored** even when its
-grantor currently lacks authority. That keeps the result independent of arrival order. The
-statement takes effect only through the fixpoint, which is the "admitted only when Manager+"
-of the decision, evaluated on the converged state. Inert statements are capped per grantor
-(§2.4) against flooding.
+**Admission (R7): held back as Deferred, never stored inert.** Both planes use one predicate,
+`admissible(effective, statement)`: the grantor's `authority` at the statement's scope is at
+least Manager. That is always true for the owner.
+- An admissible statement is admitted (DB: `role_grant`; sync plane: retained in the fabric).
+- Any other statement is **Deferred**. It is held outside the admitted set in a durable store
+  (§2.4) and re-evaluated whenever its grantor's authority changes.
+- **Why the final role set does not depend on delivery order.** Each plane keeps two
+  invariants after every change: every held statement is inadmissible under the current
+  materialization `M`, and `M` is the least fixpoint over the admitted set. The DB keeps them
+  with the §2.4 partition; the fabric keeps them with the §2.5 re-read on empowerment.
+  - Every held statement is inadmissible under `M`, so step 2 finds it invalid. Adding the held
+    statements to the input therefore leaves `M` a fixpoint.
+  - The admitted set is a subset of everything received, so `M` is at most the least fixpoint
+    over everything received.
+  - So `M` *is* that least fixpoint. It depends only on the set of statements received, not on
+    their order, on restarts, or on other authors' traffic. §2.4 makes the held set durable
+    and flood-proof, and that is what makes the argument hold in practice.
 
 ### 2.3 Local semantics (parity with the inbound path)
 
 Local assign and revoke apply the same rules:
-- the caller's `authority ≥ Manager` and `≥ R`, where authority is **verse-scope** (§2.2,
-  critic alignment with RUNBOOK §3);
-- `R ≠ Owner`;
-- the target is not the owner;
-- the statement is stamped with `next_hlc_timestamp()`;
-- it is written to `role_grant`, the cache is rematerialized, and the statement is published.
+- The caller's `authority` at the target scope must be at least Manager (subtree, §2.2). Once
+  the `role` table is the §2.2 step 4 projection, the existing check
+  `resolve_role(db, caller_did, scope)?.can_manage()` (`role_manager.rs:83`) computes exactly
+  this, so it stays.
+- `R ≠ Owner`, and the target is not the owner.
+- A Manager may assign `manager`, `editor` or `viewer`. Assigning `none` is refused with a
+  named error: Managers only raise, and a Manager retracts their own grant with a revoke. The
+  owner may also assign `none`, which pins the cell.
+- A caller without authority is refused synchronously. A local command never defers.
+- The statement is stamped with `next_hlc_timestamp()`.
+- It is written to `role_grant`; it is admissible, because the caller was just checked. Then
+  the verse is re-partitioned and rematerialized (§2.4), and the statement is published.
 
 A Manager's revoke writes that Manager's own `revoked` statement, which retracts only their
-own grant. If the target still holds the role through another grantor, the result says so;
-the UI may surface it later under D-32 FR-4.
+own grant. If the target still holds the role through another grantor or by inheritance, the
+result says so. The UI may surface that later under D-32 FR-4.
 
 ### 2.4 Deferred admission (replaces "deny and hope for a reconnect")
 
@@ -193,10 +257,97 @@ wait reasons:
 - `Parent{table,id}` (the referenced fractal, petal or node is unknown locally);
 - `AuthorRole{did}` (the author resolves below the threshold).
 
-Structural violations stay **Denied**.
+Structural violations stay **Denied**. A deferred row is held in one of two places, depending
+on what it is.
 
-The queue (`InboundAdmissions`) lives in the DB loop:
-- It is keyed by `(verse, table, record_id, author)` with the latest bytes and indexed by wait
+#### Role statements: a durable store per plane (decision, AC-1)
+
+The in-memory queue (next subsection) is not safe for role statements, for two reasons:
+- it does not survive a restart;
+- it drops the oldest entry at 4096 per verse, with a cap of 512 per author. A write-capable
+  peer with 8 or more author ids can therefore evict a legitimate held statement. That peer
+  then diverges until the replica reopens, which breaks R7's order-independence.
+
+The options:
+
+| Retry source | Survives restart | Survives a flood | Verdict |
+|---|---|---|---|
+| In-memory `InboundAdmissions` (the old plan) | no | no: a shared cap with drop-oldest | rejected (AC-1) |
+| The DB plane re-reads the replica's `role/` prefix on every authority change | yes | yes | rejected for the DB plane, for the three reasons below the table |
+| **DB plane: a persisted `role_statement_pending` table** | yes (SurrealKV) | yes: rows are keyed by grantor, the budget is per grantor, and there is no shared cap | **chosen.** Re-evaluation runs synchronously in the DB loop, in the same step as rematerialization. It is testable at the DB dispatch seam, and it does not depend on whether the replica is open |
+| **Sync plane: a per-author replica re-read** (§2.5) | yes (the iroh-docs store) | yes: a held statement is read back only when its grantor gains authority | **chosen** for the fabric, which already holds the replica. iroh-docs 0.101 composes `Query::author(id).key_prefix(p)`. The re-read also re-forwards to the DB, which is the DB plane's backstop |
+
+Why a replica re-read does not suit the DB plane:
+- The DB thread has no replica handle, so a re-read needs a new DB→sync request type through
+  both binaries' bridges.
+- The re-read rows come back over the drop-and-count DB channel, so the retry itself can be
+  lost.
+- It works only while the replica is open, but a local grant can change authority while the
+  replica is closed.
+
+Rules for the DB plane:
+- **One live version per key.** A key `(scope, peer_did, grantor_did)` lives in either
+  `role_grant` or `role_statement_pending`, never both, and its version is always the latest
+  by the §2.1 rule.
+  - An arriving statement older than the live version is reported `Applied` (idempotent) and
+    dropped.
+  - A newer one replaces the live version, and placement decides which table it lands in.
+- **Partition by current authority.** This runs after every change: an admitted statement
+  (inbound or local), the manifest landing (the owner becomes known), the migration, and DB
+  startup (which also repairs a crash between a statement write and this step).
+  1. Rematerialize the verse. That returns `ChangedDids`, with the direction of each change.
+  2. **Demote.** For each DID whose authority fell, move its admitted statements that are no
+     longer admissible into pending. Demotion is never refused and never drops a row. It does
+     not move `M`, because the fixpoint already ignores those statements.
+  3. **Promote.** For each DID whose authority rose, take its pending statements that are now
+     admissible. Re-validate each in full; for pre-manifest statements, this is where the
+     owner-dependent checks first run, and a failure deletes the row as Denied. Admit the
+     survivors, rematerialize, and repeat with the newly raised DIDs.
+
+     Two triggers have no previous `M` to compare against, so they seed the "rose" set
+     directly. When the manifest lands, the owner DID counts as risen. At startup, the owner
+     and every DID holding Manager+ anywhere in the verse count as risen.
+
+  The loop terminates: promotions only raise `M`, demotions never change it, and each round
+  moves at least one row. Every lookup goes through the `(verse_id, grantor_did)` index, so a
+  flooder's held rows are never scanned unless that flooder gains authority.
+
+  **Invariant:** afterwards, `role_grant` holds exactly the latest statements admissible under
+  `M`, and `role_statement_pending` holds the rest.
+- **A flood-proof budget.**
+  - `validate_statement` pins `grantor_did` to the attested author, so an author can occupy
+    only its own keys.
+  - `ROLE_PENDING_PER_GRANTOR` (1024 keys per verse) applies only when an inbound statement
+    would create a new pending key. Beyond the budget, that statement is refused and counted
+    (`role_pending_refused_count()`).
+  - An update to an existing key always applies, and an admissible statement never touches
+    the budget.
+  - There is **no per-verse or shared cap**, so no author can evict or starve another
+    author's held statements.
+  - Every held row mirrors an entry the replica already stores, so the replica bounds the
+    total size. The store adds no amplification beyond the namespace write capability that
+    already exists.
+- **Over-budget recovery.** A refused statement is still in the replica. When its grantor gains
+  authority, the sync-plane re-read (§2.5) forwards it again, and it is admitted directly.
+- **Role statements never use the in-memory queue.**
+  - They are never deferred on `Parent`. The materializer works on scope strings, so a
+    statement for a petal not yet known locally is placed normally and takes effect when the
+    petal row lands, with no retry. A scope that names a fractal or petal where the hierarchy
+    does not put it never resolves, so it can never take effect.
+  - Before the manifest lands, the owner is unknown and nobody has authority, so every role
+    statement is held in the pending store (reason `Manifest`). The manifest landing triggers
+    the partition.
+- **Guarantee.** The converged role set is a function of the set of statements the DB has
+  received. Delivery order, restarts and other authors' floods cannot change it.
+  - The bounded sync→DB channel can still drop a row under load. That is the pre-existing
+    drop-and-count (`fe-sync/src/AGENTS.md` §inbound-apply).
+  - A dropped statement comes back through the §2.5 re-read or the next open's replay. That
+    delays the result but never changes it.
+
+#### Content rows: the in-memory `InboundAdmissions` queue
+
+The queue lives in the DB loop:
+- It is keyed by `(verse, table, record_id, author)` with the latest bytes, and indexed by wait
   reason.
 - Caps: 4096 per verse and 512 per author. Overflow drops the oldest entry, with a warning and
   a counter (`deferred_admission_drop_count()`).
@@ -207,23 +358,53 @@ Retries run as a worklist loop (not recursion) after each apply:
 - a materialization change retries the `AuthorRole` waiters for every DID whose effective
   role changed.
 
-Restart loses the queue; the existing snapshot replay on open re-feeds it.
+A restart or an overflow loses entries, and the snapshot replay on open re-feeds them (A4).
+Content rows never feed the role set, so a flood here can delay content but cannot change who
+holds which role.
 
 ### 2.5 Sync plane
 
 `VerseFabric` learns:
 - the owner, from the first manifest's `created_by`, pinned with the same immutability rule;
-- statements, from `role` rows in both directions, the way `note_verse_row` learns settings;
+- role statements, from `role` rows in both directions. Through the same `admissible`
+  predicate, it **retains only admitted statements**. It does not keep a held statement in
+  memory, because the replica already stores it;
 - a `petal → fractal` map, from `petal` rows.
 
-It runs the same `fe_policy` materializer. Gates:
-- `__shards` and `__holders` need the author to be Editor+ at the petal scope;
-- a manifest's settings need Manager+ (or the owner);
-- a compute requester needs Viewer+ at the verse (`default_access` applies).
+It runs the same `fe_policy` materializer. **Every gate calls `role_at` at the row's deepest
+scope.** That is the same function the DB's A3 gate (RP-4 step 6) and grant authority use, so
+the two planes judge a petal-scoped Editor or Manager (appointed by a petal Manager) the same
+way. The gates:
+- `__shards` and `__holders`: Editor+ at the petal scope.
+- A manifest's settings: Manager+ at the verse scope, or the owner. A petal or fractal
+  Manager's manifest edits are ignored, because verse settings lie above their subtree.
+- A compute requester: Viewer+ at the requested petal's scope. `default_access` applies when
+  `role_at` is ⊥, and the walk lets verse-level Viewers through.
+- The merge filter (§2.6): Editor+ at the shard's petal scope.
 
-A row that cannot be judged yet is **quarantined** (bounded) and re-evaluated whenever the role
-view or the petal map changes. Retention of an unknown shard stays "retain", the safe
-direction.
+**Re-read on empowerment (the fabric's durable, flood-proof retry).**
+- When an author's `role_at` rises at any scope, the fabric queues that DID in `reread_queue`.
+  A role increase needs a valid grant, so a stranger cannot grow the queue.
+- The sync loop drains the queue with
+  `replicator.entries_by_author(did, ["role/", "__shards/", "__holders/", "verse/"])` and feeds
+  every entry through `handle_inbound_row_change`. The fabric and the DB therefore both see the
+  entry again, and both apply it idempotently.
+- The read is awaited on the local docs store, never on a channel that the select loop drains.
+  That respects the §inbound-apply self-drain rule.
+- `entries_by_author` is a provided `VerseReplicator` method. Its default filters
+  `snapshot()`, so the mock, virtual and `fe-sim` replicators need no edit.
+  - `AnyReplicator` forwards it.
+  - `IrohDocsReplicator` overrides it with `Query::author(id).key_prefix(p)`. The author id
+    comes from `fe_identity::did_key::public_key_from_did_key`, the inverse of
+    `author_did_key` (`replicator.rs:896`).
+
+A gated row that cannot be judged yet is **quarantined** (1024 per verse, drop-oldest with a
+counter). It is re-evaluated whenever the role view or the petal map changes.
+- The quarantine is only an accelerator. An evicted row comes back through the re-read when
+  its author is empowered, so a flood of strangers' rows cannot cost a legitimate Editor their
+  `__shards` row.
+- A row that was waiting only on the petal map comes back with the next open's replay.
+- Retention of an unknown shard stays "retain", the safe direction.
 
 ### 2.6 Settlement and filtering
 
@@ -239,7 +420,8 @@ direction.
   DB holds deferred readings. A covered-empty answer on such a shard does not settle it, and
   the shard is reported in `meta.incomplete_shards`.
 - **Merge.** Rows from an answerer that is neither a host nor an admitted holder, and that is
-  below Editor in the requester's role view, are discarded and listed in
+  below Editor at the shard's petal scope in the requester's role view (`role_at`, §2.5), are
+  discarded and listed in
   `meta.rejected_answerers`. If the requester's role view has not converged on that answerer,
   the rows are kept and the answerer is listed in `meta.unverified_answerers`.
 - **Responder filter.** A responder answers a shard iff local ∈ hosts ∪ holders(shard), or the
@@ -263,7 +445,17 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
 **Steps:**
 1. Add `RoleStatement`, `StatementKey::parse(record_id)`, `validate_statement(..) ->
    Result<RoleStatement, RejectReason>` and `materialize(owner, impl IntoIterator<Item=&RoleStatement>)
-   -> EffectiveRoles` (a `BTreeMap<(scope, did), RoleLevel>` plus `authority(did, scope)`).
+   -> EffectiveRoles`. `EffectiveRoles` holds the owner pins and blocks plus the `mgr` map,
+   and exposes:
+   - `role_at(did, scope)` and `authority(did, scope)` (§2.2 resolution);
+   - `admissible(&RoleStatement)`, the one placement predicate both planes use (§2.2
+     "Admission");
+   - `cache_rows()`, the §2.2 step 4 projection;
+   - `diff(&previous) -> ChangedDids`, which gives each DID with the direction its authority
+     moved.
+
+   `validate_statement` takes `owner_did: Option<_>`. With `None` (pre-manifest), it runs only
+   the owner-independent checks.
 2. Add a scope-chain helper that splits `VERSE#..-FRACTAL#..-PETAL#..`. Mirror
    `fe-database/src/scope.rs:163` `parent_scope` exactly, or move the pure parser into
    fe-policy and re-export it from fe-database (preferred: one parser).
@@ -277,10 +469,27 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
 
 **Flow tests** (pure, table-driven or property-based; run at campaign end):
 - `materialize_is_order_independent`: a property test over random permutations of a generated
-  statement set (owner plus 3 Managers plus grants, revokes and cycles). It asserts identical
-  `EffectiveRoles` across permutations.
-- `owner_revocation_of_a_manager_voids_their_concurrent_grant_in_every_order`: covers threat
-  T4.
+  statement set. The set has the owner; 3 Managers at verse, fractal and petal scope; and
+  grants, revokes, owner pins and cycles. It asserts identical `EffectiveRoles` across
+  permutations.
+- `partitioned_admission_reaches_the_fixpoint_over_everything_received` (R7, the §2.2
+  argument). This is a property test over random statement sets and arrival orders. It feeds
+  statements one at a time through admit-if-admissible, then re-partitions to quiescence. It
+  asserts that the result equals `materialize` over the whole set, and that the held set is
+  exactly the inadmissible statements. It fails if `admissible` and step 2's validity ever
+  disagree.
+- `owner_revocation_of_a_manager_voids_their_concurrent_grant_in_every_order` (T4). It
+  includes the petal Manager whom the revoked Manager appointed, so the cascade runs down the
+  subtree.
+- `grant_authority_is_the_grantors_own_subtree` (R7, T19). This is table-driven:
+  - a petal Manager's grant takes effect in their petal;
+  - the same grant in a sibling petal, or at the enclosing fractal or verse, has no effect;
+  - a fractal Manager's grant takes effect in every petal of that fractal and nowhere else;
+  - a verse Manager's grant takes effect everywhere in the verse.
+- `an_owner_pin_below_manager_carves_a_petal_out_of_a_verse_managers_authority` (T21).
+- `a_lower_scope_manager_cannot_demote_a_wider_scoped_peer` (T20). A petal Manager's
+  `viewer` statement for a verse Manager writes no cache row, and `role_at` stays Manager. A
+  Manager's `none` statement has no effect.
 - `a_manager_cannot_grant_owner_and_an_owner_grant_statement_is_rejected` (T3).
 - `statements_targeting_the_owner_are_rejected` (T5).
 - `a_statement_whose_key_names_another_grantor_is_rejected` (T1).
@@ -290,13 +499,13 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
 - `a_far_future_hlc_from_a_manager_cannot_displace_the_owners_statement` (T7).
 - `an_unrooted_grant_cycle_is_never_effective`.
 - `a_manager_grant_lapses_when_the_manager_loses_authority_and_returns_when_regranted`.
-- **(critic)** `a_petal_scoped_manager_s_statements_are_inert_and_a_verse_manager_s_take_effect`
-  (pins the RUNBOOK §3 "Manager+ at the verse scope" rule).
 
 ### RP-2: fe-database local statements, materialized cache, outbound publish, migration · L · opus
 
 **Owned files:**
-- `fe-database/src/schema.rs` (the `role_grant` table and its index)
+- `fe-database/src/schema.rs` (the `role_grant` and `role_statement_pending` tables and their
+  indexes)
+- `fe-database/src/role_grants.rs` (new: statement store, placement, partition, rematerialize)
 - `fe-database/src/rbac.rs`
 - `fe-database/src/role_manager.rs`
 - `fe-database/src/handlers/rbac.rs`
@@ -314,30 +523,49 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
   §interim-manager-authority.
 
 **Steps:**
-1. Add the schema: `role_grant` (scope, peer_did, grantor_did, role, revoked, hlc,
-   updated_at) with UNIQUE (scope, peer_did, grantor_did). Keep the `role` table shape and add
-   the comment "materialized; written only by `role_grants::rematerialize`".
-2. Add `role_grants::rematerialize(db, verse_id) -> ChangedDids`. It loads the verse's
-   statements and its owner, calls `fe_policy::materialize`, and diff-writes `role` rows for
-   that verse's scopes. One transaction; mind the §log-first-commit ordering.
+1. Add the schema (§2.1):
+   - `role_grant` (verse_id, scope, peer_did, grantor_did, role, revoked, hlc, updated_at);
+   - `role_statement_pending` (the same columns plus received_at).
+
+   Each gets UNIQUE (scope, peer_did, grantor_did) and an index on (verse_id, grantor_did).
+   Keep the `role` table shape, and add the comment "materialized; written only by
+   `role_grants::rematerialize`".
+2. Add `fe-database/src/role_grants.rs`:
+   - `place_statement(db, verse_id, stmt) -> Placement` returns one of `Admitted`, `Held`,
+     `Superseded` or `RefusedOverBudget`, following §2.4's one-live-version and budget rules.
+   - `rematerialize(db, verse_id) -> ChangedDids` loads the admitted statements and the owner,
+     calls `fe_policy::materialize`, and diff-writes `cache_rows()` for that verse's scopes.
+     It runs in one transaction. Mind the §log-first-commit ordering.
+   - `repartition(db, verse_id)` runs §2.4's demote/promote worklist on top of
+     `rematerialize`.
+   - At DB startup, `repartition` runs for every verse. That repairs a crash between a
+     statement write and the partition step.
 3. Rewrite `assign_role_checked` and `revoke_role_checked` per §2.3:
    - the op-log entry still lands first (§log-first-commit);
-   - then the statement upsert, then rematerialize;
+   - keep the existing authority check, `resolve_role(caller, scope)?.can_manage()`. Over the
+     new cache it is exactly subtree authority;
+   - reject `Owner`, an owner target, and a Manager-issued `none`, each with a named error;
+   - then upsert the statement into `role_grant`, then `repartition` (which can promote held
+     statements the caller's grant just empowered);
    - then `replicate_row(repl_tx, blob_store, verse_id, "role", "{scope}/{peer}/{grantor}", bytes)`.
-   - Reject `Owner` and an owner target with named errors.
 4. **Gate parity:** `set_default_access` and `set_verse_timeseries_settings_handler` require
-   local Manager+ (via `resolve_role` and fe-policy). `SetVerseDefaultAccess` now re-emits the
-   manifest, the same way settings already do (`verse_settings.rs:74`), so the change
-   propagates deliberately.
+   local Manager+ **at the verse scope**, via `resolve_role` and fe-policy; a petal or fractal
+   Manager is refused. `SetVerseDefaultAccess` now re-emits the manifest, the same way
+   settings already do (`verse_settings.rs:74`), so the change propagates deliberately.
 5. Stop writing implicit `owner` role rows (`crud.rs:182-190`, `seed.rs:202-210`, the example).
+   R7 confirmed this.
 6. **Migration (idempotent, runs once at DB startup):**
-   - drop every `role` row whose `role = "owner"`;
+   - drop every `role` row whose `role = "owner"`. That includes every implicit petal-creator
+     row (R7). Role rows have never replicated, so no other peer ever honoured those rows, and
+     dropping them loses nothing remote. Locally, the creator falls back to the role they
+     resolve to from the enclosing scope;
    - for each remaining explicit row in a verse whose `created_by == local_did`, synthesize an
      owner statement (hlc = `next_hlc_timestamp()`) and emit a `ReplicationEvent`. Pending
      writes retain it until the replica opens (`fe-sync/src/AGENTS.md` §pending-writes);
    - for every other legacy row, log a warning and drop it (no consumers; §7 assumption);
-   - then rematerialize every verse.
-7. Add a test pinning that `ELEVATED_WRITABLE_TABLES` never contains `role` or `role_grant`.
+   - then repartition every verse.
+7. Add a test pinning that `ELEVATED_WRITABLE_TABLES` never contains `role`, `role_grant` or
+   `role_statement_pending`.
 8. **(Critic, cross-plan.)** CDL-W4 made `DurableAuthorizationView` the production authority for
    W4-7's `ManagerPlusAuthorizationView` and W4-8's key-wrap issuer. It reads
    `SELECT peer_did, scope, role FROM role` and **never consults `verse.created_by`**
@@ -365,13 +593,22 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
   `ReplicationEvent{table:"role", record_id:"{S}/{P}/{owner}"}` on a test channel.
 - `a_manager_grant_then_owner_revocation_of_the_manager_voids_the_grant_locally`.
 - `a_manager_revoking_another_managers_grant_reports_the_role_still_held`.
-- `assigning_owner_is_refused_and_writes_nothing`.
-- `an_editor_creating_a_petal_gets_no_implicit_owner_row` (crud flow).
-- `non_manager_cannot_change_default_access_or_ts_settings_locally`, with the Manager case
-  allowed, the change replicating, and the manifest re-emitted.
+- `refused_assignments_write_nothing` (table-driven): assigning `Owner`; targeting the owner;
+  a Manager assigning `none`. Each returns its named error, and writes no `role_grant` row and
+  no `ReplicationEvent`.
+- `a_petal_manager_assigns_in_their_petal_and_is_refused_in_a_sibling_petal_and_at_the_verse`
+  (R7 local parity, T19). The in-petal grant materializes and publishes; the two refusals
+  write nothing.
+- `an_editor_creating_a_petal_gets_no_implicit_owner_row` (crud flow, T8).
+- `implicit_petal_owner_rows_are_dropped_and_the_creator_keeps_only_their_inherited_role`
+  (R7 migration, T8). The input is a seeded legacy DB in which an Editor created a petal.
+  After migration, that Editor resolves to Editor in the petal, not Owner.
+- `non_manager_cannot_change_default_access_or_ts_settings_locally`. It covers the refused cases
+  (a Viewer, an Editor and a petal Manager) and the allowed verse-Manager case, where the
+  change replicates and the manifest is re-emitted.
 - `legacy_role_rows_migrate_owner_rows_dropped_owner_authored_rows_become_statements`
   (migration flow on a seeded legacy DB).
-- `elevated_writable_tables_never_include_role_tables`.
+- `elevated_writable_tables_never_include_role_tables` (all three tables).
 - **(critic)** `the_verse_owner_still_answers_manager_plus_to_the_canonical_interim_authority_after_migration`:
   a migrated DB has no owner rows, `DurableAuthorizationView::load` runs, and the owner is
   Manager+ at verse and petal scope while a revoked Manager is not.
@@ -396,14 +633,22 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
 **Steps:**
 1. Add a `"role"` arm in `apply_row_mode`, routed to `apply_role_statement`:
    - parse the key;
-   - `fe_policy::validate_statement`, where any `Err` returns `Denied`;
-   - if the scope is not known locally, return Deferred `Parent`;
-   - last-writer-wins upsert into `role_grant`, where an older HLC is reported `Applied`
-     (idempotent) without writing;
-   - rematerialize, then retry the `AuthorRole` waiters of the changed DIDs.
-   - Role statements bypass the Editor+ write gate; their gate is the validator plus the
-     fixpoint. Pre-manifest, they are Deferred `Manifest`, because the owner is unknown.
-2. Add `InboundAdmissions` (§2.4) as a pub struct. Its `apply(&mut self, db, ...)` is the ONE
+   - run `fe_policy::validate_statement`. Before the manifest it runs with `owner_did: None`.
+     Any `Err` returns `Denied`;
+   - call `role_grants::place_statement` (RP-2) and map the result:
+     - `Admitted` → `Applied`, then `repartition`, then retry the content `AuthorRole` waiters
+       of the changed DIDs;
+     - `Superseded` (older than the live version) → `Applied`, idempotent, with no write;
+     - `Held` → `Deferred AuthorRole`, or `Deferred Manifest` before the manifest. The row is
+       persisted in `role_statement_pending`;
+     - `RefusedOverBudget` → `Deferred AuthorRole`, not persisted. The counter rises, and the
+       replica keeps the statement for the §2.5 re-read;
+   - Role statements bypass the Editor+ write gate. Their gate is the validator plus
+     placement. They never enter `InboundAdmissions`, and they are never deferred on `Parent`
+     (§2.4).
+   - The manifest-apply path calls `repartition` once the owner is known, which is what
+     promotes the pre-manifest holds.
+2. Add `InboundAdmissions` (§2.4, content rows) as a pub struct. Its `apply(&mut self, db, ...)` is the ONE
    entry point that both the production loop and the harness loop call. That keeps the
    "statement-parity isn't enough" contract at `replicated_row.rs:36-40`.
 3. The A3 gate's insufficient-role branch returns Deferred `AuthorRole` instead of `Denied`.
@@ -434,15 +679,53 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
   This replaces the manual-replay test at `:1168`. The order is the node row (Deferred, not
   persisted), then the owner's statement, after which the node is durable with no second
   delivery.
-- `a_role_statement_authored_by_a_non_manager_is_stored_inert_and_grants_nothing`, followed by
-  the owner granting that author Manager, after which the earlier statement becomes effective
-  (order independence end to end).
+- `a_not_yet_managers_statement_is_deferred_then_admitted_on_promotion` (R7). This is
+  table-driven over where the promotion comes from: an inbound owner statement, or a local
+  `AssignRole` by the owner.
+  - Before the promotion: M's statement returns `Deferred`, sits in `role_statement_pending`
+    (not `role_grant`), and has no effect.
+  - After the promotion: the statement is in `role_grant`, its grantee's role materializes,
+    and pending is empty, with no second delivery.
+- `role_statement_delivery_order_never_changes_the_final_role_set` (R7 reordering
+  convergence, T22). It uses six statements:
+  1. the owner makes M1 verse Manager;
+  2. M1 makes M2 Manager of petal P1;
+  3. M2 grants X Editor in P1;
+  4. M2 grants Y Editor in sibling petal P2, which is never effective;
+  5. the owner revokes M1, which cascades: M2 and X lapse;
+  6. the owner makes M2 Manager of P1 directly, so X returns.
+
+  Statements 1 and 5 share a key, so the owner's HLC orders them, and whichever arrives
+  second is either applied or superseded. It runs all 720 delivery orders, each into a fresh in-memory DB. Drop to a seeded sample of
+  at least 120 orders only if the run exceeds 60 s. It asserts identical `role` tables and
+  identical `role_grant`/`role_statement_pending` partitions.
+- `held_role_statements_survive_restart` (R7, T22). It uses a persisted SurrealKV DB in a temp
+  dir. M's statement is held, then the DB is dropped and reopened. The owner's promotion then
+  arrives, and M's statement is admitted with no re-delivery.
+- `a_hostile_flood_cannot_evict_or_starve_a_held_role_statement` (R7, T12).
+  - M's statement arrives first and is held.
+  - Then 8 hostile author DIDs send 1100 structurally valid statements each. That is beyond
+    both the old 4096-per-verse cap and each hostile author's own 1024 budget. They are
+    interleaved with 5000 deferred content rows, which overflow `InboundAdmissions`.
+  - Then the owner's promotion of M arrives.
+  - It asserts that M's statement is admitted and that no hostile statement is ever admitted.
+  - It asserts that `role_pending_refused_count()` counts only the hostile grantors' overflow.
+  - It asserts that `deferred_admission_drop_count() > 0`, which shows the content queue
+    overflowed without touching role statements.
 - `concurrent_revocation_converges_in_both_delivery_orders` (T4, DB-level). Two fresh DBs get
-  the same three statements in opposite orders; the `role` tables are equal.
+  the same statements in opposite orders: a grant by the revoked Manager, the petal Manager
+  that Manager appointed, and the owner's revocation. The `role` tables are equal, and so are
+  the partitions.
+- `an_inbound_petal_manager_grant_applies_in_their_petal_and_is_held_in_a_sibling_petal`
+  (R7 subtree, inbound).
+- `an_owner_statement_for_a_petal_not_yet_known_takes_effect_when_the_petal_lands` (no
+  `Parent` deferral for role statements, and no re-delivery).
+- `role_statements_before_the_manifest_are_held_and_resolve_when_it_lands`. A pre-manifest
+  statement that targets the owner is deleted as Denied at promotion.
 - `a_replayed_older_owner_grant_never_undoes_the_newer_revocation` (T2).
 - `a_forged_grantor_key_and_a_cross_verse_scope_are_denied` (T1/T6, table-driven).
 - `an_empty_entry_on_the_role_table_is_not_applicable`.
-- `the_deferred_queue_caps_per_author_and_counts_drops`.
+- `the_deferred_queue_caps_per_author_and_counts_drops` (content rows).
 - The existing `viewer_role_row_is_denied_never_applied` (`:1103`) and
   `timeseries_reading_from_viewer_is_denied` (`:1698`) flip to `Deferred` (never persisted).
   `unknown_peer_row_is_denied` (`:1133`) flips the same way. Rename them accordingly. **(Critic)**
@@ -464,12 +747,14 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
 1. **Immutable identity.** For an inbound verse row on an existing verse, any change to
    `verse_id`, `created_by`, `created_at` or `namespace_id` returns `Denied`.
 2. **Governance fields.** A change to `default_access`, `ts_mode`, `ts_replication_factor` or
-   `ts_bucket_width_ms` needs the author to be Manager+ (else Deferred `AuthorRole`).
-   `name`/`view_hidden` follow the Editor+ write gate.
+   `ts_bucket_width_ms` needs the author to be Manager+ **at the verse scope** (else Deferred
+   `AuthorRole`). A petal or fractal Manager's change is held like anyone else's, because verse
+   governance lies above their subtree. `name`/`view_hidden` follow the Editor+ write gate.
 3. **First-manifest rule** (narrowing the bootstrap window).
    - Before a manifest exists, ONLY the verse row is admitted. Every other table is Deferred
      `Manifest` (safe now that deferral retries; the old reason for admitting everything,
-     `:239-249`, no longer holds).
+     `:239-249`, no longer holds). Role statements are the exception: they are held in the
+     durable pending store (RP-3, §2.4), not in the in-memory queue.
    - If an owner pin exists for the verse (step 4), a first manifest whose `created_by`
      differs is Denied.
    - Without a pin it is trust-on-first-use (TOFU), as today; this is a documented residual
@@ -498,7 +783,9 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
    - A parent unknown locally means Deferred `Parent`. A parent in another verse means Denied.
 6. **Scope-precise role resolution.** Resolve the author's role at the row's deepest scope
    (`build_scope(verse, fractal, petal)`). Verse-level Editors still pass because
-   `resolve_role` walks up the chain.
+   `resolve_role` walks up the chain. Over the §2.2 cache, this is `role_at`, the same function
+   that grant authority and the sync-plane gates use (§2.5). An Editor appointed by a petal
+   Manager therefore passes in that petal and is Deferred elsewhere.
 
 **Invariants:**
 - §geometry-inserts (strip, then cast).
@@ -510,7 +797,7 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
 **Flow tests:**
 - `an_editor_cannot_rewrite_created_by_through_a_replicated_manifest` (T9; it would have
   passed before this slice — the hole).
-- `an_editor_cannot_flip_ts_mode_or_default_access_but_a_manager_can`.
+- `an_editor_or_petal_manager_cannot_flip_ts_mode_or_default_access_but_a_verse_manager_can`.
 - `an_invitee_records_the_real_owner_and_admits_the_owners_rows_as_owner` (T10). The invite
   is generated by a non-owner Manager, and the owner's later petal row is Applied on the
   invitee.
@@ -535,42 +822,79 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
 **Owned files:**
 - `fe-sync/src/sharding.rs` (VerseFabric role view, owner pin, petal map, quarantine, gated
   `note_entry`/`note_verse_row`)
-- `fe-sync/src/replicator.rs` (snapshot: add an all-authors `Query::key_prefix("role/")` pass
-  for the real doc; make the mock keep per-(key, author) entries for the `role/` prefix)
-- `fe-sync/src/sync_thread.rs` (feed outbound `role`/`petal` rows to the fabric in
-  `handle_write_row_entry`)
-- `fe-sync/src/distributed_query.rs` (requester Viewer+ gate in `handle_gossip_incoming`,
+- `fe-sync/src/replicator.rs`:
+  - snapshot: add an all-authors `Query::key_prefix("role/")` pass for the real doc, and
+    make the mock keep per-(key, author) entries for the `role/` prefix;
+  - add the provided `VerseReplicator::entries_by_author` method, which the iroh replicator
+    overrides (§2.5).
+- `fe-sync/src/sync_thread.rs`:
+  - feed outbound `role`/`petal` rows to the fabric in `handle_write_row_entry`;
+  - `AnyReplicator` forwards `entries_by_author`;
+  - the select loop drains `reread_queue`.
+- `fe-sync/src/distributed_query.rs` (the requester Viewer+ gate in `handle_gossip_incoming`,
   `:1076`)
-- `fe-sync/src/AGENTS.md` (§sharding ledger admission, §transport-admission-control item 5
-  rewritten as CLOSED with the residual removed, a new §role-view)
+- `fe-sync/src/AGENTS.md`:
+  - §sharding ledger admission;
+  - §transport-admission-control item 5, rewritten as CLOSED with the residual removed;
+  - a new §role-view.
+- Not edited: `fe-sim/src/net.rs` (`SimVerseReplicator`) inherits the provided method's
+  default.
 
 **Steps:**
-1. Implement §2.5 using `fe_policy::role_grants`. Quarantine caps are 1024 per verse,
-   drop-oldest with a counter.
-2. Gate `note_verse_row` on governance authority. Owner-pinned identity is never relearned.
+1. Implement §2.5 using `fe_policy::role_grants`:
+   - the fabric retains only admissible statements;
+   - every gate calls `role_at` at the row's deepest scope;
+   - quarantine caps are 1024 per verse, drop-oldest with a counter.
+2. Gate `note_verse_row` on Manager+ at the verse scope (or the owner). Owner-pinned identity is
+   never relearned.
 3. Snapshot: role statements must be read from ALL authors. Otherwise an Editor writing the
    key `role/S/P/{owner}` with a later iroh timestamp would hide the owner's genuine entry
    from `single_latest_per_key`, a DoS on convergence for fresh peers. The gate drops the
    forgery; the all-authors pass keeps the genuine entry visible.
-4. Add a `drop_reason::INSUFFICIENT_ROLE` for requesters below Viewer, used when
-   `default_access = none`.
+4. **Re-read on empowerment** (§2.5, the R7 durable retry for the fabric, and the DB plane's
+   backstop):
+   - add `reread_queue`, filled from the fabric's `ChangedDids` rises;
+   - add `entries_by_author` (a provided method whose default filters `snapshot()`;
+     `AnyReplicator` forwards it; `IrohDocsReplicator` overrides it with
+     `Query::author(id).key_prefix(p)`);
+   - the drain feeds `handle_inbound_row_change`.
+5. Add a `drop_reason::INSUFFICIENT_ROLE` for a requester below Viewer at the requested
+   petal's scope. It fires when `default_access = none` and no grant reaches that petal.
 
 **Invariants:**
-- §inbound-apply self-drain rule: the quarantine re-evaluation is synchronous and never awaits
-  an aggregated-stream send.
+- The §inbound-apply self-drain rule: quarantine re-evaluation is synchronous and never awaits
+  an aggregated-stream send. The re-read awaits only the local docs store.
 - `note_entry` stays BEFORE the own-author filter (`sync_thread.rs:1110-1118`).
 - Retention of an unknown shard stays "retain" (§sharding).
 - §transport-admission-control items 1-4 stay.
+- One authority function: the fabric never resolves roles any way except
+  `fe_policy::role_grants` `role_at`.
 
 **Flow tests:**
 - `a_viewer_authored_shards_row_is_quarantined_and_admitted_once_the_owner_grants_editor`.
 - `a_forged_shards_row_from_a_stranger_never_reaches_the_ledger`.
-- `a_viewer_published_manifest_does_not_change_fabric_settings`.
+- `a_petal_scoped_editors_shards_row_is_admitted_for_that_petal_only` (R7 subtree, on the
+  sync plane). The Editor is appointed by a petal Manager.
+- `manifest_settings_are_adopted_only_from_a_verse_manager_or_the_owner` (table-driven).
+  Settings from a Viewer or a petal Manager are ignored; settings from a verse Manager are
+  adopted.
 - `snapshot_replay_sees_the_owners_role_statement_despite_a_later_forged_entry_on_the_same_key`
   (real loopback replicator, two authors).
-- `a_requester_without_view_rights_is_dropped_when_default_access_is_none`.
+- `a_held_role_statement_is_reread_from_the_replica_when_its_grantor_is_empowered` (R7).
+  M's statement reaches the fabric before the owner's grant and is not retained. The grant
+  then arrives. The re-read retains M's statement and re-forwards it on the DB command
+  channel.
+- `a_quarantine_flood_cannot_lose_a_legit_editors_shards_row` (T12). The legit row is
+  quarantined. Then 1024 or more strangers' rows evict it. Then the owner grants Editor, and
+  the legit row reaches the ledger through the re-read.
+- `requester_gate_resolves_at_the_requested_petal` (table-driven, with
+  `default_access = none`):
+  - a petal-scoped Viewer is served for that petal and dropped for a sibling petal;
+  - a verse Viewer is served everywhere;
+  - a stranger is dropped.
 - `fabric_and_db_materialize_identical_effective_roles_from_the_same_statements` (cross-plane
-  parity on a shared fixture).
+  parity on a shared fixture). The fixture includes subtree grants, an owner pin, and a
+  Manager `viewer` statement that must write no cache row.
 
 ### RP-6: settlement race closed · L · opus
 
@@ -655,6 +979,10 @@ Add `the_responder_answers_an_unknown_ledger_shard` (the safe direction).
   - alice grants bob Editor. carol, a fresh peer, admits bob's node row and reading with no
     local provisioning. This is the SYNC-ROLE-PROPAGATION acceptance.
   - alice grants bob Manager. bob grants dave Editor, and carol admits dave's row.
+  - The petal-scoped leg (R7 subtree, end to end):
+    - alice makes a member Manager of petal P1 only;
+    - that Manager grants another identity Editor in P1;
+    - carol admits that identity's P1 row, and Defers its row in sibling petal P2.
   - alice revokes bob, and dave's next row is Deferred on carol (cascade, T4).
   - a node row from bob in verse A referencing verse B's petal is denied on carol
     (P2P-REF-CONFINE, two-peer).
@@ -676,39 +1004,54 @@ findings, per the standing rule), plus
 `conductor/tracks/role_propagation_20261013/review-rp9.md` (a one-line verdict and findings
 list; this is a track-local record, not a report file for the parent).
 
-Run `/security-review` scoped to the track diff, plus `oh-my-claudecode:critic` on §2.2.
+Run `/security-review` scoped to the track diff. Run `oh-my-claudecode:critic` on §2.2 and
+§2.4. The critic must try to break five things:
+- subtree authority;
+- the owner-pin cut;
+- the raise-only rule;
+- the admission argument ("the partitioned materialization equals the least fixpoint over
+  everything received");
+- the partition invariant.
+
 Load `conductor-okf:code-styleguides`. **Threat matrix:** each row needs a named test that
-fails if the guard is removed; the reviewer adds any that are missing.
+fails if its guard is removed; the reviewer adds any that are missing.
 
 | # | Threat | Guard | Test (slice) |
 |---|---|---|---|
 | T1 | Forged role row (grantor ≠ attested author) | key grantor == entry author | RP-1, RP-3 |
-| T2 | Replayed role row (old genuine grant after revoke) | per-grantor HLC last-writer-wins; iroh latest-per-(key, author) | RP-3 |
-| T3 | Manager grants Owner, or self-elevation | `role ≠ owner`; `authority ≥ R` | RP-1, RP-2 |
-| T4 | Revocation race (revoked Manager's concurrent grants) | cascade via fixpoint; order-free | RP-1, RP-3, RP-8 |
+| T2 | Replayed role row (old genuine grant after revoke) | per-grantor HLC last-writer-wins, one live version per key across both tables; iroh latest-per-(key, author) | RP-3 |
+| T3 | Manager grants Owner, or self-elevation | `role ≠ owner`; `R ≤ Manager ≤ authority` | RP-1, RP-2 |
+| T4 | Revocation race (revoked Manager's concurrent grants, and the subtree Managers they appointed) | cascade via the fixpoint, demotion to pending; order-free | RP-1, RP-3, RP-8 |
 | T5 | Demoting or revoking the owner | owner derived from `created_by`, never a target | RP-1, RP-2 |
 | T6 | Cross-verse role rows | scope's verse == replica verse | RP-1, RP-3 |
 | T7 | HLC skew abuse | no cross-author last-writer-wins; no remote HLC observation | RP-1 |
-| T8 | Petal creator becomes Owner | implicit owner rows removed | RP-2 |
+| T8 | Petal creator becomes Owner | implicit owner rows no longer written; migration drops existing ones (R7) | RP-2 |
 | T9 | Manifest MERGE rewrites `created_by` | immutable identity fields | RP-4 |
 | T10 | Invitee trusts the inviter as owner | signed `owner_did` pin | RP-4, RP-8 |
 | T11 | Cross-verse tombstone or re-parent | referential confinement (payload and durable row) | RP-4, RP-8 |
-| T12 | Statement or deferred-row flooding | per-grantor and per-author caps, drop counters | RP-3 |
-| T13 | Viewer-authored `__shards`/`__holders`/manifest settings | sync role view gates | RP-5, RP-6 |
+| T12 | Flooding: role statements, deferred content rows, or quarantined `__shards` rows from many author ids | role statements never use the shared in-memory queue; the durable pending store is keyed by attested grantor, with a per-grantor budget and NO shared cap, so there is no cross-author eviction; the fabric retains only admitted statements and re-reads by author; content-queue caps and drop counters (delay only) | RP-3, RP-5 |
+| T13 | Viewer-authored `__shards`/`__holders`/manifest settings, or a petal Manager's verse settings | sync role view gates via `role_at` at the deepest scope; settings at the verse scope | RP-5, RP-6 |
 | T14 | Forged later entry hides the owner's statement from snapshots | all-authors `role/` snapshot | RP-5 |
-| T15 | Unauthorized creator copy injected into query results | merge rejects sub-Editor unexpected answerers | RP-6 |
+| T15 | Unauthorized creator copy injected into query results | merge rejects sub-Editor unexpected answerers (at the shard's petal scope) | RP-6 |
 | T16 (critic) | Cross-verse device-payload / asset / device-format rows (tables from CDL-SPEC10 A3) | shared confinement resolver; Manager+ on `device_format` | SPEC10 A3, RP-4 |
 | T17 (critic) | Enrolment branch bypassed or deferred by the new gates | W4-8 branch first, verify-before-anything | RP-3, RP-4 |
 | T18 (critic) | Canonical interim authority loses the owner after the cache rewrite | `DurableAuthorizationView` derives the owner from `created_by` | RP-2 |
-| T19 (critic) | A petal-scoped Manager issues verse-effective grants | verse-scope grant authority (RUNBOOK §3) | RP-1 |
+| T19 (R7) | A Manager grants above or beside their own subtree (enclosing fractal or verse, sibling petal), or grants Owner | `authority = role_at` at the target scope (maximum over the scope and its ancestors); `owner` structurally denied | RP-1, RP-2, RP-3 |
+| T20 (R7) | A lower-scope Manager demotes a wider-scoped peer inside their subtree with an explicit lower grant that shadows inheritance | Managers only raise: Manager `none` has no effect, and there is no non-raising cache row | RP-1, RP-5 parity |
+| T21 (R7) | A verse Manager undoes the owner's carve-out by appointing a petal Manager where the owner pinned them below Manager | owner pins cut the authority walk | RP-1 |
+| T22 (R7) | A held role statement is lost (restart, overflow, channel drop), so the final role set depends on delivery order | durable `role_statement_pending` + the partition run on every authority change + startup repartition; sync-plane re-read by author | RP-1, RP-3, RP-5 |
 
 The review must also challenge:
-- whether the deferred retry can loop;
-- whether the cache can drift from `role_grant` (crash between the statement write and
-  rematerialize, and recovery on startup);
-- whether the elevated API or raw query can write `role_grant`;
-- whether fe-api `/query` should hide `role_grant.grantor_did` (default: visible to readers of
-  the verse; record the verdict).
+- whether the promote/demote worklist or the sync re-read can loop or amplify. The expected
+  answer: promotions only raise `M`, each round moves at least one row, and re-reads happen
+  only on role rises, which need a valid grant;
+- whether the `role` cache or the partition can drift from `role_grant`. Cover a crash
+  between the statement write and `repartition`, and the startup repair;
+- whether a hostile author can occupy another grantor's pending keys, or force a scan of its
+  own held rows without gaining authority;
+- whether the elevated API or raw query can write `role_grant` or `role_statement_pending`;
+- that neither role table enters fe-api's `/query` `ALLOWED_TABLES` allowlist
+  (`fe-api/src/query_guard.rs:36`; `role` is not on it either). Record the verdict.
 
 ### RP-10: docs consolidation · S · haiku
 
@@ -730,16 +1073,17 @@ updates are handed to their owning agent (§4).
 
 | Doc | Change |
 |---|---|
-| `fe-policy/AGENTS.md` | New §role-grants: the statement model, the fixpoint, the order-independence argument, why there is no cross-author last-writer-wins |
-| `fe-database/src/AGENTS.md` | §rbac-policy (`role` is a materialized cache); a new §role-propagation (statements, migration, local/inbound parity); §handlers `replicated_row` (Deferred, confinement, immutable manifest identity, bootstrap narrowed to the manifest only, invite owner pin) |
-| `fe-sync/src/AGENTS.md` | §sharding (holders, the gated ledger); §distributed-query (creator copies → holders; settlement closed; filter = hosted ∪ held; hosted-only stays forbidden); §transport-admission-control item 5 CLOSED; new §role-view; §inbound-apply (Deferred replaces "permanently skipped") |
+| `fe-policy/AGENTS.md` | New §role-grants: the statement model, the fixpoint, subtree authority (`role_at`, owner pins cut the walk, Managers only raise), the admission argument (Deferred = held, order-independent), why there is no cross-author last-writer-wins |
+| `fe-database/src/AGENTS.md` | §rbac-policy (`role` is a materialized cache, the raise-only projection); a new §role-propagation (statements, the `role_statement_pending` store, the partition invariant and budget, migration, local/inbound parity); §handlers `replicated_row` (Deferred, confinement, immutable manifest identity, bootstrap narrowed to the manifest only, invite owner pin) |
+| `fe-sync/src/AGENTS.md` | §sharding (holders, the gated ledger); §distributed-query (creator copies → holders; settlement closed; filter = hosted ∪ held; hosted-only stays forbidden); §transport-admission-control item 5 CLOSED; new §role-view (one authority function, retain-admitted-only, re-read on empowerment); §inbound-apply (Deferred replaces "permanently skipped") |
 | `fe-runtime/src/AGENTS.md` | The new outcome variant and meta fields |
 | `fe-test-harness/src/AGENTS.md` | "no role provisioning" becomes "roles flow from the owner via `AssignRole`" |
-| Owner-agent hand-off (NOT edited here) | Ledger rows SYNC-ROLE-PROPAGATION, SYNC-RESPONDER and P2P-REF-CONFINE close. SYNC-SIGNED-PLANE splits: the `__shards` gate is DONE, relayed attribution and signed ops stay. RUNBOOK §4 records the refined role-replication assumption. tracks.md gains this track |
+| Owner-agent hand-off (NOT edited here) | Ledger rows SYNC-ROLE-PROPAGATION, SYNC-RESPONDER and P2P-REF-CONFINE close. SYNC-SIGNED-PLANE splits: the `__shards` gate is DONE, relayed attribution and signed ops stay. RUNBOOK §4 records the refined role-replication assumption and this plan's two decisions (§7 D-RP-1, D-RP-2). tracks.md gains this track |
 
 ## 5. Risks
 
-1. **Fixpoint cost.** Rematerializing a verse costs O(passes × statements). Statement counts
+1. **Fixpoint cost.** Rematerializing a verse costs O(passes × statements). It runs over
+   ADMITTED statements only, so a flood of held statements never enters it. Admitted counts
    are small (members × scopes). Bound the passes at |statements|+1, with a warning if the
    bound is hit (a bug guard).
 2. **Line drift after PAS/CDL phases.** The `ApplyReplicatedRow` and `ExecuteTsPartial` arms,
@@ -754,7 +1098,8 @@ updates are handed to their owning agent (§4).
    `PENDING_WRITES_CAP` interplay.
 6. **Behaviour changes users could notice:**
    - Editors lose implicit petal ownership.
-   - Managers can no longer strip other grantors' grants.
+   - Managers can no longer strip other grantors' grants, or lower anyone (raise-only).
+   - A Manager loses grant authority wherever the owner pins them below Manager.
    - Legacy role rows on non-owner stores are dropped.
    - Invite strings change format.
    All are recorded as assumptions or decisions (§7).
@@ -764,6 +1109,14 @@ updates are handed to their owning agent (§4).
 8. **Holder fan-in.** In a verse with many authors, every author answers for its own shards.
    That is bounded by authorship, not fleet size, and still beats today's "everyone answers
    everything".
+9. **Pending-store growth.** `role_statement_pending` has no shared cap, by design (a shared
+   cap is the eviction vector). Each grantor gets at most 1024 keys per verse, and every row
+   mirrors an entry the replica already holds. A hostile author therefore costs the DB at most
+   what it already costs the replica, plus one indexed upsert per statement. Watch
+   `role_pending_refused_count()`.
+10. **Re-read cost.** A role rise re-reads that author's `role/`, `__shards/`, `__holders/` and
+    `verse/` entries. That is small per author, and rises need a valid grant. If a
+    bulk-granting UI arrives (D-32 FR-4), batch the queue drain per verse.
 
 ## 6. Deferral audit (only a missing user decision, a NO_GO class, or a hard external dependency justifies one)
 
@@ -775,59 +1128,81 @@ updates are handed to their owning agent (§4).
 | Pinning the bootstrap owner for relays that open replicas without an invite | **Missing user decision (D-23)** | The relay host and provisioning are undecided (R6). The pin mechanism ships in RP-4; only the relay-side source of the expected owner waits. TOFU is a documented residual |
 | Role-at-authoring-time admission (role history) | Not deferred: **rejected by design** | Author-claimed HLCs make backdating trivial, so current-converged-role evaluation is the secure choice |
 | Retroactive purge of rows from later-revoked authors | Not deferred: **rejected by design** | Destructive; the §7 A5 assumption covers it |
+| A durable retry store for deferred CONTENT rows (non-role) | Not deferred: **outside R7's requirement; existing behaviour kept (A4)** | R7's order-independence requirement concerns the role set, and §2.4 makes that durable and flood-proof. Content rows already converge on the next replay. The §2.5 re-read also recovers `__shards`/`__holders`/`verse/` rows. A content-row flood can only delay content, never change roles. Trigger to revisit: `deferred_admission_drop_count() > 0` observed in the field |
 
 Nothing else is left out. Reconciliation retries, confinement, the `__shards` gate, the
 governance-field gates and the invite owner bug are all in scope.
 
-## 7. User decisions and assumptions
+## 7. Decisions and assumptions
 
-**Decisions to confirm.** A default has been taken for each; the user may override.
+**Decided by the user** (R7, 2026-10-13, RUNBOOK §3). These replace the plan's earlier
+defaults.
 
-1. **Role-statement semantics (high blast radius).** The default is the per-grantor model with
-   owner override, a maximum over Manager grants, and cascade on grantor loss (§0, §2.2). The
-   §4 assumption read literally ("one last-writer-wins row per (verse, peer)") does not
-   converge. Reversal cost: moderate before RP-2 lands (RP-1 is pure), high afterwards.
-   **(Critic) It must also be squared with a RUNBOOK §3 *decision*, not only the §4 assumption.**
-   - §3 (2026-10-12, user) says: *"Role propagation: replicate the `role` table as ordinary
-     replicated rows, admitted only when the author is Manager+ at the verse scope (owner
-     bootstraps from `verse.created_by`). Chosen over signed role grants (simpler, no new
-     signature format)."*
-   - This plan stores structurally valid statements from any author and lets them take effect
-     only when the grantor is Manager+ in the converged state (§2.2 "Admission versus effect").
-   - Agreement:
-     - **verse scope:** now the default (§2.2 step 2, critic edit);
-     - **no new signature format:** kept. Statements are ordinary iroh-author-signed doc entries.
-   - Divergence: *storing* an inert statement is not literally "admitted only when Manager+".
-     Its *effect* is identical, and it is what makes the result independent of delivery order.
-   - The literal alternative: return `Deferred AuthorRole` for a non-Manager+ author's statement
-     instead of storing it inert. The effect is the same, but it depends on the non-persistent
-     deferred queue plus snapshot replay. Reversal: cheap, one arm in RP-3.
-   - **Default kept: stored-inert.** Ask the user to confirm.
-2. **Petal creators lose implicit petal-scope Owner** (`crud.rs:182-190`). The default is to
-   remove it (it is an escalation, and it is unreplicable). Reversal: cheap-ish; re-add as an
-   owner-issued Manager statement if wanted.
+1. **Role-statement semantics.** The per-grantor model is the implemented basis (§0, §2.2).
+   It has owner override, a maximum over valid Manager grants, and cascade on grantor loss.
+   R7 settled its two open questions:
+   - **Admission:** a statement whose author is not yet Manager+ at its scope is held back
+     as **Deferred**. It is never stored inert. It is re-evaluated whenever any author's
+     authority changes, so the final role set is independent of delivery order (§2.2
+     "Admission", §2.4).
+   - **Grant authority:** any Manager may grant within their own subtree: a petal Manager in
+     that petal, a fractal Manager in that fractal and its petals, a verse Manager or the
+     owner in the whole verse. A Manager can never grant above their scope, beside it, or grant
+     Owner (§2.2).
+
+   The model itself replaces the §4 "LWW per (verse, peer)" assumption, which does not
+   converge (§0). It keeps the 2026-10-12 decision's properties: ordinary replicated rows, no
+   new signature format, and the owner from `verse.created_by`. Reversal: moderate before RP-2
+   lands (RP-1 is pure), high afterwards.
+2. **Petal creators no longer become petal Owners** (`crud.rs:182-190`). The RP-2 migration
+   drops existing implicit rows. They never replicated, so no other peer ever honoured them.
+
+**Decided by this plan** (not asked; the orchestrator mirrors these into RUNBOOK §4 as
+assumptions):
+
+- **D-RP-1, the durable retry source for held role statements (AC-1).**
+  - DB plane: a persisted `role_statement_pending` table, keyed by attested grantor, with a
+    per-grantor budget and no shared cap.
+  - Sync plane: a per-author re-read of the replica when an author's role rises.
+  - The justification table is in §2.4. Reversal: moderate (RP-2/RP-3 schema) before
+    landing; high after.
+- **D-RP-2, two refinements of R7's subtree rule (§2.2).**
+  - Owner pins cut the authority walk, so the owner can carve a petal out of a Manager's
+    authority.
+  - Managers only raise, so a narrower Manager cannot demote a wider-scoped peer by
+    shadowing.
+
+  Both keep the operator monotone. Without them, R7's subtree authority opens T20 and T21.
+  Reversal: cheap (RP-1 is pure).
 
 **Assumptions** (highest reversal cost first):
 
-- A1: a Manager's revoke retracts only that Manager's own grant; only the owner removes
-  grants issued by others. To reverse, add "Manager may revoke grants from strictly lower
-  grantors" (moderate).
+- A1: Managers only raise (D-RP-2). A Manager's revoke retracts only that Manager's own
+  grant. Only the owner lowers a peer or removes a grant someone else issued. To reverse, add
+  "Manager may revoke grants from strictly lower grantors" (moderate).
 - A2: legacy explicit role rows on stores that are not the owner's are dropped at migration
   (there are no consumers). To reverse, keep them as local-only statements (cheap before
   release).
 - A3: `SetVerseDefaultAccess` now replicates (it re-emits the manifest), and local governance
-  changes need Manager+. To reverse, drop the re-emit (cheap).
-- A4: a Deferred row is not persisted; restart relies on the existing snapshot replay. Caps
-  are 4096 per verse and 512 per author. To reverse, persist the queue (moderate).
+  changes need Manager+ at the verse scope. To reverse, drop the re-emit (cheap).
+- A4: a deferred **content** row is not persisted. A restart or overflow relies on the
+  existing snapshot replay. Caps are 4096 per verse and 512 per author. Held **role
+  statements** are durable (D-RP-1) and are not covered by this assumption. To reverse,
+  persist the content queue (moderate).
 - A5: admission uses the author's current converged role. Rows already admitted from a
   later-revoked author stay; late joiners do not admit them. To reverse, add an owner "purge
   author" command (moderate).
 - A6: `HOLDER_WAIT_MS` = 750 ms (clamped to the deadline). To reverse, it is a constant
   (cheap).
-- A7: `role_grant` is readable through fe-api `/query` by verse readers, with the RP-9
-  reviewer's verdict recorded. To reverse, add a query-guard entry (cheap).
+- A7: `role_grant` and `role_statement_pending` stay OUT of fe-api `/query`. `ALLOWED_TABLES`
+  (`fe-api/src/query_guard.rs:36`) is an allowlist and does not list `role` either. RP-9
+  records the verdict, and FR-4 (D-32) reads roles through a scoped route. To reverse, add an
+  allowlist entry with a scope filter (cheap).
 - A8: invites carry `owner_did` (a breaking invite-string format; there are no consumers). To
   reverse, accept both formats (cheap).
+- A9: `ROLE_PENDING_PER_GRANTOR` = 1024 keys per verse, refuse-new. The cost of a refusal
+  falls only on the grantor that exceeds it, and the §2.5 re-read recovers the refused
+  statement on empowerment. To reverse, it is a constant (cheap).
 
 ## 8. Critic amendments (2026-10-13)
 
@@ -836,8 +1211,8 @@ therefore inherits code those phases land in its files, and owns the edits that 
 
 | # | Change | Class |
 |---|---|---|
-| C1 | Grant authority = Manager+ **at the verse scope** (§2.2, §2.3, RP-1 test, T19). This matches RUNBOOK §3, *"admitted only when the author is Manager+ at the verse scope"*; the planner had used scope-chain maximum. | contradicts RUNBOOK §3 |
-| C2 | User decision #1 now quotes the §3 decision itself (not only the §4 assumption) and names the stored-inert vs Deferred divergence, with the literal alternative and its reversal cost. | contradicts RUNBOOK §3 (flagged) |
+| C1 | The critic narrowed grant authority to the verse scope, to match the 2026-10-12 wording. **Superseded by R7:** subtree authority, now §2.2. T19 is rewritten. | superseded (R7) |
+| C2 | The critic surfaced the 2026-10-12 decision's admission wording as a user question. **Answered by R7:** Deferred. The durable store is D-RP-1 (§2.4). | superseded (R7) |
 | C3 | RP-2 owns `DurableAuthorizationView::load` (`canonical_epoch.rs:540`). It must derive the owner from `created_by`, otherwise dropping owner rows silently breaks CDL-W4-7/W4-8's canonical issuer authority. Test + T18 added. | cross-plan regression (later phase breaks earlier) |
 | C4 | RP-2 keeps CDL-W4-1's six bypass lines in `crud.rs` byte-identical. | cross-plan collision |
 | C5 | RP-3 owns the earlier phases' test files whose `Denied` expectations it flips (PAS-P3P4 S6, CDL-SPEC10 A3), and preserves the W4-8 enrolment branch and the SPEC10 A3 arms. Test + T17 added. | cross-plan collision (`replicated_row.rs`) |
