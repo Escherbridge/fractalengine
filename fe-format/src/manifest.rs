@@ -139,6 +139,69 @@ pub struct ChunkIndex {
     pub total_chunks: u32,
     /// Bounds of this specific chunk [min_lat, min_lon, max_lat, max_lon].
     pub chunk_bounds: [f64; 4],
+    /// blake3 hex digest of this chunk's exported archive bytes (D-76 per-chunk
+    /// hash slot; PAS-P5 signs it). `None` on legacy chunks predating this field —
+    /// `#[serde(default, skip_serializing_if)]` keeps them byte-identical on re-export.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blake3: Option<String>,
+}
+
+/// One bundle's entry in a [`TilesetBundleIndex`]: its sequence, integrity
+/// hash, size, and the tile-coordinate range it covers (see
+/// `fe-terrain/src/AGENTS.md` §bundles for how bundles are built).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BundleEntry {
+    /// This bundle's sequence number (0-indexed), matching its `ChunkIndex.chunk_seq`.
+    pub seq: u32,
+    /// blake3 hex digest of the bundle's exported archive bytes.
+    pub blake3_hex: String,
+    /// Size of the exported archive in bytes.
+    pub byte_len: u64,
+    /// Number of elevation tiles the bundle carries.
+    pub tile_count: u32,
+    /// Zoom level this bundle's tile range belongs to.
+    pub zoom: u8,
+    /// Inclusive `[min, max]` tile-x range covered by this bundle.
+    pub x_range: [u32; 2],
+    /// Inclusive `[min, max]` tile-y range covered by this bundle.
+    pub y_range: [u32; 2],
+    /// Inclusive `[min, max]` Hilbert-distance range covered by this bundle
+    /// (evidence/debugging only — `bundle_for_tile` never reads it).
+    pub hilbert_range: [u64; 2],
+}
+
+/// Deterministic spatial-bundle index for a tileset (D-73 A4): the tileset is
+/// split into Hilbert-ordered, size-capped bundles instead of flat chunks.
+/// Ships as the opaque HashSeq child 0 (fe-sync never parses it; see
+/// `fe-sync/src/AGENTS.md` §tileset-transfer).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TilesetBundleIndex {
+    /// Index format version, for forward-compatible parsing.
+    pub schema: u32,
+    /// The tileset id all bundles share (becomes the installed hexon's id).
+    pub tileset_id: String,
+    /// The tileset's metadata with `chunk_index` always `None` — per-bundle
+    /// chunk metadata lives in `bundles`, not here.
+    pub tileset_meta: TilesetMeta,
+    pub bundles: Vec<BundleEntry>,
+}
+
+impl TilesetBundleIndex {
+    /// The one tile → bundle-sequence lookup (critic C4: `fe-terrain`'s
+    /// `StreamedTileSource` and PAS-P5 both call this instead of
+    /// re-implementing a chunk table).
+    pub fn bundle_for_tile(&self, zoom: u8, x: u32, y: u32) -> Option<u32> {
+        self.bundles
+            .iter()
+            .find(|b| {
+                b.zoom == zoom
+                    && x >= b.x_range[0]
+                    && x <= b.x_range[1]
+                    && y >= b.y_range[0]
+                    && y <= b.y_range[1]
+            })
+            .map(|b| b.seq)
+    }
 }
 
 /// Web-Mercator equatorial circumference in meters (mirrors `fe-terrain::tile_world_size_m`).
@@ -327,5 +390,73 @@ mod scale_field_tests {
         assert!((native_scale * expected_tile_world_size_m - tile_size as f64).abs() < 1e-6);
         assert!(gsd > 0.0 && gsd != 1.0);
         assert!(native_scale > 0.0 && native_scale != 1.0);
+    }
+}
+
+#[cfg(test)]
+mod bundle_index_tests {
+    use super::*;
+
+    fn index_with_one_bundle() -> TilesetBundleIndex {
+        TilesetBundleIndex {
+            schema: 1,
+            tileset_id: "t".into(),
+            tileset_meta: TilesetMeta {
+                bounds: [0.0; 4],
+                min_zoom: 10,
+                max_zoom: 10,
+                tile_size: 256,
+                elevation_encoding: ElevationEncoding::TerrainRgb,
+                tile_count: 4,
+                region_name: "x".into(),
+                ..Default::default()
+            },
+            bundles: vec![BundleEntry {
+                seq: 0,
+                blake3_hex: "deadbeef".into(),
+                byte_len: 10,
+                tile_count: 4,
+                zoom: 10,
+                x_range: [2, 3],
+                y_range: [5, 6],
+                hilbert_range: [0, 3],
+            }],
+        }
+    }
+
+    /// (critic) The one tile -> bundle lookup, table-driven: inside, on a
+    /// range border, outside, and wrong zoom.
+    #[test]
+    fn bundle_for_tile_table() {
+        let index = index_with_one_bundle();
+        let cases: &[(&str, u8, u32, u32, Option<u32>)] = &[
+            ("inside the range", 10, 2, 5, Some(0)),
+            ("on the x border", 10, 3, 5, Some(0)),
+            ("on the y border", 10, 2, 6, Some(0)),
+            ("outside the x range", 10, 4, 5, None),
+            ("outside the y range", 10, 2, 7, None),
+            ("below the x range", 10, 1, 5, None),
+            ("wrong zoom", 11, 2, 5, None),
+        ];
+        for &(desc, zoom, x, y, expected) in cases {
+            assert_eq!(index.bundle_for_tile(zoom, x, y), expected, "case: {desc}");
+        }
+    }
+
+    #[test]
+    fn chunk_index_blake3_defaults_absent_for_legacy_json() {
+        let legacy = serde_json::json!({
+            "tileset_id": "t",
+            "chunk_seq": 0,
+            "total_chunks": 1,
+            "chunk_bounds": [0.0, 0.0, 0.0, 0.0]
+        });
+        let parsed: ChunkIndex = serde_json::from_value(legacy).expect("legacy chunk must parse");
+        assert!(parsed.blake3.is_none());
+
+        // And re-serializing a `None` stays byte-identical to the legacy shape
+        // (no `blake3` key emitted), per `#[serde(skip_serializing_if)]`.
+        let json = serde_json::to_value(&parsed).unwrap();
+        assert!(json.get("blake3").is_none());
     }
 }

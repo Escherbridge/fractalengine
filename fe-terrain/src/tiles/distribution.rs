@@ -18,7 +18,7 @@ use tracing;
 use fe_format::manifest::TilesetMeta;
 
 use super::hexon_source::HexonTileSource;
-use super::store::HexonStore;
+use super::store::{HexonStore, InstalledTileset};
 
 // ---------------------------------------------------------------------------
 // Advertisement — what a peer tells others it has
@@ -157,12 +157,14 @@ impl TilesetDownload {
 /// Each chunk is a self-contained `.hexon` archive containing a subset of the
 /// tileset's tiles with `ChunkIndex` metadata. Chunks can arrive in any order.
 ///
-/// Returns the installed tileset's hexon_id on success.
+/// Returns the installed tileset record on success (also used by
+/// `bundle::assemble_bundles`, which verifies blake3 hashes first and then
+/// delegates here — "one assembly implementation").
 pub fn assemble_chunks(
     store: &HexonStore,
     tileset_id: &str,
     chunk_archives: &[Vec<u8>],
-) -> Result<String> {
+) -> Result<InstalledTileset> {
     if chunk_archives.is_empty() {
         bail!("no chunk archives to assemble");
     }
@@ -295,7 +297,7 @@ pub fn assemble_chunks(
         total
     );
 
-    Ok(installed.hexon_id)
+    Ok(installed)
 }
 
 // ---------------------------------------------------------------------------

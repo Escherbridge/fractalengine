@@ -408,6 +408,7 @@ fn check5_chunk_index_sequential() {
                 chunk_seq: seq,
                 total_chunks,
                 chunk_bounds: bounds,
+                blake3: None,
             }),
             crs: None, // deliberately legacy — differs from Default's Some("EPSG:4326")
             ..Default::default()

@@ -20,6 +20,21 @@ offline terrain rendering: `terrain/tiles/{z}/{x}/{y}.png` (elevation),
 optional `terrain/satellite/{z}/{x}/{y}.jpg` (imagery), plus a `tileset_meta`
 manifest block with bounds, zoom range, encoding, and tile count.
 
+### §bundles — `TilesetBundleIndex` / `ChunkIndex.blake3`
+
+`TilesetBundleIndex { schema, tileset_id, tileset_meta (chunk_index = None),
+bundles: Vec<BundleEntry> }` is the deterministic spatial-bundle index (D-73
+A4): a tileset split into Hilbert-ordered, size-capped bundles instead of flat
+chunks. Each `BundleEntry` carries its `blake3_hex` (verified before
+install), `byte_len`, `tile_count`, and the `(zoom, x_range, y_range)` tile
+range it covers — `TilesetBundleIndex::bundle_for_tile(z, x, y)` is the *one*
+pure tile→bundle lookup (critic C4); nothing else re-implements it.
+`ChunkIndex.blake3: Option<String>` is the parallel per-chunk hash slot
+(`#[serde(default, skip_serializing_if)]`, so legacy chunks without it stay
+byte-identical on re-export) — PAS-P5 signs it. The bundler itself
+(`bundle_tileset`, Hilbert ordering, greedy size-fill, determinism) lives in
+`fe-terrain/src/tiles/bundle.rs` — see `fe-terrain/src/AGENTS.md` §bundles.
+
 ### §scale — `TilesetMeta` additive fields and `Default`
 
 `native_scale`, `ground_sample_distance_m`, `crs`, and `scale_bounds` were all

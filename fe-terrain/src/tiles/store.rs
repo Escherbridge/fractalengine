@@ -47,6 +47,29 @@ pub struct InstalledTileset {
     pub last_served: Option<DateTime<Utc>>,
 }
 
+/// Error text `install_tileset` returns when `hexon_id` could escape the
+/// store directory (path-traversal guard; campaign plan S1 step 6, critic C1).
+pub const UNSAFE_HEXON_ID_ERROR: &str = "unsafe hexon_id (path traversal guard)";
+
+/// Chars allowed in a `hexon_id` used as an on-disk filename component
+/// (mirrors the registry's charset, `fe-hexon-registry/src/routes.rs:283`),
+/// plus an explicit `.`/`..` refusal the charset alone doesn't catch (both
+/// consist only of allowed characters but name the current/parent directory).
+///
+/// `install_tileset` is the one place every install path goes through — a
+/// fresh download, an `assemble_chunks`/`assemble_bundles` P2P install, or a
+/// direct call — so it is the single choke point for this guard. S4 makes
+/// P2P-assembled installs (where `hexon_id` is the peer-advertised
+/// `tileset_id`, untrusted) reachable before PAS-P5's signing lands.
+fn is_safe_hexon_id(id: &str) -> bool {
+    !id.is_empty()
+        && id != "."
+        && id != ".."
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
 /// Backfill missing `native_scale`/`ground_sample_distance_m` on a loaded
 /// [`TilesetMeta`] via [`fe_format::manifest::derive_scale_from_bounds`]
 /// (FR-3). Idempotent: already-populated fields are untouched.
@@ -120,8 +143,9 @@ impl HexonStore {
     /// Steps:
     /// 1. Import and validate the archive.
     /// 2. Verify the hexon type is `TerrainTileset`.
-    /// 3. Write `{hexon_id}.hexon` and `{hexon_id}.meta.json`.
-    /// 4. Append an entry to `registry.json`.
+    /// 3. Refuse an unsafe `hexon_id` before any path join (`is_safe_hexon_id`).
+    /// 4. Write `{hexon_id}.hexon` and `{hexon_id}.meta.json`.
+    /// 5. Append an entry to `registry.json`.
     pub fn install_tileset(&self, bytes: &[u8]) -> Result<InstalledTileset> {
         // Import and validate
         let data = HexonArchive::import(bytes).context("failed to import hexon archive")?;
@@ -134,6 +158,9 @@ impl HexonStore {
         }
 
         let hexon_id = manifest.hexon_id.clone();
+        if !is_safe_hexon_id(&hexon_id) {
+            bail!("{UNSAFE_HEXON_ID_ERROR}: {hexon_id:?}");
+        }
 
         let tileset_meta: TilesetMeta = data
             .tileset_meta

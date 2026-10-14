@@ -1,5 +1,6 @@
 #[cfg(feature = "fetch")]
 pub mod builder;
+pub mod bundle;
 pub mod cache;
 pub mod composite;
 pub mod distribution;
@@ -11,6 +12,7 @@ pub mod registry;
 pub mod source;
 pub mod store;
 
+pub use bundle::{assemble_bundles, bundle_tileset, TilesetBundles, DEFAULT_BUNDLE_BYTES};
 pub use cache::*;
 pub use composite::CompositeTileSource;
 pub use elevation::*;

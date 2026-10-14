@@ -285,7 +285,11 @@ mod inner {
 
         /// Download tiles and package into multiple `.hexon` chunk archives.
         ///
-        /// Each chunk is at most `max_chunk_size_mb` megabytes.
+        /// Each chunk is at most `max_chunk_size_mb` megabytes. Splitting goes
+        /// through the shared `bundle::split_tiles_into_bundles` (Hilbert
+        /// ordering + greedy size-fill) so there is one split implementation
+        /// (campaign plan S1 step 4) — this is the same grouping `bundle_tileset`
+        /// uses, just fed from freshly-downloaded tiles instead of an archive.
         pub async fn package_chunked(
             &self,
             publisher_did: &str,
@@ -295,35 +299,29 @@ mod inner {
             let (_result, all_tiles) = self.download_tiles().await?;
 
             let max_bytes = max_chunk_size_mb as u64 * 1024 * 1024;
-
-            // Split tiles into chunks by size
-            let mut chunks: Vec<Vec<(String, Vec<u8>)>> = Vec::new();
-            let mut current_chunk: Vec<(String, Vec<u8>)> = Vec::new();
-            let mut current_size: u64 = 0;
-
-            for (key, data) in all_tiles {
-                let len = data.len() as u64;
-                if !current_chunk.is_empty() && current_size + len > max_bytes {
-                    chunks.push(std::mem::take(&mut current_chunk));
-                    current_size = 0;
-                }
-                current_size += len;
-                current_chunk.push((key, data));
-            }
-            if !current_chunk.is_empty() {
-                chunks.push(current_chunk);
-            }
-
-            let total_chunks = chunks.len() as u32;
+            let slices =
+                crate::tiles::bundle::split_tiles_into_bundles(&all_tiles, &[], max_bytes)?;
+            let total_chunks = slices.len() as u32;
             let tileset_id = format!(
                 "tileset-{}",
                 self.region_name.to_lowercase().replace(' ', "-")
             );
+            // One timestamp for the whole build, not one per chunk — chunks
+            // built in the same call are the same "build", so they share a
+            // `created_at`/`updated_at` instead of drifting across the loop.
+            let now = chrono::Utc::now().to_rfc3339();
 
-            let mut archives = Vec::with_capacity(chunks.len());
-            for (seq, chunk_tiles) in chunks.into_iter().enumerate() {
+            let mut archives = Vec::with_capacity(slices.len());
+            for slice in slices {
+                let seq = slice.seq;
+                let chunk_tiles = slice.elevation_tiles;
                 let tile_count = chunk_tiles.len() as u32;
                 let chunk_bytes: u64 = chunk_tiles.iter().map(|(_, d)| d.len() as u64).sum();
+                let chunk_bounds = crate::tiles::bundle::bounds_for_tile_range(
+                    slice.zoom,
+                    slice.x_range,
+                    slice.y_range,
+                );
 
                 let mut manifest = HexonManifest {
                     schema_version: "1.0.0".into(),
@@ -341,8 +339,8 @@ mod inner {
                     ),
                     description: None,
                     tags: vec!["terrain".into(), "tileset".into(), "chunk".into()],
-                    created_at: chrono::Utc::now().to_rfc3339(),
-                    updated_at: chrono::Utc::now().to_rfc3339(),
+                    created_at: now.clone(),
+                    updated_at: now.clone(),
                     source_peer_did: None,
                     approx_size_bytes: Some(chunk_bytes),
                     min_engine_version: None,
@@ -369,9 +367,10 @@ mod inner {
                     region_name: self.region_name.clone(),
                     chunk_index: Some(fe_format::manifest::ChunkIndex {
                         tileset_id: tileset_id.clone(),
-                        chunk_seq: seq as u32,
+                        chunk_seq: seq,
                         total_chunks,
-                        chunk_bounds: self.bounds,
+                        chunk_bounds,
+                        blake3: None,
                     }),
                     crs: None, // preserve pre-Default behavior exactly; see fe-format/src/AGENTS.md §scale
                     ..Default::default()

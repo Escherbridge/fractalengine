@@ -602,3 +602,58 @@ seam Level == Flatten and Smooth is identity (real math lives in `sculpt`).
   `fe_renderer::terrain_overlay::EarthworkVolumeReport` once per revision and
   again as late chunks extend coverage — fe-ui's changed-value gate absorbs
   the re-fires before any DB write.
+
+## §bundles — deterministic spatial bundler (`tiles/bundle.rs`, p2p_asset_streaming S1)
+
+`bundle_tileset(source: &HexonArchiveData, max_bundle_bytes)` splits a
+tileset into deterministic, Hilbert-ordered, size-capped bundles instead of
+flat chunks (D-73 A4) — the unit P2P streaming fetches and the pointer-set
+(S7/S8) demands. It is a pure function of the source bytes: identical input
+gives identical bundle bytes, hence identical blake3 values, which is the
+identity cross-hexon dedup and the tile pointer-set both depend on.
+
+- **Grouping.** Elevation and satellite tiles are grouped by `(z, x, y)`
+  first — a pair never splits across bundles — then coordinates are ordered
+  by `(z, hilbert(x, y))` (PMTiles-style: `hilbert_distance` is Wikipedia's
+  `xy2d`, reimplemented locally to avoid a new dependency) before the
+  greedy size-fill, so spatially-adjacent tiles land in the same or
+  adjacent bundles. `DEFAULT_BUNDLE_BYTES` is 1 MiB (evidence §3: a real
+  elevation+satellite pair is ~110 KB).
+- **One split, two callers.** `split_tiles_into_bundles` (grouping + Hilbert
+  order + greedy fill) and `bounds_for_tile_range` (a bundle's real lat/lon
+  extent from its tile range) are `pub(crate)` and shared with
+  `TilesetBuilder::package_chunked` (`builder.rs`, `fetch` feature) — the
+  only other place tiles get split into chunks. Before this, `package_chunked`
+  stamped every chunk's `chunk_index.chunk_bounds` with the *whole tileset's*
+  bounds and called `chrono::Utc::now()` once per chunk inside the loop; both
+  now use the shared splitter's real per-chunk range and a single
+  build-wide timestamp.
+- **Each bundle is a self-contained `.hexon`** via `HexonArchive::export_tileset`,
+  manifest `signature` cleared (the source manifest's signature, if any,
+  covered different bytes) and timestamps copied from the source manifest —
+  never `now()` — so bundling twice yields byte-identical archives.
+- **Verification lives at the index, not the archive.** An archive can't
+  embed its own hash, so `ChunkIndex.blake3` stays `None` on bundle
+  archives; the verifiable digest is `BundleEntry.blake3_hex` in the
+  `TilesetBundleIndex` (fe-format `manifest.rs`).
+- **`assemble_bundles(store, index, bundle_paths)`** reads each bundle file,
+  reads its *own* `ChunkIndex.chunk_seq` (so files may arrive in any order —
+  the same contract `assemble_chunks` already honors), verifies
+  `blake3(file) == index.bundles[seq].blake3_hex`, and only then delegates to
+  `distribution::assemble_chunks` (now returning the installed
+  `InstalledTileset` record directly rather than just a hexon_id, so there is
+  one assembly implementation shared with the legacy flat-chunk path). Any
+  hash mismatch fails before anything is written to the store.
+- **Path-traversal guard moved in from PAS-P5 (critic C1).** `HexonStore::
+  install_tileset` (`store.rs`) is the single choke point every install path
+  reaches — a fresh download, `assemble_chunks`/`assemble_bundles`, or a
+  direct call — so `is_safe_hexon_id` (the registry's `[A-Za-z0-9_.-]`
+  charset plus an explicit `.`/`..` refusal) runs there, before any path
+  join, refusing with `UNSAFE_HEXON_ID_ERROR`. This has to land here, not in
+  PAS-P5: S4 makes P2P-assembled installs — where `hexon_id` is the
+  peer-advertised `tileset_id`, untrusted — reachable a full campaign phase
+  before PAS-P5's signing lands.
+- **One tile→bundle lookup.** `TilesetBundleIndex::bundle_for_tile(z, x, y)`
+  (fe-format, pure, over `x_range`/`y_range`/zoom) is the only tile→bundle
+  mapping; S7's `StreamedTileSource` and PAS-P5 both call it instead of
+  re-implementing a chunk table (critic C4).
