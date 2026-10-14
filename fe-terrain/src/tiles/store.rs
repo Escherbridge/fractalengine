@@ -113,14 +113,12 @@ struct RegistryData {
 /// Local persistent store for `.hexon` terrain tilesets.
 pub struct HexonStore {
     base_dir: PathBuf,
-    /// W2b F3: held across `install_tileset`'s continuity check → write →
-    /// `sync_all` → both renames, so two concurrent installs of the SAME
-    /// `hexon_id` are fully serialized — the second one's continuity check
-    /// always sees the first's completed result, never a half-written file
-    /// or a stale "nothing installed yet" read. Mirrors the registry's own
-    /// `publish_lock` (`fe-hexon-registry/src/routes.rs`). See
-    /// `src/AGENTS.md` §chunked-containers "atomic install".
-    install_lock: std::sync::Mutex<()>,
+    /// W2b F3: serializes every store mutation — `install_tileset`'s
+    /// continuity check → synced write → both renames → registry update, and
+    /// each `registry.json` read-modify-write (`remove_tileset`,
+    /// `set_seeding`, `update_last_served`). See `src/AGENTS.md`
+    /// §chunked-containers "atomic install".
+    write_lock: std::sync::Mutex<()>,
 }
 
 impl HexonStore {
@@ -155,7 +153,7 @@ impl HexonStore {
             .with_context(|| format!("failed to create store directory: {}", dir.display()))?;
         Ok(Self {
             base_dir: dir,
-            install_lock: std::sync::Mutex::new(()),
+            write_lock: std::sync::Mutex::new(()),
         })
     }
 
@@ -183,7 +181,7 @@ impl HexonStore {
     /// tileset with another publisher's archive or an unsealed one — every
     /// install path (P2P, registry, local) passes this one pin.
     ///
-    /// W2b F3: `install_lock` is held from the continuity check below
+    /// W2b F3: `write_lock` is held from the continuity check below
     /// through both renames and the registry update, so two installs of the
     /// SAME `hexon_id` racing on different threads (local, P2P, registry)
     /// are fully serialized, never interleaved.
@@ -203,10 +201,7 @@ impl HexonStore {
             bail!("{UNSAFE_HEXON_ID_ERROR}: {hexon_id:?}");
         }
 
-        let _install_guard = self
-            .install_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _write_guard = self.lock_writes();
 
         if let Some(installed) = self.installed_publisher(&hexon_id) {
             let incoming = match &data.integrity {
@@ -299,6 +294,7 @@ impl HexonStore {
         }
         let hexon_path = self.hexon_path(hexon_id);
         let meta_path = self.meta_path(hexon_id);
+        let _write_guard = self.lock_writes();
 
         if hexon_path.exists() {
             std::fs::remove_file(&hexon_path).with_context(|| {
@@ -364,6 +360,7 @@ impl HexonStore {
 
     /// Enable or disable P2P seeding for a tileset.
     pub fn set_seeding(&self, hexon_id: &str, enabled: bool) -> Result<()> {
+        let _write_guard = self.lock_writes();
         let mut reg = self.load_registry();
         let entry = reg
             .tilesets
@@ -376,6 +373,7 @@ impl HexonStore {
 
     /// Update the `last_served` timestamp for a tileset to now.
     pub fn update_last_served(&self, hexon_id: &str) -> Result<()> {
+        let _write_guard = self.lock_writes();
         let mut reg = self.load_registry();
         let entry = reg
             .tilesets
@@ -432,6 +430,14 @@ impl HexonStore {
             "{hexon_id}.{suffix}.tmp-{}-{nanos}",
             std::process::id()
         ))
+    }
+
+    /// Take [`Self::write_lock`] (a poisoned lock is still usable: the
+    /// guarded state is the on-disk store, not the `()` inside).
+    fn lock_writes(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.write_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn load_registry(&self) -> RegistryData {

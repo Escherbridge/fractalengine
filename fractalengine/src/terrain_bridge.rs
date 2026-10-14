@@ -753,6 +753,10 @@ pub struct StreamedTilesetState {
     advertised: HashSet<String>,
     /// tileset_ids with a `RequestTilesetMeta` in flight, and when each was sent.
     meta_requested: HashMap<String, std::time::Instant>,
+    /// tileset_ids whose meta reply is being verified off-thread (W2b
+    /// review), and when verification started: not re-requested meanwhile,
+    /// and expired like a stalled request if no verdict ever lands.
+    meta_verifying: HashMap<String, std::time::Instant>,
     /// tileset_ids whose meta resolution failed: consecutive failures and the
     /// instant before which it is not requested again (retried, never forever).
     meta_backoff: HashMap<String, (u32, std::time::Instant)>,
@@ -1040,6 +1044,17 @@ pub(crate) fn expire_stalled_requests(
         .filter(|(_, sent_at)| stalled(sent_at))
         .map(|(key, _)| key.clone())
         .collect();
+    let verifying: Vec<String> = state
+        .meta_verifying
+        .iter()
+        .filter(|(_, started_at)| stalled(started_at))
+        .map(|(id, _)| id.clone())
+        .collect();
+    for tileset_id in &verifying {
+        state.meta_verifying.remove(tileset_id);
+        let (failures, delay) = note_failure(&mut state.meta_backoff, tileset_id.clone());
+        tracing::warn!(tileset_id, failures, retry_in = ?delay, "streamed tileset meta verification never reported");
+    }
     for tileset_id in &metas {
         state.meta_requested.remove(tileset_id);
         let (failures, delay) = note_failure(&mut state.meta_backoff, tileset_id.clone());
@@ -1056,7 +1071,7 @@ pub(crate) fn expire_stalled_requests(
             "streamed bundle request timed out"
         );
     }
-    metas.len() + chunks.len()
+    metas.len() + verifying.len() + chunks.len()
 }
 
 /// Exponential backoff after `failures` consecutive failures of one bundle (capped).
@@ -1133,6 +1148,7 @@ pub fn drive_streamed_tilesets(
     // `TilesetMetaReceived` arm below, which only ever SPAWNS the check).
     if let Some(streamed_verdicts) = streamed_verdicts.as_ref() {
         while let Ok(verdict) = streamed_verdicts.rx.try_recv() {
+            state.meta_verifying.remove(&verdict.tileset_id);
             match verdict.outcome {
                 Ok(source) => {
                     state.meta_backoff.remove(&verdict.tileset_id);
@@ -1291,12 +1307,18 @@ pub fn drive_streamed_tilesets(
                     // above): installed, then TOFU. A streamed source is
                     // never itself the TOFU source of truth for this
                     // tileset_id — only an install-flow verdict records one.
-                    let pin = tileset_registry
-                        .as_ref()
-                        .and_then(|r| r.0.store().installed_publisher(&tileset_id))
-                        .or_else(|| known_publishers.0.get(&tileset_id).cloned());
+                    // The installed pin opens (and hashes) the store's
+                    // archive, so it is resolved on the worker thread too.
+                    let registry = tileset_registry.as_ref().map(|r| Arc::clone(&r.0));
+                    let known_pin = known_publishers.0.get(&tileset_id).cloned();
+                    state
+                        .meta_verifying
+                        .insert(tileset_id.clone(), std::time::Instant::now());
                     let tileset_id_for_thread = tileset_id.clone();
                     std::thread::spawn(move || {
+                        let pin = registry
+                            .and_then(|r| r.store().installed_publisher(&tileset_id_for_thread))
+                            .or(known_pin);
                         let outcome = StreamedTileSource::from_meta_json(
                             tileset_id_for_thread.clone(),
                             &meta_json,
@@ -1410,6 +1432,7 @@ pub fn drive_streamed_tilesets(
         .filter(|id| {
             state.advertised.contains(*id)
                 && !state.meta_requested.contains_key(*id)
+                && !state.meta_verifying.contains_key(*id)
                 && !state
                     .meta_backoff
                     .get(*id)
@@ -2860,42 +2883,25 @@ mod tests {
         assert!(!pending(&app), "our own reply resolves the streamed source");
     }
 
-    /// W2b F1, through the real system (not just the unit-level
-    /// `from_header_doc` check in fe-terrain): once a publisher is pinned for
-    /// a tileset_id (TOFU via `KnownTilesetPublishers`, the same pin chain the
-    /// install flow uses), a validly-signed header for the SAME tileset_id
-    /// from a DIFFERENT publisher never resolves — the drive system returns
-    /// before the worker thread's verdict lands (same frame: still pending),
-    /// and it is STILL refused once that verdict arrives.
-    #[test]
-    fn a_streamed_header_signed_by_a_publisher_other_than_the_known_pin_is_refused() {
-        let owner = ed25519_dalek::SigningKey::from_bytes(&[81u8; 32]);
-        let impostor = ed25519_dalek::SigningKey::from_bytes(&[82u8; 32]);
-        let owner_did = fe_format::verifying_key_to_did(&owner.verifying_key());
-        let tileset_id = "s7-pinned-tileset";
-        let meta_json = sealed_monolithic_header_json(&impostor, tileset_id);
-
-        let mut composite = fe_terrain::tiles::CompositeTileSource::new();
-        composite.mark_streamed_pending(tileset_id);
-        let (mut app, _cmd_rx) = streamed_app(Some(composite));
-        app.world_mut()
-            .resource_mut::<KnownTilesetPublishers>()
-            .0
-            .insert(tileset_id.to_string(), owner_did);
-        app.world_mut()
-            .resource_mut::<fe_sync::StreamedTilesetEventBuffer>()
-            .events
-            .push(fe_sync::SyncEvent::TilesetMetaReceived {
-                peer_id: String::new(),
-                tileset_id: tileset_id.to_string(),
-                meta_json,
-                total_chunks: 1,
-                approx_size_bytes: 0,
-                root_hash: "ab".repeat(32),
-                chunk_hashes: Vec::new(),
-                index_path: std::path::PathBuf::new(),
-                ad_publisher_did: String::new(),
-            });
+    /// Drive one streamed meta reply through `drive_streamed_tilesets` the way
+    /// production does — an advertisement, OUR `RequestTilesetMeta`, then the
+    /// reply (an unsolicited reply is dropped before any verification, so a
+    /// test that skips the request proves nothing). Asserts the system
+    /// returns before the worker thread's verdict and does not re-request the
+    /// uri while it verifies, then polls until the verdict is applied
+    /// (resolved, or refused into `meta_backoff`). Returns whether the uri is
+    /// still pending, i.e. whether the reply was refused.
+    fn drive_one_streamed_meta_reply(
+        app: &mut App,
+        cmd_rx: &crossbeam::channel::Receiver<fe_sync::SyncCommand>,
+        tileset_id: &str,
+        meta_json: String,
+    ) -> bool {
+        let meta_requests = |rx: &crossbeam::channel::Receiver<fe_sync::SyncCommand>| {
+            rx.try_iter()
+                .filter(|cmd| matches!(cmd, fe_sync::SyncCommand::RequestTilesetMeta { .. }))
+                .count()
+        };
         let pending = |app: &App| {
             app.world()
                 .resource::<ActiveTileSource>()
@@ -2905,29 +2911,157 @@ mod tests {
                 .pending_streamed_uris()
                 .any(|id| id == tileset_id)
         };
+        let refused = |app: &App| {
+            app.world()
+                .resource::<StreamedTilesetState>()
+                .meta_backoff
+                .contains_key(tileset_id)
+        };
+        let buffer = |app: &mut App, event| {
+            app.world_mut()
+                .resource_mut::<fe_sync::StreamedTilesetEventBuffer>()
+                .events
+                .push(event)
+        };
 
+        buffer(
+            app,
+            fe_sync::SyncEvent::PeerTilesetAdvertisement {
+                peer_id: "peer".into(),
+                advertisements_json: format!(r#"[{{"tileset_id":"{tileset_id}"}}]"#),
+            },
+        );
+        app.update();
+        assert_eq!(
+            meta_requests(cmd_rx),
+            1,
+            "the advertised uri is requested once"
+        );
+
+        buffer(
+            app,
+            fe_sync::SyncEvent::TilesetMetaReceived {
+                peer_id: String::new(),
+                tileset_id: tileset_id.to_string(),
+                meta_json,
+                total_chunks: 1,
+                approx_size_bytes: 0,
+                root_hash: "ab".repeat(32),
+                chunk_hashes: Vec::new(),
+                index_path: std::path::PathBuf::new(),
+                ad_publisher_did: String::new(),
+            },
+        );
         app.update();
         assert!(
-            pending(&app),
+            pending(app) && !refused(app),
             "the drive system must return before the worker thread's verdict lands"
+        );
+        assert_eq!(
+            meta_requests(cmd_rx),
+            0,
+            "a uri whose reply is being verified off-thread is not re-requested"
         );
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while pending(&app) && std::time::Instant::now() < deadline {
+        while pending(app) && !refused(app) && std::time::Instant::now() < deadline {
             app.update();
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert!(
-            pending(&app),
-            "an impostor's header must never resolve into a streamed source, even \
-             once the worker thread finishes verifying it"
+            !pending(app) || refused(app),
+            "the worker thread's verdict must be applied"
+        );
+        pending(app)
+    }
+
+    /// W2b F1, through the real system (not just the unit-level
+    /// `from_header_doc` check in fe-terrain): once a publisher is pinned for
+    /// a tileset_id (TOFU via `KnownTilesetPublishers`, the same pin chain the
+    /// install flow uses), a validly-signed header for the SAME tileset_id
+    /// from a DIFFERENT publisher is refused off the main thread and never
+    /// resolves into a streamed source.
+    #[test]
+    fn a_streamed_header_signed_by_a_publisher_other_than_the_known_pin_is_refused() {
+        let owner = ed25519_dalek::SigningKey::from_bytes(&[81u8; 32]);
+        let impostor = ed25519_dalek::SigningKey::from_bytes(&[82u8; 32]);
+        let owner_did = fe_format::verifying_key_to_did(&owner.verifying_key());
+        let tileset_id = "s7-pinned-tileset";
+
+        let mut composite = fe_terrain::tiles::CompositeTileSource::new();
+        composite.mark_streamed_pending(tileset_id);
+        let (mut app, cmd_rx) = streamed_app(Some(composite));
+        app.world_mut()
+            .resource_mut::<KnownTilesetPublishers>()
+            .0
+            .insert(tileset_id.to_string(), owner_did);
+
+        let still_pending = drive_one_streamed_meta_reply(
+            &mut app,
+            &cmd_rx,
+            tileset_id,
+            sealed_monolithic_header_json(&impostor, tileset_id),
+        );
+        assert!(
+            still_pending,
+            "an impostor's header must never resolve into a streamed source"
+        );
+    }
+
+    /// W2b review: the INSTALLED publisher (first in the pin chain, resolved
+    /// on the worker thread because it opens the store's archive) pins the
+    /// streamed path even with no TOFU entry — an impostor's header for an
+    /// installed tileset_id is refused, the installed publisher's own header
+    /// resolves.
+    #[test]
+    fn a_streamed_header_is_pinned_to_the_installed_publisher() {
+        let owner = ed25519_dalek::SigningKey::from_bytes(&[85u8; 32]);
+        let impostor = ed25519_dalek::SigningKey::from_bytes(&[86u8; 32]);
+        let tileset_id = "s7-installed-pin";
+        let installed = fe_format::seal(
+            &fe_format::HexonArchive::export_tileset(
+                synthetic_tileset_manifest(tileset_id),
+                synthetic_tileset(tileset_id).tileset_meta.as_ref().unwrap(),
+                &[("10/0/0".to_string(), vec![3u8; 8])],
+                &[],
+                None,
+            )
+            .expect("export unsealed archive"),
+            &owner,
+        )
+        .expect("seal archive");
+        let (_store_tmp, tileset_registry) = fresh_tileset_registry();
+        tileset_registry
+            .store()
+            .install_tileset(&installed)
+            .expect("install the owner's archive");
+        let tileset_registry = std::sync::Arc::new(tileset_registry);
+
+        let run = |key: &ed25519_dalek::SigningKey| {
+            let mut composite = fe_terrain::tiles::CompositeTileSource::new();
+            composite.mark_streamed_pending(tileset_id);
+            let (mut app, cmd_rx) = streamed_app(Some(composite));
+            app.insert_resource(SharedTilesetRegistry(tileset_registry.clone()));
+            drive_one_streamed_meta_reply(
+                &mut app,
+                &cmd_rx,
+                tileset_id,
+                sealed_monolithic_header_json(key, tileset_id),
+            )
+        };
+        assert!(
+            run(&impostor),
+            "an impostor's header must be refused against the installed publisher"
+        );
+        assert!(
+            !run(&owner),
+            "the installed publisher's own header resolves into a streamed source"
         );
     }
 
     /// W2b F1, through the real system: once a sealed publisher is pinned for
     /// a tileset_id, an unsealed (legacy plain-index) meta reply for the SAME
-    /// id is refused — it never resolves, and the drive system returns before
-    /// the worker thread's verdict lands.
+    /// id is refused off the main thread and never resolves.
     #[test]
     fn an_unsealed_streamed_meta_is_refused_once_a_sealed_publisher_is_known() {
         let owner = ed25519_dalek::SigningKey::from_bytes(&[84u8; 32]);
@@ -2942,48 +3076,16 @@ mod tests {
 
         let mut composite = fe_terrain::tiles::CompositeTileSource::new();
         composite.mark_streamed_pending(tileset_id);
-        let (mut app, _cmd_rx) = streamed_app(Some(composite));
+        let (mut app, cmd_rx) = streamed_app(Some(composite));
         app.world_mut()
             .resource_mut::<KnownTilesetPublishers>()
             .0
             .insert(tileset_id.to_string(), owner_did);
-        app.world_mut()
-            .resource_mut::<fe_sync::StreamedTilesetEventBuffer>()
-            .events
-            .push(fe_sync::SyncEvent::TilesetMetaReceived {
-                peer_id: String::new(),
-                tileset_id: tileset_id.to_string(),
-                meta_json: unsealed_meta_json,
-                total_chunks: 1,
-                approx_size_bytes: 0,
-                root_hash: "ab".repeat(32),
-                chunk_hashes: Vec::new(),
-                index_path: std::path::PathBuf::new(),
-                ad_publisher_did: String::new(),
-            });
-        let pending = |app: &App| {
-            app.world()
-                .resource::<ActiveTileSource>()
-                .composite
-                .as_ref()
-                .expect("composite")
-                .pending_streamed_uris()
-                .any(|id| id == tileset_id)
-        };
 
-        app.update();
+        let still_pending =
+            drive_one_streamed_meta_reply(&mut app, &cmd_rx, tileset_id, unsealed_meta_json);
         assert!(
-            pending(&app),
-            "the drive system must return before the worker thread's verdict lands"
-        );
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while pending(&app) && std::time::Instant::now() < deadline {
-            app.update();
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(
-            pending(&app),
+            still_pending,
             "an unsealed reply must never resolve into a streamed source once a \
              sealed publisher pin is known"
         );

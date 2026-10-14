@@ -686,10 +686,20 @@ fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
     carries the outcome back, applied by `drive_streamed_tilesets` itself at
     the top of its next invocation — re-checking "still pending" at apply
     time, since the petal may have changed while verification ran off-thread.
+    The installed pin itself is resolved ON the worker thread too
+    (`installed_publisher` opens and hashes the store's archive); only the
+    TOFU map lookup happens on the main thread. While a reply verifies, its
+    uri sits in `state.meta_verifying` and is not re-requested (otherwise the
+    request loop at the end of the same frame re-sent `RequestTilesetMeta`
+    every frame until the verdict landed); a verification that never reports
+    expires into the backoff like a stalled request (W2b review).
     Tests: `a_streamed_header_signed_by_a_publisher_other_than_the_known_pin_is_refused`,
+    `a_streamed_header_is_pinned_to_the_installed_publisher`,
     `an_unsealed_streamed_meta_is_refused_once_a_sealed_publisher_is_known`
-    (both assert the system returns before the verdict AND that an impostor/
-    unsealed reply never resolves, even once the worker thread finishes). A
+    (all driven through advertisement → OUR request → reply, since an
+    unsolicited reply is dropped before verification; each asserts the
+    system returns before the verdict, no re-request while verifying, and
+    the refusal lands in `meta_backoff`). A
     failed meta resolution backs off (`state.meta_backoff`, same 2 s→120 s
     curve) and is retried, never parked forever. It hands each
     `ChunkReceived` THIS NODE requested (`state.chunk_requested`) to a

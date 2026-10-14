@@ -328,6 +328,77 @@ fn concurrent_installs_of_one_id_by_two_publishers_leave_exactly_one_winner() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// W2b review: an install (now on a worker thread for local files too, F2)
+/// racing the Hexon Manager's main-thread `set_seeding` — both
+/// read-modify-write `registry.json` — loses neither update: every seeding
+/// flag set during the installs survives, and every install is listed.
+/// Without the shared store lock an install's stale registry snapshot
+/// overwrites a concurrent seeding change (or the two collide on the one
+/// `registry.json.tmp`).
+#[test]
+fn installs_racing_seeding_toggles_lose_no_registry_update() {
+    const SEEDED: usize = 48;
+    const RACING_INSTALLS: usize = 12;
+    let (store, dir) = temp_store();
+    let store = std::sync::Arc::new(store);
+    for i in 0..SEEDED {
+        store
+            .install_tileset(&tileset_bytes(
+                &format!("seeded-{i}"),
+                &[("10/0/0".into(), vec![i as u8; 16])],
+            ))
+            .expect("pre-install");
+    }
+    let racing: Vec<Vec<u8>> = (0..RACING_INSTALLS)
+        .map(|i| {
+            tileset_bytes(
+                &format!("racing-{i}"),
+                &[("10/0/0".into(), vec![i as u8; 16])],
+            )
+        })
+        .collect();
+
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let seeder = {
+        let store = store.clone();
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            barrier.wait();
+            for i in 0..SEEDED {
+                store
+                    .set_seeding(&format!("seeded-{i}"), true)
+                    .expect("set_seeding");
+            }
+        })
+    };
+    let installer = {
+        let store = store.clone();
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            barrier.wait();
+            for bytes in &racing {
+                store.install_tileset(bytes).expect("racing install");
+            }
+        })
+    };
+    seeder.join().expect("seeder panicked");
+    installer.join().expect("installer panicked");
+
+    let listed = store.list_installed();
+    assert_eq!(listed.len(), SEEDED + RACING_INSTALLS, "{listed:#?}");
+    let unseeded: Vec<_> = listed
+        .iter()
+        .filter(|t| t.hexon_id.starts_with("seeded-") && !t.seeding_enabled)
+        .map(|t| t.hexon_id.as_str())
+        .collect();
+    assert!(
+        unseeded.is_empty(),
+        "seeding updates lost to a concurrent install: {unseeded:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // Chunked containers
 // ---------------------------------------------------------------------------

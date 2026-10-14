@@ -794,14 +794,20 @@ camera can see.
   of the old `Arc` is not refreshed — the next assignment picks up the
   registry's fresh source.
 - **Install is also serialized and durably synced (W2b F3, 2026-10-14).**
-  `HexonStore::install_lock` (a per-store `Mutex<()>`) is held from the
+  `HexonStore::write_lock` (a per-store `Mutex<()>`) is held from the
   publisher-continuity check through both renames and the registry-entry
   update, so two installs of the SAME `hexon_id` racing on different threads
   (local file, P2P assemble, registry fetch) are fully serialized — the
   second always sees the first's completed result at its continuity check,
   never a stale "nothing installed yet" read interleaved with the first's
   write (mirrors the registry's own `publish_lock`, `fe-hexon-registry/AGENTS.md`
-  "Publish validation" step 3). `write_synced_and_rename` also
+  "Publish validation" step 3). The same lock guards every other
+  `registry.json` read-modify-write (`remove_tileset`, `set_seeding`,
+  `update_last_served`): installs run on worker threads while the Hexon
+  Manager's remove/seeding toggles run on the main thread, and an
+  unserialized install would write back a stale registry snapshot (losing
+  the toggle) or collide on the one `registry.json.tmp` (W2b review; test
+  `installs_racing_seeding_toggles_lose_no_registry_update`). `write_synced_and_rename` also
   `File::create`s + `write_all`s + `sync_all`s the temp file BEFORE each
   rename (the old `std::fs::write` had no fsync), and `install_tileset`
   fsyncs the store directory itself once after both renames (POSIX-only; a

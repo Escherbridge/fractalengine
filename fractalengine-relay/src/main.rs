@@ -746,14 +746,18 @@ mod tests {
                 "/var/fractalengine/data/db.kv",
                 Some("/var/fractalengine/data/blobs"),
             ),
-            (
-                r"C:\fractalengine\data\db.kv",
-                Some(r"C:\fractalengine\data\blobs"),
-            ),
             ("db.kv", None),
             ("", None),
         ];
-        for (db_path, want) in cases {
+        // A backslash is only a separator on Windows (CI's Lint/test jobs run Linux).
+        let mut cases = cases.to_vec();
+        if cfg!(windows) {
+            cases.push((
+                r"C:\fractalengine\data\db.kv",
+                Some(r"C:\fractalengine\data\blobs"),
+            ));
+        }
+        for (db_path, want) in &cases {
             let got = derive_blob_dir_from_db_path(db_path);
             assert_eq!(got.as_deref(), want.map(Path::new), "db_path={db_path:?}");
         }
