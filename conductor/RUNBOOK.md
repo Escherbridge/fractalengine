@@ -141,6 +141,7 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 | W0d `558197c` | review-and-fix + packaged re-smoke | 1M (3L residual 5: reader read-only convention needs guarded newtype pre-A3) | FIXED |
 | Planning swarm (5 plans) | cross-check critic edits | 29–37 plan edits (collisions, ordering, security slices) | AMENDED |
 | W1 PAS-P3P4 `53a4c4c..069f8ea` | per-slice gates + S8b security + final review-and-fix | S8b: 3H(2 mandatory) 7M 1L; final: 3H 5M 2L; relay smoke PASS | FIXED (tests at final sweep) |
+| W2 PAS-P5 `4865a54..e7762d9` | per-slice gates (feature matrix) + S8 security + final review-and-fix | S8: 3H(1 mandatory) 5M 2L; final: 1H 3M 2L | FIXED (tests at final sweep) |
 | Critic tick 1 | accountability critic | 2H 3M 3L (R7 not in plan bodies; push gate) | DRIFTING → all ACCEPTED |
 | Critic tick 2 (pre-push) | accountability critic | 1H 2M 2L (AC-9 packaged binary never launched; AC-10 MCP upload_asset gate gap; AC-11 stale QUICKSTART wording; AC-12/AC-13 ledger + KTX2-test residuals) | ON_TRACK → all ACCEPTED |
 | Critic tick 3 (W1 launch) | accountability critic | 4M 1L (AC-14 push-freeze until CI run concludes; AC-15 relay `main()` never smoke-tested; AC-16 S9 ledger-edit scope override; AC-17 per-slice gate coverage; AC-18 stale docs/manifest) | ON_TRACK → all ACCEPTED |

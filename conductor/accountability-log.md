@@ -150,3 +150,19 @@ both mandatory S8b findings fixed AND regression-tested (`sync_thread.rs:2188` +
 (`fe-format/src/partial.rs:85-124`) returns `uri`/`layout`/`archive_size` from the unauthenticated doc;
 sealed Container chunk_count IS checked, but uri substitution, Monolithic-downgrade and unauthenticated
 size remain. **Routed into W2 S8 as a mandatory fix + tests** (P5 plan S8 section) — S3 is building.
+
+### W2 close — 2026-10-14
+- **W2 PAS-P5 DONE** (`4865a54..e7762d9`, 17 commits, 11 agents, ~5.4 h). Every slice `gate_green`
+  incl. the AC-19 feature matrix (S1b surfaced + fixed pre-existing feature-gated clippy failures).
+- **S8 `d21a957` FIXED**: mandatory VerifiedHeader binding verified in code (`doc.uri` must equal the
+  signed `hexon_id@version` → `Substituted`; layout derived from signed coverage; `archive_size` removed)
+  + HIGH pin provenance after restart + HIGH no store-side publisher continuity + 5 MED + 2 L.
+- **Final review `e7762d9` FIXED**: HIGH late streamed meta reply auto-installed + 3 MED + 2 L.
+- **Open residuals (to critic tick 5 for disposition):** (1) production P2P download path does not go
+  through FetchStrategy/P2pPartialFetch (only the header check is shared) — A7 "same conformance suite"
+  acceptance gap; (2) `HexonOp::Install` (local file) runs on the Bevy main thread, now heavier with seal
+  verification; (3) streamed path verifies on the main thread with `RequireSealed{pin:None}` (display-only);
+  (4) narrow first-contact TOFU race (store-side continuity backs it); (5) relay `FE_DB_PATH` alone does not
+  move the blob dir; (6) orchestrator: `install_tileset` temp+rename has no `sync_all` before rename;
+  (7) S7b: no bearer-token auth for hosted registry fetch.
+- W2 must-cover appended to `conductor/final-sweep-manifest.md`.

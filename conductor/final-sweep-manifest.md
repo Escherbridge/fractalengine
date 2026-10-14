@@ -173,3 +173,115 @@ Generated 2026-10-14 from the W1 journal (`wf_d8699636-cf0`). Base `53a4c4c` →
 - [ ] Packaged binaries (GUI + relay) launch and connect cleanly
 - [ ] Campaign final sweep complete → ready to push
 
+## W2 PAS-P5 (`4865a54..e7762d9`)
+
+Generated 2026-10-14 from the W2 journal (`wf_4e779cc6-58c`).
+
+**S1 (`db5883b`) — tests written (6):**
+- fe-format/tests/integrity_flow.rs::sealed_tileset_verifies_and_names_its_publisher: export_tileset, then seal, then verify_archive under RequireSealed (with and without pin) and under VerifyIfSealed. Expects Sealed{did} 
+- fe-format/tests/integrity_flow.rs::tampering_is_refused_per_class: one table-driven test with 10 rows, each asserting an exact IntegrityError. A flipped byte in a tile, entries.json, tileset_meta.json, members.json or an
+- fe-format/tests/integrity_flow.rs::legacy_unsealed_archive_passes_verify_if_sealed_and_fails_require_sealed: also checks that the legacy archive still imports.
+- fe-format/tests/integrity_flow.rs::sealing_preserves_every_member_byte: import(seal(x)) equals import(x) for tiles, satellite tiles, assets, meta and entries. Every non-manifest member keeps its CRC-32, compressed size a
+- fe-format/tests/integrity_flow.rs::container_chunk_table_is_bound_to_its_chunk_members: a 3-chunk container of sealed chunks plus chunks/index.json (TilesetBundleIndex) verifies. Swapping chunk 1 for chunk 0 gives Digest
+- fe-format/src/integrity.rs::tests::seal_enforces_asset_hash_and_verifies_a_self_certifying_asset: a model whose asset is named by its blake3 seals and verifies. A model whose catalogued asset_hash does not match the blob
+
+**S1b (`44bc4e9`) — tests written (4):**
+- fe-sync/src/blob_store.rs: default_path_under_data_dir_with_no_override, default_path_honors_fe_blob_dir_override, legacy_default_path_under_data_local_dir (ENV_GUARD-serialized)
+- fe-hexon/src/registry.rs: default_path_under_data_dir_with_no_override, default_path_honors_fe_blob_dir_override (ENV_GUARD-serialized)
+- fe-test-harness/tests/blob_store_cross_read.rs: default_path_agrees_between_fe_sync_and_fe_hexon (plan invariant: the two duplicated default_path() impls never re-diverge)
+- fe-database/src/handlers/blob_migration.rs: migration_copies_referenced_blobs_once (plan flow test 'migration copies referenced blobs once', incl. legacy source untouched after two calls), two_installs_sharing_the_old_st
+
+**S2 (`cbbd806`) — tests written (9):**
+- fe-format/src/archive_index.rs :: header_phase_reads_no_tile_bytes
+- fe-format/src/archive_index.rs :: lazy_member_read_refuses_only_the_tampered_member
+- fe-format/src/archive_index.rs :: chunked_container_roundtrips_and_each_chunk_matches_its_signed_hash
+- fe-format/src/archive.rs (import_integrity_tests) :: legacy_unsealed_archive_imports_as_unsealed
+- fe-format/src/archive.rs (import_integrity_tests) :: sealed_archive_imports_and_reports_its_publisher
+- fe-format/src/archive.rs (import_integrity_tests) :: tampered_sealed_archive_is_refused_at_import
+- fe-format/src/partial.rs :: a_sealed_monolithic_header_verifies_under_its_publisher
+- fe-format/src/partial.rs :: a_pin_mismatch_is_refused
+- fe-format/src/partial.rs :: a_tampered_manifest_text_fails_signature_verification
+
+**S3 (`36866aa`) — tests written (7):**
+- publish_outcomes (table: sealed->200+searchable, unsigned->400, asset_hash!=blob->400 via post-seal tamper, same hexon_id different verified publisher->409, rejected version never written/indexed)
+- meta_route_header_verifies_client_side_without_tile_bytes (4MiB+ tileset, meta response <64KiB, verify_header succeeds with no archive bytes)
+- chunk_route_serves_bytes_matching_the_signed_index (3-chunk container: each chunk's blake3 matches the signed chunks/index.json digest + imports standalone; out-of-range seq->404; monolithic seq=0 is the whole file byte-
+- member_route_refuses_names_not_in_the_archive (real member round-trips; traversal/absolute-looking/nonexistent paths all 404)
+- an_html_member_is_served_as_an_octet_stream_attachment_with_nosniff (critic addition)
+- entry_cap_picks_json_vs_binary (limits.rs unit test)
+- drain_entry_capped_charges_the_budget_and_refuses_over_cap (limits.rs unit test)
+
+**S4 (`3294210`) — tests written (5):**
+- fe-hexon/tests/partial_fetch_http.rs::http_source_passes_conformance: an in-process registry on an ephemeral port serves the three sealed fixtures, and conformance::run through RemoteRegistryClient must pass every case. 
+- fe-hexon/tests/partial_fetch_http.rs::strategy_falls_back_from_a_tampering_source_to_an_honest_one: two real registries; one holds a tileset with one tile tampered after sealing. Its header is honest, but its whole archi
+- fe-hexon/src/registry.rs::legacy_install_refuses_missing_or_mismatched_blob: a table over missing and mismatched blobs. Asserts the exact error, that nothing is listed as installed, and that no blob was written to the st
+- fe-hexon/src/p2p/fetch.rs::pacing_delay_table: pure function over (bytes, rate, elapsed) to delay. Covers uncapped, zero rate, owed, partially owed, already slow enough, and overflow saturation.
+- fe-hexon/src/p2p/fetch.rs::served_headers_are_bound_to_the_requested_uri_and_signed_layout: a table over a real sealed container header. Bare and versioned uri are accepted; another id and another version are refused as 
+
+**S6 (`e86ec55`) — tests written (10):**
+- fe-terrain/tests/hexon_integrity_flow.rs::tampered_sealed_tileset_install_is_refused_and_store_is_unchanged
+- fe-terrain/tests/hexon_integrity_flow.rs::install_refuses_path_escaping_hexon_ids (table: ../x, a/b, a\\b, C:x, .., empty)
+- fe-terrain/tests/hexon_integrity_flow.rs::legacy_unsealed_tileset_installs_flagged_unverified
+- fe-terrain/tests/hexon_integrity_flow.rs::reinstall_keeps_an_older_readers_cached_bytes_and_new_opens_see_the_new_file
+- fe-terrain/tests/hexon_integrity_flow.rs::chunked_container_install_serves_tiles_from_every_chunk
+- fe-terrain/tests/hexon_integrity_flow.rs::assembled_p2p_download_installs_as_a_reseedable_sealed_container
+- fe-terrain/src/tiles/hexon_source.rs::container_backed_source_serves_tiles_from_every_chunk
+- fe-terrain/src/tiles/hexon_source.rs::container_backed_source_serves_baked_splats
+- fe-terrain/src/tiles/composite.rs::add_hexon_source_refuses_past_the_cap
+- fe-terrain/src/tiles/builder.rs::package_tiles_chunked_produces_a_container_that_verifies_sealed (fetch-feature-gated)
+
+**S5 (`391eefd`) — tests written (10):**
+- fe-hexon/tests/partial_fetch_p2p.rs::in_memory_p2p_source_passes_conformance: the A7 proof. It runs the same conformance::run as HTTP, publishing via publish_to_transport over InMemoryNetwork, and asserts the case names 
+- fe-hexon/tests/partial_fetch_p2p.rs::poisoned_peer_store_is_refused: the transport itself returns Integrity for forged chunk bytes. With [poisoned, honest] sources, the strategy returns the honest bytes and the poisoned 
+- fe-hexon/tests/partial_fetch_p2p.rs::iroh_loopback_fetches_one_chunk_without_the_rest: two real endpoints and DocsStacks over IrohBlobTransport. It fetches the header plus chunk 1 of the 3-chunk sealed container, then ch
+- fe-hexon/tests/partial_fetch_p2p.rs::a_sealed_container_is_reseeded_from_its_signed_chunks_without_rebundling: install, then bundle_for_seeding, then TilesetTransfer::publish_files. Children[1..] must equal the signed ch
+- fe-hexon/tests/partial_fetch_p2p.rs::a_sealed_seed_downloads_installs_sealed_and_streams_checked_bundles: a sealed seed is downloaded through the real P3 transfer. The streamed source's BundleCheck passes the real bundle
+- fe-sync/src/event_outbox.rs::a_burst_from_spawned_tasks_never_blocks_the_loop_and_loses_nothing: 300 spawned tasks emit into a full bounded(256) channel. The loop still serves its shutdown channel, and all 300 events arr
+- fe-sync/src/event_outbox.rs::advisory_events_coalesce_while_state_events_queue: a newer relay health replaces the queued one in place, a repeated ad is dropped, both are counted, and state events keep their order.
+- fe-sync/src/sync_thread.rs::a_command_burst_past_the_event_capacity_never_stalls_the_loop: the real spawn_sync_thread_with_transport with a virtual transport. 600 RequestChunk commands plus Shutdown go through a bounded(
+- fractalengine/src/terrain_bridge.rs::a_never_answered_request_frees_its_slot_after_the_timeout_and_retries: driven through the real streamed systems. A meta request and a chunk request go out and hold their slots. expire
+- fe-sync/tests/tileset_transfer_test.rs::streamed_caches_past_the_disk_budget_evict_least_recently_used_first: the least-recently-used cache (mid) is evicted after old is re-read. An in-progress full download is never evi
+
+**S7a (`a2147bb`) — tests written (12):**
+- fe-sync/tests/tileset_transfer_test.rs::an_unconfirmed_download_never_fetches_a_chunk_even_across_a_restart
+- fe-sync/tests/tileset_transfer_test.rs::a_confirmation_disagreeing_with_the_resolved_hashseq_is_refused
+- fe-sync/tests/tileset_transfer_test.rs::a_published_tileset_downloads_verified_and_complete (extended: asserts AwaitingConfirmation before confirm)
+- fe-sync/tests/tileset_transfer_test.rs::a_download_over_its_total_byte_cap_stops_without_completing (extended: confirms before download)
+- fe-sync/src/sync_thread.rs::provider_map_prefers_authenticated_roots_and_ignores_relayed_claims_about_them (extended: asserts the TOFU pin candidate is the SAME chosen entry's publisher_did, never a different entry's)
+- fe-sync/src/sync_thread.rs::tileset_ad_codec_and_authentication_table (extended: an older peer's wire frame with no publisher_did field still decodes, defaulting to empty)
+- fractalengine/src/terrain_bridge.rs::seeder_with_an_unsigned_chunk_index_is_refused_before_any_chunk_request
+- fractalengine/src/terrain_bridge.rs::chunk_not_in_the_signed_index_never_reaches_install
+- fractalengine/src/terrain_bridge.rs::a_header_signed_by_a_publisher_other_than_the_pinned_one_is_refused
+- fractalengine/src/terrain_bridge.rs::first_contact_tofu_pins_the_publisher_then_refuses_an_impostor
+- fe-ui/src/terrain_map/events.rs::closing_the_hexon_manager_does_not_stall_a_download (extended: asserts Verifying before the first chunk, Downloading after)
+- fe-test-harness two_peer_tileset_stream::run (extended: drives the real two-phase gate over loopback, confirm step added before awaiting TilesetDownloadComplete)
+
+**S7b (`b56b877`) — tests written (3):**
+- fractalengine/src/terrain_bridge.rs: install_from_registry_installs_a_sealed_container_end_to_end -- real in-process fe-hexon-registry (own OS thread + tokio runtime) serves a sealed 3-chunk container; queues HexonOp::In
+- fractalengine/src/terrain_bridge.rs: install_from_registry_refuses_a_tampered_source_and_installs_nothing -- a sealed monolithic archive whose header verifies but whose tile bytes were flipped post-seal (same attack shap
+- fe-ui/src/settings.rs: hexon_registry_url_resolve_precedence_table (env-wins/settings-fallback/blank-is-absent, 6 cases) + two new sanitize-table rows (blank->None, real URL gets trimmed) + hexon_registry_url added to sa
+
+**S8 security review-and-fix (`d21a957`) — must cover:**
+- cargo test --workspace (all PAS-P5 S1-S8 deferred tests)
+- cargo test -p fe-hexon --all-features: http_source_passes_conformance and in_memory_p2p_source_passes_conformance must appear by name; also served_headers_are_bound_to_the_requested_uri_and_signed_layout
+- cargo test -p fe-format: a_signed_header_served_under_another_uri_is_refused, a_layout_claim_that_contradicts_the_signed_chunk_index_is_refused, archive_size_is_advisory_and_never_reaches_the_verified_header, an_uncommitted_header_member_in_a_sealed_doc_is_ref
+- cargo test -p fe-terrain --features fetch,render: a_sealed_install_is_never_replaced_by_another_publisher_or_an_unsealed_archive (tests/hexon_integrity_flow.rs), container_splat_reads_are_bounded_by_the_streamed_bundle_budget
+- cargo test -p fe-hexon-registry: concurrent_publishes_of_one_id_admit_exactly_one_publisher, a_hostile_member_name_cannot_shape_the_content_disposition_header, publish_outcomes, an_html_member_is_served_as_an_octet_stream_attachment_with_nosniff
+- cargo test -p fractalengine (bin): a_header_signed_for_another_tileset_is_refused_and_pins_nothing, an_installed_tileset_pins_its_publisher_over_the_advertisers_hint, install_from_registry_stops_a_container_past_its_byte_budget, first_contact_tofu_pins_the_pub
+- cargo test -p fe-database blob_migration: a_crash_mid_migration_is_retried_without_loss_or_legacy_writes, a_corrupt_legacy_blob_is_not_copied, a_new_store_at_the_legacy_path_writes_nothing_into_it
+- cargo test -p fe-sync (lib + tests/tileset_transfer_test.rs: confirm gate, resume_all skips unconfirmed)
+- fe-test-harness two_peer_tileset_stream scenario
+
+**Final review-and-fix (`e7762d9`) — must cover:**
+- env CARGO_PROFILE_DEV_DEBUG=0 RUST_MIN_STACK=134217728 cargo test -j4 --workspace (all PAS-P5 S1-S8 + final-review deferred tests)
+- cargo test -j4 -p fe-hexon --all-features — output must name http_source_passes_conformance and in_memory_p2p_source_passes_conformance (C10 non-vacuous), plus the_locator_stays_bounded_under_an_advertisement_storm, strategy_falls_back_from_a_tampering_source_
+- cargo test -j4 -p fe-sync --test tileset_transfer_test — a_streamed_cache_is_never_confirmed_into_a_full_download, an_unconfirmed_download_never_fetches_a_chunk_even_across_a_restart, a_confirmation_disagreeing_with_the_resolved_hashseq_is_refused
+- cargo test -j4 -p fe-sync --lib — an_unconfirmed_full_download_is_discarded_at_startup_never_installed, the_startup_pass_reports_downloads_and_hands_back_completed_ones, event_outbox tests (a_burst_from_spawned_tasks_never_blocks_the_loop_and_loses_nothing, ad
+- cargo test -j4 -p fractalengine (bin) — install_flow_replies_are_verified_off_thread_and_untracked_ones_ignored, only_a_requested_meta_reply_becomes_a_streamed_source, a_never_answered_request_frees_its_slot_after_the_timeout_and_retries, first_contact_tofu_pi
+- cargo test -j4 -p fe-ui terrain_map — closing_the_hexon_manager_does_not_stall_a_download plus the settings hexon_registry_url tables
+- cargo test -j4 -p fe-database blob_migration asset_gc — migration_copies_referenced_blobs_once, two-DB GC test, a_crash_mid_migration_is_retried_without_loss_or_legacy_writes, a_corrupt_legacy_blob_is_not_copied, a_new_store_at_the_legacy_path_writes_nothing_i
+- cargo test -j4 -p fe-format (incl. tests/integrity_flow.rs and the S8 verify_header binding tests)
+- cargo test -j4 -p fe-terrain --features fetch,render (tests/hexon_integrity_flow.rs, container_splat_reads_are_bounded_by_the_streamed_bundle_budget)
+- cargo test -j4 -p fe-hexon-registry (publish_outcomes, concurrent_publishes_of_one_id_admit_exactly_one_publisher, nosniff/attachment route tests)
+- cargo test -j4 -p fractalengine-test-harness: two_peer_tileset_stream scenario and tests/blob_store_cross_read.rs
+
