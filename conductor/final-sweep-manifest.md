@@ -165,7 +165,7 @@ Generated 2026-10-14 from the W1 journal (`wf_d8699636-cf0`). Base `53a4c4c` →
 ## Signoff checklist
 
 - [ ] All core suite steps executed and passing
-- [ ] Feature-matrix gate green (fe-terrain fetch+render, fe-hexon all-features, fe-format no-default-features) and the A7 conformance tests confirmed present by name in the output (AC-19)
+- [ ] Feature-matrix gate green (fe-terrain fetch+render, fe-hexon all-features, fe-format no-default-features) and the A7 conformance tests confirmed present by name in the output (AC-19): `http_source_passes_conformance`, `in_memory_p2p_source_passes_conformance`, and the production P2P carrier `a_sealed_container_is_reseeded_from_its_signed_chunks_without_rebundling` (root equality, `fe-hexon/tests/partial_fetch_p2p.rs:316-319`) — critic tick 5, AC-23
 - [ ] W0/W0b/W0c/W0d must-cover lists reconciled and verified
 - [ ] W1 PAS-P3P4 must-cover list appended and verified
 - [ ] Zero test failures across all scopes
@@ -284,4 +284,14 @@ Generated 2026-10-14 from the W2 journal (`wf_4e779cc6-58c`).
 - cargo test -j4 -p fe-terrain --features fetch,render (tests/hexon_integrity_flow.rs, container_splat_reads_are_bounded_by_the_streamed_bundle_budget)
 - cargo test -j4 -p fe-hexon-registry (publish_outcomes, concurrent_publishes_of_one_id_admit_exactly_one_publisher, nosniff/attachment route tests)
 - cargo test -j4 -p fractalengine-test-harness: two_peer_tileset_stream scenario and tests/blob_store_cross_read.rs
+
+## W3 CDL-W4 (append at W3 close)
+
+*Reserved by critic tick 5 (2026-10-14, `.omc/accountability/tick-20261014-0722.md` AC-26): the
+orchestrator appends W3's must-cover list here at W3 close — per-slice named tests from
+`campaign-plan-w4-20261013.md` (W4-1..W4-9), `cross_spec_integration.rs`, the five fe-database
+test binaries, the fe-sdk `legacy_identifier_is_stable_and_collision_free_across_tables` test,
+`node --test docs/spec/canonical-log/operation-envelope-v1.test.mjs`, and
+`cargo run -p fractalengine-test-harness` 16/16 ×2 — to run ONCE at the campaign final sweep,
+per the W4 plan's §1 "W3 close gate" amendment.*
 

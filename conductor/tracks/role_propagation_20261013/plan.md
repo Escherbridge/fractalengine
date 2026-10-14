@@ -1278,3 +1278,11 @@ sequencing (D-32 FR-4 "after role propagation").
 | C9 | The blob-ALPN request filter (`fe-sync/src/AGENTS.md` §tileset-security "Risk 2") was deferred at W1 S8b with an explicit revisit trigger ("when RP replicates roles …"). This section's own "Corrected cross-cut" paragraph above called it only "an option, not a dependency," so the trigger could never fire. **RP-5** is now scheduled as the moment it fires (§3 RP-5 step 6, owned-file bullets, and flow test above), tied to the role view RP-5 already builds. | scheduled deliverable, previously unreachable (AC-21(e)) |
 
 Both logged against `.omc/accountability/tick-20261014-0149.md` AC-21(d) and AC-21(e).
+
+### Tick 5 (2026-10-14) — source: critic tick 5
+
+| # | Change | Class |
+|---|---|---|
+| C10 | New slice, scheduled after RP-4: **STREAMED-TERRAIN-PIN** (AC-24 residual (3) / AC-23(a), `.omc/accountability/tick-20261014-0722.md`). Owned files: `fe-terrain/src/tiles/streamed.rs` (`from_header_doc` pin threading only — the worker-thread move itself is W2b F1, which this slice builds on), `fe-terrain/src/config.rs` (`TerrainConfig`), `fe-ui/src/plugin.rs::tileset_to_terrain_json`, fe-api terrain validation (DEC-C22 strictest reader). W2b F1 moves streamed-meta verification off the main thread and pins to a locally installed publisher; this slice supplies the remaining pin source — a publisher DID carried in the Editor-authored petal terrain row — which needs RP-4's Editor+ gate on `set_petal_terrain_handler` (§3 RP-4 step 7) to be trustworthy before a streamed (never-installed) tileset can pin to it. Named test: `a_streamed_tileset_signed_by_a_publisher_other_than_the_petal_maps_pin_is_refused`. | scheduled deliverable (depends on RP-4) |
+
+Logged against `.omc/accountability/tick-20261014-0722.md` AC-24 residual (3) and AC-23(a).

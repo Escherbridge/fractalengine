@@ -24,10 +24,15 @@ supersedes_brief: workstream-g-plan.json waves[3] W4-integration (brief written 
 # CDL Wave 4 — serial integration campaign plan
 
 Planner output, 2026-10-13. Read-only recon at HEAD `877e801`; no cargo was run. Every claim
-below cites the file:line it was checked against. Slices run **strictly sequentially**; each
-executor runs `cargo check` + `cargo clippy -D warnings` on its own crates only. Tests are
-**written** in each slice and **run once** at campaign end (user standing rule, RUNBOOK §3
-"Working rules").
+below cites the file:line it was checked against. Slices run **strictly sequentially**; ~~each
+executor runs `cargo check` + `cargo clippy -D warnings` on its own crates only.~~ **Amended
+2026-10-14 (critic tick 5, §9 C6): each executor runs the AC-17 workspace triple** —
+`cargo check -j4 --workspace --tests`; `cargo +1.99.0 clippy -j4 --workspace --all-targets
+--keep-going -- -D warnings`; `cargo +1.99.0 fmt --all -- --check` — **+ `gate_green` halt on
+any failure**, not a per-crate gate (W4-8's new `DbCommand`/`DbResult` variants and exhaustive
+matches ripple across fe-runtime/fe-database/fe-test-harness, so a per-crate gate would miss
+the ripple). Tests are **written** in each slice and **run once** at campaign end (user standing
+rule, RUNBOOK §3 "Working rules"); see §9 C6 for the corrected gate split.
 
 ## 1. Goal and acceptance
 
@@ -48,12 +53,23 @@ CANON-DUAL-EMIT.
 | Track spec hard limits (`spec.md` "Status and boundary") + task hard limits | canonical-log network exposure stays NO_GO: no `/ws/canonical` mount, no relay seeding, no inbound P2P on the canonical path; CANON-DUAL-EMIT stays unwired; CDL-ROTATION-ASSEMBLY stays unscheduled |
 | Track `spec.md` "Required outcomes" | one serial integrated workspace test/lint/format sweep passes |
 
-**Campaign-end gate (run once, after slice 9):** `cargo test --workspace`;
+~~**Campaign-end gate (run once, after slice 9):** `cargo test --workspace`;
 `cargo +1.99.0 clippy --workspace --all-targets --keep-going -- -D warnings`;
 `cargo fmt --check -p <touched crates>`; `node --test docs/spec/canonical-log/operation-envelope-v1.test.mjs`;
 `cargo run -p fractalengine-test-harness` (enrolment rows ride the real row path); greps:
 `build_router_with_canonical_log` has zero non-`#[cfg(test)]` callers outside `fe-api/src/canonical_ws/`,
-`commit_operation_dual_emit` has zero callers under `fe-database/src/handlers/`.
+`commit_operation_dual_emit` has zero callers under `fe-database/src/handlers/`.~~
+
+**W3 close gate (amended 2026-10-14, critic tick 5, §9 C6):** W3 (this plan's own close) runs
+only the two non-cargo greps — `build_router_with_canonical_log` has zero non-`#[cfg(test)]`
+callers outside `fe-api/src/canonical_ws/`; `commit_operation_dual_emit` has zero callers under
+`fe-database/src/handlers/`. Every named test in this plan (per-slice flow tests,
+`cross_spec_integration.rs`, the five fe-database test binaries, `node --test
+docs/spec/canonical-log/operation-envelope-v1.test.mjs`, `cargo run -p
+fractalengine-test-harness` 16/16 ×2) is recorded in `final-sweep-manifest.md` §"W3 CDL-W4" and
+runs ONCE at the campaign final sweep (RUNBOOK §3 "one full test + e2e + harness sweep at the
+end", §7 step 6) — not here. See §9 C6 for the full gate correction and the feature-matrix
+verdict.
 
 ## 2. Current-code reality (what the 2026-08-08 brief no longer matches)
 
@@ -721,6 +737,10 @@ in.
 | C3 | 2026-10-13 | critic pass | W4-7: `RegisteredSchemaSet::register` added, so CDL-SPEC10 B3 registers kind 5 with a call. | cross-plan ordering |
 | C4 | 2026-10-13 | A1 hand-back | W4-2 widens `CausalMaterializer::reduce` (`traits.rs:271-275`) to receive the admitted operation's own decrypted payload facts, solving the seam SPEC-10 §12 names once, here, before CDL-SPEC10 starts. CDL-SPEC10 B1 and B3 consume the widened signature instead of re-widening it. | cross-plan API gap |
 | C5 | 2026-10-13 | A1 hand-back | W4-9 implements the single `fe_sdk::legacy_identifier(table, id) -> Identifier32` (SPEC-10 §4.5) for its own `UpdateNodeTransform` candidate-scope derivation. CDL-SPEC10 B1 (kind-5 `anchors`) and B2 (hexon `anchor` column) consume it instead of a second implementation — §4.5 rule 2 forbids a second one. | cross-plan API gap |
+| C6 | 2026-10-14 | critic tick 5 (AC-26) | Per-slice gate corrected to the AC-17 workspace triple (`cargo check -j4 --workspace --tests`; `cargo +1.99.0 clippy -j4 --workspace --all-targets --keep-going -- -D warnings`; `cargo +1.99.0 fmt --all -- --check`) + `gate_green` halt, not "own crates only" — W4-8's new `DbCommand`/`DbResult` variants and exhaustive matches ripple across fe-runtime/fe-database/fe-test-harness, so a per-crate gate would miss ripple breaks elsewhere in the workspace. W3 close itself runs only the two non-cargo greps (`build_router_with_canonical_log`, `commit_operation_dual_emit`); every slice's named tests move to `final-sweep-manifest.md` § "W3 CDL-W4" and run once at the campaign final sweep, per RUNBOOK §3 "one full test + e2e + harness sweep at the end" and §7 step 6. Feature-matrix verdict (confirmed, no gate needed): fe-canonical-log, fe-database, fe-sdk, fe-runtime, fe-test-harness have no `[features]`; fe-identity's `keyring` default is untouched by any slice (W4-7 uses only `SecretStore::{get,set,delete}`, `fe-identity/src/secret_store/mod.rs:19`); the relay's `sim-control` code has no `DbCommand`/`DbResult` match (`fractalengine-relay/src/main.rs:405,489`); fe-ui's `apply_db_results` has a wildcard (`fe-ui/src/verse_manager/db_results/mod.rs:472`). One condition: any slice that edits fe-identity adds `cargo check -p fe-identity --no-default-features --tests` (the relay builds it `default-features = false`, and workspace feature unification otherwise hides that build). | gate correction |
+| C7 | 2026-10-14 | critic tick 5 (AC-25) | W4-9 step 1's premise is corrected: "fe-database and fe-query already depend on [fe-sdk]" is false — neither `Cargo.toml` lists `fe-sdk` (grep) and no `fe_sdk::` use exists in either. fe-sdk stays the single home for `legacy_identifier` anyway (lightest crate every consumer can reach), but this needs a dependency-rule amendment: `fe-sdk/src/AGENTS.md:3-4` states fe-sdk has "exactly two dependencies (`serde`, `serde_json`)" and `fe-sdk/Cargo.toml` matches; BLAKE3 + canonical CBOR are needed for `legacy_identifier`. Amendment: fe-sdk's dependency rule becomes `serde, serde_json, blake3` (reason: SPEC-10 §4.5 rule 2's single-implementation requirement; `blake3` is a pure hash, not an engine internal, so it does not violate the "stable, serde-light" design intent). The 2-element canonical CBOR `[table, id]` is hand-encoded per RFC 8949 §4.2.1 — no CBOR crate dependency. A drift-guard golden test lands in fe-canonical-log comparing `legacy_identifier`'s hash against its own deterministic encoder, so the two independent encoders cannot silently diverge. W4-9's owned-files list is corrected to add `fe-sdk/Cargo.toml`, `fe-database/Cargo.toml`, `Cargo.lock`, and the new fe-canonical-log golden-test file. CDL-SPEC10's B2/C10 inherit the same premise fix — see that plan's own critic row. | premise correction + dependency-rule amendment |
+| C8 | 2026-10-14 | critic tick 5 (AC-27) | Four corrections: (i) W4-7 step 3's "loads at construction" claim is corrected — `SecretStore` has no enumeration and `OsKeystoreBackend` cannot list (`fe-identity/src/secret_store/mod.rs:19-28`), so `SecretStoreScopeKeyCustody` keeps a non-secret key-id index in SurrealDB (key ids + shred records only, never secret material) instead of relying on a `SecretStore::list`, and `SecretStore` never gains a `list` method. (ii) W4-7's and W4-9's DB-thread restart tests must drop/join the DB thread before reopening it, reusing the harness pattern at `fe-database/tests/node_view_test.rs:150-215` — `558197c` made SurrealKV one-open-per-process. (iii) W4-1's ImportGltf fixture must be a non-KTX2 GLB (the `da3e6a1` KTX2 guard refuses KTX2/basisu textures for every GLB, local or peer); §bypass-counter already records that a guard-refused import still counts as an attempt for bypass-counter purposes, so `record_bypass_for("ImportGltf")` still fires even when the import itself is refused downstream. (iv) W4-8's security-review brief (`:490-492`, "regardless of role") gains an explicit review item: role-None enrolment rows trade spam/linkability off against pre-manifest loss, and the reviewer must either set a floor or record the decision — the eventual holder is role_propagation's RP-3/RP-4 Deferred mechanism, once it lands. | four corrections (one security review item) |
+| C9 | 2026-10-14 | critic tick 5 (AC-27) | Re-grounded citation table at HEAD `8d8eaf8` (line numbers drift as commits land; re-grep before editing regardless): `crud.rs` `22,87,130,359,1609,1676` → `19,84,127,356,1604,1671`; `replicated_row.rs` bootstrap `:291-300` → `:296-305`; `lib.rs` `:155` → `:153`, `:368` → `:366`; `app.rs` `:239` → `:241`; `peer.rs` `:994` → the `:1012-1022` arm block; fe-sync `messages.rs` `:44` → `:46`; `doneness-ledger.md` `:100/:102/:106/:186/:192/:193/:264` → `:129/:131/:135/:249/:254/:255/:309`. | citation re-grounding |
 
 **Later-phase obligations (recorded here; owned by the later plan).**
 - **Role propagation RP-2** turns `role` into a materialized cache and drops `role = "owner"`

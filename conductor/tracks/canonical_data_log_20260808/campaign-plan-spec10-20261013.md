@@ -718,6 +718,8 @@ peer-bytes ingress door (`decode_and_admit`) and a preview decoder.
 **Owned files**
 - `fe-query/src/columnar/observation/` (new: `mod.rs`, `writer.rs`, `reader.rs`, `profile.rs`)
 - `fe-query/src/columnar/mod.rs`
+- `fe-query/Cargo.toml` (**new, critic tick 5 AC-25/§8 C15:** add the `fe-sdk` dependency — B2
+  consumes `fe_sdk::legacy_identifier` and fe-query does not depend on fe-sdk today)
 - `fe-query/src/AGENTS.md` (new §observation-hexon)
 - `fe-format/src/manifest.rs` (`HexonType::ObservationBatch`)
 - `fe-format/src/AGENTS.md` §manifest
@@ -746,6 +748,11 @@ peer-bytes ingress door (`decode_and_admit`) and a preview decoder.
   54.3.1` is pinned `default-features = false` (`fe-query/Cargo.toml:15,29-30`); enabling a codec
   is a Cargo change this slice does not own, and a future codec bump would be a byte-determinism
   hazard against `same_rows_any_input_order_produce_identical_hexon_bytes`.
+
+**Gate (added, critic tick 5, AC-25/§8 C15).** This module is feature-dark under ordinary
+`cargo check --workspace` (the AC-19 lesson: a feature-gated path that never gets its own build
+silently bitrots): `cargo check -p fe-query --features parquet --tests`; `cargo +1.99.0 clippy
+-p fe-query --features parquet --all-targets -- -D warnings`.
 
 **Flow tests**
 - `observation_hexon_round_trip_honours_segment_and_order_profile`: readings for 3 anchors written in
@@ -998,6 +1005,7 @@ owns a shared piece; this plan notes the dependency.
 | C12 | 2026-10-13 | A1 hand-back | The `simulation` source class had no carrier: fe-sim sends `InsertIotReadings`/`InsertDevicePayloads` with `source_did` = host DID (`fe-sim/src/session.rs:454-460`), which SPEC-10 §7.1 rule 6 forbids reading as `device`/`connector`. A3 threads an explicit `source_class` through `fe-runtime/src/messages.rs` and sets it in `fe-sim/src/session.rs` (now an A3-owned file), with a test. | security + cross-plan (missing carrier) |
 | C13 | 2026-10-13 | A1 hand-back | Doc follow-ups: the Hexon Types table in `docs/hexon-format-spec.md` is missing `observation_batch` — routed to B2, alongside the code that adds the `HexonType` variant (not B4) so doc and enum cannot drift apart. `commit-preview-wire.md`'s registry cross-reference was already a B4-owned file (confirmed, no change needed). B2's dependency on `HexonArchiveIndex`/PAS-P3P4 S5 was already noted in §1.3, §7.1, §9 (confirmed, no change needed). The `CDL-SPEC10` ledger-row update is flagged for the bookkeeping orchestrator in §4 (not edited here). | doc follow-ups / confirmation |
 | C14 | 2026-10-13 | A1 hand-back | zstd was replaced by uncompressed Parquet pages: an earlier internal note in A1's §3 planning text said "zstd pages", but the shipped spec (§3.2 rule 1, D-CL32) pins uncompressed pages — `parquet 54.3.1` is built `default-features = false` (no codec compiled in), so zstd would need a Cargo change B2 does not own and would risk byte determinism. A1's text and B2's brief are both corrected to match the spec. | spec/plan drift |
+| C15 | 2026-10-14 | critic tick 5 (AC-25) | C10's premise is corrected: CDL-W4-9's `fe_sdk::legacy_identifier` requires `fe-sdk` as a dependency wherever it is consumed, and neither `fe-database` nor `fe-query` lists `fe-sdk` today (grep confirms; no `fe_sdk::` use exists in either). B2 (this plan, §3 Phase B) consumes `legacy_identifier` for its `anchor` column (step 1, `:716`) — B2's owned files therefore gain `fe-query/Cargo.toml` (new `fe-sdk` dependency), and B2 gains a feature-matrix gate (`cargo check -p fe-query --features parquet --tests` + clippy), matching the AC-19 lesson that feature-gated code needs its own build. See CDL-W4 campaign plan §9 C7 for the matching fe-sdk dependency-rule amendment (`serde, serde_json, blake3`). | premise correction + owned-files + gate |
 
 **Cross-plan note.** A6's device-payload blob fetch uses `SyncCommand::FetchBlob` over the blob
 ALPN. PAS-P3P4 S8b may add an iroh-blobs request filter, and its brief requires that filter to

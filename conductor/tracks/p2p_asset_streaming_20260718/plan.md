@@ -180,10 +180,18 @@ Single workspace sweep at the end per standing policy.
 ## Phase 5: Registry parity + integrity (FR-5 + FR-6, after D-75/D-76)
 
 - [x] Task: `PartialHexonFetch` trait; HTTP impl (chunk-by-seq + meta routes on
-      fe-hexon-registry); FetchStrategy as shared policy layer (TDD)
+      fe-hexon-registry); ~~FetchStrategy as shared policy layer~~ (TDD)
       — CODE-COMPLETE 2026-10-14, pending the end-of-campaign sweep (tests
       written, not run): S3 `36866aa`, S4 `3294210`, S5 `391eefd`, S7a
       `a2147bb`, S7b `b56b877`, S8 review-and-fix.
+      **Caveat (critic tick 5, AC-23):** "FetchStrategy as shared policy layer" is
+      NOT met for P2P downloads — `P2pPartialFetch`/`HexonLocator`/`publish_to_transport`
+      have zero production callers (grep), and `TransferLimits` has no rate field
+      (`fe-sync/src/tileset_transfer.rs:77-85`), so `P2pConfig.max_download_rate_bytes_per_sec`
+      stays dead for P2P. FetchStrategy's semaphore, pacing, source priority and demotion apply
+      only to the HTTP/registry source today. This is an acceptable staged state for A7 (see the
+      Verification line below), not a redesign before the sweep — tracked as ledger row
+      **PAS-P5-P2P-POLICY** (`conductor/doneness-ledger.md`).
 - [x] Task: `HexonArchive::import` split (header phase / member reads) (TDD)
       — CODE-COMPLETE 2026-10-14, pending the sweep: S2 `cbbd806`
       (`HexonArchiveIndex` header phase + verified `read_member`/`chunk`), S8
@@ -198,6 +206,15 @@ Single workspace sweep at the end per standing policy.
       suite [checkpoint] — suite WRITTEN (`http_source_passes_conformance`,
       `in_memory_p2p_source_passes_conformance`, `cargo test -p fe-hexon
       --all-features`), NOT YET RUN: the final sweep must show both by name.
+      **A7 production carrier (critic tick 5, AC-23):** the production P2P path is
+      proven by `fe-hexon/tests/partial_fetch_p2p.rs::a_sealed_container_is_reseeded_from_its_signed_chunks_without_rebundling`
+      (`:254`), which runs the production seeding path
+      (`fe_terrain::tiles::bundle_for_seeding` → `fe_sync::TilesetTransfer::publish_files`) and
+      asserts `assert_eq!(root, direct.root, "one root for every seeder")` (`:316-319`) — the
+      same HashSeq root means the same bytes are served, so production seeders pass the
+      conformance suite for the tileset/container fixtures that production P2P actually carries.
+      Name it beside `in_memory_p2p_source_passes_conformance` as the production A7 carrier in
+      `final-sweep-manifest.md`'s sign-off line.
 
 ## Phase 6: Close-out
 
