@@ -10,12 +10,15 @@
 //! - Partial-availability tile serving (serve tiles from chunks we have)
 
 use std::collections::HashMap;
+use std::io::Write;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing;
+use zip::write::SimpleFileOptions;
 
 use fe_format::manifest::TilesetMeta;
+use fe_format::HeaderDoc;
 
 use super::hexon_source::HexonTileSource;
 use super::store::{HexonStore, InstalledTileset};
@@ -323,6 +326,75 @@ pub fn assemble_chunks(
     );
 
     Ok(installed)
+}
+
+/// Reconstruct a SEALED chunked container from its verified header and
+/// per-chunk bytes, then install it — unlike [`assemble_chunks`] (which
+/// flattens tiles into one fresh, unsigned archive), this never decodes a
+/// single tile: it writes the EXACT raw bytes a `FetchStrategy` (PAS-P5
+/// S4/S5/S7a) already verified back into a new zip, so the publisher's seal
+/// survives the round trip and the installed file can be re-seeded with its
+/// signature intact (campaign plan S6 step 3, "keeps the publisher's sealed
+/// container instead of flattening it").
+///
+/// `header` is the already-VERIFIED [`HeaderDoc`] (the caller's
+/// `FetchStrategy`/`verify_header` ran before any chunk was ever requested —
+/// PAS-P5 S7a's two-phase download); `chunks` are the per-chunk bytes the
+/// caller already checked against the header's signed `chunks/index.json`
+/// hash. This function does not re-verify either — it only reassembles the
+/// exact bytes — but `HexonStore::install_tileset`'s own `HexonArchive::import`
+/// (which always runs the full integrity pass under `VerifyIfSealed`) is the
+/// backstop: a caller that got the verification wrong, or any accidental
+/// corruption introduced here, is refused before anything is written to
+/// disk. See `src/AGENTS.md` §chunked-containers "reassembly".
+pub fn assemble_sealed_container(
+    store: &HexonStore,
+    header: &HeaderDoc,
+    chunks: &[(u32, Vec<u8>)],
+) -> Result<InstalledTileset> {
+    if chunks.is_empty() {
+        bail!("no chunks to reassemble");
+    }
+
+    let buf = Vec::new();
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(buf));
+    // Deflated for the small header-member JSON (matches every other writer
+    // in this crate/fe-format); Stored for chunk bytes — each chunk is
+    // already a compressed/sealed archive, so recompressing it would spend
+    // CPU for no size gain (mirrors `HexonArchive::export_chunked`).
+    let deflate_opts =
+        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let stored_opts =
+        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+    zip.start_file(fe_format::integrity::MANIFEST_PATH, deflate_opts)
+        .context("failed to start manifest.json")?;
+    zip.write_all(header.manifest.as_bytes())
+        .context("failed to write manifest.json")?;
+
+    for (path, text) in &header.header_members {
+        zip.start_file(path, deflate_opts)
+            .with_context(|| format!("failed to start header member {path}"))?;
+        zip.write_all(text.as_bytes())
+            .with_context(|| format!("failed to write header member {path}"))?;
+    }
+
+    for (seq, bytes) in chunks {
+        let path = fe_format::integrity::chunk_member_path(*seq);
+        zip.start_file(&path, stored_opts)
+            .with_context(|| format!("failed to start chunk member {path}"))?;
+        zip.write_all(bytes)
+            .with_context(|| format!("failed to write chunk member {path}"))?;
+    }
+
+    let archive_bytes = zip
+        .finish()
+        .context("failed to finish reassembled container")?
+        .into_inner();
+
+    store
+        .install_tileset(&archive_bytes)
+        .context("failed to install reassembled sealed container")
 }
 
 // ---------------------------------------------------------------------------

@@ -5,8 +5,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use anyhow::{Context, Result};
-use fe_format::manifest::TilesetMeta;
-use fe_format::{ArchiveChanged, HexonArchive, HexonArchiveIndex};
+use fe_format::manifest::{TilesetBundleIndex, TilesetMeta};
+use fe_format::{ArchiveChanged, HexonArchive, HexonArchiveIndex, Layout};
 
 use crate::splat::format::{decode_baked_splats, read_baked_splats_from_archive, BakedSplatBuffer};
 
@@ -125,8 +125,18 @@ struct IndexedArchive {
 }
 
 impl IndexedArchive {
+    /// Open a monolithic archive from its path and build its membership set
+    /// (used only by the re-index-on-change path below — `HexonTileSource::
+    /// open` goes through `from_index` instead, since it has already opened
+    /// the index to check `layout()`).
     fn open(path: &Path) -> Result<Self> {
-        let index = HexonArchiveIndex::open(path)?;
+        Self::from_index(HexonArchiveIndex::open(path)?)
+    }
+
+    /// Build the membership set over an already-opened, monolithic index
+    /// (header phase done by the caller — p2p_asset_streaming S6 splits
+    /// `open` on `index.layout()` before this ever runs).
+    fn from_index(index: HexonArchiveIndex) -> Result<Self> {
         let mut members = HashSet::new();
         for name in index.member_names() {
             for layer in TileLayer::ALL {
@@ -143,9 +153,66 @@ impl IndexedArchive {
     }
 }
 
+/// Lazy backing for a sealed chunked container (p2p_asset_streaming S6): the
+/// outer archive's header phase only (`chunks/{seq}.hexon` bodies are never
+/// touched at `open`), plus the parsed, signed `chunks/index.json`. A tile
+/// resolves to its covering chunk via [`TilesetBundleIndex::bundle_for_tile`]
+/// (fe-format's one tile→chunk lookup, critic C4 — no second table here,
+/// mirroring `StreamedTileSource`, `src/AGENTS.md` §streamed-tilesets); the
+/// chunk is then imported ON DEMAND (verified against the signed chunk hash
+/// when the outer container is sealed) and the ONE requested tile is
+/// extracted and handed to the shared `ByteLru` — the decoded chunk itself
+/// is never cached beyond that single lookup, so touching every chunk of a
+/// huge container still can never hold more than `TILE_BYTE_BUDGET` bytes
+/// resident at once (see `src/AGENTS.md` §chunked-containers "residency
+/// budget").
+struct ContainerArchive {
+    index: HexonArchiveIndex,
+    chunk_index: TilesetBundleIndex,
+}
+
+impl ContainerArchive {
+    /// Read chunk `seq`'s whole archive, decode it under the streamed-bundle
+    /// decompression budget, and return the ONE `(layer, key)` member it
+    /// carries, if any. `Ok(None)` covers both "key not in this chunk" and
+    /// "chunk missing" — neither is a format error once the container opened.
+    fn read_tile(&self, layer: TileLayer, key: TileKey) -> Result<Option<ResidentTile>> {
+        let seq = match self.chunk_index.bundle_for_tile(key.0, key.1, key.2) {
+            Some(seq) => seq,
+            None => return Ok(None),
+        };
+        let Some(bytes) = self.index.chunk(seq)? else {
+            return Ok(None);
+        };
+        let data = HexonArchive::import_with_budget(&bytes, STREAMED_BUNDLE_DECODE_BUDGET)
+            .with_context(|| format!("failed to import chunk {seq}"))?;
+        let cache_key = format!("{}/{}/{}", key.0, key.1, key.2);
+        let found = match layer {
+            TileLayer::Elevation => data
+                .elevation_tiles
+                .into_iter()
+                .find(|(k, _)| *k == cache_key),
+            TileLayer::Satellite => data
+                .satellite_tiles
+                .into_iter()
+                .find(|(k, _)| *k == cache_key),
+            // Chunked containers don't carry a baked-splats section today
+            // (`builder.rs::package_tiles_chunked` never writes one) —
+            // live synthesis covers this (FR-5), same as any archive
+            // predating baked splats.
+            TileLayer::BakedSplats => None,
+        };
+        Ok(found.map(|(_, bytes)| ResidentTile::Bytes(Arc::from(bytes))))
+    }
+}
+
 enum Backing {
     Memory(MemoryTiles),
     Indexed(RwLock<Arc<IndexedArchive>>),
+    // Boxed: `ContainerArchive` embeds a `HexonArchiveIndex` (central
+    // directory + header JSON), making it far larger than the other
+    // variants — clippy::large_enum_variant.
+    Container(Box<ContainerArchive>),
 }
 
 /// Total decoded bytes one streamed bundle may expand to (honest bundles are ~1 MiB).
@@ -212,19 +279,45 @@ impl HexonTileSource {
         Ok(Self::with_backing(tileset_meta, Backing::Memory(tiles)))
     }
 
-    /// Lazily open an installed `.hexon` file: header phase only, members on demand.
+    /// Lazily open an installed `.hexon` file: header phase only, members on
+    /// demand. A chunked container (p2p_asset_streaming S6) takes the
+    /// `Container` backing instead of `Indexed` — its tiles live inside
+    /// `chunks/{seq}.hexon`, not at the top level, so `IndexedArchive`'s
+    /// membership scan (which only ever looks at the outer archive's own
+    /// member names) would otherwise see zero tiles.
     pub fn open(path: &Path) -> Result<Self> {
-        let archive = IndexedArchive::open(path)
+        let index = HexonArchiveIndex::open(path)
             .with_context(|| format!("failed to index hexon archive {}", path.display()))?;
-        let tileset_meta = archive
-            .index
-            .tileset_meta()
-            .cloned()
-            .context("archive is missing tileset_meta (not a TerrainTileset hexon)")?;
-        Ok(Self::with_backing(
-            tileset_meta,
-            Backing::Indexed(RwLock::new(Arc::new(archive))),
-        ))
+        match index.layout() {
+            Layout::Container { .. } => {
+                let chunk_index_bytes = index
+                    .read_member(fe_format::integrity::CHUNK_INDEX_PATH)
+                    .with_context(|| {
+                        format!("failed to read chunks/index.json from {}", path.display())
+                    })?
+                    .context("container archive missing chunks/index.json")?;
+                let chunk_index: TilesetBundleIndex = serde_json::from_slice(&chunk_index_bytes)
+                    .context("invalid chunks/index.json")?;
+                let tileset_meta = chunk_index.tileset_meta.clone();
+                Ok(Self::with_backing(
+                    tileset_meta,
+                    Backing::Container(Box::new(ContainerArchive { index, chunk_index })),
+                ))
+            }
+            Layout::Monolithic => {
+                let archive = IndexedArchive::from_index(index)
+                    .with_context(|| format!("failed to index hexon archive {}", path.display()))?;
+                let tileset_meta = archive
+                    .index
+                    .tileset_meta()
+                    .cloned()
+                    .context("archive is missing tileset_meta (not a TerrainTileset hexon)")?;
+                Ok(Self::with_backing(
+                    tileset_meta,
+                    Backing::Indexed(RwLock::new(Arc::new(archive))),
+                ))
+            }
+        }
     }
 
     /// Load a tileset from a directory layout (for development/pre-packaging).
@@ -282,9 +375,10 @@ impl HexonTileSource {
         Arc::clone(&lock.read().unwrap_or_else(|poisoned| poisoned.into_inner()))
     }
 
-    /// True for an index-backed (lazy) source; false for an eagerly decoded one.
+    /// True for a lazy source (index- or container-backed); false for an
+    /// eagerly decoded one.
     pub fn is_lazy(&self) -> bool {
-        matches!(self.backing, Backing::Indexed(_))
+        matches!(self.backing, Backing::Indexed(_) | Backing::Container(_))
     }
 
     /// Resident value for `layer` at `coord` (no I/O); `None` when absent or not loaded.
@@ -292,7 +386,7 @@ impl HexonTileSource {
         let key = (layer, key_of(coord));
         match &self.backing {
             Backing::Memory(tiles) => tiles.layers.get(&key).cloned(),
-            Backing::Indexed(_) => self.cache().get(&key),
+            Backing::Indexed(_) | Backing::Container(_) => self.cache().get(&key),
         }
     }
 
@@ -315,11 +409,21 @@ impl HexonTileSource {
     }
 
     /// Whether the archive holds `layer` at `coord` (membership only, no I/O).
+    ///
+    /// For a container this is the same coverage test `bundle_for_tile` IS
+    /// (a covering chunk range exists) rather than an exact per-tile
+    /// membership check — the same approximation `StreamedTileSource::covers`
+    /// already makes for not-yet-installed tilesets (`src/AGENTS.md`
+    /// §streamed-tilesets); an exact check would require decoding the chunk.
     pub fn has_member(&self, layer: TileLayer, coord: TileCoord) -> bool {
         let key = (layer, key_of(coord));
         match &self.backing {
             Backing::Memory(tiles) => tiles.layers.contains_key(&key),
             Backing::Indexed(lock) => Self::archive(lock).members.contains(&key),
+            Backing::Container(c) => c
+                .chunk_index
+                .bundle_for_tile(key.1 .0, key.1 .1, key.1 .2)
+                .is_some(),
         }
     }
 
@@ -353,6 +457,17 @@ impl HexonTileSource {
                 return Ok(tiles.layers.get(&(layer, key_of(coord))).cloned())
             }
             Backing::Indexed(lock) => lock,
+            Backing::Container(container) => {
+                let key = (layer, key_of(coord));
+                if let Some(hit) = self.cache().get(&key) {
+                    return Ok(Some(hit));
+                }
+                let Some(value) = container.read_tile(layer, key.1)? else {
+                    return Ok(None);
+                };
+                self.cache().insert(key, value.clone(), value.byte_cost());
+                return Ok(Some(value));
+            }
         };
         let key = (layer, key_of(coord));
         if let Some(hit) = self.cache().get(&key) {
@@ -454,7 +569,7 @@ impl HexonTileSource {
     pub fn resident_bytes(&self) -> u64 {
         match &self.backing {
             Backing::Memory(tiles) => tiles.bytes,
-            Backing::Indexed(_) => self.cache().total_bytes(),
+            Backing::Indexed(_) | Backing::Container(_) => self.cache().total_bytes(),
         }
     }
 
@@ -463,7 +578,10 @@ impl HexonTileSource {
         self.cache().pinned_len()
     }
 
-    /// Every tile key the archive holds for `layer`, sorted (no I/O).
+    /// Every tile key the archive holds for `layer`, sorted (no I/O for
+    /// `Memory`/`Indexed`; a `Container` only has chunk RANGES at header
+    /// time, so this is a debug/test helper that decodes every chunk —
+    /// never called from a production hot path).
     pub fn member_keys(&self, layer: TileLayer) -> Vec<TileKey> {
         let mut keys: Vec<TileKey> = match &self.backing {
             Backing::Memory(tiles) => tiles
@@ -477,6 +595,21 @@ impl HexonTileSource {
                 .iter()
                 .filter(|(l, _)| *l == layer)
                 .map(|(_, key)| *key)
+                .collect(),
+            Backing::Container(container) => container
+                .chunk_index
+                .bundles
+                .iter()
+                .filter_map(|bundle| container.index.chunk(bundle.seq).ok().flatten())
+                .filter_map(|bytes| {
+                    HexonArchive::import_with_budget(&bytes, STREAMED_BUNDLE_DECODE_BUDGET).ok()
+                })
+                .flat_map(|data| match layer {
+                    TileLayer::Elevation => data.elevation_tiles,
+                    TileLayer::Satellite => data.satellite_tiles,
+                    TileLayer::BakedSplats => Vec::new(),
+                })
+                .filter_map(|(cache_key, _)| parse_tile_key(&cache_key))
                 .collect(),
         };
         keys.sort_unstable();
@@ -728,6 +861,66 @@ mod tests {
         // Zoom 5 is outside range
         let coord = TileCoord::from_lat_lon(45.5, -121.5, 5);
         assert!(!source.covers(coord));
+    }
+
+    /// p2p_asset_streaming S6: `HexonTileSource::open` on a chunked container
+    /// serves tiles from EVERY chunk (lazily, one chunk decoded per distinct
+    /// chunk touched) through the exact same resident-cache API an installed
+    /// monolithic tileset uses.
+    #[test]
+    fn container_backed_source_serves_tiles_from_every_chunk() {
+        use fe_format::ChunkInput;
+
+        let mut chunks = Vec::new();
+        for seq in 0..3u32 {
+            let chunk_tiles = vec![(format!("10/{seq}/0"), vec![seq as u8; 64])];
+            let chunk_bytes = HexonArchive::export_tileset(
+                test_manifest(),
+                &test_tileset_meta(),
+                &chunk_tiles,
+                &[],
+                None,
+            )
+            .unwrap();
+            chunks.push(ChunkInput {
+                seq,
+                tile_count: 1,
+                zoom: 10,
+                x_range: [seq, seq],
+                y_range: [0, 0],
+                hilbert_range: [seq as u64, seq as u64],
+                archive_bytes: chunk_bytes,
+            });
+        }
+        let mut outer_meta = test_tileset_meta();
+        outer_meta.tile_count = 3;
+        let mut outer_manifest = test_manifest();
+        outer_manifest.hexon_id = "container-src".into();
+        let container_bytes =
+            HexonArchive::export_chunked(outer_manifest, &outer_meta, &chunks).unwrap();
+
+        let path = std::env::temp_dir().join(format!(
+            "fe_hexon_source_container_test_{}.hexon",
+            std::process::id()
+        ));
+        std::fs::write(&path, &container_bytes).unwrap();
+
+        let source = HexonTileSource::open(&path).expect("open container");
+        assert!(source.is_lazy());
+        for seq in 0..3u32 {
+            let coord = TileCoord::new(seq, 0, 10);
+            assert!(source.has_tile(coord), "chunk {seq} tile must be a member");
+            let data = source
+                .load_tile_blocking(coord)
+                .expect("load must not error")
+                .expect("tile must be present");
+            assert_eq!(data.as_ref(), vec![seq as u8; 64].as_slice());
+            // Resident now (no further I/O needed).
+            assert!(source.get_tile(coord).is_some());
+        }
+        assert!(!source.has_tile(TileCoord::new(99, 0, 10)));
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

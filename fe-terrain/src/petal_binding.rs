@@ -353,6 +353,7 @@ mod tests {
             elevation_encoding: Some(ElevationEncoding::TerrainRgb),
             native_scale: None,
             scale_bounds: None,
+            verified: false,
         }
     }
 

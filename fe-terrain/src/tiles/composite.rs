@@ -235,8 +235,35 @@ impl CompositeTileSource {
             && std::env::var("FE_DEMO_TILE_URL").is_ok()
     }
 
+    /// Worst-case resident ceiling per composite (p2p_asset_streaming S6,
+    /// critic AC-21b): `TILE_BYTE_BUDGET` (256 MiB) is enforced PER
+    /// `HexonTileSource`, not globally across every source a process holds
+    /// (making it truly global would need a cross-source LRU, a much larger
+    /// change than this slice's scope — tracked as a deferral, not silently
+    /// dropped). The chosen mitigation instead bounds N: a petal's
+    /// `tileset_hexon_uris` realistically cascades a regional tileset over at
+    /// most a couple of broader fallback bases (`src/AGENTS.md`
+    /// §petal-map/§lazy-tiles), so capping one composite at 4 sources caps
+    /// its worst case at 4 x 256 MiB = 1 GiB — the same order of magnitude a
+    /// single tileset's budget already accepted. A source past the cap is
+    /// refused (logged), never silently dropped from the chain for an
+    /// EXISTING coordinate — see `add_hexon_source`.
+    pub const MAX_HEXON_SOURCES: usize = 4;
+
     /// Add a hexon tile source (checked first, by bounds); pass the registry's `Arc` to share it.
+    ///
+    /// Refuses (with a `warn!`) past [`Self::MAX_HEXON_SOURCES`] — see that
+    /// constant's doc comment for the residency-budget rationale. The caller
+    /// (`petal_binding`) still renders every source it added before the cap;
+    /// only sources past the limit never reach the lookup chain.
     pub fn add_hexon_source(&mut self, source: impl Into<Arc<HexonTileSource>>) {
+        if self.hexon_sources.len() >= Self::MAX_HEXON_SOURCES {
+            tracing::warn!(
+                limit = Self::MAX_HEXON_SOURCES,
+                "composite already holds the max hexon sources; refusing another"
+            );
+            return;
+        }
         self.hexon_sources.push(source.into());
     }
 
@@ -740,6 +767,23 @@ mod tests {
         let bytes =
             HexonArchive::export_tileset(manifest, &meta, &tiles, &satellite, None).unwrap();
         HexonTileSource::from_archive(&bytes).unwrap()
+    }
+
+    /// S6 (critic AC-21b residency-budget mitigation): a composite refuses a
+    /// hexon source past `MAX_HEXON_SOURCES`, bounding the worst-case
+    /// resident ceiling; sources added before the cap are unaffected.
+    #[test]
+    fn add_hexon_source_refuses_past_the_cap() {
+        let mut composite = CompositeTileSource::new();
+        for i in 0..CompositeTileSource::MAX_HEXON_SOURCES + 2 {
+            let coord = TileCoord::from_lat_lon(45.5, -121.5, 11);
+            let source = make_hexon_source(vec![(coord.cache_key(), vec![i as u8; 4])], vec![]);
+            composite.add_hexon_source(source);
+        }
+        assert_eq!(
+            composite.hexon_sources().len(),
+            CompositeTileSource::MAX_HEXON_SOURCES
+        );
     }
 
     #[test]

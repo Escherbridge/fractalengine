@@ -38,6 +38,10 @@ pub struct TilesetInfo {
     /// Hexon-declared `[min, max]` world-scale clamp bounds (FR-5/FR-6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale_bounds: Option<[f64; 2]>,
+    /// Whether the archive's header verified under a publisher signature at
+    /// install time (`InstalledTileset::verified`, p2p_asset_streaming S6).
+    #[serde(default)]
+    pub verified: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -171,6 +175,7 @@ impl TilesetRegistry {
                     elevation_encoding,
                     native_scale,
                     scale_bounds,
+                    verified: t.verified,
                 }
             })
             .collect()

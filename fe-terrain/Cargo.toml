@@ -44,3 +44,8 @@ ed25519-dalek = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+# Only for building/sealing test fixtures (campaign plan p2p_asset_streaming
+# S6, fe-terrain/tests/hexon_integrity_flow.rs) — the production `fetch`
+# feature pulls in its own copy; this dev-only one lets the flow test seal
+# fixtures without requiring --features fetch.
+ed25519-dalek = { workspace = true }

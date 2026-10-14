@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use fe_format::manifest::{HexonType, TilesetMeta};
-use fe_format::HexonArchive;
+use fe_format::{HexonArchive, IntegrityStatus};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -45,6 +45,15 @@ pub struct InstalledTileset {
     pub seeding_enabled: bool,
     /// When a tile was last served from this tileset (if ever).
     pub last_served: Option<DateTime<Utc>>,
+    /// Whether the archive's header verified under a publisher signature
+    /// (`fe_format::IntegrityStatus::Sealed`) at install time — `false` for a
+    /// legacy unsealed archive (nothing was checked) AND for a tampered one
+    /// (which `install_tileset` already refused before this field is ever
+    /// written). `#[serde(default)]` so a pre-PAS-P5 `registry.json` entry
+    /// deserializes as unverified, never a hard failure (p2p_asset_streaming
+    /// S6; see `src/AGENTS.md` §chunked-containers).
+    #[serde(default)]
+    pub verified: bool,
 }
 
 /// Error text `install_tileset` returns when `hexon_id` could escape the
@@ -139,11 +148,18 @@ impl HexonStore {
     /// Install a tileset from raw `.hexon` archive bytes.
     ///
     /// Steps:
-    /// 1. Import and validate the archive.
-    /// 2. Verify the hexon type is `TerrainTileset`.
+    /// 1. Import and validate the archive (`HexonArchive::import` runs the
+    ///    full integrity pass under `VerifyIfSealed` — a sealed archive is
+    ///    fully enforced; a tampered one is refused before anything here
+    ///    runs; a legacy unsealed one passes through as before).
+    /// 2. Verify the hexon type is `TerrainTileset` (monolithic or a signed
+    ///    chunked container — both carry `tileset_meta`, p2p_asset_streaming S6).
     /// 3. Refuse an unsafe `hexon_id` before any path join (`is_safe_hexon_id`).
-    /// 4. Write `{hexon_id}.hexon` and `{hexon_id}.meta.json`.
-    /// 5. Append an entry to `registry.json`.
+    /// 4. Write `{hexon_id}.hexon` and `{hexon_id}.meta.json` ATOMICALLY
+    ///    (temp file in the same directory, then rename over any existing
+    ///    file) — see `src/AGENTS.md` §chunked-containers "atomic install".
+    /// 5. Append an entry to `registry.json`, recording whether the header
+    ///    verified under a publisher signature (`verified`).
     pub fn install_tileset(&self, bytes: &[u8]) -> Result<InstalledTileset> {
         // Import and validate
         let data = HexonArchive::import(bytes).context("failed to import hexon archive")?;
@@ -163,18 +179,50 @@ impl HexonStore {
         let tileset_meta: TilesetMeta = data
             .tileset_meta
             .context("archive is missing tileset_meta (TerrainTileset must include it)")?;
+        let verified = matches!(data.integrity, IntegrityStatus::Sealed { .. });
 
-        // Persist raw bytes
+        // Persist raw bytes atomically: write to a temp file in the same
+        // directory (same filesystem, so the rename is atomic) then rename
+        // over any existing `{hexon_id}.hexon`. A lazy reader's open `File`
+        // handle (`fe_format::HexonArchiveIndex`'s internal `LazyFile`) keeps
+        // reading the pre-rename bytes even on Windows (the stdlib opens
+        // files with FILE_SHARE_DELETE); its own `is_stale()` check then
+        // reports `ArchiveChanged` on its NEXT read, same as a non-atomic
+        // rewrite did, so correctness is unchanged — only the WRITE itself
+        // stops racing a concurrent reader (critic AC-21b/c).
         let hexon_path = self.hexon_path(&hexon_id);
-        std::fs::write(&hexon_path, bytes)
-            .with_context(|| format!("failed to write hexon file: {}", hexon_path.display()))?;
+        let tmp_hexon_path = self.temp_path(&hexon_id, "hexon");
+        std::fs::write(&tmp_hexon_path, bytes).with_context(|| {
+            format!(
+                "failed to write temp hexon file: {}",
+                tmp_hexon_path.display()
+            )
+        })?;
+        std::fs::rename(&tmp_hexon_path, &hexon_path).with_context(|| {
+            format!(
+                "failed to install hexon file atomically: {}",
+                hexon_path.display()
+            )
+        })?;
 
-        // Persist extracted meta
+        // Persist extracted meta (same atomic pattern; no lazy reader holds
+        // this file open today, but there is no reason to special-case it).
         let meta_json = serde_json::to_string_pretty(&tileset_meta)
             .context("failed to serialize TilesetMeta")?;
         let meta_path = self.meta_path(&hexon_id);
-        std::fs::write(&meta_path, &meta_json)
-            .with_context(|| format!("failed to write meta file: {}", meta_path.display()))?;
+        let tmp_meta_path = self.temp_path(&hexon_id, "meta.json");
+        std::fs::write(&tmp_meta_path, &meta_json).with_context(|| {
+            format!(
+                "failed to write temp meta file: {}",
+                tmp_meta_path.display()
+            )
+        })?;
+        std::fs::rename(&tmp_meta_path, &meta_path).with_context(|| {
+            format!(
+                "failed to install meta file atomically: {}",
+                meta_path.display()
+            )
+        })?;
 
         let size_bytes = std::fs::metadata(&hexon_path)
             .map(|m| m.len())
@@ -190,6 +238,7 @@ impl HexonStore {
             installed_at: Utc::now(),
             seeding_enabled: false,
             last_served: None,
+            verified,
         };
 
         // Update registry
@@ -313,6 +362,21 @@ impl HexonStore {
 
     fn meta_path(&self, hexon_id: &str) -> PathBuf {
         self.base_dir.join(format!("{hexon_id}.meta.json"))
+    }
+
+    /// A same-directory temp path for an atomic write-then-rename of
+    /// `{hexon_id}.{suffix}` (`"hexon"` or `"meta.json"`). Unique per call
+    /// (pid + nanos) so two concurrent installs of the SAME id never write
+    /// the same temp file.
+    fn temp_path(&self, hexon_id: &str, suffix: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        self.base_dir.join(format!(
+            "{hexon_id}.{suffix}.tmp-{}-{nanos}",
+            std::process::id()
+        ))
     }
 
     fn load_registry(&self) -> RegistryData {

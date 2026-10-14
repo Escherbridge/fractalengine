@@ -754,14 +754,22 @@ camera can see.
   beyond its cache pins. **No-tear rule:** `registry.install` / `reload`
   insert a NEW `Arc`; the active composite keeps the old one until the next
   assignment.
-- **Reinstall in place.** `HexonStore::install_tileset` rewrites
-  `{id}.hexon` in place, so an old `Arc` can find different bytes behind its
-  offsets. `HexonArchiveIndex::read_member` refuses with `ArchiveChanged`
-  when the file's size/mtime moved; `load_layer_blocking` then re-indexes
-  ONCE, swaps the index, drops unpinned (stale) cache entries, and retries.
-  Pinned bytes of live chunks stay as rendered until they leave the ring.
-  `tileset_meta` of the old `Arc` is not refreshed — the next assignment
-  picks up the registry's fresh source.
+- **Reinstall is atomic (p2p_asset_streaming S6; corrects the earlier
+  "rewrites in place" text).** `HexonStore::install_tileset` writes
+  `{id}.hexon.tmp-{pid}-{nanos}` then `std::fs::rename`s it over `{id}.hexon`
+  — never a direct `std::fs::write` to the live path — so a concurrent P2P
+  install of the same id (reachable since S4) can never hand a lazy reader a
+  half-written file. An old `Arc`'s open `HexonArchiveIndex`/`LazyFile`
+  handle keeps reading the PRE-RENAME bytes (the stdlib opens files with
+  `FILE_SHARE_DELETE`, so Windows allows the rename while the handle is
+  open), and finds different bytes behind its offsets only once it next
+  seeks — exactly the same `ArchiveChanged` recovery as before.
+  `HexonArchiveIndex::read_member` refuses with `ArchiveChanged` when the
+  file's size/mtime moved; `load_layer_blocking` then re-indexes ONCE, swaps
+  the index, drops unpinned (stale) cache entries, and retries. Pinned bytes
+  of live chunks stay as rendered until they leave the ring. `tileset_meta`
+  of the old `Arc` is not refreshed — the next assignment picks up the
+  registry's fresh source.
 - **`load_tileset` refuses unsafe ids** (`is_safe_hexon_id`) before the path
   join: the id arrives from a (replicated) petal terrain config.
 - **`CompositeTileSource::resident_tile(coord)`** resolves every layer with
@@ -905,3 +913,97 @@ anything to the local hexon store.
   `pending_streamed_uris` forever for that assignment (observably identical
   to today's "no source covers it" — the region just never renders, silently,
   instead of once marking `FailedTiles`).
+
+## §chunked-containers — sealed chunk containers, atomic install, reassembly (p2p_asset_streaming S6)
+
+**What a container is.** Produced by `fe_format::HexonArchive::export_chunked`
++ `fe_format::seal`: ONE `.hexon` whose `chunks/index.json` is a signed
+`TilesetBundleIndex` and whose body members are `chunks/{seq}.hexon` — each a
+self-contained (unsealed, in this slice) tileset archive of its own. The
+OUTER manifest's signature is the only one that matters; chunks are not
+individually sealed (D-76: "a hash committed under one signed manifest is
+equivalent trust"), so there is exactly one signature to check, not N.
+
+- **`HexonStore::install_tileset` accepts both layouts.** It always calls
+  `HexonArchive::import` (unchanged — `VerifyIfSealed`, full integrity pass),
+  then records `InstalledTileset::verified = matches!(data.integrity,
+  IntegrityStatus::Sealed{..})`. A monolithic archive's `tileset_meta.
+  tile_count` is whatever its own JSON declares; a container's comes from
+  `chunks/index.json`'s `tileset_meta` (the CALLER — `builder.rs::
+  package_tiles_chunked` — is responsible for setting it to the AGGREGATE
+  across every chunk, not one chunk's own count).
+- **`HexonTileSource::open` branches on `index.layout()`.** `Layout::
+  Monolithic` keeps the existing `IndexedArchive` (membership scan of the
+  outer archive's own member names, unchanged — now built via
+  `IndexedArchive::from_index` over an already-open `HexonArchiveIndex`
+  rather than re-opening the path). `Layout::Container{..}` takes a NEW
+  `Backing::Container(ContainerArchive{index, chunk_index})`: `chunk_index`
+  is the parsed, signed `chunks/index.json`, read once at `open` (header
+  phase — no chunk body is ever touched here).
+- **Lazy PER CHUNK, not per tile.** A tile resolves to its covering chunk via
+  `TilesetBundleIndex::bundle_for_tile` (the one tile→chunk lookup, critic
+  C4 — same call `StreamedTileSource` makes, §streamed-tilesets); the chunk
+  is then imported ON DEMAND via `HexonArchiveIndex::chunk(seq)` (verified
+  against the signed hash when the outer container is sealed) under
+  `STREAMED_BUNDLE_DECODE_BUDGET`, and the ONE requested `(layer, key)` tile
+  is extracted and handed to the source's existing `ByteLru` cache. The
+  decoded chunk itself is discarded immediately after — there is no second,
+  unbounded "resident chunks" cache alongside the tile `ByteLru`, so
+  touching every chunk of a huge container still can never hold more than
+  the cache's own budget resident at once (see "residency budget" below). A
+  repeated request for a tile from the same chunk simply re-decodes that
+  chunk if its tile already evicted from the `ByteLru` — CPU for safety, the
+  same trade `StreamedTileSource` makes implicitly by discarding a bundle the
+  instant its last pin releases.
+- **Residency budget (critic AC-21b).** `TILE_BYTE_BUDGET` (256 MiB,
+  `tiles/residency.rs`) stays enforced PER `HexonTileSource`, not globally —
+  making it truly global needs a cross-source LRU (a redesign out of this
+  slice's scope; `ByteLru` has no handle to a "the other sources in this
+  process" view). Instead `CompositeTileSource::MAX_HEXON_SOURCES` (4) caps
+  how many `HexonTileSource`s one composite holds — a petal's
+  `tileset_hexon_uris` realistically cascades a regional tileset over at
+  most a couple of broader fallback bases, so the cap's 4 × 256 MiB = 1 GiB
+  worst case is the same order of magnitude a single tileset's existing
+  budget already accepted. `add_hexon_source` past the cap is refused
+  (`warn!`), never silently dropped from an in-progress lookup chain.
+  **Deferred, not dropped:** a genuinely global byte ceiling across every
+  resident source — revisit if a real workload needs more than 4 cascaded
+  sources per petal.
+- **Atomic install** (critic AC-21b/c). See §lazy-tiles "Reinstall is
+  atomic" above — `install_tileset` now writes a same-directory temp file
+  then renames over `{id}.hexon`/`{id}.meta.json`, for BOTH layouts.
+- **Reassembly (`tiles/distribution.rs::assemble_sealed_container`).**
+  Unlike `assemble_chunks` (which flattens tiles into a fresh, UNSIGNED
+  archive — the path `bundle_tileset`/`assemble_bundles` still use for the
+  legacy, deterministic-bundling P2P download, §bundles — the §3.5
+  reconciliation rule: "only legacy unsealed tilesets keep P3P4's
+  deterministic bundling"), `assemble_sealed_container` takes an already-
+  VERIFIED `fe_format::HeaderDoc` (what PAS-P5 S4/S5/S7a's `FetchStrategy`
+  will hand it, once those slices exist) plus the per-chunk bytes a caller
+  already checked against the header's signed `chunks/index.json`, and
+  writes those EXACT bytes back into a new zip — `manifest.json` = the raw
+  (already-signed) manifest text, each `HEADER_MEMBER_PATHS` member = its raw
+  text, `chunks/{seq}.hexon` = the verified chunk bytes, nothing
+  re-serialized. Because nothing is re-derived, the publisher's signature
+  still covers exactly these bytes, so the reassembled file still verifies
+  `Sealed` and can be re-seeded with the ORIGINAL seal intact (the test
+  `assembled_p2p_download_installs_as_a_reseedable_sealed_container`,
+  `tests/hexon_integrity_flow.rs`, proves the full round trip locally, since
+  S4/S5/S7a don't exist yet to drive it from the network). `install_tileset`'s
+  own `HexonArchive::import` (always `VerifyIfSealed`) is still the
+  backstop: a caller that got pre-verification wrong, or any corruption
+  introduced here, is refused before anything reaches disk — reassembly
+  itself does not re-check digests.
+- **`builder.rs::package_tiles_chunked`** (replaces the old `package_chunked`
+  chunk-list output) is the one producer: pure over already-downloaded
+  tiles, splits via the shared `bundle::split_tiles_into_bundles`, bakes
+  splats per chunk (chunks are NOT individually sealed), then
+  `export_chunked` + `seal` LAST, after every chunk's splat append — the
+  §integrity "seal is always the last transform" rule applies to the OUTER
+  container. `package_chunked` (async) is now a thin download-then-package
+  wrapper, returning the ONE sealed container instead of the old
+  `Vec<Vec<u8>>` of separately-signed-per-chunk-manifest archives (D-76
+  retires that per-chunk scheme).
+- **`TilesetInfo.verified`** (`registry.rs`) surfaces `InstalledTileset.
+  verified` through `TilesetRegistry::list_tilesets`, so a future Hexon
+  Manager UI can show an "unverified" badge without reaching into the store.

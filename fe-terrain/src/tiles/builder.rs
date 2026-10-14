@@ -290,24 +290,31 @@ mod inner {
             crate::splat::format::append_baked_splats_to_archive(&archive_bytes, &splat_entries)
         }
 
-        /// Download tiles and package into multiple `.hexon` chunk archives.
+        /// Package already-downloaded tiles into a SEALED chunked container
+        /// (campaign plan p2p_asset_streaming S6 step 4): a pure function of
+        /// `tiles` (no network I/O), so tests and re-packaging callers never
+        /// need a `TileSource`. Replaces the old per-call signing of each
+        /// chunk's own legacy manifest (D-76: "a hash committed under one
+        /// signed manifest is equivalent trust" — one outer seal, not N).
         ///
-        /// Each chunk is at most `max_chunk_size_mb` megabytes. Splitting goes
-        /// through the shared `bundle::split_tiles_into_bundles` (Hilbert
-        /// ordering + greedy size-fill) so there is one split implementation
-        /// (campaign plan S1 step 4) — this is the same grouping `bundle_tileset`
-        /// uses, just fed from freshly-downloaded tiles instead of an archive.
-        pub async fn package_chunked(
+        /// Splitting goes through the shared `bundle::split_tiles_into_bundles`
+        /// (Hilbert ordering + greedy size-fill), the same grouping
+        /// `bundle_tileset` uses. Each chunk is its own unsealed `.hexon`
+        /// (splat-baked); the OUTER container (`HexonArchive::export_chunked`)
+        /// is sealed LAST, after every chunk (hence every splat append) is
+        /// final — fe-format AGENTS.md §integrity "seal is always the last
+        /// transform". `signing_key: None` leaves the container unsealed,
+        /// matching `package_hexon`'s existing optional-signing convention —
+        /// an unsealed container still installs (flagged `verified: false`).
+        pub fn package_tiles_chunked(
             &self,
+            tiles: &[(String, Vec<u8>)],
             publisher_did: &str,
             signing_key: Option<&ed25519_dalek::SigningKey>,
             max_chunk_size_mb: u32,
-        ) -> Result<Vec<Vec<u8>>> {
-            let (_result, all_tiles) = self.download_tiles().await?;
-
+        ) -> Result<Vec<u8>> {
             let max_bytes = max_chunk_size_mb as u64 * 1024 * 1024;
-            let slices =
-                crate::tiles::bundle::split_tiles_into_bundles(&all_tiles, &[], max_bytes)?;
+            let slices = crate::tiles::bundle::split_tiles_into_bundles(tiles, &[], max_bytes)?;
             let total_chunks = slices.len() as u32;
             let tileset_id = format!(
                 "tileset-{}",
@@ -318,7 +325,7 @@ mod inner {
             // `created_at`/`updated_at` instead of drifting across the loop.
             let now = chrono::Utc::now().to_rfc3339();
 
-            let mut archives = Vec::with_capacity(slices.len());
+            let mut chunk_inputs = Vec::with_capacity(slices.len());
             for slice in slices {
                 let seq = slice.seq;
                 let chunk_tiles = slice.elevation_tiles;
@@ -330,7 +337,7 @@ mod inner {
                     slice.y_range,
                 );
 
-                let mut manifest = HexonManifest {
+                let chunk_manifest = HexonManifest {
                     schema_version: "1.0.0".into(),
                     hexon_id: format!("{tileset_id}-chunk-{seq}"),
                     hexon_type: HexonType::TerrainTileset,
@@ -356,47 +363,189 @@ mod inner {
                     platforms: vec![],
                     address: None,
                     integrity: None,
+                    // Chunks are not individually sealed in this slice (only
+                    // the outer container is) — see the function doc comment.
                     signature: None,
                 };
 
-                if let Some(key) = signing_key {
-                    let json = serde_json::to_vec(&manifest)?;
-                    let sig = fe_format::sign_manifest(&json, key)?;
-                    manifest.signature = Some(sig);
-                }
-
-                let meta = TilesetMeta {
-                    bounds: self.bounds,
-                    min_zoom: self.min_zoom,
-                    max_zoom: self.max_zoom,
+                let chunk_meta = TilesetMeta {
+                    bounds: chunk_bounds,
+                    min_zoom: slice.zoom,
+                    max_zoom: slice.zoom,
                     tile_size: 256,
                     elevation_encoding: self.elevation_encoding.clone(),
                     tile_count,
                     region_name: self.region_name.clone(),
-                    chunk_index: Some(fe_format::manifest::ChunkIndex {
-                        tileset_id: tileset_id.clone(),
-                        chunk_seq: seq,
-                        total_chunks,
-                        chunk_bounds,
-                        blake3: None,
-                    }),
                     crs: None, // preserve pre-Default behavior exactly; see fe-format/src/AGENTS.md §scale
                     ..Default::default()
                 };
 
-                let archive_bytes = HexonArchive::export_tileset(
-                    manifest,
-                    &meta,
+                let chunk_archive = HexonArchive::export_tileset(
+                    chunk_manifest,
+                    &chunk_meta,
                     &chunk_tiles,
                     &[],
                     Some(License::default()),
-                )?;
+                )
+                .with_context(|| format!("failed to export chunk {seq}"))?;
                 let splat_entries = self.bake_splat_tiles(&chunk_tiles);
-                let archive = append_baked_splats_to_archive(&archive_bytes, &splat_entries)?;
-                archives.push(archive);
+                let chunk_archive = append_baked_splats_to_archive(&chunk_archive, &splat_entries)
+                    .with_context(|| format!("failed to append splats to chunk {seq}"))?;
+
+                chunk_inputs.push(fe_format::ChunkInput {
+                    seq,
+                    tile_count,
+                    zoom: slice.zoom,
+                    x_range: slice.x_range,
+                    y_range: slice.y_range,
+                    hilbert_range: slice.hilbert_range,
+                    archive_bytes: chunk_archive,
+                });
             }
 
-            Ok(archives)
+            let outer_manifest = HexonManifest {
+                schema_version: "1.0.0".into(),
+                hexon_id: tileset_id.clone(),
+                hexon_type: HexonType::TerrainTileset,
+                publisher_did: publisher_did.into(),
+                publisher_name: None,
+                version: "0.1.0".into(),
+                build_id: None,
+                name: format!("Terrain Tileset — {}", self.region_name),
+                description: Some(format!(
+                    "Elevation tileset for {} ({} tiles across {} chunks, zoom {}-{})",
+                    self.region_name,
+                    tiles.len(),
+                    total_chunks,
+                    self.min_zoom,
+                    self.max_zoom
+                )),
+                tags: vec!["terrain".into(), "tileset".into(), "container".into()],
+                created_at: now.clone(),
+                updated_at: now,
+                source_peer_did: None,
+                approx_size_bytes: Some(tiles.iter().map(|(_, d)| d.len() as u64).sum()),
+                min_engine_version: None,
+                homepage_url: None,
+                dependencies: vec![],
+                platforms: vec![],
+                address: None,
+                integrity: None,
+                signature: None,
+            };
+            let outer_meta = TilesetMeta {
+                bounds: self.bounds,
+                min_zoom: self.min_zoom,
+                max_zoom: self.max_zoom,
+                tile_size: 256,
+                elevation_encoding: self.elevation_encoding.clone(),
+                tile_count: tiles.len() as u32,
+                region_name: self.region_name.clone(),
+                crs: None,
+                ..Default::default()
+            };
+            let container_bytes =
+                HexonArchive::export_chunked(outer_manifest, &outer_meta, &chunk_inputs)
+                    .context("failed to export chunked container")?;
+
+            match signing_key {
+                Some(key) => {
+                    fe_format::seal(&container_bytes, key).context("failed to seal container")
+                }
+                None => Ok(container_bytes),
+            }
+        }
+
+        /// Download then package into a sealed chunked container — the
+        /// network-fetching convenience wrapper over
+        /// [`Self::package_tiles_chunked`] (step 1: `download_tiles`, step 4's
+        /// pure packaging). Returns ONE `.hexon` container instead of the old
+        /// `Vec<Vec<u8>>` of separately unsigned chunk archives, since a
+        /// container's chunks are independently recoverable via
+        /// `fe_format::HexonArchiveIndex::chunk` without flattening.
+        pub async fn package_chunked(
+            &self,
+            publisher_did: &str,
+            signing_key: Option<&ed25519_dalek::SigningKey>,
+            max_chunk_size_mb: u32,
+        ) -> Result<Vec<u8>> {
+            let (_result, tiles) = self.download_tiles().await?;
+            self.package_tiles_chunked(&tiles, publisher_did, signing_key, max_chunk_size_mb)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ed25519_dalek::SigningKey;
+        use fe_format::{verify_archive, HexonArchiveIndex, IntegrityPolicy, IntegrityStatus};
+
+        /// S6: `package_tiles_chunked` produces a container whose OUTER seal
+        /// survives — unlike the legacy per-chunk-manifest signing this
+        /// replaces, there is one signature to check, over one committed
+        /// `chunks/index.json`.
+        #[test]
+        fn package_tiles_chunked_produces_a_container_that_verifies_sealed() {
+            let key = SigningKey::from_bytes(&[41u8; 32]);
+            let builder = TilesetBuilder::new(
+                "Flow Region",
+                [45.0, -122.0, 46.0, -121.0],
+                10,
+                10,
+                ElevationEncoding::TerrainRgb,
+            );
+            // 6 tiles x 300 KiB = ~1.8 MiB raw, well over the 1 MiB cap below,
+            // so the greedy size-fill must split this into more than one chunk.
+            let tiles: Vec<(String, Vec<u8>)> = (0..6u32)
+                .map(|x| (format!("10/{x}/0"), vec![x as u8; 300 * 1024]))
+                .collect();
+
+            let container = builder
+                .package_tiles_chunked(&tiles, "did:key:z6Mkbuilder", Some(&key), 1)
+                .expect("package_tiles_chunked failed");
+
+            let status = verify_archive(&container, &IntegrityPolicy::default())
+                .expect("container must verify");
+            assert_eq!(
+                status,
+                IntegrityStatus::Sealed {
+                    publisher_did: fe_format::verifying_key_to_did(&key.verifying_key())
+                }
+            );
+
+            let path = std::env::temp_dir().join(format!(
+                "fe_builder_chunked_test_{}.hexon",
+                std::process::id()
+            ));
+            std::fs::write(&path, &container).unwrap();
+            let index = HexonArchiveIndex::open(&path).expect("open container");
+            assert!(matches!(
+                index.layout(),
+                fe_format::Layout::Container { chunk_count } if chunk_count > 1
+            ));
+            // Every original tile is reachable through SOME chunk.
+            for (key, _) in &tiles {
+                let (z, x, y) = {
+                    let mut p = key.split('/');
+                    (
+                        p.next().unwrap().parse::<u8>().unwrap(),
+                        p.next().unwrap().parse::<u32>().unwrap(),
+                        p.next().unwrap().parse::<u32>().unwrap(),
+                    )
+                };
+                let bundle_index: fe_format::manifest::TilesetBundleIndex = serde_json::from_slice(
+                    &index
+                        .read_member(fe_format::integrity::CHUNK_INDEX_PATH)
+                        .unwrap()
+                        .unwrap(),
+                )
+                .unwrap();
+                assert!(
+                    bundle_index.bundle_for_tile(z, x, y).is_some(),
+                    "tile {key} must be covered by some chunk"
+                );
+            }
+            let _ = std::fs::remove_file(&path);
         }
     }
 }
