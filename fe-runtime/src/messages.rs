@@ -690,6 +690,24 @@ pub enum DbCommand {
         petal_id: String,
         correlation_id: Option<String>,
     },
+    // --- Device enrolment (CDL-R2, W4-8) ---
+    /// Sign this node's X25519 device key into a self-signed SPEC-3 §10.2.1 enrolment (owner
+    /// R2), store it, and publish the row into `verse_id`'s replica. Explicit only: nothing
+    /// auto-enrols (fe-database `canon_log/AGENTS.md` §device-enrolment). Replies
+    /// `LocalDeviceEnrolled`; a failure is `RequestFailed` when correlated, else `Error`.
+    EnrolLocalDevice {
+        verse_id: String,
+        correlation_id: Option<String>,
+    },
+    /// Sign a revocation (signed tombstone) of one of this principal's device keys, store it and
+    /// publish it into `verse_id`'s replica; revoking this node's own key rotates it. Replies
+    /// `LocalDeviceRevoked`; failures as `EnrolLocalDevice`.
+    RevokeLocalDevice {
+        verse_id: String,
+        /// Lowercase hex of the 32-byte X25519 device key.
+        device_key_hex: String,
+        correlation_id: Option<String>,
+    },
     // --- Inbound P2P replication (A4 seam) ---
     /// Apply one row received from a peer's verse replica.
     ///
@@ -1070,6 +1088,21 @@ pub enum DbResult {
     RequestFailed {
         error: String,
         correlation_id: String,
+    },
+    /// Reply to `EnrolLocalDevice`: the row the slot holds, already published.
+    LocalDeviceEnrolled {
+        verse_id: String,
+        record_id_hex: String,
+        principal_did: String,
+        device_key_hex: String,
+        correlation_id: Option<String>,
+    },
+    /// Reply to `RevokeLocalDevice`: the tombstone the slot holds, already published.
+    LocalDeviceRevoked {
+        verse_id: String,
+        record_id_hex: String,
+        device_key_hex: String,
+        correlation_id: Option<String>,
     },
     /// Result of `ApplyReplicatedRow` — how the DB thread reconciled one
     /// inbound replicated row (A4).

@@ -960,3 +960,16 @@ A new write on the reader, especially anything that touches `node_log`
 Tests: `tests/shared_handle_test.rs` (DB-thread write read back through the
 clone on a foreign runtime while the DB thread idles; after shutdown the clone
 errors promptly instead of hanging).
+
+## §canon-log-materialization
+
+The Canonical Fractal Data Log's SurrealDB half lives in `canon_log/` and is documented in
+`canon_log/AGENTS.md`. That covers the verified log, admission order, rebuild and checkpoints,
+epoch state, the W4-7 durable authority sources and production verifier, and the W4-8 device
+enrolment registry. The legacy-to-canonical migration harness lives in `migration/` and is
+documented in `migration/AGENTS.md`. §log-first-commit above still describes the only live write
+path. `canon_log` is parallel and dormant, with one exception: `canon_device_enrolment` rows.
+They are owner-decided (R2) ordinary replicated rows, written by
+`DbCommand::EnrolLocalDevice` / `RevokeLocalDevice`. Inbound, they are admitted by signed
+self-authorship, not role, in `handlers::replicated_row` (`canon_log/AGENTS.md`
+§device-enrolment).

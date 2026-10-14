@@ -1516,6 +1516,20 @@ pub fn spawn_db_thread_shared(
                             Err(e) => send_result(&tx, DbResult::Error(format!("Uninstall crate failed: {e}"))),
                         }
                     }
+                    // CDL-R2 (W4-8): self-signed device enrolment, published as an
+                    // ordinary replicated row (canon_log/AGENTS.md §device-enrolment).
+                    Ok(DbCommand::EnrolLocalDevice { verse_id, correlation_id }) => {
+                        let reply = canon_log::device_enrolment::enrol_local_device_reply(
+                            &db, &blob_store, repl_tx.as_ref(), keypair.as_ref(), secret_store.as_ref(), verse_id, correlation_id,
+                        ).await;
+                        send_result(&tx, reply);
+                    }
+                    Ok(DbCommand::RevokeLocalDevice { verse_id, device_key_hex, correlation_id }) => {
+                        let reply = canon_log::device_enrolment::revoke_local_device_reply(
+                            &db, &blob_store, repl_tx.as_ref(), keypair.as_ref(), secret_store.as_ref(), verse_id, device_key_hex, correlation_id,
+                        ).await;
+                        send_result(&tx, reply);
+                    }
                     // A4: inbound replicated row — applied on the DB thread
                     // (the single SurrealDB writer). The handler takes no
                     // replication sender and this arm passes none, so an

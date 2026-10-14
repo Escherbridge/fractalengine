@@ -366,9 +366,9 @@ crate's own tests; what is missing is the *durable*, database-backed caller a la
 | `AuthorKeyLifecycleView` | `compose::CausalLifecycleView` (W4-3); durable: `fe-database canon_log::author_lifecycle::DurableAuthorKeyLifecycle` (W4-7), rebuilt from `verified_op_log` | `compose::ComposedCandidateVerifier::verify_authorization`, inside the durable verifier (W4-7) |
 | `admit_rotation` / `admit_disavow` / `admit_disavow_rescind` / `admit_continuity_grant` | `author_key::admission` (W2) | `compose::LifecycleDispatcher::dispatch` (W4-3) — the four SPEC-2 entrypoints now have a production caller |
 | `MaterializerVersion::registry_id` mapping | `materialize::identity::MaterializerVersion` (W4-3) | `compose::checkpoint_binding_for_selection` (W4-3) |
-| `DeviceEnrolmentView` | `crypto::device_enrolment::EnrolmentRegistry` (W4-6) | fe-database `canon_log::device_enrolment::DurableDeviceEnrolmentView` (W4-8, not yet landed) loads its table into it; exercised in-process by `cross_spec_integration.rs::a_device_enrolment_gates_a_scope_key_wrap` |
+| `DeviceEnrolmentView` | `crypto::device_enrolment::EnrolmentRegistry` (W4-6) | fe-database `canon_log::device_enrolment::DurableDeviceEnrolmentView` (W4-8) loads its table into it, re-verifying every row; exercised in-process by `cross_spec_integration.rs::a_device_enrolment_gates_a_scope_key_wrap` |
 | `ManagerPlusAuthorizationView` | `fe-database canon_log::canonical_epoch::DurableAuthorizationView` (W4-7; checkpoint chains from `chain_store::ChainStore`) | `fe-database canon_log::rebuild::AdmittedCheckpoint::admit` |
-| `DeliveryAuthorizationView` | none yet | W4-8 |
+| `DeliveryAuthorizationView` | fe-database `canon_log::device_enrolment::DurableDeliveryView` (W4-8): issuer half from `DurableAuthorizationView`, device half from `DurableDeviceEnrolmentView`, recipient `decrypt/op` from held chains in `ChainStore` | `crypto::key_wrap::issue_scope_key_wrap` / `RecipientDeviceBinding::resolve`; the §10.2.4 delivery transport that would call them in production is NO_GO |
 
 ## §materializer-identity — one mapping from name/number to identifier
 

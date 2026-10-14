@@ -8,7 +8,8 @@
 //! A3: admission is role-gated here (deny-by-default). The author's role is
 //! resolved from the local tables at the verse scope — never from the wire —
 //! and must reach Editor+ (the same fe-policy standard write gate as the
-//! local path). See [`admit_inbound_row`].
+//! local path). See [`admit_inbound_row`]. The one exception is `canon_device_enrolment`,
+//! gated on signed self-authorship instead of role (`canon_log/AGENTS.md` §device-enrolment).
 //!
 //! M2/F5: dispatch is keyed on [`ReplicationMode::for_table`] — `Row` tables
 //! take the tombstone-aware merge, `Timeseries` tables (`iot_reading`) the
@@ -198,6 +199,11 @@ async fn apply_row_mode(
             apply_static_row(db, table, record_id, row_bytes).await
         }
         "node" => apply_node_row(db, record_id, row_bytes, entity_change_tx).await,
+        // Revocation dominates; the unsigned `del` marker is NotApplicable (§device-enrolment).
+        crate::canon_log::device_enrolment::DEVICE_ENROLMENT_TABLE => {
+            crate::canon_log::device_enrolment::apply_replicated_enrolment(db, record_id, row_bytes)
+                .await
+        }
         other => {
             tracing::debug!(
                 table = other,
@@ -292,6 +298,21 @@ async fn admit_inbound_row(
                 ));
             }
         }
+    }
+
+    // Device enrolment (owner R2, W4-8): admitted iff the signed artifact verifies AND its
+    // principal is the entry author, whatever that author's role. It must run BEFORE the
+    // bootstrap window, or a forged pre-manifest enrolment would slip in unchecked; see
+    // canon_log/AGENTS.md §device-enrolment.
+    if table == crate::canon_log::device_enrolment::DEVICE_ENROLMENT_TABLE {
+        return Ok(
+            match crate::canon_log::device_enrolment::admit_replicated_enrolment(
+                record_id, row_bytes, author_did,
+            ) {
+                Ok(()) => Admission::Allow,
+                Err(reason) => Admission::Deny(reason),
+            },
+        );
     }
 
     // Bootstrap window (see the doc comment above).

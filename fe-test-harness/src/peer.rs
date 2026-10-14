@@ -1048,6 +1048,19 @@ impl TestPeer {
                                 Err(e) => tracing::warn!("harness peer asset GC failed: {e}"),
                             }
                         }
+                        // CDL-R2 device enrolment (W4-8) — covered by
+                        // fe-database/tests/device_enrolment_test.rs, not this
+                        // mock peer — surface, don't drop. (Inbound enrolment
+                        // rows still take the REAL apply path below.)
+                        Ok(DbCommand::EnrolLocalDevice { .. })
+                        | Ok(DbCommand::RevokeLocalDevice { .. }) => {
+                            db_result_tx
+                                .send(DbResult::Error(
+                                    "device enrolment not simulated by the test-harness peer"
+                                        .to_string(),
+                                ))
+                                .ok();
+                        }
                         // F13 API asset ingest — covered by fe-database/fe-api
                         // tests, not this mock peer — surface, don't drop.
                         Ok(DbCommand::CreateAsset { .. })

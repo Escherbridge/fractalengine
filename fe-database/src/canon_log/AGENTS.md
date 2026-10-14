@@ -15,6 +15,13 @@ implementation that will be cut over by a later, owner-gated slice under SPEC-8,
 SPEC-4 §10 explicitly defer GLTF import, node duplicate/rename, and Verse/Fractal/Petal
 creation until each has an atomic intent schema and a replay contract.
 
+**One deliberate exception: `device_enrolment` (W4-8).** Owner decision R2 makes the device
+enrolment an ordinary replicated row, so the dispatch loop reaches it through
+`DbCommand::EnrolLocalDevice` / `RevokeLocalDevice`, and `handlers::replicated_row` reaches it
+through one admission branch and one apply arm. That is legacy-row-plane data (public keys and
+signatures), not canonical-log traffic: no operation envelope, segment or `/ws/canonical` frame
+moves. See §device-enrolment.
+
 Dormant is a fact about wiring, not a licence for untested code: every gate here has a test,
 and the two obligations `fe-canonical-log`'s `capability/AGENTS.md` §revalidation and
 `branch/AGENTS.md` hand to Wave 3 are discharged in this module (see §obligations-discharged).
@@ -25,7 +32,9 @@ and the SurrealDB projection derivative, so an admin "clear everything" that era
 `verified_op_log` would destroy history no rebuild could recover. The same holds for W4-7's
 three durable authority sources (`canon_capability_chain`, `canon_sealed_artifact`,
 `canon_scope_key_index`): clearing them silently turns admitted history into un-reopenable
-ciphertext and quarantines every later candidate.
+ciphertext and quarantines every later candidate. `canon_device_enrolment` (W4-8) is excluded for a sharper
+reason: a revocation only dominates while its row is held, so clearing the table would let a
+replayed stale enrolment re-grant a revoked device.
 
 ## §verified-log
 
@@ -318,13 +327,16 @@ the role table — and does NOT route through `authority_is_manager_plus`: the w
 `CapabilityRef.chain_id` names a certificate chain, not an `issuer_authority_id`, so feeding it
 to the anchor check would be a second, invented mapping that refuses every real wrap. The
 `chain_id` is not resolved for the wrap check; the signed reference's epoch is checked by
-`open_scope_key` itself. (W4-7's `chain_store::ChainStore` now exists; W4-8's
+`open_scope_key` itself. (W4-7's `chain_store::ChainStore` exists; W4-8's
 `DurableDeliveryView` uses it for the recipient-decrypt half, not for this issuer half.) `ManagerPlus`→`Granted`,
 `NotManagerPlus`→`Refused`, `Unknown`→`Unknown`; both non-`Granted` answers refuse. Test:
 `opening_a_wrap_asks_the_durable_view_whether_its_issuer_is_manager_plus`. The
-`DeviceEnrolmentView` half is decided (owner R2, 2026-10-13: self-signed, replicated) and the
-protocol artifact exists (`fe-canonical-log` `crypto::device_enrolment`, W4-6); its durable
-registry is W4-8's `canon_log::device_enrolment`, not yet landed.
+`DeviceEnrolmentView` half is decided (owner R2, 2026-10-13: self-signed, replicated), the
+protocol artifact exists (`fe-canonical-log` `crypto::device_enrolment`, W4-6), and its durable
+registry is `device_enrolment::DurableDeviceEnrolmentView` (W4-8).
+`device_enrolment::DurableDeliveryView` composes this view's issuer half with that registry
+and a `decrypt` check over the `ChainStore` into the production `DeliveryAuthorizationView`, so
+`issue_scope_key_wrap` has a durable answer to all three §10.2.1 questions (§device-enrolment).
 
 **Checkpoint authority (W4-7).** `DurableAuthorizationView` also implements
 `checkpoint::ManagerPlusAuthorizationView`, so `rebuild::AdmittedCheckpoint::admit` has a
@@ -434,6 +446,104 @@ and recorded in `fe-canonical-log/src/AGENTS.md` §Provisional wire numbering.
 Tests: `fe-database/tests/canon_log_composed_admission_test.rs`, through the real DB thread's
 shared handle over an on-disk store that is joined and reopened.
 
+## §device-enrolment
+
+SPEC-3 §10.2.1 "a recipient device enrolls one X25519 public key bound to its principal", under
+owner decision R2 (2026-10-13): the principal's Ed25519 key signs `{principal, device X25519 key,
+enrolled_at}`, only that principal may write it, it replicates as an ordinary row, and revocation
+is a signed tombstone. The protocol artifact and the pure `EnrolmentRegistry` are W4-6
+(`fe-canonical-log` `crypto/AGENTS.md` §device-enrolment); `device_enrolment.rs` is the durable
+half.
+
+**Table.** `canon_device_enrolment`, one row per `enrolment_record_id(principal, device_key)`
+(lowercase hex; also the wire key): `principal_did`, `device_key_hex`, `artifact_cbor` (base64 of
+the exact canonical artifact) and `revoked`. `artifact_cbor` is the only authority.
+`EnrolmentRow::verify` runs W4-6's `VerifiedEnrolmentArtifact::decode_and_verify`, where the
+signature DOMAIN decides enrolment vs revocation, and then refuses a row whose other columns are
+not exactly the ones that artifact derives. So a `revoked` column, a DID or a record id can never
+be asserted, only re-derived. The table is not in `ALL_TABLE_NAMES` (§parallel-and-dormant).
+
+**One write door.** `store_verified_artifact` takes only a `VerifiedEnrolmentArtifact`, which has
+no unverified spelling. It loads the held slot and converges through `EnrolmentRegistry::record`:
+a revocation beats every enrolment whatever the timestamps say (auth is never LWW), and within one
+class the earliest assertion and then the smallest bytes win, so every arrival order stores the
+same bytes. It reports `Stored`, `Unchanged` or `DominatedByRevocation`. A held row that no longer
+verifies is a `StorageError`, never overwritten: replacing an unreadable revocation with a fresh
+enrolment would un-revoke a device. The DB thread is the single writer, so read-then-write is
+not racy.
+
+**Local commands** (`DbCommand::EnrolLocalDevice` / `RevokeLocalDevice`, both correlated; a
+failure is `RequestFailed` when correlated, else `Error`):
+
+- The principal is the node `NodeKeypair`. Its did:key is exactly the entry-author DID fe-sync
+  attests for this node's rows, which is what makes the inbound self-authorship check line up.
+  If the keypair is missing, the command returns `MissingNodeKeypair`; nothing is ever signed
+  with a placeholder.
+- The device key lives in `SecretStore` service `fractalengine`, account `device_keypair`
+  (`LOCAL_DEVICE_KEY_ACCOUNT`), via `fe_identity::load_or_generate_device_keypair`. It is
+  independent of the Ed25519 identity key (fe-identity §x25519-device-key).
+- The verse must be known locally. The HELD row (which may be an earlier same-class winner, so
+  replicas converge) is published through `replicate_row` into that verse's replica. That adds
+  no transport and does not change the shape of `WriteRowEntry`.
+- **Explicit only.** Nothing auto-enrols when a replica opens. A published X25519 key is a stable
+  identifier every replica member sees (campaign plan §5 risk 3). The only consumer, §10.2.4 wrap
+  delivery, is NO_GO, so publishing a key nobody asked for would only add linkability.
+- Revocation dominates forever, so a revoked key can never be re-enrolled. `RevokeLocalDevice`
+  of this node's current key therefore deletes that secret AFTER the tombstone is stored, and
+  the next enrolment mints a fresh key. A crash between the two leaves a revoked secret, which
+  `EnrolLocalDevice` refuses with `DeviceKeyRevoked`. That fails closed, and revoking again
+  repairs it. `RevokeLocalDevice` takes any of the principal's device keys (a lost device),
+  so it needs no secret store.
+
+**Inbound** (`handlers::replicated_row`):
+
+- `admit_inbound_row` runs the enrolment branch BEFORE the bootstrap window. It admits iff the
+  artifact verifies, the wire key is its record id, and `author_did == principal.did`. That
+  check is role-independent: a Viewer must be able to enrol to receive keys. Run after the
+  window, a forged pre-manifest enrolment would slip in (plan §5 risk 2). The
+  table-driven test pins that ordering.
+- The empty `Doc::del` marker is admitted and then reported `NotApplicable`. It carries no
+  signature, so it can never revoke anything.
+- The apply arm re-verifies, so no caller can store unverified bytes, then converges through the
+  write door. `Stored` revocation → `AppliedTombstone`; `Stored`/`Unchanged` → `Applied`; an
+  enrolment dominated by a held revocation → `SkippedTombstoned`.
+- The registry is principal-keyed and accepts a valid row from any verse (plan §8 assumption).
+
+**Views.** `DurableDeviceEnrolmentView` is a startup snapshot. It loads every row through
+`EnrolmentRow::verify` into an `EnrolmentRegistry`; an unverifiable row is not held (its slot
+answers `Unknown`, which refuses) and is listed in `load_faults`. Reload it after an enrolment
+write. `DurableDeliveryView` is the production `DeliveryAuthorizationView`:
+
+- **Issuer:** the `DurableAuthorizationView` issuer half (§interim-manager-authority).
+- **Device:** this registry.
+- **Recipient `decrypt`:** every held chain whose leaf audience is the recipient, verified with
+  SPEC-3 §2.4 for `decrypt/op` at exactly the delivery's scope and epoch, recipient as requester,
+  live policy. Any chain that verifies gives `Granted`. No held chain, or only chains whose epoch
+  scope the view cannot resolve (`EpochScopeUnknown`, an evidence gap), gives `Unknown`. Held
+  chains that all fail give `Refused`. `decrypt/op` is used because the scope key is what opens
+  the scope's operation payloads (SPEC-3 §3 table row `op`).
+
+**Security-review items (end-of-campaign `/security-review`, critic C8(iv)).**
+
+- **Role-None enrolment rows. Decision recorded, no floor:** any replica member can publish
+  enrolments for its own principal, whatever its role. Spam is bounded to holders of the
+  replica's namespace capability, and every row is signed by its own principal, one slot per
+  (principal, device). A role floor would lose every enrolment that arrives before the manifest
+  or role rows converge, and would stop Viewers from receiving keys. The residual risk is
+  storage growth: one principal can publish unboundedly many device keys. The eventual holder is
+  role_propagation RP-3/RP-4's Deferred mechanism. RP-3/RP-4 must keep this branch first and
+  role-independent (plan §9 later-phase obligations). A reviewer may instead set a floor here,
+  which is a cheap reversal (plan §8).
+- `RevokeLocalDevice` deletes the local device secret. Any wrap previously sealed to that key
+  becomes unopenable here; keys already received are held in scope-key custody, not in the wrap.
+- The view is a snapshot. A revocation that arrives after `DurableDeliveryView::load` is not
+  seen until the next load, so an issuer must load the view right before issuing.
+
+Tests: `fe-database/tests/device_enrolment_test.rs`. They cover the local enrol path, the
+revoke-and-rotate path, a missing keypair, the table-driven inbound admission (including the
+pre-manifest case and the `del` marker), revocation surviving a late replay, and the ledger's
+three CDL-R2 delivery outcomes plus a recipient with no `decrypt` chain.
+
 ## §obligations-discharged
 
 | Obligation | Source | Where |
@@ -443,6 +553,7 @@ shared handle over an on-disk store that is joined and reopened.
 | Ask the SPEC-3 §5.1 Manager+ question on every epoch bump | SPEC-3 §5.1 | `canonical_epoch::SurrealScopeEpochStore::admit_epoch_bump` — `authority: &dyn ManagerAuthorityView` is a required parameter and the question is asked before any state is touched |
 | Implement `VerseDagView` over `fe-database` | `branch/AGENTS.md` | `append_store::SurrealVerseDagView` — admission and equivocation from `verified_op_log`, genesis from admitted kind-2 rows (ambiguous genesis answers `None`), replay-verified recorded only by an actually-completed **from-empty** rebuild, through a `pub(crate)` setter |
 | Give `CandidateVerifier`, `ManagerPlusAuthorizationView`, `AuthorKeyLifecycleView` and scope-key custody a durable production implementor | campaign plan W4-7 / ledger CDL-W4 | §durable-authority-sources, §production-verifier |
+| Give `DeviceEnrolmentView` and `DeliveryAuthorizationView` a durable production implementor | campaign plan W4-8 / ledger CDL-R2 | §device-enrolment |
 
 Still open, and not this module's to close: `CacheKey`/`PinnedSession` wiring in `fe-api` and
 `fe-network` (§5.3 obligations 1 and 3), and the SPEC-2 authority history that replaces

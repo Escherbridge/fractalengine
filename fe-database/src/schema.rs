@@ -431,6 +431,21 @@ define_table! {
     }
 }
 
+define_table! {
+    /// SPEC-3 §10.2.1 self-signed device enrolments and revocations (owner R2, W4-8), one row
+    /// per (principal, device) record id. Replicated as an ordinary row; `artifact_cbor` is the
+    /// authority and every other column is re-derived from it (`canon_log/AGENTS.md`
+    /// §device-enrolment).
+    table "canon_device_enrolment" => CanonDeviceEnrolment (id: record_id) {
+        record_id:      String => "TYPE string",
+        principal_did:  String => "TYPE string",
+        device_key_hex: String => "TYPE string",
+        /// Standard base64 of the exact canonical artifact bytes.
+        artifact_cbor:  String => "TYPE string",
+        revoked:        bool   => "TYPE bool",
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Convenience helpers
 // ---------------------------------------------------------------------------
@@ -477,6 +492,7 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     Repo::<CanonCapabilityChain>::apply_schema(db).await?;
     Repo::<CanonSealedArtifact>::apply_schema(db).await?;
     Repo::<CanonScopeKeyIndex>::apply_schema(db).await?;
+    Repo::<CanonDeviceEnrolment>::apply_schema(db).await?;
 
     // Critical indexes for query performance
     db.query("DEFINE INDEX IF NOT EXISTS idx_node_petal ON TABLE node FIELDS petal_id")
@@ -586,6 +602,8 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
         .await?.check().map_err(|e| anyhow::anyhow!("idx_canon_sealed_artifact_id: {e}"))?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_canon_scope_key_index_key ON TABLE canon_scope_key_index FIELDS index_key UNIQUE")
         .await?.check().map_err(|e| anyhow::anyhow!("idx_canon_scope_key_index_key: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_canon_device_enrolment_record ON TABLE canon_device_enrolment FIELDS record_id UNIQUE")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_canon_device_enrolment_record: {e}"))?;
 
     Ok(())
 }

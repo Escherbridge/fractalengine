@@ -85,6 +85,8 @@ const OTHER_DISPATCHED_MUTATION_KINDS: &[&str] = &[
     "GcUnreferencedAssets",
     "CreateNodeWithAsset",
     "ElevatedQuery",
+    "EnrolLocalDevice",
+    "RevokeLocalDevice",
 ];
 
 /// Registry of every currently-dispatched mutation kind's canonical-mapping

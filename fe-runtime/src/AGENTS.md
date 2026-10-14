@@ -304,6 +304,14 @@ order:
   terrain's split Fetch/Set families — render distance has no desktop
   live-apply consumer to protect from a correlated echo). Failures use the
   generic `RequestFailed` (below), never a bespoke variant.
+  **Device enrolment (2026-10-14, CDL-W4 W4-8).** `EnrolLocalDevice` /
+  `RevokeLocalDevice` carry `correlation_id: Option<String>` and share ONE
+  family, `ReplyKind::DeviceEnrolment`, answered by `LocalDeviceEnrolled` /
+  `LocalDeviceRevoked` (each echoes the id). Failures are `RequestFailed`
+  when correlated and `Error` when not (`handlers::correlated_failure`). No
+  caller exists yet: the commands are explicit-only by design (fe-database
+  `canon_log/AGENTS.md` §device-enrolment). Test:
+  `device_enrolment_replies_reach_only_their_own_waiter`.
 - **Typed correlated failure — `RequestFailed` (2026-10-11, RT-CORR-EDGE).**
   `DbResult::RequestFailed { error, correlation_id }` is the generic failure
   for correlated commands whose family has no family-specific failure

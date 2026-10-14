@@ -251,6 +251,8 @@ fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
         | DbCommand::SetScopeHidden { correlation_id, .. }
         | DbCommand::SetPetalRenderDistance { correlation_id, .. }
         | DbCommand::GetPetalRenderDistance { correlation_id, .. }
+        | DbCommand::EnrolLocalDevice { correlation_id, .. }
+        | DbCommand::RevokeLocalDevice { correlation_id, .. }
         | DbCommand::RawQuery { correlation_id, .. } => correlation_id.as_deref(),
         DbCommand::ElevatedQuery { correlation_id, .. } => Some(correlation_id.as_str()),
         _ => None,
@@ -269,6 +271,8 @@ fn correlation_of_result(result: &DbResult) -> Option<&str> {
         | DbResult::PetalVisibilityGroupsLoaded { correlation_id, .. }
         | DbResult::ScopeHiddenSet { correlation_id, .. }
         | DbResult::PetalRenderDistanceLoaded { correlation_id, .. }
+        | DbResult::LocalDeviceEnrolled { correlation_id, .. }
+        | DbResult::LocalDeviceRevoked { correlation_id, .. }
         | DbResult::QueryResult { correlation_id, .. } => correlation_id.as_deref(),
         DbResult::QueryFailed { correlation_id, .. }
         | DbResult::PetalTerrainSetFailed { correlation_id, .. }
@@ -324,6 +328,8 @@ enum ReplyKind {
     ScopeHidden,
     /// `Set`/`GetPetalRenderDistance` replies (`PetalRenderDistanceLoaded`).
     RenderDistance,
+    /// `EnrolLocalDevice`/`RevokeLocalDevice` replies (`LocalDeviceEnrolled`/`LocalDeviceRevoked`).
+    DeviceEnrolment,
 }
 
 /// The reply family `cmd` produces, or `None` when the command has no reply on
@@ -373,6 +379,7 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
         }
         SetScopeHidden { .. } => ReplyKind::ScopeHidden,
         SetPetalRenderDistance { .. } | GetPetalRenderDistance { .. } => ReplyKind::RenderDistance,
+        EnrolLocalDevice { .. } | RevokeLocalDevice { .. } => ReplyKind::DeviceEnrolment,
         _ => return None,
     })
 }
@@ -427,6 +434,7 @@ fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
         PetalVisibilityGroupsLoaded { .. } => ReplyKind::VisibilityGroups,
         ScopeHiddenSet { .. } => ReplyKind::ScopeHidden,
         PetalRenderDistanceLoaded { .. } => ReplyKind::RenderDistance,
+        LocalDeviceEnrolled { .. } | LocalDeviceRevoked { .. } => ReplyKind::DeviceEnrolment,
         _ => return None,
     })
 }
@@ -945,6 +953,52 @@ mod tests {
         assert!(matches!(
             rx.try_recv(),
             Ok(DbResult::NodeViewSet { correlation_id: Some(ref c), .. }) if c == "api-view-1"
+        ));
+    }
+
+    /// W4-8: an enrol waiter receives only its own echo, a revoke waiter its own
+    /// tombstone reply, and a correlated failure reaches the one entry it names.
+    #[test]
+    fn device_enrolment_replies_reach_only_their_own_waiter() {
+        let enrolled = |correlation_id: Option<&str>| DbResult::LocalDeviceEnrolled {
+            verse_id: "v".to_string(),
+            record_id_hex: "r".to_string(),
+            principal_did: "did:key:z".to_string(),
+            device_key_hex: "d".to_string(),
+            correlation_id: correlation_id.map(str::to_string),
+        };
+        let mut pending = PendingApiRequests::default();
+        let (enrol_tx, mut enrol_rx) = tokio::sync::oneshot::channel();
+        let (revoke_tx, mut revoke_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(
+            &DbCommand::EnrolLocalDevice {
+                verse_id: "v".to_string(),
+                correlation_id: Some("api-enrol".to_string()),
+            },
+            enrol_tx,
+        );
+        pending.enqueue_for(
+            &DbCommand::RevokeLocalDevice {
+                verse_id: "v".to_string(),
+                device_key_hex: "d".to_string(),
+                correlation_id: Some("api-revoke".to_string()),
+            },
+            revoke_tx,
+        );
+        assert!(!pending.try_deliver(enrolled(None)));
+        assert!(enrol_rx.try_recv().is_err(), "an uncorrelated echo leaked");
+        assert!(pending.try_deliver(enrolled(Some("api-enrol"))));
+        assert!(matches!(
+            enrol_rx.try_recv(),
+            Ok(DbResult::LocalDeviceEnrolled { correlation_id: Some(ref c), .. }) if c == "api-enrol"
+        ));
+        assert!(pending.try_deliver(DbResult::RequestFailed {
+            error: "no node keypair".to_string(),
+            correlation_id: "api-revoke".to_string(),
+        }));
+        assert!(matches!(
+            revoke_rx.try_recv(),
+            Ok(DbResult::RequestFailed { ref correlation_id, .. }) if correlation_id == "api-revoke"
         ));
     }
 
