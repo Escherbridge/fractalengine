@@ -203,3 +203,19 @@ tests non-vacuous; `20bb91b` faithful except 4 defects; W3 script faithful (no r
 | AC-31 | LOW | Plan amendments before W4-7/W4-9 read the plan (C10, C8(iii) correction, strikes, W4-9 owned files, golden test `legacy_identifier_matches_the_canonical_log_cbor_encoder` over id lengths 0/1/23/24/255/256; RP C10 + ledger `:243` terrain_bridge/petal_binding + streamed-TOFU item); manifest note to copy W4-9 evidence JSON before any target/ prune | **ACCEPT** → docs agent now (plans + ledger); manifest note added by the orchestrator |
 | AC-32 | LOW | Orchestrator duties: review rows W2b + ticks 5/6; RUNBOOK §2 `:116` stale; at W3 close verify docs verdict lines, run both C6 greps, fe-identity `--no-default-features --tests` if touched | **ACCEPT** → rows + §2 fixed now; W3-close items on the checklist |
 | watch | — | 681 processes (> the 646 lag mark) | dry-run reap of own strays at the next boundary |
+
+### W3 close — 2026-10-14
+- **W3 CDL-W4 DONE** (`38dd271..381264e`, 12 agents, ~3.8 h): W4-1..W4-9 all gate_green; security
+  review `e886539` FIXED (MED: device-enrolment rows were the one row-plane table exempt from A3
+  deny-by-default — membership floor added, overriding W4-8's interim "no floor"; LOWs: pipeline byte
+  binding, keystore secret text in hex-decode errors); correctness review `00a2a08` FIXED (MED: W4-1
+  counter tests raced on process-global counters; MED: KTX2-refused-import-counts rule untested → test
+  added; 3 L). Docs `381264e` recorded both verdicts in G-WAVE-4 + the decisions record (verified).
+- **AC-32 checks:** fe-identity untouched (no extra check needed); C6 NO_GO greps clean —
+  `build_router_with_canonical_log` callers only inside `router.rs` `#[cfg(test)]` (0 in binaries/server),
+  `commit_operation_dual_emit` called nowhere live; KTX2-attempt rule documented (`migration/AGENTS.md:90`).
+- **Routed:** W4-2's replay-time payload-facts deferral → ledger CDL-REPLAY-PAYLOAD-FACTS (owner decision:
+  crypto-shredded key semantics on replay; first consumer SPEC10 B3). Accepted residuals: revocation reach
+  per verse (documented); quarantine outcomes mapped to best-fit Rejected wire categories pending owner
+  ratification (W4-4); W4-9 network metrics structurally zero (NO_GO).
+- W3 must-cover appended untruncated to the manifest. Next: W3b fixups (AC-30) → critic tick 7 → SPEC-10.
