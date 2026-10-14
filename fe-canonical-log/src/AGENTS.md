@@ -528,6 +528,33 @@ only schema-hash convention any spec states, SPEC-10 §4.1 rule 3:
 The scope-key custody account name `canon-scope-key/<key_id hex>` (service `fractalengine`) is a
 local keystore label, never on the wire, and is not part of this register.
 
+### Provisional — SPEC-8 `node-transform-v1` mapping (`fe-database migration::transform_mapping`)
+
+W4-9. The first reviewed SPEC-8 §4.2 mapping (`UpdateNodeTransform`). SPEC-8 defines no payload,
+so every number here is ours. **Unratified, no interop claimed.**
+
+| Item | Value |
+| --- | --- |
+| Schema name | `node-transform-v1` (kind 1, normal intent) |
+| Schema hash | `BLAKE3("fe-schema-node-transform-v1\0")` (`NODE_TRANSFORM_SCHEMA_DOMAIN`, the SPEC-10 §4.1 rule 3 convention) |
+| Payload key 0 | node anchor: `legacy_identifier("node", node_id)`, 32-byte bstr |
+| Payload key 1 | position, `[i64; 3]` nanometres (SPEC-1 §4 vector codec) |
+| Payload key 2 | rotation, `[i64; 3]` Euler XYZ nanodegrees |
+| Payload key 3 | scale, `[i64; 3]` parts per billion |
+| Shadow materializer | `MaterializerVersion::new("node-transform-shadow", 1)`, id via `registry_id()` |
+
+### Provisional — SPEC-10 §4.5 legacy identifier (`fe-sdk legacy_identifier`)
+
+W4-9 (A1 hand-back, critic C5). SPEC-10 marks the mapping provisional (D-CL34). The single
+implementation lives in fe-sdk; `tests/legacy_identifier_golden.rs` pins its hand-written CBOR to
+this crate's canonical encoder.
+
+| Item | Value |
+| --- | --- |
+| Domain | `fe-legacy-identifier-v1` followed by `00` (`fe_sdk::legacy_identifier::LEGACY_IDENTIFIER_DOMAIN`) |
+| Hashed body | `canonical_cbor([table, id])`, `table` one of `"verse"`, `"petal"`, `"node"` |
+| Refusal | a non-ASCII `id` (NFC cannot be checked in fe-sdk) |
+
 ### Provisional — SPEC-5 checkpoint claim v1 (`checkpoint.rs`)
 
 §3.1 rule 2 gives the bindings as a prose table with no integer keys and rule 3 defers them to

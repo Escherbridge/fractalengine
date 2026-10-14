@@ -13,6 +13,8 @@ fe-identity = { path = "../fe-identity" }
 fe-query = { path = "../fe-query" }
 fe-policy = { path = "../fe-policy" }
 fe-canonical-log = { path = "../fe-canonical-log" }
+# SPEC-10 §4.5 legacy_identifier (migration/AGENTS.md §transform-mapping).
+fe-sdk = { path = "../fe-sdk" }
 surrealdb = { workspace = true }
 async-trait = "0.1"
 tokio = { workspace = true }

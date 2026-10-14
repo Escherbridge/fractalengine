@@ -12,3 +12,4 @@ pub mod mode;
 pub mod rebuild;
 pub mod report;
 pub mod shadow_store;
+pub mod transform_mapping;

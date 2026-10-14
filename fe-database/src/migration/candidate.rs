@@ -16,6 +16,12 @@ pub trait IntentSnapshot {
     fn intent_digest_hex(&self) -> String {
         hex::encode(self.intent_digest())
     }
+
+    /// The intent's own typed fields, for a per-kind derivation to downcast; `None` when the
+    /// snapshot exposes none. Never DB state (see AGENTS.md §candidate-derivation).
+    fn intent_fields(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 /// One scope-local member of a migration candidate set (§4.1.4, §4.2.1).

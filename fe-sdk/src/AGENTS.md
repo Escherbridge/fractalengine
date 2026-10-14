@@ -1,8 +1,11 @@
 # fe-sdk/src — module rationale
 
-`fe-sdk` is the **stable, serde-only** extension API surface. It has exactly two
-dependencies (`serde`, `serde_json`) and must never pull in engine internals
-(Bevy, SurrealDB, wasmtime, rhai). It is the single source of truth for the data
+`fe-sdk` is the **stable, serde-light** extension API surface. Its dependency rule is
+exactly three dependencies (`serde`, `serde_json`, `blake3`) and it must never pull in
+engine internals (Bevy, SurrealDB, wasmtime, rhai). `blake3` was admitted 2026-10-14
+(CDL-W4 W4-9, campaign-plan critic C7) for §legacy-identifier only: it is a pure hash,
+not an engine internal, and SPEC-10 §4.5 rule 2 needs one implementation that every
+consumer can reach. It is the single source of truth for the data
 types the plugin/extension API is expressed in — `fe-plugin` and
 `fe-plugin-test` both re-export these rather than defining parallel copies.
 
@@ -23,6 +26,7 @@ types the plugin/extension API is expressed in — `fe-plugin` and
 | `texture` | `TextureRegistry`, `TextureEntry` — content-addressed textures (§texture) |
 | `ui` | `UiSlot`, `UiContribution`, `UiExtensionRegistry` — UI slot contributions |
 | `events` | `PluginEvent`, `EventSubscription` — inter-plugin events |
+| `legacy_identifier` | `legacy_identifier`, `LegacyTable` — SPEC-10 §4.5 text id -> canonical 32-byte identifier (§legacy-identifier) |
 
 ## §storage
 
@@ -118,3 +122,38 @@ extension-author-facing contract. `fe-plugin` keeps its own concrete host-side
 capability tokens, which are engine-internal). These are deliberately *not*
 unified onto the SDK traits: they are different layers (stable contract vs.
 runtime implementation). Only the serde **data** types are unified.
+
+## §legacy-identifier (CDL-W4 W4-9, SPEC-10 §4.5)
+
+`legacy_identifier.rs` is the **single** implementation of SPEC-10 §4.5's mapping from a
+hot-plane text id (verse, petal, node ULIDs) to a canonical-log `Identifier32`:
+
+```text
+legacy_identifier(table, id) =
+    BLAKE3(ASCII("fe-legacy-identifier-v1") || 00 || canonical_cbor([table, id]))
+```
+
+- **Why here.** SPEC-10 §4.5 rule 2 says the observation family's mapping and SPEC-8's
+  candidate-scope derivation MUST be the same function, and that no second one may exist.
+  fe-sdk is the lightest crate every consumer reaches: fe-canonical-log depends only on
+  fe-sdk, fe-database gained the edge in W4-9 for its `node-transform-v1` mapping, and
+  CDL-SPEC10 B1 (kind-5 `anchors`) and B2 (hexon `anchor` column) call this function
+  rather than hashing locally.
+- **Returns `[u8; 32]`, not `Identifier32`.** `Identifier32` lives in fe-canonical-log,
+  which depends on this crate; callers wrap the bytes (`Identifier32(bytes)`).
+- **Hand-encoded CBOR, no CBOR crate.** The value is always a two-element array of two
+  text strings, so the encoder is the array header `0x82` plus two shortest-form text
+  headers (RFC 8949 §4.2.1). `fe-canonical-log/tests/legacy_identifier_golden.rs` checks
+  it against fe-canonical-log's own canonical encoder at every text-length header boundary
+  (0, 1, 23, 24, 255, 256, 65 535, 65 536 bytes), so the two encoders cannot drift apart
+  silently.
+- **ASCII only, fail closed.** Canonical CBOR text must be Unicode NFC and this crate has
+  no normalizer. A non-NFC id would hash to bytes a canonical encoder refuses or
+  normalizes, which is a second, divergent mapping. Every non-ASCII id is therefore
+  refused (`LegacyIdentifierError::NonAsciiId`); every hot-plane id today is an ASCII ULID.
+- **Enumerable, so never in clear (rule 3).** Anyone who knows a node id can compute its
+  identifier. Callers keep the output inside encrypted payloads, sealed hexons, blinded
+  topics or a header scope, never in clear manifest statistics.
+- **Provisional.** The domain `fe-legacy-identifier-v1` is a SPEC-10 provisional number
+  (D-CL34), listed in fe-canonical-log's single register (`src/AGENTS.md` §Provisional wire
+  numbering) for CDL-PROV batch ratification.

@@ -1,6 +1,6 @@
 //! fe-sdk — Stable extension SDK for FractalEngine plugins.
 //!
-//! The public API surface extension authors program against: serde-only deps,
+//! The public API surface extension authors program against: serde-light deps,
 //! decoupled from engine internals (module map: src/AGENTS.md §modules).
 
 #![warn(missing_docs)]
@@ -8,6 +8,7 @@
 pub mod api;
 pub mod context;
 pub mod events;
+pub mod legacy_identifier;
 pub mod node;
 pub mod path_asset;
 pub mod primitive;
@@ -24,6 +25,7 @@ pub mod units;
 pub use api::{ApiExtensionHandle, ExtensionRoute, HttpMethod};
 pub use context::PluginContext;
 pub use events::{EventSubscription, PluginEvent};
+pub use legacy_identifier::{legacy_identifier, LegacyIdentifierError, LegacyTable};
 pub use node::NodeSnapshot;
 pub use path_asset::{PathAssetDescriptor, SpacingMode, PATH_ASSET_PROPERTY_KEY};
 pub use primitive::{PrimitiveDescriptor, PrimitiveKind, PRIMITIVE_PROPERTY_KEY};
