@@ -226,6 +226,20 @@ attach implementation-specific diagnostics without changing their meaning.
 4. This contract does not prescribe an analytics query language, output format,
    access-control policy, or branch retention window. It guarantees a stable,
    replay-verifiable source relation for those future interfaces.
+5. An analytics computation that reads observation-plane data (SPEC-10) MUST
+   extend the rule 1 input identity with its **observation input set**: the
+   canonically sorted, deduplicated set of observation-batch `op_id`s whose
+   data it read. Every listed batch MUST be an admitted operation in the causal
+   closure of the rule 1 frontier. Each batch's signed payload binds its
+   columnar artifact and the source identity of every observation in it
+   (SPEC-10 §7), so the extended identity fixes both what was read and where it
+   came from. The query chooses the set; local availability never does. The
+   computation MUST read every selected batch in full or fail with
+   `referenced_artifact_unavailable`, and MUST NOT leave out a selected batch
+   because its artifact is not held. A result that reads observations from a
+   legacy table such as `iot_reading` or `device_payload`, or from a hydrated
+   catalog without recording its observation input set, MUST NOT be described
+   as reproducible from the canonical log.
 
 ## 8. Required conformance tests
 
@@ -271,6 +285,12 @@ at least the following names and outcomes.
     `referenced_artifact_unavailable` state, that state is not equal to any
     semantic exclusion, the apply marker does not advance, and re-reducing the
     same operation returns the same state.
+14. **`analytics_identity_records_the_batches_it_read`** — an analytics
+    computation over observation data records the sorted, deduplicated
+    `op_id` set of the batches it read; a selected batch whose artifact is not
+    held fails the computation with `referenced_artifact_unavailable` instead
+    of shrinking the set; and two computations with the same extended identity
+    read identical observation relations.
 
 ## 9. Design notes
 
@@ -312,6 +332,20 @@ Owner-ratified under D-CL28, 2026-08-16.
 - **G1 companion (2026-08-16):** §5 gained the `unknown_kind` category, so
   SPEC-5 §4's partitioned quarantine reasons have canonical names here. See
   `branches-checkpoints-retention.md` §7 erratum G1.
+
+Owner-ratified under D-CL28; the gate was ratified 2026-08-16 and its text
+landed 2026-10-13, when the observation plane (SPEC-10) first needed it.
+
+- **G6 (2026-10-13):** §7 gained rule 5 and §8 gained conformance test 14.
+  Rule 1's input identity names only operation-plane values: branch, frontier,
+  segment manifest, and materializer. SPEC-10 commits telemetry by reference,
+  so a result that blends a projection with observations could record that
+  tuple and still not be reproducible. Which batches it read, where their
+  observations came from, and whether their artifacts were held locally are
+  not functions of the tuple. Rule 5 adds the batches read, which carry their
+  observations' source identities in signed bytes. It also forbids letting
+  local availability shape the set, the analytics form of the §4 rule 8 bright
+  line.
 
 ## 10. D-CL20 approved legacy-operation deferral
 

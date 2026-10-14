@@ -130,8 +130,8 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 - **Verified:** the final sweep above. **Not verified:** in-app GUI behavior of W4 work;
   relay-assisted connection through a self-hosted iroh-relay 1.3; the fuzz CI step; the 0.35 store
   migration on a REAL user data dir (only the committed generator + the local fixture).
-- Untracked on purpose: `fe-sync/tests/fixtures/p2p_store_v035/` (7.1 MB; the migration test
-  skips when absent — a skip-as-green smell; commit decision open).
+- ~~Untracked on purpose: the 0.35 fixture … commit decision open~~ — RESOLVED 2026-10-13 (R2):
+  CI generates it (`119dbd0`); the test fails, not skips, under `FE_REQUIRE_STORE_FIXTURE=1`.
 
 ### Review ledger
 
@@ -147,6 +147,10 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 | W4 `7a74214` | 2 reviews + reconcile | 1H (hidden ribbons pickable) 2M 4L | FIXED |
 | W5 `ff8b1e4` | review-and-fix | 1H (watcher masked stack-failure health) 1M (doc handle leak) 3L | FIXED |
 | Final sweep | full tests + harness + e2e | harness 14/15 → root-caused, `df35a7f` | GREEN after fix |
+| 2026-10-13 purge `877e801` | critic tick 1 audit | Duck unreachable from every ref; 128/130 cited SHAs resolve (2 foreign) | SOUND |
+| W0 `119dbd0` `bf28971` | adversarial review-and-fix | 1M (zero-match test filter passed vacuously) 2L | FIXED |
+| Planning swarm (5 plans) | cross-check critic edits | 29–37 plan edits (collisions, ordering, security slices) | AMENDED |
+| Critic tick 1 | accountability critic | 2H 3M 3L (R7 not in plan bodies; push gate) | DRIFTING → all ACCEPTED |
 
 ## 3. Decisions
 
@@ -236,7 +240,9 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
   resumable downloads; residency ledger / lazy tiles / exit-ring eviction), PAS-P5 (partial
   hexon fetch), CDL Wave 4 integration, CDL SPEC-10 observation plane. Then role propagation,
   the decision backlog, pending tracks (all four streams are in scope).
-- **Role propagation:** replicate the `role` table as ordinary replicated rows, admitted only when
+- **Role propagation:** *(admission scope + not-yet-authorized handling SUPERSEDED by R7
+  2026-10-13: any Manager within their own subtree; unauthorized-yet statements Deferred and
+  re-tried)* replicate the `role` table as ordinary replicated rows, admitted only when
   the author is Manager+ at the verse scope (owner bootstraps from `verse.created_by`). Chosen
   over signed role grants (simpler, no new signature format). After it lands: fix the
   distributed-query settlement race, then consider re-enabling responder filtering.
@@ -263,6 +269,14 @@ the previous workflow id before relaunch); reviewers fix their own findings (no 
 reviewers); **no tests until the code is complete** — compile + clippy between workflows, one full
 test + e2e + harness sweep at the end; prune `target/debug/incremental` + PDBs at every safe
 point; network access granted; **report at the end** (not mid-run).
+- *(2026-10-13, critic AC-5)* Before any blocking question: commit finished work and launch the next
+  independent workflow first, or take the stated default as a logged assumption — never let done
+  work sit uncommitted (or main sit red) behind a question.
+- *(2026-10-13, critic AC-2)* **Push gate:** code reaches `main` only after a test gate covering
+  exactly the code being pushed (main publishes `latest`). W0+W0b get a scoped gate (their
+  reviewers' `test_sweep_must_cover` + the crates W0b touched); **from W1 on, no main pushes until
+  the campaign final sweep** (docs-only commits excepted). Accountability critic ticks at every
+  workflow boundary and before any push (`conductor/accountability-log.md`).
 
 **Outputs (user, standing):** reports are published as **artifacts** — status + decisions on top,
 teaching depth inside (file:line links, quoted load-bearing lines, why/what-to-watch, Sharpen),
@@ -290,6 +304,11 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
 - Campaign length unbounded (long horizon); report once at the end as an artifact; model tiers
   per standing rules (haiku bookkeeping, sonnet standard, opus hard/review) · to reverse: time box.
 - The 0.35 fixture "stays untracked" assumption below is superseded by R2 (CI generation).
+- *(partly superseded by R7)* the "second campaign" line above no longer covers the generic asset /
+  device payload / format descriptor work — R7 builds it in THIS campaign (CDL-SPEC10 A3–A6).
+- Reorder logged (critic AC-3): SPEC-10 **A1 (spec draft, docs only)** was pulled ahead of
+  PAS/W4 because it needs no cargo; A2–A6 and Phase B keep the §7 order (after CDL-W4), and A2
+  re-grounds A1's file:line citations after W4 lands · to reverse: none needed (docs).
 
 **Carried from 2026-10-12:**
 - Role-table replication semantics: last-writer-wins by HLC per (verse, peer) row; revocation =
@@ -383,7 +402,14 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
 - In flight: CI watch `bdxqawa1s` (run on `877e801`); W0 workflow `wf_aa8dded9-e92` (task
   `wnzsvkwjm`); planning swarm `wf_7f0fd597-d05` (task `wtenzbfpx`) writing
   `campaign-plan-*-20261013.md` under the PAS/CDL tracks + new track `role_propagation_20261013`.
-- Next: W0 gate → commit → critic tick → W1 PAS-P3+P4 from its plan file (sequential builds).
+- W0 DONE (review FIXED 1M 2L; gate check+clippy+fmt green): `119dbd0` fixture CI, `bf28971`
+  imported/ fallback retired, `0848237` bookkeeping + 5 campaign plans. Not pushed yet.
+- CI on `877e801`: Lint RED — cargo-deny advisories (NEW RustSec: quinn-proto ×5 via libp2p-quic,
+  ammonia ×2 via surrealdb-core, ruzstd via bevy_image); build/test jobs green; publish SKIPPED.
+- In flight: W0b `wf_e727510a-f59` (lint → warnings not failure, advisory bumps, runnable release
+  packages); critic tick 1 (background agent); SPEC-10 A1 spec draft (background agent, docs only).
+- Next: W0b gate → commit → push → watch CI → W1 PAS-P3+P4 (execute plan file, sequential slices,
+  per-slice local commits) with docs-only lanes in parallel.
 
 ### 2026-10-12 — handoff after the completeness campaign
 - Done: retro (§1); 5-round grill loop → §3 decisions; pushed `a064144..4765bc5`; untracked

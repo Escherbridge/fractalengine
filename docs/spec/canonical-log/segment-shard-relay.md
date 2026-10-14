@@ -167,6 +167,53 @@ network wiring or a change to the currently disabled iroh paths.
    authorized `fetch` plus `decrypt` under SPEC-3; possession of the manifest
    confers neither.
 
+### 3.4 Bulk-artifact lane
+
+1. A **bulk artifact** is a sealed stored artifact whose decrypted body holds
+   one independently addressable immutable object: a Hexon data shard, a
+   terrain tile, or an asset. Its lane class is the fifth lane class. Sections
+   2.1 and 2.2 apply to it exactly as they apply to a segment.
+2. Its inner body carries exactly: its lane class; one payload-topic scope of
+   the section 3.2 rule 2 shape; an `object_class` that is exactly one of
+   `shard`, `tile`, or `asset` (SPEC-3 section 3.2); `content_length`; and
+   `content_bytes`. `content_length` MUST equal the byte length of
+   `content_bytes`. A receiver MUST reject an `object_class` of `op`,
+   `segment`, or `checkpoint`, a value with more than one class bit, and a
+   lane/body mismatch (section 2.1 rule 5).
+3. A bulk artifact has exactly one petal-affine payload-topic scope. A
+   verse-wide bulk artifact is not representable. One artifact MUST NOT mix
+   petals, verses, scope epochs, or key identifiers.
+4. Sealing follows section 9 with no exception: the current scope key for that
+   scope and epoch, `suite_id = 1`, a fresh 24-byte nonce, and a
+   domain-separated AAD of its own lane. Sealing requires
+   `append/<object_class>` at its scope; fetch, decrypt, materialize, and seed
+   follow that class's row of the SPEC-3 section 3.3 table.
+5. A bulk artifact is addressed only by its `artifact_id` and exact stored
+   length, named in the payload of the admitted operation that commits it. A
+   segment manifest MUST NOT index a bulk artifact, and a HashSeq node MUST NOT
+   list one: reachability comes from the committing operation, so the section
+   3.3 manifest grammar is unchanged. A checkpoint reachability proof (section
+   4.2) therefore reaches a bulk artifact only through a reachable operation's
+   payload. An absent bulk artifact is a `referenced_artifact_unavailable`
+   state at whichever step dereferences it (SPEC-4 section 4 rules 8 and 9,
+   section 5). It is never a reason to refuse the committing operation.
+6. A bulk artifact MUST fit the sealing principal's effective
+   `max_segment_bytes` caveat (section 3.2 rule 5). A producer splits an
+   oversized object into several artifacts committed by separate operations,
+   or rejects it. It MUST NOT create an oversized artifact.
+7. Discovery uses the SPEC-3 section 6.1 payload lane (`lane = 1`), the
+   artifact's petal-affine scope, and its own class bit as `object_class`.
+   This lane class adds no topic lane.
+8. `content_bytes` is opaque to this document. Its interior format belongs to
+   the specification whose operation commits it (SPEC-10 for observation
+   hexons and their statistics artifacts). It is validated when the object is
+   materialized under SPEC-3 `materialize/<class>`, not at receipt. Receipt
+   follows section 5 unchanged.
+9. `BLAKE3(content_bytes)`, the content address of the enclosed object, is not
+   its `artifact_id`. An operation that must name the plaintext object, such as
+   a device asset by its blob-store content hash, names it in its own
+   encrypted payload. Only `artifact_id` keys fetch and seed.
+
 ## 4. HashSeq and reachability proofs
 
 ### 4.1 HashSeq node
@@ -352,6 +399,22 @@ named tests:
      range, a non-zero count with no claimed lane, a zero count with claimed
      roots, a non-ascending petal set, or a sealed statistics reference naming
      an unclaimed lane is rejected rather than normalized.
+18. **`bulk_artifact_seals_through_single_door_and_round_trips`** — sealing a
+     `shard`, `tile`, and `asset` body yields an `artifact_id` equal to
+     BLAKE3 of the stored bytes, and opening it returns an identical body.
+19. **`bulk_artifact_refused_under_retired_epoch_key`** — sealing under the key
+     of a superseded scope epoch is refused.
+20. **`bulk_artifact_nonce_reuse_refused`** — a nonce already used under the
+     same scope key is refused.
+21. **`bulk_lane_body_mismatch_rejected`** — a bulk-artifact outer map with a
+     payload-shard body, and a payload-shard outer map with a bulk-artifact
+     body, are both rejected.
+22. **`bulk_artifact_object_class_table`** — `shard`, `tile`, and `asset` are
+     accepted; `op`, `segment`, `checkpoint`, and a multi-bit class are
+     rejected.
+23. **`bulk_artifact_discovery_is_payload_lane_petal_affine`** — discovery
+     labels use lane 1 and the artifact's petal scope; a verse-wide scope is
+     refused.
 
 ## 9. D-CL17 sealed-artifact key lifecycle
 
@@ -392,6 +455,11 @@ named tests:
   splitting on *derivation*, not on usefulness: what a signed header already
   discloses to a verse member may be clear, and what payload plaintext would
   disclose must be sealed — even when the sealed tier is the more useful one.
+- **A bulk artifact rides its operation, not the manifest:** §3.4 rule 5 makes
+  the committing operation's signed payload the only index of a bulk artifact.
+  That keeps the manifest grammar fixed and keeps every bulk artifact inside
+  the causal history that justifies it: an artifact no admitted operation
+  names is unreferenced bytes, not data.
 
 ### Errata
 
@@ -405,3 +473,19 @@ Owner-ratified under D-CL28, 2026-08-16.
   would have published payload-derived values under the verse-wide header scope.
   The rules land before Wave 3 because this is a wire format: adding the slots
   now is an addition, and adding them afterwards is a migration.
+
+Owner-ratified under D-CL28; the gate was ratified 2026-08-16 and its text
+landed 2026-10-13, when the observation plane (SPEC-10) first needed it.
+
+- **G3 (2026-10-13):** §3.4 is new, §8 gained conformance tests 18 to 23, and
+  §10 gained one design note. SPEC-3 §3.2 defines the object classes `shard`,
+  `tile`, and `asset`, and its §3.3 table gives each a full append, fetch,
+  decrypt, materialize, and seed row. No SPEC-6 lane could carry one: the four
+  lanes carry headers, operation payload ciphertext, HashSeq nodes, and
+  manifests. A columnar observation hexon (D-CL26) or a sealed asset therefore
+  had no sealed form at all. The lane makes bulk artifacts reachable through
+  their committing operation rather than through the manifest, so the G4
+  manifest wire format is unchanged. A manifest slot would have been a
+  migration; a lane class whose artifacts ride their operation is an addition.
+  The lane's wire value (5) and AAD domain are provisional and recorded in the
+  `fe-canonical-log` register (D-CL34).

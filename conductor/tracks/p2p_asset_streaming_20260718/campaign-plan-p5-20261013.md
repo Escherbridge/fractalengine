@@ -9,6 +9,13 @@ decisions: [D-75 C1, D-76 D2, D-73 A4, D-77 E2, "2026-10-13 R4/R5 (D-5/D-17 gene
 resource: ./plan.md
 ---
 
+> **OWNER DECISIONS 2026-10-13 (R7, RUNBOOK §3) — supersede this plan wherever they differ:**
+> 1. **Seeders never re-bundle sealed tilesets: CONFIRMED.** The §3.5 seeder rule and assumption 1b
+>    — a sealed container re-seeds its existing signed chunks and is never re-bundled; a sealed
+>    monolithic archive seeds as `[HeaderDoc, whole archive]`; only legacy unsealed tilesets keep
+>    PAS-P3P4's deterministic bundling — is owner-confirmed as of 2026-10-13, not merely a
+>    moderate-reversal default awaiting review.
+
 # PAS-P5 campaign plan (2026-10-13)
 
 Planner output for the large-phases campaign (RUNBOOK §7 step 3: PAS-P3+P4 → **PAS-P5** →
