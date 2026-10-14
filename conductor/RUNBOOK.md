@@ -429,8 +429,15 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
   ruzstd ignored — reachable via KTX2 in peer GLBs).
 - In flight: W0c `wf_34174034-e00` (fuzz-crash still blocks publish, licences allow-list + CI,
   KTX2 GLB intake guard, setup-python); AC-1 role-prop plan rewrite (docs agent).
-- Next: W0c commit → **scoped test gate** (W0+W0b+W0c test lists) → push → watch CI (first
-  packaged `latest`) → critic tick 2 → W1 PAS-P3+P4. No main pushes after that until the final sweep.
+- W0c DONE `da3e6a1` (review FIXED 2H 1M 3L). Scoped push gate GREEN (fe-sync migration 3/3 with
+  fixture required; fe-database 221 lib + all integration; fe-runtime + fractalengine; fe-api upload,
+  asset_ownership 6/6, mcp_integration 30/30; logs `.omc/research/push-gate-20261013/`). Critic tick 2
+  ON_TRACK; packaged smoke PASS (AC-9). **Pushed `877e801..7441ab5`** 2026-10-13 ~19:30 MDT; CI watch
+  in flight. AC-8 prune done (523 incremental dirs).
+- OF-2 found by the smoke run (desktop analytics API never had its reader on Windows — double SurrealKV
+  open) → **W0d `wf_e724d2d0-2de`** in flight (shared handle + scoped test gate) → push → then W1.
+- Next: W0d push → AC-12 docs pass → critic tick 3 → **W1 PAS-P3+P4** (S1..S9 + S8b, sequential,
+  per-slice local commits; AC-13 test folded into S6). No main pushes from W1 until the final sweep.
 
 ### 2026-10-12 — handoff after the completeness campaign
 - Done: retro (§1); 5-round grill loop → §3 decisions; pushed `a064144..4765bc5`; untracked

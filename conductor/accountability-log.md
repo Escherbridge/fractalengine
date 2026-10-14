@@ -69,3 +69,10 @@ open local API read connection; analytics API will remain unavailable … (os er
 process after the DB thread holds it, so on Windows the desktop app's BI/analytics API is unavailable
 whenever the DB thread opens first (e2e BI scripts test the headless relay, so it went unseen). Not a
 regression of this push → fix next (W0d: share the DB thread's `Surreal<Db>` handle) before W1.
+
+**W0d / OF-2 closed (2026-10-13):** `558197c` — one SurrealKV open per process (the reader shares the
+DB thread's handle; DB runtime multi-thread so the router serves while the loop blocks in recv). Also
+fixed a second pre-existing defect: the old reader's router lived on a throwaway runtime → dead after
+hydration. Review FIXED (1M 3L); push gate green (fe-database 311, fe-api 289, fractalengine 62, relay 7).
+Packaged re-smoke: "Hydrated EntityStore through the DB thread's shared SurrealKV handle node_count=3",
+"API server listening on 127.0.0.1:8765", zero ERROR lines.
