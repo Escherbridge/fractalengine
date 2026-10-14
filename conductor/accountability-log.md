@@ -132,3 +132,16 @@ section) — S5 is building, so no source edits now. Verify at W1 close.
   in-flight slot). Other W1 residuals accepted as recorded in the journal (live peer terrain re-fetch
   deliberately off; double hash on startup = efficiency; GPU-pressure band edge; overlapping-source pin).
 - W1 must-cover appended to `conductor/final-sweep-manifest.md` (`5c4745a`, 58 slice tests + S8b + final).
+
+### Tick 4 (W1 close / W2 launch) — 2026-10-14 01:49 MDT · VERDICT: ON_TRACK (1 HIGH, 2 MED, 1 LOW)
+Report: `.omc/accountability/tick-20261014-0149.md`. Verified sound: AC-16 (W1 S9 covered plan steps 1–6);
+both mandatory S8b findings fixed AND regression-tested (`sync_thread.rs:2188` + test `:3767`;
+`bundle.rs:336/:409` + `tileset_bundles_test.rs:318`); W2 script faithful (order, S1b, R7, gate_green halt).
+
+| id | sev | directive (short) | disposition |
+|---|---|---|---|
+| AC-19 | HIGH | No gate compiles feature-gated code (fe-terrain `fetch`, fe-hexon `remote`/`conformance`); W2 S1's new `HexonManifest.integrity` breaks fetch-gated literals (`builder.rs:223,:326`) while gates stay green | **ACCEPT** → P5 plan §10 C10 (urgent docs agent): every remaining slice + S8 + final review also run the feature-matrix check/clippy; first post-amendment slice repairs the literals; feature-matrix TESTS added to the final-sweep manifest (conformance tests must appear by name). Per-slice `checks_run` verified at landing. CI `--all-features` clippy step: decide at the final sweep |
+| AC-20 | MED | My S5 "extra" allowed lossy `try_send` for ALL SyncEvents (state-bearing ones would strand in-flight slots); slots live host-side in `terrain_bridge.rs`, not fe-sync; S7a TOFU pin source | **ACCEPT** → P5 plan S5 amendment explicitly SUPERSEDES my workflow-prompt extra (lossless for state-bearing events, host-side timeout into backoff, >256 burst test); S7a pin uses the `root_for`-chosen entry's `publisher_did` |
+| AC-21 | MED | W1 residuals without disposition: (a) streamed cache / iroh store growth; (b) per-source tile budget; (c) non-atomic install; (d) set_petal_terrain_handler no authorize_edit; (e) blob-ALPN filter unscheduled | **ACCEPT** → (a) LRU disk budget → P5 S5; iroh-store GC → ledger row IROH-STORE-GC with trigger; (b)+(c) → P5 S6; (d)+(e) → role-propagation deliverables with named tests |
+| AC-22 | LOW | Bookkeeping: harness 16 scenarios, PAS-P1V honesty, track-board counts, RUNBOOK §2 State, review rows ticks 2–4, root AGENTS crate lines | **ACCEPT** → docs lane (sonnet) |
+| watch | — | W2 S1 editing `archive.rs`/`archive_index.rs` (plan assigns them to S2) | check S1's report at landing |
