@@ -36,6 +36,7 @@ Pre-1.0, under active development. What that means concretely:
 - JWT auth, hierarchical RBAC, deny-by-default policy engine
 - Plugin system (library) — Rhai and WASM sandboxes against the stable `fe-sdk` API, with UI slots; not yet hosted by the shipped `fractalengine` / `fe-relay` binaries
 - **Peer-to-peer sync** — a real iroh 1.3 / iroh-docs 0.101 stack replicates whole verses with deny-by-default RBAC enforced at the DB thread (never trusted from a peer), plus a switchable mirror/sharded/balanced timeseries fabric for IoT readings with honest per-query coverage reporting. See [Peer-to-Peer Sync & Distributed Data](#peer-to-peer-sync--distributed-data) below.
+- **Generic device payloads** — a MIME-agnostic `asset` + `device_payload` + declared `device_format` model alongside IoT readings, for non-GLB device data (REST + MCP ingest, petal-scoped BI query, peer-to-peer replication)
 - **BI egress** (the headline): GeoParquet/CSV export of nodes and IoT readings, signed share URLs, and an in-app "Copy for BI" card — verified end to end against DuckDB (see [docs/bi-egress.md](docs/bi-egress.md))
 
 **In progress**

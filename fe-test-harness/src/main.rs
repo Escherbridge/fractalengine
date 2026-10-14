@@ -108,6 +108,10 @@ fn main() {
             "Two-Peer Tileset Stream (PAS-P3P4 S4)",
             scenarios::two_peer_tileset_stream::run,
         ),
+        (
+            "Two-Peer Device-Payload Sync (CDL-SPEC10 A6)",
+            scenarios::two_peer_device_payload_sync::run,
+        ),
     ];
 
     let mut passed = 0;

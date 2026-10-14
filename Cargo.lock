@@ -5856,6 +5856,7 @@ dependencies = [
  "fe-hexon",
  "fe-identity",
  "fe-runtime",
+ "fe-sdk",
  "fe-sync",
  "fe-terrain",
  "hex",

@@ -13,6 +13,11 @@ fe-database = { path = "../fe-database" }
 fe-runtime = { path = "../fe-runtime" }
 fe-sync = { path = "../fe-sync" }
 fe-identity = { path = "../fe-identity" }
+# Scenario 17 (two_peer_device_payload_sync, CDL-SPEC10 A6): constructs a
+# DeviceFormatDescriptor directly — fe-runtime re-exports SourceClass but not
+# this type, so fe-sdk is a direct dependency (mechanical, mirrors A3b's own
+# cross-boundary Cargo touch).
+fe-sdk = { path = "../fe-sdk" }
 # Tileset-registry seam for the API harness (api.rs::spawn_with_tileset_registry,
 # F14/T2) — already in the dep graph via fe-api itself.
 fe-terrain = { path = "../fe-terrain" }
