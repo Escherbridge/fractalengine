@@ -1,10 +1,13 @@
-//! Structural operation kinds (SPEC-1 §6); see `src/AGENTS.md` §module-ownership.
+//! Structural operation kinds (SPEC-1 §6, SPEC-10 §4.1); see `src/AGENTS.md` §module-ownership.
 
 use thiserror::Error;
 
 use crate::envelope::UnsignedEnvelope;
 
-/// The v1 structural operation kinds, plus the open application range.
+/// The wire `operation_kind` of a SPEC-10 `observation_batch` (§4.1 rule 1).
+pub const OBSERVATION_BATCH_OPERATION_KIND: u16 = 5;
+
+/// The v1 structural operation kinds, SPEC-10's observation batch, and the open application range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OperationKind {
     /// Kind 1: an intent operation with parents and an encrypted non-empty payload.
@@ -15,7 +18,9 @@ pub enum OperationKind {
     DetachedMerge,
     /// Kind 4: an epoch bump for an exact revoked scope.
     ScopeEpochBump,
-    /// Kinds 5..=65535, whose payload rules live in a schema registry that does not exist yet.
+    /// Kind 5: a SPEC-10 observation batch committing one sealed observation hexon by reference.
+    ObservationBatch,
+    /// Kinds 6..=65535, whose payload rules live in the payload schema registry.
     Application(u16),
 }
 
@@ -55,6 +60,15 @@ pub enum StructuralRuleError {
     /// A scope-epoch bump carried a payload.
     #[error("scope_epoch_bump (kind 4) requires the no-payload form")]
     ScopeEpochBumpNeedsNoPayload,
+    /// An observation batch named no parent (SPEC-10 §4.1 rule 2.1).
+    #[error("observation_batch (kind 5) must have at least one parent")]
+    ObservationBatchHasNoParent,
+    /// An observation batch lacked an encrypted non-empty payload (SPEC-10 §4.1 rule 2.2).
+    #[error("observation_batch (kind 5) requires an encrypted non-empty payload reference")]
+    ObservationBatchPayloadNotEncrypted,
+    /// An observation batch was not scoped to exactly one petal (SPEC-10 §4.1 rule 2.3).
+    #[error("observation_batch (kind 5) requires a petal scope with a null resource")]
+    ObservationBatchScopeNotPetal,
 }
 
 impl OperationKind {
@@ -66,6 +80,7 @@ impl OperationKind {
             2 => Ok(Self::BranchGenesis),
             3 => Ok(Self::DetachedMerge),
             4 => Ok(Self::ScopeEpochBump),
+            OBSERVATION_BATCH_OPERATION_KIND => Ok(Self::ObservationBatch),
             other => Ok(Self::Application(other)),
         }
     }
@@ -77,15 +92,23 @@ impl OperationKind {
             Self::BranchGenesis => 2,
             Self::DetachedMerge => 3,
             Self::ScopeEpochBump => 4,
+            Self::ObservationBatch => OBSERVATION_BATCH_OPERATION_KIND,
             Self::Application(value) => value,
         }
+    }
+
+    /// Whether admission needs the payload schema registry to interpret this kind: kind 5 and
+    /// the application range. A registry that does not interpret one quarantines it as
+    /// `unknown_kind` (SPEC-4 §5, SPEC-10 §4.1 rule 4), never `invalid_envelope`.
+    pub const fn requires_registered_interpretation(self) -> bool {
+        matches!(self, Self::ObservationBatch | Self::Application(_))
     }
 }
 
 /// Checks every §6 rule derivable from ONE envelope, with no DAG or registry lookup.
 ///
-/// Kinds 5 and above pass through structurally unvalidated because no schema registry
-/// exists yet: an unknown kind or unknown `schema_hash` MUST be quarantined by the
+/// Kind 5 carries the SPEC-10 §4.1 rule 2 header rules. Kinds 6 and above pass through
+/// structurally unvalidated: an unknown kind or unknown `schema_hash` MUST be quarantined by the
 /// admission layer (§6.7), never here and never by silent reinterpretation.
 pub fn validate_structural_rules(
     envelope: &UnsignedEnvelope,
@@ -127,6 +150,17 @@ pub fn validate_structural_rules(
             }
             if !envelope.payload.is_no_payload_form() {
                 return Err(StructuralRuleError::ScopeEpochBumpNeedsNoPayload);
+            }
+        }
+        OperationKind::ObservationBatch => {
+            if parent_count == 0 {
+                return Err(StructuralRuleError::ObservationBatchHasNoParent);
+            }
+            if envelope.payload.encryption.is_none() || envelope.payload.ciphertext_length == 0 {
+                return Err(StructuralRuleError::ObservationBatchPayloadNotEncrypted);
+            }
+            if envelope.scope.petal_id().is_none() || envelope.scope.resource_id().is_some() {
+                return Err(StructuralRuleError::ObservationBatchScopeNotPetal);
             }
         }
         OperationKind::Application(_) => {}
@@ -188,7 +222,8 @@ mod tests {
             (2, OperationKind::BranchGenesis),
             (3, OperationKind::DetachedMerge),
             (4, OperationKind::ScopeEpochBump),
-            (5, OperationKind::Application(5)),
+            (5, OperationKind::ObservationBatch),
+            (6, OperationKind::Application(6)),
             (65535, OperationKind::Application(65535)),
         ] {
             assert_eq!(OperationKind::from_u16(value), Ok(kind));
@@ -281,7 +316,7 @@ mod tests {
 
     #[test]
     fn application_kinds_pass_through_unvalidated() {
-        for kind in [5u16, 1000, 65535] {
+        for kind in [6u16, 1000, 65535] {
             assert_eq!(
                 validate_structural_rules(&envelope(kind, Vec::new(), PayloadRef::empty())),
                 Ok(OperationKind::Application(kind))

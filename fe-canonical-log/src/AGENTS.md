@@ -161,7 +161,7 @@ code parses JSON.
 | --- | --- | --- |
 | `cbor` | SPEC-1 §2 | W1a — implemented |
 | `did_key` | SPEC-1 §3.2 | W1a — implemented |
-| `kind` | SPEC-1 §6 | W1b |
+| `kind` | SPEC-1 §6, SPEC-10 §4.1 | W1b; CDL-SPEC10 B1 — kind 5 `ObservationBatch` |
 | `units_codec` | SPEC-1 §4 | W1b |
 | `envelope` | SPEC-1 §3 | W1b |
 | `signing` | SPEC-1 §5.1 | W1b |
@@ -177,6 +177,15 @@ code parses JSON.
 | `segment` | SPEC-6 | W2-segment — implemented |
 | `wire` | SPEC-7 | W2-wire — implemented |
 | `compose` | cross-cutting facade | W4 integration — implemented |
+| `observation` | SPEC-10 §4, §4.5 | CDL-SPEC10 B1 — implemented (the one post-W1a module, see below) |
+
+**Recorded exception (CDL-SPEC10 B1, 2026-10-14).** `lib.rs` gained exactly one line, `pub mod
+observation;`, after the freeze. SPEC-10 is a later, owner-pre-approved spec (R7) whose operation
+half has no home in any W1a module: the payload codec, reduction, and schema hash belong
+together, and folding them into `materialize` or `kind` would have mixed one spec's wire numbers
+into another's module. `Cargo.toml` is untouched — `fe-sdk` (for `legacy_identifier`) and
+`async-trait` were already declared. Any further module needs its own recorded exception here.
+Rationale for the module itself: `src/observation/AGENTS.md`.
 
 Unimplemented modules are one-line doc-comment placeholders. They exist so `lib.rs` compiles
 today and so module boundaries are settled before parallel slices start writing code.
@@ -269,7 +278,7 @@ reads 0, which no chain window contains.
 | Step | Check | Outcome on failure |
 | --- | --- | --- |
 | envelope | `verify_candidate` (the one ingress) | `InvalidEnvelope` |
-| envelope | an `OperationKind::Application` kind the registry does not interpret | `UnknownKind` (Quarantine, never `InvalidEnvelope`) |
+| envelope | a kind the registry must interpret (`OperationKind::requires_registered_interpretation`: kind 5 and the application range) that it does not | `UnknownKind` (Quarantine, never `InvalidEnvelope`) |
 | authorization | chain bytes by `capability.chain_id` | absent → `AuthorizationEvidenceUnavailable(CapabilityChainUnavailable)` |
 | authorization | `verify_chain_bytes` for `append/op`; requester = author = envelope author; every request field read from the signed envelope | `EpochScopeUnknown` → `AuthorizationEvidenceUnavailable(EpochStateUnavailable)`; every other `ChainError` → `UnauthorizedOperation` |
 | authorization | the verified chain's id equals the envelope's `chain_id` | `UnauthorizedOperation` |
@@ -365,6 +374,7 @@ crate's own tests; what is missing is the *durable*, database-backed caller a la
 | `CanonicalCommitPipeline` | `compose::VerifyingCommitPipeline` (W4-4) | none — its production mount is inside `fe-api`'s CANON-WS surface, which stays NO_GO; exercised directly by this crate's own tests and by W4-5 |
 | `AuthorKeyLifecycleView` | `compose::CausalLifecycleView` (W4-3); durable: `fe-database canon_log::author_lifecycle::DurableAuthorKeyLifecycle` (W4-7), rebuilt from `verified_op_log` | `compose::ComposedCandidateVerifier::verify_authorization`, inside the durable verifier (W4-7) |
 | `admit_rotation` / `admit_disavow` / `admit_disavow_rescind` / `admit_continuity_grant` | `author_key::admission` (W2) | `compose::LifecycleDispatcher::dispatch` (W4-3) — the four SPEC-2 entrypoints now have a production caller |
+| `CausalMaterializer` for kind 5 | `observation::ObservationBatchMaterializer` (CDL-SPEC10 B1) | none yet — CDL-SPEC10 B3 wires it into `fe-database` replay/rebuild through B2b's facts source |
 | `MaterializerVersion::registry_id` mapping | `materialize::identity::MaterializerVersion` (W4-3) | `compose::checkpoint_binding_for_selection` (W4-3) |
 | `DeviceEnrolmentView` | `crypto::device_enrolment::EnrolmentRegistry` (W4-6) | fe-database `canon_log::device_enrolment::DurableDeviceEnrolmentView` (W4-8) loads its table into it, re-verifying every row; exercised in-process by `cross_spec_integration.rs::a_device_enrolment_gates_a_scope_key_wrap` |
 | `ManagerPlusAuthorizationView` | `fe-database canon_log::canonical_epoch::DurableAuthorizationView` (W4-7; checkpoint chains from `chain_store::ChainStore`) | `fe-database canon_log::rebuild::AdmittedCheckpoint::admit` |
@@ -756,6 +766,43 @@ source_label]))` (§7.2), domain `OBSERVATION_SOURCE_ID_DOMAIN`. The `source_cla
 `ObservationSource` sorts by its canonical bytes, the order a kind-5 `sources` list is signed in
 (CDL-SPEC10 B1 consumes it). `AnalyticsSourceIdentity` assigns no wire number: it is an in-process
 value, not an encoded artifact.
+
+### Provisional — SPEC-10 §4 observation batch (`observation`, `kind.rs`)
+
+D-CL34, CDL-SPEC10 B1. SPEC-10 §4.3 gives the key table; the numbers are still provisional under
+D-CL24(3). Exactly these keys, each once; unknown keys refused; no floats.
+
+| Item | Value |
+| --- | --- |
+| Operation kind | `5` = `observation_batch` (`kind::OBSERVATION_BATCH_OPERATION_KIND`) |
+| Schema hash | `BLAKE3("fe-schema-observation-batch-v1\0")` (`observation::OBSERVATION_BATCH_SCHEMA_DOMAIN`, SPEC-10 §4.1 rule 3) |
+| Payload key 0 | `hexon_artifact_id`, bytes(32) |
+| Payload key 1 | `hexon_stored_length`, uint |
+| Payload key 2 | `hlc_range`, map `{0 min, 1 max}`, each a SPEC-1 §3.4 HLC map |
+| Payload key 3 | `sensor_time_range_ms`, map `{0 min, 1 max}`, each a signed int |
+| Payload key 4 | `stats_hash`, bytes(32) |
+| Payload key 5 | `count`, uint, at least 1 |
+| Payload key 6 | `anchors`, array of bytes(32), strictly ascending |
+| Payload key 7 | `asset_refs`, array of bytes(32), strictly ascending |
+| Payload key 8 | `sources`, array of `ObservationSource` maps (G6 table below), strictly ascending by canonical bytes |
+| Payload key 9 | `hexon_format_version`, uint, `1` |
+| Payload key 10 | `stats_stored_length`, uint |
+| Reference materializer | `MaterializerVersion::new("observation-batch-reference", 1)` (`ObservationBatchMaterializer::version()`); the row's field names are listed in `src/observation/AGENTS.md` §reduction (storage names, not wire keys) |
+
+### Provisional — SPEC-10 §6 `telemetry_sample_v1` (`wire/preview.rs`)
+
+D-CL33/D-CL34. `preview_kind` allocation: `0` invalid, `1` `telemetry_sample_v1`, `2..=1023`
+reserved for specifications, `1024..` application. The kind-1 `preview_data` map:
+
+| Key | Field | CBOR type |
+| ---: | --- | --- |
+| 0 | `anchor` | bytes(32), SPEC-10 §4.5 node identifier |
+| 1 | `metric` | text, non-empty |
+| 2 | `value_nano` | signed int, nano-units, rounded half to even |
+| 3 | `units` | text, may be empty |
+| 4 | `recorded_at_ms` | signed int |
+
+The reserved preview keys `90`-`98` (SPEC-7 bodies, below) are refused here too.
 
 ### Provisional — SPEC-7 bodies (`wire`)
 

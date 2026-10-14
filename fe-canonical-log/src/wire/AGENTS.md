@@ -17,7 +17,7 @@ against.
 | `commit.rs` | §4 | `commit_submit`/`commit_ack`/`commit_delta`, `CanonicalCommitPipeline`, `build_commit_ack` |
 | `subscription.rs` | §5.1 | `subscribe`/`resume`/`replay_complete`, `SubscriptionTable`, `resolve_resume` |
 | `snapshot.rs` | §5.2 | `snapshot_required`/`scene_snapshot`/`snapshot_ack`, `ScopeSnapshotSource`, lag fan-out |
-| `preview.rs` | §7.1 | `preview_send`/`preview_delta`/`preview_dropped`, reserved-key gate |
+| `preview.rs` | §7.1; SPEC-10 §6 | `preview_send`/`preview_delta`/`preview_dropped`, reserved-key gate, the `preview_kind` registry, `telemetry_sample_v1` codec |
 | `preview_limiter.rs` | §7.2.3 | `PreviewRateLimiter` |
 | `test_support.rs` | — | In-memory fakes, always compiled (not `#[cfg(test)]`) so `tests/spec7_conformance.rs` can link them |
 
@@ -33,6 +33,35 @@ replay, or commit fanout, because the types it would need are simply not in scop
 also carries `reject_reserved_preview_keys`, a second, independent gate over a fixed key range
 (90..98) that a future edit could not accidentally satisfy just by keeping the exact-key check
 passing.
+
+## §preview-kind-registry — SPEC-10 §6 (CDL-SPEC10 B1)
+
+SPEC-7 §7.1 rule 1 demanded a "registered" non-zero `preview_kind` and no registry existed, so any
+non-zero `u32` decoded and two applications could collide on one number. SPEC-10 §6 (D-CL33)
+allocates `0` invalid, `1` `telemetry_sample_v1`, `2..=1023` reserved for specifications, and
+`1024..` for applications.
+
+- **Structural decoding is unchanged.** `PreviewSendBody`/`PreviewDeltaBody::from_cbor` still
+  accept any non-zero kind (§6 rule 2). The registry is a second, receiver-side step:
+  `decode_registered_preview(kind, data, handlers)` returns `Display(..)` or a silent
+  `Drop(..)` — a reserved kind no spec registers, or an application kind with no local
+  `ApplicationPreviewHandlers` entry. A drop is display loss, never an error to the sender and
+  never durable. Kind 1 whose data fails the codec is an `Err`, not a drop: the kind is
+  registered, so malformed data is malformed, not unknown.
+- **`TelemetrySamplePreview`** is the five-key map `{0 anchor, 1 metric, 2 value_nano, 3 units,
+  4 recorded_at_ms}`. `from_cbor` runs `reject_reserved_preview_keys` BEFORE the exact-key check,
+  so a smuggled SPEC-7 §7.2 rule 5 operation field (op_id, hlc, ...) names itself in the error.
+  Floats cannot appear: the canonical decoder refuses major type 7 floats.
+- **`quantize_value_nano`** is the one f64 → `i64` nano-unit conversion (D-CL5): scale by 1e9 in
+  f64, `round_ties_even`, refuse non-finite and anything outside `[-2^63, 2^63)`. A value that
+  fails MUST NOT be sent (§6 rule 3).
+- **`anchor`** comes from `observation::node_anchor` (the one `fe_sdk::legacy_identifier`
+  mapping, SPEC-10 §4.5). `preview.rs` itself does not import `observation`; the caller builds the
+  anchor, so the module-boundary isolation above is unchanged.
+- **No transport.** Nothing here sends or receives: `/ws/canonical` (CANON-WS) stays NO_GO, and
+  §6 rule 4 forbids turning a preview into a reading, a batch, or hot-plane state. The durable
+  copy of the same observation goes ingest door → hot plane → kind-5 batch.
+- Provisional key numbers: `src/AGENTS.md` §Provisional wire numbering, "SPEC-10 §6".
 
 ## The session-generation gate
 

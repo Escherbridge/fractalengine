@@ -257,10 +257,9 @@ impl PayloadSchemaRegistry for SchemaTable {
         operation_kind: u16,
         plaintext: &[u8],
     ) -> SchemaVerdict {
-        if matches!(
-            OperationKind::from_u16(operation_kind),
-            Ok(OperationKind::Application(_))
-        ) && !self.interprets_kind(operation_kind)
+        if OperationKind::from_u16(operation_kind)
+            .is_ok_and(OperationKind::requires_registered_interpretation)
+            && !self.interprets_kind(operation_kind)
         {
             return SchemaVerdict::UnknownKind;
         }

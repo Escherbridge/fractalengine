@@ -181,10 +181,8 @@ impl PayloadSchemaRegistry for RegisteredSchemaSet {
     ) -> SchemaVerdict {
         let validator = {
             let entries = self.read_entries();
-            let application = matches!(
-                OperationKind::from_u16(operation_kind),
-                Ok(OperationKind::Application(_))
-            );
+            let application = OperationKind::from_u16(operation_kind)
+                .is_ok_and(OperationKind::requires_registered_interpretation);
             if application && !entries.keys().any(|(kind, _)| *kind == operation_kind) {
                 return SchemaVerdict::UnknownKind;
             }

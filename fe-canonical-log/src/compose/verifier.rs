@@ -49,7 +49,8 @@ pub enum SchemaVerdict {
 
 /// The schemas and kinds this build interprets (SPEC-1 §6 rule 7, SPEC-4 §5).
 pub trait PayloadSchemaRegistry: Send + Sync {
-    /// Whether this build has a registered schema and reduction for an application kind (5+).
+    /// Whether this build has a registered schema and reduction for a registry-interpreted kind
+    /// (kind 5 and the application range, `OperationKind::requires_registered_interpretation`).
     fn interprets_kind(&self, operation_kind: u16) -> bool;
 
     /// Validates a decrypted plaintext against `schema_hash` for `operation_kind`.
@@ -306,8 +307,9 @@ where
         let candidate = verify_candidate(candidate_bytes)?;
         let operation_kind = candidate.meta.operation_kind;
         match OperationKind::from_u16(operation_kind) {
-            Ok(OperationKind::Application(_))
-                if !self.parts.schemas.interprets_kind(operation_kind) =>
+            Ok(kind)
+                if kind.requires_registered_interpretation()
+                    && !self.parts.schemas.interprets_kind(operation_kind) =>
             {
                 Err(AdmissionOutcome::UnknownKind { operation_kind })
             }

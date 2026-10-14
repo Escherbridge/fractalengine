@@ -18,6 +18,7 @@ pub mod envelope;
 pub mod frontier;
 pub mod kind;
 pub mod materialize;
+pub mod observation;
 pub mod payload_aad;
 pub mod retention;
 pub mod segment;
