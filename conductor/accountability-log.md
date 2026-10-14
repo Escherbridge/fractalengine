@@ -111,3 +111,24 @@ carries W1 code commits interleaved with docs, so docs can't be pushed alone). p
 never bound to the requested id (`bundle.rs` ~446 / `terrain_bridge.rs` ~324-336) → a provider can
 overwrite a different installed tileset. **Routed into W1 S8b as mandatory finding #2** (plan S8b
 section) — S5 is building, so no source edits now. Verify at W1 close.
+
+### W1 close — 2026-10-14 ~01:40 MDT
+- **W1 PAS-P3+P4 DONE** (`53a4c4c..069f8ea`, 11 agents, ~5.5 h): S1 `f25f906`, S2 `84cd342`, S3 `e5d8928`,
+  S4 `3d89b60`, S5 `9725dd2`, S6 `b9a85f3`, S7 `0692e14`, S8 `a8a50c1` — every slice gate checked as it
+  landed (AC-17): workspace check + clippy + fmt green; deferrals reviewed and justified.
+- **S8b `4a61b19` FIXED**: both mandatory findings verified in code (`sync_thread.rs` `root_for` →
+  `RootChoice`; `bundle.rs:336` `expected_tileset_id` binding) + HIGH peer-chosen `cache_dir` /
+  `elevation_api_key_env` via replicated petal terrain + 7 MED (relay-URL SSRF, ad-storm DoS, partial
+  streamed cache auto-install, resume-ledger tampering, streamed zip bomb, oversized blobs into the iroh
+  store, Windows device stems in ids) + 1 L. Blob-ALPN request filter: decision recorded, not built.
+- **Final review `069f8ea` FIXED** 3 HIGH (decode-failed bundle re-requested at frame rate; unbounded
+  streamed fan-out + blocking main-thread send; installed downloads never cleaned up) + 5 MED + 2 L.
+- **AC-15 CLOSED — relay smoke PASS** (W1 tip): alive 40 s, DB in its CWD, "Hydrated analytics
+  EntityStore through the DB thread's shared handle", API listening :8765, S4 seeding published the
+  installed PNW tileset (8 bundles, 7.69 MB), 0 ERROR lines; exact PID tree killed.
+- **Residuals routed into W2 (PAS-P5) slice S5 (fe-sync):** (1) spawned sync-thread tasks use a
+  BLOCKING crossbeam send on bounded(256) — >256 events between frames stalls the whole sync thread;
+  (2) `chunk_requested` / `meta_requested` slots have no timeout (a never-answered request pins an
+  in-flight slot). Other W1 residuals accepted as recorded in the journal (live peer terrain re-fetch
+  deliberately off; double hash on startup = efficiency; GPU-pressure band edge; overlapping-source pin).
+- W1 must-cover appended to `conductor/final-sweep-manifest.md` (`5c4745a`, 58 slice tests + S8b + final).

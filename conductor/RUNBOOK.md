@@ -139,6 +139,7 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 | W0c `da3e6a1` | review-and-fix | 2H (guard bypasses: percent-encoded data URI, JSON glTF as .glb, invalid-UTF-8 URI panic) 1M 3L | FIXED |
 | W0d `558197c` | review-and-fix + packaged re-smoke | 1M (3L residual 5: reader read-only convention needs guarded newtype pre-A3) | FIXED |
 | Planning swarm (5 plans) | cross-check critic edits | 29–37 plan edits (collisions, ordering, security slices) | AMENDED |
+| W1 PAS-P3P4 `53a4c4c..069f8ea` | per-slice gates + S8b security + final review-and-fix | S8b: 3H(2 mandatory) 7M 1L; final: 3H 5M 2L; relay smoke PASS | FIXED (tests at final sweep) |
 | Critic tick 1 | accountability critic | 2H 3M 3L (R7 not in plan bodies; push gate) | DRIFTING → all ACCEPTED |
 
 ## 3. Decisions
