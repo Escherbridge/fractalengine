@@ -439,6 +439,8 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
   (per-slice local commits) → S8b security review-and-fix → S9 docs → final review-and-fix. Parallel
   docs lanes: OF-1 → new PAS-P5 slice (agent); critic tick 3 (agent).
 - **No main pushes from here until the campaign final sweep** (docs-only excepted).
+- **W2b fixups DONE** `4306cb2`+`474ab9b` (review failed the executor on 2 HIGH — main-thread verify left, vacuous F1 tests — fixed).
+- **W3 CDL-W4 launched** `wf_644e287e-abf` (task `wscoctxno`), base `38dd271`: W4-1..W4-9 → security review (W4-3..8) → correctness review (W4-1,2,5,9) → docs. Critic tick 6 running. Then CDL-SPEC10 (A2..A6, B1..B4) → role propagation → final sweep → push.
 - **W1 DONE** `53a4c4c..069f8ea` (S8b + final review FIXED; relay smoke PASS) — see accountability-log "W1 close".
 - **W2 PAS-P5 launched** `wf_4e779cc6-58c` (task `wnuvgltiu`), base `4865a54`: S1→S1b(OF-1)→S2→S3→S4→S6→S5
   (+ W1 sync-thread residuals)→S7a→S7b→S8 security+docs→final review; `gate_green` halt per slice;
