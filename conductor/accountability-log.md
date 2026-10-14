@@ -219,3 +219,23 @@ tests non-vacuous; `20bb91b` faithful except 4 defects; W3 script faithful (no r
   per verse (documented); quarantine outcomes mapped to best-fit Rejected wire categories pending owner
   ratification (W4-4); W4-9 network metrics structurally zero (NO_GO).
 - W3 must-cover appended untruncated to the manifest. Next: W3b fixups (AC-30) → critic tick 7 → SPEC-10.
+
+### Tick 7 (W3 close / SPEC-10 pre-launch) — 2026-10-14 12:19 MDT · VERDICT: ON_TRACK (1 HIGH, 5 MED, 2 LOW)
+Report: `.omc/accountability/tick-20261014-1219.md`. Verified (code read): all five W3 review fixes real
+(enrolment membership floor after the self-authorship branch; counter tests serialised; pipeline op_id
+binding; keystore error redaction; KTX2-attempt test — one weak `contains("ktx2")` assertion → AC-35h).
+Review ledger now complete; other false/stale "done" claims listed (AC-39).
+
+| id | sev | directive (short) | disposition |
+|---|---|---|---|
+| AC-33 | HIGH | CDL-REPLAY-PAYLOAD-FACTS collides with SPEC-10 B1/B3: replay passes `None` facts (`canon_log/replay.rs:203`) but SPEC-10 §4.4 rule 3 forbids the only lawful fallback → B1 has no legal replay output; the owner question was queued AFTER its first consumer (orchestrator sequencing error) | **ACCEPT** → default adopted NOW as a §4 assumption (shredded/absent key → pending with a distinct reason, pre-shred row kept, never Excluded; owner post-review in the final report); new slice **B2b** before B3 (opus, security review-and-fix) |
+| AC-34 | MED | A3's new tables vs the pre-manifest bootstrap window (`replicated_row.rs:329-338`) — device_format/asset admissions permanent and arrival-order-divergent | **ACCEPT** → per-table pre-manifest rule (device_format + asset fail closed) mirroring W3's enrolment floor, named test |
+| AC-35 | MED | Phase A stale owned files + compile breakers (compose.rs split; receipt.rs/artifact_aad.rs unowned; `matches!` lane gate won't fail to compile; SourceClass home → fe-sdk; 7 struct-literal files; 4 app.rs routing tables; reuse `is_safe_path_id`) | **ACCEPT** → plan C17/C18 |
+| AC-36 | MED | Phase B collisions (fe-query→fe-format default-features=false; in-memory `HexonArchive::import`, plaintext never on disk; B2 owns archive.rs packer; real `legacy_identifier` signature; spec authoritative; tests 10/12 owners; §4.2 rule 2 enforcement) | **ACCEPT** → plan C20/C21/C23 |
+| AC-37 | MED | Plan gate text stale; harness → 17 scenarios | **ACCEPT** → plan C16/C24 |
+| AC-38 | MED | DB-READER-RO (must land before SPEC10 A3) unscheduled | **ACCEPT** → new slice **A3b** between A3 and A4 |
+| AC-39 | LOW | False/stale done-claims (ledger `cross_spec_integration` "green"; G-WAVE-4 greps "not run"; tracks.md; RUNBOOK §2); ledger rows CDL-WRAP-DELIVERY + LEGACY-TRANSFORM-TOMBSTONE; CANON-WS pre-mount precondition; four W3 judgement calls → owner queue | **ACCEPT** → docs agent (brief §3) |
+| AC-40 | LOW | Process watch — dry-run reap of own strays not logged | **DONE**: dry-run at 678 processes → 0 session strays (only the live slice watcher when running; both smoke apps killed) |
+
+**Orchestrator lesson (sequencing):** an owner question whose answer a scheduled slice needs must be
+answered or defaulted-as-assumption BEFORE that slice — not queued for the end report (AC-5 applies).
