@@ -29,20 +29,33 @@ All of these must pass green before pushing the campaign to origin.
 
 ## W0 / W0b / W0c / W0d must-cover (verify from journals)
 
-Grep the workflow journals for `test_sweep_must_cover` and `test_gate_commands` entries to assemble the exact crates/scopes tested by each workflow's gate. These are recorded at workflow close and form the evidence that the code path was exercised.
+Extracted 2026-10-13 from the reviewers' `test_sweep_must_cover` / `test_gate_commands` in the
+session journals (`~/.claude/projects/…/a871e6ff-…/subagents/workflows/<wf>/journal.jsonl`). All of
+these already PASSED once in the pre-push scoped gates (logs `.omc/research/push-gate-20261013/`,
+`.omc/research/w0d-*.log`); the final sweep re-runs them on the campaign tip.
 
-**Sources:** `.omc/state/sessions/*/subagents/workflows/*/journal.jsonl`
+**W0 (`119dbd0`, `bf28971`) — `wf_aa8dded9-e92`**
+- `FE_REQUIRE_STORE_FIXTURE=1 cargo test -p fe-sync --lib p2p_store_migration` — output must show `legacy_v035_fixture_migrates_and_reads_back ... ok`, not a skip
+- `cargo test -p fe-database asset_backfill` (both backfill tests) and `legacy_imported_dir_is_where_old_imports_were_written`
+- the full workspace sweep (crud.rs `load_hierarchy_handler` resolver changed)
 
-| Workflow | Scope | Evidence |
-|---|---|---|
-| **W0 (119dbd0)** | fixture CI gen + bookkeeping | List of test_sweep_must_cover crates from `wf_aa8dded9-e92` |
-| **W0b (6a53a2b)** | lint fixes, licenses, runnable packages | List of test_sweep_must_cover crates from `wf_e727510a-f59` |
-| **W0c (da3e6a1)** | KTX2 guard, fuzz, CI setup | List of test_sweep_must_cover crates from `wf_34174034-e00` |
-| **W0d (558197c)** | shared SurrealKV handle, packaged re-smoke | List of test_sweep_must_cover crates from `wf_e724d2d0-2de` + push-gate logs |
+**W0b (`6a53a2b`) — `wf_e727510a-f59`** (reviewer listed none): `cargo test -p fe-runtime -p fractalengine`
+(packaged_root / file_asset_root); packaged GUI smoke (row above).
+
+**W0c (`da3e6a1`) — `wf_34174034-e00`**
+- `cargo test -p fe-runtime --lib ktx2_guard` and `--lib bevy_blob_reader`
+- `cargo test -p fe-api --lib upload`, `--test asset_ownership_test`, `--test mcp_integration`
+- `cargo test -p fe-database --lib handlers::crud`
+
+**W0d (`558197c`) — `wf_e724d2d0-2de`**
+- `cargo test -p fe-database --test shared_handle_test` (2 tests; mutation-checked against a current-thread runtime)
+- `cargo test -p fe-database -p fe-api -p fractalengine -p fractalengine-relay`
+- relay binary smoke (row above, AC-15) — relay `main()` has never been launched
 
 ## W1 PAS-P3P4 (append at W1 close)
 
-*This section is appended by the W1 orchestrator at the W1→final-sweep boundary. It captures the must-cover list for the 8 parallel slices (S1..S8) + the sequential integration pass (S8b) + the reviewer corrections (S9).*
+*Appended by the orchestrator at W1 close: must-cover lists from slices S1..S8 (sequential), the S8b
+security review-and-fix and the final review-and-fix; S9 is docs only.*
 
 *Placeholder — leave empty until W1 closure.*
 
