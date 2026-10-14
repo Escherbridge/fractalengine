@@ -54,6 +54,16 @@ approval of the complete normative specification set.
 4. The deletion of unsigned live-transform gossip supersedes the D-73 through
    D-78 live-transform feature. No send or receive path may be restored until a
    separately approved signed durable path exists.
+5. **CDL-W4 (2026-10-14).** `fe-sdk`'s dependency rule widens from exactly
+   `(serde, serde_json)` to `(serde, serde_json, blake3)`
+   (`fe-sdk/src/AGENTS.md:3-4`, `fe-sdk/Cargo.toml`), so `fe_sdk::legacy_identifier`
+   — the SPEC-10 §4.5 legacy-identifier / candidate-scope derivation — has exactly
+   one implementation every consumer can reach, instead of a second local BLAKE3
+   hash (§4.5 rule 2 forbids a second one). `blake3` is a pure hash, not an engine
+   internal, so it does not violate fe-sdk's serde-light design intent. A
+   drift-guard golden test (`fe-canonical-log/tests/legacy_identifier_golden.rs`)
+   cross-checks the two independent encoders so they cannot silently diverge.
+   (`campaign-plan-w4-20261013.md` §9 critic amendment C7.)
 
 ## Workstream G unlock and implementation-phase decisions (2026-08-09)
 
@@ -100,10 +110,44 @@ to the row.
 | D-CL33 | **`preview_kind` registry.** `0` invalid, `1` = `telemetry_sample_v1` (canonical CBOR `{anchor, metric, value_nano: i64, units, recorded_at_ms}`, no floats), `2..=1023` reserved for specification registration, `1024` and above application/experimental. A registry-aware receiver drops unregistered and unhandled kinds; structural SPEC-7 decoding is unchanged. Live display travels as a preview and durable history as batches (SPEC-7 §7.1 rule 4). Codec only: no transport while CANON-WS is closed. Rejected: no registry, string-named kinds, per-verse negotiation. | PRE-APPROVED 2026-10-13 (owner pre-approved the draft's defaults; post-review pending) |
 | D-CL34 | **Provisional wire numbers join the CDL-PROV ratification index** with no interop claim, under D-CL24(3): lane class 5 and AAD domain `fe-segment-bulk-artifact-v1`; the bulk-artifact inner-body keys; kind-5 payload keys 0–10 (key 10 `stats_stored_length` added to the planned 0–9 so every artifact reference carries its stored length, SPEC-6 §2.1 rule 4); the `ObservationSource`/`DecoderIdentity` keys and `source_class` values 1–5; the `telemetry_sample_v1` keys; and the domains `fe-schema-observation-batch-v1`, `fe-observation-source-id-v1`, and `fe-legacy-identifier-v1`. The legacy-identifier mapping must become the same function as SPEC-8's candidate scope derivation once that is ratified. Rejected: hold Phase B until ratification. | PRE-APPROVED 2026-10-13 (owner pre-approved the draft's defaults; post-review pending) |
 
+## CDL Wave 4 decisions and errata (2026-10-13/14)
+
+Recorded at CDL-W4 close-out (`campaign-plan-w4-20261013.md` §4 "Docs to update";
+commits `41c466b`..`7c31344` + security review-fix `e886539` + code-review-fix
+`00a2a08`). Tests for this work are **written, not run** — see
+`conductor/tracks/canonical_data_log_20260808/metadata.json` `G-WAVE-4`.
+
+| ID | Decision | Status |
+| --- | --- | --- |
+| E-W4-1 | **Erratum to SPEC-4 §5 / SPEC-2 `author-key-lifecycle.md` rule 5.** SPEC-4 §5's `AdmissionOutcome` table has no row for "capability chain, epoch state, or payload key unavailable." Default: quarantine, not reject, per SPEC-2 `author-key-lifecycle.md:240-241` (`AuthorizationEvidenceUnavailable { reason: QuarantineReason }`, `fe-canonical-log/src/materialize/errors.rs:132`; indexed in that crate's own errata list, `fe-canonical-log/src/AGENTS.md` "Owner-ratified errata, 2026-10-13"). | **Owner-confirmed 2026-10-13** (`conductor/RUNBOOK.md` §3 R7) — not PENDING-RATIFICATION. Reversal: one `disposition()` match arm to `Reject` (cheap). |
+
+**Provisional wire numbers appended under CDL-W4** join the single `CDL-PROV`
+register under D-CL24(3) (provisional CBOR key numbers, no interop claim) — same
+status as D-CL34's SPEC-10 numbers, not a new ratification. Full detail lives in
+`fe-canonical-log/src/AGENTS.md` §Provisional wire numbering, the single
+ratification surface; this is only the index so the register's growth is
+traceable from the decision record too:
+
+- `fe-materializer-id-v1` — `MaterializerVersion::registry_id()` domain (W4-3).
+- `fe-device-enrolment-v1` / `fe-device-enrolment-revoke-v1` — enrolment/revocation
+  signing domains, plus the `(principal, device_key)` record-id domain (W4-6).
+- `node-transform-v1` — the first reviewed SPEC-8 per-kind migration schema, keys
+  0-5 (W4-9).
+- `fe-legacy-identifier-v1` — `fe_sdk::legacy_identifier`'s domain, shared with
+  SPEC-10 §4.5 per D-CL34 (amendment 5 above; the same function must serve both,
+  SPEC-10 §4.5 rule 2 — W4-9, critic C5).
+
+Status: **provisional, owner-confirmed as shipping with no interop claim
+2026-10-13** (RUNBOOK §3 R7 item 2) — an unchanged default, not a new decision.
+Batch ratification is still open (ledger `CDL-PROV`).
+
 ## Pending ratification
 
 No PENDING-RATIFICATION entries. D-CL1 through D-CL29 are canonical as of
 2026-08-16. D-CL30 through D-CL34 are pre-approved as of 2026-10-13 and await
 owner post-review; until it happens they bind implementation exactly as written.
+E-W4-1 is owner-confirmed as of 2026-10-13, not pending. CDL-W4's four
+provisional wire-number domains (above) ship with no interop claim and await the
+same D-CL24(3) batch ratification as the rest of the `CDL-PROV` register.
 Product retention durations, replication-factor numbers, and the
 network-rollout gate remain work items, not unrecorded protocol decisions.

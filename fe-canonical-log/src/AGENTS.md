@@ -851,3 +851,15 @@ migration afterwards.
   over that range. Normative text: SPEC-5 §5.2 rules 4-5. The retention module models
   quarantine and leases, not device storage profiles, so nothing here implements it; Wave 3's
   `fe-database` retention work is where it becomes callable.
+
+## Owner-ratified errata, 2026-10-13 (CDL-W4, E-W4-1)
+
+- **E-W4-1** — SPEC-4 §5's `AdmissionOutcome` table has no row for "capability chain, epoch
+  state, or payload key unavailable." Default: quarantine, not reject, per SPEC-2
+  `author-key-lifecycle.md:240-241` rule 5. `AuthorizationEvidenceUnavailable { reason:
+  QuarantineReason }` (`materialize/errors.rs:132`) wraps exactly `CapabilityChainUnavailable`
+  / `EpochStateUnavailable` / `PayloadKeyUnavailable` — its constructor refuses any other
+  reason (see §composed-verifiers above). **Owner-confirmed 2026-10-13** (`conductor/RUNBOOK.md`
+  §3 R7; recorded in `conductor/decisions/canonical-data-log-20260808.md`), not
+  PENDING-RATIFICATION. Reversal: one `disposition()` match arm to `Reject` (cheap, no
+  consumers yet).

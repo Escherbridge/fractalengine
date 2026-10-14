@@ -32,6 +32,29 @@ resource: ./metadata.json
 | HARD-5 Wire dormant authorization gates | `fe-sync`, `fe-hexon`, `fe-api` | Use built auth gates and deny P2P writes by default without enabling network transport. |
 | HARD-6 Desktop analytics wiring | `fractalengine`, `fe-api` | Share `Arc<EntityStore>` with the API thread so local analytics has a source. |
 
+## Workstream G — implementation (tracked separately)
+
+Workstream S's owner approval (2026-08-08/09) unlocked Workstream G, the gated
+implementation of SPEC-1..8 in `fe-canonical-log` + `fe-database`. Its own wave
+plan, slice briefs and per-wave status live outside this file — this plan never
+duplicated them and does not start now:
+
+- `workstream-g-plan.json` — the original wave partition (waves 1-4).
+- `campaign-plan-w4-20261013.md` — Wave 4's campaign plan, which supersedes
+  `workstream-g-plan.json` waves[3] (that brief had gone stale by 2026-10-13;
+  see its own §2 "Current-code reality").
+- `metadata.json` tasks `G-WAVE-1`..`G-WAVE-4`, `G-ERRATA-*`, `SPEC-9-durability`,
+  `SPEC-10-observation` — the machine-truth status for each wave/phase.
+- `conductor/doneness-ledger.md` rows `CDL-*` and `conductor/decisions/canonical-data-log-20260808.md`
+  — the work-queue and decision register for the whole program.
+
+**Status as of 2026-10-14:** Waves 1-3 complete-verified-committed; Wave 4
+(`G-WAVE-4`, ledger `CDL-W4`) and the production `DeviceEnrolmentView`/
+`IssuerAuthorityView` implementors (ledger `CDL-R2`) are DONE-pending-sweep —
+code-complete and reviewed, tests written but not yet run. Network rollout,
+relay seeding and inbound P2P on the canonical path remain owner-gated (NO-GO)
+per this plan's own `network_enablement: prohibited`.
+
 ## Execution rules
 
 - `HARD-2` through `HARD-4` have one owner because they share `ws.rs`.
