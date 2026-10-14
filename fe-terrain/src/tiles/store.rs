@@ -448,15 +448,30 @@ impl HexonStore {
         serde_json::from_str(&contents).unwrap_or_default()
     }
 
+    /// W3b fixup (AC-30c): synced the same way `install_tileset`'s own
+    /// `.hexon`/`.meta.json` writes are, via the shared
+    /// [`write_synced_and_rename`] (one implementation, not a second
+    /// hand-rolled atomic-write here) — the old `std::fs::write` had no
+    /// `sync_all`, so a crash between the write and the rename could leave
+    /// `registry.json` empty (or missing) after an unclean shutdown, and
+    /// `load_registry` silently treats that as `RegistryData::default()`:
+    /// every installed tileset "vanishes" from the list, even though the
+    /// `.hexon`/`.meta.json` files on disk are untouched. The trailing
+    /// `fsync_dir()` call is the same POSIX directory-fsync this store
+    /// already does after `install_tileset`'s renames — durable file
+    /// content alone is not enough; the directory entry the rename created
+    /// needs its own fsync too (no-op on Windows, where NTFS's metadata
+    /// journal already covers it). Every caller holds `_write_guard` before
+    /// reaching here, so the one shared `registry.json.tmp` path is never
+    /// raced. No dedicated test: like `install_tileset`'s fsyncs, success
+    /// has no externally observable effect short of an actual power-loss
+    /// event.
     fn save_registry(&self, reg: &RegistryData) -> Result<()> {
         let path = self.registry_path();
         let json = serde_json::to_string_pretty(reg).context("failed to serialize registry")?;
-        // Atomic write: write to a temp file then rename.
         let tmp_path = path.with_extension("json.tmp");
-        std::fs::write(&tmp_path, &json)
-            .with_context(|| format!("failed to write registry tmp: {}", tmp_path.display()))?;
-        std::fs::rename(&tmp_path, &path)
-            .with_context(|| format!("failed to rename registry tmp: {}", tmp_path.display()))?;
+        write_synced_and_rename(&tmp_path, &path, json.as_bytes())?;
+        self.fsync_dir();
         Ok(())
     }
 

@@ -186,6 +186,25 @@ pub enum HexonAssembleOutcome {
         uri: String,
         reason: String,
     },
+    /// W3b fixup (AC-30b): `HexonOp::Remove`'s `HexonStore::remove_tileset`
+    /// moved off the Bevy main thread — it takes the same `write_lock` a
+    /// worker install can hold across a write + `sync_all` of up to 1 GiB
+    /// (`fe-terrain/src/AGENTS.md` §install-lock), so running it inline in
+    /// `drain_hexon_ops` could freeze frames for that long. The P2P
+    /// `UnpublishTileset` side effect moves here too, to stay ordered after
+    /// the store write actually lands.
+    RemoveApplied {
+        tileset_id: String,
+        result: Result<(), String>,
+    },
+    /// Same rationale as `RemoveApplied`, for `HexonOp::SetSeeding`'s
+    /// `HexonStore::set_seeding`. `enabled` carries the requested value
+    /// through so the apply side can still choose publish vs. unpublish.
+    SetSeedingApplied {
+        tileset_id: String,
+        enabled: bool,
+        result: Result<(), String>,
+    },
 }
 
 /// Receiver half for [`HexonAssembleOutcome`]s — polled each frame by
@@ -266,7 +285,6 @@ pub fn drain_hexon_ops(
     mut ops: ResMut<PendingHexonOps>,
     registry: Option<Res<SharedTilesetRegistry>>,
     mut ui_mgr: ResMut<UiManager>,
-    sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
     assemble_tx: Option<Res<HexonAssembleResultSender>>,
     app_settings: Res<AppSettings>,
     mut downloads: ResMut<TilesetDownloads>,
@@ -321,41 +339,60 @@ pub fn drain_hexon_ops(
                     }
                 });
             }
+            // W3b fixup (AC-30b): `remove`/`set_seeding` take the same
+            // `write_lock` a worker install can hold across a write +
+            // `sync_all` of up to 1 GiB (fe-terrain `src/AGENTS.md`
+            // §install-lock) — running them inline here could freeze the
+            // Bevy main thread for that long. Both move to a worker thread,
+            // exactly like `Install`/`AssembleDownload` above; the dialog
+            // refresh + P2P side effect apply once the real outcome lands,
+            // in `drain_hexon_assemble_results`.
             HexonOp::Remove(id) => {
-                match reg.remove(&id) {
-                    Ok(()) => tracing::info!(hexon_id = %id, "Removed hexon tileset"),
-                    Err(e) => tracing::warn!("Hexon remove failed for {id}: {e}"),
-                }
-                refresh = true;
-                if let Some(sender) = sync_sender.as_ref() {
-                    if let Err(e) = sender.0.send(fe_sync::SyncCommand::UnpublishTileset {
-                        tileset_id: id.clone(),
-                    }) {
-                        tracing::warn!(hexon_id = %id, "UnpublishTileset send failed: {e}");
+                let Some(tx) = assemble_tx.as_ref().map(|t| t.0.clone()) else {
+                    tracing::warn!(
+                        hexon_id = %id,
+                        "Hexon remove dropped — no result channel registered"
+                    );
+                    continue;
+                };
+                let reg_for_task = registry.0.clone();
+                std::thread::spawn(move || {
+                    let result = reg_for_task.remove(&id).map_err(|e| e.to_string());
+                    if tx
+                        .send(HexonAssembleOutcome::RemoveApplied {
+                            tileset_id: id.clone(),
+                            result,
+                        })
+                        .is_err()
+                    {
+                        tracing::warn!(hexon_id = %id, "Hexon remove result channel closed");
                     }
-                }
+                });
             }
             HexonOp::SetSeeding(id, enabled) => {
-                if let Err(e) = reg.set_seeding(&id, enabled) {
-                    tracing::warn!("Hexon set_seeding failed for {id}: {e}");
-                }
-                refresh = true;
-                if enabled {
-                    if let Some(sender) = sync_sender.as_ref() {
-                        spawn_bundle_and_publish(registry.0.clone(), sender.0.clone(), id.clone());
-                    } else {
-                        tracing::warn!(
-                            hexon_id = %id,
-                            "SetSeeding(true) but no sync thread — nothing to publish to"
-                        );
+                let Some(tx) = assemble_tx.as_ref().map(|t| t.0.clone()) else {
+                    tracing::warn!(
+                        hexon_id = %id,
+                        "Hexon set_seeding dropped — no result channel registered"
+                    );
+                    continue;
+                };
+                let reg_for_task = registry.0.clone();
+                std::thread::spawn(move || {
+                    let result = reg_for_task
+                        .set_seeding(&id, enabled)
+                        .map_err(|e| e.to_string());
+                    if tx
+                        .send(HexonAssembleOutcome::SetSeedingApplied {
+                            tileset_id: id.clone(),
+                            enabled,
+                            result,
+                        })
+                        .is_err()
+                    {
+                        tracing::warn!(hexon_id = %id, "Hexon set_seeding result channel closed");
                     }
-                } else if let Some(sender) = sync_sender.as_ref() {
-                    if let Err(e) = sender.0.send(fe_sync::SyncCommand::UnpublishTileset {
-                        tileset_id: id.clone(),
-                    }) {
-                        tracing::warn!(hexon_id = %id, "UnpublishTileset send failed: {e}");
-                    }
-                }
+                });
             }
             HexonOp::RefreshList => refresh = true,
             HexonOp::AssembleDownload {
@@ -725,6 +762,55 @@ pub fn drain_hexon_assemble_results(
                 tracing::warn!(uri, reason, "Install from registry failed");
                 if let Some(dl) = downloads.as_mut().and_then(|d| d.0.get_mut(&uri)) {
                     dl.status = DownloadStatus::Failed(reason);
+                }
+            }
+            // W3b fixup (AC-30b): applies the op the worker thread actually
+            // ran — same ordering as the old inline arms (`drain_hexon_ops`
+            // §W3b comment), just deferred until the real outcome lands.
+            HexonAssembleOutcome::RemoveApplied { tileset_id, result } => {
+                match &result {
+                    Ok(()) => tracing::info!(hexon_id = %tileset_id, "Removed hexon tileset"),
+                    Err(e) => tracing::warn!(hexon_id = %tileset_id, "Hexon remove failed: {e}"),
+                }
+                refreshed = true;
+                if let Some(sender) = sync_sender.as_ref() {
+                    if let Err(e) = sender.0.send(fe_sync::SyncCommand::UnpublishTileset {
+                        tileset_id: tileset_id.clone(),
+                    }) {
+                        tracing::warn!(hexon_id = %tileset_id, "UnpublishTileset send failed: {e}");
+                    }
+                }
+            }
+            HexonAssembleOutcome::SetSeedingApplied {
+                tileset_id,
+                enabled,
+                result,
+            } => {
+                if let Err(e) = &result {
+                    tracing::warn!(hexon_id = %tileset_id, "Hexon set_seeding failed: {e}");
+                }
+                refreshed = true;
+                if enabled {
+                    if let (Some(sender), Some(registry)) =
+                        (sync_sender.as_ref(), registry.as_ref())
+                    {
+                        spawn_bundle_and_publish(
+                            registry.0.clone(),
+                            sender.0.clone(),
+                            tileset_id.clone(),
+                        );
+                    } else {
+                        tracing::warn!(
+                            hexon_id = %tileset_id,
+                            "SetSeeding(true) but no sync thread — nothing to publish to"
+                        );
+                    }
+                } else if let Some(sender) = sync_sender.as_ref() {
+                    if let Err(e) = sender.0.send(fe_sync::SyncCommand::UnpublishTileset {
+                        tileset_id: tileset_id.clone(),
+                    }) {
+                        tracing::warn!(hexon_id = %tileset_id, "UnpublishTileset send failed: {e}");
+                    }
                 }
             }
         }
@@ -2014,6 +2100,19 @@ mod tests {
     /// sealed archive reports `Installed` and is actually installed (a real
     /// tile reads back through the registry); a tampered one reports
     /// `Failed` and installs nothing.
+    ///
+    /// W3b fixup (AC-30d): the name claimed "off the main thread" but never
+    /// asserted it — `app.update()` draining the op and `recv_timeout`
+    /// blocking for up to 10s both looked identical whether the install ran
+    /// inline or on a worker. Each leg below now checks `rx.try_recv()`
+    /// immediately after `app.update()` returns, before blocking on `recv`:
+    /// a main-thread (synchronous) install would already have the outcome
+    /// sitting in the channel at that point, since the send happens inside
+    /// the same system call that drains the op. This is probabilistic for a
+    /// fixture this small (the worker could in principle finish first), but
+    /// a real regression back to an inline install reliably fails it: an
+    /// inline install sends its outcome as part of draining the op, strictly
+    /// before `app.update()` can return.
     #[test]
     fn a_local_hexon_install_runs_off_the_main_thread_and_reports_its_outcome() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[95u8; 32]);
@@ -2057,6 +2156,10 @@ mod tests {
             .0
             .push(HexonOp::Install(tampered_path));
         app.update(); // drains the op, spawning the background install thread
+        assert!(
+            rx.try_recv().is_err(),
+            "the outcome must not already be in the channel right after app.update() returns"
+        );
         match recv(&rx) {
             HexonAssembleOutcome::Failed { reason, .. } => {
                 assert!(!reason.is_empty(), "{reason}");
@@ -2075,6 +2178,10 @@ mod tests {
             .0
             .push(HexonOp::Install(sealed_path));
         app.update();
+        assert!(
+            rx.try_recv().is_err(),
+            "the outcome must not already be in the channel right after app.update() returns"
+        );
         match recv(&rx) {
             HexonAssembleOutcome::Installed { tileset_id } => {
                 assert_eq!(tileset_id, hexon_id);
@@ -2086,6 +2193,87 @@ mod tests {
             tileset_registry.get_tile(hexon_id, 10, 0, 0).as_deref(),
             Some(tile_bytes.as_slice()),
             "the installed tile must read back byte-identical"
+        );
+    }
+
+    /// W3b fixup (AC-30b): `HexonOp::Remove`/`SetSeeding` moved their
+    /// `HexonStore` disk work off the Bevy main thread — same shape as F2's
+    /// `Install` above. Proves the outcome arrives over the worker-result
+    /// channel (`RemoveApplied`/`SetSeedingApplied`), not synchronously, and
+    /// that the store actually reflects each op once applied.
+    #[test]
+    fn remove_and_seeding_ops_report_through_the_worker_channel() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[96u8; 32]);
+        let hexon_id = "w3b-remove-seeding-test";
+        let sealed = fe_format::seal(
+            &fe_format::HexonArchive::export_tileset(
+                synthetic_tileset_manifest(hexon_id),
+                synthetic_tileset(hexon_id).tileset_meta.as_ref().unwrap(),
+                &[("10/0/0".to_string(), vec![1u8; 8])],
+                &[],
+                None,
+            )
+            .expect("export archive"),
+            &key,
+        )
+        .expect("seal archive");
+
+        let (_store_tmp, tileset_registry) = fresh_tileset_registry();
+        tileset_registry.install(&sealed).expect("install fixture");
+        let tileset_registry = std::sync::Arc::new(tileset_registry);
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let mut app = app_for_install_from_registry(tileset_registry.clone(), String::new(), tx);
+        let recv = |rx: &crossbeam::channel::Receiver<HexonAssembleOutcome>| {
+            rx.recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the worker thread must report an outcome")
+        };
+
+        // SetSeeding(true): the outcome arrives over the channel, not inline
+        // inside `drain_hexon_ops` (no `sync_sender` is wired into this test
+        // app, so `drain_hexon_ops` never touches it either — only the
+        // worker-returned result matters here).
+        app.world_mut()
+            .resource_mut::<PendingHexonOps>()
+            .0
+            .push(HexonOp::SetSeeding(hexon_id.to_string(), true));
+        app.update();
+        match recv(&rx) {
+            HexonAssembleOutcome::SetSeedingApplied {
+                tileset_id,
+                enabled,
+                result,
+            } => {
+                assert_eq!(tileset_id, hexon_id);
+                assert!(enabled);
+                assert!(result.is_ok(), "{result:?}");
+            }
+            other => panic!("expected SetSeedingApplied, got {other:?}"),
+        }
+        assert!(
+            tileset_registry
+                .list_tilesets()
+                .iter()
+                .any(|t| t.tileset_id == hexon_id && t.seeding),
+            "the store must reflect the enabled seeding flag"
+        );
+
+        // Remove: also over the channel, and the tileset is actually gone
+        // from the store (not just reported as gone).
+        app.world_mut()
+            .resource_mut::<PendingHexonOps>()
+            .0
+            .push(HexonOp::Remove(hexon_id.to_string()));
+        app.update();
+        match recv(&rx) {
+            HexonAssembleOutcome::RemoveApplied { tileset_id, result } => {
+                assert_eq!(tileset_id, hexon_id);
+                assert!(result.is_ok(), "{result:?}");
+            }
+            other => panic!("expected RemoveApplied, got {other:?}"),
+        }
+        assert!(
+            tileset_registry.list_tilesets().is_empty(),
+            "the store must reflect the removal"
         );
     }
 
@@ -2385,6 +2573,74 @@ mod tests {
         ))
         .expect("the configured bearer token must install");
         assert_eq!(tileset_registry.store().list_installed().len(), 1);
+    }
+
+    /// W3b fixup (AC-30a): the test above drives `fetch_and_install_from_registry`
+    /// directly, bypassing `install_from_registry` — the function that
+    /// actually owns `RemoteRegistryClient::new(registry_url.to_string(),
+    /// token)`. Reverting that call to a hardcoded `None` token left the test
+    /// above green, because it never calls `install_from_registry` at all.
+    /// This test drives the REAL seam instead: `install_from_registry`
+    /// itself, the one `drain_hexon_ops`'s `InstallFromRegistry` arm calls in
+    /// production. No env mutation — the token is passed as a plain
+    /// parameter, same as every other test here.
+    #[test]
+    fn install_from_registry_threads_the_bearer_token_to_the_client() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[97u8; 32]);
+        let hexon_id = "w3b-f4-seam-test";
+        let sealed = fe_format::seal(
+            &fe_format::HexonArchive::export_tileset(
+                synthetic_tileset_manifest(hexon_id),
+                synthetic_tileset(hexon_id).tileset_meta.as_ref().unwrap(),
+                &[("10/0/0".to_string(), vec![7u8; 8])],
+                &[],
+                None,
+            )
+            .expect("export unsealed archive"),
+            &key,
+        )
+        .expect("seal archive");
+
+        let registry_dir = tempfile::tempdir().expect("registry tempdir");
+        std::fs::write(registry_dir.path().join("pkg.hexon"), &sealed).expect("write fixture");
+        let addr = spawn_test_registry(registry_dir.path(), Some("s3cr3t".to_string()));
+        let registry_url = format!("http://{addr}");
+
+        // The configured token installs for real, through `install_from_registry`.
+        // Mutation check: if `:541`'s `RemoteRegistryClient::new(..., token)`
+        // is reverted to a hardcoded `None`, THIS call goes red (the
+        // token-gated registry refuses an anonymous request).
+        let (_tmp, tileset_registry) = fresh_tileset_registry();
+        let (tx, rx) = crossbeam::channel::unbounded();
+        install_from_registry(
+            &tileset_registry,
+            &registry_url,
+            hexon_id,
+            Some("s3cr3t".to_string()),
+            &tx,
+        );
+        match collect_registry_outcomes(&rx, std::time::Duration::from_secs(20)).last() {
+            Some(HexonAssembleOutcome::RegistryInstalled {
+                hexon_id: installed,
+                ..
+            }) => {
+                assert_eq!(installed, hexon_id);
+            }
+            other => panic!("expected RegistryInstalled with the configured token, got {other:?}"),
+        }
+        assert_eq!(tileset_registry.store().list_installed().len(), 1);
+
+        // No token against the SAME token-gated registry: refused, nothing
+        // installed — proves the seam actually threads what it's given, both
+        // ways, not just "any token always works".
+        let (_tmp2, tileset_registry2) = fresh_tileset_registry();
+        let (tx2, rx2) = crossbeam::channel::unbounded();
+        install_from_registry(&tileset_registry2, &registry_url, hexon_id, None, &tx2);
+        match collect_registry_outcomes(&rx2, std::time::Duration::from_secs(20)).last() {
+            Some(HexonAssembleOutcome::RegistryFailed { .. }) => {}
+            other => panic!("expected RegistryFailed with no token, got {other:?}"),
+        }
+        assert!(tileset_registry2.store().list_installed().is_empty());
     }
 
     /// (plan S7b) `install_from_registry_refuses_a_tampered_source_and_installs_nothing`:

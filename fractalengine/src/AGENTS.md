@@ -584,7 +584,12 @@ fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
   on the id actually being a TRACKED download (`TilesetDownloads` contains
   it) — a local install, which started no P2P download, sends no spurious
   cancel for an id the sync thread never heard of. Test:
-  `a_local_hexon_install_runs_off_the_main_thread_and_reports_its_outcome`.
+  `a_local_hexon_install_runs_off_the_main_thread_and_reports_its_outcome`
+  (W3b fixup, AC-30d: the name claimed "off the main thread" but the test
+  never checked — it now asserts `rx.try_recv()` is empty immediately after
+  `app.update()` returns, before blocking on `recv_timeout`, for both the
+  tampered and sealed legs; an inline main-thread install would already have
+  queued its outcome by then).
 - **Install from registry (PAS-P5 S7b, A9).** `HexonOp::InstallFromRegistry { uri }`
   (queued by the Hexon Manager's "Install from registry" field, enabled only
   when `AppSettings.hexon_registry_url`/`FE_HEXON_REGISTRY_URL` resolves to
@@ -626,15 +631,44 @@ fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
   `AppSettings` field for it (RUNBOOK §5: secrets never in files) and it is
   never logged. Test (through the pure fetch core, against a token-gated
   in-process registry): `install_from_registry_requires_the_configured_bearer_token`.
+  **W3b fixup (AC-30a, 2026-10-14):** that test drives
+  `fetch_and_install_from_registry` directly, never `install_from_registry`
+  itself (the function that actually owns the `RemoteRegistryClient::new`
+  call this bearer token threads through), so it stayed green against a
+  reversion of that one line. `install_from_registry_threads_the_bearer_token_to_the_client`
+  drives the real seam instead — `install_from_registry` itself, the
+  function `drain_hexon_ops`'s `InstallFromRegistry` arm calls in
+  production — against the same token-gated in-process registry, both with
+  and without the token.
+- **Remove/SetSeeding also move off the main thread (W3b fixup, AC-30b,
+  2026-10-14).** `HexonOp::Remove`/`SetSeeding` used to call
+  `HexonStore::remove_tileset`/`set_seeding` inline inside `drain_hexon_ops`
+  — the one install-path invariant (S4/NFR-4: never block the Bevy main
+  thread on hexon-store disk I/O) this pair had not yet been brought under.
+  Both take `HexonStore`'s single `write_lock`, the SAME lock a worker
+  install can hold across a write + `sync_all` of up to
+  `fe_format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES` (fe-terrain
+  `src/AGENTS.md` §install-lock), so a main-thread Remove/SetSeeding click
+  could block on that `std::sync::Mutex` for as long as the install's disk
+  write takes. They now mirror `Install`/`AssembleDownload`: `drain_hexon_ops`
+  spawns a worker thread per op and reports
+  `HexonAssembleOutcome::RemoveApplied { tileset_id, result }` /
+  `SetSeedingApplied { tileset_id, enabled, result }` over the SAME
+  `HexonAssembleResultSender` channel; `drain_hexon_assemble_results` applies
+  the result (log, dialog refresh, and the P2P side effect below) once it
+  actually lands, never inline. Test:
+  `remove_and_seeding_ops_report_through_the_worker_channel`.
 - **Seeding → publish.** `terrain_bridge::spawn_bundle_and_publish(registry,
   sync_tx, tileset_id)` is the GUI's thread+channel wrapper around the ONE
   shared bundling implementation, `fe_terrain::tiles::bundle_for_seeding`
   (writes/reuses `<hexon store>/bundles/<id>/`, see fe-terrain `AGENTS.md`
-  §bundles). `drain_hexon_ops`'s `SetSeeding(id, true)` arm and `main.rs`'s
-  startup loop (every tileset `TilesetRegistry::get_seeding_tilesets()`
-  already lists) both call it; `SetSeeding(id, false)` and `Remove` send
+  §bundles). `drain_hexon_assemble_results`'s `SetSeedingApplied { enabled: true, .. }`
+  arm and `main.rs`'s startup loop (every tileset
+  `TilesetRegistry::get_seeding_tilesets()` already lists) both call it;
+  `SetSeedingApplied { enabled: false, .. }` and `RemoveApplied` send
   `SyncCommand::UnpublishTileset` directly (no bundling needed to stop
-  seeding).
+  seeding) — same split as before W3b, just applied once the worker's
+  outcome lands instead of inline.
 - **One seeding implementation, two thin wrappers.** `fractalengine-relay`'s
   startup seeding (its own `main.rs`, right after its `TilesetRegistry`
   loads) calls the SAME `fe_terrain::tiles::bundle_for_seeding` — the

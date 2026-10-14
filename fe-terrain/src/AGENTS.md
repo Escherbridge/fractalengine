@@ -803,10 +803,9 @@ camera can see.
   write (mirrors the registry's own `publish_lock`, `fe-hexon-registry/AGENTS.md`
   "Publish validation" step 3). The same lock guards every other
   `registry.json` read-modify-write (`remove_tileset`, `set_seeding`,
-  `update_last_served`): installs run on worker threads while the Hexon
-  Manager's remove/seeding toggles run on the main thread, and an
-  unserialized install would write back a stale registry snapshot (losing
-  the toggle) or collide on the one `registry.json.tmp` (W2b review; test
+  `update_last_served`), so an unserialized install can never write back a
+  stale registry snapshot (losing a toggle) or collide on the one
+  `registry.json.tmp` (W2b review; test
   `installs_racing_seeding_toggles_lose_no_registry_update`). `write_synced_and_rename` also
   `File::create`s + `write_all`s + `sync_all`s the temp file BEFORE each
   rename (the old `std::fs::write` had no fsync), and `install_tileset`
@@ -816,6 +815,30 @@ camera can see.
   (`tests/hexon_integrity_flow.rs`) — the fsyncs themselves get no dedicated
   test (their success has no externally observable effect short of an actual
   power-loss event).
+- **`save_registry` is synced too (W3b fixup, 2026-10-14).** It used to be
+  the one `registry.json` write that skipped `write_synced_and_rename` (a
+  bare `std::fs::write` + `std::fs::rename`, no `sync_all`), even though
+  every caller already took `write_lock` around it. It now goes through the
+  same helper every other write in this file uses, plus the same
+  `fsync_dir()` the hexon/meta renames get — so a crash right after any
+  `registry.json` rename (install, remove, set_seeding, update_last_served)
+  can no longer leave `load_registry` reading an empty/corrupt file and
+  silently reporting `RegistryData::default()` (every installed tileset
+  "vanishes" from the list, though the `.hexon` files themselves survive).
+  No dedicated test, same reasoning as the hexon/meta fsyncs above.
+- **The lock is the reason remove/seeding moved off the Bevy main thread
+  too (W3b fixup, AC-30b, 2026-10-14).** This lock is also why
+  `HexonOp::Remove`/`SetSeeding` can no longer run inline in
+  `fractalengine::terrain_bridge::drain_hexon_ops` (the previous paragraph's
+  "Hexon Manager's remove/seeding toggles run on the main thread" is now
+  stale) — a worker install can hold `write_lock` across a write + `sync_all`
+  of up to 1 GiB (`fe-format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES`), and a
+  main-thread caller blocking on the SAME `std::sync::Mutex` would freeze
+  frames for that long. Both ops now run on their own `std::thread::spawn`
+  worker and report back over `HexonAssembleResultSender`, exactly like
+  `Install`/`AssembleDownload` already did (see `fractalengine/src/AGENTS.md`
+  §tileset-p2p). `update_last_served` has no production caller today, but
+  would need the same treatment if one is ever wired up.
 - **`load_tileset` refuses unsafe ids** (`is_safe_hexon_id`) before the path
   join: the id arrives from a (replicated) petal terrain config.
 - **`CompositeTileSource::resident_tile(coord)`** resolves every layer with
