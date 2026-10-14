@@ -3,7 +3,7 @@ type: plan
 track: p2p_asset_streaming_20260718
 created: 2026-10-13
 title: "Campaign plan — PAS-P5: partial hexon fetch (HTTP + P2P), archive reader split, signed integrity root"
-ledger_rows: [PAS-P5]
+ledger_rows: [PAS-P5, BLOB-STORE-SCOPE]
 depends_on: [PAS-P3, PAS-P4]
 decisions: [D-75 C1, D-76 D2, D-73 A4, D-77 E2, "2026-10-13 R4/R5 (D-5/D-17 generic asset)"]
 resource: ./plan.md
@@ -267,8 +267,10 @@ The P3P4 plan (`campaign-plan-p3p4-20261013.md` §10) now **fixes** the C-P3 con
 
 ## 4. Slices (strictly sequential; one executor each)
 
-Order: **S1 → S2 → S3 → S4 → S6 → S5 → S7a → S7b → S8.** S6 runs before S5 so the P2P suite can
-use real builder-sealed containers.
+Order: **S1 → S1b → S2 → S3 → S4 → S6 → S5 → S7a → S7b → S8.** S6 runs before S5 so the P2P suite
+can use real builder-sealed containers. S1b (blob-store scope, OF-1) has no dependency on S1's
+format/integrity work and none on it — it is placed right after S1 purely to land the runtime
+fix early, before any later slice's tests open a *default* (not explicit-path) blob store.
 
 ### S1 — fe-format integrity core (size M)
 
@@ -308,6 +310,114 @@ opt-in only), `fe-format/examples/seal_hexon.rs` (new).
 - `legacy_unsealed_archive_passes_verify_if_sealed_and_fails_require_sealed`.
 - `sealing_preserves_every_member_byte`: `import(seal(x))` yields the same tiles, assets and meta as
   `import(x)`. This catches a raw-copy regression.
+
+### S1b — Blob store scope: co-locate with the DB (OF-1, size M)
+
+**Orchestrator finding (`conductor/accountability-log.md` Tick 2, "Orchestrator finding (OF-1")):**
+the blob store is per-**USER** (`fe-sync/src/blob_store.rs:60-67` `FsBlobStore::default_path()` →
+`dirs::data_local_dir()/fractalengine/blobs`) while the DB is per-**INSTALL** (`data/` beside the
+binary — `fe-runtime/src/app.rs:81-84` `packaged_root()` + `fractalengine/src/main.rs:27-30`
+`set_current_dir(root)` — or the CWD for `cargo run`/the relay's `FE_DB_PATH`,
+`fractalengine-relay/src/main.rs:90`). Asset GC (`fe-database/src/handlers/asset_gc.rs:103-112`)
+deletes the blob of any asset row it collects **unless its own DB still names the hash** — correct
+only when the blob store is exclusive to that DB. Today it is not: every install on one machine
+shares the one per-user directory, so install A's GC can delete a blob install B's DB still
+references. Pre-existing (different CWDs already split DBs), but packaging makes multiple installs
+normal, which is why this is scheduled now rather than deferred again.
+
+**Chosen fix (co-locate, not "GC never touches a shared store"):** making the blob store agree with
+the DB's own scope is strictly stronger than teaching GC to distrust its own store, and it requires
+no change to `asset_gc.rs`'s deletion logic at all — the existing "my DB doesn't name this hash"
+check becomes correct the moment the store it operates on is actually exclusive to that DB. The
+alternative (GC never removes anything from a shared store) would require either a global
+reference-count across every install on the machine — a coordination problem this plan is not
+built to solve — or disabling GC entirely wherever hexon installs and replication keep sharing a
+store (defeats the point of GC). Co-location composes with hexon installs and replication sharing a
+store *per install*, which is the only sharing scope that was ever safe.
+
+**Owned files:** `fe-sync/src/blob_store.rs`, `fe-hexon/src/registry.rs` (`FsBlobStore::default_path`
+/ `open_default` only — the independently-maintained duplicate of the same constant, whose own doc
+comment at `:108` says "same as fe-sync's store"), `fe-database/src/handlers/asset_gc.rs` (extract a
+`referenced_asset_hashes` helper only — no deletion-logic change), `fe-database/src/handlers/blob_migration.rs`
+(new), `fractalengine/src/main.rs`, `fractalengine-relay/src/main.rs`, `fe-runtime/src/AGENTS.md`
+(§packaged-layout correction), `fe-sync/src/AGENTS.md` (§blob-store correction),
+`fe-test-harness/tests/blob_store_cross_read.rs` (extend).
+
+**Steps:**
+1. `fe-sync/src/blob_store.rs::default_path()`: replace the `dirs::data_local_dir()`-based path with
+   a CWD-relative default `data/blobs`, honoring an `FE_BLOB_DIR` env override checked first — the
+   same precedence pattern the relay already uses for `FE_DB_PATH`/`FE_P2P_DIR`
+   (`fractalengine-relay/src/main.rs:90,191`). Keep the old expression under a new
+   `legacy_default_path()` (named and unit-tested, not re-inlined) for the migration step to read
+   from. The GUI binary already calls `set_current_dir(packaged_root)` before anything touches
+   `data/` (`main.rs:27-30`), so the new default lands beside `data/fractalengine.db` with no extra
+   wiring there.
+2. `fe-hexon/src/registry.rs::FsBlobStore::default_path()` (`:107-114`, the second, hand-duplicated
+   copy of the exact same per-user constant) gets the identical `FE_BLOB_DIR` / `data/blobs` logic,
+   so the two stores `fe-test-harness/tests/blob_store_cross_read.rs` asserts are interchangeable
+   don't re-diverge the moment one of them changes.
+3. New `fe-database/src/handlers/blob_migration.rs`:
+   - `referenced_asset_hashes(db) -> HashSet<String>`: the same three queries `asset_gc.rs:72-101`
+     already runs (`asset.content_hash`, `crate_entry.asset_hash`, the `blob://{hash}.{ext}`
+     `path_asset` stamps), but over every row, not just the doomed set. `asset_gc.rs`'s own
+     `still_named` computation is refactored to call this helper instead of duplicating the SQL.
+   - `migrate_legacy_blob_store(db, new_store: &FsBlobStore, legacy_root: &Path) -> anyhow::Result<MigrationReport>`:
+     no-op if `legacy_root` doesn't exist. Otherwise, for every hash in `referenced_asset_hashes(db)`
+     that `legacy_root` has and `new_store` does not, read the legacy bytes and write them through
+     `new_store.add_blob()` — reusing its existing atomic tmp-then-rename path, so a half-written
+     target is never observed. This **copies**; `legacy_root` is never written to or deleted from.
+     The whole pass is gated on a marker file `{new_store_root}/.migrated-from-legacy` being absent
+     (same atomic tmp+rename as a blob write), written only after every referenced hash has been
+     attempted without a hard I/O error. A crash mid-pass leaves the marker absent, so the next
+     launch retries — safe, because each per-blob copy is independently idempotent
+     (content-addressed; `add_blob`'s existing "already exists" short-circuit makes a retried copy a
+     no-op).
+4. `fractalengine/src/main.rs`: after the DB thread's shared handle is ready (the point OF-2's fix,
+   `558197c`, already established) and before `blob_store` is handed to anything else
+   (`schedule_asset_gc`, the sync thread), call
+   `fe_database::handlers::blob_migration::migrate_legacy_blob_store(&db, &blob_store,
+   &fe_sync::FsBlobStore::legacy_default_path())`.
+5. `fractalengine-relay/src/main.rs`: the same call at the equivalent point (after the DB thread is
+   ready, before the relay's own blob-store consumers read it).
+6. Correct the now-stale lines: `fe-runtime/src/AGENTS.md:364-366` ("Per-user state outside `data/`
+   is unaffected: the blob store...") and the matching note in `fe-sync/src/AGENTS.md` §blob-store —
+   both now say the blob store is per-install under `data/blobs`, `FE_BLOB_DIR` is the override, and
+   the old per-user path is named only as the one-time migration source.
+
+**Invariants:**
+- **Never delete a blob another install may reference.** Migration only ever reads `legacy_root` and
+  writes through `new_store.add_blob()` — it calls no `remove_blob` anywhere, on either store. GC's
+  own deletion logic (`asset_gc.rs:103-112`) is untouched; it becomes correct as a side effect of the
+  store it operates on now being exclusive to its own DB.
+- **Migration is idempotent and crash-safe.** Marker-gated; every per-blob copy is naturally
+  idempotent; `legacy_root` is read-only to this code path for its entire lifetime.
+- **The two `FsBlobStore::default_path()` implementations never silently re-diverge** — covered by
+  extending `blob_store_cross_read.rs` with a same-`FE_BLOB_DIR`-value equality assertion (set for
+  the test, so CI never touches a real per-user directory).
+- Packaged layout: `data/blobs` sits beside `data/fractalengine.db`, under the same
+  `set_current_dir(packaged_root)` guarantee the AC-9 packaged smoke already exercised for the DB
+  file.
+
+**Flow tests** (`fe-database/tests/blob_migration_flow.rs` or folded into
+`fe-test-harness`, whichever already has two-DB scaffolding):
+- **two DBs sharing the old store: GC in one never removes the other's blob after migration.** Seed
+  one shared legacy directory with blob H; two independent `data/` roots (DB-A, DB-B), each with its
+  own asset row naming H (the pre-fix state: both installs deduped onto the one shared store); run
+  `migrate_legacy_blob_store` for A and for B (H lands in both installs' own `data/blobs`); tombstone
+  + expire H's row in A only; run `gc_unreferenced_assets` on A; assert A's own store no longer has H
+  **and B's own store still does**.
+- **packaged layout puts blobs under `data/`.** `default_path()` with no `FE_BLOB_DIR` set resolves
+  to `PathBuf::from("data/blobs")`, never anything under `dirs::data_local_dir()`.
+- **migration copies referenced blobs once.** Call `migrate_legacy_blob_store` twice against the same
+  fixtures: the second call is a no-op (report shows zero copied; marker already present), and the
+  legacy source file is byte-identical and still present after both calls (never moved).
+
+**Risk (named, not blocking):** during a mixed-version transition — an unupgraded install still
+running the old per-user default alongside an upgraded one — the old shared-store bug persists
+between those two specific installs until both are upgraded. Migration only ever adds a safety net
+going forward; it cannot retroactively fix a GC pass an old-version install already ran. No code
+changes make this fully flag-day-safe without a protocol version bump, which is out of scope here
+(no consumers of the shared path today per the original OF-1 note — "not a push blocker").
 
 ### S2 — Header/member reader split + chunk container (size M)
 
@@ -578,10 +688,13 @@ This is a separate context from the executors, and the reviewer fixes its own fi
 review is mandatory: the slices touch crypto, signature verification, untrusted network input and
 filesystem paths.
 
-**Owned files:** any file from S1–S7b for fixes, plus the docs in §5.
+**Owned files:** any file from S1, S1b, S2–S7b for fixes, plus the docs in §5.
 
 **Brief for the reviewer:**
 - Refute that every network path uses `RequireSealed`.
+- **(OF-1 / S1b)** Refute that the blob migration ever deletes from or writes into the legacy
+  per-user directory (copy-only), and that a crash mid-migration (marker absent, partial copies on
+  disk) is safe to retry — not merely assumed safe.
 - Refute that the coverage invariant is enforced at every reader.
 - Refute that `HeaderDoc` raw-text hashing matches the stored bytes.
 - Refute the traversal fix.
@@ -746,3 +859,4 @@ overlap, P3P4 owns the shared piece and P5 adapts (§3.5).
 | C6 | S3 serves `/chunk` and `/member` as octet-stream attachments with nosniff, and has a test. | security |
 | C7 | The D-5/D-17 deferral row is re-classified: device-payload records are built by CDL-SPEC10 A3 in this campaign; RUNBOOK §4 is an assumption, not a user decision. | mis-justified deferral |
 | C8 | Reviewer brief (S8) extended with the confirm gate, pin provenance and headers. | security review scope |
+| C9 | New slice **S1b** added (source: OF-1 orchestrator finding, `conductor/accountability-log.md` Tick 2): co-locates the blob store with the DB (`data/blobs`, `FE_BLOB_DIR` override, copy-only migration from the legacy per-user dir), closing the install-A-deletes-install-B's-blob gap. Placed right after S1 — no dependency either way on the format/integrity work. | scheduled fix (not previously a slice) |

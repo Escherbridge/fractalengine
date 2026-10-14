@@ -436,8 +436,12 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
   in flight. AC-8 prune done (523 incremental dirs).
 - OF-2 found by the smoke run (desktop analytics API never had its reader on Windows — double SurrealKV
   open) → **W0d `wf_e724d2d0-2de`** in flight (shared handle + scoped test gate) → push → then W1.
-- Next: W0d push → AC-12 docs pass → critic tick 3 → **W1 PAS-P3+P4** (S1..S9 + S8b, sequential,
-  per-slice local commits; AC-13 test folded into S6). No main pushes from W1 until the final sweep.
+- W0d DONE `558197c` (OF-2 closed; packaged re-smoke shows the API reader hydrating through the
+  shared handle) → **pushed `7441ab5..53a4c4c`**; CI watch `bwkioq32s` (run for 53a4c4c).
+- **W1 PAS-P3+P4 launched** `wf_d8699636-cf0` (task `wa0838p8u`), base `53a4c4c`: S1..S8 sequential
+  (per-slice local commits) → S8b security review-and-fix → S9 docs → final review-and-fix. Parallel
+  docs lanes: OF-1 → new PAS-P5 slice (agent); critic tick 3 (agent).
+- **No main pushes from here until the campaign final sweep** (docs-only excepted).
 
 ### 2026-10-12 — handoff after the completeness campaign
 - Done: retro (§1); 5-round grill loop → §3 decisions; pushed `a064144..4765bc5`; untracked

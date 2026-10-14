@@ -93,13 +93,13 @@ Counts are plan checkboxes (`[x]` versus `[ ]`/`[~]`) where a plan exists. `-` m
 
 | Class | Items |
 |---|---|
-| AGENT_DOABLE_RATIFIED | 110 |
+| AGENT_DOABLE_RATIFIED | 111 |
 | NEEDS_RATIFICATION | 30 |
 | USER_GATED | 15 |
 | NO_GO | 3 |
 | OFF_STRATEGY_OR_SPEC_ONLY | 16 |
 | STALE_OR_OBSOLETE | 18 |
-| **Total** | **192** |
+| **Total** | **193** |
 
 Suggested batches for the next workflows (agent-doable, disjoint files), reordered to RUNBOOK §7:
 
@@ -113,7 +113,7 @@ Suggested batches for the next workflows (agent-doable, disjoint files), reorder
 - **Stale sweep (unchanged from 2026-10-10):** every STALE_OR_OBSOLETE item with a code or doc acceptance, in one pass.
 - **v1 ship gate:** `oss_release_20260717` readiness — OSS-1.3's CI wiring and OSS-P6's user-blocked residuals are the last gate items of substance.
 
-### AGENT_DOABLE_RATIFIED (110)
+### AGENT_DOABLE_RATIFIED (111)
 
 Design ratified; an agent can build and test it now without new scope. Items whose evidence says *trigger-gated* are ratified but conditional: build them when the trigger fires or opportunistically.
 
@@ -142,6 +142,7 @@ Design ratified; an agent can build and test it now without new scope. Items who
 | **PAS-P4** | Pointer-set residency ledger, distance-ranked residency, lazy HexonTileSource, exit-ring eviction | L | p2p_asset_streaming_20260718 Phase 4 + 2.6; absorbs FEUI-RESIDENCY-LEDGER (fe-ui petal_respawn.rs:95 TODO) | D-74 ratified; fe-ui/src/verse_manager/spawn.rs:34 soft allowance only; batch spawners use distance 0.0 | Ledger resource replaces the boolean gate; nodes beyond render_distance x1.5 despawn/re-enter with hysteresis (moving-camera system test); lazy tile reads with offset index; 2.6 outcome recorded |
 | **PAS-P4B** | DONE (7a74214; absorbs FEUI-SETTINGS-PERSIST) — AppSettings RON persistence, remaining knobs, PetalManifest render-distance override, relay config from settings | M | p2p_asset_streaming_20260718 Phase 4b; fe-ui/src/settings.rs:73 TODO; fe-sync/src/relay_config.rs:91 TODO; absorbs FEUI-SETTINGS-PERSIST | D-78 ratified; serde derives in place; only 2 knobs exposed; relay config env-only. 2026-10-12 grill additionally wants a REPLICATED `petal.render_distance` DB column (bigger than this phase's manifest override) — unrow'd, see the consolidation-notes flag | settings.ron survives restart (temp-dir test; corrupt/partial file -> defaults); caps/tile mode/camera knobs editable; PetalManifest.render_distance overrides global (test) |
 | **PAS-P5** | PartialHexonFetch (HTTP + P2P), HexonArchive::import split, signed digest integrity | L | p2p_asset_streaming_20260718 Phase 5 | D-75 C1 + D-76 D2 ratified; zero code; coordinate manifest fields with HU-P1/P2 | Shared conformance suite for hosted + P2P partial fetch; chunk-by-seq + meta routes; asset_hash verified at install and publish (mismatch test) |
+| **BLOB-STORE-SCOPE** | Blob store is per-USER while the DB is per-INSTALL: GC in one install can delete a blob another install's DB still references — co-locate the default blob store with the DB (`data/blobs`, `FE_BLOB_DIR` override) + one-time copy-only migration from the legacy per-user dir | M | Orchestrator finding OF-1, `conductor/accountability-log.md` Tick 2 (2026-10-13); scheduled as PAS-P5 slice S1b | `fe-sync/src/blob_store.rs:60-67` `default_path()` is `dirs::data_local_dir()/fractalengine/blobs`; `fractalengine/src/main.rs:27-30` + `fe-runtime/src/app.rs:81-84` make the DB (`data/fractalengine.db`) per-install; `fe-database/src/handlers/asset_gc.rs:103-112` deletes blobs its own DB no longer names, which is only safe if the store is exclusive to that DB — it is not today; pre-existing, but packaging makes multiple installs normal | `default_path()` resolves to CWD-relative `data/blobs` (no `dirs::data_local_dir()`); copy-only, marker-gated, crash-safe migration from the legacy dir; flow test: two DBs that shared the old store — GC in one never removes the other's blob after migration |
 | **PAS-P6** | Close-out sweep, retro, archive | S | p2p_asset_streaming_20260718 Phase 6 | Plan Phase 6 open; after PAS-P0..P5 | Sweep green; retro written; decision record closed |
 | **TS-FR1** | DONE (49e2de0) — Commit an unwrap/expect census script and rewrite the audit | M | thorns_shields_20260321 FR-1 | docs/unwrap-audit.md STALE; scripts/audit.sh never committed | Script lists production unwrap/expect sites (tests excluded); audit doc replaced with current register + justified panics; STALE marker removed |
 | **TS-FR3** | DONE (49e2de0 built the targets + CI job; f002e8e/850466d fixed the step — pinned x86_64-unknown-linux-gnu, dropped LTO, cached fuzz/target, 45 min timeout; confirmed green on main, CI run 38277696834 on 850466d) — Fuzz targets built and run in CI | M | thorns_shields_20260321 FR-3 | fuzz/targets/{ed25519_verify,jwt_parse}.rs exist; CI job builds both with cargo-fuzz (nightly), runs each for a bounded time | Green on main — met |
