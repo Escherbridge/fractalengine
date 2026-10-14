@@ -24,6 +24,13 @@ use crate::types::{is_valid_ulid, ApiResponse};
 pub const MAX_ASSET_BYTES: usize = 256 * 1024 * 1024;
 /// Per-route body limit for the REST multipart upload (asset + form overhead).
 pub const ASSET_ROUTE_BODY_LIMIT: usize = MAX_ASSET_BYTES + 1024 * 1024;
+/// Per-route body limit for the device-payload multipart route (CDL-SPEC10
+/// A4 §device-ingest). `DEVICE_PAYLOAD_MAX_ASSETS` files at `MAX_ASSET_BYTES`
+/// each would be an enormous ceiling, so the whole request is capped like
+/// the single-GLB asset route instead — a device payload needing more than
+/// one 256 MiB-capped blob's worth of bytes is pathological (plan default,
+/// reversal: raise this constant).
+pub const DEVICE_PAYLOAD_ROUTE_BODY_LIMIT: usize = ASSET_ROUTE_BODY_LIMIT;
 /// `/mcp` body limit for EVERY JSON-RPC method (DEC-C21; §asset-ingest).
 pub const MCP_ROUTE_BODY_LIMIT: usize = 16 * 1024 * 1024;
 /// Max decoded GLB via MCP `upload_asset`: its base64 (4/3 → ~14.7 MiB) plus
@@ -40,6 +47,14 @@ pub const MCP_MAX_CONCURRENT_CALLS: usize = 8;
 /// caller's scope — one message, so it is not an asset-existence oracle.
 pub const UNKNOWN_ASSET: &str =
     "unknown asset_id (not found, or not usable from this token's scope)";
+/// Client text when a (reachable, existing) asset cannot be placed as a scene
+/// node because its bytes are not a GLB (CDL-SPEC10 A4 §device-ingest) — a
+/// device payload asset reads back fine through the asset endpoints, it just
+/// protects the renderer from a `SceneRoot` spawn over opaque bytes. Distinct
+/// from [`UNKNOWN_ASSET`]: the caller already proved reach, so naming the
+/// real reason here leaks nothing an existence-oracle rule must hide.
+pub const NOT_A_GLB_ASSET: &str =
+    "asset is not placeable as a scene node (its bytes are not a GLB)";
 /// Content type every ingested asset row carries (GLB only — FR-7).
 pub const GLB_CONTENT_TYPE: &str = "model/gltf-binary";
 /// Longest accepted asset display name.
@@ -234,6 +249,37 @@ fn store_glb(
     })
 }
 
+/// Decode -> (validate if GLB) -> hash + write. Generalizes [`store_glb`] for
+/// device-payload bytes (CDL-SPEC10 A4 §device-ingest): `content_type ==
+/// GLB_CONTENT_TYPE` still runs the FR-7 GLB header + KTX2 guard; any other
+/// MIME is opaque bytes (R5: "bytes stored opaque") and only the size cap
+/// applies. The bytes are consumed here and never leave this function, same
+/// as `store_glb`.
+fn store_blob(
+    store: &BlobStoreHandle,
+    payload: GlbPayload,
+    content_type: &str,
+    max_len: usize,
+) -> Result<StoredGlb, UploadError> {
+    let bytes = match payload {
+        GlbPayload::Bytes(bytes) => bytes,
+        GlbPayload::Base64(text) => decode_base64_capped(&text, max_len)?,
+    };
+    if content_type == GLB_CONTENT_TYPE {
+        validate_glb(&bytes, max_len)?;
+    } else if bytes.len() > max_len {
+        return Err(UploadError::TooLarge { max: max_len });
+    }
+    let hash = store.add_blob(&bytes).map_err(|e| {
+        tracing::error!("asset blob write failed: {e}");
+        UploadError::StoreFailed
+    })?;
+    Ok(StoredGlb {
+        content_hash: hash_to_hex(&hash),
+        size_bytes: bytes.len() as u64,
+    })
+}
+
 /// Send the metadata-only `CreateAsset` and await its correlated reply.
 async fn register_asset(
     state: &ApiState,
@@ -241,10 +287,23 @@ async fn register_asset(
     name: String,
     stored: StoredGlb,
 ) -> Result<IngestedAsset, UploadError> {
+    register_asset_as(state, owner, name, GLB_CONTENT_TYPE, stored).await
+}
+
+/// [`register_asset`] generalized to an arbitrary `content_type` (CDL-SPEC10
+/// A4): the device-payload path registers each blob with the declared
+/// format descriptor's MIME, never the GLB constant.
+async fn register_asset_as(
+    state: &ApiState,
+    owner: &UploadOwner,
+    name: String,
+    content_type: &str,
+    stored: StoredGlb,
+) -> Result<IngestedAsset, UploadError> {
     let correlation_id = ulid::Ulid::new().to_string();
     let cmd = DbCommand::CreateAsset {
         name,
-        content_type: GLB_CONTENT_TYPE.to_string(),
+        content_type: content_type.to_string(),
         size_bytes: stored.size_bytes,
         content_hash: stored.content_hash.clone(),
         owner_did: Some(owner.owner_did.clone()),
@@ -361,6 +420,43 @@ pub async fn ingest_glb(
     ingest_glb_with_limit(state, owner, name, payload, MAX_ASSET_BYTES).await
 }
 
+/// Generic asset ingest (CDL-SPEC10 A4 §device-ingest): [`ingest_glb_with_limit`]'s
+/// twin for a caller-declared `content_type`. Shares every guard (name check,
+/// blob-store presence, owner quota) and never runs `validate_glb` unless
+/// `content_type == GLB_CONTENT_TYPE` ([`store_blob`]) — a device payload's
+/// bytes are opaque by design (R5: "bytes stored opaque"), registered with
+/// the declared format descriptor's MIME, never sniffed from the upload.
+pub async fn ingest_blob_with_limit(
+    state: &ApiState,
+    owner: &UploadOwner,
+    name: &str,
+    content_type: &str,
+    payload: GlbPayload,
+    max_len: usize,
+) -> Result<IngestedAsset, UploadError> {
+    let name = name.trim();
+    if name.is_empty()
+        || name.chars().count() > MAX_ASSET_NAME_LEN
+        || name.chars().any(char::is_control)
+    {
+        return Err(UploadError::InvalidName);
+    }
+    let Some(store) = state.blob_store.clone() else {
+        return Err(UploadError::StoreNotConfigured);
+    };
+    check_upload_quota(state, owner, payload_upper_bound(&payload)).await?;
+    let content_type_owned = content_type.to_string();
+    let stored = tokio::task::spawn_blocking(move || {
+        store_blob(&store, payload, &content_type_owned, max_len)
+    })
+    .await
+    .map_err(|e| {
+        tracing::error!("asset store task failed: {e}");
+        UploadError::StoreFailed
+    })??;
+    register_asset_as(state, owner, name.to_string(), content_type, stored).await
+}
+
 /// A node placed from an asset (MCP `place_asset`).
 #[derive(Debug, Clone, Serialize)]
 pub struct PlacedAsset {
@@ -395,6 +491,31 @@ pub async fn place_asset_core(
             "place_asset refused: asset referenced only outside the caller's scope"
         );
         return Err(UNKNOWN_ASSET.to_string());
+    }
+    // CDL-SPEC10 A4 §device-ingest: a device-payload asset (declared-MIME
+    // opaque bytes, R5) protects the renderer by never becoming a `SceneRoot`
+    // — refused here, the one place both REST `create_node` and MCP
+    // `place_asset` funnel through, rather than duplicated at each caller.
+    let content_type: Option<String> = crate::gis::run_select(
+        state,
+        "SELECT content_type FROM asset WHERE asset_id = $aid LIMIT 1",
+        vec![("aid".to_string(), serde_json::json!(asset_id))],
+    )
+    .await
+    .and_then(|rows| rows.first().cloned())
+    .and_then(|row| {
+        row.get("content_type")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    });
+    if content_type.as_deref() != Some(GLB_CONTENT_TYPE) {
+        tracing::warn!(
+            asset_id,
+            petal_id,
+            content_type = ?content_type,
+            "place_asset refused: asset is not a GLB"
+        );
+        return Err(NOT_A_GLB_ASSET.to_string());
     }
     let correlation_id = ulid::Ulid::new().to_string();
     let cmd = DbCommand::CreateNodeWithAsset {

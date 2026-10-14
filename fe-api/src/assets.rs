@@ -215,6 +215,7 @@ pub async fn get_asset(
         "cache-control",
         HeaderValue::from_static("private, max-age=31536000, immutable"),
     );
+    insert_nosniff(&mut headers);
     (StatusCode::OK, headers, data).into_response()
 }
 
@@ -405,8 +406,22 @@ async fn serve_asset_by_id(db: &Db, blob_store: &BlobStoreHandle, asset_id: &str
         headers.insert(CONTENT_LENGTH, len_val);
     }
     headers.insert(CONTENT_DISPOSITION, disposition_header_value(&meta.name));
+    insert_nosniff(&mut headers);
 
     (StatusCode::OK, headers, data).into_response()
+}
+
+/// `X-Content-Type-Options: nosniff` on every blob response (CDL-SPEC10 A4
+/// §device-ingest, security): R5 device payloads can carry any declared
+/// MIME, including browser-sniffable types like `text/html`; `attachment`
+/// (already set via [`disposition_header_value`] / this route's fixed
+/// `octet-stream`) plus `nosniff` closes the stored-XSS surface — a browser
+/// must not reinterpret the bytes against a sniffed type.
+fn insert_nosniff(headers: &mut HeaderMap) {
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
 }
 
 /// Build a structured JSON error body with the given HTTP status.

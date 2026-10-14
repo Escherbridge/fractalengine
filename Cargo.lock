@@ -5157,6 +5157,7 @@ dependencies = [
  "fe-policy",
  "fe-query",
  "fe-runtime",
+ "fe-sdk",
  "fe-terrain",
  "fractalengine-test-harness",
  "futures-util",

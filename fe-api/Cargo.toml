@@ -11,6 +11,9 @@ description = "HTTP/WebSocket API gateway for FractalEngine"
 fe-runtime = { path = "../fe-runtime" }
 fe-identity = { path = "../fe-identity" }
 fe-database = { path = "../fe-database" }
+# R5 device-format descriptor shape (CDL-SPEC10 A4) — already compiled
+# transitively via fe-runtime/fe-database; this adds no new compile unit.
+fe-sdk = { path = "../fe-sdk" }
 fe-format = { path = "../fe-format", features = ["runtime"] }
 fe-query = { path = "../fe-query", features = ["datafusion"] }
 fe-entity-store = { path = "../fe-entity-store" }

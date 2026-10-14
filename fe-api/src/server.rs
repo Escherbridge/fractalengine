@@ -321,6 +321,19 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
             "/api/v1/petals/{petal_id}/iot/readings",
             post(crate::iot::ingest_readings),
         )
+        // R5 device formats + device payloads (CDL-SPEC10 A4, §device-ingest)
+        .route(
+            "/api/v1/verses/{verse_id}/device-formats",
+            post(crate::device::register_device_format).get(crate::device::list_device_formats),
+        )
+        .route(
+            "/api/v1/petals/{petal_id}/iot/payloads",
+            post(crate::device::ingest_device_payload)
+                .get(crate::device::list_device_payloads)
+                .layer(DefaultBodyLimit::max(
+                    crate::upload::DEVICE_PAYLOAD_ROUTE_BODY_LIMIT,
+                )),
+        )
         // Shareable signed query URLs (mint; redemption is public)
         .route("/api/v1/query/share", post(crate::share::issue_share_url))
         // Analytics (DataFusion columnar queries over EntityStore)

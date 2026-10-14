@@ -26,6 +26,11 @@ pub const IOT_INGEST_MAX_READINGS: usize = 1_000;
 /// Per-DID IoT ingestion rate limit (requests per second).
 pub const IOT_INGEST_RATE_PER_SEC: u32 = 10;
 
+/// Max asset files one device-payload ingest call may carry (CDL-SPEC10 A4
+/// §device-ingest; R5 assumption 5) — "a list of records" (SPEC-10 §2.3),
+/// not an unbounded one.
+pub const DEVICE_PAYLOAD_MAX_ASSETS: usize = 32;
+
 /// Default shareable-URL TTL (1 hour) — plan D2.
 pub const SHARE_DEFAULT_TTL_SECS: u64 = 3600;
 /// Maximum shareable-URL TTL (24 hours) — plan D2.

@@ -62,6 +62,7 @@ when a route lands.
 | Field defs | `POST /api/v1/field-defs`, `GET /api/v1/field-defs/{scope}`, `PATCH\|DELETE /api/v1/field-defs/by-id/{id}` |
 | Query / BI egress (§query-guard, §export, §share) | `POST /api/v1/query` (body `distributed: {…TsQueryKind…}` → §distributed-query), `POST /api/v1/query/elevated` (§elevated-query — OFF unless `FE_API_ELEVATED_ALLOW=1`; Owner; NOT scope-confined), `POST /api/v1/query/share`, `GET /api/v1/petals/{p}/export.parquet`, `GET …/export.csv`, `POST /api/v1/analytics/query` (merged `iot_reading` table via §distributed-query) |
 | IoT ingest (§iot-ingest) | `POST /api/v1/petals/{p}/iot/readings` |
+| R5 device formats / payloads (§device-ingest) | `POST\|GET /api/v1/verses/{v}/device-formats`; `POST\|GET /api/v1/petals/{p}/iot/payloads` (multipart ingest / list) |
 | Hexon tilesets | `POST /api/v1/hexons/tilesets/install?petal_id=…`, `DELETE /api/v1/hexons/tilesets/{id}?petal_id=…`, `PATCH …/{id}/seeding?petal_id=…`, `GET /api/v1/hexons/tilesets?petal_id=…`, `GET /api/v1/hexons/storage?petal_id=…` |
 | Hexon crate registry | `POST /api/v1/crates/publish`, `POST /api/v1/crates/{uri}/install?petal_id=…`, `DELETE …/{uri}/uninstall?petal_id=…`, `GET /api/v1/crates/search?petal_id=…`, `GET /api/v1/crates/installed?petal_id=…`, `GET /api/v1/crates/{uri}?petal_id=…`, `GET …/{uri}/entries?petal_id=…`, `GET …/{uri}/entries/{entry_id}/asset?petal_id=…`, `GET /api/v1/crates/available?petal_id=…` |
 | Sim control (§sim-control) | `POST /api/v1/sim/start`, `POST /api/v1/sim/stop`, `GET /api/v1/sim/status`, `POST /api/v1/sim/step`, `POST /api/v1/sim/inject-fault` |
@@ -318,6 +319,17 @@ body (`{"ok": false, "error": "..."}`) with a real HTTP status
 differs from the rest of `rest.rs`, where most handlers return HTTP 200 with
 `{"ok": false, ...}` for historical reasons; asset delivery is byte-stream
 territory, so real status codes matter for HTTP caches/CDNs/downloaders.
+
+**`X-Content-Type-Options: nosniff` on every blob response (CDL-SPEC10 A4,
+security).** R5 device payloads register an `asset` row with the declared
+format descriptor's MIME — any MIME, including browser-sniffable types like
+`text/html` or `image/svg+xml`. `get_asset`, `get_node_asset` and
+`get_asset_by_id` (via the shared `serve_asset_by_id`/`insert_nosniff`) all
+set the header alongside the existing `Content-Disposition: attachment` /
+fixed `application/octet-stream` — a browser must not reinterpret the bytes
+against a sniffed type (the stored-XSS surface a generic-MIME asset model
+opens up). Test: `html_payload_is_served_as_attachment_with_nosniff`
+(`tests/device_ingest_test.rs`).
 
 **Asset scope = anchor petal + referencing nodes (DEC-C21; FEAPI-ASSET-OWNER
 2026-10-11, `assets::asset_reach`)**: an API upload writes two ownership
@@ -1178,6 +1190,98 @@ future work). Design notes:
   `/api/v1/query` + shared-URL redemption serve IoT rows scope-guarded.
   Reading-shaped `export.parquet`/`export.csv` (flat reading rows + the
   anchor-position batched join) now ships too — see §export.
+
+## §device-ingest (`device.rs`, CDL-SPEC10 A4 — security review-and-fix)
+
+R5's generic-asset + device-payload REST surface, built on A3's DB layer
+(`fe-database::handlers::device_payload`) and A2's `fe-sdk::source_class` /
+`fe-sdk::device_format` shapes. No second validation path: every guard below
+front-loads a cheap REST-layer check purely to fail before a byte moves or
+to pick the right `content_type`; the DB-thread handler is still the actual
+authority and re-validates everything (A5's MCP tools reuse these same core
+functions for the same reason).
+
+- **`POST /api/v1/verses/{v}/device-formats`** — Manager+ at verse scope (R5
+  assumption 2: schema-defining, like branch controls — the same floor the
+  A3 inbound-replication gate uses for `device_format`, so the local and P2P
+  gates agree). Body deserializes straight into `fe_sdk::device_format::
+  DeviceFormatDescriptor` (no separate request DTO — one shape, one grammar
+  check). `DbCommand::RegisterDeviceFormat` → `DeviceFormatRegistered` (201)
+  or the typed `DeviceFormatRejected` (422: bad `format_id` grammar, blank
+  `mime`, or a conflicting `mime` on an existing `(verse_id, format_id)` —
+  re-declaring the SAME mime is an idempotent 201, per the DB handler).
+- **`GET /api/v1/verses/{v}/device-formats`** — Viewer+, same verse-scope
+  resolution (`rest::resolve_verse_scope` + `write_target_authorized` with
+  no ancestry — the `create_fractal`/`create_verse` idiom, reused for a read).
+- **`POST /api/v1/petals/{p}/iot/payloads`** — Editor+, petal scope
+  (`authorized_petal_scope`, §existence-oracle). Multipart fields:
+  `format_id`, `node_id`, optional `recorded_at` / `payload_id`, and 1..=
+  `limits::DEVICE_PAYLOAD_MAX_ASSETS` (32) ordered `file` parts. Route body
+  limit: `upload::DEVICE_PAYLOAD_ROUTE_BODY_LIMIT` (= `ASSET_ROUTE_BODY_LIMIT`,
+  256 MiB + 1 MiB — one 256 MiB-capped blob's worth of bytes per payload is
+  already generous; `DEVICE_PAYLOAD_MAX_ASSETS × MAX_ASSET_BYTES` would be an
+  absurd per-route ceiling). Order:
+  1. Resolve the declared format's MIME (`device.rs::declared_format_mime`,
+     a `gis::run_select` read) — unknown `format_id` is a 422 **before** any
+     blob is stored.
+  2. Store each file through `upload::ingest_blob_with_limit` (new, beside
+     `ingest_glb_with_limit`): same name/quota/store-presence guards, but
+     `store_blob` only runs the FR-7 GLB header + KTX2 checks when
+     `content_type == GLB_CONTENT_TYPE` — a device payload's bytes are
+     opaque by design (R5: "bytes stored opaque") and are registered with
+     the **declared descriptor's MIME**, never sniffed from the multipart
+     part or the client's `Content-Type`. Each accepted file becomes its own
+     `asset` row (owner = token `sub`, anchor = this petal, same as a GLB
+     upload — §assets).
+  3. Send `DbCommand::InsertDevicePayloads` (Device `SourceClass` — A5 widens
+     this once connector/manual routes exist, SPEC-10 §7.1 rule 6 forbids
+     inferring the class, not a sound single-route default). The DB handler
+     re-validates anchor/format/per-asset MIME/timestamp and is the only
+     place idempotent retry and referential confinement are enforced; a
+     rejection here is 422 (`DevicePayloadIngestRejection`'s `Display`).
+     **Known accepted gap**: by this step some `asset` rows from step 2 may
+     already be durable even though the payload itself is then refused
+     (e.g. an unknown `node_id`) — orphan GC (`asset_gc.rs`, A3) reclaims
+     them after the grace window; re-validating per-file MIME/anchor in
+     REST before storing would duplicate the DB handler's own checks for a
+     narrow win, so it is not done (§5 risk 1 in the campaign plan notes the
+     same tradeoff for the pre-existing IoT/asset path).
+  4. 201 `{payload_id, asset_ids}` (asset ids keep ingest order — the DB
+     handler returns them verbatim, including on an idempotent retry).
+- **`GET /api/v1/petals/{p}/iot/payloads?node_id&format_id&from&to`** —
+  Viewer+, petal scope. Thin `ListDevicePayloadsQuery` → `DbCommand::
+  ListDevicePayloads` → `{payloads}`.
+- **Placement refusal (renderer protection).** `upload::place_asset_core` —
+  shared by REST `create_node`'s `asset_id` path and MCP `place_asset` — now
+  checks `asset.content_type == GLB_CONTENT_TYPE` (a `gis::run_select` read)
+  AFTER the existing `asset_reach` check and BEFORE `CreateNodeWithAsset`: a
+  reachable, existing device-payload asset is refused with
+  `upload::NOT_A_GLB_ASSET`, distinct from `UNKNOWN_ASSET` (the caller
+  already proved reach, so naming the real reason leaks nothing an
+  existence-oracle rule must hide). One refusal point covers both REST and
+  MCP — never duplicated per caller. Test:
+  `device_asset_cannot_be_placed_as_a_scene_node`.
+- **Reading↔payload link** (`iot.rs`, A3 wiring; no A4 code change —
+  `IotReadingInput.payload_id` already round-trips through the existing
+  `IotIngestRequest` deserialize). Test:
+  `readings_posted_with_payload_id_join_to_the_payload`.
+- **Correlation discipline**: every DB-thread round trip here follows the
+  `upload::register_asset` precedent — a fresh `ulid` `correlation_id`, and
+  the reply arm matches on `correlation_id: Some(echoed) if echoed ==
+  correlation_id`; a mismatched or family-blind reply is 502, never
+  attributed to this caller (fe-runtime `src/AGENTS.md` §api-reply-correlation).
+
+**Known open item (not this slice's owned files — flagged for the Phase A
+review checkpoint, §6 of the campaign plan).** The plan's MANDATORY KNOWN
+FINDINGS (automated security review of A3, `65f39ec`) name two issues in
+`fe-database/src/handlers/{iot_reading.rs,device_payload.rs}`: `
+fetch_known_payloads` has no petal scope (a reading in petal P can
+reference petal Q's `device_payload`), and the idempotent-retry branch of
+`insert_device_payloads` returns `existing.asset_ids` for ANY matching
+`payload_id` before validating the caller's petal/principal match the
+existing row's. Neither file is in A4's owned-files list (fe-api only); the
+review-and-fix is accordingly left for whichever slice/pass owns those
+fe-database files next, rather than edited out-of-scope here.
 
 ## §distributed-query (M2/F7 — A15/A16/A17)
 
