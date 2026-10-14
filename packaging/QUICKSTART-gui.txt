@@ -79,8 +79,13 @@ Other useful environment variables:
   * Op-log entries carry signature fields, but older entries hold placeholder
     signatures. Do not rely on op-log integrity yet.
   * Anyone who holds a verse's sharing capability can write to it. Only open
-    verses from peers you trust. A crafted model file from a peer can crash
-    the app (out of memory). See SECURITY.md in the source repository.
+    verses from peers you trust. See SECURITY.md in the source repository.
+  * Models with KTX2/Basis textures are refused (from peers AND local
+    imports) until the engine picks up an upstream decompression fix
+    (RUSTSEC-2026-0344). Convert such textures to PNG/JPEG before importing.
+    The refusal is reported in the console window only.
+  * Unpack into a folder you can write to: the app keeps its database in the
+    data/ folder next to the program.
   * Recent editor features have passed their automated tests but have not
     been fully checked in the running app.
 

@@ -47,3 +47,6 @@ fractalengine/assets/imported/
 fe-sync/tests/fixtures/p2p_store_v035/
 # ...and that generator's own build dir (it is a separate workspace)
 fe-sync/tests/fixtures/p2p_store_v035_gen/target/
+
+# scrt mind-palace working memory (agent-local)
+.mpg/

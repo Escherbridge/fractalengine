@@ -320,6 +320,11 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
   (1024/verse, refuse-new) and NO shared cap (no cross-author eviction → flood-proof); sync: a
   per-author replica re-read (`Query::author(id).key_prefix`) when an author's authority rises ·
   to reverse: redesign before RP-2 (moderate).
+- **KTX2 guard scope (W0c, unasked):** the interim RUSTSEC-2026-0344 guard refuses KTX2/basisu
+  textures for EVERY GLB, including the user's own local imports — the blob store replicates and
+  `BlobAssetReader` cannot tell a blob's origin, so fail-closed is the only sound choice without
+  provenance tracking · to reverse: add blob provenance (local-origin flag) and exempt local blobs,
+  or transcode KTX2→PNG at import (moderate) · lifts entirely when bevy requires ruzstd ≥ 0.9.1.
 - **D-RP-2 (AC-1 agent, security):** owner pins cut the subtree authority walk (a verse Manager the
   owner pinned to viewer in petal P cannot appoint a Manager in P), and Managers only RAISE (a
   Manager's `none` is a no-op — no shadow-demotion of a higher Manager) · to reverse: RP-1 is pure,
