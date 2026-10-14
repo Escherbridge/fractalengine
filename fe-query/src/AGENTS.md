@@ -166,3 +166,77 @@ footer metadata; `codec.rs` owns the snapshot↔Arrow/WKB mapping.
   attribution needed). The executing host renders this SQL from the
   structured spec with bound parameters (fe-database `handlers/ts_partial.rs`)
   — remote SQL is never accepted from the wire.
+
+## §observation-hexon (`columnar/observation/`, SPEC-10 B2, critic tick 5 AC-25 / tick 7 AC-36a/C21)
+
+Writer/reader for the columnar observation hexon — `docs/spec/canonical-log/observation-plane.md`
+§3 is the normative source; this section is the implementation record. Feature-gated behind
+`parquet` (same gate as §geoparquet); its own feature-matrix gate is
+`cargo check -p fe-query --features parquet --tests` + the matching clippy (AC-19 lesson: a
+feature-gated path that never gets its own build silently bitrots).
+
+- **Never touches disk.** The hexon is held decrypted in memory start to finish — `writer.rs`
+  returns `Vec<u8>` buffers, `reader.rs` reads through `fe_format::HexonArchive::import`/
+  `read_member` (in-memory `Bytes`), never a temp file. `HexonArchiveIndex` (the on-disk,
+  `LazyFile`-backed reader) stays the right tool for a *file-backed* hexon such as a terrain
+  tileset; it is the wrong one here (critic tick 7 AC-36b/C21).
+- **One packer, two readers, no third.** `fe_format::HexonArchive::export_stored_deterministic`
+  (fe-format AGENTS.md §archive) is the ONLY zip writer this module uses — it canonical-JSON-encodes
+  `manifest.json`, writes the fixed empty `entries.json`, then the caller's members, all `Stored`
+  with the MS-DOS epoch timestamp, so archive bytes are a pure function of member bytes. Reading
+  goes through `HexonArchive::import` (manifest + entries + integrity) plus its companions
+  `member_order`/`read_member` (member name/order/storage-method check and named-member extraction
+  under the same decompression-limit guard `import` uses) — not a hand-rolled zip parse.
+- **`profile.rs`** pins every SPEC-10 §3.2 rule 1 writer-property constant (`CREATED_BY =
+  "fe-observation-hexon-v1"`, the one `fe.observation.hexon_format_version` key-value entry,
+  `MAX_ROW_GROUP_ROWS = 50_000`, `DATA_PAGE_SIZE_LIMIT = 1 MiB`, writer version `PARQUET_1_0`,
+  `Compression::UNCOMPRESSED`, dictionary encoding off, `EnabledStatistics::Chunk`) plus the exact
+  Arrow schemas for `readings.parquet` (12 columns), `payload_refs.parquet` (11 columns, 2 of them
+  `List<Utf8>`/`List<FixedSizeBinary(32)>`), and the statistics artifact (§3.3, 12 columns). A change
+  to any pinned value is a new `hexon_format_version`, never a silent edit.
+- **Determinism (§3.2 rule 8).** The writer sorts every row by `(anchor, hlc_wall_ms, hlc_counter,
+  id)` itself before writing — callers may hand rows in any order. `parquet` is built
+  `default-features = false` (`fe-query/Cargo.toml`): no compression codec is compiled in at all,
+  so "pages are uncompressed" (D-CL32) cannot regress by a future default change, only by a
+  deliberate Cargo edit (flagged as a determinism hazard in the campaign plan's own risk register).
+- **`segmentby`/`orderby` (§3.2 rules 5-6).** The writer groups already-sorted rows into consecutive
+  same-anchor runs and calls `ArrowWriter::write` + `.flush()` once per run — `write` itself further
+  splits a run at `MAX_ROW_GROUP_ROWS` (parquet-rs's own row-group-size behavior), so one flush per
+  anchor is sufficient to guarantee "a row group never mixes anchors" without any bespoke row-group
+  bookkeeping. The reader re-derives the same guarantee by rebuilding one `ParquetRecordBatchReaderBuilder`
+  per row group (`.with_row_groups(vec![rg])`) — re-parsing the small footer per group is an accepted
+  simplicity/correctness trade (same precedent as fe-format's own documented sealed-member
+  double-decompress, `fe-format/src/AGENTS.md` §archive-index), not a hot path.
+- **`anchor` column = `fe_sdk::legacy_identifier(LegacyTable::Node, node_id)`** (SPEC-10 §4.5; the
+  ONE mapping, `fe-sdk/src/AGENTS.md` §legacy-identifier) — computed once per distinct `node_id`,
+  never reimplemented here. A non-ASCII node id surfaces as `ObservationHexonError::LegacyIdentifier`.
+- **`source_index`** on every row is the caller's (B3's) index into the kind-5 payload's `sources`
+  list (§4.3 key 8); this module only range-checks it against the caller-supplied `source_count`
+  and carries it opaquely — it has no `ObservationSource` type of its own and no
+  fe-canonical-log dependency.
+- **Statistics artifact (§3.3)** groups rows by `(anchor, table, key)` in a `BTreeMap`, which yields
+  the required "strictly ascending by that triple" order for free (no separate sort step); `table`
+  discriminants are `STATS_TABLE_READING = 1` / `STATS_TABLE_PAYLOAD = 2`. Per rule 2's literal
+  wording, `min_hlc_wall_ms`/`min_hlc_counter` (and the `max_*` pair) are independent per-column
+  aggregates over the group's rows, NOT a single row's paired HLC value — unlike the overall
+  `hlc_range` summary field, which IS the true lexicographic `(wall_ms, counter)` extremum (the
+  two are intentionally different reductions; do not unify them).
+- **No chrono/time dependency.** `writer.rs::epoch_ms_to_rfc3339` is a ~20-line, dependency-free
+  epoch-ms → RFC 3339 formatter (Howard Hinnant's `civil_from_days` algorithm) used only for the
+  manifest's `created_at`/`updated_at` (a pure function of the batch's max ingestion HLC wall time,
+  per §3.1 rule 4). Adding chrono/time for one field was judged not worth a new dependency edge.
+- **Error type.** `ObservationHexonError` distinguishes a caller-input defect (`EmptyBatch`,
+  `SourceIndexOutOfRange`, `LegacyIdentifier`) from a profile violation found in bytes being read
+  back (`ProfileViolation`, with a message naming the rule) — B3 can branch on the variant instead
+  of matching error-message substrings.
+- **New dependency edges, all gated by the `parquet` feature (`fe-query/Cargo.toml`):**
+  `fe-sdk` (critic tick 5 AC-25/§8 C15 — `legacy_identifier`), `fe-format` with
+  `default-features = false` (critic tick 7 AC-36a/C21 — the `runtime` feature would pull
+  fe-runtime → bevy, which this crate must not gain), `bytes` (already pinned at the workspace
+  level — the only new edge; needed for `parquet::file::reader::ChunkReader` over an in-memory
+  buffer), and `blake3` (already pinned at the workspace level — `hexon_id` per §3.1 rule 4).
+- **Deferred to B3 (the sealer/hydrator, not owned here):** sealing the plaintext hexon + statistics
+  artifact into `LaneClass::BulkArtifact` bulk artifacts, building the kind-5 CBOR payload from
+  `ObservationHexonSummary`, window-membership selection, and the §5.2 hydration cross-check between
+  a hexon's actual contents and its signed payload (this module only validates the hexon against
+  *itself* — the container and Parquet profile — never against a payload it has no access to).

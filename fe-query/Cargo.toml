@@ -11,8 +11,19 @@ description = "Query builder and GIS query helpers for FractalEngine"
 default = ["geo"]
 graphql = ["dep:async-graphql"]
 geo = []
-# Lighter than `datafusion`: GeoParquet I/O without DataFusion (see src/AGENTS.md §geoparquet)
-parquet = ["dep:parquet", "dep:arrow", "dep:fe-entity-store"]
+# Lighter than `datafusion`: GeoParquet I/O without DataFusion (see src/AGENTS.md §geoparquet).
+# Also gates the observation-hexon codec (src/AGENTS.md §observation-hexon, SPEC-10 B2): the
+# feature-matrix gate is `cargo check -p fe-query --features parquet --tests` (critic tick 5 AC-25 /
+# tick 7 AC-36a).
+parquet = [
+    "dep:parquet",
+    "dep:arrow",
+    "dep:fe-entity-store",
+    "dep:fe-sdk",
+    "dep:fe-format",
+    "dep:bytes",
+    "dep:blake3",
+]
 datafusion = ["dep:datafusion", "dep:async-trait", "dep:fe-entity-store", "parquet"]
 
 [dependencies]
@@ -28,6 +39,23 @@ datafusion = { version = "46", optional = true, default-features = false, featur
 # arrow/parquet on datafusion-46's 54.x line (single arrow in tree); not in workspace root — fe-query is sole consumer
 arrow = { version = "54", optional = true, default-features = false }
 parquet = { version = "54", optional = true, default-features = false, features = ["arrow"] }
+# SPEC-10 B2 observation-hexon codec only (src/AGENTS.md §observation-hexon):
+# `legacy_identifier` for the Parquet `anchor` column (critic tick 5 AC-25/§8 C15).
+fe-sdk = { path = "../fe-sdk", optional = true }
+# `default-features = false`: the `runtime` feature pulls fe-runtime -> bevy, which this
+# crate must not gain (critic tick 7 AC-36a/C21). Used for the deterministic `.hexon` packer
+# and reader (`export_stored_deterministic`/`member_order`/`read_member`), never
+# `HexonArchiveIndex` (that stays the on-disk, file-backed reader — this hexon is held
+# decrypted in memory, never written to disk).
+fe-format = { path = "../fe-format", optional = true, default-features = false }
+# In-memory `parquet::file::reader::ChunkReader` (observation-hexon reader): the hexon's
+# Parquet members are read from a `Bytes` buffer, never a temp file (plaintext never
+# touches disk). Already pinned at the workspace level; this is its only new edge.
+bytes = { workspace = true, optional = true }
+# `hexon_id` (manifest §3.1 rule 4: BLAKE3-of-BLAKE3s of the two Parquet members).
+# Already pinned at the workspace level (used by fe-format/fe-sdk/etc.); this is its
+# only new edge into fe-query.
+blake3 = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

@@ -17,6 +17,10 @@ use crate::{
     ExportNode, FieldDef, SchemaDefinition,
 };
 
+/// The fixed empty entry catalog `export_stored_deterministic` writes for
+/// every producer that has no catalogued entries (SPEC-10 §3.1 rule 5).
+const EMPTY_ENTRY_CATALOG_JSON: &[u8] = b"{\"entries\":[]}";
+
 // ---------------------------------------------------------------------------
 // Archive data
 // ---------------------------------------------------------------------------
@@ -351,6 +355,89 @@ impl HexonArchive {
 
         let cursor = zip.finish()?;
         Ok(cursor.into_inner())
+    }
+
+    /// Deterministic `Stored`-only `.hexon` packer (SPEC-10 §3.1 rules 2-4):
+    /// `manifest.json` (canonical JSON, keys sorted recursively, no whitespace
+    /// — the same canonicalizer `sign_manifest`/`verify_manifest` use) and
+    /// `entries.json` (the fixed empty catalog `{"entries":[]}`, since a
+    /// columnar batch is not a scene asset and is not catalogued), followed
+    /// by `extra_members` in the exact order given. Every member is written
+    /// `Stored` (uncompressed) with the MS-DOS epoch timestamp
+    /// (`zip::DateTime::default()`), no extra fields, no file/archive
+    /// comment, and the crate-wide default `0o644` external attributes — so
+    /// the archive bytes are a pure function of the member bytes, which is
+    /// what lets a kind-5 observation batch's hexon be reproduced byte-for-byte
+    /// from the same rows (see `fe-query/src/AGENTS.md` §observation-hexon).
+    /// This packer is generic (any future byte-stable-archive producer can
+    /// reuse it) — it is NOT a new reader; pair it with [`Self::import`] /
+    /// [`Self::import_with_budget`] to read the result back, same as every
+    /// other `.hexon` producer in this crate.
+    pub fn export_stored_deterministic(
+        manifest: &HexonManifest,
+        extra_members: &[(&str, &[u8])],
+    ) -> Result<Vec<u8>> {
+        let manifest_json = crate::signature::canonical_json_bytes(manifest)
+            .context("canonicalising manifest.json")?;
+
+        let buf = Vec::new();
+        let cursor = Cursor::new(buf);
+        let mut zip = zip::ZipWriter::new(cursor);
+        let options = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored)
+            .last_modified_time(zip::DateTime::default());
+
+        zip.start_file("manifest.json", options)?;
+        zip.write_all(&manifest_json)?;
+
+        zip.start_file("entries.json", options)?;
+        zip.write_all(EMPTY_ENTRY_CATALOG_JSON)?;
+
+        for (name, data) in extra_members {
+            zip.start_file(*name, options)?;
+            zip.write_all(data)?;
+        }
+
+        let cursor = zip.finish()?;
+        Ok(cursor.into_inner())
+    }
+
+    /// Every member's name and whether it is stored (uncompressed), in
+    /// physical central-directory order — a cheap read of the central
+    /// directory only (no decompression), capped by the same
+    /// [`limits::MAX_ARCHIVE_ENTRIES`] guard `import` uses. Used by format
+    /// profiles that pin an exact member order and storage method (e.g. the
+    /// observation hexon, SPEC-10 §3.1 rules 2-3); general consumers should
+    /// use [`Self::import`]'s extracted fields instead.
+    pub fn member_order(bytes: &[u8]) -> Result<Vec<(String, bool)>> {
+        let cursor = Cursor::new(bytes);
+        let mut archive = zip::ZipArchive::new(cursor).context("failed to open ZIP archive")?;
+        limits::check_entry_count(archive.len())?;
+        let mut out = Vec::with_capacity(archive.len());
+        for i in 0..archive.len() {
+            let file = archive.by_index(i)?;
+            out.push((
+                file.name().to_string(),
+                file.compression() == zip::CompressionMethod::Stored,
+            ));
+        }
+        Ok(out)
+    }
+
+    /// Read one named member's raw bytes under `cap`, with the same
+    /// [`limits::read_entry_capped`] zip-bomb guard `import`/`import_with_budget`
+    /// use, for a member those entry points do not themselves extract (e.g.
+    /// the observation hexon's `observations/*.parquet`,
+    /// `fe-query/src/AGENTS.md` §observation-hexon). `Ok(None)` when absent.
+    /// This does not re-run the sealed-archive integrity check — a caller
+    /// needing that calls [`Self::import`]/[`Self::import_with_budget`] too
+    /// (same bytes, same budget discipline, not a second reader).
+    pub fn read_member(bytes: &[u8], name: &str, cap: u64) -> Result<Option<Vec<u8>>> {
+        let cursor = Cursor::new(bytes);
+        let mut archive = zip::ZipArchive::new(cursor).context("failed to open ZIP archive")?;
+        limits::check_entry_count(archive.len())?;
+        let mut budget = cap;
+        read_optional(&mut archive, name, cap, &mut budget)
     }
 
     /// Import a `.hexon` ZIP archive from bytes.
@@ -814,5 +901,125 @@ mod import_integrity_tests {
             err.downcast_ref::<IntegrityError>().is_some(),
             "expected an IntegrityError, got {err:#}"
         );
+    }
+}
+
+#[cfg(test)]
+mod observation_packer_tests {
+    use super::*;
+    use crate::manifest::HexonType;
+
+    fn obs_manifest() -> HexonManifest {
+        HexonManifest {
+            schema_version: "1.0.0".into(),
+            hexon_id: "obs-test".into(),
+            hexon_type: HexonType::ObservationBatch,
+            publisher_did: "did:key:z6Mktest".into(),
+            publisher_name: None,
+            version: "1".into(),
+            build_id: None,
+            name: "observation-batch".into(),
+            description: None,
+            tags: vec![],
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            updated_at: "2026-01-01T00:00:00.000Z".into(),
+            source_peer_did: None,
+            approx_size_bytes: None,
+            min_engine_version: None,
+            homepage_url: None,
+            dependencies: vec![],
+            platforms: vec![],
+            address: None,
+            integrity: None,
+            signature: None,
+        }
+    }
+
+    /// SPEC-10 §3.1 rule 3 + rule 8's archive-level half: the same manifest +
+    /// members produce byte-identical archive bytes regardless of wall-clock
+    /// time (MS-DOS epoch timestamp, not "now").
+    #[test]
+    fn export_stored_deterministic_is_byte_identical_and_stored_in_order() {
+        let manifest = obs_manifest();
+        let members: [(&str, &[u8]); 2] = [
+            ("observations/readings.parquet", b"RB1"),
+            ("observations/payload_refs.parquet", b"RB2"),
+        ];
+        let a = HexonArchive::export_stored_deterministic(&manifest, &members).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let b = HexonArchive::export_stored_deterministic(&manifest, &members).unwrap();
+        assert_eq!(a, b, "packer bytes must not depend on wall-clock time");
+
+        let order = HexonArchive::member_order(&a).unwrap();
+        assert_eq!(
+            order,
+            vec![
+                ("manifest.json".to_string(), true),
+                ("entries.json".to_string(), true),
+                ("observations/readings.parquet".to_string(), true),
+                ("observations/payload_refs.parquet".to_string(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn export_stored_deterministic_round_trips_through_import_and_read_member() {
+        let manifest = obs_manifest();
+        let members: [(&str, &[u8]); 2] = [
+            ("observations/readings.parquet", b"RB1"),
+            ("observations/payload_refs.parquet", b"RB2"),
+        ];
+        let bytes = HexonArchive::export_stored_deterministic(&manifest, &members).unwrap();
+
+        let data = HexonArchive::import(&bytes).unwrap();
+        assert!(matches!(
+            data.manifest.hexon_type,
+            HexonType::ObservationBatch
+        ));
+        assert!(data.entries.is_empty());
+
+        assert_eq!(
+            HexonArchive::read_member(&bytes, "observations/readings.parquet", 1024)
+                .unwrap()
+                .unwrap(),
+            b"RB1"
+        );
+        assert_eq!(
+            HexonArchive::read_member(&bytes, "observations/payload_refs.parquet", 1024)
+                .unwrap()
+                .unwrap(),
+            b"RB2"
+        );
+        assert!(HexonArchive::read_member(&bytes, "missing", 1024)
+            .unwrap()
+            .is_none());
+    }
+
+    /// `read_member`'s decompression-limit guard applies before any
+    /// allocation, matching `HexonArchive::import`'s own bomb refusals.
+    #[test]
+    fn read_member_refuses_a_declared_size_bomb_without_allocation() {
+        let manifest = obs_manifest();
+        let buf = Vec::new();
+        let cursor = Cursor::new(buf);
+        let mut zip = zip::ZipWriter::new(cursor);
+        zip.start_file("manifest.json", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&crate::signature::canonical_json_bytes(&manifest).unwrap())
+            .unwrap();
+        let bomb_opts = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .compression_level(Some(1));
+        zip.start_file("bomb", bomb_opts).unwrap();
+        let chunk = vec![0u8; 1 << 20];
+        for _ in 0..(limits::MAX_ENTRY_UNCOMPRESSED_BYTES / (1 << 20) + 16) {
+            zip.write_all(&chunk).unwrap();
+        }
+        let bytes = zip.finish().unwrap().into_inner();
+        assert!(bytes.len() < (4 << 20), "fixture must compress small");
+
+        let err = HexonArchive::read_member(&bytes, "bomb", limits::MAX_ENTRY_UNCOMPRESSED_BYTES)
+            .expect_err("a member over the cap must be refused");
+        assert!(format!("{err:#}").contains(limits::DECOMPRESSION_LIMIT_ERROR));
     }
 }

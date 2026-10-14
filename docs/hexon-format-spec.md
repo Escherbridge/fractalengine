@@ -181,6 +181,7 @@ Canonical serialization: Base32 (52 chars) or hex with `0x` prefix. Tag literals
 | `visual_layer` | 2D overlays, sprites | `entries.json`, `assets/` |
 | `theme` | UI themes, colors, fonts | `entries.json`, `assets/` |
 | `bundle` | Mixed collection | `entries.json`, `assets/` |
+| `observation_batch` | Columnar observation batch (SPEC-10 §3.1): readings + payload refs | `observations/readings.parquet`, `observations/payload_refs.parquet` |
 
 ### Platform Targeting (amp-compatible)
 

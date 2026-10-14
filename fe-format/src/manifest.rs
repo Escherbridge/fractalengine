@@ -20,6 +20,13 @@ pub enum HexonType {
     VisualLayer,
     Theme,
     Bundle,
+    /// A sealed columnar observation batch (SPEC-10 §3.1 rule 1): two Parquet
+    /// members (`observations/readings.parquet`, `observations/payload_refs.parquet`),
+    /// written by `fe-query`'s observation-hexon writer (`fe-query/src/AGENTS.md`
+    /// §observation-hexon). The archive is unsigned (no `integrity`/`signature`
+    /// field) — the canonical-log kind-5 operation's own signature binds the
+    /// sealed hexon, so a second fe-format signature would rebind nothing.
+    ObservationBatch,
 }
 
 /// Metadata for a `TerrainTileset` hexon.

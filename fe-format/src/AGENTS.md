@@ -52,6 +52,23 @@ packs already-built chunk archives into one container (`chunks/index.json` +
 `chunks/{seq}.hexon`, Stored) — see §bundles and §partial below. It returns
 UNSEALED bytes; the caller seals last, same as every other producer.
 
+**`export_stored_deterministic(manifest, extra_members)`** (SPEC-10 B2,
+critic tick 7 AC-36b/C21) is the generic byte-stable packer every other
+exporter above is NOT: `manifest.json` (canonical JSON via
+`signature::canonical_json_bytes`, the same canonicalizer `sign_manifest`
+uses) + the fixed empty `entries.json` + `extra_members` in the exact order
+given, every member `Stored` with the MS-DOS epoch timestamp
+(`zip::DateTime::default()`), no extra fields/comment, fixed `0o644`
+attributes — so the archive bytes are a pure function of the member bytes.
+First consumer: `fe-query`'s observation-hexon writer
+(`fe-query/src/AGENTS.md` §observation-hexon). `member_order(bytes)` (cheap,
+central-directory-only) and `read_member(bytes, name, cap)` (the same
+`read_entry_capped` zip-bomb guard `import` uses) are its reader-side
+companions for a profile that must check exact member order/storage method
+and pull a member `import` does not itself extract (e.g.
+`observations/*.parquet`) — NOT a third zip-parsing implementation, the same
+`zip`/`limits` machinery `import` already uses.
+
 ## §archive-index (`archive_index.rs`)
 
 `HexonArchiveIndex` is THE lazy `.hexon` reader (critic C5: PAS-P5 extends it
@@ -121,10 +138,20 @@ and the zip crate checks each member's CRC-32 at EOF.
 ## §manifest (`manifest.rs`)
 
 `HexonType` is the content taxonomy (Scene, Model, ..., TerrainTileset,
-Bundle). `TerrainTileset` hexons carry pre-baked elevation/satellite tiles for
-offline terrain rendering: `terrain/tiles/{z}/{x}/{y}.png` (elevation),
-optional `terrain/satellite/{z}/{x}/{y}.jpg` (imagery), plus a `tileset_meta`
-manifest block with bounds, zoom range, encoding, and tile count.
+Bundle, ObservationBatch). `TerrainTileset` hexons carry pre-baked
+elevation/satellite tiles for offline terrain rendering:
+`terrain/tiles/{z}/{x}/{y}.png` (elevation), optional
+`terrain/satellite/{z}/{x}/{y}.jpg` (imagery), plus a `tileset_meta` manifest
+block with bounds, zoom range, encoding, and tile count.
+
+`ObservationBatch` (SPEC-10 B2) hexons carry two Parquet members
+(`observations/readings.parquet`, `observations/payload_refs.parquet`),
+written by `fe-query`'s observation-hexon codec (`fe-query/src/AGENTS.md`
+§observation-hexon) via `export_stored_deterministic` below — never
+`export`/`export_scene`/`export_tileset` (those use `Deflated` compression
+and a non-canonical `manifest.json`, which would break SPEC-10 §3.1's
+byte-determinism requirement). The manifest carries no `signature`/`integrity`
+— the canonical-log kind-5 operation's own signature binds the sealed hexon.
 
 ### §bundles — `TilesetBundleIndex` / `ChunkIndex.blake3`
 

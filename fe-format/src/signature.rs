@@ -8,6 +8,7 @@ use anyhow::{bail, Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use serde::Serialize;
 use serde_json::Value;
 
 // ---- canonical JSON ---------------------------------------------------------
@@ -44,6 +45,15 @@ fn canonical_json(value: &Value) -> String {
             format!("{{{}}}", entries.join(","))
         }
     }
+}
+
+/// Canonical JSON bytes of any serde `Serialize` value — the ONE canonicalizer
+/// `sign_manifest`/`verify_manifest` use, reused by `archive::export_stored_deterministic`
+/// (SPEC-10 §3.1 rule 4: `manifest.json` is canonical JSON) so there is a
+/// single sorted-keys-no-whitespace implementation in this crate, not two.
+pub(crate) fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
+    let v = serde_json::to_value(value).context("canonical_json_bytes: serialization failed")?;
+    Ok(canonical_json(&v).into_bytes())
 }
 
 // ---- signing ----------------------------------------------------------------
@@ -204,6 +214,17 @@ mod tests {
 
         let ok = verify_manifest(&json, &tampered, &did).unwrap();
         assert!(!ok, "tampered signature must not verify");
+    }
+
+    #[test]
+    fn canonical_json_bytes_matches_canonical_json() {
+        #[derive(Serialize)]
+        struct Doc {
+            z: u8,
+            a: &'static str,
+        }
+        let bytes = canonical_json_bytes(&Doc { z: 1, a: "x" }).unwrap();
+        assert_eq!(bytes, br#"{"a":"x","z":1}"#);
     }
 
     #[test]
