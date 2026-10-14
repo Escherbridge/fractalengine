@@ -283,6 +283,11 @@ fn main() {
     let blob_store_for_api = blob_store.clone();
     let blob_store_for_assets = blob_store.clone();
 
+    // S4 startup-seeding clone: `sync_cmd_tx` moves into `SyncCommandSenderRes`
+    // just below, so the startup-publish loop (after `tileset_registry`
+    // builds) needs its own handle taken before that move.
+    let sync_cmd_tx_for_seeding = sync_cmd_tx.clone();
+
     let mut app = fe_runtime::app::build_app(BevyHandles {
         net_cmd_tx: ch.net_cmd_tx,
         net_evt_rx: ch.net_evt_rx,
@@ -397,6 +402,22 @@ fn main() {
             }
         };
 
+    // Startup publish (S4 step 2): every tileset this peer was already
+    // seeding before the restart gets re-bundled (cache-reused if its source
+    // hash is unchanged) and re-published, so a peer that was offline sees
+    // it advertised again without the user re-toggling anything. Spawned
+    // (never blocks the GUI from opening) via the same shared helper
+    // `drain_hexon_ops` uses at runtime.
+    if let Some(ref registry) = tileset_registry {
+        for installed in registry.get_seeding_tilesets() {
+            terrain_bridge::spawn_bundle_and_publish(
+                registry.clone(),
+                sync_cmd_tx_for_seeding.clone(),
+                installed.hexon_id,
+            );
+        }
+    }
+
     let _api_thread = fe_api::spawn_api_thread(fe_api::ApiConfig {
         bind_addr: "127.0.0.1:8765".to_string(),
         api_cmd_tx: api_cmd_tx.clone(),
@@ -509,11 +530,20 @@ fn main() {
             registry.clone(),
         ));
     }
+    // S4: background assemble-result channel for `HexonOp::AssembleDownload`
+    // (verify+assemble+install run off the Bevy main thread; only the
+    // dialog refresh needs it — see `terrain_bridge::drain_hexon_assemble_results`).
+    {
+        let (assemble_tx, assemble_rx) = crossbeam::channel::unbounded();
+        app.insert_resource(terrain_bridge::HexonAssembleResultSender(assemble_tx));
+        app.insert_resource(terrain_bridge::HexonAssembleResults(assemble_rx));
+    }
     app.add_systems(
         bevy::prelude::Update,
         (
             terrain_bridge::bridge_petal_terrain,
             terrain_bridge::drain_hexon_ops,
+            terrain_bridge::drain_hexon_assemble_results,
             // Settings-section ruler toggles → fe-terrain RulerSettings.
             terrain_bridge::sync_ruler_settings,
         ),

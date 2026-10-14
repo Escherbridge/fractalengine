@@ -520,3 +520,60 @@ final sweep.
 4. `GpxImportStatus`'s exact field names are this worker's assumption,
    pending reconciliation with whatever fe-ui's `gpx_ops` worker actually
    ships (see above).
+
+## §tileset-p2p — host wiring for P2P tileset streaming (`p2p_asset_streaming_20260718` S4)
+
+fe-ui has no fe-terrain dependency, so this binary is the only place that can
+assemble a completed P2P download into the hexon store or bundle an installed
+tileset for seeding — fe-sync (the P2P transport) sees neither fe-format nor
+fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
+§tileset-transfer). `terrain_bridge.rs` is the bridge.
+
+- **Download → install.** `fe-ui/src/terrain_map/events.rs::drain_tileset_events`
+  turns a `SyncEvent::TilesetDownloadComplete` into
+  `HexonOp::AssembleDownload { tileset_id, index_path, bundle_paths }` (no
+  more main-thread install call). `terrain_bridge::drain_hexon_ops` spawns a
+  **background thread** per `AssembleDownload` (`std::thread::spawn` — never
+  Bevy's main thread, S4's NFR-4 invariant): it re-verifies the bundle hashes
+  against the index (`fe_terrain::tiles::assemble_bundles_from_index_json`,
+  defense in depth over S2/S3's own per-chunk check), installs via
+  `HexonStore::install_tileset`, and `TilesetRegistry::reload`s it —
+  `TilesetRegistry`/`HexonStore` are internally lock-protected (`RwLock`), so
+  this is all safe off-thread. The ONLY step that needs the main thread is
+  refreshing `ActiveDialog::HexonManager`'s installed list, so the thread
+  reports back over `HexonAssembleResults` (a plain crossbeam channel
+  resource) and `drain_hexon_assemble_results` does that one thing each
+  frame. This is the regression fix for "closing the Hexon Manager stalls a
+  download" (`fe-ui/src/AGENTS.md` §terrain-map) carried all the way through
+  to the install step.
+- **Seeding → publish.** `terrain_bridge::spawn_bundle_and_publish(registry,
+  sync_tx, tileset_id)` is the GUI's thread+channel wrapper around the ONE
+  shared bundling implementation, `fe_terrain::tiles::bundle_for_seeding`
+  (writes/reuses `<hexon store>/bundles/<id>/`, see fe-terrain `AGENTS.md`
+  §bundles). `drain_hexon_ops`'s `SetSeeding(id, true)` arm and `main.rs`'s
+  startup loop (every tileset `TilesetRegistry::get_seeding_tilesets()`
+  already lists) both call it; `SetSeeding(id, false)` and `Remove` send
+  `SyncCommand::UnpublishTileset` directly (no bundling needed to stop
+  seeding).
+- **One seeding implementation, two thin wrappers.** `fractalengine-relay`'s
+  startup seeding (its own `main.rs`, right after its `TilesetRegistry`
+  loads) calls the SAME `fe_terrain::tiles::bundle_for_seeding` — the
+  correctness-bearing part (Hilbert bundling, cache-hash reuse, disk writes)
+  is not duplicated. Only the ~15-line "spawn a thread, send
+  `PublishTileset`" glue is written twice, once per binary, because
+  `fractalengine` is a bin-only crate (no lib target) `fractalengine-relay`
+  could depend on — there is no third binary-agnostic home for it that both
+  already share without adding a dependency edge neither needs otherwise. If
+  a third caller needs this, promote the wrapper into a tiny shared crate
+  then.
+- **Startup publish ordering.** `main.rs` reads `sync_cmd_tx` for the startup
+  seeding loop via a clone taken BEFORE `app.insert_resource(SyncCommandSenderRes(sync_cmd_tx))`
+  moves the original — the sync thread is already spawned by then (channel
+  sends just queue until it's ready), so a pre-existing seeding tileset gets
+  re-advertised on every launch without the user re-toggling it.
+- **PAS-P1V (relay posture, not tileset streaming).** `scripts/relay-health-verify.ps1`
+  boots `fe-relay.exe` under `FE_SYNC_RELAY=default|http://127.0.0.1:3340|disabled`
+  and asserts the resolved-mode log line, the one-time default-relay warning
+  (Default only), and a relay-health transition line per mode — orthogonal to
+  tileset streaming, but the same binary and the same `fe-sync` relay
+  plumbing (`relay_config.rs`/`endpoint.rs`/`status.rs`).

@@ -9,7 +9,9 @@ use fe_runtime::messages::DbCommand;
 use crate::dialogs::ActiveDialog;
 use crate::terrain_map::dto::{DownloadProgress, DownloadStatus, InstalledTilesetDto};
 use crate::terrain_map::manifest::PetalManifest;
-use crate::terrain_map::{tileset_to_terrain_json, HexonOp, PendingHexonOps, PetalMapState};
+use crate::terrain_map::{
+    tileset_to_terrain_json, HexonOp, PendingHexonOps, PetalMapState, TilesetDownloads,
+};
 
 use super::UiManager;
 
@@ -34,74 +36,67 @@ pub(crate) fn toggle_seeding(
     hexon_ops.0.push(HexonOp::SetSeeding(id, enabled));
     // After toggling, re-advertise to peers
     if let Some(sender) = sync_sender {
-        sender
-            .0
-            .send(fe_sync::SyncCommand::AdvertiseTilesets {
-                verse_id: active_verse_id.unwrap_or_default().to_string(),
-                advertisements_json: String::new(), // refreshed by terrain layer
-            })
-            .ok();
+        if let Err(e) = sender.0.send(fe_sync::SyncCommand::AdvertiseTilesets {
+            verse_id: active_verse_id.unwrap_or_default().to_string(),
+            advertisements_json: String::new(), // ignored on the wire — built from the catalog
+        }) {
+            bevy::log::warn!("sync_sender channel closed — AdvertiseTilesets not dispatched: {e}");
+        }
     }
 }
 
+/// Starts a P2P tileset download: seeds a [`DownloadProgress`] tracker and
+/// sends `DownloadTileset`, which drives meta resolution + every bundle
+/// fetch on the sync thread (S3) — no more `RequestChunk` ping-pong from
+/// here. The tracker lives in [`TilesetDownloads`], not the dialog, so it
+/// survives the Hexon Manager closing (S4 regression fix).
 pub(crate) fn start_download(
-    ui_mgr: &mut UiManager,
+    downloads: &mut TilesetDownloads,
     sync_sender: Option<&fe_sync::SyncCommandSenderRes>,
     id: String,
 ) {
     bevy::log::info!("Hexon: start P2P download for tileset {}", id);
-    // Initialize a download tracker in the dialog state
-    if let ActiveDialog::HexonManager {
-        ref mut download_progress,
-        ..
-    } = ui_mgr.active_dialog
-    {
-        download_progress.insert(
-            id.clone(),
-            DownloadProgress {
-                tileset_id: id.clone(),
-                chunks_received: 0,
-                total_chunks: 0,
-                bytes_received: 0,
-                total_bytes_estimate: 0,
-                status: DownloadStatus::Queued,
-            },
-        );
-    }
-    // Request metadata from any peer that has it
+    downloads.0.insert(
+        id.clone(),
+        DownloadProgress {
+            tileset_id: id.clone(),
+            chunks_received: 0,
+            total_chunks: 0,
+            bytes_received: 0,
+            total_bytes_estimate: 0,
+            status: DownloadStatus::Queued,
+        },
+    );
     if let Some(sender) = sync_sender {
-        sender
-            .0
-            .send(fe_sync::SyncCommand::RequestTilesetMeta {
-                peer_id: String::new(), // sync thread picks best peer
-                tileset_id: id,
-            })
-            .ok();
+        if let Err(e) = sender.0.send(fe_sync::SyncCommand::DownloadTileset {
+            tileset_id: id,
+            provider: None, // every provider this node has seen advertise it
+        }) {
+            bevy::log::warn!("sync_sender channel closed — DownloadTileset not dispatched: {e}");
+        }
+    } else {
+        downloads.0.entry(id).and_modify(|dl| {
+            dl.status = DownloadStatus::Failed("P2P offline — no sync thread".to_string());
+        });
     }
 }
 
 pub(crate) fn cancel_download(
-    ui_mgr: &mut UiManager,
+    downloads: &mut TilesetDownloads,
     sync_sender: Option<&fe_sync::SyncCommandSenderRes>,
     id: String,
 ) {
     bevy::log::info!("Hexon: cancel download {}", id);
     if let Some(sender) = sync_sender {
-        sender
-            .0
-            .send(fe_sync::SyncCommand::CancelTilesetDownload {
-                tileset_id: id.clone(),
-            })
-            .ok();
+        if let Err(e) = sender.0.send(fe_sync::SyncCommand::CancelTilesetDownload {
+            tileset_id: id.clone(),
+        }) {
+            bevy::log::warn!(
+                "sync_sender channel closed — CancelTilesetDownload not dispatched: {e}"
+            );
+        }
     }
-    // Update status in dialog
-    if let ActiveDialog::HexonManager {
-        ref mut download_progress,
-        ..
-    } = ui_mgr.active_dialog
-    {
-        download_progress.remove(&id);
-    }
+    downloads.0.remove(&id);
 }
 
 pub(crate) fn refresh_list(
@@ -113,13 +108,12 @@ pub(crate) fn refresh_list(
     hexon_ops.0.push(HexonOp::RefreshList);
     // Re-advertise our tilesets to trigger peer exchange
     if let Some(sender) = sync_sender {
-        sender
-            .0
-            .send(fe_sync::SyncCommand::AdvertiseTilesets {
-                verse_id: active_verse_id.unwrap_or_default().to_string(),
-                advertisements_json: String::new(),
-            })
-            .ok();
+        if let Err(e) = sender.0.send(fe_sync::SyncCommand::AdvertiseTilesets {
+            verse_id: active_verse_id.unwrap_or_default().to_string(),
+            advertisements_json: String::new(),
+        }) {
+            bevy::log::warn!("sync_sender channel closed — AdvertiseTilesets not dispatched: {e}");
+        }
     }
 }
 

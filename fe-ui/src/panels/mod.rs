@@ -125,6 +125,9 @@ pub fn gardener_console(
     vis_state: &mut crate::visibility::VisibilityState,
     // hexon_scale FR-9: Measure tool anchors, edited by the Options Measure arm.
     measure_state: &mut crate::node_manager::measure::MeasureState,
+    // S4 (p2p_asset_streaming_20260718): active tileset downloads — read by
+    // the Maps section, written only by `terrain_map::drain_tileset_events`.
+    downloads: &crate::terrain_map::TilesetDownloads,
 ) -> egui::Rect {
     // Repair conditional editor state; see `panels/AGENTS.md` §numeric-boundary.
     path_editor_card::sanitize_path_editor_numeric_state(path_state);
@@ -202,6 +205,7 @@ pub fn gardener_console(
             tool,
             measure_state,
             vis_state,
+            downloads,
         )
     });
 
@@ -463,6 +467,7 @@ mod tests {
         let mut modal = crate::ui_shell::modal::ModalManagerState::default();
         let mut vis_state = crate::visibility::VisibilityState::default();
         let mut measure_state = crate::node_manager::measure::MeasureState::default();
+        let downloads = crate::terrain_map::TilesetDownloads::default();
 
         {
             let mut render = |section: Option<RightSidebarSection>, active_tool: Tool| {
@@ -509,6 +514,7 @@ mod tests {
                         &mut modal,
                         &mut vis_state,
                         &mut measure_state,
+                        &downloads,
                     );
                 });
             };

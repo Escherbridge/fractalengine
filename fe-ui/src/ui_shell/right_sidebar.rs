@@ -12,8 +12,6 @@
 //! machine handle (`slug`/`from_slug`, D11) driven by `UiAction::RevealSection`.
 //! See `fe-ui/src/ui_shell/AGENTS.md` §right.
 
-use std::collections::HashMap;
-
 use bevy::prelude::Resource;
 use bevy_egui::egui;
 use fe_database::handlers::node_view::MAX_VIEW_GROUPS;
@@ -223,6 +221,10 @@ pub fn render_right_sidebar(
     // VIS-PH5: the Groups section reads the registry + membership; edits go
     // out as `UiAction`s (optimistic + authed in the reducer).
     visibility: &VisibilityState,
+    // S4 (p2p_asset_streaming_20260718): active tileset downloads, read-only
+    // here — `drain_tileset_events` is the sole writer. Survives the Maps
+    // section closing (moved out of `ActiveDialog::HexonManager`).
+    downloads: &crate::terrain_map::TilesetDownloads,
 ) {
     let portal_open = ui_mgr.portal_is_open();
     if portal_open {
@@ -293,6 +295,7 @@ pub fn render_right_sidebar(
             ui_mgr,
             petal_map,
             nav.active_petal_id.as_deref(),
+            downloads,
         ),
         Some(RightSidebarSection::Groups) => render_groups_section(
             ctx,
@@ -849,6 +852,7 @@ fn render_maps_section(
     ui_mgr: &mut UiManager,
     petal_map: &mut PetalMapState,
     active_petal: Option<&str>,
+    downloads: &crate::terrain_map::TilesetDownloads,
 ) {
     if !matches!(ui_mgr.active_dialog, ActiveDialog::HexonManager { .. }) {
         if matches!(ui_mgr.active_dialog, ActiveDialog::None) {
@@ -868,7 +872,8 @@ fn render_maps_section(
             return;
         }
     }
-    let close = crate::dialogs::render_hexon_manager(ctx, ui_mgr, petal_map, active_petal);
+    let close =
+        crate::dialogs::render_hexon_manager(ctx, ui_mgr, petal_map, active_petal, &downloads.0);
     if close {
         clear_maps_carrier(ui_mgr);
         // requested was Maps → toggling it clears back to the selection default.
@@ -882,7 +887,6 @@ fn seed_hexon_manager() -> ActiveDialog {
     ActiveDialog::HexonManager {
         installed_tilesets: Vec::new(),
         available_tilesets: Vec::new(),
-        download_progress: HashMap::new(),
         filter_text: String::new(),
         active_tab: HexonManagerTab::Installed,
         storage_info: StorageInfoDto {

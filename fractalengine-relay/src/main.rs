@@ -345,6 +345,21 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
+    // S4 (p2p_asset_streaming_20260718, critic step 5): a headless relay
+    // seeds every installed tileset whose `seeding_enabled` flag is set, so
+    // P2P tileset streaming works even with every GUI peer offline. One
+    // thread for the whole batch (never blocks `/ready`); the per-tileset
+    // bundle+publish core is `publish_seeding_tilesets`, directly testable
+    // and the one seeding implementation this reuses (see its own doc
+    // comment and `fractalengine/src/AGENTS.md` §tileset-p2p).
+    // `tileset_registry` is MOVED into `ApiConfig` below, so this clones a
+    // handle before that happens.
+    if let Some(ref registry) = tileset_registry {
+        let registry = registry.clone();
+        let sync_tx = sync_cmd_tx.clone();
+        std::thread::spawn(move || publish_seeding_tilesets(&registry, &sync_tx));
+    }
+
     // F9/A20: the sim control seam exists only in a `sim-control` build
     // (fe-sim/src/AGENTS.md §session) AND with the runtime opt-in
     // `FE_SIM_ALLOW=1`; otherwise `None` and every /api/v1/sim/* call fails
@@ -493,6 +508,35 @@ fn run_replication_bridge(
                 );
             }
             Err(crossbeam::channel::TrySendError::Disconnected(_)) => break,
+        }
+    }
+}
+
+/// S4 (`p2p_asset_streaming_20260718`, critic step 5): bundle + publish every
+/// tileset `registry` currently lists as seeding. The ONE seeding
+/// implementation (`fe_terrain::tiles::bundle_for_seeding` — cache-reused
+/// across restarts) shared with the GUI's
+/// `fractalengine::terrain_bridge::spawn_bundle_and_publish`; this function
+/// is the relay's synchronous core (directly testable, no thread of its
+/// own) — `main()` wraps the whole batch in one background thread so a slow
+/// bundle never delays `/ready`. See `fractalengine/src/AGENTS.md` §tileset-p2p.
+fn publish_seeding_tilesets(
+    registry: &fe_terrain::tiles::TilesetRegistry,
+    sync_tx: &crossbeam::channel::Sender<fe_sync::SyncCommand>,
+) {
+    for installed in registry.get_seeding_tilesets() {
+        let tileset_id = installed.hexon_id;
+        match fe_terrain::tiles::bundle_for_seeding(registry.store(), &tileset_id) {
+            Ok((index_path, bundle_paths)) => {
+                if let Err(e) = sync_tx.send(fe_sync::SyncCommand::PublishTileset {
+                    tileset_id: tileset_id.clone(),
+                    index_path,
+                    bundle_paths,
+                }) {
+                    tracing::warn!(tileset_id, "PublishTileset send failed: {e}");
+                }
+            }
+            Err(e) => tracing::warn!(tileset_id, "Bundling for seeding failed: {e}"),
         }
     }
 }
@@ -728,5 +772,106 @@ mod tests {
         // drain thread exits instead of lingering.
         drop(tx);
         drain.join().expect("drain exits on closed broadcast");
+    }
+
+    fn synthetic_tileset_archive(id: &str) -> Vec<u8> {
+        let manifest = fe_format::manifest::HexonManifest {
+            schema_version: "1.0.0".into(),
+            hexon_id: id.into(),
+            hexon_type: fe_format::manifest::HexonType::TerrainTileset,
+            publisher_did: "did:key:zrelaytest".into(),
+            publisher_name: None,
+            version: "0.1.0".into(),
+            build_id: None,
+            name: "Relay seeding test tileset".into(),
+            description: None,
+            tags: vec!["terrain".into(), "tileset".into()],
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            source_peer_did: None,
+            approx_size_bytes: None,
+            min_engine_version: None,
+            homepage_url: None,
+            dependencies: vec![],
+            platforms: vec![],
+            address: None,
+            signature: None,
+        };
+        let meta = fe_format::manifest::TilesetMeta {
+            bounds: [45.0, -122.0, 46.0, -121.0],
+            min_zoom: 10,
+            max_zoom: 10,
+            tile_size: 256,
+            elevation_encoding: fe_format::manifest::ElevationEncoding::TerrainRgb,
+            has_satellite: false,
+            tile_count: 1,
+            satellite_tile_count: 0,
+            region_name: "Relay Seeding Test".into(),
+            parent_tileset: None,
+            chunk_index: None,
+            native_scale: None,
+            ground_sample_distance_m: None,
+            crs: None,
+            scale_bounds: None,
+        };
+        let elevation = vec![("10/0/0".to_string(), vec![1u8, 2, 3, 4])];
+        fe_format::HexonArchive::export_tileset(manifest, &meta, &elevation, &[], None)
+            .expect("export synthetic tileset archive")
+    }
+
+    /// Critic (S4 step 5): a headless relay with one seeding and one
+    /// non-seeding installed tileset publishes EXACTLY the seeding one at
+    /// startup, and its bundle files land on disk (the same seeding cache
+    /// `fe_terrain::tiles::bundle_for_seeding` writes for the GUI).
+    #[test]
+    fn a_headless_relay_publishes_its_seeding_tilesets_at_startup() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = fe_terrain::tiles::HexonStore::with_dir(tmp.path().join("hexons"))
+            .expect("fresh hexon store");
+
+        let seeding_id = "relay-seeding-tileset";
+        let quiet_id = "relay-quiet-tileset";
+        store
+            .install_tileset(&synthetic_tileset_archive(seeding_id))
+            .expect("install seeding tileset");
+        store
+            .install_tileset(&synthetic_tileset_archive(quiet_id))
+            .expect("install quiet tileset");
+        store
+            .set_seeding(seeding_id, true)
+            .expect("mark seeding_id as seeding");
+
+        let registry = fe_terrain::tiles::TilesetRegistry::new(store);
+        let seeding = registry.get_seeding_tilesets();
+        assert_eq!(
+            seeding.len(),
+            1,
+            "fixture sanity: exactly one tileset marked seeding"
+        );
+
+        let (sync_tx, sync_rx) = crossbeam::channel::unbounded::<fe_sync::SyncCommand>();
+        publish_seeding_tilesets(&registry, &sync_tx);
+        drop(sync_tx);
+
+        let published: Vec<_> = sync_rx.try_iter().collect();
+        assert_eq!(
+            published.len(),
+            1,
+            "exactly one PublishTileset — the seeding id, never the quiet one: {published:?}"
+        );
+        match &published[0] {
+            fe_sync::SyncCommand::PublishTileset {
+                tileset_id,
+                bundle_paths,
+                ..
+            } => {
+                assert_eq!(tileset_id, seeding_id);
+                assert!(!bundle_paths.is_empty(), "at least one bundle file");
+                for path in bundle_paths {
+                    assert!(path.exists(), "bundle file exists on disk: {path:?}");
+                }
+            }
+            other => panic!("expected PublishTileset, got {other:?}"),
+        }
     }
 }

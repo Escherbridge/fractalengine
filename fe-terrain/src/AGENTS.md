@@ -657,3 +657,12 @@ identity cross-hexon dedup and the tile pointer-set both depend on.
   (fe-format, pure, over `x_range`/`y_range`/zoom) is the only tile→bundle
   mapping; S7's `StreamedTileSource` and PAS-P5 both call it instead of
   re-implementing a chunk table (critic C4).
+- **Seeding cache (`bundle_for_seeding`, S4).** The ONE "bundle an installed
+  tileset for `PublishTileset`" implementation, shared by the GUI's
+  `terrain_bridge` and the headless relay (`fractalengine/src/AGENTS.md`
+  §tileset-p2p). Writes to `<hexon store>/bundles/<id>/{index.json,
+  <seq>.bundle, source.blake3}`; a call whose `source.blake3` still matches
+  the installed `.hexon` file's current hash reuses the cached bundles
+  in-place instead of re-splitting. Touched outside S1's own owned-files list
+  (S4 critic step 5 needs cross-binary reuse) — additive only, no existing
+  function's behavior changed.

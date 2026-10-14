@@ -21,10 +21,8 @@ pub use node_options::{node_options_save_url, render_node_options_dialog};
 pub use peer_debug::render_peer_debug_panel;
 pub use petal_manifest::render_petal_manifest;
 
-use std::collections::HashMap;
-
 use crate::terrain_map::dto::{
-    AvailableTilesetDto, DownloadProgress, HexonManagerTab, InstalledTilesetDto, StorageInfoDto,
+    AvailableTilesetDto, HexonManagerTab, InstalledTilesetDto, StorageInfoDto,
 };
 use crate::terrain_map::manifest::PetalManifest;
 
@@ -139,7 +137,6 @@ pub enum ActiveDialog {
     HexonManager {
         installed_tilesets: Vec<InstalledTilesetDto>,
         available_tilesets: Vec<AvailableTilesetDto>,
-        download_progress: HashMap<String, DownloadProgress>,
         filter_text: String,
         active_tab: HexonManagerTab,
         storage_info: StorageInfoDto,

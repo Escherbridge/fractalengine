@@ -12,7 +12,10 @@ pub mod registry;
 pub mod source;
 pub mod store;
 
-pub use bundle::{assemble_bundles, bundle_tileset, TilesetBundles, DEFAULT_BUNDLE_BYTES};
+pub use bundle::{
+    assemble_bundles, assemble_bundles_from_index_json, bundle_for_seeding, bundle_tileset,
+    TilesetBundles, DEFAULT_BUNDLE_BYTES,
+};
 pub use cache::*;
 pub use composite::CompositeTileSource;
 pub use elevation::*;

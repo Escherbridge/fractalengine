@@ -37,11 +37,11 @@ pub fn render_hexon_manager(
     ui_mgr: &mut UiManager,
     petal_map: &mut PetalMapState,
     active_petal_id: Option<&str>,
+    downloads: &crate::terrain_map::dto::DownloadProgressMap,
 ) -> bool {
     let ActiveDialog::HexonManager {
         ref mut installed_tilesets,
         ref mut available_tilesets,
-        ref mut download_progress,
         ref mut filter_text,
         ref mut active_tab,
         ref storage_info,
@@ -166,7 +166,7 @@ pub fn render_hexon_manager(
                         render_available_tab(ui, available_tilesets, &filter_lower, &mut actions);
                     }
                     HexonManagerTab::Downloads => {
-                        render_downloads_tab(ui, download_progress, &mut actions);
+                        render_downloads_tab(ui, downloads, &mut actions);
                     }
                 }
             }

@@ -16,6 +16,9 @@ fe-identity = { path = "../fe-identity" }
 # Tileset-registry seam for the API harness (api.rs::spawn_with_tileset_registry,
 # F14/T2) — already in the dep graph via fe-api itself.
 fe-terrain = { path = "../fe-terrain" }
+# Scenario 16 (two_peer_tileset_stream, p2p_asset_streaming_20260718 S4): builds a
+# synthetic `.hexon` tileset archive to bundle and stream over the real transport.
+fe-format = { path = "../fe-format" }
 crossbeam = { workspace = true }
 anyhow = { workspace = true }
 tempfile = "3"

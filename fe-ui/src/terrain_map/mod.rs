@@ -7,13 +7,24 @@ pub mod events;
 pub mod manifest;
 
 pub use dto::{
-    AvailableTilesetDto, DownloadProgress, DownloadStatus, HexonManagerTab, InstalledTilesetDto,
-    StorageInfoDto,
+    AvailableTilesetDto, DownloadProgress, DownloadProgressMap, DownloadStatus, HexonManagerTab,
+    InstalledTilesetDto, StorageInfoDto,
 };
 pub(crate) use events::drain_tileset_events;
 pub use manifest::{ManifestHexonEntry, PetalManifest};
 
+use std::path::PathBuf;
+
 use bevy::prelude::*;
+
+/// Active tileset downloads, keyed by tileset id. S4 (campaign plan
+/// `p2p_asset_streaming_20260718`): moved OUT of `ActiveDialog::HexonManager`
+/// so a download survives the user closing the Hexon Manager (the former
+/// ping-pong bug — see `terrain_map/events.rs` module docs and AGENTS.md
+/// §terrain-map). The dialog renders from this resource; it no longer owns
+/// download state.
+#[derive(Debug, Default, Resource)]
+pub struct TilesetDownloads(pub DownloadProgressMap);
 
 /// Which tileset(s) the active petal uses as its map, plus its world scale.
 #[derive(Debug, Clone, Resource)]
@@ -50,10 +61,20 @@ impl Default for PetalMapState {
 /// Registry operation requested by the UI; drained by the main binary.
 #[derive(Debug, Clone)]
 pub enum HexonOp {
-    Install(std::path::PathBuf),
+    Install(PathBuf),
     Remove(String),
     SetSeeding(String, bool),
     RefreshList,
+    /// A P2P tileset download completed (`SyncEvent::TilesetDownloadComplete`,
+    /// relayed by `drain_tileset_events`): verify + assemble + install into
+    /// the hexon store on a background thread, never the Bevy main thread
+    /// (NFR4/S4 invariant). `index_path`/`bundle_paths` are the verified
+    /// on-disk files `fe_sync::TilesetTransfer` wrote.
+    AssembleDownload {
+        tileset_id: String,
+        index_path: PathBuf,
+        bundle_paths: Vec<PathBuf>,
+    },
 }
 
 /// Queue of pending registry ops (fe-ui has no TilesetRegistry access).

@@ -723,6 +723,10 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<crate::path_ops::PendingPathOps>();
         app.init_resource::<crate::path_ops::PathEditStatus>();
         app.init_resource::<fe_sync::TilesetEventBuffer>();
+        // S4 (p2p_asset_streaming_20260718): active tileset downloads, moved
+        // out of `ActiveDialog::HexonManager` so closing the dialog can never
+        // stall a download — see AGENTS.md §terrain-map.
+        app.init_resource::<crate::terrain_map::TilesetDownloads>();
         // Register BrowserCommand so MessageWriter<BrowserCommand> is usable.
         // fe-webview's WebViewPlugin also registers this; calling add_message
         // twice is idempotent.
@@ -855,6 +859,9 @@ struct MiscUiParams<'w> {
     vis_state: ResMut<'w, crate::visibility::VisibilityState>,
     // hexon_scale FR-9: Measure tool anchors for the Options Measure arm.
     measure_state: ResMut<'w, crate::node_manager::measure::MeasureState>,
+    // S4 (p2p_asset_streaming_20260718): active tileset downloads, read by
+    // the Maps section (`terrain_map::drain_tileset_events` is the writer).
+    downloads: ResMut<'w, crate::terrain_map::TilesetDownloads>,
 }
 
 /// ui_shell_architecture_20260724 (FR-4/5/6): the area-manager state resources,
@@ -925,6 +932,7 @@ fn gardener_ui_system(
         &mut ui_shell.modal,
         &mut misc.vis_state,
         &mut misc.measure_state,
+        &misc.downloads,
     );
     viewport_rect.0 = rect;
 

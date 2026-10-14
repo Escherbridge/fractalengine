@@ -369,3 +369,104 @@ pub fn assemble_bundles(
     super::distribution::assemble_chunks(store, &index.tileset_id, &chunk_archives)
         .context("failed to assemble verified bundles")
 }
+
+// ---------------------------------------------------------------------------
+// Seeding cache (campaign plan S4, critic step 5 — touched outside S1's
+// owned-files list; minimal, additive: see that slice's reported open_issues)
+// ---------------------------------------------------------------------------
+
+/// `bundles_dir`'s `source.blake3` marker name (the bundled-from hash).
+const SOURCE_HASH_MARKER: &str = "source.blake3";
+/// `bundles_dir`'s bundle index file name.
+const BUNDLE_INDEX_FILE: &str = "index.json";
+
+fn bundles_dir(store: &HexonStore, hexon_id: &str) -> PathBuf {
+    store.base_dir().join("bundles").join(hexon_id)
+}
+
+/// Bundle an **installed** hexon tileset for P2P seeding, writing the index
+/// and bundle files to `<hexon store>/bundles/<id>/` and returning the paths
+/// `SyncCommand::PublishTileset` needs.
+///
+/// Reuses the on-disk bundle set when present and its recorded source hash
+/// still matches the installed `.hexon` file — a seeding toggle or a startup
+/// re-seed does not re-bundle (and does not thrash disk) on every call. The
+/// ONE shared implementation `fractalengine::terrain_bridge` (GUI) and
+/// `fractalengine-relay` (headless) both call — see
+/// `fractalengine/src/AGENTS.md` §tileset-p2p.
+pub fn bundle_for_seeding(store: &HexonStore, hexon_id: &str) -> Result<(PathBuf, Vec<PathBuf>)> {
+    let hexon_path = store.base_dir().join(format!("{hexon_id}.hexon"));
+    let source_bytes = std::fs::read(&hexon_path)
+        .with_context(|| format!("failed to read installed hexon: {}", hexon_path.display()))?;
+    let source_hash = blake3::hash(&source_bytes).to_hex().to_string();
+
+    let dir = bundles_dir(store, hexon_id);
+    let index_path = dir.join(BUNDLE_INDEX_FILE);
+    let hash_marker = dir.join(SOURCE_HASH_MARKER);
+
+    if index_path.exists() {
+        if let Ok(existing_hash) = std::fs::read_to_string(&hash_marker) {
+            if existing_hash.trim() == source_hash {
+                if let Some(cached) = try_reuse_cached_bundles(&dir, &index_path) {
+                    return Ok(cached);
+                }
+            }
+        }
+    }
+
+    let source = HexonArchive::import(&source_bytes)
+        .with_context(|| format!("failed to import hexon for bundling: {hexon_id}"))?;
+    let bundles = bundle_tileset(&source, DEFAULT_BUNDLE_BYTES)?;
+
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create bundles dir: {}", dir.display()))?;
+    std::fs::write(&index_path, &bundles.index_json)
+        .with_context(|| format!("failed to write bundle index: {}", index_path.display()))?;
+    let mut bundle_paths = Vec::with_capacity(bundles.bundles.len());
+    for (seq, bytes) in bundles.bundles.iter().enumerate() {
+        let path = dir.join(format!("{seq}.bundle"));
+        std::fs::write(&path, bytes)
+            .with_context(|| format!("failed to write bundle file: {}", path.display()))?;
+        bundle_paths.push(path);
+    }
+    std::fs::write(&hash_marker, &source_hash).with_context(|| {
+        format!(
+            "failed to write source-hash marker: {}",
+            hash_marker.display()
+        )
+    })?;
+
+    Ok((index_path, bundle_paths))
+}
+
+/// Parse a verified bundle index (`SyncEvent::TilesetDownloadComplete`'s
+/// `index_path` bytes) and assemble+install it. The one entry point a host
+/// binary needs for a completed P2P download, so it never needs an
+/// `fe_format` dependency just to deserialize the index (S4).
+pub fn assemble_bundles_from_index_json(
+    store: &HexonStore,
+    index_json: &[u8],
+    bundle_paths: &[PathBuf],
+) -> Result<InstalledTileset> {
+    let index: TilesetBundleIndex =
+        serde_json::from_slice(index_json).context("failed to parse bundle index JSON")?;
+    assemble_bundles(store, &index, bundle_paths)
+}
+
+/// `None` makes the caller rebuild — a missing bundle file, a corrupt index,
+/// or anything else that would make a cached reuse unsafe.
+fn try_reuse_cached_bundles(
+    dir: &std::path::Path,
+    index_path: &std::path::Path,
+) -> Option<(PathBuf, Vec<PathBuf>)> {
+    let index_json = std::fs::read(index_path).ok()?;
+    let index: TilesetBundleIndex = serde_json::from_slice(&index_json).ok()?;
+    let bundle_paths: Vec<PathBuf> = (0..index.bundles.len())
+        .map(|seq| dir.join(format!("{seq}.bundle")))
+        .collect();
+    if bundle_paths.iter().all(|p| p.exists()) {
+        Some((index_path.to_path_buf(), bundle_paths))
+    } else {
+        None
+    }
+}

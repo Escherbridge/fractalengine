@@ -728,6 +728,52 @@ soft budgets routed through them (`.min(HARD_CAP)` at each spawn site, and
   (`ui_shell/right_sidebar.rs::render_settings_section`), which reads/writes
   `AppSettings` directly; there is no Settings dialog or toggle action.
 
+## §terrain-map — Hexon Manager, P2P tileset downloads (`p2p_asset_streaming_20260718` S4)
+
+`terrain_map/` owns which tileset(s) the active petal uses (`PetalMapState`),
+the hexon registry op queue the main binary drains (`PendingHexonOps`), and
+the sync-thread event drain that feeds the Hexon Manager's Installed /
+Available / Downloads tabs (`dto.rs`, `events.rs`, `mod.rs`).
+
+- **`TilesetDownloads` is independent of the dialog.** Before S4,
+  `download_progress` lived inside `ActiveDialog::HexonManager`, so closing
+  the Maps section (which tears down that carrier —
+  `ui_shell/right_sidebar.rs::clear_maps_carrier`) silently stalled any
+  in-flight download: `drain_tileset_events`'s old ping-pong (`ChunkReceived`
+  → send the next `RequestChunk`) only ran `if let ActiveDialog::HexonManager`.
+  `TilesetDownloads` (a top-level resource) now holds the
+  `DownloadProgressMap` for the whole session; `dialogs::hexon_manager::render_hexon_manager`
+  takes it as a read-only `&DownloadProgressMap` param instead of owning it.
+  `fe-ui/src/actions/mod.rs::ToolStateParams` and
+  `plugin.rs::MiscUiParams` both carry it (param-ceiling bundles, see their
+  own doc comments) — `start_download`/`cancel_download` write it,
+  `drain_tileset_events` is its other writer, everything else reads.
+- **No more chunk ping-pong.** Since fe-sync S3 wired
+  `SyncCommand::DownloadTileset` to drive meta resolution AND every bundle
+  fetch on the sync thread, `start_download` sends exactly one
+  `DownloadTileset` and `drain_tileset_events` only updates progress —
+  `TilesetMetaReceived` sets the chunk-count estimate, `ChunkReceived` bumps
+  counters, `TilesetDownloadComplete` pushes
+  `HexonOp::AssembleDownload { tileset_id, index_path, bundle_paths }` for the
+  main binary. `TilesetDownloadResumed` (emitted at sync-thread startup from
+  the persisted ledger, S3) seeds/updates the same tracker so a download that
+  completed before a restart still shows as resolved in the Downloads tab.
+- **Assembly/install never happens in fe-ui.** fe-ui has no fe-terrain
+  dependency (root `AGENTS.md` §petal-map) — `HexonOp::AssembleDownload` is
+  just a queued request; `fractalengine::terrain_bridge::drain_hexon_ops`
+  verifies the bundle files' hashes against the index (again — defense in
+  depth, S2's `TilesetTransfer` already verified each on receipt),
+  assembles + installs via `fe_terrain::tiles::assemble_bundles`, and refreshes
+  the dialog's installed list, on a background thread (never the Bevy main
+  thread — NFR-4/S4 invariant).
+- **Seeding (`HexonToggleSeeding`/startup)** sends `SetSeeding` into
+  `PendingHexonOps` as before; the main binary additionally bundles the
+  tileset (`fe_terrain::tiles::bundle_for_seeding`, cached under
+  `<hexon store>/bundles/<id>/`, reused when the source hash still matches)
+  and sends `SyncCommand::PublishTileset` — see
+  `fractalengine/src/AGENTS.md` §tileset-p2p for the full host-side flow,
+  shared verbatim by the headless relay's startup seeding.
+
 ## §residency-ledger — distance-ranked spawn budgets (D-74)
 
 The D-74 residency ledger replaces the boolean `mesh_budget.exceeded` gate with

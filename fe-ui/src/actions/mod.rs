@@ -576,6 +576,10 @@ pub(crate) struct ToolStateParams<'w> {
     app_settings: ResMut<'w, crate::settings::AppSettings>,
     /// `UiAction::PetalManifestSave`'s target (session render-distance override).
     render_override: ResMut<'w, crate::settings::PetalRenderOverride>,
+    /// `UiAction::HexonStartDownload`/`HexonCancelDownload`'s target (S4:
+    /// moved out of `ActiveDialog::HexonManager` — bundled here for the same
+    /// param-ceiling reason as `right_sidebar`).
+    downloads: ResMut<'w, crate::terrain_map::TilesetDownloads>,
 }
 
 /// Drains all UiActions queued during the egui pass and processes them.
@@ -613,6 +617,7 @@ pub(crate) fn process_ui_actions(
         mut visibility,
         mut app_settings,
         mut render_override,
+        mut downloads,
     } = tool_state;
     // Fold pen-tool actions queued by `render_tool_panel` into the main queue
     // (the Tools panel has no `ui_mgr` handle — see panels/tool_panel.rs).
@@ -724,10 +729,10 @@ pub(crate) fn process_ui_actions(
                 );
             }
             UiAction::HexonStartDownload(id) => {
-                hexon::start_download(&mut ui_mgr, sync_sender.as_deref(), id);
+                hexon::start_download(&mut downloads, sync_sender.as_deref(), id);
             }
             UiAction::HexonCancelDownload(id) => {
-                hexon::cancel_download(&mut ui_mgr, sync_sender.as_deref(), id);
+                hexon::cancel_download(&mut downloads, sync_sender.as_deref(), id);
             }
             UiAction::HexonRefreshList => {
                 hexon::refresh_list(

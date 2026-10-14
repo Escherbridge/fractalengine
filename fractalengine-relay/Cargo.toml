@@ -33,6 +33,12 @@ hex         = "0.4"
 # harness; see fe-sim/src/AGENTS.md §session for the process-global hazards).
 fe-sim      = { path = "../fe-sim", optional = true }
 
+[dev-dependencies]
+tempfile = "3"
+# S4 (p2p_asset_streaming_20260718) `publish_seeding_tilesets` test only —
+# builds a synthetic `.hexon` tileset archive.
+fe-format = { path = "../fe-format" }
+
 [features]
 default = []
 sim-control = ["dep:fe-sim"]

@@ -18,6 +18,9 @@ rand = "0.8"
 fe-identity = { path = "../fe-identity" }
 fe-webview = { path = "../fe-webview" }
 fe-renderer = { path = "../fe-renderer" }
+# S4 (p2p_asset_streaming_20260718) `terrain_bridge` test only — builds a
+# synthetic tileset archive to exercise the real assemble+install path.
+fe-format = { path = "../fe-format" }
 tempfile = "3"
 
 [dependencies]

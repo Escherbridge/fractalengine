@@ -104,6 +104,10 @@ fn main() {
             "API-DB-Sync Cross-Thread (F14/T4)",
             scenarios::api_db_sync_cross_thread::run,
         ),
+        (
+            "Two-Peer Tileset Stream (PAS-P3P4 S4)",
+            scenarios::two_peer_tileset_stream::run,
+        ),
     ];
 
     let mut passed = 0;
