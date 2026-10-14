@@ -76,3 +76,16 @@ fixed a second pre-existing defect: the old reader's router lived on a throwaway
 hydration. Review FIXED (1M 3L); push gate green (fe-database 311, fe-api 289, fractalengine 62, relay 7).
 Packaged re-smoke: "Hydrated EntityStore through the DB thread's shared SurrealKV handle node_count=3",
 "API server listening on 127.0.0.1:8765", zero ERROR lines.
+
+### Tick 3 (W1 launch) — 2026-10-13 20:12 MDT · VERDICT: ON_TRACK (4 MED, 1 LOW)
+Report: `.omc/accountability/tick-20261013-2012.md`. W1 script faithful to the P3P4 plan (slices, §10
+amendments, tiers, AC-13). W0d residuals 1–4 acceptable (recorded); residual 5 (reader read-only by
+convention) needs a guarded newtype before SPEC10 A3.
+
+| id | sev | directive (short) | disposition |
+|---|---|---|---|
+| AC-14 | MED | Every push cancels the in-progress CI run (`cancel-in-progress`); W0b/W0c never completed a CI run → hold ALL pushes until run 38498925963 concludes; set a red-CI policy; consider paths-ignore for conductor/** | **ACCEPT** → push freeze until that run concludes. Red-CI policy: YAML-only fixes push after actionlint; cargo-needing fixes wait for the W1→P5 cargo-free window (logged as an AC-5 override, main may sit red until then). paths-ignore `conductor/**`, `.omc/**` added with the next push |
+| AC-15 | MED | Relay `main()` never launched before push (relay "7 green" = helper unit tests) | **ACCEPT** → relay smoke at the W1→P5 boundary (build fe-relay at W1 tip, temp CWD, `FE_SYNC_RELAY=disabled`, temp `FE_P2P_DIR`, expect shared-handle hydrate + API listening + 0 ERROR, kill exact PID); W0d review-ledger row states it honestly |
+| AC-16 | MED | Script's S9 edits ledger rows the plan says it must not; omits spec.md strike, root AGENTS lines, D-77 drift note, evidence.md §6; ledger commit-collision risk | **ACCEPT with OVERRIDE of the plan text**: S9 may edit the 4 ledger rows (ledger accuracy needs it) because every docs lane commits before S9 starts; from now on docs lanes commit with `git commit -m … -- <paths>` (never stage-then-bare-commit while W1 runs); S9 coverage of plan steps 1–6 checked at W1 close |
+| AC-17 | MED | Script halts only on agent death, never on a red gate; per-slice clippy misses crates slices touch | **ACCEPT** → each W1 slice result is checked as it lands (journal waiter); red gate → TaskStop + relaunch remaining slices from HEAD. P5/W4/SPEC10 scripts get a required `gate_green` field + halt, and workspace-wide clippy per slice |
+| AC-18 | LOW | AC-12 still open (trigger never fired); review-ledger rows W0b/W0c/W0d/ticks 2–3; stale ledger/RUNBOOK lines; no durable final-sweep manifest; DB-READER-RO row; durability-env doc line | **ACCEPT** → haiku docs lane now (commits with `-- <paths>`); S8b + final-review must-cover appended to the manifest at W1 close |
