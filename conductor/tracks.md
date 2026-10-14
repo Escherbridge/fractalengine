@@ -248,10 +248,16 @@ with `asset_id`/rotation/scale (MCP-2.4).
 
 _Link: [./tracks/canonical_data_log_20260808/](./tracks/canonical_data_log_20260808/) · in_progress · local implementation GO, network rollout NO-GO_
 
-SPEC-1..8 owner-approved; HARD-1..6, Waves 1–3 (+3R remediation) landed. Open and
+SPEC-1..8 owner-approved; HARD-1..6, Waves 1–3 (+3R remediation) landed. ~~Open and
 agent-doable: Wave 4 serial integration incl. the six D-CL20 bypass counters
 (CDL-W4), seal `VerifiedEnvelopeMeta` (CDL-R1), production enrolment/issuer views
-(CDL-R2), scope-sensitive WS test (CDL-R6), SPEC-10 draft (CDL-SPEC10). Needs a
+(CDL-R2), scope-sensitive WS test (CDL-R6), SPEC-10 draft (CDL-SPEC10).~~ **Updated
+2026-10-14 (critic tick 7):** `VerifiedEnvelopeMeta` seal (CDL-R1) and the
+scope-sensitive WS test (CDL-R6) are DONE; Wave 4 (CDL-W4) and the production
+enrolment/issuer views (CDL-R2) are **DONE-pending-sweep** (code-complete, reviewed,
+tests written, campaign-end sweep not yet run); the SPEC-10 draft (CDL-SPEC10) landed
+and is PRE-APPROVED. What is still agent-doable now is **CDL-SPEC10 A2..A6 (+A3b),
+B1..B4 (+B2b)**. Needs a
 ratification: SPEC-9 availability floor, provisional CBOR numbering, rotation-fork
 resolver, WIT s64, dual-emit cut-over. Network rollout, relay seeding, inbound P2P and
 mounting `/ws/canonical` stay owner-gated. The old "is_available() must stay false"

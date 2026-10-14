@@ -405,16 +405,8 @@ Generated 2026-10-14 from the W3 journal (`wf_644e287e-abf`), base `38dd271` →
 - fe-canonical-log tests/legacy_identifier_golden.rs legacy_identifier_matches_the_canonical_log_cbor_encoder, and the fe-sdk legacy_identifier unit tests (4)
 - fe-database test binaries migration_equivalence_harness (2 tests, highest risk, never executed), canon_log_materialization_test (an_unknown_kind_candidate_is_quarantined_not_rejected, a_candidate_whose_chain_is_unavailable_is_quarantined_and_admits_once_it_arrives), canon_log_composed_admission_test and device_enrolment_test: every one passes through admit_candidate_with_facts, which now refuses mismatched facts
 - fe-database lib unit tests import_gltf_ktx2_guard_tests and migration::transform_mapping tests
-
-
-
-*Reserved by critic tick 5 (2026-10-14, `.omc/accountability/tick-20261014-0722.md` AC-26): the
-orchestrator appends W3's must-cover list here at W3 close — per-slice named tests from
-`campaign-plan-w4-20261013.md` (W4-1..W4-9), `cross_spec_integration.rs`, the five fe-database
-test binaries, the fe-sdk `legacy_identifier_is_stable_and_collision_free_across_tables` test,
-`node --test docs/spec/canonical-log/operation-envelope-v1.test.mjs`, and
-`cargo run -p fractalengine-test-harness` 16/16 ×2 — to run ONCE at the campaign final sweep,
-per the W4 plan's §1 "W3 close gate" amendment.*
+- node --test docs/spec/canonical-log/operation-envelope-v1.test.mjs (no envelope codec change in
+  W3; run as a regression guard, moved here from the stale reservation note — critic tick 7, AC-39)
 
 ## W3b fixups (`bccb654` + review `78eab0e`)
 

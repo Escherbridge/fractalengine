@@ -44,7 +44,7 @@ small signed operation that references a sealed columnar observation hexon (D-CL
 
 | Source | Acceptance criterion |
 |---|---|
-| Ledger `CDL-SPEC10` (`conductor/doneness-ledger.md:105`) | A draft spec with conformance-test names, the `iot_reading` graduation path and the LaneClass/ObjectClass mapping is **submitted for owner approval**. |
+| Ledger `CDL-SPEC10` (`conductor/doneness-ledger.md:135`, **critic tick 7, AC-37 stale-cite fix from `:105`**) | A draft spec with conformance-test names, the `iot_reading` graduation path and the LaneClass/ObjectClass mapping is **submitted for owner approval**. |
 | metadata `SPEC-10-observation` | Columnar hexon format (segmentby=entity, orderby=hlc, row-group statistics), the observation-batch operation kind and schema, `preview_kind` registration for live telemetry, and the graduation path from `iot_reading`. |
 | metadata `G-ERRATA-G3` | A fifth `LaneClass` for bulk artifacts (SPEC-6) that activates SPEC-3 `ObjectClass::{Shard,Tile,Asset}`. |
 | metadata `G-ERRATA-G6` | An observation-plane source-identity vocabulary for SPEC-4 §7.3 reproducibility claims. |
@@ -87,10 +87,14 @@ small signed operation that references a sealed columnar observation hexon (D-CL
 - **Operation kinds.** `OperationKind` (`kind.rs:9-20`) covers kinds 1-4 plus `Application(u16)` for 5..=65535,
   "whose payload rules live in a schema registry that does not exist yet". No observation kind exists. G1's
   partitioned quarantine is in place and gives an un-upgraded peer a separate budget for a new
-  high-volume kind: `compose.rs:51` (`QuarantineReason::UnknownKind`), `compose.rs:154` (class mapping),
-  `retention/quarantine.rs:396-399` (`OperationKindAvailability`).
+  high-volume kind: `compose/mod.rs:71` (`QuarantineReason::UnknownKind`, **critic tick 7, AC-37
+  stale-cite fix from `compose.rs:51`** — W4-4 split `compose.rs` into
+  `compose/{storage,verifier,wire,lifecycle,mod}.rs`), `compose/mod.rs:174` (class mapping,
+  fixed from `compose.rs:154`), `retention/quarantine.rs:394` (`OperationKindAvailability`, fixed
+  from `:396-399`).
 - **G2 bright line is built.** `ProjectionMutation::ReferencedArtifactUnavailable` is at
-  `materialize/traits.rs:194`. `reduce()` may only *write* a reference (SPEC-4 §4 rules 8-9).
+  `materialize/traits.rs:280` (**critic tick 7, AC-37 stale-cite fix from `:194`**, moved by
+  CDL-W4). `reduce()` may only *write* a reference (SPEC-4 §4 rules 8-9).
 - **G4 tiered statistics are built.** `SegmentStatistics` (`segment/manifest.rs:77`) is the clear block and
   `SealedStatisticsRef` (`manifest.rs:161`) is the sealed per-lane reference.
 - **Preview.** `preview_kind: u32` must be non-zero (`wire/preview.rs:53,87-90`), but there is **no
@@ -190,7 +194,15 @@ need a fourth record type.
 
 ---
 
-## 3. Slices (strictly sequential; each executor runs cargo check + clippy on its own crates only)
+## 3. Slices (strictly sequential; campaign gate per slice — critic tick 7, AC-37/C16)
+
+The campaign gate, not "each executor runs cargo check + clippy on its own crates only": the
+workspace triple (`cargo check -j4 --workspace --tests`; `cargo +1.99.0 clippy -j4 --workspace
+--all-targets -- -D warnings`; `cargo fmt --check`), plus a per-slice feature matrix where a slice
+touches a feature-gated crate (B2/B3: `-p fe-query --features parquet`; B2: `-p fe-format
+--no-default-features`), a `gate_green` halt on any red gate, and B2b/B3 restart tests using the C8
+drop+join pattern (one SurrealKV open per process). Tests are written now and run once at the
+campaign final sweep (standing rule), never test→fix→test in a loop.
 
 Model tiers follow the standing rules. Every slice ends with a **review-and-fix** pass (a reviewer that fixes
 its own findings), and its verdict is recorded in the track's review ledger. Slices A3-A5 are ingest of
@@ -336,9 +348,20 @@ other files this slice edits, and line numbers cited above may have moved.
 - `fe-canonical-log/src/segment/AGENTS.md`
 - `fe-canonical-log/src/materialize/AGENTS.md`
 - `fe-canonical-log/src/AGENTS.md` (§Provisional wire numbering, new "Owner-ratified errata, 2026-10-13" section)
-- **(Critic, cross-plan)** `fe-canonical-log/src/compose.rs`: the `BulkArtifact` arm of CDL-W4-4's
-  `SealedProofEnvironment` `LaneClass` match only. W4-4 made that match wildcard-free, so
-  without this file the slice cannot compile.
+- **(critic tick 7, AC-35a/C17 — corrects the prior `compose.rs` cite below.)**
+  `fe-canonical-log/src/compose/storage.rs`: the `BulkArtifact` arm of CDL-W4-4's
+  `SealedProofEnvironment` `LaneClass` match, in `decode_sealed_body`/`DecodedSealedBody`. W4-4
+  split `compose.rs` into `compose/{storage,verifier,wire,lifecycle,mod}.rs` and made this match
+  wildcard-free, so without this file the slice cannot compile.
+- **(critic tick 7, AC-35b/C17)** `fe-canonical-log/src/segment/receipt.rs`: a SECOND exhaustive
+  `LaneClass` match, `decode_opened_body`/`OpenedBody`, unowned by the original plan text.
+- **(critic tick 7, AC-35c/C17)** `fe-canonical-log/src/crypto/artifact_aad.rs`: `EVERY_LANE:
+  [LaneClass; 4]` gains the lane-5 constructor.
+- **(critic tick 7, AC-35d/C17)** `fe-sdk/src/source_class.rs` (new): the ONE `SourceClass` enum —
+  `fe-runtime` depends only on `fe-identity` and `fe-sdk` (`fe-runtime/Cargo.toml:22-23`), so it
+  cannot see this crate's own `SourceClass`, and a second enum in `fe-runtime/src/messages.rs`
+  would drift from this one. A3's `source_class` field (below) uses this same type.
+- `fe-sdk/src/lib.rs` (one `pub mod source_class` line) + `fe-sdk/src/AGENTS.md`.
 
 **Review:** **security** review-and-fix (critic upgrade). The slice adds a seal lane, an AAD domain
 and a crypto-gated body codec.
@@ -349,9 +372,14 @@ and a crypto-gated body codec.
 2. Add a `BulkArtifactBody` inner-body codec (deterministic CBOR; `object_class` restricted to
    Shard/Tile/Asset; refuses Operation/Segment/Checkpoint).
 3. Route sealing through `seal_artifact` only.
-4. Map BulkArtifact to topic lane 1 (payload), petal-affine, in `discovery_labels`.
-5. Make `relay_policy` handle the lane. Every `match` on `LaneClass` is total, so the compiler finds all
-   sites.
+4. **(critic tick 7, AC-35c/C17 — rewrites the original steps 4-5.)** Lane routing is
+   `segment/artifact.rs::assert_lane_carries_class` (a `matches!`, so the compiler will NOT flag an
+   unhandled lane the way an exhaustive `match` would — the earlier premise "every match on
+   LaneClass is total" is false for this function). Extend it so `LaneKey::Payload` permits
+   `BulkArtifact`, with a test (`bulk_lane_key_permits_bulk_artifact`).
+5. `relay_policy` and `discovery_labels` key on `LaneKey`/`TopicLane`, not on `LaneClass` directly —
+   map BulkArtifact to topic lane 1 (payload), petal-affine, there; update the discovery
+   object-class table only if SPEC-6 §3.4 requires it.
 6. In `materialize/identity.rs`, add `ObservationSource`, `SourceClass` and `DecoderIdentity` with a
    canonical CBOR codec (provisional keys, no floats, unknown keys rejected). Add an
    `AnalyticsSourceIdentity` that extends the §7 tuple with a sorted, deduplicated observation `op_id` set.
@@ -372,6 +400,11 @@ and a crypto-gated body codec.
 - `bulk_artifact_object_class_table` (table-driven): Shard/Tile/Asset accepted; Operation/Segment/Checkpoint
   refused.
 - `bulk_artifact_discovery_is_payload_lane_petal_affine`: a verse-wide scope is refused.
+- **(critic tick 7, AC-35/C17)** `bulk_lane_key_permits_bulk_artifact`: pins the Step 4 extension to
+  `assert_lane_carries_class`.
+- **(critic tick 7, AC-36e/C17 — spec's own required conformance test 17's refusal list, not an
+  invented one):** class 0, a decoder on a non-decoder class, and a malformed `format_id` are all
+  refused.
 - `observation_source_cbor_canonical_round_trip_and_refusals` (table-driven): float, unknown key,
   duplicate key and non-canonical length are all refused.
 - `analytics_source_identity_dedupes_and_sorts_batch_ids`: real branching, so it is kept.
@@ -417,23 +450,36 @@ own DID.
   `NotApplicable` (`replicated_row.rs:201-207`) — nothing peer-supplied reaches this join. This
   slice makes anchored `asset` rows replicate insert-if-absent (§3.3 steps 1/3 above), so a
   peer-chosen `asset_id` would reach this startup join on any machine that still has legacy
-  `imported/` files (the user's machine does). Add an asset_id charset/ULID guard before the path
-  join — one doctrine for path joins from data, matching P3P4 S1's `hexon_id` guard
-  (`fe-terrain/src/tiles/store.rs`, "shared cores + separate guards = drift", RUNBOOK §5) — so a
-  malformed or path-escaping `asset_id` is refused before `legacy_file`/the write path ever builds
-  a path from it.
+  `imported/` files (the user's machine does). **(critic tick 7, AC-35g — corrects the original
+  "add a guard" text below.)** Reuse `fe_runtime::safe_id::is_safe_path_id`
+  (`fe-runtime/src/safe_id.rs:14`) before the path join — NOT a third hand-rolled guard alongside
+  P3P4 S1's `hexon_id` guard (`fe-terrain/src/tiles/store.rs`) and this one; "shared cores +
+  separate guards = drift" (RUNBOOK §5) — so a malformed or path-escaping `asset_id` is refused
+  before `legacy_file`/the write path ever builds a path from it.
 - `fe-database/src/replication_mode.rs`
 - `fe-database/src/handlers/replicated_row.rs`
 - `fe-database/src/lib.rs` (dispatch arms)
 - `fe-database/src/migration/mapping_inventory.rs`
 - `fe-database/src/AGENTS.md`, `fe-database/src/migration/AGENTS.md`, `fe-sdk/src/AGENTS.md`
 - `fe-database/tests/device_payload_test.rs` (new)
-- **(Critic — files the slice needs but did not own; verified at `877e801`):**
+- **(critic tick 7, AC-35e/C18)** the struct-literal call sites that adding `source_class` to
+  `DbCommand::InsertIotReadings`/`InsertDevicePayloads` and `payload_id` to `IotReadingInput` breaks:
+  `fe-api/src/iot.rs:149`, `fe-api/tests/iot_ingest_test.rs:569,955`,
+  `fe-api/tests/export_share_test.rs:154`, `fe-database/tests/iot_reading_test.rs:44`,
+  `fe-test-harness/src/scenarios/distributed_query.rs:145,153`.
+- **(critic tick 7, AC-35h/C18)** `fe-database/tests/dcl20_bypass_counter_test.rs`: one change —
+  the KTX2-attempt test's error assertion narrows from `e.contains("RUSTSEC-2026-0344") ||
+  e.to_lowercase().contains("ktx2")` to `RUSTSEC-2026-0344` only. The fixture file is named
+  `ktx2.glb` and the error message quotes the path, so the `ktx2` half of the OR currently passes
+  for ANY refusal, not just the RUSTSEC one.
+- **(critic tick 7, AC-35f/C18 — rewrite of C2 above: ALL FOUR routing tables, not two.)**
   `fe-test-harness/src/peer.rs` (its `DbCommand` match is exhaustive, with no wildcard: the only
-  catch-all is `Shutdown | Err(_)`, `:1086`), and `fe-runtime/src/app.rs`
-  (`correlation_of_command`/`correlation_of_result`, `:229-260`) for every new command that
-  carries a `correlation_id`. A4/A5 answer REST/MCP through that routing; the `_ => None` arm
-  would compile and then silently never deliver the reply.
+  catch-all is `Shutdown | Err(_)`, `:1086`), and `fe-runtime/src/app.rs`'s four `_ => None` tables —
+  `correlation_of_command` (`:241`), `correlation_of_result` (`:263`), `reply_kind_of_command`
+  (`~:343`), `reply_kind_of_result` (`~:392`) — for every new command/result that carries a
+  `correlation_id` or needs a reply kind. A4/A5 answer REST/MCP through that routing; a stray
+  `_ => None` arm would compile and then silently never deliver the reply. Add a routing test in
+  the style of W4-8's `device_enrolment_replies_reach_only_their_own_waiter`.
 
 **Shapes** (defaults recorded in §7 as assumptions)
 - **`DeviceFormatDescriptor`** (fe-sdk, serde-only, so a future plugin manifest can embed it):
@@ -473,6 +519,17 @@ own DID.
      anchored to that petal; `device_format.verse_id == replica verse`. A reference to another
      verse → `Denied`. A reference unknown locally → `Denied` for now. Role propagation RP-4 turns
      it into `Deferred Parent` and owns that change.
+   - **(critic tick 7, AC-34 — bootstrap-window ordering, mirrors the W3 enrolment-floor
+     pattern.)** Role-independent checks run BEFORE the bootstrap window (the manifest-absent
+     window the W3 enrolment floor also runs ahead of): signature/self-consistency,
+     `device_format.verse_id == replica verse`, and the C4 referential-confinement checks above.
+     The POST-MANIFEST role floor is Manager+ for `device_format` and Editor+ for
+     `asset`/`device_payload`. The PRE-MANIFEST rule is an explicit per-table choice, recorded in
+     `fe-database/src/AGENTS.md`. Recommended default: `device_format` and `asset` fail closed
+     (Deny) pre-manifest, like the W3 floor's "fail closed, re-publish" residual; `device_payload`
+     is denied when its petal/node/assets are not locally known (the C4 check above). Role
+     propagation RP-4 later turns these into `Deferred`. The W3 enrolment branch stays first, ahead
+     of this window.
 4. Inventory: add `InsertIotReadings` (pre-existing drift), `RegisterDeviceFormat` and
    `InsertDevicePayloads` to `OTHER_DISPATCHED_MUTATION_KINDS`.
 5. **(A1 hand-back, item 3, security — SPEC-10 §3.4 rule 5.)** Record window membership **at the
@@ -527,6 +584,10 @@ own DID.
   `asset.petal_id`, `device_payload.petal_id`, a `device_payload.asset_ids` entry anchored
   elsewhere, `device_format.verse_id`).
 - **(critic)** `an_editor_authored_inbound_device_format_is_denied_and_a_manager_one_applies`.
+- **(critic tick 7, AC-34)** `pre_manifest_device_rows_follow_the_declared_bootstrap_rule`
+  (table: each new table — `device_format`, `asset`, `device_payload` — pre- and post-manifest).
+  Mutation check: moving a table's role-independent check below the bootstrap window turns its
+  row red.
 - **(AC-7)** Two tests in `fe-database/src/handlers/asset_backfill.rs`'s own `#[cfg(test)] mod
   tests` (in-file, alongside `backfill_moves_legacy_imports_into_the_blob_store` and
   `backfill_is_a_no_op_without_a_legacy_dir`), not in this file:
@@ -553,6 +614,45 @@ own DID.
   through the real door and records `source_class = Simulation`; an ordinary REST-authored reading
   in the same test still records `device`. Deleting the explicit field and falling back to
   `source_did`-based inference turns this red.
+
+#### A3b. DB-READER-RO: guarded read-only newtype for fe-api's `db_reader` (fe-api, sonnet, M; review-and-fix)
+
+**Why here (critic tick 7, AC-38).** Ledger row `DB-READER-RO` (`doneness-ledger.md:179`) was
+ACCEPTED at critic tick 3 (2026-10-13) with an explicit precondition: it "must land BEFORE
+CDL-SPEC10 A3 inbound admission" (W0d review residual 5). No slice in this plan scheduled it, and
+A4/A5 (below) are the first new fe-api read surfaces to sit on `db_reader` — currently 59 call
+sites, all reads (grep confirms zero writes today). This slice closes that gap in the one place it
+is still open: before A4, the first new surface added on top of it.
+
+**Owned files**
+- `fe-api/src/db_reader.rs` (new: `ReadDb` newtype, `impl Deref<Target = Db>` only — no `DerefMut`,
+  no re-exposed mutating inherent method)
+- the ~59 fe-api call sites named in the `DB-READER-RO` ledger row, migrated from the raw mutable
+  handle to `ReadDb`
+- `fe-api/AGENTS.md` (new §db-reader)
+
+**Review:** review-and-fix (not security-upgraded: this slice narrows an existing read-only
+convention to a type-level guarantee; it adds no new admission surface of its own).
+
+**Steps**
+1. Define `ReadDb(Db)` with `Deref<Target = Db>` and no mutating method re-exposed.
+2. A `compile_fail` doctest on `ReadDb` proves an external caller cannot reach
+   `.delete()`/`.update()`/`.create()` through it — the W0d review residual's "guarded newtype" ask.
+3. Migrate the ~59 call sites to `ReadDb` with zero behaviour change: every existing read test keeps
+   passing unmodified.
+
+**Invariants**
+- §existence-oracle and §query-guard stay unchanged — this is a type-level guard, not a new policy.
+- No call site this slice touches gains write access; a site that needs a write stays on the
+  original mutable handle, never on `ReadDb`.
+
+**Flow tests**
+- `read_db_compile_fail_doctest`: the compile_fail doctest from Step 2.
+- The existing read-path test suites re-run unchanged across the 59 migrated call sites (the
+  acceptance is "zero behaviour change", so no new assertions are needed beyond the doctest).
+
+**Downstream.** A4 and A5 (below) are the first new fe-api read surfaces built after this lands;
+their briefs consume `ReadDb` directly rather than the raw handle.
 
 #### A4. R5 REST surface: generic asset ingest + device routes (fe-api, sonnet, L; security review-and-fix)
 
@@ -647,6 +747,8 @@ All four use the same core functions as A4, so there is no second validation pat
 - `fe-test-harness/src/AGENTS.md` §scenarios
 - `README.md` (Status line: device payloads)
 - `conductor/tracks/iot_spatial_reporting_20260714/` (a dated note only)
+- `conductor/final-sweep-manifest.md` (**critic tick 7, AC-37/C24:** when this scenario lands, bump
+  the harness-scenario expectation from 16 to 17 and the signoff-checklist line naming that count)
 
 **Flow test**
 - `two_peer_device_payload_sync`:
@@ -677,6 +779,28 @@ see §6.
 
 **Review:** **security** review-and-fix (critic upgrade). Kind 5 adds a new structural rule on the
 peer-bytes ingress door (`decode_and_admit`) and a preview decoder.
+
+**Spec authority (critic tick 7, AC-36e).** `observation-plane.md` is authoritative wherever this
+plan's §3 A1 summary differs: 11 payload keys including key 10 `stats_stored_length` (§4.3), `count
+≥ 1` (not "`count == 0` iff empty" as this plan's earlier §3 text put it), petal-only scope with a
+null resource (§4.1 rule 2.3), the schema-hash rule (§4.1 rule 3), and the full required-refusal
+list for conformance tests 2 and 8 (B2 carries test 8's list — see below).
+
+**Reduction contract for `payload_facts == None` (critic tick 7, AC-33).** B1's kind-5 reduction
+follows the RUNBOOK §4 default this tick records (see that dated assumption) and the B2b Errata it
+builds on: it never fakes a `stats_hash`/`count`/range field. It defers to whatever facts-source
+B2b's additive parameter resolves to for that call site — the legacy `None` wrapper (unchanged on
+the 21 pre-existing call sites) still yields the pre-B2b outcome, and a call site wired to B2b's
+durable verifier re-derives facts through custody. A shredded or absent scope key yields a distinct
+pending reason, never `Excluded`, and the pre-shred projection row is kept.
+
+**Where §4.2 rule 2 is enforced (critic tick 7, AC-36g).** The spec's §4.2 rule 2 ("`append/shard`
+must seal the hexon and statistics") has no enforcement site in this plan as originally written —
+the composed verifier asks only `append/op` (`compose/verifier.rs:252-278`). This slice records the
+choice when it is implemented: either B3's sealer self-check enforces it before signing (no change
+to this crate), or this slice adds a kind-5 admission check here, in which case B1 owns
+`compose/verifier.rs` for that one additional capability check. Whichever B1/B3 pick, the choice
+and its file ownership are recorded in `fe-canonical-log/src/AGENTS.md` at that time.
 
 **Steps**
 1. Write the observation payload codec, using the A2 `ObservationSource`. Derive every
@@ -718,10 +842,16 @@ peer-bytes ingress door (`decode_and_admit`) and a preview decoder.
 **Owned files**
 - `fe-query/src/columnar/observation/` (new: `mod.rs`, `writer.rs`, `reader.rs`, `profile.rs`)
 - `fe-query/src/columnar/mod.rs`
-- `fe-query/Cargo.toml` (**new, critic tick 5 AC-25/§8 C15:** add the `fe-sdk` dependency — B2
-  consumes `fe_sdk::legacy_identifier` and fe-query does not depend on fe-sdk today)
+- `fe-query/Cargo.toml` (**critic tick 5 AC-25/§8 C15 + critic tick 7 AC-36a/C21:** add the
+  `fe-sdk` dependency — B2 consumes `fe_sdk::legacy_identifier` and fe-query does not depend on
+  fe-sdk today — AND `fe-format = { path = "../fe-format", default-features = false }` beside it.
+  fe-query has NO fe-format dependency today, and fe-format's default `runtime` feature pulls in
+  fe-runtime → bevy, which this crate must not gain)
 - `fe-query/src/AGENTS.md` (new §observation-hexon)
 - `fe-format/src/manifest.rs` (`HexonType::ObservationBatch`)
+- `fe-format/src/archive.rs` (**critic tick 7, AC-36b/C21:** one deterministic stored,
+  fixed-timestamp packer for the observation hexon's own archive — not a new reader, see the
+  corrected Step 3 below)
 - `fe-format/src/AGENTS.md` §manifest
 - `docs/hexon-format-spec.md` (**A1 hand-back, item 5:** the Hexon Types table is missing
   `observation_batch`; add the row here, in the same slice as the code that introduces the
@@ -730,14 +860,21 @@ peer-bytes ingress door (`decode_and_admit`) and a preview decoder.
 **Steps**
 1. Write the writer: segmentby anchor, orderby `(hlc, reading_id)`, pinned writer properties
    (**uncompressed pages**, not zstd — see A1's corrected note above), row-group statistics on,
-   plus `payload_refs.parquet`. Compute the `anchor` column (§3.2 rule 3/4) via
-   `fe_sdk::legacy_identifier("node", node_id)` (**dependency, A1 hand-back:** the one shared
-   function CDL-W4-9 builds; do not reimplement the BLAKE3 domain hash here).
-2. Write the stored-zip `.hexon` packer using the fe-format archive, with fixed timestamps.
-3. Write the reader/validator. It enforces the profile and returns typed errors. **(Critic, one
-   zip reader.)** Open the `.hexon` through `fe_format::archive_index::HexonArchiveIndex` (built
-   in PAS-P4 S5, extended with verified reads in PAS-P5 S2) under `fe_format::limits`. Do not add
-   a third zip reader. The doctrine is "shared cores + separate guards = drift" (RUNBOOK §5).
+   plus `payload_refs.parquet`. Compute the `anchor` column (§3.2 rule 3/4) via the real signature
+   **(critic tick 7, AC-36d/C21 — corrects the two-string-argument form previously written here)**
+   `fe_sdk::legacy_identifier(LegacyTable::Node, node_id) -> Result<[u8; 32], LegacyIdentifierError>`,
+   mapping `Err` to a typed writer error (dependency, A1 hand-back: the one shared function
+   CDL-W4-9 builds; do not reimplement the BLAKE3 domain hash here).
+2. Write the stored-zip `.hexon` packer using the fe-format archive, with fixed timestamps
+   (`fe-format/src/archive.rs`, owned above).
+3. Write the reader/validator. It enforces the profile and returns typed errors. **(critic tick 7,
+   AC-36b/C21 — corrects the original "one zip reader" note below.)** Read via
+   `fe_format::HexonArchive::import(bytes)` under `fe_format::limits`, NOT the file-backed
+   `HexonArchiveIndex::open(path)`: the observation hexon is held decrypted in memory, and
+   `HexonArchiveIndex` is `LazyFile`-backed, so routing through it would mean writing decrypted
+   plaintext to disk. `HexonArchiveIndex` stays the right reader for an on-disk, file-backed hexon
+   (e.g. a terrain tileset) — it is simply the wrong one here. Do not add a THIRD zip reader beyond
+   these two. The doctrine is "shared cores + separate guards = drift" (RUNBOOK §5).
 4. Compute a stats summary (per-anchor min/max/time range) that becomes the sealed statistics artifact
    (`stats_hash`).
 
@@ -749,21 +886,76 @@ peer-bytes ingress door (`decode_and_admit`) and a preview decoder.
   is a Cargo change this slice does not own, and a future codec bump would be a byte-determinism
   hazard against `same_rows_any_input_order_produce_identical_hexon_bytes`.
 
-**Gate (added, critic tick 5, AC-25/§8 C15).** This module is feature-dark under ordinary
-`cargo check --workspace` (the AC-19 lesson: a feature-gated path that never gets its own build
-silently bitrots): `cargo check -p fe-query --features parquet --tests`; `cargo +1.99.0 clippy
--p fe-query --features parquet --all-targets -- -D warnings`.
+**Gate (added, critic tick 5, AC-25/§8 C15; extended critic tick 7, AC-36a/C21).** This module is
+feature-dark under ordinary `cargo check --workspace` (the AC-19 lesson: a feature-gated path that
+never gets its own build silently bitrots): `cargo check -p fe-query --features parquet --tests`;
+`cargo +1.99.0 clippy -p fe-query --features parquet --all-targets -- -D warnings`; plus
+`cargo check -p fe-format --no-default-features --tests` and its matching clippy, since this slice
+is the first fe-query consumer of fe-format built without the `runtime` feature.
 
 **Flow tests**
 - `observation_hexon_round_trip_honours_segment_and_order_profile`: readings for 3 anchors written in
   shuffled order; the reader sees per-anchor row groups, ascending HLC and correct row-group statistics.
 - `same_rows_any_input_order_produce_identical_hexon_bytes`.
-- `profile_violations_rejected` (table-driven over crafted files):
+- `profile_violations_rejected` (table-driven over crafted files; **critic tick 7, AC-36e/C21 adds
+  the spec's own conformance-test-8 cases below, alongside the ones already here**):
   - a mixed-entity row group;
   - unsorted HLC;
   - a missing required column;
-  - a wrong `HexonType`.
+  - a wrong `HexonType`;
+  - a compressed member (the profile requires stored/uncompressed);
+  - a wrong member order;
+  - an extra column not in the profile.
 - `zip_bomb_observation_hexon_refused_without_allocation`. This reuses the REG-DECOMP fixture style.
+
+#### B2b. Replay-time payload facts (fe-database canon_log + spec errata, opus, M; security review-and-fix)
+
+**Why here (critic tick 7, AC-33).** `replay_to_frontier`/`rebuild_projection` pass `None` for
+payload facts on every one of their 21 existing call sites (`fe-database/src/canon_log/replay.rs:203`
+→ `rebuild.rs:210-222`). `materialize/AGENTS.md:120-130` says a payload-needing reduction given
+`None` MUST return `ReferencedArtifactUnavailable`, but `observation-plane.md` §4.4 rule 3 says a
+kind-5 reduction "MUST NOT return `referenced_artifact_unavailable`" — a kind-5 reference row holds
+every encrypted payload field (§4.4 rule 1), so on replay B1's reduction otherwise has no lawful
+output, and B3's spec test 16 `rebuild_from_log_reproduces_observation_reference_rows` (below)
+could not pass. This slice closes that gap before B3 needs it, on the RUNBOOK §4 default this tick
+records: replay re-derives facts through the durable verifier (W4-7 ciphertext store + scope-key
+custody + `RegisteredSchemaSet`); a shredded or absent key yields a pending outcome under a distinct
+reason, the pre-shred row is kept, and it is never `Excluded`. The owner post-reviews this default
+in the final report; it is not a blocker on this slice landing.
+
+**Owned files**
+- `fe-database/src/canon_log/replay.rs`
+- `fe-database/src/canon_log/rebuild.rs`
+- `fe-database/src/canon_log/AGENTS.md`
+- `fe-canonical-log/src/materialize/AGENTS.md` §payload-facts
+- `docs/spec/canonical-log/observation-plane.md` (a dated Errata scoping §4.4 rule 3 to the
+  hexon/statistics/asset artifacts; the operation's own undecryptable payload stays pending per
+  SPEC-4 §4 rule 8 — unchanged)
+- `fe-database/tests/canon_log_replay_payload_facts_test.rs` (new)
+- ledger row `CDL-REPLAY-PAYLOAD-FACTS` (status update only; the bookkeeping orchestrator, not this
+  slice, makes the actual ledger edit)
+
+**Review:** **security** review-and-fix. This slice re-derives cryptographic facts on replay
+through scope-key custody; a wrong default could either leak a shredded key's facts or silently
+fabricate them.
+
+**Design hint.** An ADDITIVE facts-source parameter or variant that keeps the 21 existing
+`replay_to_frontier`/`rebuild_projection` call sites on the `None` wrapper (no call site this slice
+does not own changes behaviour). Facts are re-derived through the W4-7 durable verifier's
+`verify_payload` (`SurrealArtifactStore` ciphertext, `SecretStoreScopeKeyCustody` key,
+`RegisteredSchemaSet`). A shredded or absent scope key yields a pending outcome under a distinct
+reason — never `Excluded` — and the pre-shred projection row is kept untouched.
+
+**Flow tests**
+- `replay_rederives_payload_facts_through_custody`: a kind-5 operation replayed after a restart
+  re-derives the same facts it had live, through the durable verifier.
+- `a_shredded_scope_key_leaves_replay_pending_and_keeps_the_pre_shred_row`: shred the scope key,
+  replay, and confirm the reference row is pending under its own distinct reason while the
+  pre-shred projection row is untouched (never `Excluded`).
+- A restart case using the C8 drop+join pattern (one SurrealKV open per process).
+
+**Downstream.** B3 (below) depends on this slice; its rebuild step consumes this slice's facts
+source instead of the legacy `None` wrapper.
 
 #### B3. Shadow sealer, reference materializer, hydrator (fe-database canon_log + migration, opus, L)
 
@@ -785,6 +977,9 @@ silently bitrots): `cargo check -p fe-query --features parquet --tests`; `cargo 
 
 **Review:** **security** review-and-fix (critic upgrade). The sealer signs operations with the
 node key and appends to the verified log.
+
+**Depends on B2b (critic tick 7, AC-33/C23).** This slice's rebuild step (Step 4 below) consumes
+B2b's facts-source parameter/variant rather than the legacy `None` wrapper.
 
 **Steps**
 1. Write the sealer. For a closed `(petal, bucket)` window, selected **only** from A3's
@@ -822,6 +1017,10 @@ node key and appends to the verified log.
   payload → sealer → a kind-5 op in `verified_op_log` → reference row → the hydrated catalog equals the
   legacy rows (comparator report: zero divergences).
 - `rebuild_from_log_reproduces_observation_reference_rows`.
+- **(critic tick 7, AC-36f/C23 — spec conformance test 10, previously unassigned to any slice)**
+  `hydration_rejects_a_hexon_that_disagrees_with_its_signed_batch`.
+- **(critic tick 7, AC-36f/C23 — spec conformance test 12, previously unassigned to any slice)**
+  `conflicting_duplicate_observation_is_retained_as_evidence_not_resolved`.
 - `missing_hexon_surfaces_unavailable_at_hydration_not_reduce`.
 - `analytics_identity_records_the_batches_it_read`: the G6 end-to-end check.
 - **(A1 hand-back)** `sealer_never_signs_replicated_observations` (named in SPEC-10 §10 test 15,
@@ -899,7 +1098,12 @@ node key and appends to the verified log.
 7. **Concurrent edits from earlier phases.** CDL-W4 edits `compose.rs`, the fe-canonical-log `lib.rs`
    surface and `migration/boundary.rs`. Role propagation (after this phase) edits `replicated_row.rs`, the
    same file as A3. Slices are sequential, so the risk is a merge-intent loss. Role propagation's brief
-   must preserve the `device_payload` / `asset` / `device_format` arms.
+   must preserve the `device_payload` / `asset` / `device_format` arms. **(Critic tick 7, AC-33/AC-38 —
+   widens this risk to the two slices this tick added.)** A3b (DB-READER-RO) touches ~59 fe-api call
+   sites before A4/A5 add new ones on top of `ReadDb`, so A4/A5's briefs must build on A3b's migrated
+   handle, not the raw one; B2b (replay-time payload facts) touches `canon_log/{replay.rs,rebuild.rs}`
+   before B3's sealer/hydrator lands, so B3's brief must consume B2b's additive facts-source parameter
+   rather than re-deriving it.
 8. **Build weight.** B3 makes fe-database compile arrow/parquet. That is not a new compile unit for the
    workspace, but `cargo check -p fe-database` becomes slower. Accepted.
 9. **Dependency latency (superseded 2026-10-13 by R7's pre-approval).** SPEC-10 approval is no
@@ -929,6 +1133,12 @@ node key and appends to the verified log.
 
 No other omissions. The critic/monitor the user asked for should challenge any row above whose class is not
 one of: missing user decision, NO_GO, hard external dependency, or explicit ratified sequencing.
+
+**(Critic tick 7 addendum, AC-33/AC-38.)** Two slices were added to this plan after the table above
+was written — A3b (DB-READER-RO) and B2b (replay-time payload facts). Neither is a deferral: A3b
+closes a pre-existing ACCEPTED ledger precondition (`DB-READER-RO`, due before CDL-SPEC10 A3's first
+new fe-api read surface) and B2b closes a cross-plan gap between B1's reduction contract and B3's
+rebuild consumer (`CDL-REPLAY-PAYLOAD-FACTS`). Both are scheduled now, not left out.
 
 ---
 
@@ -1006,6 +1216,15 @@ owns a shared piece; this plan notes the dependency.
 | C13 | 2026-10-13 | A1 hand-back | Doc follow-ups: the Hexon Types table in `docs/hexon-format-spec.md` is missing `observation_batch` — routed to B2, alongside the code that adds the `HexonType` variant (not B4) so doc and enum cannot drift apart. `commit-preview-wire.md`'s registry cross-reference was already a B4-owned file (confirmed, no change needed). B2's dependency on `HexonArchiveIndex`/PAS-P3P4 S5 was already noted in §1.3, §7.1, §9 (confirmed, no change needed). The `CDL-SPEC10` ledger-row update is flagged for the bookkeeping orchestrator in §4 (not edited here). | doc follow-ups / confirmation |
 | C14 | 2026-10-13 | A1 hand-back | zstd was replaced by uncompressed Parquet pages: an earlier internal note in A1's §3 planning text said "zstd pages", but the shipped spec (§3.2 rule 1, D-CL32) pins uncompressed pages — `parquet 54.3.1` is built `default-features = false` (no codec compiled in), so zstd would need a Cargo change B2 does not own and would risk byte determinism. A1's text and B2's brief are both corrected to match the spec. | spec/plan drift |
 | C15 | 2026-10-14 | critic tick 5 (AC-25) | C10's premise is corrected: CDL-W4-9's `fe_sdk::legacy_identifier` requires `fe-sdk` as a dependency wherever it is consumed, and neither `fe-database` nor `fe-query` lists `fe-sdk` today (grep confirms; no `fe_sdk::` use exists in either). B2 (this plan, §3 Phase B) consumes `legacy_identifier` for its `anchor` column (step 1, `:716`) — B2's owned files therefore gain `fe-query/Cargo.toml` (new `fe-sdk` dependency), and B2 gains a feature-matrix gate (`cargo check -p fe-query --features parquet --tests` + clippy), matching the AC-19 lesson that feature-gated code needs its own build. See CDL-W4 campaign plan §9 C7 for the matching fe-sdk dependency-rule amendment (`serde, serde_json, blake3`). | premise correction + owned-files + gate |
+| C16 | 2026-10-14 | critic tick 7 | §3 header replaced with the campaign gate: workspace check/clippy/fmt triple, the per-slice feature matrix (B2/B3 `-p fe-query --features parquet`; B2 `-p fe-format --no-default-features`), a `gate_green` halt, tests written and run at the final sweep, and the C8 drop+join restart pattern for B2b/B3. | process gate |
+| C17 | 2026-10-14 | critic tick 7 | A2's owned files corrected to `compose/storage.rs` (not the no-longer-existing `compose.rs`), plus a second unowned exhaustive match in `segment/receipt.rs`, `crypto/artifact_aad.rs`'s `EVERY_LANE`, and a new `fe-sdk/src/source_class.rs` (the ONE `SourceClass`, since fe-runtime cannot depend on fe-canonical-log). Steps 4-5 rewritten around the real lane gate, `assert_lane_carries_class` (a `matches!`, not an exhaustive `match`, so the compiler does NOT flag an unhandled lane). | cross-plan collision / ordering |
+| C18 | 2026-10-14 | critic tick 7 | A3 gains the bootstrap-window paragraph (mirrors the W3 enrolment floor: role-independent checks before the window, a per-table pre-manifest rule, the enrolment branch stays first) and its test; the AC-35(e) struct-literal call sites; the four-table rewrite of C2's `app.rs` routing (not two); `fe_runtime::safe_id::is_safe_path_id` reuse instead of a third hand-rolled guard; and a narrowed `dcl20_bypass_counter_test.rs` assertion. | security + cross-plan |
+| C19 | 2026-10-14 | critic tick 7 | New slice **A3b · DB-READER-RO** scheduled between A3 and A4, closing an ACCEPTED ledger precondition ("must land BEFORE CDL-SPEC10 A3") before CDL-SPEC10's first new fe-api read surface actually arrives. | missing scheduled dependency |
+| C20 | 2026-10-14 | critic tick 7 | B1 now defers to the shipped spec wherever this plan's §3 A1 summary differs (11 keys incl. `stats_stored_length`, `count ≥ 1`, petal-only scope, schema-hash rule, full test-2/8 refusal lists); states the `payload_facts == None` reduction contract (never fakes a field; follows B2b/the Errata); and records where §4.2 rule 2 (`append/shard` sealing) is enforced. | spec/plan drift + missing contract |
+| C21 | 2026-10-14 | critic tick 7 | B2 gains `fe-format/src/archive.rs` (the deterministic packer), the corrected reader (`fe_format::HexonArchive::import(bytes)`, not the file-backed `HexonArchiveIndex` — decrypted plaintext never touches disk), the real `legacy_identifier(LegacyTable::Node, id)` signature, a new `fe-format` Cargo dependency beside `fe-sdk`, a `--no-default-features` gate, and the spec's own conformance-test-8 refusal cases. | cross-plan collision + premise correction |
+| C22 | 2026-10-14 | critic tick 7 | New slice **B2b · replay-time payload facts** scheduled before B3, closing the gap between B1's reduction contract and B3's rebuild consumer (ledger row `CDL-REPLAY-PAYLOAD-FACTS`) on the RUNBOOK §4 default this tick records. | cross-plan API gap / missing scheduled dependency |
+| C23 | 2026-10-14 | critic tick 7 | B3 now explicitly depends on B2b for its rebuild's facts source, and gains spec conformance tests 10 (`hydration_rejects_a_hexon_that_disagrees_with_its_signed_batch`) and 12 (`conflicting_duplicate_observation_is_retained_as_evidence_not_resolved`), both previously unassigned to any slice. | ordering + test coverage |
+| C24 | 2026-10-14 | critic tick 7 | A6 gains a future step to bump `final-sweep-manifest.md`'s harness-scenario count 16→17 once its scenario lands; §5 risk 7 and §6 widened to name A3b/B2b; stale §1.2/§2 cites fixed (`doneness-ledger.md:105`→`:135`; `traits.rs:194`→`:280`; `compose.rs:51/154`→`compose/mod.rs:71/174`; `quarantine.rs:396`→`:394`). | bookkeeping + stale cites |
 
 **Cross-plan note.** A6's device-payload blob fetch uses `SyncCommand::FetchBlob` over the blob
 ALPN. PAS-P3P4 S8b may add an iroh-blobs request filter, and its brief requires that filter to

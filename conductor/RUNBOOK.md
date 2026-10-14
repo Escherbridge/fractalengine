@@ -113,7 +113,7 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 - ~~**2026-10-13 post-W0d, HEAD = `d4c0e19`** (W0–W0d complete; W1 PAS-P3+P4 launched, W0d final smoke & push complete, CI in flight on 53a4c4c)~~ — superseded (critic tick 4, AC-22(4)).
 - ~~**2026-10-14, W1 done / W2 (PAS-P5) running.** W1 PAS-P3+P4 landed `53a4c4c..069f8ea` (11 agents; S8b security review FIXED; final review FIXED; relay smoke PASS, AC-15). W2 (campaign PAS-P5) launched `01:40` and is in progress (S1 committed `db5883b`). **Last pushed `53a4c4c`; CI green run `38498925963`** (first fully completed run of the day's work — Lint incl. licenses/fuzz, Linux build+test+package incl. the 0.35 store-migration fixture test, Windows build+package; rolling `latest` republished with fractalengine/fe-relay archives + SHA256SUMS). Push freeze (AC-14) lifted at that run; **no further pushes until the campaign final sweep** (docs-only commits excepted). **Ledger refreshed 2026-10-13** (dated 10-10; now tracks committed and ratified rows) **and 2026-10-14** (critic tick 4 bookkeeping — IROH-STORE-GC + 2 role-propagation rows added, PAS-P1V status corrected, counts recomputed). Section §4 assumptions still the 2026-10-13 grill R1–R7; RUNBOOK §3 decisions frozen.~~ — superseded (critic tick 5, W2 close).
-- **2026-10-14, W2 done / W2b fixups running.** W2 (PAS-P5) landed `4865a54..e7762d9` (S1→S1b→S2→S3→S4→S6→S5→S7a→S7b→S8 security review-and-fix `d21a957`→final review-and-fix `e7762d9`; every slice `gate_green`). Critic tick 5 ran at W2 close (`.omc/accountability/tick-20261014-0722.md`, verdict ON_TRACK): AC-23 accepts the P2P/FetchStrategy gap as a staged state (ledger row PAS-P5-P2P-POLICY); AC-24 schedules **W2b fixups** (F1-F6: streamed-meta worker-thread move + publisher pin, local hexon-install worker thread, `install_tileset` continuity/write/rename lock, registry bearer token, relay blob-dir derivation, registry nosniff) before W3; AC-25/26/27/28 are docs-only amendments (this commit). ~~W2b is running now~~ → **W2b DONE** `4306cb2`+`474ab9b`; **W3 = CDL-W4 running** (`wf_644e287e-abf`, base `38dd271`).
+- **2026-10-14, W2 done / W2b fixups running.** W2 (PAS-P5) landed `4865a54..e7762d9` (S1→S1b→S2→S3→S4→S6→S5→S7a→S7b→S8 security review-and-fix `d21a957`→final review-and-fix `e7762d9`; every slice `gate_green`). Critic tick 5 ran at W2 close (`.omc/accountability/tick-20261014-0722.md`, verdict ON_TRACK): AC-23 accepts the P2P/FetchStrategy gap as a staged state (ledger row PAS-P5-P2P-POLICY); AC-24 schedules **W2b fixups** (F1-F6: streamed-meta worker-thread move + publisher pin, local hexon-install worker thread, `install_tileset` continuity/write/rename lock, registry bearer token, relay blob-dir derivation, registry nosniff) before W3; AC-25/26/27/28 are docs-only amendments (this commit). ~~W2b is running now~~ → **W2b DONE** `4306cb2`+`474ab9b`; **W3 DONE `38dd271..381264e`; W3b running** (`wf_a45fa136-1c5`).
 - ~~**2026-10-13 session open:** origin/main = `850466d`~~ — superseded. Two `ci(fuzz)` commits + 4 W0–W0d follow-up commits complete.
 - ~~**CI fully green on `850466d`**~~ — superseded. Fuzz CI step now DONE + `850466d` (run 38277696834) verified green on Linux; lint RED on `877e801` (pre-purge cargo-deny advisories), FIXED in W0b/W0c/W0d; §7 step 2 was completed. Superseded again by CI run `38498925963` (first fully green run, §2 above).
 - ~~**Ledger stale**~~ — superseded. Refreshed 2026-10-13 against post-purge history + 2026-10-13 grill R1–R6. "Commit pending" rows traced to their landing commits via `git log -S/--grep` on the post-purge tree.
@@ -311,6 +311,14 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
 - Reorder logged (critic AC-3): SPEC-10 **A1 (spec draft, docs only)** was pulled ahead of
   PAS/W4 because it needs no cargo; A2–A6 and Phase B keep the §7 order (after CDL-W4), and A2
   re-grounds A1's file:line citations after W4 lands · to reverse: none needed (docs).
+- **Replay-time payload facts default (critic tick 7, AC-33, unasked):** a kind-5 reduction given
+  `None` facts on replay re-derives them through the durable verifier (W4-7 ciphertext store +
+  scope-key custody + `RegisteredSchemaSet`), rather than returning
+  `referenced_artifact_unavailable` as the general bright-line rule would; a shredded or absent
+  scope key yields a distinct pending reason and keeps the pre-shred row, never `Excluded`. Built
+  as CDL-SPEC10 slice B2b, scoped by a dated Errata to `observation-plane.md` §4.4 rule 3. The
+  owner post-reviews this default in the final report — it is not a blocker · to reverse: moderate
+  — B2b + one Errata.
 
 **Carried from 2026-10-12:**
 - ~~Role-table replication semantics: LWW by HLC per (verse, peer) row …~~ SUPERSEDED by the
@@ -445,8 +453,15 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
 - **No main pushes from here until the campaign final sweep** (docs-only excepted).
 - **W2b fixups DONE** `4306cb2`+`474ab9b` (review failed the executor on 2 HIGH — main-thread verify left, vacuous F1 tests — fixed).
 - **W3 CDL-W4 DONE** `38dd271..381264e` (security + correctness review FIXED; C6 NO_GO greps clean). **W3b fixups**
-  `wf_a45fa136-1c5` running (critic AC-30). Critic tick 7 pre-checking the SPEC-10 plan. Owner question queued for the final
-  report: crypto-shredded scope-key semantics on replay (ledger CDL-REPLAY-PAYLOAD-FACTS; first consumer SPEC10 B3).
+  `wf_a45fa136-1c5` running (critic AC-30). Critic tick 7 pre-checked the SPEC-10 plan
+  (`.omc/accountability/tick-20261014-1219.md`, verdict ON_TRACK). Owner questions — crypto-shredded
+  scope-key semantics on replay: default adopted (§4), owner post-review in the final report (ledger
+  CDL-REPLAY-PAYLOAD-FACTS; first consumer SPEC10 B3, now scheduled as slice B2b) — plus, appended to
+  this owner queue (AC-39), the four W3 judgement calls with no durable owner-question entry: W4-4
+  wire categories + `MaterializationPending` reuse; W4-3 `RootAuthorityRecordUnknown` = reject; W4-9
+  `UpdateNodeTransform` on a tombstoned node succeeds (`handlers/transform.rs:20`
+  `require_node_exists` ignores tombstones); W4-8 revoke-rotates-local-key + the auto-enrol/
+  wrap-delivery deferral + revocation reach.
 - **W3 CDL-W4 launched** `wf_644e287e-abf` (task `wscoctxno`), base `38dd271`: W4-1..W4-9 → security review (W4-3..8) → correctness review (W4-1,2,5,9) → docs. Critic tick 6 running. Then CDL-SPEC10 (A2..A6, B1..B4) → role propagation → final sweep → push.
 - **W1 DONE** `53a4c4c..069f8ea` (S8b + final review FIXED; relay smoke PASS) — see accountability-log "W1 close".
 - **W2 PAS-P5 launched** `wf_4e779cc6-58c` (task `wnuvgltiu`), base `4865a54`: S1→S1b(OF-1)→S2→S3→S4→S6→S5
