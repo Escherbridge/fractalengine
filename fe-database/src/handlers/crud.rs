@@ -853,6 +853,11 @@ pub(crate) async fn load_hierarchy_handler(
                                                 view_hidden: p["view_hidden"]
                                                     .as_bool()
                                                     .unwrap_or(false),
+                                                // p2p_asset_streaming S6: durable
+                                                // residency horizon; `None` = inherit.
+                                                render_distance: p["render_distance"]
+                                                    .as_f64()
+                                                    .map(|v| v as f32),
                                                 nodes,
                                             }
                                         })
@@ -2276,5 +2281,104 @@ mod tombstone_atomicity_tests {
             "the op-log row rolled back"
         );
         assert_eq!(live_count(&db, std::slice::from_ref(&root)).await, 1);
+    }
+}
+
+/// Accountability directive AC-13: the KTX2 intake guard
+/// (`fe_runtime::ktx2_guard`, RUSTSEC-2026-0344) at the `DbCommand::ImportGltf`
+/// dispatch seam (`import_gltf_handler`, see lines ~376-379) must refuse
+/// BEFORE any side effect — no blob, no asset row, no node row.
+#[cfg(test)]
+mod import_gltf_ktx2_guard_tests {
+    use super::*;
+    use fe_runtime::blob_store::mock::MockBlobStore;
+
+    async fn setup_mem_db() -> Db {
+        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+            .await
+            .expect("in-memory SurrealDB");
+        db.use_ns("test").use_db("test").await.expect("ns/db");
+        crate::schema::apply_all(&db).await.expect("schema");
+        db.query(
+            "CREATE verse CONTENT { verse_id: 'verse-1', name: 'v', created_by: 'owner-did', \
+             created_at: '2026-10-11T00:00:00Z' };
+             CREATE fractal CONTENT { fractal_id: 'fractal-1', verse_id: 'verse-1', \
+             owner_did: 'owner-did', name: 'f', created_at: '2026-10-11T00:00:00Z' };
+             CREATE petal CONTENT { petal_id: 'petal-1', fractal_id: 'fractal-1', name: 'p', \
+             node_id: 'anchor-node', created_at: '2026-10-11T00:00:00Z' };",
+        )
+        .await
+        .expect("seed scope chain")
+        .check()
+        .expect("seed scope chain");
+        db
+    }
+
+    /// A minimal valid GLB whose sole image declares `mimeType: "image/ktx2"`
+    /// — the exact shape `fe_runtime::ktx2_guard::check_glb` refuses.
+    fn glb_with_ktx2_image() -> Vec<u8> {
+        let json = r#"{"images":[{"bufferView":0,"mimeType":"image/ktx2"}],"bufferViews":[{"buffer":0,"byteLength":4}]}"#;
+        let mut json_bytes = json.as_bytes().to_vec();
+        while !json_bytes.len().is_multiple_of(4) {
+            json_bytes.push(b' ');
+        }
+        let bin: Vec<u8> = vec![0u8; 4];
+        let mut body = Vec::new();
+        body.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
+        body.extend_from_slice(b"JSON");
+        body.extend_from_slice(&json_bytes);
+        body.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        body.extend_from_slice(b"BIN\0");
+        body.extend_from_slice(&bin);
+        let mut glb = b"glTF".to_vec();
+        glb.extend_from_slice(&2u32.to_le_bytes());
+        glb.extend_from_slice(&((12 + body.len()) as u32).to_le_bytes());
+        glb.extend_from_slice(&body);
+        glb
+    }
+
+    #[tokio::test]
+    async fn importing_a_ktx2_model_is_refused_and_stores_nothing() {
+        let db = setup_mem_db().await;
+        let store = std::sync::Arc::new(MockBlobStore::new());
+        let blob_store: BlobStoreHandle = store.clone();
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file_path = dir.path().join("model.glb");
+        std::fs::write(&file_path, glb_with_ktx2_image()).expect("write fixture glb");
+
+        let err = import_gltf_handler(
+            &db,
+            &blob_store,
+            "petal-1",
+            "bad-model",
+            file_path.to_str().expect("utf8 path"),
+            [0.0, 0.0, 0.0],
+        )
+        .await
+        .expect_err("a KTX2-textured GLB must be refused");
+        assert!(
+            err.to_string().contains("RUSTSEC-2026-0344")
+                || err.to_string().to_lowercase().contains("ktx2"),
+            "refusal must name the ktx2 guard, got: {err}"
+        );
+
+        assert!(store.is_empty(), "no blob may be written on refusal");
+
+        let assets: Vec<serde_json::Value> = db
+            .query("SELECT * FROM asset")
+            .await
+            .expect("query asset")
+            .take(0)
+            .unwrap_or_default();
+        assert!(assets.is_empty(), "no asset row on refusal");
+
+        let nodes: Vec<serde_json::Value> = db
+            .query("SELECT * FROM node")
+            .await
+            .expect("query node")
+            .take(0)
+            .unwrap_or_default();
+        assert!(nodes.is_empty(), "no node row on refusal");
     }
 }

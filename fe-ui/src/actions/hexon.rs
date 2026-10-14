@@ -225,25 +225,47 @@ fn clamp_to_bounds(scale: f64, bounds: Option<[f64; 2]>) -> f64 {
     }
 }
 
-/// Applies a manifest save: the active petal's `render_distance` becomes the
-/// session residency override (no durable manifest store exists yet — see
-/// AGENTS.md §app-settings).
+/// Applies a manifest save: the manifest's `render_distance` is persisted to
+/// the petal's durable `petal.render_distance` column (p2p_asset_streaming
+/// S6) via a correlated-free local write (`CallerAuth::Local` — the DB thread
+/// resolves the caller's own role). This REPLACES the prior session-override
+/// write: a manifest save is a durable, shared setting, not a local knob —
+/// see `fe-ui/src/AGENTS.md` §app-settings. The session-only override
+/// (`PetalRenderOverride`, for a viewer on a weak machine) is a separate,
+/// explicit action (`UiAction::PetalSetRenderOverride`).
 pub(crate) fn manifest_save(
+    db_sender: &DbCommandSender,
     petal_id: String,
     manifest: PetalManifest,
-    active_petal: Option<&str>,
-    render_override: &mut crate::settings::PetalRenderOverride,
 ) {
     bevy::log::info!(
         "PetalManifest: save requested for petal {petal_id} ({} hexons)",
         manifest.hexons.len()
     );
-    if active_petal == Some(petal_id.as_str()) {
-        *render_override = crate::settings::PetalRenderOverride {
-            petal_id: Some(petal_id),
-            render_distance: Some(manifest.render_distance),
-        };
+    if let Err(e) = db_sender.0.send(DbCommand::SetPetalRenderDistance {
+        petal_id,
+        render_distance: Some(manifest.render_distance),
+        auth: fe_runtime::messages::CallerAuth::Local,
+        correlation_id: None,
+    }) {
+        bevy::log::warn!("db_sender channel closed — SetPetalRenderDistance not dispatched: {e}");
     }
+}
+
+/// Sets (or clears) the session-only residency override for `petal_id` — a
+/// local-only knob for a viewer on a weak machine, never persisted, cleared
+/// on petal change (`clear_petal_render_override_on_nav_change`). Beats both
+/// the petal's durable column and the global setting
+/// (`settings::effective_render_distance`).
+pub(crate) fn set_render_override(
+    render_override: &mut crate::settings::PetalRenderOverride,
+    petal_id: String,
+    render_distance: Option<f32>,
+) {
+    *render_override = crate::settings::PetalRenderOverride {
+        petal_id: Some(petal_id),
+        render_distance,
+    };
 }
 
 pub(crate) fn manifest_open(ui_mgr: &mut UiManager, petal_id: String, petal_name: String) {
@@ -258,4 +280,43 @@ pub(crate) fn manifest_open(ui_mgr: &mut UiManager, petal_id: String, petal_name
         render_distance_buf: "500".to_string(),
         dirty: false,
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// S6 flow test: `manifest_save` persists to the petal column — the
+    /// `DbCommand` on the channel is the observable outcome at the thread
+    /// seam (campaign plan §3 S6 "fe-ui" flow tests).
+    #[test]
+    fn manifest_save_persists_to_the_petal_column() {
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let db_sender = DbCommandSender(tx);
+        let manifest = PetalManifest {
+            render_distance: 1234.0,
+            ..Default::default()
+        };
+
+        manifest_save(&db_sender, "petal-1".to_string(), manifest);
+
+        match rx.try_recv().expect("a DbCommand was sent") {
+            DbCommand::SetPetalRenderDistance {
+                petal_id,
+                render_distance,
+                auth,
+                correlation_id,
+            } => {
+                assert_eq!(petal_id, "petal-1");
+                assert_eq!(render_distance, Some(1234.0));
+                assert!(matches!(auth, fe_runtime::messages::CallerAuth::Local));
+                assert_eq!(correlation_id, None);
+            }
+            other => panic!("expected SetPetalRenderDistance, got {other:?}"),
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "exactly one command, no session-override side channel"
+        );
+    }
 }

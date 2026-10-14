@@ -56,6 +56,7 @@ when a route lands.
 | Assets (§assets, §asset-ingest) | `GET /api/v1/assets/{content_hash}`, `GET /api/v1/assets/by-id/{asset_id}`, `GET /api/v1/nodes/{id}/asset`; upload `POST /api/v1/petals/{p}/assets` (multipart GLB) |
 | Petal archive / GPX | `GET /api/v1/petals/{p}/export`, `POST …/import`, `POST …/import/gpx`, `GET …/export/gpx` |
 | Terrain config (§terrain-mutation) | `GET\|PUT\|DELETE /api/v1/petals/{p}/terrain` |
+| Render distance (§render-distance) | `GET\|PUT\|DELETE /api/v1/petals/{p}/render-distance` |
 | Visibility Groups (§visibility-groups) | `GET\|PUT /api/v1/petals/{p}/visibility-groups`, `PATCH\|DELETE …/visibility-groups/{group_id}` |
 | Tile data plane | `GET /api/v1/tiles/elevation/{id}/{z}/{x}/{y}.png?petal_id=...`, `GET /api/v1/tiles/satellite/{id}/{z}/{x}/{y}.jpg?petal_id=...`, `GET /api/v1/tilesets?petal_id=...`, `GET /api/v1/tilesets/{id}/meta?petal_id=...` |
 | Field defs | `POST /api/v1/field-defs`, `GET /api/v1/field-defs/{scope}`, `PATCH\|DELETE /api/v1/field-defs/by-id/{id}` |
@@ -64,7 +65,7 @@ when a route lands.
 | Hexon tilesets | `POST /api/v1/hexons/tilesets/install?petal_id=…`, `DELETE /api/v1/hexons/tilesets/{id}?petal_id=…`, `PATCH …/{id}/seeding?petal_id=…`, `GET /api/v1/hexons/tilesets?petal_id=…`, `GET /api/v1/hexons/storage?petal_id=…` |
 | Hexon crate registry | `POST /api/v1/crates/publish`, `POST /api/v1/crates/{uri}/install?petal_id=…`, `DELETE …/{uri}/uninstall?petal_id=…`, `GET /api/v1/crates/search?petal_id=…`, `GET /api/v1/crates/installed?petal_id=…`, `GET /api/v1/crates/{uri}?petal_id=…`, `GET …/{uri}/entries?petal_id=…`, `GET …/{uri}/entries/{entry_id}/asset?petal_id=…`, `GET /api/v1/crates/available?petal_id=…` |
 | Sim control (§sim-control) | `POST /api/v1/sim/start`, `POST /api/v1/sim/stop`, `GET /api/v1/sim/status`, `POST /api/v1/sim/step`, `POST /api/v1/sim/inject-fault` |
-| MCP | `POST /mcp` (`mcp::mcp_handler`) — 31-row `ToolSpec` table, 26 advertised off a sim lab host (§mcp-dispatch); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
+| MCP | `POST /mcp` (`mcp::mcp_handler`) — 32-row `ToolSpec` table, 27 advertised off a sim lab host (§mcp-dispatch); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
 
 ## §existence-oracle (REST/WS denial unification, 2026-10-10)
 
@@ -1002,6 +1003,32 @@ ULID check → petal scope resolution + `require_scope` (MCP: the dispatcher's
   to the API caller — it no longer re-applies the read to the desktop's
   terrain runtime, and a GUI load for the same petal cannot satisfy it. Tests: `tests/terrain_mutation_test.rs` (full router,
   real reply router + production DB reply builder against Mem SurrealDB).
+
+## §render-distance (SetPetalRenderDistance, p2p_asset_streaming_20260718 S6)
+
+`render_distance.rs::set_render_distance_core` backs REST `PUT|DELETE
+/api/v1/petals/{p}/render-distance` and MCP `set_petal_render_distance` —
+same shape as `set_petal_terrain_core` (§terrain-mutation), minus the GUI
+fan-out (render distance has no desktop live-apply consumer the way terrain
+does; the fe-ui side picks it up via `ReplicatedRowApplied`/`HierarchyLoaded`,
+not an API echo). Order: RBAC Editor+ (PUT/DELETE) or Viewer+ (GET) → ULID
+check → `authorized_petal_scope` (404 unknown-or-foreign, §existence-oracle)
+→ range validation → correlated write.
+
+- **Validation.** `render_distance` must be a JSON number or `null`
+  (`null`/absent clears — inherit the global setting); a non-finite or
+  negative number is 400. The DB thread's own `ASSERT` is the authoritative
+  ceiling (`[0, 50000]`) — the API only screens for the cheap, obviously-wrong
+  cases before the round trip; the DB thread's refusal still surfaces as 502.
+- **Write path.** Always `api_cmd_tx`, never `db_reader`. `CallerAuth::Identified
+  { did: "api", role: "editor" }` carries the role this route ALREADY
+  validated (`require_role(&claims, "editor")`) — same trust boundary as
+  `terrain.rs`/`visibility.rs`'s REST routes, never a role the DB thread
+  resolves itself for an API caller. A fresh ULID rides `correlation_id`; the
+  reply is accepted only if the echoed id AND `petal_id` match.
+  `PetalRenderDistanceLoaded` is the one reply shape for both set and get.
+- **Failures.** `RequestFailed` / closed channel → 502; no reply in 10 s → 504
+  (`RENDER_DISTANCE_WRITE_TIMEOUT_SECS`, mirrors the IoT/terrain precedent).
 
 ## §visibility-groups (VIS-PH6, hierarchy_visibility_groups Phase 6)
 

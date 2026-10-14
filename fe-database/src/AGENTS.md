@@ -228,6 +228,19 @@ so there is one definition, not two that can drift.
 - The A3 role gate (`admit_inbound_row`, Editor+) runs **before** mode
   dispatch, so union semantics never widen authority — a viewer-authored
   reading is denied exactly like a viewer-authored row.
+- **Strictest-reader field validation (p2p_asset_streaming S6, RUNBOOK §5
+  "a writer of a shared column must satisfy the strictest reader").**
+  `apply_static_row` MERGEs a whole petal row, so an Editor+-admitted but
+  malformed field can still reach the local row. `replicated_row.rs` adds a
+  per-field check BEFORE the merge, denying the whole row on failure:
+  `render_distance` must be `NONE` or finite in `[0, RENDER_DISTANCE_MAX]`
+  (mirrors `petal_render_distance::validate_render_distance`); `terrain` must
+  be `NONE` or a JSON object under a byte cap whose `tileset_hexon_uris` (if
+  present) is an array of hexon-id-charset strings (fe-database has no
+  fe-terrain dependency, so this is a structural check only —
+  `terrain_bridge::terrain_config_from_petal_json` is the second line of
+  defence). See `handlers/petal_render_distance.rs` and the `is_valid_inbound_*`
+  helpers in `replicated_row.rs`.
 
 
 ## §session-cache (absorbed from fe-auth, 2026-07-17)
@@ -405,7 +418,21 @@ one sub-module per domain:
 - `admin` — database reset
 - `crate_registry` — hexon crate registry install/uninstall
 - `petal_terrain` — per-petal terrain config get/set; `*_reply` builders answer
-  correlated (API) callers privately (`PetalTerrainFetched` / `RequestFailed`)
+  correlated (API) callers privately (`PetalTerrainFetched` / `RequestFailed`).
+  S6 (critic step 8): now op-logs (`OpType::SetPetalTerrain`) before the
+  `UPDATE … RETURN AFTER`, then replicates the read-back row via
+  `replicate_row_with_petal` — closes the prior parity gap (this write used to
+  neither op-log nor replicate, while S6's own render-distance write would
+  otherwise have carried the whole row, `terrain` included, unvalidated).
+- `petal_render_distance` — "Petal render distance" (p2p_asset_streaming S6):
+  `set_petal_render_distance_handler` resolves the petal's scope →
+  `visibility_groups::authorize_edit` (Editor+, the SAME gate `SetScopeHidden`
+  uses) → range-validates (`[0, RENDER_DISTANCE_MAX]` = 50 000, mirrors the
+  schema `ASSERT`) → op-logs (`OpType::SetPetalRenderDistance`) →
+  `UPDATE … RETURN AFTER` → replicates the read-back row. `None` clears
+  (`render_distance = NONE`, inherit the global). One reply shape for both
+  Set and Get: `PetalRenderDistanceLoaded { petal_id, render_distance,
+  correlation_id }`.
 - `visibility_groups` — petal Group registry get/set + persisted scope eyes
   (`*_reply` builders, Editor+ via fe-policy; §lifecycle "Visibility groups")
 - `raw_query` — `RawQuery` reply (`raw_query_reply`): SELECT-only keyword

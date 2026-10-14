@@ -86,7 +86,13 @@ define_table! {
         visibility_groups: Option<serde_json::Value> => "TYPE option<array<object>> FLEXIBLE",
         /// Persisted petal eye (VIS-PH4); `NONE` = visible.
         #[serde(skip_serializing_if = "Option::is_none")]
-        view_hidden: Option<bool> => "TYPE option<bool>"
+        view_hidden: Option<bool> => "TYPE option<bool>",
+        /// Durable per-petal residency horizon (p2p_asset_streaming S6);
+        /// `NONE` = inherit the global `AppSettings.render_distance`. The
+        /// `50000` ceiling mirrors `fe-ui`'s `RENDER_DISTANCE_MAX` — see
+        /// `src/AGENTS.md` §app-settings.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        render_distance: Option<f64> => "TYPE option<float> ASSERT $value = NONE OR ($value >= 0 AND $value <= 50000)"
     }
 }
 

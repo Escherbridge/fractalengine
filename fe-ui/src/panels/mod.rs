@@ -128,6 +128,8 @@ pub fn gardener_console(
     // S4 (p2p_asset_streaming_20260718): active tileset downloads — read by
     // the Maps section, written only by `terrain_map::drain_tileset_events`.
     downloads: &crate::terrain_map::TilesetDownloads,
+    // S6: session-only per-petal render-distance override (Settings section).
+    render_override: &mut crate::settings::PetalRenderOverride,
 ) -> egui::Rect {
     // Repair conditional editor state; see `panels/AGENTS.md` §numeric-boundary.
     path_editor_card::sanitize_path_editor_numeric_state(path_state);
@@ -206,6 +208,7 @@ pub fn gardener_console(
             measure_state,
             vis_state,
             downloads,
+            render_override,
         )
     });
 
@@ -468,6 +471,7 @@ mod tests {
         let mut vis_state = crate::visibility::VisibilityState::default();
         let mut measure_state = crate::node_manager::measure::MeasureState::default();
         let downloads = crate::terrain_map::TilesetDownloads::default();
+        let mut render_override = crate::settings::PetalRenderOverride::default();
 
         {
             let mut render = |section: Option<RightSidebarSection>, active_tool: Tool| {
@@ -515,6 +519,7 @@ mod tests {
                         &mut vis_state,
                         &mut measure_state,
                         &downloads,
+                        &mut render_override,
                     );
                 });
             };

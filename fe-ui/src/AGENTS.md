@@ -37,7 +37,7 @@ sanitized radius. Missing petal/map is a warned, visible no-op.
 | `panels` | The top-level egui shell (`gardener_console`) + one file per panel (toolbar, status bar, sidebar tree, inspector tabs, query tab, portal toolbar). |
 | `node_manager` | `NodeManager` (single source of truth for selection) + gimbal interaction/hover/pick, viewport click-to-select, transform broadcast, inspector sync — one file per concern. |
 | `verse_manager` | `VerseManager` (in-memory verse/fractal/petal/node tree) + `DbResult` draining, GLTF/fallback-sign spawning, petal-switch respawn. Also the residency-ledger primitive (`spawn::distance_ranked_allowance` + `spawn::ResidencyBudget`). See §residency-ledger. |
-| `settings` | `AppSettings` (D-78 application settings Resource) + `TileSourceMode` + RON persistence (`load_settings_from`/`save_settings_to`/`sanitize`, debounced save) + live syncs (mesh budget, camera) + `PetalRenderOverride`/`effective_render_distance`. See §app-settings. |
+| `settings` | `AppSettings` (D-78 application settings Resource) + `TileSourceMode` + RON persistence (`load_settings_from`/`save_settings_to`/`sanitize`, debounced save) + live syncs (mesh budget, camera) + the 3-way `effective_render_distance(global, petal_column, session_override)` precedence + session-only `PetalRenderOverride`. See §app-settings. |
 | `terrain_proposal_state` | `ProposalEditState` (Resource) + `ProposalRecord`/`ProposalOp` + pure `to_json`/`from_json`. The fe-ui-local mirror of the persisted proposal contract. See §terrain-proposal-editor. |
 | `geometry` | fe-ui-local pure mirror of fe-terrain's ruler math (`polygon_area_m2`/`world_to_real_distance`/`bearing_deg`). See §geometry-mirror. |
 | `navigation_manager`, `viewport`, `atlas`, `gimbal`, `theme`, `role_chip` | Unchanged from before this decomposition; not god-files. |
@@ -709,17 +709,27 @@ soft budgets routed through them (`.min(HARD_CAP)` at each spawn site, and
 - **Knobs not exposed (ui_ux §6 — no faked settings).** `camera_easing` is
   persisted but has no consumer (the controller's `easing_rate` is a rate, not
   the 0–1 factor), so it has no widget.
-- **Per-petal override.** `PetalRenderOverride { petal_id, render_distance }`
-  (session-only) is set by `actions::hexon::manifest_save` when the saved
-  manifest is for the active petal, and reset by
-  `clear_petal_render_override_on_nav_change` when the active petal changes.
-  `effective_render_distance(global, override)` lets a finite, positive override
-  win (clamped to `RENDER_DISTANCE_MAX`, the same ceiling `sanitize` puts on the
-  global knob — a manifest value is not a way around it); `ResidencyBudget::render_distance_for(petal)` (verse_manager/spawn.rs) is
-  what every spawner reads. **There is no durable home for
-  `PetalManifest.render_distance`** (manifest_save had only a log stub;
-  `petal.hexon_manifest` has no handlers and is a signed publishing artifact), so
-  the override does not survive navigation or restart — an open decision.
+- **Per-petal render distance (p2p_asset_streaming S6, closes the prior open
+  decision).** `petal.render_distance` is now a durable, replicated column
+  (fe-database `src/AGENTS.md` §handlers "Petal render distance";
+  `fe-runtime::messages::{Set,Get}PetalRenderDistance` /
+  `PetalRenderDistanceLoaded`), carried on `PetalHierarchyData`/`PetalEntry`.
+  `actions::hexon::manifest_save` now sends `SetPetalRenderDistance`
+  (`CallerAuth::Local`) instead of touching the session override — a manifest
+  save is a durable, shared setting. `PetalRenderOverride { petal_id,
+  render_distance }` stays session-only, for a viewer on a weak machine: set by
+  `actions::hexon::set_render_override` (`UiAction::PetalSetRenderOverride`),
+  reset by `clear_petal_render_override_on_nav_change` on petal change.
+  Precedence, highest first: session override → petal column → global
+  (`effective_render_distance(global, petal_column, session_override)`, each
+  candidate finite+positive or skipped, the winner clamped to
+  `RENDER_DISTANCE_MAX` — the same ceiling `sanitize` puts on the global knob,
+  and the schema `ASSERT` puts on the column); `ResidencyBudget::render_distance_for(petal_id,
+  petal_column)` (verse_manager/spawn.rs) is what every spawner reads, the
+  petal_column argument coming from `VerseManager::find_petal(id).render_distance`.
+  A peer's `ReplicatedRowApplied { table: "petal", .. }` for the active petal
+  re-requests `GetPetalRenderDistance` (`db_results/mod.rs`) so a peer's change
+  lands without a full hierarchy reload.
 - **Ruler toggles cross a crate boundary.** fe-ui has no fe-terrain
   dependency, so the main binary's `terrain_bridge::sync_ruler_settings` mirrors
   `show_scale_bar`/`show_world_grid` into fe-terrain's `RulerSettings`. Keep the

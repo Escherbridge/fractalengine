@@ -430,6 +430,42 @@ pub(super) fn apply_db_results(
                 &mut petal_map,
                 &mut caches.proposal_state,
             ),
+            // p2p_asset_streaming S6: both the GUI's own echo and a
+            // ReplicatedRowApplied-triggered re-fetch (below) land here.
+            DbResult::PetalRenderDistanceLoaded {
+                petal_id,
+                render_distance,
+                ..
+            } => terrain::handle_petal_render_distance_loaded(
+                petal_id,
+                *render_distance,
+                &mut verse_mgr,
+            ),
+            // S6: a peer's converged `petal` row — re-fetch render_distance
+            // so a peer's change lands without a full hierarchy reload
+            // (fe-ui/src/AGENTS.md §app-settings). Not the terrain field:
+            // `PetalTerrainLoaded`'s own GUI write path already drives that
+            // one; this command exists purely to surface the OTHER changed
+            // column peers can write to the same row.
+            DbResult::ReplicatedRowApplied {
+                table,
+                record_id,
+                outcome: fe_runtime::messages::ReplicatedRowOutcome::Applied,
+                ..
+            } if table.as_str() == "petal" => {
+                if let Err(e) =
+                    db_sender
+                        .0
+                        .send(fe_runtime::messages::DbCommand::GetPetalRenderDistance {
+                            petal_id: record_id.clone(),
+                            correlation_id: None,
+                        })
+                {
+                    bevy::log::warn!(
+                        "db_sender channel closed — GetPetalRenderDistance re-fetch dropped for {record_id}: {e}"
+                    );
+                }
+            }
             _ => {}
         }
 
@@ -475,6 +511,7 @@ mod tests {
                         id: "p1".into(),
                         name: "Petal".into(),
                         expanded: true,
+                        render_distance: None,
                         nodes: vec![NodeEntry {
                             id: "n1".into(),
                             name: "Node".into(),

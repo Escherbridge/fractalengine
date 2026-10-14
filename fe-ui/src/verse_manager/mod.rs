@@ -66,6 +66,10 @@ pub struct PetalEntry {
     pub id: String,
     pub name: String,
     pub expanded: bool,
+    /// Durable per-petal residency horizon (p2p_asset_streaming S6);
+    /// `None` = inherit the global `AppSettings.render_distance`. See
+    /// `fe-ui/src/AGENTS.md` §app-settings.
+    pub render_distance: Option<f32>,
     pub nodes: Vec<NodeEntry>,
 }
 
@@ -133,6 +137,19 @@ impl VerseManager {
             .flat_map(|v| &mut v.fractals)
             .flat_map(|f| &mut f.petals)
             .find(|p| p.id == petal_id)
+    }
+
+    /// Updates a petal's in-memory `render_distance` from a
+    /// `PetalRenderDistanceLoaded` echo (S6) — no-op if the petal is not (yet)
+    /// in the tree.
+    pub(super) fn update_petal_render_distance(
+        &mut self,
+        petal_id: &str,
+        render_distance: Option<f32>,
+    ) {
+        if let Some(petal) = self.find_petal_mut(petal_id) {
+            petal.render_distance = render_distance;
+        }
     }
 }
 
@@ -205,6 +222,7 @@ mod tests {
             id: "petal-1".to_string(),
             name: "Petal 1".to_string(),
             expanded: true,
+            render_distance: None,
             nodes: vec![node],
         };
         let fractal = FractalEntry {
@@ -270,6 +288,7 @@ mod tests {
             id: "p1".to_string(),
             name: "P1".to_string(),
             expanded: true,
+            render_distance: None,
             nodes: vec![],
         });
 

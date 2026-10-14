@@ -225,6 +225,13 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
                 .put(crate::terrain::set_terrain_config)
                 .delete(crate::terrain::delete_terrain_config),
         )
+        // Petal render distance (p2p_asset_streaming_20260718 S6)
+        .route(
+            "/api/v1/petals/{petal_id}/render-distance",
+            get(crate::render_distance::get_render_distance)
+                .put(crate::render_distance::set_render_distance)
+                .delete(crate::render_distance::delete_render_distance),
+        )
         // Petal visibility-Group registry (VIS-PH6, AGENTS.md §visibility-groups)
         .route(
             "/api/v1/petals/{petal_id}/visibility-groups",

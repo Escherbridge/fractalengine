@@ -15,6 +15,7 @@ pub mod invite;
 pub mod iot_reading;
 pub mod node_log;
 pub mod node_view;
+pub mod petal_render_distance;
 pub mod petal_terrain;
 pub(crate) mod preconditions;
 pub mod raw_query;

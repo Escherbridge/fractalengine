@@ -207,6 +207,7 @@ fn hierarchy(m: &Model) -> Vec<VerseHierarchyData> {
                             id: pid.clone(),
                             name: pname.clone(),
                             view_hidden: false,
+                            render_distance: None,
                             nodes: m
                                 .nodes
                                 .iter()

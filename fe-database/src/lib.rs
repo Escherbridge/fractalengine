@@ -1357,11 +1357,21 @@ pub fn spawn_db_thread_shared(
                         send_result(&tx, reply);
                     }
                     Ok(DbCommand::SetPetalTerrain { petal_id, terrain, correlation_id }) => {
-                        let reply = handlers::petal_terrain::set_petal_terrain_reply(&db, petal_id, terrain, correlation_id).await;
+                        let reply = handlers::petal_terrain::set_petal_terrain_reply(&db, petal_id, terrain, repl_tx.as_ref(), &blob_store, correlation_id).await;
                         send_result(&tx, reply);
                     }
                     Ok(DbCommand::GetPetalTerrain { petal_id, correlation_id }) => {
                         let reply = handlers::petal_terrain::get_petal_terrain_reply(&db, petal_id, correlation_id).await;
+                        send_result(&tx, reply);
+                    }
+                    Ok(DbCommand::SetPetalRenderDistance { petal_id, render_distance, auth, correlation_id }) => {
+                        let reply = handlers::petal_render_distance::set_petal_render_distance_reply(
+                            &db, &local_did, petal_id, render_distance, auth, repl_tx.as_ref(), &blob_store, correlation_id,
+                        ).await;
+                        send_result(&tx, reply);
+                    }
+                    Ok(DbCommand::GetPetalRenderDistance { petal_id, correlation_id }) => {
+                        let reply = handlers::petal_render_distance::get_petal_render_distance_reply(&db, petal_id, correlation_id).await;
                         send_result(&tx, reply);
                     }
                     Ok(DbCommand::CreateFieldDef { scope, entity_type, key, value_type, default_val }) => {

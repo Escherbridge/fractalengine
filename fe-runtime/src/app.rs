@@ -249,6 +249,8 @@ fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
         | DbCommand::SetPetalVisibilityGroups { correlation_id, .. }
         | DbCommand::GetPetalVisibilityGroups { correlation_id, .. }
         | DbCommand::SetScopeHidden { correlation_id, .. }
+        | DbCommand::SetPetalRenderDistance { correlation_id, .. }
+        | DbCommand::GetPetalRenderDistance { correlation_id, .. }
         | DbCommand::RawQuery { correlation_id, .. } => correlation_id.as_deref(),
         DbCommand::ElevatedQuery { correlation_id, .. } => Some(correlation_id.as_str()),
         _ => None,
@@ -266,6 +268,7 @@ fn correlation_of_result(result: &DbResult) -> Option<&str> {
         | DbResult::NodeViewSet { correlation_id, .. }
         | DbResult::PetalVisibilityGroupsLoaded { correlation_id, .. }
         | DbResult::ScopeHiddenSet { correlation_id, .. }
+        | DbResult::PetalRenderDistanceLoaded { correlation_id, .. }
         | DbResult::QueryResult { correlation_id, .. } => correlation_id.as_deref(),
         DbResult::QueryFailed { correlation_id, .. }
         | DbResult::PetalTerrainSetFailed { correlation_id, .. }
@@ -319,6 +322,8 @@ enum ReplyKind {
     VisibilityGroups,
     /// `SetScopeHidden` replies (`ScopeHiddenSet`).
     ScopeHidden,
+    /// `Set`/`GetPetalRenderDistance` replies (`PetalRenderDistanceLoaded`).
+    RenderDistance,
 }
 
 /// The reply family `cmd` produces, or `None` when the command has no reply on
@@ -367,6 +372,7 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
             ReplyKind::VisibilityGroups
         }
         SetScopeHidden { .. } => ReplyKind::ScopeHidden,
+        SetPetalRenderDistance { .. } | GetPetalRenderDistance { .. } => ReplyKind::RenderDistance,
         _ => return None,
     })
 }
@@ -420,6 +426,7 @@ fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
         PetalViewStateLoaded { .. } => ReplyKind::PetalViewState,
         PetalVisibilityGroupsLoaded { .. } => ReplyKind::VisibilityGroups,
         ScopeHiddenSet { .. } => ReplyKind::ScopeHidden,
+        PetalRenderDistanceLoaded { .. } => ReplyKind::RenderDistance,
         _ => return None,
     })
 }

@@ -35,6 +35,7 @@ pub async fn create_petal(
         terrain: None,
         view_hidden: None,
         visibility_groups: None,
+        render_distance: None,
     };
     commit_operation(db, entry, |_| async {
         Repo::<Petal>::create(db, &petal).await

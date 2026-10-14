@@ -21,6 +21,7 @@ pub mod iot;
 pub mod limits;
 pub mod mcp;
 pub mod query_guard;
+pub mod render_distance;
 pub mod rest;
 pub mod server;
 pub mod share;

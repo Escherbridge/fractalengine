@@ -525,6 +525,28 @@ pub(super) fn set_petal_terrain(call: ToolCall<'_>) -> ToolFuture<'_> {
     })
 }
 
+pub(super) fn set_petal_render_distance(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let petal_id = scoped_petal(&call)?;
+        let render_distance = match call.args.get("render_distance") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(v) => Some(
+                v.as_f64()
+                    .map(|n| n as f32)
+                    .ok_or_else(|| "render_distance must be a number or null".to_string())?,
+            ),
+        };
+        let stored = crate::render_distance::set_render_distance_core(
+            call.state,
+            &petal_id,
+            render_distance,
+        )
+        .await
+        .map_err(|e| e.message())?;
+        Ok(json!({ "petal_id": petal_id, "render_distance": stored }))
+    })
+}
+
 pub(super) fn list_visibility_groups(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
         let petal_id = scoped_petal(&call)?;
@@ -884,6 +906,17 @@ pub(super) mod schema {
             "properties": {
                 "petal_id": { "type": "string" },
                 "terrain": { "type": ["object", "null"], "description": "A TerrainConfig object, or null to clear" }
+            },
+            "required": ["petal_id"]
+        })
+    }
+
+    pub fn set_petal_render_distance() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "petal_id": { "type": "string" },
+                "render_distance": { "type": ["number", "null"], "description": "World units, >= 0; null clears it (inherit the global setting)" }
             },
             "required": ["petal_id"]
         })

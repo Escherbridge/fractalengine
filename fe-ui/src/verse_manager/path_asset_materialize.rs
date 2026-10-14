@@ -374,6 +374,9 @@ fn stamp_is_orphaned(inst: &PathAssetInstance, active_petal: &str, cache: &PathA
 pub(super) fn materialize_path_assets(
     nav: Res<NavigationManager>,
     cache: Res<PathAssetCache>,
+    // S6: the active petal's durable `render_distance` column (precedence:
+    // session override → petal column → global).
+    verse_mgr: Res<super::VerseManager>,
     petal_map: Res<crate::terrain_map::PetalMapState>,
     asset_server: Res<AssetServer>,
     stamp_state: Res<StampInteractionState>,
@@ -421,9 +424,12 @@ pub(super) fn materialize_path_assets(
     let mut stamp_budget = if residency.mesh_budget.exceeded {
         0
     } else {
+        let petal_render_distance = verse_mgr
+            .find_petal(active_petal)
+            .and_then(|p| p.render_distance);
         super::spawn::distance_ranked_allowance(
             0.0,
-            residency.render_distance_for(active_petal),
+            residency.render_distance_for(active_petal, petal_render_distance),
             residency.settings.stamp_ceiling.min(MAX_STAMPS_PER_PETAL),
         )
     };

@@ -74,7 +74,13 @@ now a thin dispatcher (`db_results/mod.rs`) over one `handle_*` function per
   the legacy uncorrelated flag-priority claim, and `Error`'s pen-create
   cleanup (fe-ui/src/AGENTS.md §gis-query-ui).
 - `fields.rs` / `terrain.rs` — field-def lists, petal terrain docs. `terrain.rs`
-  also rehydrates `ProposalEditState` (5th param via DescriptorCaches.proposal_state).
+  also rehydrates `ProposalEditState` (5th param via DescriptorCaches.proposal_state)
+  and, since p2p_asset_streaming S6, handles `PetalRenderDistanceLoaded`
+  (writes `VerseManager::update_petal_render_distance`, consumed by every
+  spawner through `ResidencyBudget::render_distance_for`). `mod.rs`'s own
+  `ReplicatedRowApplied { table: "petal", outcome: Applied, .. }` arm
+  re-requests `GetPetalRenderDistance` so a peer's change lands without a
+  full hierarchy reload.
 
 **`DescriptorCaches` is also the SystemParam-overflow valve (M2/F6).**
 `apply_db_results` sits at Bevy's 16-`SystemParam` ceiling, so any new

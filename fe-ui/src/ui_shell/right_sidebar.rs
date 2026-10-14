@@ -40,7 +40,7 @@ use crate::theme;
 use crate::verse_manager::VerseManager;
 use crate::visibility::groups as group_ops;
 use crate::visibility::VisibilityState;
-use fe_runtime::messages::DbCommand;
+use fe_runtime::messages::{CallerAuth, DbCommand};
 
 /// The mutually-exclusive right-sidebar sections (one at a time — never-double).
 /// `Settings` + `Maps` (FR-1/FR-2, D-A10) are ordinary sections here now — the
@@ -225,6 +225,10 @@ pub fn render_right_sidebar(
     // here — `drain_tileset_events` is the sole writer. Survives the Maps
     // section closing (moved out of `ActiveDialog::HexonManager`).
     downloads: &crate::terrain_map::TilesetDownloads,
+    // S6: session-only residency override, read/written by the Settings
+    // section's "Session override" field (bundled by the caller, same
+    // param-ceiling reason as `downloads`).
+    render_override: &mut crate::settings::PetalRenderOverride,
 ) {
     let portal_open = ui_mgr.portal_is_open();
     if portal_open {
@@ -286,9 +290,17 @@ pub fn render_right_sidebar(
             petal_map.world_scale,
             petal_map.terrain_json.as_ref(),
         ),
-        Some(RightSidebarSection::Settings) => {
-            render_settings_section(ctx, state, app_settings, ts_settings, nav, db_tx)
-        }
+        Some(RightSidebarSection::Settings) => render_settings_section(
+            ctx,
+            state,
+            app_settings,
+            ts_settings,
+            nav,
+            db_tx,
+            hierarchy,
+            local_role,
+            render_override,
+        ),
         Some(RightSidebarSection::Maps) => render_maps_section(
             ctx,
             state,
@@ -503,6 +515,7 @@ fn render_proposal_report_section(
 /// verbatim from the retired `dialogs/settings.rs`; calm hint for the not-yet-
 /// added knobs (ui_ux §7). The old `settings_window`/`ActiveDialog::Settings`
 /// are removed — this section is the sole Settings surface.
+#[allow(clippy::too_many_arguments)]
 fn render_settings_section(
     ctx: &egui::Context,
     state: &mut RightSidebarState,
@@ -510,6 +523,12 @@ fn render_settings_section(
     ts_settings: &mut crate::timeseries_settings::TimeseriesSettingsState,
     nav: &NavigationManager,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
+    // S6 (p2p_asset_streaming_20260718): the active petal's durable
+    // `render_distance` column + the session-only override, surfaced right
+    // under the global knob so the three-way precedence is visible in one place.
+    hierarchy: &VerseManager,
+    local_role: &LocalUserRole,
+    render_override: &mut crate::settings::PetalRenderOverride,
 ) {
     crate::settings::sanitize(app_settings);
     section_chrome(ctx, state, RightSidebarSection::Settings, |ui| {
@@ -525,6 +544,14 @@ fn render_settings_section(
                 "Global residency horizon (0 stops spawning); a petal manifest's render distance overrides it for that petal",
             );
         });
+        render_petal_render_distance_controls(
+            ui,
+            hierarchy,
+            nav,
+            local_role,
+            render_override,
+            db_tx,
+        );
         settings_row(ui, "Mesh budget ceiling", |ui| {
             usize_drag(
                 ui,
@@ -600,6 +627,88 @@ fn render_settings_section(
         );
         ui.add_space(2.0);
         render_timeseries_fabric_controls(ui, ts_settings, nav, db_tx);
+    });
+}
+
+/// Per-petal render-distance controls (p2p_asset_streaming S6, campaign plan
+/// §3 step 6): "This petal" is the durable `petal.render_distance` column
+/// (editable by Editor+, read-only for a Viewer — `SetPetalRenderDistance`
+/// is the DB thread's own Editor+ gate, this is the UI-side courtesy), and
+/// "Session override" is the local-only knob for a weak-machine viewer
+/// (`PetalRenderOverride`, never persisted, cleared on petal change). No
+/// active petal → nothing to show (mirrors the timeseries fabric's calm hint).
+fn render_petal_render_distance_controls(
+    ui: &mut egui::Ui,
+    hierarchy: &VerseManager,
+    nav: &NavigationManager,
+    local_role: &LocalUserRole,
+    render_override: &mut crate::settings::PetalRenderOverride,
+    db_tx: &crossbeam::channel::Sender<DbCommand>,
+) {
+    let Some(petal_id) = nav.active_petal_id.as_deref() else {
+        return;
+    };
+    let Some(petal) = hierarchy.find_petal(petal_id) else {
+        return;
+    };
+
+    ui.add_space(4.0);
+    settings_row(ui, "This petal (shared)", |ui| {
+        let mut value = petal.render_distance.unwrap_or(0.0);
+        let editable = local_role.can_edit();
+        ui.add_enabled_ui(editable, |ui| {
+            if ui
+                .add(
+                    egui::DragValue::new(&mut value)
+                        .speed(1.0)
+                        .range(0.0..=crate::settings::RENDER_DISTANCE_MAX)
+                        .suffix(" wu"),
+                )
+                .on_hover_text(if editable {
+                    "Durable per-petal override (replicates to peers); 0 clears it (inherit global)"
+                } else {
+                    "Editor+ required to change this petal's shared render distance"
+                })
+                .changed()
+            {
+                let render_distance = (value > 0.0).then_some(value);
+                if db_tx
+                    .send(DbCommand::SetPetalRenderDistance {
+                        petal_id: petal_id.to_string(),
+                        render_distance,
+                        auth: CallerAuth::Local,
+                        correlation_id: None,
+                    })
+                    .is_err()
+                {
+                    bevy::log::warn!(
+                        "db_tx channel closed — SetPetalRenderDistance dropped for {petal_id}"
+                    );
+                }
+            }
+        });
+    });
+    settings_row(ui, "Session override", |ui| {
+        let mut value = render_override.for_petal(petal_id).unwrap_or(0.0);
+        if ui
+            .add(
+                egui::DragValue::new(&mut value)
+                    .speed(1.0)
+                    .range(0.0..=crate::settings::RENDER_DISTANCE_MAX)
+                    .suffix(" wu"),
+            )
+            .on_hover_text(
+                "Local-only, never shared; beats both this petal's value and the global one; cleared on petal change",
+            )
+            .changed()
+        {
+            let render_distance = (value > 0.0).then_some(value);
+            crate::actions::hexon::set_render_override(
+                render_override,
+                petal_id.to_string(),
+                render_distance,
+            );
+        }
     });
 }
 

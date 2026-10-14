@@ -96,7 +96,7 @@ pub(super) fn respawn_on_petal_change(
             // override already applies via `render_distance_for`.
             let ceiling = super::spawn::distance_ranked_allowance(
                 0.0,
-                residency.render_distance_for(pid),
+                residency.render_distance_for(pid, petal.render_distance),
                 residency
                     .settings
                     .entity_cap

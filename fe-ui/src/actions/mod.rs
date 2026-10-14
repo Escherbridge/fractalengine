@@ -95,6 +95,12 @@ pub enum UiAction {
         petal_id: String,
         manifest: PetalManifest,
     },
+    /// Session-only residency override for `petal_id` (S6) — a local-only
+    /// knob, never persisted; `None` clears it. See `settings::PetalRenderOverride`.
+    PetalSetRenderOverride {
+        petal_id: String,
+        render_distance: Option<f32>,
+    },
     PetalManifestOpen {
         petal_id: String,
         petal_name: String,
@@ -761,12 +767,13 @@ pub(crate) fn process_ui_actions(
                 );
             }
             UiAction::PetalManifestSave { petal_id, manifest } => {
-                hexon::manifest_save(
-                    petal_id,
-                    manifest,
-                    nav.active_petal_id.as_deref(),
-                    &mut render_override,
-                );
+                hexon::manifest_save(&db_sender, petal_id, manifest);
+            }
+            UiAction::PetalSetRenderOverride {
+                petal_id,
+                render_distance,
+            } => {
+                hexon::set_render_override(&mut render_override, petal_id, render_distance);
             }
             UiAction::PetalManifestOpen {
                 petal_id,

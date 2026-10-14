@@ -29,6 +29,11 @@ enum DbMode {
 fn serve_db_thread(h: &ApiHarness, mode: DbMode) {
     let rx = h.api_command_receiver();
     let db = (*h.db).clone();
+    let blob_store = h
+        .state
+        .blob_store
+        .clone()
+        .expect("harness spawned with a blob store");
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -60,6 +65,8 @@ fn serve_db_thread(h: &ApiHarness, mode: DbMode) {
                                 petal_id.clone(),
                                 Some(gui_config()),
                                 None,
+                                &blob_store,
+                                None,
                             ),
                         );
                         assert!(
@@ -72,6 +79,8 @@ fn serve_db_thread(h: &ApiHarness, mode: DbMode) {
                             &db,
                             petal_id,
                             terrain,
+                            None,
+                            &blob_store,
                             correlation_id,
                         ),
                     )

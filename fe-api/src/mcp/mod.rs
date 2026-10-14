@@ -208,6 +208,8 @@ static TOOLS: &[ToolSpec] = &[
         "Import a GPX document (base64, max 11 MiB decoded, max 10000 points) as track/waypoint nodes in a petal. Requires editor role + petal scope."),
     tool!(set_petal_terrain, Editor, PetalArg("petal_id"),
         "Set (object) or clear (null) a petal's terrain config, like REST PUT/DELETE /petals/{id}/terrain. The object must be a valid TerrainConfig; returns the stored terrain. Requires editor role + petal scope."),
+    tool!(set_petal_render_distance, Editor, PetalArg("petal_id"),
+        "Set (>= 0) or clear (null) a petal's durable residency horizon (petal.render_distance; replicates to peers), like REST PUT/DELETE /petals/{id}/render-distance. Returns the stored value. Requires editor role + petal scope."),
     tool!(list_visibility_groups, Viewer, PetalArg("petal_id"),
         "List a petal's visibility Groups ({id, name, visible, order}), like REST GET /petals/{id}/visibility-groups. Requires viewer role + petal scope."),
     tool!(set_visibility_group, Editor, PetalArg("petal_id"),
@@ -596,7 +598,11 @@ mod tests {
                 );
             }
         }
-        assert_eq!(TOOLS.len(), 31, "DEC-C14: 26 non-sim + 5 sim");
+        assert_eq!(
+            TOOLS.len(),
+            32,
+            "DEC-C14: 27 non-sim + 5 sim (p2p_asset_streaming S6 added set_petal_render_distance)"
+        );
     }
 
     #[test]

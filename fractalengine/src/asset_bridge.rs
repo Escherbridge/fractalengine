@@ -244,6 +244,7 @@ mod tests {
                     id: "p1".to_string(),
                     name: "P1".to_string(),
                     expanded: true,
+                    render_distance: None,
                     nodes: vec![node],
                 }],
             }],

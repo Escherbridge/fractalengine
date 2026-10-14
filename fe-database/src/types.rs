@@ -35,6 +35,13 @@ pub enum OpType {
     NodePromoted,
     /// An Owner's `/query/elevated` write script (fe-api AGENTS.md §elevated-query).
     ElevatedQuery,
+    // p2p_asset_streaming_20260718 S6: petal-scoped settings writers, both
+    // op-logged before the row mutates (src/AGENTS.md §log-first-commit).
+    /// `SetPetalRenderDistance` — the petal's durable residency horizon.
+    SetPetalRenderDistance,
+    /// `SetPetalTerrain` — closes the parity gap (campaign plan §10 C7):
+    /// previously this write neither replicated nor op-logged.
+    SetPetalTerrain,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -332,15 +332,23 @@ impl PetalRenderOverride {
     }
 }
 
-/// The render distance the residency ledger uses: a finite, positive per-petal
-/// override (clamped to `RENDER_DISTANCE_MAX`) wins, otherwise the global setting.
-pub fn effective_render_distance(global: f32, petal_override: Option<f32>) -> f32 {
-    match petal_override {
-        Some(distance) if distance.is_finite() && distance > 0.0 => {
-            distance.min(RENDER_DISTANCE_MAX)
-        }
-        _ => global,
-    }
+/// The render distance the residency ledger uses, in priority order (p2p_asset_streaming
+/// S6, campaign plan §3 step 6): the session override (`PetalRenderOverride`, a
+/// local-only knob for viewers on weak machines) beats the petal's durable
+/// `render_distance` column, which beats the global `AppSettings.render_distance`.
+/// Each candidate is skipped unless finite and positive; the winner is clamped
+/// to `RENDER_DISTANCE_MAX` (the ceiling also binds the petal column —
+/// `fe-ui/src/AGENTS.md:716-718`).
+pub fn effective_render_distance(
+    global: f32,
+    petal_column: Option<f32>,
+    session_override: Option<f32>,
+) -> f32 {
+    let valid = |d: Option<f32>| d.filter(|v| v.is_finite() && *v > 0.0);
+    valid(session_override)
+        .or_else(|| valid(petal_column))
+        .map(|v| v.min(RENDER_DISTANCE_MAX))
+        .unwrap_or(global)
 }
 
 /// Drops the override once the petal it was set for is no longer active.
@@ -642,22 +650,37 @@ mod tests {
     }
 
     #[test]
-    fn effective_render_distance_prefers_a_valid_override() {
+    fn effective_render_distance_prefers_session_over_petal_over_global() {
+        // (global, petal_column, session_override, expected)
         let cases = [
-            (500.0, None, 500.0),
-            (500.0, Some(120.0), 120.0),
-            (500.0, Some(0.0), 500.0),
-            (500.0, Some(-3.0), 500.0),
-            (500.0, Some(f32::NAN), 500.0),
-            (500.0, Some(f32::INFINITY), 500.0),
-            (0.0, Some(80.0), 80.0),
-            (500.0, Some(1.0e9), RENDER_DISTANCE_MAX),
+            // No petal column, no session override: global wins.
+            (500.0, None, None, 500.0),
+            // Petal column alone beats global.
+            (500.0, Some(200.0), None, 200.0),
+            // Session override beats BOTH petal column and global.
+            (500.0, Some(200.0), Some(50.0), 50.0),
+            (500.0, None, Some(50.0), 50.0),
+            // Invalid (non-finite/non-positive) petal column is skipped,
+            // falling through to global.
+            (500.0, Some(0.0), None, 500.0),
+            (500.0, Some(-3.0), None, 500.0),
+            (500.0, Some(f32::NAN), None, 500.0),
+            (500.0, Some(f32::INFINITY), None, 500.0),
+            // Invalid session override is skipped, falling through to a
+            // valid petal column, then global.
+            (500.0, Some(200.0), Some(f32::NAN), 200.0),
+            (500.0, None, Some(-1.0), 500.0),
+            // A valid petal column with an empty global.
+            (0.0, Some(80.0), None, 80.0),
+            // The winner is clamped to RENDER_DISTANCE_MAX, whichever source.
+            (500.0, Some(1.0e9), None, RENDER_DISTANCE_MAX),
+            (500.0, None, Some(1.0e9), RENDER_DISTANCE_MAX),
         ];
-        for (global, petal_override, expected) in cases {
+        for (global, petal_column, session_override, expected) in cases {
             assert_eq!(
-                effective_render_distance(global, petal_override),
+                effective_render_distance(global, petal_column, session_override),
                 expected,
-                "global {global}, override {petal_override:?}"
+                "global {global}, petal_column {petal_column:?}, session_override {session_override:?}"
             );
         }
     }

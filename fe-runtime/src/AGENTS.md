@@ -271,6 +271,14 @@ order:
   `terrain_bridge` never see it, so an API tile request no longer re-drives
   the desktop's terrain runtime, and a GUI load / GUI set echo for the same
   petal (family-identical before) can no longer satisfy the API waiter.
+  **Petal render distance (2026-10-13, p2p_asset_streaming S6).**
+  `SetPetalRenderDistance` / `GetPetalRenderDistance` share ONE reply family
+  (`ReplyKind::RenderDistance`) and ONE result variant,
+  `PetalRenderDistanceLoaded { petal_id, render_distance, correlation_id }`
+  (mirrors `PetalVisibilityGroupsLoaded`'s shared-shape precedent, not
+  terrain's split Fetch/Set families — render distance has no desktop
+  live-apply consumer to protect from a correlated echo). Failures use the
+  generic `RequestFailed` (below), never a bespoke variant.
 - **Typed correlated failure — `RequestFailed` (2026-10-11, RT-CORR-EDGE).**
   `DbResult::RequestFailed { error, correlation_id }` is the generic failure
   for correlated commands whose family has no family-specific failure

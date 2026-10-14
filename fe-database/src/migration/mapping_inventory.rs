@@ -79,6 +79,7 @@ const OTHER_DISPATCHED_MUTATION_KINDS: &[&str] = &[
     "InstallCrateEntry",
     "UninstallCrate",
     "SetPetalTerrain",
+    "SetPetalRenderDistance",
     "SetVerseTimeseriesSettings",
     "CreateAsset",
     "GcUnreferencedAssets",

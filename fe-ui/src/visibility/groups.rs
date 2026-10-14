@@ -406,6 +406,7 @@ mod tests {
                     id: "p1".into(),
                     name: "P".into(),
                     view_hidden: true,
+                    render_distance: None,
                     nodes: Vec::new(),
                 }],
             }],

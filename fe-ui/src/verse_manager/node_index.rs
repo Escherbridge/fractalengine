@@ -170,6 +170,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             expanded: true,
+            render_distance: None,
             nodes,
         }
     }

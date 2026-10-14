@@ -122,6 +122,7 @@ mod tests {
                         id: "petal-1".to_string(),
                         name: "Petal 1".to_string(),
                         expanded: true,
+                        render_distance: None,
                         nodes: vec![NodeEntry {
                             id: node_id.to_string(),
                             name: node_id.to_string(),

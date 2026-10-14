@@ -862,6 +862,9 @@ struct MiscUiParams<'w> {
     // S4 (p2p_asset_streaming_20260718): active tileset downloads, read by
     // the Maps section (`terrain_map::drain_tileset_events` is the writer).
     downloads: ResMut<'w, crate::terrain_map::TilesetDownloads>,
+    // S6: session-only per-petal render-distance override, read/written by
+    // the Settings section's "Session override" field.
+    render_override: ResMut<'w, crate::settings::PetalRenderOverride>,
 }
 
 /// ui_shell_architecture_20260724 (FR-4/5/6): the area-manager state resources,
@@ -933,6 +936,7 @@ fn gardener_ui_system(
         &mut misc.vis_state,
         &mut misc.measure_state,
         &misc.downloads,
+        &mut misc.render_override,
     );
     viewport_rect.0 = rect;
 

@@ -362,6 +362,36 @@ async fn apply_static_row(
         }
     }
 
+    // p2p_asset_streaming_20260718 S6 (critic step 8 + "strictest reader" rule,
+    // RUNBOOK §5): a writer of a shared petal column must satisfy the
+    // strictest reader. The admission gate (A3 Editor+) already ran; this is
+    // the per-field shape/range check an admitted-but-malicious or buggy
+    // writer could otherwise slip past (`apply_static_row` MERGEs the whole
+    // row — see campaign plan §3 S6 step 4/8).
+    if table == "petal" {
+        if let Some(rd) = row.get("render_distance") {
+            if !is_valid_inbound_render_distance(rd) {
+                tracing::warn!(
+                    table,
+                    record_id,
+                    render_distance = ?rd,
+                    "Inbound petal row carries an out-of-range render_distance — denied"
+                );
+                return Ok(ReplicatedRowOutcome::Denied);
+            }
+        }
+        if let Some(terrain) = row.get("terrain") {
+            if !terrain.is_null() && !is_valid_inbound_petal_terrain(terrain) {
+                tracing::warn!(
+                    table,
+                    record_id,
+                    "Inbound petal row carries a malformed terrain config — denied"
+                );
+                return Ok(ReplicatedRowOutcome::Denied);
+            }
+        }
+    }
+
     // Extract the geometry column now, write it with an explicit cast after
     // the row exists (a raw GeoJSON bind against a SCHEMAFULL table fails).
     let geometry_value = match geometry_field {
@@ -431,6 +461,64 @@ async fn apply_static_row(
     }
 
     Ok(ReplicatedRowOutcome::Applied)
+}
+
+/// Inbound `petal.render_distance` strictest-reader check (S6 step 4):
+/// `NONE`/null (inherit) is always fine; a numeric value must be finite and
+/// within `[0, RENDER_DISTANCE_MAX]`, the same ceiling the schema `ASSERT`
+/// and the local write path (`petal_render_distance::validate_render_distance`)
+/// enforce — duplicated here because this check runs BEFORE the merge, on
+/// the raw wire JSON, not after a typed local write.
+fn is_valid_inbound_render_distance(value: &serde_json::Value) -> bool {
+    if value.is_null() {
+        return true;
+    }
+    value.as_f64().is_some_and(|v| {
+        v.is_finite()
+            && (0.0..=crate::handlers::petal_render_distance::RENDER_DISTANCE_MAX).contains(&v)
+    })
+}
+
+/// Inbound `petal.terrain` strictest-reader check (S6 step 8, critic C7):
+/// fe-database has no fe-terrain dependency, so this is a STRUCTURAL check
+/// only — a JSON object under a byte cap whose `tileset_hexon_uris` (if
+/// present) is an array of strings in the hexon-id charset (S1 step 6,
+/// `fe-terrain/src/tiles/store.rs::is_safe_hexon_id`, duplicated here for the
+/// same layering reason). `terrain_bridge::terrain_config_from_petal_json`
+/// is the second line of defence that actually parses the `TerrainConfig`.
+const MAX_INBOUND_PETAL_TERRAIN_BYTES: usize = 64 * 1024;
+
+fn is_valid_inbound_petal_terrain(terrain: &serde_json::Value) -> bool {
+    let Some(obj) = terrain.as_object() else {
+        return false;
+    };
+    let Ok(bytes) = serde_json::to_vec(terrain) else {
+        return false;
+    };
+    if bytes.len() > MAX_INBOUND_PETAL_TERRAIN_BYTES {
+        return false;
+    }
+    match obj.get("tileset_hexon_uris") {
+        None => true,
+        Some(v) => match v.as_array() {
+            Some(arr) => arr
+                .iter()
+                .all(|x| x.as_str().is_some_and(is_safe_hexon_id_charset)),
+            None => false,
+        },
+    }
+}
+
+/// Mirrors `fe-terrain/src/tiles/store.rs::is_safe_hexon_id`'s charset guard
+/// (campaign plan S1 step 6) — fe-database cannot depend on fe-terrain, so
+/// the two must be kept in lock-step by hand.
+fn is_safe_hexon_id_charset(id: &str) -> bool {
+    !id.is_empty()
+        && id != "."
+        && id != ".."
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
 }
 
 /// Render a GeoJSON `coordinates` value as an inline SurrealQL numeric

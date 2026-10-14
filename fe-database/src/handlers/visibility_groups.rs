@@ -86,8 +86,9 @@ async fn resolve_level_scope(db: &Db, level: ScopeLevel, id: &str) -> Option<Str
 }
 
 /// Resolve the caller at `scope` and require Editor+ (`authorize_node_edit` is
-/// `Write` at any scope string, so it covers verse/fractal/petal too).
-async fn authorize_edit(
+/// `Write` at any scope string, so it covers verse/fractal/petal too). `pub(crate)`
+/// so sibling petal-scoped writers (`petal_render_distance`) reuse the same gate.
+pub(crate) async fn authorize_edit(
     db: &Db,
     local_did: &str,
     auth: &CallerAuth,

@@ -1,9 +1,22 @@
 //! Handler for per-petal terrain docs feeding the map picker + rehydrating the
-//! terrain-proposal mirror (data-loss guard). See ../AGENTS.md §db-results.
+//! terrain-proposal mirror (data-loss guard), and for the durable per-petal
+//! `render_distance` echo (p2p_asset_streaming S6). See ../AGENTS.md §db-results.
 
 use crate::navigation_manager::NavigationManager;
 use crate::terrain_map::PetalMapState;
 use crate::terrain_proposal_state::ProposalEditState;
+
+/// `PetalRenderDistanceLoaded`: both the GUI's own `Set`/`GetPetalRenderDistance`
+/// echo and a peer-converged value (via the `ReplicatedRowApplied` re-fetch,
+/// see `mod.rs`) land here — the in-memory tree is the single source
+/// `ResidencyBudget::render_distance_for` reads (fe-ui/src/AGENTS.md §app-settings).
+pub(super) fn handle_petal_render_distance_loaded(
+    petal_id: &str,
+    render_distance: Option<f32>,
+    verse_mgr: &mut crate::verse_manager::VerseManager,
+) {
+    verse_mgr.update_petal_render_distance(petal_id, render_distance);
+}
 
 /// `PetalTerrainLoaded`: only the active petal's terrain drives the map
 /// picker state AND rehydrates `ProposalEditState` from the doc's

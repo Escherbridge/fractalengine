@@ -883,6 +883,7 @@ mod tests {
             id: "petal-1".to_string(),
             name: "Petal".to_string(),
             expanded: true,
+            render_distance: None,
             nodes: node_entries,
         };
         let fractal = FractalEntry {

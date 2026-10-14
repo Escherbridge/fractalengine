@@ -1197,6 +1197,7 @@ mod tests {
                     id: "p1".into(),
                     name: "P".into(),
                     expanded: true,
+                    render_distance: None,
                     nodes: vec![NodeEntry {
                         id: "n1".into(),
                         name: "Tower".into(),

@@ -133,6 +133,7 @@ pub(super) fn handle_hierarchy_loaded(
                             id: p.id.clone(),
                             name: p.name.clone(),
                             expanded: true,
+                            render_distance: p.render_distance,
                             nodes: p
                                 .nodes
                                 .iter()
@@ -261,6 +262,7 @@ pub(super) fn handle_petal_created(
                 id: id.to_string(),
                 name: name.to_string(),
                 expanded: true,
+                render_distance: None,
                 nodes: Vec::new(),
             });
         }

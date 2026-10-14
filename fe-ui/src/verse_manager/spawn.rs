@@ -66,10 +66,13 @@ pub(super) struct ResidencyBudget<'w> {
 }
 
 impl ResidencyBudget<'_> {
-    /// Render distance for `petal_id`: its session override, else the global setting.
-    pub fn render_distance_for(&self, petal_id: &str) -> f32 {
+    /// Render distance for `petal_id`: precedence is the session override,
+    /// then `petal_column` (the durable `petal.render_distance`, S6), then
+    /// the global setting (`settings::effective_render_distance`).
+    pub fn render_distance_for(&self, petal_id: &str, petal_column: Option<f32>) -> f32 {
         crate::settings::effective_render_distance(
             self.settings.render_distance,
+            petal_column,
             self.render_override.for_petal(petal_id),
         )
     }
@@ -301,18 +304,29 @@ mod tests {
     #[derive(Resource, Default)]
     struct ReportedRenderDistance(f32);
 
+    /// The active petal's column value the test drives directly (no
+    /// `VerseManager` dependency in `ResidencyBudget` — the real spawners
+    /// read it off `PetalEntry`, see `petal_respawn.rs`/`primitive_materialize.rs`).
+    #[derive(Resource, Default)]
+    struct ActivePetalColumn(Option<f32>);
+
     fn report_active_render_distance(
         residency: ResidencyBudget,
         nav: Res<crate::navigation_manager::NavigationManager>,
+        petal_column: Res<ActivePetalColumn>,
         mut out: ResMut<ReportedRenderDistance>,
     ) {
         if let Some(petal) = nav.active_petal_id.as_deref() {
-            out.0 = residency.render_distance_for(petal);
+            out.0 = residency.render_distance_for(petal, petal_column.0);
         }
     }
 
+    /// Session override beats the petal column, which beats the global
+    /// setting (S6 precedence), and `set_render_override` is the local-only
+    /// writer the Settings section's "Session override" field uses —
+    /// cleared on petal change, as before.
     #[test]
-    fn active_petal_manifest_save_overrides_the_residency_render_distance() {
+    fn session_override_beats_petal_column_beats_global_and_clears_on_nav_change() {
         use crate::settings::PetalRenderOverride;
         let mut app = App::new();
         let mut nav = crate::navigation_manager::NavigationManager::default();
@@ -320,6 +334,7 @@ mod tests {
         app.insert_resource(nav)
             .insert_resource(crate::plugin::MeshInstanceBudget::default())
             .insert_resource(crate::settings::AppSettings::default())
+            .insert_resource(ActivePetalColumn(None))
             .init_resource::<PetalRenderOverride>()
             .init_resource::<ReportedRenderDistance>()
             .add_systems(
@@ -331,45 +346,39 @@ mod tests {
                     .chain(),
             );
         let reported = |app: &App| app.world().resource::<ReportedRenderDistance>().0;
-        let save = |app: &mut App, petal: &str, distance: f32| {
-            let manifest = crate::terrain_map::PetalManifest {
-                render_distance: distance,
-                ..Default::default()
-            };
-            let active = app
-                .world()
-                .resource::<crate::navigation_manager::NavigationManager>()
-                .active_petal_id
-                .clone();
-            let mut render_override = app.world_mut().resource_mut::<PetalRenderOverride>();
-            crate::actions::hexon::manifest_save(
-                petal.to_string(),
-                manifest,
-                active.as_deref(),
-                &mut render_override,
-            );
-        };
 
         app.update();
-        assert_eq!(reported(&app), 500.0, "global default");
+        assert_eq!(reported(&app), 500.0, "global default, no petal column");
 
-        save(&mut app, "p2", 50.0);
+        app.world_mut().resource_mut::<ActivePetalColumn>().0 = Some(200.0);
+        app.update();
+        assert_eq!(reported(&app), 200.0, "petal column beats global");
+
+        {
+            let mut render_override = app.world_mut().resource_mut::<PetalRenderOverride>();
+            crate::actions::hexon::set_render_override(
+                &mut render_override,
+                "p1".to_string(),
+                Some(50.0),
+            );
+        }
         app.update();
         assert_eq!(
             reported(&app),
-            500.0,
-            "a non-active petal's save is ignored"
+            50.0,
+            "session override beats BOTH petal column and global"
         );
-
-        save(&mut app, "p1", 120.0);
-        app.update();
-        assert_eq!(reported(&app), 120.0, "active petal's manifest wins");
 
         app.world_mut()
             .resource_mut::<crate::navigation_manager::NavigationManager>()
             .navigate_to_petal("p2");
+        app.world_mut().resource_mut::<ActivePetalColumn>().0 = None;
         app.update();
-        assert_eq!(reported(&app), 500.0, "override does not follow navigation");
+        assert_eq!(
+            reported(&app),
+            500.0,
+            "override does not follow navigation to a petal with no column"
+        );
         assert_eq!(
             *app.world().resource::<PetalRenderOverride>(),
             PetalRenderOverride::default(),

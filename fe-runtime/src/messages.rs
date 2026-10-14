@@ -672,6 +672,24 @@ pub enum DbCommand {
         /// (fe-runtime src/AGENTS.md §api-reply-correlation).
         correlation_id: Option<String>,
     },
+    // --- Petal render distance (p2p_asset_streaming_20260718 S6) ---
+    /// Set or clear a petal's durable residency horizon (`petal.render_distance`,
+    /// `NONE` = inherit the global `AppSettings.render_distance`). Auth-carrying:
+    /// Editor+ at the petal scope (fe-database `src/AGENTS.md` §handlers "Petal
+    /// render distance"). Replies `PetalRenderDistanceLoaded`.
+    SetPetalRenderDistance {
+        petal_id: String,
+        render_distance: Option<f32>,
+        auth: CallerAuth,
+        /// `Some` routes a failure to `RequestFailed`; `None` to `Error`.
+        correlation_id: Option<String>,
+    },
+    /// Read a petal's `render_distance` (read-only; REST gates Viewer+).
+    /// Replies `PetalRenderDistanceLoaded`.
+    GetPetalRenderDistance {
+        petal_id: String,
+        correlation_id: Option<String>,
+    },
     // --- Inbound P2P replication (A4 seam) ---
     /// Apply one row received from a peer's verse replica.
     ///
@@ -1039,6 +1057,13 @@ pub enum DbResult {
         terrain: Option<serde_json::Value>,
         correlation_id: String,
     },
+    /// Reply to both `SetPetalRenderDistance` and `GetPetalRenderDistance`
+    /// (the echo); `None` = inherit the global.
+    PetalRenderDistanceLoaded {
+        petal_id: String,
+        render_distance: Option<f32>,
+        correlation_id: Option<String>,
+    },
     /// Typed failure of a correlated command whose family has no
     /// family-specific failure variant; the GUI never sees it, the API caller
     /// maps it to its error status.
@@ -1112,6 +1137,9 @@ pub struct PetalHierarchyData {
     pub name: String,
     /// Persisted petal eye (`petal.view_hidden`); `false` = visible.
     pub view_hidden: bool,
+    /// Durable per-petal residency horizon (p2p_asset_streaming S6);
+    /// `None` = inherit the global `AppSettings.render_distance`.
+    pub render_distance: Option<f32>,
     pub nodes: Vec<NodeHierarchyData>,
 }
 

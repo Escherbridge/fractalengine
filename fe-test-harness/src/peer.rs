@@ -979,6 +979,34 @@ impl TestPeer {
                                 tracing::warn!("PetalTerrain reply send failed: {e:?}");
                             }
                         }
+                        // Petal render distance (p2p_asset_streaming_20260718 S6) —
+                        // same stub shape as SetPetalTerrain: echo the set value.
+                        Ok(DbCommand::SetPetalRenderDistance {
+                            petal_id,
+                            render_distance,
+                            correlation_id,
+                            ..
+                        }) => {
+                            if let Err(e) = db_result_tx.send(DbResult::PetalRenderDistanceLoaded {
+                                petal_id,
+                                render_distance,
+                                correlation_id,
+                            }) {
+                                tracing::warn!("PetalRenderDistanceLoaded send failed: {e:?}");
+                            }
+                        }
+                        Ok(DbCommand::GetPetalRenderDistance {
+                            petal_id,
+                            correlation_id,
+                        }) => {
+                            if let Err(e) = db_result_tx.send(DbResult::PetalRenderDistanceLoaded {
+                                petal_id,
+                                render_distance: None,
+                                correlation_id,
+                            }) {
+                                tracing::warn!("PetalRenderDistanceLoaded send failed: {e:?}");
+                            }
+                        }
                         // Lifecycle ops (node_lifecycle_addressing_20260725) are covered by
                         // fe-database/fe-sync tests, not this mock peer — surface, don't drop.
                         Ok(DbCommand::TombstoneNode { .. })
@@ -1635,6 +1663,7 @@ async fn load_hierarchy(db: &surrealdb::Surreal<Db>) -> anyhow::Result<Vec<Verse
                     id: petal_id,
                     name: petal_name,
                     view_hidden: false,
+                    render_distance: None,
                     nodes,
                 });
             }
