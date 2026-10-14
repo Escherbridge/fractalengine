@@ -102,6 +102,12 @@ pub fn drain_sync_events(
                 tracing::info!(peer_id, peer_count = status.peer_count, "Peer disconnected");
             }
             SyncEvent::RelayHealthChanged { health } => {
+                // Unconditional info-level line (PAS-P1V): the headless
+                // relay-health script greps for this regardless of mode, so
+                // a `Disabled`/`Healthy` run logs exactly as reliably as a
+                // `Degraded`/`Unreachable` one (which additionally warns
+                // below).
+                tracing::info!(?health, "SyncStatus updated: relay health changed");
                 if health.is_problem() {
                     tracing::warn!(?health, "Relay health degraded");
                 } else {
@@ -134,7 +140,10 @@ pub fn drain_sync_events(
             ev @ SyncEvent::PeerTilesetAdvertisement { .. }
             | ev @ SyncEvent::TilesetMetaReceived { .. }
             | ev @ SyncEvent::ChunkReceived { .. }
-            | ev @ SyncEvent::ChunkFailed { .. } => {
+            | ev @ SyncEvent::ChunkFailed { .. }
+            | ev @ SyncEvent::TilesetDownloadComplete { .. }
+            | ev @ SyncEvent::TilesetPublished { .. }
+            | ev @ SyncEvent::TilesetDownloadResumed { .. } => {
                 tileset_buf.events.push(ev);
             }
             // Peer transform updates — applying to local nodes is deferred.

@@ -16,13 +16,15 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use fe_runtime::blob_store::{hash_to_hex, BlobStoreHandle};
+use fe_runtime::blob_store::{hash_from_hex, hash_to_hex, BlobStoreHandle};
+use fe_runtime::blob_transport::{BlobTransport, Hash32, ProviderRef};
 use fe_runtime::messages::DbCommand;
 
 use iroh::Watcher as _;
 use iroh_gossip::api::{Event as GossipTopicEvent, GossipReceiver};
 use iroh_gossip::{Gossip, TopicId};
 
+use crate::blob_transport::IrohBlobTransport;
 use crate::distributed_query::{
     handle_gossip_incoming, submit_distributed_query, DistributedTransport, GossipIncoming,
     TopicSender,
@@ -38,6 +40,7 @@ use crate::replicator::{
     ReplicatorFuture, RowChange, VerseReplicator,
 };
 use crate::sharding::{PeerDeclaration, ShardId, VerseFabric, PEER_DECL_TABLE, SHARD_TABLE};
+use crate::tileset_transfer::{CatalogEntry, MetaResolved, TilesetTransfer, TransferEvent};
 use crate::verse_peers;
 use crate::virtual_transport::{VirtualReplica, VirtualTransportFactory};
 
@@ -472,6 +475,11 @@ pub fn spawn_sync_thread_with_transport(
             // (sim lab, F8/A19) skips the bind entirely — no real network, no
             // relay, no stack; replicas come from the factory instead.
             let mut relay_health: RelayHealth;
+            // PAS-P3 S3: our own dialable address, embedded in outbound
+            // tileset ads as `provider_addr` (the same JSON form
+            // `SyncEvent::Started.node_addr` carries). `None` offline/virtual
+            // — this node cannot serve tileset bundles to anyone.
+            let mut my_provider_addr: Option<String> = None;
             let endpoint = match virtual_transport.as_ref() {
                 Some(factory) => {
                     tracing::info!(
@@ -515,6 +523,7 @@ pub fn spawn_sync_thread_with_transport(
                             None
                         }
                     };
+                    my_provider_addr = addr_json.clone();
                     send_sync_event(
                         &evt_tx,
                         SyncEvent::Started {
@@ -599,6 +608,60 @@ pub fn spawn_sync_thread_with_transport(
                 }
             };
 
+            // PAS-P3 S3: the tileset transfer service, over the stack's blob
+            // store + endpoint — only when a stack exists. Offline/virtual
+            // mode has none: every tileset command then answers honestly
+            // (see `handle_download_tileset` et al.), never a silent drop
+            // (`AGENTS.md` §tileset-transfer).
+            let tileset_transfer: Option<Arc<TilesetTransfer>> = docs_stack.as_ref().map(|stack| {
+                let transport: Arc<dyn BlobTransport> = Arc::new(IrohBlobTransport::from_stack(stack));
+                Arc::new(TilesetTransfer::for_p2p_dir(transport, &p2p_dir))
+            });
+            if let Some(transfer) = tileset_transfer.clone() {
+                let evt_tx = evt_tx.clone();
+                tokio::spawn(async move {
+                    // Rebuild the catalog from persisted `fe/tileset/` tags
+                    // (survives a restart — the tags live in the fs store).
+                    if let Err(e) = transfer.catalog_from_tags().await {
+                        tracing::warn!("Rebuilding tileset catalog from tags failed: {e}");
+                    }
+                    // Report what was already on disk BEFORE re-fetching
+                    // anything, so a UI sees "found N/M" honestly.
+                    match transfer.pending_downloads().await {
+                        Ok(pending) => {
+                            for resumed in &pending {
+                                tracing::info!(
+                                    tileset_id = %resumed.tileset_id,
+                                    received = resumed.received,
+                                    total = resumed.total,
+                                    "Found a persisted tileset download at startup"
+                                );
+                                send_sync_event(
+                                    &evt_tx,
+                                    SyncEvent::TilesetDownloadResumed {
+                                        tileset_id: resumed.tileset_id.clone(),
+                                        received: resumed.received,
+                                        total: resumed.total,
+                                    },
+                                );
+                            }
+                        }
+                        Err(e) => tracing::warn!("Listing pending tileset downloads failed: {e}"),
+                    }
+                    // Now actually fetch whatever those downloads are still
+                    // missing — spawned, so this never blocks the command
+                    // loop (the select! loop never awaits a transfer
+                    // inline).
+                    let (progress_tx, progress_rx) = tokio::sync::mpsc::unbounded_channel();
+                    let pump = tokio::spawn(pump_transfer_progress(progress_rx, evt_tx.clone()));
+                    if let Err(e) = transfer.resume_all(Some(&progress_tx)).await {
+                        tracing::warn!("Resuming tileset downloads failed: {e}");
+                    }
+                    drop(progress_tx);
+                    let _ = pump.await;
+                });
+            }
+
             // Gossip lives inside the stack (one instance, routed by the
             // Router) — a second instance here would never see inbound
             // connections. None in offline mode, like before.
@@ -669,8 +732,11 @@ pub fn spawn_sync_thread_with_transport(
             // Phase F.2: per-petal replica map.
             let mut petal_replicas: HashMap<String, Box<dyn PetalReplicator>> = HashMap::new();
 
-            // Phase F.5: tileset download tracker
-            let mut download_tracker = TilesetDownloadTracker::new();
+            // PAS-P3 S3: tileset_id -> known providers, learned from inbound
+            // ads (authenticated ones sorted first). Replaces the dead
+            // Phase-F.5 `TilesetDownloadTracker` HashMap — "received" now
+            // lives in `TilesetTransfer`'s persisted ledger.
+            let mut tileset_providers = TilesetProviderMap::default();
 
             // F21/M2: writes retained for verses whose replica is not open
             // yet, republished after the open (see PendingWrites).
@@ -753,12 +819,27 @@ pub fn spawn_sync_thread_with_transport(
                     }
                     maybe_gossip = gossip_inbound_rx.recv() => {
                         if let Some(incoming) = maybe_gossip {
-                            handle_gossip_incoming(
-                                &transport,
-                                &fabrics,
-                                &gossip_senders,
-                                incoming,
-                            );
+                            // PAS-P3 S3: tileset ads ride the same verse
+                            // topic as compute envelopes, tagged `kind`
+                            // (never `type`) so the two decoders can never
+                            // collide. A malformed/foreign frame falls
+                            // through to `handle_gossip_incoming` unchanged.
+                            match decode_tileset_ad(&incoming.content) {
+                                Some(ad) => handle_inbound_tileset_ad(
+                                    &mut tileset_providers,
+                                    &evt_tx,
+                                    &incoming,
+                                    ad,
+                                ),
+                                None => {
+                                    handle_gossip_incoming(
+                                        &transport,
+                                        &fabrics,
+                                        &gossip_senders,
+                                        incoming,
+                                    );
+                                }
+                            }
                         }
                     }
                     maybe_cmd = async_cmd_rx.recv() => {
@@ -909,23 +990,57 @@ pub fn spawn_sync_thread_with_transport(
                                     call,
                                 );
                             }
-                            Some(SyncCommand::AdvertiseTilesets { verse_id, advertisements_json }) => {
+                            Some(SyncCommand::AdvertiseTilesets { verse_id, advertisements_json: _ }) => {
                                 handle_advertise_tilesets(
                                     &gossip_host,
                                     &gossip_senders,
-                                    &advertisements_json,
+                                    &tileset_transfer,
+                                    my_provider_addr.as_deref(),
                                     &verse_id,
                                 )
                                 .await;
                             }
-                            Some(SyncCommand::RequestTilesetMeta { peer_id, tileset_id }) => {
-                                handle_request_tileset_meta(&peer_id, &tileset_id, &evt_tx);
+                            Some(SyncCommand::PublishTileset { tileset_id, index_path, bundle_paths }) => {
+                                spawn_publish_tileset(
+                                    tileset_transfer.clone(),
+                                    evt_tx.clone(),
+                                    gossip_senders.clone(),
+                                    my_provider_addr.clone(),
+                                    tileset_id,
+                                    index_path,
+                                    bundle_paths,
+                                );
                             }
-                            Some(SyncCommand::RequestChunk { peer_id, tileset_id, chunk_seq }) => {
-                                handle_request_chunk(&peer_id, &tileset_id, chunk_seq, &evt_tx);
+                            Some(SyncCommand::UnpublishTileset { tileset_id }) => {
+                                spawn_unpublish_tileset(tileset_transfer.clone(), tileset_id);
+                            }
+                            Some(SyncCommand::DownloadTileset { tileset_id, provider }) => {
+                                handle_download_tileset(
+                                    &tileset_transfer,
+                                    &tileset_providers,
+                                    tileset_id,
+                                    provider,
+                                    &evt_tx,
+                                );
+                            }
+                            Some(SyncCommand::RequestTilesetMeta { peer_id, tileset_id }) => {
+                                handle_request_tileset_meta(
+                                    &tileset_transfer,
+                                    &tileset_providers,
+                                    &peer_id,
+                                    &tileset_id,
+                                    &evt_tx,
+                                );
+                            }
+                            Some(SyncCommand::RequestChunk { peer_id: _, tileset_id, chunk_seq, provider: _ }) => {
+                                // `provider` is accepted on the wire for S7
+                                // (single streaming bundles) but not yet
+                                // consulted here — see `handle_request_chunk`'s
+                                // doc comment.
+                                handle_request_chunk(&tileset_transfer, &tileset_id, chunk_seq, &evt_tx);
                             }
                             Some(SyncCommand::CancelTilesetDownload { tileset_id }) => {
-                                handle_cancel_tileset_download(&mut download_tracker, &tileset_id);
+                                handle_cancel_tileset_download(&tileset_transfer, tileset_id);
                             }
                             Some(SyncCommand::SetShardDeclaration {
                                 capacity_bytes,
@@ -1998,75 +2113,283 @@ fn unsubscribe_from_verse_gossip_topic(
 // Phase 5: Tileset P2P
 // ============================================================================
 
-/// Tileset advertisement message for P2P discovery.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct TilesetAdvertisement {
-    pub tileset_id: String,
-    pub chunk_count: u32,
-    pub size_bytes: u64,
+/// Outbound/inbound tileset-advertisement gossip frame (S3). Tagged `kind`
+/// (never `type`) so it shares a verse's compute topic with
+/// [`crate::distributed_query::ComputeEnvelope`] (tagged `type`) without the
+/// two decoders ever mistaking one for the other.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct TilesetAd {
+    kind: String,
+    tileset_id: String,
+    /// HashSeq root (hex).
+    root_hash: String,
+    total_chunks: u32,
+    approx_bytes: u64,
+    /// `EndpointAddr` JSON the provider can be dialed at.
+    provider_addr: String,
 }
 
-/// Track in-flight tileset downloads.
-struct TilesetDownloadTracker {
-    /// Active downloads: tileset_id -> (peer_id, chunk_seq)
-    active: HashMap<String, (String, u32)>,
+/// The only value [`TilesetAd::kind`] may hold.
+const TILESET_AD_KIND: &str = "tileset_ad";
+
+/// Decode a tileset ad from gossip bytes; `None` for anything else (a
+/// compute envelope, garbage, or a frame from before this campaign step).
+fn decode_tileset_ad(bytes: &[u8]) -> Option<TilesetAd> {
+    let ad: TilesetAd = serde_json::from_slice(bytes).ok()?;
+    (ad.kind == TILESET_AD_KIND).then_some(ad)
 }
 
-impl TilesetDownloadTracker {
-    fn new() -> Self {
-        Self {
-            active: HashMap::new(),
+/// One peer's advertised source for a tileset.
+#[derive(Debug, Clone)]
+struct TilesetProvider {
+    provider: ProviderRef,
+    root: Hash32,
+    /// F23-style admission: whether the delivery was direct AND the ad's own
+    /// `provider_addr` named the authenticated sender (§transport-admission-
+    /// control item 2 pattern, applied to tileset ads).
+    authenticated: bool,
+    /// The ad's claimed size (best-effort; not re-verified until a download
+    /// actually fetches bundles).
+    advertised_bytes: u64,
+}
+
+/// `tileset_id -> known providers`, authenticated-first, learned from
+/// inbound ads. Never persisted — rebuilt from gossip traffic each session
+/// (the durable state is `TilesetTransfer`'s own ledger/catalog).
+#[derive(Default)]
+struct TilesetProviderMap {
+    by_id: HashMap<String, Vec<TilesetProvider>>,
+}
+
+impl TilesetProviderMap {
+    /// Record (or refresh) one peer's advertised source. Authenticated
+    /// providers sort first so a download always tries them before hints;
+    /// an authenticated re-ad of a previously-unauthenticated provider
+    /// upgrades it (never downgrades — a stale relayed copy must not demote
+    /// a provider this node once saw directly).
+    fn record(
+        &mut self,
+        tileset_id: String,
+        provider: ProviderRef,
+        root: Hash32,
+        authenticated: bool,
+        advertised_bytes: u64,
+    ) {
+        let entries = self.by_id.entry(tileset_id).or_default();
+        match entries.iter_mut().find(|e| e.provider == provider) {
+            Some(existing) => {
+                existing.root = root;
+                existing.authenticated = existing.authenticated || authenticated;
+                existing.advertised_bytes = advertised_bytes;
+            }
+            None => entries.push(TilesetProvider {
+                provider,
+                root,
+                authenticated,
+                advertised_bytes,
+            }),
+        }
+        entries.sort_by_key(|e| !e.authenticated);
+    }
+
+    /// Every known provider for `tileset_id`, authenticated ones first.
+    fn candidates(&self, tileset_id: &str) -> Vec<ProviderRef> {
+        self.by_id
+            .get(tileset_id)
+            .map(|entries| entries.iter().map(|e| e.provider.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// The HashSeq root this node has seen advertised for `tileset_id`.
+    fn root_for(&self, tileset_id: &str) -> Option<Hash32> {
+        self.by_id
+            .get(tileset_id)
+            .and_then(|entries| entries.first())
+            .map(|e| e.root)
+    }
+
+    /// The best-effort advertised size for `tileset_id` (0 if unknown).
+    fn bytes_for(&self, tileset_id: &str) -> u64 {
+        self.by_id
+            .get(tileset_id)
+            .and_then(|entries| entries.first())
+            .map(|e| e.advertised_bytes)
+            .unwrap_or(0)
+    }
+}
+
+/// Candidate providers for one request: an explicit override first (when
+/// non-empty), then every advertised provider, de-duplicated.
+fn resolve_providers(
+    map: &TilesetProviderMap,
+    tileset_id: &str,
+    explicit: Option<&str>,
+) -> Vec<ProviderRef> {
+    let mut out = Vec::new();
+    if let Some(addr) = explicit.filter(|a| !a.is_empty()) {
+        out.push(ProviderRef::new(addr));
+    }
+    for candidate in map.candidates(tileset_id) {
+        if !out.contains(&candidate) {
+            out.push(candidate);
         }
     }
+    out
+}
 
-    #[allow(dead_code)] // download-start bookkeeping — wiring lands with P2P chunk transfer
-    fn start(&mut self, tileset_id: String, peer_id: String, chunk_seq: u32) {
-        self.active.insert(tileset_id, (peer_id, chunk_seq));
+/// [`resolve_providers`] plus the tileset's advertised root — the pair every
+/// meta/download request needs. An honest named error when either is
+/// unknown (never a silent no-op).
+fn resolve_providers_and_root(
+    map: &TilesetProviderMap,
+    tileset_id: &str,
+    explicit: Option<&str>,
+) -> Result<(Vec<ProviderRef>, Hash32), &'static str> {
+    let root = map
+        .root_for(tileset_id)
+        .ok_or("no advertised root for this tileset yet")?;
+    let providers = resolve_providers(map, tileset_id, explicit);
+    if providers.is_empty() {
+        return Err("no known provider for this tileset");
     }
+    Ok((providers, root))
+}
 
-    fn cancel(&mut self, tileset_id: &str) -> Option<(String, u32)> {
-        self.active.remove(tileset_id)
+/// Pure core of the inbound tileset-ad authentication check
+/// (§transport-admission-control item 2's pattern, applied here): a direct
+/// delivery whose claimed `provider_addr` resolves to the authenticated
+/// sender's `EndpointId` is authenticated; anything relayed, malformed, or
+/// mismatched is an unauthenticated hint, never the download's only source
+/// of truth (the per-bundle BLAKE3 check in `TilesetTransfer` still runs
+/// regardless).
+fn tileset_ad_is_authenticated(
+    direct: bool,
+    claimed_provider_addr: &str,
+    from: iroh::EndpointId,
+) -> bool {
+    direct
+        && IrohBlobTransport::parse_provider(&ProviderRef::new(claimed_provider_addr.to_string()))
+            .map(|addr| addr.id == from)
+            .unwrap_or(false)
+}
+
+/// Handle one inbound tileset ad: record its provider (admission above) and
+/// echo it to the UI/terrain layer as [`SyncEvent::PeerTilesetAdvertisement`].
+fn handle_inbound_tileset_ad(
+    providers: &mut TilesetProviderMap,
+    evt_tx: &SyncEventSender,
+    incoming: &GossipIncoming,
+    ad: TilesetAd,
+) {
+    let Ok(root) = hash_from_hex(&ad.root_hash) else {
+        tracing::debug!(tileset_id = %ad.tileset_id, "Malformed tileset ad root hash — ignored");
+        return;
+    };
+    let authenticated =
+        tileset_ad_is_authenticated(incoming.direct, &ad.provider_addr, incoming.from);
+    providers.record(
+        ad.tileset_id.clone(),
+        ProviderRef::new(ad.provider_addr.clone()),
+        root,
+        authenticated,
+        ad.approx_bytes,
+    );
+    tracing::debug!(
+        tileset_id = %ad.tileset_id,
+        authenticated,
+        "Recorded a tileset advertisement"
+    );
+    // The DTO fe-ui parses today (`terrain_map/events.rs`) reads a richer
+    // fe-terrain shape with defaults for the fields this thin ad doesn't
+    // carry (region_name, bounds, zoom) — graceful degradation until S4
+    // aligns it. `tileset_id`/`approx_size_bytes` already match.
+    let advertisements_json = serde_json::to_string(&serde_json::json!([{
+        "tileset_id": ad.tileset_id,
+        "root_hash": ad.root_hash,
+        "total_chunks": ad.total_chunks,
+        "approx_size_bytes": ad.approx_bytes,
+    }]))
+    .unwrap_or_else(|_| "[]".to_string());
+    send_sync_event(
+        evt_tx,
+        SyncEvent::PeerTilesetAdvertisement {
+            peer_id: crate::replicator::peer_did_key(&incoming.from),
+            advertisements_json,
+        },
+    );
+}
+
+/// One [`TilesetAd`] built from a published catalog entry.
+fn tileset_ad_from_catalog_entry(entry: &CatalogEntry, provider_addr: &str) -> TilesetAd {
+    TilesetAd {
+        kind: TILESET_AD_KIND.to_string(),
+        tileset_id: entry.tileset_id.clone(),
+        root_hash: hash_to_hex(&entry.root),
+        total_chunks: entry.total_chunks,
+        approx_bytes: entry.bytes,
+        provider_addr: provider_addr.to_string(),
     }
+}
 
-    #[allow(dead_code)] // download-start bookkeeping — wiring lands with P2P chunk transfer
-    fn get(&self, tileset_id: &str) -> Option<&(String, u32)> {
-        self.active.get(tileset_id)
+/// Serialize and broadcast every ad on one verse topic.
+async fn broadcast_ads_on(sender: &TopicSender, ads: &[TilesetAd]) {
+    for ad in ads {
+        match serde_json::to_vec(ad) {
+            Ok(payload) => {
+                if let Err(e) = sender.broadcast(payload.into()).await {
+                    tracing::warn!(tileset_id = %ad.tileset_id, "Failed to broadcast tileset advertisement: {e}");
+                } else {
+                    tracing::debug!(tileset_id = %ad.tileset_id, "Broadcasted tileset advertisement");
+                }
+            }
+            Err(e) => {
+                tracing::error!(tileset_id = %ad.tileset_id, "Failed to serialize advertisement: {e}")
+            }
+        }
+    }
+}
+
+/// Broadcast every ad on every currently-joined verse topic (publish/
+/// unpublish have no single verse to target — a newly seeded tileset is
+/// relevant to every verse this node currently participates in).
+async fn broadcast_ads_to_all_verses(
+    gossip_senders: &HashMap<String, TopicSender>,
+    ads: &[TilesetAd],
+) {
+    for sender in gossip_senders.values() {
+        broadcast_ads_on(sender, ads).await;
     }
 }
 
 /// Handle [`SyncCommand::AdvertiseTilesets`].
 ///
-/// Broadcasts tileset advertisements to connected peers via gossip.
+/// Outbound ads are built from the published catalog, never from the
+/// command's payload (see the variant's doc comment) — broadcast on one
+/// verse's topic.
 async fn handle_advertise_tilesets(
     gossip_host: &Option<Gossip>,
     gossip_senders: &HashMap<String, TopicSender>,
-    advertisements_json: &str,
+    transfer: &Option<Arc<TilesetTransfer>>,
+    provider_addr: Option<&str>,
     verse_id: &str,
 ) {
     if gossip_host.is_none() {
-        tracing::debug!(
-            len = advertisements_json.len(),
-            "No gossip, skipping tileset advertise"
-        );
-        return;
-    };
-
-    // Empty payload = nothing to advertise (fe-ui sends "" as a refresh nudge).
-    if advertisements_json.trim().is_empty() {
-        tracing::debug!("AdvertiseTilesets with empty payload — skipping");
+        tracing::debug!("No gossip, skipping tileset advertise");
         return;
     }
-
-    // Parse advertisements
-    let ads: Vec<TilesetAdvertisement> = match serde_json::from_str(advertisements_json) {
-        Ok(a) => a,
-        Err(e) => {
-            tracing::error!("Failed to parse tileset advertisements: {e}");
-            return;
-        }
+    let Some(transfer) = transfer else {
+        tracing::debug!("No tileset transfer (offline) — nothing to advertise");
+        return;
     };
-
-    // Get the verse topic sender
+    let Some(provider_addr) = provider_addr else {
+        tracing::debug!("No dialable address yet — skipping tileset advertise");
+        return;
+    };
+    let catalog = transfer.catalog();
+    if catalog.is_empty() {
+        tracing::debug!("Catalog empty — nothing to advertise");
+        return;
+    }
     let topic_key = derive_gossip_topic(verse_id);
     let Some(sender) = gossip_senders.get(&topic_key) else {
         tracing::warn!(
@@ -2075,74 +2398,319 @@ async fn handle_advertise_tilesets(
         );
         return;
     };
+    let ads: Vec<TilesetAd> = catalog
+        .iter()
+        .map(|entry| tileset_ad_from_catalog_entry(entry, provider_addr))
+        .collect();
+    broadcast_ads_on(sender, &ads).await;
+}
 
-    // Broadcast each advertisement
-    for ad in ads {
-        let payload = match serde_json::to_vec(&ad) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!(tileset_id = %ad.tileset_id, "Failed to serialize advertisement: {e}");
-                continue;
+/// Forward each [`TransferEvent`] from a tileset transfer operation as a
+/// [`SyncEvent`] — spawned alongside the operation driving it
+/// (publish/download/resume) so the command loop's `select!` never awaits a
+/// transfer inline.
+async fn pump_transfer_progress(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<TransferEvent>,
+    evt_tx: SyncEventSender,
+) {
+    while let Some(event) = rx.recv().await {
+        send_sync_event(&evt_tx, transfer_event_to_sync_event(event));
+    }
+}
+
+/// Pure mapping from a transfer-progress event to the wire event.
+fn transfer_event_to_sync_event(event: TransferEvent) -> SyncEvent {
+    match event {
+        TransferEvent::ChunkStored { tileset_id, chunk } => SyncEvent::ChunkReceived {
+            tileset_id,
+            chunk_seq: chunk.seq,
+            path: chunk.path,
+            byte_len: chunk.byte_len,
+        },
+        TransferEvent::ChunkFailed {
+            tileset_id,
+            seq,
+            error,
+        } => SyncEvent::ChunkFailed {
+            tileset_id,
+            chunk_seq: seq,
+            reason: error.to_string(),
+        },
+        TransferEvent::Complete(completed) => SyncEvent::TilesetDownloadComplete {
+            tileset_id: completed.tileset_id,
+            index_path: completed.index_path,
+            bundle_paths: completed.bundle_paths,
+        },
+    }
+}
+
+/// A [`SyncEvent::TilesetMetaReceived`] for a resolved meta request.
+fn meta_resolved_event(
+    peer_id: String,
+    resolved: &MetaResolved,
+    approx_size_bytes: u64,
+) -> SyncEvent {
+    SyncEvent::TilesetMetaReceived {
+        peer_id,
+        tileset_id: resolved.tileset_id.clone(),
+        meta_json: String::from_utf8_lossy(&resolved.index_json).into_owned(),
+        total_chunks: resolved.chunk_hashes.len() as u32,
+        approx_size_bytes,
+        root_hash: hash_to_hex(&resolved.root),
+        chunk_hashes: resolved.chunk_hashes.iter().map(hash_to_hex).collect(),
+        index_path: resolved.index_path.clone(),
+    }
+}
+
+/// An honest-failure [`SyncEvent::TilesetMetaReceived`] (never a silent
+/// drop): every resolved field is empty/zero and `meta_json` names why.
+fn failed_meta_event(peer_id: String, tileset_id: String, reason: &str) -> SyncEvent {
+    SyncEvent::TilesetMetaReceived {
+        peer_id,
+        tileset_id,
+        meta_json: serde_json::json!({ "error": reason }).to_string(),
+        total_chunks: 0,
+        approx_size_bytes: 0,
+        root_hash: String::new(),
+        chunk_hashes: Vec::new(),
+        index_path: PathBuf::new(),
+    }
+}
+
+/// [`failed_meta_event`] for the virtual-transport / offline case.
+fn offline_meta_event(peer_id: String, tileset_id: String) -> SyncEvent {
+    failed_meta_event(
+        peer_id,
+        tileset_id,
+        "P2P offline — no tileset transfer available",
+    )
+}
+
+/// Handle [`SyncCommand::RequestTilesetMeta`]: resolve the tileset's root
+/// from a prior advertisement (or `peer_id` as an explicit provider
+/// override) and fetch + verify its index. Spawned so the command loop
+/// never awaits the network fetch inline.
+fn handle_request_tileset_meta(
+    transfer: &Option<Arc<TilesetTransfer>>,
+    providers_map: &TilesetProviderMap,
+    peer_id: &str,
+    tileset_id: &str,
+    evt_tx: &SyncEventSender,
+) {
+    let Some(transfer) = transfer.clone() else {
+        send_sync_event(
+            evt_tx,
+            offline_meta_event(peer_id.to_string(), tileset_id.to_string()),
+        );
+        return;
+    };
+    let explicit = (!peer_id.is_empty()).then_some(peer_id);
+    let (providers, root) = match resolve_providers_and_root(providers_map, tileset_id, explicit) {
+        Ok(ok) => ok,
+        Err(reason) => {
+            send_sync_event(
+                evt_tx,
+                failed_meta_event(peer_id.to_string(), tileset_id.to_string(), reason),
+            );
+            return;
+        }
+    };
+    let approx_size_bytes = providers_map.bytes_for(tileset_id);
+    let peer_id = peer_id.to_string();
+    let tileset_id = tileset_id.to_string();
+    let evt_tx = evt_tx.clone();
+    tokio::spawn(async move {
+        match transfer.request_meta(&providers, &tileset_id, root).await {
+            Ok(resolved) => send_sync_event(
+                &evt_tx,
+                meta_resolved_event(peer_id, &resolved, approx_size_bytes),
+            ),
+            Err(e) => send_sync_event(
+                &evt_tx,
+                failed_meta_event(peer_id, tileset_id, &e.to_string()),
+            ),
+        }
+    });
+}
+
+/// Handle [`SyncCommand::DownloadTileset`]: resolve meta, then fetch every
+/// bundle. Spawned (never awaited inline); per-bundle progress is forwarded
+/// through [`pump_transfer_progress`].
+fn handle_download_tileset(
+    transfer: &Option<Arc<TilesetTransfer>>,
+    providers_map: &TilesetProviderMap,
+    tileset_id: String,
+    provider: Option<String>,
+    evt_tx: &SyncEventSender,
+) {
+    let Some(transfer) = transfer.clone() else {
+        send_sync_event(evt_tx, offline_meta_event(String::new(), tileset_id));
+        return;
+    };
+    let (providers, root) =
+        match resolve_providers_and_root(providers_map, &tileset_id, provider.as_deref()) {
+            Ok(ok) => ok,
+            Err(reason) => {
+                send_sync_event(evt_tx, failed_meta_event(String::new(), tileset_id, reason));
+                return;
             }
         };
-
-        if let Err(e) = sender.broadcast(payload.into()).await {
-            tracing::warn!(tileset_id = %ad.tileset_id, "Failed to broadcast tileset advertisement: {e}");
-        } else {
-            tracing::debug!(tileset_id = %ad.tileset_id, "Broadcasted tileset advertisement");
+    let approx_size_bytes = providers_map.bytes_for(&tileset_id);
+    let evt_tx = evt_tx.clone();
+    tokio::spawn(async move {
+        let (progress_tx, progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let pump = tokio::spawn(pump_transfer_progress(progress_rx, evt_tx.clone()));
+        match transfer.request_meta(&providers, &tileset_id, root).await {
+            Ok(resolved) => {
+                send_sync_event(
+                    &evt_tx,
+                    meta_resolved_event(String::new(), &resolved, approx_size_bytes),
+                );
+                if let Err(e) = transfer.download(&tileset_id, Some(&progress_tx)).await {
+                    tracing::warn!(tileset_id = %tileset_id, "Tileset download failed: {e}");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(tileset_id = %tileset_id, "Tileset meta resolution failed: {e}");
+                send_sync_event(
+                    &evt_tx,
+                    failed_meta_event(String::new(), tileset_id.clone(), &e.to_string()),
+                );
+            }
         }
-    }
+        drop(progress_tx);
+        let _ = pump.await;
+    });
 }
 
-/// Handle [`SyncCommand::RequestTilesetMeta`].
+/// Handle [`SyncCommand::RequestChunk`]: fetch one already-meta-resolved
+/// bundle. Spawned (never awaited inline).
 ///
-/// Looks up tileset metadata locally and sends to requesting peer.
-/// This is a stub - full implementation would track local tilesets.
-fn handle_request_tileset_meta(peer_id: &str, tileset_id: &str, evt_tx: &SyncEventSender) {
-    tracing::debug!(peer_id = %peer_id, tileset_id = %tileset_id, "RequestTilesetMeta (stub)");
-
-    // Stub: emit a placeholder response
-    // In full implementation, we'd look up actual metadata
-    let meta_json = r#"{"error": "tileset not found locally"}"#;
-    send_sync_event(
-        evt_tx,
-        SyncEvent::TilesetMetaReceived {
-            peer_id: peer_id.to_string(),
-            tileset_id: tileset_id.to_string(),
-            meta_json: meta_json.to_string(),
-            total_chunks: 0,
-            approx_size_bytes: 0,
-        },
-    );
+/// **Known limitation (S7 follow-up):** an explicit `provider` override is
+/// accepted on the wire (`SyncCommand::RequestChunk::provider`) but not yet
+/// consulted here — a chunk fetch always uses the providers a prior
+/// `RequestTilesetMeta`/`DownloadTileset` already resolved into the
+/// tileset's ledger. S7's streamed (not-installed) tileset source resolves
+/// meta before it ever requests a chunk, so this is not a gap for that flow;
+/// it would only matter for a chunk request with no prior meta resolution,
+/// which no caller does today.
+fn handle_request_chunk(
+    transfer: &Option<Arc<TilesetTransfer>>,
+    tileset_id: &str,
+    chunk_seq: u32,
+    evt_tx: &SyncEventSender,
+) {
+    let Some(transfer) = transfer.clone() else {
+        send_sync_event(
+            evt_tx,
+            SyncEvent::ChunkFailed {
+                tileset_id: tileset_id.to_string(),
+                chunk_seq,
+                reason: "P2P offline — no tileset transfer available".to_string(),
+            },
+        );
+        return;
+    };
+    let tileset_id = tileset_id.to_string();
+    let evt_tx = evt_tx.clone();
+    tokio::spawn(async move {
+        match transfer.fetch_chunk(&tileset_id, chunk_seq).await {
+            Ok(chunk) => send_sync_event(
+                &evt_tx,
+                SyncEvent::ChunkReceived {
+                    tileset_id,
+                    chunk_seq,
+                    path: chunk.path,
+                    byte_len: chunk.byte_len,
+                },
+            ),
+            Err(e) => send_sync_event(
+                &evt_tx,
+                SyncEvent::ChunkFailed {
+                    tileset_id,
+                    chunk_seq,
+                    reason: e.to_string(),
+                },
+            ),
+        }
+    });
 }
 
-/// Handle [`SyncCommand::RequestChunk`].
-///
-/// Requests a chunk from a peer via iroh-blobs.
-/// This is a stub - full implementation would use actual blob transfer.
-fn handle_request_chunk(peer_id: &str, tileset_id: &str, chunk_seq: u32, evt_tx: &SyncEventSender) {
-    tracing::debug!(peer_id = %peer_id, tileset_id = %tileset_id, chunk_seq, "RequestChunk (stub)");
-
-    // Stub: emit failure since we can't actually transfer
-    send_sync_event(
-        evt_tx,
-        SyncEvent::ChunkFailed {
-            tileset_id: tileset_id.to_string(),
-            chunk_seq,
-            reason: "chunk transfer not implemented in stub".to_string(),
-        },
-    );
+/// Handle [`SyncCommand::CancelTilesetDownload`]. Spawned (never awaited
+/// inline) — `TilesetTransfer::cancel` does filesystem work.
+fn handle_cancel_tileset_download(transfer: &Option<Arc<TilesetTransfer>>, tileset_id: String) {
+    let Some(transfer) = transfer.clone() else {
+        tracing::debug!(tileset_id, "CancelTilesetDownload ignored — P2P offline");
+        return;
+    };
+    tokio::spawn(async move {
+        match transfer.cancel(&tileset_id).await {
+            Ok(()) => tracing::info!(tileset_id, "Cancelled tileset download"),
+            Err(e) => tracing::warn!(tileset_id, "Cancel tileset download failed: {e}"),
+        }
+    });
 }
 
-/// Handle [`SyncCommand::CancelTilesetDownload`].
-///
-/// Cancels an in-progress tileset download.
-fn handle_cancel_tileset_download(download_tracker: &mut TilesetDownloadTracker, tileset_id: &str) {
-    if let Some((peer_id, chunk_seq)) = download_tracker.cancel(tileset_id) {
-        tracing::info!(tileset_id, peer_id = %peer_id, chunk_seq, "Cancelled tileset download");
-    } else {
-        tracing::debug!(tileset_id, "CancelTilesetDownload: no active download");
-    }
+/// Handle [`SyncCommand::PublishTileset`]: publish, then broadcast an ad on
+/// every currently-joined verse topic. Spawned (never awaited inline).
+fn spawn_publish_tileset(
+    transfer: Option<Arc<TilesetTransfer>>,
+    evt_tx: SyncEventSender,
+    gossip_senders: HashMap<String, TopicSender>,
+    provider_addr: Option<String>,
+    tileset_id: String,
+    index_path: PathBuf,
+    bundle_paths: Vec<PathBuf>,
+) {
+    let Some(transfer) = transfer else {
+        tracing::debug!(tileset_id, "PublishTileset ignored — P2P offline");
+        return;
+    };
+    tokio::spawn(async move {
+        match transfer
+            .publish_files(&tileset_id, &index_path, &bundle_paths)
+            .await
+        {
+            Ok(entry) => {
+                tracing::info!(tileset_id = %entry.tileset_id, bundles = entry.total_chunks, "Tileset published");
+                send_sync_event(
+                    &evt_tx,
+                    SyncEvent::TilesetPublished {
+                        tileset_id: entry.tileset_id.clone(),
+                        root_hash: hash_to_hex(&entry.root),
+                    },
+                );
+                match provider_addr {
+                    Some(addr) => {
+                        broadcast_ads_to_all_verses(
+                            &gossip_senders,
+                            &[tileset_ad_from_catalog_entry(&entry, &addr)],
+                        )
+                        .await;
+                    }
+                    None => tracing::debug!(
+                        tileset_id = %entry.tileset_id,
+                        "Published but no dialable address yet — not advertised"
+                    ),
+                }
+            }
+            Err(e) => tracing::warn!(tileset_id, "Tileset publish failed: {e}"),
+        }
+    });
+}
+
+/// Handle [`SyncCommand::UnpublishTileset`]. Spawned (never awaited inline).
+fn spawn_unpublish_tileset(transfer: Option<Arc<TilesetTransfer>>, tileset_id: String) {
+    let Some(transfer) = transfer else {
+        tracing::debug!(tileset_id, "UnpublishTileset ignored — P2P offline");
+        return;
+    };
+    tokio::spawn(async move {
+        match transfer.unpublish(&tileset_id).await {
+            Ok(was_published) => tracing::info!(tileset_id, was_published, "Tileset unpublished"),
+            Err(e) => tracing::warn!(tileset_id, "Tileset unpublish failed: {e}"),
+        }
+    });
 }
 
 #[cfg(test)]
@@ -2974,55 +3542,17 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // Phase 5: Tileset P2P Tests (TDD)
+    // Phase 5 / PAS-P3 S3: Tileset P2P Tests
     // -------------------------------------------------------------------------
-
-    #[test]
-    fn tileset_download_tracker_new() {
-        let tracker = TilesetDownloadTracker::new();
-        assert!(tracker.active.is_empty(), "new tracker should be empty");
-    }
-
-    #[test]
-    fn tileset_download_tracker_start_and_cancel() {
-        let mut tracker = TilesetDownloadTracker::new();
-
-        // Start a download
-        tracker.start("ts-001".to_string(), "peer-a".to_string(), 0);
-        assert!(
-            tracker.get("ts-001").is_some(),
-            "download should be tracked"
-        );
-
-        // Cancel it
-        let result = tracker.cancel("ts-001");
-        assert!(result.is_some(), "cancel should return the download info");
-        assert!(
-            tracker.get("ts-001").is_none(),
-            "download should be removed after cancel"
-        );
-    }
-
-    #[test]
-    fn tileset_download_tracker_cancel_nonexistent() {
-        let mut tracker = TilesetDownloadTracker::new();
-
-        // Cancel something that doesn't exist
-        let result = tracker.cancel("ts-nonexistent");
-        assert!(
-            result.is_none(),
-            "canceling non-existent should return None"
-        );
-    }
 
     #[test]
     fn handle_advertise_tilesets_no_host_is_noop() {
         let gossip_host: Option<Gossip> = None;
         let gossip_senders: HashMap<String, TopicSender> = HashMap::new();
+        let transfer: Option<Arc<TilesetTransfer>> = None;
 
-        let ads_json = r#"[{"tileset_id": "ts-001", "chunk_count": 10, "size_bytes": 1000}]"#;
-
-        // Should not panic, just skip
+        // Should not panic, just skip (no gossip host at all — the
+        // "no transfer" and "no transfer" paths are table-tested below).
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -3030,9 +3560,204 @@ mod tests {
         rt.block_on(handle_advertise_tilesets(
             &gossip_host,
             &gossip_senders,
-            ads_json,
+            &transfer,
+            None,
             "verse-1",
         ));
+    }
+
+    #[test]
+    fn provider_map_sorts_authenticated_first_and_upgrades_in_place() {
+        let mut map = TilesetProviderMap::default();
+        let hint = ProviderRef::new("hint-addr");
+        let real = ProviderRef::new("real-addr");
+        map.record("ts-1".to_string(), hint.clone(), [1u8; 32], false, 10);
+        map.record("ts-1".to_string(), real.clone(), [2u8; 32], true, 20);
+
+        let candidates = map.candidates("ts-1");
+        assert_eq!(candidates, vec![real.clone(), hint.clone()]);
+        // The authenticated entry's root wins `root_for` (first == authenticated-first).
+        assert_eq!(map.root_for("ts-1"), Some([2u8; 32]));
+        assert_eq!(map.bytes_for("ts-1"), 20);
+
+        // A later UNauthenticated re-ad of the same provider never demotes it.
+        map.record("ts-1".to_string(), real, [2u8; 32], false, 25);
+        assert_eq!(map.candidates("ts-1")[0], ProviderRef::new("real-addr"));
+
+        assert!(map.candidates("ts-unknown").is_empty());
+        assert_eq!(map.root_for("ts-unknown"), None);
+        assert_eq!(map.bytes_for("ts-unknown"), 0);
+    }
+
+    #[test]
+    fn resolve_providers_prefers_explicit_override_and_dedupes() {
+        let mut map = TilesetProviderMap::default();
+        let known = ProviderRef::new("known-addr");
+        map.record("ts-1".to_string(), known.clone(), [3u8; 32], true, 0);
+
+        // An explicit override that is ALSO already known appears once, first.
+        let resolved = resolve_providers(&map, "ts-1", Some("known-addr"));
+        assert_eq!(resolved, vec![known.clone()]);
+
+        // A brand-new override is prepended ahead of the known candidate.
+        let explicit_new = resolve_providers(&map, "ts-1", Some("override-addr"));
+        assert_eq!(explicit_new, vec![ProviderRef::new("override-addr"), known]);
+
+        // No root known at all -> an honest named error, not an empty Ok.
+        assert_eq!(
+            resolve_providers_and_root(&map, "ts-unknown", None),
+            Err("no advertised root for this tileset yet")
+        );
+    }
+
+    /// Flow test (S3 plan): direct + matching provider -> authenticated;
+    /// relayed -> hint; malformed input never authenticates; a non-ad JSON
+    /// frame (shaped like a `ComputeEnvelope`) decodes to `None` so it falls
+    /// through to `handle_gossip_incoming` unchanged.
+    #[test]
+    fn tileset_ad_codec_and_authentication_table() {
+        let compute_frame = serde_json::to_vec(&serde_json::json!({
+            "type": "response",
+            "request_id": "r-1",
+            "from_did": "did:key:somebody",
+            "partial": {
+                "per_shard": [],
+                "rows": [],
+                "failed": false,
+            },
+        }))
+        .unwrap();
+        assert!(
+            decode_tileset_ad(&compute_frame).is_none(),
+            "a `type`-tagged compute envelope must never decode as a tileset ad"
+        );
+        assert!(decode_tileset_ad(b"not json at all").is_none());
+
+        let alice = iroh::SecretKey::from_bytes(&[101u8; 32]).public();
+        let bob = iroh::SecretKey::from_bytes(&[102u8; 32]).public();
+        let alice_addr = iroh::EndpointAddr::new(alice);
+        let provider_json = serde_json::to_string(&alice_addr).unwrap();
+
+        let ad = TilesetAd {
+            kind: TILESET_AD_KIND.to_string(),
+            tileset_id: "ts-1".to_string(),
+            root_hash: hash_to_hex(&[7u8; 32]),
+            total_chunks: 3,
+            approx_bytes: 999,
+            provider_addr: provider_json.clone(),
+        };
+        let decoded = decode_tileset_ad(&serde_json::to_vec(&ad).unwrap())
+            .expect("a well-formed tileset_ad frame decodes");
+        assert_eq!(decoded, ad);
+
+        for (direct, claimed, from, expected, label) in [
+            (
+                true,
+                provider_json.as_str(),
+                alice,
+                true,
+                "direct + matching provider",
+            ),
+            (
+                true,
+                provider_json.as_str(),
+                bob,
+                false,
+                "direct but a different sender — forged",
+            ),
+            (
+                false,
+                provider_json.as_str(),
+                alice,
+                false,
+                "relayed — claim-based, never authenticated",
+            ),
+            (true, "not-json", alice, false, "malformed provider address"),
+        ] {
+            assert_eq!(
+                tileset_ad_is_authenticated(direct, claimed, from),
+                expected,
+                "{label}"
+            );
+        }
+    }
+
+    /// Flow test (S3 plan): a sync thread with no `TilesetTransfer` (virtual
+    /// transport, so no `DocsStack`) answers `DownloadTileset`/`RequestChunk`
+    /// honestly instead of hanging or silently dropping the command. The
+    /// real two-peer download flow is S4's harness scenario.
+    #[test]
+    fn offline_thread_answers_tileset_commands_honestly() {
+        let _env_guard = SYNC_THREAD_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let p2p_dir = hermetic_p2p_env();
+        let store: BlobStoreHandle = Arc::new(MockBlobStore::new());
+        let secret = iroh::SecretKey::from_bytes(&[103u8; 32]);
+        let (cmd_tx, cmd_rx) = crossbeam::channel::bounded(8);
+        let (evt_tx, evt_rx) = crossbeam::channel::bounded(16);
+        let factory = Arc::new(FakeTransportFactory {
+            replica: Arc::new(MockVerseReplicator::new("did:key:virtual-offline")),
+            opened: std::sync::atomic::AtomicUsize::new(0),
+        });
+
+        let handle = spawn_sync_thread_with_transport(
+            secret,
+            store,
+            cmd_rx,
+            evt_tx,
+            "did:key:virtual-offline".to_string(),
+            None,
+            Some(p2p_dir.path().to_path_buf()),
+            Some(factory),
+        );
+        let started = evt_rx.recv_timeout(std::time::Duration::from_secs(15));
+        assert!(matches!(started, Ok(SyncEvent::Started { .. })));
+        let _health = evt_rx.recv_timeout(std::time::Duration::from_secs(2));
+
+        cmd_tx
+            .send(SyncCommand::DownloadTileset {
+                tileset_id: "ts-virtual".to_string(),
+                provider: None,
+            })
+            .unwrap();
+        match evt_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(SyncEvent::TilesetMetaReceived {
+                tileset_id,
+                meta_json,
+                root_hash,
+                chunk_hashes,
+                ..
+            }) => {
+                assert_eq!(tileset_id, "ts-virtual");
+                assert!(meta_json.contains("offline"), "got: {meta_json}");
+                assert!(root_hash.is_empty());
+                assert!(chunk_hashes.is_empty());
+            }
+            other => panic!("expected an honest offline TilesetMetaReceived, got {other:?}"),
+        }
+
+        cmd_tx
+            .send(SyncCommand::RequestChunk {
+                peer_id: String::new(),
+                tileset_id: "ts-virtual".to_string(),
+                chunk_seq: 0,
+                provider: None,
+            })
+            .unwrap();
+        match evt_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(SyncEvent::ChunkFailed {
+                tileset_id, reason, ..
+            }) => {
+                assert_eq!(tileset_id, "ts-virtual");
+                assert!(reason.contains("offline"), "got: {reason}");
+            }
+            other => panic!("expected an honest offline ChunkFailed, got {other:?}"),
+        }
+
+        cmd_tx.send(SyncCommand::Shutdown).unwrap();
+        handle.join().expect("sync thread panicked");
+        restore_p2p_env();
     }
 
     // -------------------------------------------------------------------------

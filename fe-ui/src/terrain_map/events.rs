@@ -111,6 +111,7 @@ pub(crate) fn drain_tileset_events(
                             peer_id: String::new(),
                             tileset_id,
                             chunk_seq: 0,
+                            provider: None,
                         })
                         .ok();
                 }
@@ -118,9 +119,15 @@ pub(crate) fn drain_tileset_events(
             fe_sync::SyncEvent::ChunkReceived {
                 tileset_id,
                 chunk_seq,
-                chunk_bytes,
+                byte_len,
+                ..
             } => {
-                let chunk_size = chunk_bytes.len() as u64;
+                // S3 wire change: the bundle bytes now land on disk
+                // (`path`) rather than traveling through this channel; this
+                // view-updater only needs the size for progress accounting.
+                // S4 rewrites this module into a real view updater that
+                // reads `path` off disk when assembling.
+                let chunk_size = byte_len;
                 let mut request_next = None;
 
                 if let ActiveDialog::HexonManager {
@@ -149,6 +156,7 @@ pub(crate) fn drain_tileset_events(
                             peer_id: String::new(),
                             tileset_id: ts_id,
                             chunk_seq: next_seq,
+                            provider: None,
                         })
                         .ok();
                 }

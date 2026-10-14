@@ -3,6 +3,8 @@
 //! The main thread sends [`SyncCommand`]s to the sync thread over a crossbeam
 //! channel; the sync thread sends [`SyncEvent`]s back.
 
+use std::path::PathBuf;
+
 use fe_runtime::blob_store::BlobHash;
 
 use crate::relay_config::RelayHealth;
@@ -51,20 +53,50 @@ pub enum SyncCommand {
     SubscribePetal { petal_id: String },
     /// Unsubscribe from petal-level replication for a specific petal.
     UnsubscribePetal { petal_id: String },
-    /// Advertise locally-seeding tilesets to connected peers.
+    /// Re-broadcast this node's published-tileset catalog to a verse's gossip
+    /// topic (S3). `advertisements_json` is accepted for wire back-compat
+    /// (fe-ui still sends `""`) but ignored: outbound ads are always built
+    /// from [`crate::tileset_transfer::TilesetTransfer`]'s catalog, never
+    /// from the payload — see `AGENTS.md` §tileset-transfer.
     AdvertiseTilesets {
         /// The verse to broadcast to.
         verse_id: String,
-        /// Serialized JSON of `Vec<TilesetAdvertisement>` from fe-terrain.
+        /// Unused (kept for wire back-compat); see the variant doc comment.
         advertisements_json: String,
     },
-    /// Request tileset metadata from a specific peer.
+    /// Publish (seed) a bundled tileset: a HashSeq `[index, bundle_0 …
+    /// bundle_n]` tagged in the local blob store and advertised to peers.
+    /// `index_path`/`bundle_paths` are an S1 bundle set already on disk.
+    PublishTileset {
+        tileset_id: String,
+        index_path: PathBuf,
+        bundle_paths: Vec<PathBuf>,
+    },
+    /// Stop publishing (seeding) a previously-published tileset.
+    UnpublishTileset { tileset_id: String },
+    /// Download a tileset end to end: resolve its HashSeq root from an
+    /// advertised provider (or `provider` when given), then fetch every
+    /// bundle, emitting progress as `ChunkReceived`/`ChunkFailed` and
+    /// `TilesetDownloadComplete` on success.
+    DownloadTileset {
+        tileset_id: String,
+        /// Explicit provider override (an `EndpointAddr` JSON string);
+        /// `None` uses every provider this node has seen advertise the
+        /// tileset.
+        provider: Option<String>,
+    },
+    /// Request tileset metadata from a specific peer (the lower-level
+    /// primitive `DownloadTileset` builds on; does not fetch any bundle).
     RequestTilesetMeta { peer_id: String, tileset_id: String },
     /// Request a single chunk from a specific peer.
     RequestChunk {
         peer_id: String,
         tileset_id: String,
         chunk_seq: u32,
+        /// Explicit provider override (S7 fetches single streaming bundles
+        /// for a not-yet-installed tileset); `None` uses the tileset's
+        /// already-resolved providers from a prior `RequestTilesetMeta`.
+        provider: Option<String>,
     },
     /// Cancel an in-progress tileset download.
     CancelTilesetDownload { tileset_id: String },
@@ -157,27 +189,61 @@ pub enum SyncEvent {
         /// Serialized JSON of `Vec<TilesetAdvertisement>` from fe-terrain.
         advertisements_json: String,
     },
-    /// Tileset metadata received from a peer.
+    /// Tileset metadata resolved (or failed to resolve) for a tileset.
+    ///
+    /// On success `root_hash`/`chunk_hashes` are non-empty and `index_path`
+    /// names the verified index blob on disk; `meta_json` carries the
+    /// opaque `TilesetBundleIndex` JSON (fe-sync never parses fe-format
+    /// types). On failure every new field is empty/zero and `meta_json`
+    /// carries `{"error": "..."}` (the honest-failure shape, S3).
     TilesetMetaReceived {
         peer_id: String,
         tileset_id: String,
-        /// Serialized JSON of `TilesetMeta` from fe-format.
         meta_json: String,
         total_chunks: u32,
         approx_size_bytes: u64,
+        /// HashSeq root (hex); empty when resolution failed.
+        root_hash: String,
+        /// Per-bundle BLAKE3 hashes (hex); `chunk_hashes[seq]` is bundle `seq`.
+        chunk_hashes: Vec<String>,
+        /// Where the verified index blob landed on disk; empty when
+        /// resolution failed.
+        index_path: PathBuf,
     },
-    /// A chunk has been received from a peer.
+    /// A bundle has been fetched, verified and written to disk.
     ChunkReceived {
         tileset_id: String,
         chunk_seq: u32,
-        /// Raw `.hexon` chunk archive bytes.
-        chunk_bytes: Vec<u8>,
+        /// `downloads/<id>/<seq>.bundle` — read the bytes from disk; they
+        /// never travel through this channel (no MBs through Bevy events).
+        path: std::path::PathBuf,
+        /// The bundle's size in bytes.
+        byte_len: u64,
     },
     /// A chunk download has failed.
     ChunkFailed {
         tileset_id: String,
         chunk_seq: u32,
         reason: String,
+    },
+    /// Every bundle of a tileset download is on disk and verified.
+    TilesetDownloadComplete {
+        tileset_id: String,
+        index_path: PathBuf,
+        bundle_paths: Vec<PathBuf>,
+    },
+    /// This node published (started seeding) a tileset.
+    TilesetPublished {
+        tileset_id: String,
+        root_hash: String,
+    },
+    /// A previously in-progress download was found on disk at startup
+    /// (`TilesetTransfer::pending_downloads`) and is being resumed —
+    /// fetching only what verified files don't already cover.
+    TilesetDownloadResumed {
+        tileset_id: String,
+        received: u32,
+        total: u32,
     },
     /// A verse replica's document failed to open **while the P2P stack was
     /// online** (F20/M1 finding 4).
@@ -477,8 +543,29 @@ mod tests {
             peer_id: "did:key:z6Mk123".into(),
             tileset_id: "ts-001".into(),
             chunk_seq: 0,
+            provider: None,
         };
         let _ = format!("{:?}", cmd.clone());
+    }
+
+    #[test]
+    fn publish_tileset_debug_clone() {
+        let cmd = SyncCommand::PublishTileset {
+            tileset_id: "ts-001".into(),
+            index_path: PathBuf::from("index.json"),
+            bundle_paths: vec![PathBuf::from("0.bundle")],
+        };
+        let _ = format!("{:?}", cmd.clone());
+    }
+
+    #[test]
+    fn download_tileset_debug_clone() {
+        let cmd = SyncCommand::DownloadTileset {
+            tileset_id: "ts-001".into(),
+            provider: Some("did:key:z6Mk123".into()),
+        };
+        let dbg = format!("{:?}", cmd.clone());
+        assert!(dbg.contains("DownloadTileset"));
     }
 
     #[test]
@@ -531,21 +618,93 @@ mod tests {
         let ev = SyncEvent::ChunkReceived {
             tileset_id: "ts-001".into(),
             chunk_seq: 2,
-            chunk_bytes: vec![0u8; 64],
+            path: PathBuf::from("downloads/ts-001/2.bundle"),
+            byte_len: 64,
         };
         match &ev {
             SyncEvent::ChunkReceived {
                 tileset_id,
                 chunk_seq,
-                chunk_bytes,
+                path,
+                byte_len,
             } => {
                 assert_eq!(tileset_id, "ts-001");
                 assert_eq!(*chunk_seq, 2);
-                assert_eq!(chunk_bytes.len(), 64);
+                assert_eq!(path, &PathBuf::from("downloads/ts-001/2.bundle"));
+                assert_eq!(*byte_len, 64);
             }
             _ => panic!("expected ChunkReceived"),
         }
         let _ = format!("{:?}", ev.clone());
+    }
+
+    #[test]
+    fn tileset_meta_received_carries_resolved_fields() {
+        let ev = SyncEvent::TilesetMetaReceived {
+            peer_id: "did:key:z6Mk123".into(),
+            tileset_id: "ts-001".into(),
+            meta_json: "{}".into(),
+            total_chunks: 3,
+            approx_size_bytes: 300,
+            root_hash: "ab".repeat(32),
+            chunk_hashes: vec!["cd".repeat(32)],
+            index_path: PathBuf::from("downloads/ts-001/index.json"),
+        };
+        match &ev {
+            SyncEvent::TilesetMetaReceived {
+                root_hash,
+                chunk_hashes,
+                index_path,
+                ..
+            } => {
+                assert_eq!(root_hash.len(), 64);
+                assert_eq!(chunk_hashes.len(), 1);
+                assert_eq!(index_path, &PathBuf::from("downloads/ts-001/index.json"));
+            }
+            _ => panic!("expected TilesetMetaReceived"),
+        }
+        let _ = format!("{:?}", ev.clone());
+    }
+
+    #[test]
+    fn tileset_download_complete_debug_clone() {
+        let ev = SyncEvent::TilesetDownloadComplete {
+            tileset_id: "ts-001".into(),
+            index_path: PathBuf::from("downloads/ts-001/index.json"),
+            bundle_paths: vec![PathBuf::from("downloads/ts-001/0.bundle")],
+        };
+        let dbg = format!("{:?}", ev.clone());
+        assert!(dbg.contains("TilesetDownloadComplete"));
+    }
+
+    #[test]
+    fn tileset_published_debug_clone() {
+        let ev = SyncEvent::TilesetPublished {
+            tileset_id: "ts-001".into(),
+            root_hash: "ab".repeat(32),
+        };
+        let dbg = format!("{:?}", ev.clone());
+        assert!(dbg.contains("TilesetPublished"));
+    }
+
+    #[test]
+    fn tileset_download_resumed_debug_clone() {
+        let ev = SyncEvent::TilesetDownloadResumed {
+            tileset_id: "ts-001".into(),
+            received: 2,
+            total: 5,
+        };
+        let dbg = format!("{:?}", ev.clone());
+        assert!(dbg.contains("TilesetDownloadResumed"));
+        match ev {
+            SyncEvent::TilesetDownloadResumed {
+                received, total, ..
+            } => {
+                assert_eq!(received, 2);
+                assert_eq!(total, 5);
+            }
+            _ => panic!("expected TilesetDownloadResumed"),
+        }
     }
 
     #[test]

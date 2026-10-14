@@ -114,17 +114,20 @@ API map (0.35 → 1.x) for the seams fe-sync uses:
   queue until a neighbor is available). Unsigned transform broadcasts are
   intentionally absent.
 
-**Inbound consumption is live for the compute plane (F7/F9).** The
-distributed-query fan-out (`distributed_query.rs::handle_gossip_incoming`,
-real and virtual transports alike) drains the verse's gossip topic for
-`ComputeEnvelope` request/response frames. Tileset advertisement, which
-rides the SAME topic, remains outbound-only: `handle_advertise_tilesets`
-broadcasts but no inbound handler parses a `TilesetAdvertisement` frame, and
-the `SyncEvent::PeerTilesetAdvertisement` / `SyncEvent::NodeTransformed`
-variants `status.rs` drains defensively are never actually emitted anywhere
-in this crate — dead wire-format placeholders, not a live path. Inbound
-*connections* are routed by the stack's `Router`, which accepts
-`iroh_gossip::ALPN` (`/iroh-gossip/1`).
+**Inbound consumption is live for the compute plane (F7/F9) AND the tileset
+plane (PAS-P3 S3).** The distributed-query fan-out
+(`distributed_query.rs::handle_gossip_incoming`, real and virtual transports
+alike) drains the verse's gossip topic for `ComputeEnvelope` request/response
+frames (tagged `type`). Tileset advertisement rides the SAME topic, tagged
+`kind` instead — `decode_tileset_ad` is tried FIRST in the `gossip_inbound_rx`
+select branch; a hit is handled by `handle_inbound_tileset_ad` (records the
+provider, emits `SyncEvent::PeerTilesetAdvertisement`) and never reaches
+`handle_gossip_incoming`; a miss (any other frame shape — a compute envelope,
+garbage, or a pre-S3 build's frame) falls through unchanged. `SyncEvent::
+NodeTransformed` remains the one variant nothing in this crate ever emits
+(the comment below still marks a future capability). Inbound *connections*
+are routed by the stack's `Router`, which accepts `iroh_gossip::ALPN`
+(`/iroh-gossip/1`).
 
 ### iroh-docs 0.101 — stack and replicators both real (A1/A2); mock is offline-only
 
@@ -1115,4 +1118,76 @@ caps (`MAX_INDEX_BYTES`, `MAX_CHUNK_BYTES`, `MAX_HASH_SEQ_CHILDREN`) are
 checked after a fetch, so an oversized advertised blob is refused before it
 reaches disk. On iroh it can still land in the blob store first (S8b scope).
 All filesystem work runs on `spawn_blocking` (§sync-thread-blocking-io / NFR-3).
-The sync-thread wiring (commands, events, advertisements) is S3.
+
+### Sync-thread wiring (PAS-P3 S3, `sync_thread.rs`)
+
+**One `TilesetTransfer` per online stack.** Built right after `DocsStack`
+spawns (`Arc<dyn BlobTransport> = IrohBlobTransport::from_stack(&stack)`,
+`TilesetTransfer::for_p2p_dir(transport, &p2p_dir)`); `None` in offline or
+virtual-transport mode. Every tileset command handler takes `&Option<Arc<
+TilesetTransfer>>` and answers the offline case honestly (a
+`TilesetMetaReceived`/`ChunkFailed` whose reason says `"P2P offline"`) rather
+than hanging or silently dropping — this is what keeps the command loop
+byte-identical between the real and virtual transports (§virtual-transport).
+At startup a spawned task rebuilds the catalog from persisted `fe/tileset/`
+tags (`catalog_from_tags`), reports what `pending_downloads` finds as
+`SyncEvent::TilesetDownloadResumed` (received/total BEFORE anything is
+re-fetched), then runs `resume_all` to actually finish them.
+
+**The select! loop never awaits a transfer inline.** Every handler that
+calls into `TilesetTransfer` (`publish_files`, `unpublish`, `request_meta`,
+`download`, `fetch_chunk`, `cancel` — all bounded by `CONNECT_TIMEOUT`/
+`FETCH_TIMEOUT`/`LOCAL_STORE_TIMEOUT`, up to 60s) runs inside a `tokio::spawn`
+the match arm fires and returns from immediately; only the gossip broadcast
+helpers (`handle_advertise_tilesets`, `broadcast_ads_on`) stay awaited
+inline, like every other lightweight gossip send in this file. Per-bundle
+progress (`TransferEvent::{ChunkStored,ChunkFailed,Complete}`) is forwarded
+to `SyncEvent`s by `pump_transfer_progress`, spawned alongside the operation
+over a fresh one-shot `UnboundedChannel` — not a single long-lived channel
+routed through the main `select!`, since nothing in the invariant requires
+that and a per-operation channel is simpler to reason about.
+
+**`TilesetProviderMap`** (`tileset_id -> known providers`, authenticated
+ones sorted first, replaces the dead Phase-F.5 `TilesetDownloadTracker`
+HashMap) is what `RequestTilesetMeta`/`DownloadTileset` resolve a root +
+candidate providers from — session-only, never persisted (the durable state
+is `TilesetTransfer`'s own ledger/catalog). An explicit provider override
+(`RequestTilesetMeta.peer_id`, `DownloadTileset.provider`) is tried first,
+then every advertised provider. **`RequestChunk.provider` is accepted on the
+wire but not yet consulted** (`handle_request_chunk`'s doc comment) — a
+chunk fetch always rides the ledger a prior meta resolution already built.
+This is not a gap for S7 (whose streamed source always resolves meta
+before requesting a chunk); it only matters for a provider-only chunk
+request with no prior meta resolution, which no caller does today.
+
+**Advertisements, both directions:**
+- *Outbound* (`handle_advertise_tilesets`) is always built from the
+  published catalog, never from `AdvertiseTilesets.advertisements_json`
+  (kept on the wire for back-compat; fe-ui still sends `""`). `PublishTileset`
+  additionally broadcasts its one new ad on **every currently-joined verse
+  topic** (`broadcast_ads_to_all_verses`) — publish has no single verse to
+  target.
+- *Inbound*: `decode_tileset_ad` is tried before `handle_gossip_incoming`
+  (§iroh-1.x). Admission mirrors the §transport-admission-control item 2
+  pattern: `tileset_ad_is_authenticated(direct, claimed_provider_addr, from)`
+  is true only when the delivery was direct AND the ad's own
+  `provider_addr` parses to the authenticated sender's `EndpointId`.
+  Unauthenticated ads still record (ordered after authenticated ones by
+  `TilesetProviderMap::record`, and an authenticated re-ad upgrades a
+  provider in place but a later unauthenticated one never downgrades it) —
+  they are hints that can only affect try-order, never skip the per-bundle
+  BLAKE3 check `TilesetTransfer` runs regardless (Risk 1 in the campaign
+  plan — the real fix is D-76 D2 in PAS-P5).
+- The dead three-field `TilesetAdvertisement` struct is gone; `TilesetAd`
+  (tagged `kind: "tileset_ad"`, distinct from `ComputeEnvelope`'s `type` tag
+  so the two decoders can never collide on one topic) is the only wire
+  shape fe-sync emits or parses. fe-ui's richer fe-terrain-shaped DTO
+  (region_name/bounds/zoom) still reads a `PeerTilesetAdvertisement` payload
+  that only carries `tileset_id`/`root_hash`/`total_chunks`/
+  `approx_size_bytes` today — it degrades gracefully (its `.get(..)
+  .unwrap_or(default)` reads), and S4 aligns the two shapes.
+
+**PAS-P1V:** `status.rs::drain_sync_events`'s `RelayHealthChanged` arm now
+logs one unconditional `info!` before its existing problem/no-problem
+branch, so the headless relay-health script has a reliable info-level line
+to grep in every mode (`Disabled` included), not only the non-problem ones.
