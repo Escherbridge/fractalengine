@@ -89,3 +89,10 @@ convention) needs a guarded newtype before SPEC10 A3.
 | AC-16 | MED | Script's S9 edits ledger rows the plan says it must not; omits spec.md strike, root AGENTS lines, D-77 drift note, evidence.md §6; ledger commit-collision risk | **ACCEPT with OVERRIDE of the plan text**: S9 may edit the 4 ledger rows (ledger accuracy needs it) because every docs lane commits before S9 starts; from now on docs lanes commit with `git commit -m … -- <paths>` (never stage-then-bare-commit while W1 runs); S9 coverage of plan steps 1–6 checked at W1 close |
 | AC-17 | MED | Script halts only on agent death, never on a red gate; per-slice clippy misses crates slices touch | **ACCEPT** → each W1 slice result is checked as it lands (journal waiter); red gate → TaskStop + relaunch remaining slices from HEAD. P5/W4/SPEC10 scripts get a required `gate_green` field + halt, and workspace-wide clippy per slice |
 | AC-18 | LOW | AC-12 still open (trigger never fired); review-ledger rows W0b/W0c/W0d/ticks 2–3; stale ledger/RUNBOOK lines; no durable final-sweep manifest; DB-READER-RO row; durability-env doc line | **ACCEPT** → haiku docs lane now (commits with `-- <paths>`); S8b + final-review must-cover appended to the manifest at W1 close |
+
+**Automated commit security review (S3 `e5d8928`), MEDIUM→HIGH, CONFIRMED by reading the code:**
+`TilesetProviderMap::record` (`fe-sync/src/sync_thread.rs` ~2180-2184) lets an unauthenticated (relayed)
+ad overwrite an authenticated provider's `root`/`advertised_bytes`; `root_for` (~2204) feeds that root to
+downloads → content poisoning. Disposition: **routed into W1 S8b as a MANDATORY fix + regression test**
+(`8442e68` writes it into the plan's S8b section, which S8b reads) rather than editing fe-sync while S4's
+cargo build runs (house rule). Verify at W1 close; if S8b misses it, fix before W1 is declared done.
