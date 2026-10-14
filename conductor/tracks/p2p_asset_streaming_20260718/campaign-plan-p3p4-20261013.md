@@ -751,6 +751,18 @@ pointing at real S1 bundle files):
 
 ### S8b — Adversarial SECURITY review-and-fix (critic-added) · size M · opus, fresh context
 
+> **MANDATORY KNOWN FINDING (added 2026-10-13 by the orchestrator, from an automated commit security
+> review of S3 `e5d8928`) — S8b MUST fix this and add a regression test:** `TilesetProviderMap::record`
+> (`fe-sync/src/sync_thread.rs` ~2180-2184) lets an UNAUTHENTICATED (relayed) advertisement that names an
+> already-authenticated provider overwrite that entry's `root` and `advertised_bytes` while
+> `authenticated` stays `true`; `root_for` (~2204) then hands the poisoned root to the download path
+> (content poisoning — chunks verify against an attacker-chosen HashSeq root). Required: an
+> unauthenticated ad never changes `root`/`advertised_bytes` of an authenticated entry (prefer keying
+> entries by `(provider, root)` and having `root_for` return only authenticated-provider roots, falling
+> back to unauthenticated roots only when no authenticated provider exists, surfaced as such).
+> Regression flow test: authenticated ad (root A) then relayed ad for the same provider (root B) →
+> `root_for` still returns A and a download fetches A.
+
 **Why it was added:** the plan had no review step, even though RUNBOOK §7 step 3 says every
 workflow has "a reviewer that fixes". S2/S3/S4 take untrusted network input (advertisements,
 provider addresses, bundle bytes, tileset ids), S1/S4 install archives assembled from peers, and
