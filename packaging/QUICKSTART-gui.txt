@@ -1,0 +1,97 @@
+FractalEngine @@PLATFORM@@ -- Quick Start
+==========================================
+
+FractalEngine is an alpha 3D scene editor with peer-to-peer sync. This
+archive holds the desktop app, the sample models it can load, and the
+licence files.
+
+Build: @@BUILD@@
+
+
+1. Run it
+---------
+
+@@RUN@@
+
+Keep the "assets" folder next to the program. Besides holding the sample
+models, its presence tells FractalEngine that it is running from an unpacked
+download, so it keeps its database in the "data" folder next to the program
+no matter where you launch it from.
+
+
+2. What you need
+----------------
+
+@@REQUIREMENTS@@
+
+
+3. Where your data and settings live
+------------------------------------
+
+  data/fractalengine.db   Your verses, fractals, petals and nodes (SurrealDB).
+                          Created next to the program on first run.
+  data/p2p/               The peer-to-peer replica store.
+  data/panic.log          Crash details, if the app ever crashes.
+
+  Imported models (content-addressed blob store):
+      @@BLOBS@@
+  Settings (render distance, camera, relay, scale bar):
+      @@SETTINGS@@
+  Node identity key: your operating system's keychain (@@KEYCHAIN@@).
+
+To move or back up an installation, copy the whole folder, including "data".
+To start from scratch, close the app and delete the "data" folder.
+
+Upgrading from a single-file download (builds before 2026-10-13 shipped a
+bare program with no "assets" folder): that build kept its "data" folder in
+whatever directory it was launched from. To keep your verses, close both
+versions and copy that old "data" folder into this folder, replacing the
+new one if this version already created it.
+
+
+4. Network and peer-to-peer sync
+--------------------------------
+
+  * The app serves a local HTTP/WebSocket API (with MCP tools) on
+    127.0.0.1:8765. It listens on this computer only.
+  * Peer-to-peer sync uses iroh 1.x. By default it goes through n0's
+    public iroh relays, which are shared and rate-limited. For anything
+    beyond a trial, run your own iroh-relay 1.x server and point the app at
+    it, either in Settings > Network or with an environment variable:
+
+        FE_SYNC_RELAY=https://relay.example.com     (your own relay)
+        FE_SYNC_RELAY=disabled                      (LAN only, no relay)
+
+    If you set both, the environment variable wins.
+  * iroh 0.35 and iroh 1.x peers cannot talk to each other. Everyone you
+    sync with needs a build from 2026-10-11 or later.
+
+Other useful environment variables:
+
+  RUST_LOG=debug    More detailed logs on the console.
+
+
+5. Known limits (alpha)
+-----------------------
+
+  * The app is alpha software, and the files are unsigned. Windows
+    SmartScreen may warn on first launch. There is no macOS build.
+  * Op-log entries carry signature fields, but older entries hold placeholder
+    signatures. Do not rely on op-log integrity yet.
+  * Anyone who holds a verse's sharing capability can write to it. Only open
+    verses from peers you trust. A crafted model file from a peer can crash
+    the app (out of memory). See SECURITY.md in the source repository.
+  * Recent editor features have passed their automated tests but have not
+    been fully checked in the running app.
+
+
+6. Licences
+-----------
+
+FractalEngine's own code is licensed under Apache-2.0 (LICENSE-APACHE). The
+program also embeds third-party code under its own licences. In particular,
+the SurrealDB engine is under the Business Source License 1.1. See
+THIRD-PARTY-LICENSES.md. Each sample model in assets/samples carries its
+own licence and attribution, listed in assets/samples/README.md.
+
+Source, issues and documentation: https://github.com/Escherbridge/fractalengine

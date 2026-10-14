@@ -21,6 +21,16 @@ mod terrain_bridge;
 const DB_PATH: &str = "data/fractalengine.db";
 
 fn main() {
+    // Packaged build: run from the executable's folder so `data/` (database,
+    // P2P store, panic log) lands beside the binary wherever it is launched
+    // from. Before any relative path is touched. See fe-runtime src/AGENTS.md
+    // §packaged-layout.
+    if let Some(root) = fe_runtime::app::packaged_root() {
+        if let Err(error) = std::env::set_current_dir(&root) {
+            eprintln!("warning: could not enter {}: {error}", root.display());
+        }
+    }
+
     // Captures the payload of any panic (esp. in-egui-pass panics that
     // otherwise only surface as "Encountered a panic in system" + abort) to
     // `data/panic.log`. Installed first so it covers every subsequent line.

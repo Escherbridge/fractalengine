@@ -46,15 +46,23 @@ merely restate them will be deduplicated against this list.
   - 19 for `wasmtime` 29 in the dormant WASM plugin host. Each needs a major
     upgrade.
   - Several transitive advisories whose patched release would re-resolve
-    other crates: `ammonia` via surrealdb-core, `h2`, `rustls`, and
-    `webbrowser` via bevy_egui.
+    other crates: `h2`, `rustls`, and `webbrowser` via bevy_egui. (`ammonia`
+    and `quinn-proto` were upgraded to fixed releases on 2026-10-13.)
   - Advisories with no fix in the line our dependencies pin:
-    `quick-xml` 0.39 via tauri's plist reader; and `rsa` (RUSTSEC-2023-0071,
+    `quick-xml` 0.39 via tauri's plist reader; `rsa` (RUSTSEC-2023-0071,
     no upstream fix; reached only through jsonwebtoken, while FractalEngine
-    signs and verifies EdDSA only).
+    signs and verifies EdDSA only); and `ruzstd` 0.8.3 (RUSTSEC-2026-0344,
+    decompression bomb). Bevy 0.18 through 0.20 pins `ruzstd` ^0.8, and the
+    fix exists only in 0.9.1. This one is **reachable**: a GLB that embeds a
+    KTX2 texture with Zstandard supercompression is decoded by `ruzstd` when
+    it loads. A peer who can share a GLB into a verse you open can therefore
+    crash the GUI with an out-of-memory error. This is a denial of service,
+    not code execution. We will lift the ignore once a Bevy release requires
+    `ruzstd` >= 0.9.1.
 
-  CI runs `cargo deny check advisories bans sources`, so any new advisory
-  fails the lint job.
+  CI runs `cargo deny check advisories bans sources`. A new advisory shows
+  up as a warning on the lint job and in the run summary, but it does not
+  block the build or the rolling download.
 - **Peer write admission has residual gaps.** Inbound replicated rows are
   admitted on the database thread only when their author holds Editor+ at
   the verse scope (fe-policy, deny-by-default). Residuals: rows for a verse

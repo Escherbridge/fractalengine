@@ -274,6 +274,34 @@ family in `reply_kind_of_result`, so it can never satisfy an API waiter and
 just reaches Bevy messages. The DB side and the GC rules: fe-database
 src/AGENTS.md §handlers (`asset_gc`), fe-api AGENTS.md §asset-ingest.
 
+## §packaged-layout (release archives, 2026-10-13)
+
+`app.rs::packaged_root()` returns the executable's folder when an `assets/`
+directory sits beside the binary. That is the layout the release archives ship
+(`.github/workflows/build-artifacts.yml` and `release.yml` package
+`fractalengine/assets/samples/` as `assets/samples/` next to the binary). Two
+things key off it:
+
+- `file_asset_root()` gives Bevy's default file source an ABSOLUTE root:
+  `<exe dir>/assets` when packaged, else `<cwd>/fractalengine/assets` (a
+  workspace checkout run from the repo root). An absolute path bypasses Bevy's
+  own base (`BEVY_ASSET_ROOT`, then the *runtime* `CARGO_MANIFEST_DIR` that
+  `cargo run` sets, then the exe folder), which would otherwise resolve to
+  `fractalengine/fractalengine/assets` under `cargo run`.
+- The GUI binary's `main` calls `std::env::set_current_dir(packaged_root)`
+  first thing, so every CWD-relative path (`data/fractalengine.db`,
+  `data/p2p`, `data/panic.log`, the legacy `fractalengine/assets/imported`
+  backfill source) lands beside the binary no matter where it was launched
+  from. Without this, a double-click and a terminal launch from `~` would open
+  two different databases.
+
+A dev build is never "packaged": `target/{debug,release}/assets` does not
+exist, so `cargo run` behaves exactly as before. The relay does not use this:
+it is a server and keeps `FE_DB_PATH` / `FE_P2P_DIR` (CWD-relative defaults).
+Per-user state outside `data/` is unaffected: the blob store
+(`<data_local_dir>/fractalengine/blobs`), settings
+(`<config_dir>/fractalengine/settings.ron`) and the OS keychain identity.
+
 ## §sim-control (F9/A20)
 
 `sim_control.rs` — the API→fe-sim bridge seam (`SimControlCommand` in a

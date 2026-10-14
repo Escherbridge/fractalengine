@@ -1,9 +1,11 @@
 name: Release
 
 # Tag-triggered release pipeline (release_ci_20260429, plan Tasks 2.1-2.3, 2.6).
-# Builds the Linux and Windows artifact matrix, publishes a GitHub Release with
-# a SHA256SUMS manifest, and pushes the
-# relay Docker image to GHCR. Tags containing '-' (e.g. v0.3.0-rc1) publish as
+# Builds the Linux and Windows artifact matrix, packages each binary as a
+# user-facing archive (.zip on Windows, .tar.gz elsewhere: binary + runtime
+# assets + QUICKSTART.txt + licences -- scripts/package_release.py, the same
+# packaging as the rolling build in build-artifacts.yml), publishes a GitHub
+# Release with a SHA256SUMS manifest, and pushes the relay Docker image to GHCR. Tags containing '-' (e.g. v0.3.0-rc1) publish as
 # pre-releases. `workflow_dispatch` runs the builds without publishing.
 
 on:
@@ -53,11 +55,13 @@ jobs:
         run: cargo build --release --bin fractalengine --bin fe-relay
 
       - name: Package artifacts
+        shell: bash
         run: |
-          mkdir -p dist
-          strip target/release/fractalengine target/release/fe-relay
-          cp target/release/fractalengine dist/fractalengine-linux-x86_64
-          cp target/release/fe-relay dist/fe-relay-linux-x86_64
+          mkdir -p package-bin
+          cp target/release/fractalengine target/release/fe-relay package-bin/
+          strip package-bin/fractalengine package-bin/fe-relay
+          python3 scripts/package_release.py --kind gui   --platform linux-x86_64 --binary package-bin/fractalengine --out-dir dist
+          python3 scripts/package_release.py --kind relay --platform linux-x86_64 --binary package-bin/fe-relay      --out-dir dist
 
       - uses: actions/upload-artifact@v4
         with:
@@ -83,12 +87,12 @@ jobs:
       - name: Build release binaries
         run: cargo build --release --bin fractalengine --bin fe-relay
 
+      # bash, not pwsh: pwsh only checks the LAST native exit code.
       - name: Package artifacts
         shell: bash
         run: |
-          mkdir -p dist
-          cp target/release/fractalengine.exe dist/fractalengine-windows-x86_64.exe
-          cp target/release/fe-relay.exe dist/fe-relay-windows-x86_64.exe
+          python scripts/package_release.py --kind gui   --platform windows-x86_64 --binary target/release/fractalengine.exe --out-dir dist
+          python scripts/package_release.py --kind relay --platform windows-x86_64 --binary target/release/fe-relay.exe      --out-dir dist
 
       - uses: actions/upload-artifact@v4
         with:
@@ -119,9 +123,8 @@ jobs:
       - name: Package artifacts
         shell: bash
         run: |
-          mkdir -p dist
-          cp target/aarch64-pc-windows-msvc/release/fractalengine.exe \
-            dist/fractalengine-windows-aarch64.exe
+          python scripts/package_release.py --kind gui --platform windows-aarch64 \
+            --binary target/aarch64-pc-windows-msvc/release/fractalengine.exe --out-dir dist
 
       - uses: actions/upload-artifact@v4
         with:
@@ -170,10 +173,10 @@ jobs:
         run: cargo zigbuild --release --target ${{ matrix.target }} -p fractalengine-relay
 
       - name: Package artifacts
+        shell: bash
         run: |
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/fe-relay \
-            dist/fe-relay-linux-musl-${{ matrix.arch }}
+          python3 scripts/package_release.py --kind relay --platform linux-musl-${{ matrix.arch }} \
+            --binary target/${{ matrix.target }}/release/fe-relay --out-dir dist
 
       - uses: actions/upload-artifact@v4
         with:
@@ -237,9 +240,16 @@ jobs:
           merge-multiple: true
           path: release-assets
 
-      - name: Generate SHA256SUMS
+      # Fail loudly if a package is missing rather than publishing a partial set.
+      - name: Check packages + generate SHA256SUMS
         run: |
           cd release-assets
+          for f in fractalengine-linux-x86_64.tar.gz fe-relay-linux-x86_64.tar.gz \
+                   fractalengine-windows-x86_64.zip fe-relay-windows-x86_64.zip \
+                   fractalengine-windows-aarch64.zip \
+                   fe-relay-linux-musl-x86_64.tar.gz fe-relay-linux-musl-aarch64.tar.gz; do
+            [ -f "$f" ] || { echo "::error::missing package $f"; exit 1; }
+          done
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
 
@@ -249,19 +259,21 @@ jobs:
           files: release-assets/*
           prerelease: ${{ contains(github.ref_name, '-') }}
           body: |
-            ## Artifacts
+            ## Downloads
 
-            | Artifact | Platform | Type |
+            | Download | Platform | What |
             |----------|----------|------|
-            | `fractalengine-linux-x86_64` | Linux x86_64 (glibc) | GUI |
-            | `fe-relay-linux-x86_64` | Linux x86_64 (glibc) | Headless relay |
-            | `fractalengine-windows-x86_64.exe` | Windows x86_64 | GUI |
-            | `fe-relay-windows-x86_64.exe` | Windows x86_64 | Headless relay |
-            | `fractalengine-windows-aarch64.exe` | Windows ARM64 | GUI |
-            | `fe-relay-linux-musl-x86_64` | Linux x86_64 (static musl) | Headless relay |
-            | `fe-relay-linux-musl-aarch64` | Linux ARM64 (static musl) | Headless relay |
+            | `fractalengine-windows-x86_64.zip` | Windows x86_64 | Desktop app |
+            | `fractalengine-windows-aarch64.zip` | Windows ARM64 | Desktop app |
+            | `fractalengine-linux-x86_64.tar.gz` | Linux x86_64 (glibc 2.39+) | Desktop app |
+            | `fe-relay-windows-x86_64.zip` | Windows x86_64 | Headless relay |
+            | `fe-relay-linux-x86_64.tar.gz` | Linux x86_64 (glibc 2.39+) | Headless relay |
+            | `fe-relay-linux-musl-x86_64.tar.gz` | Linux x86_64 (static musl) | Headless relay |
+            | `fe-relay-linux-musl-aarch64.tar.gz` | Linux ARM64 (static musl) | Headless relay |
             | `SHA256SUMS` | — | Checksums |
 
+            Extract the whole archive and read `QUICKSTART.txt` inside it. Keep the
+            `assets` folder next to the desktop app: the app keeps its `data` folder there.
             Verify downloads with `sha256sum -c SHA256SUMS --ignore-missing`.
 
             Docker: `docker pull ghcr.io/${{ github.repository_owner }}/fractalengine-relay:${{ github.ref_name }}`

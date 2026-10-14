@@ -76,6 +76,25 @@ pub fn setup_core_systems(app: &mut App, handles: BevyHandles) {
     );
 }
 
+/// The executable's folder when it holds a packaged build (an `assets/` dir
+/// beside the binary), else `None` (see src/AGENTS.md §packaged-layout).
+pub fn packaged_root() -> Option<std::path::PathBuf> {
+    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    exe_dir.join("assets").is_dir().then_some(exe_dir)
+}
+
+/// Absolute root of Bevy's default file asset source: `<exe dir>/assets` for
+/// a packaged build, `<cwd>/fractalengine/assets` for a workspace checkout.
+pub fn file_asset_root() -> std::path::PathBuf {
+    match packaged_root() {
+        Some(root) => root.join("assets"),
+        None => std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join("fractalengine")
+            .join("assets"),
+    }
+}
+
 /// Build a full GUI application with `DefaultPlugins`, blob asset source, and
 /// the core ECS resources. The caller is responsible for adding GUI-specific
 /// plugins such as `EguiPlugin` and `FrameTimeDiagnosticsPlugin` after this
@@ -103,16 +122,9 @@ pub fn build_app(handles: BevyHandles) -> App {
         tracing::info!("Registered 'blob' asset source (BlobAssetReader)");
     }
 
-    // Override AssetPlugin's file_path so Bevy loads assets from the same
-    // directory the GLB import writer uses (`fractalengine/assets` relative
-    // to CWD). We resolve it to an ABSOLUTE path to avoid Bevy's normal
-    // CARGO_MANIFEST_DIR prefixing (which would yield
-    // `fractalengine/fractalengine/assets`) and to avoid the exe-relative
-    // fallback path when launched standalone from `target/{debug,release}/`.
-    let asset_root = std::env::current_dir()
-        .unwrap_or_else(|_| std::path::PathBuf::from("."))
-        .join("fractalengine")
-        .join("assets");
+    // Absolute file_path: bypasses Bevy's CARGO_MANIFEST_DIR / exe-dir base
+    // (src/AGENTS.md §packaged-layout).
+    let asset_root = file_asset_root();
     tracing::info!("Bevy AssetPlugin file_path = {}", asset_root.display());
     app.add_plugins(DefaultPlugins.set(bevy::asset::AssetPlugin {
         file_path: asset_root.to_string_lossy().into_owned(),

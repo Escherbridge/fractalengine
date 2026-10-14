@@ -81,14 +81,19 @@ ignore = [
     { id = "RUSTSEC-2026-0269", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
     { id = "RUSTSEC-2026-0316", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
     # Transitive: the patch release re-resolves other crates (graph change).
-    { id = "RUSTSEC-2026-0193", reason = "ammonia 4.1.2 (via surrealdb-core): 4.1.4 bumps html5ever/markup5ever — graph change" },
-    { id = "RUSTSEC-2026-0213", reason = "ammonia 4.1.2 (via surrealdb-core): 4.1.4 bumps html5ever/markup5ever — graph change" },
     { id = "RUSTSEC-2026-0258", reason = "h2 0.4.14 (via hyper/reqwest): 0.4.16 re-resolves socket2/windows-sys — graph change" },
     { id = "RUSTSEC-2026-0285", reason = "rustls 0.23.40 (via iroh/reqwest): 0.23.45 bumps aws-lc-rs/aws-lc-sys — graph change" },
     { id = "RUSTSEC-2026-0257", reason = "webbrowser 1.2.1 (via bevy_egui; Unix BROWSER env only): 1.2.2 changes its dependency set — graph change" },
     # Transitive: fixed only in a new minor/major the upstream crate has not adopted.
     { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.39 (via tauri plist, parses bundled Info.plist only): fixed in 0.41 only" },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.39 (via tauri plist, parses bundled Info.plist only): fixed in 0.41 only" },
+    # ruzstd 0.8.3 decompression bomb. bevy_image 0.18.1 (also 0.19.1, 0.20.0) pins ^0.8 and the
+    # fix is 0.9.1 only. Pulled by bevy `3d_api` (ktx2 + zstd_rust, needed by the built-in
+    # tonemapping/SMAA LUTs) and forced by bevy_egui's `zstd_rust`. EXPOSED: a GLB embedding an
+    # `image/ktx2` texture with Zstandard supercompression reaches ruzstd at load, so a peer-shared
+    # GLB can OOM-crash the GUI (DoS, not code execution). Revisit when a bevy release requires
+    # ruzstd >= 0.9.1; until then SECURITY.md "Known limitations" records it.
+    { id = "RUSTSEC-2026-0344", reason = "ruzstd 0.8.3 (via bevy_image ^0.8): fix is 0.9.1 only, no bevy release takes it; peer GLB with zstd KTX2 can OOM the GUI" },
     # Unmaintained, but a direct workspace dependency (fe-terrain baked-splat codec).
     { id = "RUSTSEC-2025-0141", reason = "bincode 1 (direct, fe-terrain splat/format.rs): unmaintained, no vulnerability; replacement is a follow-up" },
     { id = "RUSTSEC-2023-0071", reason = "rsa 0.9 (via jsonwebtoken; FE signs/verifies EdDSA only, RSA never used): no upstream fix exists" },

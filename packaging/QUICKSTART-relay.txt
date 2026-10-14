@@ -1,0 +1,72 @@
+FractalEngine relay (fe-relay) @@PLATFORM@@ -- Quick Start
+==========================================================
+
+fe-relay is FractalEngine's headless peer. It has no window, needs no GPU,
+WebView or OS keychain, and serves the HTTP/WebSocket API so that thin
+clients and automation can work with verses. Note that fe-relay is an
+application peer, NOT an iroh relay server.
+
+Build: @@BUILD@@
+
+
+1. Run it
+---------
+
+@@RUN@@
+
+By default it listens on 0.0.0.0:8765, so it is reachable from your network.
+To keep it on this machine only, set FE_BIND_ADDR=127.0.0.1:8765. Two
+endpoints let you check it is up:
+
+  GET /api/v1/health   liveness, always 200
+  GET /ready           readiness, 200 once the database answers
+
+
+2. Configuration (environment variables)
+----------------------------------------
+
+  FE_BIND_ADDR      Listen address               (default 0.0.0.0:8765)
+  FE_DB_PATH        SurrealDB store path         (default data/fractalengine.db)
+  FE_P2P_DIR        P2P replica store directory  (default data/p2p)
+  FE_CORS_ORIGINS   Allowed CORS origins         (default *)
+  FE_SYNC_RELAY     iroh relay: default | disabled | https://your-relay
+  FE_SYNC_BOOTSTRAP Peers to dial, as iroh EndpointAddr JSON, ';'-separated
+  RUST_LOG          Log level (info, debug, ...)
+
+The data paths are relative to the directory you start fe-relay from. For a
+service, set FE_DB_PATH and FE_P2P_DIR to absolute paths.
+
+Secrets come from environment variables, because the relay does not use an
+OS keychain:
+
+  FE_SECRET_FRACTALENGINE_NODE_KEYPAIR   Node identity. If unset, the node
+                                         gets a new id on every start.
+  FE_SECRET_FRACTALENGINE_SHARE_SIGNER   Share-URL signing key. If unset,
+                                         share links stop working on restart.
+
+The full reference, including per-verse namespace secrets, is in
+fractalengine-relay/README.md in the source repository.
+
+
+3. Known limits (alpha)
+-----------------------
+
+  * The relay is alpha software, and the files are unsigned.
+  * The default iroh relays are n0's public v1 fleet, which is shared and
+    rate-limited. In production, point FE_SYNC_RELAY at your own iroh-relay
+    1.x server.
+  * iroh 0.35 and iroh 1.x peers cannot talk to each other. Upgrade every
+    peer in a swarm together.
+  * Verses created over REST lose their namespace secret when the relay
+    restarts, unless you inject that secret yourself (see the README).
+
+
+4. Licences
+-----------
+
+FractalEngine's own code is licensed under Apache-2.0 (LICENSE-APACHE). The
+binary also embeds third-party code under its own licences. In particular,
+the SurrealDB engine is under the Business Source License 1.1. See
+THIRD-PARTY-LICENSES.md.
+
+Source, issues and documentation: https://github.com/Escherbridge/fractalengine

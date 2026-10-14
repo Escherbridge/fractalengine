@@ -56,6 +56,35 @@ placeholder signatures. Do not rely on op-log integrity guarantees yet.
 
 ---
 
+## Download
+
+You can get prebuilt packages without building from source. The
+[**rolling `latest` prerelease**](https://github.com/Escherbridge/fractalengine/releases/tag/latest)
+is rebuilt from every `main` commit whose Linux and Windows build jobs pass.
+Tagged `v*` releases are listed on the
+[releases page](https://github.com/Escherbridge/fractalengine/releases).
+
+| Download | Platform | What |
+|---|---|---|
+| [`fractalengine-windows-x86_64.zip`](https://github.com/Escherbridge/fractalengine/releases/download/latest/fractalengine-windows-x86_64.zip) | Windows 10/11 x64 | Desktop app |
+| [`fractalengine-linux-x86_64.tar.gz`](https://github.com/Escherbridge/fractalengine/releases/download/latest/fractalengine-linux-x86_64.tar.gz) | Linux x64 (glibc 2.39+) | Desktop app |
+| [`fe-relay-windows-x86_64.zip`](https://github.com/Escherbridge/fractalengine/releases/download/latest/fe-relay-windows-x86_64.zip) | Windows x64 | Headless relay |
+| [`fe-relay-linux-x86_64.tar.gz`](https://github.com/Escherbridge/fractalengine/releases/download/latest/fe-relay-linux-x86_64.tar.gz) | Linux x64 (glibc 2.39+) | Headless relay |
+| [`SHA256SUMS`](https://github.com/Escherbridge/fractalengine/releases/download/latest/SHA256SUMS) | — | Checksums (`sha256sum -c SHA256SUMS --ignore-missing`) |
+
+Tagged releases also include `fractalengine-windows-aarch64.zip` and static musl
+relays (`fe-relay-linux-musl-{x86_64,aarch64}.tar.gz`).
+
+Each archive unpacks into a single folder. The desktop app's folder holds the
+binary, an `assets/` folder of sample models, `QUICKSTART.txt`, and the licence
+files. Extract the **whole** archive, read `QUICKSTART.txt`, and run
+`fractalengine` (or `fractalengine.exe`) from that folder. While `assets/` sits
+next to the binary, the app keeps its database in a `data/` folder beside it,
+wherever you launch it from. To back up or move an install, copy the whole
+folder. The packages are unsigned alpha builds, and there is no macOS build.
+
+---
+
 ## Quick Start
 
 ### Prerequisites
@@ -92,7 +121,8 @@ cargo build --release -p fractalengine-relay
 # The pre-commit trio
 cargo fmt && cargo clippy -- -D warnings && cargo test
 
-# CI's lint job also runs these two (fuzzing needs nightly + Linux)
+# CI's lint job also runs these two (fuzzing needs nightly + Linux).
+# CI lint is warn-only: failures become run-summary warnings, never a red run.
 cargo deny check advisories bans sources
 cd fuzz && cargo +nightly fuzz run jwt_parse -- -max_total_time=60
 
