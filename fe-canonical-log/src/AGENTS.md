@@ -380,13 +380,15 @@ changes the identifier. `checkpoint_binding_for_selection` therefore compares ve
 identifiers, so a bump reports `MaterializerVersionMismatch` rather than the less precise
 identifier mismatch. The domain and keys are provisional (register below).
 
-## §single-seal-entry-point — all four lanes seal through one door
+## §single-seal-entry-point — all five lanes seal through one door
 
 `segment::artifact::seal_artifact` is the ONLY way to obtain a `SealedArtifact`;
 `SealedArtifact::seal` is `pub(crate)`. In order it refuses a lane/body-class mismatch, then the
 production suite plus the lane's current scope epoch and current key through
 `relay_policy::assert_seals_under_current_key`, then a nonce already seen under that key through
-`NonceLedger::record_fresh`.
+`NonceLedger::record_fresh`. Lane 5 (`BulkArtifact`, G3) has no opt-in and no second door:
+`pack_bulk_artifact` mirrors `seal_payload_shard` (lane and epoch from the body's own topic, size
+caveat, no nonce burned) and the seal itself is still `seal_artifact`.
 
 Before R-unify only the payload shard was checked, and only partially: `seal_payload_shard` took
 a bare `current_key_id` and could not see the lane's epoch, the header segment, HashSeq nodes
@@ -606,6 +608,7 @@ which is how the §2.1.5 lane/body mismatch is detected without a second discrim
 | ---: | --- | ---: | --- |
 | 1 | header segment | 3 | HashSeq node |
 | 2 | payload shard | 4 | segment manifest |
+| 5 | bulk artifact (G3, D-CL34) | | |
 
 Header segment body (§3.1) — `header_lane::HeaderSegmentBody`. `op_id` is not carried: it is
 BLAKE3 of the record's own bytes and is always recomputed, so there is nothing for a sender to
@@ -655,6 +658,21 @@ key 1 `stored_length` uint.
 | 1 | indexed lane key | array |
 | 2 | `predecessor_id` | bytes(32) or null |
 | 3 | entries | array of maps, sealing order preserved |
+
+Bulk artifact body (§3.4, erratum G3, D-CL34) — `artifact::BulkArtifactBody`. The lane class is
+checked at key 0 BEFORE the key set, so another lane's body reports `LaneBodyMismatch` rather
+than a missing field. Key 2 is the single SPEC-3 §3.2 class bit; anything but `0x08` shard,
+`0x10` tile or `0x20` asset (including zero, a multi-bit value, and `op`/`segment`/`checkpoint`)
+is `BulkObjectClassRefused`. A manifest and a HashSeq node never index a bulk artifact (§3.4
+rule 5), so neither grammar changed.
+
+| Key | Field | CBOR type |
+| ---: | --- | --- |
+| 0 | lane class (always 5) | uint |
+| 1 | payload topic scope | map (the payload topic scope above, verbatim) |
+| 2 | `object_class` | uint, exactly one of `0x08`, `0x10`, `0x20` |
+| 3 | `content_length` | uint, MUST equal the byte length of key 4 |
+| 4 | `content_bytes` | bytes, opaque here (§3.4 rule 8) |
 
 Lane key — `hashseq::LaneKey`, encoded as a two-element array so it can serve as a canonical CBOR
 map key in the manifest: header lane `[0, verse_id]`, payload lane
@@ -707,9 +725,37 @@ of another, matching the SPEC-1 §5.1 convention.
 | --- | --- | --- | --- |
 | header segment | `fe-segment-header-v1` | HashSeq node | `fe-segment-hashseq-v1` |
 | payload shard | `fe-segment-payload-shard-v1` | segment manifest | `fe-segment-manifest-v1` |
+| bulk artifact (G3) | `fe-segment-bulk-artifact-v1` | | |
 
 SPEC-6 §7 discovery contributes **no** labels of its own any more. The four §7 traffic kinds map
 onto the three normative SPEC-3 §6.1 lanes; see `segment/AGENTS.md` §discovery-lanes.
+
+### Provisional — SPEC-10 §7 observation source identity (`materialize/identity.rs`, G6)
+
+D-CL34. `ObservationSource` and `DecoderIdentity` are canonical CBOR maps with exactly these
+keys (SPEC-10 §7.1 gives the table; the numbers are still provisional under D-CL24(3)). Unknown
+and duplicate keys are refused, text is NFC, floats never appear.
+
+| Key | `ObservationSource` field | CBOR type |
+| ---: | --- | --- |
+| 0 | `source_class` | uint: `1` device, `2` connector, `3` decoder, `4` manual, `5` simulation; `0` and `> 5` refused |
+| 1 | `source_id` | bytes(32) |
+| 2 | `ingest_principal` | bytes(32), Ed25519 public key |
+| 3 | `format_id` | text (SPEC-10 §2.2 rule 4 grammar) or null |
+| 4 | `decoder` | `DecoderIdentity` map, non-null exactly when key 0 is `3`; class `3` also needs key 3 |
+
+| Key | `DecoderIdentity` field | CBOR type |
+| ---: | --- | --- |
+| 0 | `plugin_id` | text, 1 to 128 bytes |
+| 1 | `plugin_version` | text, 1 to 64 bytes |
+| 2 | `module_hash` | bytes(32), BLAKE3 of the exact module bytes |
+
+`source_id = BLAKE3("fe-observation-source-id-v1" || 00 || canonical_cbor([source_class,
+source_label]))` (§7.2), domain `OBSERVATION_SOURCE_ID_DOMAIN`. The `source_class` wire values are
+`fe_sdk::source_class::SourceClass::wire()`, the one enum the whole workspace shares.
+`ObservationSource` sorts by its canonical bytes, the order a kind-5 `sources` list is signed in
+(CDL-SPEC10 B1 consumes it). `AnalyticsSourceIdentity` assigns no wire number: it is an in-process
+value, not an encoded artifact.
 
 ### Provisional — SPEC-7 bodies (`wire`)
 
@@ -851,6 +897,32 @@ migration afterwards.
   over that range. Normative text: SPEC-5 §5.2 rules 4-5. The retention module models
   quarantine and leases, not device storage profiles, so nothing here implements it; Wave 3's
   `fe-database` retention work is where it becomes callable.
+
+## Owner-ratified errata, 2026-10-13 (D-CL28 gates G3 and G6)
+
+Spec text landed with SPEC-10 (CDL-SPEC10 A1); the code landed in CDL-SPEC10 A2. Both are
+D-CL28-ratified gates, so like G1/G2/G4/G5 they needed no further approval round. The wire numbers
+they add are provisional (D-CL34, register above).
+
+- **G3** — a fifth lane class, `LaneClass::BulkArtifact` (wire 5), for one independently
+  addressable shard, tile, or asset. Normative text: SPEC-6 §3.4 rules 1-9, conformance tests
+  18-23. It activates SPEC-3's `ObjectClass::{Shard,Tile,Asset}`, which no lane carried before.
+  What landed: `artifact::{BulkArtifactBody, pack_bulk_artifact, BULK_ARTIFACT_AAD_DOMAIN}`, the
+  `Payload`-lane permission in `assert_lane_carries_class`, the `BulkArtifact` arms of the two
+  exhaustive lane matches (`receipt::decode_opened_body`, `compose::storage::decode_sealed_body`),
+  `SealedProofEnvironment::open_bulk_artifact`, `StoredArtifactAad::bulk_artifact`, and
+  `discovery_labels::authorize_bulk_artifact_discovery` (payload lane 1, petal scope, own class
+  bit; a header scope is refused). No new topic lane, and the manifest grammar is unchanged:
+  a bulk artifact is reachable only through the payload of the operation that commits it.
+- **G6** — SPEC-4 §7 rule 5: an analytics computation over observation data extends its rule 1
+  input identity with the sorted, deduplicated set of kind-5 `op_id`s it read. What landed:
+  `materialize::identity::{ObservationSource, DecoderIdentity, AnalyticsSourceIdentity,
+  ObservationSourceError, OBSERVATION_SOURCE_ID_DOMAIN}` and the `SourceClass` re-export from
+  `fe-sdk` (see `materialize/AGENTS.md` §g6-source-identity). Nothing produces a kind-5 batch
+  yet; CDL-SPEC10 B1 embeds `ObservationSource` in the batch payload.
+
+No network path was added: the bulk lane is local sealing, receipt, and opening only. Canonical
+network exposure (CDL-NET, CANON-WS) stays NO_GO.
 
 ## Owner-ratified errata, 2026-10-13 (CDL-W4, E-W4-1)
 

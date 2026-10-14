@@ -19,7 +19,7 @@ a port, and nothing here can influence `fe-sync`'s `IrohDocsEngineHolder::is_ava
 act; the transport itself remains owner-gated and unbuilt. Relay work here is local artifact
 handling only.
 
-### One seal entry point, for all four lanes
+### One seal entry point, for all five lanes
 
 `artifact::seal_artifact` is the only way to obtain a `SealedArtifact`; `SealedArtifact::seal` is
 `pub(crate)` so no Wave-3 caller can reach the ungated constructor. In order it refuses a
@@ -42,7 +42,10 @@ it exactly once, at the seal.
 
 The lane/class table `SealRequest::assert_lane_carries_class` enforces (§4.1.3): a header lane
 carries verse-wide header segments, its own HashSeq nodes, and the branch manifest; a payload
-lane carries only petal-affine shards and its own HashSeq nodes.
+lane carries petal-affine shards, its own HashSeq nodes, and bulk artifacts (§3.4). It is a
+`matches!`, not an exhaustive `match`, so the compiler will NOT flag a new lane class here: every
+new class must be added to this table by hand, and `bulk_lane_key_permits_bulk_artifact` pins
+lane 5's row.
 
 `store::SealedArtifactStore` is deliberately a trait with an in-memory implementation and no
 binding to `fe_runtime::blob_store::BlobStore`: `fe-runtime` pulls bevy and tokio, which must
@@ -136,6 +139,7 @@ availability traffic uses the authorized lane selected by SPEC-3"):
 | payload shards | `1` payload | petal-affine | `Shard` |
 | segment manifest | `0` header | verse-wide | `Segment` |
 | availability (`have`, announcements) | `2` availability | the announced artifact's lane scope | class of the announced artifact |
+| bulk artifacts (lane class 5, G3) | `1` payload | petal-affine (the body's own topic) | its own class bit: `Shard`, `Tile`, or `Asset` |
 
 The manifest rides the **header** lane because §7.2 binds the header lane to the verse-wide
 topic/key scope and a manifest is verse- and branch-wide rather than petal-affine; `object_class`
@@ -146,6 +150,45 @@ The deleted `DiscoveryLane` enum invented a fourth `Manifest` variant with no la
 and four `fe-lane-*-v1` label strings that appear in no spec, and its trait signature supplied no
 `object_class` at all, so §6.1 key 2 was unsatisfiable. The seam is now structurally implementable
 from `derive_topic_name` alone.
+
+Bulk artifacts add **no** topic lane (§3.4 rule 7). `authorize_bulk_artifact_discovery` is
+`authorize_lane_subscription` pinned to `TopicLane::Payload`, refusing a header (verse-wide)
+scope and any class other than shard, tile, or asset; the label it returns is byte-identical to
+a payload-lane subscription for that class, which `bulk_artifact_discovery_is_payload_lane_petal_affine`
+asserts.
+
+## §bulk-lane -- G3, the fifth lane class (CDL-SPEC10 A2)
+
+SPEC-6 §3.4. `LaneClass::BulkArtifact` (wire 5, AAD domain `fe-segment-bulk-artifact-v1`) carries
+one immutable object of SPEC-3 class `shard`, `tile`, or `asset` — an observation hexon and its
+statistics artifact (SPEC-10 §9) are the first producers, both in CDL-SPEC10 B3.
+
+- **Body.** `BulkArtifactBody { topic: PayloadTopicScope, object_class, content }`. Scope is a
+  `PayloadTopicScope`, so a verse-wide bulk artifact cannot be built at all (rule 3). The decoder
+  checks the lane at key 0 first, then the key set, the single class bit, and
+  `content_length == len(content_bytes)`, then pins canonical bytes.
+- **Sealing.** `pack_bulk_artifact` mirrors `seal_payload_shard` (lane and epoch from the body's
+  own topic, descriptor must name the topic key, size caveat refuses an oversized candidate, no
+  nonce recorded); the seal is `seal_artifact`, so the epoch/key/nonce gates apply with no opt-in.
+- **Receipt.** `decode_opened_body` gained the `BulkArtifact` arm. A bulk artifact has no header
+  cross-reference (`cross_check_body` returns `Ok`): its committing operation names it, not the
+  other way round (rule 5), and its content is validated at `materialize/<class>`, not at receipt
+  (rule 8).
+- **Opening.** `compose::SealedProofEnvironment::open_bulk_artifact` is inherent, not a fifth
+  `ProofEnvironment` method: no checkpoint proof walks a bulk artifact (rule 5).
+- **Body topic == sealing key (security, §3.4 rule 3).** The seal door cannot see inside the
+  ciphertext, so a holder of petal Y's key could seal a body whose `topic()` claims petal X.
+  Receipt refuses a bulk body whose `topic().key_id` is not the outer `key_id`
+  (`BulkArtifactBody::assert_sealed_under`, quarantined as a malformed lane body), and
+  `open_bulk_artifact` additionally refuses a body whose verse, petal, or epoch is not the payload
+  lane whose current key opened it (`ForeignLaneArtifact`). A consumer may therefore trust
+  `topic()` as the authenticated scope.
+- **Relay policy.** Unchanged and deliberately so: `decide_seed`/`decide_fetch` key on `LaneKey`,
+  and a bulk artifact rides its petal's payload `LaneKey`. No relay seeding or network path exists
+  (CDL-NET NO_GO).
+- **`BLAKE3(content_bytes)` is not the `artifact_id`** (rule 9). `BulkArtifactBody::content_hash`
+  is the plaintext object's address, which only the committing operation's encrypted payload may
+  name (SPEC-10 `asset_refs`).
 
 ## G4 -- statistics are tiered by derivation, not by usefulness
 
@@ -203,3 +246,11 @@ The §8 named tests implemented here, with their homes:
 | `scope_epoch_bump_stops_old_lane_service` | `relay_policy.rs` |
 | `key_wrap_rotation_blocks_old_epoch_segment_service` | `relay_policy.rs` |
 | `private_discovery_uses_blinded_lane_separation` | `discovery_labels.rs` |
+| `bulk_artifact_seals_through_single_door_and_round_trips` (18) | `artifact.rs` |
+| `bulk_artifact_refused_under_retired_epoch_key` (19) | `artifact.rs` |
+| `bulk_artifact_nonce_reuse_refused` (20) | `artifact.rs` |
+| `bulk_lane_body_mismatch_rejected` (21) | `receipt.rs` |
+| `bulk_artifact_object_class_table` (22) | `artifact.rs` |
+| `bulk_artifact_discovery_is_payload_lane_petal_affine` (23) | `discovery_labels.rs` |
+| `bulk_lane_key_permits_bulk_artifact` (plan AC-35) | `artifact.rs` |
+| `sealed_proof_environment_opens_a_bulk_artifact_lane_and_refuses_a_retired_key` (plan C1) | `compose/storage.rs` |

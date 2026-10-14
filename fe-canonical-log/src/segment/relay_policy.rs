@@ -6,6 +6,10 @@
 //! thread's own P2P stack spawn). It decides
 //! whether a hypothetical transport WOULD be permitted to seed or disclose an artifact; the
 //! transport itself remains owner-gated and unbuilt.
+//!
+//! Every decision keys on [`LaneKey`], never on a lane class: a bulk artifact (lane class 5,
+//! SPEC-6 §3.4) rides its petal's payload `LaneKey`, so it gets the same epoch, capability and
+//! current-key checks as a payload shard with no separate path (`segment/AGENTS.md` §bulk-lane).
 
 use crate::envelope::Identifier32;
 

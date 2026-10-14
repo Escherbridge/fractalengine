@@ -13,7 +13,10 @@ pub use checkpoint_binding::{CheckpointBinding, CheckpointBindingMismatch};
 pub use errors::{
     AdmissionDisposition, AdmissionOutcome, AppendError, AppendOutcome, AuthorizationEvidenceGap,
 };
-pub use identity::{ApplyMarkerKey, MaterializerVersion, ProjectionIdentity};
+pub use identity::{
+    AnalyticsSourceIdentity, ApplyMarkerKey, DecoderIdentity, MaterializerVersion,
+    ObservationSource, ObservationSourceError, ProjectionIdentity, SourceClass,
+};
 pub use ordering::{deterministic_causal_order, ordering_key, OrderingError, OrderingKey};
 pub use traits::{
     admit_candidate, admit_candidate_with_facts, check_author_equivocation,

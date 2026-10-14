@@ -12,7 +12,7 @@ use crate::materialize::errors::{AdmissionOutcome, AppendError, AppendOutcome};
 use crate::materialize::traits::{
     admit_candidate, CandidateVerifier, EquivocationIndex, ParentVerseLookup, VerifiedLogStore,
 };
-use crate::segment::artifact::{admit_sealed, verify_artifact_id, LaneClass};
+use crate::segment::artifact::{admit_sealed, verify_artifact_id, BulkArtifactBody, LaneClass};
 use crate::segment::checkpoint_proof::ProofEnvironment;
 use crate::segment::hashseq::{ArtifactLookup, HashSeqNode, LaneKey};
 use crate::segment::header_lane::HeaderSegmentBody;
@@ -161,6 +161,16 @@ impl<'a, A: ArtifactLookup, K: ScopeKeyStore> SealedProofEnvironment<'a, A, K> {
     /// decodes the plaintext under its OWN declared lane class -- never a class the caller
     /// merely hoped for.
     fn open_and_decode(&self, artifact_id: Hash32) -> Result<DecodedSealedBody, SegmentError> {
+        self.open_with_lane(artifact_id)
+            .map(|(_, _, decoded)| decoded)
+    }
+
+    /// [`Self::open_and_decode`], also returning the lane whose current key opened the artifact
+    /// and the `key_id` it committed to (which that lane's key was just shown to derive).
+    fn open_with_lane(
+        &self,
+        artifact_id: Hash32,
+    ) -> Result<(LaneKey, Identifier32, DecodedSealedBody), SegmentError> {
         let bytes = self.lookup.fetch_verified(artifact_id)?;
         let (sealed, _) = admit_sealed(&bytes)?;
         let lane = self
@@ -175,7 +185,44 @@ impl<'a, A: ArtifactLookup, K: ScopeKeyStore> SealedProofEnvironment<'a, A, K> {
         let aad = sealed.associated_data()?;
         let plaintext = aead::open(key, sealed.encryption.params(), &aad, &sealed.ciphertext)
             .map_err(|_| SegmentError::DecryptionFailed)?;
-        decode_sealed_body(sealed.lane_class, &plaintext)
+        let decoded = decode_sealed_body(sealed.lane_class, &plaintext)?;
+        Ok((lane, sealed.encryption.key_id(), decoded))
+    }
+
+    /// Opens a bulk artifact (SPEC-6 §3.4) the same way the four [`ProofEnvironment`] lanes
+    /// open: re-hash, resolve the lane whose CURRENT key derives the committed `key_id`,
+    /// authenticate under the lane-5 AAD, decode under the artifact's own declared class.
+    ///
+    /// Inherent rather than a fifth trait method: no checkpoint proof walks a bulk artifact
+    /// (§3.4 rule 5 keeps it out of manifests and HashSeq nodes), so the trait stays unchanged.
+    /// A key whose epoch the caller no longer lists, or whose material was crypto-shredded,
+    /// resolves to no lane and is refused with [`SegmentError::ScopeKeyUnavailable`]. A body
+    /// whose own topic is not the payload lane that opened it (another petal, verse, epoch, or
+    /// key, or the header lane) is refused with [`SegmentError::ForeignLaneArtifact`] (§3.4
+    /// rule 3), so `topic()` on the result is always the scope that authenticated it.
+    pub fn open_bulk_artifact(
+        &self,
+        artifact_id: Hash32,
+    ) -> Result<BulkArtifactBody, SegmentError> {
+        let (lane, sealed_key_id, decoded) = self.open_with_lane(artifact_id)?;
+        let DecodedSealedBody::BulkArtifact(body) = decoded else {
+            return Err(SegmentError::LaneBodyMismatch);
+        };
+        let LaneKey::Payload(opened_under) = lane else {
+            return Err(SegmentError::ForeignLaneArtifact { artifact_id });
+        };
+        let topic = body.topic();
+        if (topic.verse_id, topic.petal_id, topic.scope_epoch)
+            != (
+                opened_under.verse_id,
+                opened_under.petal_id,
+                opened_under.scope_epoch,
+            )
+        {
+            return Err(SegmentError::ForeignLaneArtifact { artifact_id });
+        }
+        body.assert_sealed_under(artifact_id, sealed_key_id)?;
+        Ok(body)
     }
 }
 
@@ -185,15 +232,15 @@ enum DecodedSealedBody {
     PayloadShard(PayloadShardBody),
     HashSeqNode(HashSeqNode),
     SegmentManifest(SegmentManifestBody),
+    BulkArtifact(BulkArtifactBody),
 }
 
 /// Picks the one decoder a sealed artifact's own declared lane class names.
 ///
-/// A total match with **no wildcard arm**, per `src/AGENTS.md` §composed-verifiers: when
-/// CDL-SPEC10 A2 adds a fifth [`LaneClass`] (`BulkArtifact`), this function refuses to compile
-/// until that slice adds its own decoding arm here -- A2 owns that arm, not a silent fallthrough
-/// that would otherwise let an unrecognized lane decode as whichever variant happened to be
-/// requested.
+/// A total match with **no wildcard arm**, per `src/AGENTS.md` §composed-verifiers: a sixth
+/// [`LaneClass`] refuses to compile until its own decoding arm lands here, so an unrecognized
+/// lane can never decode as whichever variant happened to be requested. CDL-SPEC10 A2 added the
+/// fifth (`BulkArtifact`) arm this way.
 fn decode_sealed_body(
     lane_class: LaneClass,
     plaintext: &[u8],
@@ -210,6 +257,9 @@ fn decode_sealed_body(
         }
         LaneClass::SegmentManifest => {
             SegmentManifestBody::decode_canonical(plaintext).map(DecodedSealedBody::SegmentManifest)
+        }
+        LaneClass::BulkArtifact => {
+            BulkArtifactBody::decode_canonical(plaintext).map(DecodedSealedBody::BulkArtifact)
         }
     }
 }
@@ -402,17 +452,23 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
+    use std::num::NonZeroUsize;
+
+    use crate::capability::verbs::ObjectClass;
     use crate::crypto::aead::{FreshNonce, SealingKey, SEALING_KEY_LENGTH};
     use crate::crypto::artifact_aad::StoredArtifactAad;
-    use crate::crypto::scope_key::InMemoryScopeKeyStore;
+    use crate::crypto::scope_key::{InMemoryScopeKeyStore, ScopeKeyLifecycle};
     use crate::envelope::{
         Author, CapabilityRef, EquivocationKey, Hlc, PayloadRef, Scope, UnsignedEnvelope,
         NONCE_LENGTH, PRODUCTION_SUITE_ID, PROTOCOL_VERSION,
     };
     use crate::materialize::traits::{verify_candidate, PayloadFacts, VerifiedCandidate};
     use crate::retention::crypto_shred::{crypto_shred, ScopeKeyId};
-    use crate::segment::artifact::{EncryptionDescriptor, SealedArtifact};
+    use crate::segment::artifact::{
+        seal_artifact, EncryptionDescriptor, NonceLedger, SealRequest, SealedArtifact,
+    };
     use crate::segment::hashseq::HashSeqEntry;
+    use crate::segment::relay_policy::{PeerIdentity, RelayAuthorizationView};
     use crate::signing::sign_envelope;
     use ed25519_dalek::SigningKey;
 
@@ -814,5 +870,237 @@ mod tests {
         );
         assert_eq!(state.already_present_hits, 1);
         assert_eq!(state.rows.len(), 1);
+    }
+
+    /// One payload lane's persistent authorization view: its current epoch and key, nothing else.
+    struct CurrentPayloadLane {
+        epoch: u64,
+        key_id: Identifier32,
+    }
+
+    impl RelayAuthorizationView for CurrentPayloadLane {
+        fn current_scope_epoch(&self, _lane: &LaneKey) -> Option<u64> {
+            Some(self.epoch)
+        }
+
+        fn current_key_id(&self, _lane: &LaneKey) -> Option<Identifier32> {
+            Some(self.key_id)
+        }
+
+        fn has_seed_capability(&self, _: &PeerIdentity, _: &LaneKey, _: u64) -> bool {
+            false
+        }
+
+        fn has_fetch_capability(&self, _: &PeerIdentity, _: &LaneKey, _: u64) -> bool {
+            false
+        }
+
+        fn may_wrap_scope_key_for_peer(&self, _: &PeerIdentity, _: &LaneKey, _: u64) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn sealed_proof_environment_opens_a_bulk_artifact_lane_and_refuses_a_retired_key() {
+        let verse_id = Identifier32([0x11; 32]);
+        let petal_id = Identifier32([0x21; 32]);
+        let petal_scope = Scope::new(verse_id, Some(petal_id), None).expect("petal scope");
+        let header_epoch = 1;
+        let first_epoch = 3;
+
+        let mut lifecycle = ScopeKeyLifecycle::new(InMemoryScopeKeyStore::new());
+        let first_key_id = lifecycle
+            .get_or_generate(&petal_scope, first_epoch)
+            .expect("first epoch key");
+        let first_topic = PayloadTopicScope {
+            verse_id,
+            petal_id,
+            scope_epoch: first_epoch,
+            key_id: first_key_id,
+        };
+        let body = BulkArtifactBody::new(first_topic, ObjectClass::Shard, b"hexon".to_vec())
+            .expect("bulk body");
+        let plaintext = body.encode_canonical().expect("plaintext");
+
+        let nonce = FreshNonce::draw(first_key_id).expect("nonce");
+        let params = nonce.params();
+        let aad = StoredArtifactAad::bulk_artifact(plaintext.len(), params)
+            .preimage()
+            .expect("aad");
+        let material = lifecycle
+            .store()
+            .scope_key(&ScopeKeyId {
+                scope: petal_scope,
+                epoch: first_epoch,
+            })
+            .expect("held key");
+        let sealed_payload = aead::seal(material, nonce, &aad, &plaintext).expect("aead seal");
+        let mut ledger = NonceLedger::with_capacity(NonZeroUsize::new(8).expect("capacity"));
+        let sealed = seal_artifact(
+            &CurrentPayloadLane {
+                epoch: first_epoch,
+                key_id: first_key_id,
+            },
+            &mut ledger,
+            SealRequest {
+                lane: &body.lane_key(),
+                scope_epoch: first_epoch,
+                lane_class: LaneClass::BulkArtifact,
+                descriptor: EncryptionDescriptor::new(params.suite_id, params.key_id, params.nonce),
+                ciphertext: sealed_payload.ciphertext,
+            },
+        )
+        .expect("sealed through the single door");
+        let artifact_id = sealed.artifact_id().expect("id");
+        let mut store = ByteStoreSealedArtifactStore::new(TestByteStore::default());
+        store
+            .put_verified(artifact_id, &sealed.encode_canonical().expect("bytes"))
+            .expect("stored");
+
+        {
+            let topics = [first_topic];
+            let environment = SealedProofEnvironment::new(
+                &store,
+                lifecycle.store(),
+                verse_id,
+                header_epoch,
+                &topics,
+            );
+            assert_eq!(
+                environment.open_bulk_artifact(artifact_id),
+                Ok(body.clone()),
+                "the lane-5 arm decodes the artifact under its own declared class"
+            );
+            assert_eq!(
+                environment.open_payload_shard(artifact_id),
+                Err(SegmentError::LaneBodyMismatch),
+                "a bulk artifact is never reinterpreted as the lane the caller hoped for"
+            );
+        }
+
+        // A body that claims another petal, sealed under this petal's current key, is refused:
+        // the scope that authenticated it is the only scope its `topic()` may name.
+        let impostor = BulkArtifactBody::new(
+            PayloadTopicScope {
+                petal_id: Identifier32([0x22; 32]),
+                ..first_topic
+            },
+            ObjectClass::Shard,
+            b"hexon".to_vec(),
+        )
+        .expect("impostor body");
+        let impostor_plaintext = impostor.encode_canonical().expect("plaintext");
+        let impostor_nonce = FreshNonce::draw(first_key_id).expect("nonce");
+        let impostor_params = impostor_nonce.params();
+        let impostor_aad =
+            StoredArtifactAad::bulk_artifact(impostor_plaintext.len(), impostor_params)
+                .preimage()
+                .expect("aad");
+        let impostor_payload =
+            aead::seal(material, impostor_nonce, &impostor_aad, &impostor_plaintext)
+                .expect("aead seal");
+        let impostor_sealed = seal_artifact(
+            &CurrentPayloadLane {
+                epoch: first_epoch,
+                key_id: first_key_id,
+            },
+            &mut ledger,
+            SealRequest {
+                lane: &LaneKey::Payload(first_topic),
+                scope_epoch: first_epoch,
+                lane_class: LaneClass::BulkArtifact,
+                descriptor: EncryptionDescriptor::new(
+                    impostor_params.suite_id,
+                    impostor_params.key_id,
+                    impostor_params.nonce,
+                ),
+                ciphertext: impostor_payload.ciphertext,
+            },
+        )
+        .expect("the door cannot see inside the ciphertext");
+        let impostor_id = impostor_sealed.artifact_id().expect("id");
+        store
+            .put_verified(
+                impostor_id,
+                &impostor_sealed.encode_canonical().expect("bytes"),
+            )
+            .expect("stored");
+        {
+            let topics = [first_topic];
+            let environment = SealedProofEnvironment::new(
+                &store,
+                lifecycle.store(),
+                verse_id,
+                header_epoch,
+                &topics,
+            );
+            assert_eq!(
+                environment.open_bulk_artifact(impostor_id),
+                Err(SegmentError::ForeignLaneArtifact {
+                    artifact_id: impostor_id
+                })
+            );
+        }
+
+        let bump = lifecycle
+            .on_epoch_bump(&petal_scope, first_epoch)
+            .expect("epoch bump");
+        let current_topic = PayloadTopicScope {
+            scope_epoch: bump.current.epoch,
+            key_id: bump.current_key_id,
+            ..first_topic
+        };
+        {
+            let topics = [current_topic];
+            let environment = SealedProofEnvironment::new(
+                &store,
+                lifecycle.store(),
+                verse_id,
+                header_epoch,
+                &topics,
+            );
+            assert_eq!(
+                environment.open_bulk_artifact(artifact_id),
+                Err(SegmentError::ScopeKeyUnavailable),
+                "the retired epoch key_id resolves to no current lane"
+            );
+        }
+        assert_eq!(
+            seal_artifact(
+                &CurrentPayloadLane {
+                    epoch: bump.current.epoch,
+                    key_id: bump.current_key_id,
+                },
+                &mut ledger,
+                SealRequest {
+                    lane: &LaneKey::Payload(first_topic),
+                    scope_epoch: first_epoch,
+                    lane_class: LaneClass::BulkArtifact,
+                    descriptor: EncryptionDescriptor::new(
+                        PRODUCTION_SUITE_ID,
+                        first_key_id,
+                        [0x33; NONCE_LENGTH],
+                    ),
+                    ciphertext: b"late".to_vec(),
+                },
+            ),
+            Err(SegmentError::StaleScopeEpoch {
+                requested: first_epoch,
+                current: bump.current.epoch,
+            }),
+            "nothing new seals into lane 5 under the retired epoch"
+        );
+
+        lifecycle
+            .crypto_shred(&bump.retired, Hlc::new(1_000, 0))
+            .expect("shred");
+        let topics = [first_topic];
+        let environment =
+            SealedProofEnvironment::new(&store, lifecycle.store(), verse_id, header_epoch, &topics);
+        assert_eq!(
+            environment.open_bulk_artifact(artifact_id),
+            Err(SegmentError::ScopeKeyUnavailable),
+            "a shredded retired key opens nothing, even when its old topic is listed"
+        );
     }
 }

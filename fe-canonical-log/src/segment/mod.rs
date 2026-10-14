@@ -112,7 +112,7 @@ pub enum SegmentError {
         /// The version actually present.
         version: u64,
     },
-    /// The outer map declared a lane class outside the four SPEC-6 lanes.
+    /// The outer map declared a lane class outside the five SPEC-6 lanes.
     #[error("lane class {lane_class} is not a SPEC-6 lane")]
     UnknownLaneClass {
         /// The unrecognized lane class.
@@ -121,6 +121,20 @@ pub enum SegmentError {
     /// The decrypted body was not the body form its lane class declares (§2.1.5).
     #[error("sealed body does not match its declared lane class")]
     LaneBodyMismatch,
+    /// A bulk artifact named object-class bits other than exactly shard, tile, or asset (§3.4.2).
+    #[error("object class bits {object_class:#x} are not exactly one of shard, tile, or asset")]
+    BulkObjectClassRefused {
+        /// The refused class bits.
+        object_class: u64,
+    },
+    /// A bulk artifact's `content_length` disagreed with the content bytes it carried (§3.4.2).
+    #[error("bulk artifact declares {declared} content byte(s) but carries {actual}")]
+    BulkContentLengthMismatch {
+        /// Length the body declared.
+        declared: u64,
+        /// Length actually carried.
+        actual: u64,
+    },
     /// The declared ciphertext length disagreed with the ciphertext actually carried (§2.1.4).
     #[error("declared ciphertext length {declared} but carried {actual} byte(s)")]
     CiphertextLengthMismatch {

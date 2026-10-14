@@ -247,3 +247,29 @@ in the wave-4 named-conformance census.
   composition (W4-3 `ComposedCandidateVerifier`) is buildable without widening it again.
 - `SignedCheckpointClaim` (`W2-branch-checkpoint`) and `CheckpointView` (`W2-segment`) both need
   to be bound to `CheckpointBinding` eventually; this module deliberately does not import either.
+
+## §g6-source-identity -- observation provenance vocabulary (CDL-SPEC10 A2, erratum G6)
+
+SPEC-10 §7 and SPEC-4 §7 rule 5. `identity.rs` holds the vocabulary a kind-5 observation batch
+(CDL-SPEC10 B1) signs and an analytics result records. Wire numbers: `src/AGENTS.md`
+§"Provisional — SPEC-10 §7 observation source identity".
+
+- **`SourceClass` is re-exported from `fe_sdk::source_class`, never redefined.** fe-runtime can
+  see fe-sdk but not this crate, and the ingest doors (CDL-SPEC10 A3) carry the class on
+  `DbCommand`; two enums would drift. The wire value is `SourceClass::wire()`; zero is never a
+  class, so a zero-initialized map cannot read as a well-formed source.
+- **`ObservationSource` invariants hold by construction.** Fields are private; `new` and
+  `from_cbor` are the only doors and both enforce rule 3 (decoder iff class `decoder`; `decoder`
+  needs a `format_id`) and rule 4 (`fe_sdk::source_class::is_valid_format_id`, the one grammar
+  check). `ingest_principal` is length-checked only: deriving it from the door's `did:key` is the
+  door's job (rule 5), not the codec's.
+- **Canonical order.** `Ord` compares canonical bytes, the order a signed `sources` list is
+  sorted in, so B1 cannot invent a second order.
+- **`source_id_for(class, label)`** binds the class into the hash, so a device and a decoder that
+  share a label stay distinct (§7.2).
+- **`AnalyticsSourceIdentity`** extends the SPEC-4 §7 rule 1 tuple (or a `CheckpointBinding`
+  that binds it) with the observation input set. The set is private and kept sorted and
+  deduplicated on every insert, so the identity is canonical whatever the read order. It is an
+  in-process value with no wire encoding; the "unavailable listed batch fails the computation"
+  half of rule 5 (SPEC-10 conformance test 19) belongs to the analytics read path that consumes
+  a hydrated catalog (CDL-SPEC10 B3), not to this value type.

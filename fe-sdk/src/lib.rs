@@ -15,6 +15,7 @@ pub mod primitive;
 pub mod property;
 pub mod query;
 pub mod scene;
+pub mod source_class;
 pub mod storage;
 pub mod texture;
 pub mod transaction;

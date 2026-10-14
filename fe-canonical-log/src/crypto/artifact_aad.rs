@@ -19,7 +19,7 @@ use super::CryptoError;
 pub struct StoredArtifactAad {
     /// Outer format version; always [`ARTIFACT_FORMAT_VERSION`].
     pub format_version: u64,
-    /// Which of the four §2.1 lanes the sealed body belongs to.
+    /// Which of the five §2.1/§3.4 lanes the sealed body belongs to.
     pub lane_class: LaneClass,
     /// Ciphertext length the sealed outer map will declare, tag included.
     pub ciphertext_length: u64,
@@ -75,6 +75,11 @@ impl StoredArtifactAad {
         Self::for_plaintext(LaneClass::SegmentManifest, plaintext_length, encryption)
     }
 
+    /// The §3.4 bulk-artifact lane: `ASCII("fe-segment-bulk-artifact-v1") || 0x00 || metadata`.
+    pub const fn bulk_artifact(plaintext_length: usize, encryption: EncryptionParams) -> Self {
+        Self::for_plaintext(LaneClass::BulkArtifact, plaintext_length, encryption)
+    }
+
     /// The metadata of an artifact that already carries its ciphertext.
     pub fn of_sealed(sealed: &SealedArtifact) -> Self {
         Self {
@@ -113,11 +118,12 @@ mod tests {
     use crate::envelope::{Identifier32, NONCE_LENGTH, PRODUCTION_SUITE_ID};
     use crate::segment::artifact::EncryptionDescriptor;
 
-    const EVERY_LANE: [LaneClass; 4] = [
+    const EVERY_LANE: [LaneClass; 5] = [
         LaneClass::HeaderSegment,
         LaneClass::PayloadShard,
         LaneClass::HashSeqNode,
         LaneClass::SegmentManifest,
+        LaneClass::BulkArtifact,
     ];
 
     fn key_id() -> Identifier32 {
@@ -163,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn the_four_lanes_produce_four_distinct_preimages() {
+    fn every_lane_produces_a_distinct_preimage() {
         let mut seen = std::collections::BTreeSet::new();
         for lane in EVERY_LANE {
             let preimage = StoredArtifactAad::for_plaintext(lane, 32, params())
@@ -171,7 +177,7 @@ mod tests {
                 .expect("preimage");
             assert!(seen.insert(preimage), "{lane:?} collided with another lane");
         }
-        assert_eq!(seen.len(), 4);
+        assert_eq!(seen.len(), EVERY_LANE.len());
     }
 
     #[test]
@@ -212,6 +218,34 @@ mod tests {
             )
             .expect("open"),
             body.to_vec()
+        );
+    }
+
+    #[test]
+    fn a_payload_shard_aad_cannot_open_a_bulk_artifact_ciphertext() {
+        let body = b"bulk artifact body";
+        let nonce = FreshNonce::draw(key_id()).expect("nonce");
+        let encryption = nonce.params();
+        let bulk_aad = StoredArtifactAad::bulk_artifact(body.len(), encryption)
+            .preimage()
+            .expect("bulk aad");
+        let sealed = seal(&scope_key(), nonce, &bulk_aad, body).expect("seal");
+        let shard_aad = StoredArtifactAad::for_ciphertext(
+            LaneClass::PayloadShard,
+            sealed.ciphertext.len() as u64,
+            encryption,
+        )
+        .preimage()
+        .expect("shard aad");
+        assert_eq!(
+            open(
+                &scope_key(),
+                &sealed.encryption,
+                &shard_aad,
+                &sealed.ciphertext
+            ),
+            Err(CryptoError::AuthenticationFailed),
+            "the same petal key cannot open lane 5 bytes as a payload shard"
         );
     }
 

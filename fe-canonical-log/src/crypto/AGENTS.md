@@ -168,10 +168,10 @@ ordering gap, and `for_plaintext` adds the Poly1305 tag length so the declared
 
 That is a second construction of the same four-key metadata map, and the divergence risk is real.
 `the_preseal_construction_matches_the_segment_slices_sealed_artifact_aad` pins the two to
-byte-identical output across all four lanes; if the segment slice renumbers the outer map, that
+byte-identical output across all five lanes; if the segment slice renumbers the outer map, that
 test fails rather than two modules silently disagreeing about what was authenticated.
 
-Domains are the four provisional prefixes reserved in `segment/AGENTS.md` and registered in
+Domains are the five provisional prefixes reserved in `segment/AGENTS.md` and registered in
 `src/AGENTS.md` §"Per-lane AEAD AAD domains", reused from `LaneClass::aad_domain` rather than
 re-declared here:
 
@@ -179,9 +179,12 @@ re-declared here:
 | --- | --- | --- | --- |
 | header segment | `fe-segment-header-v1` | HashSeq node | `fe-segment-hashseq-v1` |
 | payload shard | `fe-segment-payload-shard-v1` | segment manifest | `fe-segment-manifest-v1` |
+| bulk artifact (G3, CDL-SPEC10 A2) | `fe-segment-bulk-artifact-v1` | | |
 
-All four are NUL-terminated, so no domain is a prefix of another — a test pins the full
-cross-product, and a second test proves a header-lane AAD cannot open a payload-shard ciphertext.
+All five are NUL-terminated, so no domain is a prefix of another — a test pins the full
+cross-product, a second test proves a header-lane AAD cannot open a payload-shard ciphertext, and
+a third proves a payload-shard AAD cannot open a bulk-artifact ciphertext sealed under the same
+petal key (`StoredArtifactAad::bulk_artifact`).
 
 ## §key-id — the identifier is derived, never stored alongside the key
 

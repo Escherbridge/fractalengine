@@ -10,6 +10,7 @@
 use crate::capability::topic::{TopicLabel, TopicLane};
 use crate::capability::verbs::ObjectClass;
 
+use super::artifact::{is_bulk_object_class, LaneClass};
 use super::hashseq::LaneKey;
 use super::relay_policy::{PeerIdentity, RelayAuthorizationView};
 use super::SegmentError;
@@ -74,6 +75,41 @@ pub fn authorize_lane_subscription(
         topic_epoch: current,
     };
     Ok(BlindedTopic(derivation.blinded_topic(&label)?))
+}
+
+/// Discovery for a bulk artifact (SPEC-6 §3.4 rule 7): the payload lane, the artifact's own
+/// petal-affine scope, and its own class bit. This lane class adds no topic lane.
+///
+/// Refuses a header (verse-wide) scope, because a verse-wide bulk artifact is not representable
+/// (§3.4 rule 3), and any class other than shard, tile, or asset. Everything else — the epoch and
+/// `fetch` capability gate, the normative label — is [`authorize_lane_subscription`] unchanged.
+pub fn authorize_bulk_artifact_discovery(
+    view: &impl RelayAuthorizationView,
+    peer: &PeerIdentity,
+    scope: &LaneKey,
+    object_class: ObjectClass,
+    requested_epoch: u64,
+    derivation: &impl BlindedTopicDerivation,
+) -> Result<BlindedTopic, SegmentError> {
+    if !matches!(scope, LaneKey::Payload(_)) {
+        return Err(SegmentError::SealLaneMismatch {
+            lane_class: LaneClass::BulkArtifact.to_wire(),
+        });
+    }
+    if !is_bulk_object_class(object_class) {
+        return Err(SegmentError::BulkObjectClassRefused {
+            object_class: u64::from(object_class.bit()),
+        });
+    }
+    authorize_lane_subscription(
+        view,
+        peer,
+        scope,
+        TopicLane::Payload,
+        object_class,
+        requested_epoch,
+        derivation,
+    )
 }
 
 #[cfg(test)]
@@ -228,5 +264,98 @@ mod tests {
         assert_eq!(header.topic_scope().petal_id(), None);
         assert_eq!(payload.topic_scope().petal_id(), Some(petal));
         assert_eq!(payload.topic_scope().resource_id(), None);
+    }
+
+    #[test]
+    fn bulk_artifact_discovery_is_payload_lane_petal_affine() {
+        let verse = identifier(0x11);
+        let petal_scope = LaneKey::Payload(PayloadTopicScope {
+            verse_id: verse,
+            petal_id: identifier(0x21),
+            scope_epoch: 7,
+            key_id: identifier(0x41),
+        });
+        let peer = PeerIdentity([1; 32]);
+        let view = AlwaysAuthorized { epoch: 7 };
+        let derivation = KeyedTopics {
+            scope_key: [0x5a; 32],
+        };
+
+        for object_class in [ObjectClass::Shard, ObjectClass::Tile, ObjectClass::Asset] {
+            let bulk = authorize_bulk_artifact_discovery(
+                &view,
+                &peer,
+                &petal_scope,
+                object_class,
+                7,
+                &derivation,
+            )
+            .expect("a petal-affine bulk artifact is discoverable");
+            let payload_lane = authorize_lane_subscription(
+                &view,
+                &peer,
+                &petal_scope,
+                TopicLane::Payload,
+                object_class,
+                7,
+                &derivation,
+            )
+            .expect("payload lane");
+            assert_eq!(
+                bulk, payload_lane,
+                "{object_class:?} rides lane 1, no new lane"
+            );
+            let availability = authorize_lane_subscription(
+                &view,
+                &peer,
+                &petal_scope,
+                TopicLane::Availability,
+                object_class,
+                7,
+                &derivation,
+            )
+            .expect("availability lane");
+            assert_ne!(bulk, availability);
+        }
+
+        assert_eq!(
+            authorize_bulk_artifact_discovery(
+                &view,
+                &peer,
+                &LaneKey::Header { verse_id: verse },
+                ObjectClass::Shard,
+                7,
+                &derivation,
+            ),
+            Err(SegmentError::SealLaneMismatch {
+                lane_class: LaneClass::BulkArtifact.to_wire(),
+            }),
+            "a verse-wide scope is refused"
+        );
+        assert_eq!(
+            authorize_bulk_artifact_discovery(
+                &view,
+                &peer,
+                &petal_scope,
+                ObjectClass::Segment,
+                7,
+                &derivation,
+            ),
+            Err(SegmentError::BulkObjectClassRefused {
+                object_class: u64::from(ObjectClass::Segment.bit()),
+            })
+        );
+        assert_eq!(
+            authorize_bulk_artifact_discovery(
+                &NeverAuthorized,
+                &peer,
+                &petal_scope,
+                ObjectClass::Shard,
+                7,
+                &derivation,
+            ),
+            Err(SegmentError::Unauthorized),
+            "the fetch-capability gate still applies"
+        );
     }
 }

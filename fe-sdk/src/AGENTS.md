@@ -27,6 +27,7 @@ types the plugin/extension API is expressed in — `fe-plugin` and
 | `ui` | `UiSlot`, `UiContribution`, `UiExtensionRegistry` — UI slot contributions |
 | `events` | `PluginEvent`, `EventSubscription` — inter-plugin events |
 | `legacy_identifier` | `legacy_identifier`, `LegacyTable` — SPEC-10 §4.5 text id -> canonical 32-byte identifier (§legacy-identifier) |
+| `source_class` | `SourceClass`, `is_valid_format_id` — SPEC-10 §7.1 source classes + §2.2 rule 4 `format_id` grammar (§source-class) |
 
 ## §storage
 
@@ -157,3 +158,26 @@ legacy_identifier(table, id) =
 - **Provisional.** The domain `fe-legacy-identifier-v1` is a SPEC-10 provisional number
   (D-CL34), listed in fe-canonical-log's single register (`src/AGENTS.md` §Provisional wire
   numbering) for CDL-PROV batch ratification.
+
+## §source-class (CDL-SPEC10 A2, SPEC-10 §7.1, §2.2 rule 4)
+
+`source_class.rs` holds the ONE `SourceClass` enum (device, connector, decoder, manual,
+simulation; provisional wire values 1-5, zero never a class) and the ONE `format_id` grammar
+check, `is_valid_format_id`.
+
+- **Why here.** `fe-runtime` depends only on `fe-identity` and `fe-sdk`, so it cannot see a
+  `SourceClass` defined in `fe-canonical-log`; a second enum in `fe-runtime/src/messages.rs`
+  would drift from the canonical one. fe-canonical-log already depends on this crate, so
+  `fe_canonical_log::materialize::identity` re-exports this type rather than defining its own.
+  CDL-SPEC10 A3's `source_class` field on `InsertIotReadings`/`InsertDevicePayloads` uses this
+  same type.
+- **No `Default`, on purpose.** SPEC-10 §7.1 rule 6: the class travels explicitly from the
+  caller to the ingest door and is never inferred (the simulation lab sets `source_did` to its
+  host peer's DID). A `Default` would let a caller omit it and get a class silently.
+- **serde form** is snake_case (`"device"`, `"simulation"`, ...); the wire value is the
+  separate `wire()`/`from_wire()` pair, used only by the canonical CBOR codec.
+- **`is_valid_format_id`** lives beside the class because both enter `ObservationSource`
+  signed bytes. A `format_id` is also the key of the R5 device-format descriptor, so A3's
+  `device_format` module and its ingest doors MUST call this function rather than re-implement
+  the grammar ("shared cores + separate guards = drift", RUNBOOK §5). ASCII-only, so NFC holds
+  trivially.

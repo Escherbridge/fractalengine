@@ -7,7 +7,9 @@
 
 use crate::envelope::Hash32;
 
-use super::artifact::{admit_sealed, verify_artifact_id, LaneClass, SealedArtifact};
+use super::artifact::{
+    admit_sealed, verify_artifact_id, BulkArtifactBody, LaneClass, SealedArtifact,
+};
 use super::hashseq::HashSeqNode;
 use super::header_lane::{EnvelopeView, HeaderSegmentBody};
 use super::manifest::SegmentManifestBody;
@@ -26,6 +28,8 @@ pub enum OpenedBody {
     HashSeqNode(HashSeqNode),
     /// A segment manifest body.
     SegmentManifest(SegmentManifestBody),
+    /// A petal-affine bulk artifact body: one shard, tile, or asset (§3.4).
+    BulkArtifact(BulkArtifactBody),
 }
 
 impl OpenedBody {
@@ -36,6 +40,7 @@ impl OpenedBody {
             Self::PayloadShard(_) => LaneClass::PayloadShard,
             Self::HashSeqNode(_) => LaneClass::HashSeqNode,
             Self::SegmentManifest(_) => LaneClass::SegmentManifest,
+            Self::BulkArtifact(_) => LaneClass::BulkArtifact,
         }
     }
 }
@@ -60,6 +65,9 @@ pub fn decode_opened_body(
         }
         LaneClass::SegmentManifest => {
             OpenedBody::SegmentManifest(SegmentManifestBody::decode_canonical(plaintext)?)
+        }
+        LaneClass::BulkArtifact => {
+            OpenedBody::BulkArtifact(BulkArtifactBody::decode_canonical(plaintext)?)
         }
     })
 }
@@ -254,6 +262,11 @@ impl<S: SealedArtifactStore> ReceiptPipeline<S> {
         if let Err(error) = cross_check_body(&body, cross_check) {
             return self.refuse(&error, Some(claimed_id), bytes);
         }
+        if let OpenedBody::BulkArtifact(bulk) = &body {
+            if let Err(error) = bulk.assert_sealed_under(claimed_id, sealed.encryption.key_id()) {
+                return self.refuse(&error, Some(claimed_id), bytes);
+            }
+        }
 
         let stored = self.store.put_verified(claimed_id, bytes);
         match stored {
@@ -271,7 +284,9 @@ impl<S: SealedArtifactStore> ReceiptPipeline<S> {
 /// Shard direction: no record may introduce a payload the header set does not reference.
 /// Header direction: a payload-bearing header whose shard record the receiver already holds
 /// must match that record's hash and length exactly; a record not yet received is an
-/// availability gap that §4.2 resolves, not a receipt failure.
+/// availability gap that §4.2 resolves, not a receipt failure. A bulk artifact has no header
+/// cross-reference: its content is validated at `materialize/<class>`, not at receipt (§3.4
+/// rule 8), and its committing operation names it, not the other way round (§3.4 rule 5).
 fn cross_check_body(body: &OpenedBody, view: &impl CrossCheckView) -> Result<(), SegmentError> {
     match body {
         OpenedBody::PayloadShard(shard) => shard.verify_against_headers(view),
@@ -296,7 +311,9 @@ fn cross_check_body(body: &OpenedBody, view: &impl CrossCheckView) -> Result<(),
             }
             Ok(())
         }
-        OpenedBody::HashSeqNode(_) | OpenedBody::SegmentManifest(_) => Ok(()),
+        OpenedBody::HashSeqNode(_)
+        | OpenedBody::SegmentManifest(_)
+        | OpenedBody::BulkArtifact(_) => Ok(()),
     }
 }
 
@@ -306,6 +323,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::num::NonZeroUsize;
 
+    use crate::capability::verbs::ObjectClass;
     use crate::envelope::{
         EncryptionParams, Identifier32, PayloadRef, Scope, NONCE_LENGTH, PRODUCTION_SUITE_ID,
     };
@@ -591,5 +609,86 @@ mod tests {
                 reason: QuarantineReason::StoredLengthMismatch
             }
         ));
+    }
+
+    #[test]
+    fn bulk_lane_body_mismatch_rejected() {
+        let topic = PayloadTopicScope {
+            verse_id: identifier(0x11),
+            petal_id: identifier(0x21),
+            scope_epoch: 7,
+            key_id: identifier(0x41),
+        };
+        let bulk = BulkArtifactBody::new(topic, ObjectClass::Shard, b"hexon".to_vec())
+            .expect("bulk body")
+            .encode_canonical()
+            .expect("bulk plaintext");
+        let shard = PayloadShardBody::new(
+            topic,
+            vec![PayloadShardRecord::of(
+                Hash32([0x0A; 32]),
+                b"ciphertext".to_vec(),
+            )],
+        )
+        .expect("shard body")
+        .encode_canonical()
+        .expect("shard plaintext");
+
+        assert_eq!(
+            decode_opened_body(LaneClass::BulkArtifact, &shard),
+            Err(SegmentError::LaneBodyMismatch)
+        );
+        assert!(decode_opened_body(LaneClass::PayloadShard, &bulk).is_err());
+
+        let opener = TagOnlyOpener {
+            authorized_keys: vec![identifier(0x41)],
+        };
+        let view = KnownReferences::default();
+        for (nonce, lane, plaintext) in [
+            (1u8, LaneClass::BulkArtifact, &shard),
+            (2, LaneClass::PayloadShard, &bulk),
+        ] {
+            let sealed = seal_for_test(lane, descriptor(0x41, nonce), plaintext);
+            let bytes = sealed.encode_canonical().expect("bytes");
+            let artifact_id = sealed.artifact_id().expect("id");
+            let mut receiver = pipeline();
+            assert_eq!(
+                receiver.receive(artifact_id, bytes.len() as u64, &bytes, &opener, &view),
+                ReceiptOutcome::Quarantined {
+                    reason: QuarantineReason::MalformedLaneBody
+                },
+                "{lane:?} outer map over the other lane's body"
+            );
+            assert!(!receiver.store().has(artifact_id));
+        }
+
+        // A body naming one topic key, sealed under another, mixes key identifiers (§3.4.3).
+        let other_key = TagOnlyOpener {
+            authorized_keys: vec![identifier(0x41), identifier(0x42)],
+        };
+        let sealed = seal_for_test(LaneClass::BulkArtifact, descriptor(0x42, 4), &bulk);
+        let bytes = sealed.encode_canonical().expect("bytes");
+        let artifact_id = sealed.artifact_id().expect("id");
+        let mut receiver = pipeline();
+        assert_eq!(
+            receiver.receive(artifact_id, bytes.len() as u64, &bytes, &other_key, &view),
+            ReceiptOutcome::Quarantined {
+                reason: QuarantineReason::MalformedLaneBody
+            }
+        );
+        assert!(!receiver.store().has(artifact_id));
+
+        // The honest pairing is admitted with no header cross-reference (§3.4 rules 5 and 8).
+        let sealed = seal_for_test(LaneClass::BulkArtifact, descriptor(0x41, 3), &bulk);
+        let bytes = sealed.encode_canonical().expect("bytes");
+        let artifact_id = sealed.artifact_id().expect("id");
+        let mut receiver = pipeline();
+        assert_eq!(
+            receiver.receive(artifact_id, bytes.len() as u64, &bytes, &opener, &view),
+            ReceiptOutcome::Stored {
+                artifact_id,
+                lane: LaneClass::BulkArtifact,
+            }
+        );
     }
 }
