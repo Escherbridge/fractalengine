@@ -106,3 +106,8 @@ archives** (fractalengine-{windows-x86_64.zip, linux-x86_64.tar.gz}, fe-relay-{w
 linux-x86_64.tar.gz}) + SHA256SUMS. Push freeze lifted; next push = campaign final sweep (main now
 carries W1 code commits interleaved with docs, so docs can't be pushed alone). paths-ignore
 (`conductor/**`, `.omc/**`) rides with that push.
+
+**Automated review of S4 `3d89b60`, MEDIUM, CONFIRMED:** peer-supplied bundle index's `tileset_id` is
+never bound to the requested id (`bundle.rs` ~446 / `terrain_bridge.rs` ~324-336) → a provider can
+overwrite a different installed tileset. **Routed into W1 S8b as mandatory finding #2** (plan S8b
+section) — S5 is building, so no source edits now. Verify at W1 close.

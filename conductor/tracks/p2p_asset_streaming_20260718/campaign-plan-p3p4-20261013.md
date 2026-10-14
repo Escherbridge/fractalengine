@@ -762,6 +762,16 @@ pointing at real S1 bundle files):
 > back to unauthenticated roots only when no authenticated provider exists, surfaced as such).
 > Regression flow test: authenticated ad (root A) then relayed ad for the same provider (root B) →
 > `root_for` still returns A and a download fetches A.
+>
+> **MANDATORY KNOWN FINDING #2 (2026-10-13, automated review of S4 `3d89b60`, confirmed by reading the
+> code):** `assemble_bundles_from_index_json` (`fe-terrain/src/tiles/bundle.rs` ~446) installs under the
+> `tileset_id` the PEER's index declares, while `assemble_and_install` (`fractalengine/src/terrain_bridge.rs`
+> ~324-336) reloads the REQUESTED id — nothing binds them, so a provider advertising tileset X with an
+> index declaring Y overwrites the user's installed Y. Required: an `expected_tileset_id` parameter on
+> `assemble_bundles` / `assemble_bundles_from_index_json` that rejects a mismatch, plus each bundle's
+> `ChunkIndex.tileset_id` checked; a P2P download never overwrites an already-installed tileset unless it
+> is the same id (and, once P5 sealing lands, the same publisher). Regression flow test: index declaring a
+> different id than requested → install refused, the existing tileset untouched.
 
 **Why it was added:** the plan had no review step, even though RUNBOOK §7 step 3 says every
 workflow has "a reviewer that fixes". S2/S3/S4 take untrusted network input (advertisements,
