@@ -19,10 +19,13 @@ Dormant is a fact about wiring, not a licence for untested code: every gate here
 and the two obligations `fe-canonical-log`'s `capability/AGENTS.md` §revalidation and
 `branch/AGENTS.md` hand to Wave 3 are discharged in this module (see §obligations-discharged).
 
-The four tables are appended to `schema.rs` and registered in `apply_all`, but deliberately
-**not** added to `ALL_TABLE_NAMES`: SPEC-4 §1.4 makes the verified log the authority and the
-SurrealDB projection derivative, so an admin "clear everything" that erased `verified_op_log`
-would destroy history no rebuild could recover.
+The canonical tables are appended to `schema.rs` and registered in `apply_all`, but
+deliberately **not** added to `ALL_TABLE_NAMES`: SPEC-4 §1.4 makes the verified log the authority
+and the SurrealDB projection derivative, so an admin "clear everything" that erased
+`verified_op_log` would destroy history no rebuild could recover. The same holds for W4-7's
+three durable authority sources (`canon_capability_chain`, `canon_sealed_artifact`,
+`canon_scope_key_index`): clearing them silently turns admitted history into un-reopenable
+ciphertext and quarantines every later candidate.
 
 ## §verified-log
 
@@ -91,51 +94,22 @@ byte-identical retry returns `AlreadyPresent` (success, §3.2) rather than an er
 
 ## §storage-faults
 
-`VerifiedLogStore::append` returns `Result<AppendOutcome, AppendError>`, and `AppendError` has
-exactly two variants: `HashMismatch` and `IntegrityConflict`. **Neither means "the database was
-unavailable."** The trait cannot express §2.3's indeterminate append at all, and the same is
-true of `get_bytes`/`get_meta`/`parents_of`, which return bare `Option`.
+`VerifiedLogStore::append` returns `Result<AppendOutcome, AppendError>`. Since the W2 erratum
+landed, `AppendError` names every outcome honestly: `HashMismatch` and `IntegrityConflict`
+(SPEC-4 §3.3, a permanent blacklist of the `op_id`), plus two **indeterminate** variants that
+condemn nothing — `NotAnEnvelope` (bytes this build cannot admit here: undecodable, unsigned,
+structurally invalid, or a protocol version it predates) and `StorageUnavailable` (the store
+could not answer). The trait impl maps `append_received`'s `VerifiedLogStoreError::NotAnEnvelope`
+and `::Storage` onto exactly those two; it never answers `IntegrityConflict` for a local
+refusal, because that would poison a legitimate identity network-wide and forever.
 
-Rather than lie in either direction, this module does three things:
-
-1. The **inherent** API (`append_admitted`, `append_received`, `meta_of`, `parents`,
-   `envelope_bytes`, `op_id_at_equivocation_key`) is the primary one and returns
-   `VerifiedLogStoreError` / `StorageError`, which name the fault honestly. Everything inside
-   `canon_log` uses it.
-2. The **trait** impl exists for callers that only have the seam. On a substrate fault, and on
-   bytes this build cannot admit, it refuses — never succeeds — because §2.3 requires the
-   mutation to fail and SurrealDB to stay unmodified. The refusal it uses is `HashMismatch`,
-   which is the **least damaging of two wrong answers**, not a correct one. `IntegrityConflict`
-   is specifically unusable: SPEC-4 §3.3 makes it a permanent blacklist of the `op_id`, so a
-   purely local refusal — an unavailable database, or an envelope from a protocol version this
-   build predates — would poison a legitimate identity network-wide and forever. `HashMismatch`
-   refuses this submission without condemning the identity. Read methods answer `None`, which
-   is the pending-safe direction: replay halts the affected head rather than applying an
-   operation whose history it could not read.
-3. Either way the real cause is recorded and drainable: substrate faults through
-   `take_storage_faults`, refused appends through `take_append_refusals`. A fault is observable
-   rather than silently rounded off.
-
-**This is a seam gap, not a design preference, and the workaround above is a wrong answer we
-chose deliberately.** ERRATUM, owed to `fe-canonical-log/src/materialize/errors.rs` (outside
-this slice's file boundary):
-
-```rust
-pub enum AppendError {
-    HashMismatch,
-    IntegrityConflict { op_id: Hash32 },
-    /// The bytes are not an admissible envelope HERE — undecodable, unsigned, structurally
-    /// invalid, or a protocol version this build predates. Says nothing about `op_id`, so it
-    /// MUST NOT blacklist it (contrast `IntegrityConflict`).
-    NotAnEnvelope { op_id: Hash32, reason: String },
-    /// The store could not answer. Neither a protocol reject nor a quarantine: retry the exact
-    /// same immutable bytes (§3.4).
-    Indeterminate { op_id: Hash32, detail: String },
-}
-```
-
-Until those variants exist, `take_append_refusals` is the only honest channel and callers of the
-trait seam cannot tell the four cases apart.
+The **inherent** API (`append_admitted`, `append_received`, `meta_of`, `parents`,
+`envelope_bytes`, `op_id_at_equivocation_key`) is still the primary one and returns
+`VerifiedLogStoreError` / `StorageError`; everything inside `canon_log` uses it. The trait's
+read methods (`get_bytes`/`get_meta`/`parents_of`) still answer bare `Option`, and `None` on a
+fault is the pending-safe direction: replay halts the affected head rather than applying an
+operation whose history it could not read. Either way the real cause stays drainable —
+substrate faults through `take_storage_faults`, refused appends through `take_append_refusals`.
 
 A related fail-open, closed here rather than deferred: `EquivocationIndex::op_id_at` returns
 `Option<Hash32>`, and `None` **admits**. Answering `None` on a storage fault therefore lets a
@@ -145,6 +119,12 @@ its evidence sources to implement `admission::EvidenceAvailability` and refuses 
 so the fail-open direction is unreachable. That gate is on the `Ok` path only: a genuine §5.1
 reject is a decision about the candidate's own bytes and must stay permanent rather than
 becoming retryable.
+
+The W4-7 durable sources follow the same rule: a fault is a typed `StorageError` from their
+`async` doors, and a stored row that fails its own re-verification on load (bytes that do not
+hash to the row's id, a non-canonical chain, key material that does not derive the indexed
+`key_id`) is **not held** and is drainable from `take_load_faults` — so an operation that
+needed it quarantines as missing evidence, never admits and never rejects.
 
 ## §admission-order
 
@@ -337,17 +317,122 @@ answer to "is this wrap's issuer Manager+ for that epoch scope". It asks the que
 the role table — and does NOT route through `authority_is_manager_plus`: the wrap's
 `CapabilityRef.chain_id` names a certificate chain, not an `issuer_authority_id`, so feeding it
 to the anchor check would be a second, invented mapping that refuses every real wrap. The
-`chain_id` is therefore not resolved here (no chain store exists to resolve it against); the
-signed reference's epoch is checked by `open_scope_key` itself. `ManagerPlus`→`Granted`,
+`chain_id` is not resolved for the wrap check; the signed reference's epoch is checked by
+`open_scope_key` itself. (W4-7's `chain_store::ChainStore` now exists; W4-8's
+`DurableDeliveryView` uses it for the recipient-decrypt half, not for this issuer half.) `ManagerPlus`→`Granted`,
 `NotManagerPlus`→`Refused`, `Unknown`→`Unknown`; both non-`Granted` answers refuse. Test:
 `opening_a_wrap_asks_the_durable_view_whether_its_issuer_is_manager_plus`. The
-`DeviceEnrolmentView` half has no production implementor: the enrolment artifact is an
-unratified owner decision (`fe-canonical-log/src/crypto/AGENTS.md` §what-is-structural).
+`DeviceEnrolmentView` half is decided (owner R2, 2026-10-13: self-signed, replicated) and the
+protocol artifact exists (`fe-canonical-log` `crypto::device_enrolment`, W4-6); its durable
+registry is W4-8's `canon_log::device_enrolment`, not yet landed.
+
+**Checkpoint authority (W4-7).** `DurableAuthorizationView` also implements
+`checkpoint::ManagerPlusAuthorizationView`, so `rebuild::AdmittedCheckpoint::admit` has a
+production answer. `is_manager_plus_for_checkpoint` asks `principal_is_manager_plus` at the verse
+scope, exactly as above. `capability_permits_append_checkpoint` resolves the claim's
+`capability.chain_id` in the `ChainStore` handed to `load_with_chain_store` (`load` keeps no
+store and answers `false`) and runs SPEC-3 §2.4 for `append/checkpoint` with the signer as
+requester under the live policy — so holding someone else's valid chain is not a capability.
+`authorization_view_root` answers `None`: no authorization-view root is derivable until SPEC-2's
+authority history exists, and `verify_checkpoint_claim` treats `None` as "cannot derive",
+never as a match.
 
 `version()` comes from a process-monotonic counter incremented on every load, so a §5.3 cache
 key recorded against an older view can never satisfy a newer one. It resets on restart, which
 is correct: the caches it guards do not survive a restart either, and §5.3 rule 5 requires a
 fresh durable read at startup regardless.
+
+## §durable-authority-sources
+
+W4-7 gives every seam the composed verifier reads a durable, local-only implementor. Each one is
+a **startup snapshot plus write-through**: the `fe-canonical-log` seams are synchronous and the
+DB thread is async, so a source loads its table once (re-verifying every row from its own bytes)
+and answers from memory; its `async` doors write the table first, then the cache. Clones of the
+chain and artifact stores share one cache.
+
+| Source | Table | Seam(s) | Write door |
+| --- | --- | --- | --- |
+| `chain_store::ChainStore` | `canon_capability_chain` | `CapabilityChainSource` | `put_verified_chain` — canonical round-trip of the chain and every certificate, `chain_id` recomputed, never caller-named |
+| `artifact_store::SurrealArtifactStore` | `canon_sealed_artifact` | `ContentByteStore`, `PayloadCiphertextSource` | `put_payload_ciphertext`, `put_sealed_artifact` (SPEC-6 §5.1 id + immutable-rewrite checks first); `ContentByteStore::put` queues for `persist_pending` |
+| `scope_key_custody::SecretStoreScopeKeyCustody` | `canon_scope_key_index` (non-secret) | `ScopeKeyStore` + `ShredLedger` | `take_custody`, `shred`; trait mutations queue for `persist` |
+| `author_lifecycle::DurableAuthorKeyLifecycle` | none — derived from `verified_op_log` | `AuthorKeyLifecycleView` | `observe_appended` after each append; `replay_verified_log` at startup |
+
+**Local-only, never served.** Chains are access-controlled local data (SPEC-3 privacy table):
+no `replicate_row`, no fe-api route. The artifact store is deliberately not the iroh blob store,
+whose content is served to peers — that is the canonical network exposure that stays NO_GO.
+Nothing here is reachable from a live handler (§parallel-and-dormant).
+
+**Scope keys never enter SurrealDB.** Material lives in `fe_identity::SecretStore` under service
+`fractalengine`, account `canon-scope-key/<key_id hex>`, and in the custody's zeroizing map.
+`SecretStore` cannot enumerate and must never gain `list` (critic C8/C10), so SurrealDB keeps a
+non-secret index — scope, epoch, `key_id`, state. On load a key is held only when its material
+is present AND derives the indexed `key_id`. Write order is chosen so a crash fails closed:
+insert files the secret before the index row (worst case an unindexed, never-loaded secret —
+"key lost"), and shred writes `destroyed` before deleting the secret (worst case a residual
+secret that is never reloaded and is deleted again on the next load — never "key resurrected").
+A destroyed or issuance-stopped `(scope, epoch)` refuses re-keying (`IssuanceStopped`). The hex
+text handed to and from the keystore is overwritten before it is freed; fe-database has no
+`zeroize` dependency, so that wipe is best-effort.
+
+**The lifecycle is derived, not stored.** `DurableAuthorKeyLifecycle` holds the
+`LifecycleDispatcher` and a causal DAG of every `verified_op_log` row. Replay walks rows in
+`deterministic_causal_order`; every row joins the DAG (everything in the verified log is
+admitted), and a row whose schema is one of the four SPEC-2 lifecycle schemas is re-opened and
+dispatched. Re-opening runs `admit_candidate_with_facts` with a private `StoredOperationOpener`
+that delegates ingress and payload to the real verifier and answers authorization from the
+row's presence in the verified log — the same trust `replay_to_frontier` places in it. Only
+bytes read back under their own `op_id` ever reach it. A lifecycle row that entered through the
+unauthorized `append_received` door is therefore dispatched too; that is bounded rather than
+an escalation, because a rotation needs the predecessor's own envelope signature AND the
+successor's possession proof, so it can only retire its own signer's key, and a disavow or
+grant is still judged by `issuer_role` against the role table. A lifecycle row that cannot be re-opened
+(its payload key was shredded, its ciphertext was never retained) is reported in
+`LifecycleReplayReport::held` and does not move the lineage, which is SPEC-2's own quarantine
+of a payload-key-unavailable lifecycle operation.
+
+Two interim answers SPEC-2 forces, both to be replaced with SPEC-2's authority history:
+
+- **`CapabilityAuthorityView::predecessor_authorized`** answers `Authorized` only for exactly
+  the dispatched operation's own `(author key, scope, epoch)`, whose append chain the composed
+  verifier verified before the append; any other question is `Unauthorized`. `issuer_role`
+  reads the interim role table (`DurableAuthorizationView::role_level`); no row is
+  `Unavailable`, which SPEC-2 holds rather than refuses. Replay reads today's roles, not the
+  roles at the time of the original admission.
+- **Lineage roots.** `LineageIndex` treats a key as active only via an incoming rotation or a
+  registered root, so with no roots every first rotation fails `PredecessorNotActive`. Before a
+  rotation is dispatched its author is registered as a root at the operation's verse — its
+  authority there rests on the chain admission just verified (SPEC-2 §4 rule 2). Root
+  registration cannot un-retire a key: `active_key_at` checks the rotation walk first.
+
+## §production-verifier
+
+`verifier::durable_candidate_verifier(db, secret_store, interim_authority_anchor)` is THE one
+production `ComposedCandidateVerifier`: `ChainStore`, `DurableAuthorizationView` (with the chain
+store), `DurableAuthorKeyLifecycle`, `SecretStoreScopeKeyCustody`, `SurrealArtifactStore`,
+`RegisteredSchemaSet`, `SystemClock`. It returns a `LoadedVerifier` carrying the startup
+`LifecycleReplayReport` so a held lifecycle row is visible, not silent. Like
+`DurableAuthorizationView`, it is a snapshot: rebuild it after an admitted epoch bump or a role
+change.
+
+`verifier::admit_and_append_durably` is its admission door: `admit_and_append` (SPEC-4 §2 order,
+unchanged), then the payload ciphertext retained in the artifact store, then
+`observe_appended`, so the next admission already sees a rotation this one recorded. Calling
+`admit_and_append` directly with this verifier is legal but leaves the lifecycle stale until the
+next rebuild, and leaves the ciphertext unretained for replay. A failure after the append is
+`CiphertextNotRetained` / `LifecycleNotObserved`, both of which the caller fixes by retrying the
+same call — the append answers `AlreadyPresent`.
+
+`RegisteredSchemaSet` interprets exactly the four SPEC-2 lifecycle schemas (kind 1, each
+validated by its own canonical decoder) until something calls `register(kind, schema_hash,
+validator)` — on a built verifier too (`verifier.parts().schemas.register(...)`), so CDL-SPEC10
+B3 adds kind 5 by a call, not by editing the constructor (critic C3). A repeat registration is
+refused, never substituted. An application kind with no schema is `UnknownKind`; a known kind
+with an unregistered schema is `UnknownSchema` (SPEC-1 §6 rule 7, SPEC-4 §5). The four lifecycle
+schema hashes are provisional — `BLAKE3("fe-schema-<name>" || 00)` after SPEC-10 §4.1 rule 3 —
+and recorded in `fe-canonical-log/src/AGENTS.md` §Provisional wire numbering.
+
+Tests: `fe-database/tests/canon_log_composed_admission_test.rs`, through the real DB thread's
+shared handle over an on-disk store that is joined and reopened.
 
 ## §obligations-discharged
 
@@ -357,10 +442,11 @@ fresh durable read at startup regardless.
 | Read durable epoch state at startup; a missed notification is a cache miss | §5.3 obligation 4 | `canonical_epoch::DurableAuthorizationView::load`, whose unknown-scope answer is `None`/`Unknown`, never an allow |
 | Ask the SPEC-3 §5.1 Manager+ question on every epoch bump | SPEC-3 §5.1 | `canonical_epoch::SurrealScopeEpochStore::admit_epoch_bump` — `authority: &dyn ManagerAuthorityView` is a required parameter and the question is asked before any state is touched |
 | Implement `VerseDagView` over `fe-database` | `branch/AGENTS.md` | `append_store::SurrealVerseDagView` — admission and equivocation from `verified_op_log`, genesis from admitted kind-2 rows (ambiguous genesis answers `None`), replay-verified recorded only by an actually-completed **from-empty** rebuild, through a `pub(crate)` setter |
+| Give `CandidateVerifier`, `ManagerPlusAuthorizationView`, `AuthorKeyLifecycleView` and scope-key custody a durable production implementor | campaign plan W4-7 / ledger CDL-W4 | §durable-authority-sources, §production-verifier |
 
 Still open, and not this module's to close: `CacheKey`/`PinnedSession` wiring in `fe-api` and
 `fe-network` (§5.3 obligations 1 and 3), and the SPEC-2 authority history that replaces
-§interim-manager-authority.
+§interim-manager-authority and the interim lifecycle answers in §durable-authority-sources.
 
 ## Conformance tests
 

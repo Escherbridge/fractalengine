@@ -6,17 +6,21 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use fe_canonical_log::capability::{
-    AuthorityState, AuthorizationSnapshot, AuthorizationView, ManagerAuthorityView, Principal,
-    RevalidationGate,
+    verify_chain_bytes, AuthorityState, AuthorizationRequest, AuthorizationSnapshot,
+    AuthorizationView, ManagerAuthorityView, ObjectClass, Principal, RevalidationGate, Verb,
+    VerificationOptions,
 };
 use fe_canonical_log::cbor;
+use fe_canonical_log::checkpoint::ManagerPlusAuthorizationView;
+use fe_canonical_log::compose::{Clock, SystemClock};
 use fe_canonical_log::crypto::{AuthorizationRecord, IssuerAuthorityView};
-use fe_canonical_log::envelope::{CapabilityRef, Hash32, Scope};
+use fe_canonical_log::envelope::{Author, CapabilityRef, Hash32, Identifier32, Scope};
 use fe_canonical_log::kind::OperationKind;
 use fe_canonical_log::signing::decode_and_admit;
 use fe_policy::RoleLevel;
 
 use crate::canon_log::append_store::SurrealVerifiedLogStore;
+use crate::canon_log::chain_store::ChainStore;
 use crate::canon_log::{identifier_to_hex, op_id_from_hex, op_id_to_hex, StorageError};
 use crate::repo::Db;
 
@@ -507,6 +511,7 @@ pub struct DurableAuthorizationView {
     roles: HashMap<(String, String), String>,
     interim_authority_anchor: Option<Hash32>,
     version: u64,
+    checkpoint_chains: Option<ChainStore>,
 }
 
 impl DurableAuthorizationView {
@@ -562,7 +567,21 @@ impl DurableAuthorizationView {
             roles,
             interim_authority_anchor,
             version: VIEW_VERSION.fetch_add(1, Ordering::SeqCst) + 1,
+            checkpoint_chains: None,
         })
+    }
+
+    /// [`Self::load`], plus the chain store `ManagerPlusAuthorizationView` verifies a
+    /// checkpoint signer's `append/checkpoint` chain from. Without one, every checkpoint
+    /// capability question answers `false`.
+    pub async fn load_with_chain_store(
+        db: &Db,
+        interim_authority_anchor: Option<Hash32>,
+        chains: ChainStore,
+    ) -> Result<Self, StorageError> {
+        let mut view = Self::load(db, interim_authority_anchor).await?;
+        view.checkpoint_chains = Some(chains);
+        Ok(view)
     }
 
     /// The number of epoch scopes this view knows.
@@ -570,7 +589,12 @@ impl DurableAuthorizationView {
         self.epochs.len()
     }
 
-    fn role_level(&self, principal: &Principal, epoch_scope: &Scope) -> Option<RoleLevel> {
+    /// The interim role-table level of `principal` at exactly `epoch_scope`, if a row exists.
+    pub(crate) fn role_level(
+        &self,
+        principal: &Principal,
+        epoch_scope: &Scope,
+    ) -> Option<RoleLevel> {
         let key = (
             principal.did.clone(),
             interim_authority_scope_key(epoch_scope),
@@ -640,6 +664,74 @@ impl IssuerAuthorityView for DurableAuthorizationView {
             AuthorityState::NotManagerPlus => AuthorizationRecord::Refused,
             AuthorityState::Unknown => AuthorizationRecord::Unknown,
         }
+    }
+}
+
+/// SPEC-5 §3.1 rule 5 / §3.2 rule 1 checkpoint authority from durable state. See
+/// `canon_log/AGENTS.md` §durable-authority-sources.
+impl ManagerPlusAuthorizationView for DurableAuthorizationView {
+    /// Manager+ at the verse scope, asked exactly as `admit_epoch_bump` asks SPEC-3 §5.1.
+    fn is_manager_plus_for_checkpoint(
+        &self,
+        verse_id: Identifier32,
+        signer: &Author,
+        capability: &CapabilityRef,
+    ) -> bool {
+        self.principal_is_manager_plus(signer, &Scope::verse_wide(verse_id), capability.scope_epoch)
+            .is_manager_plus()
+    }
+
+    /// A held chain named by `capability.chain_id` that verifies SPEC-3 §2.4 for
+    /// `append/checkpoint` at `verse_scope` with the signer as requester, under the live policy.
+    fn capability_permits_append_checkpoint(
+        &self,
+        verse_scope: &Scope,
+        signer: &Author,
+        capability: &CapabilityRef,
+    ) -> bool {
+        let Some(stored) = self
+            .checkpoint_chains
+            .as_ref()
+            .and_then(|chains| chains.held_chain(&capability.chain_id))
+        else {
+            return false;
+        };
+        let request = AuthorizationRequest {
+            verb: Verb::Append,
+            object_class: ObjectClass::Checkpoint,
+            target_scope: *verse_scope,
+            resource_id: None,
+            requester: signer.clone(),
+            operation_author: signer.clone(),
+            operation_scope_epoch: capability.scope_epoch,
+            operation_kind: None,
+            is_structural_operation: false,
+            payload_bytes: None,
+            segment_bytes: None,
+            schema_hash: None,
+            preview_hz: None,
+            now_ms: SystemClock.now_ms(),
+        };
+        verify_chain_bytes(
+            &stored.chain_bytes,
+            &request,
+            self,
+            &AuthorizationSnapshot {
+                epoch_causally_valid_for_operation: false,
+            },
+            &VerificationOptions::live(),
+        )
+        .is_ok_and(|verified| verified.chain_id == capability.chain_id)
+    }
+
+    /// No authorization-view root is derivable until SPEC-2's authority history exists.
+    fn authorization_view_root(
+        &self,
+        _verse_id: Identifier32,
+        _branch_id: Identifier32,
+        _frontier_commitment: Hash32,
+    ) -> Option<Hash32> {
+        None
     }
 }
 

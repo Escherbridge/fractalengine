@@ -4,11 +4,18 @@
 pub mod admission;
 pub mod append_store;
 pub mod apply_marker_store;
+pub mod artifact_store;
+pub mod author_lifecycle;
 pub mod canonical_epoch;
+pub mod chain_store;
 pub mod rebuild;
 pub mod replay;
+pub mod scope_key_custody;
+pub mod verifier;
 
 use fe_canonical_log::envelope::{Hash32, Identifier32};
+
+use crate::repo::Db;
 
 /// Every way the SurrealDB substrate itself fails a canonical-log operation.
 ///
@@ -71,6 +78,62 @@ pub fn identifier_to_hex(identifier: Identifier32) -> String {
 /// Parses lowercase hex back into a 32-byte identifier.
 pub fn identifier_from_hex(text: &str) -> Option<Identifier32> {
     Some(Identifier32(decode_32(text)?))
+}
+
+/// Writes `row` into a content-addressed `table` unless a row with `id_field = id_value` already
+/// exists; `true` when this call created it.
+///
+/// Only for tables whose id is a hash of the row's own bytes, where equal ids are equal rows. A
+/// concurrent writer that wins the UNIQUE-index race is reported as "already present", never as
+/// a fault.
+pub(crate) async fn create_if_absent(
+    db: &Db,
+    table: &'static str,
+    id_field: &'static str,
+    id_value: &str,
+    row: serde_json::Value,
+) -> Result<bool, StorageError> {
+    if row_exists(db, table, id_field, id_value).await? {
+        return Ok(false);
+    }
+    let created = db
+        .query(format!("CREATE {table} CONTENT $row"))
+        .bind(("row", row))
+        .await
+        .map_err(|error| StorageError::query(format!("{table} write"), error))?
+        .check();
+    match created {
+        Ok(_) => Ok(true),
+        Err(error) => {
+            if row_exists(db, table, id_field, id_value).await? {
+                Ok(false)
+            } else {
+                Err(StorageError::query(format!("{table} write"), error))
+            }
+        }
+    }
+}
+
+/// Whether `table` holds a row with `id_field = id_value`.
+pub(crate) async fn row_exists(
+    db: &Db,
+    table: &'static str,
+    id_field: &'static str,
+    id_value: &str,
+) -> Result<bool, StorageError> {
+    let mut response = db
+        .query(format!(
+            "SELECT {id_field} FROM {table} WHERE {id_field} = $id LIMIT 1"
+        ))
+        .bind(("id", id_value.to_string()))
+        .await
+        .map_err(|error| StorageError::query(format!("{table} read"), error))?
+        .check()
+        .map_err(|error| StorageError::query(format!("{table} read"), error))?;
+    let rows: Vec<serde_json::Value> = response
+        .take(0)
+        .map_err(|error| StorageError::query(format!("{table} read"), error))?;
+    Ok(!rows.is_empty())
 }
 
 fn decode_32(text: &str) -> Option<[u8; 32]> {

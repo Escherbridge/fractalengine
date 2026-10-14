@@ -356,18 +356,18 @@ crate's own tests; what is missing is the *durable*, database-backed caller a la
 
 | Trait | Production implementor | Production caller |
 | --- | --- | --- |
-| `CandidateVerifier` | `compose::ComposedCandidateVerifier` (W4-3) | `fe-database canon_log::verifier::durable_candidate_verifier` (W4-7, not yet landed) |
+| `CandidateVerifier` | `compose::ComposedCandidateVerifier` (W4-3) | `fe-database canon_log::verifier::durable_candidate_verifier` (W4-7) — the one production instantiation; `admit_and_append_durably` is its admission door |
 | wire `CapabilityVerifier` | `compose::ChainCapabilityVerifier` (W4-3) | none — `/ws/canonical` (CANON-WS) is NO_GO; never mounted or instantiated |
-| `SealedArtifactStore` | `compose::ByteStoreSealedArtifactStore` (W4-4) | `fe-database canon_log::artifact_store::SurrealArtifactStore` (W4-7, not yet landed) |
+| `SealedArtifactStore` | `compose::ByteStoreSealedArtifactStore` (W4-4) | over `fe-database canon_log::artifact_store::SurrealArtifactStore` (W4-7), the local-only `ContentByteStore` + `PayloadCiphertextSource` (`put_sealed_artifact`) |
 | `ProofEnvironment` | `compose::SealedProofEnvironment` (W4-4) | none yet — its only real consumer, checkpoint bootstrap/seeding from received segments, is relay/peer distribution and stays NO_GO; exercised directly by this crate's own tests and by W4-5's `cross_spec_integration.rs` |
 | `ScopeKeyResolver` | `crypto::scope_key::LaneScopeKeyResolver` (W3-crypto) | `compose::SealedProofEnvironment` (W4-4), in-process |
-| `ScopeKeyStore` (custody) + `retention::crypto_shred::ShredLedger` (unified W4-4) | `crypto::scope_key::InMemoryScopeKeyStore` | `retention::crypto_shred::crypto_shred` / `crypto::scope_key::ScopeKeyLifecycle` (this crate); a durable `fe-database` store is W4-7 |
+| `ScopeKeyStore` (custody) + `retention::crypto_shred::ShredLedger` (unified W4-4) | `crypto::scope_key::InMemoryScopeKeyStore`; durable: `fe-database canon_log::scope_key_custody::SecretStoreScopeKeyCustody` (W4-7) | `retention::crypto_shred::crypto_shred` / `crypto::scope_key::ScopeKeyLifecycle` (this crate); the durable verifier's payload key resolution (W4-7) |
 | `CanonicalCommitPipeline` | `compose::VerifyingCommitPipeline` (W4-4) | none — its production mount is inside `fe-api`'s CANON-WS surface, which stays NO_GO; exercised directly by this crate's own tests and by W4-5 |
-| `AuthorKeyLifecycleView` | `compose::CausalLifecycleView` (W4-3) | `compose::LifecycleDispatcher` (W4-3, in-process); a durable `fe-database` lineage rebuild is W4-7 |
+| `AuthorKeyLifecycleView` | `compose::CausalLifecycleView` (W4-3); durable: `fe-database canon_log::author_lifecycle::DurableAuthorKeyLifecycle` (W4-7), rebuilt from `verified_op_log` | `compose::ComposedCandidateVerifier::verify_authorization`, inside the durable verifier (W4-7) |
 | `admit_rotation` / `admit_disavow` / `admit_disavow_rescind` / `admit_continuity_grant` | `author_key::admission` (W2) | `compose::LifecycleDispatcher::dispatch` (W4-3) — the four SPEC-2 entrypoints now have a production caller |
 | `MaterializerVersion::registry_id` mapping | `materialize::identity::MaterializerVersion` (W4-3) | `compose::checkpoint_binding_for_selection` (W4-3) |
 | `DeviceEnrolmentView` | `crypto::device_enrolment::EnrolmentRegistry` (W4-6) | fe-database `canon_log::device_enrolment::DurableDeviceEnrolmentView` (W4-8, not yet landed) loads its table into it; exercised in-process by `cross_spec_integration.rs::a_device_enrolment_gates_a_scope_key_wrap` |
-| `ManagerPlusAuthorizationView` | none yet | W4-7 |
+| `ManagerPlusAuthorizationView` | `fe-database canon_log::canonical_epoch::DurableAuthorizationView` (W4-7; checkpoint chains from `chain_store::ChainStore`) | `fe-database canon_log::rebuild::AdmittedCheckpoint::admit` |
 | `DeliveryAuthorizationView` | none yet | W4-8 |
 
 ## §materializer-identity — one mapping from name/number to identifier
@@ -510,6 +510,23 @@ Both artifacts use the same map; the domain alone distinguishes them:
 | 1 | `device_key` | byte string, 32 bytes (X25519) |
 | 2 | `enrolled_at_ms` / `revoked_at_ms` | unsigned integer, principal-asserted, never an authority input |
 | 3 | `signature` | byte string, 64 bytes (complete artifact only) |
+
+### Provisional — SPEC-2 lifecycle schema hashes (`fe-database canon_log::verifier`)
+
+W4-7. SPEC-2 names the four payload schemas but assigns them no hash, and `RegisteredSchemas`
+deliberately has no default (D-CL24), so the production caller supplies them. They follow the
+only schema-hash convention any spec states, SPEC-10 §4.1 rule 3:
+`schema_hash = BLAKE3(ASCII(name) || 00)`. **Ours, unratified, no interop claimed.**
+
+| Schema | Hashed bytes (`verifier.rs` constant) |
+| --- | --- |
+| `author-key-rotation-v1` | `fe-schema-author-key-rotation-v1\0` (`ROTATION_SCHEMA_DOMAIN`) |
+| `manager-suspect-key-disavow-v1` | `fe-schema-manager-suspect-key-disavow-v1\0` (`DISAVOW_SCHEMA_DOMAIN`) |
+| `manager-suspect-key-disavow-rescind-v1` | `fe-schema-manager-suspect-key-disavow-rescind-v1\0` (`DISAVOW_RESCIND_SCHEMA_DOMAIN`) |
+| `owner-continuity-grant-v1` | `fe-schema-owner-continuity-grant-v1\0` (`CONTINUITY_GRANT_SCHEMA_DOMAIN`) |
+
+The scope-key custody account name `canon-scope-key/<key_id hex>` (service `fractalengine`) is a
+local keystore label, never on the wire, and is not part of this register.
 
 ### Provisional — SPEC-5 checkpoint claim v1 (`checkpoint.rs`)
 

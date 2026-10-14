@@ -392,6 +392,45 @@ define_table! {
     }
 }
 
+define_table! {
+    /// SPEC-3 §2.4 capability chains this process holds, by `chain_id` (W4-7). Local-only and
+    /// never replicated; `chain_bytes` is the authority, the other columns are lookup aids
+    /// re-derived on load (`canon_log/AGENTS.md` §durable-authority-sources).
+    table "canon_capability_chain" => CanonCapabilityChain (id: chain_id_hex) {
+        chain_id_hex:      String => "TYPE string",
+        leaf_audience_did: String => "TYPE string",
+        epoch_scope_key:   String => "TYPE string",
+        /// Standard base64 of the exact canonical chain bytes.
+        chain_bytes:       String => "TYPE string",
+    }
+}
+
+define_table! {
+    /// Local-only content-addressed bytes: sealed SPEC-6 artifacts and admitted payload
+    /// ciphertexts, keyed by `BLAKE3(bytes)` (W4-7). Never the iroh blob store.
+    table "canon_sealed_artifact" => CanonSealedArtifact (id: artifact_id_hex) {
+        artifact_id_hex: String => "TYPE string",
+        content_class:   String => "TYPE string ASSERT $value IN ['sealed_artifact', 'payload_ciphertext']",
+        /// Standard base64 of the exact bytes.
+        content_bytes:   String => "TYPE string",
+    }
+}
+
+define_table! {
+    /// The NON-SECRET scope-key custody index (W4-7): which `(scope, epoch)` keys the OS
+    /// keystore holds, by committed `key_id`. Key material never enters this table.
+    table "canon_scope_key_index" => CanonScopeKeyIndex (id: index_key) {
+        /// `{scope_key}:{epoch}`.
+        index_key:        String => "TYPE string",
+        scope_key:        String => "TYPE string",
+        epoch:            i64    => "TYPE int",
+        key_id_hex:       String => "TYPE string",
+        state:            String => "TYPE string ASSERT $value IN ['held', 'issuance_stopped', 'destroyed']",
+        destroyed_at_hlc: String => "TYPE string DEFAULT ''",
+        note:             String => "TYPE string DEFAULT ''",
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Convenience helpers
 // ---------------------------------------------------------------------------
@@ -435,6 +474,9 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     Repo::<MaterializerApplyMarker>::apply_schema(db).await?;
     Repo::<ScopeEpochState>::apply_schema(db).await?;
     Repo::<MigrationShadowLedger>::apply_schema(db).await?;
+    Repo::<CanonCapabilityChain>::apply_schema(db).await?;
+    Repo::<CanonSealedArtifact>::apply_schema(db).await?;
+    Repo::<CanonScopeKeyIndex>::apply_schema(db).await?;
 
     // Critical indexes for query performance
     db.query("DEFINE INDEX IF NOT EXISTS idx_node_petal ON TABLE node FIELDS petal_id")
@@ -538,6 +580,12 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
         .await?.check().map_err(|e| anyhow::anyhow!("idx_scope_epoch_state_key: {e}"))?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_migration_shadow_ledger_run ON TABLE migration_shadow_ledger FIELDS run_id")
         .await?.check().map_err(|e| anyhow::anyhow!("idx_migration_shadow_ledger_run: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_canon_capability_chain_id ON TABLE canon_capability_chain FIELDS chain_id_hex UNIQUE")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_canon_capability_chain_id: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_canon_sealed_artifact_id ON TABLE canon_sealed_artifact FIELDS artifact_id_hex UNIQUE")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_canon_sealed_artifact_id: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_canon_scope_key_index_key ON TABLE canon_scope_key_index FIELDS index_key UNIQUE")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_canon_scope_key_index_key: {e}"))?;
 
     Ok(())
 }
