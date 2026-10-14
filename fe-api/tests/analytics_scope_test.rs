@@ -189,6 +189,78 @@ async fn analytics_fails_closed_without_a_direct_scope_reader() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// CDL-SPEC10 A5 — `device_payload` through the guarded `/query` pipeline
+// ---------------------------------------------------------------------------
+
+/// `device_payload` was added to `query_guard::{ALLOWED_TABLES,
+/// PETAL_SCOPED_TABLES}` (A5); this mirrors `iot_ingest_test.rs`'s
+/// `guarded_query_reads_iot_rows_scope_filtered` for the new table. Rows are
+/// seeded directly (the guard pipeline only cares about `petal_id`, not the
+/// R5 ingest validation `fe-database::handlers::device_payload` already
+/// covers).
+#[tokio::test]
+async fn query_device_payload_is_scoped_to_token_petals() {
+    let db = setup_test_db().await;
+    let pa = ulid::Ulid::new().to_string();
+    let pb = ulid::Ulid::new().to_string();
+    seed_petal(&db, &pa).await;
+    seed_petal(&db, &pb).await;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    for (petal, payload_id) in [(pa.as_str(), "pay-a"), (pb.as_str(), "pay-b")] {
+        db.query(
+            "CREATE device_payload CONTENT { \
+                payload_id: $pid, node_id: 'anchor', petal_id: $petal, \
+                format_id: 'acme.thermo/frame@1', recorded_at: $now, \
+                recorded_at_ms: 0, hlc_timestamp: 0, asset_ids: [], \
+                source_did: 'did:key:dev' \
+            }",
+        )
+        .bind(("pid", payload_id.to_string()))
+        .bind(("petal", petal.to_string()))
+        .bind(("now", now.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    }
+
+    let state = state(Some(db), Arc::new(EntityStore::new()));
+    // A petal-A-scoped token querying device_payload through the guard
+    // pipeline must never see petal B's row.
+    let scope = format!("VERSE#v1-FRACTAL#f1-PETAL#{pa}");
+    let guarded = fe_api::query_guard::guard_and_prepare_query(
+        &state,
+        "test-device-payload-query",
+        fe_api::limits::QUERY_RATE_PER_SEC,
+        "10 queries/sec",
+        &scope,
+        "SELECT * FROM device_payload",
+    )
+    .await
+    .expect("guard pipeline accepts device_payload");
+    let rows = fe_api::query_guard::run_guarded_query(
+        state.db_reader.as_ref().unwrap(),
+        &guarded,
+        &std::collections::HashMap::new(),
+        fe_api::limits::QUERY_ROW_CAP,
+    )
+    .await
+    .expect("guarded query runs");
+
+    // Mutation check: removing DEVICE_PAYLOAD from PETAL_SCOPED_TABLES (or
+    // from ALLOWED_TABLES) turns this red — either the foreign row leaks
+    // unfiltered, or the query is refused outright.
+    assert_eq!(
+        rows.len(),
+        1,
+        "petal-B's device_payload must be scope-filtered out"
+    );
+    assert_eq!(rows[0]["petal_id"], pa.as_str());
+    assert_eq!(rows[0]["payload_id"], "pay-a");
+}
+
 #[test]
 fn analytics_request_requires_a_petal_id() {
     assert!(

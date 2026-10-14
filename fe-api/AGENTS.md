@@ -66,7 +66,7 @@ when a route lands.
 | Hexon tilesets | `POST /api/v1/hexons/tilesets/install?petal_id=…`, `DELETE /api/v1/hexons/tilesets/{id}?petal_id=…`, `PATCH …/{id}/seeding?petal_id=…`, `GET /api/v1/hexons/tilesets?petal_id=…`, `GET /api/v1/hexons/storage?petal_id=…` |
 | Hexon crate registry | `POST /api/v1/crates/publish`, `POST /api/v1/crates/{uri}/install?petal_id=…`, `DELETE …/{uri}/uninstall?petal_id=…`, `GET /api/v1/crates/search?petal_id=…`, `GET /api/v1/crates/installed?petal_id=…`, `GET /api/v1/crates/{uri}?petal_id=…`, `GET …/{uri}/entries?petal_id=…`, `GET …/{uri}/entries/{entry_id}/asset?petal_id=…`, `GET /api/v1/crates/available?petal_id=…` |
 | Sim control (§sim-control) | `POST /api/v1/sim/start`, `POST /api/v1/sim/stop`, `GET /api/v1/sim/status`, `POST /api/v1/sim/step`, `POST /api/v1/sim/inject-fault` |
-| MCP | `POST /mcp` (`mcp::mcp_handler`) — 32-row `ToolSpec` table, 27 advertised off a sim lab host (§mcp-dispatch); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
+| MCP | `POST /mcp` (`mcp::mcp_handler`) — 36-row `ToolSpec` table, 31 advertised off a sim lab host (§mcp-dispatch); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
 
 ## §existence-oracle (REST/WS denial unification, 2026-10-10)
 
@@ -585,10 +585,14 @@ step 1 above; this used to say "comments + scoped subqueries allowed," which
 was the bug). `Egress` (json share): flat single SELECT, no comments.
 `Export` (parquet/csv export + share): `Egress` + `*` projection.
 
-*Row-scoped tables (corrected 2026-10-09, DEC-C19 N1):* `node`, `iot_reading`,
-`petal`, `room`, `model`, `crate_registry` are all in `PETAL_SCOPED_TABLES`
-and get the identical FROM-substitution row filter — each has its own
-`petal_id` column (fe-database/src/schema.rs). The claim previously here —
+*Row-scoped tables (corrected 2026-10-09, DEC-C19 N1; `device_payload` added
+CDL-SPEC10 A5):* `node`, `iot_reading`, `petal`, `room`, `model`,
+`crate_registry`, `device_payload` are all in `PETAL_SCOPED_TABLES` and get
+the identical FROM-substitution row filter — each has its own `petal_id`
+column (fe-database/src/schema.rs). `device_format` is NOT in
+`ALLOWED_TABLES` at all: it is verse-scoped (not petal-scoped), and already
+has its own dedicated read route (`list_device_formats`, REST + MCP) rather
+than an ad-hoc BI query. The claim previously here —
 "only `node` and `iot_reading` are row-scoped … `node_log` has only
 `node_id`" — was **factually wrong**: `node_log.payload` carries the node's
 `petal_id`, `name`, `position`, and `asset_id` (fe-database/src/lib.rs
@@ -1222,7 +1226,8 @@ functions for the same reason).
   already generous; `DEVICE_PAYLOAD_MAX_ASSETS × MAX_ASSET_BYTES` would be an
   absurd per-route ceiling). Order:
   1. Resolve the declared format's MIME (`device.rs::declared_format_mime`,
-     a `gis::run_select` read) — unknown `format_id` is a 422 **before** any
+     a `gis::run_select` read, `pub(crate)` so MCP's `ingest_device_payload`
+     (A5) reuses it directly) — unknown `format_id` is a 422 **before** any
      blob is stored.
   2. Store each file through `upload::ingest_blob_with_limit` (new, beside
      `ingest_glb_with_limit`): same name/quota/store-presence guards, but
@@ -1233,9 +1238,10 @@ functions for the same reason).
      part or the client's `Content-Type`. Each accepted file becomes its own
      `asset` row (owner = token `sub`, anchor = this petal, same as a GLB
      upload — §assets).
-  3. Send `DbCommand::InsertDevicePayloads` (Device `SourceClass` — A5 widens
-     this once connector/manual routes exist, SPEC-10 §7.1 rule 6 forbids
-     inferring the class, not a sound single-route default). The DB handler
+  3. Send `DbCommand::InsertDevicePayloads` (Device `SourceClass`, fixed —
+     SPEC-10 §7.1 rule 6 forbids inferring the class from `source_did`, not a
+     sound fixed default for a single-route caller; MCP's `ingest_device_payload`
+     (A5) is a separate route fixed to `Manual` for the same reason). The DB handler
      re-validates anchor/format/per-asset MIME/timestamp and is the only
      place idempotent retry and referential confinement are enforced; a
      rejection here is 422 (`DevicePayloadIngestRejection`'s `Display`).
@@ -1409,6 +1415,7 @@ defense in depth.
 | `Global` | no resource scope exists — role-only by design | create_verse (Manager), sim_* (Owner) |
 | `PetalArg(k)` | `args[k]` petal → `resolve_petal_scope` | promote_instance, query_timeseries, upload_asset, place_asset, create_waypoint, import_gpx, set_petal_terrain, list_visibility_groups, set_visibility_group, list_tilesets, install_tileset, get_gis_nodes |
 | `NodeArg(k)` | `args[k]` node → `resolve_node_scope` | update_transform, read_node, node_address, delete_node, set/get/delete_property, move_waypoint |
+| `VerseArg(k)` | `args[k]` verse → `resolve_verse_scope` (CDL-SPEC10 A5) | register_device_format, list_device_formats |
 | `HierarchyArgs(target)` | the id AT `target` (Verse/Fractal/Petal) is DB-resolved; shallower ids sent must match the stored chain; a DEEPER id is rejected outright | create_fractal→Verse, create_petal→Fractal, create_node→Petal |
 
 Role floors: Viewer for reads, Editor for writes (incl. install_tileset),
@@ -1460,14 +1467,33 @@ its scope; the field-def by-id routes (`PATCH|DELETE
 rewrite any verse's schema) and now require the field def's stored scope;
 `GET /api/v1/field-defs/{scope}` requires the token to cover `{scope}`.
 
-**Honest arithmetic (DEC-C14).** A26's "20 tools" = the mcp_scene_primitives
-20-name vocabulary, now fully present. The table has 31 rows: 26 non-sim +
-5 sim — an intentional, documented superset (read_node, node_address,
-promote_instance, query_timeseries, list_visibility_groups,
-set_visibility_group, sim_* shipped legitimately); none are
-deleted or renamed. `tools/list` returns 31 on a sim lab host and 26
-everywhere else (the GUI always; the relay without `sim-control`) —
-`tools_list_inventory` pins both configurations.
+**Honest arithmetic (DEC-C14; counts updated CDL-SPEC10 A5).** A26's "20
+tools" = the mcp_scene_primitives 20-name vocabulary, now fully present. The
+table has 36 rows: 31 non-sim + 5 sim — an intentional, documented superset
+(read_node, node_address, promote_instance, query_timeseries,
+list_visibility_groups, set_visibility_group, sim_* shipped legitimately,
+plus A5's 4 R5 device rows below); none are deleted or renamed. `tools/list`
+returns 36 on a sim lab host and 31 everywhere else (the GUI always; the
+relay without `sim-control`) — `tools_list_inventory` pins both
+configurations.
+
+**R5 MCP parity (CDL-SPEC10 A5).** `register_device_format` (Manager,
+`VerseArg`), `list_device_formats` (Viewer, `VerseArg`), `ingest_device_payload`
+(Editor, `PetalArg`), `list_device_payloads` (Viewer, `PetalArg`) mirror the
+REST surface (`device.rs`, §device-ingest) with no second validation path:
+`ingest_device_payload` reuses `device.rs::declared_format_mime` (now
+`pub(crate)`) and `upload::ingest_blob_with_limit` directly, the same core
+REST's multipart route calls. Its `files` arg is base64 (MCP has no
+multipart), decoded and SUMMED before any byte is stored — the cap is on the
+TOTAL decoded size across the whole payload (`upload::MCP_MAX_ASSET_BYTES`,
+the same §asset-ingest envelope arithmetic `upload_asset` uses), not per
+file; larger payloads use REST multipart. Its `DbCommand::InsertDevicePayloads
+source_class` is fixed to `SourceClass::Manual` (an MCP caller drives ingest
+by hand, distinct from REST's fixed `Device` — SPEC-10 §7.1 rule 6 forbids
+inferring either from `source_did`). `query_guard::{ALLOWED_TABLES,
+PETAL_SCOPED_TABLES}` also gained `DEVICE_PAYLOAD` (§query-guard);
+`device_format` stays non-queryable by design (verse-scoped, already has its
+own list route).
 
 **Known gaps (F14 / follow-ups).** (`set_petal_terrain` is no longer a gap —
 it shares REST PUT/DELETE's correlated core, §terrain-mutation.) `query` inherits

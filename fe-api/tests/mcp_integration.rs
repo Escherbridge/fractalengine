@@ -1,3 +1,6 @@
+// CDL-SPEC10 A5 added 8 keys to `fuzz_baseline_args`' `json!({...})` literal,
+// pushing its macro expansion past the default recursion limit (128).
+#![recursion_limit = "256"]
 //! Integration tests for the MCP JSON-RPC endpoint (fe-api/src/mcp/).
 //!
 //! Two lanes: (1) the full-router API harness (real auth middleware, Mem
@@ -22,8 +25,11 @@ use fe_api::mcp::{mcp_handler, tool_specs, HierarchyTarget, JsonRpcRequest, Scop
 use fe_api::rest::NOT_FOUND_OR_DENIED;
 use fe_api::server::ApiState;
 use fe_api::upload::{ingest_glb_with_limit, GlbPayload, UploadError, UploadOwner, UNKNOWN_ASSET};
+use fe_database::handlers::crud::{create_asset_reply, AssetRegistration};
+use fe_database::handlers::device_payload;
 use fe_database::RoleLevel;
 use fe_identity::api_token::ApiClaims;
+use fe_runtime::app::PendingApiRequests;
 use fe_runtime::blob_store::{hash_from_hex, BlobHash, BlobStore, BlobStoreHandle};
 use fe_runtime::messages::{
     ApiCommand, DbCommand, DbResult, FractalHierarchyData, NodeHierarchyData, PetalHierarchyData,
@@ -31,8 +37,12 @@ use fe_runtime::messages::{
 };
 use fractalengine_test_harness::api::ApiHarness;
 
-/// DEC-C14: the 20-name mcp_scene_primitives vocabulary + 11 shipped extras.
-const EXPECTED_TOOLS: [&str; 31] = [
+/// DEC-C14: the 20-name mcp_scene_primitives vocabulary + 12 shipped extras
+/// (`set_petal_render_distance`, p2p_asset_streaming S6, was missing from
+/// this golden list until CDL-SPEC10 A5 — a pre-existing drift this slice
+/// fixes incidentally while adding its own 4 R5 device tools) = 32 non-sim,
+/// + 5 sim = 36.
+const EXPECTED_TOOLS: [&str; 36] = [
     "get_hierarchy",
     "create_verse",
     "create_fractal",
@@ -62,6 +72,7 @@ const EXPECTED_TOOLS: [&str; 31] = [
     "move_waypoint",
     "import_gpx",
     "set_petal_terrain",
+    "set_petal_render_distance",
     // VIS-PH6: visibility-Group registry
     "list_visibility_groups",
     "set_visibility_group",
@@ -69,6 +80,11 @@ const EXPECTED_TOOLS: [&str; 31] = [
     "install_tileset",
     "get_gis_nodes",
     "query",
+    // CDL-SPEC10 A5: R5 MCP parity (device format descriptors + device payload ingest)
+    "register_device_format",
+    "list_device_formats",
+    "ingest_device_payload",
+    "list_device_payloads",
 ];
 
 // ---------------------------------------------------------------------------
@@ -831,7 +847,7 @@ async fn tools_list_inventory() {
         .copied()
         .filter(|n| !n.starts_with("sim_"))
         .collect();
-    assert_eq!(names, non_lab, "26 tools off a sim lab host");
+    assert_eq!(names, non_lab, "31 tools off a sim lab host");
     // tools/list and the dispatch table are one source of truth.
     let table: Vec<&str> = tool_specs()
         .iter()
@@ -858,7 +874,7 @@ async fn tools_list_inventory() {
         assert_eq!(tool_text(&body), format!("unknown tool: {name}"));
     }
 
-    // A sim lab host advertises all 31 (DEC-C14: 26 non-sim + 5 sim control).
+    // A sim lab host advertises all 36 (31 non-sim + 5 sim control).
     let (tx, _rx) = fe_runtime::sim_control::sim_control_channel();
     let lab = ApiHarness::spawn_with_sim_control_tx(Some(tx))
         .await
@@ -2638,7 +2654,7 @@ impl SplitMix64 {
     }
 }
 
-/// A superset of every property name used across all 31 tool schemas, filled
+/// A superset of every property name used across all 36 tool schemas, filled
 /// with values valid enough to clear `check_required_args` and reach the
 /// handler. [`fuzz_args_for`] trims it to ONE tool's schema keys; one random
 /// key of that schema is then replaced per iteration — see [`mutate`].
@@ -2658,6 +2674,11 @@ fn fuzz_baseline_args(home: &Chain, asset_id: &str) -> serde_json::Value {
         "bbox": "0,0,10,10", "bbox_ll": "0,0,1,1", "radius": 5.0, "cx": 0.0, "cz": 0.0,
         "sql": "SELECT 1", "vars": {},
         "group_id": "fuzz-group", "visible": true, "order": 0.0, "delete": false,
+        // CDL-SPEC10 A5: device format descriptors + device payload ingest.
+        "format_id": "acme.thermo/frame@1", "mime": "application/octet-stream",
+        "schema": serde_json::Value::Null,
+        "files": [b64(&tiny_glb())], "recorded_at": "2026-01-01T00:00:00Z",
+        "payload_id": "fuzz-payload-id", "from_ms": 0, "to_ms": 1,
     })
 }
 
@@ -2841,4 +2862,264 @@ async fn mcp_structured_fuzz_never_panics_or_leaks_to_channel() {
         unreached.is_empty(),
         "tools that never reached their handler across the control + {N} iterations: {unreached:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// CDL-SPEC10 A5 - R5 MCP parity (device format descriptors + device payloads)
+// ---------------------------------------------------------------------------
+
+/// Service `CreateAsset` + the four R5 device commands against the harness's
+/// real DB + blob store, against the PRODUCTION handlers (the same ones REST
+/// uses) - mirrors `device_ingest_test.rs`'s `serve_device_commands`
+/// (duplicated here: each integration-test binary is its own crate, so a
+/// `fn` private to that file cannot be imported from this one).
+fn serve_device_commands(h: &ApiHarness) {
+    let rx = h.api_command_receiver();
+    let db = (*h.db).clone();
+    let blob_store = h.state.blob_store.clone().expect("harness blob store");
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("db thread runtime");
+        let mut pending = PendingApiRequests::default();
+        while let Ok(ApiCommand::DbRequest { cmd, reply_tx }) = rx.recv() {
+            pending.enqueue_for(&cmd, reply_tx);
+            let reply = match cmd {
+                DbCommand::CreateAsset {
+                    name,
+                    content_type,
+                    size_bytes,
+                    content_hash,
+                    owner_did,
+                    petal_id,
+                    correlation_id,
+                } => rt.block_on(create_asset_reply(
+                    &db,
+                    &blob_store,
+                    AssetRegistration {
+                        name,
+                        content_type,
+                        size_bytes,
+                        content_hash,
+                        owner_did,
+                        petal_id,
+                    },
+                    correlation_id,
+                )),
+                DbCommand::RegisterDeviceFormat {
+                    verse_id,
+                    descriptor,
+                    declared_by,
+                    correlation_id,
+                } => rt.block_on(async {
+                    match device_payload::register_format(&db, &verse_id, &descriptor, &declared_by)
+                        .await
+                    {
+                        Ok(()) => DbResult::DeviceFormatRegistered {
+                            verse_id,
+                            format_id: descriptor.format_id,
+                            correlation_id,
+                        },
+                        Err(e) => match e.rejection() {
+                            Some(reason) => DbResult::DeviceFormatRejected {
+                                verse_id,
+                                reason,
+                                correlation_id,
+                            },
+                            None => DbResult::Error(format!("RegisterDeviceFormat failed: {e}")),
+                        },
+                    }
+                }),
+                DbCommand::ListDeviceFormats {
+                    verse_id,
+                    correlation_id,
+                } => rt.block_on(async {
+                    match device_payload::list_device_formats(&db, &verse_id).await {
+                        Ok(formats) => DbResult::DeviceFormatsListed {
+                            verse_id,
+                            formats,
+                            correlation_id,
+                        },
+                        Err(e) => DbResult::Error(format!("ListDeviceFormats failed: {e}")),
+                    }
+                }),
+                DbCommand::InsertDevicePayloads {
+                    petal_id,
+                    verse_id,
+                    source_did,
+                    source_class,
+                    payload,
+                    correlation_id,
+                } => rt.block_on(async {
+                    match device_payload::insert_device_payloads(
+                        &db,
+                        &petal_id,
+                        verse_id.as_deref(),
+                        &source_did,
+                        source_class,
+                        &payload,
+                        Some(&blob_store),
+                        None,
+                    )
+                    .await
+                    {
+                        Ok((payload_id, asset_ids)) => DbResult::DevicePayloadsInserted {
+                            petal_id,
+                            payload_id,
+                            asset_ids,
+                            correlation_id,
+                        },
+                        Err(e) => match e.rejection() {
+                            Some(reason) => DbResult::DevicePayloadsRejected {
+                                petal_id,
+                                reason,
+                                correlation_id,
+                            },
+                            None => DbResult::Error(format!("InsertDevicePayloads failed: {e}")),
+                        },
+                    }
+                }),
+                DbCommand::ListDevicePayloads {
+                    petal_id,
+                    node_id,
+                    format_id,
+                    from_ms,
+                    to_ms,
+                    correlation_id,
+                } => rt.block_on(async {
+                    match device_payload::list_device_payloads(
+                        &db,
+                        &petal_id,
+                        node_id.as_deref(),
+                        format_id.as_deref(),
+                        from_ms,
+                        to_ms,
+                    )
+                    .await
+                    {
+                        Ok(payloads) => DbResult::DevicePayloadsListed {
+                            petal_id,
+                            payloads,
+                            correlation_id,
+                        },
+                        Err(e) => DbResult::Error(format!("ListDevicePayloads failed: {e}")),
+                    }
+                }),
+                other => DbResult::Error(format!("not serviced by this test: {other:?}")),
+            };
+            pending.try_deliver(reply);
+        }
+    });
+}
+
+/// GET a binary route; returns (status, body bytes). Local copy of
+/// `device_ingest_test.rs`'s `fetch` (private per-file helpers don't cross
+/// integration-test binaries).
+async fn fetch_bytes(h: &ApiHarness, token: &str, uri: &str) -> (StatusCode, Vec<u8>) {
+    let req = Request::builder()
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .expect("get request");
+    let resp = h.request(req).await;
+    let status = resp.status();
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("read body")
+        .to_vec();
+    (status, body)
+}
+
+/// Full MCP loop (A5 flow test): register a device format, ingest a 2-file
+/// payload over `ingest_device_payload` (base64, not multipart), list it
+/// back, then fetch each blob through the REST-by-id route and confirm the
+/// bytes round-trip - the same production handlers REST uses (A4), reached
+/// through MCP instead of multipart, so there is no second validation path.
+#[tokio::test]
+async fn mcp_device_payload_full_loop() {
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    serve_device_commands(&h);
+    let verse = h.seed_verse("MCP Device Verse").await.expect("verse");
+    let fractal = h
+        .seed_fractal(&verse, "MCP Device Fractal")
+        .await
+        .expect("fractal");
+    let petal = h
+        .seed_petal(&fractal, "MCP Device Petal", None)
+        .await
+        .expect("petal");
+    let node = h
+        .seed_node(&petal, "anchor", [0.0, 0.0, 0.0], None)
+        .await
+        .expect("node");
+    let scope = fe_database::build_scope(&verse, Some(&fractal), Some(&petal));
+    let manager = claims(&scope, "manager");
+    let editor = claims(&scope, "editor");
+    let viewer = claims(&scope, "viewer");
+
+    let resp = call_tool(
+        &h.state,
+        &manager,
+        "register_device_format",
+        json!({
+            "verse_id": verse,
+            "format_id": "acme.thermo/frame@1",
+            "mime": "application/octet-stream",
+        }),
+    )
+    .await;
+    let body = tool_json(&resp);
+    assert_eq!(body["format_id"], "acme.thermo/frame@1", "{resp}");
+
+    let file_a = b"mcp frame bytes A".to_vec();
+    let file_b = b"mcp frame bytes B, a bit longer".to_vec();
+    let resp = call_tool(
+        &h.state,
+        &editor,
+        "ingest_device_payload",
+        json!({
+            "petal_id": petal,
+            "node_id": node,
+            "format_id": "acme.thermo/frame@1",
+            "files": [b64(&file_a), b64(&file_b)],
+        }),
+    )
+    .await;
+    let body = tool_json(&resp);
+    let payload_id = body["payload_id"].as_str().expect("payload_id").to_string();
+    let asset_ids: Vec<String> = body["asset_ids"]
+        .as_array()
+        .expect("asset_ids")
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(asset_ids.len(), 2, "{body}");
+
+    let resp = call_tool(
+        &h.state,
+        &viewer,
+        "list_device_payloads",
+        json!({ "petal_id": petal }),
+    )
+    .await;
+    let body = tool_json(&resp);
+    let payloads = body["payloads"].as_array().expect("payloads");
+    assert_eq!(payloads.len(), 1, "{body}");
+    assert_eq!(payloads[0]["payload_id"], payload_id);
+
+    // REST by-id returns each blob's exact bytes under the declared mime -
+    // the same core `ingest_blob_with_limit` REST uses (fe-api/AGENTS.md
+    // §device-ingest), reached here through MCP instead of multipart.
+    for (asset_id, want_bytes) in asset_ids.iter().zip([&file_a, &file_b]) {
+        let viewer_token = h.mint_token(&scope, "viewer");
+        let (status, got) = fetch_bytes(
+            &h,
+            &viewer_token,
+            &format!("/api/v1/assets/by-id/{asset_id}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(&got, want_bytes);
+    }
 }

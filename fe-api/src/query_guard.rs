@@ -33,6 +33,12 @@ const BLOCKED_KEYWORDS: &[&str] = &[
 /// owner/scope column, so allow-listing them exposed every uploaded asset's
 /// `asset_id`/`content_hash` to any token; asset reads go through the scoped
 /// `/api/v1/assets/*` + `/nodes/{id}/asset` routes (§assets).
+/// `DEVICE_PAYLOAD` added (CDL-SPEC10 A5): its rows carry `petal_id` exactly
+/// like `IOT_READING`, so the identical FROM-substitution scoping applies —
+/// see `PETAL_SCOPED_TABLES` below. `device_format` deliberately stays OUT
+/// (plan default): it is verse-scoped, not petal-scoped, and already has a
+/// dedicated read route (`list_device_formats`, REST + MCP) rather than an
+/// ad-hoc BI query (fe-api/AGENTS.md §query-guard).
 const ALLOWED_TABLES: &[&str] = &[
     "NODE",
     "VERSE",
@@ -44,13 +50,16 @@ const ALLOWED_TABLES: &[&str] = &[
     "CRATE_REGISTRY",
     "CRATE_ENTRY",
     "IOT_READING",
+    "DEVICE_PAYLOAD",
 ];
 
 /// Tables whose rows carry `petal_id` and are scope-filtered at the source.
 /// `PETAL`/`ROOM`/`MODEL`/`CRATE_REGISTRY` added 2026-10-09 (DEC-C19 N1) —
 /// each has its own `petal_id` column (fe-database/src/schema.rs), verified
 /// per-table before adding. `CRATE_ENTRY` has no `petal_id` column and stays
-/// unscoped (deliberately).
+/// unscoped (deliberately). `DEVICE_PAYLOAD` added (CDL-SPEC10 A5) — its
+/// `petal_id` column is the same anchor column `InsertDevicePayloads` writes
+/// (fe-database/src/schema.rs).
 const PETAL_SCOPED_TABLES: &[&str] = &[
     "NODE",
     "IOT_READING",
@@ -58,6 +67,7 @@ const PETAL_SCOPED_TABLES: &[&str] = &[
     "ROOM",
     "MODEL",
     "CRATE_REGISTRY",
+    "DEVICE_PAYLOAD",
 ];
 
 /// The table whose rows carry the iroh-docs replica read capability (`namespace_id`).

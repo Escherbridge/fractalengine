@@ -4,7 +4,7 @@
 
 use serde_json::{json, Value};
 
-use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
+use fe_runtime::messages::{ApiCommand, DbCommand, DbResult, DevicePayloadInput, SourceClass};
 
 use super::{ToolCall, ToolFuture, ToolOutcome};
 use crate::endpoint::{caller_auth, load_node};
@@ -647,6 +647,205 @@ pub(super) fn query(call: ToolCall<'_>) -> ToolFuture<'_> {
 }
 
 // ---------------------------------------------------------------------------
+// R5: device format descriptors + device payload ingest (CDL-SPEC10 A5) —
+// MCP parity with REST (`device.rs`); same core functions, same DB-thread
+// authority, no second validation path (fe-api/AGENTS.md §device-ingest).
+// ---------------------------------------------------------------------------
+
+pub(super) fn register_device_format(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let verse_id = scope_parts(&call)?.verse_id;
+        let descriptor = fe_sdk::device_format::DeviceFormatDescriptor {
+            format_id: str_arg(call.args, "format_id").to_string(),
+            mime: str_arg(call.args, "mime").to_string(),
+            schema: call.args.get("schema").filter(|v| !v.is_null()).cloned(),
+            description: call
+                .args
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        };
+        let cmd = DbCommand::RegisterDeviceFormat {
+            verse_id,
+            descriptor,
+            declared_by: call.claims.sub.clone(),
+            correlation_id: None,
+        };
+        match crate::rest::db_round_trip(call.state, cmd).await? {
+            DbResult::DeviceFormatRegistered {
+                verse_id,
+                format_id,
+                ..
+            } => Ok(json!({ "verse_id": verse_id, "format_id": format_id })),
+            DbResult::DeviceFormatRejected { reason, .. } => Err(reason.to_string()),
+            DbResult::Error(e) => Err(db_failure("register_device_format", &e)),
+            _ => Err("register_device_format failed".to_string()),
+        }
+    })
+}
+
+pub(super) fn list_device_formats(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let verse_id = scope_parts(&call)?.verse_id;
+        let cmd = DbCommand::ListDeviceFormats {
+            verse_id,
+            correlation_id: None,
+        };
+        match crate::rest::db_round_trip(call.state, cmd).await? {
+            DbResult::DeviceFormatsListed { formats, .. } => Ok(json!({ "formats": formats })),
+            DbResult::Error(e) => Err(db_failure("list_device_formats", &e)),
+            _ => Err("list_device_formats failed".to_string()),
+        }
+    })
+}
+
+/// Ingest one device payload over MCP: base64 `files`, decoded and summed
+/// BEFORE any byte is stored (so a budget refusal writes nothing — the A4
+/// `declared_format_mime`-before-any-byte-moves precedent). The cap is on the
+/// TOTAL decoded size across the whole payload (`MCP_MAX_ASSET_BYTES`, the
+/// same §asset-ingest envelope arithmetic `upload_asset` uses), not per file —
+/// larger payloads use REST multipart (fe-api/AGENTS.md §device-ingest).
+pub(super) fn ingest_device_payload(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let petal_id = scoped_petal(&call)?;
+        let verse_id = scope_parts(&call)?.verse_id;
+        let node_id = str_arg(call.args, "node_id").to_string();
+        let format_id = str_arg(call.args, "format_id").to_string();
+        let recorded_at = call
+            .args
+            .get("recorded_at")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let payload_id = call
+            .args
+            .get("payload_id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+
+        let files: Vec<String> = match call.args.get("files") {
+            Some(Value::Array(items)) if !items.is_empty() => items
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| "files must be an array of base64 strings".to_string())
+                })
+                .collect::<Result<_, _>>()?,
+            _ => return Err("files is required (a non-empty array of base64 strings)".to_string()),
+        };
+        if files.len() > crate::limits::DEVICE_PAYLOAD_MAX_ASSETS {
+            return Err(format!(
+                "at most {} files per device payload",
+                crate::limits::DEVICE_PAYLOAD_MAX_ASSETS
+            ));
+        }
+
+        let mut decoded = Vec::with_capacity(files.len());
+        let mut total = 0usize;
+        for text in files {
+            let bytes = decode_base64(text, MCP_MAX_ASSET_BYTES).await?;
+            total += bytes.len();
+            if total > MCP_MAX_ASSET_BYTES {
+                return Err(format!(
+                    "device payload exceeds the {MCP_MAX_ASSET_BYTES}-byte total decoded limit over MCP \
+                     (use REST multipart POST /api/v1/petals/{{petal_id}}/iot/payloads for larger payloads)"
+                ));
+            }
+            decoded.push(bytes);
+        }
+
+        let Some(mime) =
+            crate::device::declared_format_mime(call.state, &verse_id, &format_id).await
+        else {
+            return Err(format!(
+                "no device_format '{format_id}' declared for this verse"
+            ));
+        };
+
+        let owner = crate::upload::UploadOwner::new(call.claims, &petal_id);
+        let mut asset_ids = Vec::with_capacity(decoded.len());
+        for bytes in decoded {
+            let asset = crate::upload::ingest_blob_with_limit(
+                call.state,
+                &owner,
+                "device-payload-file",
+                &mime,
+                GlbPayload::Bytes(bytes),
+                MCP_MAX_ASSET_BYTES,
+            )
+            .await
+            .map_err(|e| e.message())?;
+            asset_ids.push(asset.asset_id);
+        }
+
+        let cmd = DbCommand::InsertDevicePayloads {
+            petal_id,
+            verse_id: Some(verse_id),
+            source_did: call.claims.sub.clone(),
+            // An MCP caller drives ingest by hand rather than presenting its
+            // own field-device token (SPEC-10 §7.1 rule 6 forbids inferring
+            // the class from `source_did`; `device.rs`'s REST route fixes
+            // `Device` for the analogous reason — fe-api/AGENTS.md
+            // §device-ingest).
+            source_class: SourceClass::Manual,
+            payload: DevicePayloadInput {
+                node_id,
+                format_id,
+                asset_ids,
+                recorded_at,
+                payload_id,
+            },
+            correlation_id: None,
+        };
+        match crate::rest::db_round_trip(call.state, cmd).await? {
+            DbResult::DevicePayloadsInserted {
+                payload_id,
+                asset_ids,
+                ..
+            } => Ok(json!({ "payload_id": payload_id, "asset_ids": asset_ids })),
+            DbResult::DevicePayloadsRejected { reason, .. } => Err(reason.to_string()),
+            DbResult::Error(e) => Err(db_failure("ingest_device_payload", &e)),
+            _ => Err("ingest_device_payload failed".to_string()),
+        }
+    })
+}
+
+pub(super) fn list_device_payloads(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let petal_id = scoped_petal(&call)?;
+        let node_id = call
+            .args
+            .get("node_id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let format_id = call
+            .args
+            .get("format_id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let from_ms = call.args.get("from_ms").and_then(Value::as_i64);
+        let to_ms = call.args.get("to_ms").and_then(Value::as_i64);
+        let cmd = DbCommand::ListDevicePayloads {
+            petal_id,
+            node_id,
+            format_id,
+            from_ms,
+            to_ms,
+            correlation_id: None,
+        };
+        match crate::rest::db_round_trip(call.state, cmd).await? {
+            DbResult::DevicePayloadsListed { payloads, .. } => Ok(json!({ "payloads": payloads })),
+            DbResult::Error(e) => Err(db_failure("list_device_payloads", &e)),
+            _ => Err("list_device_payloads failed".to_string()),
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Input schemas (one fn per tool, named like the tool)
 // ---------------------------------------------------------------------------
 
@@ -979,6 +1178,58 @@ pub(super) mod schema {
                 "vars": { "type": "object", "description": "Bind variables" }
             },
             "required": ["sql"]
+        })
+    }
+
+    pub fn register_device_format() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "verse_id": { "type": "string" },
+                "format_id": { "type": "string", "description": "<namespace>/<name>@<major>" },
+                "mime": { "type": "string", "description": "MIME every asset ingested under this format must carry" },
+                "schema": { "type": ["object", "null"], "description": "Informative JSON Schema for the payload bytes; never enforced in v1" },
+                "description": { "type": "string" }
+            },
+            "required": ["verse_id", "format_id", "mime"]
+        })
+    }
+
+    pub fn list_device_formats() -> Value {
+        json!({ "type": "object", "properties": { "verse_id": { "type": "string" } }, "required": ["verse_id"] })
+    }
+
+    pub fn ingest_device_payload() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "petal_id": { "type": "string" },
+                "node_id": { "type": "string", "description": "Anchor node the payload is spatially attached to" },
+                "format_id": { "type": "string", "description": "A format already declared via register_device_format" },
+                "files": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "minItems": 1,
+                    "description": "Standard base64 of each opaque file, order preserved into asset_ids; total decoded size <= 11 MiB (use REST multipart for larger payloads)"
+                },
+                "recorded_at": { "type": "string", "description": "RFC-3339 sensor timestamp; server ingest time when absent" },
+                "payload_id": { "type": "string", "description": "Client-supplied id for an idempotent retry" }
+            },
+            "required": ["petal_id", "node_id", "format_id", "files"]
+        })
+    }
+
+    pub fn list_device_payloads() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "petal_id": { "type": "string" },
+                "node_id": { "type": "string" },
+                "format_id": { "type": "string" },
+                "from_ms": { "type": "integer", "description": "recorded_at_ms window start, inclusive" },
+                "to_ms": { "type": "integer", "description": "recorded_at_ms window end, exclusive" }
+            },
+            "required": ["petal_id"]
         })
     }
 }

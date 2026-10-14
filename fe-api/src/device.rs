@@ -140,10 +140,16 @@ pub async fn list_device_formats(
 /// direct-or-channel read (the `gis::run_select` idiom), not a second
 /// validation path: the DB-thread `InsertDevicePayloads` handler re-checks
 /// this exact invariant and is the actual authority (fe-api/AGENTS.md
-/// §device-ingest) — this lookup only lets the REST layer assign the right
+/// §device-ingest) — this lookup only lets the caller assign the right
 /// `content_type` to each blob BEFORE storing it, and refuse an unknown
-/// format before any byte is written.
-async fn declared_format_mime(state: &ApiState, verse_id: &str, format_id: &str) -> Option<String> {
+/// format before any byte is written. `pub(crate)` (CDL-SPEC10 A5): MCP's
+/// `ingest_device_payload` reuses this exact function rather than a second
+/// lookup, so REST and MCP share one core (fe-api/AGENTS.md §device-ingest).
+pub(crate) async fn declared_format_mime(
+    state: &ApiState,
+    verse_id: &str,
+    format_id: &str,
+) -> Option<String> {
     let rows = crate::gis::run_select(
         state,
         "SELECT mime FROM device_format WHERE verse_id = $vid AND format_id = $fid LIMIT 1",
@@ -290,9 +296,11 @@ pub async fn ingest_device_payload(
         verse_id: Some(verse_id),
         source_did: claims.sub.clone(),
         // REST ingest is a field-device/connector caller by construction
-        // (A5 widens this to a caller-chosen class — SPEC-10 §7.1 rule 6
-        // forbids inferring it from `source_did`, never forbids a sound
-        // default for an existing single-class route; `iot.rs` precedent).
+        // (SPEC-10 §7.1 rule 6 forbids inferring the class from `source_did`,
+        // never forbids a sound fixed default for a single-class route;
+        // `iot.rs` precedent). MCP's `ingest_device_payload` (CDL-SPEC10 A5)
+        // is a separate caller class (`Manual`), fixed the same way for the
+        // same reason — fe-api/AGENTS.md §device-ingest.
         source_class: SourceClass::Device,
         payload: DevicePayloadInput {
             node_id,

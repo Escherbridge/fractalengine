@@ -67,6 +67,10 @@ pub enum ScopeRule {
     PetalArg(&'static str),
     /// `args[key]` is a node id; its DB-resolved scope must be covered.
     NodeArg(&'static str),
+    /// `args[key]` is a verse id; its DB-resolved scope must be covered
+    /// (CDL-SPEC10 A5 — `register_device_format`/`list_device_formats` are
+    /// verse-scoped, like REST's `resolve_verse_scope` + `write_target_authorized`).
+    VerseArg(&'static str),
     /// The id AT the tool's write-target level is DB-resolved; every
     /// shallower id present must match that stored chain; any id DEEPER
     /// than the target is rejected (2026-10-09 depth-escalation hardening —
@@ -153,7 +157,7 @@ macro_rules! tool {
 }
 
 use HierarchyTarget::{Fractal, Petal, Verse};
-use ScopeRule::{Global, HierarchyArgs, NodeArg, PetalArg};
+use ScopeRule::{Global, HierarchyArgs, NodeArg, PetalArg, VerseArg};
 
 /// DEC-C14: the 20-name mcp_scene_primitives vocabulary + 9 shipped extras = 29.
 static TOOLS: &[ToolSpec] = &[
@@ -222,6 +226,15 @@ static TOOLS: &[ToolSpec] = &[
         "List a petal's geo-positioned nodes with gis.annotation.* data; optional single spatial filter (bbox, bbox_ll, or radius+cx+cz). Requires viewer role + petal scope."),
     tool!(query, Viewer, ScopeRule::None,
         "Run a read-only SurrealQL SELECT through the /api/v1/query guard pipeline (rate limit, SELECT-only, table whitelist, token-scope filter injection, row/byte caps). Requires viewer role."),
+    // --- R5 MCP parity: device format descriptors + device payload ingest (CDL-SPEC10 A5) ---
+    tool!(register_device_format, Manager, VerseArg("verse_id"),
+        "Declare a device payload format (format_id + mime + optional informative JSON Schema, never enforced in v1) for a verse; immutable per (verse_id, format_id) — re-declaring the SAME mime is an idempotent success, a DIFFERENT mime is a conflict. Requires manager role + verse scope."),
+    tool!(list_device_formats, Viewer, VerseArg("verse_id"),
+        "List every device_format declared for a verse. Requires viewer role + verse scope."),
+    tool!(ingest_device_payload, Editor, PetalArg("petal_id"),
+        "Ingest one device payload: base64 files (order preserved into asset_ids; total decoded size <= 11 MiB over MCP, use REST multipart POST /api/v1/petals/{petal_id}/iot/payloads for larger payloads), stored as generic assets under a declared format's mime, then recorded as one device_payload row. Requires editor role + petal scope."),
+    tool!(list_device_payloads, Viewer, PetalArg("petal_id"),
+        "List device_payload rows for a petal, optionally filtered by node_id, format_id and a recorded-time window (from_ms/to_ms). Requires viewer role + petal scope."),
 ];
 
 // ---------------------------------------------------------------------------
@@ -392,6 +405,11 @@ async fn authorize(
         ScopeRule::NodeArg(key) => {
             let node_id = id_arg(args, key, is_addressable_node_id)?;
             let scope = crate::rest::resolve_node_scope(state, node_id).await;
+            (scope, ClaimedAncestry::default())
+        }
+        ScopeRule::VerseArg(key) => {
+            let verse_id = id_arg(args, key, is_valid_ulid)?;
+            let scope = crate::rest::resolve_verse_scope(state, verse_id).await;
             (scope, ClaimedAncestry::default())
         }
         ScopeRule::HierarchyArgs(target) => resolve_hierarchy_scope(state, args, target).await?,
@@ -588,7 +606,9 @@ mod tests {
             );
             let schema = (spec.input_schema)();
             assert_eq!(schema["type"], "object", "{}", spec.name);
-            if let ScopeRule::PetalArg(key) | ScopeRule::NodeArg(key) = spec.scope_rule {
+            if let ScopeRule::PetalArg(key) | ScopeRule::NodeArg(key) | ScopeRule::VerseArg(key) =
+                spec.scope_rule
+            {
                 assert!(
                     schema["required"]
                         .as_array()
@@ -600,8 +620,10 @@ mod tests {
         }
         assert_eq!(
             TOOLS.len(),
-            32,
-            "DEC-C14: 27 non-sim + 5 sim (p2p_asset_streaming S6 added set_petal_render_distance)"
+            36,
+            "DEC-C14: 27 non-sim + 5 sim (p2p_asset_streaming S6 added set_petal_render_distance); \
+             CDL-SPEC10 A5 added 4 R5 device tools (register/list_device_formats, \
+             ingest/list_device_payloads)"
         );
     }
 
