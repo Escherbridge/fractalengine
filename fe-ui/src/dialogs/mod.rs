@@ -142,6 +142,8 @@ pub enum ActiveDialog {
         storage_info: StorageInfoDto,
         loading: bool,
         pending_remove: Option<String>,
+        /// PAS-P5 S7b: the "Install from registry" URI text buffer.
+        registry_uri_buf: String,
     },
     PetalManifest {
         petal_id: String,

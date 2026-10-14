@@ -38,6 +38,7 @@ pub fn render_hexon_manager(
     petal_map: &mut PetalMapState,
     active_petal_id: Option<&str>,
     downloads: &crate::terrain_map::dto::DownloadProgressMap,
+    registry_url: Option<&str>,
 ) -> bool {
     let ActiveDialog::HexonManager {
         ref mut installed_tilesets,
@@ -47,6 +48,7 @@ pub fn render_hexon_manager(
         ref storage_info,
         ref loading,
         ref mut pending_remove,
+        ref mut registry_uri_buf,
     } = ui_mgr.active_dialog
     else {
         return false;
@@ -110,6 +112,43 @@ pub fn render_hexon_manager(
                         }
                     }
                 });
+            });
+
+            ui.add_space(8.0);
+
+            // "Install from registry" (PAS-P5 S7b, A6/A9): disabled with a
+            // calm hint when no registry is configured, rather than a faked
+            // control (ui_ux §6) — `AppSettings.hexon_registry_url` is the
+            // only source of `registry_url`, so this control is the field's
+            // real, live consumer.
+            ui.horizontal(|ui| {
+                ui.add_enabled_ui(registry_url.is_some(), |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(registry_uri_buf)
+                            .hint_text("hexon_id or hexon_id@version")
+                            .desired_width(240.0),
+                    );
+                    let can_install = registry_url.is_some() && !registry_uri_buf.trim().is_empty();
+                    if ui
+                        .add_enabled(
+                            can_install,
+                            egui::Button::new("Install from registry").fill(theme::BG_SAVE),
+                        )
+                        .clicked()
+                    {
+                        actions.push(UiAction::HexonInstallFromRegistry(
+                            registry_uri_buf.trim().to_string(),
+                        ));
+                        registry_uri_buf.clear();
+                    }
+                });
+                if registry_url.is_none() {
+                    ui.label(
+                        egui::RichText::new("Set a registry URL in Settings → Network")
+                            .small()
+                            .color(theme::TEXT_MUTED),
+                    );
+                }
             });
 
             ui.add_space(8.0);

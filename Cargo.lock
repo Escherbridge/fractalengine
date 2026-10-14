@@ -5776,6 +5776,7 @@ name = "fractalengine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "bevy",
  "bevy_egui",
  "crossbeam",
@@ -5785,6 +5786,8 @@ dependencies = [
  "fe-database",
  "fe-entity-store",
  "fe-format",
+ "fe-hexon",
+ "fe-hexon-registry",
  "fe-identity",
  "fe-network",
  "fe-renderer",

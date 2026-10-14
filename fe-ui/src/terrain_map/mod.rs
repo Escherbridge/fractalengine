@@ -75,6 +75,16 @@ pub enum HexonOp {
         index_path: PathBuf,
         bundle_paths: Vec<PathBuf>,
     },
+    /// PAS-P5 S7b: install a hexon directly from the configured hosted
+    /// registry (`AppSettings.hexon_registry_url`), by URI (`hexon_id` or
+    /// `hexon_id@version`). Drained on a background thread: header fetch →
+    /// every chunk fetch (`FetchStrategy`, `RequireSealed`) → container
+    /// install — never on the Bevy main thread (S4 invariant). Progress and
+    /// the outcome come back over `HexonAssembleResultSender`'s channel and
+    /// are shown in the existing Downloads tab, keyed by `uri`.
+    InstallFromRegistry {
+        uri: String,
+    },
 }
 
 /// Queue of pending registry ops (fe-ui has no TilesetRegistry access).

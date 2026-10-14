@@ -19,12 +19,22 @@ fe-identity = { path = "../fe-identity" }
 fe-webview = { path = "../fe-webview" }
 fe-renderer = { path = "../fe-renderer" }
 tempfile = "3"
+# PAS-P5 S7b flow tests: an in-process fe-hexon-registry on an ephemeral port
+# (mirrors fe-hexon/tests/support/registry_server.rs — not reusable as a lib
+# from here, so the helper is reimplemented locally in terrain_bridge.rs's
+# own test module).
+fe-hexon-registry = { path = "../fe-hexon-registry" }
+axum = { workspace = true }
 
 [dependencies]
 # PAS-P5 S7a: `terrain_bridge::verify_install_meta` parses `fe_format::HeaderDoc`
 # and runs `verify_header` to gate the install-flow two-phase download —
 # promoted from dev-dependencies (was S4 `terrain_bridge` test-fixture-only).
 fe-format = { path = "../fe-format" }
+# PAS-P5 S7b: hosted "install from registry" production path — the first
+# production consumer of `FetchStrategy`/`RemoteRegistryClient` (A9, closing
+# the "gate built but never wired" finding for the HTTP partial-fetch half).
+fe-hexon = { path = "../fe-hexon", features = ["remote"] }
 fe-runtime = { path = "../fe-runtime" }
 fe-network = { path = "../fe-network" }
 fe-database = { path = "../fe-database" }

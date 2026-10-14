@@ -569,6 +569,29 @@ fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
   that completed but was never installed (a restart in between) is handed
   back at start-up as `TilesetDownloadComplete` (fe-sync `AGENTS.md`
   §tileset-transfer), so it still installs.
+- **Install from registry (PAS-P5 S7b, A9).** `HexonOp::InstallFromRegistry { uri }`
+  (queued by the Hexon Manager's "Install from registry" field, enabled only
+  when `AppSettings.hexon_registry_url`/`FE_HEXON_REGISTRY_URL` resolves to
+  something — `fe_ui::settings::resolve_hexon_registry_url`, same precedence
+  shape as the relay spec) is drained on its own background thread,
+  `terrain_bridge::install_from_registry`: `FetchStrategy::fetch_header`
+  (`RequireSealed`, no pin — the operator's chosen registry IS the trust
+  anchor, same model as `/download`) → `fetch_chunk` for every chunk a
+  container names (or the one whole-archive chunk for a monolithic hexon),
+  each one checked against the signed integrity root before it is ever
+  written anywhere → `assemble_sealed_container` (container) or
+  `HexonStore::install_tileset` directly (monolithic) → `TilesetRegistry::reload`.
+  This is the FIRST production caller of `fe_hexon::partial::FetchStrategy`/
+  `RemoteRegistryClient` (`fractalengine/Cargo.toml` now enables `fe-hexon`'s
+  `remote` feature) — closes the "gate built but never wired" class of
+  finding for the HTTP partial-fetch half (S5/S7a already wired the P2P half).
+  Progress (`HexonAssembleOutcome::RegistryProgress`, header-resolved `0/N`
+  through every chunk) and the terminal `RegistryInstalled`/`RegistryFailed`
+  travel over the SAME `HexonAssembleResultSender` channel as
+  `AssembleDownload`, and `drain_hexon_assemble_results` reuses the existing
+  `TilesetDownloads`/Downloads-tab UI to show them, keyed by the REQUESTED
+  uri (never routed through `SyncCommand::CancelTilesetDownload` — no P2P
+  `DownloadTileset` was ever sent for it).
 - **Seeding → publish.** `terrain_bridge::spawn_bundle_and_publish(registry,
   sync_tx, tileset_id)` is the GUI's thread+channel wrapper around the ONE
   shared bundling implementation, `fe_terrain::tiles::bundle_for_seeding`

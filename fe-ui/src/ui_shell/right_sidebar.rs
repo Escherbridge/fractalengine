@@ -352,6 +352,7 @@ pub fn render_right_sidebar(
             petal_map,
             nav.active_petal_id.as_deref(),
             downloads,
+            app_settings,
         ),
         Some(RightSidebarSection::Groups) => render_groups_section(
             ctx,
@@ -668,6 +669,7 @@ fn render_settings_section(
         ui.add_space(8.0);
         settings_heading(ui, "Network");
         render_relay_setting(ui, app_settings);
+        render_registry_setting(ui, app_settings);
 
         // --- Timeseries fabric (M2/F6 — per active verse) ---
         ui.add_space(12.0);
@@ -836,6 +838,30 @@ fn render_relay_setting(ui: &mut egui::Ui, app_settings: &mut AppSettings) {
                     .color(theme::STATUS_OFFLINE),
             );
         }
+    }
+    ui.data_mut(|data| data.insert_temp(buffer_id, buffer));
+}
+
+/// Hosted hexon registry URL (PAS-P5 S7b, A6): a blank field means "not
+/// configured" (`None`), which the Hexon Manager's Available tab shows as a
+/// disabled "Install from registry" control rather than a faked one (ui_ux
+/// §6). `FE_HEXON_REGISTRY_URL` overrides whatever is saved here.
+fn render_registry_setting(ui: &mut egui::Ui, app_settings: &mut AppSettings) {
+    let buffer_id = ui.id().with("hexon_registry_url_buffer");
+    let mut buffer = ui
+        .data_mut(|data| data.get_temp::<String>(buffer_id))
+        .unwrap_or_else(|| app_settings.hexon_registry_url.clone().unwrap_or_default());
+    settings_row(ui, "Hexon registry", |ui| {
+        ui.add(egui::TextEdit::singleline(&mut buffer).desired_width(220.0))
+            .on_hover_text(
+                "Hosted fe-hexon-registry base URL, e.g. https://hexons.example.com \
+                 (FE_HEXON_REGISTRY_URL overrides); blank = no registry configured",
+            );
+    });
+    let trimmed = buffer.trim();
+    let new_value = (!trimmed.is_empty()).then(|| trimmed.to_string());
+    if new_value != app_settings.hexon_registry_url {
+        app_settings.hexon_registry_url = new_value;
     }
     ui.data_mut(|data| data.insert_temp(buffer_id, buffer));
 }
@@ -1015,6 +1041,7 @@ fn render_maps_section(
     petal_map: &mut PetalMapState,
     active_petal: Option<&str>,
     downloads: &crate::terrain_map::TilesetDownloads,
+    app_settings: &AppSettings,
 ) {
     if !matches!(ui_mgr.active_dialog, ActiveDialog::HexonManager { .. }) {
         if matches!(ui_mgr.active_dialog, ActiveDialog::None) {
@@ -1034,8 +1061,24 @@ fn render_maps_section(
             return;
         }
     }
-    let close =
-        crate::dialogs::render_hexon_manager(ctx, ui_mgr, petal_map, active_petal, &downloads.0);
+    // Resolved fresh every frame (cheap: one env read) so `FE_HEXON_REGISTRY_URL`
+    // enables the control even when the persisted setting is blank — same
+    // precedence as `resolve_hexon_registry_url`'s doc comment, applied here
+    // because (like the relay spec) the Settings UI only ever edits the
+    // persisted field, never the env-resolved effective one.
+    let env_registry_url = std::env::var(crate::settings::HEXON_REGISTRY_URL_ENV_VAR).ok();
+    let registry_url = crate::settings::resolve_hexon_registry_url(
+        env_registry_url.as_deref(),
+        app_settings.hexon_registry_url.as_deref(),
+    );
+    let close = crate::dialogs::render_hexon_manager(
+        ctx,
+        ui_mgr,
+        petal_map,
+        active_petal,
+        &downloads.0,
+        registry_url.as_deref(),
+    );
     if close {
         clear_maps_carrier(ui_mgr);
         // requested was Maps → toggling it clears back to the selection default.
@@ -1058,6 +1101,7 @@ fn seed_hexon_manager() -> ActiveDialog {
         },
         loading: true,
         pending_remove: None,
+        registry_uri_buf: String::new(),
     }
 }
 

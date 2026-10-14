@@ -77,6 +77,12 @@ pub struct AppSettings {
     /// P2P relay servers: `default` | `disabled` | comma-separated relay URLs.
     /// Read once at startup; `FE_SYNC_RELAY` overrides it.
     pub relay: String,
+    /// Base URL of a hosted `fe-hexon-registry` to install maps from (PAS-P5
+    /// S7b, A6). `None` means no registry is configured — the Hexon Manager's
+    /// "Install from registry" control is disabled rather than faked
+    /// (ui_ux.md §6). `FE_HEXON_REGISTRY_URL` overrides it; see
+    /// `resolve_hexon_registry_url`.
+    pub hexon_registry_url: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -93,8 +99,25 @@ impl Default for AppSettings {
             show_world_grid: false,
             show_scale_bar: true,
             relay: DEFAULT_RELAY_SPEC.to_string(),
+            hexon_registry_url: None,
         }
     }
+}
+
+/// Environment override for [`AppSettings::hexon_registry_url`] (PAS-P5 S7b, A6).
+pub const HEXON_REGISTRY_URL_ENV_VAR: &str = "FE_HEXON_REGISTRY_URL";
+
+/// Registry-URL precedence, mirroring `fe_sync::relay_config::resolve`: the
+/// environment override wins over the persisted setting; absent both →
+/// `None` (no registry configured). A blank/whitespace-only value at either
+/// source is treated as absent.
+pub fn resolve_hexon_registry_url(env: Option<&str>, settings: Option<&str>) -> Option<String> {
+    let non_blank = |raw: &str| {
+        let trimmed = raw.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    };
+    env.and_then(non_blank)
+        .or_else(|| settings.and_then(non_blank))
 }
 
 /// Clamps every knob into its valid range; non-finite floats fall back to the
@@ -126,6 +149,13 @@ pub fn sanitize(settings: &mut AppSettings) {
         warn!(relay = %settings.relay, "invalid relay spec in settings; using default relays");
         settings.relay = defaults.relay;
     }
+    // A blank/whitespace-only URL is the same as "not configured" — keeps the
+    // Installed/Available UI's "is a registry configured?" check a plain
+    // `is_some()` rather than also checking for blankness everywhere it reads this.
+    settings.hexon_registry_url = settings
+        .hexon_registry_url
+        .take()
+        .and_then(|url| (!url.trim().is_empty()).then(|| url.trim().to_string()));
 }
 
 fn clamp_multiplier(value: f32) -> f32 {
@@ -399,6 +429,7 @@ mod tests {
             camera_zoom_speed: 0.5,
             show_world_grid: true,
             relay: "disabled".into(),
+            hexon_registry_url: Some("https://hexons.example.com".into()),
             ..Default::default()
         };
         save_settings_to(&path, &edited).unwrap();
@@ -490,6 +521,43 @@ mod tests {
     }
 
     #[test]
+    fn hexon_registry_url_resolve_precedence_table() {
+        // (env, settings, expected) — mirrors fe_sync::relay_config's table shape.
+        let cases: [(Option<&str>, Option<&str>, Option<&str>); 6] = [
+            (None, None, None),
+            (
+                None,
+                Some("https://settings.example.com"),
+                Some("https://settings.example.com"),
+            ),
+            (
+                Some("https://env.example.com"),
+                Some("https://settings.example.com"),
+                Some("https://env.example.com"),
+            ),
+            (
+                Some("https://env.example.com"),
+                None,
+                Some("https://env.example.com"),
+            ),
+            (
+                Some("   "),
+                Some("https://settings.example.com"),
+                Some("https://settings.example.com"),
+            ),
+            (None, Some("   "), None),
+        ];
+        for (env, settings, expected) in cases {
+            let resolved = resolve_hexon_registry_url(env, settings);
+            assert_eq!(
+                resolved.as_deref(),
+                expected,
+                "env={env:?} settings={settings:?}"
+            );
+        }
+    }
+
+    #[test]
     fn sanitize_clamps_every_knob() {
         let mesh_cap = crate::plugin::MAX_MESH_INSTANCES;
         let node_cap = crate::verse_manager::MAX_PETAL_NODES;
@@ -567,6 +635,25 @@ mod tests {
                     render_distance: 1_200.0,
                     entity_cap: 500,
                     relay: "https://relay.example.com".into(),
+                    ..Default::default()
+                },
+            ),
+            // PAS-P5 S7b: blank/whitespace-only is "not configured", a real
+            // URL is kept trimmed.
+            (
+                AppSettings {
+                    hexon_registry_url: Some("   ".into()),
+                    ..Default::default()
+                },
+                AppSettings::default(),
+            ),
+            (
+                AppSettings {
+                    hexon_registry_url: Some("  https://hexons.example.com  ".into()),
+                    ..Default::default()
+                },
+                AppSettings {
+                    hexon_registry_url: Some("https://hexons.example.com".into()),
                     ..Default::default()
                 },
             ),

@@ -20,6 +20,15 @@ pub(crate) fn install_from_file(hexon_ops: &mut PendingHexonOps, path: PathBuf) 
     hexon_ops.0.push(HexonOp::Install(path));
 }
 
+/// Queues a hosted-registry install by URI (PAS-P5 S7b). The caller (the
+/// Hexon Manager dialog) only enables this control when
+/// `AppSettings.hexon_registry_url` is configured — a blank URI here would
+/// otherwise queue an op `drain_hexon_ops` can only fail.
+pub(crate) fn install_from_registry(hexon_ops: &mut PendingHexonOps, uri: String) {
+    bevy::log::info!("Hexon: install from registry {}", uri);
+    hexon_ops.0.push(HexonOp::InstallFromRegistry { uri });
+}
+
 pub(crate) fn remove_tileset(hexon_ops: &mut PendingHexonOps, id: String) {
     bevy::log::info!("Hexon: remove tileset {}", id);
     hexon_ops.0.push(HexonOp::Remove(id));

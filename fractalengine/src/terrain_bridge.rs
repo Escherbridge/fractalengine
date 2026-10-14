@@ -21,7 +21,7 @@ use fe_ui::plugin::{
     StorageInfoDto, UiManager,
 };
 use fe_ui::settings::AppSettings;
-use fe_ui::terrain_map::{DownloadStatus, TilesetDownloads};
+use fe_ui::terrain_map::{DownloadProgress, DownloadStatus, TilesetDownloads};
 
 /// New proposal ghosts the mesh-instance budget can absorb: none once the
 /// watchdog has tripped, else the headroom under the ceiling (capped).
@@ -153,9 +153,39 @@ pub fn bridge_petal_terrain(
 /// `TilesetRegistry` is internally lock-protected, so the install + reload
 /// itself runs off-thread; only the dialog's `ActiveDialog` carrier needs the
 /// main thread, which `drain_hexon_assemble_results` provides.
+#[derive(Debug)]
 pub enum HexonAssembleOutcome {
-    Installed { tileset_id: String },
-    Failed { tileset_id: String, reason: String },
+    Installed {
+        tileset_id: String,
+    },
+    Failed {
+        tileset_id: String,
+        reason: String,
+    },
+    /// PAS-P5 S7b: one "install from registry" fetch made progress (header
+    /// resolved → `chunks_received == 0`; each verified chunk after that).
+    /// Reuses the Downloads tab's existing progress bar, keyed by the
+    /// REQUESTED uri (the `hexon_id` the signed header confirms is only known
+    /// once the fetch succeeds — see `RegistryInstalled`).
+    RegistryProgress {
+        uri: String,
+        chunks_received: u32,
+        total_chunks: u32,
+    },
+    /// An "install from registry" fetch finished and the archive is on disk,
+    /// indexed and reloaded.
+    RegistryInstalled {
+        uri: String,
+        hexon_id: String,
+    },
+    /// An "install from registry" fetch was refused — a transport failure, or
+    /// (the common/important case) every source failed the signed integrity
+    /// root (`FetchStrategy`'s `RequireSealed`), so nothing was ever written
+    /// to the store.
+    RegistryFailed {
+        uri: String,
+        reason: String,
+    },
 }
 
 /// Receiver half for [`HexonAssembleOutcome`]s — polled each frame by
@@ -238,6 +268,8 @@ pub fn drain_hexon_ops(
     mut ui_mgr: ResMut<UiManager>,
     sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
     assemble_tx: Option<Res<HexonAssembleResultSender>>,
+    app_settings: Res<AppSettings>,
+    mut downloads: ResMut<TilesetDownloads>,
 ) {
     if ops.0.is_empty() {
         return;
@@ -333,6 +365,54 @@ pub fn drain_hexon_ops(
                     }
                 });
             }
+            HexonOp::InstallFromRegistry { uri } => {
+                let Some(tx) = assemble_tx.as_ref().map(|t| t.0.clone()) else {
+                    tracing::warn!(
+                        uri,
+                        "InstallFromRegistry dropped — no result channel registered"
+                    );
+                    continue;
+                };
+                // Same precedence as the UI's enable/disable check
+                // (`right_sidebar::render_maps_section`): the env var can
+                // enable this even when the persisted setting is blank.
+                let env_registry_url =
+                    std::env::var(fe_ui::settings::HEXON_REGISTRY_URL_ENV_VAR).ok();
+                let Some(registry_url) = fe_ui::settings::resolve_hexon_registry_url(
+                    env_registry_url.as_deref(),
+                    app_settings.hexon_registry_url.as_deref(),
+                ) else {
+                    tracing::warn!(
+                        uri,
+                        "InstallFromRegistry dropped — no registry URL configured"
+                    );
+                    if tx
+                        .send(HexonAssembleOutcome::RegistryFailed {
+                            uri: uri.clone(),
+                            reason: "no hexon registry URL configured".to_string(),
+                        })
+                        .is_err()
+                    {
+                        tracing::warn!(uri, "InstallFromRegistry result channel closed");
+                    }
+                    continue;
+                };
+                downloads.0.insert(
+                    uri.clone(),
+                    DownloadProgress {
+                        tileset_id: uri.clone(),
+                        chunks_received: 0,
+                        total_chunks: 0,
+                        bytes_received: 0,
+                        total_bytes_estimate: 0,
+                        status: DownloadStatus::Queued,
+                    },
+                );
+                let reg_for_task = registry.0.clone();
+                std::thread::spawn(move || {
+                    install_from_registry(&reg_for_task, &registry_url, &uri, &tx);
+                });
+            }
         }
     }
 
@@ -362,6 +442,150 @@ fn assemble_and_install(
     )?;
     registry.reload(tileset_id)?;
     Ok(())
+}
+
+/// Fetch `uri` from `registry_url` and install it (PAS-P5 S7b): header first
+/// (`RequireSealed`, no pin — the operator-chosen registry is the trust
+/// anchor here, matching `/download`'s existing trust model), then every
+/// chunk a container names, reporting progress after the header and after
+/// each chunk. No chunk is ever written to disk before `FetchStrategy`
+/// verifies it against the signed integrity root — a tampered or unsealed
+/// source fails inside `fetch_header`/`fetch_chunk` and nothing reaches
+/// [`HexonStore::install_tileset`][store]. Runs its own single-threaded tokio
+/// runtime (mirrors `main.rs`'s one-off `block_on` bridges) — never the Bevy
+/// main thread (S4 invariant); the caller (`drain_hexon_ops`) is what
+/// spawns the OS thread this runs on.
+///
+/// [store]: fe_terrain::tiles::HexonStore::install_tileset
+fn install_from_registry(
+    registry: &TilesetRegistry,
+    registry_url: &str,
+    uri: &str,
+    tx: &crossbeam::channel::Sender<HexonAssembleOutcome>,
+) {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            if tx
+                .send(HexonAssembleOutcome::RegistryFailed {
+                    uri: uri.to_string(),
+                    reason: format!("could not start a runtime for the fetch: {e}"),
+                })
+                .is_err()
+            {
+                tracing::warn!(uri, "InstallFromRegistry result channel closed");
+            }
+            return;
+        }
+    };
+
+    let client: std::sync::Arc<dyn fe_hexon::partial::PartialHexonFetch> = std::sync::Arc::new(
+        fe_hexon::remote::RemoteRegistryClient::new(registry_url.to_string(), None),
+    );
+    let strategy = fe_hexon::partial::FetchStrategy::new(fe_hexon::p2p::P2pConfig::from_env());
+    let tx_progress = tx.clone();
+    let uri_for_progress = uri.to_string();
+    let result = rt.block_on(fetch_and_install_from_registry(
+        &strategy,
+        client,
+        registry.store(),
+        uri,
+        move |chunks_received, total_chunks| {
+            if tx_progress
+                .send(HexonAssembleOutcome::RegistryProgress {
+                    uri: uri_for_progress.clone(),
+                    chunks_received,
+                    total_chunks,
+                })
+                .is_err()
+            {
+                tracing::warn!(
+                    uri = %uri_for_progress,
+                    "InstallFromRegistry progress channel closed"
+                );
+            }
+        },
+    ));
+
+    let outcome = match result {
+        Ok(installed) => {
+            // `assemble_sealed_container`/`install_tileset` write through the
+            // store directly (no `TilesetRegistry::install`), so the
+            // in-memory source cache needs an explicit reload — same as
+            // `assemble_and_install` above.
+            if let Err(e) = registry.reload(&installed.hexon_id) {
+                tracing::warn!(
+                    hexon_id = %installed.hexon_id,
+                    "reload after registry install failed: {e}"
+                );
+            }
+            HexonAssembleOutcome::RegistryInstalled {
+                uri: uri.to_string(),
+                hexon_id: installed.hexon_id,
+            }
+        }
+        Err(e) => HexonAssembleOutcome::RegistryFailed {
+            uri: uri.to_string(),
+            reason: e.to_string(),
+        },
+    };
+    if tx.send(outcome).is_err() {
+        tracing::warn!(uri, "InstallFromRegistry result channel closed");
+    }
+}
+
+/// Pure fetch+install core (PAS-P5 S7b step 3): `FetchStrategy::fetch_header`
+/// then `fetch_chunk` for every chunk a container names (seq `0` is the whole
+/// archive for a monolithic hexon). `on_progress(chunks_received, total)` is
+/// called once after the header resolves (`0, total`) and once per verified
+/// chunk — the "header → 1/N … N/N" progress sequence the Downloads tab
+/// renders. A container is reassembled with its seal intact
+/// (`assemble_sealed_container`, S6) so the installed file can be re-seeded
+/// unchanged; a monolithic archive's single verified chunk IS the archive, so
+/// it installs directly.
+async fn fetch_and_install_from_registry(
+    strategy: &fe_hexon::partial::FetchStrategy,
+    client: std::sync::Arc<dyn fe_hexon::partial::PartialHexonFetch>,
+    store: &fe_terrain::tiles::HexonStore,
+    uri: &str,
+    mut on_progress: impl FnMut(u32, u32),
+) -> anyhow::Result<fe_terrain::tiles::InstalledTileset> {
+    let sources = [client];
+    let header = strategy
+        .fetch_header(uri, &sources, None)
+        .await
+        .map_err(|e| anyhow::anyhow!("header fetch refused: {e}"))?
+        .value;
+
+    match header.layout {
+        fe_format::Layout::Monolithic => {
+            on_progress(0, 1);
+            let bytes = strategy
+                .fetch_chunk(&header, 0, &sources)
+                .await
+                .map_err(|e| anyhow::anyhow!("archive fetch refused: {e}"))?
+                .value;
+            on_progress(1, 1);
+            store.install_tileset(&bytes)
+        }
+        fe_format::Layout::Container { chunk_count } => {
+            on_progress(0, chunk_count);
+            let mut chunks = Vec::with_capacity(chunk_count as usize);
+            for seq in 0..chunk_count {
+                let bytes = strategy
+                    .fetch_chunk(&header, seq, &sources)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("chunk {seq} fetch refused: {e}"))?
+                    .value;
+                chunks.push((seq, bytes.to_vec()));
+                on_progress(seq + 1, chunk_count);
+            }
+            fe_terrain::tiles::distribution::assemble_sealed_container(store, &header.doc, &chunks)
+        }
+    }
 }
 
 /// Drains completed background assemble results (`HexonOp::AssembleDownload`):
@@ -398,6 +622,34 @@ pub fn drain_hexon_assemble_results(
                 tracing::warn!(tileset_id, reason, "P2P tileset assemble/install failed");
                 if let Some(dl) = downloads.as_mut().and_then(|d| d.0.get_mut(&tileset_id)) {
                     dl.status = DownloadStatus::Failed(format!("Install failed: {reason}"));
+                }
+            }
+            // PAS-P5 S7b: "install from registry" — keyed by the requested
+            // uri, never routed through `CancelTilesetDownload` (no P2P
+            // `DownloadTileset` was ever sent for it, so there is nothing on
+            // the sync thread to cancel).
+            HexonAssembleOutcome::RegistryProgress {
+                uri,
+                chunks_received,
+                total_chunks,
+            } => {
+                if let Some(dl) = downloads.as_mut().and_then(|d| d.0.get_mut(&uri)) {
+                    dl.status = DownloadStatus::Downloading;
+                    dl.chunks_received = chunks_received;
+                    dl.total_chunks = total_chunks;
+                }
+            }
+            HexonAssembleOutcome::RegistryInstalled { uri, hexon_id } => {
+                tracing::info!(uri, hexon_id, "Installed hexon tileset from registry");
+                refreshed = true;
+                if let Some(dl) = downloads.as_mut().and_then(|d| d.0.get_mut(&uri)) {
+                    dl.status = DownloadStatus::Complete;
+                }
+            }
+            HexonAssembleOutcome::RegistryFailed { uri, reason } => {
+                tracing::warn!(uri, reason, "Install from registry failed");
+                if let Some(dl) = downloads.as_mut().and_then(|d| d.0.get_mut(&uri)) {
+                    dl.status = DownloadStatus::Failed(reason);
                 }
             }
         }
@@ -1350,6 +1602,284 @@ mod tests {
             registry.get_tile("victim", 10, 0, 0).as_deref(),
             Some(&[42u8; 8][..]),
             "the victim still serves its own tile"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // PAS-P5 S7b: hosted "install from registry" production path — see
+    // src/AGENTS.md §tileset-p2p.
+    // -------------------------------------------------------------------------
+
+    /// An in-process `fe-hexon-registry` on an ephemeral port, serving
+    /// whatever `.hexon` files are placed in `dir` (mirrors
+    /// `fe-hexon/tests/support/registry_server.rs`, not reusable as a lib
+    /// from this crate). Runs on its own OS thread with its own tokio
+    /// runtime — exactly like `install_from_registry`'s production
+    /// background thread — so the SYNC tests below can block on the result
+    /// channel without needing (or risking deadlocking) an async test runtime.
+    fn spawn_test_registry(dir: &std::path::Path) -> std::net::SocketAddr {
+        let dir = dir.to_path_buf();
+        let (addr_tx, addr_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test registry runtime");
+            rt.block_on(async move {
+                let state = std::sync::Arc::new(fe_hexon_registry::RegistryState::new(
+                    dir.clone(),
+                    None,
+                    false,
+                    fe_hexon_registry::scan_dir(&dir),
+                ));
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("bind ephemeral port");
+                let addr = listener.local_addr().expect("local_addr");
+                addr_tx.send(addr).expect("send bound addr");
+                axum::serve(listener, fe_hexon_registry::build_router(state))
+                    .await
+                    .expect("test registry server");
+            });
+        });
+        addr_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("test registry did not start")
+    }
+
+    /// Drains `rx` until either the named uri reaches a terminal
+    /// `RegistryInstalled`/`RegistryFailed` outcome or `timeout` elapses;
+    /// returns every outcome seen (in order) plus the terminal one, if any.
+    fn collect_registry_outcomes(
+        rx: &crossbeam::channel::Receiver<HexonAssembleOutcome>,
+        timeout: std::time::Duration,
+    ) -> Vec<HexonAssembleOutcome> {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut seen = Vec::new();
+        while std::time::Instant::now() < deadline {
+            match rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                Ok(outcome) => {
+                    let terminal = matches!(
+                        outcome,
+                        HexonAssembleOutcome::RegistryInstalled { .. }
+                            | HexonAssembleOutcome::RegistryFailed { .. }
+                    );
+                    seen.push(outcome);
+                    if terminal {
+                        break;
+                    }
+                }
+                Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
+                Err(crossbeam::channel::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        seen
+    }
+
+    /// A fresh `TilesetRegistry` over a fresh temp-dir `HexonStore`.
+    fn fresh_tileset_registry() -> (tempfile::TempDir, TilesetRegistry) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = fe_terrain::tiles::HexonStore::with_dir(tmp.path().join("hexons"))
+            .expect("fresh hexon store");
+        (tmp, TilesetRegistry::new(store))
+    }
+
+    /// Bevy `App` wired exactly as `drain_hexon_ops` needs it in production,
+    /// pointed at `registry_url`.
+    fn app_for_install_from_registry(
+        tileset_registry: std::sync::Arc<TilesetRegistry>,
+        registry_url: String,
+        tx: crossbeam::channel::Sender<HexonAssembleOutcome>,
+    ) -> App {
+        let settings = AppSettings {
+            hexon_registry_url: Some(registry_url),
+            ..Default::default()
+        };
+        let mut app = App::new();
+        app.init_resource::<UiManager>()
+            .init_resource::<PendingHexonOps>()
+            .insert_resource(TilesetDownloads::default())
+            .insert_resource(SharedTilesetRegistry(tileset_registry))
+            .insert_resource(HexonAssembleResultSender(tx))
+            .insert_resource(settings)
+            .add_systems(Update, drain_hexon_ops);
+        app
+    }
+
+    /// (plan S7b) `install_from_registry_installs_a_sealed_container_end_to_end`:
+    /// a real in-process registry serves a sealed, THREE-chunk container
+    /// (same fixture shape as `fe-terrain`'s
+    /// `container_backed_source_serves_tiles_from_every_chunk`, just sealed);
+    /// queuing `HexonOp::InstallFromRegistry` and driving it through
+    /// `drain_hexon_ops` fetches the header, fetches every chunk (reporting
+    /// progress 0/3 → 3/3), reassembles the sealed container and installs it
+    /// — proven by reading a real tile back through the registry afterward,
+    /// not just checking the result enum.
+    #[test]
+    fn install_from_registry_installs_a_sealed_container_end_to_end() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[91u8; 32]);
+        let hexon_id = "s7b-container-test";
+
+        let mut chunks = Vec::new();
+        for seq in 0..3u32 {
+            let tile_bytes = vec![(100 + seq) as u8; 16];
+            let chunk_bytes = fe_format::HexonArchive::export_tileset(
+                synthetic_tileset_manifest(hexon_id),
+                synthetic_tileset(hexon_id).tileset_meta.as_ref().unwrap(),
+                &[(format!("10/{seq}/0"), tile_bytes)],
+                &[],
+                None,
+            )
+            .expect("export chunk archive");
+            chunks.push(fe_format::ChunkInput {
+                seq,
+                tile_count: 1,
+                zoom: 10,
+                x_range: [seq, seq],
+                y_range: [0, 0],
+                hilbert_range: [seq as u64, seq as u64],
+                archive_bytes: chunk_bytes,
+            });
+        }
+        let mut outer_meta = synthetic_tileset(hexon_id).tileset_meta.unwrap();
+        outer_meta.tile_count = 3;
+        let unsealed = fe_format::HexonArchive::export_chunked(
+            synthetic_tileset_manifest(hexon_id),
+            &outer_meta,
+            &chunks,
+        )
+        .expect("export container");
+        let sealed = fe_format::seal(&unsealed, &key).expect("seal container");
+
+        let registry_dir = tempfile::tempdir().expect("registry tempdir");
+        std::fs::write(registry_dir.path().join("pkg.hexon"), &sealed).expect("write fixture");
+        let addr = spawn_test_registry(registry_dir.path());
+
+        let (tmp, tileset_registry) = fresh_tileset_registry();
+        let tileset_registry = std::sync::Arc::new(tileset_registry);
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let mut app =
+            app_for_install_from_registry(tileset_registry.clone(), format!("http://{addr}"), tx);
+        app.world_mut()
+            .resource_mut::<PendingHexonOps>()
+            .0
+            .push(HexonOp::InstallFromRegistry {
+                uri: hexon_id.to_string(),
+            });
+        app.update(); // drains the op, spawning the background fetch+install thread
+
+        let outcomes = collect_registry_outcomes(&rx, std::time::Duration::from_secs(20));
+        let progress: Vec<(u32, u32)> = outcomes
+            .iter()
+            .filter_map(|o| match o {
+                HexonAssembleOutcome::RegistryProgress {
+                    chunks_received,
+                    total_chunks,
+                    ..
+                } => Some((*chunks_received, *total_chunks)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            progress,
+            vec![(0, 3), (1, 3), (2, 3), (3, 3)],
+            "progress must run header (0/3) through every chunk in order: {outcomes:?}"
+        );
+        match outcomes.last() {
+            Some(HexonAssembleOutcome::RegistryInstalled {
+                uri,
+                hexon_id: installed_id,
+            }) => {
+                assert_eq!(uri, hexon_id);
+                assert_eq!(installed_id, hexon_id);
+            }
+            other => panic!("expected RegistryInstalled, got {other:?}: {outcomes:?}"),
+        }
+
+        // The real, observable outcome: every chunk's tile reads back
+        // through the registry exactly as written, through the SAME
+        // `TilesetRegistry` `drain_hexon_ops` installed into (not a
+        // freshly-reloaded one) — proves `registry.reload` ran.
+        for seq in 0..3u32 {
+            assert_eq!(
+                tileset_registry.get_tile(hexon_id, 10, seq, 0).as_deref(),
+                Some(vec![(100 + seq) as u8; 16].as_slice()),
+                "chunk {seq}'s tile must read back byte-identical"
+            );
+        }
+        assert!(
+            tileset_registry
+                .list_tilesets()
+                .iter()
+                .any(|t| t.tileset_id == hexon_id),
+            "installed via the real store, not faked"
+        );
+        drop(tmp);
+    }
+
+    /// (plan S7b) `install_from_registry_refuses_a_tampered_source_and_installs_nothing`:
+    /// the registry serves a SEALED monolithic archive whose header verifies
+    /// cleanly, but whose tile bytes were tampered with after sealing (same
+    /// attack shape as fe-hexon's own
+    /// `strategy_falls_back_from_a_tampering_source_to_an_honest_one` fixture)
+    /// — `FetchStrategy::fetch_chunk`'s whole-archive check must refuse it,
+    /// and nothing may land in the store.
+    #[test]
+    fn install_from_registry_refuses_a_tampered_source_and_installs_nothing() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[92u8; 32]);
+        let hexon_id = "s7b-tampered-test";
+        let tile_bytes: Vec<u8> = vec![0xAB, 0xCD, 0xEF, 0x12, 0x34, 0x56, 0x78, 0x9A];
+        let unsealed = fe_format::HexonArchive::export_tileset(
+            synthetic_tileset_manifest(hexon_id),
+            synthetic_tileset(hexon_id).tileset_meta.as_ref().unwrap(),
+            &[("10/0/0".to_string(), tile_bytes.clone())],
+            &[],
+            None,
+        )
+        .expect("export unsealed archive");
+        let sealed = fe_format::seal(&unsealed, &key).expect("seal archive");
+
+        // Flip the tile's bytes in place, post-seal, without touching
+        // manifest.json or any header member — the header still verifies;
+        // only the tile content itself (and so the whole-archive check) is
+        // wrong. Stored (uncompressed) tiles put these bytes verbatim in the
+        // zip, so a literal byte search finds them.
+        let mut tampered = sealed.clone();
+        let pos = tampered
+            .windows(tile_bytes.len())
+            .position(|w| w == tile_bytes.as_slice())
+            .expect("tile bytes must appear verbatim in a Stored zip entry");
+        tampered[pos] ^= 0xFF;
+        assert_ne!(tampered, sealed, "tamper must actually change the bytes");
+
+        let registry_dir = tempfile::tempdir().expect("registry tempdir");
+        std::fs::write(registry_dir.path().join("pkg.hexon"), &tampered).expect("write fixture");
+        let addr = spawn_test_registry(registry_dir.path());
+
+        let (_tmp, tileset_registry) = fresh_tileset_registry();
+        let tileset_registry = std::sync::Arc::new(tileset_registry);
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let mut app =
+            app_for_install_from_registry(tileset_registry.clone(), format!("http://{addr}"), tx);
+        app.world_mut()
+            .resource_mut::<PendingHexonOps>()
+            .0
+            .push(HexonOp::InstallFromRegistry {
+                uri: hexon_id.to_string(),
+            });
+        app.update();
+
+        let outcomes = collect_registry_outcomes(&rx, std::time::Duration::from_secs(20));
+        match outcomes.last() {
+            Some(HexonAssembleOutcome::RegistryFailed { uri, .. }) => {
+                assert_eq!(uri, hexon_id);
+            }
+            other => panic!("expected RegistryFailed, got {other:?}: {outcomes:?}"),
+        }
+        assert!(
+            tileset_registry.list_tilesets().is_empty(),
+            "a tampered source must install nothing: {:?}",
+            tileset_registry.list_tilesets()
         );
     }
 

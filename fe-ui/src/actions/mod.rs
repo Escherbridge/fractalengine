@@ -79,6 +79,8 @@ pub enum UiAction {
     HexonCancelDownload(String),
     HexonRefreshList,
     HexonOpenStorageDir,
+    /// PAS-P5 S7b: install a hexon by URI from the configured hosted registry.
+    HexonInstallFromRegistry(String),
     /// Set (Some) or clear (None) the active petal's map tileset. See AGENTS.md §terrain-map.
     PetalSetMap {
         petal_id: String,
@@ -749,6 +751,9 @@ pub(crate) fn process_ui_actions(
             }
             UiAction::HexonOpenStorageDir => {
                 hexon::open_storage_dir(&ui_mgr);
+            }
+            UiAction::HexonInstallFromRegistry(uri) => {
+                hexon::install_from_registry(&mut hexon_ops, uri);
             }
             UiAction::PetalSetMap { petal_id, tileset } => {
                 hexon::set_petal_map(&db_sender, &mut petal_map, petal_id, tileset);
