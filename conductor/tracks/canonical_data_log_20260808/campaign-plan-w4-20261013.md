@@ -444,7 +444,8 @@ NEW `fe-database/src/canon_log/author_lifecycle.rs`, NEW `fe-database/src/canon_
    `PayloadCiphertextSource`; explicitly NOT the iroh blob store.
 3. `SecretStoreScopeKeyCustody`: the unified `ScopeKeyStore` (W4-4) as an in-memory map
    write-through to `fe_identity::SecretStore` (account `canon-scope-key/<key_id hex>`), shred =
-   delete + zeroize; loads at construction.
+   delete + zeroize; ~~loads at construction~~ loads a non-secret key-id index from SurrealDB at
+   construction — `SecretStore` has no enumeration and never gains `list` (§9 C7, C10).
 4. `DurableAuthorKeyLifecycle`: rebuilds `LineageIndex`/`DisavowIndex` by replaying lifecycle-kind
    rows of `verified_op_log` through W4-3's `LifecycleDispatcher` in
    `ordering::deterministic_causal_order`; implements `AuthorKeyLifecycleView` with
@@ -546,7 +547,10 @@ errors); `crypto/AGENTS.md` three-state answers; `fe-sync/src/AGENTS.md` §distr
 §transform-mapping), NEW `fe-database/tests/migration_equivalence_harness.rs`,
 `fe-canonical-log/src/AGENTS.md` (provisional register rows for the intent schema),
 NEW `fe-sdk/src/legacy_identifier.rs`, `fe-sdk/src/lib.rs` (one `pub mod`),
-`fe-sdk/src/AGENTS.md` (A1 hand-back: register the `fe-legacy-identifier-v1` domain).
+`fe-sdk/src/AGENTS.md` (A1 hand-back: register the `fe-legacy-identifier-v1` domain),
+`fe-sdk/Cargo.toml` (+`blake3`), `fe-database/Cargo.toml` (if it gains the `fe-sdk` dependency),
+`Cargo.lock`, and NEW `fe-canonical-log/tests/legacy_identifier_golden.rs` (the golden test;
+§9 C10).
 **Crates:** fe-database, fe-sdk (+ fe-canonical-log check only).
 
 **Steps.**
@@ -554,8 +558,9 @@ NEW `fe-sdk/src/legacy_identifier.rs`, `fe-sdk/src/lib.rs` (one `pub mod`),
    `fe_sdk::legacy_identifier(table: LegacyTable, id: &str) -> Identifier32` function:
    `BLAKE3(ASCII("fe-legacy-identifier-v1") || 00 || canonical_cbor([table, id]))` (SPEC-10 §4.5
    rule 1; `table` is `"verse"`, `"petal"`, or `"node"`). `fe-sdk` is the one crate every consumer
-   already reaches (fe-canonical-log → fe-sdk only, W4-4 §crate-surface; fe-database and fe-query
-   already depend on it), so this is the single home for both this slice's own candidate-scope
+   already reaches (fe-canonical-log → fe-sdk only, W4-4 §crate-surface; ~~fe-database and fe-query
+   already depend on it~~ — premise false, neither depends on fe-sdk today (§9 C7, C10)), so this
+   is the single home for both this slice's own candidate-scope
    derivation (step 2, for `UpdateNodeTransform`'s petal scope and node anchor — SPEC-8 §4.2
    rule 2's "candidate scope derivation") and CDL-SPEC10's later uses (B1's kind-5 `anchors`
    field, B2's hexon `anchor` column). SPEC-10 §4.5 rule 2 requires both to be the same function;
@@ -741,6 +746,7 @@ in.
 | C7 | 2026-10-14 | critic tick 5 (AC-25) | W4-9 step 1's premise is corrected: "fe-database and fe-query already depend on [fe-sdk]" is false — neither `Cargo.toml` lists `fe-sdk` (grep) and no `fe_sdk::` use exists in either. fe-sdk stays the single home for `legacy_identifier` anyway (lightest crate every consumer can reach), but this needs a dependency-rule amendment: `fe-sdk/src/AGENTS.md:3-4` states fe-sdk has "exactly two dependencies (`serde`, `serde_json`)" and `fe-sdk/Cargo.toml` matches; BLAKE3 + canonical CBOR are needed for `legacy_identifier`. Amendment: fe-sdk's dependency rule becomes `serde, serde_json, blake3` (reason: SPEC-10 §4.5 rule 2's single-implementation requirement; `blake3` is a pure hash, not an engine internal, so it does not violate the "stable, serde-light" design intent). The 2-element canonical CBOR `[table, id]` is hand-encoded per RFC 8949 §4.2.1 — no CBOR crate dependency. A drift-guard golden test lands in fe-canonical-log comparing `legacy_identifier`'s hash against its own deterministic encoder, so the two independent encoders cannot silently diverge. W4-9's owned-files list is corrected to add `fe-sdk/Cargo.toml`, `fe-database/Cargo.toml`, `Cargo.lock`, and the new fe-canonical-log golden-test file. CDL-SPEC10's B2/C10 inherit the same premise fix — see that plan's own critic row. | premise correction + dependency-rule amendment |
 | C8 | 2026-10-14 | critic tick 5 (AC-27) | Four corrections: (i) W4-7 step 3's "loads at construction" claim is corrected — `SecretStore` has no enumeration and `OsKeystoreBackend` cannot list (`fe-identity/src/secret_store/mod.rs:19-28`), so `SecretStoreScopeKeyCustody` keeps a non-secret key-id index in SurrealDB (key ids + shred records only, never secret material) instead of relying on a `SecretStore::list`, and `SecretStore` never gains a `list` method. (ii) W4-7's and W4-9's DB-thread restart tests must drop/join the DB thread before reopening it, reusing the harness pattern at `fe-database/tests/node_view_test.rs:150-215` — `558197c` made SurrealKV one-open-per-process. (iii) W4-1's ImportGltf fixture must be a non-KTX2 GLB (the `da3e6a1` KTX2 guard refuses KTX2/basisu textures for every GLB, local or peer); §bypass-counter already records that a guard-refused import still counts as an attempt for bypass-counter purposes, so `record_bypass_for("ImportGltf")` still fires even when the import itself is refused downstream. (iv) W4-8's security-review brief (`:490-492`, "regardless of role") gains an explicit review item: role-None enrolment rows trade spam/linkability off against pre-manifest loss, and the reviewer must either set a floor or record the decision — the eventual holder is role_propagation's RP-3/RP-4 Deferred mechanism, once it lands. | four corrections (one security review item) |
 | C9 | 2026-10-14 | critic tick 5 (AC-27) | Re-grounded citation table at HEAD `8d8eaf8` (line numbers drift as commits land; re-grep before editing regardless): `crud.rs` `22,87,130,359,1609,1676` → `19,84,127,356,1604,1671`; `replicated_row.rs` bootstrap `:291-300` → `:296-305`; `lib.rs` `:155` → `:153`, `:368` → `:366`; `app.rs` `:239` → `:241`; `peer.rs` `:994` → the `:1012-1022` arm block; fe-sync `messages.rs` `:44` → `:46`; `doneness-ledger.md` `:100/:102/:106/:186/:192/:193/:264` → `:129/:131/:135/:249/:254/:255/:309`. | citation re-grounding |
+| C10 | 2026-10-14 | critic tick 6 (AC-31) | Three additions/corrections: (a) names the golden test `legacy_identifier_matches_the_canonical_log_cbor_encoder` (W4-9), table-driven over id lengths 0, 1, 23, 24, 255 and 256 — the RFC 8949 §4.2.1 CBOR text-string length-header boundaries (inline <24, 1-byte <256, 2-byte) where a hand encoder goes wrong — cross-checking `fe_sdk::legacy_identifier(t, id)` against fe-canonical-log's own deterministic CBOR encoding of `[t, id]`; buildable because fe-canonical-log already depends on fe-sdk (`fe-canonical-log/Cargo.toml:24`). (b) Corrects C8(iii): `fe-database/src/migration/AGENTS.md:62-71` does **NOT** yet record the rule that a guard-refused import (KTX2 guard) still counts as an attempt for bypass-counter purposes — C8(iii) asserted this was "already recorded"; it is not. W4-1, which owns §bypass-counter, must ADD the sentence; if W4-1 has already landed without it, the W3 correctness reviewer adds it. (c) Adds `fe-sdk/Cargo.toml` (+`blake3`), `fe-database/Cargo.toml` (if it gains the `fe-sdk` dependency), `Cargo.lock`, and NEW `fe-canonical-log/tests/legacy_identifier_golden.rs` to W4-9's Owned files (edited directly in that slice, above). | golden test naming + C8(iii) correction + owned-files gap |
 
 **Later-phase obligations (recorded here; owned by the later plan).**
 - **Role propagation RP-2** turns `role` into a materialized cache and drops `role = "owner"`
