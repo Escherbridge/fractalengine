@@ -26,6 +26,13 @@ writes atomically; `has` answers `false` for an invalid hash. The old flat
 `HexonRegistry` (only `TilesetRegistry`), so nothing was ever installed
 there. Test fixtures must use `signature::asset_hash(&bytes)`, not fake hashes.
 
+**Install refuses missing or mismatched blobs (PAS-P5 S4, D-76 (3)).**
+`HexonRegistry::install` checks every catalogued entry BEFORE storing any
+blob: an absent blob is `RegistryError::MissingAssetBlob(hash)` (it used to be
+a `warn!` and the install succeeded), a blob that does not hash to its
+`asset_hash` is `RegistryError::Package`. Pre-checking keeps a refused install
+from leaving half its blobs in the store.
+
 ## §package-open limits (REG-DECOMP, 2026-10-11)
 
 `HexonPackage::open` reads every entry through
@@ -62,3 +69,88 @@ token cannot identify a publisher. Otherwise it calls `install(package,
 `OwnershipPolicy` with the manifest's publisher DID; petal unbinding stays
 Editor-gated. The API never names `"global"` (its routes require a ULID
 `petal_id`), so unpublish is registry-level only today.
+
+## §partial-fetch (PAS-P5 S4 — D-75 C1, D-76 D2)
+
+Fetching a hexon in parts: header first, then only the chunks or members the
+caller needs, with every part checked against the one Ed25519-signed
+integrity root (fe-format/src/AGENTS.md §integrity, §partial). Plan:
+`conductor/tracks/p2p_asset_streaming_20260718/campaign-plan-p5-20261013.md` §3.3.
+
+- **Trait (`partial.rs`).** `PartialHexonFetch` (`async_trait`, dyn-safe, so one
+  strategy holds mixed transports as `SharedSource = Arc<dyn PartialHexonFetch>`):
+  `source()`, `fetch_header(uri) -> HeaderDoc`, `fetch_chunk(uri, seq)`,
+  `fetch_member(uri, path)`, plus `fetch_blob(hash)` with a default `NotFound`
+  (the hosted registry has no by-hash route; the P2P transport overrides it).
+  Transports return **unverified** bytes. Errors: `NotFound`, `OutOfRange`,
+  `Integrity(IntegrityError)`, `Substituted{requested, signed}`, `Transport`,
+  `Timeout`; `is_integrity()` is true for the two that prove a source lied.
+- **Policy (`p2p/fetch.rs::FetchStrategy`).** The ONLY place bytes are
+  checked, so no transport can skip a check:
+  - `fetch_header(uri, sources, pin)` runs `verify_fetched_header`:
+    `fe_format::verify_header` under `RequireSealed { pin }` (network paths
+    never accept unsealed hexons), then **binds** the signed manifest to the
+    requested uri (`hexon_id`, and `version` when given → `Substituted`), then
+    **re-derives the layout** from the signed `chunks/index.json` and refuses
+    a doc whose claimed layout differs (a "Monolithic" claim over a signed
+    container would otherwise make seq 0 the trust boundary). These two
+    checks close the substitution/downgrade gap in `VerifiedHeader` at the
+    strategy layer; S8 also fixes it in fe-format itself.
+  - Every follow-up fetch requests the signed `hexon_id@version`
+    (`FetchedHeader::hexon_uri`), never the caller's unversioned uri, so a
+    second source cannot answer for a newer version.
+  - `fetch_chunk`: container → blake3 must equal the signed `BundleEntry`
+    digest; a seq the signed index does not list is `OutOfRange` before any
+    source is asked. Monolithic → only seq 0 (the whole archive), verified
+    off the async thread: its `manifest.json` must be byte-identical to the
+    header's signed manifest (no same-publisher swap), then full
+    `verify_archive(RequireSealed { pin: header publisher })`.
+  - `fetch_member`: a path the signed root does not name (`committed_digest`,
+    or an `assets/` path) is `NotFound` with no network call;
+    `manifest.json` must equal the header text byte for byte (coverage
+    itself never digests the manifest); everything else goes through
+    `SealedCoverage::check_member` (the one guard set).
+  - `fetch_by_hash(hash)`: blake3 of the bytes must equal `hash` — the generic
+    asset primitive (`asset.content_hash` == `AssetEntry.asset_hash` == the
+    iroh blob hash) that device payloads and bucket pull-through will call.
+  - **Source order:** non-demoted before demoted, then peers by
+    `PeerPriority` (`Lan < LowLatency < Remote`), then registries; ties keep
+    the caller's order. An integrity failure **demotes** the source for the
+    life of the strategy (shared across clones) and the next one is tried;
+    other failures just move on. `FetchOutcome { value, served_by, attempts }`
+    names every source passed over (`demoted()` filters the integrity ones);
+    when all fail, `FetchFailure.error` is the most alarming attempt
+    (integrity > timeout > transport > out-of-range > not-found).
+  - **Semaphore:** one `max_concurrent_downloads` permit is held for the
+    whole call — every source attempt, verification and pacing sleep.
+  - **Pacing:** `max_download_rate_bytes_per_sec` (dead config until now) is
+    enforced by one shared window: after each verified transfer the caller
+    sleeps `pacing_delay(window_bytes, rate, window_elapsed)` — the pure
+    function the table test covers. A window idle for longer than its owed
+    time + 1 s restarts, so unused allowance never becomes a burst.
+  - Per-source request timeout (default 120 s, `with_request_timeout`).
+- **Legacy check retired.** `verify_fetched_manifest`/`FetchManifestResult`/
+  `FetchError` (the fe-hexon `signature.txt`-era scheme D-76 retires; zero
+  production consumers) are gone; `acquire_download_slot` now returns
+  `PartialFetchError`.
+- **HTTP transport (`remote.rs`, feature `remote`).** `impl PartialHexonFetch
+  for RemoteRegistryClient` over the registry's `/meta`, `/chunk/{seq}` and
+  `/member/{*path}` (fe-hexon-registry/AGENTS.md §routes). URLs are built
+  segment by segment (percent-encoded); a member path with an empty, `.` or
+  `..` component is refused client-side. 404 → `NotFound`; every body is read
+  under a cap (header 64 MiB, member 64 MiB, chunk 1 GiB) so a hostile
+  registry cannot exhaust memory.
+- **Conformance suite (`partial/conformance.rs`, feature `conformance`).**
+  `conformance::run(fetcher, &ConformanceFixtures::build()?) -> ConformanceReport`
+  is a public async fn any transport crate's test calls after making the
+  fixtures available (a sealed monolithic model hexon with an asset and a GPX
+  member, a sealed tileset, a sealed 3-chunk container — all sealed with the
+  deterministic `fixture_key()`). It drives `FetchStrategy`, not the raw
+  transport, so a transport passes only if production would accept its bytes:
+  header verified with publisher and layout, pin accepted and wrong pin
+  refused, every chunk byte-equal, out-of-range, probe members byte-equal,
+  unnamed member not found, unknown uri not found, plus two raw-transport
+  error-mapping cases. HTTP proof: `tests/partial_fetch_http.rs`
+  (`http_source_passes_conformance`, `strategy_falls_back_from_a_tampering_source_to_an_honest_one`);
+  P2P proof: S5's `partial_fetch_p2p.rs`. Both tests are gated on
+  `remote`+`conformance`, so they run under `--all-features` (plan §10 C10).

@@ -156,3 +156,6 @@ binary endpoints return raw bytes.
 `RemoteRegistryClient::new(base_url, token)` with `search`/`manifest`/
 `download`. Integration test `fe-hexon/tests/remote_registry_test.rs` spins
 this router on an ephemeral port — no container needed.
+It also implements `fe_hexon::partial::PartialHexonFetch` over `/meta`,
+`/chunk/{seq}` and `/member/{*path}` (fe-hexon/src/AGENTS.md §partial-fetch);
+`fe-hexon/tests/partial_fetch_http.rs` runs the conformance suite against it.

@@ -5,6 +5,7 @@ pub mod handlers;
 pub mod manifest;
 pub mod p2p;
 pub mod package;
+pub mod partial;
 pub mod publisher;
 pub mod registry;
 #[cfg(feature = "remote")]

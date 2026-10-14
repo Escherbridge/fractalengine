@@ -9,6 +9,8 @@ description = "Hexon package format tooling — registry, packaging, publishing"
 
 [features]
 remote = ["dep:reqwest"]
+# Partial-fetch conformance suite (`partial::conformance::run`) for transport crates' tests.
+conformance = []
 
 [dependencies]
 fe-runtime = { path = "../fe-runtime" }
@@ -23,6 +25,8 @@ zip = "0.6"
 blake3 = { workspace = true }
 ed25519-dalek = { workspace = true }
 tokio = { workspace = true }
+async-trait = "0.1"
+bytes = { workspace = true }
 tracing = { workspace = true }
 base64 = "0.22"
 multibase = "0.9"

@@ -201,25 +201,34 @@ impl HexonRegistry {
             }
         }
 
-        // Step 2 & 3: Copy asset blobs to blob store
+        // Step 2: every catalogued blob must be present and hash to its
+        // asset_hash before ANY is stored (D-76 (3); see src/AGENTS.md §blob-store).
         for entry in &package.entries {
-            if let Some(data) = package.assets.get(&entry.asset_hash) {
-                let stored = self.blob_store.store(&entry.asset_hash, data)?;
-                if stored {
-                    info!(
-                        "Stored new asset blob {} for entry {} in crate {}",
-                        entry.asset_hash, entry.entry_id, uri
-                    );
-                } else {
-                    info!(
-                        "Asset blob {} already exists (shared), skipping for entry {}",
-                        entry.asset_hash, entry.entry_id
-                    );
-                }
+            let Some(data) = package.assets.get(&entry.asset_hash) else {
+                return Err(RegistryError::MissingAssetBlob(entry.asset_hash.clone()));
+            };
+            if signature::asset_hash(data) != entry.asset_hash.to_ascii_lowercase() {
+                return Err(RegistryError::Package(anyhow::anyhow!(
+                    "blob hash mismatch: entry {} does not hash to {}",
+                    entry.entry_id,
+                    entry.asset_hash
+                )));
+            }
+        }
+
+        // Step 3: Copy asset blobs to blob store
+        for entry in &package.entries {
+            let data = &package.assets[&entry.asset_hash];
+            let stored = self.blob_store.store(&entry.asset_hash, data)?;
+            if stored {
+                info!(
+                    "Stored new asset blob {} for entry {} in crate {}",
+                    entry.asset_hash, entry.entry_id, uri
+                );
             } else {
-                warn!(
-                    "Missing asset blob for entry {} (hash {}) in crate {}",
-                    entry.entry_id, entry.asset_hash, uri
+                info!(
+                    "Asset blob {} already exists (shared), skipping for entry {}",
+                    entry.asset_hash, entry.entry_id
                 );
             }
         }
@@ -561,6 +570,50 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    /// A catalogued blob that is absent or does not hash to its `asset_hash`
+    /// refuses the whole install: nothing is recorded and no blob is stored.
+    #[test]
+    fn legacy_install_refuses_missing_or_mismatched_blob() {
+        enum Corruption {
+            Missing,
+            Mismatched,
+        }
+        for corruption in [Corruption::Missing, Corruption::Mismatched] {
+            let keypair = test_signing_key();
+            let mut package = test_package(&keypair);
+            let hash = package.entries[0].asset_hash.clone();
+            match corruption {
+                Corruption::Missing => {
+                    package.assets.clear();
+                }
+                Corruption::Mismatched => {
+                    package.assets.insert(
+                        hash.clone(),
+                        b"bytes that are not the catalogued model".to_vec(),
+                    );
+                }
+            }
+            let temp_dir = std::env::temp_dir().join(format!("hexon_test_{}", ulid::Ulid::new()));
+            let mut registry = HexonRegistry::new(temp_dir.clone());
+
+            let result = registry.install(package, "petal-123");
+
+            match corruption {
+                Corruption::Missing => assert!(
+                    matches!(&result, Err(RegistryError::MissingAssetBlob(h)) if *h == hash),
+                    "missing blob: {result:?}"
+                ),
+                Corruption::Mismatched => assert!(
+                    matches!(&result, Err(RegistryError::Package(_))),
+                    "mismatched blob: {result:?}"
+                ),
+            }
+            assert!(registry.list_installed(None).is_empty());
+            assert!(!FsBlobStore::new(temp_dir.clone()).has(&hash));
+            let _ = std::fs::remove_dir_all(&temp_dir);
+        }
     }
 
     #[test]

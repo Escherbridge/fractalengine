@@ -5259,9 +5259,11 @@ name = "fe-hexon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "blake3",
+ "bytes",
  "chrono",
  "crossbeam",
  "dirs 5.0.1",

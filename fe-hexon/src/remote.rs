@@ -1,7 +1,20 @@
 //! HTTP client for a hosted fe-hexon-registry — see `fe-hexon-registry/AGENTS.md` §client.
 
 use anyhow::{anyhow, Context, Result};
+use async_trait::async_trait;
+use bytes::Bytes;
+use fe_format::{limits, HeaderDoc};
+use reqwest::StatusCode;
 use serde::Deserialize;
+
+use crate::partial::{FetchSource, PartialFetchError, PartialHexonFetch};
+
+/// Response cap for `/meta`: every header member at its JSON cap, plus the manifest.
+const MAX_HEADER_RESPONSE_BYTES: u64 = 8 * limits::MAX_JSON_ENTRY_BYTES;
+/// Response cap for `/member`: one member at the binary entry cap.
+const MAX_MEMBER_RESPONSE_BYTES: u64 = limits::MAX_ENTRY_UNCOMPRESSED_BYTES;
+/// Response cap for `/chunk` (a monolithic `seq = 0` is the whole archive).
+const MAX_CHUNK_RESPONSE_BYTES: u64 = limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES;
 
 /// Mirror of the registry's `ApiResponse` envelope.
 #[derive(Debug, Deserialize)]
@@ -106,6 +119,48 @@ impl RemoteRegistryClient {
         Ok(resp.bytes().await?.to_vec())
     }
 
+    /// `{base}/api/v1/hexons/{uri}/{tail…}` with every segment percent-encoded.
+    fn hexon_url(&self, uri: &str, tail: &[&str]) -> Result<reqwest::Url, PartialFetchError> {
+        let mut url = reqwest::Url::parse(&self.base_url)
+            .map_err(|e| PartialFetchError::Transport(format!("bad registry url: {e}")))?;
+        url.path_segments_mut()
+            .map_err(|()| PartialFetchError::Transport("registry url cannot be a base".into()))?
+            .pop_if_empty()
+            .extend(["api", "v1", "hexons", uri])
+            .extend(tail);
+        Ok(url)
+    }
+
+    /// GET `url`, mapping 404 to `NotFound`, and read at most `cap` body bytes.
+    async fn get_capped(&self, url: reqwest::Url, cap: u64) -> Result<Bytes, PartialFetchError> {
+        let transport = |e: reqwest::Error| PartialFetchError::Transport(e.to_string());
+        let mut resp = self.get(url.to_string()).send().await.map_err(transport)?;
+        match resp.status() {
+            StatusCode::NOT_FOUND => return Err(PartialFetchError::NotFound),
+            status if !status.is_success() => {
+                return Err(PartialFetchError::Transport(format!(
+                    "registry answered {status}"
+                )))
+            }
+            _ => {}
+        }
+        if resp.content_length().is_some_and(|len| len > cap) {
+            return Err(PartialFetchError::Transport(format!(
+                "registry response exceeds {cap} bytes"
+            )));
+        }
+        let mut body = Vec::new();
+        while let Some(piece) = resp.chunk().await.map_err(transport)? {
+            if (body.len() + piece.len()) as u64 > cap {
+                return Err(PartialFetchError::Transport(format!(
+                    "registry response exceeds {cap} bytes"
+                )));
+            }
+            body.extend_from_slice(&piece);
+        }
+        Ok(Bytes::from(body))
+    }
+
     /// Decode an `ApiResponse` envelope, surfacing registry-side errors.
     async fn unwrap_envelope<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> Result<T> {
         let status = resp.status();
@@ -121,5 +176,56 @@ impl RemoteRegistryClient {
         }
         env.data
             .ok_or_else(|| anyhow!("registry response missing data"))
+    }
+}
+
+/// HTTP transport over the registry's partial routes (`/meta`, `/chunk/{seq}`,
+/// `/member/{*path}`); bytes are returned unverified — `FetchStrategy` checks them.
+#[async_trait]
+impl PartialHexonFetch for RemoteRegistryClient {
+    fn source(&self) -> FetchSource {
+        FetchSource::Registry {
+            base_url: self.base_url.clone(),
+        }
+    }
+
+    async fn fetch_header(&self, uri: &str) -> Result<HeaderDoc, PartialFetchError> {
+        let url = self.hexon_url(uri, &["meta"])?;
+        let body = self.get_capped(url, MAX_HEADER_RESPONSE_BYTES).await?;
+        let envelope: Envelope<HeaderDoc> = serde_json::from_slice(&body)
+            .map_err(|e| PartialFetchError::Transport(format!("invalid /meta response: {e}")))?;
+        match envelope {
+            Envelope {
+                ok: true,
+                data: Some(doc),
+                ..
+            } => Ok(doc),
+            Envelope { error, .. } => Err(PartialFetchError::Transport(format!(
+                "registry /meta error: {}",
+                error.unwrap_or_else(|| "missing data".into())
+            ))),
+        }
+    }
+
+    async fn fetch_chunk(&self, uri: &str, seq: u32) -> Result<Bytes, PartialFetchError> {
+        let seq = seq.to_string();
+        let url = self.hexon_url(uri, &["chunk", seq.as_str()])?;
+        self.get_capped(url, MAX_CHUNK_RESPONSE_BYTES).await
+    }
+
+    async fn fetch_member(&self, uri: &str, path: &str) -> Result<Bytes, PartialFetchError> {
+        let components: Vec<&str> = path.split('/').collect();
+        // No legitimate member path has an empty or dot component; refusing them
+        // here keeps URL normalization from ever rewriting the request.
+        if components
+            .iter()
+            .any(|c| c.is_empty() || *c == "." || *c == "..")
+        {
+            return Err(PartialFetchError::NotFound);
+        }
+        let mut tail = vec!["member"];
+        tail.extend(components);
+        let url = self.hexon_url(uri, &tail)?;
+        self.get_capped(url, MAX_MEMBER_RESPONSE_BYTES).await
     }
 }
