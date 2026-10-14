@@ -380,6 +380,7 @@ async fn a_sealed_seed_downloads_installs_sealed_and_streams_checked_bundles() {
         let streamed = fe_terrain::tiles::StreamedTileSource::from_meta_json(
             id.to_string(),
             std::str::from_utf8(&child0).unwrap(),
+            None,
         )
         .expect("a sealed child 0 becomes a streamed source");
         let first = std::fs::read(&done.bundle_paths[0]).unwrap();

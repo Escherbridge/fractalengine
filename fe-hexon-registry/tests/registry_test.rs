@@ -599,6 +599,59 @@ async fn a_hostile_member_name_cannot_shape_the_content_disposition_header() {
     );
 }
 
+/// W2b F6: `/entries/{id}/asset` and `/download` get the same
+/// nosniff+attachment protection `/chunk` and `/member` already carried (S3
+/// deferral, never picked up by S8's header pass) — extends the existing
+/// `an_html_member_is_served_as_an_octet_stream_attachment_with_nosniff` test
+/// to these two routes.
+#[tokio::test]
+async fn asset_and_download_routes_carry_nosniff_and_attachment_headers() {
+    let tmp = tempfile::tempdir().unwrap();
+    fixtures::write_fixture_set(tmp.path());
+    let router = router_for(tmp.path(), None, false);
+
+    let assert_protected = |resp: &axum::http::Response<axum::body::Body>| {
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get("x-content-type-options").unwrap(),
+            "nosniff"
+        );
+        let disposition = resp
+            .headers()
+            .get(header::CONTENT_DISPOSITION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(disposition.starts_with("attachment"), "{disposition}");
+    };
+
+    let asset_resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/hexons/alpine-terrain/entries/tileset_a/asset")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_protected(&asset_resp);
+    let body = asset_resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.as_ref(), fixtures::ALPINE_V1_BLOB);
+
+    let download_resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/hexons/alpine-terrain/download")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_protected(&download_resp);
+}
+
 /// S8: publish's duplicate/continuity check and its write are one critical
 /// section — of N different publishers racing to publish the same new
 /// `hexon_id`, exactly one wins and every other gets 409, and the stored

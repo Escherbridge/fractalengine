@@ -588,6 +588,9 @@ fn main() {
     // gate learns from a verified header. See src/AGENTS.md §tileset-p2p.
     app.init_resource::<terrain_bridge::KnownTilesetPublishers>();
     app.init_resource::<terrain_bridge::InstallMetaVerdicts>();
+    // W2b F1: the streamed (not-installed) path's own off-thread meta
+    // verification verdicts (mirrors InstallMetaVerdicts above).
+    app.init_resource::<terrain_bridge::StreamedMetaVerdicts>();
     app.init_resource::<fe_runtime::diag15m::ResidencyStats>();
     {
         let (streamed_tx, streamed_rx) = terrain_bridge::streamed_bundle_channel();

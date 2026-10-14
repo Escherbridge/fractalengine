@@ -154,6 +154,26 @@ integrity root (fe-format/src/AGENTS.md §integrity, §partial). Plan:
   (`http_source_passes_conformance`, `strategy_falls_back_from_a_tampering_source_to_an_honest_one`);
   P2P proof: S5's `partial_fetch_p2p.rs`. Both tests are gated on
   `remote`+`conformance`, so they run under `--all-features` (plan §10 C10).
+- **AC-23(d) (critic tick 5, 2026-10-14):** the P2P partial-fetch adapter
+  (`P2pPartialFetch`/`HexonLocator`/`publish_to_transport`, `partial/p2p.rs`)
+  has **no production consumer yet** — production P2P downloads are served by
+  `fe_sync::TilesetTransfer`, not `FetchStrategy` over this adapter (see
+  AC-23 in `.omc/accountability/tick-20261014-0722.md` for the staged-state
+  disposition and `PAS-P5-P2P-POLICY` ledger row). The two paths still carry
+  the SAME HashSeq root for one seeded tileset:
+  `fe-hexon/tests/partial_fetch_p2p.rs::a_sealed_container_is_reseeded_from_its_signed_chunks_without_rebundling`
+  asserts `root == direct.root` between `fe_terrain::tiles::bundle_for_seeding`
+  → `fe_sync::TilesetTransfer::publish_files` and this adapter's own
+  `publish_to_transport`, so production seeders pass this suite too, even
+  though nothing in production calls `fetch_header`/`fetch_chunk` through it
+  for a tileset download. `verify_fetched_header` itself (the ONE header
+  check, `p2p/fetch.rs`) IS a production consumer independent of this
+  adapter — `fe-terrain`'s streamed (not-installed) tile path calls it
+  directly from `StreamedTileSource::from_header_doc` (W2b F1; this crate
+  already dev-depended on `fe-terrain` for its own P2P flow tests, and
+  `fe-terrain` now also depends on THIS crate normally — a supported cargo
+  dev-dependency cycle, not a build cycle — see `fe-terrain/src/AGENTS.md`
+  §streamed-tilesets).
 
 ## §partial-fetch-p2p (PAS-P5 S5 — `partial/p2p.rs`)
 

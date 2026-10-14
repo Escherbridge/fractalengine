@@ -22,6 +22,15 @@ carry identical `FE_BLOB_DIR`/`data/blobs` logic — covered by
 `default_path_agrees_between_fe_sync_and_fe_hexon` so the two never
 re-diverge.
 
+**Relay co-location (W2b F5, 2026-10-14):** unlike the GUI binary's hardcoded
+`DB_PATH`, the relay's DB path is operator-configurable (`FE_DB_PATH`), so
+`FE_DB_PATH` diverging from `data/` without `FE_BLOB_DIR` set would silently
+un-co-locate the blob store. `fractalengine-relay/src/main.rs::main` now
+derives `FE_BLOB_DIR` from `FE_DB_PATH`'s parent (`derive_blob_dir_from_db_path`,
+a pure fn, table-tested) and `set_var`s it before any thread starts or any
+`default_path()` call — both the fe-sync one above and the fe-hexon duplicate
+read `FE_BLOB_DIR` once, so this must win the race, never follow it.
+
 ## §blob-store-directory-initialization
 
 `FsBlobStore` evaluates `create_dir_all` by its required postcondition: an error

@@ -569,6 +569,22 @@ fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
   that completed but was never installed (a restart in between) is handed
   back at start-up as `TilesetDownloadComplete` (fe-sync `AGENTS.md`
   §tileset-transfer), so it still installs.
+- **Local file install (W2b F2, 2026-10-14).** `HexonOp::Install(path)` (the
+  Hexon Manager's "Install local .hexon file" picker) used to `std::fs::read`
+  + `TilesetRegistry::install` directly inside `drain_hexon_ops` — on the
+  Bevy main thread, the one S4 invariant every OTHER install path already
+  respected. It now mirrors `AssembleDownload`: `drain_hexon_ops` spawns a
+  background thread that does the read + install and reports
+  `HexonAssembleOutcome::Installed { tileset_id }` /
+  `Failed { tileset_id, reason }` over the SAME `HexonAssembleResultSender`
+  channel; `drain_hexon_assemble_results` refreshes the dialog once the real
+  outcome lands (never inside `drain_hexon_ops`, where nothing has happened
+  yet for this op). Sharing `Installed`/`Failed` with `AssembleDownload` means
+  `drain_hexon_assemble_results`'s `CancelTilesetDownload` send is now gated
+  on the id actually being a TRACKED download (`TilesetDownloads` contains
+  it) — a local install, which started no P2P download, sends no spurious
+  cancel for an id the sync thread never heard of. Test:
+  `a_local_hexon_install_runs_off_the_main_thread_and_reports_its_outcome`.
 - **Install from registry (PAS-P5 S7b, A9).** `HexonOp::InstallFromRegistry { uri }`
   (queued by the Hexon Manager's "Install from registry" field, enabled only
   when `AppSettings.hexon_registry_url`/`FE_HEXON_REGISTRY_URL` resolves to
@@ -599,6 +615,17 @@ fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
   With `pin: None` here, a malicious registry still cannot replace an
   installed sealed tileset of another publisher: the store refuses it
   (fe-terrain `src/AGENTS.md` §chunked-containers "publisher continuity").
+  **Bearer token (W2b F4, 2026-10-14):** `RemoteRegistryClient::new` took a
+  hardcoded `None` token, so S7b could never reach a registry that set its
+  own `FE_REGISTRY_TOKEN` (`fe-hexon-registry/AGENTS.md` §client gates ALL
+  `/api/v1` reads on it). `drain_hexon_ops` now resolves the **env-only**
+  `FE_HEXON_REGISTRY_TOKEN` var at this one seam
+  (`resolve_hexon_registry_token`, a pure fn — table-tested without
+  mutating the process environment) and threads it through
+  `install_from_registry` into the client; there is deliberately no
+  `AppSettings` field for it (RUNBOOK §5: secrets never in files) and it is
+  never logged. Test (through the pure fetch core, against a token-gated
+  in-process registry): `install_from_registry_requires_the_configured_bearer_token`.
 - **Seeding → publish.** `terrain_bridge::spawn_bundle_and_publish(registry,
   sync_tx, tileset_id)` is the GUI's thread+channel wrapper around the ONE
   shared bundling implementation, `fe_terrain::tiles::bundle_for_seeding`
@@ -644,13 +671,27 @@ fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
     for any uri the active composite is waiting on once some peer has
     advertised it (an empty `peer_id` lets the sync thread's own provider map
     resolve an address — this binary never needs one), parses a successful
-    `TilesetMetaReceived.meta_json` as a `TilesetBundleIndex` and installs a
-    `StreamedTileSource` via `composite.add_streamed_source`. A meta
-    reply it handles must answer ITS OWN request (`state.meta_requested`) —
-    the install flow's meta replies share the feed — and a uri the active
-    composite still has pending (a stale reply after a petal switch is
-    dropped). A failed meta resolution backs off (`state.meta_backoff`, same
-    2 s→120 s curve) and is retried, never parked forever. It hands each
+    `TilesetMetaReceived.meta_json` and installs a `StreamedTileSource` via
+    `composite.add_streamed_source`. A meta reply it handles must answer ITS
+    OWN request (`state.meta_requested`) — the install flow's meta replies
+    share the feed — and a uri the active composite still has pending (a
+    stale reply after a petal switch is dropped). **W2b F1 (2026-10-14):**
+    parsing + verification (`StreamedTileSource::from_meta_json`, which for a
+    sealed `HeaderDoc` runs the same `verify_fetched_header` the install-flow
+    arm uses) moves to a worker thread — resolved pin precedence (installed
+    publisher, then TOFU `KnownTilesetPublishers`, same as the install flow)
+    threads through so a header signed by another publisher, or a legacy
+    unsealed reply once a pin is known, is refused. The system returns
+    before the verdict; `StreamedMetaVerdicts` (mirrors `InstallMetaVerdicts`)
+    carries the outcome back, applied by `drive_streamed_tilesets` itself at
+    the top of its next invocation — re-checking "still pending" at apply
+    time, since the petal may have changed while verification ran off-thread.
+    Tests: `a_streamed_header_signed_by_a_publisher_other_than_the_known_pin_is_refused`,
+    `an_unsealed_streamed_meta_is_refused_once_a_sealed_publisher_is_known`
+    (both assert the system returns before the verdict AND that an impostor/
+    unsealed reply never resolves, even once the worker thread finishes). A
+    failed meta resolution backs off (`state.meta_backoff`, same 2 s→120 s
+    curve) and is retried, never parked forever. It hands each
     `ChunkReceived` THIS NODE requested (`state.chunk_requested`) to a
     background thread (a size-capped read + `HexonTileSource::from_streamed_bundle`
     under the 64 MiB streamed decode budget — S8b, peer bytes — never the

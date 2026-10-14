@@ -12,6 +12,7 @@
 //!   <hexon_id>.meta.json   — serialized TilesetMeta
 //! ```
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -112,6 +113,14 @@ struct RegistryData {
 /// Local persistent store for `.hexon` terrain tilesets.
 pub struct HexonStore {
     base_dir: PathBuf,
+    /// W2b F3: held across `install_tileset`'s continuity check → write →
+    /// `sync_all` → both renames, so two concurrent installs of the SAME
+    /// `hexon_id` are fully serialized — the second one's continuity check
+    /// always sees the first's completed result, never a half-written file
+    /// or a stale "nothing installed yet" read. Mirrors the registry's own
+    /// `publish_lock` (`fe-hexon-registry/src/routes.rs`). See
+    /// `src/AGENTS.md` §chunked-containers "atomic install".
+    install_lock: std::sync::Mutex<()>,
 }
 
 impl HexonStore {
@@ -144,7 +153,10 @@ impl HexonStore {
     pub fn with_dir(dir: PathBuf) -> Result<Self> {
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("failed to create store directory: {}", dir.display()))?;
-        Ok(Self { base_dir: dir })
+        Ok(Self {
+            base_dir: dir,
+            install_lock: std::sync::Mutex::new(()),
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -170,6 +182,11 @@ impl HexonStore {
     /// Refuses ([`PUBLISHER_CONTINUITY_ERROR`]) to replace an installed sealed
     /// tileset with another publisher's archive or an unsealed one — every
     /// install path (P2P, registry, local) passes this one pin.
+    ///
+    /// W2b F3: `install_lock` is held from the continuity check below
+    /// through both renames and the registry update, so two installs of the
+    /// SAME `hexon_id` racing on different threads (local, P2P, registry)
+    /// are fully serialized, never interleaved.
     pub fn install_tileset(&self, bytes: &[u8]) -> Result<InstalledTileset> {
         // Import and validate
         let data = HexonArchive::import(bytes).context("failed to import hexon archive")?;
@@ -185,6 +202,11 @@ impl HexonStore {
         if !is_safe_hexon_id(&hexon_id) {
             bail!("{UNSAFE_HEXON_ID_ERROR}: {hexon_id:?}");
         }
+
+        let _install_guard = self
+            .install_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         if let Some(installed) = self.installed_publisher(&hexon_id) {
             let incoming = match &data.integrity {
@@ -204,10 +226,14 @@ impl HexonStore {
             .context("archive is missing tileset_meta (TerrainTileset must include it)")?;
         let verified = matches!(data.integrity, IntegrityStatus::Sealed { .. });
 
-        // Persist raw bytes atomically: write to a temp file in the same
-        // directory (same filesystem, so the rename is atomic) then rename
-        // over any existing `{hexon_id}.hexon`. A lazy reader's open `File`
-        // handle (`fe_format::HexonArchiveIndex`'s internal `LazyFile`) keeps
+        // Persist raw bytes atomically: write + fsync a temp file in the
+        // same directory (same filesystem, so the rename is atomic) then
+        // rename over any existing `{hexon_id}.hexon`. The `sync_all` (W2b
+        // F3) makes the bytes durable BEFORE the rename makes them visible
+        // under the final name — a crash between write and rename leaves
+        // only an orphaned temp file, never a final-named file with
+        // unflushed content. A lazy reader's open `File` handle
+        // (`fe_format::HexonArchiveIndex`'s internal `LazyFile`) keeps
         // reading the pre-rename bytes even on Windows (the stdlib opens
         // files with FILE_SHARE_DELETE); its own `is_stale()` check then
         // reports `ArchiveChanged` on its NEXT read, same as a non-atomic
@@ -215,37 +241,26 @@ impl HexonStore {
         // stops racing a concurrent reader (critic AC-21b/c).
         let hexon_path = self.hexon_path(&hexon_id);
         let tmp_hexon_path = self.temp_path(&hexon_id, "hexon");
-        std::fs::write(&tmp_hexon_path, bytes).with_context(|| {
-            format!(
-                "failed to write temp hexon file: {}",
-                tmp_hexon_path.display()
-            )
-        })?;
-        std::fs::rename(&tmp_hexon_path, &hexon_path).with_context(|| {
-            format!(
-                "failed to install hexon file atomically: {}",
-                hexon_path.display()
-            )
-        })?;
+        write_synced_and_rename(&tmp_hexon_path, &hexon_path, bytes)?;
 
-        // Persist extracted meta (same atomic pattern; no lazy reader holds
-        // this file open today, but there is no reason to special-case it).
+        // Persist extracted meta (same atomic + synced pattern; no lazy
+        // reader holds this file open today, but there is no reason to
+        // special-case it).
         let meta_json = serde_json::to_string_pretty(&tileset_meta)
             .context("failed to serialize TilesetMeta")?;
         let meta_path = self.meta_path(&hexon_id);
         let tmp_meta_path = self.temp_path(&hexon_id, "meta.json");
-        std::fs::write(&tmp_meta_path, &meta_json).with_context(|| {
-            format!(
-                "failed to write temp meta file: {}",
-                tmp_meta_path.display()
-            )
-        })?;
-        std::fs::rename(&tmp_meta_path, &meta_path).with_context(|| {
-            format!(
-                "failed to install meta file atomically: {}",
-                meta_path.display()
-            )
-        })?;
+        write_synced_and_rename(&tmp_meta_path, &meta_path, meta_json.as_bytes())?;
+
+        // W2b F3: fsync the store directory itself so the renames' directory-
+        // entry updates are durable too, not just each file's own fsync
+        // (POSIX requires this separately; Windows has no equivalent — NTFS's
+        // own metadata journal already covers it, and opening a directory as
+        // a `File` is unsupported there anyway). No dedicated test covers
+        // this call: a missing directory fsync has no externally observable
+        // effect short of an actual power-loss event, which nothing in this
+        // test suite can simulate.
+        self.fsync_dir();
 
         let size_bytes = std::fs::metadata(&hexon_path)
             .map(|m| m.len())
@@ -438,6 +453,45 @@ impl HexonStore {
             .with_context(|| format!("failed to rename registry tmp: {}", tmp_path.display()))?;
         Ok(())
     }
+
+    /// W2b F3: fsync the store directory so a rename's directory-entry
+    /// update is durable, not just the renamed file's own content (POSIX
+    /// requires this separately from a file's `sync_all`). A no-op on
+    /// Windows, where opening a directory as a `File` for this purpose is
+    /// unsupported and NTFS's own metadata journal makes it unnecessary.
+    #[cfg(unix)]
+    fn fsync_dir(&self) {
+        if let Ok(dir) = std::fs::File::open(&self.base_dir) {
+            let _ = dir.sync_all();
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn fsync_dir(&self) {}
+}
+
+/// Write `bytes` to `tmp_path`, fsync the file (W2b F3 — durable on disk
+/// BEFORE the rename makes it visible under `final_path`), then rename over
+/// any existing file at `final_path` (same directory as its temp path, so
+/// the rename itself is atomic on both POSIX and Windows).
+fn write_synced_and_rename(tmp_path: &Path, final_path: &Path, bytes: &[u8]) -> Result<()> {
+    {
+        let mut file = std::fs::File::create(tmp_path)
+            .with_context(|| format!("failed to create temp file: {}", tmp_path.display()))?;
+        file.write_all(bytes)
+            .with_context(|| format!("failed to write temp file: {}", tmp_path.display()))?;
+        file.sync_all()
+            .with_context(|| format!("failed to fsync temp file: {}", tmp_path.display()))?;
+        // `file` closes here, before the rename — required on Windows,
+        // where an open handle can block a rename over the destination.
+    }
+    std::fs::rename(tmp_path, final_path).with_context(|| {
+        format!(
+            "failed to install file atomically: {}",
+            final_path.display()
+        )
+    })?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

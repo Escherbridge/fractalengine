@@ -284,16 +284,43 @@ pub fn drain_hexon_ops(
     let mut refresh = false;
     for op in ops.0.drain(..) {
         match op {
-            HexonOp::Install(path) => match std::fs::read(&path) {
-                Ok(bytes) => match reg.install(&bytes) {
-                    Ok(installed) => {
-                        tracing::info!(hexon_id = %installed.hexon_id, "Installed hexon tileset");
-                        refresh = true;
+            // W2b F2: a local `.hexon` file's read + `TilesetRegistry::install`
+            // (parse, verify, atomic write, index) moves to a worker thread,
+            // mirroring `HexonOp::AssembleDownload` below — neither disk I/O
+            // nor archive/signature verification ever runs on the Bevy main
+            // thread (S4 invariant). The dialog refreshes once the real
+            // outcome lands, via `drain_hexon_assemble_results` — not here,
+            // where nothing has happened yet.
+            HexonOp::Install(path) => {
+                let Some(tx) = assemble_tx.as_ref().map(|t| t.0.clone()) else {
+                    tracing::warn!(
+                        path = %path.display(),
+                        "Hexon install dropped — no result channel registered"
+                    );
+                    continue;
+                };
+                let reg_for_task = registry.0.clone();
+                std::thread::spawn(move || {
+                    let outcome = std::fs::read(&path)
+                        .map_err(|e| format!("could not read hexon file {}: {e}", path.display()))
+                        .and_then(|bytes| reg_for_task.install(&bytes).map_err(|e| e.to_string()));
+                    let result = match outcome {
+                        Ok(installed) => HexonAssembleOutcome::Installed {
+                            tileset_id: installed.hexon_id,
+                        },
+                        Err(reason) => HexonAssembleOutcome::Failed {
+                            // The hexon_id isn't known until a successful
+                            // parse — the local file path is still useful
+                            // context for the warn log it reaches.
+                            tileset_id: path.display().to_string(),
+                            reason,
+                        },
+                    };
+                    if tx.send(result).is_err() {
+                        tracing::warn!("Hexon install result channel closed");
                     }
-                    Err(e) => tracing::warn!("Hexon install failed for {}: {e}", path.display()),
-                },
-                Err(e) => tracing::warn!("Could not read hexon file {}: {e}", path.display()),
-            },
+                });
+            }
             HexonOp::Remove(id) => {
                 match reg.remove(&id) {
                     Ok(()) => tracing::info!(hexon_id = %id, "Removed hexon tileset"),
@@ -408,9 +435,15 @@ pub fn drain_hexon_ops(
                         status: DownloadStatus::Queued,
                     },
                 );
+                // W2b F4: resolved once, here at the `drain_hexon_ops` seam
+                // — never inside `install_from_registry`/the pure fetch
+                // core, and never logged (RUNBOOK §5).
+                let token = resolve_hexon_registry_token(
+                    std::env::var(HEXON_REGISTRY_TOKEN_ENV_VAR).ok().as_deref(),
+                );
                 let reg_for_task = registry.0.clone();
                 std::thread::spawn(move || {
-                    install_from_registry(&reg_for_task, &registry_url, &uri, &tx);
+                    install_from_registry(&reg_for_task, &registry_url, &uri, token, &tx);
                 });
             }
         }
@@ -444,6 +477,23 @@ fn assemble_and_install(
     Ok(())
 }
 
+/// Env var for an optional bearer token on registry reads — **env-only**:
+/// there is deliberately no `AppSettings` field, so the token is never
+/// persisted to `settings.ron` (RUNBOOK §5: secrets never in files) and
+/// never appears in a log line. Resolved once, at the `drain_hexon_ops`
+/// seam, by [`resolve_hexon_registry_token`].
+pub const HEXON_REGISTRY_TOKEN_ENV_VAR: &str = "FE_HEXON_REGISTRY_TOKEN";
+
+/// A blank env value means "no token" — same shape as
+/// `fe_ui::settings::resolve_hexon_registry_url`'s env half, and, like it, a
+/// pure function so a table test exercises every case without mutating the
+/// process's actual environment (which races across parallel test threads).
+pub fn resolve_hexon_registry_token(env: Option<&str>) -> Option<String> {
+    env.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 /// Fetch `uri` from `registry_url` and install it (PAS-P5 S7b): header first
 /// (`RequireSealed`, no pin — the operator-chosen registry is the trust
 /// anchor here, matching `/download`'s existing trust model), then every
@@ -456,11 +506,16 @@ fn assemble_and_install(
 /// main thread (S4 invariant); the caller (`drain_hexon_ops`) is what
 /// spawns the OS thread this runs on.
 ///
+/// `token`: W2b F4, resolved by the caller via
+/// [`resolve_hexon_registry_token`] — never read from the environment in
+/// here, so this function stays plain-token-in, no hidden env access.
+///
 /// [store]: fe_terrain::tiles::HexonStore::install_tileset
 fn install_from_registry(
     registry: &TilesetRegistry,
     registry_url: &str,
     uri: &str,
+    token: Option<String>,
     tx: &crossbeam::channel::Sender<HexonAssembleOutcome>,
 ) {
     let rt = match tokio::runtime::Builder::new_current_thread()
@@ -483,7 +538,7 @@ fn install_from_registry(
     };
 
     let client: std::sync::Arc<dyn fe_hexon::partial::PartialHexonFetch> = std::sync::Arc::new(
-        fe_hexon::remote::RemoteRegistryClient::new(registry_url.to_string(), None),
+        fe_hexon::remote::RemoteRegistryClient::new(registry_url.to_string(), token),
     );
     let strategy = fe_hexon::partial::FetchStrategy::new(fe_hexon::p2p::P2pConfig::from_env());
     let tx_progress = tx.clone();
@@ -615,16 +670,26 @@ pub fn drain_hexon_assemble_results(
     while let Ok(outcome) = results.0.try_recv() {
         match outcome {
             HexonAssembleOutcome::Installed { tileset_id } => {
-                tracing::info!(tileset_id, "P2P tileset assembled and installed");
+                tracing::info!(tileset_id, "Hexon tileset installed (P2P or local)");
                 refreshed = true;
-                if let Some(dl) = downloads.as_mut().and_then(|d| d.0.get_mut(&tileset_id)) {
-                    dl.status = DownloadStatus::Complete;
-                }
-                if let Some(sender) = sync_sender.as_ref() {
-                    if let Err(e) = sender.0.send(fe_sync::SyncCommand::CancelTilesetDownload {
-                        tileset_id: tileset_id.clone(),
-                    }) {
-                        tracing::warn!(tileset_id, "download cleanup not sent: {e}");
+                // W2b F2: `HexonOp::Install` (a local file, no P2P download
+                // behind it) shares this variant with `AssembleDownload`
+                // (which always has one), so only a TRACKED download's
+                // cache is settled/cancelled — a local install sends no
+                // spurious `CancelTilesetDownload` for an id the sync
+                // thread never started a download for.
+                let was_tracked = downloads
+                    .as_mut()
+                    .and_then(|d| d.0.get_mut(&tileset_id))
+                    .map(|dl| dl.status = DownloadStatus::Complete)
+                    .is_some();
+                if was_tracked {
+                    if let Some(sender) = sync_sender.as_ref() {
+                        if let Err(e) = sender.0.send(fe_sync::SyncCommand::CancelTilesetDownload {
+                            tileset_id: tileset_id.clone(),
+                        }) {
+                            tracing::warn!(tileset_id, "download cleanup not sent: {e}");
+                        }
                     }
                 }
             }
@@ -795,6 +860,33 @@ pub struct InstallMetaVerdicts {
 }
 
 impl Default for InstallMetaVerdicts {
+    fn default() -> Self {
+        let (tx, rx) = crossbeam::channel::unbounded();
+        Self { tx, rx }
+    }
+}
+
+/// W2b F1: the streamed (not-installed) path's own meta-verification verdict,
+/// computed off the main thread by `drive_streamed_tilesets` — a
+/// `StreamedTileSource` ready to add to the composite, or a refusal reason.
+/// Mirrors [`InstallMetaVerdict`]/[`InstallMetaVerdicts`] but carries the
+/// built source itself (the streamed path has no `ConfirmTilesetDownload` to
+/// send — it just resolves or backs off). See `src/AGENTS.md` §tileset-p2p.
+struct StreamedMetaVerdict {
+    tileset_id: String,
+    outcome: Result<StreamedTileSource, String>,
+}
+
+/// Streamed-path meta verdicts from worker threads, applied by
+/// `drive_streamed_tilesets` (adds the source, if the petal still wants it —
+/// or backs off, same as a failed resolution always did).
+#[derive(Resource)]
+pub struct StreamedMetaVerdicts {
+    tx: crossbeam::channel::Sender<StreamedMetaVerdict>,
+    rx: crossbeam::channel::Receiver<StreamedMetaVerdict>,
+}
+
+impl Default for StreamedMetaVerdicts {
     fn default() -> Self {
         let (tx, rx) = crossbeam::channel::unbounded();
         Self { tx, rx }
@@ -1024,6 +1116,7 @@ pub fn drive_streamed_tilesets(
     tileset_registry: Option<Res<SharedTilesetRegistry>>,
     mut downloads: Option<ResMut<TilesetDownloads>>,
     verdicts: Option<Res<InstallMetaVerdicts>>,
+    streamed_verdicts: Option<Res<StreamedMetaVerdicts>>,
 ) {
     if let Some(verdicts) = verdicts.as_ref() {
         while let Ok(verdict) = verdicts.rx.try_recv() {
@@ -1033,6 +1126,39 @@ pub fn drive_streamed_tilesets(
                 &verdict.tileset_id,
                 verdict.outcome,
             );
+        }
+    }
+    // W2b F1: apply streamed-path meta verdicts a worker thread finished
+    // verifying since last frame — never on the main thread (see the
+    // `TilesetMetaReceived` arm below, which only ever SPAWNS the check).
+    if let Some(streamed_verdicts) = streamed_verdicts.as_ref() {
+        while let Ok(verdict) = streamed_verdicts.rx.try_recv() {
+            match verdict.outcome {
+                Ok(source) => {
+                    state.meta_backoff.remove(&verdict.tileset_id);
+                    // Re-check "still wanted" at apply time: the petal may
+                    // have changed while verification ran off-thread.
+                    if let Some(composite) = tile_source.composite.as_mut() {
+                        if composite
+                            .pending_streamed_uris()
+                            .any(|id| id == verdict.tileset_id)
+                        {
+                            composite.add_streamed_source(source);
+                        }
+                    }
+                }
+                Err(err) => {
+                    let (failures, delay) =
+                        note_failure(&mut state.meta_backoff, verdict.tileset_id.clone());
+                    tracing::warn!(
+                        tileset_id = verdict.tileset_id,
+                        error = %err,
+                        failures,
+                        retry_in = ?delay,
+                        "streamed tileset header verification refused"
+                    );
+                }
+            }
         }
     }
     if !events.events.is_empty() {
@@ -1141,30 +1267,52 @@ pub fn drive_streamed_tilesets(
                         );
                         continue;
                     }
-                    let Some(composite) = tile_source.composite.as_mut() else {
+                    let Some(composite) = tile_source.composite.as_ref() else {
                         continue;
                     };
                     // A stale reply (the petal no longer wants this uri) is dropped.
                     if !composite.pending_streamed_uris().any(|id| id == tileset_id) {
                         continue;
                     }
-                    match StreamedTileSource::from_meta_json(tileset_id.clone(), &meta_json) {
-                        Ok(source) => {
-                            state.meta_backoff.remove(&tileset_id);
-                            composite.add_streamed_source(source);
+                    // W2b F1: the same shape as the install-flow arm above —
+                    // parsing (header or legacy index) and, for a sealed
+                    // header, its signature verification both move to a
+                    // worker thread; this system returns before the
+                    // verdict, which `drive_streamed_tilesets` applies on a
+                    // later frame via `StreamedMetaVerdicts`.
+                    let Some(verdict_tx) = streamed_verdicts.as_ref().map(|v| v.tx.clone()) else {
+                        tracing::warn!(
+                            tileset_id,
+                            "streamed meta verification dropped — no verdict channel registered"
+                        );
+                        continue;
+                    };
+                    // Pin precedence (S8, mirrors the install-flow arm
+                    // above): installed, then TOFU. A streamed source is
+                    // never itself the TOFU source of truth for this
+                    // tileset_id — only an install-flow verdict records one.
+                    let pin = tileset_registry
+                        .as_ref()
+                        .and_then(|r| r.0.store().installed_publisher(&tileset_id))
+                        .or_else(|| known_publishers.0.get(&tileset_id).cloned());
+                    let tileset_id_for_thread = tileset_id.clone();
+                    std::thread::spawn(move || {
+                        let outcome = StreamedTileSource::from_meta_json(
+                            tileset_id_for_thread.clone(),
+                            &meta_json,
+                            pin.as_deref(),
+                        )
+                        .map_err(|e| e.to_string());
+                        if verdict_tx
+                            .send(StreamedMetaVerdict {
+                                tileset_id: tileset_id_for_thread,
+                                outcome,
+                            })
+                            .is_err()
+                        {
+                            tracing::warn!("streamed meta verdict channel closed");
                         }
-                        Err(err) => {
-                            let (failures, delay) =
-                                note_failure(&mut state.meta_backoff, tileset_id.clone());
-                            tracing::warn!(
-                                tileset_id,
-                                error = %err,
-                                failures,
-                                retry_in = ?delay,
-                                "failed to parse streamed bundle index"
-                            );
-                        }
-                    }
+                    });
                 }
                 fe_sync::SyncEvent::ChunkReceived {
                     tileset_id,
@@ -1748,7 +1896,7 @@ mod tests {
     /// runtime — exactly like `install_from_registry`'s production
     /// background thread — so the SYNC tests below can block on the result
     /// channel without needing (or risking deadlocking) an async test runtime.
-    fn spawn_test_registry(dir: &std::path::Path) -> std::net::SocketAddr {
+    fn spawn_test_registry(dir: &std::path::Path, token: Option<String>) -> std::net::SocketAddr {
         let dir = dir.to_path_buf();
         let (addr_tx, addr_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -1759,7 +1907,7 @@ mod tests {
             rt.block_on(async move {
                 let state = std::sync::Arc::new(fe_hexon_registry::RegistryState::new(
                     dir.clone(),
-                    None,
+                    token,
                     false,
                     fe_hexon_registry::scan_dir(&dir),
                 ));
@@ -1837,6 +1985,87 @@ mod tests {
         app
     }
 
+    /// W2b F2: `HexonOp::Install` (a local `.hexon` file picked via a file
+    /// dialog) moves its read + `TilesetRegistry::install` to a worker
+    /// thread, exactly like `HexonOp::AssembleDownload` already did — a
+    /// sealed archive reports `Installed` and is actually installed (a real
+    /// tile reads back through the registry); a tampered one reports
+    /// `Failed` and installs nothing.
+    #[test]
+    fn a_local_hexon_install_runs_off_the_main_thread_and_reports_its_outcome() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[95u8; 32]);
+        let hexon_id = "w2b-f2-local-install";
+        let tile_bytes = vec![0x11u8, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        let unsealed = fe_format::HexonArchive::export_tileset(
+            synthetic_tileset_manifest(hexon_id),
+            synthetic_tileset(hexon_id).tileset_meta.as_ref().unwrap(),
+            &[("10/0/0".to_string(), tile_bytes.clone())],
+            &[],
+            None,
+        )
+        .expect("export unsealed archive");
+        let sealed = fe_format::seal(&unsealed, &key).expect("seal archive");
+
+        let mut tampered = sealed.clone();
+        let pos = tampered
+            .windows(tile_bytes.len())
+            .position(|w| w == tile_bytes.as_slice())
+            .expect("tile bytes must appear verbatim in a Stored zip entry");
+        tampered[pos] ^= 0xFF;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sealed_path = tmp.path().join("sealed.hexon");
+        let tampered_path = tmp.path().join("tampered.hexon");
+        std::fs::write(&sealed_path, &sealed).expect("write sealed fixture");
+        std::fs::write(&tampered_path, &tampered).expect("write tampered fixture");
+
+        let (_store_tmp, tileset_registry) = fresh_tileset_registry();
+        let tileset_registry = std::sync::Arc::new(tileset_registry);
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let mut app = app_for_install_from_registry(tileset_registry.clone(), String::new(), tx);
+        let recv = |rx: &crossbeam::channel::Receiver<HexonAssembleOutcome>| {
+            rx.recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the worker thread must report an outcome")
+        };
+
+        // Tampered: refused off the main thread, nothing installed.
+        app.world_mut()
+            .resource_mut::<PendingHexonOps>()
+            .0
+            .push(HexonOp::Install(tampered_path));
+        app.update(); // drains the op, spawning the background install thread
+        match recv(&rx) {
+            HexonAssembleOutcome::Failed { reason, .. } => {
+                assert!(!reason.is_empty(), "{reason}");
+            }
+            other => panic!("expected Failed for a tampered local install, got {other:?}"),
+        }
+        assert!(
+            tileset_registry.store().list_installed().is_empty(),
+            "a tampered install must leave the store untouched"
+        );
+
+        // Sealed: installed for real, through the SAME registry drain_hexon_ops
+        // reads from in production.
+        app.world_mut()
+            .resource_mut::<PendingHexonOps>()
+            .0
+            .push(HexonOp::Install(sealed_path));
+        app.update();
+        match recv(&rx) {
+            HexonAssembleOutcome::Installed { tileset_id } => {
+                assert_eq!(tileset_id, hexon_id);
+            }
+            other => panic!("expected Installed for a sealed local install, got {other:?}"),
+        }
+        assert_eq!(tileset_registry.store().list_installed().len(), 1);
+        assert_eq!(
+            tileset_registry.get_tile(hexon_id, 10, 0, 0).as_deref(),
+            Some(tile_bytes.as_slice()),
+            "the installed tile must read back byte-identical"
+        );
+    }
+
     /// (plan S7b) `install_from_registry_installs_a_sealed_container_end_to_end`:
     /// a real in-process registry serves a sealed, THREE-chunk container
     /// (same fixture shape as `fe-terrain`'s
@@ -1884,7 +2113,7 @@ mod tests {
 
         let registry_dir = tempfile::tempdir().expect("registry tempdir");
         std::fs::write(registry_dir.path().join("pkg.hexon"), &sealed).expect("write fixture");
-        let addr = spawn_test_registry(registry_dir.path());
+        let addr = spawn_test_registry(registry_dir.path(), None);
 
         let (tmp, tileset_registry) = fresh_tileset_registry();
         let tileset_registry = std::sync::Arc::new(tileset_registry);
@@ -1988,7 +2217,7 @@ mod tests {
         .expect("seal container");
         let registry_dir = tempfile::tempdir().expect("registry tempdir");
         std::fs::write(registry_dir.path().join("pkg.hexon"), &sealed).expect("write fixture");
-        let addr = spawn_test_registry(registry_dir.path());
+        let addr = spawn_test_registry(registry_dir.path(), None);
 
         let (_tmp, tileset_registry) = fresh_tileset_registry();
         let client: std::sync::Arc<dyn fe_hexon::partial::PartialHexonFetch> = std::sync::Arc::new(
@@ -2024,6 +2253,114 @@ mod tests {
             |_, _| {},
         ))
         .expect("the same container fits a budget of exactly its chunks");
+        assert_eq!(tileset_registry.store().list_installed().len(), 1);
+    }
+
+    /// W2b F4: a table test for the pure resolver — no process-env mutation
+    /// (env vars are process-global and race across parallel test threads;
+    /// this function takes the env value as a parameter instead, same shape
+    /// as `fe_ui::settings::resolve_hexon_registry_url`'s env half).
+    #[test]
+    fn resolve_hexon_registry_token_table() {
+        let cases: &[(Option<&str>, Option<&str>)] = &[
+            (None, None),
+            (Some(""), None),
+            (Some("   "), None),
+            (Some("s3cr3t"), Some("s3cr3t")),
+            (Some("  s3cr3t  "), Some("s3cr3t")),
+        ];
+        for (env, want) in cases {
+            assert_eq!(
+                resolve_hexon_registry_token(*env).as_deref(),
+                *want,
+                "env={env:?}"
+            );
+        }
+    }
+
+    /// W2b F4: `FE_HEXON_REGISTRY_TOKEN` is resolved at the `drain_hexon_ops`
+    /// seam and threaded through to `RemoteRegistryClient`, never read inside
+    /// the pure fetch core itself — proven by driving
+    /// `fetch_and_install_from_registry` directly against a token-gated
+    /// in-process registry (`RegistryState`'s own `token` field, not the
+    /// `FE_REGISTRY_TOKEN` env var — no process-env mutation needed here
+    /// either): the right token installs; no token (or the wrong one) is
+    /// refused and installs nothing.
+    #[test]
+    fn install_from_registry_requires_the_configured_bearer_token() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[94u8; 32]);
+        let hexon_id = "w2b-f4-token-test";
+        let sealed = fe_format::seal(
+            &fe_format::HexonArchive::export_tileset(
+                synthetic_tileset_manifest(hexon_id),
+                synthetic_tileset(hexon_id).tileset_meta.as_ref().unwrap(),
+                &[("10/0/0".to_string(), vec![9u8; 8])],
+                &[],
+                None,
+            )
+            .expect("export unsealed archive"),
+            &key,
+        )
+        .expect("seal archive");
+
+        let registry_dir = tempfile::tempdir().expect("registry tempdir");
+        std::fs::write(registry_dir.path().join("pkg.hexon"), &sealed).expect("write fixture");
+        let addr = spawn_test_registry(registry_dir.path(), Some("s3cr3t".to_string()));
+        let registry_url = format!("http://{addr}");
+
+        let (_tmp, tileset_registry) = fresh_tileset_registry();
+        let strategy = fe_hexon::partial::FetchStrategy::new(fe_hexon::p2p::P2pConfig::default());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let client_for =
+            |token: Option<String>| -> std::sync::Arc<dyn fe_hexon::partial::PartialHexonFetch> {
+                std::sync::Arc::new(fe_hexon::remote::RemoteRegistryClient::new(
+                    registry_url.clone(),
+                    token,
+                ))
+            };
+
+        // No token at all: refused, nothing installed.
+        let err = rt
+            .block_on(fetch_and_install_from_registry(
+                &strategy,
+                client_for(None),
+                tileset_registry.store(),
+                hexon_id,
+                fe_format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+                |_, _| {},
+            ))
+            .expect_err("a missing bearer token must be refused by a token-gated registry");
+        assert!(err.to_string().contains("refused"), "{err:#}");
+        assert!(tileset_registry.store().list_installed().is_empty());
+
+        // The wrong token: also refused.
+        let err = rt
+            .block_on(fetch_and_install_from_registry(
+                &strategy,
+                client_for(resolve_hexon_registry_token(Some("not-it"))),
+                tileset_registry.store(),
+                hexon_id,
+                fe_format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+                |_, _| {},
+            ))
+            .expect_err("the wrong bearer token must be refused");
+        assert!(err.to_string().contains("refused"), "{err:#}");
+        assert!(tileset_registry.store().list_installed().is_empty());
+
+        // The configured token installs.
+        rt.block_on(fetch_and_install_from_registry(
+            &strategy,
+            client_for(resolve_hexon_registry_token(Some("s3cr3t"))),
+            tileset_registry.store(),
+            hexon_id,
+            fe_format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+            |_, _| {},
+        ))
+        .expect("the configured bearer token must install");
         assert_eq!(tileset_registry.store().list_installed().len(), 1);
     }
 
@@ -2064,7 +2401,7 @@ mod tests {
 
         let registry_dir = tempfile::tempdir().expect("registry tempdir");
         std::fs::write(registry_dir.path().join("pkg.hexon"), &tampered).expect("write fixture");
-        let addr = spawn_test_registry(registry_dir.path());
+        let addr = spawn_test_registry(registry_dir.path(), None);
 
         let (_tmp, tileset_registry) = fresh_tileset_registry();
         let tileset_registry = std::sync::Arc::new(tileset_registry);
@@ -2104,6 +2441,7 @@ mod tests {
             .init_resource::<StreamedTilesetState>()
             .init_resource::<KnownTilesetPublishers>()
             .init_resource::<InstallMetaVerdicts>()
+            .init_resource::<StreamedMetaVerdicts>()
             .init_resource::<fe_terrain::tiles::TileBundleDemand>()
             .insert_resource(ActiveTileSource::default())
             .insert_resource(fe_sync::SyncCommandSenderRes(cmd_tx));
@@ -2191,6 +2529,7 @@ mod tests {
             .init_resource::<StreamedTilesetState>()
             .init_resource::<KnownTilesetPublishers>()
             .init_resource::<InstallMetaVerdicts>()
+            .init_resource::<StreamedMetaVerdicts>()
             .init_resource::<fe_runtime::diag15m::ResidencyStats>();
         let mut composite = fe_terrain::tiles::CompositeTileSource::new();
         composite.add_streamed_source(StreamedTileSource::new(
@@ -2289,6 +2628,7 @@ mod tests {
             .init_resource::<StreamedTilesetState>()
             .init_resource::<KnownTilesetPublishers>()
             .init_resource::<InstallMetaVerdicts>()
+            .init_resource::<StreamedMetaVerdicts>()
             .init_resource::<fe_terrain::tiles::TileBundleDemand>()
             .insert_resource(ActiveTileSource {
                 composite,
@@ -2450,7 +2790,9 @@ mod tests {
 
     /// Final review: the streamed path shares the meta feed with the install
     /// flow. A meta reply it never asked for must not add a streamed source;
-    /// the reply to its own request (after an advertisement) must.
+    /// the reply to its own request (after an advertisement) must — off the
+    /// main thread (W2b F1), so this polls a few frames rather than asserting
+    /// resolution after exactly one `app.update()`.
     #[test]
     fn only_a_requested_meta_reply_becomes_a_streamed_source() {
         let tileset_id = "s7-meta-tileset";
@@ -2510,8 +2852,141 @@ mod tests {
             1
         );
         buffer(&mut app, reply());
-        app.update();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while pending(&app) && std::time::Instant::now() < deadline {
+            app.update();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         assert!(!pending(&app), "our own reply resolves the streamed source");
+    }
+
+    /// W2b F1, through the real system (not just the unit-level
+    /// `from_header_doc` check in fe-terrain): once a publisher is pinned for
+    /// a tileset_id (TOFU via `KnownTilesetPublishers`, the same pin chain the
+    /// install flow uses), a validly-signed header for the SAME tileset_id
+    /// from a DIFFERENT publisher never resolves — the drive system returns
+    /// before the worker thread's verdict lands (same frame: still pending),
+    /// and it is STILL refused once that verdict arrives.
+    #[test]
+    fn a_streamed_header_signed_by_a_publisher_other_than_the_known_pin_is_refused() {
+        let owner = ed25519_dalek::SigningKey::from_bytes(&[81u8; 32]);
+        let impostor = ed25519_dalek::SigningKey::from_bytes(&[82u8; 32]);
+        let owner_did = fe_format::verifying_key_to_did(&owner.verifying_key());
+        let tileset_id = "s7-pinned-tileset";
+        let meta_json = sealed_monolithic_header_json(&impostor, tileset_id);
+
+        let mut composite = fe_terrain::tiles::CompositeTileSource::new();
+        composite.mark_streamed_pending(tileset_id);
+        let (mut app, _cmd_rx) = streamed_app(Some(composite));
+        app.world_mut()
+            .resource_mut::<KnownTilesetPublishers>()
+            .0
+            .insert(tileset_id.to_string(), owner_did);
+        app.world_mut()
+            .resource_mut::<fe_sync::StreamedTilesetEventBuffer>()
+            .events
+            .push(fe_sync::SyncEvent::TilesetMetaReceived {
+                peer_id: String::new(),
+                tileset_id: tileset_id.to_string(),
+                meta_json,
+                total_chunks: 1,
+                approx_size_bytes: 0,
+                root_hash: "ab".repeat(32),
+                chunk_hashes: Vec::new(),
+                index_path: std::path::PathBuf::new(),
+                ad_publisher_did: String::new(),
+            });
+        let pending = |app: &App| {
+            app.world()
+                .resource::<ActiveTileSource>()
+                .composite
+                .as_ref()
+                .expect("composite")
+                .pending_streamed_uris()
+                .any(|id| id == tileset_id)
+        };
+
+        app.update();
+        assert!(
+            pending(&app),
+            "the drive system must return before the worker thread's verdict lands"
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while pending(&app) && std::time::Instant::now() < deadline {
+            app.update();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            pending(&app),
+            "an impostor's header must never resolve into a streamed source, even \
+             once the worker thread finishes verifying it"
+        );
+    }
+
+    /// W2b F1, through the real system: once a sealed publisher is pinned for
+    /// a tileset_id, an unsealed (legacy plain-index) meta reply for the SAME
+    /// id is refused — it never resolves, and the drive system returns before
+    /// the worker thread's verdict lands.
+    #[test]
+    fn an_unsealed_streamed_meta_is_refused_once_a_sealed_publisher_is_known() {
+        let owner = ed25519_dalek::SigningKey::from_bytes(&[84u8; 32]);
+        let owner_did = fe_format::verifying_key_to_did(&owner.verifying_key());
+        let tileset_id = "s7-unsealed-vs-pin";
+        let bundles = fe_terrain::tiles::bundle_tileset(
+            &synthetic_tileset(tileset_id),
+            fe_terrain::tiles::DEFAULT_BUNDLE_BYTES,
+        )
+        .expect("bundle_tileset");
+        let unsealed_meta_json = String::from_utf8(bundles.index_json.clone()).expect("utf8 index");
+
+        let mut composite = fe_terrain::tiles::CompositeTileSource::new();
+        composite.mark_streamed_pending(tileset_id);
+        let (mut app, _cmd_rx) = streamed_app(Some(composite));
+        app.world_mut()
+            .resource_mut::<KnownTilesetPublishers>()
+            .0
+            .insert(tileset_id.to_string(), owner_did);
+        app.world_mut()
+            .resource_mut::<fe_sync::StreamedTilesetEventBuffer>()
+            .events
+            .push(fe_sync::SyncEvent::TilesetMetaReceived {
+                peer_id: String::new(),
+                tileset_id: tileset_id.to_string(),
+                meta_json: unsealed_meta_json,
+                total_chunks: 1,
+                approx_size_bytes: 0,
+                root_hash: "ab".repeat(32),
+                chunk_hashes: Vec::new(),
+                index_path: std::path::PathBuf::new(),
+                ad_publisher_did: String::new(),
+            });
+        let pending = |app: &App| {
+            app.world()
+                .resource::<ActiveTileSource>()
+                .composite
+                .as_ref()
+                .expect("composite")
+                .pending_streamed_uris()
+                .any(|id| id == tileset_id)
+        };
+
+        app.update();
+        assert!(
+            pending(&app),
+            "the drive system must return before the worker thread's verdict lands"
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while pending(&app) && std::time::Instant::now() < deadline {
+            app.update();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            pending(&app),
+            "an unsealed reply must never resolve into a streamed source once a \
+             sealed publisher pin is known"
+        );
     }
 
     /// Final review: an assembled + installed download settles its tracker to

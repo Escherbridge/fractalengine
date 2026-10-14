@@ -793,6 +793,23 @@ camera can see.
   of live chunks stay as rendered until they leave the ring. `tileset_meta`
   of the old `Arc` is not refreshed — the next assignment picks up the
   registry's fresh source.
+- **Install is also serialized and durably synced (W2b F3, 2026-10-14).**
+  `HexonStore::install_lock` (a per-store `Mutex<()>`) is held from the
+  publisher-continuity check through both renames and the registry-entry
+  update, so two installs of the SAME `hexon_id` racing on different threads
+  (local file, P2P assemble, registry fetch) are fully serialized — the
+  second always sees the first's completed result at its continuity check,
+  never a stale "nothing installed yet" read interleaved with the first's
+  write (mirrors the registry's own `publish_lock`, `fe-hexon-registry/AGENTS.md`
+  "Publish validation" step 3). `write_synced_and_rename` also
+  `File::create`s + `write_all`s + `sync_all`s the temp file BEFORE each
+  rename (the old `std::fs::write` had no fsync), and `install_tileset`
+  fsyncs the store directory itself once after both renames (POSIX-only; a
+  no-op on Windows, where NTFS's metadata journal already covers it). Test:
+  `concurrent_installs_of_one_id_by_two_publishers_leave_exactly_one_winner`
+  (`tests/hexon_integrity_flow.rs`) — the fsyncs themselves get no dedicated
+  test (their success has no externally observable effect short of an actual
+  power-loss event).
 - **`load_tileset` refuses unsafe ids** (`is_safe_hexon_id`) before the path
   join: the id arrives from a (replicated) petal terrain config.
 - **`CompositeTileSource::resident_tile(coord)`** resolves every layer with
@@ -937,17 +954,27 @@ anything to the local hexon store.
   to today's "no source covers it" — the region just never renders, silently,
   instead of once marking `FailedTiles`).
 
-**Sealed streamed tilesets (PAS-P5 S5).** `StreamedTileSource::from_meta_json`
-accepts either child-0 shape. A `HeaderDoc` (`from_header_doc`) must verify
-under `RequireSealed` and name the tileset. A container then streams by its
-signed `chunks/index.json`. A monolithic archive gets a synthesized index:
-bundle 0 = the whole archive, with one full-range entry per zoom, since
-`covers` already bounds the extent. Every source answers
-`bundle_check(seq) -> BundleCheck` (`Digest` = the signed digest, or a
-legacy index's own digest; `WholeArchive` = signed manifest + publisher). The
-host decode thread runs that check on the bytes before decoding them
-(`fractalengine/src/AGENTS.md` §tileset-p2p), so a bundle that no
-index names, or that fails its seal, never becomes terrain.
+**Sealed streamed tilesets (PAS-P5 S5; pin chain added W2b F1, 2026-10-14).**
+`StreamedTileSource::from_meta_json(id, json, pin)` accepts either child-0
+shape. A `HeaderDoc` (`from_header_doc(id, header, pin)`) is verified through
+`fe_hexon::partial::verify_fetched_header` — the SAME header check every
+other network path (install-flow, every P2P transport) uses, no third copy —
+under `RequireSealed { pin }` and bound to the requested id. A container then
+streams by its signed `chunks/index.json`. A monolithic archive gets a
+synthesized index: bundle 0 = the whole archive, with one full-range entry
+per zoom, since `covers` already bounds the extent. `pin` is the caller's
+local pin chain (installed publisher, then TOFU `KnownTilesetPublishers`) —
+once a pin exists for a tileset_id, a header signed by a DIFFERENT publisher
+is refused, and so is a legacy UNSEALED plain-index reply (it can no longer
+silently downgrade a known-sealed publisher). The caller
+(`fractalengine::terrain_bridge::drive_streamed_tilesets`) resolves the pin
+and runs this whole check on a WORKER THREAD, never the Bevy main thread
+(S4 invariant) — see `fractalengine/src/AGENTS.md` §tileset-p2p for the
+verdict-channel shape. Every source answers `bundle_check(seq) ->
+BundleCheck` (`Digest` = the signed digest, or a legacy index's own digest;
+`WholeArchive` = signed manifest + publisher). The host decode thread runs
+that check on the bytes before decoding them, so a bundle that no index
+names, or that fails its seal, never becomes terrain.
 
 ## §chunked-containers — sealed chunk containers, atomic install, reassembly (p2p_asset_streaming S6)
 

@@ -30,6 +30,12 @@ dirs = "5"
 tracing = { workspace = true }
 fe-format = { path = "../fe-format" }
 fe-sdk = { path = "../fe-sdk" }
+# W2b F1: the streamed path's pinned-header check reuses fe-hexon's ONE
+# `verify_fetched_header` (no third copy of the RequireSealed+pin logic).
+# fe-hexon dev-depends on fe-terrain for its own P2P flow tests, which is a
+# supported cargo dev-dependency cycle (not a build cycle) — see
+# fe-terrain/src/AGENTS.md §streamed-tilesets.
+fe-hexon = { path = "../fe-hexon" }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 bincode = "1"
 
@@ -49,3 +55,6 @@ tokio = { workspace = true }
 # feature pulls in its own copy; this dev-only one lets the flow test seal
 # fixtures without requiring --features fetch.
 ed25519-dalek = { workspace = true }
+# W2b F1 unit test (streamed.rs): a sealed `HeaderDoc` can only be read back
+# via `HexonArchiveIndex::open`, which needs a real path.
+tempfile = "3"

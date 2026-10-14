@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -22,6 +23,18 @@ struct ShutdownRequested(Arc<AtomicBool>);
 /// EnvBackend slot for the share-URL signing seed (`("fractalengine", "share_signer")`).
 const SHARE_SIGNER_ENV: &str = "FE_SECRET_FRACTALENGINE_SHARE_SIGNER";
 
+/// W2b F5 (OF-1 co-location, relay half): `<FE_DB_PATH's parent>/blobs` —
+/// the directory the GUI binary's own blob store already co-locates with
+/// its (hardcoded) DB path. `None` when `db_path` has no parent component
+/// (defensive; `FE_DB_PATH` is always a file path with at least one).
+/// Pure so a table test exercises it without mutating process env vars.
+fn derive_blob_dir_from_db_path(db_path: &str) -> Option<PathBuf> {
+    Path::new(db_path)
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(|parent| parent.join("blobs"))
+}
+
 fn main() -> anyhow::Result<()> {
     // Durability: default SurrealKV's fsync mode unless the operator overrode it,
     // mirroring the GUI binary so both agree. Valid values are `never` | `every` |
@@ -35,6 +48,29 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     tracing::info!("Starting FractalEngine Relay (headless)");
+
+    // W2b F5 (OF-1 co-location, relay half): when the operator set
+    // FE_DB_PATH but left FE_BLOB_DIR unset, derive the blob dir from it —
+    // the relay's `FE_DB_PATH` is operator-configurable (unlike the GUI
+    // binary's hardcoded `DB_PATH`), so without this the blob store silently
+    // falls back to CWD-relative `data/blobs` while the DB lives elsewhere.
+    // Must run before ANY thread starts and before the first
+    // `default_path()` call — `fe_sync::FsBlobStore::default_path` below AND
+    // its `fe-hexon` duplicate (`registry.rs::default_path`) both read
+    // `FE_BLOB_DIR` once, so this must win the race, never follow it.
+    if std::env::var_os("FE_BLOB_DIR").is_none() {
+        if let Some(derived) = std::env::var("FE_DB_PATH")
+            .ok()
+            .as_deref()
+            .and_then(derive_blob_dir_from_db_path)
+        {
+            tracing::info!(
+                blob_dir = %derived.display(),
+                "Co-locating the blob store with FE_DB_PATH"
+            );
+            std::env::set_var("FE_BLOB_DIR", &derived);
+        }
+    }
 
     let ch = ChannelHandles::new();
 
@@ -697,6 +733,31 @@ fn exit_on_shutdown_signal(
 mod tests {
     use super::*;
     use bevy::prelude::*;
+
+    /// W2b F5: table test for the pure derivation — no process-env mutation
+    /// (FE_DB_PATH/FE_BLOB_DIR are process-global and race across parallel
+    /// test threads; `derive_blob_dir_from_db_path` takes the value as a
+    /// parameter instead, same shape as `fe_ui::settings::resolve_hexon_registry_url`).
+    #[test]
+    fn derive_blob_dir_from_db_path_table() {
+        let cases: &[(&str, Option<&str>)] = &[
+            ("data/fractalengine.db", Some("data/blobs")),
+            (
+                "/var/fractalengine/data/db.kv",
+                Some("/var/fractalengine/data/blobs"),
+            ),
+            (
+                r"C:\fractalengine\data\db.kv",
+                Some(r"C:\fractalengine\data\blobs"),
+            ),
+            ("db.kv", None),
+            ("", None),
+        ];
+        for (db_path, want) in cases {
+            let got = derive_blob_dir_from_db_path(db_path);
+            assert_eq!(got.as_deref(), want.map(Path::new), "db_path={db_path:?}");
+        }
+    }
 
     /// A8: once the shutdown flag is set, the system raises `AppExit::Success`
     /// (exit code 0), which makes `app.run()` return.

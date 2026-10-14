@@ -232,15 +232,12 @@ async fn meta(State(state): State<Arc<RegistryState>>, Path(uri): Path<String>) 
     }
 }
 
-/// Octet-stream response for publisher-controlled archive bytes (`/chunk`,
-/// `/member`): `nosniff` + `attachment` stop a member that happens to be
-/// named e.g. `notes.html` from ever being rendered as same-origin HTML by a
-/// browser that follows the link — the stored-XSS rule CDL-SPEC10 A4 already
-/// applies to fe-api blobs (S3 critic amendment, step 6).
-fn octet_response(bytes: Vec<u8>, filename: &str) -> Response {
-    // The name is publisher-controlled: keep only a safe charset inside the quotes.
-    let filename: String = filename
-        .chars()
+/// Keep only a safe charset inside a `Content-Disposition` filename — the
+/// name may be publisher- or caller-controlled (a `/chunk`/`/member` name, an
+/// entries.json `asset_hash`, or `/download`'s requested `uri`), so anything
+/// outside `[A-Za-z0-9._-]` is replaced (S8: cannot shape the header).
+fn safe_filename(raw: &str) -> String {
+    raw.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
                 c
@@ -248,7 +245,16 @@ fn octet_response(bytes: Vec<u8>, filename: &str) -> Response {
                 '_'
             }
         })
-        .collect();
+        .collect()
+}
+
+/// Octet-stream response for publisher-controlled archive bytes (`/chunk`,
+/// `/member`, `/entries/{id}/asset`): `nosniff` + `attachment` stop a member
+/// that happens to be named e.g. `notes.html` from ever being rendered as
+/// same-origin HTML by a browser that follows the link — the stored-XSS rule
+/// CDL-SPEC10 A4 already applies to fe-api blobs (S3 critic amendment, step 6).
+fn octet_response(bytes: Vec<u8>, filename: &str) -> Response {
+    let filename = safe_filename(filename);
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/octet-stream")
@@ -356,12 +362,10 @@ async fn asset(
     let path = entry.path.clone();
     let zip_path = format!("assets/{hash}");
     match tokio::task::spawn_blocking(move || index::read_zip_bytes(&path, &zip_path)).await {
-        Ok(Ok(bytes)) => (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/octet-stream")],
-            Bytes::from(bytes),
-        )
-            .into_response(),
+        // W2b F6: same nosniff+attachment protection `/chunk` and `/member`
+        // already carry (S3 deferral, never picked up by S8) — a stored
+        // asset blob is just as attacker-controlled a payload as a member.
+        Ok(Ok(bytes)) => octet_response(bytes, &format!("asset-{entry_id}")),
         // A stored blob over the decompression limits is a server-side content fault, not a 404.
         Ok(Err(e)) if format!("{e:#}").contains(limits::DECOMPRESSION_LIMIT_ERROR) => {
             json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))
@@ -387,10 +391,18 @@ async fn download(State(state): State<Arc<RegistryState>>, Path(uri): Path<Strin
         Ok(m) => m.len(),
         Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
+    // W2b F6: nosniff+attachment (S3 deferral) — streamed, so `octet_response`
+    // (which buffers) isn't reused; the two headers are cheap to add directly.
+    let filename = safe_filename(&format!("{uri}.hexon"));
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/x-hexon+zip")
         .header(header::CONTENT_LENGTH, len)
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{filename}\""),
+        )
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .body(Body::from_stream(ReaderStream::new(file)))
         .unwrap_or_else(|e| json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }

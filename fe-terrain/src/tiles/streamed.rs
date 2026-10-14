@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
 use fe_format::manifest::{BundleEntry, TilesetBundleIndex, TilesetMeta};
-use fe_format::{HeaderDoc, HexonManifest, IntegrityPolicy};
+use fe_format::HeaderDoc;
 
 use super::hexon_source::{HexonTileSource, ResidentTile, TileLayer};
 use super::source::TileCoord;
@@ -132,9 +132,26 @@ impl StreamedTileSource {
     /// PAS-P5: a sealed seeder's child 0 is a `HeaderDoc` instead; it must
     /// verify under `RequireSealed` and name `tileset_id`, and its bundles are
     /// then checked against the SIGNED digests (see [`Self::from_header_doc`]).
-    pub fn from_meta_json(tileset_id: String, meta_json: &str) -> anyhow::Result<Self> {
+    ///
+    /// W2b F1: `pin` is the local pin chain (installed, then TOFU) resolved
+    /// by the caller off the main thread. Once a pin exists for this
+    /// `tileset_id`, an unsealed/legacy plain-index reply (the fallback
+    /// branch below) is refused outright — a known sealed publisher can
+    /// never be silently downgraded to an unsigned index. See
+    /// `src/AGENTS.md` §streamed-tilesets "Sealed".
+    pub fn from_meta_json(
+        tileset_id: String,
+        meta_json: &str,
+        pin: Option<&str>,
+    ) -> anyhow::Result<Self> {
         if let Ok(header) = serde_json::from_str::<HeaderDoc>(meta_json) {
-            return Self::from_header_doc(tileset_id, &header);
+            return Self::from_header_doc(tileset_id, &header, pin);
+        }
+        if pin.is_some() {
+            bail!(
+                "streamed tileset {tileset_id:?} has a known sealed publisher pin; \
+                 refusing an unsealed meta reply"
+            );
         }
         let index: TilesetBundleIndex = serde_json::from_str(meta_json)?;
         if index.tileset_id != tileset_id {
@@ -149,22 +166,26 @@ impl StreamedTileSource {
 
     /// A source over a sealed seeder's verified `HeaderDoc`: a container
     /// streams its signed chunks, a monolithic archive streams as bundle 0.
-    pub fn from_header_doc(tileset_id: String, header: &HeaderDoc) -> anyhow::Result<Self> {
-        let verified =
-            fe_format::verify_header(header, &IntegrityPolicy::RequireSealed { pin: None })
-                .context("the streamed tileset's signed header does not verify")?;
-        let coverage = verified
+    ///
+    /// W2b F1: reuses the ONE header check
+    /// (`fe_hexon::partial::verify_fetched_header`, the same function the
+    /// install-flow path and every P2P transport use — no third copy)
+    /// instead of a bare `fe_format::verify_header` with no pin, so a
+    /// header signed by a publisher other than `pin` is refused exactly
+    /// like every other network path.
+    pub fn from_header_doc(
+        tileset_id: String,
+        header: &HeaderDoc,
+        pin: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        let fetched = fe_hexon::partial::verify_fetched_header(&tileset_id, header.clone(), pin)
+            .map_err(|e| {
+                anyhow::anyhow!("the streamed tileset's signed header does not verify: {e}")
+            })?;
+        let coverage = fetched
+            .verified
             .coverage()
             .context("a RequireSealed header always carries coverage")?;
-        let manifest: HexonManifest =
-            serde_json::from_str(&header.manifest).context("invalid signed manifest")?;
-        if manifest.hexon_id != tileset_id {
-            bail!(
-                "signed header names tileset {:?}, but {:?} was requested",
-                manifest.hexon_id,
-                tileset_id
-            );
-        }
         let (index, sealed_whole) = match coverage.chunk_index() {
             Some(index) => (index.clone(), None),
             None => {
@@ -616,13 +637,83 @@ mod tests {
     #[test]
     fn a_streamed_index_must_name_the_requested_tileset() {
         let json = serde_json::to_string(&two_bundle_index()).unwrap();
-        let err = StreamedTileSource::from_meta_json("other-tileset".into(), &json)
+        let err = StreamedTileSource::from_meta_json("other-tileset".into(), &json, None)
             .err()
             .expect("a mismatched index is refused");
         assert!(err.to_string().contains("requested"), "{err:#}");
-        let ok = StreamedTileSource::from_meta_json("streamed-test".into(), &json)
+        let ok = StreamedTileSource::from_meta_json("streamed-test".into(), &json, None)
             .expect("a matching index parses");
         assert_eq!(ok.tileset_id(), "streamed-test");
+    }
+
+    /// A sealed MONOLITHIC `HeaderDoc` (HashSeq child-0 shape) signed by `key`.
+    fn sealed_monolithic_header(key: &ed25519_dalek::SigningKey, hexon_id: &str) -> HeaderDoc {
+        let meta = TilesetMeta {
+            bounds: [-85.0, -180.0, 85.0, 180.0],
+            min_zoom: 10,
+            max_zoom: 10,
+            tile_size: 256,
+            elevation_encoding: ElevationEncoding::TerrainRgb,
+            tile_count: 1,
+            region_name: "pin-test".into(),
+            ..Default::default()
+        };
+        let unsealed = fe_format::HexonArchive::export_tileset(
+            manifest(hexon_id),
+            &meta,
+            &[("10/0/0".to_string(), vec![1u8; 8])],
+            &[],
+            None,
+        )
+        .expect("export_tileset");
+        let sealed = fe_format::seal(&unsealed, key).expect("seal");
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        std::fs::write(tmp.path(), &sealed).expect("write archive");
+        fe_format::HexonArchiveIndex::open(tmp.path())
+            .expect("open archive index")
+            .header_doc()
+    }
+
+    /// W2b F1 (critic-mandated pin chain, mirrors
+    /// `terrain_bridge::a_header_signed_by_a_publisher_other_than_the_pinned_one_is_refused`):
+    /// once a publisher is pinned, a validly-signed header for the SAME
+    /// tileset_id from a DIFFERENT publisher is refused by `from_header_doc`
+    /// — the same `verify_fetched_header` check every other network path
+    /// runs, never a second copy. The pinned publisher's own header still verifies.
+    #[test]
+    fn a_streamed_header_signed_by_a_publisher_other_than_the_known_pin_is_refused() {
+        let owner = ed25519_dalek::SigningKey::from_bytes(&[71u8; 32]);
+        let impostor = ed25519_dalek::SigningKey::from_bytes(&[72u8; 32]);
+        let owner_did = fe_format::verifying_key_to_did(&owner.verifying_key());
+
+        let impostor_header = sealed_monolithic_header(&impostor, "pin-test");
+        let err = StreamedTileSource::from_header_doc(
+            "pin-test".into(),
+            &impostor_header,
+            Some(&owner_did),
+        )
+        .err()
+        .expect("a different publisher's header must be refused against a pin");
+        assert!(err.to_string().contains("pinned"), "{err:#}");
+
+        let owner_header = sealed_monolithic_header(&owner, "pin-test");
+        let ok =
+            StreamedTileSource::from_header_doc("pin-test".into(), &owner_header, Some(&owner_did))
+                .expect("the pinned publisher's own header verifies");
+        assert_eq!(ok.tileset_id(), "pin-test");
+    }
+
+    /// W2b F1: once a pin is known for a tileset_id, a plain (unsealed)
+    /// index reply is refused outright — it can no longer silently downgrade
+    /// a known-sealed publisher to an unsigned index.
+    #[test]
+    fn an_unsealed_index_is_refused_once_a_sealed_publisher_pin_is_known() {
+        let json = serde_json::to_string(&two_bundle_index()).unwrap();
+        let err =
+            StreamedTileSource::from_meta_json("streamed-test".into(), &json, Some("did:key:zpin"))
+                .err()
+                .expect("an unsealed reply must be refused once a pin exists");
+        assert!(err.to_string().contains("pin"), "{err:#}");
     }
 
     /// S8b: a streamed bundle that inflates past the decode budget is refused

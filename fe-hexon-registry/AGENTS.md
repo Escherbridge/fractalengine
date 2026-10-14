@@ -124,18 +124,26 @@ Body is raw `.hexon` bytes. Validation is two gates, in order:
    new `hexon_id` could all pass and the last `fs::write` silently replaced
    the winner's file. Test: `concurrent_publishes_of_one_id_admit_exactly_one_publisher`.
 
-### Security headers on publisher-controlled bytes (S3 critic amendment)
+### Security headers on publisher-controlled bytes (S3 critic amendment; extended W2b F6, 2026-10-14)
 
-`/chunk/{seq}` and `/member/{*path}` always answer with
-`Content-Type: application/octet-stream`, `X-Content-Type-Options: nosniff`
-and `Content-Disposition: attachment` (`routes::octet_response`), regardless
-of what the member's own name or content looks like — the same stored-XSS
-rule CDL-SPEC10 A4 applies to fe-api blobs. The `filename` inside the
-disposition is the member's last path segment reduced to `[A-Za-z0-9._-]`
-(anything else becomes `_`; S8), so a publisher-chosen name with quotes or
-`;` cannot reshape the header (test:
-`a_hostile_member_name_cannot_shape_the_content_disposition_header`). A member whose zip path happens
-to end in `.html` is still served as a forced download, never rendered.
+`/chunk/{seq}`, `/member/{*path}`, `/entries/{id}/asset` and `/download`
+always answer with `Content-Type: application/octet-stream` (`/download`:
+`application/x-hexon+zip`), `X-Content-Type-Options: nosniff` and
+`Content-Disposition: attachment` (`routes::octet_response`, or the same two
+headers added directly for `/download`'s streamed body, which `octet_response`
+can't serve without buffering the whole file), regardless of what the
+member's own name or content looks like — the same stored-XSS rule
+CDL-SPEC10 A4 applies to fe-api blobs. `/entries/{id}/asset` and `/download`
+were an S3 deferral never picked up by S8's header pass; W2b F6 closes it.
+The `filename` inside the disposition (`routes::safe_filename`, the ONE
+charset filter every one of these four routes shares) is reduced to
+`[A-Za-z0-9._-]` (anything else becomes `_`; S8), so a publisher-chosen name
+with quotes or `;` cannot reshape the header (test:
+`a_hostile_member_name_cannot_shape_the_content_disposition_header`;
+`/entries/{id}/asset` + `/download` coverage:
+`asset_and_download_routes_carry_nosniff_and_attachment_headers`). A member
+whose zip path happens to end in `.html` is still served as a forced
+download, never rendered.
 `/member` resolves `path` only by **membership lookup** against the zip's own
 central directory (`HexonArchiveIndex::contains`/`read_member`) — it is never
 joined onto a filesystem path, so a request such as `../../etc/passwd`
@@ -151,10 +159,10 @@ construction, not by charset-filtering the input.
 | GET | `/api/v1/hexons/{uri}` | raw manifest.json |
 | GET | `/api/v1/hexons/{uri}/meta` | `HeaderDoc` (header phase only — no tile/body bytes; `fe_format::HexonArchiveIndex`) |
 | GET | `/api/v1/hexons/{uri}/entries` | raw entries.json |
-| GET | `/api/v1/hexons/{uri}/entries/{entry_id}/asset` | blob via entry `asset_hash` → `assets/{hash}` |
+| GET | `/api/v1/hexons/{uri}/entries/{entry_id}/asset` | blob via entry `asset_hash` → `assets/{hash}`; octet-stream + nosniff + attachment (W2b F6) |
 | GET | `/api/v1/hexons/{uri}/chunk/{seq}` | one container chunk's raw bytes; monolithic archives serve the whole file at `seq=0`, 404 otherwise; octet-stream + nosniff + attachment |
 | GET | `/api/v1/hexons/{uri}/member/{*path}` | one raw member, membership-checked against the central directory; octet-stream + nosniff + attachment |
-| GET | `/api/v1/hexons/{uri}/download` | whole file, `application/x-hexon+zip` |
+| GET | `/api/v1/hexons/{uri}/download` | whole file, `application/x-hexon+zip`; nosniff + attachment (W2b F6) |
 | POST | `/api/v1/hexons/publish` | raw bytes body (≤1 GiB), decompression-capped + sealed + publisher-continuity checked (§Publish validation), writes + reindexes |
 
 JSON endpoints use the fe-api `ApiResponse` envelope (`{ok, data, error}`);
@@ -169,3 +177,15 @@ this router on an ephemeral port — no container needed.
 It also implements `fe_hexon::partial::PartialHexonFetch` over `/meta`,
 `/chunk/{seq}` and `/member/{*path}` (fe-hexon/src/AGENTS.md §partial-fetch);
 `fe-hexon/tests/partial_fetch_http.rs` runs the conformance suite against it.
+
+**fractalengine's "install from registry" GUI path (W2b F4, 2026-10-14):**
+`terrain_bridge::install_from_registry` builds its `RemoteRegistryClient` with
+a `token` resolved from the **env-only** `FE_HEXON_REGISTRY_TOKEN` var —
+there is deliberately no persisted `AppSettings` field for it (RUNBOOK §5:
+secrets never in files), and it is never logged. Resolution happens once, at
+the `drain_hexon_ops` seam (`terrain_bridge::resolve_hexon_registry_token`, a
+pure fn so a table test covers it without mutating the process environment),
+never inside `install_from_registry` or the pure `fetch_and_install_from_registry`
+core — those just take an already-resolved `Option<String>`. A registry that
+sets its own `FE_REGISTRY_TOKEN` (`require_token` above) gates ALL `/api/v1`
+reads, so S7b could not reach any non-dev registry before this.

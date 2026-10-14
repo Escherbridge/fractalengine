@@ -254,6 +254,80 @@ fn a_sealed_install_is_never_replaced_by_another_publisher_or_an_unsealed_archiv
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// W2b F3: `install_tileset`'s continuity check, write and both renames are
+/// one critical section (a per-store `Mutex`, mirroring the registry's own
+/// `publish_lock`) — of two publishers racing to install the SAME
+/// `hexon_id`, exactly one wins (installed for real) and the other is
+/// refused by [`PUBLISHER_CONTINUITY_ERROR`], never a torn or silently
+/// overwritten file. `sync_all`/the directory fsync get no dedicated test
+/// (their success has no externally observable effect short of an actual
+/// power-loss event, which nothing in this suite can simulate) — see
+/// `src/AGENTS.md` §chunked-containers "atomic install".
+#[test]
+fn concurrent_installs_of_one_id_by_two_publishers_leave_exactly_one_winner() {
+    let owner = SigningKey::from_bytes(&[61u8; 32]);
+    let impostor = SigningKey::from_bytes(&[62u8; 32]);
+    let owner_did = fe_format::verifying_key_to_did(&owner.verifying_key());
+    let impostor_did = fe_format::verifying_key_to_did(&impostor.verifying_key());
+    let (store, dir) = temp_store();
+    let store = std::sync::Arc::new(store);
+
+    let bytes_owner = seal(
+        &tileset_bytes("race", &[("10/0/0".into(), vec![1u8; 64])]),
+        &owner,
+    )
+    .expect("seal owner");
+    let bytes_impostor = seal(
+        &tileset_bytes("race", &[("10/0/0".into(), vec![2u8; 64])]),
+        &impostor,
+    )
+    .expect("seal impostor");
+
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let spawn_racer = |bytes: Vec<u8>, did: String| {
+        let store = store.clone();
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            barrier.wait();
+            (did, store.install_tileset(&bytes))
+        })
+    };
+    let h1 = spawn_racer(bytes_owner, owner_did);
+    let h2 = spawn_racer(bytes_impostor, impostor_did);
+    let (did1, r1) = h1.join().expect("racer 1 panicked");
+    let (did2, r2) = h2.join().expect("racer 2 panicked");
+
+    let oks: Vec<_> = [(&did1, &r1), (&did2, &r2)]
+        .into_iter()
+        .filter_map(|(did, r)| r.is_ok().then_some(did))
+        .collect();
+    let errs: Vec<_> = [&r1, &r2]
+        .into_iter()
+        .filter_map(|r| r.as_ref().err())
+        .collect();
+
+    assert_eq!(oks.len(), 1, "exactly one install must win: {r1:?} {r2:?}");
+    assert_eq!(
+        errs.len(),
+        1,
+        "exactly one install must be refused: {r1:?} {r2:?}"
+    );
+    assert!(
+        errs[0].to_string().contains(PUBLISHER_CONTINUITY_ERROR),
+        "{:#}",
+        errs[0]
+    );
+
+    let winner_did = oks[0];
+    assert_eq!(
+        store.installed_publisher("race").as_deref(),
+        Some(winner_did.as_str()),
+        "installed_publisher must match whichever install actually won, never a mix"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // Chunked containers
 // ---------------------------------------------------------------------------
