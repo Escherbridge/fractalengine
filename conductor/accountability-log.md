@@ -166,3 +166,19 @@ size remain. **Routed into W2 S8 as a mandatory fix + tests** (P5 plan S8 sectio
   move the blob dir; (6) orchestrator: `install_tileset` temp+rename has no `sync_all` before rename;
   (7) S7b: no bearer-token auth for hosted registry fetch.
 - W2 must-cover appended to `conductor/final-sweep-manifest.md`.
+
+### Tick 5 (W2 close / W3 pre-launch) — 2026-10-14 07:22 MDT · VERDICT: ON_TRACK (4 MED, 2 LOW)
+Report: `.omc/accountability/tick-20261014-0722.md`. Key ruling: W2 residual (1) is NOT an A7 failure —
+production seeders publish the same root the conformance suite covers (`partial_fetch_p2p.rs:316-319`
+"one root for every seeder") and the download path shares the one header check; what is unmet is A3
+(FetchStrategy as the single policy layer) — a plan-design consequence (fe-sync format-agnostic), not a
+scope trim; `plan.md` wrongly ticked it.
+
+| id | sev | directive (short) | disposition |
+|---|---|---|---|
+| AC-23 | MED | Residual (1) as honest bookkeeping: A3 caveat, A7 evidence named, PAS-P5 shas, ledger row PAS-P5-P2P-POLICY with triggers, fe-hexon AGENTS note | **ACCEPT** → docs agent (conductor) + W2b executor (fe-hexon AGENTS line) |
+| AC-24 | MED | W2b fixups BEFORE W3: F1 streamed pin chain off-main-thread; F2 HexonOp::Install off main thread; F3 per-store install lock + sync_all; F4 FE_HEXON_REGISTRY_TOKEN; F5 relay blob dir from FE_DB_PATH; F6 registry nosniff; STREAMED-TERRAIN-PIN routed to RP; TOFU first-contact race / >64 MiB monolithic / trim race / member_keys accepted with reasons | **ACCEPT** → W2b `wf_cbb4d1ed-495` launched (sonnet exec → opus review-and-fix, workspace + C10 gates) |
+| AC-25 | MED | W4-9/C5 `legacy_identifier` premise false (fe-database/fe-query don't depend on fe-sdk; fe-sdk is serde-only) → fe-sdk + blake3, hand-encoded CBOR, golden cross-check, owned Cargo files; SPEC10 B2 adds fe-sdk to fe-query + `--features parquet` gate | **ACCEPT** → docs agent (W4 C7, SPEC10 row) |
+| AC-26 | MED | W4 plan gate/test drift: per-crate-only gates + campaign-end `cargo test` after slice 9 contradict AC-17 + the tests-at-end rule | **ACCEPT** → docs agent (W4 C6: workspace triple + gate_green halt; tests → manifest "W3 CDL-W4"); no C10-style feature gate needed for W4 crates (fe-identity no-default check only if edited) |
+| AC-27 | LOW | W4 precision: W4-7 key-id index (SecretStore can't enumerate), restart tests must drop+join (one open per process), W4-1 KTX2-guarded fixture, W4-8 role-None review item, re-grounded citation table @8d8eaf8 | **ACCEPT** → docs agent (W4 C8, C9) |
+| AC-28 | LOW | Bookkeeping + prune 7.5 GB PDBs | **ACCEPT** → docs agent; PDBs pruned (114 files) before W2b |
