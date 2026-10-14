@@ -1083,7 +1083,9 @@ provider is cached and evicted on failure. Every await is bounded:
 a download root):
 - `publish` → HashSeq + tag `fe/tileset/<id>` + catalog entry `{id, root,
   total_chunks, bytes}`; `catalog_from_tags` rebuilds the catalog at start
-  (tags persist in the fs store); `unpublish` drops the tag.
+  (tags persist in the fs store) and MERGES into it — startup seeding can
+  publish while the rebuild runs, and a replace would drop that entry from
+  every later advertisement; `unpublish` drops the tag.
 - `request_meta(providers, id, root)` resolves the root from the first
   provider whose children hash back to it, tags `fe/download/<id>`, writes the
   ledger, and fetches + verifies the index. The same root reuses the ledger
@@ -1131,10 +1133,19 @@ TilesetTransfer>>` and answers the offline case honestly (a
 `TilesetMetaReceived`/`ChunkFailed` whose reason says `"P2P offline"`) rather
 than hanging or silently dropping — this is what keeps the command loop
 byte-identical between the real and virtual transports (§virtual-transport).
-At startup a spawned task rebuilds the catalog from persisted `fe/tileset/`
-tags (`catalog_from_tags`), reports what `pending_downloads` finds as
+At startup a spawned task (`report_and_resume_tileset_downloads`) rebuilds
+the catalog from persisted `fe/tileset/` tags (`catalog_from_tags`), reports
+each FULL download `pending_downloads` finds as
 `SyncEvent::TilesetDownloadResumed` (received/total BEFORE anything is
-re-fetched), then runs `resume_all` to actually finish them.
+re-fetched; a streamed-bundle cache is not a download and is not reported),
+hands every already-complete full download back as
+`TilesetDownloadComplete` (`completed_from` — a restart between completion
+and install would otherwise strand it: `resume_all` skips complete ones),
+then runs `resume_all` to finish the rest. The host discards a download
+with `CancelTilesetDownload` once installed, so a complete download still on
+disk at start means "not installed yet". A `download` that fails as a
+whole (e.g. `DownloadTooLarge`) answers with the empty-root
+`TilesetMetaReceived`, which fe-ui shows as Failed.
 
 **The select! loop never awaits a transfer inline.** Every handler that
 calls into `TilesetTransfer` (`publish_files`, `unpublish`, `request_meta`,
@@ -1186,6 +1197,13 @@ request with no prior meta resolution, which no caller does today.
   that only carries `tileset_id`/`root_hash`/`total_chunks`/
   `approx_size_bytes` today — it degrades gracefully (its `.get(..)
   .unwrap_or(default)` reads), and S4 aligns the two shapes.
+
+**Bounded buffers.** `drain_sync_events` caps `TilesetEventBuffer` and
+`StreamedTilesetEventBuffer` at `MAX_BUFFERED_TILESET_EVENTS` (4096) and
+drops (with a warning) past it. The headless relay has no consumer for
+either, so it also clears `TilesetEventBuffer` every frame
+(`discard_tileset_events`); before the final review it grew by one event
+per advertisement for the life of the process.
 
 **PAS-P1V:** `status.rs::drain_sync_events`'s `RelayHealthChanged` arm now
 logs one unconditional `info!` before its existing problem/no-problem

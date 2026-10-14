@@ -106,15 +106,26 @@ pub(crate) fn drain_tileset_events(
                 tileset_id,
                 total_chunks,
                 approx_size_bytes,
+                root_hash,
+                meta_json,
                 ..
             } => {
                 // The sync thread (S3's `TilesetTransfer::download`) fetches
-                // every bundle on its own; this just records the estimate for
-                // the progress bar.
+                // every bundle on its own; this records the estimate for the
+                // progress bar. An empty `root_hash` is fe-sync's honest
+                // failure reply (no provider, offline, download stopped).
                 if let Some(dl) = downloads.0.get_mut(&tileset_id) {
-                    dl.total_chunks = total_chunks;
-                    dl.total_bytes_estimate = approx_size_bytes;
-                    dl.status = DownloadStatus::Downloading;
+                    if root_hash.is_empty() {
+                        let reason = serde_json::from_str::<serde_json::Value>(&meta_json)
+                            .ok()
+                            .and_then(|v| v.get("error")?.as_str().map(str::to_string))
+                            .unwrap_or_else(|| "download failed".to_string());
+                        dl.status = DownloadStatus::Failed(reason);
+                    } else {
+                        dl.total_chunks = total_chunks;
+                        dl.total_bytes_estimate = approx_size_bytes;
+                        dl.status = DownloadStatus::Downloading;
+                    }
                 }
             }
             fe_sync::SyncEvent::ChunkReceived {
@@ -214,6 +225,54 @@ pub(crate) fn drain_tileset_events(
 mod tests {
     use super::*;
     use crate::actions::UiManager;
+
+    /// Final review: fe-sync answers a download it cannot run (no provider
+    /// advertised the tileset, P2P offline, over its byte cap) with an
+    /// empty-root meta reply; the tracker must show Failed with the reason,
+    /// never sit on "Downloading" forever.
+    #[test]
+    fn a_failed_download_shows_failed_not_downloading() {
+        let mut app = App::new();
+        app.init_resource::<UiManager>()
+            .init_resource::<fe_sync::TilesetEventBuffer>()
+            .init_resource::<TilesetDownloads>()
+            .init_resource::<PendingHexonOps>()
+            .add_systems(Update, drain_tileset_events);
+        let tileset_id = "ts-unadvertised".to_string();
+        app.world_mut().resource_mut::<TilesetDownloads>().0.insert(
+            tileset_id.clone(),
+            DownloadProgress {
+                tileset_id: tileset_id.clone(),
+                chunks_received: 0,
+                total_chunks: 0,
+                bytes_received: 0,
+                total_bytes_estimate: 0,
+                status: DownloadStatus::Queued,
+            },
+        );
+        app.world_mut()
+            .resource_mut::<fe_sync::TilesetEventBuffer>()
+            .events
+            .push(fe_sync::SyncEvent::TilesetMetaReceived {
+                peer_id: String::new(),
+                tileset_id: tileset_id.clone(),
+                meta_json: r#"{"error":"no advertised root for this tileset yet"}"#.into(),
+                total_chunks: 0,
+                approx_size_bytes: 0,
+                root_hash: String::new(),
+                chunk_hashes: Vec::new(),
+                index_path: std::path::PathBuf::new(),
+            });
+        app.update();
+        let status = app.world().resource::<TilesetDownloads>().0[&tileset_id]
+            .status
+            .clone();
+        assert!(
+            matches!(&status, DownloadStatus::Failed(reason)
+                if reason == "no advertised root for this tileset yet"),
+            "{status:?}"
+        );
+    }
 
     /// Regression test for the S4 bug: before this slice, download progress
     /// lived inside `ActiveDialog::HexonManager`, so `ChunkReceived`'s

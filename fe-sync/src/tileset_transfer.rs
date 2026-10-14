@@ -634,7 +634,12 @@ impl TilesetTransfer {
             );
         }
         let entries = rebuilt.values().cloned().collect();
-        *lock(&self.catalog) = rebuilt;
+        // Merge, never replace: a `publish` that finished after `list_tags`
+        // (startup seeding races this rebuild) must keep its entry.
+        let mut catalog = lock(&self.catalog);
+        for (id, entry) in rebuilt {
+            catalog.entry(id).or_insert(entry);
+        }
         Ok(entries)
     }
 
@@ -902,6 +907,24 @@ impl TilesetTransfer {
         }
         out.sort_by(|a, b| a.tileset_id.cmp(&b.tileset_id));
         Ok(out)
+    }
+
+    /// The complete full downloads in `pending` (as just listed by
+    /// [`Self::pending_downloads`]), ready for the host to assemble — a
+    /// restart between `Complete` and install must not strand them.
+    pub fn completed_from(&self, pending: &[ResumedDownload]) -> Vec<CompletedDownload> {
+        let ledgers = lock(&self.ledgers);
+        pending
+            .iter()
+            .filter(|p| p.full_download && p.index_present && p.received == p.total)
+            .filter_map(|p| ledgers.get(&p.tileset_id))
+            .map(|ledger| CompletedDownload {
+                tileset_id: ledger.tileset_id.clone(),
+                root: ledger.root,
+                index_path: ledger.index_path(),
+                bundle_paths: (0..ledger.total()).map(|s| ledger.chunk_path(s)).collect(),
+            })
+            .collect()
     }
 
     /// Re-verify every persisted full download and fetch only what is missing.

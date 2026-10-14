@@ -560,7 +560,15 @@ fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
   resource) and `drain_hexon_assemble_results` does that one thing each
   frame. This is the regression fix for "closing the Hexon Manager stalls a
   download" (`fe-ui/src/AGENTS.md` §terrain-map) carried all the way through
-  to the install step.
+  to the install step. It also settles fe-ui's `TilesetDownloads` tracker
+  (`Complete`, or `Failed` with the install error — nothing else ever set
+  `Complete`) and, after a successful install, sends
+  `SyncCommand::CancelTilesetDownload` so the now-redundant
+  `downloads/<id>/` cache is deleted (final review 2026-10-14: before, it
+  stayed on disk forever and was re-reported at every start). A download
+  that completed but was never installed (a restart in between) is handed
+  back at start-up as `TilesetDownloadComplete` (fe-sync `AGENTS.md`
+  §tileset-transfer), so it still installs.
 - **Seeding → publish.** `terrain_bridge::spawn_bundle_and_publish(registry,
   sync_tx, tileset_id)` is the GUI's thread+channel wrapper around the ONE
   shared bundling implementation, `fe_terrain::tiles::bundle_for_seeding`
@@ -607,7 +615,12 @@ fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
     advertised it (an empty `peer_id` lets the sync thread's own provider map
     resolve an address — this binary never needs one), parses a successful
     `TilesetMetaReceived.meta_json` as a `TilesetBundleIndex` and installs a
-    `StreamedTileSource` via `composite.add_streamed_source`, and hands each
+    `StreamedTileSource` via `composite.add_streamed_source`. A meta
+    reply it handles must answer ITS OWN request (`state.meta_requested`) —
+    the install flow's meta replies share the feed — and a uri the active
+    composite still has pending (a stale reply after a petal switch is
+    dropped). A failed meta resolution backs off (`state.meta_backoff`, same
+    2 s→120 s curve) and is retried, never parked forever. It hands each
     `ChunkReceived` THIS NODE requested (`state.chunk_requested`) to a
     background thread (a size-capped read + `HexonTileSource::from_streamed_bundle`
     under the 64 MiB streamed decode budget — S8b, peer bytes — never the
@@ -616,12 +629,23 @@ fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
     `HexonAssembleResultSender`/`HexonAssembleResults`).
   - `drain_streamed_bundle_results` applies finished decodes into the active
     composite (`insert_streamed_bundle`) — the one step needing the main
-    thread, since decoding itself already ran off it.
+    thread, since decoding itself already ran off it. A FAILED decode (corrupt
+    or over-budget archive) comes back over the same channel and backs off
+    like a failed fetch; a bundle stays in `state.decoding` while its thread
+    runs, so it is never re-requested mid-decode. It also evicts streamed
+    bundles no chunk pinned within `STREAMED_BUNDLE_IDLE_GRACE` (10 s): one
+    that lands after the ring moved on is never pinned, so `release` alone
+    would keep it in memory forever (fe-terrain `src/AGENTS.md`
+    §streamed-tilesets).
   - `request_demanded_bundles` reads fe-terrain's `TileBundleDemand` (the
     tile pointer-set, rebuilt every frame by `fetch_and_spawn_terrain_chunks`)
     and sends one `SyncCommand::RequestChunk` per not-yet-requested
     `(tileset_id, bundle_seq)`, bounded by `state.chunk_requested` so a still-
-    pending bundle is never re-requested every frame. **S8b demand-storm
+    pending bundle is never re-requested every frame. At most
+    `MAX_STREAMED_BUNDLES_IN_FLIGHT` (8) bundles are requested or decoding at
+    once — the sync thread spawns one fetch task per request — and requests
+    go out with `try_send`, so a full command channel defers to the next
+    frame instead of blocking the main thread. **S8b demand-storm
     guard:** a `ChunkFailed` for one of OUR requests starts an exponential
     backoff (`streamed_retry_delay`: 2 s doubling to 120 s) in
     `state.chunk_backoff`, cleared by that bundle's next `ChunkReceived`. A

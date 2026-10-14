@@ -446,10 +446,10 @@ pub(super) fn apply_db_results(
             ),
             // S6: a peer's converged `petal` row — re-fetch render_distance
             // so a peer's change lands without a full hierarchy reload
-            // (fe-ui/src/AGENTS.md §app-settings). Not the terrain field:
-            // `PetalTerrainLoaded`'s own GUI write path already drives that
-            // one; this command exists purely to surface the OTHER changed
-            // column peers can write to the same row.
+            // (fe-ui/src/AGENTS.md §app-settings). Not the terrain field: a
+            // peer's converged `terrain` reaches this GUI on the next petal
+            // entry (`GetPetalTerrain`), not live — re-fetching it here would
+            // rebuild the whole terrain on every peer petal-row write.
             DbResult::ReplicatedRowApplied {
                 table,
                 record_id,

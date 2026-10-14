@@ -626,3 +626,81 @@ async fn catalog_survives_a_stack_restart() {
     stack.shutdown().await;
     endpoint.shutdown().await;
 }
+
+/// Final review: a full download that completed before a restart (the host
+/// never got to install it) is handed back as a `CompletedDownload`; a
+/// streamed-bundle cache is not, even when every bundle is on disk.
+#[tokio::test]
+async fn a_download_completed_before_a_restart_is_handed_back_for_install() {
+    let network = InMemoryNetwork::new();
+    let alice = network.transport("alice");
+    let (alice_dir, bob_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let plain = SourceTileset::write(&alice_dir.path().join("plain"), "plain", 2);
+    let cached = SourceTileset::write(&alice_dir.path().join("cached"), "cached", 1);
+    let publisher = service(&alice, alice_dir.path());
+    let plain_entry = publisher
+        .publish("plain", plain.index_json.clone(), &plain.bundle_paths)
+        .await
+        .unwrap();
+    let cached_entry = publisher
+        .publish("cached", cached.index_json.clone(), &cached.bundle_paths)
+        .await
+        .unwrap();
+    {
+        let bob = service(&network.transport("bob"), bob_dir.path());
+        let report = bob
+            .start_download(&[alice.provider_ref()], "plain", plain_entry.root, None)
+            .await
+            .unwrap();
+        assert!(report.complete.is_some());
+        bob.request_meta(&[alice.provider_ref()], "cached", cached_entry.root)
+            .await
+            .unwrap();
+        bob.fetch_chunk("cached", 0).await.unwrap();
+    }
+
+    let restarted = service(&network.transport("bob-restarted"), bob_dir.path());
+    let pending = restarted.pending_downloads().await.unwrap();
+    assert_eq!(pending.len(), 2, "both ledgers are listed: {pending:?}");
+    let completed = restarted.completed_from(&pending);
+    assert_eq!(completed.len(), 1, "only the full download: {completed:?}");
+    assert_eq!(completed[0].tileset_id, "plain");
+    assert_eq!(completed[0].root, plain_entry.root);
+    for (seq, path) in completed[0].bundle_paths.iter().enumerate() {
+        assert_eq!(std::fs::read(path).unwrap(), plain.bundles[seq]);
+    }
+}
+
+/// Final review: `catalog_from_tags` runs at sync-thread start while startup
+/// seeding may already be publishing. A tag snapshot that predates a publish
+/// (modelled by deleting the fresh tag) must not erase the published entry.
+#[tokio::test]
+async fn a_tag_rebuild_never_drops_a_tileset_published_meanwhile() {
+    let network = InMemoryNetwork::new();
+    let alice = network.transport("alice");
+    let alice_dir = TempDir::new().unwrap();
+    let older = SourceTileset::write(&alice_dir.path().join("older"), "older", 1);
+    let fresh = SourceTileset::write(&alice_dir.path().join("fresh"), "fresh", 1);
+    let transfer = service(&alice, alice_dir.path());
+    let older_entry = transfer
+        .publish("older", older.index_json.clone(), &older.bundle_paths)
+        .await
+        .unwrap();
+    let fresh_entry = transfer
+        .publish("fresh", fresh.index_json.clone(), &fresh.bundle_paths)
+        .await
+        .unwrap();
+    alice
+        .delete_tag(&fe_sync::tileset_transfer::tileset_tag("fresh"))
+        .await
+        .unwrap();
+
+    let rebuilt = transfer.catalog_from_tags().await.unwrap();
+    assert_eq!(rebuilt, vec![older_entry.clone()]);
+    assert_eq!(transfer.catalog_entry("older"), Some(older_entry));
+    assert_eq!(
+        transfer.catalog_entry("fresh"),
+        Some(fresh_entry),
+        "the concurrent publish keeps its catalog entry (it is still advertised)"
+    );
+}

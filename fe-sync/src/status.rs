@@ -54,6 +54,20 @@ pub struct StreamedTilesetEventBuffer {
     pub events: Vec<SyncEvent>,
 }
 
+/// Most events either tileset buffer holds between drains; past it new events
+/// are dropped (a binary with no consumer — the headless relay — never grows
+/// without bound; see `src/AGENTS.md` §tileset-transfer).
+pub const MAX_BUFFERED_TILESET_EVENTS: usize = 4096;
+
+/// Push `ev` unless `events` is full; returns whether it was kept.
+fn push_bounded(events: &mut Vec<SyncEvent>, ev: SyncEvent) -> bool {
+    if events.len() >= MAX_BUFFERED_TILESET_EVENTS {
+        return false;
+    }
+    events.push(ev);
+    true
+}
+
 /// Bevy system that drains [`SyncEvent`]s from the sync thread and updates
 /// [`SyncStatus`].
 pub fn drain_sync_events(
@@ -64,6 +78,7 @@ pub fn drain_sync_events(
 ) {
     let Some(receiver) = receiver else { return };
     let Ok(rx) = receiver.0.lock() else { return };
+    let mut dropped = 0usize;
     while let Ok(evt) = rx.try_recv() {
         match evt {
             SyncEvent::Started { online, node_addr } => {
@@ -171,11 +186,14 @@ pub fn drain_sync_events(
                             | SyncEvent::TilesetMetaReceived { .. }
                             | SyncEvent::ChunkReceived { .. }
                             | SyncEvent::ChunkFailed { .. }
-                    ) {
-                        streamed.events.push(ev.clone());
+                    ) && !push_bounded(&mut streamed.events, ev.clone())
+                    {
+                        dropped += 1;
                     }
                 }
-                tileset_buf.events.push(ev);
+                if !push_bounded(&mut tileset_buf.events, ev) {
+                    dropped += 1;
+                }
             }
             // Peer transform updates — applying to local nodes is deferred.
             // TODO(iroh-1.x): apply peer NodeTransformed to the local ECS/world.
@@ -200,6 +218,13 @@ pub fn drain_sync_events(
             }
         }
     }
+    if dropped > 0 {
+        tracing::warn!(
+            dropped,
+            cap = MAX_BUFFERED_TILESET_EVENTS,
+            "Tileset event buffer full (nothing drains it) — events dropped"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -212,6 +237,41 @@ mod tests {
         assert_eq!(status.health, RelayHealth::Unknown);
         assert!(!status.online);
         assert_eq!(status.peer_count, 0);
+    }
+
+    /// A binary with no tileset consumer (the headless relay) drains the
+    /// sync channel every frame; its buffers must stay capped, not grow
+    /// with every advertisement for the life of the process.
+    #[test]
+    fn undrained_tileset_buffers_stay_bounded() {
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let mut app = App::new();
+        app.insert_resource(SyncEventReceiverRes(Arc::new(Mutex::new(rx))))
+            .init_resource::<SyncStatus>()
+            .init_resource::<TilesetEventBuffer>()
+            .init_resource::<StreamedTilesetEventBuffer>()
+            .add_systems(Update, drain_sync_events);
+        for frame in 0..3 {
+            for i in 0..MAX_BUFFERED_TILESET_EVENTS {
+                tx.send(SyncEvent::PeerTilesetAdvertisement {
+                    peer_id: format!("peer-{frame}-{i}"),
+                    advertisements_json: "[]".to_string(),
+                })
+                .unwrap();
+            }
+            app.update();
+        }
+        assert_eq!(
+            app.world().resource::<TilesetEventBuffer>().events.len(),
+            MAX_BUFFERED_TILESET_EVENTS
+        );
+        assert_eq!(
+            app.world()
+                .resource::<StreamedTilesetEventBuffer>()
+                .events
+                .len(),
+            MAX_BUFFERED_TILESET_EVENTS
+        );
     }
 
     #[test]

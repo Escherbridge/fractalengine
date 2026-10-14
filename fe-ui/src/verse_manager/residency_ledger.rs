@@ -97,7 +97,7 @@ impl CameraPose {
 pub(crate) struct Horizon {
     /// Enter at weighted distance ≤ this.
     pub enter: f32,
-    /// Exit at raw distance > this (raw, so rotation never evicts inside `enter`).
+    /// Exit at weighted distance > this (weighted ≤ raw, so rotation never evicts inside `enter`).
     pub exit: f32,
     /// `false` while the mesh budget is exceeded or pressure halted admission.
     pub admit_new: bool,
@@ -133,7 +133,7 @@ pub(crate) struct Candidate {
 
 /// Fills `out` with the input indices admitted this pass, nearest-first, at
 /// most `cap`. Enter at weighted ≤ `enter`; stay while `previously_admitted`
-/// and raw ≤ `exit` (or still entering). `camera: None` = every distance `0`;
+/// and weighted ≤ `exit`. `camera: None` = every distance `0`;
 /// a non-finite camera or `horizon: None` admits nothing. Pure; see AGENTS.md
 /// §residency-ledger.
 pub(crate) fn select_admitted<'n>(
@@ -182,8 +182,9 @@ pub(crate) fn select_admitted<'n>(
             _ => (0.0, 0.0),
         };
         let entering = horizon.admit_new && weighted <= horizon.enter;
-        let retained =
-            previously_admitted.contains(id) && (raw <= horizon.exit || weighted <= horizon.enter);
+        // Weighted ≤ raw, so this keeps everything inside raw `exit` AND gives a
+        // forward node the same 1.5× band (no enter/exit flap on camera jitter).
+        let retained = previously_admitted.contains(id) && weighted <= horizon.exit;
         if !(entering || retained) {
             continue;
         }
@@ -640,6 +641,30 @@ mod tests {
                 select(camera, &nodes, prev, full(), 10) == ["n"],
                 expected,
                 "d {distance} prev {previously}"
+            );
+        }
+    }
+
+    /// A node straight ahead enters at raw 2r (weighted r); it must keep the
+    /// same 1.5× band before it leaves, or camera jitter at 2r flaps it.
+    #[test]
+    fn a_node_straight_ahead_keeps_a_hysteresis_band() {
+        let camera = pose([0.0; 3], [1.0, 0.0, 0.0]);
+        // (raw distance ahead, previously admitted, admitted now)
+        let table = [
+            (20.0, false, true),
+            (21.0, false, false),
+            (21.0, true, true),
+            (29.0, true, true),
+            (31.0, true, false),
+        ];
+        for (distance, previously, expected) in table {
+            let nodes = [("n", [distance, 0.0, 0.0])];
+            let prev: &[&str] = if previously { &["n"] } else { &[] };
+            assert_eq!(
+                select(camera, &nodes, prev, full(), 10) == ["n"],
+                expected,
+                "ahead d {distance} prev {previously}"
             );
         }
     }

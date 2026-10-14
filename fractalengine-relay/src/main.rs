@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bevy::prelude::{AppExit, MessageWriter, PluginGroup};
+use bevy::prelude::{AppExit, IntoScheduleConfigs, MessageWriter, PluginGroup};
 use fe_runtime::app::{
     ApiCommandReceiver, ApiCommandSender, BevyHandles, PendingApiRequests,
     RevocationBroadcastSender, TransformBroadcastSender,
@@ -283,7 +283,13 @@ fn main() -> anyhow::Result<()> {
     // first frame panics with "Resource does not exist" (the GUI inits it in
     // fe-ui's plugin, which the relay does not load).
     app.init_resource::<fe_sync::TilesetEventBuffer>();
-    app.add_systems(bevy::prelude::Update, fe_sync::drain_sync_events);
+    // Nothing on the relay consumes tileset events (no Hexon Manager), so
+    // discard them each frame after the drain instead of letting the buffer
+    // sit at its cap (fe-sync `src/AGENTS.md` §tileset-transfer).
+    app.add_systems(
+        bevy::prelude::Update,
+        (fe_sync::drain_sync_events, discard_tileset_events).chain(),
+    );
 
     // Secret store resource (cloned for the startup replica scan below).
     app.insert_resource(fe_database::SecretStoreRes(secret_store.clone()));
@@ -510,6 +516,11 @@ fn run_replication_bridge(
             Err(crossbeam::channel::TrySendError::Disconnected(_)) => break,
         }
     }
+}
+
+/// Drops the tileset events `drain_sync_events` buffered — the relay has no consumer for them.
+fn discard_tileset_events(mut buffer: bevy::prelude::ResMut<fe_sync::TilesetEventBuffer>) {
+    buffer.events.clear();
 }
 
 /// S4 (`p2p_asset_streaming_20260718`, critic step 5): bundle + publish every

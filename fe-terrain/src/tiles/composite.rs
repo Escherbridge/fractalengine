@@ -292,6 +292,19 @@ impl CompositeTileSource {
         }
     }
 
+    /// Drop streamed bundles that arrived but were never pinned within
+    /// `max_idle` (the ring left before they landed); returns how many.
+    pub fn evict_idle_streamed_bundles(
+        &self,
+        max_idle: std::time::Duration,
+        now: std::time::Instant,
+    ) -> usize {
+        self.streamed_sources
+            .iter()
+            .map(|s| s.evict_idle(max_idle, now))
+            .sum()
+    }
+
     /// Whether `coord` is in a window a streamed source would eventually
     /// resolve but can't yet: an unresolved index (conservatively, only when
     /// no OTHER source already covers `coord`), or a resolved index whose

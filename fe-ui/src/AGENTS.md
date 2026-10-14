@@ -763,12 +763,16 @@ Available / Downloads tabs (`dto.rs`, `events.rs`, `mod.rs`).
   `SyncCommand::DownloadTileset` to drive meta resolution AND every bundle
   fetch on the sync thread, `start_download` sends exactly one
   `DownloadTileset` and `drain_tileset_events` only updates progress —
-  `TilesetMetaReceived` sets the chunk-count estimate, `ChunkReceived` bumps
+  `TilesetMetaReceived` sets the chunk-count estimate (or, with an empty
+  `root_hash` — fe-sync's honest failure reply — sets `Failed` with the
+  reason from `meta_json.error`), `ChunkReceived` bumps
   counters, `TilesetDownloadComplete` pushes
   `HexonOp::AssembleDownload { tileset_id, index_path, bundle_paths }` for the
   main binary. `TilesetDownloadResumed` (emitted at sync-thread startup from
   the persisted ledger, S3) seeds/updates the same tracker so a download that
   completed before a restart still shows as resolved in the Downloads tab.
+  `Complete` is set by the host (`terrain_bridge::drain_hexon_assemble_results`)
+  once the install succeeds — fe-ui never sees the install itself.
 - **Assembly/install never happens in fe-ui.** fe-ui has no fe-terrain
   dependency (root `AGENTS.md` §petal-map) — `HexonOp::AssembleDownload` is
   just a queued request; `fractalengine::terrain_bridge::drain_hexon_ops`
@@ -801,12 +805,15 @@ despawn for distance" behaviour.
   ahead of the spawners, not first in the frame).
 - **Ranking (B2).** Weighted distance = `d × (1 − 0.5·max(0, cosθ))`, with θ
   the angle to camera-forward (the single `OrbitCameraController`'s
-  `GlobalTransform`). A node **enters** at weighted ≤ r and **exits** at raw
-  distance > 1.5 r. The exit uses raw distance, so turning the camera can never
-  evict anything inside r: inside raw r the weighted distance is ≤ r at any
-  angle. A forward node at raw 1.8 r is admitted (weighted 0.9 r) and stays
-  admitted while it keeps entering. It drops when the camera turns away, which
-  is allowed because it is outside r. Candidates sort by tier, then weighted
+  `GlobalTransform`). A node **enters** at weighted ≤ r and **exits** at
+  weighted > 1.5 r. Weighted ≤ raw, so turning the camera can never evict
+  anything inside raw 1.5 r. A forward node at raw 1.8 r is admitted (weighted
+  0.9 r) and stays until its weighted distance passes 1.5 r. It can drop when
+  the camera turns away, which is allowed because it is outside r. (Final
+  review 2026-10-14: the exit used to be "raw > 1.5 r and weighted > r", which
+  gave a node straight ahead NO band — it entered and left at the same raw 2 r,
+  so camera jitter there flapped its scene; test
+  `a_node_straight_ahead_keeps_a_hysteresis_band`.) Candidates sort by tier, then weighted
   distance, then tree order. Tier 0 is the selected node, tier 1 is inside raw
   r, tier 2 is the rest. So when the cap (`entity_cap.min(MAX_PETAL_NODES)`)
   saturates, a band node never displaces one inside r.

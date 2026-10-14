@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use fe_format::manifest::TilesetBundleIndex;
 
@@ -35,6 +36,8 @@ struct StreamedState {
     /// is the BUNDLE (many tiles), unlike the per-tile `ByteLru` an installed
     /// `HexonTileSource` uses.
     pins: HashMap<u32, u32>,
+    /// When each resident bundle arrived (idle-eviction clock for never-pinned ones).
+    inserted_at: HashMap<u32, Instant>,
 }
 
 impl StreamedTileSource {
@@ -113,7 +116,29 @@ impl StreamedTileSource {
     /// — see fe-sync `AGENTS.md` §tileset-transfer). A duplicate insert (a
     /// re-fetch after eviction) just replaces it.
     pub fn insert_bundle(&self, seq: u32, source: HexonTileSource) {
-        self.state().resident.insert(seq, source);
+        let mut state = self.state();
+        state.resident.insert(seq, source);
+        state.inserted_at.insert(seq, Instant::now());
+    }
+
+    /// Drop resident bundles no live chunk ever pinned within `max_idle` of
+    /// arriving (the ring moved on before they landed); returns how many.
+    pub fn evict_idle(&self, max_idle: Duration, now: Instant) -> usize {
+        let mut state = self.state();
+        let StreamedState {
+            resident,
+            pins,
+            inserted_at,
+        } = &mut *state;
+        let before = resident.len();
+        resident.retain(|seq, _| {
+            pins.get(seq).is_some_and(|count| *count > 0)
+                || inserted_at
+                    .get(seq)
+                    .is_some_and(|at| now.saturating_duration_since(*at) < max_idle)
+        });
+        inserted_at.retain(|seq, _| resident.contains_key(seq));
+        before - resident.len()
     }
 
     /// Resident bytes for `layer` at `coord` (no I/O — the bundle is either
@@ -145,6 +170,7 @@ impl StreamedTileSource {
             if *count == 0 {
                 state.pins.remove(&seq);
                 state.resident.remove(&seq);
+                state.inserted_at.remove(&seq);
             }
         }
     }
@@ -404,6 +430,38 @@ mod tests {
             0,
             "readout drops to zero"
         );
+    }
+
+    /// Final review: a bundle that lands after the ring moved on is never
+    /// pinned, so `release` never drops it; idle eviction does, while a
+    /// pinned bundle and a fresh arrival stay resident.
+    #[test]
+    fn a_bundle_no_chunk_ever_pinned_is_evicted_once_idle() {
+        let mut composite = super::super::composite::CompositeTileSource::new();
+        composite.add_streamed_source(StreamedTileSource::new("ts".into(), two_bundle_index()));
+        let source = |x| HexonTileSource::from_archive(&bundle_archive(x, 1)).unwrap();
+        composite.insert_streamed_bundle("ts", 0, source(0));
+        composite.insert_streamed_bundle("ts", 1, source(2));
+        composite.pin_streamed(TileCoord::new(0, 0, 10));
+
+        let grace = Duration::from_secs(10);
+        let now = Instant::now();
+        assert_eq!(
+            composite.evict_idle_streamed_bundles(grace, now),
+            0,
+            "fresh"
+        );
+        let later = now + Duration::from_secs(11);
+        assert_eq!(composite.evict_idle_streamed_bundles(grace, later), 1);
+        assert!(
+            !composite.streamed_pending(TileCoord::new(0, 0, 10)),
+            "pinned stays"
+        );
+        assert!(
+            composite.streamed_pending(TileCoord::new(2, 0, 10)),
+            "the unpinned bundle left memory"
+        );
+        assert_eq!(composite.streamed_resident_bundles(), 1);
     }
 
     /// S8b: a meta reply whose index names another tileset never becomes a

@@ -873,7 +873,13 @@ anything to the local hexon store.
   §tileset-transfer) — a re-entry re-demands the bundle but
   `fe-sync::TilesetTransfer::fetch_chunk` serves it from that verified file
   rather than re-fetching over the network (not re-verified here, since S2/S3
-  already blake3-checked it before `ChunkReceived` ever fires).
+  already blake3-checked it before `ChunkReceived` ever fires). A bundle that
+  arrives after the ring moved on is never pinned, so `release` never drops
+  it: `StreamedTileSource::evict_idle` (via
+  `CompositeTileSource::evict_idle_streamed_bundles`, called each frame by
+  the binary with a 10 s grace) drops resident bundles with no pin that are
+  older than the grace (final review 2026-10-14; test
+  `a_bundle_no_chunk_ever_pinned_is_evicted_once_idle`).
 - **The binary owns network state fe-terrain can't.** `petal_binding` only
   marks a uri pending and renders nothing for it; it has no provider
   addresses, no peer knowledge, and (by design, root `AGENTS.md` §petal-map)

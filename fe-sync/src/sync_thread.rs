@@ -628,48 +628,10 @@ pub fn spawn_sync_thread_with_transport(
                 Arc::new(TilesetTransfer::for_p2p_dir(transport, &p2p_dir))
             });
             if let Some(transfer) = tileset_transfer.clone() {
-                let evt_tx = evt_tx.clone();
-                tokio::spawn(async move {
-                    // Rebuild the catalog from persisted `fe/tileset/` tags
-                    // (survives a restart — the tags live in the fs store).
-                    if let Err(e) = transfer.catalog_from_tags().await {
-                        tracing::warn!("Rebuilding tileset catalog from tags failed: {e}");
-                    }
-                    // Report what was already on disk BEFORE re-fetching
-                    // anything, so a UI sees "found N/M" honestly.
-                    match transfer.pending_downloads().await {
-                        Ok(pending) => {
-                            for resumed in &pending {
-                                tracing::info!(
-                                    tileset_id = %resumed.tileset_id,
-                                    received = resumed.received,
-                                    total = resumed.total,
-                                    "Found a persisted tileset download at startup"
-                                );
-                                send_sync_event(
-                                    &evt_tx,
-                                    SyncEvent::TilesetDownloadResumed {
-                                        tileset_id: resumed.tileset_id.clone(),
-                                        received: resumed.received,
-                                        total: resumed.total,
-                                    },
-                                );
-                            }
-                        }
-                        Err(e) => tracing::warn!("Listing pending tileset downloads failed: {e}"),
-                    }
-                    // Now actually fetch whatever those downloads are still
-                    // missing — spawned, so this never blocks the command
-                    // loop (the select! loop never awaits a transfer
-                    // inline).
-                    let (progress_tx, progress_rx) = tokio::sync::mpsc::unbounded_channel();
-                    let pump = tokio::spawn(pump_transfer_progress(progress_rx, evt_tx.clone()));
-                    if let Err(e) = transfer.resume_all(Some(&progress_tx)).await {
-                        tracing::warn!("Resuming tileset downloads failed: {e}");
-                    }
-                    drop(progress_tx);
-                    let _ = pump.await;
-                });
+                tokio::spawn(report_and_resume_tileset_downloads(
+                    transfer,
+                    evt_tx.clone(),
+                ));
             }
 
             // Gossip lives inside the stack (one instance, routed by the
@@ -2547,6 +2509,56 @@ async fn pump_transfer_progress(
     }
 }
 
+/// Start-up pass over persisted tilesets (spawned — never on the select!
+/// loop): rebuild the catalog from `fe/tileset/` tags, report each persisted
+/// FULL download (`TilesetDownloadResumed`, counts before any re-fetch),
+/// hand back the ones already complete (`TilesetDownloadComplete`, so a
+/// restart between completion and install still installs), then resume the
+/// rest. A streamed-bundle cache is a cache, not a download, so it is never
+/// reported. See `AGENTS.md` §tileset-transfer.
+async fn report_and_resume_tileset_downloads(
+    transfer: Arc<TilesetTransfer>,
+    evt_tx: SyncEventSender,
+) {
+    if let Err(e) = transfer.catalog_from_tags().await {
+        tracing::warn!("Rebuilding tileset catalog from tags failed: {e}");
+    }
+    match transfer.pending_downloads().await {
+        Ok(pending) => {
+            for resumed in pending.iter().filter(|p| p.full_download) {
+                tracing::info!(
+                    tileset_id = %resumed.tileset_id,
+                    received = resumed.received,
+                    total = resumed.total,
+                    "Found a persisted tileset download at startup"
+                );
+                send_sync_event(
+                    &evt_tx,
+                    SyncEvent::TilesetDownloadResumed {
+                        tileset_id: resumed.tileset_id.clone(),
+                        received: resumed.received,
+                        total: resumed.total,
+                    },
+                );
+            }
+            for completed in transfer.completed_from(&pending) {
+                send_sync_event(
+                    &evt_tx,
+                    transfer_event_to_sync_event(TransferEvent::Complete(completed)),
+                );
+            }
+        }
+        Err(e) => tracing::warn!("Listing pending tileset downloads failed: {e}"),
+    }
+    let (progress_tx, progress_rx) = tokio::sync::mpsc::unbounded_channel();
+    let pump = tokio::spawn(pump_transfer_progress(progress_rx, evt_tx));
+    if let Err(e) = transfer.resume_all(Some(&progress_tx)).await {
+        tracing::warn!("Resuming tileset downloads failed: {e}");
+    }
+    drop(progress_tx);
+    let _ = pump.await;
+}
+
 /// Pure mapping from a transfer-progress event to the wire event.
 fn transfer_event_to_sync_event(event: TransferEvent) -> SyncEvent {
     match event {
@@ -2697,6 +2709,12 @@ fn handle_download_tileset(
                 );
                 if let Err(e) = transfer.download(&tileset_id, Some(&progress_tx)).await {
                     tracing::warn!(tileset_id = %tileset_id, "Tileset download failed: {e}");
+                    // Never a silent stop (e.g. `DownloadTooLarge`): the UI's
+                    // tracker reads an empty-root meta reply as Failed.
+                    send_sync_event(
+                        &evt_tx,
+                        failed_meta_event(String::new(), tileset_id.clone(), &e.to_string()),
+                    );
                 }
             }
             Err(e) => {
@@ -3819,6 +3837,82 @@ mod tests {
                 std::fs::read(&complete.bundle_paths[0]).unwrap(),
                 b"genuine bundle"
             );
+        });
+    }
+
+    /// Final review: the start-up pass reports persisted FULL downloads only
+    /// (a streamed-bundle cache is not a download the UI should track), and
+    /// hands a download that completed before the restart back as
+    /// `TilesetDownloadComplete` so the host still assembles + installs it.
+    #[test]
+    fn the_startup_pass_reports_downloads_and_hands_back_completed_ones() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let network = fe_runtime::blob_transport::InMemoryNetwork::new();
+            let alice = network.transport("alice");
+            let publish = |transport: fe_runtime::blob_transport::InMemoryTransport,
+                           body: &'static [u8]| async move {
+                let index = transport
+                    .add(bytes::Bytes::from_static(b"{}"))
+                    .await
+                    .unwrap();
+                let bundle = transport
+                    .add(bytes::Bytes::from_static(body))
+                    .await
+                    .unwrap();
+                transport.add_hash_seq(&[index, bundle]).await.unwrap()
+            };
+            let full_root = publish(alice.clone(), b"full bundle").await;
+            let cache_root = publish(alice.clone(), b"cache bundle").await;
+            let providers = [alice.provider_ref()];
+            let dir = tempfile::TempDir::new().unwrap();
+            {
+                let bob = TilesetTransfer::new(Arc::new(network.transport("bob")), dir.path());
+                let report = bob
+                    .start_download(&providers, "full", full_root, None)
+                    .await
+                    .unwrap();
+                assert!(report.complete.is_some());
+                bob.request_meta(&providers, "cache", cache_root)
+                    .await
+                    .unwrap();
+                bob.fetch_chunk("cache", 0).await.unwrap();
+            }
+
+            let restarted = Arc::new(TilesetTransfer::new(
+                Arc::new(network.transport("bob-restarted")),
+                dir.path(),
+            ));
+            let (evt_tx, evt_rx) = crossbeam::channel::unbounded();
+            report_and_resume_tileset_downloads(restarted, evt_tx).await;
+            let events: Vec<SyncEvent> = evt_rx.try_iter().collect();
+
+            assert!(
+                events
+                    .iter()
+                    .all(|e| !format!("{e:?}").contains("\"cache\"")),
+                "a streamed cache is never reported: {events:?}"
+            );
+            assert!(events.iter().any(|e| matches!(e,
+                SyncEvent::TilesetDownloadResumed { tileset_id, received: 1, total: 1 }
+                    if tileset_id == "full")));
+            let completed: Vec<_> = events
+                .iter()
+                .filter_map(|e| match e {
+                    SyncEvent::TilesetDownloadComplete {
+                        tileset_id,
+                        bundle_paths,
+                        ..
+                    } => Some((tileset_id.clone(), bundle_paths.clone())),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(completed.len(), 1, "{events:?}");
+            assert_eq!(completed[0].0, "full");
+            assert_eq!(std::fs::read(&completed[0].1[0]).unwrap(), b"full bundle");
         });
     }
 
