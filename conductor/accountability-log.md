@@ -239,3 +239,10 @@ Review ledger now complete; other false/stale "done" claims listed (AC-39).
 
 **Orchestrator lesson (sequencing):** an owner question whose answer a scheduled slice needs must be
 answered or defaulted-as-assumption BEFORE that slice — not queued for the end report (AC-5 applies).
+
+### W3b close — 2026-10-14
+- **W3b DONE** `bccb654` + review `78eab0e`, gate_green. AC-30 (a) bearer token through the real seam, (d)
+  off-main-thread assertion — hold. Reviewer FIXED (b) MED: one thread per Remove/SetSeeding raced on the
+  lock → a quick seeding on→off could land off→on (republished) → one long-lived FIFO mutation worker; LOW:
+  publish only after a successful seeding write; (c) LOW: fixed `registry.json.tmp` could tear between GUI
+  and relay sharing a store dir → unique temp path. Accepted: (d) is probabilistic-red by nature (documented).

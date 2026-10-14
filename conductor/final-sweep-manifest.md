@@ -416,3 +416,24 @@ test binaries, the fe-sdk `legacy_identifier_is_stable_and_collision_free_across
 `cargo run -p fractalengine-test-harness` 16/16 ×2 — to run ONCE at the campaign final sweep,
 per the W4 plan's §1 "W3 close gate" amendment.*
 
+## W3b fixups (`bccb654` + review `78eab0e`)
+
+Reviewer fixed a seeding-toggle reorder race (FIFO mutation worker), publish-on-failed-write, and a GUI↔relay shared temp-path tear.
+
+- fractalengine/src/terrain_bridge.rs: install_from_registry_threads_the_bearer_token_to_the_client
+- fractalengine/src/terrain_bridge.rs: remove_and_seeding_ops_report_through_the_worker_channel
+- fractalengine/src/terrain_bridge.rs: a_local_hexon_install_runs_off_the_main_thread_and_reports_its_outcome (amended with try_recv-empty assertions, both legs)
+- install_from_registry_threads_the_bearer_token_to_the_client
+- remove_and_seeding_ops_report_through_the_worker_channel
+- a_local_hexon_install_runs_off_the_main_thread_and_reports_its_outcome
+- fractalengine/src/terrain_bridge.rs: queued_store_mutations_apply_in_click_order (16 seeding toggles, one per frame, then a Remove; asserts the applied order matches the click order and the store ends empty. Mutation: going back to a thread per op makes 16 threads compete for the lock, so this very likely goes red, though not guaranteed)
+- fractalengine/src/terrain_bridge.rs: a_seeding_enable_that_fails_to_persist_is_never_published (full flow: drain_hexon_ops → worker → drain_hexon_assemble_results → SyncCommand channel. Enable publishes, disable unpublishes, and after registry.json is corrupted an enable does not publish. Mutation: removing the result.is_err() gate makes it publish, so the test goes red)
+- fe-terrain/src/tiles/store.rs: a_stale_registry_temp_file_never_blocks_a_save (a directory sits at the old fixed registry.json.tmp name; install and set_seeding still succeed. Mutation: reverting to the fixed temp name makes File::create fail, so the test goes red deterministically)
+- queued_store_mutations_apply_in_click_order
+- a_seeding_enable_that_fails_to_persist_is_never_published
+- a_stale_registry_temp_file_never_blocks_a_save
+- installs_racing_seeding_toggles_lose_no_registry_update
+- test_set_seeding
+- test_remove_tileset
+- an_installed_download_completes_and_discards_its_cache
+
