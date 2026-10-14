@@ -51,6 +51,8 @@ pub(super) struct DescriptorCaches<'w, 's> {
         Without<super::spawn::PathAssetInstance>,
     >,
     mesh_budget: Res<'w, crate::plugin::MeshInstanceBudget>,
+    /// D-74: `HierarchyLoaded` only spawns ledger-admitted nodes (§residency-ledger).
+    residency: Res<'w, super::ResidencyLedger>,
     /// Phase 3 visibility hydration target (`view.state`/`view.groups` via
     /// `NodePropertiesLoaded`, `PetalViewStateLoaded`, `NodeViewSet`).
     visibility: ResMut<'w, crate::visibility::VisibilityState>,
@@ -97,6 +99,7 @@ pub(super) fn apply_db_results(
                     &mut pending_api,
                     &mut already_spawned,
                     mesh_budget_exceeded,
+                    &caches.residency,
                     &mut caches.ts_settings,
                 )
             }

@@ -56,6 +56,28 @@ pub fn sync_ruler_settings(settings: Res<AppSettings>, mut ruler: ResMut<RulerSe
     }
 }
 
+/// Mirrors fe-terrain tile residency (streamed bundles + resident tile bytes)
+/// into fe-runtime `ResidencyStats` for fe-ui's Settings readout (fe-ui has no
+/// fe-terrain dependency). See src/AGENTS.md §residency-stats.
+pub fn mirror_tile_residency_stats(
+    tile_source: Option<Res<ActiveTileSource>>,
+    mut stats: ResMut<fe_runtime::diag15m::ResidencyStats>,
+) {
+    let next = tile_source
+        .as_deref()
+        .and_then(|source| source.composite.as_ref())
+        .map(|composite| fe_runtime::diag15m::ResidencyStats {
+            tile_bundles: composite.streamed_resident_bundles(),
+            tile_bytes: composite
+                .resident_bytes()
+                .saturating_add(composite.streamed_resident_bytes()),
+        })
+        .unwrap_or_default();
+    if *stats != next {
+        *stats = next;
+    }
+}
+
 /// The tile mode the active composite should honour: the global `Offline`
 /// setting forces no-network, otherwise the petal's own mode governs.
 pub fn effective_tile_mode(
@@ -625,6 +647,29 @@ mod tests {
     }
 
     #[test]
+    fn tile_residency_mirror_clears_a_stale_readout() {
+        use fe_runtime::diag15m::ResidencyStats;
+
+        let mut app = App::new();
+        app.init_resource::<ResidencyStats>()
+            .insert_resource(ResidencyStats {
+                tile_bundles: 9,
+                tile_bytes: 9,
+            })
+            .insert_resource(ActiveTileSource {
+                composite: None,
+                projection: None,
+            })
+            .add_systems(Update, mirror_tile_residency_stats);
+        app.update();
+        assert_eq!(
+            *app.world().resource::<ResidencyStats>(),
+            ResidencyStats::default(),
+            "a stale count is cleared once no composite is active"
+        );
+    }
+
+    #[test]
     fn settings_toggles_reach_the_ruler_overlays() {
         let mut app = App::new();
         app.init_resource::<AppSettings>()
@@ -891,7 +936,8 @@ mod tests {
 
         let mut app = App::new();
         app.init_resource::<fe_sync::StreamedTilesetEventBuffer>()
-            .init_resource::<StreamedTilesetState>();
+            .init_resource::<StreamedTilesetState>()
+            .init_resource::<fe_runtime::diag15m::ResidencyStats>();
         let mut composite = fe_terrain::tiles::CompositeTileSource::new();
         composite.add_streamed_source(StreamedTileSource::new(
             tileset_id.to_string(),
@@ -906,7 +952,12 @@ mod tests {
         app.insert_resource(rx);
         app.add_systems(
             Update,
-            (drive_streamed_tilesets, drain_streamed_bundle_results).chain(),
+            (
+                drive_streamed_tilesets,
+                drain_streamed_bundle_results,
+                mirror_tile_residency_stats,
+            )
+                .chain(),
         );
 
         // Simulate a prior `request_demanded_bundles` call: this bundle is
@@ -958,6 +1009,17 @@ mod tests {
                 .chunk_requested
                 .contains(&(tileset_id.to_string(), 0)),
             "the completed request is no longer tracked as in-flight"
+        );
+        let stats = *app
+            .world()
+            .resource::<fe_runtime::diag15m::ResidencyStats>();
+        assert_eq!(
+            stats.tile_bundles, 1,
+            "S8 readout counts the resident bundle"
+        );
+        assert!(
+            stats.tile_bytes >= 8,
+            "and its decoded tile bytes: {stats:?}"
         );
     }
 }

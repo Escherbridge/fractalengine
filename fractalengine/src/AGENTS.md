@@ -34,6 +34,21 @@ fe-terrain dependency, so only this binary can join them. Each field is
 written only when it differs, so `RulerSettings` change detection stays quiet.
 Ordering does not matter: a toggle lands at most one frame late.
 
+## §residency-stats (p2p_asset_streaming S8)
+
+`terrain_bridge::mirror_tile_residency_stats` runs in Update. It writes the
+active composite's tile residency into `fe_runtime::diag15m::ResidencyStats`:
+- `tile_bundles` = `streamed_resident_bundles()`;
+- `tile_bytes` = `resident_bytes()` + `streamed_resident_bytes()`.
+
+fe-ui's Settings readout reads those stats ("… K tile bundles (X MiB)",
+fe-ui `src/AGENTS.md` §residency-ledger). The reason is the same as for
+§proposal-budget: only this binary sees both crates.
+
+It writes only on change, and resets to zero when no composite is active. The
+read takes each source's mutex once per frame, which is the same cost as the
+ring pass's own pin and release calls.
+
 ## §tile-mode
 
 `terrain_bridge::apply_global_tile_mode` applies fe-ui's `AppSettings.tile_mode`

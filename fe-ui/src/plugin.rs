@@ -658,6 +658,15 @@ impl Plugin for GardenerConsolePlugin {
         // Mesh-instance watchdog runs in Last so its gate lands before the
         // next frame's spawners (see AGENTS.md §mesh-budget).
         app.add_systems(Last, mesh_instance_watchdog);
+        // D-74 B3 + readout: GPU pressure (render world writes, ledger reads) and
+        // the host-mirrored tile counters; idempotent with fe-runtime's
+        // Diag15MPlugin / the main binary (AGENTS.md §residency-ledger).
+        app.init_resource::<fe_runtime::diag15m::RenderPressure>();
+        app.init_resource::<fe_runtime::diag15m::ResidencyStats>();
+        app.add_systems(
+            Update,
+            crate::ui_shell::right_sidebar::update_residency_readout,
+        );
         app.init_resource::<SidebarState>();
         app.init_resource::<ToolState>();
         app.init_resource::<InspectorFormState>();

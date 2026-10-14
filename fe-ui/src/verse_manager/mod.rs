@@ -19,6 +19,7 @@ mod path_asset_reconcile;
 mod petal_respawn;
 mod primitive_materialize;
 mod primitive_reconcile;
+mod residency_ledger;
 pub(crate) mod spawn;
 
 use bevy::prelude::*;
@@ -36,8 +37,9 @@ pub(crate) use path_asset_materialize::MAX_STAMPS_PER_PETAL;
 pub(crate) use path_asset_materialize::{parse_stamp_marker_id, stamp_marker_id};
 pub use primitive_materialize::PrimitiveDescriptorCache;
 pub use primitive_reconcile::PrimitiveMaterialAssets;
+pub use residency_ledger::{radius_scale_for_pressure, ResidencyLedger};
 pub(crate) use spawn::MAX_PETAL_NODES;
-pub use spawn::{build_primitive_mesh, PathAssetInstance, PrimitiveNode};
+pub use spawn::{build_primitive_mesh, PathAssetInstance, PrimitiveNode, ResidentNode};
 
 // ---------------------------------------------------------------------------
 // Hierarchy tree types
@@ -174,6 +176,7 @@ impl Plugin for VerseManagerPlugin {
         app.init_resource::<PathAssetCache>();
         app.init_resource::<StampRenderIndex>();
         app.init_resource::<PrimitiveDescriptorCache>();
+        app.init_resource::<ResidencyLedger>();
         // Idempotent with fe-runtime `setup_core_systems` (same add-twice-is-ok
         // idiom as BrowserCommand) — keeps fe-ui-only test apps runnable.
         app.add_message::<fe_runtime::messages::LifecycleEvent>();
@@ -184,12 +187,17 @@ impl Plugin for VerseManagerPlugin {
         // `reconcile_path_asset` only FEEDS the path-asset cache; the single
         // `materialize_path_assets` (last) does all stamp spawning so no
         // double-stamping is possible. See AGENTS.md §path-asset-materialization.
+        // D-74: the residency ledger sees this frame's tree and runs ahead of
+        // every spawner; `apply_node_residency` streams nodes in/out after the
+        // petal-entry batch. See AGENTS.md §residency-ledger.
         app.add_systems(
             Update,
             (
                 lifecycle_events::apply_lifecycle_events,
                 db_results::apply_db_results,
+                residency_ledger::update_residency_ledger,
                 petal_respawn::respawn_on_petal_change,
+                residency_ledger::apply_node_residency,
                 primitive_materialize::materialize_cached_primitives,
                 primitive_reconcile::reconcile_selected_primitive,
                 path_asset_reconcile::reconcile_path_asset,

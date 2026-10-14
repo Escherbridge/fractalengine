@@ -392,6 +392,37 @@ Per-user state outside `data/` is unaffected: the blob store
 (`<data_local_dir>/fractalengine/blobs`), settings
 (`<config_dir>/fractalengine/settings.ron`) and the OS keychain identity.
 
+## §render-pressure (p2p_asset_streaming S8, D-74 B3)
+
+DIAG-15M (`diag15m.rs`) began as temporary logging for the 2026-07-17 crash,
+where the bind group hit 2.7 GiB. It is now the sensor for the residency
+ledger's closed loop.
+
+- **`RenderPressure(Arc<AtomicU64>)`** is created by `Diag15MPlugin::build`
+  (`init_resource`, idempotent with fe-ui's own init). `finish` clones the same
+  `Arc` into the render sub-app. The render-world `diag_log` stores into it and
+  the main-world ledger reads it, so the two worlds share one cell with no
+  extract step. Relaxed ordering is enough: the value is a gauge, and it is
+  one frame stale at worst.
+- **What it measures.** `instance_pressure_bytes` returns the LARGEST single
+  binding: the current input buffer (`len × size_of::<MeshInputUniform>`) or
+  any phase's data buffer (`len × size_of::<MeshUniform>`), whichever is
+  bigger.
+  - The 2 GiB `max_*_buffer_binding_size` limit applies per binding. A sum
+    would halt admission on scenes where no single buffer is near the limit.
+  - It uses element counts × element size, not the GPU `buffer.size()`. The
+    buffers are grow-only, so their size would never fall after eviction, and
+    the loop would stay latched.
+  - It stays `0` when GPU preprocessing is off (CPU-building path, no
+    `BatchedInstanceBuffers`). `0` means unmeasured, so the horizon is not
+    shrunk.
+  - The debug logging is unchanged.
+- **`ResidencyStats { tile_bundles, tile_bytes }`** sits beside it. The main
+  binary mirrors the fe-terrain counters into it
+  (`terrain_bridge::mirror_tile_residency_stats`) for fe-ui's Settings readout.
+  It lives in fe-runtime because fe-ui has no fe-terrain dependency (root
+  `AGENTS.md` §petal-map).
+
 ## §sim-control (F9/A20)
 
 `sim_control.rs` — the API→fe-sim bridge seam (`SimControlCommand` in a

@@ -1,4 +1,8 @@
-// DIAG-15M: temporary render-world instance-buffer diagnostics for the 2.7 GiB bind-group crash.
+// DIAG-15M: render-world instance-buffer diagnostics for the 2.7 GiB bind-group crash, promoted
+// to the D-74 B3 closed loop (`RenderPressure`). See `fe-runtime/src/AGENTS.md` §render-pressure.
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
 use bevy::pbr::{MeshInputUniform, MeshUniform, RenderMeshInstances};
 use bevy::prelude::*;
 use bevy::render::batching::gpu_preprocessing::{
@@ -7,18 +11,64 @@ use bevy::render::batching::gpu_preprocessing::{
 use bevy::render::view::ExtractedView;
 use bevy::render::{Render, RenderApp, RenderSystems};
 
+/// Largest per-binding GPU instance-buffer demand in bytes, shared by the main
+/// and render worlds (one `Arc`): the render world stores, the residency ledger
+/// reads. See `fe-runtime/src/AGENTS.md` §render-pressure.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct RenderPressure(pub Arc<AtomicU64>);
+
+impl RenderPressure {
+    /// Latest measured bytes (`0` = unmeasured / no GPU preprocessing).
+    pub fn bytes(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    /// Publish a new measurement.
+    pub fn store(&self, bytes: u64) {
+        self.0.store(bytes, Ordering::Relaxed);
+    }
+}
+
+/// Tile-residency counters the host binary mirrors from fe-terrain each frame
+/// so fe-ui (no fe-terrain dependency) can show them. See AGENTS.md §render-pressure.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ResidencyStats {
+    /// Streamed tile bundles resident in RAM.
+    pub tile_bundles: usize,
+    /// Tile bytes resident in RAM (installed hexon caches + streamed bundles).
+    pub tile_bytes: u64,
+}
+
+/// Largest single instance-buffer binding the render world currently needs:
+/// `max(input_len × size_of::<MeshInputUniform>, max_phase(data_len × size_of::<MeshUniform>))`.
+/// Pure so the per-binding (not summed) rule is unit-testable.
+pub fn instance_pressure_bytes(
+    input_len: usize,
+    phase_data_lens: impl IntoIterator<Item = usize>,
+) -> u64 {
+    let input = (input_len as u64).saturating_mul(std::mem::size_of::<MeshInputUniform>() as u64);
+    phase_data_lens
+        .into_iter()
+        .map(|len| (len as u64).saturating_mul(std::mem::size_of::<MeshUniform>() as u64))
+        .fold(input, u64::max)
+}
+
 // DIAG-15M: plugin registering the per-frame logger in the render sub-app.
 pub struct Diag15MPlugin;
 
 impl Plugin for Diag15MPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<RenderPressure>();
         app.add_systems(Last, diag_main_world);
     }
 
     fn finish(&self, app: &mut App) {
+        // Same Arc in both worlds: the render world writes, the main world reads.
+        let pressure = app.world().resource::<RenderPressure>().clone();
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
+        render_app.insert_resource(pressure);
         render_app.add_systems(
             Render,
             diag_log.in_set(RenderSystems::PrepareResourcesFlush),
@@ -55,11 +105,13 @@ fn diag_main_world(
     );
 }
 
-// DIAG-15M: logs instance/view/buffer populations once per render frame.
+// DIAG-15M: logs instance/view/buffer populations once per render frame and
+// publishes the per-binding byte demand into `RenderPressure` (B3 closed loop).
 fn diag_log(
     mesh_instances: Option<Res<RenderMeshInstances>>,
     buffers: Option<Res<BatchedInstanceBuffers<MeshUniform, MeshInputUniform>>>,
     views: Query<(), With<ExtractedView>>,
+    pressure: Option<Res<RenderPressure>>,
     mut frame: Local<u64>,
 ) {
     *frame += 1;
@@ -80,6 +132,14 @@ fn diag_log(
     };
     let cur = b.current_input_buffer.len();
     let prev = b.previous_input_buffer.len();
+    if let Some(pressure) = pressure.as_deref() {
+        pressure.store(instance_pressure_bytes(
+            cur,
+            b.phase_instance_buffers
+                .values()
+                .map(|phase| phase.data_buffer.len()),
+        ));
+    }
     tracing::debug!(
         "DIAG-15M f={} mesh_instances={} views={} input_cur={} input_prev={} input_cur_gpu_bytes={:?}",
         *frame, mi_len, view_count, cur, prev,
@@ -119,5 +179,42 @@ fn diag_log(
             "DIAG-15M f={} phase={:?} data_buffer_len={} data_buffer_gpu_bytes={:?} work_items_total={} wi_views={} wi_max_view={}",
             *frame, tid, db_len, db_gpu, wi_total, wi_views, wi_max_view
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pressure is the largest single binding, never the sum: the 2 GiB
+    /// limit is per bind group entry, so three 600 MB phases are not 1.8 GB of risk.
+    #[test]
+    fn pressure_is_the_largest_binding_not_the_sum() {
+        let uniform = std::mem::size_of::<MeshUniform>() as u64;
+        let input = std::mem::size_of::<MeshInputUniform>() as u64;
+        assert_eq!(instance_pressure_bytes(0, []), 0);
+        assert_eq!(instance_pressure_bytes(10, []), 10 * input);
+        assert_eq!(
+            instance_pressure_bytes(0, [100, 300, 200]),
+            300 * uniform,
+            "max phase, not 600 × MeshUniform"
+        );
+        assert_eq!(
+            instance_pressure_bytes(1_000, [1]),
+            (1_000 * input).max(uniform)
+        );
+        assert_eq!(
+            instance_pressure_bytes(usize::MAX, []),
+            u64::MAX,
+            "saturates instead of wrapping"
+        );
+    }
+
+    #[test]
+    fn render_pressure_clones_share_one_cell() {
+        let main_world = RenderPressure::default();
+        let render_world = main_world.clone();
+        render_world.store(42);
+        assert_eq!(main_world.bytes(), 42);
     }
 }

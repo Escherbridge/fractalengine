@@ -783,9 +783,15 @@ dispatch" decision: the main thread never reads a tile.
   pressure point. Re-entry reloads them (identical bytes, identical heights).
   A reassignment releases the old composite's pins wholesale; only the one
   active composite ever pins.
-- Counters for the S8 readout: `CompositeTileSource::resident_bytes()`
-  (distinct sources) and `HexonTileSource::{resident_bytes, pinned_len}`;
-  `TileResidency::{in_flight_len, ready_len}`.
+- Counters for the S8 readout:
+  - `CompositeTileSource::resident_bytes()` (distinct hexon sources);
+  - `streamed_resident_bundles()` / `streamed_resident_bytes()` (S8; built on
+    `StreamedTileSource::{resident_bundle_count, resident_bytes}`);
+  - `HexonTileSource::{resident_bytes, pinned_len}`;
+  - `TileResidency::{in_flight_len, ready_len}`.
+
+  The host mirrors the first two groups into fe-runtime `ResidencyStats`
+  (fractalengine `src/AGENTS.md` §residency-stats).
 - Cost: a chunk now appears a frame or more after it enters the ring (Risk 4,
   accepted; in-app check is USER_GATED). D-38 snap-to-terrain reads
   `TerrainHeightField`, which only covers resident chunks — unchanged by S5.

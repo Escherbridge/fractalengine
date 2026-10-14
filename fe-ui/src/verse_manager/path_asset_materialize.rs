@@ -52,7 +52,7 @@ impl PathAssetCache {
         self.entries.get(track_id)
     }
 
-    fn iter(&self) -> impl Iterator<Item = (&String, &PathAssetCacheEntry)> {
+    pub(super) fn iter(&self) -> impl Iterator<Item = (&String, &PathAssetCacheEntry)> + Clone {
         self.entries.iter()
     }
 
@@ -135,13 +135,14 @@ impl PathAssetCache {
 // Per-track applied-state gate (FR-2)
 // ---------------------------------------------------------------------------
 
-/// The `(descriptor, points-fingerprint, world-scale, overrides-fingerprint)`
-/// last stamped for a track. See AGENTS.md §path-asset-materialization.
+/// The `(descriptor, points-fingerprint, world-scale, overrides-fingerprint,
+/// residency bit)` last applied for a track. See AGENTS.md §path-asset-materialization.
 struct AppliedState {
     descriptor: PathAssetDescriptor,
     points_fingerprint: u64,
     world_scale_bits: u32,
     overrides_fingerprint: u64,
+    admitted: bool,
 }
 
 /// Per-track change gate (FR-2): replaces the old single-slot gate so live
@@ -165,12 +166,14 @@ impl PathAssetApplied {
         points_fingerprint: u64,
         world_scale: f32,
         overrides_fingerprint: u64,
+        admitted: bool,
     ) -> bool {
         self.applied.get(track_id).is_some_and(|s| {
             &s.descriptor == descriptor
                 && s.points_fingerprint == points_fingerprint
                 && s.world_scale_bits == world_scale.to_bits()
                 && s.overrides_fingerprint == overrides_fingerprint
+                && s.admitted == admitted
         })
     }
 
@@ -181,6 +184,7 @@ impl PathAssetApplied {
         points_fingerprint: u64,
         world_scale: f32,
         overrides_fingerprint: u64,
+        admitted: bool,
     ) {
         self.applied.insert(
             track_id.to_string(),
@@ -189,6 +193,7 @@ impl PathAssetApplied {
                 points_fingerprint,
                 world_scale_bits: world_scale.to_bits(),
                 overrides_fingerprint,
+                admitted,
             },
         );
     }
@@ -226,18 +231,32 @@ pub(crate) fn parse_stamp_marker_id(id: &str) -> Option<(&str, usize)> {
     Some((track, idx.parse().ok()?))
 }
 
-/// One materialized track's render/pick data. `index.pick_nearest(x, z, r)`
-/// returns the STAMP INDEX within this track (positions are fed in stamp
-/// order); `batches` is the CPU seam for a future custom instanced pipeline —
-/// today's draw rides Bevy auto-instancing over the shared GLB handles from
+/// One materialized track's render/pick data. Resolve a pick with
+/// [`StampTrackRenderData::pick_stamp`] (maps a pick-index hit to the STAMP
+/// INDEX, which differs once the stamp budget truncated farthest-first);
+/// `batches` is the CPU seam for a future custom instanced pipeline — today's
+/// draw rides Bevy auto-instancing over the shared GLB handles from
 /// `spawn_stamped_entity`. See AGENTS.md §path-asset-materialization.
 pub struct StampTrackRenderData {
     /// Owning petal (entries are cleared wholesale on petal change).
     pub petal_id: String,
-    /// XZ uniform-grid pick index; a hit IS the stamp_index for this track.
+    /// XZ uniform-grid pick index over the SPAWNED stamps' positions.
     pub index: StampSpatialIndex,
+    /// Stamp index of each `index` position, in order; empty = identity.
+    pub stamp_indices: Vec<u32>,
     /// Per-asset instance batches with overrides folded in (one per track today).
     pub batches: Vec<InstanceBatch>,
+}
+
+impl StampTrackRenderData {
+    /// Nearest spawned stamp's index within `max_radius` of `(x, z)`.
+    pub fn pick_stamp(&self, x: f32, z: f32, max_radius: f32) -> Option<usize> {
+        let hit = self.index.pick_nearest(x, z, max_radius)?;
+        if self.stamp_indices.is_empty() {
+            return Some(hit);
+        }
+        self.stamp_indices.get(hit).map(|&i| i as usize)
+    }
 }
 
 /// `track_node_id → StampTrackRenderData`, rebuilt ONLY when a track (re)stamps
@@ -348,6 +367,30 @@ fn take_stamp_budget(remaining: &mut usize, requested: usize) -> usize {
     granted
 }
 
+/// Stamp indices to spawn when only `granted` of `positions` fit the budget:
+/// the `granted` nearest to `camera` (farthest truncated), returned in stamp
+/// order; a prefix when there is no camera. Pure; see AGENTS.md §residency-ledger.
+fn stamps_to_keep(positions: &[[f32; 3]], granted: usize, camera: Option<Vec3>) -> Vec<usize> {
+    let mut keep: Vec<usize> = (0..positions.len()).collect();
+    if granted >= positions.len() {
+        return keep;
+    }
+    if let Some(camera) = camera {
+        let distance = |i: usize| {
+            let d = camera.distance(Vec3::from_array(positions[i]));
+            if d.is_finite() {
+                d
+            } else {
+                f32::INFINITY
+            }
+        };
+        keep.sort_by(|&a, &b| distance(a).total_cmp(&distance(b)).then(a.cmp(&b)));
+    }
+    keep.truncate(granted);
+    keep.sort_unstable();
+    keep
+}
+
 /// A live stamp is orphaned when it belongs to the active petal but its source
 /// track no longer has a cache entry there — the `path_asset` was deleted or the
 /// track/node itself was removed (FR-4, `PathAssetCache::invalidate` on
@@ -364,11 +407,13 @@ fn stamp_is_orphaned(inst: &PathAssetInstance, active_petal: &str, cache: &PathA
 /// Petal-wide path-asset materializer (FR-1): the ONLY system that spawns
 /// stamp instances. For every cached track in the active petal it despawns the
 /// old `PathAssetInstance` group and restamps whenever the descriptor, points,
-/// `world_scale`, or per-stamp overrides changed (per-track gate). Orphaned
-/// groups (track no longer cached — e.g. its `path_asset` was deleted) are torn
-/// down. Runs when the cache, petal, `world_scale`, or stamp state changed;
-/// chained after `respawn_on_petal_change` + `reconcile_path_asset` so it
-/// observes their despawns, gate clears, and cache feeds. See AGENTS.md
+/// `world_scale`, per-stamp overrides, or the group's residency bit (D-74
+/// ledger) changed (per-track gate); a non-resident group is only torn down.
+/// Orphaned groups (track no longer cached — e.g. its `path_asset` was
+/// deleted) are torn down. Runs when the cache, petal, `world_scale`, stamp
+/// state, or the ledger's stamp epoch changed — never per frame; chained after
+/// `respawn_on_petal_change` + `reconcile_path_asset` so it observes their
+/// despawns, gate clears, and cache feeds. See AGENTS.md
 /// §path-asset-materialization.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn materialize_path_assets(
@@ -382,19 +427,25 @@ pub(super) fn materialize_path_assets(
     stamp_state: Res<StampInteractionState>,
     mut applied: ResMut<PathAssetApplied>,
     mut render_index: ResMut<StampRenderIndex>,
-    mut last_petal: Local<Option<String>>,
+    mut last_seen: Local<(Option<String>, Option<u64>)>,
     mut commands: Commands,
     existing: Query<(Entity, &PathAssetInstance)>,
     residency: super::spawn::ResidencyBudget,
+    ledger: Res<super::residency_ledger::ResidencyLedger>,
 ) {
-    let petal_changed = *last_petal != nav.active_petal_id;
+    let petal_changed = last_seen.0 != nav.active_petal_id;
+    let residency_changed = last_seen.1 != Some(ledger.stamp_epoch());
     // T2 FR-3: `stamp_state` changes (override gestures) also re-run the pass;
     // the per-track overrides fingerprint keeps untouched tracks gated out.
-    if !(cache.is_changed() || petal_map.is_changed() || petal_changed || stamp_state.is_changed())
+    if !(cache.is_changed()
+        || petal_map.is_changed()
+        || petal_changed
+        || stamp_state.is_changed()
+        || residency_changed)
     {
         return;
     }
-    *last_petal = nav.active_petal_id.clone();
+    *last_seen = (nav.active_petal_id.clone(), Some(ledger.stamp_epoch()));
     if petal_changed {
         // Pick/instance data is petal-scoped; restamps below rebuild it.
         render_index.tracks.clear();
@@ -442,17 +493,19 @@ pub(super) fn materialize_path_assets(
         // T2 FR-3: sparse per-stamp overrides are a stamp input like any other.
         let track_overrides = stamp_state.overrides_for_track(track_id);
         let ov_fingerprint = overrides_fingerprint(&track_overrides);
+        // D-74: the group's residency bit is a stamp input too, so a group
+        // restamps / tears down only on a residency transition.
+        let admitted = ledger.admits_stamp_group(track_id);
         if applied.matches(
             track_id,
             &entry.descriptor,
             entry.fingerprint,
             world_scale,
             ov_fingerprint,
+            admitted,
         ) {
             continue; // nothing changed — skip the restamp entirely
         }
-        let ov_by_index: HashMap<usize, &StampOverride> =
-            track_overrides.iter().map(|(i, o)| (*i, o)).collect();
 
         // Despawn the previous group for this track before rebuild (deferred).
         for (entity, inst) in existing.iter() {
@@ -460,25 +513,42 @@ pub(super) fn materialize_path_assets(
                 commands.entity(entity).despawn();
             }
         }
+        if !admitted {
+            render_index.tracks.remove(track_id);
+            applied.remember(
+                track_id,
+                entry.descriptor.clone(),
+                entry.fingerprint,
+                world_scale,
+                ov_fingerprint,
+                false,
+            );
+            continue;
+        }
+        let ov_by_index: HashMap<usize, &StampOverride> =
+            track_overrides.iter().map(|(i, o)| (*i, o)).collect();
 
-        let mut samples = sample_transforms(&entry.points, &entry.descriptor, world_scale);
+        let samples = sample_transforms(&entry.points, &entry.descriptor, world_scale);
         let granted = take_stamp_budget(&mut stamp_budget, samples.len());
         if granted < samples.len() {
             bevy::log::warn!(
-                "path-asset stamps saturated: track {} truncated {} → {} (petal cap {})",
+                "path-asset stamps saturated: track {} truncated {} → {} farthest-first (petal cap {})",
                 track_id,
                 samples.len(),
                 granted,
                 MAX_STAMPS_PER_PETAL
             );
-            samples.truncate(granted);
         }
-        let stamped = samples.len();
+        let sample_positions: Vec<[f32; 3]> = samples.iter().map(|(p, _)| *p).collect();
+        let keep = stamps_to_keep(&sample_positions, granted, ledger.camera_position());
+        let stamped = keep.len();
         // FR-4 seam: per-stamp positions + instance data for the pick index and
         // the instanced-draw batch, built once per restamp (never per frame).
         let mut positions: Vec<[f32; 3]> = Vec::with_capacity(stamped);
+        let mut stamp_indices: Vec<u32> = Vec::with_capacity(stamped);
         let mut instances: Vec<StampInstanceData> = Vec::with_capacity(stamped);
-        for (i, (position, yaw)) in samples.into_iter().enumerate() {
+        for i in keep {
+            let (position, yaw) = samples[i];
             let transform = stamp_transform(
                 &entry.points,
                 position,
@@ -487,6 +557,7 @@ pub(super) fn materialize_path_assets(
                 ov_by_index.get(&i).copied(),
             );
             positions.push(transform.translation.to_array());
+            stamp_indices.push(i as u32);
             instances.push(StampInstanceData {
                 position: transform.translation.to_array(),
                 rotation: transform.rotation.to_array(),
@@ -510,6 +581,7 @@ pub(super) fn materialize_path_assets(
             StampTrackRenderData {
                 petal_id: active_petal.to_string(),
                 index: StampSpatialIndex::build(&positions, DEFAULT_CELL_SIZE_M),
+                stamp_indices,
                 batches: batch_by_asset(
                     instances
                         .iter()
@@ -523,6 +595,7 @@ pub(super) fn materialize_path_assets(
             entry.fingerprint,
             world_scale,
             ov_fingerprint,
+            true,
         );
         bevy::log::debug!(
             "Materialized {} path-asset stamps of '{}' along track {} (petal {})",
@@ -787,63 +860,115 @@ mod tests {
         let fp = 12345u64;
         let mut applied = PathAssetApplied::default();
         assert!(
-            !applied.matches("t1", &d, fp, 1.0, 0),
+            !applied.matches("t1", &d, fp, 1.0, 0, true),
             "empty gate never matches"
         );
-        applied.remember("t1", d.clone(), fp, 1.0, 0);
+        applied.remember("t1", d.clone(), fp, 1.0, 0, true);
         assert!(
-            applied.matches("t1", &d, fp, 1.0, 0),
+            applied.matches("t1", &d, fp, 1.0, 0, true),
             "identical inputs match"
         );
         // FR-2: a different track is independent — the single-slot gate used to
         // stomp here, dropping one track's stamps when another was applied.
         assert!(
-            !applied.matches("t2", &d, fp, 1.0, 0),
+            !applied.matches("t2", &d, fp, 1.0, 0, true),
             "different track re-stamps"
         );
         // Changed points fingerprint re-stamps.
         assert!(
-            !applied.matches("t1", &d, fp ^ 1, 1.0, 0),
+            !applied.matches("t1", &d, fp ^ 1, 1.0, 0, true),
             "changed points re-stamp"
         );
         // Changed descriptor re-stamps.
         let mut d2 = d.clone();
         d2.spacing_value = 6.0;
         assert!(
-            !applied.matches("t1", &d2, fp, 1.0, 0),
+            !applied.matches("t1", &d2, fp, 1.0, 0, true),
             "changed descriptor re-stamps"
         );
         // FR-3: metric spacing depends on world_scale, so a scale change re-stamps.
         assert!(
-            !applied.matches("t1", &d, fp, 0.5, 0),
+            !applied.matches("t1", &d, fp, 0.5, 0, true),
             "changed world_scale re-stamps"
         );
         // T2 FR-3: a changed per-stamp override set re-stamps.
         assert!(
-            !applied.matches("t1", &d, fp, 1.0, 42),
+            !applied.matches("t1", &d, fp, 1.0, 42, true),
             "changed overrides re-stamp"
         );
+        // D-74: a residency transition (and only that) re-applies the group.
+        assert!(
+            !applied.matches("t1", &d, fp, 1.0, 0, false),
+            "eviction re-applies"
+        );
+    }
+
+    // --- farthest-first truncation + pick mapping (D-74 residency) ---
+
+    #[test]
+    fn stamps_to_keep_truncates_the_farthest_and_keeps_stamp_order() {
+        let positions: Vec<[f32; 3]> = (0..6).map(|i| [i as f32 * 10.0, 0.0, 0.0]).collect();
+        // Camera at the far end: the budget keeps the stamps nearest to it.
+        assert_eq!(
+            stamps_to_keep(&positions, 2, Some(Vec3::new(55.0, 0.0, 0.0))),
+            vec![4, 5]
+        );
+        assert_eq!(
+            stamps_to_keep(&positions, 3, Some(Vec3::new(22.0, 0.0, 0.0))),
+            vec![1, 2, 3]
+        );
+        // No camera: a prefix (the pre-ledger behaviour).
+        assert_eq!(stamps_to_keep(&positions, 2, None), vec![0, 1]);
+        // Within budget: everything, in order.
+        assert_eq!(
+            stamps_to_keep(&positions, 99, Some(Vec3::ZERO)),
+            vec![0, 1, 2, 3, 4, 5]
+        );
+        assert!(stamps_to_keep(&positions, 0, Some(Vec3::ZERO)).is_empty());
+    }
+
+    #[test]
+    fn pick_stamp_maps_a_truncated_pick_back_to_the_stamp_index() {
+        let truncated = StampTrackRenderData {
+            petal_id: "p".into(),
+            index: StampSpatialIndex::build(
+                &[[40.0, 0.0, 0.0], [50.0, 0.0, 0.0]],
+                DEFAULT_CELL_SIZE_M,
+            ),
+            stamp_indices: vec![4, 5],
+            batches: Vec::new(),
+        };
+        assert_eq!(truncated.pick_stamp(50.5, 0.0, 2.0), Some(5));
+        assert_eq!(truncated.pick_stamp(39.5, 0.0, 2.0), Some(4));
+        assert_eq!(truncated.pick_stamp(0.0, 0.0, 2.0), None);
+        let identity = StampTrackRenderData {
+            petal_id: "p".into(),
+            index: StampSpatialIndex::build(&[[0.0; 3], [10.0, 0.0, 0.0]], DEFAULT_CELL_SIZE_M),
+            stamp_indices: Vec::new(),
+            batches: Vec::new(),
+        };
+        assert_eq!(identity.pick_stamp(10.0, 0.0, 1.0), Some(1));
     }
 
     #[test]
     fn applied_gate_invalidate_is_per_track_and_clear_drops_all() {
         let d = sample_desc();
         let mut applied = PathAssetApplied::default();
-        applied.remember("t1", d.clone(), 1, 1.0, 0);
-        applied.remember("t2", d.clone(), 2, 1.0, 0);
+        applied.remember("t1", d.clone(), 1, 1.0, 0, true);
+        applied.remember("t2", d.clone(), 2, 1.0, 0, true);
         applied.invalidate("t1");
         assert!(
-            !applied.matches("t1", &d, 1, 1.0, 0),
+            !applied.matches("t1", &d, 1, 1.0, 0, true),
             "invalidated track re-stamps"
         );
         assert!(
-            applied.matches("t2", &d, 2, 1.0, 0),
+            applied.matches("t2", &d, 2, 1.0, 0, true),
             "sibling survives invalidate"
         );
         // Petal change / reset clears everything so re-entry restamps.
         applied.clear();
         assert!(
-            !applied.matches("t2", &d, 2, 1.0, 0),
+            !applied.matches("t2", &d, 2, 1.0, 0, true),
             "clear drops everything"
         );
     }
@@ -855,14 +980,15 @@ mod tests {
         cache.upsert("gone", "p", descriptor.clone(), vec![[0.0; 3]], 1);
         cache.upsert("kept", "p", descriptor.clone(), vec![[1.0; 3]], 2);
         let mut applied = PathAssetApplied::default();
-        applied.remember("gone", descriptor.clone(), 1, 1.0, 0);
-        applied.remember("kept", descriptor.clone(), 2, 1.0, 0);
+        applied.remember("gone", descriptor.clone(), 1, 1.0, 0, true);
+        applied.remember("kept", descriptor.clone(), 2, 1.0, 0, true);
         let mut render_index = StampRenderIndex::default();
         render_index.tracks.insert(
             "gone".into(),
             StampTrackRenderData {
                 petal_id: "p".into(),
                 index: StampSpatialIndex::build(&[], DEFAULT_CELL_SIZE_M),
+                stamp_indices: Vec::new(),
                 batches: Vec::new(),
             },
         );
@@ -871,10 +997,10 @@ mod tests {
         invalidate_path_stamp_projection("gone", &mut cache, &mut applied, &mut render_index);
 
         assert!(cache.get("gone").is_none());
-        assert!(!applied.matches("gone", &descriptor, 1, 1.0, 0));
+        assert!(!applied.matches("gone", &descriptor, 1, 1.0, 0, true));
         assert!(!render_index.tracks.contains_key("gone"));
         assert!(cache.get("kept").is_some());
-        assert!(applied.matches("kept", &descriptor, 2, 1.0, 0));
+        assert!(applied.matches("kept", &descriptor, 2, 1.0, 0, true));
     }
 
     // --- per-stamp override application (T2 FR-3) ---

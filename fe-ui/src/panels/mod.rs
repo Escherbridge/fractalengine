@@ -466,6 +466,7 @@ mod tests {
         let mut left = crate::ui_shell::left_sidebar::LeftSidebarState::default();
         let mut right = RightSidebarState {
             requested: Some(RightSidebarSection::Options),
+            ..Default::default()
         };
         let mut modal = crate::ui_shell::modal::ModalManagerState::default();
         let mut vis_state = crate::visibility::VisibilityState::default();

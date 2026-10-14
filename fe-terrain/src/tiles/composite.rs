@@ -587,6 +587,22 @@ impl CompositeTileSource {
         }
     }
 
+    /// Resident bundles across the streamed (not-installed) sources.
+    pub fn streamed_resident_bundles(&self) -> usize {
+        self.streamed_sources
+            .iter()
+            .map(StreamedTileSource::resident_bundle_count)
+            .sum()
+    }
+
+    /// Tile bytes held by the streamed sources' resident bundles.
+    pub fn streamed_resident_bytes(&self) -> u64 {
+        self.streamed_sources
+            .iter()
+            .map(StreamedTileSource::resident_bytes)
+            .sum()
+    }
+
     /// Tile bytes resident in RAM across the distinct hexon sources.
     pub fn resident_bytes(&self) -> u64 {
         self.hexon_sources

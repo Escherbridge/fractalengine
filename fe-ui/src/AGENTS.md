@@ -699,8 +699,9 @@ soft budgets routed through them (`.min(HARD_CAP)` at each spawn site, and
   `mesh_budget_ceiling` into `MeshInstanceBudget.ceiling`;
   `sync_app_settings_to_camera` sets `OrbitCameraController.sensitivity` /
   `zoom_speed` to `BASE_CAMERA_* × multiplier` (the base consts mirror
-  `OrbitCameraController::default()`, pinned by a test). `entity_cap` applies on
-  the next petal entry / primitive pass, `stamp_ceiling` on the next restamp.
+  `OrbitCameraController::default()`, pinned by a test). `entity_cap` is the
+  residency ledger's live cap (§residency-ledger); `stamp_ceiling` applies on the
+  next restamp.
   `tile_mode` is applied by the main binary's `terrain_bridge::apply_global_tile_mode`
   (only `Offline` overrides the petal's mode; fractalengine `src/AGENTS.md`
   §tile-mode). `relay` is read once at startup by fe-sync (`FE_SYNC_RELAY` env
@@ -784,44 +785,109 @@ Available / Downloads tabs (`dto.rs`, `events.rs`, `mod.rs`).
   `fractalengine/src/AGENTS.md` §tileset-p2p for the full host-side flow,
   shared verbatim by the headless relay's startup seeding.
 
-## §residency-ledger — distance-ranked spawn budgets (D-74)
+## §residency-ledger — the D-74 node + stamp-group pointer-set (p2p_asset_streaming S8)
 
-The D-74 residency ledger replaces the boolean `mesh_budget.exceeded` gate with
-a **distance-ranked allowance**. `spawn::distance_ranked_allowance(distance,
-render_distance, ceiling)` (pure, in `verse_manager/spawn.rs`) returns full
-`ceiling` inside `render_distance`, tapering linearly to `0` across the
-`(render_distance, render_distance × 1.5]` hysteresis band (matching the terrain
-×1.5 despawn hysteresis), then `0`; never exceeds `ceiling`. A non-positive
-`render_distance` halts spawning (a valid "render nothing" setting); a
-non-finite/negative distance is a defensive `0`.
+`verse_manager/residency_ledger.rs` owns `ResidencyLedger`, the per-frame
+pointer-set of what the active petal keeps resident: `admitted_nodes`
+(node ids) and `admitted_stamp_groups` (path-asset track ids). It is the
+node/stamp half of D-74; fe-terrain's `TileBundleDemand` (S7) is the tile half.
+It replaces the old "spawn everything up to a hard cap at petal entry, never
+despawn for distance" behaviour.
 
-- **Wiring (drop-in, per D-74).** Every fe-ui spawner already consumed a numeric
-  budget (`spawn_allowance`, `take_stamp_budget`) as `if exceeded {0} else
-  {CONST}`. The `CONST` is now replaced by `distance_ranked_allowance(0.0,
-  settings.render_distance, settings.<cap>.min(HARD_CAP))`. The two budget inputs
-  (the `MeshInstanceBudget` gate + `AppSettings`) are bundled into
-  `spawn::ResidencyBudget` (a `SystemParam`) so `petal_respawn`,
-  `materialize_cached_primitives`, and `materialize_path_assets` each stay under
-  Bevy's 16-param limit (the bundle replaces the old standalone `mesh_budget`
-  param 1-for-1).
-- **Why distance `0.0` at the batch spawners.** These systems run at
-  petal-*entry* / cache-change, not per frame. The petal you just navigated into
-  is the near region, so distance `0` → full ranked ceiling → **no node is
-  dropped one-shot** (a per-frame taper would strand nodes permanently since
-  these spawners don't re-run per frame). The *live* per-frame distance taper —
-  ranking individual entities by camera distance — is the future
-  residency-ledger system's job (`p2p_asset_streaming` Phase 4). What the batch
-  path *does* gain now: the configurable `entity_cap`/`stamp_ceiling`, the
-  `render_distance ≤ 0` kill-switch, and the active petal's session
-  render-distance override via `ResidencyBudget::render_distance_for`
-  (§app-settings). With distance `0`, an override only matters when the global
-  value is `0` (an override re-enables that petal); the distance it carries is
-  what the Phase 4 taper will consume.
-- **Hard backstops kept.** `MAX_PETAL_NODES` (10k), `MAX_STAMPS` (4096/track),
-  `MAX_STAMPS_PER_PETAL` (65,536), and the 2M mesh watchdog are untouched — the
-  ranked ceiling is always `.min()`-ed under them. The FR-4 stamp delete-cascade
-  (`stamp_is_orphaned` + `take_stamp_budget`) is preserved verbatim; the ledger
-  only changed how the *initial* `stamp_budget` value is computed.
+- **Placement.** `update_residency_ledger` runs in the `VerseManagerPlugin` chain
+  right after `apply_lifecycle_events` + `apply_db_results` and before
+  `respawn_on_petal_change`. It sees this frame's tree and runs ahead of every
+  spawner, which is how D-74's "first system" is read (§8 assumption 3: first
+  ahead of the spawners, not first in the frame).
+- **Ranking (B2).** Weighted distance = `d × (1 − 0.5·max(0, cosθ))`, with θ
+  the angle to camera-forward (the single `OrbitCameraController`'s
+  `GlobalTransform`). A node **enters** at weighted ≤ r and **exits** at raw
+  distance > 1.5 r. The exit uses raw distance, so turning the camera can never
+  evict anything inside r: inside raw r the weighted distance is ≤ r at any
+  angle. A forward node at raw 1.8 r is admitted (weighted 0.9 r) and stays
+  admitted while it keeps entering. It drops when the camera turns away, which
+  is allowed because it is outside r. Candidates sort by tier, then weighted
+  distance, then tree order. Tier 0 is the selected node, tier 1 is inside raw
+  r, tier 2 is the rest. So when the cap (`entity_cap.min(MAX_PETAL_NODES)`)
+  saturates, a band node never displaces one inside r.
+- **Inputs.** r = `ResidencyBudget::render_distance_for` (S6 precedence:
+  session override, then petal column, then global) × the GPU-pressure scale.
+  - `mesh_budget.exceeded` sets `admit_new = false`. Nothing new is admitted
+    and nothing still in the ring is evicted (prevention, not recovery, NFR-1).
+  - The selected node (`NodeManager`) is always admitted.
+  - With no orbit camera (headless apps, tests without one), every distance is
+    `0`, which is the pre-ledger batch behaviour.
+  - A non-finite camera freezes the ledger for that frame.
+  - Pure `select_admitted` treats NaN or negative input as "admit nothing", and
+    so does an r that is not positive and finite. r = 0 stays the
+    "render nothing" kill switch.
+- **No per-frame allocation.** The ranked indices and candidates live in reused
+  scratch `Vec`s. The admitted `HashSet<String>`s are rebuilt, and `node_epoch`
+  / `stamp_epoch` bumped, only when membership actually changes. The ledger
+  writes through `bypass_change_detection` and calls `set_changed` only on a
+  transition. Consumers key on the epochs, never on `is_changed()` of a
+  per-frame resource.
+- **Consumers.**
+  - `respawn_on_petal_change` spawns only admitted nodes at petal entry, with
+    `MAX_PETAL_NODES` and the mesh gate as backstops.
+  - `apply_node_residency` runs right after it. It spawns newly admitted nodes
+    nearest-first (≤ `MAX_NODE_SPAWNS_PER_FRAME` = 256, carrying a backlog) and
+    `try_despawn`s evicted ones, never recursively (anti-pattern #5).
+    `kept_node_ids` is collected before any despawn is issued. It runs on an
+    epoch change, on a backlog, or when a `ResidentNode` was spawned elsewhere
+    this frame (`GltfImported`). That last trigger is a drift check, so a far
+    node spawned outside the ledger is reconciled the same frame.
+  - `materialize_cached_primitives` only freshly materialises admitted nodes.
+  - `HierarchyLoaded` (`db_results/hierarchy.rs`) skips non-admitted nodes. An
+    API `GetHierarchy` poll therefore can't spawn a petal's far nodes for one
+    frame and then despawn them.
+- **`ResidentNode` marker** (`spawn.rs`). `spawn_node_entity`,
+  `spawn_primitive_entity` and `spawn_fallback_sign` tag the tree-node entities
+  whose lifetime the ledger owns. Stamps (`PathAssetInstance`), GPX ribbons and
+  single-point track icons also carry `SpawnedNodeMarker`, but they are not
+  `ResidentNode`s and are never touched by `apply_node_residency`.
+- **Stamp groups (§8 assumption 4).** A track's group is the residency unit.
+  It is admitted when its nearest polyline point (raw distance, no forward
+  weighting) is within r and evicted beyond 1.5 r. The admission bit is part of
+  the `PathAssetApplied` gate, and `materialize_path_assets` also wakes on
+  `stamp_epoch`. A group therefore restamps or tears down only on a residency
+  transition, never per frame. When `take_stamp_budget` truncates, it drops the
+  farthest stamps first (`stamps_to_keep`, nearest to the ledger's camera).
+  Because survivors are then not a prefix, `StampTrackRenderData.stamp_indices`
+  maps a pick-index hit back to the stamp index (`pick_stamp`, used by
+  `node_manager::context_pick`). `stamp_is_orphaned` + the delete cascade are
+  unchanged. Per-sample residency is the follow-up if in-app shows waste (plan
+  §6).
+- **B3 closed loop.** `fe_runtime::diag15m::RenderPressure` (one `Arc<AtomicU64>`
+  in both worlds) carries the largest instance-buffer binding the render world
+  needs (fe-runtime `src/AGENTS.md` §render-pressure).
+  `radius_scale_for_pressure` maps it to a scale:
+  - `1.0` below 1 GiB;
+  - a linear ramp to `0.25` at 1.5 GiB, held there up to 1.75 GiB;
+  - `0` at 1.75 GiB or more (admission halts), against the 2 GiB limit.
+
+  `step_pressure_scale` applies drops at once but recovers at most 0.02 per
+  update. Without that limit, eviction would lower the pressure, readmission
+  would raise it again, and the two would oscillate. Under pressure the exit
+  ring shrinks with the scale, floored at 0.25. That floor is why the halted
+  state still sheds load beyond 0.375 r.
+- **`distance_ranked_allowance`** (spawn.rs, pure) is now only the stamp budget
+  taper (called at distance `0` → the full `stamp_ceiling`). Node residency is
+  the ledger's.
+- **Readout.** The Settings section shows
+  "Resident: N nodes · M stamp groups · K tile bundles (X MiB)".
+  `update_residency_readout` (ui_shell/right_sidebar.rs) copies ledger counts
+  plus `fe_runtime::diag15m::ResidencyStats` into `RightSidebarState.residency`,
+  writing only on change. The main binary mirrors the fe-terrain counters into
+  `ResidencyStats` (`terrain_bridge::mirror_tile_residency_stats`), because fe-ui
+  has no fe-terrain dependency.
+- **Hard backstops kept.** `MAX_PETAL_NODES`, `MAX_STAMPS`,
+  `MAX_STAMPS_PER_PETAL`, the 2M mesh watchdog and terrain `max_chunks` are
+  untouched (decision record "Ratification" §3).
+- **Decision 2.6.** FR-4 subsumes runtime_instance_guardrails FR-6. That
+  track's "dense-petal camera-locality" acceptance is carried by
+  `moving_camera_streams_nodes_in_and_out_with_hysteresis` plus a USER_GATED
+  live run.
 
 ## §terrain-proposal-editor — analytics-first proposed overlays (FR-5)
 

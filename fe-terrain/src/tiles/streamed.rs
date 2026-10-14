@@ -139,9 +139,18 @@ impl StreamedTileSource {
         }
     }
 
-    /// Bundles currently resident (evidence/tests).
+    /// Bundles currently resident (evidence/tests, fe-ui residency readout).
     pub fn resident_bundle_count(&self) -> usize {
         self.state().resident.len()
+    }
+
+    /// Decoded tile bytes held by the resident bundles (fe-ui residency readout).
+    pub fn resident_bytes(&self) -> u64 {
+        self.state()
+            .resident
+            .values()
+            .map(HexonTileSource::resident_bytes)
+            .sum()
     }
 }
 
@@ -361,6 +370,9 @@ mod tests {
             HexonTileSource::from_archive(&bundle_archive(0, 1)).unwrap(),
         );
         assert!(!composite.streamed_pending(coord0), "resident now");
+        assert_eq!(composite.streamed_resident_bundles(), 1);
+        let resident_bytes = composite.streamed_resident_bytes();
+        assert!(resident_bytes > 0, "S8 readout sees the bundle's bytes");
         composite.pin_streamed(coord0);
 
         // The camera moves to bundle 1's tiles: bundle 1 is still pending
@@ -375,6 +387,12 @@ mod tests {
         assert!(
             composite.streamed_pending(coord0),
             "bundle 0 left memory with the chunk that pinned it"
+        );
+        assert_eq!(composite.streamed_resident_bundles(), 0);
+        assert_eq!(
+            composite.streamed_resident_bytes(),
+            0,
+            "readout drops to zero"
         );
     }
 

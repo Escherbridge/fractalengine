@@ -105,6 +105,50 @@ impl RightSidebarSection {
 #[derive(Resource, Default, Debug, Clone)]
 pub struct RightSidebarState {
     pub requested: Option<RightSidebarSection>,
+    /// Settings-section residency readout, refreshed by `update_residency_readout`.
+    pub residency: ResidencyReadout,
+}
+
+/// What is resident right now (D-74 pointer-set): ledger nodes + stamp groups,
+/// and the host-mirrored tile counters. See `fe-ui/src/AGENTS.md` §residency-ledger.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResidencyReadout {
+    pub nodes: usize,
+    pub stamp_groups: usize,
+    pub tile_bundles: usize,
+    pub tile_bytes: u64,
+}
+
+impl ResidencyReadout {
+    /// "Resident: N nodes · M stamp groups · K tile bundles (X MiB)".
+    pub fn line(&self) -> String {
+        format!(
+            "Resident: {} nodes · {} stamp groups · {} tile bundles ({:.1} MiB)",
+            self.nodes,
+            self.stamp_groups,
+            self.tile_bundles,
+            self.tile_bytes as f64 / (1024.0 * 1024.0)
+        )
+    }
+}
+
+/// Mirror the residency ledger + `ResidencyStats` into the sidebar readout,
+/// writing only on change (no per-frame change-detection churn).
+pub fn update_residency_readout(
+    ledger: bevy::prelude::Res<crate::verse_manager::ResidencyLedger>,
+    stats: Option<bevy::prelude::Res<fe_runtime::diag15m::ResidencyStats>>,
+    mut state: bevy::prelude::ResMut<RightSidebarState>,
+) {
+    let stats = stats.as_deref().copied().unwrap_or_default();
+    let next = ResidencyReadout {
+        nodes: ledger.node_count(),
+        stamp_groups: ledger.stamp_group_count(),
+        tile_bundles: stats.tile_bundles,
+        tile_bytes: stats.tile_bytes,
+    };
+    if state.residency != next {
+        state.residency = next;
+    }
 }
 
 impl RightSidebarState {
@@ -531,6 +575,7 @@ fn render_settings_section(
     render_override: &mut crate::settings::PetalRenderOverride,
 ) {
     crate::settings::sanitize(app_settings);
+    let residency_line = state.residency.line();
     section_chrome(ctx, state, RightSidebarSection::Settings, |ui| {
         settings_heading(ui, "Rendering");
         settings_row(ui, "Render distance", |ui| {
@@ -544,6 +589,14 @@ fn render_settings_section(
                 "Global residency horizon (0 stops spawning); a petal manifest's render distance overrides it for that petal",
             );
         });
+        ui.label(
+            egui::RichText::new(residency_line)
+                .small()
+                .color(theme::TEXT_DIM),
+        )
+        .on_hover_text(
+            "Live residency: nodes / stamp groups within the render horizon (camera-weighted, ×1.5 exit ring, shrunk under GPU pressure) and streamed tile bundles in RAM",
+        );
         render_petal_render_distance_controls(
             ui,
             hierarchy,
@@ -567,7 +620,7 @@ fn render_settings_section(
                 crate::verse_manager::MAX_PETAL_NODES,
             )
             .on_hover_text(
-                "Soft cap on scene nodes spawned per petal; applies on next petal entry",
+                "Soft cap on resident scene nodes per petal (nearest to the camera first); applies live",
             );
         });
         settings_row(ui, "Stamp ceiling", |ui| {
@@ -1270,7 +1323,24 @@ mod tests {
     use super::*;
 
     fn st(req: Option<RightSidebarSection>) -> RightSidebarState {
-        RightSidebarState { requested: req }
+        RightSidebarState {
+            requested: req,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn residency_readout_line_reports_every_counter() {
+        let readout = ResidencyReadout {
+            nodes: 12,
+            stamp_groups: 3,
+            tile_bundles: 4,
+            tile_bytes: 3 * 1024 * 1024 / 2,
+        };
+        assert_eq!(
+            readout.line(),
+            "Resident: 12 nodes · 3 stamp groups · 4 tile bundles (1.5 MiB)"
+        );
     }
 
     const ALL: [RightSidebarSection; 7] = ALL_SECTIONS;

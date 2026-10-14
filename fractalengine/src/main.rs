@@ -546,6 +546,7 @@ fn main() {
     // tileset path — mirrors the S4 assemble channel above. See
     // src/AGENTS.md §tileset-p2p.
     app.init_resource::<terrain_bridge::StreamedTilesetState>();
+    app.init_resource::<fe_runtime::diag15m::ResidencyStats>();
     {
         let (streamed_tx, streamed_rx) = terrain_bridge::streamed_bundle_channel();
         app.insert_resource(streamed_tx);
@@ -559,6 +560,8 @@ fn main() {
             terrain_bridge::drain_hexon_assemble_results,
             // Settings-section ruler toggles → fe-terrain RulerSettings.
             terrain_bridge::sync_ruler_settings,
+            // S8: tile residency → fe-runtime ResidencyStats (Settings readout).
+            terrain_bridge::mirror_tile_residency_stats,
             // S7: streamed-tileset event drain -> bundle decode -> demand.
             (
                 terrain_bridge::drive_streamed_tilesets,

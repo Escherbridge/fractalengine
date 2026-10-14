@@ -113,16 +113,17 @@ pub(super) fn spawn_branch(node: &NodeEntry, cache: &PrimitiveDescriptorCache) -
 }
 
 /// Materialize cached descriptors for the active petal as they arrive:
-/// promote fallback signs (or spawn fresh) into primitive meshes and
-/// reconcile already-spawned primitives whose cached descriptor changed —
-/// no selection required. Runs chained after `apply_db_results` +
-/// `respawn_on_petal_change`, gated on cache change.
+/// promote fallback signs (or spawn fresh, ledger-admitted nodes only) into
+/// primitive meshes and reconcile already-spawned primitives whose cached
+/// descriptor changed — no selection required. Runs chained after
+/// `apply_node_residency`, gated on cache change.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn materialize_cached_primitives(
     nav: Res<NavigationManager>,
     verse_mgr: Res<VerseManager>,
     cache: Res<PrimitiveDescriptorCache>,
-    residency: super::spawn::ResidencyBudget,
+    ledger: Res<super::residency_ledger::ResidencyLedger>,
+    mesh_budget: Res<crate::plugin::MeshInstanceBudget>,
     texture_registry: Res<TextureRegistryRes>,
     mat_assets: Res<PrimitiveMaterialAssets>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -142,23 +143,14 @@ pub(super) fn materialize_cached_primitives(
         return;
     };
 
-    // Spawn budget (D-74/D-78): halt under the app-wide mesh-budget gate, else
-    // saturate fresh spawns at the `entity_cap`-ranked ceiling hard-backstopped
-    // by MAX_PETAL_NODES (mirrors petal_respawn; §residency-ledger). Distance 0
-    // = active petal is the near region; per-frame taper is the ledger's job.
-    let ceiling = super::spawn::distance_ranked_allowance(
-        0.0,
-        residency.render_distance_for(petal_id, petal.render_distance),
-        residency
-            .settings
-            .entity_cap
-            .min(super::spawn::MAX_PETAL_NODES),
-    );
-    let mut remaining = if residency.mesh_budget.exceeded {
+    // Fresh spawns need ledger admission (the ledger owns `entity_cap` + the
+    // render horizon); MAX_PETAL_NODES + the mesh-budget gate stay as hard
+    // backstops (§residency-ledger).
+    let mut remaining = if mesh_budget.exceeded {
         0
     } else {
         let live = primitives.iter().count() + fallback_signs.iter().count();
-        super::spawn::spawn_allowance(usize::MAX, live, ceiling)
+        super::spawn::spawn_allowance(usize::MAX, live, super::spawn::MAX_PETAL_NODES)
     };
     let mut skipped: usize = 0;
 
@@ -192,7 +184,7 @@ pub(super) fn materialize_cached_primitives(
             }
             prim.descriptor = descriptor.clone();
         }
-        if found {
+        if found || !ledger.admits_node(&node.id) {
             continue;
         }
         if remaining == 0 {

@@ -522,7 +522,7 @@ fn nearest_visible_ground_stamp(
         let Some(data) = stamp_index.tracks.get(track_id) else {
             continue;
         };
-        if let Some(index) = data.index.pick_nearest(x, z, STAMP_PICK_RADIUS_M) {
+        if let Some(index) = data.pick_stamp(x, z, STAMP_PICK_RADIUS_M) {
             if is_visible(&stamp_marker_id(track_id, index)) {
                 return Some((track_id.clone(), index));
             }
@@ -783,6 +783,7 @@ mod tests {
         let track = |petal: &str| StampTrackRenderData {
             petal_id: petal.to_string(),
             index: StampSpatialIndex::build(&[[0.0, 0.0, 0.0]], DEFAULT_CELL_SIZE_M),
+            stamp_indices: Vec::new(),
             batches: Vec::new(),
         };
         let mut index = StampRenderIndex::default();

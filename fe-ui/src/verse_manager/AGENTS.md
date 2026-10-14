@@ -12,13 +12,20 @@
   `FallbackSign` marker component), and primitive-mesh spawning
   (`spawn_primitive_entity`, `build_primitive_mesh`, `PrimitiveNode` marker —
   FR-1). Shared by `db_results.rs`, `petal_respawn.rs`, and
-  `primitive_reconcile.rs`.
+  `primitive_reconcile.rs`. All three tree-node spawners tag `ResidentNode`
+  (the residency ledger owns those entities' lifetime, §chain-order); also
+  hosts `ResidencyBudget` and the stamp-budget taper `distance_ranked_allowance`.
 - `petal_respawn.rs` — despawns/respawns scene entities in-place when
   `NavigationManager::active_petal_id` changes, using the in-memory tree
-  directly (no DB round-trip for the entities). Branches per node via
-  `primitive_materialize::spawn_branch`: GLTF asset → primitive (warm
+  directly (no DB round-trip for the entities), spawning only the nodes the
+  residency ledger admits. Owns `NodeSpawner`, the shared per-node branch
+  (`primitive_materialize::spawn_branch`: GLTF asset → primitive (warm
   descriptor cache) → fallback sign; cache-miss asset-less nodes get one
-  async `GetNodeProperties` fetch. See §primitives.
+  async `GetNodeProperties` fetch) that `apply_node_residency` reuses. See
+  §primitives.
+- `residency_ledger.rs` — `ResidencyLedger` (D-74 node + stamp-group
+  pointer-set), `update_residency_ledger` and `apply_node_residency`. See
+  §chain-order and fe-ui `src/AGENTS.md` §residency-ledger.
 - `primitive_materialize.rs` — `PrimitiveDescriptorCache` (node_id →
   `PrimitiveDescriptor`, fed by every `NodePropertiesLoaded` broadcast) +
   `materialize_cached_primitives` (petal-wide FR-1: promotes fallback signs /
@@ -38,6 +45,27 @@
   the per-track `PathAssetApplied` change gate, and `materialize_path_assets`
   (the single system that does ALL stamp spawning — petal-wide FR-1). See
   §path-asset-materialization.
+
+## §chain-order (p2p_asset_streaming S8)
+
+`VerseManagerPlugin`'s `Update` chain, in order:
+
+1. `apply_lifecycle_events`
+2. `apply_db_results`
+3. `update_residency_ledger`
+4. `respawn_on_petal_change`
+5. `apply_node_residency`
+6. `materialize_cached_primitives`
+7. `reconcile_selected_primitive`
+8. `reconcile_path_asset`
+9. `materialize_path_assets`
+
+The ledger has to see this frame's tree, so it runs after `apply_db_results`,
+and it has to run before every spawner, so it precedes the rest.
+`apply_node_residency` follows the petal-entry batch. The chain's automatic
+sync points make that batch's spawns visible to it, which is why it never
+double-spawns a node. Tree-node entities carry `spawn::ResidentNode`. Only those
+are reconciled; stamps, ribbons and track icons are not.
 
 `find_petal_mut` on `VerseManager` stays private (not `pub(super)`) — Rust's
 privacy rule already makes private items of a module visible to all of its
@@ -318,9 +346,11 @@ gate — never per frame) rebuilds the track's entry in the `StampRenderIndex`
 resource: `tracks: HashMap<track_node_id, StampTrackRenderData { petal_id,
 index: StampSpatialIndex, batches: Vec<InstanceBatch> }>` (types from
 `fe_renderer::instancing`). T4's right-click classification iterates
-active-petal entries and calls `index.pick_nearest(x, z, radius)` — a hit IS
-the `stamp_index`, yielding `(track_node_id, stamp_index)` for
-`HitTarget::Stamp`. Entries drop on orphan teardown and clear on petal change.
+active-petal entries and calls `StampTrackRenderData::pick_stamp(x, z,
+radius)`. That maps the pick-index hit through `stamp_indices`, the stamp index
+of each spawned position. The mapping is needed because, since S8, a saturated
+stamp budget truncates farthest-first, so the spawned stamps are no longer a
+prefix. The result is `(track_node_id, stamp_index)` for `HitTarget::Stamp`. Entries drop on orphan teardown and clear on petal change.
 The instanced DRAW currently rides Bevy auto-instancing over the shared GLB
 asset handles from `spawn_stamped_entity` (same `Mesh3d`+material = one batch);
 `InstanceBatch` (with overrides folded into its matrices) is the seam for a

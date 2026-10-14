@@ -47,9 +47,11 @@ pub(super) fn handle_database_reset(verse_mgr: &mut VerseManager, db_sender: &Db
 }
 
 /// `HierarchyLoaded`: rebuild the whole tree, auto-navigate on first load, and
-/// spawn scene entities for the active petal's asset nodes. `already_spawned`
-/// holds node_ids with a live scene entity — repeat loads (API polls, P2P
-/// joins) skip them instead of double-materializing; see AGENTS.md §db-results.
+/// spawn scene entities for the active petal's ledger-admitted asset nodes
+/// (others are `apply_node_residency`'s — see fe-ui `AGENTS.md`
+/// §residency-ledger). `already_spawned` holds node_ids with a live scene
+/// entity — repeat loads (API polls, P2P joins) skip them instead of
+/// double-materializing; see AGENTS.md §db-results.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_hierarchy_loaded(
     verses: &[VerseHierarchyData],
@@ -60,6 +62,7 @@ pub(super) fn handle_hierarchy_loaded(
     pending_api: &mut PendingApiRequests,
     already_spawned: &mut std::collections::HashSet<String>,
     budget_exceeded: bool,
+    residency: &super::super::ResidencyLedger,
     ts_settings: &mut crate::timeseries_settings::TimeseriesSettingsState,
 ) {
     let first_load = nav.active_verse_id.is_none();
@@ -142,8 +145,11 @@ pub(super) fn handle_hierarchy_loaded(
                                         if let Some(ref ap) = n.asset_path {
                                             // Skip already-live nodes (repeat load) —
                                             // the pre-fix double-materialization bug.
-                                            if already_spawned.contains(&n.id) {
-                                                // already materialized — no-op
+                                            if already_spawned.contains(&n.id)
+                                                || !residency.admits_node(&n.id)
+                                            {
+                                                // already live, or not resident —
+                                                // `apply_node_residency` owns it
                                             } else if remaining == 0 {
                                                 skipped += 1;
                                             } else {

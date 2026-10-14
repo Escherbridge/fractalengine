@@ -19,18 +19,21 @@ pub(super) fn spawn_allowance(requested: usize, already: usize, max: usize) -> u
     max.saturating_sub(already).min(requested)
 }
 
-/// Outer taper ring as a multiple of `render_distance` — matches the ×1.5
+/// Outer taper / exit ring as a multiple of `render_distance` — matches the ×1.5
 /// despawn-hysteresis pattern already used for terrain chunks (D-74).
-const RESIDENCY_TAPER_FACTOR: f32 = 1.5;
+pub(crate) const RESIDENCY_TAPER_FACTOR: f32 = 1.5;
 
-/// Distance-ranked residency allowance (D-74 soft budget): the number of
-/// instances a region at `distance_to_camera` may spawn, given a global
-/// `render_distance` horizon and a hard-backstopped `ceiling`. Full `ceiling`
-/// while inside `render_distance`, tapering linearly to `0` out to
-/// `render_distance * 1.5`, then `0`. Never exceeds `ceiling`. A non-positive /
-/// non-finite `render_distance` halts spawning (`0`); a non-finite/negative
-/// distance is treated defensively as "unknown → don't over-spawn" (`0`). Pure
-/// so the ledger math is unit-testable. See AGENTS.md §residency-ledger.
+/// Marks a tree-node scene entity (GLTF / primitive / fallback sign) whose
+/// lifetime the residency ledger owns — stamps, track ribbons and single-point
+/// track icons carry `SpawnedNodeMarker` but not this. See AGENTS.md §residency-ledger.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct ResidentNode;
+
+/// Distance-ranked allowance taper (D-74 soft budget): full `ceiling` inside
+/// `render_distance`, linear to `0` at `render_distance * 1.5`, then `0`; never
+/// above `ceiling`. Non-positive/non-finite `render_distance` or a
+/// non-finite/negative distance → `0`. Used for the stamp budget; node
+/// residency is the ledger's. See AGENTS.md §residency-ledger.
 pub(crate) fn distance_ranked_allowance(
     distance_to_camera: f32,
     render_distance: f32,
@@ -54,10 +57,10 @@ pub(crate) fn distance_ranked_allowance(
     ((ceiling as f32) * t).floor() as usize
 }
 
-/// Bundle of the two residency-budget inputs (D-74/D-78) — the app-wide
-/// `MeshInstanceBudget` gate + the tunable `AppSettings` — so spawner systems
-/// consume one `SystemParam` and stay under Bevy's 16-param limit. See AGENTS.md
-/// §residency-ledger.
+/// Bundle of the residency-budget inputs (D-74/D-78) — the app-wide
+/// `MeshInstanceBudget` gate, the tunable `AppSettings`, and the session
+/// override — read by the ledger pass and the stamp budget (one `SystemParam`,
+/// Bevy's 16-param limit). See AGENTS.md §residency-ledger.
 #[derive(bevy::ecs::system::SystemParam)]
 pub(super) struct ResidencyBudget<'w> {
     pub mesh_budget: Res<'w, crate::plugin::MeshInstanceBudget>,
@@ -108,6 +111,7 @@ pub(super) fn spawn_node_entity(
                 node_id: node_id.to_string(),
                 petal_id: petal_id.to_string(),
             },
+            ResidentNode,
         ))
         .id();
     bevy::log::debug!(
@@ -242,6 +246,7 @@ pub(super) fn spawn_primitive_entity(
                 node_id: node_id.to_string(),
                 petal_id: petal_id.to_string(),
             },
+            ResidentNode,
             PrimitiveNode { descriptor },
         ))
         .id();
@@ -286,6 +291,7 @@ pub(super) fn spawn_fallback_sign(
                 node_id: node_id.to_string(),
                 petal_id: petal_id.to_string(),
             },
+            ResidentNode,
             FallbackSign,
         ))
         .id();
