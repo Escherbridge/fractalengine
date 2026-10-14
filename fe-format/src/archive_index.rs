@@ -1,5 +1,6 @@
 //! Lazy offset-indexed `.hexon` reader: header phase once, then single-member reads; see `src/AGENTS.md` §archive-index.
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -9,8 +10,13 @@ use std::time::SystemTime;
 use anyhow::{Context, Result};
 
 use crate::entries::{AssetEntry, EntryCatalog};
+use crate::integrity::{
+    IntegrityPolicy, IntegrityStatus, SealCheck, CHUNK_INDEX_PATH, ENTRIES_PATH,
+    HEADER_MEMBER_PATHS,
+};
 use crate::limits;
-use crate::manifest::{HexonManifest, TilesetMeta};
+use crate::manifest::{HexonManifest, TilesetBundleIndex, TilesetMeta};
+use crate::partial::{HeaderDoc, Layout, HEADER_DOC_VERSION};
 
 /// Error text when an indexed archive file changed on disk after its header phase.
 pub const ARCHIVE_CHANGED_ERROR: &str = "hexon archive changed on disk since it was indexed";
@@ -86,6 +92,12 @@ impl Seek for LazyFile {
 
 /// A `.hexon` archive on disk whose central directory and header JSON were read once;
 /// members are read one at a time, on demand, under the `limits` caps.
+///
+/// Header-phase verification (PAS-P5 S2) runs once at [`open`](Self::open), under
+/// a caller-chosen [`IntegrityPolicy`] (default [`IntegrityPolicy::VerifyIfSealed`]).
+/// A sealed archive's subsequent [`read_member`](Self::read_member) calls are
+/// then checked against the signed coverage; a legacy unsealed archive behaves
+/// exactly as before (nothing is checked, per [`IntegrityPolicy::VerifyIfSealed`]).
 pub struct HexonArchiveIndex {
     path: Arc<PathBuf>,
     /// Parsed central directory; its reader is closed (cloned per read, opened lazily).
@@ -94,6 +106,16 @@ pub struct HexonArchiveIndex {
     entries: Vec<AssetEntry>,
     tileset_meta: Option<TilesetMeta>,
     stamp: FileStamp,
+    /// Raw `manifest.json` bytes, for [`header_doc`](Self::header_doc) — digests
+    /// are over exact stored bytes, so the parsed `manifest` is never re-serialized.
+    manifest_raw: Vec<u8>,
+    /// Raw bytes of every `HEADER_MEMBER_PATHS` member actually present.
+    header_raw: BTreeMap<String, Vec<u8>>,
+    /// Monolithic, or a container with its signed chunk count.
+    layout: Layout,
+    /// The header-phase verification outcome: what [`read_member`](Self::read_member)
+    /// checks subsequent reads against.
+    coverage: SealCheck,
 }
 
 impl std::fmt::Debug for HexonArchiveIndex {
@@ -107,9 +129,19 @@ impl std::fmt::Debug for HexonArchiveIndex {
 }
 
 impl HexonArchiveIndex {
-    /// Header phase: read the central directory plus `manifest.json`, `entries.json`
-    /// and (optional) `terrain/tileset_meta.json`; no other member is touched.
+    /// [`open_with_policy`](Self::open_with_policy) under [`IntegrityPolicy::VerifyIfSealed`]
+    /// (the safe default: a sealed archive is fully enforced, a legacy unsealed
+    /// one passes through exactly as before — see fe-format/src/AGENTS.md §integrity).
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_policy(path, IntegrityPolicy::VerifyIfSealed)
+    }
+
+    /// Header phase: read the central directory plus every `HEADER_MEMBER_PATHS`
+    /// member present (manifest, entries, license, schema, tileset_meta, terrain
+    /// config, members.json, chunks/index.json), then verify under `policy`.
+    /// `RequireSealed` fails `open` itself for an unsealed or tampered archive —
+    /// nothing is read lazily before this check passes.
+    pub fn open_with_policy(path: impl AsRef<Path>, policy: IntegrityPolicy) -> Result<Self> {
         let path = Arc::new(path.as_ref().to_path_buf());
         let stamp = FileStamp::of(&path)
             .with_context(|| format!("failed to stat hexon archive {}", path.display()))?;
@@ -119,25 +151,46 @@ impl HexonArchiveIndex {
 
         let mut budget = limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES;
         let json = limits::MAX_JSON_ENTRY_BYTES;
-        let manifest: HexonManifest = {
-            let buf = read_named(&mut archive, "manifest.json", json, &mut budget)?
-                .context("missing manifest.json")?;
-            serde_json::from_slice(&buf).context("invalid manifest.json")?
-        };
+        let manifest_raw = read_named(&mut archive, "manifest.json", json, &mut budget)?
+            .context("missing manifest.json")?;
+        let manifest: HexonManifest =
+            serde_json::from_slice(&manifest_raw).context("invalid manifest.json")?;
+
+        let mut header_raw: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        for member_path in HEADER_MEMBER_PATHS {
+            if let Some(buf) = read_named(&mut archive, member_path, json, &mut budget)? {
+                header_raw.insert((*member_path).to_string(), buf);
+            }
+        }
+
         let entries: Vec<AssetEntry> = {
-            let buf = read_named(&mut archive, "entries.json", json, &mut budget)?
+            let buf = header_raw
+                .get(ENTRIES_PATH)
                 .context("missing entries.json")?;
             let catalog: EntryCatalog =
-                serde_json::from_slice(&buf).context("invalid entries.json")?;
+                serde_json::from_slice(buf).context("invalid entries.json")?;
             catalog.entries
         };
-        let tileset_meta: Option<TilesetMeta> =
-            match read_named(&mut archive, "terrain/tileset_meta.json", json, &mut budget)? {
-                Some(buf) => Some(
-                    serde_json::from_slice(&buf).context("invalid terrain/tileset_meta.json")?,
-                ),
-                None => None,
-            };
+        let tileset_meta: Option<TilesetMeta> = match header_raw.get("terrain/tileset_meta.json") {
+            Some(buf) => {
+                Some(serde_json::from_slice(buf).context("invalid terrain/tileset_meta.json")?)
+            }
+            None => None,
+        };
+        let layout = match header_raw.get(CHUNK_INDEX_PATH) {
+            Some(buf) => {
+                let index: TilesetBundleIndex =
+                    serde_json::from_slice(buf).context("invalid chunks/index.json")?;
+                Layout::Container {
+                    chunk_count: index.bundles.len() as u32,
+                }
+            }
+            None => Layout::Monolithic,
+        };
+
+        let coverage = crate::integrity::verify_sealed_header(&manifest_raw, &header_raw, &policy)
+            .map_err(anyhow::Error::from)
+            .with_context(|| format!("header verification failed for {}", path.display()))?;
 
         // Keep only a closed clone: the header-phase handle is dropped with `archive`.
         let directory = archive.clone();
@@ -150,6 +203,10 @@ impl HexonArchiveIndex {
             entries,
             tileset_meta,
             stamp,
+            manifest_raw,
+            header_raw,
+            layout,
+            coverage,
         })
     }
 
@@ -171,6 +228,52 @@ impl HexonArchiveIndex {
     /// Parsed `terrain/tileset_meta.json`, when the archive is a tileset.
     pub fn tileset_meta(&self) -> Option<&TilesetMeta> {
         self.tileset_meta.as_ref()
+    }
+
+    /// Whether this archive is a signed container, and if so how many chunks.
+    pub fn layout(&self) -> Layout {
+        self.layout
+    }
+
+    /// What header-phase verification established (`Sealed{publisher_did}` or
+    /// `Unsealed`) — the same outcome [`HexonArchive::import`] would report.
+    pub fn integrity_status(&self) -> IntegrityStatus {
+        match &self.coverage {
+            SealCheck::Unsealed => IntegrityStatus::Unsealed,
+            SealCheck::Sealed(coverage) => IntegrityStatus::Sealed {
+                publisher_did: coverage.publisher_did().to_string(),
+            },
+        }
+    }
+
+    /// The header document both transports carry (PAS-P5 §3.2): raw manifest
+    /// and header-member text, captured once at [`open`](Self::open). Uses a
+    /// lossy UTF-8 conversion for API simplicity; every writer in this crate
+    /// emits strict UTF-8 JSON, so this is a no-op in practice, and a hostile
+    /// non-UTF-8 byte would only ever make a downstream hash check fail safe,
+    /// never succeed on the wrong bytes.
+    pub fn header_doc(&self) -> HeaderDoc {
+        let manifest = String::from_utf8_lossy(&self.manifest_raw).into_owned();
+        let header_members = self
+            .header_raw
+            .iter()
+            .map(|(path, bytes)| (path.clone(), String::from_utf8_lossy(bytes).into_owned()))
+            .collect();
+        HeaderDoc {
+            v: HEADER_DOC_VERSION,
+            uri: format!("{}@{}", self.manifest.hexon_id, self.manifest.version),
+            manifest,
+            header_members,
+            archive_size: self.stamp.len,
+            layout: self.layout,
+        }
+    }
+
+    /// Read container chunk `seq` (`chunks/{seq}.hexon`), verified against the
+    /// signed chunk index when sealed; `Ok(None)` when absent (monolithic
+    /// archive, or `seq` out of range).
+    pub fn chunk(&self, seq: u32) -> Result<Option<Vec<u8>>> {
+        self.read_member(&crate::integrity::chunk_member_path(seq))
     }
 
     /// Number of members in the central directory.
@@ -211,6 +314,12 @@ impl HexonArchiveIndex {
     }
 
     /// [`read_member`](Self::read_member) under an explicit cap (never above the binary cap).
+    ///
+    /// When the archive is sealed, the bytes are checked against the signed
+    /// coverage (the committed digest, or the `asset_hash` self-certification
+    /// for an `assets/{h}` member) before being returned — the ONE coverage
+    /// rule every lazy reader applies, shared with `HexonArchive::import` and
+    /// `verify_archive` via `SealedCoverage::check_member` (no second guard set).
     pub fn read_member_capped(&self, name: &str, cap: u64) -> Result<Option<Vec<u8>>> {
         if !self.contains(name) {
             return Ok(None);
@@ -220,11 +329,23 @@ impl HexonArchiveIndex {
                 path: self.path.as_ref().clone(),
             }));
         }
+        // Header members were already read (and, if sealed, verified) at
+        // `open`; return the cached bytes rather than decompressing again.
+        if let Some(bytes) = self.header_raw.get(name) {
+            return Ok(Some(bytes.clone()));
+        }
         let cap = cap.min(limits::MAX_ENTRY_UNCOMPRESSED_BYTES);
         let mut budget = cap;
         let mut reader = self.directory.clone();
-        read_named(&mut reader, name, cap, &mut budget)
-            .with_context(|| format!("reading {name} from {}", self.path.display()))
+        let data = read_named(&mut reader, name, cap, &mut budget)
+            .with_context(|| format!("reading {name} from {}", self.path.display()))?;
+        if let (Some(bytes), SealCheck::Sealed(coverage)) = (&data, &self.coverage) {
+            coverage
+                .check_member(name, bytes)
+                .map_err(anyhow::Error::from)
+                .with_context(|| format!("verifying {name} from {}", self.path.display()))?;
+        }
+        Ok(data)
     }
 }
 
@@ -247,8 +368,10 @@ fn read_named<R: Read + Seek>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::integrity::{seal, IntegrityError};
     use crate::manifest::{ElevationEncoding, HexonType};
-    use crate::HexonArchive;
+    use crate::{ChunkInput, HexonArchive};
+    use ed25519_dalek::SigningKey;
 
     fn manifest(id: &str) -> HexonManifest {
         HexonManifest {
@@ -342,5 +465,187 @@ mod tests {
             .expect_err("stale index must refuse");
         assert!(err.downcast_ref::<ArchiveChanged>().is_some(), "{err:#}");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// S2 acceptance: the header phase (`open` + `header_doc`) never reads tile
+    /// bytes — true by construction (the doc only ever carries
+    /// `HEADER_MEMBER_PATHS` text), checked here against a real multi-MiB tileset.
+    #[test]
+    fn header_phase_reads_no_tile_bytes() {
+        let tiles: Vec<(String, Vec<u8>)> = (0..64)
+            .map(|i| (format!("10/{i}/0"), vec![7u8; 64 * 1024]))
+            .collect();
+        let bytes = tileset("header-phase", &tiles);
+        assert!(
+            bytes.len() > 4 * 1024 * 1024,
+            "fixture must be at least 4 MiB: {} bytes",
+            bytes.len()
+        );
+        let path = temp_path("header_phase");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let index = HexonArchiveIndex::open(&path).expect("open");
+        let doc = index.header_doc();
+        let doc_bytes =
+            doc.manifest.len() + doc.header_members.values().map(String::len).sum::<usize>();
+        assert!(
+            doc_bytes < 64 * 1024,
+            "header doc leaked tile bytes: {doc_bytes} bytes"
+        );
+        for member_path in doc.header_members.keys() {
+            assert!(
+                !member_path.starts_with("terrain/tiles/"),
+                "{member_path} is a tile member, not a header member"
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// S2 acceptance: a sealed archive's lazy member reads are verified
+    /// per-member — one tampered tile is refused, an untampered sibling
+    /// still reads.
+    #[test]
+    fn lazy_member_read_refuses_only_the_tampered_member() {
+        let key = SigningKey::from_bytes(&[5u8; 32]);
+        let good = vec![1u8; 300];
+        let bad = vec![2u8; 300];
+        let tiles = vec![
+            ("10/0/0".to_string(), good.clone()),
+            ("10/0/1".to_string(), bad.clone()),
+        ];
+        let bytes = tileset("tamper", &tiles);
+        let mut sealed = seal(&bytes, &key).expect("seal");
+
+        // Flip one byte inside the second tile's (Stored, uncompressed) bytes.
+        let pos = sealed
+            .windows(bad.len())
+            .position(|w| w == bad.as_slice())
+            .expect("tile bytes must appear verbatim (Stored compression)");
+        sealed[pos] ^= 0xFF;
+
+        let path = temp_path("tamper");
+        std::fs::write(&path, &sealed).unwrap();
+        let index = HexonArchiveIndex::open(&path).expect("open");
+        assert_eq!(
+            index.integrity_status(),
+            IntegrityStatus::Sealed {
+                publisher_did: crate::verifying_key_to_did(&key.verifying_key())
+            }
+        );
+
+        assert_eq!(
+            index
+                .read_member("terrain/tiles/10/0/0.png")
+                .unwrap()
+                .unwrap(),
+            good,
+            "the untampered tile must still read"
+        );
+        let err = index
+            .read_member("terrain/tiles/10/0/1.png")
+            .expect_err("tampered tile must be refused");
+        assert!(
+            matches!(
+                err.downcast_ref::<IntegrityError>(),
+                Some(IntegrityError::DigestMismatch { .. })
+            ),
+            "{err:#}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// S2 acceptance: a chunked container round-trips every chunk byte-for-byte
+    /// and each chunk's signed hash is enforced on read.
+    #[test]
+    fn chunked_container_roundtrips_and_each_chunk_matches_its_signed_hash() {
+        let key = SigningKey::from_bytes(&[9u8; 32]);
+        let mut chunks = Vec::new();
+        for seq in 0..3u32 {
+            let chunk_tiles = vec![(format!("10/{seq}/0"), vec![seq as u8; 128])];
+            let chunk_bytes = tileset(&format!("chunk-{seq}"), &chunk_tiles);
+            let sealed_chunk = seal(&chunk_bytes, &key).expect("seal chunk");
+            chunks.push(ChunkInput {
+                seq,
+                tile_count: 1,
+                zoom: 10,
+                x_range: [seq, seq],
+                y_range: [0, 0],
+                hilbert_range: [seq as u64, seq as u64],
+                archive_bytes: sealed_chunk,
+            });
+        }
+
+        let container_meta = TilesetMeta {
+            bounds: [45.0, -122.0, 46.0, -121.0],
+            min_zoom: 10,
+            max_zoom: 10,
+            tile_size: 256,
+            elevation_encoding: ElevationEncoding::TerrainRgb,
+            tile_count: 3,
+            region_name: "Container".into(),
+            ..Default::default()
+        };
+        let unsealed =
+            HexonArchive::export_chunked(manifest("container"), &container_meta, &chunks)
+                .expect("export_chunked");
+        let sealed = seal(&unsealed, &key).expect("seal container");
+
+        let path = temp_path("container");
+        std::fs::write(&path, &sealed).unwrap();
+        let index = HexonArchiveIndex::open(&path).expect("open");
+        assert_eq!(index.layout(), Layout::Container { chunk_count: 3 });
+        let doc = index.header_doc();
+        assert_eq!(doc.layout, Layout::Container { chunk_count: 3 });
+
+        for chunk in &chunks {
+            let read = index
+                .chunk(chunk.seq)
+                .expect("chunk read must not error")
+                .expect("chunk must be present");
+            assert_eq!(
+                &read, &chunk.archive_bytes,
+                "chunk {} must roundtrip byte-for-byte",
+                chunk.seq
+            );
+        }
+        assert!(
+            index.chunk(99).unwrap().is_none(),
+            "an out-of-range seq is just absent"
+        );
+
+        // Tamper with chunk 1's distinctive tile bytes (all 0x01) directly in
+        // the outer container; the signed index still commits to the
+        // original hash, so only chunk 1's read is refused.
+        let marker = vec![1u8; 32];
+        let pos = sealed
+            .windows(marker.len())
+            .position(|w| w == marker.as_slice())
+            .expect("chunk 1 tile bytes present");
+        let mut tampered = sealed.clone();
+        tampered[pos] ^= 0xFF;
+        let tampered_path = temp_path("container_tampered");
+        std::fs::write(&tampered_path, &tampered).unwrap();
+        let tampered_index = HexonArchiveIndex::open(&tampered_path).expect("open tampered");
+        let err = tampered_index
+            .chunk(1)
+            .expect_err("tampered chunk must be refused");
+        assert!(
+            matches!(
+                err.downcast_ref::<IntegrityError>(),
+                Some(IntegrityError::DigestMismatch { .. })
+            ),
+            "{err:#}"
+        );
+        assert!(
+            tampered_index.chunk(0).unwrap().is_some(),
+            "chunk 0 is unaffected"
+        );
+        assert!(
+            tampered_index.chunk(2).unwrap().is_some(),
+            "chunk 2 is unaffected"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&tampered_path);
     }
 }

@@ -84,6 +84,7 @@ fn synthetic_tileset() -> HexonArchiveData {
         tileset_meta: Some(meta),
         elevation_tiles,
         satellite_tiles: vec![],
+        integrity: fe_format::IntegrityStatus::Unsealed,
     }
 }
 

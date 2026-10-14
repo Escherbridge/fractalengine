@@ -10,9 +10,10 @@ use zip::write::SimpleFileOptions;
 
 use crate::{
     entries::{AssetEntry, EntryCatalog},
+    integrity::{verify_archive_with_budget, IntegrityPolicy, IntegrityStatus},
     license::License,
     limits,
-    manifest::HexonManifest,
+    manifest::{BundleEntry, HexonManifest, TilesetBundleIndex, TilesetMeta},
     ExportNode, FieldDef, SchemaDefinition,
 };
 
@@ -39,6 +40,37 @@ pub struct HexonArchiveData {
     pub elevation_tiles: Vec<(String, Vec<u8>)>,
     /// Satellite tiles: `(cache_key, jpg_bytes)` where cache_key = `{z}/{x}/{y}`.
     pub satellite_tiles: Vec<(String, Vec<u8>)>,
+    /// What header-phase verification established (PAS-P5 S2): `Sealed{publisher_did}`
+    /// for a sealed archive whose every member checked out, `Unsealed` for a
+    /// legacy archive (nothing was checked — see [`IntegrityPolicy::VerifyIfSealed`]).
+    pub integrity: IntegrityStatus,
+}
+
+/// One already-built chunk for [`HexonArchive::export_chunked`]: the chunk's own
+/// (ideally already-sealed, "recursive trust" — fe-format/src/AGENTS.md §integrity)
+/// `.hexon` bytes, plus the tile-range metadata `chunks/index.json` records.
+///
+/// fe-format has no tile-coordinate math of its own (that lives in
+/// `fe-terrain/src/tiles/bundle.rs`, AGENTS.md §bundles); this struct is the
+/// seam — the caller supplies the spatial range, `export_chunked` computes the
+/// digest and size from `archive_bytes` itself.
+#[derive(Debug, Clone)]
+pub struct ChunkInput {
+    /// This chunk's sequence number (0-indexed).
+    pub seq: u32,
+    /// Number of elevation tiles the chunk carries.
+    pub tile_count: u32,
+    /// Zoom level this chunk's tile range belongs to.
+    pub zoom: u8,
+    /// Inclusive `[min, max]` tile-x range covered by this chunk.
+    pub x_range: [u32; 2],
+    /// Inclusive `[min, max]` tile-y range covered by this chunk.
+    pub y_range: [u32; 2],
+    /// Inclusive `[min, max]` Hilbert-distance range covered (debugging only).
+    pub hilbert_range: [u64; 2],
+    /// The chunk's own `.hexon` archive bytes, stored verbatim at
+    /// `chunks/{seq}.hexon`.
+    pub archive_bytes: Vec<u8>,
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +280,79 @@ impl HexonArchive {
         Ok(cursor.into_inner())
     }
 
+    /// Pack already-built chunk archives into one container: `chunks/index.json`
+    /// (a signed [`TilesetBundleIndex`]) plus `chunks/{seq}.hexon` (Stored) per
+    /// chunk, `entries.json` (empty — chunks aren't individually addressable
+    /// entries, matching `export_tileset`), and `terrain/tileset_meta.json`.
+    ///
+    /// The result is UNSEALED — [`crate::integrity::seal`] it last, after any
+    /// further transform (fe-format/src/AGENTS.md §integrity "seal is always
+    /// the last transform"). `seal`'s own `chunks/index.json` check requires
+    /// each `BundleEntry.blake3_hex` to equal the stored `chunks/{seq}.hexon`
+    /// digest, which holds here by construction (both are `digest_hex` of the
+    /// same `chunk.archive_bytes`).
+    pub fn export_chunked(
+        manifest: HexonManifest,
+        tileset_meta: &TilesetMeta,
+        chunks: &[ChunkInput],
+    ) -> Result<Vec<u8>> {
+        let bundles: Vec<BundleEntry> = chunks
+            .iter()
+            .map(|c| BundleEntry {
+                seq: c.seq,
+                blake3_hex: crate::integrity::digest_hex(&c.archive_bytes),
+                byte_len: c.archive_bytes.len() as u64,
+                tile_count: c.tile_count,
+                zoom: c.zoom,
+                x_range: c.x_range,
+                y_range: c.y_range,
+                hilbert_range: c.hilbert_range,
+            })
+            .collect();
+        let index = TilesetBundleIndex {
+            schema: 1,
+            tileset_id: manifest.hexon_id.clone(),
+            // The index's own copy always has `chunk_index: None` — per-chunk
+            // metadata lives in `bundles`, not here (fe-format AGENTS §bundles).
+            tileset_meta: TilesetMeta {
+                chunk_index: None,
+                ..tileset_meta.clone()
+            },
+            bundles,
+        };
+
+        let buf = Vec::new();
+        let cursor = Cursor::new(buf);
+        let mut zip = zip::ZipWriter::new(cursor);
+        let deflate_opts =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        // Stored: each chunk is itself a compressed/signed archive; recompressing
+        // it would spend CPU for no size gain.
+        let stored_opts =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("manifest.json", deflate_opts)?;
+        zip.write_all(serde_json::to_string_pretty(&manifest)?.as_bytes())?;
+
+        let catalog = EntryCatalog { entries: vec![] };
+        zip.start_file("entries.json", deflate_opts)?;
+        zip.write_all(serde_json::to_string_pretty(&catalog)?.as_bytes())?;
+
+        zip.start_file("terrain/tileset_meta.json", deflate_opts)?;
+        zip.write_all(serde_json::to_string_pretty(tileset_meta)?.as_bytes())?;
+
+        zip.start_file(crate::integrity::CHUNK_INDEX_PATH, deflate_opts)?;
+        zip.write_all(&serde_json::to_vec(&index)?)?;
+
+        for chunk in chunks {
+            zip.start_file(crate::integrity::chunk_member_path(chunk.seq), stored_opts)?;
+            zip.write_all(&chunk.archive_bytes)?;
+        }
+
+        let cursor = zip.finish()?;
+        Ok(cursor.into_inner())
+    }
+
     /// Import a `.hexon` ZIP archive from bytes.
     ///
     /// Handles both scene hexons (with `entities/` directory) and non-scene
@@ -259,12 +364,22 @@ impl HexonArchive {
 
     /// [`Self::import`] under a caller-chosen total decompression budget
     /// (never above [`limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES`]).
+    ///
+    /// Runs the full integrity pass first (PAS-P5 S2), under the SAME budget,
+    /// so a sealed archive's member walk can never bypass the caller's cap —
+    /// a legacy unsealed archive only costs a `manifest.json` read here (see
+    /// `verify_sealed_header`), so this stays cheap for the common case. A
+    /// tampered sealed archive is refused before any extraction is attempted.
     pub fn import_with_budget(bytes: &[u8], total_budget: u64) -> Result<HexonArchiveData> {
+        let total_budget = total_budget.min(limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES);
+        let integrity: IntegrityStatus =
+            verify_archive_with_budget(bytes, &IntegrityPolicy::VerifyIfSealed, total_budget)?;
+
         let cursor = Cursor::new(bytes);
         let mut archive = zip::ZipArchive::new(cursor).context("failed to open ZIP archive")?;
         limits::check_entry_count(archive.len())?;
         // One shared decompression budget for the whole import (zip-bomb guard).
-        let mut budget = total_budget.min(limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES);
+        let mut budget = total_budget;
         let json = limits::MAX_JSON_ENTRY_BYTES;
         let binary = limits::MAX_ENTRY_UNCOMPRESSED_BYTES;
 
@@ -393,6 +508,7 @@ impl HexonArchive {
             tileset_meta,
             elevation_tiles,
             satellite_tiles,
+            integrity,
         })
     }
 }
@@ -618,6 +734,85 @@ mod decompression_limit_tests {
         assert!(
             format!("{err:#}").contains(DECOMPRESSION_LIMIT_ERROR),
             "unexpected error: {err:#}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod import_integrity_tests {
+    use super::*;
+    use crate::integrity::{seal, IntegrityError};
+    use ed25519_dalek::SigningKey;
+
+    /// S2 acceptance (`HexonArchive::import` enforces `VerifyIfSealed`): an
+    /// unsealed (legacy) archive still imports exactly as before, reporting
+    /// `Unsealed`.
+    #[test]
+    fn legacy_unsealed_archive_imports_as_unsealed() {
+        let bytes = HexonArchive::export(
+            super::scale_roundtrip_tests::manifest(),
+            vec![],
+            vec![],
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let data = HexonArchive::import(&bytes).expect("legacy archive still imports");
+        assert_eq!(data.integrity, IntegrityStatus::Unsealed);
+    }
+
+    /// A sealed, untampered archive imports and reports its publisher.
+    #[test]
+    fn sealed_archive_imports_and_reports_its_publisher() {
+        let key = SigningKey::from_bytes(&[13u8; 32]);
+        let bytes = HexonArchive::export(
+            super::scale_roundtrip_tests::manifest(),
+            vec![],
+            vec![],
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let sealed = seal(&bytes, &key).expect("seal");
+        let data = HexonArchive::import(&sealed).expect("sealed archive imports");
+        assert_eq!(
+            data.integrity,
+            IntegrityStatus::Sealed {
+                publisher_did: crate::verifying_key_to_did(&key.verifying_key())
+            }
+        );
+    }
+
+    /// A tampered sealed archive is refused at import time, before extraction.
+    #[test]
+    fn tampered_sealed_archive_is_refused_at_import() {
+        let key = SigningKey::from_bytes(&[14u8; 32]);
+        let marker = vec![77u8; 64];
+        let bytes = HexonArchive::export(
+            super::scale_roundtrip_tests::manifest(),
+            vec![],
+            vec![],
+            None,
+            None,
+            Some(&[("run.gpx".into(), marker.clone())]),
+            None,
+        )
+        .unwrap();
+        let mut sealed = seal(&bytes, &key).expect("seal");
+        let pos = sealed
+            .windows(marker.len())
+            .position(|w| w == marker.as_slice())
+            .expect("gpx bytes must appear verbatim");
+        sealed[pos] ^= 0xFF;
+
+        let err = HexonArchive::import(&sealed).expect_err("tampered sealed archive is refused");
+        assert!(
+            err.downcast_ref::<IntegrityError>().is_some(),
+            "expected an IntegrityError, got {err:#}"
         );
     }
 }

@@ -32,6 +32,26 @@ several stay resident at once. `is_safe_path_id` is re-exported from
 fe-runtime (`fe-runtime/src/AGENTS.md` §safe-id) so fe-terrain can guard
 ids without a fe-runtime edge.
 
+**PAS-P5 S2: `import`/`import_with_budget` now enforce `VerifyIfSealed`.**
+Both run `integrity::verify_archive_with_budget(bytes, &VerifyIfSealed,
+total_budget)` FIRST, under the same caller-chosen budget, before any
+extraction — a tampered sealed archive is refused before a single section is
+unpacked, and the caller's smaller budget (the streamed-bundle path) is
+enforced across the integrity pass too, not only extraction. For a legacy
+unsealed archive this pre-pass only ever reads `manifest.json` (see
+`verify_sealed_header`'s `None` short-circuit), so it stays cheap and every
+existing decompression-bomb test is unaffected. `HexonArchiveData` gained
+`integrity: IntegrityStatus`. Known inefficiency (open issue, not fixed here):
+a SEALED archive's members are decompressed twice — once by the integrity
+walk, once by extraction — rather than merged into one pass; `import` is an
+install/bundling-time path, not a hot per-tile read, so this was judged an
+acceptable simplicity/correctness trade for this slice.
+
+`HexonArchive::export_chunked(manifest, tileset_meta, chunks: &[ChunkInput])`
+packs already-built chunk archives into one container (`chunks/index.json` +
+`chunks/{seq}.hexon`, Stored) — see §bundles and §partial below. It returns
+UNSEALED bytes; the caller seals last, same as every other producer.
+
 ## §archive-index (`archive_index.rs`)
 
 `HexonArchiveIndex` is THE lazy `.hexon` reader (critic C5: PAS-P5 extends it
@@ -57,8 +77,37 @@ and the zip crate checks each member's CRC-32 at EOF.
   at read time fails with the typed `ArchiveChanged` (downcastable from
   `anyhow`) instead of reading the new file's bytes at the old offsets. The
   CRC check is the backstop for a same-size, same-mtime rewrite.
-- `HexonArchive::import` is unchanged and still the eager, whole-archive
-  validation path (install, bundling).
+- `HexonArchive::import` is still the eager, whole-archive validation path
+  (install, bundling) — PAS-P5 S2 makes it enforce `VerifyIfSealed` (see
+  §archive above); its extraction shape and existing tests are unchanged.
+
+**PAS-P5 S2 additions** (critic C2: this is THE lazy reader — no second
+`reader.rs`/index type was added):
+- **Header-phase verification.** `open(path)` (= `open_with_policy(path,
+  VerifyIfSealed)`) now ALSO captures the raw bytes of `manifest.json` and
+  every present `HEADER_MEMBER_PATHS` member, and runs
+  `integrity::verify_sealed_header` over them once, storing the resulting
+  `SealCheck`. `open_with_policy(path, RequireSealed { pin })` fails `open`
+  itself for an unsealed or tampered archive — nothing is read lazily before
+  that check passes. A legacy unsealed archive behaves exactly as before
+  (`VerifyIfSealed` is a no-op when there is nothing signed).
+- **Verified `read_member`/`read_member_capped`.** When the archive is
+  sealed, a member's bytes are checked with `SealedCoverage::check_member`
+  before being returned — the SAME coverage rule `HexonArchive::import` and
+  `verify_archive` apply (no second guard set). A header member already
+  captured at `open` is returned from the cache, not re-read from disk.
+- **`layout()` / `header_doc()`.** `layout()` is `Monolithic` or
+  `Container { chunk_count }` (determined from whether `chunks/index.json`
+  is present, read once at `open`). `header_doc()` builds the
+  `fe_format::partial::HeaderDoc` both transports carry, from the raw bytes
+  captured at `open` — infallible (lossy UTF-8; every writer here emits
+  strict UTF-8 JSON, so this is a no-op in practice and a hostile non-UTF-8
+  byte only ever makes a downstream hash check fail safe).
+- **`chunk(seq)`** reads `chunks/{seq}.hexon` through the same verified
+  `read_member` path; `Ok(None)` for a monolithic archive or an out-of-range
+  `seq`.
+- **`integrity_status()`** reports `Sealed{publisher_did}`/`Unsealed`, the
+  same shape `HexonArchiveData.integrity` carries.
 
 ## §manifest (`manifest.rs`)
 
@@ -183,3 +232,29 @@ manifest.json  (signed; canonical JSON, signature blanked)
 - **Keys never live in files.** `examples/seal_hexon.rs <in> <out>` reads the
   32-byte hex seed from `FE_SECRET_HEXON_SEAL_KEY` and self-verifies the output
   under `RequireSealed { pin: <its DID> }` before writing it.
+
+## §partial (`partial.rs`) — PAS-P5 S2: the header document both transports carry
+
+`HeaderDoc { v, uri, manifest, header_members, archive_size, layout }` is the
+ONE shape the HTTP `/meta` route (S3) and the P2P HashSeq child 0 (S5) both
+ship: raw `manifest.json` text plus raw text of every `HEADER_MEMBER_PATHS`
+member present, never re-serialized, so a client's hash over
+`String::as_bytes()` equals the digest `seal` committed to. `layout` is
+`Monolithic` or `Container { chunk_count }`, read off `HexonArchiveIndex::open`
+(`archive_index.rs`).
+
+- **`verify_header(doc, policy) -> Result<VerifiedHeader, IntegrityError>`**
+  is the one client-side check both transports run, with no archive bytes
+  needed: it rebuilds the `BTreeMap<String, Vec<u8>>` header-members map from
+  the doc's text and calls `integrity::verify_sealed_header` — the same
+  function the eager `verify_archive` path uses, so there is one signature/pin/
+  digest guard, not two. It additionally refuses a `Container` layout whose
+  claimed `chunk_count` disagrees with the signed `chunks/index.json` bundle
+  count, so a transport can never under- or over-claim chunks relative to what
+  the publisher actually signed.
+- **`VerifiedHeader`** carries `status` (`Sealed{publisher_did}`/`Unsealed`)
+  and, when sealed, the `SealedCoverage` every subsequent `fetch_chunk`/
+  `fetch_member` call (S4/S5) checks bytes against via `chunk_digest(seq)` or
+  `coverage().check_member(...)`.
+- **Format version.** `HEADER_DOC_VERSION = 1`; an unrecognized `doc.v` is
+  `IntegrityError::Unsupported` before anything else is parsed.

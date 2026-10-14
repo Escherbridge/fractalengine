@@ -1031,6 +1031,7 @@ mod tests {
             tileset_meta: Some(meta),
             elevation_tiles,
             satellite_tiles: vec![],
+            integrity: fe_format::IntegrityStatus::Unsealed,
         }
     }
 

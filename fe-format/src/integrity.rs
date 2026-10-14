@@ -356,15 +356,19 @@ fn read_for_verify<R: Read + Seek>(
         .map_err(|e| malformed(name, e))
 }
 
-/// Verify a whole archive: header phase, then every member's coverage and digest.
-pub fn verify_archive(
+/// [`verify_archive`] under a caller-chosen total decompression budget (never
+/// above [`limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES`]) — the knob `HexonArchive::
+/// import_with_budget` threads through so its smaller streamed-bundle budget
+/// (S2: PAS-P5) is enforced across the integrity pass too, not just extraction.
+pub fn verify_archive_with_budget(
     bytes: &[u8],
     policy: &IntegrityPolicy,
+    total_budget: u64,
 ) -> Result<IntegrityStatus, IntegrityError> {
     let mut archive =
         zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| malformed("zip archive", e))?;
     limits::check_entry_count(archive.len()).map_err(|e| malformed("zip archive", e))?;
-    let mut budget = limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES;
+    let mut budget = total_budget.min(limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES);
 
     let manifest_json = match read_for_verify(&mut archive, MANIFEST_PATH, &mut budget) {
         Err(IntegrityError::MissingMember { .. }) => {
@@ -410,6 +414,15 @@ pub fn verify_archive(
     Ok(IntegrityStatus::Sealed {
         publisher_did: coverage.publisher_did,
     })
+}
+
+/// Verify a whole archive: header phase, then every member's coverage and digest,
+/// under the default [`limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES`] budget.
+pub fn verify_archive(
+    bytes: &[u8],
+    policy: &IntegrityPolicy,
+) -> Result<IntegrityStatus, IntegrityError> {
+    verify_archive_with_budget(bytes, policy, limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES)
 }
 
 /// Seal an archive: raw-copy every member, write `members.json`, set and sign

@@ -10,6 +10,7 @@ pub mod integrity;
 pub mod license;
 pub mod limits;
 pub mod manifest;
+pub mod partial;
 pub mod signature;
 
 // Re-exports for convenience
@@ -19,12 +20,13 @@ pub use entries::*;
 #[cfg(feature = "runtime")]
 pub use fe_runtime::safe_id::is_safe_path_id;
 pub use integrity::{
-    seal, verify_archive, verify_sealed_header, IntegrityError, IntegrityPolicy, IntegrityRoot,
-    IntegrityStatus, MembersDoc, SealCheck, SealedCoverage,
+    seal, verify_archive, verify_archive_with_budget, verify_sealed_header, IntegrityError,
+    IntegrityPolicy, IntegrityRoot, IntegrityStatus, MembersDoc, SealCheck, SealedCoverage,
 };
 pub use license::*;
 pub use limits::read_entry_capped;
 pub use manifest::*;
+pub use partial::{verify_header, HeaderDoc, Layout, VerifiedHeader, HEADER_DOC_VERSION};
 pub use signature::{sign_manifest, verify_manifest, verifying_key_to_did};
 
 use serde::{Deserialize, Serialize};
