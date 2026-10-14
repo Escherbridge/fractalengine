@@ -184,9 +184,23 @@ impl ContainerArchive {
         let Some(bytes) = self.index.chunk(seq)? else {
             return Ok(None);
         };
+        let cache_key = format!("{}/{}/{}", key.0, key.1, key.2);
+        if layer == TileLayer::BakedSplats {
+            // Baked splats live in their own `terrain/splats/*.bin` section
+            // (`crate::splat::format`), not in `HexonArchiveData` — read it
+            // the same way the eager `from_archive` path does
+            // (`read_baked_splats_from_archive`), over the already-fetched
+            // chunk bytes. `builder.rs::package_tiles_chunked` bakes splats
+            // per chunk, so this is NOT a live-synthesis-only path.
+            let splats =
+                crate::splat::format::read_baked_splats_from_archive(&bytes).unwrap_or_default();
+            return Ok(splats
+                .into_iter()
+                .find(|(k, _)| *k == cache_key)
+                .map(|(_, buf)| ResidentTile::Splats(Arc::new(buf))));
+        }
         let data = HexonArchive::import_with_budget(&bytes, STREAMED_BUNDLE_DECODE_BUDGET)
             .with_context(|| format!("failed to import chunk {seq}"))?;
-        let cache_key = format!("{}/{}/{}", key.0, key.1, key.2);
         let found = match layer {
             TileLayer::Elevation => data
                 .elevation_tiles
@@ -196,11 +210,7 @@ impl ContainerArchive {
                 .satellite_tiles
                 .into_iter()
                 .find(|(k, _)| *k == cache_key),
-            // Chunked containers don't carry a baked-splats section today
-            // (`builder.rs::package_tiles_chunked` never writes one) —
-            // live synthesis covers this (FR-5), same as any archive
-            // predating baked splats.
-            TileLayer::BakedSplats => None,
+            TileLayer::BakedSplats => unreachable!("handled above"),
         };
         Ok(found.map(|(_, bytes)| ResidentTile::Bytes(Arc::from(bytes))))
     }
@@ -919,6 +929,71 @@ mod tests {
             assert!(source.get_tile(coord).is_some());
         }
         assert!(!source.has_tile(TileCoord::new(99, 0, 10)));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// S6: a container chunk that carries a baked-splats section (built via
+    /// `append_baked_splats_to_archive`, same as `builder.rs::
+    /// package_tiles_chunked` does per chunk) serves it through the
+    /// container backing too, not just the eager `from_archive` path.
+    #[test]
+    fn container_backed_source_serves_baked_splats() {
+        use crate::splat::format::{append_baked_splats_to_archive, encode_baked_splats};
+        use fe_format::ChunkInput;
+
+        let coord_key = "10/0/0".to_string();
+        let chunk_tiles = vec![(coord_key.clone(), vec![9u8; 32])];
+        let base = HexonArchive::export_tileset(
+            test_manifest(),
+            &test_tileset_meta(),
+            &chunk_tiles,
+            &[],
+            None,
+        )
+        .unwrap();
+        let baked = BakedSplatBuffer {
+            version: 1,
+            positions: vec![[1.0, 2.0, 3.0]],
+            colors: vec![[1.0, 1.0, 1.0, 1.0]],
+            scales: vec![[1.0, 1.0]],
+            normals: vec![[0.0, 1.0, 0.0]],
+        };
+        let splat_entries = vec![(coord_key, encode_baked_splats(&baked).unwrap())];
+        let chunk_bytes = append_baked_splats_to_archive(&base, &splat_entries).unwrap();
+
+        let mut outer_meta = test_tileset_meta();
+        outer_meta.tile_count = 1;
+        let mut outer_manifest = test_manifest();
+        outer_manifest.hexon_id = "container-splats".into();
+        let container_bytes = HexonArchive::export_chunked(
+            outer_manifest,
+            &outer_meta,
+            &[ChunkInput {
+                seq: 0,
+                tile_count: 1,
+                zoom: 10,
+                x_range: [0, 0],
+                y_range: [0, 0],
+                hilbert_range: [0, 0],
+                archive_bytes: chunk_bytes,
+            }],
+        )
+        .unwrap();
+
+        let path = std::env::temp_dir().join(format!(
+            "fe_hexon_source_container_splats_test_{}.hexon",
+            std::process::id()
+        ));
+        std::fs::write(&path, &container_bytes).unwrap();
+
+        let source = HexonTileSource::open(&path).expect("open container");
+        let coord = TileCoord::new(0, 0, 10);
+        let loaded = source
+            .load_baked_splats_blocking(coord)
+            .expect("read must not error")
+            .expect("splats must be present");
+        assert_eq!(loaded.positions, baked.positions);
 
         let _ = std::fs::remove_file(&path);
     }

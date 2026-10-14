@@ -954,7 +954,12 @@ equivalent trust"), so there is exactly one signature to check, not N.
   repeated request for a tile from the same chunk simply re-decodes that
   chunk if its tile already evicted from the `ByteLru` — CPU for safety, the
   same trade `StreamedTileSource` makes implicitly by discarding a bundle the
-  instant its last pin releases.
+  instant its last pin releases. `TileLayer::BakedSplats` reads go through
+  `crate::splat::format::read_baked_splats_from_archive` over the SAME
+  already-fetched chunk bytes instead of `HexonArchive::import` (baked
+  splats are not an `HexonArchiveData` field) — `package_tiles_chunked`
+  bakes them per chunk, so this is a real served layer, not a FR-5
+  live-synthesis-only fallback.
 - **Residency budget (critic AC-21b).** `TILE_BYTE_BUDGET` (256 MiB,
   `tiles/residency.rs`) stays enforced PER `HexonTileSource`, not globally —
   making it truly global needs a cross-source LRU (a redesign out of this
