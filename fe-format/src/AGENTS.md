@@ -97,8 +97,17 @@ and the zip crate checks each member's CRC-32 at EOF.
   `verify_archive` apply (no second guard set). A header member already
   captured at `open` is returned from the cache, not re-read from disk.
 - **`layout()` / `header_doc()`.** `layout()` is `Monolithic` or
-  `Container { chunk_count }` (determined from whether `chunks/index.json`
-  is present, read once at `open`). `header_doc()` builds the
+  `Container { chunk_count }`: for a sealed archive it comes from the SIGNED
+  chunk index; for an unsealed one from whether `chunks/index.json` is
+  present (read once at `open`).
+- **Uncommitted header members (S8, 2026-10-14).** For a sealed archive,
+  `open` runs `SealedCoverage::check_member` over every captured header
+  member, so a header member injected without being committed by the root
+  (e.g. a forged `chunks/index.json` turning a monolithic archive into a
+  "container") is `Uncovered` at `open` — the same refusal `verify_archive`
+  gives it. Before this, the lazy reader parsed and served such a member
+  from its cache unchecked (`read_member_capped` short-circuits header
+  members). Test: `an_uncommitted_header_member_in_a_sealed_archive_is_refused_at_open`. `header_doc()` builds the
   `fe_format::partial::HeaderDoc` both transports carry, from the raw bytes
   captured at `open` — infallible (lossy UTF-8; every writer here emits
   strict UTF-8 JSON, so this is a no-op in practice and a hostile non-UTF-8
@@ -248,10 +257,26 @@ member present, never re-serialized, so a client's hash over
   needed: it rebuilds the `BTreeMap<String, Vec<u8>>` header-members map from
   the doc's text and calls `integrity::verify_sealed_header` — the same
   function the eager `verify_archive` path uses, so there is one signature/pin/
-  digest guard, not two. It additionally refuses a `Container` layout whose
-  claimed `chunk_count` disagrees with the signed `chunks/index.json` bundle
-  count, so a transport can never under- or over-claim chunks relative to what
-  the publisher actually signed.
+  digest guard, not two.
+- **S8 binding of the unauthenticated doc fields (2026-10-14, mandatory
+  finding on S2 `cbbd806`).** `HeaderDoc.uri`, `.layout` and `.archive_size`
+  sit OUTSIDE the signature. `verify_header` now (1) requires `doc.uri ==
+  "{manifest.hexon_id}@{manifest.version}"` (`IntegrityError::Substituted`
+  otherwise — a validly signed header of hexon A cannot be served under uri
+  B); (2) derives the layout itself — from the signed `chunks/index.json`
+  when sealed, from the doc's own `chunks/index.json` text when unsealed —
+  and refuses any doc whose claim differs (`Unsupported`: no Monolithic
+  downgrade that would let seq 0 skip per-chunk digests, no over/under-
+  claimed count); (3) never copies `archive_size` into `VerifiedHeader`
+  (it is advisory display data only; every fetch cap is a constant).
+  A sealed doc's `header_members` may hold only committed members (an extra
+  one is `Uncovered`), so callers reading the map see only signed text.
+  `VerifiedHeader { uri, hexon_id, version, layout, status }` is therefore
+  derived entirely from authenticated (or, unsealed, self-consistent)
+  bytes. Tests: `a_signed_header_served_under_another_uri_is_refused`,
+  `a_layout_claim_that_contradicts_the_signed_chunk_index_is_refused`,
+  `archive_size_is_advisory_and_never_reaches_the_verified_header`,
+  `an_uncommitted_header_member_in_a_sealed_doc_is_refused`.
 - **`VerifiedHeader`** carries `status` (`Sealed{publisher_did}`/`Unsealed`)
   and, when sealed, the `SealedCoverage` every subsequent `fetch_chunk`/
   `fetch_member` call (S4/S5) checks bytes against via `chunk_digest(seq)` or

@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use fe_format::manifest::{HexonType, TilesetMeta};
-use fe_format::{HexonArchive, IntegrityStatus};
+use fe_format::{HexonArchive, HexonArchiveIndex, IntegrityStatus};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -59,6 +59,12 @@ pub struct InstalledTileset {
 /// Error text `install_tileset` returns when `hexon_id` could escape the
 /// store directory (path-traversal guard; campaign plan S1 step 6, critic C1).
 pub const UNSAFE_HEXON_ID_ERROR: &str = "unsafe hexon_id (path traversal guard)";
+
+/// Error text `install_tileset` returns when it would replace an installed
+/// SEALED tileset with another publisher's archive or an unsealed one (the
+/// store-side publisher pin; see `src/AGENTS.md` §chunked-containers "publisher continuity").
+pub const PUBLISHER_CONTINUITY_ERROR: &str =
+    "installed tileset is sealed by a different publisher (publisher continuity)";
 
 /// Chars allowed in a `hexon_id` used as an on-disk filename component
 /// (mirrors the registry's charset, `fe-hexon-registry/src/routes.rs:283`),
@@ -160,6 +166,10 @@ impl HexonStore {
     ///    file) — see `src/AGENTS.md` §chunked-containers "atomic install".
     /// 5. Append an entry to `registry.json`, recording whether the header
     ///    verified under a publisher signature (`verified`).
+    ///
+    /// Refuses ([`PUBLISHER_CONTINUITY_ERROR`]) to replace an installed sealed
+    /// tileset with another publisher's archive or an unsealed one — every
+    /// install path (P2P, registry, local) passes this one pin.
     pub fn install_tileset(&self, bytes: &[u8]) -> Result<InstalledTileset> {
         // Import and validate
         let data = HexonArchive::import(bytes).context("failed to import hexon archive")?;
@@ -174,6 +184,19 @@ impl HexonStore {
         let hexon_id = manifest.hexon_id.clone();
         if !is_safe_hexon_id(&hexon_id) {
             bail!("{UNSAFE_HEXON_ID_ERROR}: {hexon_id:?}");
+        }
+
+        if let Some(installed) = self.installed_publisher(&hexon_id) {
+            let incoming = match &data.integrity {
+                IntegrityStatus::Sealed { publisher_did } => Some(publisher_did.as_str()),
+                IntegrityStatus::Unsealed => None,
+            };
+            if incoming != Some(installed.as_str()) {
+                bail!(
+                    "{PUBLISHER_CONTINUITY_ERROR}: {hexon_id:?} is sealed by {installed}, not {}",
+                    incoming.unwrap_or("an unsealed archive")
+                );
+            }
         }
 
         let tileset_meta: TilesetMeta = data
@@ -362,6 +385,23 @@ impl HexonStore {
 
     fn meta_path(&self, hexon_id: &str) -> PathBuf {
         self.base_dir.join(format!("{hexon_id}.meta.json"))
+    }
+
+    /// The DID whose signature covers the installed `{hexon_id}.hexon`; `None`
+    /// when nothing is installed, the install is unsealed, or it fails its
+    /// own header check (a broken install pins nothing and may be replaced).
+    pub fn installed_publisher(&self, hexon_id: &str) -> Option<String> {
+        if !is_safe_hexon_id(hexon_id) {
+            return None;
+        }
+        let path = self.hexon_path(hexon_id);
+        if !path.is_file() {
+            return None;
+        }
+        match HexonArchiveIndex::open(&path).ok()?.integrity_status() {
+            IntegrityStatus::Sealed { publisher_did } => Some(publisher_did),
+            IntegrityStatus::Unsealed => None,
+        }
     }
 
     /// A same-directory temp path for an atomic write-then-rename of

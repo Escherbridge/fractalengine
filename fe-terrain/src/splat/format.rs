@@ -157,6 +157,19 @@ pub fn append_baked_splats_to_archive(
 pub fn read_baked_splats_from_archive(
     archive_bytes: &[u8],
 ) -> Result<Vec<(String, BakedSplatBuffer)>> {
+    read_baked_splats_from_archive_with_budget(
+        archive_bytes,
+        fe_format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+    )
+}
+
+/// [`read_baked_splats_from_archive`] under a caller-chosen total
+/// decompression budget (a container chunk uses the streamed-bundle budget;
+/// `src/AGENTS.md` §chunked-containers "nested budget").
+pub fn read_baked_splats_from_archive_with_budget(
+    archive_bytes: &[u8],
+    total_budget: u64,
+) -> Result<Vec<(String, BakedSplatBuffer)>> {
     let reader = Cursor::new(archive_bytes);
     let mut archive = match zip::ZipArchive::new(reader) {
         Ok(a) => a,
@@ -169,7 +182,8 @@ pub fn read_baked_splats_from_archive(
 
     let mut out = Vec::new();
     // Zip-bomb guard shared with `HexonArchive::import` (fe-format AGENTS.md §decompression-limits).
-    let mut budget = fe_format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES;
+    fe_format::limits::check_entry_count(names.len())?;
+    let mut budget = total_budget.min(fe_format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES);
     for name in names.iter().filter(|n| {
         n.starts_with(SPLATS_ZIP_PREFIX)
             && n.ends_with(SPLATS_ZIP_SUFFIX)

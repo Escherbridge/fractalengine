@@ -179,13 +179,25 @@ Single workspace sweep at the end per standing policy.
 
 ## Phase 5: Registry parity + integrity (FR-5 + FR-6, after D-75/D-76)
 
-- [ ] Task: `PartialHexonFetch` trait; HTTP impl (chunk-by-seq + meta routes on
+- [x] Task: `PartialHexonFetch` trait; HTTP impl (chunk-by-seq + meta routes on
       fe-hexon-registry); FetchStrategy as shared policy layer (TDD)
-- [ ] Task: `HexonArchive::import` split (header phase / member reads) (TDD)
-- [ ] Task: Integrity enforcement — signed digests committed, asset_hash checked
+      — CODE-COMPLETE 2026-10-14, pending the end-of-campaign sweep (tests
+      written, not run): S3 `36866aa`, S4 `3294210`, S5 `391eefd`, S7a
+      `a2147bb`, S7b `b56b877`, S8 review-and-fix.
+- [x] Task: `HexonArchive::import` split (header phase / member reads) (TDD)
+      — CODE-COMPLETE 2026-10-14, pending the sweep: S2 `cbbd806`
+      (`HexonArchiveIndex` header phase + verified `read_member`/`chunk`), S8
+      (uncommitted header members refused at `open`).
+- [x] Task: Integrity enforcement — signed digests committed, asset_hash checked
       at install + publish (coordinate manifest fields with hexon_unification)
+      — CODE-COMPLETE 2026-10-14, pending the sweep: S1 `db5883b`, S6
+      `046cb28`+`e86ec55`, S8 (header uri/layout binding, store publisher
+      continuity, confirm-gate pin provenance, publish lock, byte budgets).
+      Blob store co-located with the DB: S1b `44bc4e9` (+ S8 migration hardening).
 - [ ] Verification: hosted and P2P paths pass the same partial-fetch conformance
-      suite [checkpoint]
+      suite [checkpoint] — suite WRITTEN (`http_source_passes_conformance`,
+      `in_memory_p2p_source_passes_conformance`, `cargo test -p fe-hexon
+      --all-features`), NOT YET RUN: the final sweep must show both by name.
 
 ## Phase 6: Close-out
 

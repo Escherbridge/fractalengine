@@ -117,6 +117,12 @@ Body is raw `.hexon` bytes. Validation is two gates, in order:
    cannot take over another's id, even under a brand-new version. Combined
    with the existing same-`id@version` 409, both duplicate-publish and
    id-takeover land on the same status code with different messages.
+3. **(S8, 2026-10-14.)** The duplicate/continuity check, the write and the
+   reindex run under `RegistryState::publish_lock`, and the file is created
+   with `create_new` (an `AlreadyExists` is a 409). Before S8 the check read
+   the index, released it, and wrote later, so N publishers racing on one
+   new `hexon_id` could all pass and the last `fs::write` silently replaced
+   the winner's file. Test: `concurrent_publishes_of_one_id_admit_exactly_one_publisher`.
 
 ### Security headers on publisher-controlled bytes (S3 critic amendment)
 
@@ -124,7 +130,11 @@ Body is raw `.hexon` bytes. Validation is two gates, in order:
 `Content-Type: application/octet-stream`, `X-Content-Type-Options: nosniff`
 and `Content-Disposition: attachment` (`routes::octet_response`), regardless
 of what the member's own name or content looks like — the same stored-XSS
-rule CDL-SPEC10 A4 applies to fe-api blobs. A member whose zip path happens
+rule CDL-SPEC10 A4 applies to fe-api blobs. The `filename` inside the
+disposition is the member's last path segment reduced to `[A-Za-z0-9._-]`
+(anything else becomes `_`; S8), so a publisher-chosen name with quotes or
+`;` cannot reshape the header (test:
+`a_hostile_member_name_cannot_shape_the_content_disposition_header`). A member whose zip path happens
 to end in `.html` is still served as a forced download, never rendered.
 `/member` resolves `path` only by **membership lookup** against the zip's own
 central directory (`HexonArchiveIndex::contains`/`read_member`) — it is never

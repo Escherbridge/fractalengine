@@ -69,6 +69,11 @@ pub async fn migrate_legacy_blob_store(
     new_store_root: &Path,
     legacy_root: &Path,
 ) -> anyhow::Result<MigrationReport> {
+    if same_directory(new_store_root, legacy_root) {
+        // FE_BLOB_DIR points at the legacy store itself: nothing to copy, and
+        // the legacy directory must not even receive the marker (S8).
+        return Ok(MigrationReport::default());
+    }
     let marker = new_store_root.join(MIGRATED_MARKER_NAME);
     if marker.exists() {
         return Ok(MigrationReport {
@@ -92,6 +97,11 @@ pub async fn migrate_legacy_blob_store(
             }
             let bytes = std::fs::read(&legacy_path)
                 .map_err(|e| anyhow::anyhow!("read legacy blob {}: {e}", legacy_path.display()))?;
+            if *blake3::hash(&bytes).as_bytes() != hash {
+                // A corrupt legacy file is never carried forward under its name.
+                tracing::warn!(path = %legacy_path.display(), "Skipping a legacy blob whose bytes do not match its hash");
+                continue;
+            }
             new_store.add_blob(&bytes)?;
             copied += 1;
         }
@@ -123,6 +133,14 @@ pub async fn migrate_legacy_blob_store(
         copied,
         already_migrated: false,
     })
+}
+
+/// Whether `a` and `b` name one directory (resolved when both exist).
+fn same_directory(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
 }
 
 #[cfg(test)]
@@ -273,5 +291,111 @@ mod tests {
             }
         );
         assert!(new_root.path().join(MIGRATED_MARKER_NAME).exists());
+    }
+
+    /// S8: a crash mid-migration (marker absent, one blob already copied, a
+    /// stale marker temp file on disk) is retried safely: only the missing
+    /// blob is copied, the marker lands, and the legacy files are untouched.
+    #[tokio::test]
+    async fn a_crash_mid_migration_is_retried_without_loss_or_legacy_writes() {
+        let legacy = tempfile::tempdir().unwrap();
+        let new_root = tempfile::tempdir().unwrap();
+        let first_hex = seed_legacy_dir(legacy.path(), b"copied before the crash");
+        let second_hex = seed_legacy_dir(legacy.path(), b"never reached before the crash");
+        let db = setup().await;
+        asset_naming(&db, &first_hex).await;
+        asset_naming(&db, &second_hex).await;
+
+        let store: BlobStoreHandle = Arc::new(MockBlobStore::default());
+        store.add_blob(b"copied before the crash").unwrap();
+        std::fs::write(
+            new_root.path().join(format!("{MIGRATED_MARKER_NAME}.tmp")),
+            b"half",
+        )
+        .unwrap();
+        let legacy_before = legacy_snapshot(legacy.path());
+
+        let report = migrate_legacy_blob_store(&db, store.as_ref(), new_root.path(), legacy.path())
+            .await
+            .unwrap();
+        assert_eq!(
+            report,
+            MigrationReport {
+                copied: 1,
+                already_migrated: false
+            }
+        );
+        for hex in [&first_hex, &second_hex] {
+            assert!(store.has_blob(&hash_from_hex(hex).unwrap()));
+        }
+        assert!(new_root.path().join(MIGRATED_MARKER_NAME).exists());
+        assert_eq!(legacy_snapshot(legacy.path()), legacy_before);
+    }
+
+    /// S8: a legacy file whose bytes no longer hash to its name is not
+    /// carried forward, and the legacy file itself is left as it was.
+    #[tokio::test]
+    async fn a_corrupt_legacy_blob_is_not_copied() {
+        let legacy = tempfile::tempdir().unwrap();
+        let new_root = tempfile::tempdir().unwrap();
+        let hash_hex = seed_legacy_dir(legacy.path(), b"original bytes");
+        let hash = hash_from_hex(&hash_hex).unwrap();
+        std::fs::write(
+            canonical_blob_path(legacy.path(), &hash),
+            b"bit-rotted bytes",
+        )
+        .unwrap();
+        let db = setup().await;
+        asset_naming(&db, &hash_hex).await;
+        let store: BlobStoreHandle = Arc::new(MockBlobStore::default());
+
+        let report = migrate_legacy_blob_store(&db, store.as_ref(), new_root.path(), legacy.path())
+            .await
+            .unwrap();
+        assert_eq!(report.copied, 0);
+        assert!(!store.has_blob(&hash));
+        assert!(!store.has_blob(blake3::hash(b"bit-rotted bytes").as_bytes()));
+        assert_eq!(
+            std::fs::read(canonical_blob_path(legacy.path(), &hash)).unwrap(),
+            b"bit-rotted bytes"
+        );
+    }
+
+    /// S8: when the new store IS the legacy directory (`FE_BLOB_DIR` pointed
+    /// at it), migration writes nothing there, not even its marker.
+    #[tokio::test]
+    async fn a_new_store_at_the_legacy_path_writes_nothing_into_it() {
+        let legacy = tempfile::tempdir().unwrap();
+        let hash_hex = seed_legacy_dir(legacy.path(), b"lives in the legacy dir");
+        let db = setup().await;
+        asset_naming(&db, &hash_hex).await;
+        let store: BlobStoreHandle = Arc::new(MockBlobStore::default());
+        let before = legacy_snapshot(legacy.path());
+
+        let report = migrate_legacy_blob_store(&db, store.as_ref(), legacy.path(), legacy.path())
+            .await
+            .unwrap();
+        assert_eq!(report, MigrationReport::default());
+        assert!(!legacy.path().join(MIGRATED_MARKER_NAME).exists());
+        assert_eq!(legacy_snapshot(legacy.path()), before);
+    }
+
+    /// Every file under `root` with its bytes (recursive, sorted).
+    fn legacy_snapshot(root: &Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    let bytes = std::fs::read(&path).unwrap();
+                    out.push((path, bytes));
+                }
+            }
+        }
+        out.sort();
+        out
     }
 }

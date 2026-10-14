@@ -192,8 +192,13 @@ impl ContainerArchive {
             // (`read_baked_splats_from_archive`), over the already-fetched
             // chunk bytes. `builder.rs::package_tiles_chunked` bakes splats
             // per chunk, so this is NOT a live-synthesis-only path.
-            let splats =
-                crate::splat::format::read_baked_splats_from_archive(&bytes).unwrap_or_default();
+            // Same nested budget as the tile import below (R8: a bomb chunk
+            // cannot inflate past it, and the refusal is an error, not a miss).
+            let splats = crate::splat::format::read_baked_splats_from_archive_with_budget(
+                &bytes,
+                STREAMED_BUNDLE_DECODE_BUDGET,
+            )
+            .with_context(|| format!("failed to read baked splats from chunk {seq}"))?;
             return Ok(splats
                 .into_iter()
                 .find(|(k, _)| *k == cache_key)
@@ -995,6 +1000,91 @@ mod tests {
             .expect("splats must be present");
         assert_eq!(loaded.positions, baked.positions);
 
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// S8 (R8 nested budget): a container chunk whose splat entries are each
+    /// under the per-entry cap but together inflate past the streamed-bundle
+    /// budget is refused with the decompression-limit error, instead of being
+    /// inflated under the whole-archive budget on every tile miss.
+    #[test]
+    fn container_splat_reads_are_bounded_by_the_streamed_bundle_budget() {
+        use crate::splat::format::encode_baked_splats;
+        use fe_format::ChunkInput;
+        use std::io::Write;
+
+        let base = HexonArchive::export_tileset(
+            test_manifest(),
+            &test_tileset_meta(),
+            &[("10/0/0".to_string(), vec![9u8; 32])],
+            &[],
+            None,
+        )
+        .unwrap();
+        let baked = BakedSplatBuffer {
+            version: 1,
+            positions: vec![[1.0, 2.0, 3.0]],
+            colors: vec![[1.0, 1.0, 1.0, 1.0]],
+            scales: vec![[1.0, 1.0]],
+            normals: vec![[0.0, 1.0, 0.0]],
+        };
+        let mut source_zip = zip::ZipArchive::new(std::io::Cursor::new(&base)).unwrap();
+        let mut chunk = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for i in 0..source_zip.len() {
+            chunk
+                .raw_copy_file(source_zip.by_index_raw(i).unwrap())
+                .unwrap();
+        }
+        let deflated = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        let zeros = vec![0u8; 1 << 20];
+        let per_entry_mib = (STREAMED_BUNDLE_DECODE_BUDGET >> 20) * 5 / 8;
+        for key in ["10/1/0", "10/2/0"] {
+            chunk
+                .start_file(format!("terrain/splats/{key}.bin"), deflated)
+                .unwrap();
+            for _ in 0..per_entry_mib {
+                chunk.write_all(&zeros).unwrap();
+            }
+        }
+        chunk
+            .start_file("terrain/splats/10/0/0.bin", deflated)
+            .unwrap();
+        chunk
+            .write_all(&encode_baked_splats(&baked).unwrap())
+            .unwrap();
+        let chunk_bytes = chunk.finish().unwrap().into_inner();
+
+        let mut outer_manifest = test_manifest();
+        outer_manifest.hexon_id = "container-splat-bomb".into();
+        let container_bytes = HexonArchive::export_chunked(
+            outer_manifest,
+            &test_tileset_meta(),
+            &[ChunkInput {
+                seq: 0,
+                tile_count: 1,
+                zoom: 10,
+                x_range: [0, 2],
+                y_range: [0, 0],
+                hilbert_range: [0, 2],
+                archive_bytes: chunk_bytes,
+            }],
+        )
+        .unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "fe_hexon_source_container_splat_bomb_{}.hexon",
+            std::process::id()
+        ));
+        std::fs::write(&path, &container_bytes).unwrap();
+
+        let source = HexonTileSource::open(&path).expect("open container");
+        let err = source
+            .load_baked_splats_blocking(TileCoord::new(0, 0, 10))
+            .expect_err("splats past the nested budget must be refused");
+        assert!(
+            format!("{err:#}").contains(fe_format::limits::DECOMPRESSION_LIMIT_ERROR),
+            "{err:#}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 

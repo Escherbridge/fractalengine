@@ -13,7 +13,7 @@ use fe_format::{
     IntegrityPolicy, IntegrityStatus,
 };
 use fe_terrain::tiles::distribution::assemble_sealed_container;
-use fe_terrain::tiles::store::UNSAFE_HEXON_ID_ERROR;
+use fe_terrain::tiles::store::{PUBLISHER_CONTINUITY_ERROR, UNSAFE_HEXON_ID_ERROR};
 use fe_terrain::tiles::{HexonStore, TileCoord};
 
 // ---------------------------------------------------------------------------
@@ -197,6 +197,59 @@ fn reinstall_keeps_an_older_readers_cached_bytes_and_new_opens_see_the_new_file(
         .expect("v2 read must not error")
         .expect("v2 tile present");
     assert_eq!(v2_tile.as_ref(), vec![2u8; 64].as_slice());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// S8 flow test (store-side publisher pin): once a SEALED tileset is
+/// installed, neither another publisher's validly-signed archive of the same
+/// `hexon_id` nor an unsealed one can replace it — whichever path delivered
+/// it (P2P, registry, local) — while the same publisher can still update it.
+#[test]
+fn a_sealed_install_is_never_replaced_by_another_publisher_or_an_unsealed_archive() {
+    let owner = SigningKey::from_bytes(&[31u8; 32]);
+    let impostor = SigningKey::from_bytes(&[32u8; 32]);
+    let (store, dir) = temp_store();
+    let build = |fill: u8| tileset_bytes("pinned", &[("10/0/0".into(), vec![fill; 64])]);
+    let served_tile = |store: &HexonStore| {
+        store
+            .load_tileset("pinned")
+            .expect("load")
+            .load_tile_blocking(TileCoord::new(0, 0, 10))
+            .expect("read must not error")
+            .expect("tile present")
+            .as_ref()
+            .to_vec()
+    };
+
+    store
+        .install_tileset(&seal(&build(1), &owner).expect("seal"))
+        .expect("first install");
+
+    let hijack = seal(&build(2), &impostor).expect("seal");
+    let downgrade = build(3);
+    for (what, bytes) in [
+        ("another publisher", hijack),
+        ("an unsealed archive", downgrade),
+    ] {
+        let err = store
+            .install_tileset(&bytes)
+            .expect_err("a sealed install must not be replaced");
+        assert!(
+            err.to_string().contains(PUBLISHER_CONTINUITY_ERROR),
+            "{what}: {err:#}"
+        );
+        assert_eq!(served_tile(&store), vec![1u8; 64], "{what}: original kept");
+    }
+
+    store
+        .install_tileset(&seal(&build(4), &owner).expect("seal"))
+        .expect("the same publisher may update its own tileset");
+    assert_eq!(served_tile(&store), vec![4u8; 64]);
+    assert_eq!(
+        store.installed_publisher("pinned").as_deref(),
+        Some(fe_format::verifying_key_to_did(&owner.verifying_key()).as_str())
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

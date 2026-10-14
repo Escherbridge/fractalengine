@@ -493,6 +493,7 @@ fn install_from_registry(
         client,
         registry.store(),
         uri,
+        fe_format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES,
         move |chunks_received, total_chunks| {
             if tx_progress
                 .send(HexonAssembleOutcome::RegistryProgress {
@@ -546,11 +547,15 @@ fn install_from_registry(
 /// (`assemble_sealed_container`, S6) so the installed file can be re-seeded
 /// unchanged; a monolithic archive's single verified chunk IS the archive, so
 /// it installs directly.
+///
+/// `max_total_bytes` bounds the chunk bytes held in memory before reassembly
+/// (S8: a signed index naming many large chunks cannot exhaust memory).
 async fn fetch_and_install_from_registry(
     strategy: &fe_hexon::partial::FetchStrategy,
     client: std::sync::Arc<dyn fe_hexon::partial::PartialHexonFetch>,
     store: &fe_terrain::tiles::HexonStore,
     uri: &str,
+    max_total_bytes: u64,
     mut on_progress: impl FnMut(u32, u32),
 ) -> anyhow::Result<fe_terrain::tiles::InstalledTileset> {
     let sources = [client];
@@ -573,13 +578,18 @@ async fn fetch_and_install_from_registry(
         }
         fe_format::Layout::Container { chunk_count } => {
             on_progress(0, chunk_count);
-            let mut chunks = Vec::with_capacity(chunk_count as usize);
+            let mut chunks = Vec::new();
+            let mut total: u64 = 0;
             for seq in 0..chunk_count {
                 let bytes = strategy
                     .fetch_chunk(&header, seq, &sources)
                     .await
                     .map_err(|e| anyhow::anyhow!("chunk {seq} fetch refused: {e}"))?
                     .value;
+                total = total.saturating_add(bytes.len() as u64);
+                if total > max_total_bytes {
+                    anyhow::bail!("container exceeds {max_total_bytes} bytes at chunk {seq}");
+                }
                 chunks.push((seq, bytes.to_vec()));
                 on_progress(seq + 1, chunk_count);
             }
@@ -729,6 +739,7 @@ pub const MAX_KNOWN_PUBLISHERS: usize = 4096;
 type VerifiedInstallMeta = Result<(String, Option<Vec<[u8; 32]>>), String>;
 
 fn verify_install_meta(
+    tileset_id: &str,
     meta_json: &str,
     ad_publisher_did: &str,
     known_pin: Option<&str>,
@@ -741,6 +752,13 @@ fn verify_install_meta(
     let policy = fe_format::IntegrityPolicy::RequireSealed { pin };
     let verified =
         fe_format::verify_header(&doc, &policy).map_err(|e| format!("header refused: {e}"))?;
+    // S8: the pin is keyed by tileset_id, so the signed header must name it.
+    if verified.hexon_id != tileset_id {
+        return Err(format!(
+            "header refused: it is signed for {:?}, not the requested {tileset_id:?}",
+            verified.hexon_id
+        ));
+    }
     let publisher_did = match &verified.status {
         fe_format::IntegrityStatus::Sealed { publisher_did } => publisher_did.clone(),
         fe_format::IntegrityStatus::Unsealed => {
@@ -773,16 +791,26 @@ fn verify_install_meta(
 /// on refusal — **before any chunk is ever requested**. `resolved_chunk_hashes`
 /// is the event's own (HashSeq-resolved) hashes, used verbatim for a sealed
 /// MONOLITHIC archive (no signed per-chunk table exists to check against).
+/// `installed_pin` is the publisher of an already-installed sealed tileset of
+/// this id (`HexonStore::installed_publisher`).
 fn verify_install_meta_and_confirm(
     known: &mut KnownTilesetPublishers,
+    installed_pin: Option<String>,
     sender: &fe_sync::SyncCommandSenderRes,
     tileset_id: String,
     meta_json: &str,
     ad_publisher_did: &str,
     resolved_chunk_hashes: Vec<[u8; 32]>,
 ) {
-    let known_pin = known.0.get(&tileset_id).cloned();
-    match verify_install_meta(meta_json, ad_publisher_did, known_pin.as_deref()) {
+    // S8: an installed sealed tileset is the authoritative (restart-proof)
+    // pin, the in-memory TOFU pin next, the ad's hint only when neither exists.
+    let known_pin = installed_pin.or_else(|| known.0.get(&tileset_id).cloned());
+    match verify_install_meta(
+        &tileset_id,
+        meta_json,
+        ad_publisher_did,
+        known_pin.as_deref(),
+    ) {
         Ok((publisher_did, signed_hashes)) => {
             if known.0.len() < MAX_KNOWN_PUBLISHERS {
                 known.0.entry(tileset_id.clone()).or_insert(publisher_did);
@@ -935,6 +963,7 @@ pub fn drive_streamed_tilesets(
     mut known_publishers: ResMut<KnownTilesetPublishers>,
     sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
     bundle_tx: Option<Res<StreamedBundleResultSender>>,
+    tileset_registry: Option<Res<SharedTilesetRegistry>>,
 ) {
     if !events.events.is_empty() {
         for evt in std::mem::take(&mut events.events) {
@@ -989,8 +1018,12 @@ pub fn drive_streamed_tilesets(
                                 .send(fe_sync::SyncCommand::CancelTilesetDownload { tileset_id });
                             continue;
                         };
+                        let installed_pin = tileset_registry
+                            .as_ref()
+                            .and_then(|r| r.0.store().installed_publisher(&tileset_id));
                         verify_install_meta_and_confirm(
                             &mut known_publishers,
+                            installed_pin,
                             sender,
                             tileset_id,
                             &meta_json,
@@ -1817,6 +1850,85 @@ mod tests {
         drop(tmp);
     }
 
+    /// S8 (partial-fetch size cap): a sealed container whose chunks together
+    /// exceed the caller's byte budget is abandoned mid-fetch and installs
+    /// nothing; the same container installs under a budget that fits it.
+    #[test]
+    fn install_from_registry_stops_a_container_past_its_byte_budget() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[93u8; 32]);
+        let hexon_id = "s8-budget-test";
+        let chunks: Vec<fe_format::ChunkInput> = (0..3u32)
+            .map(|seq| fe_format::ChunkInput {
+                seq,
+                tile_count: 1,
+                zoom: 10,
+                x_range: [seq, seq],
+                y_range: [0, 0],
+                hilbert_range: [u64::from(seq), u64::from(seq)],
+                archive_bytes: fe_format::HexonArchive::export_tileset(
+                    synthetic_tileset_manifest(hexon_id),
+                    synthetic_tileset(hexon_id).tileset_meta.as_ref().unwrap(),
+                    &[(format!("10/{seq}/0"), vec![seq as u8; 4096])],
+                    &[],
+                    None,
+                )
+                .expect("export chunk archive"),
+            })
+            .collect();
+        let all_chunks: u64 = chunks.iter().map(|c| c.archive_bytes.len() as u64).sum();
+        let mut outer_meta = synthetic_tileset(hexon_id).tileset_meta.unwrap();
+        outer_meta.tile_count = 3;
+        let sealed = fe_format::seal(
+            &fe_format::HexonArchive::export_chunked(
+                synthetic_tileset_manifest(hexon_id),
+                &outer_meta,
+                &chunks,
+            )
+            .expect("export container"),
+            &key,
+        )
+        .expect("seal container");
+        let registry_dir = tempfile::tempdir().expect("registry tempdir");
+        std::fs::write(registry_dir.path().join("pkg.hexon"), &sealed).expect("write fixture");
+        let addr = spawn_test_registry(registry_dir.path());
+
+        let (_tmp, tileset_registry) = fresh_tileset_registry();
+        let client: std::sync::Arc<dyn fe_hexon::partial::PartialHexonFetch> = std::sync::Arc::new(
+            fe_hexon::remote::RemoteRegistryClient::new(format!("http://{addr}"), None),
+        );
+        let strategy = fe_hexon::partial::FetchStrategy::new(fe_hexon::p2p::P2pConfig::default());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let mut progress = Vec::new();
+        let err = rt
+            .block_on(fetch_and_install_from_registry(
+                &strategy,
+                client.clone(),
+                tileset_registry.store(),
+                hexon_id,
+                all_chunks - 1,
+                |received, total| progress.push((received, total)),
+            ))
+            .expect_err("three chunks cannot fit a budget one byte short of them");
+        assert!(err.to_string().contains("exceeds"), "{err:#}");
+        assert_eq!(progress, vec![(0, 3), (1, 3), (2, 3)], "stopped at chunk 2");
+        assert!(tileset_registry.store().list_installed().is_empty());
+
+        rt.block_on(fetch_and_install_from_registry(
+            &strategy,
+            client,
+            tileset_registry.store(),
+            hexon_id,
+            all_chunks,
+            |_, _| {},
+        ))
+        .expect("the same container fits a budget of exactly its chunks");
+        assert_eq!(tileset_registry.store().list_installed().len(), 1);
+    }
+
     /// (plan S7b) `install_from_registry_refuses_a_tampered_source_and_installs_nothing`:
     /// the registry serves a SEALED monolithic archive whose header verifies
     /// cleanly, but whose tile bytes were tampered with after sealing (same
@@ -2455,7 +2567,7 @@ mod tests {
         .expect("export unsealed archive");
         let meta_json = header_doc_json(&unsealed);
 
-        let err = verify_install_meta(&meta_json, "", None)
+        let err = verify_install_meta("unsealed-seeder", &meta_json, "", None)
             .expect_err("an unsealed header must never verify over the network");
         assert!(err.contains("unsealed") || err.contains("refused"), "{err}");
     }
@@ -2474,8 +2586,9 @@ mod tests {
         let key = ed25519_dalek::SigningKey::from_bytes(&[41u8; 32]);
         let (meta_json, expected) = sealed_container_header_and_hashes(&key, "container-tileset");
 
-        let (publisher_did, hashes) = verify_install_meta(&meta_json, "", None)
-            .expect("a sealed container with a valid signature verifies");
+        let (publisher_did, hashes) =
+            verify_install_meta("container-tileset", &meta_json, "", None)
+                .expect("a sealed container with a valid signature verifies");
         assert_eq!(
             publisher_did,
             fe_format::verifying_key_to_did(&key.verifying_key())
@@ -2499,14 +2612,15 @@ mod tests {
         let pinned_did = fe_format::verifying_key_to_did(&key_a.verifying_key());
         let meta_from_b = sealed_monolithic_header_json(&key_b, "same-tileset-id");
 
-        let err = verify_install_meta(&meta_from_b, "", Some(&pinned_did))
+        let err = verify_install_meta("same-tileset-id", &meta_from_b, "", Some(&pinned_did))
             .expect_err("a different publisher's header must be refused against a pin");
         assert!(err.contains("refused"), "{err}");
 
         // The honest publisher still verifies against its OWN pin.
         let meta_from_a = sealed_monolithic_header_json(&key_a, "same-tileset-id");
-        let (publisher_did, hashes) = verify_install_meta(&meta_from_a, "", Some(&pinned_did))
-            .expect("the pinned publisher's own header verifies");
+        let (publisher_did, hashes) =
+            verify_install_meta("same-tileset-id", &meta_from_a, "", Some(&pinned_did))
+                .expect("the pinned publisher's own header verifies");
         assert_eq!(publisher_did, pinned_did);
         assert!(
             hashes.is_none(),
@@ -2533,6 +2647,7 @@ mod tests {
         // First contact: no local pin, no ad hint either — first-use trust.
         verify_install_meta_and_confirm(
             &mut known,
+            None,
             &sender,
             "tofu-tileset".to_string(),
             &meta_a,
@@ -2551,6 +2666,7 @@ mod tests {
         // no ad pin override, is refused against the now-known pin.
         verify_install_meta_and_confirm(
             &mut known,
+            None,
             &sender,
             "tofu-tileset".to_string(),
             &meta_b,
@@ -2568,5 +2684,91 @@ mod tests {
             Some(&did_a),
             "the pin is never overwritten by a refused header"
         );
+    }
+
+    /// S8: a validly-signed header for ANOTHER hexon served under the
+    /// requested tileset_id is refused before anything is confirmed, and it
+    /// pins nothing (the pin is keyed by tileset_id).
+    #[test]
+    fn a_header_signed_for_another_tileset_is_refused_and_pins_nothing() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[46u8; 32]);
+        let other = sealed_monolithic_header_json(&key, "some-other-tileset");
+        let err = verify_install_meta("wanted-tileset", &other, "", None)
+            .expect_err("a header signed for another tileset must be refused");
+        assert!(err.contains("not the requested"), "{err}");
+
+        let mut known = KnownTilesetPublishers::default();
+        let (cmd_tx, cmd_rx) = crossbeam::channel::unbounded();
+        verify_install_meta_and_confirm(
+            &mut known,
+            None,
+            &fe_sync::SyncCommandSenderRes(cmd_tx),
+            "wanted-tileset".to_string(),
+            &other,
+            "",
+            vec![[0u8; 32]],
+        );
+        assert!(matches!(
+            cmd_rx.try_recv(),
+            Ok(fe_sync::SyncCommand::CancelTilesetDownload { .. })
+        ));
+        assert!(known.0.is_empty(), "a refused header pins nothing");
+    }
+
+    /// S8 (pin provenance across a restart): with an installed sealed
+    /// tileset and an EMPTY in-memory pin store (a fresh process), the
+    /// advertiser's own DID hint cannot become the pin; the installed
+    /// publisher is the pin, so the impostor is cancelled before any chunk.
+    #[test]
+    fn an_installed_tileset_pins_its_publisher_over_the_advertisers_hint() {
+        let owner = ed25519_dalek::SigningKey::from_bytes(&[47u8; 32]);
+        let impostor = ed25519_dalek::SigningKey::from_bytes(&[48u8; 32]);
+        let impostor_did = fe_format::verifying_key_to_did(&impostor.verifying_key());
+
+        let (_tmp, registry) = fresh_tileset_registry();
+        let installed = fe_format::seal(
+            &fe_format::HexonArchive::export_tileset(
+                synthetic_tileset_manifest("restart-pinned"),
+                synthetic_tileset("restart-pinned")
+                    .tileset_meta
+                    .as_ref()
+                    .unwrap(),
+                &[("10/0/0".to_string(), vec![5u8; 8])],
+                &[],
+                None,
+            )
+            .expect("export"),
+            &owner,
+        )
+        .expect("seal");
+        registry
+            .store()
+            .install_tileset(&installed)
+            .expect("the owner installs first");
+        let installed_pin = registry.store().installed_publisher("restart-pinned");
+        assert_eq!(
+            installed_pin.as_deref(),
+            Some(fe_format::verifying_key_to_did(&owner.verifying_key()).as_str())
+        );
+
+        let mut known = KnownTilesetPublishers::default();
+        let (cmd_tx, cmd_rx) = crossbeam::channel::unbounded();
+        verify_install_meta_and_confirm(
+            &mut known,
+            installed_pin,
+            &fe_sync::SyncCommandSenderRes(cmd_tx),
+            "restart-pinned".to_string(),
+            &sealed_monolithic_header_json(&impostor, "restart-pinned"),
+            &impostor_did,
+            vec![[0u8; 32]],
+        );
+        assert!(
+            matches!(
+                cmd_rx.try_recv(),
+                Ok(fe_sync::SyncCommand::CancelTilesetDownload { .. })
+            ),
+            "the advertiser's self-chosen pin must not override the installed publisher"
+        );
+        assert!(known.0.is_empty());
     }
 }

@@ -177,20 +177,39 @@ impl HexonArchiveIndex {
             }
             None => None,
         };
-        let layout = match header_raw.get(CHUNK_INDEX_PATH) {
-            Some(buf) => {
-                let index: TilesetBundleIndex =
-                    serde_json::from_slice(buf).context("invalid chunks/index.json")?;
-                Layout::Container {
-                    chunk_count: index.bundles.len() as u32,
-                }
-            }
-            None => Layout::Monolithic,
-        };
-
         let coverage = crate::integrity::verify_sealed_header(&manifest_raw, &header_raw, &policy)
             .map_err(anyhow::Error::from)
             .with_context(|| format!("header verification failed for {}", path.display()))?;
+        // Sealed: every header member present must be committed (an injected,
+        // uncommitted one is Uncovered — the coverage invariant this reader
+        // shares with `verify_archive`), and the layout comes from the signed index.
+        let layout = match &coverage {
+            SealCheck::Sealed(sealed) => {
+                for (member_path, bytes) in &header_raw {
+                    sealed
+                        .check_member(member_path, bytes)
+                        .map_err(anyhow::Error::from)
+                        .with_context(|| {
+                            format!("header verification failed for {}", path.display())
+                        })?;
+                }
+                sealed
+                    .chunk_index()
+                    .map_or(Layout::Monolithic, |index| Layout::Container {
+                        chunk_count: index.bundles.len() as u32,
+                    })
+            }
+            SealCheck::Unsealed => match header_raw.get(CHUNK_INDEX_PATH) {
+                Some(buf) => {
+                    let index: TilesetBundleIndex =
+                        serde_json::from_slice(buf).context("invalid chunks/index.json")?;
+                    Layout::Container {
+                        chunk_count: index.bundles.len() as u32,
+                    }
+                }
+                None => Layout::Monolithic,
+            },
+        };
 
         // Keep only a closed clone: the header-phase handle is dropped with `archive`.
         let directory = archive.clone();
@@ -647,5 +666,57 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&tampered_path);
+    }
+
+    /// S8: a header member injected into a sealed archive without being
+    /// committed by its signed root (here a forged `chunks/index.json` that
+    /// would turn a monolithic archive into a "container") is refused at
+    /// `open`, exactly as `verify_archive` refuses it — the lazy reader never
+    /// serves or parses an uncommitted header member.
+    #[test]
+    fn an_uncommitted_header_member_in_a_sealed_archive_is_refused_at_open() {
+        use std::io::Write;
+        let key = SigningKey::from_bytes(&[6u8; 32]);
+        let sealed = seal(
+            &tileset("inject", &[("10/0/0".into(), vec![3u8; 64])]),
+            &key,
+        )
+        .expect("seal");
+
+        let forged_index = serde_json::to_vec(&TilesetBundleIndex {
+            schema: 1,
+            tileset_id: "inject".into(),
+            tileset_meta: TilesetMeta::default(),
+            bundles: vec![],
+        })
+        .unwrap();
+        let mut source = zip::ZipArchive::new(std::io::Cursor::new(&sealed)).unwrap();
+        let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for i in 0..source.len() {
+            out.raw_copy_file(source.by_index_raw(i).unwrap()).unwrap();
+        }
+        out.start_file(CHUNK_INDEX_PATH, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        out.write_all(&forged_index).unwrap();
+        let injected = out.finish().unwrap().into_inner();
+
+        let path = temp_path("inject");
+        std::fs::write(&path, &injected).unwrap();
+        let err = HexonArchiveIndex::open(&path).expect_err("uncommitted header member");
+        assert_eq!(
+            err.downcast_ref::<IntegrityError>(),
+            Some(&IntegrityError::Uncovered {
+                path: CHUNK_INDEX_PATH.into()
+            }),
+            "{err:#}"
+        );
+        assert!(
+            crate::integrity::verify_archive(&injected, &IntegrityPolicy::VerifyIfSealed).is_err()
+        );
+
+        std::fs::write(&path, &sealed).unwrap();
+        let honest = HexonArchiveIndex::open(&path).expect("the untouched archive opens");
+        assert_eq!(honest.layout(), Layout::Monolithic);
+        let _ = std::fs::remove_file(&path);
     }
 }

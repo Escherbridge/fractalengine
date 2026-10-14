@@ -412,7 +412,15 @@ one sub-module per domain:
   `migrate_legacy_blob_store`: a marker-gated, copy-only, crash-safe one-time
   pass that backfills the per-install blob store from the pre-2026-10-14
   per-user one, called from the binaries' `main` right after the DB thread's
-  shared handle is ready (fe-sync/src/AGENTS.md §blob-store)
+  shared handle is ready (fe-sync/src/AGENTS.md §blob-store). S8 hardening
+  (2026-10-14): a legacy file whose bytes do not hash to its name is skipped
+  (never carried forward), and when the new root resolves to the legacy
+  directory itself (`FE_BLOB_DIR` pointed there) the pass returns without
+  writing anything, not even the marker — the legacy dir is never written.
+  Hash ids come from the DB but pass `hash_from_hex` (64 hex) before
+  `canonical_blob_path`, so a DB row cannot name a path outside either
+  store. Crash-retry is tested, not assumed:
+  `a_crash_mid_migration_is_retried_without_loss_or_legacy_writes`.
 - `entity` — rename, delete, description updates
 - `entity_property` — custom property CRUD for nodes
 - `field_def` — field definition schema CRUD

@@ -591,7 +591,14 @@ fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
   `AssembleDownload`, and `drain_hexon_assemble_results` reuses the existing
   `TilesetDownloads`/Downloads-tab UI to show them, keyed by the REQUESTED
   uri (never routed through `SyncCommand::CancelTilesetDownload` — no P2P
-  `DownloadTileset` was ever sent for it).
+  `DownloadTileset` was ever sent for it). **S8:** the container loop holds
+  at most `fe_format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES` of chunk bytes
+  (the core's `max_total_bytes` argument) and abandons the fetch past it, so a
+  signed index naming many large chunks cannot exhaust memory before
+  reassembly (test `install_from_registry_stops_a_container_past_its_byte_budget`).
+  With `pin: None` here, a malicious registry still cannot replace an
+  installed sealed tileset of another publisher: the store refuses it
+  (fe-terrain `src/AGENTS.md` §chunked-containers "publisher continuity").
 - **Seeding → publish.** `terrain_bridge::spawn_bundle_and_publish(registry,
   sync_tx, tileset_id)` is the GUI's thread+channel wrapper around the ONE
   shared bundling implementation, `fe_terrain::tiles::bundle_for_seeding`
@@ -724,7 +731,7 @@ that closes the loop, because it is the one place that both receives those
   one event feed (`StreamedTilesetEventBuffer`); splitting them into two
   systems would mean draining that buffer twice, which Bevy would then have
   to serialize anyway.
-- **`verify_install_meta(meta_json, ad_publisher_did, known_pin)`** is the
+- **`verify_install_meta(tileset_id, meta_json, ad_publisher_did, known_pin)`** is the
   pure decision core (no Bevy, no I/O — independently unit-tested): parse
   `meta_json` as `fe_format::HeaderDoc`, verify it under
   `IntegrityPolicy::RequireSealed { pin }` (pin = `known_pin`, else
@@ -735,7 +742,18 @@ that closes the loop, because it is the one place that both receives those
   whatever the HashSeq itself already resolved, since there is nothing more
   this layer can check before the whole-archive check S6's install runs).
   Every network path requires a seal (decision A2): an unsealed header is
-  always `Err`.
+  always `Err`. **S8:** the signed manifest's `hexon_id` must equal
+  `tileset_id` — the pin store is keyed by tileset_id, so a header signed for
+  another hexon would otherwise pin its publisher under the wrong id.
+- **Pin precedence (S8).** `verify_install_meta_and_confirm` takes
+  `installed_pin` = `HexonStore::installed_publisher(tileset_id)` (looked up
+  by `drive_streamed_tilesets` through `SharedTilesetRegistry`) and uses
+  installed pin → in-memory TOFU pin → ad hint, in that order. Before S8 a
+  fresh process had an empty `KnownTilesetPublishers`, so the advertiser's
+  own DID became the pin even for a tileset already installed from another
+  publisher (pin provenance gap); the store-side continuity check is the
+  backstop either way. Tests: `an_installed_tileset_pins_its_publisher_over_the_advertisers_hint`,
+  `a_header_signed_for_another_tileset_is_refused_and_pins_nothing`.
 - **`verify_install_meta_and_confirm`** records a first-successful publisher
   as this node's TOFU pin (`KnownTilesetPublishers`, in-memory, capped at
   `MAX_KNOWN_PUBLISHERS`) and sends `SyncCommand::ConfirmTilesetDownload` on

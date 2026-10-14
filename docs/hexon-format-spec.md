@@ -94,6 +94,10 @@ Canonical serialization: Base32 (52 chars) or hex with `0x` prefix. Tag literals
 ├── icon.png                # 256x256 icon (optional)
 ├── preview/                # Preview images (optional)
 │   └── *.png
+├── members.json            # Sealed only: body member path → BLAKE3 hex (written by seal)
+├── chunks/                 # Chunked container only (sealed tilesets)
+│   ├── index.json          # Signed chunk table (TilesetBundleIndex, per-chunk blake3)
+│   └── {seq}.hexon         # One self-contained tileset archive per chunk
 ├── assets/                 # Content-addressed blobs (BLAKE3 hex)
 │   └── {hash}
 ├── entities/               # Scene-type hexons
@@ -456,6 +460,36 @@ Ed25519 signature of manifest JSON with `signature` field zeroed:
 
 Every `asset_hash` is BLAKE3 hex of the blob at `assets/{hash}`. Verify on extract.
 
+### Sealed archives — the Merkle-extended root (D-76 D2, PAS-P5)
+
+`seal` (always the LAST transform) extends the signature over every member:
+
+- `manifest.integrity = { "v": 1, "algo": "blake3", "header": { path: hex } }`
+  commits the BLAKE3 of the exact stored bytes of each header member present
+  (`entries.json`, `license.json`, `schema.json`, `terrain/tileset_meta.json`,
+  `terrain/config.json`, `chunks/index.json`) and always `members.json`. No
+  other path may appear in `header`.
+- `members.json` maps every other (body) member to its BLAKE3 hex — except
+  `assets/{h}`, which is self-certifying: `h` must equal BLAKE3 of the bytes
+  and must be referenced by the signed `entries.json` (`asset_hash` or a
+  `sub_assets` value).
+- `chunks/index.json` (containers) lists each `chunks/{seq}.hexon` with its
+  `blake3_hex`, which must equal that member's `members.json` digest.
+- `publisher_did` is the signing key's DID; the signature is the Manifest
+  Signature above over the manifest including `integrity`.
+- A sealed archive with any member not covered by these rules, any digest
+  mismatch, or any committed member missing is refused. Readers: install and
+  local reads verify a seal when present (`VerifyIfSealed`); every network
+  path and registry publish require one (`RequireSealed`, optionally pinned
+  to a publisher DID). Unsealed legacy archives still install locally,
+  flagged unverified.
+- Partial fetch carries a header document `{ v, uri, manifest,
+  header_members, archive_size, layout }` (raw manifest and header-member
+  text). The client verifies it with no archive bytes; `uri` must equal the
+  signed `hexon_id@version`, `layout` must match the signed chunk index, and
+  `archive_size` is advisory only. Chunks are then checked against their
+  signed digests, a monolithic archive against the whole-archive rules.
+
 ---
 
 ## Immutability Contract (Scene Hexons)
@@ -526,11 +560,14 @@ Every `asset_hash` is BLAKE3 hex of the blob at `assets/{hash}`. Verify on extra
 
 | Method | Path | RBAC | Description |
 |--------|------|------|-------------|
-| `POST` | `/api/v1/hexons/publish` | Owner+ | Upload `.hexon` package |
+| `POST` | `/api/v1/hexons/publish` | Owner+ | Upload a SEALED `.hexon` package (unsealed/tampered → 400; another publisher's `hexon_id` → 409) |
 | `GET` | `/api/v1/hexons/search?q=&tags=&type=` | Viewer+ | Search hexons |
 | `GET` | `/api/v1/hexons/:uri` | Viewer+ | Get manifest |
 | `GET` | `/api/v1/hexons/:uri/entries` | Viewer+ | List entries |
 | `GET` | `/api/v1/hexons/:uri/entries/:id/asset` | Viewer+ | Fetch blob |
+| `GET` | `/api/v1/hexons/:uri/meta` | Viewer+ | Header document (manifest + header members, no body bytes) |
+| `GET` | `/api/v1/hexons/:uri/chunk/:seq` | Viewer+ | One container chunk; seq 0 of a monolithic hexon is the whole archive (octet-stream, nosniff, attachment) |
+| `GET` | `/api/v1/hexons/:uri/member/*path` | Viewer+ | One raw member, verified against the seal on the server (octet-stream, nosniff, attachment) |
 | `POST` | `/api/v1/hexons/:uri/install` | Editor+ | Install into petal |
 | `DELETE` | `/api/v1/hexons/:uri/uninstall` | Editor+ | Uninstall |
 | `GET` | `/api/v1/hexons/installed` | Viewer+ | List installed |

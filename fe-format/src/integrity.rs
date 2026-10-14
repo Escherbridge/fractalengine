@@ -106,6 +106,8 @@ pub enum IntegrityError {
     MissingMember { path: String },
     #[error("asset {hash} is not referenced by the signed entries.json")]
     AssetNotReferenced { hash: String },
+    #[error("header document claims {claimed} but its manifest is {signed}")]
+    Substituted { claimed: String, signed: String },
 }
 
 /// Outcome of [`verify_sealed_header`].

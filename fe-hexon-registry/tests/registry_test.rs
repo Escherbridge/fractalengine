@@ -569,6 +569,88 @@ async fn an_html_member_is_served_as_an_octet_stream_attachment_with_nosniff() {
     assert_eq!(body.as_ref(), b"<script>alert(document.domain)</script>");
 }
 
+/// S8: a publisher-chosen member name cannot shape the Content-Disposition
+/// header — anything outside `[A-Za-z0-9._-]` is replaced inside the quotes.
+#[tokio::test]
+async fn a_hostile_member_name_cannot_shape_the_content_disposition_header() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sealed = fixtures::sealed_hexon_with_track_member("odd-member", "we\"ird;x=1.html");
+    std::fs::write(tmp.path().join("odd-member@1.0.0.hexon"), sealed).unwrap();
+    let router = router_for(tmp.path(), None, false);
+
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/hexons/odd-member/member/terrain/tracks/we%22ird%3Bx%3D1.html")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get(header::CONTENT_DISPOSITION)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "attachment; filename=\"we_ird_x_1.html\""
+    );
+}
+
+/// S8: publish's duplicate/continuity check and its write are one critical
+/// section — of N different publishers racing to publish the same new
+/// `hexon_id`, exactly one wins and every other gets 409, and the stored
+/// file is the winner's.
+#[tokio::test]
+async fn concurrent_publishes_of_one_id_admit_exactly_one_publisher() {
+    let tmp = tempfile::tempdir().unwrap();
+    let router = router_for(tmp.path(), None, false);
+
+    let mut tasks = tokio::task::JoinSet::new();
+    for i in 0..6u8 {
+        let router = router.clone();
+        let key = ed25519_dalek::SigningKey::from_bytes(&[200 + i; 32]);
+        let bytes = fixtures::seal_with(
+            fixtures::build_hexon(
+                "contested",
+                &format!("1.0.{i}"),
+                HexonType::Skybox,
+                "Contested",
+                "race fixture",
+                &[],
+                "sky",
+                EntryKind::Skybox,
+                format!("sky bytes {i}").as_bytes(),
+            ),
+            &key,
+        );
+        tasks.spawn(async move {
+            let did = fe_format::verifying_key_to_did(&key.verifying_key());
+            (post_publish(&router, bytes, None).await, did)
+        });
+    }
+    let mut winners = Vec::new();
+    while let Some(joined) = tasks.join_next().await {
+        let ((status, body), did) = joined.unwrap();
+        match status {
+            StatusCode::OK => winners.push(did),
+            StatusCode::CONFLICT => {}
+            other => panic!("unexpected {other}: {}", error_text(&body)),
+        }
+    }
+    assert_eq!(winners.len(), 1, "exactly one publisher may claim the id");
+    let stored: Vec<_> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("contested@"))
+        .collect();
+    assert_eq!(stored.len(), 1, "only the winner's file is written");
+    let (_, body) = get(&router, "/api/v1/hexons/contested").await;
+    assert_eq!(json_data(&body)["publisher_did"], winners[0]);
+}
+
 #[tokio::test]
 async fn reads_of_a_bomb_already_on_disk_fail_bounded() {
     let tmp = tempfile::tempdir().unwrap();

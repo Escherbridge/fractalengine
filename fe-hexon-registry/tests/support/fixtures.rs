@@ -210,6 +210,12 @@ pub fn sealed_container_hexon(id: &str) -> Vec<u8> {
 /// arbitrary, attacker-choosable member name, used to prove `/member` never
 /// trusts a file extension for its response `Content-Type` (nosniff fixture).
 pub fn sealed_hexon_with_html_member(id: &str) -> Vec<u8> {
+    sealed_hexon_with_track_member(id, "notes.html")
+}
+
+/// A sealed hexon with one body member at `terrain/tracks/{name}` (any
+/// publisher-chosen name, including header-hostile characters).
+pub fn sealed_hexon_with_track_member(id: &str, name: &str) -> Vec<u8> {
     let m = manifest(
         id,
         "1.0.0",
@@ -225,7 +231,7 @@ pub fn sealed_hexon_with_html_member(id: &str) -> Vec<u8> {
         Some(License::default()),
         None,
         Some(&[(
-            "notes.html".to_string(),
+            name.to_string(),
             b"<script>alert(document.domain)</script>".to_vec(),
         )]),
         None,

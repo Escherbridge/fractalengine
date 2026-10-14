@@ -200,6 +200,16 @@ phase (manifest+entries+tileset_meta — exactly what `index_one` does) + on-dem
 member reads; `TilesetMeta` is already fetchable without tile bytes
 (`{id}.meta.json`), satisfying metadata-before-bytes.
 
+**Implementation (2026-10-14, PAS-P5 — code-complete, tests written and not
+yet run; DONE-pending-sweep):** C1 as ratified. Registry routes `/meta`,
+`/chunk/{seq}`, `/member/{*path}` (`fe-hexon-registry/src/routes.rs`); one
+`PartialHexonFetch` trait with an HTTP impl (`fe-hexon/src/remote.rs`) and a
+P2P impl over `BlobTransport` (`fe-hexon/src/partial/p2p.rs`); `FetchStrategy`
+(`fe-hexon/src/p2p/fetch.rs`) is the single verification and source-policy
+layer; the lazy header/member reader is `fe_format::HexonArchiveIndex`. First
+production caller: the Hexon Manager "Install from registry" path
+(`fractalengine/src/terrain_bridge.rs::install_from_registry`). Commits: S1 `db5883b`, S1b `44bc4e9`, S2 `cbbd806`, S3 `36866aa`, S4 `3294210`, S6 `046cb28`+`e86ec55`, S5 `391eefd`, S7a `a2147bb`, S7b `b56b877`, S8 security review-and-fix (`fix(security): PAS-P5 S8`).
+
 ## D-76 — Integrity granularity for partial fetch
 
 Current gaps: Ed25519 covers the **manifest JSON only**, in two mutually
@@ -220,12 +230,31 @@ announce/fetch code is currently built on the LEGACY manifest
 (`announce.rs:86`) and must migrate. Owned by `hexon_unification_20260716`;
 D-76 adds the integrity requirements to that unification, it does not fork it.
 
+**Implementation (2026-10-14, PAS-P5 — code-complete, tests written and not
+yet run; DONE-pending-sweep):** D2 as ratified, on the fe-format v1.0.0 stack
+(`fe-format/src/integrity.rs`: `seal`, `verify_archive`, `IntegrityPolicy
+{RequireSealed{pin}, VerifyIfSealed}`): the signed manifest commits header
+digests incl. `members.json` and `chunks/index.json` (per-chunk blake3);
+`asset_hash` is enforced at install (fe-format import, fe-hexon `install`) and
+at registry publish, which also requires a valid seal and publisher
+continuity. The S8 adversarial review (2026-10-14) bound the header
+document's unauthenticated `uri`/`layout` to the signed manifest/index,
+closed an uncommitted-header-member gap in the lazy reader, added a
+store-side publisher pin (`HexonStore::install_tileset`), an installed-
+publisher pin and `tileset_id` binding at the P2P confirm gate, a registry
+publish lock, and nested/total byte budgets. The legacy fe-hexon
+`signature.txt` scheme is untouched (HU-P2's scope). Commits: S1 `db5883b`, S1b `44bc4e9`, S2 `cbbd806`, S3 `36866aa`, S4 `3294210`, S6 `046cb28`+`e86ec55`, S5 `391eefd`, S7a `a2147bb`, S7b `b56b877`, S8 security review-and-fix (`fix(security): PAS-P5 S8`).
+
 ## D-77 — iroh upgrade timing vs relay EOL 2026-12-31
 
 Facts: 0.35 public relays hard-EOL 2026-12-31 (~5.5 months); relay wire protocol
 broke in 0.91 so the whole stack jumps together; 0.90+ blobs is not yet labeled
 production-quality; the repo's streaming surface is **greenfield** (iroh-blobs
-wired to nothing), so there is no legacy transfer code to preserve. Today the
+wired to nothing), so there is no legacy transfer code to preserve.
+*(Corrected 2026-10-14, PAS-P5 S8: no longer true — since the iroh 1.x port
+the blobs protocol is routed on the endpoint, `fe-sync/src/docs_engine.rs:160`
+`.accept(iroh_blobs::ALPN, …)`, and PAS-P3/P5 move tileset and hexon bytes
+over it through `IrohBlobTransport`.)* Today the
 relay failure mode is **quiet**: default n0 relay binding, no relay_url config
 wired, offline detection only checks bind failure — post-EOL, gossip queues
 silently forever.

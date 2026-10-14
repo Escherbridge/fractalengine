@@ -1009,6 +1009,24 @@ equivalent trust"), so there is exactly one signature to check, not N.
   **Deferred, not dropped:** a genuinely global byte ceiling across every
   resident source — revisit if a real workload needs more than 4 cascaded
   sources per petal.
+- **Nested budget (S8, R8).** A container chunk's baked-splat section is
+  read with `read_baked_splats_from_archive_with_budget(bytes,
+  STREAMED_BUNDLE_DECODE_BUDGET)` — the same budget its tile import uses —
+  and a refusal is an ERROR, not a silent miss. Before S8 the splat read ran
+  under the 1 GiB whole-archive budget on every tile miss, so a chunk of
+  many sub-cap splat entries could inflate ~1 GiB per lookup. Test:
+  `container_splat_reads_are_bounded_by_the_streamed_bundle_budget`.
+- **Publisher continuity (S8).** `install_tileset` refuses
+  (`PUBLISHER_CONTINUITY_ERROR`) to replace an installed SEALED tileset with
+  another publisher's archive or with an unsealed one; the same publisher
+  can still update it, and a legacy unsealed or broken install pins nothing.
+  `HexonStore::installed_publisher(id)` (one header-phase open) is the pin;
+  `install_tileset` is the one choke point every path (P2P, registry,
+  local) goes through, so no transport-level pin mistake can overwrite a
+  sealed install. The host's confirm gate also reads it, so a fresh process
+  with an empty in-memory pin store still refuses an impostor before any
+  chunk (fractalengine `src/AGENTS.md` §tileset-p2p). Test:
+  `a_sealed_install_is_never_replaced_by_another_publisher_or_an_unsealed_archive`.
 - **Atomic install** (critic AC-21b/c). See §lazy-tiles "Reinstall is
   atomic" above — `install_tileset` now writes a same-directory temp file
   then renames over `{id}.hexon`/`{id}.meta.json`, for BOTH layouts.

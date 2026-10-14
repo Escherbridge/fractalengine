@@ -54,6 +54,8 @@ pub struct RegistryState {
     pub token: Option<String>,
     pub readonly: bool,
     pub index: tokio::sync::RwLock<Vec<HexonIndexEntry>>,
+    /// Serializes publish's check → write → reindex (no continuity TOCTOU).
+    publish_lock: tokio::sync::Mutex<()>,
 }
 
 impl RegistryState {
@@ -68,6 +70,7 @@ impl RegistryState {
             token,
             readonly,
             index: tokio::sync::RwLock::new(entries),
+            publish_lock: tokio::sync::Mutex::new(()),
         }
     }
 }
@@ -235,6 +238,17 @@ async fn meta(State(state): State<Arc<RegistryState>>, Path(uri): Path<String>) 
 /// browser that follows the link — the stored-XSS rule CDL-SPEC10 A4 already
 /// applies to fe-api blobs (S3 critic amendment, step 6).
 fn octet_response(bytes: Vec<u8>, filename: &str) -> Response {
+    // The name is publisher-controlled: keep only a safe charset inside the quotes.
+    let filename: String = filename
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/octet-stream")
@@ -389,6 +403,23 @@ fn safe_component(s: &str, extra: &[char]) -> bool {
         })
 }
 
+/// Create `dest` with `bytes`, refusing (AlreadyExists) to overwrite a file
+/// that appeared after the duplicate check.
+async fn write_new(dest: &std::path::Path, bytes: Bytes) -> std::io::Result<()> {
+    let dest = dest.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&dest)?;
+        file.write_all(&bytes)?;
+        file.sync_all()
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+
 /// POST /api/v1/hexons/publish — validate, persist as `{id}@{version}.hexon`, reindex.
 ///
 /// D-75/D-76: every publish must be a fully sealed, signed archive (`verify_archive`
@@ -461,6 +492,9 @@ async fn publish(State(state): State<Arc<RegistryState>>, body: Bytes) -> Respon
         Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
 
+    // Held until the reindex below: two concurrent publishes of one id can
+    // never both pass the duplicate/continuity check (see AGENTS.md §Publish validation).
+    let _publishing = state.publish_lock.lock().await;
     let dest = state.dir.join(format!("{id}@{version}.hexon"));
     let conflict = {
         let index = state.index.read().await;
@@ -485,7 +519,13 @@ async fn publish(State(state): State<Arc<RegistryState>>, body: Bytes) -> Respon
     if let Some(msg) = conflict {
         return json_err(StatusCode::CONFLICT, msg);
     }
-    if let Err(e) = tokio::fs::write(&dest, &body).await {
+    if let Err(e) = write_new(&dest, body.clone()).await {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            return json_err(
+                StatusCode::CONFLICT,
+                format!("already published: {id}@{version}"),
+            );
+        }
         return json_err(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("write failed: {e}"),

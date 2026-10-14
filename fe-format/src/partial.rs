@@ -8,9 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::integrity::{
     verify_archive_with_budget, verify_sealed_header, IntegrityError, IntegrityPolicy,
-    IntegrityStatus, SealCheck, SealedCoverage, MANIFEST_PATH,
+    IntegrityStatus, SealCheck, SealedCoverage, CHUNK_INDEX_PATH, MANIFEST_PATH,
 };
 use crate::limits;
+use crate::manifest::{HexonManifest, TilesetBundleIndex};
 
 /// Header-document format version.
 pub const HEADER_DOC_VERSION: u32 = 1;
@@ -43,7 +44,8 @@ pub struct HeaderDoc {
     /// present in the archive (entries, license, schema, tileset_meta,
     /// terrain config, members.json, chunks/index.json).
     pub header_members: BTreeMap<String, String>,
-    /// Total size of the archive this header describes, in bytes.
+    /// Total size of the archive, in bytes — ADVISORY: outside the signature,
+    /// never copied into [`VerifiedHeader`], never a cap or a security input.
     pub archive_size: u64,
     pub layout: Layout,
 }
@@ -57,12 +59,20 @@ impl HeaderDoc {
 }
 
 /// A [`HeaderDoc`] that passed [`verify_header`]: what every subsequent
-/// chunk/member fetch is checked against.
+/// chunk/member fetch is checked against. Every field is derived from the
+/// manifest and signed coverage, never from the doc's own claims (the doc's
+/// `archive_size` is advisory and deliberately absent; see `src/AGENTS.md` §partial).
 #[derive(Debug, Clone)]
 pub struct VerifiedHeader {
+    /// `"{hexon_id}@{version}"` of the (signed, when sealed) manifest.
     pub uri: String,
+    /// The manifest's `hexon_id`.
+    pub hexon_id: String,
+    /// The manifest's `version`.
+    pub version: String,
+    /// Derived from the signed chunk index (sealed) or the header's own
+    /// `chunks/index.json` (unsealed).
     pub layout: Layout,
-    pub archive_size: u64,
     pub status: IntegrityStatus,
     coverage: Option<SealedCoverage>,
 }
@@ -87,9 +97,10 @@ impl VerifiedHeader {
 /// header claims. No archive bytes are needed; this is the header-phase shape
 /// both transports carry.
 ///
-/// Refuses a `Container` layout whose claimed `chunk_count` disagrees with the
-/// signed `chunks/index.json` bundle count — a transport cannot under- or
-/// over-claim chunks relative to what the publisher actually signed.
+/// The doc's unauthenticated `uri` must equal the manifest's
+/// `hexon_id@version` (no substitution) and its `layout` must equal the one
+/// derived from the signed chunk index (no downgrade or over-claim);
+/// `archive_size` is advisory and never reaches [`VerifiedHeader`].
 pub fn verify_header(
     doc: &HeaderDoc,
     policy: &IntegrityPolicy,
@@ -106,30 +117,64 @@ pub fn verify_header(
         .map(|(path, text)| (path.clone(), text.as_bytes().to_vec()))
         .collect();
     let check = verify_sealed_header(doc.manifest.as_bytes(), &header_members, policy)?;
-    let (status, coverage) = match check {
-        SealCheck::Unsealed => (IntegrityStatus::Unsealed, None),
-        SealCheck::Sealed(coverage) => {
-            if let Layout::Container { chunk_count } = doc.layout {
-                let signed = coverage.chunk_index().map(|idx| idx.bundles.len() as u32);
-                if signed != Some(chunk_count) {
-                    return Err(IntegrityError::Unsupported(format!(
-                        "header claims {chunk_count} chunks but the signed index has {signed:?}"
-                    )));
+    // `verify_sealed_header` already parsed (and, when sealed, signature-checked) these bytes.
+    let manifest: HexonManifest = serde_json::from_str(&doc.manifest)
+        .map_err(|e| IntegrityError::Malformed(format!("{MANIFEST_PATH}: {e}")))?;
+    let signed_uri = format!("{}@{}", manifest.hexon_id, manifest.version);
+    if doc.uri != signed_uri {
+        return Err(IntegrityError::Substituted {
+            claimed: doc.uri.clone(),
+            signed: signed_uri,
+        });
+    }
+    let (status, coverage, layout) = match check {
+        SealCheck::Unsealed => {
+            let layout = match doc.header_members.get(CHUNK_INDEX_PATH) {
+                Some(text) => {
+                    let index: TilesetBundleIndex = serde_json::from_str(text).map_err(|e| {
+                        IntegrityError::Malformed(format!("{CHUNK_INDEX_PATH}: {e}"))
+                    })?;
+                    container_layout(&index)
                 }
+                None => Layout::Monolithic,
+            };
+            (IntegrityStatus::Unsealed, None, layout)
+        }
+        SealCheck::Sealed(coverage) => {
+            // An uncommitted header member is Uncovered, as in `HexonArchiveIndex::open`.
+            for (path, bytes) in &header_members {
+                coverage.check_member(path, bytes)?;
             }
+            let layout = coverage
+                .chunk_index()
+                .map_or(Layout::Monolithic, container_layout);
             let status = IntegrityStatus::Sealed {
                 publisher_did: coverage.publisher_did().to_string(),
             };
-            (status, Some(*coverage))
+            (status, Some(*coverage), layout)
         }
     };
+    if doc.layout != layout {
+        return Err(IntegrityError::Unsupported(format!(
+            "header claims {:?} but the chunk index says {layout:?}",
+            doc.layout
+        )));
+    }
     Ok(VerifiedHeader {
-        uri: doc.uri.clone(),
-        layout: doc.layout,
-        archive_size: doc.archive_size,
+        uri: signed_uri,
+        hexon_id: manifest.hexon_id,
+        version: manifest.version,
+        layout,
         status,
         coverage,
     })
+}
+
+/// The container layout a chunk index describes.
+fn container_layout(index: &TilesetBundleIndex) -> Layout {
+    Layout::Container {
+        chunk_count: index.bundles.len() as u32,
+    }
 }
 
 /// Check that `archive` is exactly the sealed archive a verified header
@@ -303,5 +348,146 @@ mod tests {
             err,
             IntegrityError::BadSignature | IntegrityError::Malformed(_)
         ));
+    }
+
+    fn tileset_meta(tile_count: u32) -> TilesetMeta {
+        TilesetMeta {
+            bounds: [45.0, -122.0, 46.0, -121.0],
+            min_zoom: 10,
+            max_zoom: 10,
+            tile_size: 256,
+            elevation_encoding: ElevationEncoding::TerrainRgb,
+            tile_count,
+            region_name: "Partial".into(),
+            ..Default::default()
+        }
+    }
+
+    /// A sealed two-chunk container's header document, as the lazy reader serves it.
+    fn sealed_container_header_doc() -> HeaderDoc {
+        let key = SigningKey::from_bytes(&[12u8; 32]);
+        let chunks: Vec<crate::ChunkInput> = (0..2u32)
+            .map(|seq| crate::ChunkInput {
+                seq,
+                tile_count: 1,
+                zoom: 10,
+                x_range: [seq, seq],
+                y_range: [0, 0],
+                hilbert_range: [u64::from(seq), u64::from(seq)],
+                archive_bytes: HexonArchive::export_tileset(
+                    manifest(&format!("chunked-{seq}")),
+                    &tileset_meta(1),
+                    &[(format!("10/{seq}/0"), vec![seq as u8; 64])],
+                    &[],
+                    None,
+                )
+                .unwrap(),
+            })
+            .collect();
+        let container =
+            HexonArchive::export_chunked(manifest("chunked"), &tileset_meta(2), &chunks).unwrap();
+        let sealed = seal(&container, &key).unwrap();
+        let path = temp_path("container");
+        std::fs::write(&path, &sealed).unwrap();
+        let doc = HexonArchiveIndex::open(&path).unwrap().header_doc();
+        let _ = std::fs::remove_file(&path);
+        doc
+    }
+
+    /// S8 mandatory finding (1): a validly-signed header of hexon A served
+    /// under uri B is refused — the uri is bound to the signed manifest.
+    #[test]
+    fn a_signed_header_served_under_another_uri_is_refused() {
+        let (_key, honest) = sealed_monolithic_header_doc();
+        let verified = verify_header(&honest, &IntegrityPolicy::VerifyIfSealed).expect("honest");
+        assert_eq!(verified.uri, "mono@0.1.0");
+        assert_eq!(verified.hexon_id, "mono");
+
+        for claimed in ["other@0.1.0", "mono@9.9.9", "mono"] {
+            let mut substituted = honest.clone();
+            substituted.uri = claimed.into();
+            let err = verify_header(&substituted, &IntegrityPolicy::VerifyIfSealed)
+                .expect_err("a uri the signature does not cover must be refused");
+            assert_eq!(
+                err,
+                IntegrityError::Substituted {
+                    claimed: claimed.into(),
+                    signed: "mono@0.1.0".into()
+                }
+            );
+        }
+    }
+
+    /// S8 mandatory finding (2): claiming `Monolithic` over a signed chunk
+    /// index (a downgrade that would let seq 0 skip the per-chunk digests),
+    /// or over-claiming chunks, is refused; the honest claim verifies.
+    #[test]
+    fn a_layout_claim_that_contradicts_the_signed_chunk_index_is_refused() {
+        let honest = sealed_container_header_doc();
+        assert_eq!(honest.layout, Layout::Container { chunk_count: 2 });
+        let verified = verify_header(&honest, &IntegrityPolicy::VerifyIfSealed).expect("honest");
+        assert_eq!(verified.layout, Layout::Container { chunk_count: 2 });
+
+        for lie in [Layout::Monolithic, Layout::Container { chunk_count: 3 }] {
+            let mut lying = honest.clone();
+            lying.layout = lie;
+            let err = verify_header(&lying, &IntegrityPolicy::VerifyIfSealed)
+                .expect_err("a layout the signed index contradicts must be refused");
+            assert!(
+                matches!(err, IntegrityError::Unsupported(_)),
+                "{lie:?}: {err}"
+            );
+        }
+
+        // A monolithic archive cannot be dressed up as a container either.
+        let (_key, mono) = sealed_monolithic_header_doc();
+        let mut upgraded = mono;
+        upgraded.layout = Layout::Container { chunk_count: 1 };
+        assert!(matches!(
+            verify_header(&upgraded, &IntegrityPolicy::VerifyIfSealed),
+            Err(IntegrityError::Unsupported(_))
+        ));
+    }
+
+    /// S8 mandatory finding (3): `archive_size` is outside the signature, so
+    /// any value verifies identically and nothing derived from it reaches the
+    /// verified header (no fetch cap can be widened through it).
+    #[test]
+    fn archive_size_is_advisory_and_never_reaches_the_verified_header() {
+        let honest = sealed_container_header_doc();
+        let verified = |size: u64| {
+            let mut doc = honest.clone();
+            doc.archive_size = size;
+            let v = verify_header(&doc, &IntegrityPolicy::VerifyIfSealed).expect("verifies");
+            (
+                v.uri.clone(),
+                v.layout,
+                v.status.clone(),
+                v.chunk_digest(0).map(str::to_string),
+                v.chunk_digest(1).map(str::to_string),
+            )
+        };
+        assert_eq!(verified(0), verified(u64::MAX));
+        assert_eq!(verified(0), verified(honest.archive_size));
+    }
+
+    /// S8: a header member the signed root does not commit (here a
+    /// `schema.json` the archive never had) is refused rather than passed
+    /// through to callers that read the doc's `header_members` map.
+    #[test]
+    fn an_uncommitted_header_member_in_a_sealed_doc_is_refused() {
+        let (_key, honest) = sealed_monolithic_header_doc();
+        let mut injected = honest.clone();
+        injected
+            .header_members
+            .insert("schema.json".into(), "{}".into());
+        assert!(!honest.header_members.contains_key("schema.json"));
+        assert_eq!(
+            verify_header(&injected, &IntegrityPolicy::VerifyIfSealed)
+                .expect_err("uncommitted header member"),
+            IntegrityError::Uncovered {
+                path: "schema.json".into()
+            }
+        );
     }
 }
