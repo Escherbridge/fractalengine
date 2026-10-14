@@ -369,17 +369,62 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
     db_path: Option<String>,
     lifecycle_tx: Option<LifecycleEventSender>,
 ) -> Result<std::thread::JoinHandle<()>, DbInitError> {
+    spawn_db_thread_shared(
+        rx,
+        tx,
+        blob_store,
+        repl_tx,
+        keypair,
+        secret_store,
+        entity_change_tx,
+        db_path,
+        lifecycle_tx,
+    )
+    .map(|db_thread| db_thread.join_handle)
+}
+
+/// A running DB thread plus a clone of its one datastore handle.
+/// See src/AGENTS.md §shared-handle.
+pub struct DbThread {
+    /// Joins when the DB thread exits (after `DbCommand::Shutdown` or channel close).
+    pub join_handle: std::thread::JoinHandle<()>,
+    /// Clone of the DB thread's own SurrealKV handle (ns/db already selected) — the
+    /// only way for another thread to read the store: a second open is refused by
+    /// SurrealKV's file lock (Windows os error 33).
+    pub shared_db: repo::Db,
+}
+
+/// [`spawn_db_thread_with_sync_and_lifecycle`] that also hands back a clone of
+/// the DB thread's datastore handle for in-process readers (the API gateway).
+/// See src/AGENTS.md §shared-handle.
+#[allow(clippy::too_many_arguments, clippy::result_large_err)] // thread-spawn seam; see spawn_db_thread
+pub fn spawn_db_thread_shared(
+    rx: crossbeam::channel::Receiver<DbCommand>,
+    tx: crossbeam::channel::Sender<DbResult>,
+    blob_store: BlobStoreHandle,
+    repl_tx: Option<ReplicationSender>,
+    keypair: Option<fe_identity::NodeKeypair>,
+    secret_store: Option<std::sync::Arc<dyn fe_identity::SecretStore>>,
+    entity_change_tx: Option<tokio::sync::broadcast::Sender<fe_runtime::messages::SceneChange>>,
+    db_path: Option<String>,
+    lifecycle_tx: Option<LifecycleEventSender>,
+) -> Result<DbThread, DbInitError> {
     assert!(
         tokio::runtime::Handle::try_current().is_err(),
         "spawn_db_thread must not be called from within a Tokio runtime"
     );
-    let (startup_tx, startup_rx) = std::sync::mpsc::sync_channel::<Result<(), DbInitError>>(0);
+    let (startup_tx, startup_rx) =
+        std::sync::mpsc::sync_channel::<Result<repo::Db, DbInitError>>(0);
     let handle = std::thread::spawn(move || {
         // The blob store handle is owned by the DB thread so future handlers
         // (Phase B: import refactor, Phase C: migration) can write to it
         // without crossing channel boundaries. Held live for thread lifetime.
         let blob_store: BlobStoreHandle = blob_store;
-        let rt = match tokio::runtime::Builder::new_current_thread()
+        // Multi-thread: the SurrealDB router task must keep serving the shared
+        // handle while this thread blocks in `rx.recv()` (src/AGENTS.md §shared-handle).
+        let rt = match tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("fe-db-engine")
             .enable_all()
             .build()
         {
@@ -415,7 +460,8 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                 let _ = startup_tx.send(Err(DbInitError::ApiTokenSchemaApply(e.to_string())));
                 return;
             }
-            let _ = startup_tx.send(Ok(()));
+            // Cloned after use_ns/use_db: the clone's session inherits ns/db.
+            let _ = startup_tx.send(Ok(db.clone()));
 
             // Initialize the Hybrid Logical Clock from the max persisted value
             // so clocks survive restarts.
@@ -1501,7 +1547,9 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
             }
             tracing::info!("Database thread shutting down");
             // Release the store while this runtime can still drive the
-            // engine's shutdown, so a reopen of the same path succeeds.
+            // engine's shutdown, so a reopen of the same path succeeds. A live
+            // shared clone keeps the router up until this runtime drops at
+            // thread exit (src/AGENTS.md §shared-handle).
             drop(db);
             for _ in 0..16 {
                 tokio::task::yield_now().await;
@@ -1510,12 +1558,15 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
             send_result(&tx, DbResult::Stopped);
         });
     });
-    startup_rx.recv().map_err(|_| {
+    let shared_db = startup_rx.recv().map_err(|_| {
         DbInitError::RuntimeBuild(std::io::Error::other(
             "DB thread startup channel closed (thread may have panicked)",
         ))
     })??;
-    Ok(handle)
+    Ok(DbThread {
+        join_handle: handle,
+        shared_db,
+    })
 }
 
 // ---------------------------------------------------------------------------

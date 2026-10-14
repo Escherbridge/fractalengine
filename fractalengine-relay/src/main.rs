@@ -107,7 +107,12 @@ fn main() -> anyhow::Result<()> {
     let entity_store_for_drain = Arc::clone(&entity_store);
     std::thread::spawn(move || run_entity_store_drain(entity_change_rx, entity_store_for_drain));
 
-    let _db_thread = fe_database::spawn_db_thread_with_sync(
+    // The DB thread is the store's only opener; `shared_db` is a clone of its
+    // handle for the API reader (fe-database src/AGENTS.md §shared-handle).
+    let fe_database::DbThread {
+        join_handle: _db_thread,
+        shared_db,
+    } = match fe_database::spawn_db_thread_shared(
         ch.db_cmd_rx,
         ch.db_res_tx,
         blob_store.clone(),
@@ -115,8 +120,15 @@ fn main() -> anyhow::Result<()> {
         Some(db_keypair),
         Some(secret_store.clone()),
         Some(entity_change_tx.clone()),
-        Some(db_path.clone()),
-    );
+        Some(db_path),
+        None,
+    ) {
+        Ok(db_thread) => db_thread,
+        Err(e) => {
+            tracing::error!("Failed to start database thread: {e}");
+            std::process::exit(1);
+        }
+    };
 
     // A10 letter gap (F20 fold-in): the seed send was a bare `.ok()` — a
     // closed DB channel (dead DB thread) was silent. Mirror the GUI's
@@ -126,11 +138,9 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    // Seed barrier (same pattern as the GUI): SurrealKV takes an exclusive
-    // file lock while the DB thread initialises, so a second read-only
-    // connection opened mid-init fails (os error 33). Wait for the seed to
-    // complete, collecting results and replaying them so Bevy still sees the
-    // full `DbResult` stream.
+    // Seed barrier (same pattern as the GUI): wait for the seed so the
+    // analytics hydration below sees seeded rows, collecting results and
+    // replaying them so Bevy still sees the full `DbResult` stream.
     let mut startup_db_results = Vec::new();
     let seed_deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
@@ -252,8 +262,11 @@ fn main() -> anyhow::Result<()> {
             {
                 tracing::warn!("Sync command channel closed before shutdown");
             }
-            // Brief grace period: the DB thread flushes its store on Shutdown
-            // and the sync thread closes replicas/endpoint before Stopped.
+            // Brief grace period: the DB thread finishes its in-flight command
+            // and exits (commits are already fsynced, SURREAL_DATASTORE_SYNC_DATA=every;
+            // the API's shared clone skips the engine's graceful close, see
+            // fe-database src/AGENTS.md §shared-handle) and the sync thread
+            // closes replicas/endpoint before Stopped.
             std::thread::sleep(Duration::from_millis(750));
             flag_for_shutdown.store(true, Ordering::SeqCst);
         });
@@ -286,79 +299,36 @@ fn main() -> anyhow::Result<()> {
         tokio::sync::broadcast::channel::<fe_runtime::messages::TransformUpdate>(1024);
     let (revocation_tx, revocation_rx) = tokio::sync::broadcast::channel::<String>(64);
 
-    // Open a second read-only SurrealKV connection for direct API reads.
-    // SurrealKV supports concurrent readers; this bypasses the crossbeam channel.
-    // Note: SurrealKV takes a per-handle file lock, so while the DB thread's
-    // writer connection is alive this legitimately fails (Windows os error 33)
-    // and the API falls back to the crossbeam channel — the same fallback the
-    // GUI binary hits on this platform. A couple of retries absorb a transient
-    // open during DB startup.
-    // F24: the analytics hot cache rides `ApiConfig` unless hydration was
-    // attempted and failed (fail-closed below). On platforms where the
-    // SurrealKV per-handle lock keeps the API read connection closed
-    // (Windows, os error 33), the analytics authz gate — which requires the
-    // direct reader — is the honest first refusal; the store itself stays
-    // wired and live via the drain thread.
+    // Direct API reader = clone of the DB thread's handle — never a second
+    // SurrealKV open, which the store lock refuses (Windows os error 33).
+    // F24: the analytics hot cache rides `ApiConfig` unless hydration fails,
+    // which fails the analytics surface CLOSED (entity_store: None) rather than
+    // serving a partial nodes table; the drain thread keeps mirroring live
+    // scene changes either way.
     let mut entity_store_for_api: Option<Arc<fe_entity_store::EntityStore>> =
         Some(Arc::clone(&entity_store));
-
     let api_db_reader: Option<Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>> = {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .expect("api_db_reader runtime");
-        let mut opened = None;
-        for attempt in 1..=4u32 {
-            match rt.block_on(async {
-                let db = surrealdb::Surreal::new::<surrealdb::engine::local::SurrealKv>(&db_path)
-                    .await?;
-                db.use_ns("fractalengine").use_db("fractalengine").await?;
-                Ok::<_, surrealdb::Error>(db)
-            }) {
-                Ok(db) => {
-                    opened = Some(Arc::new(db));
-                    break;
-                }
-                Err(e) => {
-                    if attempt < 4 {
-                        tracing::debug!(attempt, "API read connection not ready yet: {e}");
-                        std::thread::sleep(Duration::from_millis(250));
-                    } else {
-                        tracing::warn!(
-                            "Could not open API read connection, falling back to channel: {e}"
-                        );
-                    }
-                }
+            .expect("api_db_reader hydration runtime");
+        match rt.block_on(fe_api::entity_store_bridge::hydrate_entity_store(
+            &shared_db,
+            &entity_store,
+        )) {
+            Ok(node_count) => tracing::info!(
+                node_count,
+                "Hydrated analytics EntityStore through the DB thread's shared handle"
+            ),
+            Err(e) => {
+                tracing::error!(
+                    %e,
+                    "EntityStore hydration failed — analytics surface stays unavailable"
+                );
+                entity_store_for_api = None;
             }
         }
-        if opened.is_some() {
-            tracing::info!("Opened read-only SurrealKV connection for API gateway");
-        }
-        // F24: hydrate the analytics hot cache from the pre-startup rows the
-        // same way the GUI binary does (the GUI's hydrate_entity_store,
-        // extracted verbatim into fe_api::entity_store_bridge). A hydration
-        // failure fails the analytics surface CLOSED (entity_store: None)
-        // rather than serving a partial nodes table; the drain thread keeps
-        // mirroring live scene changes either way.
-        if let Some(ref db) = opened {
-            match rt.block_on(fe_api::entity_store_bridge::hydrate_entity_store(
-                db,
-                &entity_store,
-            )) {
-                Ok(node_count) => tracing::info!(
-                    node_count,
-                    "Hydrated analytics EntityStore from pre-startup nodes"
-                ),
-                Err(e) => {
-                    tracing::error!(
-                        %e,
-                        "EntityStore hydration failed — analytics surface stays unavailable"
-                    );
-                    entity_store_for_api = None;
-                }
-            }
-        }
-        opened
+        Some(Arc::new(shared_db))
     };
 
     // Tileset registry: scan installed hexon tilesets and load into memory.

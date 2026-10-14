@@ -399,7 +399,7 @@ The GUI (`fractalengine/src/main.rs`) calls these shared fns directly — its
 pre-extraction local copies and their duplicate tests were deleted
 (FEAPI-GUI-HYDRATE, 2026-10-11), so the module's own tests are the only copy.
 
-**Honest-unavailable posture on per-handle-lock platforms (Windows).** The
+**Honest-unavailable posture on per-handle-lock platforms (Windows).** (Superseded by OF-2, 2026-10-13: both binaries now pass a clone of the DB thread's own handle as `db_reader`, so the reader is present on every platform — fe-database `src/AGENTS.md` §shared-handle. The fallbacks below remain for a `None` reader, e.g. a failed GUI hydration.) The
 analytics authorization resolves the petal scope through the DIRECT reader by
 design (no crossbeam fallback — this section's first paragraph), and
 SurrealKV's per-handle file lock (os error 33, M1/F4-documented) rejects the
@@ -773,7 +773,7 @@ in-memory; no temp files) or local CSV serialization.
 - Parquet responses ship `Content-Type: application/vnd.apache.parquet`,
   `Content-Length` (axum), and `Accept-Ranges: bytes` so DuckDB httpfs can
   `read_parquet('<url>')` (plan D1).
-- **Windows `db_reader` fallback (F10, 2026-10-09).** `prepare_export` and
+- **Windows `db_reader` fallback (F10, 2026-10-09).** (Superseded by OF-2, 2026-10-13: both binaries now pass a clone of the DB thread's own handle as `db_reader`, so the reader is present on every platform — fe-database `src/AGENTS.md` §shared-handle. The fallbacks below remain for a `None` reader, e.g. a failed GUI hydration.) `prepare_export` and
   `fetch_anchor_positions` route through
   `query_guard::run_guarded_query_via_state`, which prefers the direct
   `db_reader` and falls back to the `DbCommand::RawQuery` gateway channel
@@ -1045,7 +1045,7 @@ future work). Design notes:
   derived counters, so the DB-thread single-writer invariant doesn't apply
   (rationale in fe-database `src/AGENTS.md` §iot-readings), and IoT-frequency
   batches must not queue behind the render loop's channel.
-- **DB-thread fallback when `db_reader` is absent (F24)**: the SurrealKV
+- **DB-thread fallback when `db_reader` is absent (F24)**: (Superseded by OF-2, 2026-10-13: both binaries now pass a clone of the DB thread's own handle as `db_reader`, so the reader is present on every platform — fe-database `src/AGENTS.md` §shared-handle. The fallbacks below remain for a `None` reader, e.g. a failed GUI hydration.) the SurrealKV
   per-handle file lock (os error 33 on Windows, M1/F4-documented) rejects the
   API read connection while the DB-thread writer lives, so `db_reader` is
   `None` on the deployment platform — the handler used to 503 there, killing

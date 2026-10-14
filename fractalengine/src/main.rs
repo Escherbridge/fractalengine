@@ -16,8 +16,7 @@ mod gpx_bridge;
 mod panic_log;
 mod terrain_bridge;
 
-/// Default SurrealKV database path. Must match the path used by
-/// `fe_database::spawn_db_thread_with_sync` so the API reader opens the same store.
+/// SurrealKV database path, opened exactly once per process by the DB thread.
 const DB_PATH: &str = "data/fractalengine.db";
 
 fn main() {
@@ -129,7 +128,12 @@ fn main() {
 
     // Cloned for the seed-gate replay below — the original moves into the DB thread.
     let db_res_tx_replay = ch.db_res_tx.clone();
-    let _db_thread = match fe_database::spawn_db_thread_with_sync_and_lifecycle(
+    // The DB thread is the store's only opener; `shared_db` is a clone of its
+    // handle for the API reader. See AGENTS.md §entity-store-analytics.
+    let fe_database::DbThread {
+        join_handle: _db_thread,
+        shared_db,
+    } = match fe_database::spawn_db_thread_shared(
         ch.db_cmd_rx,
         ch.db_res_tx,
         blob_store.clone(),
@@ -137,10 +141,10 @@ fn main() {
         Some(db_keypair),
         Some(secret_store.clone()),
         Some(entity_change_tx.clone()),
-        None, // use default db_path
+        Some(DB_PATH.to_string()),
         Some(lifecycle_tx),
     ) {
-        Ok(handle) => handle,
+        Ok(db_thread) => db_thread,
         Err(e) => {
             tracing::error!("Failed to start database thread: {}", e);
             eprintln!("Fatal error: Could not initialize database.\n{}", e);
@@ -349,40 +353,29 @@ fn main() {
         });
     }
 
-    // Optional direct reader backs analytics auth/hydration; failure must not block the editor. See AGENTS.md §entity-store-analytics.
+    // Direct reader = clone of the DB thread's handle (never a second SurrealKV
+    // open: the store lock refuses it, os error 33). Hydration failure leaves the
+    // editor running with the analytics surface closed. See AGENTS.md §entity-store-analytics.
     let api_db_reader: Option<Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>> = {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .expect("api_db_reader runtime");
-        match rt.block_on(async {
-            let db =
-                surrealdb::Surreal::new::<surrealdb::engine::local::SurrealKv>(DB_PATH).await?;
-            db.use_ns("fractalengine").use_db("fractalengine").await?;
-            Ok::<_, surrealdb::Error>(db)
-        }) {
-            Ok(db) => match rt.block_on(fe_api::entity_store_bridge::hydrate_entity_store(
-                &db,
-                &entity_store,
-            )) {
-                Ok(node_count) => {
-                    tracing::info!(
-                        node_count,
-                        "Opened read-only SurrealKV connection and hydrated EntityStore for API gateway"
-                    );
-                    Some(Arc::new(db))
-                }
-                Err(error) => {
-                    tracing::error!(
-                        %error,
-                        "Could not hydrate EntityStore; analytics API will remain unavailable"
-                    );
-                    None
-                }
-            },
-            Err(e) => {
+            .expect("api_db_reader hydration runtime");
+        match rt.block_on(fe_api::entity_store_bridge::hydrate_entity_store(
+            &shared_db,
+            &entity_store,
+        )) {
+            Ok(node_count) => {
+                tracing::info!(
+                    node_count,
+                    "Hydrated EntityStore through the DB thread's shared SurrealKV handle"
+                );
+                Some(Arc::new(shared_db))
+            }
+            Err(error) => {
                 tracing::error!(
-                    "Could not open local API read connection; analytics API will remain unavailable: {e}"
+                    %error,
+                    "Could not hydrate EntityStore; analytics API will remain unavailable"
                 );
                 None
             }

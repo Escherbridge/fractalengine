@@ -66,12 +66,25 @@ never write the user's config dir. See fe-ui `src/AGENTS.md` §app-settings.
 `drain_scene_changes_to_store` updates it from the DB scene-change bridge.
 Before hydration, startup subscribes the scene-change bridge; then it waits for
 the local seed command, replays its DB results for Bevy, queries every live
-node through the optional direct local SurrealKV reader, and then starts the
-API thread. The seed barrier prevents a first-run empty snapshot and the early
-subscription prevents a change-event gap. Seed failure remains fatal, but a
-malformed row, reader failure, or 10-second hydration timeout leaves the editor
-running with `api_db_reader = None`; the analytics endpoint fails unavailable
-rather than exposing a partial cache. A successful hydration gives
+node through the direct local reader, and then starts the API thread. The seed
+barrier prevents a first-run empty snapshot and the early subscription prevents
+a change-event gap. Seed failure remains fatal, but a malformed row, query
+failure, or 10-second hydration timeout leaves the editor running with
+`api_db_reader = None`; the analytics endpoint fails unavailable rather than
+exposing a partial cache.
+
+**The reader is the DB thread's own handle (OF-2, 2026-10-13).** `main.rs`
+spawns the DB thread with `fe_database::spawn_db_thread_shared` (explicit
+`DB_PATH`) and uses the returned `DbThread::shared_db` clone as
+`api_db_reader`. It must never open `data/fractalengine.db` a second time:
+SurrealKV's per-handle file lock refuses a second in-process open while the DB
+thread holds the store (`os error 33` on Windows), which is how packaged builds
+used to start with the analytics/BI API silently unavailable. The clone's
+router lives on the DB thread's multi-thread runtime, so the throwaway
+current-thread runtime used for hydration can drop safely. Runtime and
+read-only notes: fe-database `src/AGENTS.md` §shared-handle. `fe-relay` does
+the same; it keeps the reader on hydration failure and only fails the
+analytics cache closed. A successful hydration gives
 `/api/v1/analytics/query` the same lock-free hot-cache view as the desktop app;
 it is not a canonical history store and must not replace the future verified-log
 materializer.

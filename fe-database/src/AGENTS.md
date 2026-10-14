@@ -304,9 +304,10 @@ opt-in (fe-sim `src/AGENTS.md` §hlc-sim).
 
 `next_hlc_timestamp()` returns `(packed_u64, human_string)`; the human
 string is `"<wall_ms>:<counter_hex>"`, stored in the `hlc_timestamp` column
-for debugging / external tooling. HLC state sits in a `Mutex` purely for
-`static` safety — the DB thread is single-threaded (current_thread tokio),
-so contention is zero in practice.
+for debugging / external tooling. HLC state sits in a process-global `Mutex`,
+so stamping is correct from any thread. Callers are the DB thread's serial
+command loop plus the API's direct IoT ingest on the shared handle
+(§iot-readings, §shared-handle), so contention is low but not zero.
 
 ## §log-first-commit
 
@@ -574,11 +575,16 @@ distributed merge.
 
 `handlers::node_log::append_node_log` derives `row_version` as
 `SELECT math::max(row_version)` + INSERT, which is NOT atomic. It is safe
-only because the DB thread runs on a single-threaded tokio runtime
-(`current_thread`), so no two calls execute concurrently. **This invariant
-must be maintained** — if the DB thread ever moves to a multi-threaded
-runtime, replace the derivation with an atomic subquery or a DB-level
-sequence.
+only because it has exactly ONE caller context: the DB thread's command loop,
+which `block_on` drives on the DB thread itself and which awaits each handler
+to completion before receiving the next command, so no two calls execute
+concurrently. The runtime is multi-thread since OF-2 (§shared-handle), and
+that is fine: its workers only run SurrealDB's router and query tasks, never
+handlers. **This invariant must be maintained.** Never call `append_node_log`
+off the DB thread (e.g. on fe-api's shared `db_reader`), never spawn handlers
+onto the runtime, and never run two node-log writes under `join!`/`join_all`.
+If any of that becomes necessary, first replace the derivation with an atomic
+subquery or a DB-level sequence.
 
 ## §repo
 
@@ -824,7 +830,10 @@ the same store, eyes reach `HierarchyLoaded`, missing rows fail).
 its `Surreal` handle and yields/sleeps briefly INSIDE its runtime so the
 SurrealKV engine finishes closing; without that the file lock outlived the
 joined thread (os error 33 on Windows) and an in-process reopen of the same
-path — the restart tests above and `node_view_test.rs` — failed.
+path — the restart tests above and `node_view_test.rs` — failed. Since OF-2
+the router runs on the runtime's worker threads (§shared-handle), so the
+yield/sleep gives that worker time to finish; the join after `Stopped` stays
+the reopen barrier. A live shared clone defeats this close (§shared-handle).
 
 **Promotion write-side contract.** `promote_instance_handler` writes
 `properties: { node_kind: 'stamp', path_id, owning_path_id, instance_index }` —
@@ -832,3 +841,69 @@ path — the restart tests above and `node_view_test.rs` — failed.
 (fe-query/src/spatial_nodes.rs `KIND_KEY`/`STAMP_PATH_ID_KEY`/
 `STAMP_INSTANCE_INDEX_KEY`); `owning_path_id` stays because the cascade BFS and
 the reflow hook traverse it as the durable parent edge.
+
+## §shared-handle (OF-2, 2026-10-13)
+
+**One SurrealKV open per process.** SurrealKV takes a file lock per open
+handle; a second `Surreal::new::<SurrealKv>` on the same path in the same
+process is refused while the first lives (Windows: `os error 33`). Both host
+binaries used to open a second "read-only" handle for the API gateway after the
+DB thread had opened the store, so on Windows the analytics/BI surface always
+started without its reader. `spawn_db_thread_shared` fixes this at the source:
+the DB thread sends a `db.clone()` (taken after `use_ns`/`use_db`, so the clone's
+session inherits the namespace/database) through its existing startup channel,
+and the caller gets it back as `DbThread::shared_db`. The handoff rides the
+synchronous startup barrier — there is no separate wait or timeout, so a
+started DB thread always yields a reader. `spawn_db_thread_with_sync_and_lifecycle`
+(and the older shims) delegate and drop the clone.
+
+**Runtime ownership (read from surrealdb 3.0.5 `engine/local/native.rs`).**
+`Surreal<Db>` is a client: `connect` `tokio::spawn`s `run_router` on the
+runtime that created the handle, and the router `tokio::spawn`s every query on
+that same runtime; clients talk to it over `async_channel`s, which are
+runtime-agnostic, so awaiting a clone from another runtime (the API thread's,
+or a throwaway `block_on` for hydration) is sound. `Surreal::clone` registers a
+new session through an unbounded channel that the router drains `biased` ahead
+of routes, copying the source session's ns/db/vars. Two consequences:
+
+- The DB thread's runtime is **multi-thread (2 workers)**. Its command loop
+  blocks in crossbeam `rx.recv()` inside `block_on`; on a current-thread runtime
+  that parks the router too, so every API read would stall until the next
+  `DbCommand` arrived. With workers the router and query tasks run while the
+  DB thread idles. Handlers still run one at a time on the DB thread itself
+  (`block_on` runs the loop future on the calling thread), so the single-writer
+  discipline is unchanged.
+- The DB runtime must outlive every reader. It lives until the DB thread exits
+  (app lifetime). After `DbCommand::Shutdown` the runtime drops at thread exit,
+  dropping the router; a lingering clone then gets an error, not a hang.
+- A live clone defeats the graceful close. The router only runs
+  `kvs.shutdown()` when the last handle drops (its route channel closes), and
+  `Surreal` exposes no close method. With the API still holding its clone, the
+  engine is torn down by the runtime drop instead, and SurrealKV's file lock
+  stays held until the process exits (verified: an in-process reopen then fails
+  with os error 33). Both binaries exit right after shutdown, so this only
+  matters in-process; durability rests on the per-commit fsync
+  (`SURREAL_DATASTORE_SYNC_DATA=every`, set by both mains). Tests that reopen a
+  store must not keep a shared clone alive. The pre-OF-2 binaries built the reader on a throwaway
+  current-thread runtime that was dropped right after hydration, so even where
+  the second open succeeded its router was already dead.
+
+**Read-only is a convention, not a mode.** SurrealDB has no read-only handle;
+the clone can write. The API keeps its existing write rules: mutations go
+through `DbCommand`s to the DB thread, except the sanctioned append-only IoT
+ingest (§iot-readings), which writes on `db_reader` when present.
+Audit of the OF-2 review (2026-10-13), covering every `state.db_reader` site
+in fe-api/src:
+- Every site issues SELECT, `RETURN true` (readiness), or the guarded read-only
+  query (`query_guard::validate_select_sql` rejects CREATE, UPDATE, DELETE,
+  DEFINE, REMOVE, RELATE, INSERT and the rest).
+- Elevated DML goes through `DbCommand::ElevatedQuery` and never touches the reader.
+- The only write is `iot.rs` → `insert_readings_with_replication`, which is
+  append-only with HLC stamping behind a Mutex and has no read-then-write.
+
+A new write on the reader, especially anything that touches `node_log`
+(§node-log invariant), must go through a `DbCommand` instead.
+
+Tests: `tests/shared_handle_test.rs` (DB-thread write read back through the
+clone on a foreign runtime while the DB thread idles; after shutdown the clone
+errors promptly instead of hanging).
