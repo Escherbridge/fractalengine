@@ -246,3 +246,12 @@ answered or defaulted-as-assumption BEFORE that slice — not queued for the end
   lock → a quick seeding on→off could land off→on (republished) → one long-lived FIFO mutation worker; LOW:
   publish only after a successful seeding write; (c) LOW: fixed `registry.json.tmp` could tear between GUI
   and relay sharing a store dir → unique temp path. Accepted: (d) is probabilistic-red by nature (documented).
+
+### W4 CDL-SPEC10 launch — 2026-10-14
+- Launched `wf_22ded023-74a` (task `wji7vro01`), base `26833b9`: A2, A3, A3b, A4, A5, A6, B1, B2, B2b, B3
+  → Phase A security → Phase B security → correctness review → B4 docs. gate_green halt + full feature
+  matrix per slice. Critic tick 7 was the pre-launch check for this phase (amendments `26833b9` landed
+  first), so the next tick runs at W4 close.
+- Orchestrator slip (twice): a watcher started with a shell `&` inside a foreground call is an untracked
+  process no notification reaches — both killed by exact command-line match (PIDs 50852, 29288); watchers
+  only via `run_in_background`.
