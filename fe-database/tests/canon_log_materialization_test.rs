@@ -19,18 +19,20 @@ use fe_canonical_log::cbor::CborValue;
 use fe_canonical_log::checkpoint::{
     sign_checkpoint_claim, CheckpointClaimV1, ManagerPlusAuthorizationView, CHECKPOINT_VERSION,
 };
-use fe_canonical_log::compose::{BindingSelection, CompositionError};
+use fe_canonical_log::compose::{BindingSelection, CompositionError, QuarantineReason};
 use fe_canonical_log::envelope::{
     Author, CapabilityRef, CompleteEnvelope, EquivocationKey, Hash32, Hlc, Identifier32,
     PayloadRef, Scope, UnsignedEnvelope, PROTOCOL_VERSION,
 };
 use fe_canonical_log::frontier::SortedFrontier;
 use fe_canonical_log::materialize::{
-    verified_envelope_meta_from, AdmissionOutcome, AppendError, AppendOutcome, CandidateVerifier,
-    CausalMaterializer, CheckpointBindingMismatch, EquivocationIndex, MaterializerVersion,
-    ProjectionIdentity, ProjectionMutation, VerifiedEnvelopeMeta, VerifiedLogStore,
+    verified_envelope_meta_from, verify_candidate, AdmissionDisposition, AdmissionOutcome,
+    AppendError, AppendOutcome, AuthorizationEvidenceGap, CandidateVerifier, CausalMaterializer,
+    CheckpointBindingMismatch, EquivocationIndex, MaterializerVersion, PayloadFacts,
+    ProjectionIdentity, ProjectionMutation, VerifiedCandidate, VerifiedEnvelopeMeta,
+    VerifiedLogStore,
 };
-use fe_canonical_log::signing::{decode_and_admit, op_id as op_id_of_bytes, sign_envelope};
+use fe_canonical_log::signing::{op_id as op_id_of_bytes, sign_envelope};
 
 use fe_database::canon_log::admission::{
     admit_and_append, AdmissionRejection, AdmittedAppend, EvidenceAvailability, NoPrecondition,
@@ -217,9 +219,13 @@ fn binding_selection<'a>(
 }
 
 /// A verifier that runs the REAL canonical admission for envelope structure, and injects the
-/// §5 authorization/payload outcomes a test wants to observe.
+/// §5 kind/authorization/payload outcomes a test wants to observe.
 #[derive(Default)]
 struct FixtureVerifier {
+    /// Kinds this "build" has no registered rule, schema, and reduction for.
+    unregistered_kinds: HashSet<u16>,
+    /// Operations whose capability chain is not (yet) locally resolvable.
+    chain_unavailable: Mutex<HashSet<Hash32>>,
     unauthorized: HashSet<Hash32>,
     invalid_payload: HashSet<Hash32>,
     unknown_schema: HashSet<Hash32>,
@@ -231,26 +237,42 @@ impl CandidateVerifier for FixtureVerifier {
     async fn verify_envelope(
         &self,
         candidate_bytes: &[u8],
-    ) -> Result<VerifiedEnvelopeMeta, AdmissionOutcome> {
-        match decode_and_admit(candidate_bytes) {
-            Ok((complete, op_id)) => Ok(verified_envelope_meta_from(&complete, op_id)),
-            Err(error) => Err(AdmissionOutcome::InvalidEnvelope {
-                reason: error.to_string(),
-            }),
+    ) -> Result<VerifiedCandidate, AdmissionOutcome> {
+        let candidate = verify_candidate(candidate_bytes)?;
+        let operation_kind = candidate.meta.operation_kind;
+        if self.unregistered_kinds.contains(&operation_kind) {
+            return Err(AdmissionOutcome::UnknownKind { operation_kind });
         }
+        Ok(candidate)
     }
 
     async fn verify_authorization(
         &self,
-        meta: &VerifiedEnvelopeMeta,
+        candidate: &VerifiedCandidate,
     ) -> Result<(), AdmissionOutcome> {
+        let meta = &candidate.meta;
+        if self
+            .chain_unavailable
+            .lock()
+            .expect("chain availability")
+            .contains(&meta.op_id)
+        {
+            return Err(AdmissionOutcome::AuthorizationEvidenceUnavailable {
+                reason: AuthorizationEvidenceGap::capability_chain_unavailable(),
+            });
+        }
         if self.unauthorized.contains(&meta.op_id) {
             return Err(AdmissionOutcome::UnauthorizedOperation);
         }
         Ok(())
     }
 
-    async fn verify_payload(&self, meta: &VerifiedEnvelopeMeta) -> Result<(), AdmissionOutcome> {
+    async fn verify_payload(
+        &self,
+        candidate: &VerifiedCandidate,
+        _payload_ciphertext: Option<&[u8]>,
+    ) -> Result<Option<PayloadFacts>, AdmissionOutcome> {
+        let meta = &candidate.meta;
         if self.unknown_schema.contains(&meta.op_id) {
             return Err(AdmissionOutcome::UnknownSchema {
                 schema_hash: meta.schema_hash,
@@ -262,7 +284,8 @@ impl CandidateVerifier for FixtureVerifier {
         if self.invalid_payload.contains(&meta.op_id) {
             return Err(AdmissionOutcome::InvalidPayload);
         }
-        Ok(())
+        // Every fixture is the no-payload form, so there are no facts to extract.
+        Ok(None)
     }
 }
 
@@ -301,6 +324,7 @@ impl CausalMaterializer for FixtureMaterializer {
         &self,
         meta: &VerifiedEnvelopeMeta,
         envelope_bytes: &[u8],
+        _payload_facts: Option<&PayloadFacts>,
     ) -> ProjectionMutation {
         self.reduce_calls
             .lock()
@@ -480,7 +504,7 @@ async fn admit_bytes(
     verifier: &FixtureVerifier,
     bytes: &[u8],
 ) -> Result<AdmittedAppend, AdmissionRejection> {
-    admit_and_append(verifier, store, store, &NoPrecondition, store, bytes).await
+    admit_and_append(verifier, store, store, &NoPrecondition, store, bytes, None).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1699,6 +1723,7 @@ async fn an_unreadable_equivocation_index_refuses_rather_than_admitting() {
         &NoPrecondition,
         &harness.store,
         &operation.bytes,
+        None,
     )
     .await
     .expect_err("an unreadable equivocation index must not admit");
@@ -1717,5 +1742,90 @@ async fn an_unreadable_equivocation_index_refuses_rather_than_admitting() {
     admit_bytes(&harness.store, &verifier, &operation.bytes)
         .await
         .expect("admission once the evidence is readable");
+    assert_eq!(verified_log_row_count(&harness.db).await, 1);
+}
+
+// ---------------------------------------------------------------------------
+// W4-2: admission vocabulary — unknown kind and unavailable authorization evidence
+// ---------------------------------------------------------------------------
+
+/// SPEC-4 §5 `unknown_kind` (erratum G1): a validly signed operation of a kind this build cannot
+/// interpret is quarantined outside the verified log, never rejected, and admits unchanged once
+/// the build learns the kind.
+#[tokio::test]
+async fn an_unknown_kind_candidate_is_quarantined_not_rejected() {
+    let harness = harness().await;
+    let operation = build_operation(0x10, &[], 100, 0);
+    let un_upgraded = FixtureVerifier {
+        unregistered_kinds: HashSet::from([FIXTURE_KIND]),
+        ..FixtureVerifier::default()
+    };
+
+    let rejection = admit_bytes(&harness.store, &un_upgraded, &operation.bytes)
+        .await
+        .expect_err("an unregistered kind must not admit");
+    let outcome = rejection.outcome().expect("a spec-5 decision").clone();
+    assert_eq!(
+        outcome,
+        AdmissionOutcome::UnknownKind {
+            operation_kind: FIXTURE_KIND
+        }
+    );
+    assert_eq!(outcome.disposition(), AdmissionDisposition::Quarantine);
+    assert!(
+        matches!(rejection, AdmissionRejection::Quarantined { .. }),
+        "{rejection:?}"
+    );
+    assert_eq!(verified_log_row_count(&harness.db).await, 0);
+
+    // The same immutable bytes admit after the "build upgrade": quarantine, not blacklist.
+    let upgraded = FixtureVerifier::default();
+    let admitted = admit_bytes(&harness.store, &upgraded, &operation.bytes)
+        .await
+        .expect("admission once the kind is registered");
+    assert_eq!(admitted.append_outcome, AppendOutcome::Appended);
+    assert_eq!(verified_log_row_count(&harness.db).await, 1);
+}
+
+/// SPEC-2 rule 5 / erratum E-W4-1 (owner-confirmed 2026-10-13): a missing capability chain is
+/// an availability gap, so the candidate is quarantined and appended exactly once after the
+/// chain arrives.
+#[tokio::test]
+async fn a_candidate_whose_chain_is_unavailable_is_quarantined_and_admits_once_it_arrives() {
+    let harness = harness().await;
+    let operation = build_operation(0x10, &[], 100, 0);
+    let verifier = FixtureVerifier::default();
+    verifier
+        .chain_unavailable
+        .lock()
+        .expect("chain availability")
+        .insert(operation.op_id);
+
+    let rejection = admit_bytes(&harness.store, &verifier, &operation.bytes)
+        .await
+        .expect_err("an unresolvable chain must not admit");
+    match &rejection {
+        AdmissionRejection::Quarantined {
+            outcome: AdmissionOutcome::AuthorizationEvidenceUnavailable { reason },
+        } => assert_eq!(
+            reason.reason(),
+            QuarantineReason::CapabilityChainUnavailable
+        ),
+        other => panic!("expected an evidence-gap quarantine, got {other:?}"),
+    }
+    assert_eq!(verified_log_row_count(&harness.db).await, 0);
+
+    // The chain arrives; the same bytes now admit and append exactly one row.
+    verifier
+        .chain_unavailable
+        .lock()
+        .expect("chain availability")
+        .remove(&operation.op_id);
+    let admitted = admit_bytes(&harness.store, &verifier, &operation.bytes)
+        .await
+        .expect("admission once the chain is resolvable");
+    assert_eq!(admitted.append_outcome, AppendOutcome::Appended);
+    assert_eq!(admitted.meta, operation.meta);
+    assert_eq!(admitted.payload_facts, None);
     assert_eq!(verified_log_row_count(&harness.db).await, 1);
 }

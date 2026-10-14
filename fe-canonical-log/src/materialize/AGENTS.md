@@ -30,8 +30,9 @@ embedded database transitively through a types crate.
 
 ## G2 -- a reduction writes references, it never reads artifacts
 
-Erratum G2, SPEC-4 §4 rules 8-9. `meta` and `envelope_bytes` are the ONLY admissible inputs to
-`CausalMaterializer::reduce`. A reduction may write a deterministic *reference* to an external
+Erratum G2, SPEC-4 §4 rules 8-9. `meta`, `envelope_bytes`, and — since W4-2 — the operation's
+own `payload_facts` are the ONLY admissible inputs to `CausalMaterializer::reduce` (§4 rule 8:
+"the admitted operation's own verified bytes and extracted facts"; see §payload-facts). A reduction may write a deterministic *reference* to an external
 artifact — a snapshot component, a segment shard, a D-CL26 columnar observation hexon — where
 the referenced identity is a content address derived from the same signed bytes. It may not
 dereference that artifact and fold its contents, length, statistics, presence, or absence into
@@ -51,6 +52,80 @@ and `Excluded` is terminal evidence under §4.6. Two peers would then disagree a
 of them never computed. The variant is deliberately not a `Result`: the caller must handle it as
 one of the reduction's ordinary outcomes and leave the apply marker where it is, never advance
 past it with a default, an empty reference, or a partial value.
+
+## §verified-candidate -- the verifier sees the envelope, not just the facts
+
+`CandidateVerifier` used to receive only `VerifiedEnvelopeMeta`, which carries no `CapabilityRef`
+and no `PayloadRef`: an honest `verify_authorization` could not find the capability chain, and
+an honest `verify_payload` could not rebuild the §5.2 AAD or check the ciphertext hash. W4-2
+made `verify_envelope` return a `VerifiedCandidate { meta, envelope }` and passes that to the
+other two methods.
+
+`VerifiedCandidate` is sealed the same way `VerifiedEnvelopeMeta` is (`#[non_exhaustive]`, a
+`compile_fail` doctest): outside this crate the only constructors are
+`VerifiedCandidate::verify_from_bytes` and `verify_candidate`, both of which run
+`signing::decode_and_admit`. Holding one therefore proves the mandatory ingress ran on some
+bytes, and the envelope cannot drift from the facts because both come out of that one decode.
+There is no hazardous projection door for it, unlike `verified_envelope_meta_from`.
+
+`admit_candidate` keeps returning `VerifiedEnvelopeMeta` so existing callers keep their types;
+`admit_candidate_with_facts` is the same pipeline returning `AdmittedCandidate { candidate,
+payload_facts }`, and `admit_candidate` is a thin projection of it — one implementation of the
+parent and equivocation rules, not two.
+
+## §admission-vocabulary -- `UnknownKind` and `AuthorizationEvidenceUnavailable`
+
+Two `AdmissionOutcome` variants close drift between this enum and the specs (W4-2):
+
+- **`UnknownKind { operation_kind }`** — the SPEC-4 §5 `unknown_kind` row (erratum G1). A
+  validly signed operation of a kind this build has no structural rule, schema, and reduction
+  for is a Quarantine, never `InvalidEnvelope`: an upgraded peer may hold it valid, and the
+  kind arrives by build upgrade, so the same bytes must admit unchanged after the upgrade.
+  `verify_envelope` is where an implementer raises it (`signing::decode_and_admit` lets kinds
+  5+ through structurally).
+- **`AuthorizationEvidenceUnavailable { reason }`** — SPEC-2 `author-key-lifecycle.md` rule 5
+  ("a missing parent, schema, payload key, capability chain, or epoch state remains
+  quarantined"). SPEC-4 §5 has no row for it; erratum **E-W4-1**, the quarantine default
+  **owner-confirmed 2026-10-13 (R7)**. Reversal is one `disposition()` arm.
+
+`reason` is an `AuthorizationEvidenceGap`, a newtype over the crate's single
+`compose::QuarantineReason` (§unified-vocabularies: wrap, never duplicate — `reason()` answers
+in that vocabulary). Its field is private, so `AuthorizationEvidenceGap::new` — which hands back
+every reason other than `CapabilityChainUnavailable`, `EpochStateUnavailable`, and
+`PayloadKeyUnavailable` — and the three named constructors are the only doors; an enum-variant
+field alone could not enforce that, since variant fields are always public. It is stored as a
+private one-byte tag rather than a whole `QuarantineReason`, which would have grown every
+`AdmissionOutcome` (and `fe-database`'s `AdmissionRejection`) past clippy's `result_large_err`. `new` is a total match with no wildcard, so a future `QuarantineReason` is classified
+before it compiles. A refused chain (`Unauthorized`) is never an evidence gap: that is
+`UnauthorizedOperation`, a reject.
+
+## §payload-facts -- how a reduction reads its own payload (critic C4, SPEC-10 §12)
+
+`CausalMaterializer::reduce` takes `payload_facts: Option<&PayloadFacts>`. SPEC-10 §12 names
+the seam: a kind-5 reduction needs its admitted payload's extracted facts (§4.4 rule 2), and so
+does every payload-bearing kind, including W4-9's `node-transform-v1`. It is widened once, here,
+so CDL-SPEC10 B1/B3 consume this signature instead of adding a second, narrower one.
+
+- **Where facts come from.** `CandidateVerifier::verify_payload(candidate, payload_ciphertext)`
+  returns `Option<PayloadFacts>`: the implementer authenticates the ciphertext (hash, length,
+  `crypto::aead::open` under the §5.2 AAD), validates the plaintext against the schema, then
+  calls `PayloadFacts::from_validated_plaintext` last. That constructor refuses the no-payload
+  form and non-canonical CBOR, and binds `op_id`/`schema_hash` from the candidate, so a
+  reduction can check the facts are its own (`facts.op_id == meta.op_id`).
+- **What facts are.** Values only — the decoded canonical-CBOR plaintext. No artifact id to
+  dereference, no ciphertext, no key, no handle. G2 holds because there is nothing in the
+  argument a reduction could fetch with.
+- **When facts are absent.** `None` means the no-payload form OR "the caller holds no decrypted
+  payload for this operation". A reduction that needs facts and gets `None` returns
+  `ReferencedArtifactUnavailable { artifact_id: PayloadRef::ciphertext_hash }`: the payload
+  ciphertext is a "payload artifact" in §4 rule 8's list, the position stays pending replay,
+  and the apply marker does not move. Never `Excluded`, never a default.
+- **Interim gap (deferred).** `fe-database` `canon_log::replay::replay_to_frontier` has no
+  decrypted-payload source yet and passes `None` to every reduction, so a payload-needing kind
+  stays pending in the durable replay path. Re-deriving facts at replay needs the ciphertext
+  source and scope-key custody W4-3/W4-7 compose (and must answer what a crypto-shredded key
+  means for replay). Trigger: the first payload-needing `CausalMaterializer` wired to
+  `replay_to_frontier` — CDL-SPEC10 B1 or W4-9.
 
 ## M2 -- `VerifiedEnvelopeMeta` carries `scope`
 
@@ -84,7 +159,9 @@ have a real caller before a byte is durably appended.
 
 ## `AdmissionOutcome` disposition classification
 
-The brief listed nine variants "one per §5 row" without settling which of the two remaining ones
+The brief listed nine variants "one per §5 row" (W4-2 later added `UnknownKind` and
+`AuthorizationEvidenceUnavailable`, both Quarantine — §admission-vocabulary) without settling
+which of the two remaining ones
 (`MaterializationFailed`, `CheckpointMismatch`) are §5.1 rejects or §5.2 quarantines. Neither
 fits: both represent an operation that is *already durably appended* -- rejecting it after
 append would violate exactly-once durability (§3.1), and quarantining it would misfile a
@@ -162,6 +239,8 @@ in the wave-4 named-conformance census.
 - The concrete `CandidateVerifier` implementation needs the capability slice's chain-verification
   entry point (`W2-capability-chain`) and the author-key slice's `admit_rotation`/`admit_disavow`
   admission surface (`W2-author-key-lifecycle`) to build `verify_authorization`. This module
-  defines the trait only and does not import either sibling's concrete types.
+  defines the trait only and does not import either sibling's concrete types. Since W4-2 the
+  trait hands the implementer the whole verified envelope (§verified-candidate), so that
+  composition (W4-3 `ComposedCandidateVerifier`) is buildable without widening it again.
 - `SignedCheckpointClaim` (`W2-branch-checkpoint`) and `CheckpointView` (`W2-segment`) both need
   to be bound to `CheckpointBinding` eventually; this module deliberately does not import either.

@@ -10,7 +10,8 @@ use fe_canonical_log::materialize::errors::{
     AdmissionDisposition, AdmissionOutcome, AppendOutcome,
 };
 use fe_canonical_log::materialize::traits::{
-    admit_candidate, CandidateVerifier, EquivocationIndex, ParentVerseLookup, VerifiedEnvelopeMeta,
+    admit_candidate_with_facts, CandidateVerifier, EquivocationIndex, ParentVerseLookup,
+    PayloadFacts, VerifiedCandidate, VerifiedEnvelopeMeta,
 };
 
 use crate::canon_log::append_store::{SurrealVerifiedLogStore, VerifiedLogStoreError};
@@ -90,6 +91,9 @@ pub struct AdmittedAppend {
     pub meta: VerifiedEnvelopeMeta,
     /// Whether this call created the log entry or found the same bytes already there.
     pub append_outcome: AppendOutcome,
+    /// The decrypted, schema-validated payload facts the verifier extracted during admission;
+    /// `None` for the no-payload form. Never persisted by this call.
+    pub payload_facts: Option<PayloadFacts>,
 }
 
 /// Every way [`admit_and_append`] declines to produce an admitted operation.
@@ -164,8 +168,12 @@ impl AdmissionRejection {
 /// wrapping the caller's verifier, so the crate-owned `admit_candidate` sequence stays the one
 /// implementation of the parent and equivocation rules rather than being copied here.
 ///
-/// `missing_parent`, `unknown_schema`, and `opaque_payload` reach the caller as
+/// `missing_parent`, `unknown_schema`, `unknown_kind`, `opaque_payload`, and an unavailable
+/// capability chain, epoch state, or payload key reach the caller as
 /// [`AdmissionRejection::Quarantined`]; §5 note 2 forbids provisionally applying any of them.
+///
+/// `payload_ciphertext` is the payload artifact the caller already holds, passed through to
+/// `CandidateVerifier::verify_payload` unchanged; it is never appended to the verified log.
 ///
 /// An `Ok` from `admit_candidate` is only trusted when the evidence sources report no fault:
 /// see [`EvidenceAvailability`] for why an unreadable equivocation index would otherwise admit.
@@ -178,6 +186,7 @@ pub async fn admit_and_append<V, E, P, C>(
     precondition: &C,
     store: &SurrealVerifiedLogStore,
     candidate_bytes: &[u8],
+    payload_ciphertext: Option<&[u8]>,
 ) -> Result<AdmittedAppend, AdmissionRejection>
 where
     V: CandidateVerifier + ?Sized,
@@ -195,15 +204,16 @@ where
     drop(equivocation_index.take_evidence_faults());
     drop(parent_verse_lookup.take_evidence_faults());
 
-    let meta = match admit_candidate(
+    let admitted = match admit_candidate_with_facts(
         &guarded,
         equivocation_index,
         parent_verse_lookup,
         candidate_bytes,
+        payload_ciphertext,
     )
     .await
     {
-        Ok(meta) => meta,
+        Ok(admitted) => admitted,
         Err(outcome) => {
             return Err(AdmissionRejection::from_outcome(
                 outcome,
@@ -220,10 +230,12 @@ where
         });
     }
 
+    let meta = admitted.candidate.meta;
     let append_outcome = store.append_admitted(&meta, candidate_bytes).await?;
     Ok(AdmittedAppend {
         meta,
         append_outcome,
+        payload_facts: admitted.payload_facts,
     })
 }
 
@@ -252,16 +264,16 @@ where
     async fn verify_envelope(
         &self,
         candidate_bytes: &[u8],
-    ) -> Result<VerifiedEnvelopeMeta, AdmissionOutcome> {
+    ) -> Result<VerifiedCandidate, AdmissionOutcome> {
         self.inner.verify_envelope(candidate_bytes).await
     }
 
     async fn verify_authorization(
         &self,
-        meta: &VerifiedEnvelopeMeta,
+        candidate: &VerifiedCandidate,
     ) -> Result<(), AdmissionOutcome> {
-        self.inner.verify_authorization(meta).await?;
-        match self.precondition.check(meta).await {
+        self.inner.verify_authorization(candidate).await?;
+        match self.precondition.check(&candidate.meta).await {
             Ok(()) => Ok(()),
             Err(error) => {
                 // §5 `precondition_failed` requires the ORIGINAL command error to reach the
@@ -273,8 +285,14 @@ where
         }
     }
 
-    async fn verify_payload(&self, meta: &VerifiedEnvelopeMeta) -> Result<(), AdmissionOutcome> {
-        self.inner.verify_payload(meta).await
+    async fn verify_payload(
+        &self,
+        candidate: &VerifiedCandidate,
+        payload_ciphertext: Option<&[u8]>,
+    ) -> Result<Option<PayloadFacts>, AdmissionOutcome> {
+        self.inner
+            .verify_payload(candidate, payload_ciphertext)
+            .await
     }
 }
 
@@ -289,8 +307,8 @@ mod tests {
     use fe_canonical_log::signing::sign_envelope;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// Mints the meta through the verifying door: a real signed kind-100 envelope, admitted.
-    fn sample_meta() -> VerifiedEnvelopeMeta {
+    /// Mints the candidate through the verifying door: a real signed kind-100 envelope, admitted.
+    fn sample_candidate() -> VerifiedCandidate {
         let signing_key = SigningKey::from_bytes(&[0x05; 32]);
         let unsigned = UnsignedEnvelope {
             protocol_version: PROTOCOL_VERSION,
@@ -311,17 +329,21 @@ mod tests {
             .expect("sign sample")
             .encode_canonical()
             .expect("encode sample");
-        let meta = VerifiedEnvelopeMeta::verify_from_bytes(&encoded).expect("admit sample");
+        let candidate = VerifiedCandidate::verify_from_bytes(&encoded).expect("admit sample");
         assert_eq!(
-            meta.op_id,
+            candidate.meta.op_id,
             Hash32::of(&encoded),
             "op_id is derived, not chosen"
         );
-        meta
+        candidate
+    }
+
+    fn sample_meta() -> VerifiedEnvelopeMeta {
+        sample_candidate().meta
     }
 
     struct CountingVerifier {
-        meta: VerifiedEnvelopeMeta,
+        candidate: VerifiedCandidate,
         payload_calls: AtomicUsize,
     }
 
@@ -330,23 +352,24 @@ mod tests {
         async fn verify_envelope(
             &self,
             _candidate_bytes: &[u8],
-        ) -> Result<VerifiedEnvelopeMeta, AdmissionOutcome> {
-            Ok(self.meta.clone())
+        ) -> Result<VerifiedCandidate, AdmissionOutcome> {
+            Ok(self.candidate.clone())
         }
 
         async fn verify_authorization(
             &self,
-            _meta: &VerifiedEnvelopeMeta,
+            _candidate: &VerifiedCandidate,
         ) -> Result<(), AdmissionOutcome> {
             Ok(())
         }
 
         async fn verify_payload(
             &self,
-            _meta: &VerifiedEnvelopeMeta,
-        ) -> Result<(), AdmissionOutcome> {
+            _candidate: &VerifiedCandidate,
+            _payload_ciphertext: Option<&[u8]>,
+        ) -> Result<Option<PayloadFacts>, AdmissionOutcome> {
             self.payload_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+            Ok(None)
         }
     }
 
@@ -382,7 +405,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_precondition_stops_the_pipeline_before_payload_verification() {
         let verifier = CountingVerifier {
-            meta: sample_meta(),
+            candidate: sample_candidate(),
             payload_calls: AtomicUsize::new(0),
         };
         let guarded = PreconditionGuardedVerifier {
@@ -392,7 +415,7 @@ mod tests {
         };
 
         let outcome = guarded
-            .verify_authorization(&sample_meta())
+            .verify_authorization(&sample_candidate())
             .await
             .expect_err("precondition must fail admission");
         assert_eq!(outcome, AdmissionOutcome::PreconditionFailed);

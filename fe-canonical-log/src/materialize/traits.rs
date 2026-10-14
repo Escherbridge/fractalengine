@@ -116,6 +116,92 @@ pub fn verify_envelope_meta(
     })
 }
 
+/// One candidate that passed the mandatory ingress: its materializer-facing facts and the
+/// complete envelope they were projected from (`materialize/AGENTS.md` §verified-candidate).
+///
+/// Possession is proof that `signing::decode_and_admit` ran on the candidate's bytes:
+/// [`VerifiedCandidate::verify_from_bytes`] (and [`verify_candidate`], which wraps it) is the
+/// only constructor outside this crate. The envelope travels with the facts because SPEC-3
+/// authorization needs its `CapabilityRef` and payload verification needs its `PayloadRef` and
+/// the §5.2 AAD preimage, none of which [`VerifiedEnvelopeMeta`] carries.
+///
+/// An external struct literal is refused:
+///
+/// ```compile_fail,E0639
+/// # fn forge(
+/// #     meta: fe_canonical_log::materialize::VerifiedEnvelopeMeta,
+/// #     envelope: fe_canonical_log::envelope::CompleteEnvelope,
+/// # ) {
+/// let _forged = fe_canonical_log::materialize::VerifiedCandidate { meta, envelope };
+/// # }
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct VerifiedCandidate {
+    /// The facts a materializer reduces from.
+    pub meta: VerifiedEnvelopeMeta,
+    /// The complete envelope `meta` was projected from, as `decode_and_admit` returned it.
+    pub envelope: CompleteEnvelope,
+}
+
+impl VerifiedCandidate {
+    /// Verifies `candidate_bytes` through the mandatory ingress and keeps both halves.
+    pub fn verify_from_bytes(candidate_bytes: &[u8]) -> Result<Self, SigningError> {
+        verify_and_project_envelope(candidate_bytes).map(|(envelope, meta)| Self { meta, envelope })
+    }
+}
+
+/// [`VerifiedCandidate::verify_from_bytes`] with its failure mapped onto the §5.1
+/// `InvalidEnvelope` reject: the ingress half of a [`CandidateVerifier::verify_envelope`].
+pub fn verify_candidate(candidate_bytes: &[u8]) -> Result<VerifiedCandidate, AdmissionOutcome> {
+    VerifiedCandidate::verify_from_bytes(candidate_bytes).map_err(|error| {
+        AdmissionOutcome::InvalidEnvelope {
+            reason: error.to_string(),
+        }
+    })
+}
+
+/// The decrypted, schema-validated payload of ONE admitted operation, as extracted facts
+/// (SPEC-4 §4 rule 8 "extracted facts"; SPEC-10 §4.4 rule 2 and §12; `materialize/AGENTS.md`
+/// §payload-facts).
+///
+/// Values only: no artifact identifier to dereference, no ciphertext, no key, no handle. A
+/// reduction reading these reads its own operation and nothing else, so G2 still holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PayloadFacts {
+    /// The operation these facts belong to; a reduction compares it with its own `meta.op_id`.
+    pub op_id: Hash32,
+    /// The schema the plaintext was validated against (the envelope's own `schema_hash`).
+    pub schema_hash: Hash32,
+    /// The decoded canonical-CBOR plaintext.
+    pub fields: CborValue,
+}
+
+impl PayloadFacts {
+    /// Extracts facts from `plaintext`, the payload `candidate` committed to, AFTER the caller
+    /// authenticated its decryption and validated it against `candidate.meta.schema_hash`.
+    ///
+    /// Refuses (`InvalidPayload`) a no-payload-form candidate and plaintext that is not
+    /// canonical CBOR. It cannot see the schema, so the validation precondition is the
+    /// caller's: a [`CandidateVerifier::verify_payload`] implementation calls this last.
+    pub fn from_validated_plaintext(
+        candidate: &VerifiedCandidate,
+        plaintext: &[u8],
+    ) -> Result<Self, AdmissionOutcome> {
+        if candidate.envelope.unsigned.payload.is_no_payload_form() {
+            return Err(AdmissionOutcome::InvalidPayload);
+        }
+        let fields = crate::cbor::decode_canonical(plaintext)
+            .map_err(|_| AdmissionOutcome::InvalidPayload)?;
+        Ok(Self {
+            op_id: candidate.meta.op_id,
+            schema_hash: candidate.meta.schema_hash,
+            fields,
+        })
+    }
+}
+
 /// Projects an envelope's fields into [`VerifiedEnvelopeMeta`] **without verifying anything**.
 ///
 /// # HAZARD — the precondition this function does not check
@@ -202,22 +288,30 @@ pub enum ProjectionMutation {
 /// [`admit_candidate`] below and its own `VerifiedLogStore::append`.
 #[async_trait]
 pub trait CandidateVerifier: Send + Sync {
-    /// Decodes, verifies signature/structure/suite, and extracts materializer-facing facts.
-    /// Implementers call [`verify_envelope_meta`] and add nothing; reaching for
-    /// [`verified_envelope_meta_from`] here skips every check this method's name promises.
+    /// Decodes, verifies signature/structure/suite, and keeps the verified envelope with its
+    /// facts. Implementers call [`verify_candidate`] and may add only the SPEC-4 §5
+    /// `unknown_kind` check ([`AdmissionOutcome::UnknownKind`], never `InvalidEnvelope`).
     async fn verify_envelope(
         &self,
         candidate_bytes: &[u8],
-    ) -> Result<VerifiedEnvelopeMeta, AdmissionOutcome>;
+    ) -> Result<VerifiedCandidate, AdmissionOutcome>;
 
     /// Checks the operation is authorized under its presented capability (SPEC-3, injected).
+    /// An unresolvable chain or epoch state is
+    /// [`AdmissionOutcome::AuthorizationEvidenceUnavailable`], never a refusal.
     async fn verify_authorization(
         &self,
-        meta: &VerifiedEnvelopeMeta,
+        candidate: &VerifiedCandidate,
     ) -> Result<(), AdmissionOutcome>;
 
-    /// Checks the payload decrypts and validates against its declared schema.
-    async fn verify_payload(&self, meta: &VerifiedEnvelopeMeta) -> Result<(), AdmissionOutcome>;
+    /// Checks the payload decrypts and validates against its declared schema, and returns its
+    /// extracted facts (`None` for the no-payload form). `payload_ciphertext` is the ciphertext
+    /// the caller already holds, if any; an implementer may resolve it elsewhere when `None`.
+    async fn verify_payload(
+        &self,
+        candidate: &VerifiedCandidate,
+        payload_ciphertext: Option<&[u8]>,
+    ) -> Result<Option<PayloadFacts>, AdmissionOutcome>;
 }
 
 /// The exactly-once, durable log of admitted operation bytes (§3.1-§3.6). Implemented against
@@ -226,14 +320,12 @@ pub trait CandidateVerifier: Send + Sync {
 pub trait VerifiedLogStore: Send + Sync {
     /// Appends `bytes` under `claimed_op_id`. `AlreadyPresent` (byte-identical) is success.
     ///
-    /// `AppendError` currently offers only `HashMismatch` and `IntegrityConflict`, both of which
-    /// are DEFINITE answers that §3.3 treats as permanently blacklisting the `op_id`. It has no
-    /// indeterminate variant, so an implementer whose storage could not answer -- an I/O fault,
-    /// or stored bytes that fail to decode in THIS process for a reason as innocent as a future
-    /// protocol version -- has nothing honest to return and, today, reports a definite failure
-    /// for an operation it never actually examined. Filed as a `fe-canonical-log` erratum:
-    /// `AppendError` needs a `StorageUnavailable` variant, and until it lands an implementer
-    /// MUST NOT map a local decode failure onto `IntegrityConflict`.
+    /// `HashMismatch` and `IntegrityConflict` are DEFINITE answers that §3.3 treats as
+    /// permanently blacklisting the `op_id`. A store that could not answer -- an I/O fault --
+    /// returns the indeterminate `StorageUnavailable`, and stored bytes that fail to decode in
+    /// THIS process (a future protocol version, say) return the indeterminate `NotAnEnvelope`.
+    /// An implementer MUST NOT map either condition onto `IntegrityConflict`; see
+    /// `src/AGENTS.md` §append-errors.
     async fn append(
         &self,
         claimed_op_id: Hash32,
@@ -250,21 +342,28 @@ pub trait VerifiedLogStore: Send + Sync {
     async fn parents_of(&self, op_id: Hash32) -> Option<Vec<Hash32>>;
 }
 
-/// One deterministic reduction step (§4.1-§4.8): given the facts of an admitted operation and
-/// its complete bytes, produce the projection mutation. Calling this twice with the same
-/// inputs MUST produce an equal [`ProjectionMutation`] -- that equality is what makes replay
-/// idempotent: a caller can rebuild projected state from verified operations plus checkpoints
-/// alone by replaying `VerifiedLogStore` contents, in `ordering::deterministic_causal_order`,
-/// through this trait.
+/// One deterministic reduction step (§4.1-§4.8): given the facts of an admitted operation, its
+/// complete bytes, and its own extracted payload facts, produce the projection mutation.
+/// Calling this twice with the same inputs MUST produce an equal [`ProjectionMutation`] -- that
+/// equality is what makes replay idempotent: a caller can rebuild projected state from verified
+/// operations plus checkpoints alone by replaying `VerifiedLogStore` contents, in
+/// `ordering::deterministic_causal_order`, through this trait.
 ///
-/// **The §4 rule 8 bright line (D-CL28 gate G2).** `meta` and `envelope_bytes` are the ONLY
-/// admissible inputs to a reduction. An implementation MUST NOT read an external artifact --
-/// a snapshot, a segment shard, a columnar hexon, another peer's bytes -- to compute projected
-/// state, because local availability of that artifact differs per peer and §4.5/§6.1 require
-/// the same operation set to produce the same projection everywhere. A reduction may write a
-/// deterministic *reference* to such an artifact (its content address, derived from the signed
-/// envelope), and when that reference cannot itself be resolved to a verified identity it
+/// **The §4 rule 8 bright line (D-CL28 gate G2).** `meta`, `envelope_bytes`, and
+/// `payload_facts` -- the admitted operation's OWN verified bytes and extracted facts -- are the
+/// ONLY admissible inputs to a reduction. An implementation MUST NOT read an external artifact
+/// -- a snapshot, a segment shard, a columnar hexon, another peer's bytes -- to compute
+/// projected state, because local availability of that artifact differs per peer and §4.5/§6.1
+/// require the same operation set to produce the same projection everywhere. A reduction may
+/// write a deterministic *reference* to such an artifact (its content address, derived from the
+/// signed envelope), and when that reference cannot itself be resolved to a verified identity it
 /// returns [`ProjectionMutation::ReferencedArtifactUnavailable`] rather than guessing.
+///
+/// `payload_facts` is `None` for the no-payload form AND whenever the caller holds no decrypted
+/// payload for this operation. A reduction that needs facts and receives `None` returns
+/// `ReferencedArtifactUnavailable` naming the envelope's `PayloadRef::ciphertext_hash`, never
+/// `Excluded` and never a default (`materialize/AGENTS.md` §payload-facts). Kinds that need no
+/// payload ignore the argument.
 #[async_trait]
 pub trait CausalMaterializer: Send + Sync {
     /// Reduces one verified operation into a projection mutation.
@@ -272,6 +371,7 @@ pub trait CausalMaterializer: Send + Sync {
         &self,
         meta: &VerifiedEnvelopeMeta,
         envelope_bytes: &[u8],
+        payload_facts: Option<&PayloadFacts>,
     ) -> ProjectionMutation;
 }
 
@@ -323,23 +423,63 @@ pub fn check_author_equivocation(
     })
 }
 
+/// One candidate [`admit_candidate_with_facts`] admitted: the verified candidate and the payload
+/// facts its verifier extracted. Produced only by admission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AdmittedCandidate {
+    /// The candidate, verified through the mandatory ingress.
+    pub candidate: VerifiedCandidate,
+    /// Its decrypted, schema-validated payload facts; `None` for the no-payload form.
+    pub payload_facts: Option<PayloadFacts>,
+}
+
 /// The §2.1-§2.3 validate-then-log pipeline, minus the final append: verify the envelope,
 /// enforce SPEC-1 §6.2 same-verse parents, enforce the M1 author-equivocation rule, then verify
 /// authorization and payload. A storage-backed caller appends only after this returns `Ok`;
 /// an unresolvable parent lookup returns `MissingParent` rather than provisionally applying the
 /// candidate.
+///
+/// Returns only the facts; [`admit_candidate_with_facts`] is the same pipeline keeping the
+/// verified envelope and the payload facts the verifier extracted.
 pub async fn admit_candidate<V, E, P>(
     verifier: &V,
     equivocation_index: &E,
     parent_verse_lookup: &P,
     candidate_bytes: &[u8],
+    payload_ciphertext: Option<&[u8]>,
 ) -> Result<VerifiedEnvelopeMeta, AdmissionOutcome>
 where
     V: CandidateVerifier + ?Sized,
     E: EquivocationIndex + ?Sized,
     P: ParentVerseLookup + ?Sized,
 {
-    let meta = verifier.verify_envelope(candidate_bytes).await?;
+    admit_candidate_with_facts(
+        verifier,
+        equivocation_index,
+        parent_verse_lookup,
+        candidate_bytes,
+        payload_ciphertext,
+    )
+    .await
+    .map(|admitted| admitted.candidate.meta)
+}
+
+/// [`admit_candidate`], keeping the [`VerifiedCandidate`] and its [`PayloadFacts`].
+pub async fn admit_candidate_with_facts<V, E, P>(
+    verifier: &V,
+    equivocation_index: &E,
+    parent_verse_lookup: &P,
+    candidate_bytes: &[u8],
+    payload_ciphertext: Option<&[u8]>,
+) -> Result<AdmittedCandidate, AdmissionOutcome>
+where
+    V: CandidateVerifier + ?Sized,
+    E: EquivocationIndex + ?Sized,
+    P: ParentVerseLookup + ?Sized,
+{
+    let candidate = verifier.verify_envelope(candidate_bytes).await?;
+    let meta = &candidate.meta;
 
     let mut parent_verse_ids = Vec::with_capacity(meta.parents.len());
     for parent_op_id in &meta.parents {
@@ -355,12 +495,17 @@ where
     validate_same_verse_parents(meta.scope.verse_id(), parent_verse_ids)?;
 
     let existing = equivocation_index.op_id_at(meta.equivocation_key()).await;
-    check_author_equivocation(&meta, existing)?;
+    check_author_equivocation(meta, existing)?;
 
-    verifier.verify_authorization(&meta).await?;
-    verifier.verify_payload(&meta).await?;
+    verifier.verify_authorization(&candidate).await?;
+    let payload_facts = verifier
+        .verify_payload(&candidate, payload_ciphertext)
+        .await?;
 
-    Ok(meta)
+    Ok(AdmittedCandidate {
+        candidate,
+        payload_facts,
+    })
 }
 
 #[cfg(test)]
@@ -395,6 +540,8 @@ mod tests {
         }
     }
 
+    /// Answers a fixed meta for any bytes. In-crate only: the struct literal pairs `meta` with an
+    /// unrelated signed envelope, which is exactly what the seal forbids outside this crate.
     struct FixedVerifier(VerifiedEnvelopeMeta);
 
     #[async_trait]
@@ -402,22 +549,26 @@ mod tests {
         async fn verify_envelope(
             &self,
             _candidate_bytes: &[u8],
-        ) -> Result<VerifiedEnvelopeMeta, AdmissionOutcome> {
-            Ok(self.0.clone())
+        ) -> Result<VerifiedCandidate, AdmissionOutcome> {
+            Ok(VerifiedCandidate {
+                meta: self.0.clone(),
+                envelope: signed_sample().0,
+            })
         }
 
         async fn verify_authorization(
             &self,
-            _meta: &VerifiedEnvelopeMeta,
+            _candidate: &VerifiedCandidate,
         ) -> Result<(), AdmissionOutcome> {
             Ok(())
         }
 
         async fn verify_payload(
             &self,
-            _meta: &VerifiedEnvelopeMeta,
-        ) -> Result<(), AdmissionOutcome> {
-            Ok(())
+            _candidate: &VerifiedCandidate,
+            _payload_ciphertext: Option<&[u8]>,
+        ) -> Result<Option<PayloadFacts>, AdmissionOutcome> {
+            Ok(None)
         }
     }
 
@@ -449,9 +600,15 @@ mod tests {
         parents.insert(parent, identifier(0x99));
         let parent_lookup = FixedParentVerseLookup(parents);
 
-        let admitted = admit_candidate(&verifier, &equivocation_index, &parent_lookup, b"unused")
-            .await
-            .expect("admission");
+        let admitted = admit_candidate(
+            &verifier,
+            &equivocation_index,
+            &parent_lookup,
+            b"unused",
+            None,
+        )
+        .await
+        .expect("admission");
         assert_eq!(admitted, meta);
     }
 
@@ -465,9 +622,15 @@ mod tests {
         parents.insert(parent, identifier(0x77));
         let parent_lookup = FixedParentVerseLookup(parents);
 
-        let outcome = admit_candidate(&verifier, &equivocation_index, &parent_lookup, b"unused")
-            .await
-            .expect_err("cross-verse parent must be rejected");
+        let outcome = admit_candidate(
+            &verifier,
+            &equivocation_index,
+            &parent_lookup,
+            b"unused",
+            None,
+        )
+        .await
+        .expect_err("cross-verse parent must be rejected");
         assert_eq!(
             outcome,
             AdmissionOutcome::SameVerseParentViolation { parent }
@@ -483,9 +646,15 @@ mod tests {
         let equivocation_index = FixedEquivocationIndex(None);
         let parent_lookup = FixedParentVerseLookup(HashMap::new());
 
-        let outcome = admit_candidate(&verifier, &equivocation_index, &parent_lookup, b"unused")
-            .await
-            .expect_err("unresolvable parent must quarantine");
+        let outcome = admit_candidate(
+            &verifier,
+            &equivocation_index,
+            &parent_lookup,
+            b"unused",
+            None,
+        )
+        .await
+        .expect_err("unresolvable parent must quarantine");
         assert_eq!(outcome, AdmissionOutcome::MissingParent { missing: parent });
         assert!(outcome.is_quarantine());
     }
@@ -498,9 +667,15 @@ mod tests {
         let equivocation_index = FixedEquivocationIndex(Some(conflicting));
         let parent_lookup = FixedParentVerseLookup(HashMap::new());
 
-        let outcome = admit_candidate(&verifier, &equivocation_index, &parent_lookup, b"unused")
-            .await
-            .expect_err("equivocation must quarantine");
+        let outcome = admit_candidate(
+            &verifier,
+            &equivocation_index,
+            &parent_lookup,
+            b"unused",
+            None,
+        )
+        .await
+        .expect_err("equivocation must quarantine");
         assert_eq!(
             outcome,
             AdmissionOutcome::AuthorEquivocation {
@@ -518,9 +693,15 @@ mod tests {
         let equivocation_index = FixedEquivocationIndex(Some(meta.op_id));
         let parent_lookup = FixedParentVerseLookup(HashMap::new());
 
-        let admitted = admit_candidate(&verifier, &equivocation_index, &parent_lookup, b"unused")
-            .await
-            .expect("re-admitting the same op_id is not equivocation");
+        let admitted = admit_candidate(
+            &verifier,
+            &equivocation_index,
+            &parent_lookup,
+            b"unused",
+            None,
+        )
+        .await
+        .expect("re-admitting the same op_id is not equivocation");
         assert_eq!(admitted, meta);
     }
 
@@ -534,6 +715,7 @@ mod tests {
             &self,
             meta: &VerifiedEnvelopeMeta,
             _envelope_bytes: &[u8],
+            _payload_facts: Option<&PayloadFacts>,
         ) -> ProjectionMutation {
             *self.calls.lock().expect("lock") += 1;
             ProjectionMutation::Apply {
@@ -553,8 +735,8 @@ mod tests {
             calls: Mutex::new(0),
         };
 
-        let first = materializer.reduce(&meta, b"bytes").await;
-        let second = materializer.reduce(&meta, b"bytes").await;
+        let first = materializer.reduce(&meta, b"bytes", None).await;
+        let second = materializer.reduce(&meta, b"bytes", None).await;
 
         assert_eq!(
             first, second,
@@ -577,6 +759,7 @@ mod tests {
             &self,
             meta: &VerifiedEnvelopeMeta,
             _envelope_bytes: &[u8],
+            _payload_facts: Option<&PayloadFacts>,
         ) -> ProjectionMutation {
             if !self.resolvable {
                 return ProjectionMutation::ReferencedArtifactUnavailable {
@@ -600,7 +783,7 @@ mod tests {
         let meta = sample_meta(0x50, 0x60, vec![]);
 
         let blocked = ArtifactReferencingMaterializer { resolvable: false };
-        let outcome = blocked.reduce(&meta, b"bytes").await;
+        let outcome = blocked.reduce(&meta, b"bytes", None).await;
         assert_eq!(
             outcome,
             ProjectionMutation::ReferencedArtifactUnavailable {
@@ -616,13 +799,13 @@ mod tests {
         );
         assert_eq!(
             outcome,
-            blocked.reduce(&meta, b"bytes").await,
+            blocked.reduce(&meta, b"bytes", None).await,
             "the unavailable outcome replays identically"
         );
 
         let resolved = ArtifactReferencingMaterializer { resolvable: true };
         assert!(matches!(
-            resolved.reduce(&meta, b"bytes").await,
+            resolved.reduce(&meta, b"bytes", None).await,
             ProjectionMutation::Apply { .. }
         ));
     }
@@ -756,5 +939,247 @@ mod tests {
             "trailing bytes are never admissible"
         );
         assert!(VerifiedEnvelopeMeta::verify_from_bytes(&bytes[..bytes.len() - 1]).is_err());
+    }
+
+    /// A payload-bearing kind-100 envelope whose payload is `plaintext` sealed under
+    /// `scope_key` with the §5.2 AAD, and the ciphertext the envelope commits to.
+    fn signed_payload_sample(
+        scope_key: &crate::crypto::aead::SealingKey,
+        plaintext: &[u8],
+    ) -> (Vec<u8>, Vec<u8>) {
+        use crate::crypto::aead::{seal, FreshNonce};
+        use crate::envelope::{
+            Author, CapabilityRef, Hlc, PayloadRef, UnsignedEnvelope, PROTOCOL_VERSION,
+        };
+        use crate::payload_aad::payload_aad_preimage;
+        use crate::signing::sign_envelope;
+        use ed25519_dalek::SigningKey;
+
+        let signing_key = SigningKey::from_bytes(&[0x42; 32]);
+        let nonce = FreshNonce::draw(identifier(0x77)).expect("nonce");
+        let mut unsigned = UnsignedEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            operation_kind: 100,
+            scope: Scope::verse_wide(identifier(0x11)),
+            author: Author::from_public_key(signing_key.verifying_key().to_bytes()),
+            capability: CapabilityRef {
+                chain_id: hash(0x33),
+                scope_epoch: 5,
+            },
+            schema_hash: hash(0x44),
+            branch_id: identifier(0x55),
+            parents: Vec::new(),
+            hlc: Hlc::new(42, 7),
+            // §5.2: the AAD binds the encryption map but not the ciphertext hash or length, so
+            // the placeholder reference is replaced after sealing without changing the AAD.
+            payload: PayloadRef {
+                encryption: Some(nonce.params()),
+                ..PayloadRef::empty()
+            },
+        };
+        let aad = payload_aad_preimage(&unsigned).expect("aad");
+        let sealed = seal(scope_key, nonce, &aad, plaintext).expect("seal");
+        unsigned.payload = sealed.payload_ref();
+        let bytes = sign_envelope(&signing_key, &unsigned)
+            .expect("sign")
+            .encode_canonical()
+            .expect("encode");
+        (bytes, sealed.ciphertext)
+    }
+
+    /// Opens the payload the way a production verifier must -- hash, length, AEAD under the
+    /// §5.2 AAD -- and extracts facts only after it authenticates. The schema check is a fixed
+    /// "map with key 0" stand-in for the registry W4-3 composes.
+    struct DecryptingVerifier {
+        scope_key: crate::crypto::aead::SealingKey,
+    }
+
+    #[async_trait]
+    impl CandidateVerifier for DecryptingVerifier {
+        async fn verify_envelope(
+            &self,
+            candidate_bytes: &[u8],
+        ) -> Result<VerifiedCandidate, AdmissionOutcome> {
+            verify_candidate(candidate_bytes)
+        }
+
+        async fn verify_authorization(
+            &self,
+            _candidate: &VerifiedCandidate,
+        ) -> Result<(), AdmissionOutcome> {
+            Ok(())
+        }
+
+        async fn verify_payload(
+            &self,
+            candidate: &VerifiedCandidate,
+            payload_ciphertext: Option<&[u8]>,
+        ) -> Result<Option<PayloadFacts>, AdmissionOutcome> {
+            let payload = &candidate.envelope.unsigned.payload;
+            let Some(encryption) = payload.encryption else {
+                return Ok(None);
+            };
+            let ciphertext = payload_ciphertext.ok_or(AdmissionOutcome::OpaquePayload {
+                op_id: candidate.meta.op_id,
+            })?;
+            if ciphertext.len() as u64 != payload.ciphertext_length
+                || Hash32::of(ciphertext) != payload.ciphertext_hash
+            {
+                return Err(AdmissionOutcome::InvalidPayload);
+            }
+            let aad = crate::payload_aad::payload_aad_preimage(&candidate.envelope.unsigned)
+                .map_err(|_| AdmissionOutcome::InvalidPayload)?;
+            let plaintext =
+                crate::crypto::aead::open(&self.scope_key, &encryption, &aad, ciphertext)
+                    .map_err(|_| AdmissionOutcome::InvalidPayload)?;
+            let facts = PayloadFacts::from_validated_plaintext(candidate, &plaintext)?;
+            match &facts.fields {
+                CborValue::Map(entries)
+                    if entries.iter().any(|(key, _)| *key == CborValue::Uint(0)) =>
+                {
+                    Ok(Some(facts))
+                }
+                _ => Err(AdmissionOutcome::InvalidPayload),
+            }
+        }
+    }
+
+    /// A kind-100 reduction that needs its payload's field 0: it writes `op_id` plus that one
+    /// extracted value, and nothing derived from any artifact.
+    struct FactReadingMaterializer;
+
+    #[async_trait]
+    impl CausalMaterializer for FactReadingMaterializer {
+        async fn reduce(
+            &self,
+            meta: &VerifiedEnvelopeMeta,
+            envelope_bytes: &[u8],
+            payload_facts: Option<&PayloadFacts>,
+        ) -> ProjectionMutation {
+            let Some(facts) = payload_facts.filter(|facts| facts.op_id == meta.op_id) else {
+                // No decrypted payload here: a pending availability state naming the payload
+                // artifact the operation's own signed bytes commit to -- never an exclusion.
+                let envelope = CompleteEnvelope::decode_canonical(envelope_bytes)
+                    .expect("admitted bytes decode");
+                return ProjectionMutation::ReferencedArtifactUnavailable {
+                    artifact_id: envelope.unsigned.payload.ciphertext_hash,
+                };
+            };
+            let field_zero = match &facts.fields {
+                CborValue::Map(entries) => entries
+                    .iter()
+                    .find(|(key, _)| *key == CborValue::Uint(0))
+                    .map(|(_, value)| value.clone()),
+                _ => None,
+            }
+            .expect("schema-validated facts carry field 0");
+            ProjectionMutation::Apply {
+                statements: vec!["-- reference row: op_id + field 0".to_string()],
+                bindings: vec![
+                    (
+                        "op_id".to_string(),
+                        CborValue::Bytes(meta.op_id.as_bytes().to_vec()),
+                    ),
+                    ("field_zero".to_string(), field_zero),
+                ],
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn reduce_reads_its_own_payload_facts_and_stays_reference_only() {
+        let scope_key = crate::crypto::aead::SealingKey::from_bytes([0x5a; 32]);
+        let plaintext = crate::cbor::encode_canonical(&CborValue::Map(vec![(
+            CborValue::Uint(0),
+            CborValue::Text("node-a".to_string()),
+        )]));
+        let (bytes, ciphertext) = signed_payload_sample(&scope_key, &plaintext);
+        let verifier = DecryptingVerifier { scope_key };
+        let no_equivocation = FixedEquivocationIndex(None);
+        let no_parents = FixedParentVerseLookup(HashMap::new());
+
+        // Admission decrypts and validates once, and hands the facts on.
+        let admitted = admit_candidate_with_facts(
+            &verifier,
+            &no_equivocation,
+            &no_parents,
+            &bytes,
+            Some(&ciphertext),
+        )
+        .await
+        .expect("a decryptable, schema-valid payload admits");
+        let meta = admitted.candidate.meta.clone();
+        let facts = admitted
+            .payload_facts
+            .expect("payload-bearing kind has facts");
+        assert_eq!(facts.op_id, meta.op_id);
+        assert_eq!(facts.schema_hash, meta.schema_hash);
+
+        // The reduction reads them through the widened signature and writes a reference row
+        // carrying only the operation's own extracted value -- identically on every replay.
+        let materializer = FactReadingMaterializer;
+        let mutation = materializer.reduce(&meta, &bytes, Some(&facts)).await;
+        assert_eq!(
+            mutation,
+            ProjectionMutation::Apply {
+                statements: vec!["-- reference row: op_id + field 0".to_string()],
+                bindings: vec![
+                    (
+                        "op_id".to_string(),
+                        CborValue::Bytes(meta.op_id.as_bytes().to_vec()),
+                    ),
+                    (
+                        "field_zero".to_string(),
+                        CborValue::Text("node-a".to_string()),
+                    ),
+                ],
+            }
+        );
+        assert_eq!(
+            mutation,
+            materializer.reduce(&meta, &bytes, Some(&facts)).await
+        );
+
+        // Without facts the same reduction is pending on the payload artifact, not excluded.
+        let pending = materializer.reduce(&meta, &bytes, None).await;
+        assert_eq!(
+            pending,
+            ProjectionMutation::ReferencedArtifactUnavailable {
+                artifact_id: Hash32::of(&ciphertext),
+            }
+        );
+
+        // Admission without the ciphertext is the §5 opaque_payload quarantine, so facts are
+        // never minted from nothing.
+        let opaque = admit_candidate(&verifier, &no_equivocation, &no_parents, &bytes, None)
+            .await
+            .expect_err("no ciphertext, no facts");
+        assert_eq!(
+            opaque,
+            AdmissionOutcome::OpaquePayload { op_id: meta.op_id }
+        );
+        assert!(opaque.is_quarantine());
+    }
+
+    #[test]
+    fn payload_facts_refuse_the_no_payload_form_and_non_canonical_plaintext() {
+        let (_, bytes) = signed_sample();
+        let candidate = VerifiedCandidate::verify_from_bytes(&bytes).expect("admissible");
+        assert_eq!(
+            PayloadFacts::from_validated_plaintext(&candidate, &[0xa0]),
+            Err(AdmissionOutcome::InvalidPayload),
+            "a no-payload operation has no payload to extract facts from"
+        );
+
+        let scope_key = crate::crypto::aead::SealingKey::from_bytes([0x5a; 32]);
+        let (payload_bytes, _) = signed_payload_sample(&scope_key, &[0xa0]);
+        let payload_candidate =
+            VerifiedCandidate::verify_from_bytes(&payload_bytes).expect("admissible");
+        // 0x18 0x01: the integer 1 in a non-shortest encoding -- not canonical CBOR.
+        assert_eq!(
+            PayloadFacts::from_validated_plaintext(&payload_candidate, &[0x18, 0x01]),
+            Err(AdmissionOutcome::InvalidPayload)
+        );
+        assert!(PayloadFacts::from_validated_plaintext(&payload_candidate, &[0xa0]).is_ok());
     }
 }

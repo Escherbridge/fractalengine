@@ -168,10 +168,21 @@ not. `PreconditionFn` adapts a closure so `handlers::preconditions::require_node
 `require_petal_scope`, and their siblings pass through unchanged.
 
 No durable append happens on any reject or quarantine, and that is structural rather than
-asserted: `store.append_admitted` is unreachable until `admit_candidate` returns `Ok`.
-`missing_parent`, `unknown_schema`, and `opaque_payload` surface as
+asserted: `store.append_admitted` is unreachable until `admit_candidate_with_facts` returns
+`Ok`. `missing_parent`, `unknown_schema`, `unknown_kind` (erratum G1), `opaque_payload`, and
+`AuthorizationEvidenceUnavailable` (a capability chain, epoch state, or payload key this
+process cannot yet resolve — erratum E-W4-1, owner-confirmed 2026-10-13) surface as
 `AdmissionRejection::Quarantined`, because §5 note 2 forbids provisionally applying an
 availability state.
+
+Since W4-2 the verifier works on a `VerifiedCandidate` (facts + the verified envelope) rather
+than bare facts, and `admit_and_append` takes the caller's `payload_ciphertext: Option<&[u8]>`
+and passes it to `verify_payload` untouched; the ciphertext is never appended to
+`verified_op_log`. The payload facts the verifier extracts come back on
+`AdmittedAppend::payload_facts` and are not persisted here. `replay::replay_to_frontier` has no
+decrypted-payload source yet and hands every reduction `None` — see
+`fe-canonical-log/src/materialize/AGENTS.md` §payload-facts for why that is a pending state,
+not an exclusion.
 
 ## §atomic-apply
 

@@ -198,7 +198,9 @@ pub async fn replay_to_frontier(
             .into());
         }
 
-        let mutation = materializer.reduce(&meta, &bytes).await;
+        // No replay-time decrypted-payload source exists yet, so no facts are passed; a
+        // reduction that needs them stays pending (`materialize/AGENTS.md` §payload-facts).
+        let mutation = materializer.reduce(&meta, &bytes, None).await;
         let committable = match CommittableMutation::try_from_projection(&mutation) {
             Ok(committable) => committable,
             Err(NotCommittable::ReferencedArtifactUnavailable { artifact_id }) => {
