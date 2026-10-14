@@ -7,6 +7,7 @@
 
 pub mod api;
 pub mod context;
+pub mod device_format;
 pub mod events;
 pub mod legacy_identifier;
 pub mod node;
@@ -25,6 +26,7 @@ pub mod units;
 // Re-exports for convenience
 pub use api::{ApiExtensionHandle, ExtensionRoute, HttpMethod};
 pub use context::PluginContext;
+pub use device_format::DeviceFormatDescriptor;
 pub use events::{EventSubscription, PluginEvent};
 pub use legacy_identifier::{legacy_identifier, LegacyIdentifierError, LegacyTable};
 pub use node::NodeSnapshot;

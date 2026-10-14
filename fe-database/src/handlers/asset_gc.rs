@@ -31,7 +31,7 @@ pub async fn gc_unreferenced_assets(
         return Ok(AssetGcReport::default());
     };
 
-    let referenced: HashSet<String> = strings(
+    let mut referenced: HashSet<String> = strings(
         db,
         "SELECT VALUE asset_id FROM node WHERE asset_id != NONE",
         None,
@@ -39,6 +39,17 @@ pub async fn gc_unreferenced_assets(
     .await?
     .into_iter()
     .collect();
+    // R5 (CDL-SPEC10 A3): an asset referenced only by a `device_payload.asset_ids`
+    // entry would otherwise be collected after the grace period — a
+    // device-payload data-loss trap (campaign plan §2.2). `asset_ids` is
+    // itself an array column, so each row yields a `Vec<String>` that must
+    // be flattened client-side (unlike the scalar `strings()` helper above).
+    let mut asset_ids_res = db
+        .query("SELECT VALUE asset_ids FROM device_payload")
+        .await?
+        .check()?;
+    let asset_id_groups: Vec<Vec<String>> = asset_ids_res.take(0).unwrap_or_default();
+    referenced.extend(asset_id_groups.into_iter().flatten());
     let mut res = db
         .query("SELECT asset_id, content_hash, created_at FROM asset")
         .await?

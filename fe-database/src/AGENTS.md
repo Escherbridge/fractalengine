@@ -179,18 +179,32 @@ modules are path-tracking/animation only). Design decisions:
   statuses instead of string-sniffing.
 
 **Emit seam (A11, F5).** `insert_readings` is now a thin delegate;
-`insert_readings_with_replication(db, petal_id, verse_id, source_did, readings,
-blob_store, repl_tx)` is the seam that also publishes replication (`source_did`
-is the ingesting caller's DID, threaded onto each reading row — added after
-the original F5 signature, re-verified F23 2026-10-08). Order matters and is
-deliberate: validate everything, insert durably, THEN emit — so a peer never
-sees a row the local store cannot serve (the same durable-first rule as
+`insert_readings_with_replication(db, petal_id, verse_id, source_did,
+source_class, readings, blob_store, repl_tx)` is the seam that also publishes
+replication (`source_did` is the ingesting caller's DID, threaded onto each
+reading row — added after the original F5 signature, re-verified F23
+2026-10-08; `source_class` added CDL-SPEC10 A3, see below). Order matters and
+is deliberate: validate everything, insert durably, THEN emit — so a peer
+never sees a row the local store cannot serve (the same durable-first rule as
 §replication-backpressure). One `ReplicationEvent` per accepted row, carrying
 the caller's `verse_id` (fe-api derives it from the resolved petal scope),
 `petal_id`, `table: "iot_reading"`, `record_id: <reading_id>` and the row
 bytes' content hash. Missing verse/blob-store/sender degrades to
 durable-but-unpublished (warns once when a sender is wired but the context is
 missing) — never to a failed ingest.
+
+**R5 `payload_id` link + `source_class` (CDL-SPEC10 A3).** `iot_reading.payload_id`
+(additive, `option<string>`) is "decoded from / sent with this payload" — a
+`Some` value must name an existing `device_payload` row or the whole batch is
+rejected (`IotIngestError::UnknownPayload`, same all-or-nothing validation
+pass as the anchor check). `source_class` is NOT a column on `iot_reading`
+itself: it is the caller-declared `fe_sdk::source_class::SourceClass` (SPEC-10
+§7.1 rule 6 — never inferred from `source_did`) that the door threads into
+§window-membership below, so B3's future sealer can build the G6
+`ObservationSource` set without re-deriving it. `insert_readings`'s shim
+signature is unchanged (it always passes `verse_id: None`, so window
+membership — gated on a known verse — never fires on that path; its fixed
+`SourceClass::Device` default is therefore never actually read).
 
 **Typed rejection across the DB-thread seam (F24).** The dispatch loop's
 `InsertIotReadings` arm maps a validation failure (`IotIngestError::{
@@ -206,10 +220,132 @@ string-sniffing, with `Display` wording byte-identical to the direct path
 ## §replication-mode (F5)
 
 `replication_mode.rs::ReplicationMode` is the canonical per-table replication
-shape: `ReplicationMode::for_table("iot_reading") == Timeseries`, every other
+shape: `ReplicationMode::for_table("iot_reading" | "device_payload") ==
+Timeseries` (CDL-SPEC10 A3 widens this from `iot_reading` alone), every other
 table is `Row`. It lives in this crate (not `fe-sync`) because the *inbound*
 applier here must dispatch on it; `fe-sync` re-exports the enum for producers
 so there is one definition, not two that can drift.
+
+`ReplicationMode::union_key_field(table)` is the field `apply_timeseries_row`
+(handlers/replicated_row.rs) keys its idempotent insert-only check on:
+`reading_id` for `iot_reading`, `payload_id` for `device_payload`, `None` for
+every other table. `asset` and `device_format` stay `Row` mode by the default
+arm, but `apply_row_mode` gives them their own bespoke apply functions
+(`apply_anchored_asset_row` / `apply_device_format_row`) rather than the
+tombstone-aware merge the static hierarchy tables use — see §device-payload.
+
+## §device-payload (R5, CDL-SPEC10 A3)
+
+R4 override D-5/D-17: the existing `asset` table (`content_type` + iroh blob
+`content_hash` + `owner_did` + anchor `petal_id`) is the generic asset model,
+shared by IoT device payloads, path assets and `hexon_p2p_bucket` — one model,
+not a foundry-only one. `device_format` declares an ingest format
+(`{format_id, verse_id, mime, schema, declared_by, created_at}`, immutable per
+`(verse_id, format_id)` — a conflicting `mime` is refused, the same `mime`
+re-declared is an idempotent no-op); `device_payload` is the queryable index
+of opaque bytes (`{payload_id, node_id, petal_id, verse_id, format_id,
+recorded_at(_ms), hlc_timestamp, asset_ids: array<string>, source_did}` —
+`asset_ids` is ORDERED, not deduplicated: the list IS the payload).
+
+**`handlers::device_payload`** owns:
+- `register_format` / `fetch_format` / `list_device_formats` — the format
+  registry, keyed `(verse_id, format_id)` by an app-level WHERE check (the
+  SurrealDB record id is NOT `format_id` — two verses may legitimately
+  declare the same string — so uniqueness is enforced by `fetch_format`
+  before every `CREATE`, the same read-then-write pattern `iot_reading`'s
+  union key uses).
+- `insert_device_payloads` / `list_device_payloads` — mirrors
+  `insert_readings_with_replication` exactly: validate everything first
+  (anchor in petal, format declared for the petal's OWN verse — resolved
+  locally via `resolve_petal_scope_handler`, never trusting the caller's
+  replication-only `verse_id` — every asset exists/anchored/MIME-matched,
+  timestamp parses), durable insert, THEN publish (asset rows first, then
+  the payload row — SPEC-10 §2.3 ingestion-story order), THEN record
+  §window-membership. A known client `payload_id` is an idempotent no-op
+  checked BEFORE validation re-runs.
+- `record_window_membership` — `pub(crate)`, shared with
+  `handlers::iot_reading`; see §window-membership.
+- `node_is_in_petal` / `asset_anchored_to_petal` — `pub(crate)`, shared with
+  `handlers::replicated_row`'s R5 referential-confinement check (§replication
+  inbound, below) so the local-write validation and the inbound-admission
+  validation can never drift onto two different queries.
+
+**Blob GC extension (`handlers::asset_gc`).** The referenced-asset set now
+also flattens every `device_payload.asset_ids` array (a dedicated query — the
+column is `array<string>`, so `SELECT VALUE asset_ids` returns one `Vec<String>`
+per row that must be flattened client-side, unlike the scalar `strings()`
+helper the node-reference query uses). Without this, an asset referenced only
+by a device payload would be deleted after the grace period — a data-loss
+trap found in the campaign plan's §2.2 recon.
+
+**Inbound replication (`handlers::replicated_row`).**
+- `asset`: insert-if-absent, never overwrite, ANCHORED rows only (a legacy
+  `petal_id: NONE` row is never shadowed by a peer's).
+- `device_format`: insert-if-absent, immutable per key (re-declaration is
+  silently ignored, never a conflict error — the admission gate is what
+  refuses a bad actor, not this apply function).
+- `device_payload`: the generalized `Timeseries` union path, keyed on
+  `payload_id`.
+- **Admission (critic C3/C4, AC-34).** `r5_referential_confinement` runs
+  role-independently, BEFORE the bootstrap window, for all three tables:
+  `asset.petal_id`, `device_payload.{petal_id, node_id, asset_ids[*]}` and
+  `device_format.verse_id` must all resolve to the replica's OWN verse, or
+  the row is denied — a reference unknown locally is denied, not deferred
+  (role propagation RP-4 owns turning this into `Deferred Parent`). Pre-manifest
+  (bootstrap window): `device_format`/`asset` fail closed explicitly (their own
+  rows carry no reference the confinement check would otherwise deny on);
+  `device_payload` is already denied whenever its references are not locally
+  known, which an absent verse row normally implies. Post-manifest:
+  `device_format` needs **Manager+** (`RoleLevel::can_manage()`, schema-defining
+  like branch controls — "strictest reader", critic C3); `asset`/`device_payload`
+  use the standard Editor+ `evaluate_write` gate every other table uses.
+
+## §window-membership (SPEC-10 §3.4 rule 5, CDL-SPEC10 A3, A1 hand-back item 3)
+
+`observation_window_member` (`{id, table, row_id, petal_id, source_class,
+window_bucket, hlc_wall_ms, hlc_counter}`) is LOCAL-ONLY by construction:
+never added to `ALL_TABLE_NAMES` (admin dump/clear) or given a
+`ReplicationMode`. `handlers::device_payload::record_window_membership` is
+`pub(crate)` and called ONLY from the two local ingest doors
+(`insert_readings_with_replication`, `insert_device_payloads`), after their
+durable insert, gated on `verse_id.is_some()` (no verse context, no window to
+seal into — independent of whether a blob store / replication sender is
+actually wired, since window membership is about what THIS node locally
+accepted, not about publication).
+
+**Why this table exists at all (the signing-oracle gap).** Without it, a
+future batch sealer (Phase B) would have to pick window membership by
+scanning hot tables or trusting `source_did` — and a malicious peer could
+replicate a row stamped with THIS node's own DID and get it included in a
+batch this node signs. `handlers::replicated_row` (the inbound path) MUST
+NEVER write to this table, under any input, including a replicated row whose
+`source_did` names this node itself —
+`tests/device_payload_test.rs::inbound_replicated_rows_never_enter_window_membership`
+is the regression pin; mutating `apply_row_mode`'s inbound arm to also insert
+here must turn it red.
+
+`source_class` on each row is the caller-declared
+`fe_sdk::source_class::SourceClass` (SPEC-10 §7.1 rule 6) — recorded exactly
+as the caller passed it, never inferred from `source_did`. This is why
+`fe-sim/src/session.rs` sets `source_class: Simulation` explicitly even
+though its `source_did` is the simulation lab's own host-peer DID: without
+the explicit field, that DID would otherwise read as `device`/`connector`.
+
+`OBSERVATION_WINDOW_BUCKET_MS` (one minute) is an assumption, not a spec
+number — B3's sealer brief fixes the durable batch width; this is only the
+local bookkeeping grain. Reversal cost: cheap (one constant).
+
+**AC-7 (asset_backfill path guard).** `asset_backfill.rs`'s legacy-file join
+(`dir.join(format!("{asset_id}.{ext}"))`) was safe only because inbound
+`asset` rows fell to `NotApplicable` before this slice — nothing peer-supplied
+ever reached it. Now that anchored `asset` rows replicate insert-if-absent, a
+peer-chosen `asset_id` can reach this startup join on any machine that still
+has legacy `imported/` files. The fix reuses the ONE shared path-id guard,
+`fe_runtime::safe_id::is_safe_path_id` (already used by P3P4 S1's hexon-id
+guard and the inbound `petal.terrain` check above) — NOT a third hand-rolled
+guard ("shared cores + separate guards = drift", RUNBOOK §5) — refusing
+before `legacy_file`/the write path ever builds a path from the id, counted
+as a typed `failed`, never `missing`.
 
 - `Row` — whole-row CRDT semantics: an incoming payload is merged into the
   local row by `merge.rs` (tombstone-honoring, stale-HLC rejecting).
@@ -428,6 +564,8 @@ one sub-module per domain:
 - `transform` — node position/rotation/scale and URL persistence
 - `preconditions` — shared cheap target/scope checks required before append
 - `rbac` — role resolution, assignment, revocation
+- `device_payload` (CDL-SPEC10 A3) — R5 device format descriptor registry +
+  device payload ingest/list; see §device-payload
 - `invite` — verse invite generation and join-by-invite
 - `api_token` — API token minting, revocation, and listing
 - `seed` — default data seeding

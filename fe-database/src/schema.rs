@@ -275,7 +275,85 @@ define_table! {
         recorded_at:    String => "TYPE string",
         recorded_at_ms: i64    => "TYPE int",
         hlc_timestamp:  i64    => "TYPE int",
-        source_did:     String => "TYPE string DEFAULT ''"
+        source_did:     String => "TYPE string DEFAULT ''",
+        /// R5 "decoded from / sent with this payload" link (CDL-SPEC10 A3):
+        /// the `device_payload.payload_id` this reading travelled with, if
+        /// any. Additive (`option<string>`, no DEFAULT) so an old peer's
+        /// SCHEMAFULL row coercion is unaffected by its absence.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        payload_id: Option<String> => "TYPE option<string>"
+    }
+}
+
+define_table! {
+    /// R5 declared device payload format descriptor (CDL-SPEC10 A3,
+    /// SPEC-10 §2.2) — immutable per `(verse_id, format_id)`; re-declaring
+    /// with a different `mime` is a conflict (handlers/device_payload.rs).
+    table "device_format" => DeviceFormat (id: format_id) {
+        format_id:   String                    => "TYPE string",
+        verse_id:    String                    => "TYPE string",
+        mime:        String                    => "TYPE string",
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schema: Option<serde_json::Value>      => "TYPE option<object> FLEXIBLE",
+        declared_by: String                    => "TYPE string",
+        created_at:  String                    => "TYPE string"
+    }
+}
+
+define_table! {
+    /// R5 device payload: an anchor node, a declared format and an ORDERED
+    /// list of already-stored `asset` ids (R4 D-5: "allow for multiple
+    /// records (a list of records)"). Replicates as Timeseries (union,
+    /// `payload_id` key) — see `replication_mode.rs`.
+    table "device_payload" => DevicePayload (id: payload_id) {
+        payload_id:     String      => "TYPE string",
+        node_id:        String      => "TYPE string",
+        petal_id:       String      => "TYPE string",
+        /// `NONE` for a row created with no verse context (durable-only,
+        /// mirrors `iot_reading`'s `verse_id: Option<&str>` emit gate).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        verse_id:       Option<String> => "TYPE option<string>",
+        format_id:      String      => "TYPE string",
+        recorded_at:    String      => "TYPE string",
+        recorded_at_ms: i64         => "TYPE int",
+        hlc_timestamp:  i64         => "TYPE int",
+        /// Ordered, deduplicated-by-caller asset ids; order is preserved
+        /// (R5: the list IS the payload, not a set).
+        asset_ids:      Vec<String> => "TYPE array<string> VALUE $value OR []",
+        source_did:     String      => "TYPE string DEFAULT ''"
+    }
+}
+
+define_table! {
+    /// SPEC-10 §3.4 rule 5 window-membership record (CDL-SPEC10 A3, A1
+    /// hand-back item 3): written ONLY by the two local ingest doors
+    /// (`insert_readings_with_replication`, `insert_device_payloads`),
+    /// immediately after their durable insert — NEVER by the inbound
+    /// replication path (`handlers/replicated_row.rs`), even for a
+    /// replicated row that names this node's own DID as `source_did`. That
+    /// asymmetry is the whole point: a peer that could get a replicated row
+    /// into this table would be able to get this node to sign a batch
+    /// containing data it never locally admitted (a signing oracle). B3's
+    /// sealer reads ONLY this table to decide batch membership. Local-only
+    /// by construction: never added to `ALL_TABLE_NAMES`'s replicated set or
+    /// to `replication_mode.rs` (`fe-database/src/AGENTS.md`
+    /// §window-membership).
+    table "observation_window_member" => ObservationWindowMember (id: id) {
+        id:            String => "TYPE string",
+        /// The hot table the member row lives in (`"iot_reading"` |
+        /// `"device_payload"`).
+        table:         String => "TYPE string ASSERT $value IN ['iot_reading', 'device_payload']",
+        /// That row's own id (`reading_id` | `payload_id`).
+        row_id:        String => "TYPE string",
+        petal_id:      String => "TYPE string",
+        /// Caller-declared source class at ingest (SPEC-10 §7.1 rule 6) —
+        /// recorded here, never inferred, so B3's sealer can build the G6
+        /// `ObservationSource` set without re-deriving it from `source_did`.
+        source_class:  String => "TYPE string",
+        /// Sensor-time bucket this row belongs to (ms, caller-policy width).
+        window_bucket: i64    => "TYPE int",
+        hlc_wall_ms:   i64    => "TYPE int",
+        hlc_counter:   i64    => "TYPE int"
     }
 }
 
@@ -483,6 +561,9 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     Repo::<FieldDef>::apply_schema(db).await?;
     Repo::<NodeLog>::apply_schema(db).await?;
     Repo::<IotReading>::apply_schema(db).await?;
+    Repo::<DeviceFormat>::apply_schema(db).await?;
+    Repo::<DevicePayload>::apply_schema(db).await?;
+    Repo::<ObservationWindowMember>::apply_schema(db).await?;
     Repo::<CrateRegistry>::apply_schema(db).await?;
     Repo::<CrateEntry>::apply_schema(db).await?;
     Repo::<VerifiedOpLog>::apply_schema(db).await?;
@@ -547,6 +628,48 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     .map_err(|e| anyhow::anyhow!("idx_iot_reading_petal: {e}"))?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_iot_reading_series ON TABLE iot_reading FIELDS node_id, metric, recorded_at_ms")
         .await?.check().map_err(|e| anyhow::anyhow!("idx_iot_reading_series: {e}"))?;
+    db.query(
+        "DEFINE INDEX IF NOT EXISTS idx_iot_reading_payload ON TABLE iot_reading FIELDS payload_id",
+    )
+    .await?
+    .check()
+    .map_err(|e| anyhow::anyhow!("idx_iot_reading_payload: {e}"))?;
+    db.query(
+        "DEFINE INDEX IF NOT EXISTS idx_device_format_verse ON TABLE device_format FIELDS verse_id",
+    )
+    .await?
+    .check()
+    .map_err(|e| anyhow::anyhow!("idx_device_format_verse: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_device_payload_petal ON TABLE device_payload FIELDS petal_id")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_device_payload_petal: {e}"))?;
+    db.query(
+        "DEFINE INDEX IF NOT EXISTS idx_device_payload_node ON TABLE device_payload FIELDS node_id",
+    )
+    .await?
+    .check()
+    .map_err(|e| anyhow::anyhow!("idx_device_payload_node: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_device_payload_format ON TABLE device_payload FIELDS format_id")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_device_payload_format: {e}"))?;
+    // F23 precedent: idempotent-retry union key, storage-enforced (see the
+    // iot_reading.reading_id UNIQUE rationale above).
+    let unique_payload_idx = db
+        .query("DEFINE INDEX IF NOT EXISTS idx_device_payload_payload_id ON TABLE device_payload FIELDS payload_id UNIQUE")
+        .await
+        .and_then(|r| r.check());
+    if let Err(e) = unique_payload_idx {
+        tracing::error!(
+            "device_payload.payload_id UNIQUE index rejected ({e}) — falling back to the \
+             non-unique index (the read-then-write applier remains the enforcement)"
+        );
+        db.query("DEFINE INDEX IF NOT EXISTS idx_device_payload_payload_id ON TABLE device_payload FIELDS payload_id")
+            .await?
+            .check()
+            .map_err(|e| anyhow::anyhow!("idx_device_payload_payload_id: {e}"))?;
+    }
+    db.query("DEFINE INDEX IF NOT EXISTS idx_observation_window_member_bucket ON TABLE observation_window_member FIELDS petal_id, window_bucket")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_observation_window_member_bucket: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_observation_window_member_row ON TABLE observation_window_member FIELDS table, row_id")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_observation_window_member_row: {e}"))?;
     // F23 (M2 scrutiny F5 minor): the A12 union key, storage-enforced. The
     // inbound applier probes `reading_id` per replicated row and F20
     // reconciliation replays the full doc snapshot on every open — the
@@ -628,6 +751,8 @@ pub const ALL_TABLE_NAMES: &[&str] = &[
     FieldDef::TABLE_NAME,
     NodeLog::TABLE_NAME,
     IotReading::TABLE_NAME,
+    DeviceFormat::TABLE_NAME,
+    DevicePayload::TABLE_NAME,
     CrateRegistry::TABLE_NAME,
     CrateEntry::TABLE_NAME,
 ];
@@ -893,12 +1018,58 @@ mod tests {
 
     #[test]
     fn all_table_names_are_present() {
-        assert_eq!(ALL_TABLE_NAMES.len(), 15);
+        assert_eq!(ALL_TABLE_NAMES.len(), 17);
         assert!(ALL_TABLE_NAMES.contains(&"iot_reading"));
         assert!(ALL_TABLE_NAMES.contains(&"petal"));
         assert!(ALL_TABLE_NAMES.contains(&"verse_member"));
         assert!(ALL_TABLE_NAMES.contains(&"asset"));
+        assert!(ALL_TABLE_NAMES.contains(&"device_format"));
+        assert!(ALL_TABLE_NAMES.contains(&"device_payload"));
         assert!(ALL_TABLE_NAMES.contains(&CrateRegistry::TABLE_NAME));
         assert!(ALL_TABLE_NAMES.contains(&CrateEntry::TABLE_NAME));
+    }
+
+    #[test]
+    fn observation_window_member_is_never_in_the_admin_clearable_or_replicated_set() {
+        // SPEC-10 §3.4 rule 5 (A1 hand-back item 3): the window-membership
+        // table is local-only by construction — it must never be reachable
+        // from the admin dump/clear surface or the replicated-row path.
+        assert!(!ALL_TABLE_NAMES.contains(&ObservationWindowMember::TABLE_NAME));
+    }
+
+    // --- DeviceFormat / DevicePayload schema ---
+
+    #[test]
+    fn device_format_schema_is_keyed_by_format_id_and_carries_verse_and_mime() {
+        let s = DeviceFormat::schema();
+        assert!(s.contains("DEFINE TABLE IF NOT EXISTS device_format SCHEMAFULL"));
+        assert!(s.contains("format_id ON TABLE device_format TYPE string"));
+        assert!(s.contains("verse_id ON TABLE device_format TYPE string"));
+        assert!(s.contains("mime ON TABLE device_format TYPE string"));
+        assert!(s.contains("schema ON TABLE device_format TYPE option<object>"));
+    }
+
+    #[test]
+    fn device_payload_schema_carries_an_ordered_asset_id_array() {
+        let s = DevicePayload::schema();
+        assert!(s.contains("DEFINE TABLE IF NOT EXISTS device_payload SCHEMAFULL"));
+        assert!(s.contains("asset_ids ON TABLE device_payload TYPE array<string>"));
+        assert!(s.contains("node_id ON TABLE device_payload TYPE string"));
+        assert!(s.contains("petal_id ON TABLE device_payload TYPE string"));
+        assert!(s.contains("format_id ON TABLE device_payload TYPE string"));
+    }
+
+    #[test]
+    fn observation_window_member_schema_constrains_table_to_the_two_hot_tables() {
+        let s = ObservationWindowMember::schema();
+        assert!(s.contains("DEFINE TABLE IF NOT EXISTS observation_window_member SCHEMAFULL"));
+        assert!(s.contains("ASSERT $value IN ['iot_reading', 'device_payload']"));
+        assert!(s.contains("source_class ON TABLE observation_window_member TYPE string"));
+    }
+
+    #[test]
+    fn iot_reading_schema_carries_an_optional_payload_id() {
+        let s = IotReading::schema();
+        assert!(s.contains("payload_id ON TABLE iot_reading TYPE option<string>"));
     }
 }

@@ -87,6 +87,15 @@ const OTHER_DISPATCHED_MUTATION_KINDS: &[&str] = &[
     "ElevatedQuery",
     "EnrolLocalDevice",
     "RevokeLocalDevice",
+    // CDL-SPEC10 A3 (§2.1 pre-existing-drift fix): `InsertIotReadings` was a
+    // dispatched mutation before this slice (`lib.rs` dispatch arm,
+    // `fe-runtime/src/messages.rs`) but missing from this inventory —
+    // `migration/AGENTS.md` §inventory-scope requires new mutating variants
+    // "in the same change", so this fixes the drift this slice found rather
+    // than widening it.
+    "InsertIotReadings",
+    "RegisterDeviceFormat",
+    "InsertDevicePayloads",
 ];
 
 /// Registry of every currently-dispatched mutation kind's canonical-mapping

@@ -1,5 +1,11 @@
 use bevy::prelude::Message;
 
+/// Re-exported so callers that depend on `fe-runtime` but not directly on
+/// `fe-sdk` (fe-sim, fe-api, fe-test-harness) can construct
+/// `InsertIotReadings`/`InsertDevicePayloads.source_class` without a new
+/// Cargo dependency — the type is identical either way (CDL-SPEC10 A3).
+pub use fe_sdk::source_class::SourceClass;
+
 /// JTI string broadcast for token revocation notifications.
 /// Carried by the API config so the validation middleware can invalidate
 /// in-process caches without a DB round-trip.
@@ -22,7 +28,157 @@ pub struct IotReadingInput {
     /// RFC-3339 sensor timestamp; server ingest time when absent.
     #[serde(default)]
     pub recorded_at: Option<String>,
+    /// R5: "decoded from / sent with this payload" — the `device_payload`
+    /// this reading was decoded from, if any. `#[serde(default)]` so every
+    /// pre-existing caller (REST body, GUI, harness fixtures) still parses
+    /// unchanged. Validated against `device_payload` by the write handler
+    /// (fe-database `src/AGENTS.md` §iot-readings).
+    #[serde(default)]
+    pub payload_id: Option<String>,
 }
+
+// ---------------------------------------------------------------------------
+// R5: device payload / format descriptor wire shapes (CDL-SPEC10 A3)
+// ---------------------------------------------------------------------------
+
+/// One device payload to ingest: a format descriptor id plus the ordered list
+/// of already-stored asset ids that make up this payload's opaque bytes
+/// (R5: "allow for multiple records (a list of records)"). Defined here, like
+/// [`IotReadingInput`], because `DbCommand::InsertDevicePayloads` carries it
+/// cross-thread and fe-database (the validator/ingester) depends on
+/// fe-runtime, never the reverse.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DevicePayloadInput {
+    /// Anchor node the payload is spatially attached to.
+    pub node_id: String,
+    /// The declared `device_format.format_id` this payload's assets conform to.
+    pub format_id: String,
+    /// Ordered, already-stored asset ids (1..=`DEVICE_PAYLOAD_MAX_ASSETS`,
+    /// fe-api `src/AGENTS.md` §device-ingest) whose `content_type` must equal
+    /// the descriptor's `mime`.
+    pub asset_ids: Vec<String>,
+    /// RFC-3339 sensor timestamp; server ingest time when absent.
+    #[serde(default)]
+    pub recorded_at: Option<String>,
+    /// Client-supplied id for idempotent retries (R5 assumption 4); the
+    /// server mints a ULID when absent.
+    #[serde(default)]
+    pub payload_id: Option<String>,
+}
+
+/// A declared `device_format` row, as returned by `ListDeviceFormats`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DeviceFormatDto {
+    pub format_id: String,
+    pub verse_id: String,
+    pub mime: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<serde_json::Value>,
+    pub declared_by: String,
+    pub created_at: String,
+}
+
+/// A `device_payload` row, as returned by `ListDevicePayloads`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DevicePayloadDto {
+    pub payload_id: String,
+    pub node_id: String,
+    pub petal_id: String,
+    pub verse_id: Option<String>,
+    pub format_id: String,
+    pub recorded_at: String,
+    pub recorded_at_ms: i64,
+    /// Ordered asset ids this payload's bytes live in (preserves ingest order).
+    pub asset_ids: Vec<String>,
+    pub source_did: String,
+}
+
+/// Validation-shaped device-payload ingest rejection, mirroring
+/// [`IotIngestRejection`]'s F24 pattern: the typed detail a
+/// `DbResult::DevicePayloadsRejected` reply carries back across the DB-thread
+/// seam so the API layer maps real HTTP statuses (422) without string-sniffing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DevicePayloadIngestRejection {
+    /// The anchor node is not an existing node of the target petal.
+    UnknownAnchor { node_id: String },
+    /// No `device_format` with this id is declared for the verse.
+    UnknownFormat { format_id: String },
+    /// A referenced asset id does not exist.
+    UnknownAsset { asset_id: String },
+    /// A referenced asset is anchored to a different petal than this payload.
+    ForeignAssetAnchor { asset_id: String },
+    /// A referenced asset's `content_type` does not equal the descriptor's `mime`.
+    MimeMismatch { asset_id: String },
+    /// `asset_ids` was empty.
+    EmptyAssetList,
+    /// `recorded_at` is not RFC-3339.
+    InvalidTimestamp { raw: String },
+}
+
+impl std::fmt::Display for DevicePayloadIngestRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownAnchor { node_id } => {
+                write!(f, "unknown anchor node '{node_id}' in this petal")
+            }
+            Self::UnknownFormat { format_id } => {
+                write!(f, "no device_format '{format_id}' declared for this verse")
+            }
+            Self::UnknownAsset { asset_id } => write!(f, "unknown asset id '{asset_id}'"),
+            Self::ForeignAssetAnchor { asset_id } => {
+                write!(f, "asset '{asset_id}' is anchored to a different petal")
+            }
+            Self::MimeMismatch { asset_id } => write!(
+                f,
+                "asset '{asset_id}' content_type does not match the declared format's mime"
+            ),
+            Self::EmptyAssetList => write!(f, "asset_ids must be non-empty"),
+            Self::InvalidTimestamp { raw } => {
+                write!(f, "invalid recorded_at '{raw}' (expected RFC-3339)")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DevicePayloadIngestRejection {}
+
+/// Validation-shaped `RegisterDeviceFormat` rejection (F24 pattern).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceFormatRejection {
+    /// `format_id` fails the SPEC-10 §2.2 rule 4 grammar.
+    InvalidFormatId { format_id: String },
+    /// `mime` is blank.
+    EmptyMime,
+    /// A `device_format` with this id already exists for the verse with a
+    /// DIFFERENT mime (the row is immutable per key — R5 assumption 7).
+    ConflictingMime {
+        format_id: String,
+        existing_mime: String,
+    },
+}
+
+impl std::fmt::Display for DeviceFormatRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidFormatId { format_id } => {
+                write!(
+                    f,
+                    "invalid format_id '{format_id}' (expected <namespace>/<name>@<major>)"
+                )
+            }
+            Self::EmptyMime => write!(f, "mime must be non-empty"),
+            Self::ConflictingMime {
+                format_id,
+                existing_mime,
+            } => write!(
+                f,
+                "device_format '{format_id}' already declared with mime '{existing_mime}'"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DeviceFormatRejection {}
 
 /// Validation-shaped IoT ingest rejection (F24) — the typed detail a
 /// `DbResult::IotReadingsRejected` reply carries back across the DB-thread
@@ -39,6 +195,9 @@ pub enum IotIngestRejection {
     InvalidTimestamp { raw: String },
     /// The metric name is empty.
     EmptyMetric,
+    /// `payload_id` ("decoded from / sent with this payload", R5) names no
+    /// existing `device_payload` row.
+    UnknownPayload { payload_id: String },
 }
 
 impl std::fmt::Display for IotIngestRejection {
@@ -51,6 +210,9 @@ impl std::fmt::Display for IotIngestRejection {
                 write!(f, "invalid recorded_at '{raw}' (expected RFC-3339)")
             }
             Self::EmptyMetric => write!(f, "metric name must be non-empty"),
+            Self::UnknownPayload { payload_id } => {
+                write!(f, "unknown payload_id '{payload_id}'")
+            }
         }
     }
 }
@@ -622,9 +784,58 @@ pub enum DbCommand {
         verse_id: Option<String>,
         source_did: String,
         readings: Vec<IotReadingInput>,
+        /// Caller-declared source class (SPEC-10 §7.1 rule 6) — threaded
+        /// explicitly from caller to door; NEVER inferred from `source_did`
+        /// (the simulation lab's host-peer DID would otherwise read as
+        /// `device`/`connector`). See fe-sdk `source_class` AGENTS.md
+        /// §source-class.
+        source_class: fe_sdk::source_class::SourceClass,
         /// Caller-supplied id echoed on the reply (`CreateNode` precedent);
         /// `PendingApiRequests` routes a correlated reply ONLY to its own
         /// waiter (src/AGENTS.md §api-reply-correlation). `None` = legacy.
+        correlation_id: Option<String>,
+    },
+    // --- R5 device formats / payloads (CDL-SPEC10 A3) ---
+    /// Declare a device payload format for a verse (Manager+, verse scope).
+    /// Immutable per `(verse_id, format_id)` — re-declaring with a different
+    /// `mime` is a conflict (`DbResult::DeviceFormatRejected`).
+    RegisterDeviceFormat {
+        verse_id: String,
+        descriptor: fe_sdk::device_format::DeviceFormatDescriptor,
+        /// The declaring caller's DID (`device_format.declared_by`).
+        declared_by: String,
+        correlation_id: Option<String>,
+    },
+    /// List every `device_format` declared for a verse (Viewer+).
+    ListDeviceFormats {
+        verse_id: String,
+        correlation_id: Option<String>,
+    },
+    /// Ingest one device payload (Editor+, petal scope) — one REST/MCP call
+    /// ingests one payload whose `asset_ids` carry its (possibly multi-file)
+    /// opaque bytes (R5: "a list of records" IS the payload). Mirrors
+    /// `InsertIotReadings`: durable-first, then one `ReplicationEvent` per
+    /// accepted asset/payload row (fe-database `src/AGENTS.md` §iot-readings).
+    InsertDevicePayloads {
+        petal_id: String,
+        /// The verse whose replica the rows belong in; `None` disables the
+        /// replication emit (durable-only).
+        verse_id: Option<String>,
+        source_did: String,
+        /// Caller-declared source class (SPEC-10 §7.1 rule 6); see
+        /// `InsertIotReadings::source_class`.
+        source_class: fe_sdk::source_class::SourceClass,
+        payload: DevicePayloadInput,
+        correlation_id: Option<String>,
+    },
+    /// List `device_payload` rows for a petal, optionally filtered by node,
+    /// format and a recorded-time window (Viewer+).
+    ListDevicePayloads {
+        petal_id: String,
+        node_id: Option<String>,
+        format_id: Option<String>,
+        from_ms: Option<i64>,
+        to_ms: Option<i64>,
         correlation_id: Option<String>,
     },
     // --- Hexon crate registry (Phase 8) ---
@@ -1037,6 +1248,45 @@ pub enum DbResult {
         petal_id: String,
         reason: IotIngestRejection,
         /// Echoes `InsertIotReadings.correlation_id`.
+        correlation_id: Option<String>,
+    },
+    // --- R5 device formats / payloads results (CDL-SPEC10 A3) ---
+    /// Result of `RegisterDeviceFormat`.
+    DeviceFormatRegistered {
+        verse_id: String,
+        format_id: String,
+        correlation_id: Option<String>,
+    },
+    /// Validation rejection of `RegisterDeviceFormat` (F24 pattern).
+    DeviceFormatRejected {
+        verse_id: String,
+        reason: DeviceFormatRejection,
+        correlation_id: Option<String>,
+    },
+    /// Result of `ListDeviceFormats`.
+    DeviceFormatsListed {
+        verse_id: String,
+        formats: Vec<DeviceFormatDto>,
+        correlation_id: Option<String>,
+    },
+    /// Result of `InsertDevicePayloads` — one row written (its id + ordered
+    /// asset ids), or the already-existing row on an idempotent retry.
+    DevicePayloadsInserted {
+        petal_id: String,
+        payload_id: String,
+        asset_ids: Vec<String>,
+        correlation_id: Option<String>,
+    },
+    /// Validation rejection of `InsertDevicePayloads` (F24 pattern).
+    DevicePayloadsRejected {
+        petal_id: String,
+        reason: DevicePayloadIngestRejection,
+        correlation_id: Option<String>,
+    },
+    /// Result of `ListDevicePayloads`.
+    DevicePayloadsListed {
+        petal_id: String,
+        payloads: Vec<DevicePayloadDto>,
         correlation_id: Option<String>,
     },
     // --- Hexon crate registry results (Phase 8) ---

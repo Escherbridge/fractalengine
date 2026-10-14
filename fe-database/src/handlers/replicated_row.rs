@@ -101,18 +101,20 @@ async fn dispatch_by_mode(
     }
 }
 
-/// Union-CRDT apply for append-only timeseries tables (A12).
+/// Union-CRDT apply for append-only timeseries tables (A12; CDL-SPEC10 A3
+/// widens this from `iot_reading`-only to every [`ReplicationMode::Timeseries`]
+/// table, each keyed on its own [`ReplicationMode::union_key_field`]).
 ///
-/// A reading is an immutable fact: the row is inserted **only when its
-/// `reading_id` is absent**, so re-delivery is idempotent, an existing row is
-/// never overwritten (no LWW), and the entry is never deleted — an empty
+/// A row is an immutable fact: it is inserted **only when its union key is
+/// absent**, so re-delivery is idempotent, an existing row is never
+/// overwritten (no LWW), and the entry is never deleted — an empty
 /// `Doc::del` tombstone on a timeseries key is deliberately `NotApplicable`
 /// (union semantics keep the fact). Delivery order and count therefore cannot
 /// change the converged set, which is what makes offline-then-rejoin
 /// convergence work with no coordinator.
 ///
 /// The A3 role gate has already run (it precedes dispatch for every table), so
-/// an unauthorized peer's readings never reach here.
+/// an unauthorized peer's row never reaches here.
 async fn apply_timeseries_row(
     db: &Db,
     verse_id: &str,
@@ -131,34 +133,41 @@ async fn apply_timeseries_row(
         );
         return Ok(ReplicatedRowOutcome::NotApplicable);
     }
+    let Some(key_field) = ReplicationMode::union_key_field(table) else {
+        // Unreachable through `dispatch_by_mode` (it only routes Timeseries
+        // tables here), kept as a defensive fallback rather than a panic.
+        tracing::warn!(table, "timeseries apply with no known union key field");
+        return Ok(ReplicatedRowOutcome::NotApplicable);
+    };
 
     let mut row: serde_json::Value = serde_json::from_slice(row_bytes).map_err(|e| {
         anyhow::anyhow!("replicated timeseries row {table}/{record_id}: bad JSON: {e}")
     })?;
     strip_toplevel_nulls(&mut row);
 
-    // The union key is the row's own `reading_id`; the wire key is the same
+    // The union key is the row's own key field; the wire key is the same
     // value by construction (the emission seam keys the doc entry on it), so a
     // mismatch means a malformed publisher — trust the payload and log.
-    let reading_id = row
-        .get("reading_id")
+    let key_value = row
+        .get(key_field)
         .and_then(|v| v.as_str())
         .map(str::to_string)
         .unwrap_or_else(|| record_id.to_string());
-    if reading_id != record_id {
+    if key_value != record_id {
         tracing::warn!(
             table,
             record_id,
-            reading_id = %reading_id,
-            "replicated timeseries row key differs from its reading_id — trusting the payload"
+            key_field,
+            key_value = %key_value,
+            "replicated timeseries row key differs from its own key field — trusting the payload"
         );
     }
 
-    if row_exists(db, table, "reading_id", &reading_id).await? {
+    if row_exists(db, table, key_field, &key_value).await? {
         tracing::debug!(
             verse_id,
             table,
-            reading_id,
+            key_value,
             "timeseries row already present — union re-delivery is idempotent (not overwritten)"
         );
         // Reported `Applied` like the node path's idempotent re-merge: the
@@ -200,6 +209,13 @@ async fn apply_row_mode(
             apply_static_row(db, table, record_id, row_bytes).await
         }
         "node" => apply_node_row(db, record_id, row_bytes, entity_change_tx).await,
+        // R5 (CDL-SPEC10 A3): insert-if-absent, never overwrite, anchored
+        // rows only — see `apply_anchored_asset_row`.
+        "asset" => apply_anchored_asset_row(db, record_id, row_bytes).await,
+        // R5 (CDL-SPEC10 A3): Row mode, insert-if-absent, immutable per key
+        // (the admission gate already enforced the Manager+ floor and the
+        // verse match) — see `apply_device_format_row`.
+        "device_format" => apply_device_format_row(db, record_id, row_bytes).await,
         // Revocation dominates; the unsigned `del` marker is NotApplicable (§device-enrolment).
         crate::canon_log::device_enrolment::DEVICE_ENROLMENT_TABLE => {
             crate::canon_log::device_enrolment::apply_replicated_enrolment(db, record_id, row_bytes)
@@ -264,7 +280,12 @@ enum Admission {
 /// referential-confinement checking is recorded on the conductor board (the
 /// p2p_mycelium_completion FUTURE-HARDENING note) and belongs at this
 /// admission gate once the verse-manifest/role bootstrap contract is
-/// specified; it is deliberately out of M1 scope.
+/// specified; it is deliberately out of M1 scope for the pre-existing
+/// tables. **R5 (CDL-SPEC10 A3, critic C4) closes this gap for its own three
+/// new tables** — `asset`, `device_payload` and `device_format` — via
+/// [`r5_referential_confinement`], run role-independently BEFORE the
+/// bootstrap window below. The pre-existing node/petal/fractal gap is
+/// unchanged; role propagation RP-4 generalizes the pattern.
 async fn admit_inbound_row(
     db: &Db,
     verse_id: &str,
@@ -326,8 +347,47 @@ async fn admit_inbound_row(
         return Ok(Admission::Allow);
     }
 
+    // R5 (CDL-SPEC10 A3, critic C4/AC-34): role-independent referential
+    // confinement runs BEFORE the bootstrap window, exactly like the
+    // device-enrolment checks above and the W3 enrolment floor — a
+    // signature/reference check is never something authority should be
+    // allowed to bypass, bootstrap window or not.
+    if matches!(table, "asset" | "device_payload" | "device_format") {
+        if let Some(reason) = r5_referential_confinement(db, verse_id, table, row_bytes).await? {
+            tracing::warn!(
+                verse_id,
+                table,
+                record_id,
+                author = author_did,
+                reason = %reason,
+                "R5 referential confinement denied an inbound row"
+            );
+            return Ok(Admission::Deny(reason));
+        }
+    }
+
     // Bootstrap window (see the doc comment above).
     if !row_exists(db, "verse", "verse_id", verse_id).await? {
+        // AC-34: `device_format`/`asset` fail closed pre-manifest (explicit
+        // per-table choice, mirrors the W3 enrolment floor's "fail closed,
+        // re-publish" residual) — their own rows carry no local reference
+        // the confinement check above could have denied on, so without this
+        // an unauthenticated pre-manifest peer could plant either table.
+        // `device_payload` needs no extra rule here: the confinement check
+        // above already denies it whenever its petal/node/asset references
+        // are not locally known, which a missing verse row normally implies.
+        if matches!(table, "device_format" | "asset") {
+            tracing::debug!(
+                verse_id,
+                table,
+                record_id,
+                "pre-manifest: device_format/asset rows fail closed until the manifest converges"
+            );
+            return Ok(Admission::Deny(
+                "device_format/asset rows are denied before the verse manifest converges"
+                    .to_string(),
+            ));
+        }
         tracing::debug!(
             verse_id,
             table,
@@ -339,10 +399,112 @@ async fn admit_inbound_row(
 
     let verse_scope = crate::scope::build_scope(verse_id, None, None);
     let role = crate::role_manager::resolve_role(db, author_did, &verse_scope).await?;
+    // R5 (critic C3, "strictest reader"): `device_format` is schema-defining
+    // (like branch controls), so its post-manifest floor is Manager+ —
+    // stricter than the standard Editor+ write gate every other table uses.
+    if table == "device_format" && !role.can_manage() {
+        return Ok(Admission::Deny(format!(
+            "device_format requires Manager+ at the verse scope (resolved role: {role})"
+        )));
+    }
     match crate::rbac::evaluate_write(author_did, &role.to_string(), &verse_scope) {
         fe_policy::Decision::Allow => Ok(Admission::Allow),
         fe_policy::Decision::Deny(reason) => Ok(Admission::Deny(reason)),
     }
+}
+
+/// R5 referential confinement (critic C4, pre-empting the P2P-REF-CONFINE
+/// ledger row): every reference inside an `asset` / `device_payload` /
+/// `device_format` row must resolve to THIS replica's verse. `Some(reason)`
+/// denies; `None` allows. A reference unknown locally is denied for now
+/// (role propagation RP-4 later turns this into `Deferred Parent`).
+async fn r5_referential_confinement(
+    db: &Db,
+    verse_id: &str,
+    table: &str,
+    row_bytes: &[u8],
+) -> anyhow::Result<Option<String>> {
+    if row_bytes.is_empty() {
+        // An empty entry (del marker) carries no references; the per-table
+        // apply function below decides applicability on its own.
+        return Ok(None);
+    }
+    let Ok(row) = serde_json::from_slice::<serde_json::Value>(row_bytes) else {
+        // Malformed JSON surfaces once, from the apply function itself.
+        return Ok(None);
+    };
+
+    match table {
+        "asset" => match row.get("petal_id").and_then(|v| v.as_str()) {
+            // Un-anchored rows are denied by `apply_anchored_asset_row`
+            // itself; nothing to confine on an absent reference.
+            None => Ok(None),
+            Some(petal_id) => confine_petal_to_verse(db, verse_id, petal_id).await,
+        },
+        "device_payload" => {
+            let Some(petal_id) = row.get("petal_id").and_then(|v| v.as_str()) else {
+                return Ok(Some("device_payload row has no petal_id".to_string()));
+            };
+            if let Some(reason) = confine_petal_to_verse(db, verse_id, petal_id).await? {
+                return Ok(Some(reason));
+            }
+            if let Some(node_id) = row.get("node_id").and_then(|v| v.as_str()) {
+                if !crate::handlers::device_payload::node_is_in_petal(db, petal_id, node_id).await?
+                {
+                    return Ok(Some(format!(
+                        "device_payload anchor node '{node_id}' is not known in petal '{petal_id}'"
+                    )));
+                }
+            }
+            if let Some(asset_ids) = row.get("asset_ids").and_then(|v| v.as_array()) {
+                for entry in asset_ids {
+                    let Some(asset_id) = entry.as_str() else {
+                        continue;
+                    };
+                    if !crate::handlers::device_payload::asset_anchored_to_petal(
+                        db, asset_id, petal_id,
+                    )
+                    .await?
+                    {
+                        return Ok(Some(format!(
+                            "device_payload asset_ids entry '{asset_id}' is not anchored to petal '{petal_id}'"
+                        )));
+                    }
+                }
+            }
+            Ok(None)
+        }
+        "device_format" => match row.get("verse_id").and_then(|v| v.as_str()) {
+            Some(row_verse) if row_verse == verse_id => Ok(None),
+            Some(row_verse) => Ok(Some(format!(
+                "device_format verse_id '{row_verse}' does not match the replica's verse '{verse_id}'"
+            ))),
+            None => Ok(Some("device_format row has no verse_id".to_string())),
+        },
+        _ => Ok(None),
+    }
+}
+
+/// Whether `petal_id` is a locally-known petal belonging to `verse_id`.
+async fn confine_petal_to_verse(
+    db: &Db,
+    verse_id: &str,
+    petal_id: &str,
+) -> anyhow::Result<Option<String>> {
+    let Some(scope) = crate::handlers::crud::resolve_petal_scope_handler(db, petal_id).await?
+    else {
+        return Ok(Some(format!("petal '{petal_id}' is not known locally")));
+    };
+    let Ok(parts) = crate::scope::parse_scope(&scope) else {
+        return Ok(Some(format!("petal '{petal_id}' has an unparseable scope")));
+    };
+    if parts.verse_id != verse_id {
+        return Ok(Some(format!(
+            "petal '{petal_id}' belongs to verse '{}', not the replica's '{verse_id}'",
+            parts.verse_id
+        )));
+    }
+    Ok(None)
 }
 
 // ---------------------------------------------------------------------------
@@ -492,6 +654,132 @@ async fn apply_static_row(
         .map_err(|e| anyhow::anyhow!("replicated {table} geometry cast failed: {e}"))?;
     }
 
+    Ok(ReplicatedRowOutcome::Applied)
+}
+
+// ---------------------------------------------------------------------------
+// R5 generic asset / device format — insert-if-absent, never overwrite
+// (CDL-SPEC10 A3)
+// ---------------------------------------------------------------------------
+
+/// Insert-if-absent, never-overwrite apply for an inbound `asset` row —
+/// R4 override D-5/D-17 (campaign plan §3 A3 step 3): anchored rows only
+/// (an un-anchored `petal_id: NONE` legacy row is never applied, so a legacy
+/// local-only row can never be shadowed by a peer's). The admission gate
+/// (`admit_inbound_row`) has already confirmed the row's `petal_id` resolves
+/// to THIS replica's verse before this function runs.
+async fn apply_anchored_asset_row(
+    db: &Db,
+    record_id: &str,
+    row_bytes: &[u8],
+) -> anyhow::Result<ReplicatedRowOutcome> {
+    // An empty entry is the iroh-docs `del` marker; `asset` has no tombstone
+    // semantics (GC is the only deletion path) — not applicable, like the
+    // static hierarchy tables.
+    if row_bytes.is_empty() {
+        tracing::debug!(record_id, "empty-entry delete on `asset` — not applicable");
+        return Ok(ReplicatedRowOutcome::NotApplicable);
+    }
+    let mut row: serde_json::Value = serde_json::from_slice(row_bytes)
+        .map_err(|e| anyhow::anyhow!("replicated asset row {record_id}: bad JSON: {e}"))?;
+    strip_toplevel_nulls(&mut row);
+
+    if row.get("petal_id").and_then(|v| v.as_str()).is_none() {
+        tracing::warn!(
+            record_id,
+            "inbound asset row has no anchor petal_id — denied (un-anchored rows never replicate)"
+        );
+        return Ok(ReplicatedRowOutcome::Denied);
+    }
+
+    let asset_id = row
+        .get("asset_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| record_id.to_string());
+    if asset_id != record_id {
+        tracing::warn!(
+            record_id,
+            asset_id = %asset_id,
+            "replicated asset row id differs from the wire key — trusting the payload"
+        );
+    }
+
+    if row_exists(db, "asset", "asset_id", &asset_id).await? {
+        tracing::debug!(
+            asset_id,
+            "asset row already present — insert-if-absent never overwrites it"
+        );
+        return Ok(ReplicatedRowOutcome::Applied);
+    }
+
+    db.query("CREATE asset CONTENT $row")
+        .bind(("row", row))
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("replicated asset create failed: {e}"))?;
+    Ok(ReplicatedRowOutcome::Applied)
+}
+
+/// Insert-if-absent, never-overwrite, immutable-per-key apply for an inbound
+/// `device_format` row (R5: "immutable per key; re-declaring with a
+/// different MIME is a conflict" — the admission gate, not this function,
+/// enforces the Manager+ floor and the verse match).
+async fn apply_device_format_row(
+    db: &Db,
+    record_id: &str,
+    row_bytes: &[u8],
+) -> anyhow::Result<ReplicatedRowOutcome> {
+    if row_bytes.is_empty() {
+        tracing::debug!(
+            record_id,
+            "empty-entry delete on `device_format` — immutable, not applicable"
+        );
+        return Ok(ReplicatedRowOutcome::NotApplicable);
+    }
+    let mut row: serde_json::Value = serde_json::from_slice(row_bytes)
+        .map_err(|e| anyhow::anyhow!("replicated device_format row {record_id}: bad JSON: {e}"))?;
+    strip_toplevel_nulls(&mut row);
+
+    let format_id = row
+        .get("format_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| record_id.to_string());
+    let Some(verse_id) = row
+        .get("verse_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+    else {
+        tracing::warn!(
+            record_id,
+            "inbound device_format row has no verse_id — denied"
+        );
+        return Ok(ReplicatedRowOutcome::Denied);
+    };
+
+    let existing = db
+        .query("SELECT mime FROM device_format WHERE verse_id = $vid AND format_id = $fid LIMIT 1")
+        .bind(("vid", verse_id))
+        .bind(("fid", format_id.clone()))
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("replicated device_format lookup failed: {e}"))?
+        .take::<Vec<serde_json::Value>>(0)
+        .unwrap_or_default();
+    if !existing.is_empty() {
+        tracing::debug!(
+            format_id,
+            "device_format already declared — immutable, never overwritten"
+        );
+        return Ok(ReplicatedRowOutcome::Applied);
+    }
+
+    db.query("CREATE device_format CONTENT $row")
+        .bind(("row", row))
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("replicated device_format create failed: {e}"))?;
     Ok(ReplicatedRowOutcome::Applied)
 }
 

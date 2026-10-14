@@ -12,6 +12,8 @@ pub enum KnownTable {
     Fractal,
     Node,
     Asset,
+    DeviceFormat,
+    DevicePayload,
 }
 
 impl KnownTable {
@@ -26,6 +28,8 @@ impl KnownTable {
         KnownTable::Fractal,
         KnownTable::Node,
         KnownTable::Asset,
+        KnownTable::DeviceFormat,
+        KnownTable::DevicePayload,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -40,6 +44,8 @@ impl KnownTable {
             KnownTable::Fractal => "fractal",
             KnownTable::Node => "node",
             KnownTable::Asset => "asset",
+            KnownTable::DeviceFormat => "device_format",
+            KnownTable::DevicePayload => "device_payload",
         }
     }
 
@@ -56,6 +62,8 @@ impl KnownTable {
             "fractal" => Some(KnownTable::Fractal),
             "node" => Some(KnownTable::Node),
             "asset" => Some(KnownTable::Asset),
+            "device_format" => Some(KnownTable::DeviceFormat),
+            "device_payload" => Some(KnownTable::DevicePayload),
             _ => None,
         }
     }

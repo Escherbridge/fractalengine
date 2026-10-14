@@ -1467,12 +1467,13 @@ pub fn spawn_db_thread_shared(
                     // calls (durable-first, then one ReplicationEvent per
                     // accepted row; see §iot-readings). Harness peers and
                     // the sim lab ingest through this arm.
-                    Ok(DbCommand::InsertIotReadings { petal_id, verse_id, source_did, readings, correlation_id }) => {
+                    Ok(DbCommand::InsertIotReadings { petal_id, verse_id, source_did, readings, source_class, correlation_id }) => {
                         match handlers::iot_reading::insert_readings_with_replication(
                             &db,
                             &petal_id,
                             verse_id.as_deref(),
                             &source_did,
+                            source_class,
                             &readings,
                             Some(&blob_store),
                             repl_tx.as_ref(),
@@ -1487,6 +1488,44 @@ pub fn spawn_db_thread_shared(
                                 Some(reason) => send_result(&tx, DbResult::IotReadingsRejected { petal_id, reason, correlation_id }),
                                 None => send_result(&tx, DbResult::Error(format!("IoT readings ingest failed: {e}"))),
                             },
+                        }
+                    }
+                    // --- R5 device formats / payloads (CDL-SPEC10 A3) ---
+                    Ok(DbCommand::RegisterDeviceFormat { verse_id, descriptor, declared_by, correlation_id }) => {
+                        match handlers::device_payload::register_format(&db, &verse_id, &descriptor, &declared_by).await {
+                            Ok(()) => send_result(&tx, DbResult::DeviceFormatRegistered {
+                                verse_id, format_id: descriptor.format_id, correlation_id,
+                            }),
+                            Err(e) => match e.rejection() {
+                                Some(reason) => send_result(&tx, DbResult::DeviceFormatRejected { verse_id, reason, correlation_id }),
+                                None => send_result(&tx, DbResult::Error(format!("RegisterDeviceFormat failed: {e}"))),
+                            },
+                        }
+                    }
+                    Ok(DbCommand::ListDeviceFormats { verse_id, correlation_id }) => {
+                        match handlers::device_payload::list_device_formats(&db, &verse_id).await {
+                            Ok(formats) => send_result(&tx, DbResult::DeviceFormatsListed { verse_id, formats, correlation_id }),
+                            Err(e) => send_result(&tx, DbResult::Error(format!("ListDeviceFormats failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::InsertDevicePayloads { petal_id, verse_id, source_did, source_class, payload, correlation_id }) => {
+                        match handlers::device_payload::insert_device_payloads(
+                            &db, &petal_id, verse_id.as_deref(), &source_did, source_class, &payload,
+                            Some(&blob_store), repl_tx.as_ref(),
+                        ).await {
+                            Ok((payload_id, asset_ids)) => send_result(&tx, DbResult::DevicePayloadsInserted { petal_id, payload_id, asset_ids, correlation_id }),
+                            Err(e) => match e.rejection() {
+                                Some(reason) => send_result(&tx, DbResult::DevicePayloadsRejected { petal_id, reason, correlation_id }),
+                                None => send_result(&tx, DbResult::Error(format!("InsertDevicePayloads failed: {e}"))),
+                            },
+                        }
+                    }
+                    Ok(DbCommand::ListDevicePayloads { petal_id, node_id, format_id, from_ms, to_ms, correlation_id }) => {
+                        match handlers::device_payload::list_device_payloads(
+                            &db, &petal_id, node_id.as_deref(), format_id.as_deref(), from_ms, to_ms,
+                        ).await {
+                            Ok(payloads) => send_result(&tx, DbResult::DevicePayloadsListed { petal_id, payloads, correlation_id }),
+                            Err(e) => send_result(&tx, DbResult::Error(format!("ListDevicePayloads failed: {e}"))),
                         }
                     }
                     // --- Hexon crate registry (Phase 8) ---

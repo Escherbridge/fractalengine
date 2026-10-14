@@ -148,6 +148,7 @@ fn ingest(
             value: *value,
             units: "C".to_string(),
             recorded_at: Some(rfc3339(bucket_ms(*bucket))),
+            payload_id: None,
         })
         .collect();
     peer.send(DbCommand::InsertIotReadings {
@@ -155,6 +156,7 @@ fn ingest(
         verse_id: Some(verse_id.to_string()),
         source_did: peer.keypair.to_did_key(),
         readings,
+        source_class: fe_runtime::messages::SourceClass::Device,
         // The harness driver awaits each reply synchronously; no routing.
         correlation_id: None,
     });

@@ -8,6 +8,7 @@ pub mod asset_gc;
 pub mod blob_migration;
 pub mod crate_registry;
 pub mod crud;
+pub mod device_payload;
 pub mod elevated_query;
 pub mod entity;
 pub mod entity_property;

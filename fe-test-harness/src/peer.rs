@@ -544,6 +544,7 @@ impl TestPeer {
                             verse_id,
                             source_did,
                             readings,
+                            source_class,
                             correlation_id,
                         }) => {
                             match fe_database::handlers::iot_reading::insert_readings_with_replication(
@@ -551,6 +552,7 @@ impl TestPeer {
                                 &petal_id,
                                 verse_id.as_deref(),
                                 &source_did,
+                                source_class,
                                 &readings,
                                 Some(&db_blob_store),
                                 Some(&db_repl_tx),
@@ -1121,6 +1123,64 @@ impl TestPeer {
                                         dropped_total = replicated_echo_dropped,
                                         "harness peer: result channel full — ReplicatedRowApplied echo dropped"
                                     );
+                                }
+                            }
+                        }
+                        // R5 device formats / payloads (CDL-SPEC10 A3) — the
+                        // real fe-database handlers, mirroring the
+                        // `InsertIotReadings` arm above.
+                        Ok(DbCommand::RegisterDeviceFormat { verse_id, descriptor, declared_by, correlation_id }) => {
+                            match fe_database::handlers::device_payload::register_format(&db, &verse_id, &descriptor, &declared_by).await {
+                                Ok(()) => {
+                                    db_result_tx.send(DbResult::DeviceFormatRegistered {
+                                        verse_id, format_id: descriptor.format_id, correlation_id,
+                                    }).ok();
+                                }
+                                Err(e) => {
+                                    let reply = match e.rejection() {
+                                        Some(reason) => DbResult::DeviceFormatRejected { verse_id, reason, correlation_id },
+                                        None => DbResult::Error(format!("RegisterDeviceFormat failed: {e}")),
+                                    };
+                                    db_result_tx.send(reply).ok();
+                                }
+                            }
+                        }
+                        Ok(DbCommand::ListDeviceFormats { verse_id, correlation_id }) => {
+                            match fe_database::handlers::device_payload::list_device_formats(&db, &verse_id).await {
+                                Ok(formats) => {
+                                    db_result_tx.send(DbResult::DeviceFormatsListed { verse_id, formats, correlation_id }).ok();
+                                }
+                                Err(e) => {
+                                    db_result_tx.send(DbResult::Error(format!("ListDeviceFormats failed: {e}"))).ok();
+                                }
+                            }
+                        }
+                        Ok(DbCommand::InsertDevicePayloads { petal_id, verse_id, source_did, source_class, payload, correlation_id }) => {
+                            match fe_database::handlers::device_payload::insert_device_payloads(
+                                &db, &petal_id, verse_id.as_deref(), &source_did, source_class, &payload,
+                                Some(&db_blob_store), Some(&db_repl_tx),
+                            ).await {
+                                Ok((payload_id, asset_ids)) => {
+                                    db_result_tx.send(DbResult::DevicePayloadsInserted { petal_id, payload_id, asset_ids, correlation_id }).ok();
+                                }
+                                Err(e) => {
+                                    let reply = match e.rejection() {
+                                        Some(reason) => DbResult::DevicePayloadsRejected { petal_id, reason, correlation_id },
+                                        None => DbResult::Error(format!("InsertDevicePayloads failed: {e}")),
+                                    };
+                                    db_result_tx.send(reply).ok();
+                                }
+                            }
+                        }
+                        Ok(DbCommand::ListDevicePayloads { petal_id, node_id, format_id, from_ms, to_ms, correlation_id }) => {
+                            match fe_database::handlers::device_payload::list_device_payloads(
+                                &db, &petal_id, node_id.as_deref(), format_id.as_deref(), from_ms, to_ms,
+                            ).await {
+                                Ok(payloads) => {
+                                    db_result_tx.send(DbResult::DevicePayloadsListed { petal_id, payloads, correlation_id }).ok();
+                                }
+                                Err(e) => {
+                                    db_result_tx.send(DbResult::Error(format!("ListDevicePayloads failed: {e}"))).ok();
                                 }
                             }
                         }

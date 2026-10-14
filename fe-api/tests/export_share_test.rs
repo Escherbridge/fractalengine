@@ -157,6 +157,7 @@ async fn seed_reading(db: &Db, petal_id: &str, node_id: &str, metric: &str, valu
         value,
         units: "celsius".to_string(),
         recorded_at: Some("2026-10-09T12:00:00+00:00".to_string()),
+        payload_id: None,
     };
     insert_readings(db, petal_id, "did:key:z6MkSensor", &[reading])
         .await

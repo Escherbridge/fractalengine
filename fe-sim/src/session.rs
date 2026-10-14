@@ -9,7 +9,7 @@ use std::sync::MutexGuard;
 use std::time::Duration;
 
 use anyhow::Result;
-use fe_runtime::messages::{DbCommand, DbResult, IotReadingInput};
+use fe_runtime::messages::{DbCommand, DbResult, IotReadingInput, SourceClass};
 use fe_runtime::timeseries::VerseTimeseriesSettings;
 use fe_sync::messages::SyncCommand;
 use serde::Serialize;
@@ -441,6 +441,7 @@ impl ScenarioSession {
                         value: reading.value,
                         units: sensor.units.clone(),
                         recorded_at: Some(rfc3339_from_ms(reading.at_ms)),
+                        payload_id: None,
                     });
                 }
                 if batch.is_empty() {
@@ -456,6 +457,11 @@ impl ScenarioSession {
                     verse_id: Some(run.verse_id.clone()),
                     source_did: host_did.clone(),
                     readings: batch,
+                    // SPEC-10 §7.1 rule 6 (critic C12): the simulation lab
+                    // sends `source_did` = the host peer's own DID, which
+                    // must NEVER be read as `device`/`connector` — declare
+                    // the class explicitly instead of letting it be inferred.
+                    source_class: SourceClass::Simulation,
                     correlation_id: Some(want_correlation.clone()),
                 });
                 let written = match host.peer.wait_for(

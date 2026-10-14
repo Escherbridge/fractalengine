@@ -28,6 +28,7 @@ types the plugin/extension API is expressed in — `fe-plugin` and
 | `events` | `PluginEvent`, `EventSubscription` — inter-plugin events |
 | `legacy_identifier` | `legacy_identifier`, `LegacyTable` — SPEC-10 §4.5 text id -> canonical 32-byte identifier (§legacy-identifier) |
 | `source_class` | `SourceClass`, `is_valid_format_id` — SPEC-10 §7.1 source classes + §2.2 rule 4 `format_id` grammar (§source-class) |
+| `device_format` | `DeviceFormatDescriptor` — R5 device extension format descriptor (§device-format) |
 
 ## §storage
 
@@ -181,3 +182,13 @@ check, `is_valid_format_id`.
   `device_format` module and its ingest doors MUST call this function rather than re-implement
   the grammar ("shared cores + separate guards = drift", RUNBOOK §5). ASCII-only, so NFC holds
   trivially.
+
+## §device-format (CDL-SPEC10 A3, SPEC-10 §2.2, R5)
+
+`device_format.rs` holds [`DeviceFormatDescriptor`] — `{format_id, mime, schema, description}` —
+the serde-only shape a device extension declares before its payloads (R5: "a declared format
+descriptor"). `is_well_formed` validates `format_id` via [`source_class::is_valid_format_id`] and
+requires a non-blank `mime`; it does NOT check uniqueness against an existing declaration in the
+same verse — that conflict check belongs to `fe-database::handlers::device_payload`, which is the
+only place that can see other rows. `schema` is informative JSON Schema only: R5 says payload bytes
+are stored opaque, so nothing in this crate or fe-database validates bytes against it in v1.

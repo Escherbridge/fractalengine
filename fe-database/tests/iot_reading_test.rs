@@ -47,6 +47,7 @@ fn reading(node_id: &str, metric: &str, value: f64, recorded_at: Option<&str>) -
         value,
         units: "C".to_string(),
         recorded_at: recorded_at.map(str::to_string),
+        payload_id: None,
     }
 }
 
@@ -250,6 +251,7 @@ async fn replication_seam_emits_one_event_per_row_with_verse_and_petal() {
         "petal-1",
         Some("verse-1"),
         "did:key:z6MkSensor",
+        fe_runtime::messages::SourceClass::Device,
         &[
             reading("node-a", "temperature_c", 21.5, None),
             reading("node-a", "humidity_pct", 55.0, None),
@@ -313,6 +315,7 @@ async fn replication_seam_without_verse_emits_nothing() {
         "petal-1",
         None,
         "did:key:z6MkSensor",
+        fe_runtime::messages::SourceClass::Device,
         &[reading("node-a", "temperature_c", 21.5, None)],
         Some(&store),
         Some(&repl_tx),

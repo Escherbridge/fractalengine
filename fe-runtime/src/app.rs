@@ -253,6 +253,10 @@ fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
         | DbCommand::GetPetalRenderDistance { correlation_id, .. }
         | DbCommand::EnrolLocalDevice { correlation_id, .. }
         | DbCommand::RevokeLocalDevice { correlation_id, .. }
+        | DbCommand::RegisterDeviceFormat { correlation_id, .. }
+        | DbCommand::ListDeviceFormats { correlation_id, .. }
+        | DbCommand::InsertDevicePayloads { correlation_id, .. }
+        | DbCommand::ListDevicePayloads { correlation_id, .. }
         | DbCommand::RawQuery { correlation_id, .. } => correlation_id.as_deref(),
         DbCommand::ElevatedQuery { correlation_id, .. } => Some(correlation_id.as_str()),
         _ => None,
@@ -273,6 +277,12 @@ fn correlation_of_result(result: &DbResult) -> Option<&str> {
         | DbResult::PetalRenderDistanceLoaded { correlation_id, .. }
         | DbResult::LocalDeviceEnrolled { correlation_id, .. }
         | DbResult::LocalDeviceRevoked { correlation_id, .. }
+        | DbResult::DeviceFormatRegistered { correlation_id, .. }
+        | DbResult::DeviceFormatRejected { correlation_id, .. }
+        | DbResult::DeviceFormatsListed { correlation_id, .. }
+        | DbResult::DevicePayloadsInserted { correlation_id, .. }
+        | DbResult::DevicePayloadsRejected { correlation_id, .. }
+        | DbResult::DevicePayloadsListed { correlation_id, .. }
         | DbResult::QueryResult { correlation_id, .. } => correlation_id.as_deref(),
         DbResult::QueryFailed { correlation_id, .. }
         | DbResult::PetalTerrainSetFailed { correlation_id, .. }
@@ -330,6 +340,10 @@ enum ReplyKind {
     RenderDistance,
     /// `EnrolLocalDevice`/`RevokeLocalDevice` replies (`LocalDeviceEnrolled`/`LocalDeviceRevoked`).
     DeviceEnrolment,
+    /// `RegisterDeviceFormat`/`ListDeviceFormats` replies (CDL-SPEC10 A3).
+    DeviceFormat,
+    /// `InsertDevicePayloads`/`ListDevicePayloads` replies (CDL-SPEC10 A3).
+    DevicePayload,
 }
 
 /// The reply family `cmd` produces, or `None` when the command has no reply on
@@ -380,6 +394,8 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
         SetScopeHidden { .. } => ReplyKind::ScopeHidden,
         SetPetalRenderDistance { .. } | GetPetalRenderDistance { .. } => ReplyKind::RenderDistance,
         EnrolLocalDevice { .. } | RevokeLocalDevice { .. } => ReplyKind::DeviceEnrolment,
+        RegisterDeviceFormat { .. } | ListDeviceFormats { .. } => ReplyKind::DeviceFormat,
+        InsertDevicePayloads { .. } | ListDevicePayloads { .. } => ReplyKind::DevicePayload,
         _ => return None,
     })
 }
@@ -435,6 +451,12 @@ fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
         ScopeHiddenSet { .. } => ReplyKind::ScopeHidden,
         PetalRenderDistanceLoaded { .. } => ReplyKind::RenderDistance,
         LocalDeviceEnrolled { .. } | LocalDeviceRevoked { .. } => ReplyKind::DeviceEnrolment,
+        DeviceFormatRegistered { .. }
+        | DeviceFormatRejected { .. }
+        | DeviceFormatsListed { .. } => ReplyKind::DeviceFormat,
+        DevicePayloadsInserted { .. }
+        | DevicePayloadsRejected { .. }
+        | DevicePayloadsListed { .. } => ReplyKind::DevicePayload,
         _ => return None,
     })
 }
@@ -839,6 +861,7 @@ mod tests {
             verse_id: None,
             source_did: "did:key:z6MkTest".to_string(),
             readings: Vec::new(),
+            source_class: fe_sdk::source_class::SourceClass::Device,
             correlation_id: correlation_id.map(str::to_string),
         }
     }
@@ -999,6 +1022,75 @@ mod tests {
         assert!(matches!(
             revoke_rx.try_recv(),
             Ok(DbResult::RequestFailed { ref correlation_id, .. }) if correlation_id == "api-revoke"
+        ));
+    }
+
+    /// CDL-SPEC10 A3 (critic C2/AC-35f): a `device_format` waiter never
+    /// receives a `device_payload` reply (and vice versa) even though both
+    /// families reached `app.rs` in the same change — distinct `ReplyKind`s
+    /// keep the two command surfaces from cross-delivering.
+    #[test]
+    fn device_format_and_device_payload_replies_reach_only_their_own_waiter() {
+        let mut pending = PendingApiRequests::default();
+        let (format_tx, mut format_rx) = tokio::sync::oneshot::channel();
+        let (payload_tx, mut payload_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(
+            &DbCommand::RegisterDeviceFormat {
+                verse_id: "v".to_string(),
+                descriptor: fe_sdk::device_format::DeviceFormatDescriptor {
+                    format_id: "acme.thermo/frame@1".to_string(),
+                    mime: "application/octet-stream".to_string(),
+                    schema: None,
+                    description: String::new(),
+                },
+                declared_by: "did:key:z6MkManager".to_string(),
+                correlation_id: Some("api-format".to_string()),
+            },
+            format_tx,
+        );
+        pending.enqueue_for(
+            &DbCommand::InsertDevicePayloads {
+                petal_id: "p".to_string(),
+                verse_id: None,
+                source_did: "did:key:z6MkEditor".to_string(),
+                source_class: fe_sdk::source_class::SourceClass::Device,
+                payload: crate::messages::DevicePayloadInput {
+                    node_id: "n1".to_string(),
+                    format_id: "acme.thermo/frame@1".to_string(),
+                    asset_ids: vec!["a1".to_string()],
+                    recorded_at: None,
+                    payload_id: None,
+                },
+                correlation_id: Some("api-payload".to_string()),
+            },
+            payload_tx,
+        );
+        // A device_payload reply never satisfies the device_format waiter.
+        assert!(!pending.try_deliver(DbResult::DevicePayloadsInserted {
+            petal_id: "p".to_string(),
+            payload_id: "pay-1".to_string(),
+            asset_ids: Vec::new(),
+            correlation_id: Some("api-format".to_string()),
+        }));
+        assert!(format_rx.try_recv().is_err(), "a cross-family reply leaked");
+        assert!(pending.try_deliver(DbResult::DeviceFormatRegistered {
+            verse_id: "v".to_string(),
+            format_id: "acme.thermo/frame@1".to_string(),
+            correlation_id: Some("api-format".to_string()),
+        }));
+        assert!(matches!(
+            format_rx.try_recv(),
+            Ok(DbResult::DeviceFormatRegistered { correlation_id: Some(ref c), .. }) if c == "api-format"
+        ));
+        assert!(pending.try_deliver(DbResult::DevicePayloadsInserted {
+            petal_id: "p".to_string(),
+            payload_id: "pay-1".to_string(),
+            asset_ids: vec!["a1".to_string()],
+            correlation_id: Some("api-payload".to_string()),
+        }));
+        assert!(matches!(
+            payload_rx.try_recv(),
+            Ok(DbResult::DevicePayloadsInserted { correlation_id: Some(ref c), .. }) if c == "api-payload"
         ));
     }
 

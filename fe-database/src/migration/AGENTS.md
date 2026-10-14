@@ -50,6 +50,13 @@ to `OTHER_DISPATCHED_MUTATION_KINDS` (or to `D_CL20_MUTATION_KINDS` if it is
 one of the deferred multi-row kinds) in the same change — there is
 intentionally no automated check that would catch a missed one yet.
 
+**Pre-existing drift, fixed (CDL-SPEC10 A3).** `InsertIotReadings` was a
+dispatched mutation kind (`lib.rs`'s dispatch arm, `fe-runtime/src/messages.rs`)
+since M2/F7, but was never added here — exactly the drift this rule exists to
+prevent. This slice adds it, alongside its own two new mutating variants
+(`RegisterDeviceFormat`, `InsertDevicePayloads` — `ListDeviceFormats` and
+`ListDevicePayloads` are read-only and correctly excluded).
+
 **Nothing in the live product is ever `Mapped`.** `register_mapped` refuses all
 six D-CL20 kinds unconditionally (§4.2.5: inventing a per-kind canonical
 schema for one of them before its approved contract exists is forbidden, not

@@ -10,7 +10,7 @@ use fe_database::handlers::iot_reading::{
     insert_readings_with_replication, IotIngestError, IotReadingInput,
 };
 use fe_identity::api_token::ApiClaims;
-use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
+use fe_runtime::messages::{ApiCommand, DbCommand, DbResult, SourceClass};
 use serde::Deserialize;
 
 use crate::auth::require_role;
@@ -106,6 +106,8 @@ pub async fn ingest_readings(
             &petal_id,
             verse_id.as_deref(),
             &claims.sub,
+            // See the fallback arm below for why this is a fixed default.
+            SourceClass::Device,
             &req.readings,
             state.blob_store.as_ref(),
             state.replication_tx.as_ref(),
@@ -120,7 +122,8 @@ pub async fn ingest_readings(
             Err(
                 e @ (IotIngestError::UnknownAnchor(_)
                 | IotIngestError::InvalidTimestamp(_)
-                | IotIngestError::EmptyMetric),
+                | IotIngestError::EmptyMetric
+                | IotIngestError::UnknownPayload(_)),
             ) => err(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
             Err(IotIngestError::Db(e)) => {
                 tracing::error!(petal_id, error = %e, "iot ingest DB write failed");
@@ -151,6 +154,12 @@ pub async fn ingest_readings(
                 verse_id,
                 source_did: claims.sub.clone(),
                 readings: req.readings,
+                // REST ingest is a field-device/connector caller by
+                // construction (A4 widens this to a caller-chosen class once
+                // device/connector/manual routes exist — SPEC-10 §7.1 rule 6
+                // forbids inferring it from `source_did`, never forbids a
+                // sound default for an existing single-class route).
+                source_class: SourceClass::Device,
                 correlation_id: Some(correlation_id.clone()),
             };
             if state

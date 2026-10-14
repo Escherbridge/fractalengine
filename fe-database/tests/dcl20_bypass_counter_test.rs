@@ -447,9 +447,13 @@ async fn a_ktx2_refused_import_still_records_its_bypass() {
         position: [0.0, 0.0, 0.0],
     });
     match h.recv() {
+        // Critic tick 7 (AC-35h): the fixture file is named `ktx2.glb` and
+        // the error message quotes the path, so the `ktx2` half of this OR
+        // passed for ANY refusal of this file, not only the RUSTSEC one —
+        // narrowed to the one assertion that actually pins the guard.
         DbResult::Error(e) => assert!(
-            e.contains("RUSTSEC-2026-0344") || e.to_lowercase().contains("ktx2"),
-            "the refusal must still name the KTX2 guard, got: {e}"
+            e.contains("RUSTSEC-2026-0344"),
+            "the refusal must name the KTX2 guard's advisory, got: {e}"
         ),
         other => panic!("expected the KTX2 guard's Error, got {other:?}"),
     }

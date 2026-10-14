@@ -175,6 +175,7 @@ mod tests {
             recorded_at_ms: ms,
             hlc_timestamp: ms,
             source_did: "did:key:z6MkSeed".into(),
+            payload_id: None,
         }
     }
 

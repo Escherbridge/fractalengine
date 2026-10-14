@@ -134,6 +134,7 @@ fn reading(node_id: &str, metric: &str, value: f64, recorded_at: Option<&str>) -
         value,
         units: "C".to_string(),
         recorded_at: recorded_at.map(str::to_string),
+        payload_id: None,
     }
 }
 
@@ -571,6 +572,7 @@ fn fallback_harness(db: Db, insert_behaviour: InsertBehaviour) -> FallbackHarnes
                     verse_id,
                     source_did,
                     readings,
+                    source_class,
                     correlation_id,
                 } => {
                     observed_for_thread
@@ -595,6 +597,7 @@ fn fallback_harness(db: Db, insert_behaviour: InsertBehaviour) -> FallbackHarnes
                                     &petal_id,
                                     verse_id.as_deref(),
                                     &source_did,
+                                    source_class,
                                     &readings,
                                     Some(&blob),
                                     Some(&repl_tx),
