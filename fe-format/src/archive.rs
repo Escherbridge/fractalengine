@@ -254,11 +254,17 @@ impl HexonArchive {
     /// hexons. Optional sections (`license.json`, `entities/`, `terrain/`,
     /// `schema.json`) default to empty/None if missing.
     pub fn import(bytes: &[u8]) -> Result<HexonArchiveData> {
+        Self::import_with_budget(bytes, limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES)
+    }
+
+    /// [`Self::import`] under a caller-chosen total decompression budget
+    /// (never above [`limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES`]).
+    pub fn import_with_budget(bytes: &[u8], total_budget: u64) -> Result<HexonArchiveData> {
         let cursor = Cursor::new(bytes);
         let mut archive = zip::ZipArchive::new(cursor).context("failed to open ZIP archive")?;
         limits::check_entry_count(archive.len())?;
         // One shared decompression budget for the whole import (zip-bomb guard).
-        let mut budget = limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES;
+        let mut budget = total_budget.min(limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES);
         let json = limits::MAX_JSON_ENTRY_BYTES;
         let binary = limits::MAX_ENTRY_UNCOMPRESSED_BYTES;
 
@@ -597,6 +603,20 @@ mod decompression_limit_tests {
         assert_eq!(
             data.gpx_files,
             vec![("run.gpx".to_string(), b"<gpx/>".to_vec())]
+        );
+    }
+
+    /// S8b: a caller-chosen budget (the streamed-bundle path) refuses an
+    /// archive the default 1 GiB budget would accept.
+    #[test]
+    fn a_smaller_import_budget_refuses_what_the_default_accepts() {
+        let bytes = bomb_hexon("assets/big", 4 << 20);
+        HexonArchive::import(&bytes).expect("within the default budget");
+        let err =
+            HexonArchive::import_with_budget(&bytes, 1 << 20).expect_err("over a 1 MiB budget");
+        assert!(
+            format!("{err:#}").contains(DECOMPRESSION_LIMIT_ERROR),
+            "unexpected error: {err:#}"
         );
     }
 }

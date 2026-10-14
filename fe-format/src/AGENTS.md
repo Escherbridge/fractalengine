@@ -12,6 +12,13 @@ of `ExportNode`s) and generic hexons (models, materials, terrain, ...).
 `HexonArchiveData` is the fully-extracted view: manifest, entry catalog,
 license, nodes, field defs, and schema.
 
+`import` decodes under the 1 GiB total budget (`limits.rs`);
+`import_with_budget(bytes, budget)` takes a smaller one (never larger). S8b:
+fe-terrain decodes peer-supplied streamed bundles under 64 MiB, because
+several stay resident at once. `is_safe_path_id` is re-exported from
+fe-runtime (`fe-runtime/src/AGENTS.md` §safe-id) so fe-terrain can guard
+ids without a fe-runtime edge.
+
 ## §archive-index (`archive_index.rs`)
 
 `HexonArchiveIndex` is THE lazy `.hexon` reader (critic C5: PAS-P5 extends it

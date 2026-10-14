@@ -53,6 +53,22 @@ pub fn hash_seq_root(children: &[Hash32]) -> Hash32 {
     content_hash(&encode_hash_seq(children))
 }
 
+/// The byte cap for a HashSeq root blob of at most `max_children` children.
+pub fn hash_seq_byte_cap(max_children: usize) -> u64 {
+    (max_children as u64).saturating_mul(32)
+}
+
+/// Refuse a blob of `len` bytes past `max_bytes` (the shared transport size guard).
+pub fn ensure_within_cap(hash: &Hash32, len: u64, max_bytes: u64) -> Result<()> {
+    if len > max_bytes {
+        bail!(
+            "blob {} is {len} bytes, over the {max_bytes}-byte cap",
+            hash_to_hex(hash)
+        );
+    }
+    Ok(())
+}
+
 /// Decode a HashSeq blob; `None` when its length is not a multiple of 32.
 pub fn decode_hash_seq(bytes: &[u8]) -> Option<Vec<Hash32>> {
     if !bytes.len().is_multiple_of(32) {
@@ -77,10 +93,16 @@ pub trait BlobTransport: Send + Sync {
     async fn delete_tag(&self, name: &str) -> Result<()>;
     /// All tags whose name starts with `prefix`, as `(name, root)`.
     async fn list_tags(&self, prefix: &str) -> Result<Vec<(String, Hash32)>>;
-    /// Fetch only the HashSeq root blob from `provider`; returns its children.
-    async fn fetch_hash_seq(&self, provider: &ProviderRef, root: Hash32) -> Result<Vec<Hash32>>;
-    /// Fetch one blob from `provider` (local copy first when complete).
-    async fn fetch(&self, provider: &ProviderRef, hash: Hash32) -> Result<Bytes>;
+    /// Fetch only the HashSeq root blob from `provider` (refused past `max_children`); returns its children.
+    async fn fetch_hash_seq(
+        &self,
+        provider: &ProviderRef,
+        root: Hash32,
+        max_children: usize,
+    ) -> Result<Vec<Hash32>>;
+    /// Fetch one blob from `provider` (local copy first), refused past `max_bytes`
+    /// before it is downloaded wherever the transport can learn the size first.
+    async fn fetch(&self, provider: &ProviderRef, hash: Hash32, max_bytes: u64) -> Result<Bytes>;
     /// The complete local copy of `hash`, if any.
     async fn read_local(&self, hash: Hash32) -> Result<Option<Bytes>>;
     /// Size of the complete local copy of `hash`, if any.
@@ -206,8 +228,8 @@ impl InMemoryTransport {
         lock(&self.peer.blobs).get(hash).cloned()
     }
 
-    /// Remote fetch: the provider's served bytes, cached locally only when they verify.
-    fn fetch_remote(&self, provider: &ProviderRef, hash: Hash32) -> Result<Bytes> {
+    /// Remote fetch: the provider's served bytes (refused past `max_bytes`), cached locally only when they verify.
+    fn fetch_remote(&self, provider: &ProviderRef, hash: Hash32, max_bytes: u64) -> Result<Bytes> {
         if provider.as_str() == self.name {
             bail!("cannot fetch from self ({})", self.name);
         }
@@ -215,6 +237,7 @@ impl InMemoryTransport {
             .network
             .peer(provider)?
             .serve(provider.as_str(), &hash)?;
+        ensure_within_cap(&hash, bytes.len() as u64, max_bytes)?;
         if content_hash(&bytes) == hash {
             lock(&self.peer.blobs).insert(hash, bytes.clone());
         }
@@ -250,19 +273,26 @@ impl BlobTransport for InMemoryTransport {
             .collect())
     }
 
-    async fn fetch_hash_seq(&self, provider: &ProviderRef, root: Hash32) -> Result<Vec<Hash32>> {
-        let bytes = match self.local(&root) {
-            Some(bytes) => bytes,
-            None => self.fetch_remote(provider, root)?,
-        };
+    async fn fetch_hash_seq(
+        &self,
+        provider: &ProviderRef,
+        root: Hash32,
+        max_children: usize,
+    ) -> Result<Vec<Hash32>> {
+        let bytes = self
+            .fetch(provider, root, hash_seq_byte_cap(max_children))
+            .await?;
         decode_hash_seq(&bytes)
             .ok_or_else(|| anyhow!("blob {} is not a HashSeq", hash_to_hex(&root)))
     }
 
-    async fn fetch(&self, provider: &ProviderRef, hash: Hash32) -> Result<Bytes> {
+    async fn fetch(&self, provider: &ProviderRef, hash: Hash32, max_bytes: u64) -> Result<Bytes> {
         match self.local(&hash) {
-            Some(bytes) => Ok(bytes),
-            None => self.fetch_remote(provider, hash),
+            Some(bytes) => {
+                ensure_within_cap(&hash, bytes.len() as u64, max_bytes)?;
+                Ok(bytes)
+            }
+            None => self.fetch_remote(provider, hash, max_bytes),
         }
     }
 
@@ -289,6 +319,9 @@ mod tests {
         assert_eq!(decode_hash_seq(&[]).unwrap(), Vec::<Hash32>::new());
     }
 
+    /// A generous per-fetch cap for tests that are not about size limits.
+    const CAP: u64 = 1 << 20;
+
     #[tokio::test]
     async fn a_peer_fetches_what_another_published_and_hooks_change_what_is_served() {
         let network = InMemoryNetwork::new();
@@ -298,7 +331,7 @@ mod tests {
         let root = alice.add_hash_seq(&[hash]).await.unwrap();
 
         assert_eq!(
-            bob.fetch_hash_seq(&alice.provider_ref(), root)
+            bob.fetch_hash_seq(&alice.provider_ref(), root, 8)
                 .await
                 .unwrap(),
             vec![hash]
@@ -306,7 +339,7 @@ mod tests {
         alice.tamper(content_hash(b"other"), Bytes::from_static(b"forged"));
         alice.withhold(content_hash(b"missing"));
         assert_eq!(
-            bob.fetch(&alice.provider_ref(), hash).await.unwrap(),
+            bob.fetch(&alice.provider_ref(), hash, CAP).await.unwrap(),
             Bytes::from_static(b"tile bytes")
         );
         assert!(
@@ -316,7 +349,7 @@ mod tests {
 
         let carol = network.transport("carol");
         alice.tamper(hash, Bytes::from_static(b"forged"));
-        let forged = carol.fetch(&alice.provider_ref(), hash).await.unwrap();
+        let forged = carol.fetch(&alice.provider_ref(), hash, CAP).await.unwrap();
         assert_eq!(forged, Bytes::from_static(b"forged"));
         assert!(
             !carol.has_local(&hash),
@@ -324,14 +357,44 @@ mod tests {
         );
 
         alice.withhold(hash);
-        assert!(carol.fetch(&alice.provider_ref(), hash).await.is_err());
+        assert!(carol.fetch(&alice.provider_ref(), hash, CAP).await.is_err());
         alice.repair(hash);
         alice.set_online(false);
-        assert!(carol.fetch(&alice.provider_ref(), hash).await.is_err());
+        assert!(carol.fetch(&alice.provider_ref(), hash, CAP).await.is_err());
         alice.set_online(true);
         assert_eq!(
-            carol.fetch(&alice.provider_ref(), hash).await.unwrap(),
+            carol.fetch(&alice.provider_ref(), hash, CAP).await.unwrap(),
             Bytes::from_static(b"tile bytes")
+        );
+    }
+
+    /// S8b: a blob over the caller's cap is refused and never lands in the local store.
+    #[tokio::test]
+    async fn an_oversized_blob_is_refused_and_never_stored() {
+        let network = InMemoryNetwork::new();
+        let alice = network.transport("alice");
+        let bob = network.transport("bob");
+        let big = alice.add(Bytes::from(vec![7u8; 64])).await.unwrap();
+        let err = bob
+            .fetch(&alice.provider_ref(), big, 63)
+            .await
+            .expect_err("a 64-byte blob over a 63-byte cap is refused");
+        assert!(err.to_string().contains("cap"), "{err:#}");
+        assert!(!bob.has_local(&big), "refused bytes never enter the store");
+
+        let children: Vec<Hash32> = (0..3u8).map(|i| [i; 32]).collect();
+        let root = alice.add_hash_seq(&children).await.unwrap();
+        assert!(
+            bob.fetch_hash_seq(&alice.provider_ref(), root, 2)
+                .await
+                .is_err(),
+            "a HashSeq with more children than allowed is refused"
+        );
+        assert_eq!(
+            bob.fetch_hash_seq(&alice.provider_ref(), root, 3)
+                .await
+                .unwrap(),
+            children
         );
     }
 

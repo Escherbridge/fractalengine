@@ -479,16 +479,15 @@ fn is_valid_inbound_render_distance(value: &serde_json::Value) -> bool {
     })
 }
 
-/// Inbound `petal.terrain` strictest-reader check (S6 step 8, critic C7):
-/// fe-database has no fe-terrain dependency, so this is a STRUCTURAL check
-/// only — a JSON object under a byte cap whose `tileset_hexon_uris` (if
-/// present) is an array of strings in the hexon-id charset (S1 step 6,
-/// `fe-terrain/src/tiles/store.rs::is_safe_hexon_id`, duplicated here for the
-/// same layering reason). `terrain_bridge::terrain_config_from_petal_json`
-/// is the second line of defence that actually parses the `TerrainConfig`.
+/// Inbound `petal.terrain` strictest-reader check (S6 step 8, critic C7;
+/// S8b): fe-database has no fe-terrain dependency, so this is a STRUCTURAL
+/// check — see `src/AGENTS.md` §handlers "Petal terrain trust".
+/// `terrain_bridge::terrain_config_from_petal_json` is the second line of
+/// defence that actually parses the `TerrainConfig`.
 const MAX_INBOUND_PETAL_TERRAIN_BYTES: usize = 64 * 1024;
 
-fn is_valid_inbound_petal_terrain(terrain: &serde_json::Value) -> bool {
+/// Whether `terrain` is safe for the strictest reader; the local writer (`SetPetalTerrain`) applies it too.
+pub(crate) fn is_valid_inbound_petal_terrain(terrain: &serde_json::Value) -> bool {
     let Some(obj) = terrain.as_object() else {
         return false;
     };
@@ -498,27 +497,27 @@ fn is_valid_inbound_petal_terrain(terrain: &serde_json::Value) -> bool {
     if bytes.len() > MAX_INBOUND_PETAL_TERRAIN_BYTES {
         return false;
     }
-    match obj.get("tileset_hexon_uris") {
+    let uris_ok = match obj.get("tileset_hexon_uris") {
         None => true,
         Some(v) => match v.as_array() {
             Some(arr) => arr
                 .iter()
-                .all(|x| x.as_str().is_some_and(is_safe_hexon_id_charset)),
+                .all(|x| x.as_str().is_some_and(fe_runtime::safe_id::is_safe_path_id)),
             None => false,
         },
-    }
-}
-
-/// Mirrors `fe-terrain/src/tiles/store.rs::is_safe_hexon_id`'s charset guard
-/// (campaign plan S1 step 6) — fe-database cannot depend on fe-terrain, so
-/// the two must be kept in lock-step by hand.
-fn is_safe_hexon_id_charset(id: &str) -> bool {
-    !id.is_empty()
-        && id != "."
-        && id != ".."
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+    };
+    // S8b: a filesystem path read by the disk tile cache — relative safe components only.
+    let cache_dir_ok = match obj.get("cache_dir") {
+        None | Some(serde_json::Value::Null) => true,
+        Some(v) => v.as_str().is_some_and(|dir| {
+            !dir.is_empty() && dir.split('/').all(fe_runtime::safe_id::is_safe_path_id)
+        }),
+    };
+    // S8b: which environment variable a node reads a secret from is never a peer's choice.
+    let api_key_env_ok = obj
+        .get("elevation_api_key_env")
+        .is_none_or(serde_json::Value::is_null);
+    uris_ok && cache_dir_ok && api_key_env_ok
 }
 
 /// Render a GeoJSON `coordinates` value as an inline SurrealQL numeric

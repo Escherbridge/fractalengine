@@ -20,6 +20,15 @@ pub(crate) async fn set_petal_terrain_handler(
     repl_tx: Option<&ReplicationSender>,
     blob_store: &BlobStoreHandle,
 ) -> anyhow::Result<Option<serde_json::Value>> {
+    // S8b: the writer satisfies the strictest reader — a terrain peers would
+    // deny on receipt is refused here too, before the op-log or any mutation.
+    if let Some(config) = terrain {
+        if !crate::handlers::replicated_row::is_valid_inbound_petal_terrain(config) {
+            anyhow::bail!(
+                "SetPetalTerrain: terrain fails the shared shape check (tileset ids, cache_dir, size)"
+            );
+        }
+    }
     let entry = OpLogEntry {
         lamport_clock: 0,
         hlc_timestamp: String::new(),
@@ -314,6 +323,12 @@ mod tests {
             serde_json::json!({ "tileset_hexon_uris": [42] }),
             serde_json::json!({ "tileset_hexon_uris": ["../escape"] }),
             serde_json::json!({ "tileset_hexon_uris": ["ok"], "padding": "x".repeat(70_000) }),
+            // S8b: the strictest reader's other untrusted fields.
+            serde_json::json!({ "tileset_hexon_uris": ["CON"] }),
+            serde_json::json!({ "cache_dir": "../../outside" }),
+            serde_json::json!({ "cache_dir": "C:/Windows/System32" }),
+            serde_json::json!({ "cache_dir": "/etc" }),
+            serde_json::json!({ "elevation_api_key_env": "AWS_SECRET_ACCESS_KEY" }),
         ];
         for bad in bad_terrains {
             let peer_db = db_with_full_hierarchy("p1").await;
@@ -344,5 +359,35 @@ mod tests {
                 "{bad:?} must be denied"
             );
         }
+    }
+
+    /// S8b: the LOCAL writer satisfies the strictest reader — a terrain every
+    /// peer would deny (here: one choosing which env var a node reads a
+    /// secret from) is refused before the op-log, the row, or replication.
+    #[tokio::test]
+    async fn a_local_terrain_write_peers_would_deny_is_refused() {
+        use fe_runtime::blob_store::mock::MockBlobStore;
+
+        let db = db_with_full_hierarchy("p1").await;
+        let blob_store: BlobStoreHandle = std::sync::Arc::new(MockBlobStore::new());
+        let (repl_tx, repl_rx) = crossbeam::channel::bounded(4);
+        for bad in [
+            serde_json::json!({ "elevation_api_key_env": "AWS_SECRET_ACCESS_KEY" }),
+            serde_json::json!({ "cache_dir": "../../outside" }),
+        ] {
+            let err = set_petal_terrain_handler(&db, "p1", Some(&bad), Some(&repl_tx), &blob_store)
+                .await
+                .expect_err("refused");
+            assert!(err.to_string().contains("shape check"), "{err:#}");
+        }
+        assert_eq!(get_petal_terrain_handler(&db, "p1").await.unwrap(), None);
+        assert!(repl_rx.try_recv().is_err(), "nothing was replicated");
+
+        let good =
+            serde_json::json!({ "cache_dir": "terrain_cache", "tileset_hexon_uris": ["ts-1"] });
+        let stored = set_petal_terrain_handler(&db, "p1", Some(&good), Some(&repl_tx), &blob_store)
+            .await
+            .expect("a well-formed terrain still writes");
+        assert_eq!(stored, Some(good));
     }
 }

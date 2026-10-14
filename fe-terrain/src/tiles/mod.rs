@@ -21,7 +21,9 @@ pub use bundle::{
 pub use cache::*;
 pub use composite::{CompositeTileSource, LayerHit, LoadedTile, SplatHit, TileLoader, TileOrigin};
 pub use elevation::*;
-pub use hexon_source::{HexonTileSource, Probe, ResidentTile, TileKey, TileLayer};
+pub use hexon_source::{
+    HexonTileSource, Probe, ResidentTile, TileKey, TileLayer, STREAMED_BUNDLE_DECODE_BUDGET,
+};
 pub use lod::*;
 pub use regions::*;
 pub use registry::{TilesetInfo, TilesetRegistry};

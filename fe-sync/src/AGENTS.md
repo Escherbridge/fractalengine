@@ -1095,7 +1095,9 @@ a download root):
   at once, tries providers in candidate order, and reports per-chunk
   `TransferEvent`s plus a `DownloadReport`.
 - `pending_downloads` / `resume_all` re-verify files and fetch only missing
-  seqs; already complete downloads are listed, not re-run. `cancel` deletes
+  seqs; already complete downloads are listed, not re-run, and only a ledger
+  a full `download` marked (`full-download`) is resumed — a streamed-bundle
+  cache is never grown into a full download (§tileset-security). `cancel` deletes
   the ledger, the files and the download tag. A completed download stays on
   disk until `cancel` (the host discards it after install; S7 keeps it as a
   streaming cache).
@@ -1113,10 +1115,10 @@ path component and a tag suffix, so `TilesetTransfer::download_dir` is the
 single choke point. Every public method validates the id through it before
 any join or tag write: the S1 charset `[A-Za-z0-9_.-]`, non-empty, not `.`/`..`,
 at most 128 bytes, and no Windows device stem (`CON`, `NUL`, `COM1`, …). A
-refused id is `TransferError::UnsafeTilesetId` and nothing is touched. Size
-caps (`MAX_INDEX_BYTES`, `MAX_CHUNK_BYTES`, `MAX_HASH_SEQ_CHILDREN`) are
-checked after a fetch, so an oversized advertised blob is refused before it
-reaches disk. On iroh it can still land in the blob store first (S8b scope).
+refused id is `TransferError::UnsafeTilesetId` and nothing is touched. The
+guard itself is the shared `fe_runtime::safe_id::is_safe_path_id`
+(fe-terrain's install path uses the same function). Size caps are enforced
+before a blob is downloaded — see §tileset-security.
 All filesystem work runs on `spawn_blocking` (§sync-thread-blocking-io / NFR-3).
 
 ### Sync-thread wiring (PAS-P3 S3, `sync_thread.rs`)
@@ -1172,12 +1174,10 @@ request with no prior meta resolution, which no caller does today.
   pattern: `tileset_ad_is_authenticated(direct, claimed_provider_addr, from)`
   is true only when the delivery was direct AND the ad's own
   `provider_addr` parses to the authenticated sender's `EndpointId`.
-  Unauthenticated ads still record (ordered after authenticated ones by
-  `TilesetProviderMap::record`, and an authenticated re-ad upgrades a
-  provider in place but a later unauthenticated one never downgrades it) —
-  they are hints that can only affect try-order, never skip the per-bundle
-  BLAKE3 check `TilesetTransfer` runs regardless (Risk 1 in the campaign
-  plan — the real fix is D-76 D2 in PAS-P5).
+  Unauthenticated ads still record as separate hint entries — they can never
+  rewrite what an authenticated ad recorded (§tileset-security), and they
+  never skip the per-bundle BLAKE3 check `TilesetTransfer` runs regardless
+  (Risk 1 in the campaign plan — the real fix is D-76 D2 in PAS-P5).
 - The dead three-field `TilesetAdvertisement` struct is gone; `TilesetAd`
   (tagged `kind: "tileset_ad"`, distinct from `ComputeEnvelope`'s `type` tag
   so the two decoders can never collide on one topic) is the only wire
@@ -1191,3 +1191,70 @@ request with no prior meta resolution, which no caller does today.
 logs one unconditional `info!` before its existing problem/no-problem
 branch, so the headless relay-health script has a reliable info-level line
 to grep in every mode (`Disabled` included), not only the non-problem ones.
+
+### §tileset-security (PAS-P3P4 S8b adversarial review, 2026-10-14)
+
+What a hostile verse member (or anyone relaying on a verse topic) can send,
+and what stops it. Each guard has a named regression test.
+
+- **Provider-map poisoning** (mandatory finding #1). `TilesetProviderMap`
+  entries are keyed `(verse, provider, root)`. A relayed ad can only ADD a
+  hint entry; it is refused outright when it names a provider that vouched
+  for itself directly, so it can never replace an authenticated root.
+  `root_for` answers the newest authenticated root, else the newest hint
+  (logged as such in `resolve_providers_and_root`); `candidates` returns
+  only providers that advertised THAT root. Test:
+  `a_relayed_ad_cannot_replace_an_authenticated_root` (a real download
+  fetches A's bytes).
+- **Verse binding.** Every entry remembers the verse topic it arrived on;
+  `CloseVerseReplica` calls `forget_verse`, so a verse this node left stops
+  feeding it providers.
+- **Ad storms.** At most `MAX_TRACKED_TILESETS` (1024) ids and
+  `MAX_PROVIDERS_PER_TILESET` (16) entries per id; a full map refuses new
+  hint-only ids and evicts the stalest hint-only id for an authenticated
+  one. An ad with an unsafe id or an undialable provider is dropped before
+  it costs map space or a UI event. Test: `tileset_ads_are_verse_bound_validated_and_capped`.
+- **Dialing.** A wire-supplied `ProviderRef` is capped at 4 KiB and
+  `sanitize_provider_addr` keeps only its endpoint id, IP addresses and
+  relay URLs already in this node's relay map (`with_allowed_relays`, fed
+  from `RelayConfig`). A forged ad can never make this node open an HTTPS
+  connection to an arbitrary URL (SSRF). Test:
+  `a_provider_address_keeps_only_trusted_relays`.
+- **Size caps before download.** `BlobTransport::fetch`/`fetch_hash_seq`
+  take the caller's cap. `IrohBlobTransport` first asks the provider for
+  the blob's BAO-verified size (`get_verified_size`: the last chunk's proof
+  binds the size to the hash) and refuses an over-cap blob before any of
+  its content enters the fs store. `TransferLimits` (per service; tests use
+  small ones) sets the bundle cap (64 MiB), the index cap (16 MiB) and the
+  total-per-download cap (`MAX_DOWNLOAD_BYTES`, 2 GiB, since an install caps
+  at 1 GiB decoded); `MAX_HASH_SEQ_CHILDREN` is 1 + 65 536. An over-cap
+  download stops spawning fetches and returns `DownloadTooLarge` with no
+  `Complete`. Tests: `an_oversized_bundle_is_refused_and_never_persisted`,
+  `a_download_over_its_total_byte_cap_stops_without_completing`, and the
+  loopback over-cap assert in `iroh_transport_round_trips_a_hash_seq_on_loopback`.
+- **Ledger tampering.** `download.json` is size-capped (8 MiB), its bundle
+  count is capped, and it must still hash to its root. A tampered ledger
+  is skipped, so the providers it names are never dialed. `resume_all`
+  logs and skips a failing download instead of aborting the others. Test:
+  `a_tampered_ledger_is_never_resumed`.
+- **Streamed caches stay caches.** `fetch_chunk` (the streamed path, which
+  a peer-replicated petal can trigger) never writes the `full-download`
+  marker, so a restart never turns it into a full download and auto-install.
+  Test: `a_streamed_bundle_cache_is_not_resumed_as_a_full_download`.
+
+**Risk 2 — blob-ALPN request filter: decided NOT to add one now.** The
+blobs ALPN (`docs_engine.rs`, `BlobsProtocol::new(&store, None)`) serves
+any hash to anyone who asks. The brief allows a filter only if it keys on
+verse membership, so `FetchBlob`/`two_peer_blob_exchange` and CDL-SPEC10
+A6's device-payload fetch keep working. A serving node has no
+authoritative membership to key on: roles do not replicate until role
+propagation (RP) lands, and a gossip-observed allowlist would be
+attacker-populated (anyone who knows a verse id can join its topic). iroh-docs
+also fetches entry content over this ALPN, so a wrong allowlist breaks
+replication, not just tilesets. Exposure stays "hash as capability": a
+blob is servable only to someone who already knows its 256-bit hash.
+Tileset roots are broadcast only on verse topics, and tilesets are meant
+to be shared there. Row-blob hashes live in replica entries that only
+namespace holders see. **Revisit trigger:** when RP replicates roles,
+intercept `RequestMode` with an `EventSender` that admits a connection
+whose `EndpointId` maps to a role in any open verse.

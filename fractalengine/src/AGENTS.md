@@ -609,8 +609,9 @@ fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
     `TilesetMetaReceived.meta_json` as a `TilesetBundleIndex` and installs a
     `StreamedTileSource` via `composite.add_streamed_source`, and hands each
     `ChunkReceived` THIS NODE requested (`state.chunk_requested`) to a
-    background thread (`std::fs::read` + `HexonTileSource::from_archive`,
-    never the Bevy main thread) reporting back over the
+    background thread (a size-capped read + `HexonTileSource::from_streamed_bundle`
+    under the 64 MiB streamed decode budget — S8b, peer bytes — never the
+    Bevy main thread) reporting back over the
     `StreamedBundleResultSender`/`StreamedBundleResults` channel (mirrors
     `HexonAssembleResultSender`/`HexonAssembleResults`).
   - `drain_streamed_bundle_results` applies finished decodes into the active
@@ -620,7 +621,16 @@ fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
     tile pointer-set, rebuilt every frame by `fetch_and_spawn_terrain_chunks`)
     and sends one `SyncCommand::RequestChunk` per not-yet-requested
     `(tileset_id, bundle_seq)`, bounded by `state.chunk_requested` so a still-
-    pending bundle is never re-requested every frame.
+    pending bundle is never re-requested every frame. **S8b demand-storm
+    guard:** a `ChunkFailed` for one of OUR requests starts an exponential
+    backoff (`streamed_retry_delay`: 2 s doubling to 120 s) in
+    `state.chunk_backoff`, cleared by that bundle's next `ChunkReceived`. A
+    bundle that fails fast (hash mismatch from a hostile provider, no
+    ledger) would otherwise be re-requested — and re-fetched — every frame.
+- **Install binding (S8b).** `assemble_and_install` passes the REQUESTED
+  `tileset_id` into `assemble_bundles_from_index_json`, which refuses a peer
+  index naming any other id (fe-terrain `src/AGENTS.md` §bundles "Assembly
+  trust").
   - All three register in `main.rs` alongside the existing
     `terrain_bridge`/`drain_hexon_*` systems; the channel is built the same
     way as the S4 assemble channel (`streamed_bundle_channel()`).

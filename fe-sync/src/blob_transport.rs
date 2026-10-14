@@ -1,7 +1,7 @@
 //! [`IrohBlobTransport`]: the iroh-blobs 0.103 implementation of
 //! `fe_runtime::blob_transport::BlobTransport` — see `src/AGENTS.md` §tileset-transfer.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -9,9 +9,12 @@ use anyhow::{anyhow, Context as _, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
 use fe_runtime::blob_store::hash_to_hex;
-use fe_runtime::blob_transport::{BlobTransport, Hash32, ProviderRef};
+use fe_runtime::blob_transport::{
+    ensure_within_cap, hash_seq_byte_cap, BlobTransport, Hash32, ProviderRef,
+};
 use futures_lite::StreamExt as _;
 use iroh::endpoint::Connection;
+use iroh::{EndpointAddr, RelayUrl, TransportAddr};
 use iroh_blobs::api::proto::BlobStatus;
 use iroh_blobs::api::{Store, TempTag};
 use iroh_blobs::hashseq::HashSeq;
@@ -23,6 +26,27 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 pub const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
 /// Bound on every local store request.
 pub const LOCAL_STORE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Longest accepted wire-supplied provider address (`EndpointAddr` JSON).
+pub const MAX_PROVIDER_ADDR_LEN: usize = 4 * 1024;
+
+/// A wire-supplied provider address reduced to what this node may dial: the
+/// endpoint id, its IP addresses, and only relay URLs this node already
+/// trusts — never an arbitrary URL (S8b; `src/AGENTS.md` §tileset-security).
+pub fn sanitize_provider_addr(
+    addr: EndpointAddr,
+    allowed_relays: &BTreeSet<RelayUrl>,
+) -> EndpointAddr {
+    let addrs = addr
+        .addrs
+        .into_iter()
+        .filter(|transport| match transport {
+            TransportAddr::Ip(_) => true,
+            TransportAddr::Relay(url) => allowed_relays.contains(url),
+            _ => false,
+        })
+        .collect();
+    EndpointAddr { id: addr.id, addrs }
+}
 
 /// Lock a mutex, recovering the data from a poisoned lock.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -47,6 +71,8 @@ pub struct IrohBlobTransport {
     endpoint: iroh::Endpoint,
     /// One cached blobs-ALPN connection per provider.
     connections: Mutex<HashMap<iroh::EndpointId, Connection>>,
+    /// Relay URLs a wire-supplied provider address may name (this node's relay map).
+    allowed_relays: BTreeSet<RelayUrl>,
     /// Temp tags holding freshly added blobs until a named tag covers them.
     pending: Mutex<HashMap<Hash32, TempTag>>,
 }
@@ -58,8 +84,15 @@ impl IrohBlobTransport {
             store,
             endpoint,
             connections: Mutex::new(HashMap::new()),
+            allowed_relays: BTreeSet::new(),
             pending: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Allow wire-supplied provider addresses to name these relays (the node's own relay map).
+    pub fn with_allowed_relays(mut self, relays: impl IntoIterator<Item = RelayUrl>) -> Self {
+        self.allowed_relays = relays.into_iter().collect();
+        self
     }
 
     /// Transport over a running [`crate::DocsStack`]'s blob store and endpoint.
@@ -74,15 +107,20 @@ impl IrohBlobTransport {
         ))
     }
 
-    /// Parse a wire-supplied provider address (only an `EndpointAddr` is accepted).
+    /// Parse a wire-supplied provider address (only a bounded `EndpointAddr` is accepted).
     pub fn parse_provider(provider: &ProviderRef) -> Result<iroh::EndpointAddr> {
+        if provider.as_str().len() > MAX_PROVIDER_ADDR_LEN {
+            return Err(anyhow!(
+                "provider address is over {MAX_PROVIDER_ADDR_LEN} bytes"
+            ));
+        }
         serde_json::from_str(provider.as_str())
             .map_err(|e| anyhow!("provider is not EndpointAddr JSON: {e}"))
     }
 
     /// A live blobs-ALPN connection to `provider` (cached, dialed under [`CONNECT_TIMEOUT`]).
     async fn connection(&self, provider: &ProviderRef) -> Result<Connection> {
-        let addr = Self::parse_provider(provider)?;
+        let addr = sanitize_provider_addr(Self::parse_provider(provider)?, &self.allowed_relays);
         let id = addr.id;
         if let Some(conn) = lock(&self.connections).get(&id) {
             if conn.close_reason().is_none() {
@@ -102,13 +140,28 @@ impl IrohBlobTransport {
     }
 
     /// Fetch `hash` (raw) from `provider` into the local store; local state is honoured.
-    async fn fetch_into_store(&self, provider: &ProviderRef, hash: Hash32) -> Result<Bytes> {
-        if let Some(bytes) = self.read_local(hash).await? {
-            return Ok(bytes);
+    ///
+    /// Asks for the blob's BAO-verified size first, so a blob over `max_bytes`
+    /// is refused before any of its content is downloaded.
+    async fn fetch_into_store(
+        &self,
+        provider: &ProviderRef,
+        hash: Hash32,
+        max_bytes: u64,
+    ) -> Result<Bytes> {
+        if let Some(size) = self.local_size(hash).await? {
+            ensure_within_cap(&hash, size, max_bytes)?;
+            if let Some(bytes) = self.read_local(hash).await? {
+                return Ok(bytes);
+            }
         }
         let conn = self.connection(provider).await?;
         let content = HashAndFormat::raw(Hash::from(hash));
         let fetched = bounded(FETCH_TIMEOUT, "fetching blob", async {
+            let (size, _) = iroh_blobs::get::request::get_verified_size(&conn, &Hash::from(hash))
+                .await
+                .map_err(|e| anyhow!("asking the blob size: {e}"))?;
+            ensure_within_cap(&hash, size, max_bytes)?;
             self.store
                 .remote()
                 .fetch(conn, content)
@@ -215,15 +268,22 @@ impl BlobTransport for IrohBlobTransport {
         .await
     }
 
-    async fn fetch_hash_seq(&self, provider: &ProviderRef, root: Hash32) -> Result<Vec<Hash32>> {
-        let bytes = self.fetch_into_store(provider, root).await?;
+    async fn fetch_hash_seq(
+        &self,
+        provider: &ProviderRef,
+        root: Hash32,
+        max_children: usize,
+    ) -> Result<Vec<Hash32>> {
+        let bytes = self
+            .fetch_into_store(provider, root, hash_seq_byte_cap(max_children))
+            .await?;
         let seq = HashSeq::new(bytes)
             .ok_or_else(|| anyhow!("blob {} is not a HashSeq", hash_to_hex(&root)))?;
         Ok(seq.iter().map(Hash32::from).collect())
     }
 
-    async fn fetch(&self, provider: &ProviderRef, hash: Hash32) -> Result<Bytes> {
-        self.fetch_into_store(provider, hash).await
+    async fn fetch(&self, provider: &ProviderRef, hash: Hash32, max_bytes: u64) -> Result<Bytes> {
+        self.fetch_into_store(provider, hash, max_bytes).await
     }
 
     async fn read_local(&self, hash: Hash32) -> Result<Option<Bytes>> {
@@ -254,5 +314,51 @@ impl BlobTransport for IrohBlobTransport {
             BlobStatus::Complete { size } => Some(size),
             _ => None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// S8b: a wire-supplied provider keeps its id and IP addresses but only
+    /// relay URLs this node already trusts, so a forged ad can never make
+    /// this node dial an arbitrary URL.
+    #[test]
+    fn a_provider_address_keeps_only_trusted_relays() {
+        let id = iroh::SecretKey::from_bytes(&[11u8; 32]).public();
+        let trusted: RelayUrl = "https://relay.trusted.example".parse().unwrap();
+        let foreign: RelayUrl = "https://169.254.169.254".parse().unwrap();
+        let ip: std::net::SocketAddr = "192.0.2.7:4433".parse().unwrap();
+        let addr = EndpointAddr {
+            id,
+            addrs: [
+                TransportAddr::Relay(trusted.clone()),
+                TransportAddr::Relay(foreign),
+                TransportAddr::Ip(ip),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let allowed: BTreeSet<RelayUrl> = [trusted.clone()].into_iter().collect();
+        let sanitized = sanitize_provider_addr(addr.clone(), &allowed);
+        assert_eq!(sanitized.id, id);
+        let kept: Vec<_> = sanitized.addrs.into_iter().collect();
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        assert!(kept.contains(&TransportAddr::Relay(trusted)));
+        assert!(kept.contains(&TransportAddr::Ip(ip)));
+
+        let none_allowed = sanitize_provider_addr(addr, &BTreeSet::new());
+        assert_eq!(none_allowed.addrs.len(), 1);
+        assert!(none_allowed
+            .addrs
+            .iter()
+            .all(|a| matches!(a, TransportAddr::Ip(_))));
+    }
+
+    #[test]
+    fn an_oversized_provider_address_is_refused_before_parsing() {
+        let huge = ProviderRef::new("x".repeat(MAX_PROVIDER_ADDR_LEN + 1));
+        assert!(IrohBlobTransport::parse_provider(&huge).is_err());
     }
 }

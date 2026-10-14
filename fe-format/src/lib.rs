@@ -15,6 +15,7 @@ pub mod signature;
 pub use archive::*;
 pub use archive_index::{ArchiveChanged, HexonArchiveIndex, ARCHIVE_CHANGED_ERROR};
 pub use entries::*;
+pub use fe_runtime::safe_id::is_safe_path_id;
 pub use license::*;
 pub use limits::read_entry_capped;
 pub use manifest::*;

@@ -314,17 +314,32 @@ pub fn bundle_tileset(source: &HexonArchiveData, max_bundle_bytes: u64) -> Resul
 // Assembly (verify + install)
 // ---------------------------------------------------------------------------
 
-/// Verify every bundle file's blake3 against the index, then delegate to the
-/// existing [`super::distribution::assemble_chunks`]. A bundle's place in
-/// the index is read from its own `ChunkIndex.chunk_seq` (not file-list
-/// order), so bundles may arrive in any order — mirroring `assemble_chunks`'s
-/// existing "chunks can arrive in any order" contract. Any hash mismatch
-/// fails before installation runs: nothing is written for a bad bundle.
+/// Largest bundle file `assemble_bundles` reads (the transfer's per-bundle cap).
+pub const MAX_ASSEMBLE_BUNDLE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Verify every bundle file against the index, then delegate to the existing
+/// [`super::distribution::assemble_chunks`]. Bundles may arrive in any order
+/// (each is matched to its index entry by hash); any mismatch fails before
+/// installation runs, so nothing is written for a bad bundle.
+///
+/// S8b: the install is bound to `expected_tileset_id` — the id the user asked
+/// for. An index (or any bundle's `ChunkIndex`) naming a different id is
+/// refused, so a peer advertising X can never overwrite an installed Y. Each
+/// file is size-capped and hash-verified BEFORE its archive is parsed. See
+/// `src/AGENTS.md` §bundles "Assembly trust".
 pub fn assemble_bundles(
     store: &HexonStore,
+    expected_tileset_id: &str,
     index: &TilesetBundleIndex,
     bundle_paths: &[PathBuf],
 ) -> Result<InstalledTileset> {
+    if index.tileset_id != expected_tileset_id {
+        bail!(
+            "bundle index declares tileset {:?}, but {:?} was requested",
+            index.tileset_id,
+            expected_tileset_id
+        );
+    }
     if bundle_paths.len() != index.bundles.len() {
         bail!(
             "bundle count mismatch: index names {} bundles, got {} paths",
@@ -334,39 +349,79 @@ pub fn assemble_bundles(
     }
 
     let mut chunk_archives = Vec::with_capacity(bundle_paths.len());
-    for path in bundle_paths {
+    let mut seen_seqs = std::collections::HashSet::with_capacity(bundle_paths.len());
+    let mut total_bytes: u64 = 0;
+    for (position, path) in bundle_paths.iter().enumerate() {
+        let len = std::fs::metadata(path)
+            .with_context(|| format!("failed to stat bundle file: {}", path.display()))?
+            .len();
+        if len > MAX_ASSEMBLE_BUNDLE_BYTES {
+            bail!(
+                "bundle file {} is {len} bytes (cap {MAX_ASSEMBLE_BUNDLE_BYTES})",
+                path.display()
+            );
+        }
+        total_bytes = total_bytes.saturating_add(len);
+        if total_bytes > fe_format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES {
+            bail!(
+                "bundles total more than {} bytes",
+                fe_format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES
+            );
+        }
         let bytes = std::fs::read(path)
             .with_context(|| format!("failed to read bundle file: {}", path.display()))?;
 
-        let data = HexonArchive::import(&bytes)
-            .with_context(|| format!("failed to import bundle file: {}", path.display()))?;
-        let seq = data
-            .tileset_meta
-            .as_ref()
-            .and_then(|m| m.chunk_index.as_ref())
-            .map(|c| c.chunk_seq)
-            .with_context(|| format!("bundle file {} missing chunk_index", path.display()))?;
-
+        // Verify before parse: the positional entry first, else any entry with this hash.
+        let actual_hash = blake3::hash(&bytes).to_hex().to_string();
         let entry = index
             .bundles
             .iter()
-            .find(|b| b.seq == seq)
-            .with_context(|| format!("bundle seq {seq} not present in the index"))?;
+            .find(|b| b.seq as usize == position && b.blake3_hex == actual_hash)
+            .or_else(|| index.bundles.iter().find(|b| b.blake3_hex == actual_hash))
+            .with_context(|| {
+                let declared = index
+                    .bundles
+                    .iter()
+                    .find(|b| b.seq as usize == position)
+                    .map(|b| b.blake3_hex.as_str())
+                    .unwrap_or("<none>");
+                format!(
+                    "bundle seq {position} hash mismatch: index says {declared}, file {} hashes to {actual_hash}",
+                    path.display()
+                )
+            })?;
 
-        let actual_hash = blake3::hash(&bytes).to_hex().to_string();
-        if actual_hash != entry.blake3_hex {
+        let data = HexonArchive::import(&bytes)
+            .with_context(|| format!("failed to import bundle file: {}", path.display()))?;
+        let chunk = data
+            .tileset_meta
+            .as_ref()
+            .and_then(|m| m.chunk_index.as_ref())
+            .with_context(|| format!("bundle file {} missing chunk_index", path.display()))?;
+        if chunk.chunk_seq != entry.seq {
             bail!(
-                "bundle seq {seq} hash mismatch: index says {}, file hashes to {actual_hash}",
-                entry.blake3_hex
+                "bundle file {} declares seq {}, its hash belongs to seq {}",
+                path.display(),
+                chunk.chunk_seq,
+                entry.seq
             );
+        }
+        if chunk.tileset_id != expected_tileset_id {
+            bail!(
+                "bundle seq {} declares tileset {:?}, but {:?} was requested",
+                entry.seq,
+                chunk.tileset_id,
+                expected_tileset_id
+            );
+        }
+        if !seen_seqs.insert(entry.seq) {
+            bail!("bundle seq {} supplied twice", entry.seq);
         }
 
         chunk_archives.push(bytes);
     }
 
-    // `assemble_chunks` installs under `tileset_id`, so the installed
-    // hexon_id is `index.tileset_id` unchanged (keeps the original id).
-    super::distribution::assemble_chunks(store, &index.tileset_id, &chunk_archives)
+    super::distribution::assemble_chunks(store, expected_tileset_id, &chunk_archives)
         .context("failed to assemble verified bundles")
 }
 
@@ -395,6 +450,9 @@ fn bundles_dir(store: &HexonStore, hexon_id: &str) -> PathBuf {
 /// `fractalengine-relay` (headless) both call — see
 /// `fractalengine/src/AGENTS.md` §tileset-p2p.
 pub fn bundle_for_seeding(store: &HexonStore, hexon_id: &str) -> Result<(PathBuf, Vec<PathBuf>)> {
+    if !super::store::is_safe_hexon_id(hexon_id) {
+        bail!("{}: {hexon_id:?}", super::store::UNSAFE_HEXON_ID_ERROR);
+    }
     let hexon_path = store.base_dir().join(format!("{hexon_id}.hexon"));
     let source_bytes = std::fs::read(&hexon_path)
         .with_context(|| format!("failed to read installed hexon: {}", hexon_path.display()))?;
@@ -445,12 +503,13 @@ pub fn bundle_for_seeding(store: &HexonStore, hexon_id: &str) -> Result<(PathBuf
 /// `fe_format` dependency just to deserialize the index (S4).
 pub fn assemble_bundles_from_index_json(
     store: &HexonStore,
+    expected_tileset_id: &str,
     index_json: &[u8],
     bundle_paths: &[PathBuf],
 ) -> Result<InstalledTileset> {
     let index: TilesetBundleIndex =
         serde_json::from_slice(index_json).context("failed to parse bundle index JSON")?;
-    assemble_bundles(store, &index, bundle_paths)
+    assemble_bundles(store, expected_tileset_id, &index, bundle_paths)
 }
 
 /// `None` makes the caller rebuild — a missing bundle file, a corrupt index,

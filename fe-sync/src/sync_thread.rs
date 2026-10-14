@@ -40,7 +40,9 @@ use crate::replicator::{
     ReplicatorFuture, RowChange, VerseReplicator,
 };
 use crate::sharding::{PeerDeclaration, ShardId, VerseFabric, PEER_DECL_TABLE, SHARD_TABLE};
-use crate::tileset_transfer::{CatalogEntry, MetaResolved, TilesetTransfer, TransferEvent};
+use crate::tileset_transfer::{
+    is_safe_tileset_id, CatalogEntry, MetaResolved, TilesetTransfer, TransferEvent,
+};
 use crate::verse_peers;
 use crate::virtual_transport::{VirtualReplica, VirtualTransportFactory};
 
@@ -614,7 +616,15 @@ pub fn spawn_sync_thread_with_transport(
             // (see `handle_download_tileset` et al.), never a silent drop
             // (`AGENTS.md` §tileset-transfer).
             let tileset_transfer: Option<Arc<TilesetTransfer>> = docs_stack.as_ref().map(|stack| {
-                let transport: Arc<dyn BlobTransport> = Arc::new(IrohBlobTransport::from_stack(stack));
+                // S8b: a wire-supplied provider may only name relays this
+                // node's own relay map already holds (§tileset-security).
+                let allowed_relays: Vec<iroh::RelayUrl> = relay_config
+                    .to_relay_mode()
+                    .map(|mode| mode.relay_map().urls())
+                    .unwrap_or_default();
+                let transport: Arc<dyn BlobTransport> = Arc::new(
+                    IrohBlobTransport::from_stack(stack).with_allowed_relays(allowed_relays),
+                );
                 Arc::new(TilesetTransfer::for_p2p_dir(transport, &p2p_dir))
             });
             if let Some(transfer) = tileset_transfer.clone() {
@@ -917,6 +927,9 @@ pub fn spawn_sync_thread_with_transport(
                                 .await;
                             }
                             Some(SyncCommand::CloseVerseReplica { verse_id }) => {
+                                // S8b verse binding: ads learned on a verse
+                                // stop counting once this node leaves it.
+                                tileset_providers.forget_verse(&verse_id);
                                 handle_close_verse_replica(
                                     &mut replicas,
                                     &mut inbound_pumps,
@@ -2139,9 +2152,16 @@ fn decode_tileset_ad(bytes: &[u8]) -> Option<TilesetAd> {
     (ad.kind == TILESET_AD_KIND).then_some(ad)
 }
 
-/// One peer's advertised source for a tileset.
+/// Most tileset ids the provider map tracks at once (ad-storm bound).
+const MAX_TRACKED_TILESETS: usize = 1024;
+/// Most provider entries kept per tileset id (ad-storm bound).
+const MAX_PROVIDERS_PER_TILESET: usize = 16;
+
+/// One peer's advertised source for a tileset, learned on one verse topic.
 #[derive(Debug, Clone)]
 struct TilesetProvider {
+    /// The verse topic the ad arrived on; forgotten when that verse closes.
+    verse_id: String,
     provider: ProviderRef,
     root: Hash32,
     /// F23-style admission: whether the delivery was direct AND the ad's own
@@ -2151,64 +2171,146 @@ struct TilesetProvider {
     /// The ad's claimed size (best-effort; not re-verified until a download
     /// actually fetches bundles).
     advertised_bytes: u64,
+    /// Recency stamp from [`TilesetProviderMap::clock`].
+    seen: u64,
 }
 
-/// `tileset_id -> known providers`, authenticated-first, learned from
-/// inbound ads. Never persisted — rebuilt from gossip traffic each session
-/// (the durable state is `TilesetTransfer`'s own ledger/catalog).
+/// The root a download should fetch, and whether an authenticated provider vouched for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RootChoice {
+    root: Hash32,
+    authenticated: bool,
+}
+
+/// `tileset_id -> known (provider, root)` entries learned from inbound ads,
+/// authenticated first then newest first. Never persisted — rebuilt from
+/// gossip each session (the durable state is `TilesetTransfer`'s ledger).
+///
+/// Entries are keyed by `(verse, provider, root)`, so an unauthenticated
+/// (relayed) ad can never rewrite what an authenticated ad recorded — see
+/// `src/AGENTS.md` §tileset-security.
 #[derive(Default)]
 struct TilesetProviderMap {
     by_id: HashMap<String, Vec<TilesetProvider>>,
+    clock: u64,
 }
 
 impl TilesetProviderMap {
-    /// Record (or refresh) one peer's advertised source. Authenticated
-    /// providers sort first so a download always tries them before hints;
-    /// an authenticated re-ad of a previously-unauthenticated provider
-    /// upgrades it (never downgrades — a stale relayed copy must not demote
-    /// a provider this node once saw directly).
+    /// Record one inbound ad; `false` when it was refused (a relayed claim
+    /// about a provider that vouched for itself directly, or a full map).
+    ///
+    /// An authenticated ad replaces that provider's earlier entries on the
+    /// same verse (the provider republished) and every relayed claim made
+    /// about it; a relayed ad only ever adds a separate hint entry.
     fn record(
         &mut self,
+        verse_id: &str,
         tileset_id: String,
         provider: ProviderRef,
         root: Hash32,
         authenticated: bool,
         advertised_bytes: u64,
-    ) {
-        let entries = self.by_id.entry(tileset_id).or_default();
-        match entries.iter_mut().find(|e| e.provider == provider) {
-            Some(existing) => {
-                existing.root = root;
-                existing.authenticated = existing.authenticated || authenticated;
-                existing.advertised_bytes = advertised_bytes;
-            }
-            None => entries.push(TilesetProvider {
-                provider,
-                root,
-                authenticated,
-                advertised_bytes,
-            }),
+    ) -> bool {
+        self.clock += 1;
+        let seen = self.clock;
+        let map_full =
+            !self.by_id.contains_key(&tileset_id) && self.by_id.len() >= MAX_TRACKED_TILESETS;
+        if map_full && (!authenticated || !self.evict_one_unauthenticated_tileset()) {
+            return false;
         }
-        entries.sort_by_key(|e| !e.authenticated);
+        let entries = self.by_id.entry(tileset_id.clone()).or_default();
+        if authenticated {
+            entries
+                .retain(|e| e.provider != provider || (e.authenticated && e.verse_id != verse_id));
+        } else {
+            if entries
+                .iter()
+                .any(|e| e.authenticated && e.provider == provider)
+            {
+                return false;
+            }
+            if let Some(existing) = entries
+                .iter_mut()
+                .find(|e| e.verse_id == verse_id && e.provider == provider && e.root == root)
+            {
+                existing.seen = seen;
+                existing.advertised_bytes = advertised_bytes;
+                Self::order(entries);
+                return true;
+            }
+        }
+        entries.push(TilesetProvider {
+            verse_id: verse_id.to_string(),
+            provider,
+            root,
+            authenticated,
+            advertised_bytes,
+            seen,
+        });
+        while entries.len() > MAX_PROVIDERS_PER_TILESET {
+            let victim = entries
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, e)| (e.authenticated, e.seen))
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            entries.remove(victim);
+        }
+        let kept = entries.iter().any(|e| e.seen == seen);
+        Self::order(entries);
+        kept
     }
 
-    /// Every known provider for `tileset_id`, authenticated ones first.
-    fn candidates(&self, tileset_id: &str) -> Vec<ProviderRef> {
-        self.by_id
-            .get(tileset_id)
-            .map(|entries| entries.iter().map(|e| e.provider.clone()).collect())
-            .unwrap_or_default()
+    /// Authenticated first, then newest first.
+    fn order(entries: &mut [TilesetProvider]) {
+        entries.sort_by_key(|e| (!e.authenticated, std::cmp::Reverse(e.seen)));
     }
 
-    /// The HashSeq root this node has seen advertised for `tileset_id`.
-    fn root_for(&self, tileset_id: &str) -> Option<Hash32> {
+    /// Drop the stalest tileset id no authenticated provider backs; `false` if none.
+    fn evict_one_unauthenticated_tileset(&mut self) -> bool {
+        let victim = self
+            .by_id
+            .iter()
+            .filter(|(_, entries)| entries.iter().all(|e| !e.authenticated))
+            .min_by_key(|(_, entries)| entries.iter().map(|e| e.seen).max().unwrap_or(0))
+            .map(|(id, _)| id.clone());
+        match victim {
+            Some(id) => self.by_id.remove(&id).is_some(),
+            None => false,
+        }
+    }
+
+    /// Forget every ad learned on `verse_id` (its replica closed).
+    fn forget_verse(&mut self, verse_id: &str) {
+        for entries in self.by_id.values_mut() {
+            entries.retain(|e| e.verse_id != verse_id);
+        }
+        self.by_id.retain(|_, entries| !entries.is_empty());
+    }
+
+    /// The root to fetch: an authenticated provider's newest root, else the newest hint.
+    fn root_for(&self, tileset_id: &str) -> Option<RootChoice> {
         self.by_id
             .get(tileset_id)
             .and_then(|entries| entries.first())
-            .map(|e| e.root)
+            .map(|e| RootChoice {
+                root: e.root,
+                authenticated: e.authenticated,
+            })
     }
 
-    /// The best-effort advertised size for `tileset_id` (0 if unknown).
+    /// Providers that advertised `root` for `tileset_id`, authenticated first, deduplicated.
+    fn candidates(&self, tileset_id: &str, root: Hash32) -> Vec<ProviderRef> {
+        let mut out: Vec<ProviderRef> = Vec::new();
+        for entry in self.by_id.get(tileset_id).into_iter().flatten() {
+            if entry.root == root && !out.contains(&entry.provider) {
+                out.push(entry.provider.clone());
+            }
+        }
+        out
+    }
+
+    /// The best-effort advertised size of the chosen root (0 if unknown).
     fn bytes_for(&self, tileset_id: &str) -> u64 {
         self.by_id
             .get(tileset_id)
@@ -2223,13 +2325,14 @@ impl TilesetProviderMap {
 fn resolve_providers(
     map: &TilesetProviderMap,
     tileset_id: &str,
+    root: Hash32,
     explicit: Option<&str>,
 ) -> Vec<ProviderRef> {
     let mut out = Vec::new();
     if let Some(addr) = explicit.filter(|a| !a.is_empty()) {
         out.push(ProviderRef::new(addr));
     }
-    for candidate in map.candidates(tileset_id) {
+    for candidate in map.candidates(tileset_id, root) {
         if !out.contains(&candidate) {
             out.push(candidate);
         }
@@ -2239,16 +2342,24 @@ fn resolve_providers(
 
 /// [`resolve_providers`] plus the tileset's advertised root — the pair every
 /// meta/download request needs. An honest named error when either is
-/// unknown (never a silent no-op).
+/// unknown (never a silent no-op); a root no authenticated provider vouched
+/// for is used only when none did, and is logged as such.
 fn resolve_providers_and_root(
     map: &TilesetProviderMap,
     tileset_id: &str,
     explicit: Option<&str>,
 ) -> Result<(Vec<ProviderRef>, Hash32), &'static str> {
-    let root = map
+    let choice = map
         .root_for(tileset_id)
         .ok_or("no advertised root for this tileset yet")?;
-    let providers = resolve_providers(map, tileset_id, explicit);
+    if !choice.authenticated {
+        tracing::warn!(
+            tileset_id,
+            "No directly-authenticated provider for this tileset — using a relayed hint's root"
+        );
+    }
+    let root = choice.root;
+    let providers = resolve_providers(map, tileset_id, root, explicit);
     if providers.is_empty() {
         return Err("no known provider for this tileset");
     }
@@ -2285,15 +2396,33 @@ fn handle_inbound_tileset_ad(
         tracing::debug!(tileset_id = %ad.tileset_id, "Malformed tileset ad root hash — ignored");
         return;
     };
+    // S8b: an id that could never become a download dir, or a provider that
+    // could never be dialed, is dropped before it costs map space or a UI event.
+    if !is_safe_tileset_id(&ad.tileset_id) {
+        tracing::debug!("Tileset ad with an unsafe tileset_id — ignored");
+        return;
+    }
+    if IrohBlobTransport::parse_provider(&ProviderRef::new(ad.provider_addr.clone())).is_err() {
+        tracing::debug!(tileset_id = %ad.tileset_id, "Tileset ad with an undialable provider — ignored");
+        return;
+    }
     let authenticated =
         tileset_ad_is_authenticated(incoming.direct, &ad.provider_addr, incoming.from);
-    providers.record(
+    if !providers.record(
+        &incoming.verse_id,
         ad.tileset_id.clone(),
         ProviderRef::new(ad.provider_addr.clone()),
         root,
         authenticated,
         ad.approx_bytes,
-    );
+    ) {
+        tracing::debug!(
+            tileset_id = %ad.tileset_id,
+            authenticated,
+            "Tileset advertisement refused (superseded or map full)"
+        );
+        return;
+    }
     tracing::debug!(
         tileset_id = %ad.tileset_id,
         authenticated,
@@ -3567,24 +3696,26 @@ mod tests {
     }
 
     #[test]
-    fn provider_map_sorts_authenticated_first_and_upgrades_in_place() {
+    fn provider_map_prefers_authenticated_roots_and_ignores_relayed_claims_about_them() {
         let mut map = TilesetProviderMap::default();
         let hint = ProviderRef::new("hint-addr");
         let real = ProviderRef::new("real-addr");
-        map.record("ts-1".to_string(), hint.clone(), [1u8; 32], false, 10);
-        map.record("ts-1".to_string(), real.clone(), [2u8; 32], true, 20);
+        assert!(map.record("v1", "ts-1".to_string(), hint.clone(), [1u8; 32], false, 10));
+        assert!(map.record("v1", "ts-1".to_string(), real.clone(), [2u8; 32], true, 20));
 
-        let candidates = map.candidates("ts-1");
-        assert_eq!(candidates, vec![real.clone(), hint.clone()]);
-        // The authenticated entry's root wins `root_for` (first == authenticated-first).
-        assert_eq!(map.root_for("ts-1"), Some([2u8; 32]));
+        let choice = map.root_for("ts-1").unwrap();
+        assert_eq!(choice.root, [2u8; 32]);
+        assert!(choice.authenticated);
+        assert_eq!(map.bytes_for("ts-1"), 20);
+        assert_eq!(map.candidates("ts-1", [2u8; 32]), vec![real.clone()]);
+        assert_eq!(map.candidates("ts-1", [1u8; 32]), vec![hint]);
+
+        // A relayed re-ad naming the authenticated provider is refused outright.
+        assert!(!map.record("v1", "ts-1".to_string(), real, [9u8; 32], false, 999));
+        assert_eq!(map.root_for("ts-1").unwrap().root, [2u8; 32]);
         assert_eq!(map.bytes_for("ts-1"), 20);
 
-        // A later UNauthenticated re-ad of the same provider never demotes it.
-        map.record("ts-1".to_string(), real, [2u8; 32], false, 25);
-        assert_eq!(map.candidates("ts-1")[0], ProviderRef::new("real-addr"));
-
-        assert!(map.candidates("ts-unknown").is_empty());
+        assert!(map.candidates("ts-unknown", [2u8; 32]).is_empty());
         assert_eq!(map.root_for("ts-unknown"), None);
         assert_eq!(map.bytes_for("ts-unknown"), 0);
     }
@@ -3593,14 +3724,14 @@ mod tests {
     fn resolve_providers_prefers_explicit_override_and_dedupes() {
         let mut map = TilesetProviderMap::default();
         let known = ProviderRef::new("known-addr");
-        map.record("ts-1".to_string(), known.clone(), [3u8; 32], true, 0);
+        map.record("v1", "ts-1".to_string(), known.clone(), [3u8; 32], true, 0);
 
         // An explicit override that is ALSO already known appears once, first.
-        let resolved = resolve_providers(&map, "ts-1", Some("known-addr"));
+        let resolved = resolve_providers(&map, "ts-1", [3u8; 32], Some("known-addr"));
         assert_eq!(resolved, vec![known.clone()]);
 
         // A brand-new override is prepended ahead of the known candidate.
-        let explicit_new = resolve_providers(&map, "ts-1", Some("override-addr"));
+        let explicit_new = resolve_providers(&map, "ts-1", [3u8; 32], Some("override-addr"));
         assert_eq!(explicit_new, vec![ProviderRef::new("override-addr"), known]);
 
         // No root known at all -> an honest named error, not an empty Ok.
@@ -3608,6 +3739,178 @@ mod tests {
             resolve_providers_and_root(&map, "ts-unknown", None),
             Err("no advertised root for this tileset yet")
         );
+    }
+
+    /// S8b mandatory finding #1 (automated review of S3 `e5d8928`): an
+    /// authenticated ad for root A followed by a RELAYED ad naming the same
+    /// provider with root B must not poison the entry — `root_for` still
+    /// answers A and a real download fetches A's bytes, never B's.
+    #[test]
+    fn a_relayed_ad_cannot_replace_an_authenticated_root() {
+        let alice_id = iroh::SecretKey::from_bytes(&[121u8; 32]).public();
+        let relay_neighbor = iroh::SecretKey::from_bytes(&[122u8; 32]).public();
+        let alice_addr = serde_json::to_string(&iroh::EndpointAddr::new(alice_id)).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            let network = fe_runtime::blob_transport::InMemoryNetwork::new();
+            let alice = network.transport(&alice_addr);
+            let bob = network.transport("bob");
+            let publish = |transport: fe_runtime::blob_transport::InMemoryTransport,
+                           body: &'static [u8]| async move {
+                let index = transport
+                    .add(bytes::Bytes::from_static(b"{}"))
+                    .await
+                    .unwrap();
+                let bundle = transport
+                    .add(bytes::Bytes::from_static(body))
+                    .await
+                    .unwrap();
+                transport.add_hash_seq(&[index, bundle]).await.unwrap()
+            };
+            let root_a = publish(alice.clone(), b"genuine bundle").await;
+            let root_b = publish(alice.clone(), b"poisoned bundle").await;
+
+            let (evt_tx, _evt_rx) = crossbeam::channel::unbounded();
+            let mut map = TilesetProviderMap::default();
+            let ad = |root: Hash32| TilesetAd {
+                kind: TILESET_AD_KIND.to_string(),
+                tileset_id: "valley".to_string(),
+                root_hash: hash_to_hex(&root),
+                total_chunks: 1,
+                approx_bytes: 14,
+                provider_addr: alice_addr.clone(),
+            };
+            let incoming = |from, direct| GossipIncoming {
+                verse_id: "verse-1".to_string(),
+                from,
+                direct,
+                content: bytes::Bytes::new(),
+            };
+            handle_inbound_tileset_ad(&mut map, &evt_tx, &incoming(alice_id, true), ad(root_a));
+            handle_inbound_tileset_ad(
+                &mut map,
+                &evt_tx,
+                &incoming(relay_neighbor, false),
+                ad(root_b),
+            );
+
+            let choice = map.root_for("valley").expect("a root is known");
+            assert_eq!(
+                choice.root, root_a,
+                "the relayed ad must not replace root A"
+            );
+            assert!(choice.authenticated);
+
+            let (providers, root) = resolve_providers_and_root(&map, "valley", None).unwrap();
+            assert_eq!(root, root_a);
+            let dir = tempfile::TempDir::new().unwrap();
+            let transfer = TilesetTransfer::new(Arc::new(bob), dir.path());
+            let report = transfer
+                .start_download(&providers, "valley", root, None)
+                .await
+                .expect("the download runs");
+            let complete = report.complete.expect("the download completes");
+            assert_eq!(complete.root, root_a);
+            assert_eq!(
+                std::fs::read(&complete.bundle_paths[0]).unwrap(),
+                b"genuine bundle"
+            );
+        });
+    }
+
+    /// S8b verse binding + ad-storm bounds: ads learned on a verse are
+    /// forgotten when it closes, an unsafe id or undialable provider never
+    /// enters the map, and a relayed flood cannot grow it past its caps.
+    #[test]
+    fn tileset_ads_are_verse_bound_validated_and_capped() {
+        let alice_id = iroh::SecretKey::from_bytes(&[123u8; 32]).public();
+        let alice_addr = serde_json::to_string(&iroh::EndpointAddr::new(alice_id)).unwrap();
+        let (evt_tx, evt_rx) = crossbeam::channel::unbounded();
+        let mut map = TilesetProviderMap::default();
+        let ad = |tileset_id: &str, provider_addr: &str| TilesetAd {
+            kind: TILESET_AD_KIND.to_string(),
+            tileset_id: tileset_id.to_string(),
+            root_hash: hash_to_hex(&[5u8; 32]),
+            total_chunks: 1,
+            approx_bytes: 1,
+            provider_addr: provider_addr.to_string(),
+        };
+        let on_verse = |verse: &str| GossipIncoming {
+            verse_id: verse.to_string(),
+            from: alice_id,
+            direct: true,
+            content: bytes::Bytes::new(),
+        };
+
+        for (tileset_id, provider) in [
+            ("../escape", alice_addr.as_str()),
+            ("CON", alice_addr.as_str()),
+            ("ok", "not-an-endpoint-addr"),
+        ] {
+            handle_inbound_tileset_ad(
+                &mut map,
+                &evt_tx,
+                &on_verse("verse-a"),
+                ad(tileset_id, provider),
+            );
+        }
+        assert!(map.by_id.is_empty(), "invalid ads never enter the map");
+        assert!(evt_rx.try_recv().is_err(), "invalid ads never reach the UI");
+
+        handle_inbound_tileset_ad(
+            &mut map,
+            &evt_tx,
+            &on_verse("verse-a"),
+            ad("valley", &alice_addr),
+        );
+        assert!(evt_rx.try_recv().is_ok(), "a valid ad is echoed to the UI");
+        assert!(map.root_for("valley").is_some());
+        map.forget_verse("verse-b");
+        assert!(
+            map.root_for("valley").is_some(),
+            "another verse closing keeps it"
+        );
+        map.forget_verse("verse-a");
+        assert_eq!(map.root_for("valley"), None, "closing its verse forgets it");
+
+        for i in 0..(MAX_PROVIDERS_PER_TILESET * 2) {
+            map.record(
+                "v",
+                "flood".to_string(),
+                ProviderRef::new(format!("p{i}")),
+                [i as u8; 32],
+                false,
+                1,
+            );
+        }
+        assert_eq!(map.by_id["flood"].len(), MAX_PROVIDERS_PER_TILESET);
+        for i in 0..(MAX_TRACKED_TILESETS + 10) {
+            map.record(
+                "v",
+                format!("id-{i}"),
+                ProviderRef::new("p"),
+                [1u8; 32],
+                false,
+                1,
+            );
+        }
+        assert!(map.by_id.len() <= MAX_TRACKED_TILESETS);
+        assert!(
+            map.record(
+                "v",
+                "authed-late".to_string(),
+                ProviderRef::new("q"),
+                [2u8; 32],
+                true,
+                1
+            ),
+            "an authenticated ad still finds room by evicting a hint-only id"
+        );
+        assert!(map.by_id.len() <= MAX_TRACKED_TILESETS);
     }
 
     /// Flow test (S3 plan): direct + matching provider -> authenticated;

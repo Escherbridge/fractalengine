@@ -42,7 +42,10 @@ per frame and, in one pass:
    (`release_all_pins`) because every chunk is about to despawn. Then the
    config's
    `tile_source_mode`, a `DiskTileCache` rooted at `config.cache_dir`
-   (512 MB budget; skipped with a warn when the dir string is empty), and
+   (512 MB budget; skipped with a warn when the dir is empty or not a safe
+   relative path — S8b: petal terrain replicates from peers, and the disk
+   cache deletes `.tile`/`.hash` files it cannot verify, so `safe_cache_dir`
+   only admits relative paths of `is_safe_path_id` components), and
    `projection = config.origin`. A `None`/disabled config clears both fields.
 3. Rebuilds the `LayerStack` from `config.layers` via the pure
    `layers::layer_type_from_config_name(name, source_url)`: `"satellite"` →
@@ -658,20 +661,33 @@ identity cross-hexon dedup and the tile pointer-set both depend on.
   embed its own hash, so `ChunkIndex.blake3` stays `None` on bundle
   archives; the verifiable digest is `BundleEntry.blake3_hex` in the
   `TilesetBundleIndex` (fe-format `manifest.rs`).
-- **`assemble_bundles(store, index, bundle_paths)`** reads each bundle file,
-  reads its *own* `ChunkIndex.chunk_seq` (so files may arrive in any order —
-  the same contract `assemble_chunks` already honors), verifies
-  `blake3(file) == index.bundles[seq].blake3_hex`, and only then delegates to
-  `distribution::assemble_chunks` (now returning the installed
-  `InstalledTileset` record directly rather than just a hexon_id, so there is
-  one assembly implementation shared with the legacy flat-chunk path). Any
-  hash mismatch fails before anything is written to the store.
+- **`assemble_bundles(store, expected_tileset_id, index, bundle_paths)`**
+  delegates to `distribution::assemble_chunks` (which returns the installed
+  `InstalledTileset` record, so one assembly implementation serves the legacy
+  flat-chunk path too). Any mismatch fails before anything is written.
+- **Assembly trust (S8b, mandatory finding #2).** The install is bound to the
+  id the user REQUESTED: the index's `tileset_id` and every bundle's
+  `ChunkIndex.tileset_id` must equal `expected_tileset_id`, so a provider
+  advertising X with an index naming Y can never overwrite an installed Y
+  (`fractalengine::terrain_bridge::assemble_and_install` passes the
+  requested id). Each file is size-capped (`MAX_ASSEMBLE_BUNDLE_BYTES`, the
+  total under the 1 GiB archive budget) and hash-verified against the index
+  BEFORE its archive is parsed. Files may arrive in any order (each is
+  matched to its entry by hash, positional first); its declared `chunk_seq`
+  must equal that entry's seq, and a seq supplied twice is refused.
+  `assemble_chunks` also caps the merged tile bytes at 1 GiB (what
+  `install_tileset` re-imports) and refuses a `chunk_seq >= total_chunks`.
+  P2P installs stay unsigned until PAS-P5 binds the publisher too. Tests:
+  `a_peer_index_naming_another_tileset_never_overwrites_it` (fe-terrain) and
+  `a_download_naming_another_tileset_never_overwrites_it` (fractalengine).
 - **Path-traversal guard moved in from PAS-P5 (critic C1).** `HexonStore::
   install_tileset` (`store.rs`) is the single choke point every install path
   reaches — a fresh download, `assemble_chunks`/`assemble_bundles`, or a
-  direct call — so `is_safe_hexon_id` (the registry's `[A-Za-z0-9_.-]`
-  charset plus an explicit `.`/`..` refusal) runs there, before any path
-  join, refusing with `UNSAFE_HEXON_ID_ERROR`. This has to land here, not in
+  direct call — so `is_safe_hexon_id` runs there, before any path join,
+  refusing with `UNSAFE_HEXON_ID_ERROR`. Since S8b it delegates to the
+  shared `fe_format::is_safe_path_id` (fe-runtime `src/AGENTS.md` §safe-id),
+  which also refuses Windows device stems and over-long ids;
+  `remove_tileset` and `bundle_for_seeding` run the same guard. This has to land here, not in
   PAS-P5: S4 makes P2P-assembled installs — where `hexon_id` is the
   peer-advertised `tileset_id`, untrusted — reachable a full campaign phase
   before PAS-P5's signing lands.
@@ -808,12 +824,17 @@ anything to the local hexon store.
 - **One lookup, one new source kind.** `TilesetBundleIndex::bundle_for_tile`
   (fe-format, S1 critic C4) is the ONLY tile→bundle lookup; `StreamedTileSource`
   calls it, never reimplements it. A bundle, once fetched, is a fully-decoded
-  `HexonTileSource::from_archive` (`Backing::Memory` — no further I/O to serve
-  it), so `CompositeTileSource` only needs a THIRD slot in its lookup chain:
+  `HexonTileSource::from_streamed_bundle` (`Backing::Memory` — no further I/O
+  to serve it; S8b: decoded under `STREAMED_BUNDLE_DECODE_BUDGET`, 64 MiB, not
+  the 1 GiB install budget, since several bundles stay resident at once and
+  their bytes come from peers), so `CompositeTileSource` only needs a THIRD slot in its lookup chain:
   hexon sources → streamed sources → disk cache → online. Checked in EVERY
   mode including Offline (the bytes are hexon-origin, preserving NFR-4) —
   only the resident-and-decoded check runs; nothing here ever reads a disk
   or dispatches a network call synchronously.
+- **Index binding (S8b).** `StreamedTileSource::from_meta_json(id, json)`
+  refuses an index whose `tileset_id` is not `id`, so a peer answering a meta
+  request for X with Y's index never becomes X's source.
 - **Two states, one gate.** A `tileset_hexon_uri` that fails to load locally
   is `composite.mark_streamed_pending(uri)`'d by `petal_binding` instead of
   just warning. `CompositeTileSource::streamed_pending(coord)` is true when

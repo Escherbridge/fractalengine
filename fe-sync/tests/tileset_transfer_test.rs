@@ -9,7 +9,9 @@ use fe_runtime::blob_transport::{
     content_hash, BlobTransport, Hash32, InMemoryNetwork, InMemoryTransport, ProviderRef,
 };
 use fe_sync::endpoint::SyncEndpoint;
-use fe_sync::tileset_transfer::{download_tag, DOWNLOAD_TAG_PREFIX, LEDGER_FILE};
+use fe_sync::tileset_transfer::{
+    download_tag, TransferLimits, DOWNLOAD_TAG_PREFIX, LEDGER_FILE, MAX_HASH_SEQ_CHILDREN,
+};
 use fe_sync::{
     ChunkError, DocsStack, IrohBlobTransport, RelayConfig, TilesetTransfer, TransferError,
     TransferEvent,
@@ -189,13 +191,19 @@ async fn an_interrupted_download_resumes_after_restart_without_refetching() {
         .unwrap();
 
     {
+        // A full download is interrupted after bundles 0-1 (alice cannot
+        // serve 2-3 yet), so its ledger is marked for resume.
+        alice.withhold(source.chunk_hash(2));
+        alice.withhold(source.chunk_hash(3));
         let before_restart = service(&network.transport("bob"), bob_dir.path());
-        before_restart
-            .request_meta(&[alice.provider_ref()], "coast", entry.root)
+        let first = before_restart
+            .start_download(&[alice.provider_ref()], "coast", entry.root, None)
             .await
             .unwrap();
-        before_restart.fetch_chunk("coast", 0).await.unwrap();
-        before_restart.fetch_chunk("coast", 1).await.unwrap();
+        assert_eq!(first.stored, vec![0, 1]);
+        assert!(first.complete.is_none());
+        alice.repair(source.chunk_hash(2));
+        alice.repair(source.chunk_hash(3));
     }
 
     // Alice can no longer serve the root, the index or bundles 0-1, and the
@@ -216,9 +224,10 @@ async fn an_interrupted_download_resumes_after_restart_without_refetching() {
         (
             pending[0].received,
             pending[0].total,
-            pending[0].index_present
+            pending[0].index_present,
+            pending[0].full_download
         ),
-        (2, 4, true)
+        (2, 4, true, true)
     );
 
     let reports = after_restart.resume_all(None).await.unwrap();
@@ -320,6 +329,164 @@ async fn a_tileset_id_that_escapes_the_download_dir_is_refused() {
     );
 }
 
+/// S8b: a provider serving bundles over the service's per-bundle cap gets
+/// every bundle refused, and nothing of them is written to disk.
+#[tokio::test]
+async fn an_oversized_bundle_is_refused_and_never_persisted() {
+    let network = InMemoryNetwork::new();
+    let (alice, bob) = (network.transport("alice"), network.transport("bob"));
+    let (alice_dir, bob_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let source = SourceTileset::write(&alice_dir.path().join("bundles"), "bloat", 2);
+    let entry = service(&alice, alice_dir.path())
+        .publish("bloat", source.index_json.clone(), &source.bundle_paths)
+        .await
+        .unwrap();
+
+    let fetcher = service(&bob, bob_dir.path()).with_limits(TransferLimits {
+        max_chunk_bytes: BUNDLE_BYTES - 1,
+        ..TransferLimits::default()
+    });
+    let report = fetcher
+        .start_download(&[alice.provider_ref()], "bloat", entry.root, None)
+        .await
+        .unwrap();
+    assert_eq!(report.failed.len(), 2, "{:?}", report.failed);
+    assert!(report.stored.is_empty());
+    assert!(report.complete.is_none());
+    let download_dir = fetcher.download_dir("bloat").unwrap();
+    assert!(
+        files_under(&download_dir)
+            .iter()
+            .all(|p| p.extension().is_none_or(|ext| ext != "bundle")),
+        "no over-cap bundle reached disk"
+    );
+    assert!(!bob.has_local(&source.chunk_hash(0)));
+}
+
+/// S8b: a download stops once its bundles pass the total byte cap, never completes, and says why.
+#[tokio::test]
+async fn a_download_over_its_total_byte_cap_stops_without_completing() {
+    let network = InMemoryNetwork::new();
+    let (alice, bob) = (network.transport("alice"), network.transport("bob"));
+    let (alice_dir, bob_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let source = SourceTileset::write(&alice_dir.path().join("bundles"), "sprawl", 8);
+    let entry = service(&alice, alice_dir.path())
+        .publish("sprawl", source.index_json.clone(), &source.bundle_paths)
+        .await
+        .unwrap();
+
+    let cap = (BUNDLE_BYTES * 2) as u64;
+    let fetcher = service(&bob, bob_dir.path()).with_limits(TransferLimits {
+        max_download_bytes: cap,
+        ..TransferLimits::default()
+    });
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    fetcher
+        .request_meta(&[alice.provider_ref()], "sprawl", entry.root)
+        .await
+        .unwrap();
+    match fetcher.download("sprawl", Some(&tx)).await {
+        Err(TransferError::DownloadTooLarge {
+            bytes,
+            cap: reported,
+        }) => {
+            assert_eq!(reported, cap);
+            assert!(bytes > cap);
+        }
+        other => panic!("expected DownloadTooLarge, got {other:?}"),
+    }
+    while let Ok(event) = rx.try_recv() {
+        assert!(
+            !matches!(event, TransferEvent::Complete(_)),
+            "an over-cap download never reports completion"
+        );
+    }
+    let stored = files_under(&fetcher.download_dir("sprawl").unwrap())
+        .iter()
+        .filter(|p| p.extension().is_some_and(|ext| ext == "bundle"))
+        .count();
+    assert!(
+        stored < 8,
+        "the download stopped early ({stored} bundles stored)"
+    );
+}
+
+/// S8b: bundles fetched one at a time for streaming (`fetch_chunk`, the
+/// path a peer-replicated petal can trigger) stay a cache — a restart never
+/// grows them into a full download, so nothing more is fetched or installed.
+#[tokio::test]
+async fn a_streamed_bundle_cache_is_not_resumed_as_a_full_download() {
+    let network = InMemoryNetwork::new();
+    let alice = network.transport("alice");
+    let (alice_dir, bob_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let source = SourceTileset::write(&alice_dir.path().join("bundles"), "cache", 4);
+    let entry = service(&alice, alice_dir.path())
+        .publish("cache", source.index_json.clone(), &source.bundle_paths)
+        .await
+        .unwrap();
+    {
+        let streamer = service(&network.transport("bob"), bob_dir.path());
+        streamer
+            .request_meta(&[alice.provider_ref()], "cache", entry.root)
+            .await
+            .unwrap();
+        streamer.fetch_chunk("cache", 0).await.unwrap();
+    }
+
+    let restarted = service(&network.transport("bob-restarted"), bob_dir.path());
+    let pending = restarted.pending_downloads().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(!pending[0].full_download);
+    assert!(restarted.resume_all(None).await.unwrap().is_empty());
+    let bundles = files_under(&restarted.download_dir("cache").unwrap())
+        .iter()
+        .filter(|p| p.extension().is_some_and(|ext| ext == "bundle"))
+        .count();
+    assert_eq!(bundles, 1, "only the streamed bundle is on disk");
+}
+
+/// S8b resume-ledger tampering: a `download.json` whose bundle list no
+/// longer hashes to its root is skipped on restart, so nothing is fetched
+/// for it and no provider it names is dialed.
+#[tokio::test]
+async fn a_tampered_ledger_is_never_resumed() {
+    let network = InMemoryNetwork::new();
+    let alice = network.transport("alice");
+    let (alice_dir, bob_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let source = SourceTileset::write(&alice_dir.path().join("bundles"), "mesa", 3);
+    let entry = service(&alice, alice_dir.path())
+        .publish("mesa", source.index_json.clone(), &source.bundle_paths)
+        .await
+        .unwrap();
+    let ledger_path = {
+        let before = service(&network.transport("bob"), bob_dir.path());
+        before
+            .request_meta(&[alice.provider_ref()], "mesa", entry.root)
+            .await
+            .unwrap();
+        before.download_dir("mesa").unwrap().join(LEDGER_FILE)
+    };
+
+    let mut ledger: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&ledger_path).unwrap()).unwrap();
+    ledger["chunk_hashes"][1] = serde_json::json!(hex::encode([0xAB; 32]));
+    ledger["provider_candidates"] = serde_json::json!(["mallory"]);
+    std::fs::write(&ledger_path, serde_json::to_vec(&ledger).unwrap()).unwrap();
+
+    let restarted = service(&network.transport("bob-restarted"), bob_dir.path());
+    assert!(
+        restarted.pending_downloads().await.unwrap().is_empty(),
+        "a ledger that no longer hashes to its root is not trusted"
+    );
+    assert!(restarted.resume_all(None).await.unwrap().is_empty());
+    assert!(
+        files_under(&restarted.download_dir("mesa").unwrap())
+            .iter()
+            .all(|p| p.extension().is_none_or(|ext| ext != "bundle")),
+        "nothing was fetched for the tampered ledger"
+    );
+}
+
 /// Bind a hermetic loopback endpoint; `None` where UDP binding is unavailable.
 async fn loopback_endpoint(seed: u8) -> Option<SyncEndpoint> {
     match SyncEndpoint::new(
@@ -363,21 +530,39 @@ async fn iroh_transport_round_trips_a_hash_seq_on_loopback() {
 
     let bob_transport = Arc::new(IrohBlobTransport::from_stack(&bob_stack));
     let children = bob_transport
-        .fetch_hash_seq(&provider, entry.root)
+        .fetch_hash_seq(&provider, entry.root, MAX_HASH_SEQ_CHILDREN)
         .await
         .expect("root over loopback");
     let mut expected = vec![content_hash(&source.index_json)];
     expected.extend((0..3).map(|seq| source.chunk_hash(seq)));
     assert_eq!(children, expected);
     assert_eq!(
-        bob_transport.fetch(&provider, children[2]).await.unwrap(),
+        bob_transport
+            .fetch(&provider, children[2], BUNDLE_BYTES as u64)
+            .await
+            .unwrap(),
         Bytes::from(source.bundles[1].clone())
+    );
+    // S8b: the BAO-verified size is asked first, so an over-cap blob is
+    // refused before any of its content lands in bob's store.
+    assert!(
+        bob_transport
+            .fetch(&provider, children[3], BUNDLE_BYTES as u64 - 1)
+            .await
+            .is_err(),
+        "a blob over the cap is refused"
+    );
+    assert_eq!(
+        bob_transport.local_size(children[3]).await.unwrap(),
+        None,
+        "the refused blob never entered the local store"
     );
     assert!(
         bob_transport
             .fetch(
                 &ProviderRef::new("https://example.invalid/blob"),
-                children[3]
+                children[3],
+                BUNDLE_BYTES as u64
             )
             .await
             .is_err(),

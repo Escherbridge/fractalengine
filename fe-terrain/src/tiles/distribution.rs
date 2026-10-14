@@ -175,6 +175,8 @@ pub fn assemble_chunks(
     let mut base_meta: Option<TilesetMeta> = None;
     let mut seen_chunks: Vec<u32> = Vec::new();
     let mut expected_total: Option<u32> = None;
+    // S8b: the merged tiles must fit what `install_tileset` will re-import.
+    let mut merged_bytes: u64 = 0;
 
     for (i, archive_bytes) in chunk_archives.iter().enumerate() {
         let data = fe_format::HexonArchive::import(archive_bytes)
@@ -209,6 +211,14 @@ pub fn assemble_chunks(
             expected_total = Some(chunk_idx.total_chunks);
         }
 
+        if chunk_idx.chunk_seq >= chunk_idx.total_chunks {
+            bail!(
+                "chunk {i} seq {} is outside total_chunks {}",
+                chunk_idx.chunk_seq,
+                chunk_idx.total_chunks
+            );
+        }
+
         if seen_chunks.contains(&chunk_idx.chunk_seq) {
             tracing::warn!(
                 chunk_seq = chunk_idx.chunk_seq,
@@ -217,6 +227,20 @@ pub fn assemble_chunks(
             continue;
         }
         seen_chunks.push(chunk_idx.chunk_seq);
+
+        merged_bytes = data
+            .elevation_tiles
+            .iter()
+            .chain(data.satellite_tiles.iter())
+            .fold(merged_bytes, |sum, (_, bytes)| {
+                sum.saturating_add(bytes.len() as u64)
+            });
+        if merged_bytes > fe_format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES {
+            bail!(
+                "assembled tiles exceed {} bytes",
+                fe_format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES
+            );
+        }
 
         // Merge tiles
         for (key, bytes) in data.elevation_tiles {

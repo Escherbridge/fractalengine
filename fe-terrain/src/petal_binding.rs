@@ -25,6 +25,25 @@ pub fn terrain_config_from_petal_json(value: &serde_json::Value) -> Option<Terra
     }
 }
 
+/// The petal's `cache_dir` when it is a relative path of safe components, else `None`.
+///
+/// S8b: petal terrain replicates from peers, so `cache_dir` is untrusted —
+/// an absolute or traversing path must never reach `DiskTileCache` (which
+/// deletes `.tile`/`.hash` files it cannot verify). See `src/AGENTS.md` §petal_binding.
+pub fn safe_cache_dir(cache_dir: &str) -> Option<std::path::PathBuf> {
+    if cache_dir.is_empty() {
+        return None;
+    }
+    let mut out = std::path::PathBuf::new();
+    for part in cache_dir.split('/') {
+        if !fe_format::is_safe_path_id(part) {
+            return None;
+        }
+        out.push(part);
+    }
+    Some(out)
+}
+
 /// Default [`TerrainConfig`] using an installed tileset as the petal's map.
 pub fn config_for_tileset(info: &crate::tiles::TilesetInfo) -> TerrainConfig {
     // bounds = [min_lat, min_lon, max_lat, max_lon] (see hexon_source.rs covers()).
@@ -239,13 +258,14 @@ mod render_support {
                     }
                 }
                 composite.set_tile_source_mode(config.tile_source_mode.clone());
-                if config.cache_dir.is_empty() {
-                    tracing::warn!("terrain cache_dir is empty; skipping disk tile cache");
-                } else {
-                    composite.set_cache(DiskTileCache::new(
-                        config.cache_dir.clone(),
-                        DEFAULT_TILE_CACHE_BYTES,
-                    ));
+                match super::safe_cache_dir(&config.cache_dir) {
+                    Some(dir) => {
+                        composite.set_cache(DiskTileCache::new(dir, DEFAULT_TILE_CACHE_BYTES))
+                    }
+                    None => tracing::warn!(
+                        cache_dir = %config.cache_dir,
+                        "terrain cache_dir is empty or not a safe relative path; skipping disk tile cache"
+                    ),
                 }
                 // Ground the projection: mesh world-Y = elevation − origin_ele, so an
                 // unset origin_ele leaves real terrain far above the camera. The center
@@ -333,6 +353,30 @@ mod tests {
             elevation_encoding: Some(ElevationEncoding::TerrainRgb),
             native_scale: None,
             scale_bounds: None,
+        }
+    }
+
+    /// S8b: a replicated petal's `cache_dir` only reaches the disk cache as a
+    /// relative path of safe components — never absolute, traversing or a device.
+    #[test]
+    fn safe_cache_dir_table() {
+        for (raw, expected) in [
+            ("terrain_cache", Some("terrain_cache")),
+            ("caches/terrain-v2", Some("caches/terrain-v2")),
+            ("", None),
+            ("../outside", None),
+            ("caches/../../etc", None),
+            ("/etc", None),
+            (r"C:\Windows", None),
+            ("C:/Windows", None),
+            ("caches//x", None),
+            ("NUL", None),
+        ] {
+            assert_eq!(
+                safe_cache_dir(raw),
+                expected.map(|p| p.split('/').collect::<std::path::PathBuf>()),
+                "{raw:?}"
+            );
         }
     }
 

@@ -88,6 +88,27 @@ request, so tampered bytes reach the caller but never the store. Callers
 a transport's verification. The iroh impl is `fe_sync::IrohBlobTransport`
 (`fe-sync/src/AGENTS.md` §tileset-transfer).
 
+**Size caps are part of the contract (S8b).** `fetch(provider, hash,
+max_bytes)` and `fetch_hash_seq(provider, root, max_children)` take the
+caller's cap; a transport that can learn a blob's size before downloading it
+(iroh: BAO-verified size) must refuse an over-cap blob before its bytes enter
+the store, and every transport refuses it before returning
+(`ensure_within_cap`). The cap is the caller's because only the caller knows
+what the blob is (bundle, index, HashSeq root). See `fe-sync/src/AGENTS.md`
+§tileset-security.
+
+## §safe-id (S8b, 2026-10-14)
+
+`safe_id::is_safe_path_id` is the ONE guard for an untrusted content id
+(tileset/hexon id) that becomes a path component, file stem or tag suffix:
+`[A-Za-z0-9_.-]`, non-empty, not `.`/`..`, at most 128 bytes, and no Windows
+device stem (`CON`, `NUL.x`, `COM1`, … — `CON.hexon` opens the console, not
+a file). It lives here because every crate that joins such ids depends on
+fe-runtime: fe-sync (`is_safe_tileset_id`), fe-format (re-exported as
+`fe_format::is_safe_path_id`, which fe-terrain's `HexonStore` and
+`safe_cache_dir` use) and fe-database (inbound petal terrain). Before S8b
+there were three hand-copied charsets, and only fe-sync's refused device names.
+
 ## §ktx2-guard (RUSTSEC-2026-0344 interim mitigation, 2026-10-13)
 
 `ktx2_guard.rs` refuses glTF assets that would reach bevy's KTX2 decoder,

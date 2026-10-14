@@ -61,13 +61,11 @@ pub const UNSAFE_HEXON_ID_ERROR: &str = "unsafe hexon_id (path traversal guard)"
 /// direct call — so it is the single choke point for this guard. S4 makes
 /// P2P-assembled installs (where `hexon_id` is the peer-advertised
 /// `tileset_id`, untrusted) reachable before PAS-P5's signing lands.
-fn is_safe_hexon_id(id: &str) -> bool {
-    !id.is_empty()
-        && id != "."
-        && id != ".."
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+///
+/// S8b: delegates to the one shared guard (`fe_format::is_safe_path_id`),
+/// which also refuses Windows device stems (`CON`, `NUL.x`) and over-long ids.
+pub fn is_safe_hexon_id(id: &str) -> bool {
+    fe_format::is_safe_path_id(id)
 }
 
 /// Backfill missing `native_scale`/`ground_sample_distance_m` on a loaded
@@ -209,6 +207,9 @@ impl HexonStore {
     /// Deletes the `.hexon` file, the `.meta.json` file, and the registry entry.
     /// Missing files are ignored (best-effort cleanup).
     pub fn remove_tileset(&self, hexon_id: &str) -> Result<()> {
+        if !is_safe_hexon_id(hexon_id) {
+            bail!("{UNSAFE_HEXON_ID_ERROR}: {hexon_id:?}");
+        }
         let hexon_path = self.hexon_path(hexon_id);
         let meta_path = self.meta_path(hexon_id);
 
@@ -449,6 +450,36 @@ mod tests {
         assert_eq!(store.list_installed().len(), 0);
         assert!(!dir.join("tileset-rm.hexon").exists());
         assert!(!dir.join("tileset-rm.meta.json").exists());
+    }
+
+    /// S8b: a peer-declared id naming a Windows device (`CON.hexon` opens the
+    /// console, not a file) is refused at install, and `remove_tileset` never
+    /// joins a traversing id into a path — a sibling file outside the store survives.
+    #[test]
+    fn device_and_traversing_ids_never_reach_the_filesystem() {
+        let (store, dir) = temp_store();
+        for id in ["CON", "nul.part", "lpt1"] {
+            let err = store
+                .install_tileset(&make_hexon_bytes(id))
+                .expect_err("device id refused");
+            assert!(err.to_string().contains(UNSAFE_HEXON_ID_ERROR), "{err:#}");
+        }
+        assert!(store.list_installed().is_empty());
+
+        let outside = dir.with_extension("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let victim = outside.join("victim.hexon");
+        std::fs::write(&victim, b"keep me").unwrap();
+        let traversing = format!(
+            "../{}/victim",
+            outside.file_name().unwrap().to_string_lossy()
+        );
+        let err = store
+            .remove_tileset(&traversing)
+            .expect_err("traversing id refused");
+        assert!(err.to_string().contains(UNSAFE_HEXON_ID_ERROR), "{err:#}");
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep me");
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[test]

@@ -160,8 +160,8 @@ fn a_bundled_tileset_reassembles_to_identical_tiles() {
         paths.push(path);
     }
 
-    let installed =
-        assemble_bundles(&store, &bundled.index, &paths).expect("assemble_bundles failed");
+    let installed = assemble_bundles(&store, "synthetic-multizoom", &bundled.index, &paths)
+        .expect("assemble_bundles failed");
     let loaded = store
         .load_tileset(&installed.hexon_id)
         .expect("load_tileset failed");
@@ -298,7 +298,7 @@ fn assembly_rejects_a_bundle_whose_hash_disagrees_with_the_index() {
         paths.push(path);
     }
 
-    let err = assemble_bundles(&store, &tampered_index, &paths)
+    let err = assemble_bundles(&store, "synthetic-multizoom", &tampered_index, &paths)
         .expect_err("a bundle whose hash disagrees with the index must be rejected");
     assert!(
         err.to_string().contains("seq 1"),
@@ -308,6 +308,79 @@ fn assembly_rejects_a_bundle_whose_hash_disagrees_with_the_index() {
         store.list_installed().is_empty(),
         "nothing should be installed when a bundle hash disagrees with the index"
     );
+}
+
+/// S8b mandatory finding #2 (automated review of S4 `3d89b60`): a provider
+/// advertising tileset X whose index (or bundles) declare Y must never
+/// overwrite the user's installed Y — the install is bound to the id that
+/// was requested, and the installed tileset stays byte-for-byte untouched.
+#[test]
+fn a_peer_index_naming_another_tileset_never_overwrites_it() {
+    let store = temp_store();
+    let victim_meta = TilesetMeta {
+        bounds: [45.0, -122.0, 46.0, -121.0],
+        min_zoom: 5,
+        max_zoom: 5,
+        tile_size: 256,
+        elevation_encoding: ElevationEncoding::TerrainRgb,
+        tile_count: 1,
+        region_name: "Victim Region".into(),
+        ..Default::default()
+    };
+    let victim = HexonArchive::export_tileset(
+        test_manifest("victim"),
+        &victim_meta,
+        &[("5/1/1".to_string(), pseudo_random_bytes("victim", 512))],
+        &[],
+        None,
+    )
+    .unwrap();
+    store.install_tileset(&victim).expect("victim installs");
+    let victim_path = store.base_dir().join("victim.hexon");
+    let before = std::fs::read(&victim_path).unwrap();
+
+    // The attacker bundles its own tiles under the victim's id.
+    let mut attacker = synthetic_tileset();
+    attacker.manifest.hexon_id = "victim".to_string();
+    let bundled = bundle_tileset(&attacker, BUNDLE_CAP).expect("bundle_tileset failed");
+    let dir = store.base_dir().join("incoming");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut paths = Vec::new();
+    for (seq, bytes) in bundled.bundles.iter().enumerate() {
+        let path = dir.join(format!("{seq}.bundle"));
+        std::fs::write(&path, bytes).unwrap();
+        paths.push(path);
+    }
+
+    // 1. The index itself names the victim while the user asked for "valley".
+    let err = fe_terrain::tiles::assemble_bundles_from_index_json(
+        &store,
+        "valley",
+        &bundled.index_json,
+        &paths,
+    )
+    .expect_err("an index naming another tileset is refused");
+    assert!(err.to_string().contains("requested"), "{err:#}");
+
+    // 2. The index is relabelled to the requested id, but the bundles still
+    //    declare the victim: refused at the per-bundle ChunkIndex check.
+    let mut relabelled = bundled.index.clone();
+    relabelled.tileset_id = "valley".to_string();
+    let err = assemble_bundles(&store, "valley", &relabelled, &paths)
+        .expect_err("bundles naming another tileset are refused");
+    assert!(format!("{err:#}").contains("victim"), "{err:#}");
+
+    assert_eq!(
+        std::fs::read(&victim_path).unwrap(),
+        before,
+        "the installed tileset is untouched"
+    );
+    let installed: Vec<String> = store
+        .list_installed()
+        .into_iter()
+        .map(|t| t.hexon_id)
+        .collect();
+    assert_eq!(installed, vec!["victim".to_string()]);
 }
 
 #[test]

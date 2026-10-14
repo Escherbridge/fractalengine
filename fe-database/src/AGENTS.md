@@ -424,6 +424,16 @@ one sub-module per domain:
   `replicate_row_with_petal` — closes the prior parity gap (this write used to
   neither op-log nor replicate, while S6's own render-distance write would
   otherwise have carried the whole row, `terrain` included, unvalidated).
+  **Petal terrain trust (S8b).** `replicated_row::is_valid_inbound_petal_terrain`
+  is the strictest-reader shape check: a JSON object of at most 64 KiB whose
+  `tileset_hexon_uris` are `fe_runtime::safe_id::is_safe_path_id` ids, whose
+  `cache_dir` (a filesystem path the disk tile cache reads and prunes) is
+  relative safe components only, and which carries no
+  `elevation_api_key_env` (which env var a node reads a secret from is
+  never a peer's choice). The inbound gate denies the WHOLE row on failure,
+  and the LOCAL writer (`set_petal_terrain_handler`) runs the same check
+  before the op-log, so this node never writes a row its peers would deny.
+  fe-terrain's `safe_cache_dir` re-checks `cache_dir` at the reader.
 - `petal_render_distance` — "Petal render distance" (p2p_asset_streaming S6):
   `set_petal_render_distance_handler` resolves the petal's scope →
   `visibility_groups::authorize_edit` (Editor+, the SAME gate `SetScopeHidden`

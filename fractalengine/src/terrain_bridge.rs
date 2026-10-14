@@ -1,7 +1,7 @@
 //! Bridges DB petal-terrain results and UI hexon ops into fe-terrain. See AGENTS.md §petal-map
 //! and §tileset-p2p.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use bevy::prelude::*;
@@ -351,8 +351,10 @@ fn assemble_and_install(
     bundle_paths: &[std::path::PathBuf],
 ) -> anyhow::Result<()> {
     let index_json = std::fs::read(index_path)?;
+    // S8b: bound to the REQUESTED id — a peer index naming another tileset is refused.
     fe_terrain::tiles::assemble_bundles_from_index_json(
         registry.store(),
+        tileset_id,
         &index_json,
         bundle_paths,
     )?;
@@ -410,6 +412,24 @@ pub struct StreamedTilesetState {
     meta_failed: HashSet<String>,
     /// `(tileset_id, bundle_seq)` pairs with a `RequestChunk` in flight.
     chunk_requested: HashSet<(String, u32)>,
+    /// S8b demand-storm guard: per failed bundle, consecutive failures and
+    /// the instant before which it is not requested again.
+    chunk_backoff: HashMap<(String, u32), (u32, std::time::Instant)>,
+}
+
+/// Shortest wait before a failed streamed bundle is requested again.
+pub const STREAMED_RETRY_BASE: std::time::Duration = std::time::Duration::from_secs(2);
+/// Longest wait between retries of a repeatedly failing streamed bundle.
+pub const STREAMED_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(120);
+/// Largest streamed bundle file decoded (the transfer's per-bundle cap).
+pub const MAX_STREAMED_BUNDLE_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Exponential backoff after `failures` consecutive failures of one bundle (capped).
+pub fn streamed_retry_delay(failures: u32) -> std::time::Duration {
+    let doublings = failures.saturating_sub(1).min(16);
+    STREAMED_RETRY_BASE
+        .saturating_mul(1u32 << doublings)
+        .min(STREAMED_RETRY_MAX)
 }
 
 /// One streamed bundle, decoded off-thread (file read + archive import never
@@ -505,13 +525,15 @@ pub fn drive_streamed_tilesets(
                         // through `TilesetEventBuffer`.
                         continue;
                     }
+                    state.chunk_backoff.remove(&(tileset_id.clone(), chunk_seq));
                     let Some(tx) = bundle_tx.as_ref().map(|t| t.0.clone()) else {
                         continue;
                     };
                     std::thread::spawn(move || {
-                        let outcome = std::fs::read(&path)
-                            .map_err(anyhow::Error::from)
-                            .and_then(|bytes| HexonTileSource::from_archive(&bytes));
+                        // S8b: peer bytes — size-capped before the read and
+                        // decoded under the streamed-bundle zip-bomb budget.
+                        let outcome = read_streamed_bundle(&path)
+                            .and_then(|bytes| HexonTileSource::from_streamed_bundle(&bytes));
                         match outcome {
                             Ok(source) => {
                                 if tx
@@ -536,13 +558,24 @@ pub fn drive_streamed_tilesets(
                     chunk_seq,
                     reason,
                 } => {
+                    let key = (tileset_id.clone(), chunk_seq);
+                    if !state.chunk_requested.remove(&key) {
+                        continue;
+                    }
+                    let failures = state
+                        .chunk_backoff
+                        .get(&key)
+                        .map_or(1, |(failures, _)| failures.saturating_add(1));
+                    let delay = streamed_retry_delay(failures);
                     state
-                        .chunk_requested
-                        .remove(&(tileset_id.clone(), chunk_seq));
+                        .chunk_backoff
+                        .insert(key, (failures, std::time::Instant::now() + delay));
                     tracing::warn!(
                         tileset_id,
                         chunk_seq,
                         reason,
+                        failures,
+                        retry_in = ?delay,
                         "streamed bundle fetch failed"
                     );
                 }
@@ -580,6 +613,18 @@ pub fn drive_streamed_tilesets(
     }
 }
 
+/// Read one streamed bundle file, refusing it past [`MAX_STREAMED_BUNDLE_FILE_BYTES`].
+fn read_streamed_bundle(path: &std::path::Path) -> anyhow::Result<Vec<u8>> {
+    let len = std::fs::metadata(path)?.len();
+    if len > MAX_STREAMED_BUNDLE_FILE_BYTES {
+        anyhow::bail!(
+            "streamed bundle {} is {len} bytes (cap {MAX_STREAMED_BUNDLE_FILE_BYTES})",
+            path.display()
+        );
+    }
+    Ok(std::fs::read(path)?)
+}
+
 /// Applies decoded streamed bundles into the active composite (the one step
 /// needing the main thread — decoding itself already ran off-thread).
 pub fn drain_streamed_bundle_results(
@@ -605,9 +650,18 @@ pub fn request_demanded_bundles(
     let Some(sender) = sync_sender.as_ref() else {
         return;
     };
+    let now = std::time::Instant::now();
     for (tileset_id, seq) in demand.wanted() {
         let key = (tileset_id.clone(), *seq);
         if state.chunk_requested.contains(&key) {
+            continue;
+        }
+        // S8b: a failing bundle waits out its backoff instead of re-requesting every frame.
+        if state
+            .chunk_backoff
+            .get(&key)
+            .is_some_and(|(_, retry_at)| *retry_at > now)
+        {
             continue;
         }
         if let Err(e) = sender.0.send(fe_sync::SyncCommand::RequestChunk {
@@ -910,6 +964,129 @@ mod tests {
             Some(&[1u8, 2, 3, 4, 5, 6, 7, 8][..]),
             "a tile reads back byte-identical through the registry"
         );
+    }
+
+    /// S8b mandatory finding #2, host wiring: a completed download whose
+    /// index names a DIFFERENT tileset than the one requested is refused by
+    /// `assemble_and_install`, and the already-installed tileset of that
+    /// other id keeps its bytes.
+    #[test]
+    fn a_download_naming_another_tileset_never_overwrites_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = fe_terrain::tiles::HexonStore::with_dir(tmp.path().join("hexons"))
+            .expect("fresh hexon store");
+        let victim = fe_format::HexonArchive::export_tileset(
+            synthetic_tileset_manifest("victim"),
+            synthetic_tileset("victim").tileset_meta.as_ref().unwrap(),
+            &[("10/0/0".to_string(), vec![42u8; 8])],
+            &[],
+            None,
+        )
+        .expect("export victim");
+        store.install_tileset(&victim).expect("install victim");
+        let victim_path = store.base_dir().join("victim.hexon");
+        let before = std::fs::read(&victim_path).unwrap();
+        let registry = fe_terrain::tiles::TilesetRegistry::new(store);
+
+        let bundles = fe_terrain::tiles::bundle_tileset(
+            &synthetic_tileset("victim"),
+            fe_terrain::tiles::DEFAULT_BUNDLE_BYTES,
+        )
+        .expect("bundle_tileset");
+        let download_dir = tmp.path().join("downloads").join("requested");
+        std::fs::create_dir_all(&download_dir).unwrap();
+        let index_path = download_dir.join("index.json");
+        std::fs::write(&index_path, &bundles.index_json).unwrap();
+        let mut bundle_paths = Vec::new();
+        for (seq, bytes) in bundles.bundles.iter().enumerate() {
+            let path = download_dir.join(format!("{seq}.bundle"));
+            std::fs::write(&path, bytes).unwrap();
+            bundle_paths.push(path);
+        }
+
+        let err = assemble_and_install(&registry, "requested", &index_path, &bundle_paths)
+            .expect_err("an index naming another tileset is refused");
+        assert!(err.to_string().contains("requested"), "{err:#}");
+        assert_eq!(std::fs::read(&victim_path).unwrap(), before);
+        let installed = registry.list_tilesets();
+        assert!(
+            installed.iter().all(|t| t.tileset_id != "requested"),
+            "{installed:?}"
+        );
+        assert_eq!(
+            registry.get_tile("victim", 10, 0, 0).as_deref(),
+            Some(&[42u8; 8][..]),
+            "the victim still serves its own tile"
+        );
+    }
+
+    /// S8b demand-storm guard: after a streamed bundle fails, the next
+    /// frames do NOT re-request it (the sync thread is not hammered at
+    /// frame rate); a bundle that never failed is still requested.
+    #[test]
+    fn a_failed_streamed_bundle_is_not_re_requested_every_frame() {
+        let (cmd_tx, cmd_rx) = crossbeam::channel::unbounded();
+        let mut app = App::new();
+        app.init_resource::<fe_sync::StreamedTilesetEventBuffer>()
+            .init_resource::<StreamedTilesetState>()
+            .init_resource::<fe_terrain::tiles::TileBundleDemand>()
+            .insert_resource(ActiveTileSource::default())
+            .insert_resource(fe_sync::SyncCommandSenderRes(cmd_tx));
+        app.add_systems(
+            Update,
+            (drive_streamed_tilesets, request_demanded_bundles).chain(),
+        );
+        app.world_mut()
+            .resource_mut::<fe_terrain::tiles::TileBundleDemand>()
+            .demand("ts", 0);
+
+        let requested = |rx: &crossbeam::channel::Receiver<fe_sync::SyncCommand>| {
+            rx.try_iter()
+                .filter(|cmd| matches!(cmd, fe_sync::SyncCommand::RequestChunk { .. }))
+                .count()
+        };
+        app.update();
+        assert_eq!(requested(&cmd_rx), 1, "first demand is requested");
+
+        app.world_mut()
+            .resource_mut::<fe_sync::StreamedTilesetEventBuffer>()
+            .events
+            .push(fe_sync::SyncEvent::ChunkFailed {
+                tileset_id: "ts".to_string(),
+                chunk_seq: 0,
+                reason: "hash mismatch".to_string(),
+            });
+        for _ in 0..5 {
+            app.update();
+        }
+        assert_eq!(
+            requested(&cmd_rx),
+            0,
+            "a failed bundle waits out its backoff"
+        );
+
+        app.world_mut()
+            .resource_mut::<fe_terrain::tiles::TileBundleDemand>()
+            .demand("ts", 1);
+        app.update();
+        assert_eq!(requested(&cmd_rx), 1, "other bundles are unaffected");
+    }
+
+    #[test]
+    fn streamed_retry_delay_grows_and_caps() {
+        let table = [
+            (1, STREAMED_RETRY_BASE),
+            (2, STREAMED_RETRY_BASE * 2),
+            (3, STREAMED_RETRY_BASE * 4),
+            (40, STREAMED_RETRY_MAX),
+        ];
+        for (failures, expected) in table {
+            assert_eq!(
+                streamed_retry_delay(failures),
+                expected,
+                "failures={failures}"
+            );
+        }
     }
 
     /// S7 flow test: a `ChunkReceived` for a bundle this node actually

@@ -148,6 +148,9 @@ enum Backing {
     Indexed(RwLock<Arc<IndexedArchive>>),
 }
 
+/// Total decoded bytes one streamed bundle may expand to (honest bundles are ~1 MiB).
+pub const STREAMED_BUNDLE_DECODE_BUDGET: u64 = 64 * 1024 * 1024;
+
 /// Tile source for one `.hexon` tileset.
 ///
 /// `get_*` lookups are resident-only (never touch the disk); `load_*_blocking`
@@ -162,6 +165,22 @@ impl HexonTileSource {
     /// Eagerly decode a tileset from raw `.hexon` archive bytes (tests, assembly, bundles).
     pub fn from_archive(bytes: &[u8]) -> Result<Self> {
         let data = HexonArchive::import(bytes).context("failed to import hexon archive")?;
+        Self::from_imported(data, Some(bytes))
+    }
+
+    /// Decode one peer-supplied streamed bundle under [`STREAMED_BUNDLE_DECODE_BUDGET`]
+    /// (S8b zip-bomb bound; bundles carry no baked splats, so none are read).
+    pub fn from_streamed_bundle(bytes: &[u8]) -> Result<Self> {
+        let data = HexonArchive::import_with_budget(bytes, STREAMED_BUNDLE_DECODE_BUDGET)
+            .context("failed to import streamed bundle")?;
+        Self::from_imported(data, None)
+    }
+
+    /// Build a memory-backed source from an imported archive; `splat_archive` is re-read for baked splats.
+    fn from_imported(
+        data: fe_format::HexonArchiveData,
+        splat_archive: Option<&[u8]>,
+    ) -> Result<Self> {
         let tileset_meta = data
             .tileset_meta
             .context("archive is missing tileset_meta (not a TerrainTileset hexon)")?;
@@ -179,7 +198,10 @@ impl HexonTileSource {
             }
         }
         // Best-effort (FR-5): a malformed/absent splats section never fails the load.
-        for (cache_key, splats) in read_baked_splats_from_archive(bytes).unwrap_or_default() {
+        let splats = splat_archive
+            .map(|bytes| read_baked_splats_from_archive(bytes).unwrap_or_default())
+            .unwrap_or_default();
+        for (cache_key, splats) in splats {
             if let Some(key) = parse_tile_key(&cache_key) {
                 tiles.insert(
                     (TileLayer::BakedSplats, key),

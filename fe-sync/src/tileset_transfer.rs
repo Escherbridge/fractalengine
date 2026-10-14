@@ -25,36 +25,49 @@ pub const DOWNLOADS_DIR: &str = "downloads";
 pub const LEDGER_FILE: &str = "download.json";
 /// Per-download index blob (HashSeq child 0) file name.
 pub const INDEX_FILE: &str = "index.json";
+/// Marker a full [`TilesetTransfer::download`] leaves; only marked downloads resume.
+pub const FULL_DOWNLOAD_MARKER: &str = "full-download";
 /// Ledger schema version.
 pub const LEDGER_SCHEMA: u32 = 1;
 /// Concurrent bundle fetches per download.
 pub const MAX_CONCURRENT_CHUNK_FETCHES: usize = 4;
 /// Longest accepted `tileset_id`.
-pub const MAX_TILESET_ID_LEN: usize = 128;
+pub const MAX_TILESET_ID_LEN: usize = fe_runtime::safe_id::MAX_SAFE_ID_LEN;
 /// Largest accepted bundle blob (bundles default to 1 MiB).
 pub const MAX_CHUNK_BYTES: usize = 64 * 1024 * 1024;
 /// Largest accepted index blob.
 pub const MAX_INDEX_BYTES: usize = 16 * 1024 * 1024;
-/// Most children accepted in a tileset HashSeq (index + bundles).
-pub const MAX_HASH_SEQ_CHILDREN: usize = 1 << 20;
+/// Most children accepted in a tileset HashSeq (index + 65 536 bundles).
+pub const MAX_HASH_SEQ_CHILDREN: usize = 1 + (1 << 16);
+/// Largest total bundle bytes one download may store (an install caps at 1 GiB decoded).
+pub const MAX_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Largest accepted `download.json` ledger file.
+pub const MAX_LEDGER_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Windows device names that must never become a directory component.
-const RESERVED_DEVICE_NAMES: &[&str] = &[
-    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
-    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
-];
-
-/// Whether `id` is safe as a path component and tag suffix (S1 hexon-id charset + caps).
+/// Whether `id` is safe as a path component and tag suffix (the shared `safe_id` guard).
 pub fn is_safe_tileset_id(id: &str) -> bool {
-    let stem = id.split('.').next().unwrap_or(id).to_ascii_lowercase();
-    !id.is_empty()
-        && id.len() <= MAX_TILESET_ID_LEN
-        && id != "."
-        && id != ".."
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
-        && !RESERVED_DEVICE_NAMES.contains(&stem.as_str())
+    fe_runtime::safe_id::is_safe_path_id(id)
+}
+
+/// Per-service size caps for peer-supplied blobs (see `src/AGENTS.md` §tileset-security).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransferLimits {
+    /// Largest accepted bundle blob.
+    pub max_chunk_bytes: usize,
+    /// Largest accepted index blob.
+    pub max_index_bytes: usize,
+    /// Largest total bundle bytes one download may store.
+    pub max_download_bytes: u64,
+}
+
+impl Default for TransferLimits {
+    fn default() -> Self {
+        Self {
+            max_chunk_bytes: MAX_CHUNK_BYTES,
+            max_index_bytes: MAX_INDEX_BYTES,
+            max_download_bytes: MAX_DOWNLOAD_BYTES,
+        }
+    }
 }
 
 /// The publish tag name for `tileset_id`.
@@ -77,7 +90,7 @@ pub enum ChunkError {
         /// BLAKE3 of the bytes received.
         actual: Hash32,
     },
-    /// The provider sent more than [`MAX_CHUNK_BYTES`].
+    /// The blob is over the service's bundle cap ([`TransferLimits::max_chunk_bytes`]).
     TooLarge {
         /// Bytes received.
         len: usize,
@@ -97,9 +110,7 @@ impl fmt::Display for ChunkError {
                 hash_to_hex(expected),
                 hash_to_hex(actual)
             ),
-            Self::TooLarge { len } => {
-                write!(f, "bundle too large: {len} bytes (cap {MAX_CHUNK_BYTES})")
-            }
+            Self::TooLarge { len } => write!(f, "bundle too large: {len} bytes"),
             Self::Unavailable(reason) => write!(f, "unavailable: {reason}"),
             Self::Io(reason) => write!(f, "io: {reason}"),
         }
@@ -137,6 +148,13 @@ pub enum TransferError {
     Transport(String),
     /// Local filesystem failure.
     Io(String),
+    /// The download stored more bundle bytes than [`TransferLimits::max_download_bytes`].
+    DownloadTooLarge {
+        /// Bundle bytes on disk when the cap tripped.
+        bytes: u64,
+        /// The cap.
+        cap: u64,
+    },
 }
 
 impl fmt::Display for TransferError {
@@ -153,6 +171,9 @@ impl fmt::Display for TransferError {
             Self::Chunk { seq, error } => write!(f, "chunk {seq}: {error}"),
             Self::Transport(reason) => write!(f, "transport: {reason}"),
             Self::Io(reason) => write!(f, "io: {reason}"),
+            Self::DownloadTooLarge { bytes, cap } => {
+                write!(f, "download stopped at {bytes} bytes (cap {cap})")
+            }
         }
     }
 }
@@ -260,6 +281,8 @@ pub struct ResumedDownload {
     pub total: u32,
     /// Whether the index blob file verifies.
     pub index_present: bool,
+    /// Whether a full download was asked for (else it is a streamed-bundle cache).
+    pub full_download: bool,
 }
 
 /// On-disk `download.json` (hashes hex-encoded).
@@ -299,6 +322,13 @@ impl Ledger {
     fn from_file(file: LedgerFile, dir: PathBuf) -> Result<Self, String> {
         if file.schema != LEDGER_SCHEMA {
             return Err(format!("unsupported ledger schema {}", file.schema));
+        }
+        if file.chunk_hashes.len() + 1 > MAX_HASH_SEQ_CHILDREN {
+            return Err(format!(
+                "ledger lists {} bundles (cap {})",
+                file.chunk_hashes.len(),
+                MAX_HASH_SEQ_CHILDREN - 1
+            ));
         }
         let hex = |s: &str| hash_from_hex(s).map_err(|e| e.to_string());
         let chunk_hashes = file
@@ -390,15 +420,16 @@ fn file_verifies(path: &Path, expected: &Hash32, cap: usize) -> bool {
     read_verified(path, expected, cap).is_some()
 }
 
-/// Seqs whose bundle files verify. Blocking.
-fn derive_received(ledger: &Ledger) -> Vec<bool> {
+/// Per seq, the byte length of its bundle file when it verifies. Blocking.
+fn derive_received(ledger: &Ledger, max_chunk_bytes: usize) -> Vec<Option<u64>> {
     (0..ledger.total())
         .map(|seq| {
-            file_verifies(
+            read_verified(
                 &ledger.chunk_path(seq),
                 &ledger.chunk_hashes[seq as usize],
-                MAX_CHUNK_BYTES,
+                max_chunk_bytes,
             )
+            .map(|bytes| bytes.len() as u64)
         })
         .collect()
 }
@@ -407,6 +438,7 @@ fn derive_received(ledger: &Ledger) -> Vec<bool> {
 pub struct TilesetTransfer {
     transport: Arc<dyn BlobTransport>,
     download_root: PathBuf,
+    limits: TransferLimits,
     catalog: Mutex<BTreeMap<String, CatalogEntry>>,
     ledgers: Mutex<HashMap<String, Arc<Ledger>>>,
 }
@@ -417,9 +449,21 @@ impl TilesetTransfer {
         Self {
             transport,
             download_root: download_root.into(),
+            limits: TransferLimits::default(),
             catalog: Mutex::new(BTreeMap::new()),
             ledgers: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The same service under explicit size caps (tests use small ones).
+    pub fn with_limits(mut self, limits: TransferLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// The size caps this service enforces.
+    pub fn limits(&self) -> TransferLimits {
+        self.limits
     }
 
     /// Service keeping downloads under `<p2p_dir>/downloads`.
@@ -680,9 +724,14 @@ impl TilesetTransfer {
                 total: ledger.total(),
             });
         }
-        store_chunk(Arc::clone(&self.transport), ledger, seq)
-            .await
-            .map_err(|error| TransferError::Chunk { seq, error })
+        store_chunk(
+            Arc::clone(&self.transport),
+            ledger,
+            seq,
+            self.limits.max_chunk_bytes,
+        )
+        .await
+        .map_err(|error| TransferError::Chunk { seq, error })
     }
 
     /// Fetch every missing bundle (bounded concurrency, provider fallback).
@@ -693,8 +742,17 @@ impl TilesetTransfer {
     ) -> Result<DownloadReport, TransferError> {
         let ledger = self.ledger(tileset_id).await?;
         self.ensure_index(&ledger).await?;
+        // S8b: only an explicitly requested full download is resumed at start-up.
+        let marker = ledger.dir.join(FULL_DOWNLOAD_MARKER);
+        blocking(move || {
+            std::fs::write(&marker, b"").map_err(|e| format!("writing {}: {e}", marker.display()))
+        })
+        .await?;
         let derive_from = Arc::clone(&ledger);
-        let mut received = blocking(move || Ok(derive_received(&derive_from))).await?;
+        let max_chunk_bytes = self.limits.max_chunk_bytes;
+        let sizes = blocking(move || Ok(derive_received(&derive_from, max_chunk_bytes))).await?;
+        let mut stored_bytes: u64 = sizes.iter().flatten().sum();
+        let mut received: Vec<bool> = sizes.iter().map(Option::is_some).collect();
         let mut missing = received
             .iter()
             .enumerate()
@@ -716,13 +774,20 @@ impl TilesetTransfer {
             failed: Vec::new(),
             complete: None,
         };
+        let cap = self.limits.max_download_bytes;
+        let mut over_cap = stored_bytes > cap;
         let mut in_flight = tokio::task::JoinSet::new();
         loop {
-            while in_flight.len() < MAX_CONCURRENT_CHUNK_FETCHES {
+            while !over_cap && in_flight.len() < MAX_CONCURRENT_CHUNK_FETCHES {
                 let Some(seq) = missing.next() else { break };
                 let transport = Arc::clone(&self.transport);
                 let ledger = Arc::clone(&ledger);
-                in_flight.spawn(async move { (seq, store_chunk(transport, ledger, seq).await) });
+                in_flight.spawn(async move {
+                    (
+                        seq,
+                        store_chunk(transport, ledger, seq, max_chunk_bytes).await,
+                    )
+                });
             }
             let Some(joined) = in_flight.join_next().await else {
                 break;
@@ -732,6 +797,8 @@ impl TilesetTransfer {
             match outcome {
                 Ok(chunk) => {
                     received[seq as usize] = true;
+                    stored_bytes = stored_bytes.saturating_add(chunk.byte_len);
+                    over_cap = stored_bytes > cap;
                     report.stored.push(seq);
                     emit(TransferEvent::ChunkStored {
                         tileset_id: tileset_id.to_string(),
@@ -751,6 +818,18 @@ impl TilesetTransfer {
         }
         report.stored.sort_unstable();
         report.failed.sort_by_key(|(seq, _)| *seq);
+        if over_cap {
+            tracing::warn!(
+                tileset_id,
+                stored_bytes,
+                cap,
+                "Tileset download over its byte cap — stopped"
+            );
+            return Err(TransferError::DownloadTooLarge {
+                bytes: stored_bytes,
+                cap,
+            });
+        }
         if received.iter().all(|ok| *ok) {
             let complete = CompletedDownload {
                 tileset_id: tileset_id.to_string(),
@@ -779,6 +858,7 @@ impl TilesetTransfer {
     /// Every persisted download under the root, with received counts re-derived from disk.
     pub async fn pending_downloads(&self) -> Result<Vec<ResumedDownload>, TransferError> {
         let root = self.download_root.clone();
+        let limits = self.limits;
         let found = blocking(move || {
             let entries = match std::fs::read_dir(&root) {
                 Ok(entries) => entries,
@@ -793,13 +873,14 @@ impl TilesetTransfer {
                 }
                 match read_ledger(&entry.path(), &name) {
                     Ok(ledger) => {
-                        let received = derive_received(&ledger);
+                        let received = derive_received(&ledger, limits.max_chunk_bytes);
                         let index_present = file_verifies(
                             &ledger.index_path(),
                             &ledger.index_hash,
-                            MAX_INDEX_BYTES,
+                            limits.max_index_bytes,
                         );
-                        found.push((ledger, received, index_present));
+                        let full_download = ledger.dir.join(FULL_DOWNLOAD_MARKER).is_file();
+                        found.push((ledger, received, index_present, full_download));
                     }
                     Err(e) => tracing::warn!(tileset_id = %name, "Skipping a bad ledger: {e}"),
                 }
@@ -809,12 +890,13 @@ impl TilesetTransfer {
         .await?;
         let mut out = Vec::with_capacity(found.len());
         let mut ledgers = lock(&self.ledgers);
-        for (ledger, received, index_present) in found {
+        for (ledger, received, index_present, full_download) in found {
             out.push(ResumedDownload {
                 tileset_id: ledger.tileset_id.clone(),
-                received: received.iter().filter(|ok| **ok).count() as u32,
+                received: received.iter().filter(|size| size.is_some()).count() as u32,
                 total: ledger.total(),
                 index_present,
+                full_download,
             });
             ledgers.insert(ledger.tileset_id.clone(), Arc::new(ledger));
         }
@@ -822,9 +904,11 @@ impl TilesetTransfer {
         Ok(out)
     }
 
-    /// Re-verify every persisted download and fetch only what is missing.
+    /// Re-verify every persisted full download and fetch only what is missing.
     ///
     /// Already-complete downloads are not re-run; [`Self::pending_downloads`] lists them.
+    /// A streamed-bundle cache (no [`FULL_DOWNLOAD_MARKER`]) is never grown into a
+    /// full download, and one failing download never blocks the others (S8b).
     pub async fn resume_all(
         &self,
         events: Option<&UnboundedSender<TransferEvent>>,
@@ -834,13 +918,26 @@ impl TilesetTransfer {
             if pending.received == pending.total && pending.index_present {
                 continue;
             }
+            if !pending.full_download {
+                tracing::debug!(
+                    tileset_id = %pending.tileset_id,
+                    "Streamed-bundle cache — not resumed as a full download"
+                );
+                continue;
+            }
             tracing::info!(
                 tileset_id = %pending.tileset_id,
                 received = pending.received,
                 total = pending.total,
                 "Resuming tileset download"
             );
-            reports.push(self.download(&pending.tileset_id, events).await?);
+            match self.download(&pending.tileset_id, events).await {
+                Ok(report) => reports.push(report),
+                Err(e) => tracing::warn!(
+                    tileset_id = %pending.tileset_id,
+                    "Resuming tileset download failed: {e}"
+                ),
+            }
         }
         Ok(reports)
     }
@@ -891,7 +988,11 @@ impl TilesetTransfer {
     ) -> Result<Vec<Hash32>, TransferError> {
         let mut last = String::from("no provider answered");
         for provider in providers {
-            match self.transport.fetch_hash_seq(provider, root).await {
+            match self
+                .transport
+                .fetch_hash_seq(provider, root, MAX_HASH_SEQ_CHILDREN)
+                .await
+            {
                 Ok(children) if hash_seq_root(&children) != root => {
                     last = "children do not hash to the root".to_string();
                 }
@@ -911,15 +1012,20 @@ impl TilesetTransfer {
     async fn ensure_index(&self, ledger: &Arc<Ledger>) -> Result<Bytes, TransferError> {
         let path = ledger.index_path();
         let expected = ledger.index_hash;
+        let max_index_bytes = self.limits.max_index_bytes;
         let on_disk =
-            blocking(move || Ok(read_verified(&path, &expected, MAX_INDEX_BYTES))).await?;
+            blocking(move || Ok(read_verified(&path, &expected, max_index_bytes))).await?;
         if let Some(bytes) = on_disk {
             return Ok(Bytes::from(bytes));
         }
         let mut last = String::from("no provider answered");
         for provider in &ledger.providers {
-            match self.transport.fetch(provider, expected).await {
-                Ok(bytes) if bytes.len() > MAX_INDEX_BYTES => {
+            match self
+                .transport
+                .fetch(provider, expected, max_index_bytes as u64)
+                .await
+            {
+                Ok(bytes) if bytes.len() > max_index_bytes => {
                     last = format!("index blob too large: {} bytes", bytes.len());
                 }
                 Ok(bytes) if content_hash(&bytes) != expected => {
@@ -955,6 +1061,15 @@ impl TilesetTransfer {
 /// Read and validate `<dir>/download.json` for `tileset_id`. Blocking.
 fn read_ledger(dir: &Path, tileset_id: &str) -> Result<Ledger, String> {
     let path = dir.join(LEDGER_FILE);
+    let len = std::fs::metadata(&path)
+        .map_err(|e| format!("reading {}: {e}", path.display()))?
+        .len();
+    if len > MAX_LEDGER_FILE_BYTES {
+        return Err(format!(
+            "{} is {len} bytes (cap {MAX_LEDGER_FILE_BYTES})",
+            path.display()
+        ));
+    }
     let raw = std::fs::read(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
     let file: LedgerFile =
         serde_json::from_slice(&raw).map_err(|e| format!("parsing {}: {e}", path.display()))?;
@@ -972,12 +1087,13 @@ async fn store_chunk(
     transport: Arc<dyn BlobTransport>,
     ledger: Arc<Ledger>,
     seq: u32,
+    max_chunk_bytes: usize,
 ) -> Result<StoredChunk, ChunkError> {
     let expected = ledger.chunk_hashes[seq as usize];
     let path = ledger.chunk_path(seq);
     let check_path = path.clone();
     let existing = tokio::task::spawn_blocking(move || {
-        read_verified(&check_path, &expected, MAX_CHUNK_BYTES).map(|bytes| bytes.len() as u64)
+        read_verified(&check_path, &expected, max_chunk_bytes).map(|bytes| bytes.len() as u64)
     })
     .await
     .map_err(|e| ChunkError::Io(format!("blocking task: {e}")))?;
@@ -990,7 +1106,7 @@ async fn store_chunk(
     }
 
     let mut last = match transport.read_local(expected).await {
-        Ok(Some(bytes)) => match verify_chunk(&bytes, expected) {
+        Ok(Some(bytes)) => match verify_chunk(&bytes, expected, max_chunk_bytes) {
             Ok(()) => return write_chunk(path, seq, bytes).await,
             Err(e) => e,
         },
@@ -998,8 +1114,11 @@ async fn store_chunk(
         Err(e) => ChunkError::Unavailable(format!("{e:#}")),
     };
     for provider in &ledger.providers {
-        match transport.fetch(provider, expected).await {
-            Ok(bytes) => match verify_chunk(&bytes, expected) {
+        match transport
+            .fetch(provider, expected, max_chunk_bytes as u64)
+            .await
+        {
+            Ok(bytes) => match verify_chunk(&bytes, expected, max_chunk_bytes) {
                 Ok(()) => return write_chunk(path, seq, bytes).await,
                 Err(e) => last = e,
             },
@@ -1011,8 +1130,8 @@ async fn store_chunk(
 }
 
 /// Size cap + BLAKE3 check of one bundle against its HashSeq child.
-fn verify_chunk(bytes: &[u8], expected: Hash32) -> Result<(), ChunkError> {
-    if bytes.len() > MAX_CHUNK_BYTES {
+fn verify_chunk(bytes: &[u8], expected: Hash32, max_chunk_bytes: usize) -> Result<(), ChunkError> {
+    if bytes.len() > max_chunk_bytes {
         return Err(ChunkError::TooLarge { len: bytes.len() });
     }
     let actual = content_hash(bytes);

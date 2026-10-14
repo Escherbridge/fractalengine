@@ -53,8 +53,18 @@ impl StreamedTileSource {
     /// resolved streamed index, so it never needs a production `fe_format`
     /// dependency just to deserialize it — the same reasoning as
     /// `assemble_bundles_from_index_json` (`tiles/bundle.rs`, S4).
+    ///
+    /// S8b: the index must name `tileset_id` — a peer answering for X with Y's
+    /// index is refused, so a streamed source never serves another tileset.
     pub fn from_meta_json(tileset_id: String, meta_json: &str) -> anyhow::Result<Self> {
         let index: TilesetBundleIndex = serde_json::from_str(meta_json)?;
+        if index.tileset_id != tileset_id {
+            anyhow::bail!(
+                "streamed index declares tileset {:?}, but {:?} was requested",
+                index.tileset_id,
+                tileset_id
+            );
+        }
         Ok(Self::new(tileset_id, index))
     }
 
@@ -393,6 +403,51 @@ mod tests {
             composite.streamed_resident_bytes(),
             0,
             "readout drops to zero"
+        );
+    }
+
+    /// S8b: a meta reply whose index names another tileset never becomes a
+    /// streamed source for the requested one; a matching index does.
+    #[test]
+    fn a_streamed_index_must_name_the_requested_tileset() {
+        let json = serde_json::to_string(&two_bundle_index()).unwrap();
+        let err = StreamedTileSource::from_meta_json("other-tileset".into(), &json)
+            .err()
+            .expect("a mismatched index is refused");
+        assert!(err.to_string().contains("requested"), "{err:#}");
+        let ok = StreamedTileSource::from_meta_json("streamed-test".into(), &json)
+            .expect("a matching index parses");
+        assert_eq!(ok.tileset_id(), "streamed-test");
+    }
+
+    /// S8b: a streamed bundle that inflates past the decode budget is refused
+    /// (zip-bomb bound) while an honest bundle decodes and serves its tile.
+    #[test]
+    fn a_streamed_bundle_over_the_decode_budget_is_refused() {
+        let honest = HexonTileSource::from_streamed_bundle(&bundle_archive(0, 3)).unwrap();
+        assert!(honest.resident_bytes() > 0);
+
+        let meta = TilesetMeta {
+            bounds: [-85.0, -180.0, 85.0, 180.0],
+            min_zoom: 10,
+            max_zoom: 10,
+            tile_size: 256,
+            elevation_encoding: ElevationEncoding::TerrainRgb,
+            tile_count: 2,
+            region_name: "bomb".into(),
+            ..Default::default()
+        };
+        let half = (super::super::hexon_source::STREAMED_BUNDLE_DECODE_BUDGET / 2 + 1) as usize;
+        let tiles = vec![
+            ("10/0/0".to_string(), vec![0u8; half]),
+            ("10/1/0".to_string(), vec![0u8; half]),
+        ];
+        let bomb =
+            fe_format::HexonArchive::export_tileset(manifest("bomb"), &meta, &tiles, &[], None)
+                .expect("export_tileset");
+        assert!(
+            HexonTileSource::from_streamed_bundle(&bomb).is_err(),
+            "over the streamed decode budget"
         );
     }
 

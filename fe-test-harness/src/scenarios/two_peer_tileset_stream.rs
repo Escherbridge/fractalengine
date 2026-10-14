@@ -111,7 +111,12 @@ fn assemble_and_read_back(
 ) -> Result<Vec<(String, Vec<u8>)>> {
     let index_json = std::fs::read(index_path)?;
     let store = HexonStore::with_dir(store_dir.to_path_buf())?;
-    fe_terrain::tiles::assemble_bundles_from_index_json(&store, &index_json, bundle_paths)?;
+    fe_terrain::tiles::assemble_bundles_from_index_json(
+        &store,
+        TILESET_ID,
+        &index_json,
+        bundle_paths,
+    )?;
     let registry = TilesetRegistry::new(store);
     registry.reload(TILESET_ID)?;
     let mut out = Vec::new();
