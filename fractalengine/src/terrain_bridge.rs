@@ -1,19 +1,20 @@
 //! Bridges DB petal-terrain results and UI hexon ops into fe-terrain. See AGENTS.md §petal-map
 //! and §tileset-p2p.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use bevy::prelude::*;
 
 use fe_runtime::messages::DbResult;
 use fe_terrain::petal_binding::{
-    terrain_config_from_petal_json, PetalTerrainAssignment, SharedTilesetRegistry,
-    TerrainAssignmentMsg,
+    terrain_config_from_petal_json, ActiveTileSource, PetalTerrainAssignment,
+    SharedTilesetRegistry, TerrainAssignmentMsg,
 };
 use fe_terrain::ruler_plugin::RulerSettings;
 use fe_terrain::splat::{view_mode_from_terrain_json, TerrainViewModeMsg};
 use fe_terrain::terrain_plugin::{ProposalOverlayBudget, MAX_PROPOSAL_OVERLAYS};
-use fe_terrain::tiles::TilesetRegistry;
+use fe_terrain::tiles::{HexonTileSource, StreamedTileSource, TileBundleDemand, TilesetRegistry};
 use fe_ui::navigation_manager::NavigationManager;
 use fe_ui::plugin::{
     ActiveDialog, HexonOp, InstalledTilesetDto, MeshInstanceBudget, PendingHexonOps,
@@ -365,6 +366,241 @@ pub fn drain_hexon_assemble_results(
     }
 }
 
+// ---------------------------------------------------------------------------
+// S7: streamed (not-installed) tilesets — tile pointer-set -> bundle demand
+// over P2P. See src/AGENTS.md §tileset-p2p, fe-terrain `src/AGENTS.md`
+// §streamed-tilesets.
+// ---------------------------------------------------------------------------
+
+/// Per-tileset streaming bookkeeping this binary owns: fe-terrain has no
+/// network/provider knowledge and fe-sync stays format-agnostic (root
+/// `AGENTS.md` §petal-map), so this is the one place bridging the two for
+/// the streamed path.
+#[derive(Resource, Default)]
+pub struct StreamedTilesetState {
+    /// tileset_ids this node has seen at least one peer advertise.
+    advertised: HashSet<String>,
+    /// tileset_ids with a `RequestTilesetMeta` in flight (sent, no reply yet).
+    meta_requested: HashSet<String>,
+    /// tileset_ids whose meta resolution failed — not retried every frame.
+    /// Cleared only by a fresh process or (future) an explicit retry action;
+    /// no ask for either beyond that here.
+    meta_failed: HashSet<String>,
+    /// `(tileset_id, bundle_seq)` pairs with a `RequestChunk` in flight.
+    chunk_requested: HashSet<(String, u32)>,
+}
+
+/// One streamed bundle, decoded off-thread (file read + archive import never
+/// run on the Bevy main thread — S4/S7 invariant).
+struct StreamedBundleReady {
+    tileset_id: String,
+    chunk_seq: u32,
+    source: HexonTileSource,
+}
+
+/// Receiver half, polled each frame by `drain_streamed_bundle_results`.
+#[derive(Resource)]
+pub struct StreamedBundleResults(crossbeam::channel::Receiver<StreamedBundleReady>);
+
+/// Sender half, cloned into each spawned decode thread.
+#[derive(Resource, Clone)]
+pub struct StreamedBundleResultSender(crossbeam::channel::Sender<StreamedBundleReady>);
+
+/// Builds the channel pair `main.rs` inserts as two resources (mirrors
+/// `HexonAssembleResults`/`HexonAssembleResultSender`).
+pub fn streamed_bundle_channel() -> (StreamedBundleResultSender, StreamedBundleResults) {
+    let (tx, rx) = crossbeam::channel::unbounded();
+    (StreamedBundleResultSender(tx), StreamedBundleResults(rx))
+}
+
+/// Drains fe-sync's streamed-tileset event feed (`StreamedTilesetEventBuffer`
+/// — a duplicate of `TilesetEventBuffer` dedicated to this path, so this
+/// never races fe-ui's own destructive drain of the install-flow buffer; see
+/// fe-sync `src/AGENTS.md` §tileset-transfer): tracks advertisements,
+/// requests meta for the active composite's unresolved streamed uris,
+/// resolves a `StreamedTileSource` once an index arrives, and hands each
+/// `ChunkReceived` WE requested to a background thread for decoding.
+pub fn drive_streamed_tilesets(
+    mut events: ResMut<fe_sync::StreamedTilesetEventBuffer>,
+    mut state: ResMut<StreamedTilesetState>,
+    mut tile_source: ResMut<ActiveTileSource>,
+    sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
+    bundle_tx: Option<Res<StreamedBundleResultSender>>,
+) {
+    if !events.events.is_empty() {
+        for evt in std::mem::take(&mut events.events) {
+            match evt {
+                fe_sync::SyncEvent::PeerTilesetAdvertisement {
+                    advertisements_json,
+                    ..
+                } => {
+                    if let Ok(ads) =
+                        serde_json::from_str::<Vec<serde_json::Value>>(&advertisements_json)
+                    {
+                        for ad in ads {
+                            if let Some(id) = ad.get("tileset_id").and_then(|v| v.as_str()) {
+                                state.advertised.insert(id.to_string());
+                            }
+                        }
+                    }
+                }
+                fe_sync::SyncEvent::TilesetMetaReceived {
+                    tileset_id,
+                    meta_json,
+                    root_hash,
+                    ..
+                } => {
+                    state.meta_requested.remove(&tileset_id);
+                    if root_hash.is_empty() {
+                        tracing::warn!(tileset_id, "streamed tileset meta resolution failed");
+                        state.meta_failed.insert(tileset_id);
+                        continue;
+                    }
+                    match StreamedTileSource::from_meta_json(tileset_id.clone(), &meta_json) {
+                        Ok(source) => {
+                            if let Some(composite) = tile_source.composite.as_mut() {
+                                composite.add_streamed_source(source);
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!(tileset_id, error = %err, "failed to parse streamed bundle index");
+                            state.meta_failed.insert(tileset_id);
+                        }
+                    }
+                }
+                fe_sync::SyncEvent::ChunkReceived {
+                    tileset_id,
+                    chunk_seq,
+                    path,
+                    ..
+                } => {
+                    if !state
+                        .chunk_requested
+                        .remove(&(tileset_id.clone(), chunk_seq))
+                    {
+                        // Not a bundle we asked for on the streamed path —
+                        // fe-ui's install-flow owns its own completion
+                        // through `TilesetEventBuffer`.
+                        continue;
+                    }
+                    let Some(tx) = bundle_tx.as_ref().map(|t| t.0.clone()) else {
+                        continue;
+                    };
+                    std::thread::spawn(move || {
+                        let outcome = std::fs::read(&path)
+                            .map_err(anyhow::Error::from)
+                            .and_then(|bytes| HexonTileSource::from_archive(&bytes));
+                        match outcome {
+                            Ok(source) => {
+                                if tx
+                                    .send(StreamedBundleReady {
+                                        tileset_id,
+                                        chunk_seq,
+                                        source,
+                                    })
+                                    .is_err()
+                                {
+                                    tracing::warn!("streamed bundle result channel closed");
+                                }
+                            }
+                            Err(err) => {
+                                tracing::warn!(tileset_id, chunk_seq, error = %err, "failed to decode streamed bundle")
+                            }
+                        }
+                    });
+                }
+                fe_sync::SyncEvent::ChunkFailed {
+                    tileset_id,
+                    chunk_seq,
+                    reason,
+                } => {
+                    state
+                        .chunk_requested
+                        .remove(&(tileset_id.clone(), chunk_seq));
+                    tracing::warn!(
+                        tileset_id,
+                        chunk_seq,
+                        reason,
+                        "streamed bundle fetch failed"
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Request meta for every uri the active composite is waiting on, once
+    // we've seen SOME peer advertise it.
+    let Some(sender) = sync_sender.as_ref() else {
+        return;
+    };
+    let Some(composite) = tile_source.composite.as_ref() else {
+        return;
+    };
+    let to_request: Vec<String> = composite
+        .pending_streamed_uris()
+        .filter(|id| {
+            state.advertised.contains(*id)
+                && !state.meta_requested.contains(*id)
+                && !state.meta_failed.contains(*id)
+        })
+        .map(str::to_string)
+        .collect();
+    for tileset_id in to_request {
+        if let Err(e) = sender.0.send(fe_sync::SyncCommand::RequestTilesetMeta {
+            peer_id: String::new(),
+            tileset_id: tileset_id.clone(),
+        }) {
+            tracing::warn!(tileset_id, "RequestTilesetMeta send failed: {e}");
+            continue;
+        }
+        state.meta_requested.insert(tileset_id);
+    }
+}
+
+/// Applies decoded streamed bundles into the active composite (the one step
+/// needing the main thread — decoding itself already ran off-thread).
+pub fn drain_streamed_bundle_results(
+    results: Option<Res<StreamedBundleResults>>,
+    mut tile_source: ResMut<ActiveTileSource>,
+) {
+    let Some(results) = results else { return };
+    while let Ok(ready) = results.0.try_recv() {
+        if let Some(composite) = tile_source.composite.as_mut() {
+            composite.insert_streamed_bundle(&ready.tileset_id, ready.chunk_seq, ready.source);
+        }
+    }
+}
+
+/// Forwards the tile pointer-set's unmet bundle demand (`TileBundleDemand`,
+/// rebuilt each frame by `fetch_and_spawn_terrain_chunks`) to the sync
+/// thread, bounded to one `RequestChunk` per not-yet-requested bundle.
+pub fn request_demanded_bundles(
+    demand: Res<TileBundleDemand>,
+    mut state: ResMut<StreamedTilesetState>,
+    sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
+) {
+    let Some(sender) = sync_sender.as_ref() else {
+        return;
+    };
+    for (tileset_id, seq) in demand.wanted() {
+        let key = (tileset_id.clone(), *seq);
+        if state.chunk_requested.contains(&key) {
+            continue;
+        }
+        if let Err(e) = sender.0.send(fe_sync::SyncCommand::RequestChunk {
+            peer_id: String::new(),
+            tileset_id: tileset_id.clone(),
+            chunk_seq: *seq,
+            provider: None,
+        }) {
+            tracing::warn!(tileset_id, chunk_seq = seq, "RequestChunk send failed: {e}");
+            continue;
+        }
+        state.chunk_requested.insert(key);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,6 +864,100 @@ mod tests {
             tile.as_deref(),
             Some(&[1u8, 2, 3, 4, 5, 6, 7, 8][..]),
             "a tile reads back byte-identical through the registry"
+        );
+    }
+
+    /// S7 flow test: a `ChunkReceived` for a bundle this node actually
+    /// requested (`state.chunk_requested` seeded, mirroring what
+    /// `request_demanded_bundles` would have done) is decoded off-thread and
+    /// becomes servable through the composite's resident (I/O-free) tile
+    /// path — exactly what `spawn_chunk` consumes to build a terrain chunk,
+    /// without needing the full render pipeline to prove the data path.
+    #[test]
+    fn answered_bundles_become_terrain_chunks() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tileset_id = "s7-streamed-tileset";
+        let source = synthetic_tileset(tileset_id);
+        let bundles =
+            fe_terrain::tiles::bundle_tileset(&source, fe_terrain::tiles::DEFAULT_BUNDLE_BYTES)
+                .expect("bundle_tileset");
+        assert_eq!(
+            bundles.bundles.len(),
+            1,
+            "small synthetic tileset -> one bundle"
+        );
+        let bundle_path = tmp.path().join("0.bundle");
+        std::fs::write(&bundle_path, &bundles.bundles[0]).expect("write bundle");
+
+        let mut app = App::new();
+        app.init_resource::<fe_sync::StreamedTilesetEventBuffer>()
+            .init_resource::<StreamedTilesetState>();
+        let mut composite = fe_terrain::tiles::CompositeTileSource::new();
+        composite.add_streamed_source(StreamedTileSource::new(
+            tileset_id.to_string(),
+            bundles.index.clone(),
+        ));
+        app.insert_resource(ActiveTileSource {
+            composite: Some(composite),
+            projection: None,
+        });
+        let (tx, rx) = streamed_bundle_channel();
+        app.insert_resource(tx);
+        app.insert_resource(rx);
+        app.add_systems(
+            Update,
+            (drive_streamed_tilesets, drain_streamed_bundle_results).chain(),
+        );
+
+        // Simulate a prior `request_demanded_bundles` call: this bundle is
+        // one WE asked for, so `ChunkReceived` is ours to decode.
+        app.world_mut()
+            .resource_mut::<StreamedTilesetState>()
+            .chunk_requested
+            .insert((tileset_id.to_string(), 0));
+        app.world_mut()
+            .resource_mut::<fe_sync::StreamedTilesetEventBuffer>()
+            .events
+            .push(fe_sync::SyncEvent::ChunkReceived {
+                tileset_id: tileset_id.to_string(),
+                chunk_seq: 0,
+                path: bundle_path,
+                byte_len: bundles.bundles[0].len() as u64,
+            });
+
+        let coord = fe_terrain::tiles::TileCoord::new(0, 0, 10);
+        let resident = |app: &mut App| {
+            app.world()
+                .resource::<ActiveTileSource>()
+                .composite
+                .as_ref()
+                .expect("composite")
+                .get_tile_sync(coord)
+        };
+
+        // The decode runs on a background thread; poll a few frames for it
+        // (a fast, local, in-memory operation — bounded, not a sleep loop).
+        let mut tile = None;
+        for _ in 0..200 {
+            app.update();
+            if let Some(bytes) = resident(&mut app) {
+                tile = Some(bytes);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        assert_eq!(
+            tile.as_deref(),
+            Some(&[1u8, 2, 3, 4, 5, 6, 7, 8][..]),
+            "the streamed bundle's tile is byte-identical and servable with zero further I/O"
+        );
+        assert!(
+            !app.world_mut()
+                .resource_mut::<StreamedTilesetState>()
+                .chunk_requested
+                .contains(&(tileset_id.to_string(), 0)),
+            "the completed request is no longer tracked as in-flight"
         );
     }
 }

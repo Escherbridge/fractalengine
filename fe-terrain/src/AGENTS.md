@@ -789,3 +789,86 @@ dispatch" decision: the main thread never reads a tile.
 - Cost: a chunk now appears a frame or more after it enters the ring (Risk 4,
   accepted; in-app check is USER_GATED). D-38 snap-to-terrain reads
   `TerrainHeightField`, which only covers resident chunks — unchanged by S5.
+
+## §streamed-tilesets — not-installed tilesets over P2P (p2p_asset_streaming S7)
+
+**Why.** Before S7 a `tileset_hexon_uri` with no local `.hexon` file simply
+failed to load (`petal_binding` warns and skips it) — a petal referencing a
+peer's tileset rendered nothing, forever, even after that peer became
+reachable. S7 adds a THIRD tile source, `tiles/streamed.rs::StreamedTileSource`,
+served bundle-by-bundle as they arrive over P2P, without ever installing
+anything to the local hexon store.
+
+- **One lookup, one new source kind.** `TilesetBundleIndex::bundle_for_tile`
+  (fe-format, S1 critic C4) is the ONLY tile→bundle lookup; `StreamedTileSource`
+  calls it, never reimplements it. A bundle, once fetched, is a fully-decoded
+  `HexonTileSource::from_archive` (`Backing::Memory` — no further I/O to serve
+  it), so `CompositeTileSource` only needs a THIRD slot in its lookup chain:
+  hexon sources → streamed sources → disk cache → online. Checked in EVERY
+  mode including Offline (the bytes are hexon-origin, preserving NFR-4) —
+  only the resident-and-decoded check runs; nothing here ever reads a disk
+  or dispatches a network call synchronously.
+- **Two states, one gate.** A `tileset_hexon_uri` that fails to load locally
+  is `composite.mark_streamed_pending(uri)`'d by `petal_binding` instead of
+  just warning. `CompositeTileSource::streamed_pending(coord)` is true when
+  EITHER an uri is still unresolved (no index yet — conservatively, only for
+  a coordinate no OTHER source already covers) OR a resolved
+  `StreamedTileSource` covers `coord` but its bundle hasn't arrived.
+  `fetch_and_spawn_terrain_chunks`'s ring loop checks this BEFORE
+  `TileResidency::ensure_resident` and, if true, records the bundle demand
+  (`record_bundle_demand`) and `continue`s WITHOUT touching
+  `residency`/`FailedTiles` at all. This is deliberate: the async
+  `TileResidency` IoTaskPool dispatch (§tile-residency) is a one-shot,
+  non-blocking function call snapshotted at dispatch time — it can never
+  "wait" for a bundle that arrives later, so routing a streamed-pending
+  coordinate through it would classify it `Absent` once and poison it into
+  `FailedTiles` for the rest of the revision, permanently, even after the
+  bundle streams in. The early `continue` re-evaluates `streamed_pending`
+  fresh every frame instead, so a coordinate recovers the instant its bundle
+  lands.
+- **The tile pointer-set.** `tiles::TileBundleDemand` (render-gated, `tiles/streamed.rs`)
+  is the tile half of the D-74 pointer-set (fe-ui's S8 `ResidencyLedger` is
+  the node/stamp half): `clear()`ed then re-demanded every frame by
+  `fetch_and_spawn_terrain_chunks`, so it always reflects exactly what the
+  ring wants NOW, never stale demand from a camera position the ring has
+  since left — bounded over-fetch at a ring edge (D-73 evidence §3: at most
+  one bundle). `fractalengine::terrain_bridge::request_demanded_bundles`
+  reads it and sends `SyncCommand::RequestChunk` for each not-yet-requested
+  `(tileset_id, bundle_seq)`.
+- **Exit-ring eviction is per-BUNDLE, not per-tile.** Unlike an installed
+  `HexonTileSource`'s per-`(layer, coord)` `ByteLru`, a streamed bundle
+  covers many tiles, so `StreamedTileSource` ref-counts PINS per bundle
+  sequence: `CompositeTileSource::pin_tile`/`release_tile` call the
+  unconditional `pin_streamed`/`release_streamed` (a no-op for a non-streamed
+  coordinate) alongside their existing hexon-origin handling, and the bundle
+  drops from memory the instant its last pin releases. The verified bundle
+  FILE stays on disk in the download dir as a cache (fe-sync `AGENTS.md`
+  §tileset-transfer) — a re-entry re-demands the bundle but
+  `fe-sync::TilesetTransfer::fetch_chunk` serves it from that verified file
+  rather than re-fetching over the network (not re-verified here, since S2/S3
+  already blake3-checked it before `ChunkReceived` ever fires).
+- **The binary owns network state fe-terrain can't.** `petal_binding` only
+  marks a uri pending and renders nothing for it; it has no provider
+  addresses, no peer knowledge, and (by design, root `AGENTS.md` §petal-map)
+  no fe-sync dependency. `fractalengine::terrain_bridge::StreamedTilesetState`
+  (advertised / meta-requested / meta-failed / chunk-requested sets) and
+  three systems — `drive_streamed_tilesets`, `drain_streamed_bundle_results`,
+  `request_demanded_bundles` — are the bridge: see `fractalengine/src/AGENTS.md`
+  §tileset-p2p for the full flow. A `RequestTilesetMeta`/`RequestChunk` is
+  sent with an EMPTY `peer_id`/`provider`, letting the sync thread's own
+  `TilesetProviderMap` (populated transparently from real inbound ads)
+  resolve a dialable address — the binary only needs to know a tileset_id is
+  advertised SOMEWHERE, never by whom.
+- **Known, accepted limits (not fixed this slice, no ask to go further):**
+  the off-thread `TileLoader`/`fetch_tile` (fetch feature) do not know about
+  streamed sources — unreachable in practice, since `streamed_pending` never
+  lets a streamed-covered coordinate dispatch through that path; the
+  grounding center-tile read in `fetch_and_spawn_terrain_chunks` calls
+  `ensure_resident` directly, bypassing the ring loop's `streamed_pending`
+  gate (grounding is expected to resolve from an installed hexon at the
+  origin, not a streamed one); `source_metas`/`reconcile_metric_frame`/
+  `select_source_lods` (FR-4) stay hexon-only — streamed sources don't
+  contribute scale reconciliation yet; a uri nobody ever advertises stays
+  `pending_streamed_uris` forever for that assignment (observably identical
+  to today's "no source covers it" — the region just never renders, silently,
+  instead of once marking `FailedTiles`).

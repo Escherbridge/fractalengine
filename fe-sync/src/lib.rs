@@ -45,7 +45,8 @@ pub use sharding::{
     PeerDeclaration, ShardId, ShardLedgerEntry, VerseFabric, PEER_DECL_TABLE, SHARD_TABLE,
 };
 pub use status::{
-    drain_sync_events, SyncCommandSenderRes, SyncEventReceiverRes, SyncStatus, TilesetEventBuffer,
+    drain_sync_events, StreamedTilesetEventBuffer, SyncCommandSenderRes, SyncEventReceiverRes,
+    SyncStatus, TilesetEventBuffer,
 };
 pub use sync_thread::{spawn_sync_thread, spawn_sync_thread_with_transport};
 pub use tileset_transfer::{

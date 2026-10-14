@@ -371,6 +371,10 @@ mod bevy_flows {
             .init_resource::<FailedTiles>()
             .init_resource::<TileResidency>()
             .init_resource::<TerrainHeightField>()
+            // S7: `fetch_and_spawn_terrain_chunks` now requires this
+            // (streamed-tileset tile pointer-set demand), even though this
+            // suite has no streamed sources.
+            .init_resource::<fe_terrain::tiles::TileBundleDemand>()
             .insert_resource(LayerStack::new())
             .insert_resource(SharedTilesetRegistry(Arc::clone(registry)))
             .add_systems(

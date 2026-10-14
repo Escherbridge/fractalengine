@@ -31,7 +31,7 @@ use crate::projection::Projection;
 use crate::scale::{scale_elevations, scale_local, scaled_tile_size, world_to_real_height};
 use crate::tiles::{
     decode_png_pixels, ElevationDecoder, LoadedTile, Residency, TerrainRgbDecoder,
-    TerrariumDecoder, TileCoord, TileResidency,
+    TerrariumDecoder, TileBundleDemand, TileCoord, TileResidency,
 };
 use fe_renderer::terrain_height::{HeightTile, TerrainHeightField};
 
@@ -300,6 +300,10 @@ impl Plugin for TerrainPlugin {
             .init_resource::<ActiveTileSource>()
             .init_resource::<FailedTiles>()
             .init_resource::<TileResidency>()
+            // S7 (streamed tilesets): the tile half of the D-74 pointer-set —
+            // see `fetch_and_spawn_terrain_chunks` and
+            // `src/AGENTS.md` §streamed-tilesets.
+            .init_resource::<TileBundleDemand>()
             .init_resource::<ProposalRenderState>()
             .init_resource::<ProposalOverlayBudget>()
             .init_resource::<EarthworkBakeState>()
@@ -436,6 +440,7 @@ pub fn fetch_and_spawn_terrain_chunks(
     mut active: ResMut<ActivePetalTerrain>,
     mut tile_source: ResMut<ActiveTileSource>,
     mut residency: ResMut<TileResidency>,
+    mut bundle_demand: ResMut<TileBundleDemand>,
     layer_stack: Res<LayerStack>,
     mut failed: ResMut<FailedTiles>,
     mut commands: Commands,
@@ -445,6 +450,10 @@ pub fn fetch_and_spawn_terrain_chunks(
     mut height_field: Option<ResMut<TerrainHeightField>>,
 ) {
     residency.poll();
+    // S7: rebuilt fresh every frame from what the ring actually wants below
+    // (`record_bundle_demand`) — never stale demand from a position the
+    // camera has since left.
+    bundle_demand.clear();
     let Some(elevation_source) = active
         .config
         .as_ref()
@@ -564,6 +573,15 @@ pub fn fetch_and_spawn_terrain_chunks(
         let coord = TileCoord::new(x as u32, y as u32, zoom);
         let key = (zoom, coord.x, coord.y);
         if existing.contains(&key) || failed.tiles.contains(&key) {
+            continue;
+        }
+        if composite.streamed_pending(coord) {
+            // S7 (streamed tilesets): an index resolution or a bundle fetch
+            // is still in flight for whatever would cover this coordinate —
+            // demand it, but skip WITHOUT touching `residency`/`failed`, so
+            // it is retried fresh every frame and never recorded as a
+            // failure (src/AGENTS.md §streamed-tilesets).
+            composite.record_bundle_demand(coord, &mut bundle_demand);
             continue;
         }
 

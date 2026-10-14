@@ -199,6 +199,14 @@ mod render_support {
                         }
                         Err(err) => {
                             tracing::warn!(uri = %uri, error = %err, "failed to load tileset for terrain assignment");
+                            // S7 (streamed tilesets): not installed locally —
+                            // if some peer advertises it, terrain_bridge
+                            // resolves it to a `StreamedTileSource` instead
+                            // of failing the region outright. Until (or
+                            // unless) that happens the region renders
+                            // nothing — pending, not failed (src/AGENTS.md
+                            // §streamed-tilesets).
+                            composite.mark_streamed_pending(uri.clone());
                         }
                     }
                 }

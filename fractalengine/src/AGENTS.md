@@ -577,3 +577,35 @@ fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
   (Default only), and a relay-health transition line per mode — orthogonal to
   tileset streaming, but the same binary and the same `fe-sync` relay
   plumbing (`relay_config.rs`/`endpoint.rs`/`status.rs`).
+- **Streamed (not-installed) tilesets (S7).** fe-terrain only knows a
+  `tileset_hexon_uri` is "pending" (`composite.mark_streamed_pending`); it
+  has no peer/provider knowledge (fe-terrain `src/AGENTS.md`
+  §streamed-tilesets). `terrain_bridge::StreamedTilesetState` is the bridge:
+  - `drive_streamed_tilesets` drains `fe_sync::StreamedTilesetEventBuffer` — a
+    SIBLING of `fe_sync::TilesetEventBuffer` carrying a duplicate of just the
+    advertisement/meta/chunk events, added specifically so this system never
+    races `fe-ui`'s `drain_tileset_events`, which destructively
+    `std::mem::take`s the WHOLE install-flow buffer every frame (fe-sync
+    `src/AGENTS.md` §tileset-transfer). It records advertised tileset_ids,
+    sends `SyncCommand::RequestTilesetMeta { peer_id: String::new(), .. }`
+    for any uri the active composite is waiting on once some peer has
+    advertised it (an empty `peer_id` lets the sync thread's own provider map
+    resolve an address — this binary never needs one), parses a successful
+    `TilesetMetaReceived.meta_json` as a `TilesetBundleIndex` and installs a
+    `StreamedTileSource` via `composite.add_streamed_source`, and hands each
+    `ChunkReceived` THIS NODE requested (`state.chunk_requested`) to a
+    background thread (`std::fs::read` + `HexonTileSource::from_archive`,
+    never the Bevy main thread) reporting back over the
+    `StreamedBundleResultSender`/`StreamedBundleResults` channel (mirrors
+    `HexonAssembleResultSender`/`HexonAssembleResults`).
+  - `drain_streamed_bundle_results` applies finished decodes into the active
+    composite (`insert_streamed_bundle`) — the one step needing the main
+    thread, since decoding itself already ran off it.
+  - `request_demanded_bundles` reads fe-terrain's `TileBundleDemand` (the
+    tile pointer-set, rebuilt every frame by `fetch_and_spawn_terrain_chunks`)
+    and sends one `SyncCommand::RequestChunk` per not-yet-requested
+    `(tileset_id, bundle_seq)`, bounded by `state.chunk_requested` so a still-
+    pending bundle is never re-requested every frame.
+  - All three register in `main.rs` alongside the existing
+    `terrain_bridge`/`drain_hexon_*` systems; the channel is built the same
+    way as the S4 assemble channel (`streamed_bundle_channel()`).

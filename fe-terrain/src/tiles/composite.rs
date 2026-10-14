@@ -1,14 +1,19 @@
 //! Composite tile source with ordered fallback chain; see `src/AGENTS.md` §lazy-tiles.
 //!
-//! `CompositeTileSource` tries hexon sources first (by bounds check), then the
-//! disk cache, then online sources. Hexon sources are shared `Arc`s owned by the
-//! `TilesetRegistry`; resident lookups never touch the disk, `TileLoader` does.
+//! `CompositeTileSource` tries hexon sources first (by bounds check), then
+//! streamed (not-installed, P2P) sources, then the disk cache, then online
+//! sources. Hexon sources are shared `Arc`s owned by the `TilesetRegistry`;
+//! resident lookups never touch the disk, `TileLoader` does. Streamed
+//! sources never touch the disk either — a resident bundle is already fully
+//! decoded in memory (§streamed-tilesets).
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::cache::DiskTileCache;
 use super::hexon_source::{HexonTileSource, Probe, ResidentTile, TileLayer};
 use super::source::TileCoord;
+use super::streamed::StreamedTileSource;
 use crate::config::TileSourceMode;
 use crate::splat::format::BakedSplatBuffer;
 
@@ -35,6 +40,11 @@ pub struct SourceLodPick {
 pub enum TileOrigin {
     /// `hexon_sources[index]`.
     Hexon(usize),
+    /// A resident bundle of a not-yet-installed `streamed_sources` entry
+    /// (S7). Pinning/releasing a streamed-origin hit is coordinate-keyed
+    /// (`CompositeTileSource::pin_streamed`/`release_streamed`), not
+    /// index-keyed, so this variant carries no index.
+    Streamed,
     /// The disk tile cache (Online / Hybrid fallback).
     DiskCache,
 }
@@ -159,11 +169,18 @@ impl TileLoader {
 ///
 /// Lookup order:
 /// 1. Hexon sources (checked by `covers()` — bounds + zoom range)
-/// 2. Disk cache
-/// 3. Online sources (results cached to disk)
+/// 2. Streamed (not-installed, P2P) sources, resident bundles only (S7)
+/// 3. Disk cache
+/// 4. Online sources (results cached to disk)
 pub struct CompositeTileSource {
     hexon_sources: Vec<Arc<HexonTileSource>>,
     cache: Option<Arc<DiskTileCache>>,
+    /// Not-yet-installed tilesets streamed bundle-by-bundle over P2P (S7).
+    streamed_sources: Vec<StreamedTileSource>,
+    /// tileset_ids with no installed hexon and no resolved streamed source
+    /// yet (awaiting `SyncEvent::TilesetMetaReceived`) — see
+    /// `streamed_pending`, `src/AGENTS.md` §streamed-tilesets.
+    pending_streamed_uris: HashSet<String>,
     #[cfg(feature = "fetch")]
     online_sources: Vec<Box<dyn super::source::TileSource>>,
     tile_source_mode: TileSourceMode,
@@ -193,6 +210,8 @@ impl CompositeTileSource {
         Self {
             hexon_sources: Vec::new(),
             cache: None,
+            streamed_sources: Vec::new(),
+            pending_streamed_uris: HashSet::new(),
             #[cfg(feature = "fetch")]
             online_sources: Vec::new(),
             tile_source_mode: TileSourceMode::Hybrid,
@@ -224,6 +243,112 @@ impl CompositeTileSource {
     /// The hexon sources, in lookup order.
     pub fn hexon_sources(&self) -> &[Arc<HexonTileSource>] {
         &self.hexon_sources
+    }
+
+    // -----------------------------------------------------------------------
+    // Streamed (not-installed) tilesets — S7, src/AGENTS.md §streamed-tilesets
+    // -----------------------------------------------------------------------
+
+    /// Mark `tileset_id` as needing a streamed source once its index
+    /// resolves (`petal_binding` found no installed hexon for this uri). A
+    /// no-op if a streamed source for it already exists.
+    pub fn mark_streamed_pending(&mut self, tileset_id: impl Into<String>) {
+        let id = tileset_id.into();
+        if !self.streamed_sources.iter().any(|s| s.tileset_id() == id) {
+            self.pending_streamed_uris.insert(id);
+        }
+    }
+
+    /// tileset_ids awaiting a `TilesetMetaReceived` to become a streamed source.
+    pub fn pending_streamed_uris(&self) -> impl Iterator<Item = &str> {
+        self.pending_streamed_uris.iter().map(String::as_str)
+    }
+
+    /// Install a resolved streamed source (its index arrived); clears the
+    /// pending marker. Replaces any existing source for the same tileset_id
+    /// (a re-resolution, e.g. after a petal re-entry).
+    pub fn add_streamed_source(&mut self, source: StreamedTileSource) {
+        self.pending_streamed_uris.remove(source.tileset_id());
+        self.streamed_sources
+            .retain(|s| s.tileset_id() != source.tileset_id());
+        self.streamed_sources.push(source);
+    }
+
+    /// A verified bundle arrived for `tileset_id`; feed it to the matching
+    /// streamed source. A no-op (logged) if no such source is tracked — the
+    /// petal may have switched away since the fetch was requested.
+    pub fn insert_streamed_bundle(&mut self, tileset_id: &str, seq: u32, source: HexonTileSource) {
+        match self
+            .streamed_sources
+            .iter()
+            .find(|s| s.tileset_id() == tileset_id)
+        {
+            Some(streamed) => streamed.insert_bundle(seq, source),
+            None => tracing::debug!(
+                tileset_id,
+                seq,
+                "streamed bundle arrived for an untracked tileset; dropping"
+            ),
+        }
+    }
+
+    /// Whether `coord` is in a window a streamed source would eventually
+    /// resolve but can't yet: an unresolved index (conservatively, only when
+    /// no OTHER source already covers `coord`), or a resolved index whose
+    /// covering bundle hasn't arrived. The ring loop must treat this as
+    /// pending and skip the coordinate entirely — never record it in
+    /// `FailedTiles` (NFR-1, `src/AGENTS.md` §streamed-tilesets).
+    pub fn streamed_pending(&self, coord: TileCoord) -> bool {
+        if !self.pending_streamed_uris.is_empty() {
+            let covered_elsewhere = self.hexon_sources.iter().any(|s| s.covers(coord))
+                || self.streamed_sources.iter().any(|s| s.covers(coord));
+            if !covered_elsewhere {
+                return true;
+            }
+        }
+        self.streamed_sources.iter().any(|s| {
+            s.covers(coord)
+                && s.bundle_for(coord)
+                    .is_some_and(|seq| !s.has_resident_bundle(seq))
+        })
+    }
+
+    /// Pin the streamed bundle(s) covering `coord` for one live chunk
+    /// (exit-ring eviction unit = the bundle, not the tile). A no-op when no
+    /// streamed source covers `coord`.
+    pub fn pin_streamed(&self, coord: TileCoord) {
+        for src in self.streamed_sources.iter().filter(|s| s.covers(coord)) {
+            src.pin(coord);
+        }
+    }
+
+    /// Release one live chunk's hold on its streamed bundle(s); the last
+    /// release drops the bundle's bytes from memory.
+    pub fn release_streamed(&self, coord: TileCoord) {
+        for src in self.streamed_sources.iter().filter(|s| s.covers(coord)) {
+            src.release(coord);
+        }
+    }
+
+    /// Record `coord`'s desired-but-missing bundle into `demand` (the tile
+    /// half of the D-74 pointer-set): every streamed source covering `coord`
+    /// without a resident bundle contributes its `(tileset_id, bundle_seq)`.
+    /// Called from `fetch_and_spawn_terrain_chunks` at the same point
+    /// `streamed_pending` gates the ring loop (`fe-terrain/src/AGENTS.md`
+    /// §streamed-tilesets).
+    #[cfg(feature = "render")]
+    pub fn record_bundle_demand(
+        &self,
+        coord: TileCoord,
+        demand: &mut super::streamed::TileBundleDemand,
+    ) {
+        for src in self.streamed_sources.iter().filter(|s| s.covers(coord)) {
+            if let Some(seq) = src.bundle_for(coord) {
+                if !src.has_resident_bundle(seq) {
+                    demand.demand(src.tileset_id(), seq);
+                }
+            }
+        }
     }
 
     /// Set the disk cache layer.
@@ -320,6 +445,15 @@ impl CompositeTileSource {
                 src.get_layer(layer, coord)
                     .and_then(ResidentTile::into_bytes)
             })
+            .or_else(|| {
+                self.streamed_sources
+                    .iter()
+                    .filter(|src| src.covers(coord))
+                    .find_map(|src| {
+                        src.get_layer(layer, coord)
+                            .and_then(ResidentTile::into_bytes)
+                    })
+            })
     }
 
     /// I/O-free full resolution of `coord`; `None` when any layer still needs a read.
@@ -347,6 +481,23 @@ impl CompositeTileSource {
                     }
                     Probe::Hit(ResidentTile::Splats(_)) | Probe::Absent => {}
                     Probe::Miss => return None,
+                }
+            }
+            // Streamed sources (S7): checked after installed hexon sources,
+            // before the disk cache, in EVERY mode including Offline — the
+            // bytes are hexon-origin (just not-yet-arrived over P2P instead
+            // of not-yet-read from disk), so NFR-4 (Offline never reads the
+            // disk cache) still holds. A covering-but-not-resident bundle
+            // here falls through to the terminal `match` below; the ring
+            // loop never reaches that case in practice because
+            // `streamed_pending` gates it first (src/AGENTS.md
+            // §streamed-tilesets).
+            for src in self.streamed_sources.iter().filter(|s| s.covers(coord)) {
+                if let Some(ResidentTile::Bytes(bytes)) = src.get_layer(layer, coord) {
+                    return Some(Some(LayerHit {
+                        bytes,
+                        origin: TileOrigin::Streamed,
+                    }));
                 }
             }
         }
@@ -389,6 +540,11 @@ impl CompositeTileSource {
     }
 
     /// Pin a spawned chunk's hexon-origin layers so the exit ring, not the LRU, frees them.
+    ///
+    /// A streamed-origin hit (`TileOrigin::Streamed`) is pinned too, via the
+    /// unconditional `pin_streamed` call below — streamed bundles are
+    /// evicted as a whole bundle, not per `(layer, coord)` key, so there is
+    /// nothing per-layer to do in the loop above for them (S7).
     pub fn pin_tile(&self, coord: TileCoord, tile: &LoadedTile) {
         for (layer, hit) in [
             (TileLayer::Elevation, &tile.elevation),
@@ -413,6 +569,7 @@ impl CompositeTileSource {
                 );
             }
         }
+        self.pin_streamed(coord);
     }
 
     /// Release a despawned chunk's tile bytes from every covering source (exit ring).
@@ -420,6 +577,7 @@ impl CompositeTileSource {
         for src in self.hexon_sources.iter().filter(|src| src.covers(coord)) {
             src.release_tile(coord);
         }
+        self.release_streamed(coord);
     }
 
     /// Release every pin this composite placed (it is being replaced).

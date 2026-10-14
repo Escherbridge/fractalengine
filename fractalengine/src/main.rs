@@ -309,6 +309,10 @@ fn main() {
     ))));
     app.init_resource::<fe_sync::SyncStatus>();
     app.init_resource::<fe_sync::VersePeers>();
+    // S7 (streamed tilesets): registering this makes `drain_sync_events`
+    // duplicate advertisement/meta/chunk events for `terrain_bridge`'s
+    // streamed-source consumer — see src/AGENTS.md §tileset-p2p.
+    app.init_resource::<fe_sync::StreamedTilesetEventBuffer>();
     app.add_systems(bevy::prelude::Update, fe_sync::drain_sync_events);
 
     // Insert identity, peer, and secret store resources
@@ -538,6 +542,15 @@ fn main() {
         app.insert_resource(terrain_bridge::HexonAssembleResultSender(assemble_tx));
         app.insert_resource(terrain_bridge::HexonAssembleResults(assemble_rx));
     }
+    // S7: background bundle-decode channel for the streamed (not-installed)
+    // tileset path — mirrors the S4 assemble channel above. See
+    // src/AGENTS.md §tileset-p2p.
+    app.init_resource::<terrain_bridge::StreamedTilesetState>();
+    {
+        let (streamed_tx, streamed_rx) = terrain_bridge::streamed_bundle_channel();
+        app.insert_resource(streamed_tx);
+        app.insert_resource(streamed_rx);
+    }
     app.add_systems(
         bevy::prelude::Update,
         (
@@ -546,6 +559,13 @@ fn main() {
             terrain_bridge::drain_hexon_assemble_results,
             // Settings-section ruler toggles → fe-terrain RulerSettings.
             terrain_bridge::sync_ruler_settings,
+            // S7: streamed-tileset event drain -> bundle decode -> demand.
+            (
+                terrain_bridge::drive_streamed_tilesets,
+                terrain_bridge::drain_streamed_bundle_results,
+                terrain_bridge::request_demanded_bundles,
+            )
+                .chain(),
         ),
     );
     // Global Offline tile mode overrides the petal's mode on the freshly built

@@ -39,12 +39,28 @@ pub struct TilesetEventBuffer {
     pub events: Vec<SyncEvent>,
 }
 
+/// Bevy resource duplicating the subset of tileset events the STREAMED
+/// (not-installed) path needs (campaign plan S7): advertisements, meta, and
+/// chunk arrivals/failures. `TilesetEventBuffer`'s own consumer
+/// (`fe-ui::terrain_map::drain_tileset_events`) destructively drains the
+/// WHOLE buffer every frame, so a second consumer reading the same buffer
+/// would race it; this sibling buffer lets `fractalengine::terrain_bridge`
+/// react to the same network events without that race. `Option<ResMut<_>>`
+/// in `drain_sync_events` below: only a binary that registers this resource
+/// (the streamed path needs it) pays for it — see `src/AGENTS.md`
+/// §tileset-transfer.
+#[derive(Resource, Default)]
+pub struct StreamedTilesetEventBuffer {
+    pub events: Vec<SyncEvent>,
+}
+
 /// Bevy system that drains [`SyncEvent`]s from the sync thread and updates
 /// [`SyncStatus`].
 pub fn drain_sync_events(
     receiver: Option<Res<SyncEventReceiverRes>>,
     mut status: ResMut<SyncStatus>,
     mut tileset_buf: ResMut<TilesetEventBuffer>,
+    mut streamed_buf: Option<ResMut<StreamedTilesetEventBuffer>>,
 ) {
     let Some(receiver) = receiver else { return };
     let Ok(rx) = receiver.0.lock() else { return };
@@ -144,6 +160,21 @@ pub fn drain_sync_events(
             | ev @ SyncEvent::TilesetDownloadComplete { .. }
             | ev @ SyncEvent::TilesetPublished { .. }
             | ev @ SyncEvent::TilesetDownloadResumed { .. } => {
+                // S7: the streamed path only consumes advertisements, meta
+                // and chunk events — duplicate just those into its own
+                // buffer (never the install-flow-only variants) before this
+                // buffer takes ownership.
+                if let Some(streamed) = streamed_buf.as_mut() {
+                    if matches!(
+                        ev,
+                        SyncEvent::PeerTilesetAdvertisement { .. }
+                            | SyncEvent::TilesetMetaReceived { .. }
+                            | SyncEvent::ChunkReceived { .. }
+                            | SyncEvent::ChunkFailed { .. }
+                    ) {
+                        streamed.events.push(ev.clone());
+                    }
+                }
                 tileset_buf.events.push(ev);
             }
             // Peer transform updates — applying to local nodes is deferred.
