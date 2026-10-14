@@ -81,8 +81,11 @@ pub fn build_router(state: Arc<RegistryState>) -> Router {
             post(publish).layer(DefaultBodyLimit::max(MAX_PUBLISH_BYTES)),
         )
         .route("/hexons/{uri}", get(manifest))
+        .route("/hexons/{uri}/meta", get(meta))
         .route("/hexons/{uri}/entries", get(entries))
         .route("/hexons/{uri}/entries/{entry_id}/asset", get(asset))
+        .route("/hexons/{uri}/chunk/{seq}", get(chunk))
+        .route("/hexons/{uri}/member/{*path}", get(member))
         .route("/hexons/{uri}/download", get(download))
         .layer(middleware::from_fn_with_state(state.clone(), require_token));
 
@@ -207,6 +210,105 @@ async fn entries(State(state): State<Arc<RegistryState>>, Path(uri): Path<String
     }
 }
 
+/// GET /api/v1/hexons/{uri}/meta — the header-phase document (PAS-P5 §3.2):
+/// raw manifest + header-member text, no body/tile bytes. Built from the lazy
+/// `HexonArchiveIndex` reader (not `HexonArchive::import`, which is eager), so
+/// a multi-hundred-MiB tileset costs one small capped read, not a full load.
+async fn meta(State(state): State<Arc<RegistryState>>, Path(uri): Path<String>) -> Response {
+    let Some(entry) = resolve_entry(&state, &uri).await else {
+        return json_err(StatusCode::NOT_FOUND, format!("hexon not found: {uri}"));
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        fe_format::HexonArchiveIndex::open(&entry.path).map(|index| index.header_doc())
+    })
+    .await;
+    match result {
+        Ok(Ok(doc)) => Json(ApiResponse::success(doc)).into_response(),
+        Ok(Err(e)) => json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
+        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+/// Octet-stream response for publisher-controlled archive bytes (`/chunk`,
+/// `/member`): `nosniff` + `attachment` stop a member that happens to be
+/// named e.g. `notes.html` from ever being rendered as same-origin HTML by a
+/// browser that follows the link — the stored-XSS rule CDL-SPEC10 A4 already
+/// applies to fe-api blobs (S3 critic amendment, step 6).
+fn octet_response(bytes: Vec<u8>, filename: &str) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{filename}\""),
+        )
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .body(Body::from(bytes))
+        .unwrap_or_else(|e| json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// GET /api/v1/hexons/{uri}/chunk/{seq} — one container chunk's raw `.hexon`
+/// bytes; for a monolithic archive, `seq == 0` is the whole file (so a caller
+/// never needs to special-case layout) and anything else is 404.
+async fn chunk(
+    State(state): State<Arc<RegistryState>>,
+    Path((uri, seq)): Path<(String, u32)>,
+) -> Response {
+    let Some(entry) = resolve_entry(&state, &uri).await else {
+        return json_err(StatusCode::NOT_FOUND, format!("hexon not found: {uri}"));
+    };
+    let path = entry.path.clone();
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Vec<u8>>> {
+        let index = fe_format::HexonArchiveIndex::open(&path)?;
+        match index.layout() {
+            fe_format::Layout::Container { .. } => index.chunk(seq),
+            fe_format::Layout::Monolithic if seq == 0 => Ok(Some(std::fs::read(&path)?)),
+            fe_format::Layout::Monolithic => Ok(None),
+        }
+    })
+    .await;
+    match result {
+        Ok(Ok(Some(bytes))) => octet_response(bytes, &format!("chunk-{seq}.hexon")),
+        Ok(Ok(None)) => json_err(StatusCode::NOT_FOUND, format!("no chunk {seq} for {uri}")),
+        Ok(Err(e)) => json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
+        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+/// GET /api/v1/hexons/{uri}/member/{*path} — one raw member, verified against
+/// the signed coverage when the archive is sealed (`HexonArchiveIndex::read_member`).
+/// Traversal is impossible BY CONSTRUCTION, not by charset-filtering `path`:
+/// `path` is only ever compared against the zip's own central-directory member
+/// names (`contains`/`read_member`), never joined onto a filesystem path, so a
+/// request for e.g. `../../etc/passwd` just fails to match any member and 404s.
+async fn member(
+    State(state): State<Arc<RegistryState>>,
+    Path((uri, path)): Path<(String, String)>,
+) -> Response {
+    let Some(entry) = resolve_entry(&state, &uri).await else {
+        return json_err(StatusCode::NOT_FOUND, format!("hexon not found: {uri}"));
+    };
+    let file_path = entry.path.clone();
+    let member_name = path.clone();
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Vec<u8>>> {
+        let index = fe_format::HexonArchiveIndex::open(&file_path)?;
+        if !index.contains(&member_name) {
+            return Ok(None);
+        }
+        index.read_member(&member_name)
+    })
+    .await;
+    match result {
+        Ok(Ok(Some(bytes))) => {
+            let filename = path.rsplit('/').next().unwrap_or(&path);
+            octet_response(bytes, filename)
+        }
+        Ok(Ok(None)) => json_err(StatusCode::NOT_FOUND, format!("no member {path} in {uri}")),
+        Ok(Err(e)) => json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
+        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
 /// GET /api/v1/hexons/{uri}/entries/{entry_id}/asset — stream the entry's blob.
 async fn asset(
     State(state): State<Arc<RegistryState>>,
@@ -288,6 +390,13 @@ fn safe_component(s: &str, extra: &[char]) -> bool {
 }
 
 /// POST /api/v1/hexons/publish — validate, persist as `{id}@{version}.hexon`, reindex.
+///
+/// D-75/D-76: every publish must be a fully sealed, signed archive (`verify_archive`
+/// under `RequireSealed`) — an unsealed archive, a bad signature, or any member
+/// (including a self-certifying `assets/{hash}`) whose bytes no longer match
+/// their committed digest all get 400. A `hexon_id` already indexed under a
+/// different (cryptographically verified) publisher DID gets 409: a second
+/// key may not "take over" someone else's id (AP-3.4 publish ownership).
 async fn publish(State(state): State<Arc<RegistryState>>, body: Bytes) -> Response {
     if state.readonly {
         return json_err(StatusCode::FORBIDDEN, "registry is read-only");
@@ -325,19 +434,56 @@ async fn publish(State(state): State<Arc<RegistryState>>, body: Bytes) -> Respon
         );
     }
 
+    // The one gate that lets everything below trust `publisher_did`: it is
+    // self-certifying (R6 — the DID names the key, not the key's trustworthiness),
+    // so only a passing signature check makes it safe to use for the continuity
+    // decision just below.
+    let verify_bytes = body.clone();
+    let publisher_did = match tokio::task::spawn_blocking(move || {
+        fe_format::verify_archive(
+            &verify_bytes,
+            &fe_format::IntegrityPolicy::RequireSealed { pin: None },
+        )
+    })
+    .await
+    {
+        Ok(Ok(fe_format::IntegrityStatus::Sealed { publisher_did })) => publisher_did,
+        Ok(Ok(fe_format::IntegrityStatus::Unsealed)) => {
+            // Unreachable: `RequireSealed` never resolves `verify_sealed_header`
+            // to `SealCheck::Unsealed`, so `verify_archive` never returns this
+            // variant under this policy (fe-format/src/integrity.rs).
+            return json_err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "sealed status invariant broken",
+            );
+        }
+        Ok(Err(e)) => return json_err(StatusCode::BAD_REQUEST, format!("{e}")),
+        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+
     let dest = state.dir.join(format!("{id}@{version}.hexon"));
-    let duplicate = dest.exists()
-        || state
-            .index
-            .read()
-            .await
-            .iter()
-            .any(|e| e.hexon_id == id && e.version == version);
-    if duplicate {
-        return json_err(
-            StatusCode::CONFLICT,
-            format!("already published: {id}@{version}"),
-        );
+    let conflict = {
+        let index = state.index.read().await;
+        if dest.exists()
+            || index
+                .iter()
+                .any(|e| e.hexon_id == id && e.version == version)
+        {
+            Some(format!("already published: {id}@{version}"))
+        } else {
+            index
+                .iter()
+                .find(|e| e.hexon_id == id && e.publisher_did != publisher_did)
+                .map(|other| {
+                    format!(
+                        "{id} is already published by {}, not {publisher_did}",
+                        other.publisher_did
+                    )
+                })
+        }
+    };
+    if let Some(msg) = conflict {
+        return json_err(StatusCode::CONFLICT, msg);
     }
     if let Err(e) = tokio::fs::write(&dest, &body).await {
         return json_err(

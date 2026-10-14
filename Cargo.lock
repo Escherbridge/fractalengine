@@ -5293,6 +5293,7 @@ dependencies = [
  "anyhow",
  "axum",
  "blake3",
+ "ed25519-dalek 2.2.0",
  "fe-format",
  "http-body-util",
  "semver",

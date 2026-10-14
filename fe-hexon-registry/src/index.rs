@@ -19,6 +19,13 @@ pub struct HexonIndexEntry {
     pub tags: Vec<String>,
     pub publisher_did: String,
     pub size_bytes: u64,
+    /// `manifest.integrity` is present (cheap presence check at scan time —
+    /// NOT a cryptographic verification; that happens at publish and again,
+    /// per read, in the meta/chunk/member routes via `HexonArchiveIndex`).
+    pub sealed: bool,
+    /// Monolithic, or a signed chunk container (from `chunks/index.json`'s
+    /// bundle count, read the same cheap way).
+    pub layout: fe_format::Layout,
     #[serde(skip)]
     pub path: PathBuf,
 }
@@ -32,17 +39,38 @@ pub fn read_zip_json(path: &Path, name: &str) -> Result<serde_json::Value> {
 /// Read a single named file from a `.hexon` zip without touching other entries
 /// (decompression-capped — see `AGENTS.md` §decompression limits).
 pub fn read_zip_bytes(path: &Path, name: &str) -> Result<Vec<u8>> {
+    try_read_zip_bytes(path, name)?.with_context(|| format!("missing {name} in {}", path.display()))
+}
+
+/// [`read_zip_bytes`], but `Ok(None)` when `name` is simply absent from the
+/// archive (as opposed to a read/decompression failure) — `index_one` uses
+/// this to tell "no `chunks/index.json`" (an ordinary monolithic archive)
+/// apart from a real error on an archive that does claim one.
+fn try_read_zip_bytes(path: &Path, name: &str) -> Result<Option<Vec<u8>>> {
     let file =
         std::fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let mut archive = zip::ZipArchive::new(std::io::BufReader::new(file))
         .with_context(|| format!("not a zip archive: {}", path.display()))?;
-    let mut entry = archive
-        .by_name(name)
-        .with_context(|| format!("missing {name} in {}", path.display()))?;
+    let mut entry = match archive.by_name(name) {
+        Ok(entry) => entry,
+        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("opening {name} in {}", path.display())),
+    };
     let declared = entry.size();
     let mut budget = limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES;
     limits::read_entry_capped(&mut entry, declared, limits::entry_cap(name), &mut budget)
+        .map(Some)
         .with_context(|| format!("reading {name} in {}", path.display()))
+}
+
+/// [`try_read_zip_bytes`], JSON-parsed.
+fn try_read_zip_json(path: &Path, name: &str) -> Result<Option<serde_json::Value>> {
+    match try_read_zip_bytes(path, name)? {
+        Some(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .with_context(|| format!("invalid JSON in {name}")),
+        None => Ok(None),
+    }
 }
 
 /// Publish-time validation: parse `manifest.json` and decompress every entry
@@ -77,7 +105,9 @@ pub fn validate_package(bytes: &[u8]) -> Result<serde_json::Value> {
     Ok(manifest)
 }
 
-/// Index one package by reading only `manifest.json` from its zip central directory.
+/// Index one package by reading only `manifest.json` from its zip central directory
+/// (plus, cheaply, `chunks/index.json`'s presence/bundle-count for `layout` — a
+/// container's chunk table is small, header-phase JSON, same cap as the manifest).
 pub fn index_one(path: &Path) -> Result<HexonIndexEntry> {
     let manifest = read_zip_json(path, "manifest.json")?;
     let s = |key: &str| -> Option<String> {
@@ -85,6 +115,17 @@ pub fn index_one(path: &Path) -> Result<HexonIndexEntry> {
             .get(key)
             .and_then(|v| v.as_str())
             .map(str::to_string)
+    };
+    let sealed = manifest.get("integrity").is_some_and(|v| !v.is_null());
+    let layout = match try_read_zip_json(path, fe_format::integrity::CHUNK_INDEX_PATH)? {
+        Some(index) => fe_format::Layout::Container {
+            chunk_count: index
+                .get("bundles")
+                .and_then(|b| b.as_array())
+                .map(|a| a.len() as u32)
+                .unwrap_or_default(),
+        },
+        None => fe_format::Layout::Monolithic,
     };
     Ok(HexonIndexEntry {
         hexon_id: s("hexon_id").context("manifest missing hexon_id")?,
@@ -103,6 +144,8 @@ pub fn index_one(path: &Path) -> Result<HexonIndexEntry> {
             .unwrap_or_default(),
         publisher_did: s("publisher_did").unwrap_or_default(),
         size_bytes: std::fs::metadata(path)?.len(),
+        sealed,
+        layout,
         path: path.to_path_buf(),
     })
 }

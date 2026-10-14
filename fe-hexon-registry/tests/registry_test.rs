@@ -222,8 +222,9 @@ async fn post_publish(
     (status, body)
 }
 
+/// Sealed with [`fixtures::test_key`] — publish requires a seal as of PAS-P5 S3.
 fn night_sky_hexon() -> Vec<u8> {
-    fixtures::build_hexon(
+    fixtures::seal(fixtures::build_hexon(
         "night-sky",
         "2.0.0",
         HexonType::Skybox,
@@ -233,7 +234,7 @@ fn night_sky_hexon() -> Vec<u8> {
         "starfield",
         EntryKind::Skybox,
         b"hdr starfield bytes",
-    )
+    ))
 }
 
 #[tokio::test]
@@ -350,6 +351,222 @@ async fn publish_refuses_zip_bombs_without_storing_them() {
     assert!(!tmp.path().join("bomb@1.0.0.hexon").exists());
     let (_, body) = get(&router, "/health").await;
     assert_eq!(json_data(&body)["indexed"], 0);
+}
+
+/// Table-driven: the four PAS-P5 S3 publish outcomes beyond the existing
+/// duplicate/readonly/garbage/zip-bomb cases (those stay as their own tests
+/// above — "zip bomb → 400" is already fully covered there).
+#[tokio::test]
+async fn publish_outcomes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let router = router_for(tmp.path(), None, false);
+
+    // sealed -> 200, then searchable.
+    let (status, body) = post_publish(&router, night_sky_hexon(), None).await;
+    assert_eq!(status, StatusCode::OK, "{}", error_text(&body));
+    let (_, body) = get(&router, "/api/v1/hexons/search?type=skybox").await;
+    assert_eq!(json_data(&body).as_array().unwrap().len(), 1);
+
+    // unsigned -> 400 (RequireSealed refuses an archive with no integrity root).
+    let unsealed = fixtures::build_hexon(
+        "unsigned-model",
+        "1.0.0",
+        HexonType::Model,
+        "Unsigned",
+        "no seal",
+        &[],
+        "m",
+        EntryKind::Model,
+        b"unsealed bytes",
+    );
+    let (status, body) = post_publish(&router, unsealed, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        error_text(&body).contains("not sealed"),
+        "{}",
+        error_text(&body)
+    );
+
+    // asset_hash != blob (post-seal tamper) -> 400.
+    let mismatched = fixtures::sealed_asset_hash_mismatch_hexon("mismatched-model");
+    let (status, body) = post_publish(&router, mismatched, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        error_text(&body).contains("does not match its committed digest"),
+        "{}",
+        error_text(&body)
+    );
+
+    // same hexon_id, different (verified) publisher -> 409, even for a new version.
+    let night_sky_imposter = fixtures::seal_with(
+        fixtures::build_hexon(
+            "night-sky",
+            "2.1.0",
+            HexonType::Skybox,
+            "Night Sky",
+            "Starfield skybox",
+            &["skybox", "night"],
+            "starfield",
+            EntryKind::Skybox,
+            b"a different starfield",
+        ),
+        &fixtures::other_key(),
+    );
+    let (status, body) = post_publish(&router, night_sky_imposter, None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{}", error_text(&body));
+    assert!(
+        error_text(&body).contains("night-sky"),
+        "{}",
+        error_text(&body)
+    );
+
+    // the rejected imposter version must never have been written or indexed.
+    assert!(!tmp.path().join("night-sky@2.1.0.hexon").exists());
+    let (_, body) = get(&router, "/api/v1/hexons/night-sky").await;
+    assert_eq!(json_data(&body)["version"], "2.0.0");
+}
+
+#[tokio::test]
+async fn meta_route_header_verifies_client_side_without_tile_bytes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tiles: Vec<(String, Vec<u8>)> = (0..64)
+        .map(|i| (format!("10/{i}/0"), vec![7u8; 64 * 1024]))
+        .collect();
+    let sealed = fixtures::seal(fixtures::tileset_hexon("big-tileset", "1.0.0", &tiles));
+    assert!(
+        sealed.len() > 2 * 1024 * 1024,
+        "fixture should be multi-MiB: {} bytes",
+        sealed.len()
+    );
+    std::fs::write(tmp.path().join("big-tileset@1.0.0.hexon"), &sealed).unwrap();
+    let router = router_for(tmp.path(), None, false);
+
+    let (status, body) = get(&router, "/api/v1/hexons/big-tileset/meta").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.len() < 64 * 1024,
+        "meta response leaked tile bytes: {} of {} archive bytes",
+        body.len(),
+        sealed.len()
+    );
+
+    let doc: fe_format::HeaderDoc =
+        serde_json::from_value(json_data(&body)).expect("response must be a HeaderDoc");
+    let verified = fe_format::verify_header(
+        &doc,
+        &fe_format::IntegrityPolicy::RequireSealed { pin: None },
+    )
+    .expect("header must verify client-side, with no archive bytes");
+    assert_eq!(
+        verified.status,
+        fe_format::IntegrityStatus::Sealed {
+            publisher_did: fe_format::verifying_key_to_did(&fixtures::test_key().verifying_key())
+        }
+    );
+}
+
+#[tokio::test]
+async fn chunk_route_serves_bytes_matching_the_signed_index() {
+    let tmp = tempfile::tempdir().unwrap();
+    let container = fixtures::sealed_container_hexon("chunked");
+    std::fs::write(tmp.path().join("chunked@1.0.0.hexon"), &container).unwrap();
+    let mono = fixtures::seal(fixtures::tileset_hexon(
+        "mono",
+        "1.0.0",
+        &[("10/0/0".into(), vec![3u8; 64])],
+    ));
+    std::fs::write(tmp.path().join("mono@1.0.0.hexon"), &mono).unwrap();
+    let router = router_for(tmp.path(), None, false);
+
+    // The signed chunk digests, fetched independently via `/meta`.
+    let (_, meta_body) = get(&router, "/api/v1/hexons/chunked/meta").await;
+    let doc: fe_format::HeaderDoc = serde_json::from_value(json_data(&meta_body)).unwrap();
+    let verified = fe_format::verify_header(
+        &doc,
+        &fe_format::IntegrityPolicy::RequireSealed { pin: None },
+    )
+    .expect("container header must verify");
+
+    // Each chunk's served bytes match the signed index's blake3 AND round-trip
+    // through `HexonArchive::import` on their own (a chunk is itself a hexon).
+    for seq in 0..3u32 {
+        let (status, body) = get(&router, &format!("/api/v1/hexons/chunked/chunk/{seq}")).await;
+        assert_eq!(status, StatusCode::OK, "chunk {seq}");
+        assert_eq!(
+            blake3::hash(&body).to_hex().to_string(),
+            verified.chunk_digest(seq).expect("signed digest for seq"),
+            "chunk {seq} bytes must match the signed chunks/index.json digest"
+        );
+        let imported = HexonArchive::import(&body).expect("each chunk must import on its own");
+        assert_eq!(imported.manifest.hexon_id, format!("chunked-chunk-{seq}"));
+    }
+    let (status, _) = get(&router, "/api/v1/hexons/chunked/chunk/99").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "out-of-range seq");
+
+    // Monolithic: seq 0 is the whole file, byte-for-byte; seq 1 is 404.
+    let (status, body) = get(&router, "/api/v1/hexons/mono/chunk/0").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, mono);
+    let (status, _) = get(&router, "/api/v1/hexons/mono/chunk/1").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn member_route_refuses_names_not_in_the_archive() {
+    let tmp = tempfile::tempdir().unwrap();
+    fixtures::write_fixture_set(tmp.path());
+    let router = router_for(tmp.path(), None, false);
+
+    // A real member reads back byte-for-byte.
+    let (status, body) = get(&router, "/api/v1/hexons/morning-run/member/entries.json").await;
+    assert_eq!(status, StatusCode::OK);
+    let catalog: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(catalog["entries"][0]["entry_id"], "morning_run");
+
+    // Traversal, an absolute-looking path and a nonexistent name all just 404 —
+    // `path` is only ever looked up against the archive's own member names.
+    for bad in ["../../../etc/passwd", "/etc/passwd", "no/such/member.json"] {
+        let (status, _) = get(&router, &format!("/api/v1/hexons/morning-run/member/{bad}")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{bad}");
+    }
+}
+
+#[tokio::test]
+async fn an_html_member_is_served_as_an_octet_stream_attachment_with_nosniff() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sealed = fixtures::sealed_hexon_with_html_member("html-member");
+    std::fs::write(tmp.path().join("html-member@1.0.0.hexon"), sealed).unwrap();
+    let router = router_for(tmp.path(), None, false);
+
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/hexons/html-member/member/terrain/tracks/notes.html")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers().get(header::CONTENT_TYPE).unwrap(),
+        "application/octet-stream",
+        "an .html member must never be served as text/html"
+    );
+    assert_eq!(
+        resp.headers().get("x-content-type-options").unwrap(),
+        "nosniff"
+    );
+    let disposition = resp
+        .headers()
+        .get(header::CONTENT_DISPOSITION)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(disposition.starts_with("attachment"), "{disposition}");
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.as_ref(), b"<script>alert(document.domain)</script>");
 }
 
 #[tokio::test]
