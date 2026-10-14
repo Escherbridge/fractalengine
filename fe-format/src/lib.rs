@@ -6,6 +6,7 @@
 mod archive;
 pub mod archive_index;
 pub mod entries;
+pub mod integrity;
 pub mod license;
 pub mod limits;
 pub mod manifest;
@@ -15,7 +16,12 @@ pub mod signature;
 pub use archive::*;
 pub use archive_index::{ArchiveChanged, HexonArchiveIndex, ARCHIVE_CHANGED_ERROR};
 pub use entries::*;
+#[cfg(feature = "runtime")]
 pub use fe_runtime::safe_id::is_safe_path_id;
+pub use integrity::{
+    seal, verify_archive, verify_sealed_header, IntegrityError, IntegrityPolicy, IntegrityRoot,
+    IntegrityStatus, MembersDoc, SealCheck, SealedCoverage,
+};
 pub use license::*;
 pub use limits::read_entry_capped;
 pub use manifest::*;
@@ -87,6 +93,7 @@ pub struct ExportNode {
     pub node_log: Vec<serde_json::Value>,
 }
 
+#[cfg(feature = "runtime")]
 impl From<fe_runtime::messages::NodeDto> for ExportNode {
     fn from(n: fe_runtime::messages::NodeDto) -> Self {
         Self {
@@ -132,6 +139,7 @@ mod tests {
             dependencies: vec![],
             platforms: vec![],
             address: None,
+            integrity: None,
             signature: None,
         }
     }

@@ -1,8 +1,21 @@
 # fe-format/src — Hexon v1.0.0 format rationale
 
 Spec: `docs/hexon-format-spec.md`. This crate is the pure format layer
-(serde + zip + ed25519) with no engine or DB dependencies, so every other
+(serde + zip + ed25519 + blake3) with no engine or DB dependencies, so every other
 crate that reads or writes `.hexon` archives can depend on it without cycles.
+
+## §features
+
+`runtime` (default) pulls `fe-runtime` — and through it bevy — for exactly two
+things: `From<NodeDto> for ExportNode` (consumed by fe-api) and the
+`is_safe_path_id` re-export (consumed by fe-terrain). Both are `#[cfg(feature =
+"runtime")]`. Bevy-free consumers (the hosted registry, PAS-P5 S3) depend on
+`fe-format = { default-features = false }` and still get the whole archive,
+signature and integrity surface. Gate: `cargo check -p fe-format
+--no-default-features` and `cargo tree -p fe-format --no-default-features -e
+normal | grep -c bevy` == 0. fe-api opts into `runtime` explicitly. (HU-P1's
+"fe-format gains zero dependencies" check is amended by D-76: `blake3` is added,
+`fe-runtime` becomes optional.)
 
 ## §archive (`archive.rs`)
 
@@ -103,3 +116,70 @@ Ed25519 manifest signing/verification as defined in the Hexon v1.0.0 spec.
   over a 2-byte multicodec prefix `[0xed, 0x01]` (Ed25519 public key)
   followed by the 32 raw key bytes. `verifying_key_to_did` is the exact
   inverse of `did_key_to_verifying_key`.
+
+## §integrity (`integrity.rs`) — D-76 Merkle-extended signature root
+
+One Ed25519 signature (the unchanged §signature scheme) covers everything:
+
+```text
+manifest.json  (signed; canonical JSON, signature blanked)
+ └─ integrity: { v: 1, algo: "blake3",
+                 header: { "entries.json": h, "license.json": h, "schema.json": h,
+                           "terrain/tileset_meta.json": h, "terrain/config.json": h,
+                           "members.json": h, "chunks/index.json": h } }  (those present)
+      ├─ members.json      { "<zip path>": h, ... }  every body member (tiles, satellite,
+      │                    entities/*, terrain/tracks/*, chunks/{seq}.hexon, ...)
+      ├─ assets/{h}        self-certifying: h == blake3(bytes) AND h is referenced by the
+      │                    header-committed entries.json (asset_hash or sub_assets value)
+      └─ chunks/index.json a serialized `TilesetBundleIndex`; every bundle's
+                           `chunks/{seq}.hexon` must be committed in members.json with
+                           the same blake3 (each chunk is itself a sealed hexon)
+```
+
+- **Digests are blake3 over the exact stored (decompressed) member bytes.** Nothing
+  but the manifest is canonicalised, so JSON formatting can never break a digest.
+  `IntegrityRoot` is strings + integers only (no canonical-JSON floats, R4).
+- **Coverage invariant.** Every member except `manifest.json` must be in the
+  `header` map, in `members.json`, or be a self-certifying `assets/{h}`; anything
+  else is `Uncovered`. This is what catches a post-seal rewrite such as the splat
+  append (`fe-terrain/src/splat/format.rs`), so **`seal` is always the last
+  transform** in every producer.
+- **Assets are ALWAYS self-certifying in a sealed archive** (never listed in
+  `members.json`, even if a producer's `members.json` names them): this is the
+  A6 `asset_hash` check. `seal` refuses an asset whose name is not its blake3
+  (`DigestMismatch`) or that the catalog does not reference
+  (`AssetNotReferenced`). A catalogued hash with no `assets/` member is NOT an
+  error: the asset may travel outside the archive (fetch-by-hash in the one
+  `content_hash` identifier space) and is self-certifying wherever it is fetched,
+  so removing one can deny but never inject.
+- **The header map may only name `HEADER_MEMBER_PATHS`** (small JSON, read in the
+  header phase under the JSON cap); anything else is `Unsupported`. This keeps the
+  header phase bounded for PAS-P5 S2's `HeaderDoc`.
+- **`seal(bytes, key)`** reads every member once under the shared decompression
+  budget, raw-copies them (`ZipWriter::raw_copy_file`, no recompression; CRC and
+  compression method preserved), drops any previous `members.json` (re-seal is
+  idempotent), writes `members.json`, sets `manifest.publisher_did` to the key's
+  DID (a signature only verifies against its own DID, so any other value would
+  produce an unverifiable archive; this is what lets `seal_hexon` re-seal legacy
+  archives carrying placeholder DIDs), sets `integrity`, and signs. It refuses a
+  `members.json` over `MAX_JSON_ENTRY_BYTES` (R7: >~80k members must be a chunked
+  container) and a chunk table that disagrees with its chunk members.
+- **`verify_sealed_header(manifest_json, header_members, policy)`** is the header
+  phase over raw bytes (the shape both transports carry): signature → pin →
+  header digests → parse `members.json` / `entries.json` / `chunks/index.json`
+  (digests are checked BEFORE parsing, so tampering reports `DigestMismatch`, not
+  a parse error). It returns a `SealedCoverage` whose `check_member(_digest)` is
+  the ONE coverage rule every lazy reader applies per member (S2 extends
+  `HexonArchiveIndex` with it; no second guard set).
+- **`verify_archive(bytes, policy)`** = header phase + every member through
+  `check_member` + every `members.json` path present (`MissingMember`). A member
+  whose zip CRC fails reads as `Malformed`, a re-zipped tamper as `DigestMismatch`.
+- **Policies.** `VerifyIfSealed` (default) enforces a seal fully when present and
+  lets a legacy archive through as `IntegrityStatus::Unsealed` (local installs,
+  A2). `RequireSealed { pin }` refuses unsealed archives (`NotSealed`) and, with a
+  pin, any other publisher (`PublisherMismatch`); network paths and registry
+  publish use it. Stripping `integrity` from a sealed archive downgrades it to
+  unsealed, which only `VerifyIfSealed` accepts — by design.
+- **Keys never live in files.** `examples/seal_hexon.rs <in> <out>` reads the
+  32-byte hex seed from `FE_SECRET_HEXON_SEAL_KEY` and self-verifies the output
+  under `RequireSealed { pin: <its DID> }` before writing it.

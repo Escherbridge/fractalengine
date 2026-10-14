@@ -31,6 +31,7 @@ fn make_manifest(id: &str) -> HexonManifest {
         dependencies: vec![],
         platforms: vec![],
         address: None,
+        integrity: None,
         signature: None,
     }
 }
@@ -273,6 +274,7 @@ fn check3_builder_equivalent_roundtrip() {
         dependencies: vec![],
         platforms: vec![],
         address: None,
+        integrity: None,
         signature: None,
     };
 

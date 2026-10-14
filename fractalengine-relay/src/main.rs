@@ -806,6 +806,7 @@ mod tests {
             dependencies: vec![],
             platforms: vec![],
             address: None,
+            integrity: None,
             signature: None,
         };
         let meta = fe_format::manifest::TilesetMeta {

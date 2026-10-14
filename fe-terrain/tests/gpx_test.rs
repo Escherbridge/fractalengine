@@ -329,6 +329,7 @@ fn hexon_terrain_roundtrip() {
         dependencies: vec![],
         platforms: vec![],
         address: None,
+        integrity: None,
         signature: None,
     };
 

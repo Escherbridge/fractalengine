@@ -43,6 +43,7 @@ fn build_hexon(
         dependencies: vec![],
         platforms: vec![],
         address: None,
+        integrity: None,
         signature: None,
     };
     let hash = blake3::hash(blob).to_hex().to_string();

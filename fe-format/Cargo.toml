@@ -7,12 +7,21 @@ repository.workspace = true
 rust-version.workspace = true
 description = "Canonical data formats and scope strings for FractalEngine"
 
+[features]
+# `runtime` pulls fe-runtime (and through it bevy) for `From<NodeDto>` and the
+# shared `is_safe_path_id` guard; bevy-free consumers use `default-features = false`
+# (see src/AGENTS.md §features).
+default = ["runtime"]
+runtime = ["dep:fe-runtime"]
+
 [dependencies]
-fe-runtime = { path = "../fe-runtime" }
+fe-runtime = { path = "../fe-runtime", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
+blake3 = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 ed25519-dalek = { workspace = true }
 base64 = "0.22"

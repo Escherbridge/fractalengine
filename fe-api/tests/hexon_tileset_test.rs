@@ -62,6 +62,7 @@ fn build_hexon_tileset_layers(
         dependencies: vec![],
         platforms: vec![],
         address: None,
+        integrity: None,
         signature: None,
     };
     let meta = TilesetMeta {

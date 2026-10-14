@@ -440,6 +440,7 @@ mod scale_roundtrip_tests {
             dependencies: vec![],
             platforms: vec![],
             address: None,
+            integrity: None,
             signature: None,
         }
     }

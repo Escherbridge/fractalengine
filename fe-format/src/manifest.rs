@@ -290,6 +290,10 @@ pub struct HexonManifest {
     pub platforms: Vec<Platform>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub address: Option<HexonAddress>,
+    /// D-76 Merkle-extended integrity root, signed with the manifest; `None` on
+    /// legacy (unsealed) archives — see `src/AGENTS.md` §integrity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integrity: Option<crate::integrity::IntegrityRoot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
 }

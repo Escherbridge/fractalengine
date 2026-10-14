@@ -69,6 +69,7 @@ fn synthetic_tileset() -> HexonArchiveData {
             dependencies: vec![],
             platforms: vec![],
             address: None,
+            integrity: None,
             signature: None,
         },
         entries: vec![],

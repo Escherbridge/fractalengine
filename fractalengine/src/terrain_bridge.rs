@@ -986,6 +986,7 @@ mod tests {
             dependencies: vec![],
             platforms: vec![],
             address: None,
+            integrity: None,
             signature: None,
         }
     }

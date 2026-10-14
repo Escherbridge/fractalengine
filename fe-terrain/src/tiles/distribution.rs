@@ -295,6 +295,7 @@ pub fn assemble_chunks(
         dependencies: vec![],
         platforms: vec![],
         address: None,
+        integrity: None,
         signature: None,
     };
 

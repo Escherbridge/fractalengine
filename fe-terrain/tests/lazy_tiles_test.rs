@@ -45,6 +45,7 @@ fn manifest(hexon_id: &str) -> HexonManifest {
         dependencies: vec![],
         platforms: vec![],
         address: None,
+        integrity: None,
         signature: None,
     }
 }

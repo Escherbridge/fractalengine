@@ -246,6 +246,7 @@ mod inner {
                 dependencies: vec![],
                 platforms: vec![],
                 address: None,
+                integrity: None,
                 signature: None,
             };
 
@@ -348,6 +349,7 @@ mod inner {
                     dependencies: vec![],
                     platforms: vec![],
                     address: None,
+                    integrity: None,
                     signature: None,
                 };
 
