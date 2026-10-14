@@ -96,3 +96,13 @@ ad overwrite an authenticated provider's `root`/`advertised_bytes`; `root_for` (
 downloads → content poisoning. Disposition: **routed into W1 S8b as a MANDATORY fix + regression test**
 (`8442e68` writes it into the plan's S8b section, which S8b reads) rather than editing fe-sync while S4's
 cargo build runs (house rule). Verify at W1 close; if S8b misses it, fix before W1 is declared done.
+
+**AC-14 closed — CI run 38498925963 on `53a4c4c`: SUCCESS (first completed run of today's work).**
+Lint (warn-only) all steps green incl. cargo-deny advisories+bans+sources+licenses and fuzz
+build/run/verdict; Linux build+test+package incl. "Generate iroh 0.35 store fixture" +
+"Store-migration test (0.35 fixture required)" (`legacy_v035_fixture_migrates_and_reads_back ... ok`,
+3 passed, grep-guarded against a skip); Windows build+package; **rolling `latest` published 4 runnable
+archives** (fractalengine-{windows-x86_64.zip, linux-x86_64.tar.gz}, fe-relay-{windows-x86_64.zip,
+linux-x86_64.tar.gz}) + SHA256SUMS. Push freeze lifted; next push = campaign final sweep (main now
+carries W1 code commits interleaved with docs, so docs can't be pushed alone). paths-ignore
+(`conductor/**`, `.omc/**`) rides with that push.
