@@ -104,3 +104,66 @@ The rejection path is exercised end-to-end in
 `fe-database` `runtime_lifecycle_tests` (Anonymous + Viewer → denied, node
 survives). N-5: authz lives here, never in the UI; the UI receives only
 pre-authorized deletes.
+
+## §role-grants (`role_grants.rs`)
+
+Pure per-grantor role-statement model
+(`conductor/tracks/role_propagation_20261013` RP-1; plan §2.2–§2.4).
+**Algorithm: least fixpoint via Kleene iteration** on a monotone operator
+over a finite lattice (Knaster–Tarski) — `materialize` iterates Manager
+statements from `mgr ≡ ⊥`, raising a cell only while its grantor's
+`authority` (itself derived from the current `mgr`/owner state) is at least
+Manager, until a pass changes nothing, bounded at `|statements|+1` passes
+with a `tracing::warn!` bug guard if the bound is hit (plan §5 risk 1).
+
+- **Owner statements are fixed; Manager statements only raise.** A grant
+  pins a cell exactly; a revoke blocks it (the peer then inherits from the
+  enclosing scope). `role_at`'s max-fold over the whole scope chain is what
+  makes "Managers only raise" hold automatically: a weaker Manager-sourced
+  value anywhere in the chain can never pull the result below a stronger
+  one elsewhere in the chain (D-RP-2, T20). `cache_rows()` mirrors that into
+  the simple nearest-row-wins `role` table by only writing a row when the
+  cell's `mgr` value actually exceeds what inheriting from the parent would
+  give — the hot-path `resolve_role` stays untouched and still returns
+  exactly `role_at`.
+- **Owner pins cut the authority walk.** `role_at` stops at the FIRST
+  owner-pinned cell it reaches walking outward from the queried scope,
+  discarding nothing folded in from narrower cells but ignoring everything
+  wider. This is what lets the owner carve a petal out of a verse Manager's
+  authority (D-RP-2, T21) — without the cut, the wider grant would still
+  get folded in via the max.
+- **`GrantedRole` structurally excludes `Owner`** (T3: nobody can grant
+  Owner) and deliberately does not reuse `RoleLevel::from`'s unknown-string
+  mapping: `validate_statement` parses the wire `role` string through
+  `GrantedRole::parse`, which denies `"owner"` and any unrecognized string
+  outright instead of silently landing on `None`.
+- **`validate_statement`'s owner-dependent check defers, not denies,
+  pre-manifest.** With `owner_did: None` it skips the target-is-owner check
+  and returns `Ok`; the full check reruns when a held statement is promoted
+  once the owner is known (§2.4). Everything else it checks is a
+  **permanent** deny (`RejectReason`): key/payload/author agreement (T1),
+  the scope parsing to this replica's verse (T6), and the role string
+  (T3/unknown).
+- **`admissible`** is the one placement predicate both the DB and sync
+  planes use: true for the owner, else `authority(grantor, scope) ≥
+  Manager` under the CURRENT materialization. A statement that fails this
+  is Deferred (R7), never denied — `fe-database::role_grants` (RP-2) owns
+  the durable store that holds it; this module only computes whether a
+  statement is admissible, never where to park it.
+- **`has_any_role`** exists only for the RP-3 enrolment membership floor
+  (AC-44c): a petal-scoped member resolves to `RoleLevel::None` at the
+  verse scope (R7 subtree semantics give them no wider authority), so the
+  floor cannot use `role_at` at the verse scope alone.
+- **The scope-chain parser here is a private, intentional duplicate** of
+  `fe_database::scope::{parent_scope, parse_scope}` — RP-1 owns only
+  `fe-policy/**`, so it mirrors that logic rather than editing
+  `fe-database/src/scope.rs` to re-export one shared parser (the plan's
+  preferred alternative). A later slice that touches both files is free to
+  unify them; until then, keep any edit to the scope-string grammar in sync
+  across both copies.
+- **`latest_per_grantor`** is last-writer-wins by `hlc` within a
+  `(scope, peer_did, grantor_did)` key — a single author, so HLC skew can
+  only reorder that author's own statements (T7) — tie-broken on the
+  lexicographic order of the canonical payload bytes (a local
+  `format!`-based encoding, not a hash; AC-51 — `fe-policy/Cargo.toml`
+  carries no hashing/property-test dependency).

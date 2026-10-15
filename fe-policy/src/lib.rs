@@ -4,6 +4,7 @@ pub mod combinators;
 pub mod engine;
 pub mod node_lifecycle;
 pub mod policies;
+pub mod role_grants;
 pub mod role_level;
 pub mod types;
 
@@ -15,6 +16,10 @@ pub use node_lifecycle::{
 pub use policies::{
     CapabilityPolicy, OwnershipPolicy, PublicReadPolicy, RoleFloorPolicy, RoleLevelPolicy,
     TokenScopePolicy,
+};
+pub use role_grants::{
+    latest_per_grantor, materialize, validate_statement, CacheRow, ChangedDids, EffectiveRoles,
+    GrantedRole, RejectReason, RoleStatement, RoleStatementPayload, StatementKey,
 };
 pub use role_level::RoleLevel;
 pub use types::{scope_contains, Action, AuthContext, Decision, Scope};
