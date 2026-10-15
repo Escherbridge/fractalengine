@@ -578,6 +578,7 @@ impl TestPeer {
                         | Ok(DbCommand::ResolveRolesForPeers { .. })
                         | Ok(DbCommand::AssignRole { .. })
                         | Ok(DbCommand::RevokeRole { .. })
+                        | Ok(DbCommand::ReemitLocalRoleStatements { .. })
                         | Ok(DbCommand::GenerateScopedInvite { .. })
                         | Ok(DbCommand::ResolveLocalRole { .. }) => {
                             // Entity settings commands — not implemented in test harness.

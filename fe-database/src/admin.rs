@@ -6,6 +6,10 @@ pub enum KnownTable {
     Room,
     Model,
     Role,
+    /// Admitted role statements — the source the `role` cache is rebuilt from.
+    RoleGrant,
+    /// Held (Deferred) role statements.
+    RoleStatementPending,
     OpLog,
     Verse,
     VerseMember,
@@ -22,6 +26,8 @@ impl KnownTable {
         KnownTable::Room,
         KnownTable::Model,
         KnownTable::Role,
+        KnownTable::RoleGrant,
+        KnownTable::RoleStatementPending,
         KnownTable::OpLog,
         KnownTable::Verse,
         KnownTable::VerseMember,
@@ -38,6 +44,8 @@ impl KnownTable {
             KnownTable::Room => "room",
             KnownTable::Model => "model",
             KnownTable::Role => "role",
+            KnownTable::RoleGrant => "role_grant",
+            KnownTable::RoleStatementPending => "role_statement_pending",
             KnownTable::OpLog => "op_log",
             KnownTable::Verse => "verse",
             KnownTable::VerseMember => "verse_member",
@@ -56,6 +64,8 @@ impl KnownTable {
             "room" => Some(KnownTable::Room),
             "model" => Some(KnownTable::Model),
             "role" => Some(KnownTable::Role),
+            "role_grant" => Some(KnownTable::RoleGrant),
+            "role_statement_pending" => Some(KnownTable::RoleStatementPending),
             "op_log" => Some(KnownTable::OpLog),
             "verse" => Some(KnownTable::Verse),
             "verse_member" => Some(KnownTable::VerseMember),
@@ -88,9 +98,18 @@ pub async fn clear_all_tables(db: &Db) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Clear one table. `role` is a materialized cache, so clearing it (or either statement
+/// table) rebuilds the cache from the statements that remain (src/AGENTS.md
+/// §role-propagation): to remove roles, clear `role_grant`, not `role`.
 pub async fn clear_table(db: &Db, table: KnownTable) -> anyhow::Result<()> {
     db.query(format!("DELETE FROM {table}")).await?;
     tracing::info!("Table '{}' cleared", table);
+    if matches!(
+        table,
+        KnownTable::Role | KnownTable::RoleGrant | KnownTable::RoleStatementPending
+    ) {
+        crate::role_grants::repartition_all(db).await?;
+    }
     Ok(())
 }
 
@@ -126,6 +145,10 @@ pub async fn load_from_file(db: &Db, path: &std::path::Path) -> anyhow::Result<(
 
     clear_all_tables(db).await?;
 
+    // A dump with statements carries a derived `role` cache: skip it and rebuild. A legacy
+    // dump (no statements) carries raw role rows: re-arm the one-shot migration instead.
+    let has_statements = obj.contains_key(KnownTable::RoleGrant.as_str());
+
     for (table, rows) in obj {
         let known = match KnownTable::from_str(table.as_str()) {
             Some(t) => t,
@@ -134,6 +157,9 @@ pub async fn load_from_file(db: &Db, path: &std::path::Path) -> anyhow::Result<(
                 continue;
             }
         };
+        if known == KnownTable::Role && has_statements {
+            continue;
+        }
         if let Some(arr) = rows.as_array() {
             for row in arr {
                 let _: Option<serde_json::Value> = db
@@ -142,6 +168,11 @@ pub async fn load_from_file(db: &Db, path: &std::path::Path) -> anyhow::Result<(
                     .await?;
             }
         }
+    }
+    if has_statements {
+        crate::role_grants::repartition_all(db).await?;
+    } else {
+        crate::migration::role_grants::clear_marker(db).await?;
     }
     tracing::info!("Database loaded from {}", path.display());
     Ok(())

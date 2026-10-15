@@ -125,10 +125,53 @@ define_table! {
 define_table! {
     /// RBAC role assignment with hierarchical scope.
     /// Scope uses the Resource Descriptor format: VERSE#id-FRACTAL#id-PETAL#id
+    /// Materialized; written only by `role_grants::rematerialize` (src/AGENTS.md §role-propagation).
     table "role" => Role (id: peer_did) {
         peer_did: String => "TYPE string",
         scope:    String => "TYPE string",
         role:     String => "TYPE string"
+    }
+}
+
+define_table! {
+    /// An ADMITTED role statement: one live row per (scope, peer_did, grantor_did)
+    /// across this table and `role_statement_pending` (src/AGENTS.md §role-propagation).
+    table "role_grant" => RoleGrantRow (id: statement_key) {
+        /// The doc record id `{scope}/{peer_did}/{grantor_did}`.
+        statement_key: String => "TYPE string",
+        verse_id:      String => "TYPE string",
+        scope:         String => "TYPE string",
+        peer_did:      String => "TYPE string",
+        grantor_did:   String => "TYPE string",
+        role:          String => "TYPE string ASSERT $value IN ['manager', 'editor', 'viewer', 'none']",
+        revoked:       bool   => "TYPE bool",
+        /// Grantor HLC as a decimal u64 string (the wire range exceeds SurrealDB's i64).
+        hlc:           String => "TYPE string",
+        updated_at:    String => "TYPE string"
+    }
+}
+
+define_table! {
+    /// A DEFERRED (held) role statement whose grantor lacks authority yet (R7, D-RP-1).
+    table "role_statement_pending" => RoleStatementPendingRow (id: statement_key) {
+        statement_key: String => "TYPE string",
+        verse_id:      String => "TYPE string",
+        scope:         String => "TYPE string",
+        peer_did:      String => "TYPE string",
+        grantor_did:   String => "TYPE string",
+        role:          String => "TYPE string ASSERT $value IN ['manager', 'editor', 'viewer', 'none']",
+        revoked:       bool   => "TYPE bool",
+        hlc:           String => "TYPE string",
+        updated_at:    String => "TYPE string",
+        received_at:   String => "TYPE string"
+    }
+}
+
+define_table! {
+    /// One-shot local data-migration markers (the RP-2 legacy role migration).
+    table "local_migration_marker" => LocalMigrationMarker (id: marker_key) {
+        marker_key: String => "TYPE string",
+        applied_at: String => "TYPE string"
     }
 }
 
@@ -663,6 +706,9 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     Repo::<Room>::apply_schema(db).await?;
     Repo::<Model>::apply_schema(db).await?;
     Repo::<Role>::apply_schema(db).await?;
+    Repo::<RoleGrantRow>::apply_schema(db).await?;
+    Repo::<RoleStatementPendingRow>::apply_schema(db).await?;
+    Repo::<LocalMigrationMarker>::apply_schema(db).await?;
     Repo::<OpLog>::apply_schema(db).await?;
     Repo::<Node>::apply_schema(db).await?;
     // Backfill nodes created before `edit_seq` existed: DEFAULT only fires
@@ -731,6 +777,22 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
         .await?
         .check()
         .map_err(|e| anyhow::anyhow!("idx_role_scope: {e}"))?;
+    // RP-2 §2.1: the statement key is unique per table, and every held-row
+    // lookup goes through (verse_id, grantor_did) — src/AGENTS.md §role-propagation.
+    for table in ["role_grant", "role_statement_pending"] {
+        for (suffix, fields, unique) in [
+            ("key", "scope, peer_did, grantor_did", " UNIQUE"),
+            ("verse_grantor", "verse_id, grantor_did", ""),
+            ("verse", "verse_id", ""),
+        ] {
+            db.query(format!(
+                "DEFINE INDEX IF NOT EXISTS idx_{table}_{suffix} ON TABLE {table} FIELDS {fields}{unique}"
+            ))
+            .await?
+            .check()
+            .map_err(|e| anyhow::anyhow!("idx_{table}_{suffix}: {e}"))?;
+        }
+    }
     db.query("DEFINE INDEX IF NOT EXISTS idx_node_log_node ON TABLE node_log FIELDS node_id")
         .await?
         .check()

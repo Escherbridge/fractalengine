@@ -1,11 +1,13 @@
 use fe_query::{Filter, QueryBuilder, UpdateBuilder};
 
+use fe_policy::{GrantedRole, RoleStatement};
+
 use crate::query_helpers::exec_query;
 use crate::repo::Db;
 use crate::role_level::RoleLevel;
 use crate::scope::{parent_scope, parse_scope};
 use crate::types::{NodeId, OpLogEntry, OpType};
-use crate::{op_log, rbac};
+use crate::{op_log, rbac, role_grants, BlobStoreHandle, ReplicationSender};
 
 /// Verse-level metadata needed for role resolution.
 struct VerseInfo {
@@ -66,95 +68,197 @@ pub async fn resolve_role(db: &Db, peer_did: &str, scope: &str) -> anyhow::Resul
     Ok(RoleLevel::from(verse.default_access.as_str()))
 }
 
-/// Assign a role to a peer at a specific scope.
-///
-/// The caller must have Manager or Owner role at or above the target scope,
-/// and cannot assign a role higher than their own.
+/// A local role command refused before anything was written (plan §2.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoleCommandError {
+    /// Not one of `manager`/`editor`/`viewer`/`none`.
+    InvalidRole(String),
+    /// Nobody can grant Owner (T3).
+    OwnerNotAssignable,
+    /// The owner is never a grant or revoke target (T5).
+    TargetIsOwner,
+    /// Managers only raise; a Manager retracts their own grant with a revoke (D-RP-2).
+    ManagerCannotAssignNone,
+    /// The caller lacks Manager+ at the target scope (subtree authority, T19).
+    InsufficientAuthority { caller_role: RoleLevel },
+}
+
+impl std::fmt::Display for RoleCommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RoleCommandError::InvalidRole(role) => {
+                write!(f, "invalid role '{role}': expected manager, editor, viewer or none")
+            }
+            RoleCommandError::OwnerNotAssignable => write!(f, "the Owner role cannot be assigned"),
+            RoleCommandError::TargetIsOwner => {
+                write!(f, "the verse owner cannot be a role-command target")
+            }
+            RoleCommandError::ManagerCannotAssignNone => write!(
+                f,
+                "a Manager cannot assign 'none' (Managers only raise; revoke your own grant instead)"
+            ),
+            RoleCommandError::InsufficientAuthority { caller_role } => write!(
+                f,
+                "insufficient privilege: caller has {caller_role:?}, needs Manager or Owner"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RoleCommandError {}
+
+/// What a revoke left in place: the target's resolved role before and after (plan §2.3 —
+/// a Manager's revoke retracts only their own grant).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RevokeReport {
+    pub role_before: RoleLevel,
+    pub role_after: RoleLevel,
+}
+
+impl RevokeReport {
+    /// True when the target still holds the role it held (another grantor or inheritance).
+    pub fn still_held(&self) -> bool {
+        self.role_after >= self.role_before
+    }
+}
+
+/// Shared §2.3 preconditions: the scope chain exists, the target is not the owner and the
+/// caller holds Manager+ at the scope. Returns `(verse_id, owner_did)`.
+async fn check_role_command(
+    db: &Db,
+    caller_did: &str,
+    peer_did: &str,
+    scope: &str,
+    operation: &str,
+) -> anyhow::Result<(String, String)> {
+    crate::handlers::preconditions::require_scope_exists(db, scope, operation).await?;
+    let verse_id = parse_scope(scope)?.verse_id;
+    let owner = role_grants::verse_owner(db, &verse_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("{operation}: verse {verse_id} has no owner"))?;
+    if peer_did == owner {
+        return Err(RoleCommandError::TargetIsOwner.into());
+    }
+    let caller_role = resolve_role(db, caller_did, scope).await?;
+    if !rbac::evaluate_manage(caller_did, caller_role, scope).is_allow() {
+        return Err(RoleCommandError::InsufficientAuthority { caller_role }.into());
+    }
+    Ok((verse_id, owner))
+}
+
+/// Issue, store, materialize and publish one local statement (op log first, §log-first-commit).
+#[allow(clippy::too_many_arguments)]
+async fn issue_local_statement(
+    db: &Db,
+    verse_id: &str,
+    caller_did: &str,
+    peer_did: &str,
+    scope: &str,
+    role: GrantedRole,
+    revoked: bool,
+    repl_tx: Option<&ReplicationSender>,
+    blob_store: &BlobStoreHandle,
+) -> anyhow::Result<()> {
+    let entry = OpLogEntry {
+        lamport_clock: 0,
+        node_id: NodeId(caller_did.to_string()),
+        op_type: OpType::AssignRole,
+        payload: serde_json::json!({
+            "peer_did": peer_did,
+            "scope": scope,
+            "role": role.as_str(),
+            "grantor_did": caller_did,
+            "revoked": revoked,
+        }),
+        sig: "00".repeat(64),
+        hlc_timestamp: String::new(),
+    };
+    let prior = role_grants::load_effective_roles(db, verse_id).await?;
+    let (stmt_verse, stmt_scope, stmt_peer, stmt_grantor) = (
+        verse_id.to_string(),
+        scope.to_string(),
+        peer_did.to_string(),
+        caller_did.to_string(),
+    );
+    let stmt = op_log::commit_operation(db, entry, move |lamport| async move {
+        let stmt = RoleStatement {
+            scope: stmt_scope,
+            peer_did: stmt_peer,
+            grantor_did: stmt_grantor,
+            role,
+            revoked,
+            hlc: lamport,
+        };
+        role_grants::admit_local_statement(db, &stmt_verse, &stmt).await?;
+        Ok(stmt)
+    })
+    .await?;
+    // A crash before this line is repaired by the startup repartition and re-emit (AC-42).
+    role_grants::repartition(db, verse_id, prior.as_ref()).await?;
+    role_grants::publish_statement(repl_tx, blob_store, verse_id, &stmt);
+    Ok(())
+}
+
+/// Assign a role as a local statement (plan §2.3): the caller needs Manager+ at the target
+/// scope (subtree authority over the materialized cache), `owner` is never assignable, the
+/// owner is never a target, and only the owner may assign `none` (it pins the cell).
 pub async fn assign_role_checked(
     db: &Db,
     caller_did: &str,
     peer_did: &str,
     scope: &str,
-    role: RoleLevel,
+    role: &str,
+    repl_tx: Option<&ReplicationSender>,
+    blob_store: &BlobStoreHandle,
 ) -> anyhow::Result<()> {
-    crate::handlers::preconditions::require_scope_exists(db, scope, "AssignRole").await?;
-
-    // Check caller privilege.
-    let caller_role = resolve_role(db, caller_did, scope).await?;
-    if !caller_role.can_manage() {
-        anyhow::bail!(
-            "insufficient privilege: caller has {:?}, needs Manager or Owner",
-            caller_role
-        );
-    }
-
-    // Cannot assign a role higher than caller's own.
-    if role > caller_role {
-        anyhow::bail!(
-            "cannot assign role {:?} which exceeds caller's role {:?}",
-            role,
-            caller_role
-        );
-    }
-
-    let role_value = role.to_string();
-    let entry = OpLogEntry {
-        lamport_clock: 0,
-        node_id: NodeId(caller_did.to_string()),
-        op_type: OpType::AssignRole,
-        payload: serde_json::json!({
-            "peer_did": peer_did,
-            "scope": scope,
-            "role": role_value.clone(),
-        }),
-        sig: "00".repeat(64),
-        hlc_timestamp: String::new(),
+    // Cheap, I/O-free refusals first; every refusal precedes the op-log append.
+    let granted = match role {
+        "owner" => return Err(RoleCommandError::OwnerNotAssignable.into()),
+        other => GrantedRole::parse(other)
+            .ok_or_else(|| RoleCommandError::InvalidRole(other.to_string()))?,
     };
-    op_log::commit_operation(db, entry, move |_| async move {
-        rbac::assign_role(db, peer_did, scope, &role_value).await
-    })
-    .await?;
-
-    Ok(())
+    let (verse_id, owner) =
+        check_role_command(db, caller_did, peer_did, scope, "AssignRole").await?;
+    if granted == GrantedRole::None && caller_did != owner {
+        return Err(RoleCommandError::ManagerCannotAssignNone.into());
+    }
+    issue_local_statement(
+        db, &verse_id, caller_did, peer_did, scope, granted, false, repl_tx, blob_store,
+    )
+    .await
 }
 
-/// Revoke a peer's explicit role at a scope. They fall back to inherited role.
-///
-/// The caller must have Manager or Owner role at or above the target scope.
+/// Revoke as a local statement: the caller's own `revoked` statement for the key, which
+/// retracts only the caller's own grant (an owner revoke blocks the cell). The report says
+/// whether the target still holds its role through another grantor or by inheritance.
 pub async fn revoke_role_checked(
     db: &Db,
     caller_did: &str,
     peer_did: &str,
     scope: &str,
-) -> anyhow::Result<()> {
-    crate::handlers::preconditions::require_scope_exists(db, scope, "RevokeRole").await?;
-
-    let caller_role = resolve_role(db, caller_did, scope).await?;
-    if !caller_role.can_manage() {
-        anyhow::bail!(
-            "insufficient privilege: caller has {:?}, needs Manager or Owner",
-            caller_role
-        );
-    }
-
-    let entry = OpLogEntry {
-        lamport_clock: 0,
-        node_id: NodeId(caller_did.to_string()),
-        op_type: OpType::AssignRole,
-        payload: serde_json::json!({
-            "peer_did": peer_did,
-            "scope": scope,
-            "action": "revoke",
-        }),
-        sig: "00".repeat(64),
-        hlc_timestamp: String::new(),
-    };
-    op_log::commit_operation(db, entry, |_| async {
-        rbac::revoke_role(db, peer_did, scope).await
-    })
+    repl_tx: Option<&ReplicationSender>,
+    blob_store: &BlobStoreHandle,
+) -> anyhow::Result<RevokeReport> {
+    let (verse_id, _owner) =
+        check_role_command(db, caller_did, peer_did, scope, "RevokeRole").await?;
+    let role_before = resolve_role(db, peer_did, scope).await?;
+    issue_local_statement(
+        db,
+        &verse_id,
+        caller_did,
+        peer_did,
+        scope,
+        GrantedRole::None,
+        true,
+        repl_tx,
+        blob_store,
+    )
     .await?;
-
-    Ok(())
+    let role_after = resolve_role(db, peer_did, scope).await?;
+    Ok(RevokeReport {
+        role_before,
+        role_after,
+    })
 }
 
 /// Get all peers with explicit access at a scope.
@@ -174,14 +278,21 @@ pub async fn get_scope_members(db: &Db, scope: &str) -> anyhow::Result<Vec<(Stri
     Ok(members)
 }
 
-/// Set the verse-level default access. Must be `"viewer"` or `"none"`.
-pub async fn set_default_access(db: &Db, verse_id: &str, default: &str) -> anyhow::Result<()> {
+/// Set the verse-level default access (`"viewer"` or `"none"`); the caller needs Manager+
+/// at the VERSE scope — a petal or fractal Manager is refused (governance lies above them).
+pub async fn set_default_access(
+    db: &Db,
+    caller_did: &str,
+    verse_id: &str,
+    default: &str,
+) -> anyhow::Result<()> {
     if default != "viewer" && default != "none" {
         anyhow::bail!(
             "default_access must be 'viewer' or 'none', got '{}'",
             default
         );
     }
+    rbac::require_manage_role(db, caller_did, &crate::build_scope(verse_id, None, None)).await?;
     let q = UpdateBuilder::update("verse")
         .set("default_access", default)
         .where_clause(Filter::eq("verse_id", verse_id))
@@ -296,7 +407,7 @@ mod tests {
         );
 
         // Now change default_access to "viewer"
-        super::set_default_access(&db, verse_id, "viewer")
+        super::set_default_access(&db, owner_did, verse_id, "viewer")
             .await
             .expect("set_default_access");
 

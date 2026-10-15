@@ -11,5 +11,7 @@ pub mod mapping_inventory;
 pub mod mode;
 pub mod rebuild;
 pub mod report;
+/// RP-2 legacy `role`-row migration (not SPEC-8 scaffolding — see src/AGENTS.md §role-propagation).
+pub mod role_grants;
 pub mod shadow_store;
 pub mod transform_mapping;

@@ -1,6 +1,5 @@
 //! Validation fixture: seed a relay's SurrealKV store with a joinable verse
-//! (+ an optional Editor role row for a remote peer's DID) and READ-BACK rows
-//! from a stopped relay's store.
+//! and READ-BACK rows from a stopped relay's store.
 //!
 //! The relay opens a verse replica only when the verse row exists in its DB
 //! AND the namespace secret resolves from the environment
@@ -18,11 +17,14 @@
 //!   seed_join_verse gen
 //!     → prints `verse_id: <ulid>` + `ns_secret: <64-hex>` (fresh values)
 //!   seed_join_verse seed --db <path> --verse-id <ulid> --verse-name <name> \
-//!       --created-by <did> --ns-secret-hex <64-hex> \
-//!       [--role-peer-did <did> --role-scope <scope> --role-level <level>]
+//!       --created-by <did> --ns-secret-hex <64-hex>
 //!     → applies the schema, writes the verse row (namespace_id derived from
-//!       the secret, exactly like `create_verse_handler`) + optional role row;
-//!       prints `namespace_id: <hex>`
+//!       the secret, exactly like `create_verse_handler`); prints
+//!       `namespace_id: <hex>`. The old `--role-peer-did/--role-scope/
+//!       --role-level` flags are RETIRED (role_propagation RP-2): they wrote an
+//!       arbitrary-level `role` row for a remote peer, but `role` is now a
+//!       materialized cache rebuilt from role statements at every startup —
+//!       grant a role with an owner-issued `AssignRole` instead.
 //!   seed_join_verse readback --db <path> --table <table> \
 //!       [--field <field> --value <value>]
 //!     → prints each matching row as one JSON line (all rows when no filter)
@@ -50,7 +52,7 @@
 use surrealdb::engine::local::SurrealKv;
 
 use fe_database::repo::Db;
-use fe_database::schema::{Role, Verse};
+use fe_database::schema::Verse;
 use fe_terrain::config::TerrainConfig;
 
 fn arg(name: &str) -> Option<String> {
@@ -100,9 +102,14 @@ async fn run_seed() -> anyhow::Result<()> {
     let verse_name = require("--verse-name")?;
     let created_by = require("--created-by")?;
     let ns_secret_hex = require("--ns-secret-hex")?;
-    let role_peer_did = arg("--role-peer-did");
-    let role_scope = arg("--role-scope");
-    let role_level = arg("--role-level");
+    for retired in ["--role-peer-did", "--role-scope", "--role-level"] {
+        if arg(retired).is_some() {
+            anyhow::bail!(
+                "{retired} is retired: `role` is a materialized cache of role statements \
+                 (role_propagation RP-2) — grant roles with an owner-issued AssignRole"
+            );
+        }
+    }
 
     verse_id.parse::<ulid::Ulid>()?;
     let secret = parse_secret(&ns_secret_hex)?;
@@ -137,33 +144,6 @@ async fn run_seed() -> anyhow::Result<()> {
     }
     println!("namespace_id: {namespace_id}");
 
-    if let (Some(peer_did), Some(scope), Some(level)) = (role_peer_did, role_scope, role_level) {
-        let mut res = db
-            .query("SELECT * FROM role WHERE peer_did = $peer LIMIT 1")
-            .bind(("peer", peer_did.clone()))
-            .await?;
-        let rows: Vec<serde_json::Value> = res.take(0)?;
-        if rows.is_empty() {
-            fe_database::repo::Repo::<Role>::create(
-                &db,
-                &Role {
-                    peer_did: peer_did.clone(),
-                    scope: scope.clone(),
-                    role: level.clone(),
-                },
-            )
-            .await?;
-            println!("role: seeded peer_did={peer_did} scope={scope} level={level}");
-        } else {
-            db.query("UPDATE role SET scope = $scope, role = $level WHERE peer_did = $peer")
-                .bind(("scope", scope.clone()))
-                .bind(("level", level.clone()))
-                .bind(("peer", peer_did.clone()))
-                .await?
-                .check()?;
-            println!("role: updated peer_did={peer_did} scope={scope} level={level} (row existed)");
-        }
-    }
     Ok(())
 }
 
@@ -227,6 +207,8 @@ async fn run_readback() -> anyhow::Result<()> {
         "petal",
         "node",
         "role",
+        "role_grant",
+        "role_statement_pending",
         "verse_member",
         "iot_reading",
     ];

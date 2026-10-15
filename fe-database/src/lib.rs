@@ -71,6 +71,7 @@ pub mod rbac;
 pub mod reconcile;
 pub mod replication_mode;
 pub mod repo;
+pub mod role_grants;
 pub mod role_level;
 pub mod role_manager;
 pub mod schema;
@@ -526,6 +527,15 @@ pub fn spawn_db_thread_shared(
                 tracing::error!("Legacy imported/ asset backfill failed: {e}");
             }
 
+            // RP-2: one-shot legacy role migration, then repartition every verse (crash
+            // repair) and re-emit this node's own role statements (AC-42) — see
+            // src/AGENTS.md §role-propagation. Failure must not prevent startup.
+            if let Err(e) =
+                role_grants::startup(&db, &local_did, repl_tx.as_ref(), &blob_store).await
+            {
+                tracing::error!("Role statement startup failed: {e:#}");
+            }
+
             tracing::info!("SurrealDB ready");
             if tx.send(DbResult::Started).is_err() {
                 tracing::warn!("Result channel closed — UI may have shut down");
@@ -791,7 +801,16 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::SetVerseDefaultAccess { verse_id, default_access }) => {
-                        match crate::role_manager::set_default_access(&db, &verse_id, &default_access).await {
+                        match handlers::verse_settings::set_verse_default_access_handler(
+                            &db,
+                            &blob_store,
+                            repl_tx.as_ref(),
+                            &local_did,
+                            &verse_id,
+                            &default_access,
+                        )
+                        .await
+                        {
                             Ok(()) => send_result(&tx, DbResult::VerseDefaultAccessSet { verse_id, default_access }),
                             Err(e) => send_result(&tx, DbResult::Error(format!("Set default access failed: {e}"))),
                         }
@@ -801,6 +820,7 @@ pub fn spawn_db_thread_shared(
                             &db,
                             &blob_store,
                             repl_tx.as_ref(),
+                            &local_did,
                             &verse_id,
                             &mode,
                             replication_factor,
@@ -843,14 +863,24 @@ pub fn spawn_db_thread_shared(
                         send_result(&tx, DbResult::PeerRolesResolved { scope, roles });
                     }
                     Ok(DbCommand::AssignRole { peer_did, scope, role }) => {
-                        match handlers::rbac::assign_role_handler(&db, &local_did, &peer_did, &scope, &role).await {
+                        match handlers::rbac::assign_role_handler(&db, &blob_store, repl_tx.as_ref(), &local_did, &peer_did, &scope, &role).await {
                             Ok(()) => send_result(&tx, DbResult::RoleAssigned { peer_did, scope, role }),
                             Err(e) => send_result(&tx, DbResult::Error(format!("Assign role failed: {e}"))),
                         }
                     }
                     Ok(DbCommand::RevokeRole { peer_did, scope }) => {
-                        match handlers::rbac::revoke_role_handler(&db, &local_did, &peer_did, &scope).await {
-                            Ok(()) => send_result(&tx, DbResult::RoleRevoked { peer_did, scope }),
+                        match handlers::rbac::revoke_role_handler(&db, &blob_store, repl_tx.as_ref(), &local_did, &peer_did, &scope).await {
+                            Ok(report) => {
+                                if report.still_held() {
+                                    // A Manager's revoke retracts only their own grant (plan
+                                    // §2.3); surfacing this in the UI is D-32 FR-4.
+                                    tracing::info!(
+                                        peer_did, scope, role = %report.role_after,
+                                        "RevokeRole: the target still holds its role through another grantor or inheritance"
+                                    );
+                                }
+                                send_result(&tx, DbResult::RoleRevoked { peer_did, scope })
+                            }
                             Err(e) => send_result(&tx, DbResult::Error(format!("Revoke role failed: {e}"))),
                         }
                     }
@@ -1604,6 +1634,20 @@ pub fn spawn_db_thread_shared(
                                     },
                                 );
                             }
+                        }
+                    }
+                    Ok(DbCommand::ReemitLocalRoleStatements { verse_id }) => {
+                        match role_grants::reemit_local_statements(
+                            &db,
+                            repl_tx.as_ref(),
+                            &blob_store,
+                            &local_did,
+                            Some(&verse_id),
+                        )
+                        .await
+                        {
+                            Ok(n) => tracing::debug!(verse_id, emitted = n, "re-emitted local role statements on replica open"),
+                            Err(e) => tracing::warn!(verse_id, "role statement re-emit failed: {e:#}"),
                         }
                     }
                     Ok(DbCommand::Shutdown) | Err(_) => break,

@@ -969,6 +969,13 @@ pub enum DbCommand {
         /// `did:key` of the peer that authored the entry.
         author_did: String,
     },
+    /// A verse replica just opened (sent by the sync thread): re-emit this node's own live
+    /// role statements for the verse so a grant or revocation issued while the replica was
+    /// closed, or evicted from pending writes, still reaches peers (role_propagation AC-42).
+    /// Fire-and-forget, no reply; a re-publish of durable state, not a DB mutation.
+    ReemitLocalRoleStatements {
+        verse_id: String,
+    },
 }
 
 /// How one inbound replicated row was reconciled by the DB thread (A4).

@@ -16,12 +16,16 @@ DB, but they DO take the SurrealKV lock, so the app must not be running.
 
 `examples/seed_join_verse.rs` (M1 user-testing validation fixture, 2026-10-07)
 is the one WRITING example: `gen` (fresh verse ULID + namespace secret),
-`seed` (verse row with the `derive_namespace_id` namespace_id +
-optional Editor role row — the rows `create_verse_handler` writes, via the
-same `Repo` helpers; REST-created verses get an in-process secret an operator
-cannot extract, so a validator that owns both relays' environments seeds the
-joinable verse directly), `readback` (whitelisted-table SELECT, one JSON line
-per row). Same SurrealKV lock rule: host process must be stopped.
+`seed` (verse row with the `derive_namespace_id` namespace_id — the row
+`create_verse_handler` writes, via the same `Repo` helpers; REST-created verses
+get an in-process secret an operator cannot extract, so a validator that owns
+both relays' environments seeds the joinable verse directly), `readback`
+(whitelisted-table SELECT, one JSON line per row). Same SurrealKV lock rule:
+host process must be stopped. Its old `--role-peer-did/--role-scope/
+--role-level` flags (they wrote an arbitrary-level `role` row for a remote
+peer — not an owner row, as the role_propagation plan first cited) are
+**retired** and refuse loudly: `role` is a materialized cache rebuilt from
+statements at startup (§role-propagation), so a seeded row would vanish.
 
 ## §replication-backpressure
 
@@ -149,6 +153,17 @@ deserialization ("missing field `peer_did`") — explicit roles never resolved;
 only the owner (`created_by`) and `default_access` paths ever worked, and
 `assign_role_checked` for a non-owner Manager would error. The A3 inbound
 gate's editor/viewer tests surfaced it; the projection is now `SELECT *`.
+
+**`role` is a materialized cache (role_propagation RP-2).** Its rows are the
+raise-only projection of the per-grantor role statements (fe-policy
+`EffectiveRoles::cache_rows`, §role-propagation), written only by
+`role_grants::repartition`/`rematerialize`. `resolve_role`/`get_role` are
+unchanged: walking to the most specific cache row returns exactly
+fe-policy's `role_at`, so the hot path never learns about statements.
+`rbac::assign_role`/`revoke_role` survive only as raw cache writes for test
+fixtures. Manager+ gates go through `rbac::require_manage_role`
+(`resolve_role` + fe-policy `Action::Manage`), which over the cache IS
+subtree authority.
 
 ## §iot-readings (iot_spatial_reporting_20260714)
 
@@ -629,7 +644,8 @@ one sub-module per domain:
 - `field_def` — field definition schema CRUD
 - `transform` — node position/rotation/scale and URL persistence
 - `preconditions` — shared cheap target/scope checks required before append
-- `rbac` — role resolution, assignment, revocation
+- `rbac` — role resolution; `AssignRole`/`RevokeRole` issue local role
+  statements (§role-propagation)
 - `device_payload` (CDL-SPEC10 A3) — R5 device format descriptor registry +
   device payload ingest/list; see §device-payload
 - `invite` — verse invite generation and join-by-invite
@@ -762,6 +778,107 @@ via that fallback:
   directory. `IMPORTED_ASSETS_SUBDIR` / `imported_assets_dir()` survive only
   as the backfill's source path (`examples/dump_db.rs` lists the directory).
 
+## §role-propagation (role_propagation_20261013 RP-2)
+
+Roles replicate as **per-grantor role statements**, not as `role` rows
+(R7; plan §2). The pure model — validation, the least-fixpoint
+materializer, `admissible`, the cache projection — is fe-policy
+`role_grants` (fe-policy/AGENTS.md §role-grants); `src/role_grants.rs` is
+the DB plane around it.
+
+- **Storage (§2.1).** `role_grant` holds ADMITTED statements,
+  `role_statement_pending` holds DEFERRED ones (grantor not yet Manager+ at
+  the statement's scope, or no manifest yet). A key
+  `(scope, peer_did, grantor_did)` — the doc record id
+  `{scope}/{peer_did}/{grantor_did}`, also stored as `statement_key` — has
+  exactly ONE live version across both tables, the newest by fe-policy
+  `latest_per_grantor` (HLC, then canonical payload bytes). Every move
+  between the tables is one transaction (`write_live_version`). `hlc` is a
+  decimal string: the wire range is u64, SurrealDB's int is i64.
+- **Placement (`place_statement`).** Older-or-equal than the live version →
+  `Superseded` (idempotent, nothing written). Admissible under the current
+  materialization → `Admitted`. Otherwise `Held`, unless it would create a
+  NEW held key beyond `ROLE_PENDING_PER_GRANTOR` (1024/verse) for its
+  grantor → `RefusedOverBudget` (counted, `role_pending_refused_count()`;
+  the replica still holds it and the sync-plane re-read recovers it, §2.5).
+  There is no shared or per-verse cap — that is the eviction vector D-RP-1
+  removed — and the budget is keyed by the attested grantor, so no author
+  can occupy or evict another's keys. `submit_statement` = snapshot the prior
+  materialization + place + repartition; the RP-3 inbound arm calls it.
+- **Partition (`repartition`, §2.4).** Recompute M over `role_grant`;
+  **demote** every admitted statement M no longer admits (never refused,
+  never dropped, and it cannot move M — the fixpoint already ignores it);
+  **promote** held statements of each DID whose authority ROSE, looked up by
+  the `(verse_id, grantor_did)` index only — a flooder's held rows are never
+  scanned unless it gains authority; re-validate in full at promotion (a
+  pre-manifest hold that targets the owner is deleted as Denied); repeat
+  with the newly raised DIDs; then diff-write the cache. "Rose" is computed
+  per mentioned cell (`changed_between`): any rise of authority at a scope
+  implies a rise at some statement cell on its walk, so it is a superset.
+  fe-policy's `EffectiveRoles::diff` is deliberately not used here — its
+  per-DID "best role" can miss a rise at a narrower scope when the DID
+  already holds the same level elsewhere (the RP-1 hand-off note).
+  `prior = None` (startup, migration, manifest landing) seeds the risen set
+  with the owner and every admitted peer. Invariant afterwards:
+  `role_grant` = exactly the latest statements admissible under M,
+  `role_statement_pending` = the rest.
+- **Cache write (`write_cache`).** One transaction per verse, touching only
+  `role` rows whose scope `parse_scope`s to THAT verse — `VERSE#v` or
+  `VERSE#v-FRACTAL#…`, re-checked with `parse_scope` — and never a verse id
+  shaped like the canonical-log interim authority key (64 lowercase hex,
+  `is_interim_authority_verse_id`), nor a `-RESOURCE#` key (parse fails).
+  The interim `VERSE#<hex>[-PETAL#<hex>]` rows that
+  `DurableAuthorizationView::load` reads are therefore structurally out of
+  reach (AC-45, T18).
+- **Local commands (§2.3, `role_manager`).** `assign_role_checked` /
+  `revoke_role_checked` refuse, before the op-log append and with a typed
+  `RoleCommandError`: `owner` as a role (T3), the owner as target (T5), a
+  caller below Manager+ at the scope (subtree authority, T19), and a
+  Manager assigning `none` (Managers only raise; the owner's `none` pins).
+  Then: op-log (§log-first-commit) → the statement (hlc = the op's HLC) into
+  `role_grant` → `repartition` (which may promote statements the grant just
+  empowered) → publish `role/{scope}/{peer}/{grantor}`. A revoke is the
+  caller's own `revoked` statement: it retracts only the caller's grant (an
+  owner revoke blocks the cell), and `RevokeReport::still_held` says when
+  the target keeps its role through another grantor or inheritance (logged;
+  the UI surface is D-32 FR-4). A local command never defers.
+- **Durable re-emit (AC-42, T23).** `replicate_row` only reaches an OPEN
+  replica and fe-sync's pending writes are capped, drop-oldest and
+  process-lifetime (fe-sync AGENTS.md §pending-writes). So
+  `reemit_local_statements` republishes every live statement this node
+  authored (admitted or held — one per key, always the newest, so it can
+  never replay a superseded grant past a later revocation) at DB startup and
+  on `DbCommand::ReemitLocalRoleStatements`, which the sync thread sends
+  after every successful replica open. iroh dedupes identical bytes.
+- **Startup (`role_grants::startup`).** After `reconcile` (which may change
+  an owner) and before `Started`: the migration below, `repartition_all`
+  (crash repair between a statement write and its partition), then the
+  re-emit.
+- **Migration (`migration/role_grants.rs`, plan step 7).** Unlike §reconcile
+  this is **marker-guarded** (`local_migration_marker` key
+  `role_grants_v1`): rerunning it after the cache exists would misread cache
+  rows as legacy grants. It is local-only data (role rows never
+  replicated), so the P2P "peers can't coordinate a migration" argument does
+  not apply. For each `role` row whose scope parses to an existing,
+  non-interim local verse: `owner` rows are dropped (every implicit
+  petal-creator row, R7/T8); other rows in a verse this node owns become
+  owner statements, each op-logged so its HLC survives a restart (a fresh
+  local statement must always outrank it); everything else is dropped with a
+  warning (A2). Statement first, row delete second, marker last — a crash
+  reruns safely. Rows of unknown verses are left untouched.
+- **Petal creators are not owners (R7).** `create_petal_handler` and the
+  seeder no longer write a `role: "owner"` row at petal scope; the creator
+  keeps the role they resolve to from the enclosing scope.
+- **Admin (`admin.rs`).** `KnownTable` includes `role_grant` and
+  `role_statement_pending` (reset/dump/load cover them). `clear_table` on
+  `role` or either statement table rebuilds the cache from the remaining
+  statements — to remove roles, clear `role_grant`. `load_from_file` skips a
+  statement-bearing dump's derived `role` rows and repartitions; a legacy
+  dump (no statements) re-arms the migration marker instead.
+- **Out of reach:** neither statement table is in `ELEVATED_WRITABLE_TABLES`
+  (pinned by `elevated_writable_tables_never_include_role_tables`), nor in
+  fe-api `/query`'s `ALLOWED_TABLES` (plan §7 A7, RP-9 records it).
+
 ## §timeseries-settings (M2/F6)
 
 `handlers/verse_settings.rs` owns the per-verse timeseries fabric settings
@@ -786,6 +903,14 @@ back from the durable store after the UPDATE (never the request values), so
 what crosses the wire is what the store actually holds. The convergence test
 pins this: a settings change must produce a manifest event whose `ts_*`
 fields match the persisted row.
+
+**Governance gate (role_propagation RP-2 step 5).** Both
+`SetVerseTimeseriesSettings` and `SetVerseDefaultAccess`
+(`set_verse_default_access_handler`) require the local caller to hold Manager+
+at the **verse** scope (`rbac::require_manage_role`): a petal or fractal
+Manager is refused, because verse governance lies above their subtree.
+`SetVerseDefaultAccess` now also re-emits the read-back manifest, the same way
+settings do, so the change propagates deliberately (plan §7 A3).
 
 `load_hierarchy` (crud.rs) surfaces the columns via
 `VerseTimeseriesSettings::from_verse_row` — missing/invalid values fall back

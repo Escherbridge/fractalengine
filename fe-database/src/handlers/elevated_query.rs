@@ -549,6 +549,18 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    /// RP-2 (T3/T8 adjacency): an Owner's elevated script must never write a role statement
+    /// or the materialized cache — roles change only through signed-by-author statements.
+    #[test]
+    fn elevated_writable_tables_never_include_role_tables() {
+        for table in ["role", "role_grant", "role_statement_pending"] {
+            assert!(
+                !ELEVATED_WRITABLE_TABLES.contains(&table),
+                "{table} must stay outside the elevated write allowlist"
+            );
+        }
+    }
+
     async fn mem_db() -> Db {
         let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
             .await

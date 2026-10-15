@@ -1626,6 +1626,28 @@ async fn handle_open_verse_replica(
                 .await;
             }
         }
+        request_local_role_reemit(db_cmd_tx, verse_id);
+    }
+}
+
+/// role_propagation AC-42: ask the DB to re-emit this node's own live role statements now
+/// that `verse_id`'s replica is open (a statement published while it was closed, or evicted
+/// from [`PendingWrites`], would otherwise never reach a peer). Non-blocking: the DB loop
+/// answers through the outbound bridge, never through a channel this loop awaits.
+fn request_local_role_reemit(
+    db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
+    verse_id: &str,
+) {
+    let Some(tx) = db_cmd_tx else {
+        return;
+    };
+    if let Err(e) = tx.try_send(DbCommand::ReemitLocalRoleStatements {
+        verse_id: verse_id.to_string(),
+    }) {
+        tracing::warn!(
+            verse_id,
+            "role statement re-emit request not delivered to the DB thread: {e}"
+        );
     }
 }
 
@@ -5275,6 +5297,14 @@ mod tests {
             !matches!(evt_rx.try_recv(), Ok(SyncEvent::ReplicaOpenFailed { .. })),
             "no ReplicaOpenFailed when the stack is offline (mock is sanctioned)"
         );
+        // An empty mock snapshot applies nothing; the one DB command is the AC-42 request to
+        // re-emit this node's own role statements now that the replica is open.
+        match db_rx.try_recv() {
+            Ok(DbCommand::ReemitLocalRoleStatements { verse_id }) => {
+                assert_eq!(verse_id, "verse-offline")
+            }
+            other => panic!("expected only the role re-emit request, got {other:?}"),
+        }
         assert!(
             db_rx.try_recv().is_err(),
             "empty mock snapshot applies nothing"

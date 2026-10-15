@@ -4,7 +4,7 @@ use fe_query::{Filter, QueryBuilder};
 
 use crate::query_helpers::exec_query;
 use crate::repo::{Db, Repo};
-use crate::schema::{Asset, Fractal, Role, Verse, VerseMemberRow};
+use crate::schema::{Asset, Fractal, Verse, VerseMemberRow};
 use crate::types::NodeId;
 use crate::{hash_to_hex, BlobStoreHandle};
 
@@ -199,16 +199,7 @@ pub async fn seed_default_data(
     .map_err(|e| anyhow::anyhow!("seed UPDATE petal fractal_id failed: {e}"))?;
     tracing::info!("Seeded petal: {petal_name} ({})", petal_id.0);
 
-    Repo::<Role>::create(
-        db,
-        &Role {
-            peer_did: node_id.0.clone(),
-            scope: crate::build_scope(&verse_id, Some(&fractal_id), Some(&petal_id.0.to_string())),
-            role: "owner".to_string(),
-        },
-    )
-    .await?;
-    tracing::info!("Assigned owner role to {}", node_id.0);
+    // The seeding node owns the verse (`created_by`); no implicit petal-owner row (R7).
 
     for room_name in &room_names {
         crate::queries::create_room(db, &node_id, &petal_id, room_name).await?;

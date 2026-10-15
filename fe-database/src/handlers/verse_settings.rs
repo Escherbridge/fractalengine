@@ -21,6 +21,7 @@ pub async fn set_verse_timeseries_settings_handler(
     db: &Db,
     blob_store: &BlobStoreHandle,
     repl_tx: Option<&ReplicationSender>,
+    caller_did: &str,
     verse_id: &str,
     mode: &str,
     replication_factor: u32,
@@ -31,6 +32,9 @@ pub async fn set_verse_timeseries_settings_handler(
     // discipline, even though this path stays outside the op-log seam).
     let settings = VerseTimeseriesSettings::sanitized(mode, replication_factor, bucket_width_ms)
         .map_err(anyhow::Error::msg)?;
+    // Gate parity (RP-2 step 5): verse governance needs Manager+ at the VERSE scope.
+    crate::rbac::require_manage_role(db, caller_did, &crate::build_scope(verse_id, None, None))
+        .await?;
 
     db.query(
         "UPDATE verse SET ts_mode = $mode, ts_replication_factor = $r, \
@@ -70,8 +74,7 @@ pub async fn set_verse_timeseries_settings_handler(
             persisted.bucket_width_ms
         );
     }
-    let row_bytes = serde_json::to_vec(&row)?;
-    replicate_row(repl_tx, blob_store, verse_id, "verse", verse_id, &row_bytes);
+    publish_manifest_row(repl_tx, blob_store, verse_id, &row)?;
 
     tracing::info!(
         verse_id,
@@ -83,12 +86,55 @@ pub async fn set_verse_timeseries_settings_handler(
     Ok(persisted)
 }
 
+/// Re-emit a read-back verse row as the manifest (the one source the sync plane parses).
+fn publish_manifest_row(
+    repl_tx: Option<&ReplicationSender>,
+    blob_store: &BlobStoreHandle,
+    verse_id: &str,
+    row: &serde_json::Value,
+) -> anyhow::Result<()> {
+    let row_bytes = serde_json::to_vec(row)?;
+    replicate_row(repl_tx, blob_store, verse_id, "verse", verse_id, &row_bytes);
+    Ok(())
+}
+
+/// Set a verse's `default_access` (Manager+ at the verse scope) and re-emit the manifest so
+/// the change propagates deliberately, the same way settings do (RP-2 step 5, A3).
+pub async fn set_verse_default_access_handler(
+    db: &Db,
+    blob_store: &BlobStoreHandle,
+    repl_tx: Option<&ReplicationSender>,
+    caller_did: &str,
+    verse_id: &str,
+    default_access: &str,
+) -> anyhow::Result<()> {
+    crate::role_manager::set_default_access(db, caller_did, verse_id, default_access).await?;
+    let mut res = db
+        .query("SELECT * FROM verse WHERE verse_id = $id")
+        .bind(("id", verse_id.to_string()))
+        .await?;
+    let rows: Vec<serde_json::Value> = res.take(0)?;
+    let Some(row) = rows.into_iter().next() else {
+        anyhow::bail!("verse '{verse_id}' not found");
+    };
+    if row
+        .get("default_access")
+        .and_then(serde_json::Value::as_str)
+        != Some(default_access)
+    {
+        anyhow::bail!("default_access for verse '{verse_id}' did not persist");
+    }
+    publish_manifest_row(repl_tx, blob_store, verse_id, &row)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::repo::Repo;
     use crate::schema::Verse;
     use fe_runtime::blob_store::mock::MockBlobStore;
+
+    const OWNER: &str = "did:key:z6MkOwner";
 
     async fn schema_db() -> Db {
         let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
@@ -108,7 +154,7 @@ mod tests {
         Verse {
             verse_id: verse_id.to_string(),
             name: "v".to_string(),
-            created_by: "did:key:z6MkOwner".to_string(),
+            created_by: OWNER.to_string(),
             created_at: "2026-10-07T00:00:00Z".to_string(),
             namespace_id: Some("ab".repeat(32)),
             default_access: "viewer".to_string(),
@@ -138,7 +184,7 @@ mod tests {
             .expect("seed");
 
         let applied = set_verse_timeseries_settings_handler(
-            &db, &store, None, "v1", "balanced", 3, 3_600_000,
+            &db, &store, None, OWNER, "v1", "balanced", 3, 3_600_000,
         )
         .await
         .expect("set");
@@ -165,9 +211,10 @@ mod tests {
             ("mirror", 0, 1),
             ("mirror", 1, 0),
         ] {
-            let err = set_verse_timeseries_settings_handler(&db, &store, None, "v2", mode, r, w)
-                .await
-                .expect_err("must reject");
+            let err =
+                set_verse_timeseries_settings_handler(&db, &store, None, OWNER, "v2", mode, r, w)
+                    .await
+                    .expect_err("must reject");
             assert!(!err.to_string().is_empty(), "rejection carries a reason");
         }
         // Nothing was written.
@@ -179,10 +226,11 @@ mod tests {
     async fn unknown_verse_is_an_error() {
         let db = schema_db().await;
         let (store, _mock) = mock_store();
-        let err =
-            set_verse_timeseries_settings_handler(&db, &store, None, "missing", "mirror", 1, 1)
-                .await
-                .expect_err("missing verse must error");
+        let err = set_verse_timeseries_settings_handler(
+            &db, &store, None, OWNER, "missing", "mirror", 1, 1,
+        )
+        .await
+        .expect_err("missing verse must error");
         assert!(err.to_string().contains("not found"));
     }
 
@@ -199,6 +247,7 @@ mod tests {
             &db,
             &store,
             Some(&tx),
+            OWNER,
             "v3",
             "sharded",
             1,

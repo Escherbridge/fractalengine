@@ -525,7 +525,12 @@ Rules:
   whose replica never opens in the creating process (and never opens again
   in a later process through any write) relies on a later session's manual
   write or the verse-invite path to publish its manifest — a DB-side re-emit
-  on replica open is the deferred shape if that hole ever matters.
+  on replica open is the deferred shape if that hole ever matters. **Role
+  statements already take that shape** (role_propagation AC-42): after every
+  successful open, `handle_open_verse_replica` sends the DB
+  `DbCommand::ReemitLocalRoleStatements { verse_id }` (`try_send`, never
+  awaited), and the DB re-publishes this node's own live statements through
+  the normal outbound bridge (fe-database AGENTS.md §role-propagation).
 - Regression tests pin the exact failure shape:
   `write_before_open_retained_then_flushed_through_offline_mock` (offline
   seam, snapshot read-back) and

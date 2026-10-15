@@ -1,0 +1,463 @@
+//! role_propagation RP-2 flows through the real DB thread over a persisted SurrealKV store:
+//! the CreatePetal path writes no implicit owner row (T8), the AC-42 durable re-emit of local
+//! role statements across a restart and a lost publish (T23), and the AC-45 guarantee that the
+//! role migration and rematerialization never touch an interim `VERSE#<hex>` authority row
+//! (T18). Restarts drop AND join the DB thread before reopening (C8: one SurrealKV open per
+//! store); tests run one at a time because the HLC is process-global and every DB-thread start
+//! re-initialises it. See fe-database/src/AGENTS.md §role-propagation.
+
+use std::path::Path;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
+
+use fe_canonical_log::capability::{AuthorityState, ManagerAuthorityView, Principal};
+use fe_canonical_log::envelope::{Hash32, Identifier32, Scope};
+use fe_database::canon_log::canonical_epoch::{
+    interim_authority_scope_key, DurableAuthorizationView,
+};
+use fe_database::{build_scope, repo::Db, spawn_db_thread_shared, DbThread, ReplicationEvent};
+use fe_identity::NodeKeypair;
+use fe_policy::RoleStatementPayload;
+use fe_runtime::blob_store::mock::MockBlobStore;
+use fe_runtime::messages::{DbCommand, DbResult};
+
+const TIMEOUT: Duration = Duration::from_secs(20);
+const NODE_SEED: [u8; 32] = [0x5a; 32];
+const PEER: &str = "did:key:z6MkRoleTarget";
+const ANCHOR: Hash32 = Hash32([0xa7; 32]);
+
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn serial() -> MutexGuard<'static, ()> {
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn node_keypair() -> NodeKeypair {
+    NodeKeypair::from_bytes(&NODE_SEED).expect("node keypair")
+}
+
+fn local_did() -> String {
+    node_keypair().to_did_key()
+}
+
+/// A DB thread over a store directory the TEST owns, with the replication bridge exposed.
+struct Harness {
+    cmd_tx: Option<crossbeam::channel::Sender<DbCommand>>,
+    res_rx: crossbeam::channel::Receiver<DbResult>,
+    repl_rx: crossbeam::channel::Receiver<ReplicationEvent>,
+    blobs: Arc<MockBlobStore>,
+    db: Option<Db>,
+    join: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Harness {
+    fn open(dir: &Path, replication_capacity: usize) -> Self {
+        let (cmd_tx, cmd_rx) = crossbeam::channel::bounded::<DbCommand>(64);
+        let (res_tx, res_rx) = crossbeam::channel::bounded::<DbResult>(64);
+        let (repl_tx, repl_rx) =
+            crossbeam::channel::bounded::<ReplicationEvent>(replication_capacity);
+        let blobs = Arc::new(MockBlobStore::new());
+        let DbThread {
+            join_handle,
+            shared_db,
+        } = spawn_db_thread_shared(
+            cmd_rx,
+            res_tx,
+            blobs.clone(),
+            Some(repl_tx),
+            Some(node_keypair()),
+            None,
+            None,
+            Some(dir.join("fe.db").to_string_lossy().to_string()),
+            None,
+        )
+        .expect("spawn db thread");
+        let started = res_rx.recv_timeout(TIMEOUT).expect("first DB result");
+        assert!(matches!(started, DbResult::Started), "got {started:?}");
+        Self {
+            cmd_tx: Some(cmd_tx),
+            res_rx,
+            repl_rx,
+            blobs,
+            db: Some(shared_db),
+            join: Some(join_handle),
+        }
+    }
+
+    fn db(&self) -> Db {
+        self.db.clone().expect("open store")
+    }
+
+    fn send(&self, command: DbCommand) {
+        self.cmd_tx
+            .as_ref()
+            .expect("open channel")
+            .send(command)
+            .expect("send command");
+    }
+
+    /// Sends a command and returns the first reply `accept` matches (an `Error` panics).
+    fn ask(&self, command: DbCommand, accept: impl Fn(&DbResult) -> bool) -> DbResult {
+        self.send(command);
+        loop {
+            let result = self.res_rx.recv_timeout(TIMEOUT).expect("DB reply");
+            if let DbResult::Error(e) = &result {
+                panic!("DB command failed: {e}");
+            }
+            if accept(&result) {
+                return result;
+            }
+        }
+    }
+
+    /// verse → fractal → petal through the real commands; returns `(verse, petal scope)`.
+    fn create_hierarchy(&self) -> (String, String) {
+        let DbResult::VerseCreated { id: verse, .. } = self
+            .ask(DbCommand::CreateVerse { name: "V".into() }, |r| {
+                matches!(r, DbResult::VerseCreated { .. })
+            })
+        else {
+            unreachable!()
+        };
+        let fractal = self.create_fractal(&verse);
+        let DbResult::PetalCreated { id: petal, .. } = self.ask(
+            DbCommand::CreatePetal {
+                fractal_id: fractal.clone(),
+                name: "P".into(),
+            },
+            |r| matches!(r, DbResult::PetalCreated { .. }),
+        ) else {
+            unreachable!()
+        };
+        let scope = build_scope(&verse, Some(&fractal), Some(&petal));
+        (verse, scope)
+    }
+
+    fn create_fractal(&self, verse: &str) -> String {
+        let DbResult::FractalCreated { id, .. } = self.ask(
+            DbCommand::CreateFractal {
+                verse_id: verse.to_string(),
+                name: "F".into(),
+            },
+            |r| matches!(r, DbResult::FractalCreated { .. }),
+        ) else {
+            unreachable!()
+        };
+        id
+    }
+
+    fn assign(&self, scope: &str, role: &str) {
+        self.ask(
+            DbCommand::AssignRole {
+                peer_did: PEER.into(),
+                scope: scope.into(),
+                role: role.into(),
+            },
+            |r| matches!(r, DbResult::RoleAssigned { .. }),
+        );
+    }
+
+    fn revoke(&self, scope: &str) {
+        self.ask(
+            DbCommand::RevokeRole {
+                peer_did: PEER.into(),
+                scope: scope.into(),
+            },
+            |r| matches!(r, DbResult::RoleRevoked { .. }),
+        );
+    }
+
+    fn peer_role(&self, scope: &str) -> String {
+        let DbResult::PeerRolesResolved { roles, .. } = self.ask(
+            DbCommand::ResolveRolesForPeers {
+                scope: scope.into(),
+                peer_dids: vec![PEER.into()],
+            },
+            |r| matches!(r, DbResult::PeerRolesResolved { .. }),
+        ) else {
+            unreachable!()
+        };
+        roles.into_iter().next().expect("one role").1
+    }
+
+    /// Every role statement published so far, decoded from its blob.
+    fn role_statements(&self) -> Vec<(ReplicationEvent, RoleStatementPayload)> {
+        let mut out = Vec::new();
+        while let Ok(event) = self.repl_rx.try_recv() {
+            if event.table != "role" {
+                continue;
+            }
+            let bytes = self.blobs.bytes_for(&event.content_hash).expect("blob");
+            let payload = serde_json::from_slice(&bytes).expect("role statement payload");
+            out.push((event, payload));
+        }
+        out
+    }
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        drop(self.db.take());
+        drop(self.cmd_tx.take());
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("test runtime")
+}
+
+/// T8 through the real CreatePetal path: an Editor creating a petal gets no `owner` row there
+/// and resolves to the Editor role they inherit, never Owner.
+#[test]
+fn an_editor_creating_a_petal_gets_no_implicit_owner_row() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let harness = Harness::open(dir.path(), 64);
+    let db = harness.db();
+    let rt = runtime();
+    let verse_scope = build_scope("verse-of-another", None, None);
+    rt.block_on(async {
+        db.query(
+            "CREATE verse CONTENT { verse_id: 'verse-of-another', name: 'V', \
+             created_by: 'did:key:z6MkSomeoneElse', created_at: '2026-10-15T00:00:00Z', \
+             default_access: 'viewer' }; \
+             CREATE fractal CONTENT { fractal_id: 'f-1', verse_id: 'verse-of-another', \
+             owner_did: 'did:key:z6MkSomeoneElse', name: 'F', created_at: '2026-10-15T00:00:00Z' };",
+        )
+        .await
+        .expect("seed")
+        .check()
+        .expect("seed check");
+        // The materialized cache entry an inbound owner grant would produce for this node.
+        fe_database::rbac::assign_role(&db, &local_did(), &verse_scope, "editor")
+            .await
+            .expect("editor cache row");
+    });
+
+    let DbResult::PetalCreated { id: petal, .. } = harness.ask(
+        DbCommand::CreatePetal {
+            fractal_id: "f-1".into(),
+            name: "Editor's petal".into(),
+        },
+        |r| matches!(r, DbResult::PetalCreated { .. }),
+    ) else {
+        unreachable!()
+    };
+    let petal_scope = build_scope("verse-of-another", Some("f-1"), Some(&petal));
+
+    let owner_rows: Vec<serde_json::Value> = rt.block_on(async {
+        db.query("SELECT * FROM role WHERE role = 'owner'")
+            .await
+            .expect("select")
+            .take(0)
+            .expect("rows")
+    });
+    assert!(owner_rows.is_empty(), "{owner_rows:?}");
+    let DbResult::LocalRoleResolved { role, .. } = harness
+        .ask(DbCommand::ResolveLocalRole { scope: petal_scope }, |r| {
+            matches!(r, DbResult::LocalRoleResolved { .. })
+        })
+    else {
+        unreachable!()
+    };
+    assert_eq!(role, "editor");
+}
+
+/// AC-42, T23: a revocation published while the verse's replica was closed (the event never
+/// reached a peer) is re-emitted — newest version only — at the next DB startup, and again
+/// when the replica opens.
+#[test]
+fn a_revocation_issued_while_the_replica_is_closed_reaches_peers_after_restart() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (verse, scope, revocation) = {
+        let harness = Harness::open(dir.path(), 64);
+        let (verse, scope) = harness.create_hierarchy();
+        harness.assign(&scope, "editor");
+        harness.revoke(&scope);
+        assert_eq!(harness.peer_role(&scope), "viewer");
+        // Replica closed: these publishes never reach a peer.
+        let lost = harness.role_statements();
+        assert_eq!(lost.len(), 2, "the grant then the revocation: {lost:?}");
+        let revocation = lost[1].1.clone();
+        assert!(revocation.revoked);
+        (verse, scope, revocation)
+    }; // DB thread joined, store closed
+
+    let harness = Harness::open(dir.path(), 64);
+    let expected_key = format!("{scope}/{PEER}/{}", local_did());
+    let reemitted = harness.role_statements();
+    assert_eq!(
+        reemitted.len(),
+        1,
+        "one live version per key: {reemitted:?}"
+    );
+    assert_eq!(reemitted[0].0.record_id, expected_key);
+    assert_eq!(reemitted[0].0.verse_id, verse);
+    assert_eq!(
+        reemitted[0].1, revocation,
+        "the startup re-emit carries the newest statement: the revocation, never the grant"
+    );
+    assert_eq!(harness.peer_role(&scope), "viewer");
+
+    // The replica-open signal from the sync thread re-emits it once more.
+    harness.send(DbCommand::ReemitLocalRoleStatements { verse_id: verse });
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let on_open = loop {
+        let found = harness.role_statements();
+        if !found.is_empty() || std::time::Instant::now() > deadline {
+            break found;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(on_open.len(), 1);
+    assert_eq!(on_open[0].1, revocation);
+}
+
+/// AC-42, T23: a revocation whose publish was dropped by a flooded replication path is
+/// recovered by the replica-open re-emit.
+#[test]
+fn a_pending_writes_flood_cannot_drop_a_local_revocation() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let harness = Harness::open(dir.path(), 4);
+    let (verse, scope) = harness.create_hierarchy(); // verse + fractal manifests: 2 events
+    harness.create_fractal(&verse);
+    harness.create_fractal(&verse); // the bridge is now full
+
+    let dropped_before = fe_database::replication_drop_count();
+    harness.assign(&scope, "editor");
+    harness.revoke(&scope);
+    assert!(
+        fe_database::replication_drop_count() >= dropped_before + 2,
+        "both role publishes were dropped by the flood"
+    );
+    assert!(
+        harness.role_statements().is_empty(),
+        "nothing about the role reached the bridge"
+    );
+
+    harness.send(DbCommand::ReemitLocalRoleStatements {
+        verse_id: verse.clone(),
+    });
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let recovered = loop {
+        let found = harness.role_statements();
+        if !found.is_empty() || std::time::Instant::now() > deadline {
+            break found;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(recovered.len(), 1, "{recovered:?}");
+    assert_eq!(
+        recovered[0].0.record_id,
+        format!("{scope}/{PEER}/{}", local_did())
+    );
+    assert!(
+        recovered[0].1.revoked,
+        "the revocation, not the superseded grant"
+    );
+    assert_eq!(recovered[0].0.verse_id, verse);
+}
+
+/// AC-45, T18: hex-keyed interim authority rows (as the canon_log fixtures seed them) are
+/// byte-identical after the role migration and a rematerialization, across restarts, and
+/// still answer `DurableAuthorizationView`'s Manager+ question.
+#[test]
+fn interim_authority_rows_survive_the_role_migration_and_rematerialize_across_a_restart() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rt = runtime();
+    let interim_scope = Scope::verse_wide(Identifier32([0x41; 32]));
+    let interim_key = interim_authority_scope_key(&interim_scope);
+    let manager = Principal::from_public_key([0x11; 32]);
+    let owner_principal = Principal::from_public_key([0x12; 32]);
+    let legacy_verse_scope = build_scope("verse-legacy", None, None);
+
+    let snapshot = |db: &Db| -> Vec<serde_json::Value> {
+        rt.block_on(async {
+            db.query(
+                "SELECT * FROM role WHERE string::starts_with(scope, 'VERSE#4141') ORDER BY id",
+            )
+            .await
+            .expect("select interim")
+            .take(0)
+            .expect("rows")
+        })
+    };
+
+    let seeded = {
+        let harness = Harness::open(dir.path(), 64);
+        let db = harness.db();
+        rt.block_on(async {
+            db.query(
+                "CREATE verse CONTENT { verse_id: 'verse-legacy', name: 'V', created_by: $owner, \
+                 created_at: '2026-10-15T00:00:00Z', default_access: 'viewer' }; \
+                 CREATE role CONTENT { peer_did: $manager, scope: $interim, role: 'manager' }; \
+                 CREATE role CONTENT { peer_did: $owner_principal, scope: $interim, role: 'owner' }; \
+                 CREATE role CONTENT { peer_did: $peer, scope: $legacy, role: 'owner' }; \
+                 CREATE role CONTENT { peer_did: $manager, scope: $legacy, role: 'editor' }; \
+                 DELETE local_migration_marker;",
+            )
+            .bind(("owner", local_did()))
+            .bind(("manager", manager.did.clone()))
+            .bind(("owner_principal", owner_principal.did.clone()))
+            .bind(("peer", PEER))
+            .bind(("interim", interim_key.clone()))
+            .bind(("legacy", legacy_verse_scope.clone()))
+            .await
+            .expect("seed legacy store")
+            .check()
+            .expect("seed check");
+        });
+        let seeded = snapshot(&db);
+        assert_eq!(seeded.len(), 2, "{seeded:?}");
+        seeded
+    }; // a legacy, never-migrated store
+
+    for restart in 0..2 {
+        let harness = Harness::open(dir.path(), 64);
+        let db = harness.db();
+        assert_eq!(
+            snapshot(&db),
+            seeded,
+            "restart {restart}: interim rows byte-identical"
+        );
+        let view = rt
+            .block_on(DurableAuthorizationView::load(&db, Some(ANCHOR)))
+            .expect("load view");
+        assert_eq!(
+            view.authority_is_manager_plus(&ANCHOR, &manager, &interim_scope, 0),
+            AuthorityState::ManagerPlus,
+            "restart {restart}"
+        );
+        // The legacy hierarchy rows did migrate: the implicit owner row is gone, and the
+        // owner-local explicit row is an owner statement in the rebuilt cache.
+        let legacy: Vec<serde_json::Value> = rt.block_on(async {
+            db.query("SELECT peer_did, role FROM role WHERE scope = $s")
+                .bind(("s", legacy_verse_scope.clone()))
+                .await
+                .expect("select legacy")
+                .take(0)
+                .expect("rows")
+        });
+        assert_eq!(
+            legacy,
+            vec![serde_json::json!({ "peer_did": manager.did, "role": "editor" })],
+            "restart {restart}"
+        );
+        let statements = rt
+            .block_on(fe_database::role_grants::load_admitted(&db, "verse-legacy"))
+            .expect("statements");
+        assert_eq!(statements.len(), 1, "restart {restart}: {statements:?}");
+    }
+}

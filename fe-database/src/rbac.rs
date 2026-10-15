@@ -56,6 +56,29 @@ pub(crate) fn evaluate_write(peer_did: &str, role: &str, scope: &str) -> Decisio
     write_engine().evaluate(&subject, &Action::Write, &Scope::new(scope))
 }
 
+/// Pure manage decision (Manager+) for an already-resolved role — unit-testable without I/O.
+pub(crate) fn evaluate_manage(peer_did: &str, role: RoleLevel, scope: &str) -> Decision {
+    let subject = AuthContext::Did {
+        did: peer_did.to_string(),
+        role,
+    };
+    write_engine().evaluate(&subject, &Action::Manage, &Scope::new(scope))
+}
+
+/// Require `peer_did` to hold Manager+ at `scope` (resolved through the materialized cache,
+/// i.e. subtree authority — src/AGENTS.md §role-propagation); returns the resolved role.
+pub async fn require_manage_role(
+    db: &Db,
+    peer_did: &str,
+    scope: &str,
+) -> anyhow::Result<RoleLevel> {
+    let role = crate::role_manager::resolve_role(db, peer_did, scope).await?;
+    match evaluate_manage(peer_did, role, scope) {
+        Decision::Allow => Ok(role),
+        Decision::Deny(reason) => anyhow::bail!("permission denied: {reason}"),
+    }
+}
+
 /// Check whether `peer_did` may write at `scope` (fe-policy engine decision).
 /// Returns Ok(role) on success, Err on permission denied or DB error.
 pub async fn require_write_role(db: &Db, peer_did: &str, scope: &str) -> anyhow::Result<RoleId> {
@@ -90,7 +113,8 @@ pub async fn get_all_roles_for_scope(
     Ok(roles)
 }
 
-/// Assign a role to a peer at a specific scope.
+/// Raw `role`-cache write. Production cache writes go only through
+/// `role_grants::repartition` (§role-propagation); this stays for test fixtures.
 pub async fn assign_role(db: &Db, peer_did: &str, scope: &str, role: &str) -> anyhow::Result<()> {
     // Remove any existing role first
     let del_q = DeleteBuilder::delete_from("role")
@@ -111,7 +135,7 @@ pub async fn assign_role(db: &Db, peer_did: &str, scope: &str, role: &str) -> an
     Ok(())
 }
 
-/// Remove a peer's role at a specific scope (they fall back to inherited role).
+/// Raw `role`-cache delete (test fixtures only — see [`assign_role`]).
 pub async fn revoke_role(db: &Db, peer_did: &str, scope: &str) -> anyhow::Result<()> {
     let q = DeleteBuilder::delete_from("role")
         .where_clause(Filter::eq("peer_did", peer_did))
@@ -141,6 +165,23 @@ mod tests {
             assert!(
                 !evaluate_write("did:key:z6MkTest", role, "petal-1").is_allow(),
                 "role '{role}' must be denied write"
+            );
+        }
+    }
+
+    #[test]
+    fn manage_needs_manager_or_owner() {
+        for (role, allowed) in [
+            (RoleLevel::Owner, true),
+            (RoleLevel::Manager, true),
+            (RoleLevel::Editor, false),
+            (RoleLevel::Viewer, false),
+            (RoleLevel::None, false),
+        ] {
+            assert_eq!(
+                evaluate_manage("did:key:z6MkTest", role, "VERSE#v1").is_allow(),
+                allowed,
+                "{role:?}"
             );
         }
     }

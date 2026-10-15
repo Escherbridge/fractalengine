@@ -3,7 +3,7 @@ use tracing::instrument;
 use crate::handlers::preconditions::require_petal_scope;
 
 use crate::repo::{Db, Repo};
-use crate::schema::{Fractal, Role, Verse};
+use crate::schema::{Fractal, Verse};
 use fe_runtime::messages::{
     DbResult, FractalHierarchyData, NodeHierarchyData, PetalHierarchyData, VerseHierarchyData,
 };
@@ -154,8 +154,6 @@ pub(crate) async fn create_petal_handler(
     if Repo::<Verse>::find_by_id(db, verse_id).await?.is_none() {
         anyhow::bail!("CreatePetal matched no verse with verse_id = {verse_id}");
     }
-    let scope = crate::build_scope(verse_id, Some(fractal_id), Some(&petal_id));
-
     tracing::info!("Creating petal: {name} ({petal_id}) in fractal {fractal_id}");
     // Geometry fields need the explicit SurrealQL cast; see AGENTS.md §geometry-inserts.
     db.query(
@@ -179,15 +177,8 @@ pub(crate) async fn create_petal_handler(
     .await?
     .check()
     .map_err(|e| anyhow::anyhow!("CREATE petal '{name}' failed: {e}"))?;
-    Repo::<Role>::create(
-        db,
-        &Role {
-            peer_did: local_did.to_string(),
-            scope,
-            role: "owner".to_string(),
-        },
-    )
-    .await?;
+    // No implicit petal-owner role row (R7, T8): the creator keeps the role they already
+    // resolve to from the enclosing scope — src/AGENTS.md §role-propagation.
     Ok(petal_id)
 }
 

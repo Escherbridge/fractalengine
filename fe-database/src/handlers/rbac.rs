@@ -1,7 +1,8 @@
 use tracing::instrument;
 
 use crate::repo::Db;
-use crate::RoleLevel;
+use crate::role_manager::RevokeReport;
+use crate::{BlobStoreHandle, ReplicationSender, RoleLevel};
 
 /// Resolve effective roles for a list of peers at a scope.
 #[instrument(skip(db))]
@@ -23,28 +24,37 @@ pub(crate) async fn resolve_roles_for_peers_handler(
     roles
 }
 
-/// Assign a role to a peer (privilege-checked against the actor's own role).
-#[instrument(skip(db))]
-pub(crate) async fn assign_role_handler(
+/// Assign a role as a local statement: stored, materialized and published (src/AGENTS.md
+/// §role-propagation; refusals are typed `role_manager::RoleCommandError`s).
+#[instrument(skip(db, blob_store, repl_tx))]
+pub async fn assign_role_handler(
     db: &Db,
+    blob_store: &BlobStoreHandle,
+    repl_tx: Option<&ReplicationSender>,
     local_did: &str,
     peer_did: &str,
     scope: &str,
     role: &str,
 ) -> anyhow::Result<()> {
-    let role_level = RoleLevel::from(role);
-    crate::role_manager::assign_role_checked(db, local_did, peer_did, scope, role_level).await
+    crate::role_manager::assign_role_checked(
+        db, local_did, peer_did, scope, role, repl_tx, blob_store,
+    )
+    .await
 }
 
-/// Revoke a peer's explicit role at a scope (privilege-checked).
-#[instrument(skip(db))]
-pub(crate) async fn revoke_role_handler(
+/// Revoke the local node's own grant (an owner revoke blocks the cell); see
+/// `role_manager::revoke_role_checked`.
+#[instrument(skip(db, blob_store, repl_tx))]
+pub async fn revoke_role_handler(
     db: &Db,
+    blob_store: &BlobStoreHandle,
+    repl_tx: Option<&ReplicationSender>,
     local_did: &str,
     peer_did: &str,
     scope: &str,
-) -> anyhow::Result<()> {
-    crate::role_manager::revoke_role_checked(db, local_did, peer_did, scope).await
+) -> anyhow::Result<RevokeReport> {
+    crate::role_manager::revoke_role_checked(db, local_did, peer_did, scope, repl_tx, blob_store)
+        .await
 }
 
 /// Resolve the local user's effective role at a scope.
