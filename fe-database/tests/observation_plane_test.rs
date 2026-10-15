@@ -70,6 +70,8 @@ const FRACTAL_ID: &str = "fractal-obs";
 const PETAL_ID: &str = "petal-obs";
 const NODE_A: &str = "node-a";
 const NODE_B: &str = "node-b";
+/// A third anchor (RP-0): `seed_legacy` seeds only `NODE_A`/`NODE_B`.
+const NODE_C: &str = "node-c";
 const FORMAT_ID: &str = "acme.thermo/frame@1";
 const FORMAT_MIME: &str = "application/octet-stream";
 const BRANCH: Identifier32 = Identifier32([0x53; 32]);
@@ -232,6 +234,41 @@ fn node_chain() -> Vec<u8> {
     }
     .sign(&signing_key(MANAGER))
     .expect("sign certificate");
+    Chain::from_certificates(&[certificate])
+        .expect("chain")
+        .encode_canonical()
+        .expect("encode chain")
+}
+
+/// [`node_chain`], but with a `max_segment_bytes` caveat (SPEC-10 §3.2.5):
+/// small enough that an outsized sealed shard trips `ChainError::SegmentTooLarge`
+/// at `check_append_shard` (`sealer.rs:385`), the gate `seal_closed_windows`
+/// reads as `Prepared::Oversized` (RP-0).
+fn node_chain_with_segment_cap(max_segment_bytes: u64) -> Vec<u8> {
+    let now = SystemClock.now_ms();
+    let certificate = UnsignedCertificate {
+        capability_version: CAPABILITY_VERSION,
+        issuer: principal(MANAGER),
+        audience: principal(NODE),
+        parent_certificate_id: None,
+        issuer_authority_id: ANCHOR,
+        grant_scope: verse_scope(),
+        epoch_scope: verse_scope(),
+        scope_epoch: EPOCH,
+        verbs: VerbSet::from_verbs([Verb::Append, Verb::Fetch, Verb::Decrypt, Verb::Materialize])
+            .expect("verbs"),
+        object_classes: ObjectClassSet::from_classes([ObjectClass::Operation, ObjectClass::Shard])
+            .expect("classes"),
+        not_before_ms: now - 60_000,
+        not_after_ms: now + 3_600_000,
+        delegation_depth: 0,
+        caveats: Caveats {
+            max_segment_bytes: Some(max_segment_bytes),
+            ..Caveats::default()
+        },
+    }
+    .sign(&signing_key(MANAGER))
+    .expect("sign capped certificate");
     Chain::from_certificates(&[certificate])
         .expect("chain")
         .encode_canonical()
@@ -407,6 +444,42 @@ async fn ingest_reading(db: &Db, node_id: &str, value: f64, payload_id: Option<S
             units: "C".to_string(),
             recorded_at: Some("2026-10-14T00:00:00Z".to_string()),
             payload_id,
+        }],
+        None,
+        None,
+    )
+    .await
+    .expect("door accepts the reading");
+    let ids: Vec<String> = db
+        .query("SELECT VALUE reading_id FROM iot_reading WHERE node_id = $node AND value = $value")
+        .bind(("node", node_id.to_string()))
+        .bind(("value", value))
+        .await
+        .expect("reading id")
+        .take(0)
+        .expect("reading id take");
+    ids.into_iter().next().expect("the reading was written")
+}
+
+/// [`ingest_reading`], with an explicit `units` instead of the fixed `"C"`
+/// (RP-0: inflating `units` inflates the sealed hexon's stored length —
+/// SPEC-10 §3.2 rule 1 pins the Parquet members `UNCOMPRESSED` with
+/// dictionary encoding off, so stored length tracks content length directly,
+/// with no compression trick to defeat).
+async fn ingest_reading_with_units(db: &Db, node_id: &str, value: f64, units: &str) -> String {
+    insert_readings_with_replication(
+        db,
+        PETAL_ID,
+        Some(VERSE_ID),
+        &did(DEVICE),
+        SourceClass::Device,
+        &[IotReadingInput {
+            node_id: node_id.to_string(),
+            metric: "temperature_c".to_string(),
+            value,
+            units: units.to_string(),
+            recorded_at: Some("2026-10-14T00:00:00Z".to_string()),
+            payload_id: None,
         }],
         None,
         None,
@@ -1446,5 +1519,125 @@ fn analytics_identity_records_the_batches_it_read() {
             .await
             .expect("an explicitly narrower read is its own computation");
         assert_eq!(narrowed.identity.observation_input_set(), &[second.op_id]);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// RP-0 (critic tick 8, AC-49): oversized-window split path
+// ---------------------------------------------------------------------------
+
+/// SPEC-10 §3.4 rule 4: a closed window whose encoded artifact exceeds the
+/// chain's `max_segment_bytes` caveat is never refused outright — it splits
+/// by anchor, then by HLC within an anchor, until every member either seals
+/// or is individually too large to fit. A window of 3 anchors (one anchor
+/// carrying both a small and an oversized reading) exercises both splits: the
+/// anchor split separates the 3 anchors, and the HLC split then separates the
+/// two same-anchor readings. The oversized reading is marked `uncovered`,
+/// never silently dropped; the honest readings still seal and hydrate.
+///
+/// Mutation check: deleting the `Prepared::Oversized if group.len() == 1` arm
+/// (`sealer.rs:300`) makes a 1-member oversized group split forever instead
+/// of terminating (`split_group` on a 1-element group returns `(empty,
+/// original)`, so the same group is re-pushed and re-evaluated unchanged) —
+/// this test then hangs, which is why the seal call is itself time-bounded.
+#[test]
+fn an_oversized_window_splits_by_anchor_then_hlc_and_a_single_oversized_observation_is_marked_uncovered(
+) {
+    let _mode = migration_mode(Some("shadow_rebuild"));
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = runtime();
+    let secrets: Arc<dyn SecretStore> = Arc::new(InMemoryBackend::new());
+    // Comfortably above ordinary per-reading Parquet/zip overhead (a handful
+    // of short string/int columns, one row) and comfortably below a reading
+    // whose `units` alone is `HUGE_UNITS_LEN` bytes.
+    const SEGMENT_CAP: u64 = 65_536;
+    const HUGE_UNITS_LEN: usize = 300_000;
+    let chain = node_chain_with_segment_cap(SEGMENT_CAP);
+    let chain_id = Hash32::of(&chain);
+    let harness = Harness::open(dir.path());
+    runtime.block_on(async {
+        let db = harness.db();
+        seed_canon(&db, &secrets, &chain).await;
+        seed_legacy(&db).await;
+        // A third anchor: `seed_legacy` seeds only NODE_A/NODE_B.
+        db.query(
+            "CREATE node CONTENT { node_id: $nid, petal_id: $pid, display_name: 'anchor', \
+             position: <geometry<point>> [0.0, 0.0], elevation: 0.0, rotation: [0.0, 0.0, 0.0, 1.0], \
+             scale: [1.0, 1.0, 1.0], interactive: false, created_at: '2026-10-14T00:00:00Z' }",
+        )
+        .bind(("nid", NODE_C.to_string()))
+        .bind(("pid", PETAL_ID.to_string()))
+        .await
+        .expect("seed node-c")
+        .check()
+        .expect("seed node-c check");
+
+        let huge_units = "x".repeat(HUGE_UNITS_LEN);
+        // Two readings share NODE_A's anchor (one small, one oversized) so
+        // the window needs both an anchor split (3 distinct anchors) and,
+        // within NODE_A's pair, an HLC split (SPEC-10 §3.4 rule 4).
+        let small_a = ingest_reading_with_units(&db, NODE_A, 1.0, "C").await;
+        let huge = ingest_reading_with_units(&db, NODE_A, 2.0, &huge_units).await;
+        let small_b = ingest_reading_with_units(&db, NODE_B, 3.0, "C").await;
+        let small_c = ingest_reading_with_units(&db, NODE_C, 4.0, "C").await;
+        assert_eq!(
+            window_member_count(&db).await,
+            4,
+            "the door recorded every accept"
+        );
+
+        let verifier = verifier(&db, &secrets).await;
+        let author = signing_key(NODE);
+        let mut sealer = sealer(
+            MigrationMode::ShadowRebuild,
+            &db,
+            &verifier,
+            &author,
+            chain_id,
+        )
+        .expect("capped sealer");
+
+        let report = tokio::time::timeout(TIMEOUT, sealer.seal_closed_windows(i64::MAX))
+            .await
+            .expect("seal_closed_windows must terminate, not hang")
+            .expect("seal closed windows");
+
+        // Every member ends sealed or uncovered; no member is in two batches,
+        // and the batches' member sets are disjoint (each batch here is a
+        // singleton — the split path never re-merges groups).
+        assert_eq!(report.uncovered.len(), 1, "{:?}", report.uncovered);
+        assert_eq!(report.uncovered[0].table, ObservationTable::Reading);
+        assert_eq!(report.uncovered[0].row_id, huge);
+        assert_eq!(
+            report.uncovered[0].reason,
+            "a single observation exceeds the sealed artifact bound"
+        );
+        for batch in &report.batches {
+            assert_eq!(batch.count, 1, "{:?}", report.batches);
+        }
+        assert_eq!(
+            report.batches.iter().map(|b| b.count).sum::<u64>(),
+            3,
+            "every honest member seals exactly once: {:?}",
+            report.batches
+        );
+
+        hydrate(&db, &verifier, chain_id).await;
+        let mut expected = vec![small_a, small_b, small_c];
+        expected.sort();
+        assert_eq!(
+            catalog_reading_ids(&db).await,
+            expected,
+            "the oversized reading never hydrates; the honest readings do"
+        );
+
+        // A second pass seals nothing new: the honest members are already
+        // sealed and the oversized member stays uncovered, not retried.
+        let again = tokio::time::timeout(TIMEOUT, sealer.seal_closed_windows(i64::MAX))
+            .await
+            .expect("re-run must terminate, not hang")
+            .expect("re-run");
+        assert!(again.batches.is_empty());
+        assert!(again.uncovered.is_empty());
     });
 }

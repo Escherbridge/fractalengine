@@ -1218,6 +1218,62 @@ async fn register_format_conflict_and_idempotent_redeclare() {
     ));
 }
 
+/// RP-0 (critic tick 8, AC-49): a descriptor `schema` that is present but not a JSON
+/// object (array, string, number, bool) is a typed `InvalidSchema` rejection, not an
+/// untyped fall-through to a DB-layer failure — row added to this door's rejection
+/// cases alongside `register_format_conflict_and_idempotent_redeclare` above.
+#[tokio::test]
+async fn register_format_rejects_a_non_object_schema() {
+    let db = setup_db().await;
+    let cases = [
+        ("array", serde_json::json!(["type", "object"])),
+        ("string", serde_json::json!("object")),
+        ("number", serde_json::json!(1)),
+        ("bool", serde_json::json!(true)),
+    ];
+    for (name, schema) in cases {
+        let err = register_format(
+            &db,
+            VERSE,
+            &DeviceFormatDescriptor {
+                format_id: "acme.thermo/shape@1".to_string(),
+                mime: FORMAT_MIME.to_string(),
+                schema: Some(schema),
+                description: String::new(),
+            },
+            "did:key:z6MkManager",
+        )
+        .await
+        .expect_err(&format!("{name}: a non-object schema must be refused"));
+        assert!(
+            matches!(
+                err,
+                DeviceFormatError::Rejected(DeviceFormatRejection::InvalidSchema)
+            ),
+            "{name}: {err:?}"
+        );
+    }
+    assert!(
+        list_device_formats(&db, VERSE).await.unwrap().is_empty(),
+        "nothing was written for any rejected descriptor"
+    );
+
+    // A `schema` that IS an object is still accepted (unchanged behaviour).
+    register_format(
+        &db,
+        VERSE,
+        &DeviceFormatDescriptor {
+            format_id: "acme.thermo/shape@1".to_string(),
+            mime: FORMAT_MIME.to_string(),
+            schema: Some(serde_json::json!({"type": "object"})),
+            description: String::new(),
+        },
+        "did:key:z6MkManager",
+    )
+    .await
+    .expect("an object schema is accepted");
+}
+
 // ---------------------------------------------------------------------------
 // Phase A security review-and-fix (CDL-SPEC10, 2026-10-15)
 // ---------------------------------------------------------------------------

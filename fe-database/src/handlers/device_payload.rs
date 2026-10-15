@@ -89,6 +89,16 @@ pub async fn register_format_with_replication(
         }
         .into());
     }
+    // `schema` doc comment (fe-sdk): "informative JSON Schema" — always an
+    // object when present; never enforced further in v1 (critic tick 8, AC-49:
+    // a non-object schema fell through to an untyped DB-layer rejection).
+    if descriptor
+        .schema
+        .as_ref()
+        .is_some_and(|schema| !schema.is_object())
+    {
+        return Err(DeviceFormatRejection::InvalidSchema.into());
+    }
 
     if let Some(existing) = fetch_format(db, verse_id, &descriptor.format_id)
         .await

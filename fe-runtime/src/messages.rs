@@ -178,6 +178,10 @@ pub enum DeviceFormatRejection {
         format_id: String,
         existing_mime: String,
     },
+    /// `schema` is present but not a JSON object (critic tick 8, AC-49): the
+    /// descriptor's doc comment calls it "informative JSON Schema", which is
+    /// always an object, never e.g. an array, string or bare literal.
+    InvalidSchema,
 }
 
 impl std::fmt::Display for DeviceFormatRejection {
@@ -200,6 +204,9 @@ impl std::fmt::Display for DeviceFormatRejection {
                 f,
                 "device_format '{format_id}' already declared with mime '{existing_mime}'"
             ),
+            Self::InvalidSchema => {
+                write!(f, "schema must be a JSON object when present")
+            }
         }
     }
 }
