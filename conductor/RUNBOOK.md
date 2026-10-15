@@ -113,7 +113,20 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 - ~~**2026-10-13 post-W0d, HEAD = `d4c0e19`** (W0–W0d complete; W1 PAS-P3+P4 launched, W0d final smoke & push complete, CI in flight on 53a4c4c)~~ — superseded (critic tick 4, AC-22(4)).
 - ~~**2026-10-14, W1 done / W2 (PAS-P5) running.** W1 PAS-P3+P4 landed `53a4c4c..069f8ea` (11 agents; S8b security review FIXED; final review FIXED; relay smoke PASS, AC-15). W2 (campaign PAS-P5) launched `01:40` and is in progress (S1 committed `db5883b`). **Last pushed `53a4c4c`; CI green run `38498925963`** (first fully completed run of the day's work — Lint incl. licenses/fuzz, Linux build+test+package incl. the 0.35 store-migration fixture test, Windows build+package; rolling `latest` republished with fractalengine/fe-relay archives + SHA256SUMS). Push freeze (AC-14) lifted at that run; **no further pushes until the campaign final sweep** (docs-only commits excepted). **Ledger refreshed 2026-10-13** (dated 10-10; now tracks committed and ratified rows) **and 2026-10-14** (critic tick 4 bookkeeping — IROH-STORE-GC + 2 role-propagation rows added, PAS-P1V status corrected, counts recomputed). Section §4 assumptions still the 2026-10-13 grill R1–R7; RUNBOOK §3 decisions frozen.~~ — superseded (critic tick 5, W2 close).
-- **2026-10-14, W2 done / W2b fixups running.** W2 (PAS-P5) landed `4865a54..e7762d9` (S1→S1b→S2→S3→S4→S6→S5→S7a→S7b→S8 security review-and-fix `d21a957`→final review-and-fix `e7762d9`; every slice `gate_green`). Critic tick 5 ran at W2 close (`.omc/accountability/tick-20261014-0722.md`, verdict ON_TRACK): AC-23 accepts the P2P/FetchStrategy gap as a staged state (ledger row PAS-P5-P2P-POLICY); AC-24 schedules **W2b fixups** (F1-F6: streamed-meta worker-thread move + publisher pin, local hexon-install worker thread, `install_tileset` continuity/write/rename lock, registry bearer token, relay blob-dir derivation, registry nosniff) before W3; AC-25/26/27/28 are docs-only amendments (this commit). ~~W2b is running now~~ → **W2b DONE** `4306cb2`+`474ab9b`; **W3 DONE `38dd271..381264e`; W3b running** (`wf_a45fa136-1c5`).
+- ~~**2026-10-14, W2 done / W2b fixups running.** W2 (PAS-P5) landed `4865a54..e7762d9` (S1→S1b→S2→S3→S4→S6→S5→S7a→S7b→S8 security review-and-fix `d21a957`→final review-and-fix `e7762d9`; every slice `gate_green`). Critic tick 5 ran at W2 close (`.omc/accountability/tick-20261014-0722.md`, verdict ON_TRACK): AC-23 accepts the P2P/FetchStrategy gap as a staged state (ledger row PAS-P5-P2P-POLICY); AC-24 schedules **W2b fixups** (F1-F6: streamed-meta worker-thread move + publisher pin, local hexon-install worker thread, `install_tileset` continuity/write/rename lock, registry bearer token, relay blob-dir derivation, registry nosniff) before W3; AC-25/26/27/28 are docs-only amendments (this commit). ~~W2b is running now~~ → **W2b DONE** `4306cb2`+`474ab9b`; **W3 DONE `38dd271..381264e`; W3b running** (`wf_a45fa136-1c5`).~~ — superseded (critic tick 8, W4 close).
+- **2026-10-15, W4 done / critic tick 8 → RP next.** W3b landed (`bccb654`+`78eab0e`; review 1M 2L
+  FIXED). **W4 CDL-SPEC10 DONE** `26833b9..0333029`: A2..B3 all `gate_green` (B2b committed by the
+  orchestrator as `f4df2a3` with the user's explicit authorization after a gate-timing halt —
+  `conductor/accountability-log.md` "W4 HALT at B2b"); Phase A security `e3ad8e8` FIXED, Phase B
+  security `1c5f8ef` FIXED, correctness `d098b65` FIXED (all tests deferred to the campaign-end
+  sweep). Critic tick 8 (`.omc/accountability/tick-20261015-0908.md`, verdict ON_TRACK) re-grounded
+  the role-propagation plan's citations @`009b282`, amended it (C11-C21: RP-0, RP-4b
+  STREAMED-TERRAIN-PIN, RP-4s DB-plane security review, RP-9b correctness review, T23-T28, the
+  gate-text fix), and corrected one accountability-log mis-diagnosis (the B2b DLL-failure note —
+  the gate ran sequentially; see that log's dated correction line). **Next: W5 role propagation**
+  (`conductor/tracks/role_propagation_20261013/plan.md`, RP-0..RP-10, security review mandatory) →
+  campaign final sweep (`conductor/final-sweep-manifest.md`, harness 17→18 scenarios) → push on
+  green → watch CI → end-of-campaign report.
 - ~~**2026-10-13 session open:** origin/main = `850466d`~~ — superseded. Two `ci(fuzz)` commits + 4 W0–W0d follow-up commits complete.
 - ~~**CI fully green on `850466d`**~~ — superseded. Fuzz CI step now DONE + `850466d` (run 38277696834) verified green on Linux; lint RED on `877e801` (pre-purge cargo-deny advisories), FIXED in W0b/W0c/W0d; §7 step 2 was completed. Superseded again by CI run `38498925963` (first fully green run, §2 above).
 - ~~**Ledger stale**~~ — superseded. Refreshed 2026-10-13 against post-purge history + 2026-10-13 grill R1–R6. "Commit pending" rows traced to their landing commits via `git log -S/--grep` on the post-purge tree.
@@ -152,6 +165,9 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 | Critic tick 2 (pre-push) | accountability critic | 1H 2M 2L (AC-9 packaged binary never launched; AC-10 MCP upload_asset gate gap; AC-11 stale QUICKSTART wording; AC-12/AC-13 ledger + KTX2-test residuals) | ON_TRACK → all ACCEPTED |
 | Critic tick 3 (W1 launch) | accountability critic | 4M 1L (AC-14 push-freeze until CI run concludes; AC-15 relay `main()` never smoke-tested; AC-16 S9 ledger-edit scope override; AC-17 per-slice gate coverage; AC-18 stale docs/manifest) | ON_TRACK → all ACCEPTED |
 | Critic tick 4 (W1 close / W2 launch) | accountability critic | 1H 2M 1L (AC-19 feature-matrix gate never runs the fetch/remote/conformance builds; AC-20 lossy non-blocking `SyncEvent` emission risks state-bearing drops; AC-21 five undispositioned W1 residuals incl. petal-terrain authz + blob-ALPN filter; AC-22 ledger/manifest/RUNBOOK bookkeeping) | ON_TRACK → all ACCEPTED |
+| W3b fixups `bccb654`+`78eab0e` | review-and-fix | 1M 2L | FIXED |
+| Critic tick 7 (pre-check SPEC-10 plan) | accountability critic | 1H 5M 2L (AC-33 replay-time payload facts default; AC-39 four W3 judgement-call owner questions) | ON_TRACK → all ACCEPTED |
+| Critic tick 8 (W4 close / role-propagation pre-launch) | accountability critic | 11 directives AC-41..AC-51 (C11-C21): RP-4s + RP-9b dual review added, AC-42 durable local-statement re-emit, AC-43 three-valued confinement, AC-44 enrolment floor Deferred split, AC-45 C3 false-premise correction, AC-46 stale-API-token cap, AC-47 STREAMED-TERRAIN-PIN promoted to RP-4b, AC-48 gate-text + harness-manifest fix, AC-49 RP-0 (oversized-window test + typed rejection), AC-50 BLOB-HASH-CAPABILITY ledger row, AC-51 bookkeeping | ON_TRACK |
 
 ## 3. Decisions
 
@@ -320,6 +336,43 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
   as CDL-SPEC10 slice B2b, scoped by a dated Errata to `observation-plane.md` §4.4 rule 3. The
   owner post-reviews this default in the final report — it is not a blocker · to reverse: moderate
   — B2b + one Errata.
+
+**Added 2026-10-15 (critic tick 8, unasked — role_propagation pre-launch amendments):**
+- **AC-42 durable re-emit:** at DB startup and whenever a verse replica opens, the DB re-emits
+  every `role_grant` row whose `grantor_did == local_did` (newest per key; iroh dedupes identical
+  bytes), so a local grant/revocation issued while the replica was closed, or lost to a
+  pending-writes flood, still reaches peers · default: as stated · to reverse: moderate (RP-2
+  schema/logic) before RP-2 lands, high after.
+- **AC-44(a) enrolment floor failure:** a floor failure (the enrolling principal holds no
+  membership anywhere in the verse) is Deferred `AuthorRole`, retried when the principal's role
+  rises — not Denied. A signature or self-authorship failure stays Denied, and the Editor+ gate
+  never applies to the W4-8 enrolment branch · to reverse: cheap (RP-3 is new code).
+- **AC-44(b) pre-manifest enrolment:** a pre-manifest enrolment row (no owner known yet) is
+  Deferred `Manifest`, not left unfloored forever; it applies once the manifest lands and the
+  floor can be evaluated · to reverse: cheap (RP-3/RP-4).
+- **AC-44(c) membership definition:** membership = any effective role at any scope of the verse,
+  via `EffectiveRoles::has_any_role(did)` (RP-1) · to reverse: cheap (RP-1 is pure).
+- **AC-46 stale-token cap:** for replicated writes, the effective API role is
+  `min(token max_role, role_at(local_did, scope))`, applied by one helper shared by
+  `lifecycle_auth_context` and every replicated-write door, so a token minted before a node's
+  remote demotion cannot keep writing rows every peer defers · default: as stated · to reverse:
+  cheap (drop the cap).
+- **AC-47 streamed-terrain pin + precedence:** precedence is installed > petal-authored > TOFU; a
+  petal-authored pin REPLACES a recorded first-contact TOFU pin, never the reverse. The streamed
+  path records a first-contact pin in `KnownTilesetPublishers` on first contact (symmetric with
+  the installed path's TOFU) · default: record the first-contact pin · to reverse: cheap (drop
+  the recorded pin, rely only on the petal-authored pin — delete the write, keep the read).
+- **AC-45 interim authority rows untouched by RP:** the role migration and `rematerialize` touch
+  ONLY rows whose scope `parse_scope`s to that verse's ULID — **never** a `VERSE#<hex>[-PETAL#<hex>]`
+  interim-authority row (C3's original premise, that `DurableAuthorizationView::load` needed to
+  derive the owner from `created_by`, was false — it was never watching `role`/`role_grant` at
+  all; see plan.md §8 "C3 superseded by C15") · to reverse: none needed — this is a scope
+  confinement, not new behaviour, so there is nothing to undo.
+- **AC-50 blob reach by known hash (verdict, not a fix):** an inbound row naming any
+  `content_hash` can have it served by `/assets/by-id` to anyone who asks; no ALPN filter sees
+  that REST route, and C9's blob-ALPN filter admits only tileset-root hashes. Recorded as ledger
+  row BLOB-HASH-CAPABILITY, out of this track's scope · trigger to revisit: a membership-keyed
+  filter for ALL hashes, or namespace rotation.
 
 **Carried from 2026-10-12:**
 - ~~Role-table replication semantics: LWW by HLC per (verse, peer) row …~~ SUPERSEDED by the

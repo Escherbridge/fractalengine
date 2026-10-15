@@ -13,13 +13,40 @@ security_critical: true
 
 # Implementation plan: role_propagation_20261013
 
-> **Line numbers are as of `877e801`.** RUNBOOK §7 runs this track after PAS-P3+P4, PAS-P5,
-> CDL W4 and CDL SPEC-10, so every executor must re-grep each cited symbol before editing.
-> The symbol names are stable; the line numbers are not.
+> **Citations re-grounded @`009b282`** (critic tick 8; re-grep before editing if HEAD has moved
+> further — symbol names are stable, line numbers are not). RUNBOOK §7 runs this track after
+> PAS-P3+P4, PAS-P5, CDL W4 and CDL SPEC-10.
+>
+> | Plan cite | Now |
+> |---|---|
+> | `replicated_row.rs:201-207` role → `other` arm | `:224-230` |
+> | A3 gate verse-scope resolve `:308-313` | `:403-416` (device_format Manager+ `:408-412`) |
+> | bootstrap window `:297-306` | `:372-401` (AC-34 pre-manifest Deny `:382-393`) |
+> | — (new) enrolment branch + floor | `:330-348` (floor `:336-346`) |
+> | — (new) R5 confinement | `r5_referential_confinement :428-559`, `confine_petal_to_verse :562-581` |
+> | `apply_static_row` MERGE `:349-363,:387-393` | `:591-` (default_access check `:610-630`, MERGE `:685`) |
+> | — inbound terrain shape | `is_valid_inbound_petal_terrain :944-975` |
+> | tests `:1103/:1133/:1168/:1324/:1698` | `viewer_role_row_is_denied_never_applied :1644`, `unknown_peer_row_is_denied :1674`, `denied_row_converges_on_replay_after_role_lands :1710`, `node_row_before_verse_manifest_applies_bootstrap :1865`, `timeseries_reading_from_viewer_is_denied :2239` |
+> | `lib.rs:789-800` Assign/RevokeRole | `:845`, `:851`; governance arms `:793`, `:799` (was `:737-750`) |
+> | `lib.rs:1460-1486` ApplyReplicatedRow | `:1581`; ExecuteTsPartial `:1440`; `lifecycle_auth_context :240` |
+> | `fe-runtime/src/messages.rs:696-710` | `ReplicatedRowOutcome :969-983` |
+> | harness `peer.rs:1041` / no-op `:572-582` | `:1084` / `:579-580` |
+> | `canonical_epoch.rs:540` | `load :524`, query `:545`, exact-key lookup `:587-604` |
+> | `sync_thread.rs:1102-1118` note_entry | `handle_inbound_row_change :1210`, `note_entry :1223`; `handle_write_row_entry :1668`; `TilesetProviderMap :2187`, `root_for :2290` |
+> | `query_guard.rs:36` | `ALLOWED_TABLES :42` |
+> | stable | role_manager.rs, crud.rs `:187`, seed.rs `:207`, invite.rs, sharding.rs, distributed_query.rs (`:2659` pinning test), elevated_query.rs `:17`, docs_engine.rs `:120`, scope.rs `:163`, fe-policy (untouched since `877e801`) |
 >
 > **Standing rules (RUNBOOK §3):**
 > - Slices run strictly in sequence; never overlap builds.
-> - Each executor runs `cargo check` and `clippy -D warnings` on the crates it touched.
+> - **The gate (critic tick 8):** `cargo check -j4 --workspace --tests`; `cargo +1.99.0 clippy -j4
+>   --workspace --all-targets --keep-going -- -D warnings`; `cargo +1.99.0 fmt --all -- --check`;
+>   plus the feature matrix (`check` + `clippy --all-targets -D warnings` for `fe-query --features
+>   parquet`, `fe-format --no-default-features`, `fe-terrain --features fetch,render`, `fe-hexon
+>   --all-features`). `gate_green=false` → no commit, halt. Never return a structured result while
+>   a cargo process you started is still alive — poll the summary for `DONE`. On exit
+>   `0xc0000142` with no other builder running, retry that one step once before halting. The
+>   gate script must not inherit a generic `overrides` bypass unless a user authorization for it
+>   is logged first.
 > - Each executor writes its tests now. No test runs until the end of the campaign, which
 >   ends with one full test, e2e and harness sweep.
 > - Reviewers fix their own findings.
@@ -435,6 +462,31 @@ counter). It is re-evaluated whenever the role view or the petal map changes.
 
 Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
 
+### RP-0: oversized-window split path test + typed schema rejection · S · sonnet (critic tick 8, AC-49)
+
+**Owned files:**
+- `fe-database/tests/observation_plane_test.rs`
+- `fe-database/src/handlers/device_payload.rs` (+ its rejection enum's home; grep `DeviceFormatRejection`)
+- `fe-database/tests/device_payload_test.rs`
+
+**Steps:**
+1. Write `an_oversized_window_splits_by_anchor_then_hlc_and_a_single_oversized_observation_is_marked_uncovered`
+   in `observation_plane_test.rs`, reusing that file's existing fixture (verse, capability chain,
+   door ingest in a shadow mode). Grant the sealer an `append/shard` chain whose `max_segment_bytes`
+   caveat is small enough that one window of ≥3 anchors returns `Prepared::Oversized`
+   (`sealer.rs:385` `SegmentTooLarge`). Assert: the batches cover disjoint member sets; every member
+   ends either sealed (`sealed_op_id` set) or `uncovered` with the reason "a single observation
+   exceeds the sealed artifact bound"; no member is in two batches; `seal_closed_windows` returns.
+   Mutation check: deleting the `Prepared::Oversized if group.len()==1` arm must make this test fail
+   or hang (bound it with a timeout).
+2. In `register_format_with_replication` (`device_payload.rs:69`), a descriptor `schema` that is
+   present but not a JSON object returns a typed rejection (`DeviceFormatRejection::InvalidSchema`,
+   mapped like its siblings through fe-runtime/fe-api if the enum crosses crates — grep it). Add one
+   row to the existing door rejection table test.
+
+**Gate:** the same workspace-triple + feature-matrix gate as every other slice (plan header). Do
+not run tests (they run at the final sweep).
+
 ### RP-1: fe-policy pure role-grant model · M · sonnet
 
 **Owned files:**
@@ -452,14 +504,19 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
      "Admission");
    - `cache_rows()`, the §2.2 step 4 projection;
    - `diff(&previous) -> ChangedDids`, which gives each DID with the direction its authority
-     moved.
+     moved;
+   - `has_any_role(did)` (critic tick 8, AC-44c): true if the DID holds any effective role at
+     any scope of the verse. Backs the RP-3 enrolment membership floor, which must admit a
+     petal-scoped member even though they resolve to `None` at verse scope.
 
    `validate_statement` takes `owner_did: Option<_>`. With `None` (pre-manifest), it runs only
    the owner-independent checks.
 2. Add a scope-chain helper that splits `VERSE#..-FRACTAL#..-PETAL#..`. Mirror
    `fe-database/src/scope.rs:163` `parent_scope` exactly, or move the pure parser into
    fe-policy and re-export it from fe-database (preferred: one parser).
-3. Add `latest_per_grantor(statements)` (HLC last-writer-wins, payload-hash tie-break).
+3. Add `latest_per_grantor(statements)` (HLC last-writer-wins; tie-break on the lexicographic
+   order of the canonical payload **bytes** — no hash dependency, critic tick 8 AC-51, since
+   `fe-policy/Cargo.toml` carries only `serde`/`tracing` today).
 
 **Invariants:**
 - fe-policy AGENTS.md §design constraints: no I/O, serde-light, deny by default.
@@ -467,7 +524,11 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
 - `role_grants.rs` carries a one-line pointer to §role-grants and names the algorithm
   ("least fixpoint, Kleene iteration").
 
-**Flow tests** (pure, table-driven or property-based; run at campaign end):
+**Flow tests** (pure, table-driven or property-based; run at campaign end). **(Critic tick 8,
+AC-51.)** "Property test" here means seeded, hand-rolled permutations of a generated fixture set
+— no new dependency. If a later slice wants a real property-test crate (e.g. `proptest`), it must
+add `fe-policy/Cargo.toml` + `Cargo.lock` as owned files, since neither carries a property-test
+dependency today:
 - `materialize_is_order_independent`: a property test over random permutations of a generated
   statement set. The set has the owner; 3 Managers at verse, fractal and petal scope; and
   grants, revokes, owner pins and cycles. It asserts identical `EffectiveRoles` across
@@ -516,11 +577,28 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
   arms gain `repl_tx` and `blob_store`, plus the startup migration call)
 - `fe-database/src/migration/role_grants.rs` (new) and `fe-database/src/migration/mod.rs` (register)
 - `fe-database/src/handlers/elevated_query.rs` (pin test only)
-- `fe-database/examples/seed_join_verse.rs` (stop writing an owner row)
+- `fe-database/examples/seed_join_verse.rs` (`:140-164`; fix the citation — it writes an
+  arbitrary-level row for a remote peer, not an "owner row" — then retire its `--role-*` flags
+  or route them through the statement API, critic tick 8 AC-45)
 - `fe-database/src/AGENTS.md` (§rbac-policy plus a new §role-propagation)
-- **(Critic, cross-plan — CDL-W4 dependency)** `fe-database/src/canon_log/canonical_epoch.rs`
-  (`DurableAuthorizationView::load`, `:540`) and `fe-database/src/canon_log/AGENTS.md`
-  §interim-manager-authority.
+- `fe-database/src/handlers/admin.rs` (`:58`; the admin `role`-clear path — decide its
+  membership over `role_grant`/`role_statement_pending`, critic tick 8 AC-45)
+- **(Critic tick 8, AC-45 — C3 superseded, false premise; see plan §8 "C3 superseded by C15")**
+  NOT owned: `fe-database/src/canon_log/canonical_epoch.rs` — the interim authority keys
+  `VERSE#<hex>[-PETAL#<hex>]` rows directly (deliberately not `build_scope`'s string) and was
+  never watching `role`/`role_grant`; deriving the owner there is a SPEC-2 concern, out of RP's
+  scope. Owned/checked instead — the seed inventory each row of `role` passes through, which
+  must each stay valid or move to the statement API:
+  `fe-database/src/handlers/petal_render_distance.rs` (`:220,494`),
+  `fe-database/src/handlers/replicated_row.rs` (`:1590,1741`),
+  `fe-database/tests/device_payload_test.rs` (`:68`),
+  `fe-database/tests/device_enrolment_test.rs` (`:438,551,679`),
+  `fe-database/tests/observation_plane_test.rs` (`:277,755`),
+  `fe-api/tests/elevated_query_test.rs` (`:393`),
+  `fe-database/tests/record_id_read_test.rs` (`:39`),
+  `fe-database/tests/canon_log_composed_admission_test.rs` (`:196`),
+  `fe-database/tests/canon_log_replay_payload_facts_test.rs` (`:231`),
+  `fe-database/tests/migration_equivalence_harness.rs` (`:353`).
 
 **Steps:**
 1. Add the schema (§2.1):
@@ -540,7 +618,18 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
      `rematerialize`.
    - At DB startup, `repartition` runs for every verse. That repairs a crash between a
      statement write and the partition step.
-3. Rewrite `assign_role_checked` and `revoke_role_checked` per §2.3:
+3. **(Critic tick 8, AC-42 — durable re-emit of local role statements.)** Statements publish
+   through `replicate_row`, which only reaches an OPEN replica; `fe-sync/src/AGENTS.md`
+   §pending-writes caps pending writes at 1024, drop-oldest, process-lifetime only. A local
+   grant or revocation issued while the verse's replica is closed (the GUI opens only the
+   ACTIVE verse's replica — root `AGENTS.md` §NavigationManager), or lost to a pending-write
+   flood, never reaches any peer. **Default:** at DB startup and whenever a verse replica opens,
+   the DB re-emits every `role_grant` row whose `grantor_did == local_did` (newest per key; iroh
+   deduplicates identical bytes, so a re-emit of an already-seen statement costs nothing on the
+   wire). Add threat **T23** "a local grant or revocation is never published" to RP-9's matrix,
+   and two tests: `a_revocation_issued_while_the_replica_is_closed_reaches_peers_after_restart`
+   and `a_pending_writes_flood_cannot_drop_a_local_revocation`.
+4. Rewrite `assign_role_checked` and `revoke_role_checked` per §2.3:
    - the op-log entry still lands first (§log-first-commit);
    - keep the existing authority check, `resolve_role(caller, scope)?.can_manage()`. Over the
      new cache it is exactly subtree authority;
@@ -548,13 +637,13 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
    - then upsert the statement into `role_grant`, then `repartition` (which can promote held
      statements the caller's grant just empowered);
    - then `replicate_row(repl_tx, blob_store, verse_id, "role", "{scope}/{peer}/{grantor}", bytes)`.
-4. **Gate parity:** `set_default_access` and `set_verse_timeseries_settings_handler` require
+5. **Gate parity:** `set_default_access` and `set_verse_timeseries_settings_handler` require
    local Manager+ **at the verse scope**, via `resolve_role` and fe-policy; a petal or fractal
    Manager is refused. `SetVerseDefaultAccess` now re-emits the manifest, the same way
    settings already do (`verse_settings.rs:74`), so the change propagates deliberately.
-5. Stop writing implicit `owner` role rows (`crud.rs:182-190`, `seed.rs:202-210`, the example).
+6. Stop writing implicit `owner` role rows (`crud.rs:182-190`, `seed.rs:202-210`, the example).
    R7 confirmed this.
-6. **Migration (idempotent, runs once at DB startup):**
+7. **Migration (idempotent, runs once at DB startup):**
    - drop every `role` row whose `role = "owner"`. That includes every implicit petal-creator
      row (R7). Role rows have never replicated, so no other peer ever honoured those rows, and
      dropping them loses nothing remote. Locally, the creator falls back to the role they
@@ -564,18 +653,23 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
      writes retain it until the replica opens (`fe-sync/src/AGENTS.md` §pending-writes);
    - for every other legacy row, log a warning and drop it (no consumers; §7 assumption);
    - then repartition every verse.
-7. Add a test pinning that `ELEVATED_WRITABLE_TABLES` never contains `role`, `role_grant` or
+8. Add a test pinning that `ELEVATED_WRITABLE_TABLES` never contains `role`, `role_grant` or
    `role_statement_pending`.
-8. **(Critic, cross-plan.)** CDL-W4 made `DurableAuthorizationView` the production authority for
-   W4-7's `ManagerPlusAuthorizationView` and W4-8's key-wrap issuer. It reads
-   `SELECT peer_did, scope, role FROM role` and **never consults `verse.created_by`**
-   (`canonical_epoch.rs:540`). Today the petal-scope `role = "owner"` rows (`crud.rs:187`,
-   `seed.rs:207`) are part of what it sees. Steps 5-6 delete them, and the owner is never written
-   to the cache, so without this step the canonical interim authority silently stops answering
-   Owner-is-Manager+. Make `load` derive the owner from `verse.created_by`, the same rule as
-   `resolve_role`, keyed with the existing `interim_authority_scope_key`.
-9. **(Critic.)** `crud.rs` also carries CDL-W4-1's six `record_bypass_for(..)` first-statement
-   lines. The owner-row removal must leave them byte-identical (W4-1 invariant).
+9. **(Critic tick 8, AC-45 — replaces the earlier C3 step; interim authority rows must survive
+   the migration.)** C3's premise was false: the interim authority
+   (`canonical_epoch.rs:486-604`) keys rows `VERSE#<hex>[-PETAL#<hex>]`, deliberately NOT
+   `build_scope`'s string, and looks up the exact key. The owner rows at `crud.rs:187`/
+   `seed.rs:207` use `VERSE#<ulid>-FRACTAL#...` keys and were never visible to it — so deriving
+   the owner inside `DurableAuthorizationView::load` is a SPEC-2 concern, out of RP's scope. The
+   migration (step 7) and `rematerialize` (step 2) must touch ONLY rows whose scope
+   `parse_scope`s to that verse's ULID — **never** a `VERSE#<hex>` interim row. The migration
+   stays marker-guarded and runs once per DB. RP-2 owns the seed inventory listed above
+   (owned-files): each either stays valid as a legacy hex-keyed test fixture or moves to the
+   statement API. Fix the `seed_join_verse` citation (it writes an arbitrary-level row for a
+   remote peer, not an owner row) and decide `admin.rs:58`'s membership for the two new tables,
+   rematerializing after any `role` clear it still performs.
+10. **(Critic.)** `crud.rs` also carries CDL-W4-1's six `record_bypass_for(..)` first-statement
+    lines. The owner-row removal must leave them byte-identical (W4-1 invariant).
 
 **Invariants:**
 - fe-database AGENTS.md §log-first-commit (the op log before the materialized state).
@@ -609,9 +703,14 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
 - `legacy_role_rows_migrate_owner_rows_dropped_owner_authored_rows_become_statements`
   (migration flow on a seeded legacy DB).
 - `elevated_writable_tables_never_include_role_tables` (all three tables).
-- **(critic)** `the_verse_owner_still_answers_manager_plus_to_the_canonical_interim_authority_after_migration`:
-  a migrated DB has no owner rows, `DurableAuthorizationView::load` runs, and the owner is
-  Manager+ at verse and petal scope while a revoked Manager is not.
+- **(critic tick 8, AC-42)** `a_revocation_issued_while_the_replica_is_closed_reaches_peers_after_restart`
+  and `a_pending_writes_flood_cannot_drop_a_local_revocation` (step 3's durable re-emit).
+- **(critic tick 8, AC-45 — replaces the earlier C3 test
+  `the_verse_owner_still_answers_manager_plus_to_the_canonical_interim_authority_after_migration`)**
+  `interim_authority_rows_survive_the_role_migration_and_rematerialize_across_a_restart`: seed
+  hex-keyed interim-authority rows (as the canon_log test fixtures do), run the role migration and
+  a `rematerialize` pass, restart the DB, and assert the hex-keyed rows are byte-identical and
+  still resolve through `DurableAuthorizationView::load`.
 
 ### RP-3: inbound role statements and deferred admission · L · opus
 
@@ -657,8 +756,16 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
    exhaustive-match gotcha).
 5. **(Critic — preserve the arms earlier phases landed in `replicated_row.rs`.)**
    - CDL-W4-8's `canon_device_enrolment` branch stays **first**: verify, then
-     `author_did == principal_did`, independent of role. It never becomes `Deferred AuthorRole`
-     (a Viewer must be able to enrol).
+     `author_did == principal_did`, independent of role — a signature or self-authorship
+     failure stays `Denied`, and the Editor+ gate never applies to this branch. **(Critic tick
+     8, AC-44(a)-(c) — supersedes the W4 plan §9 wording "never `Deferred AuthorRole`" while
+     keeping its intent.)** Membership = any effective role at any scope of the verse
+     (`EffectiveRoles::has_any_role`, RP-1). A floor failure (the enrolling principal holds no
+     membership anywhere in the verse) is `Deferred AuthorRole`, retried when the principal's
+     role rises — not `Denied` — because a brand-new petal-scoped member must still be able to
+     enrol even though they resolve to `None` at verse scope. A pre-manifest enrolment (no owner
+     known yet) is `Deferred Manifest`, closing the unfloored pre-manifest residual
+     (`canon_log/AGENTS.md:746-748`). Revocations stay unfloored and first.
    - CDL-SPEC10 A3's `device_payload` (union), anchored `asset` (insert-if-absent) and
      `device_format` (Manager+) arms keep their semantics. Only their insufficient-role branch
      turns `Deferred AuthorRole`, like every other table.
@@ -731,8 +838,12 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
   `unknown_peer_row_is_denied` (`:1133`) flips the same way. Rename them accordingly. **(Critic)**
   The same flip applies to the viewer-authored rows in PAS-P3P4 S6's and CDL-SPEC10 A3's test
   files, which this slice now owns.
-- **(critic)** `a_viewer_s_self_signed_enrolment_still_applies_and_is_never_deferred` (it pins
-  that the W4-8 branch stays ahead of the A3 role gate).
+- **(critic tick 8, AC-44 — renamed from `a_viewer_s_self_signed_enrolment_still_applies_and_is_never_deferred`)**
+  `a_viewers_enrolment_never_needs_editor_and_a_pre_membership_enrolment_is_deferred_then_applied`:
+  a Viewer's self-signed enrolment applies with no floor and is never deferred (W4-8 stays ahead
+  of the A3 role gate); a principal with no membership anywhere in the verse is `Deferred
+  AuthorRole` and applies once any role lands for them; a pre-manifest enrolment is `Deferred
+  Manifest` and applies once the manifest lands.
 
 ### RP-4: owner integrity, P2P-REF-CONFINE, scope-precise admission · L · opus
 
@@ -744,6 +855,9 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
 - `fe-database/src/AGENTS.md` (§handlers `replicated_row` paragraph)
 - **(Critic tick 4, AC-21(d).)** `fe-database/src/handlers/petal_terrain.rs` — adds the
   missing Editor+ gate so a local edit can never diverge from what peers will accept.
+- **(Critic tick 8, AC-46.)** `fe-database/src/lib.rs` (`lifecycle_auth_context :240`, and the
+  replicated-write dispatch arms `InsertReadings`, `InsertDevicePayloads`,
+  `RegisterDeviceFormat`, `SetPetalTerrain`, `SetPetalRenderDistance`).
 
 **Steps:**
 1. **Immutable identity.** For an inbound verse row on an existing verse, any change to
@@ -758,9 +872,14 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
      `:239-249`, no longer holds). Role statements are the exception: they are held in the
      durable pending store (RP-3, §2.4), not in the in-memory queue.
    - If an owner pin exists for the verse (step 4), a first manifest whose `created_by`
-     differs is Denied.
+     differs is **Deferred `Manifest`** (critic tick 8, AC-43(3) — supersedes the earlier
+     "Denied" default: still never applied, but retried, consistent with "every other table is
+     Deferred Manifest" above).
    - Without a pin it is trust-on-first-use (TOFU), as today; this is a documented residual
      for relays (§6).
+   - **(Critic tick 8, AC-44(b).)** A pre-manifest `canon_device_enrolment` row (no owner known
+     yet) is also `Deferred Manifest`, not left unfloored forever — it applies once the
+     manifest lands and the floor (RP-3 step 5) can be evaluated.
 4. **Invite owner pin.**
    - `VerseInvite` gains `owner_did`, inside the signed canonical bytes.
    - `generate_verse_invite_handler` fills it from `verse.created_by`.
@@ -783,6 +902,27 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
      `Parent`. `canon_device_enrolment` is principal-keyed and verse-agnostic, so it is exempt
      from confinement (CDL-W4 §8 assumption); it stays verify-first.
    - A parent unknown locally means Deferred `Parent`. A parent in another verse means Denied.
+   - **(Critic tick 8, AC-43(1)-(4) — `r5_referential_confinement` must be three-valued, not
+     boolean.)** `node_is_in_petal`, `asset_anchored_to_petal`, `fetch_format`,
+     `asset_has_content_type` and `payload_in_petal` each conflate "known foreign/mismatched"
+     with "unknown locally" behind one `Option<String>`/boolean return. Split every helper into
+     three outcomes:
+     1. **Known-ok** — the parent exists locally and is in this verse;
+     2. **Known-foreign-or-mismatched** — the parent exists locally and is NOT in this verse (or
+        the row's shape otherwise mismatches it) → **Denied**;
+     3. **Unknown** — no local row for the parent yet → **Deferred `Parent{table, id}`**.
+   - Add wait reasons and retry triggers for `device_format` (verse, format_id), `asset`
+     (asset_id) and `device_payload` (payload_id), in addition to the existing `node` retry
+     trigger — so a `device_payload` before its `device_format`, a `device_payload` before its
+     `asset`s, and an `iot_reading` before its `device_payload` are deferred and applied, not
+     denied (the W4 residuals this closes).
+   - State the gate order explicitly: verse id check → enrolment verify (RP-3 step 5) →
+     Manifest wait (step 3 above) → confinement (this step) → role gate (step 6 below).
+   - Tests: `a_device_payload_before_its_format_is_deferred_then_applied`,
+     `a_device_payload_before_its_assets_is_deferred_then_applied`,
+     `a_reading_before_its_payload_is_deferred_then_applied`, and
+     `a_payload_naming_a_known_foreign_asset_is_denied_not_deferred` (the known-foreign case
+     stays Denied, never Deferred).
 6. **Scope-precise role resolution.** Resolve the author's role at the row's deepest scope
    (`build_scope(verse, fractal, petal)`). Verse-level Editors still pass because
    `resolve_role` walks up the chain. Over the §2.2 cache, this is `role_at`, the same function
@@ -802,6 +942,19 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
    "SetPetalTerrain")` before the strict-shape check and before the op-log entry is built. The
    `DbCommand::SetPetalTerrain` dispatch site picks up the caller's identity/auth the same way
    the render-distance command already does.
+8. **(Critic tick 8, AC-46 — a stale API token must not outrun a remote demotion.)** API writes
+   act on the token's `max_role` (`lib.rs:223-231,:260`; `fe-api/src/endpoint.rs:49-53`), capped
+   only at mint (`handlers/api_token.rs:55-69`) and living up to 30 days. Peers judge the node
+   DID's converged role via A3. Once RP introduces remote demotion, a demoted node's API keeps
+   writing rows that apply locally and that every peer defers — silent divergence (the existing
+   C8 test only covers a Local Viewer; an API-path `SetPetalTerrain` diverges the same way; the
+   device/IoT doors have no DB-side role check at all, `lib.rs:1494-1524`). **Default (record in
+   RUNBOOK §4):** for replicated writes, the effective API role is
+   `min(token max_role, role_at(local_did, scope))`, applied by one helper used by
+   `lifecycle_auth_context` (Identified) and every replicated-write door (`InsertReadings`,
+   `InsertDevicePayloads`, `RegisterDeviceFormat`, `SetPetalTerrain`, `SetPetalRenderDistance`).
+   Test: `an_api_token_minted_before_the_nodes_demotion_cannot_write_after_it`. Reversal: cheap
+   (drop the cap).
 
 **Invariants:**
 - §geometry-inserts (strip, then cast).
@@ -836,6 +989,89 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
   (AC-21(d)): a Viewer-scoped caller's local `SetPetalTerrain` returns the `authorize_edit`
   error and the petal row's `terrain` column is unchanged — no op-log entry, no replication
   send.
+- **(critic tick 8, AC-43)** `a_device_payload_before_its_format_is_deferred_then_applied`,
+  `a_device_payload_before_its_assets_is_deferred_then_applied`,
+  `a_reading_before_its_payload_is_deferred_then_applied`, and
+  `a_payload_naming_a_known_foreign_asset_is_denied_not_deferred` (three-valued confinement).
+- **(critic tick 8, AC-46)** `an_api_token_minted_before_the_nodes_demotion_cannot_write_after_it`:
+  a token minted while its node held Manager, after the node is demoted to Viewer, fails its
+  next replicated write with the `min(token max_role, role_at)` cap.
+
+### RP-4b: STREAMED-TERRAIN-PIN · M · opus (critic tick 8, AC-47 — promotes §8 "Tick 5" C10 into a scheduled slice)
+
+**Owned files:**
+- `fractalengine/src/terrain_bridge.rs` (`drive_streamed_tilesets` assembles the pin chain at
+  `~:1312-1321` — the petal-authored source is inserted here, between installed and TOFU)
+- `fe-terrain/src/petal_binding.rs` (`terrain_config_from_petal_json`)
+- `fe-terrain/src/config.rs` (`TerrainConfig`)
+- `fe-ui/src/plugin.rs` (`tileset_to_terrain_json`)
+- the fe-api terrain validator (DEC-C22 strictest reader)
+- `fe-database/src/handlers/replicated_row.rs` (`is_valid_inbound_petal_terrain`: add `did:key`
+  grammar validation for the new publisher-pin field)
+- `fe-terrain/src/tiles/streamed.rs` — **no change expected**: W2b (`474ab9b`) already threads
+  `pin` through `from_meta_json`/`from_header_doc`.
+
+**Steps:**
+1. W2b F1 moved streamed-meta verification off the main thread and pins to a locally installed
+   publisher. This slice supplies the remaining pin source: a publisher DID carried in the
+   Editor-authored petal terrain row, which needs RP-4's Editor+ gate on
+   `set_petal_terrain_handler` (§3 RP-4 step 7) to be trustworthy before a streamed
+   (never-installed) tileset can pin to it.
+2. **Precedence (critic tick 8, AC-47 default — record in RUNBOOK §4 now):** installed >
+   petal-authored > TOFU. A petal-authored pin REPLACES a recorded first-contact TOFU pin;
+   TOFU never overrides a petal-authored pin.
+3. **(Decision carried from critic tick 6, AC-31, defaulted here.)** The streamed path records
+   no TOFU pin of its own today — the W2b reviewer's unfixed LOW notes that with nothing
+   installed or known locally, the first header wins and a later different-publisher header in
+   the same session is also accepted. **Default: record the first-contact pin** in
+   `KnownTilesetPublishers` (symmetric with the installed path's TOFU). Reversal: drop the
+   recorded pin and rely only on the petal-authored pin (cheap — delete the write, keep the
+   read).
+4. Validate the publisher-pin field's `did:key` grammar in `is_valid_inbound_petal_terrain`
+   (house rule: strictest reader) — a malformed pin is Denied, not silently ignored.
+
+**Gate:** the workspace triple + feature matrix (header), and this slice additionally runs the
+`fe-terrain` `fetch,render` feature combination, since it touches the streamed-tileset path.
+
+**Flow tests:**
+- `a_streamed_tileset_signed_by_a_publisher_other_than_the_petal_maps_pin_is_refused` (the named
+  acceptance test from critic tick 5).
+- `a_second_streamed_publisher_for_the_same_id_is_refused_in_session` (first-contact TOFU pin).
+- `a_petal_authored_pin_overrides_an_earlier_first_contact_tofu_pin` (AC-47 precedence).
+- `an_inbound_petal_terrain_with_a_malformed_publisher_pin_is_denied` (AC-47, did:key grammar).
+
+**Threat matrix additions (RP-9):** T24 (a streamed publisher other than the petal pin), T25
+(first-contact TOFU race — a second publisher's header in the same session).
+
+### RP-4s: DB-plane SECURITY review-and-fix · M · opus (critic tick 8, AC-41; fresh context, over RP-0..RP-4b, before RP-5)
+
+**Owned files:** any file touched by RP-0..RP-4b, with fixes only (a reviewer fixes its own
+findings, per the standing rule), plus
+`conductor/tracks/role_propagation_20261013/review-rp4s.md` (a one-line verdict and findings
+list; a track-local record, not a report file for the parent).
+
+**Why a review here, not only at RP-9.** The plan originally had ONE review (RP-9) after every
+build slice, with no correctness pass. W4 (CDL-SPEC10) needed three reviews — secA caught 2
+MANDATORY authz findings, secB 2 HIGH functional findings, and the correctness pass a HIGH that
+both security passes missed (every unlinked `iot_reading` insert would have failed). RP rewrites
+the A3 gate for every replicated table, and tests run only at the campaign-end sweep, so a
+functional break introduced here would silently underlie RP-5..RP-8 before anything catches it.
+
+**Steps:** Run `/security-review` scoped to the RP-0..RP-4b diff. It must try to break:
+- the A3 gate rewrite for every table (`role`, `device_format`, `device_payload`, `asset`,
+  `iot_reading`, `node`, `petal`, `fractal`);
+- the three-valued confinement split (AC-43) — that Known-foreign-or-mismatched never leaks
+  into Deferred, and Unknown never leaks into Denied;
+- the enrolment floor and its Deferred `AuthorRole` / Deferred `Manifest` split (AC-44);
+- the AC-42 durable re-emit (that it cannot be used to replay a stale grant past a later
+  revocation);
+- the AC-46 API-token cap (that it is applied on every replicated-write door, not just the
+  ones named);
+- the migration's scope confinement (AC-45) — that it cannot be tricked into touching an
+  interim `VERSE#<hex>` row.
+
+Fix any finding directly (reviewer fixes its own findings, standing rule). Record a one-line
+verdict in `review-rp4s.md` and mirror it into RUNBOOK §2's review ledger.
 
 ### RP-5: sync-plane role view and gates · L · sonnet (opus if the quarantine gets hairy)
 
@@ -1013,6 +1249,9 @@ Add `the_responder_answers_an_unknown_ledger_shard` (the safe direction).
 - `fe-test-harness/src/scenarios/invite_flow.rs`
 - `fe-test-harness/src/main.rs` (register)
 - `fe-test-harness/src/AGENTS.md`
+- **(Critic tick 8, AC-48.)** `README.md` and `conductor/final-sweep-manifest.md` — this slice
+  adds the harness's 18th scenario (17→18) and both docs must say so before the final sweep
+  runs against them.
 
 **Flow scenarios** (real loopback transport):
 - **`role_propagation`** (three peers; alice is the owner):
@@ -1039,8 +1278,13 @@ Add `the_responder_answers_an_unknown_ledger_shard` (the safe direction).
 
 ### RP-9: SECURITY review-and-fix · M · opus (fresh context; a separate pass that refutes rather than confirms)
 
-**Owned files:** any file touched by RP-1..RP-8, with fixes only (a reviewer fixes its own
-findings, per the standing rule), plus
+**Scope (critic tick 8, AC-41):** every file touched by RP-0..RP-8, including RP-4b. This is
+the sync-plane + cross-plane security pass; RP-4s already covers the DB-plane slices
+(RP-0..RP-4b) in isolation, so this pass's job is cross-plane interaction and anything RP-5..RP-8
+introduce.
+
+**Owned files:** any file touched by RP-0..RP-8 (incl. RP-4b), with fixes only (a reviewer fixes
+its own findings, per the standing rule), plus
 `conductor/tracks/role_propagation_20261013/review-rp9.md` (a one-line verdict and findings
 list; this is a track-local record, not a report file for the parent).
 
@@ -1075,11 +1319,17 @@ fails if its guard is removed; the reviewer adds any that are missing.
 | T15 | Unauthorized creator copy injected into query results | merge rejects sub-Editor unexpected answerers (at the shard's petal scope) | RP-6 |
 | T16 (critic) | Cross-verse device-payload / asset / device-format rows (tables from CDL-SPEC10 A3) | shared confinement resolver; Manager+ on `device_format` | SPEC10 A3, RP-4 |
 | T17 (critic) | Enrolment branch bypassed or deferred by the new gates | W4-8 branch first, verify-before-anything | RP-3, RP-4 |
-| T18 (critic) | Canonical interim authority loses the owner after the cache rewrite | `DurableAuthorizationView` derives the owner from `created_by` | RP-2 |
+| T18 (critic tick 8, AC-45 — replaces the earlier "canonical interim authority loses the owner" row, whose premise was false) | Migration or `rematerialize` touches an interim `VERSE#<hex>` authority row | migration and `rematerialize` only touch rows whose scope `parse_scope`s to the verse's ULID; interim rows are structurally out of reach | RP-2 |
 | T19 (R7) | A Manager grants above or beside their own subtree (enclosing fractal or verse, sibling petal), or grants Owner | `authority = role_at` at the target scope (maximum over the scope and its ancestors); `owner` structurally denied | RP-1, RP-2, RP-3 |
 | T20 (R7) | A lower-scope Manager demotes a wider-scoped peer inside their subtree with an explicit lower grant that shadows inheritance | Managers only raise: Manager `none` has no effect, and there is no non-raising cache row | RP-1, RP-5 parity |
 | T21 (R7) | A verse Manager undoes the owner's carve-out by appointing a petal Manager where the owner pinned them below Manager | owner pins cut the authority walk | RP-1 |
 | T22 (R7) | A held role statement is lost (restart, overflow, channel drop), so the final role set depends on delivery order | durable `role_statement_pending` + the partition run on every authority change + startup repartition; sync-plane re-read by author | RP-1, RP-3, RP-5 |
+| T23 (critic tick 8, AC-42) | A local grant or revocation is never published (replica closed, or a pending-write flood evicts it) | startup + replica-open durable re-emit of every `role_grant` row whose `grantor_did == local_did` | RP-2 |
+| T24 (critic tick 8, AC-47) | A streamed (never-installed) tileset's meta is signed by a publisher other than the one the petal's terrain row names | `is_valid_inbound_petal_terrain` `did:key` grammar check; petal-authored pin overrides TOFU | RP-4b |
+| T25 (critic tick 8, AC-47) | First-contact TOFU race: a second, different publisher's header for the same streamed id arrives in the same session | recorded first-contact pin in `KnownTilesetPublishers`; a later different publisher is refused | RP-4b |
+| T26 (critic tick 8, AC-46) | A stale API token (minted before a node's remote demotion) keeps writing replicated rows peers defer | effective API role = `min(token max_role, role_at(local_did, scope))` on every replicated-write door | RP-4 |
+| T27 (critic tick 8, AC-44) | Enrolment floor order-dependence: a floor failure is wrongly Denied instead of Deferred, or a pre-manifest enrolment is never retried | floor failure → Deferred `AuthorRole`; pre-manifest enrolment → Deferred `Manifest`; signature/self-authorship failures stay Denied | RP-3, RP-4 |
+| T28 (critic tick 8, AC-50) | Blob reach by known hash: an inbound row names any `content_hash` and `/assets/by-id` serves it to anyone who asks | **No guard yet — verdict only.** Ledger row BLOB-HASH-CAPABILITY; trigger = a membership-keyed filter for all hashes, or namespace rotation. Not counted as fixed by C9 | — (recorded, not fixed) |
 
 The review must also challenge:
 - whether the promote/demote worklist or the sync re-read can loop or amplify. The expected
@@ -1092,6 +1342,21 @@ The review must also challenge:
 - whether the elevated API or raw query can write `role_grant` or `role_statement_pending`;
 - that neither role table enters fe-api's `/query` `ALLOWED_TABLES` allowlist
   (`fe-api/src/query_guard.rs:36`; `role` is not on it either). Record the verdict.
+
+### RP-9b: correctness review-and-fix · M · opus (critic tick 8, AC-41; `/code-review high`, before RP-10)
+
+**Owned files:** any file touched by RP-0..RP-9, with fixes only (reviewer fixes its own
+findings), plus `conductor/tracks/role_propagation_20261013/review-rp9b.md` (one-line verdict +
+findings list; track-local record, not a report file for the parent).
+
+**Why.** RP-9 is a security pass; it is not scoped or incentivised to catch a purely functional
+regression the way W4's dedicated correctness review caught "every unlinked `iot_reading` insert
+would fail" — a bug neither of W4's two security passes found. RP rewrites the A3 gate for every
+replicated table and the settlement/responder paths; a functional break of that shape is exactly
+the kind this pass exists to catch before the campaign-end sweep is the first thing to notice it.
+
+**Steps:** run `/code-review high` (opus) over the whole track's diff (RP-0..RP-9). Record a
+one-line verdict in `review-rp9b.md` and mirror it into RUNBOOK §2's review ledger.
 
 ### RP-10: docs consolidation · S · haiku
 
@@ -1286,3 +1551,21 @@ Both logged against `.omc/accountability/tick-20261014-0149.md` AC-21(d) and AC-
 | C10 | New slice, scheduled after RP-4: **STREAMED-TERRAIN-PIN** (AC-24 residual (3) / AC-23(a), `.omc/accountability/tick-20261014-0722.md`). Owned files: ~~`fe-terrain/src/tiles/streamed.rs` (`from_header_doc` pin threading only — the worker-thread move itself is W2b F1, which this slice builds on)~~ `fe-terrain/src/tiles/streamed.rs` — **no change expected**, W2b (`474ab9b`) already threads `pin` through `from_meta_json`/`from_header_doc`; `fractalengine/src/terrain_bridge.rs` (`drive_streamed_tilesets` assembles the pin chain at `~:1312-1321` — the petal-authored source is inserted here, between installed and TOFU); `fe-terrain/src/petal_binding.rs` (`terrain_config_from_petal_json`); `fe-terrain/src/config.rs` (`TerrainConfig`); `fe-ui/src/plugin.rs::tileset_to_terrain_json`; fe-api terrain validation (DEC-C22 strictest reader). W2b F1 moves streamed-meta verification off the main thread and pins to a locally installed publisher; this slice supplies the remaining pin source — a publisher DID carried in the Editor-authored petal terrain row — which needs RP-4's Editor+ gate on `set_petal_terrain_handler` (§3 RP-4 step 7) to be trustworthy before a streamed (never-installed) tileset can pin to it. **Decision item (critic tick 6, AC-31):** the streamed path records no TOFU pin of its own — the W2b reviewer's unfixed LOW notes that with nothing installed or known locally, the first header wins and a later different-publisher header in the same session is also accepted. Decide: record a streamed-verdict pin in `KnownTilesetPublishers` on first contact (symmetric with the installed path's TOFU), or rely solely on the petal-authored pin and document why no streamed-side TOFU pin is needed. **Default: record the first-contact pin**; if chosen, add the test `a_second_streamed_publisher_for_the_same_id_is_refused_in_session`. Reversal: drop the recorded pin and rely only on the petal-authored pin (cheap — delete the write, keep the read). Named test: `a_streamed_tileset_signed_by_a_publisher_other_than_the_petal_maps_pin_is_refused`. | scheduled deliverable (depends on RP-4) |
 
 Logged against `.omc/accountability/tick-20261014-0722.md` AC-24 residual (3) and AC-23(a).
+
+### Tick 8 (2026-10-15) — source: critic tick 8
+
+| # | Change | Class |
+|---|---|---|
+| C11 | The plan had ONE review (RP-9) after all build slices, and no correctness pass — W4 needed three. **RP-4s** (DB-plane security review-and-fix, fresh context, over RP-0..RP-4b) added before RP-5; **RP-9** stays the sync-plane + cross-plane security review with its threat matrix; **RP-9b** (correctness review-and-fix, `/code-review high`) added before RP-10. Each records a verdict row (RUNBOOK §2). | missing review coverage (AC-41) |
+| C12 | A local role grant/revocation published only through `replicate_row` can be lost if the verse's replica is closed, or evicted by a pending-writes flood — never reaching any peer. **RP-2** gets a durable re-emit step (DB startup + replica open, re-emits every `role_grant` row whose `grantor_did == local_did`) and two tests. T23 added. | missing durability guard (AC-42) |
+| C13 | `r5_referential_confinement`'s helpers conflate "known foreign/mismatched" and "unknown locally" behind one boolean/`Option<String>`. **RP-4** splits every helper into three outcomes (Known-ok / Known-foreign-or-mismatched → Denied / Unknown → Deferred `Parent{table,id}`), adds wait reasons for `device_format`/`asset`/`device_payload`, states the gate order, and converts AC-34's pre-manifest Deny to Deferred `Manifest`. Four new tests. | conflated validity states (AC-43) |
+| C14 | The enrolment floor (verse-scope `resolve_role`) can never fire for a petal-scoped member under R7 subtree semantics, and a pre-manifest enrolment skipped the floor entirely. **RP-3**: a floor failure is Deferred `AuthorRole` (not Denied); a pre-manifest enrolment is Deferred `Manifest`; membership = `EffectiveRoles::has_any_role` (RP-1, AC-44c). Supersedes the W4 plan §9 "never `Deferred AuthorRole`" wording while keeping its intent. Test renamed. T27 added. | enrolment floor order-dependence (AC-44) |
+| C15 | **C3's premise was false.** The interim authority keys `VERSE#<hex>[-PETAL#<hex>]` rows directly, deliberately not `build_scope`'s string, and was never watching `role`/`role_grant` — deriving the owner inside `DurableAuthorizationView::load` is a SPEC-2 concern, out of RP's scope. **RP-2** step 9 (ex-step 8), its test and T18 replaced: migration/`rematerialize` touch only rows whose scope `parse_scope`s to the verse's ULID, never an interim `VERSE#<hex>` row. RP-2 owns the seed inventory; `seed_join_verse` citation corrected; `admin.rs` membership decided. **C3 superseded by C15 (false premise).** | cross-plan regression, corrected (AC-45) |
+| C16 | An API token's `max_role` is capped only at mint and lives up to 30 days; RP introduces remote demotion, so a demoted node's API keeps writing rows every peer defers. **RP-4** adds a new step: effective API role = `min(token max_role, role_at(local_did, scope))`, applied by one helper on every replicated-write door. Test + T26 added. | stale-token divergence (AC-46) |
+| C17 | C10 (STREAMED-TERRAIN-PIN) existed only as a §8 table row, with no slice id or position in §3. Promoted to **RP-4b** (opus, after RP-4, before RP-4s): precedence installed > petal-authored > TOFU (a petal-authored pin replaces a recorded TOFU pin, never the reverse); `is_valid_inbound_petal_terrain` gets `did:key` grammar validation; two new tests plus the two already named. T24/T25 added. | scheduled deliverable, now slotted (AC-47) |
+| C18 | The plan's own gate text ("cargo check + clippy on the crates it touched") contradicted AC-17/AC-19/AC-26, and the W4 script's `overrides` bypass pattern was never disclaimed. Plan header and spec.md's gate text replaced with the workspace triple + feature matrix + `gate_green` halt (no commit on red); the workflow prompt must never return a structured result while a cargo process it started is alive, and must retry once on exit `0xc0000142` with no other builder running; the gate script must not inherit a generic `overrides` bypass unless a user authorization is logged first. **RP-8** owns `README.md` + `conductor/final-sweep-manifest.md` (harness 17→18). | stale gate text + missing doc updates (AC-48) |
+| C19 | The B3 oversized-window split path (`Prepared::Oversized`) was implemented but never tested, and a non-object descriptor `schema` fell through to an untyped rejection. **RP-0** (new first slice, sonnet, same gate): the split-path flow test plus a typed `InvalidSchema` rejection and door-table row. | untested branch + typed-error gap (AC-49) |
+| C20 | secA's "blob reach by known hash" residual was routed to "the planned blob request filter" (C9), but C9's design only ever admitted tileset-root hashes — row and asset blobs stay open over `/assets/by-id`, which no ALPN filter sees. Honest disposition recorded: ledger row **BLOB-HASH-CAPABILITY**, trigger = a membership-keyed filter for all hashes or namespace rotation. Not counted as fixed by C9. T28 added as a recorded-not-fixed row. | mis-routed residual (AC-50) |
+| C21 | Bookkeeping: `metadata.json` partitions were stale at `877e801` (missing C3/C5/C8/C9/C10 files, `progress.open: 10`); spec scope/acceptance lacked C8/C9/C10 and the Deferred Parent/Manifest rules; the review ledger lacked W3b/tick 7/tick 8 rows; RUNBOOK §2 `:116` and the ledger's role_propagation row (`:83`) were stale; `accountability-log.md:268-269` mis-diagnosed the B2b DLL failure as concurrent cargo invocations (it was sequential; the real cause was resource pressure); the `seal_observations` cutover precondition was unrecorded; RP-1's tie-break uses canonical-payload-byte order (no hash dependency), and property tests stay seeded/hand-rolled unless a slice adds `fe-policy/Cargo.toml` + `Cargo.lock` for `proptest`. Docs pass (this commit). New ledger row **OBS-SEAL-FIXTURE-SEAMS**. | bookkeeping + dependency note (AC-51) |
+
+Logged against `.omc/accountability/tick-20261015-0908.md`.

@@ -109,7 +109,22 @@ Two consequences of combining that rule with R7's subtree authority are made exp
    answerers below Editor.
 7. **Responder filtering re-enabled** as `hosted ∪ held ∪ unknown-ledger`, never hosted-only.
    The pinning test flips (plan RP-7).
-8. **A dedicated security review-and-fix slice** works through the threat matrix (plan RP-9).
+8. **Three dedicated review-and-fix slices** (critic tick 8, AC-41): RP-4s (DB-plane security,
+   fresh context, over RP-0..RP-4b), RP-9 (sync-plane + cross-plane security, the full threat
+   matrix), and RP-9b (correctness, `/code-review high`, over the whole track). Each records a
+   verdict row.
+9. **Three W4-close deliverables folded in at critic tick 8:**
+   - **C8/C9 carryover (tick 4/5):** `set_petal_terrain_handler` gets the `authorize_edit` gate
+     (RP-4 step 7) and the blob-ALPN request filter is keyed on RP's role view (RP-5 step 6).
+   - **C10 → RP-4b, STREAMED-TERRAIN-PIN:** a streamed (never-installed) tileset's meta pins to
+     a publisher DID carried in the Editor-authored petal terrain row, with precedence
+     installed > petal-authored > TOFU; a petal-authored pin replaces a recorded TOFU pin, never
+     the reverse.
+   - **Deferred Parent / Deferred Manifest rules (AC-43/AC-44):** a content row whose parent is
+     not yet known locally, or whose author's role has not yet converged, is **Deferred** — not
+     Denied — and is retried automatically once the missing parent or role lands. A pre-manifest
+     `canon_device_enrolment` row is Deferred `Manifest`; an enrolment floor failure is Deferred
+     `AuthorRole`; a known-foreign-or-mismatched parent stays Denied.
 
 ## Acceptance (from the ledger and the decisions)
 
@@ -132,10 +147,15 @@ Two consequences of combining that rule with R7's subtree authority are made exp
     partition;
   - held statements survive a restart and a hostile multi-author flood (RP-3 tests);
   - implicit petal-owner rows are gone after migration (RP-2 test).
-- **Threat matrix** (plan §RP-9, T1–T22): every row has a test that fails if its guard is
-  removed.
-- `cargo check` and clippy stay clean after every slice. One full test, e2e and harness sweep
-  runs at campaign end (standing rule: no tests until the code is complete).
+- **Threat matrix** (plan §RP-9, T1–T28): every row has a test that fails if its guard is
+  removed (T28 is a recorded-not-fixed verdict, not a test — see Out of scope).
+- **The gate (critic tick 8, AC-48), every slice:** `cargo check -j4 --workspace --tests`;
+  `cargo +1.99.0 clippy -j4 --workspace --all-targets --keep-going -- -D warnings`;
+  `cargo +1.99.0 fmt --all -- --check`; plus the feature matrix (`check` + `clippy --all-targets
+  -D warnings` for `fe-query --features parquet`, `fe-format --no-default-features`,
+  `fe-terrain --features fetch,render`, `fe-hexon --all-features`). `gate_green=false` → no
+  commit, halt. One full test, e2e and harness sweep (18 scenarios) runs at campaign end
+  (standing rule: no tests until the code is complete).
 
 ## Out of scope
 
@@ -146,3 +166,8 @@ The full justification is in plan §6, the deferral audit.
 - Docs-ALPN peer admission and namespace rotation (needs a decision).
 - Scoped-invite redemption and the FR-4 role UI (D-32, user-scheduled after this track).
 - Pinning the relay's bootstrap owner (D-23 relay host undecided).
+- Blob reach by known hash (T28, critic tick 8 AC-50): an inbound row naming any `content_hash`
+  can have it served by `/assets/by-id` to anyone who asks; no ALPN filter sees that route.
+  C9's blob-ALPN filter admits only tileset-root hashes. Recorded as ledger row
+  BLOB-HASH-CAPABILITY, not fixed by this track; trigger = a membership-keyed filter for all
+  hashes, or namespace rotation.

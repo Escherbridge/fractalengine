@@ -268,6 +268,8 @@ W4's Phase A security review as MANDATORY** (block at the top of the SPEC-10 pla
   all exit=0; `check-workspace exit=101` was `STATUS_DLL_INIT_FAILED (0xc0000142)` — a Windows process-launch
   failure under resource pressure (689 processes, 2.4 GB free), compounded by the script running check and
   clippy concurrently. The orchestrator re-ran `cargo check -j4 --workspace --tests` as the sole builder → exit 0.
+- **2026-10-15, Correction (critic tick 8):** `gate.sh` ran sequentially; the concurrent-looking PIDs were
+  cargo-clippy's own child `cargo check`; the cause was resource pressure (689 processes, 2.4 GB free).
 - **B2b's code is UNCOMMITTED in the working tree** (replay.rs, rebuild.rs, canon_log/AGENTS.md,
   materialize/AGENTS.md, observation-plane.md errata, new canon_log_replay_payload_facts_test.rs).
 - The orchestrator's attempt to commit it and resume W4 past the halt (overrides hook) was DENIED by the
