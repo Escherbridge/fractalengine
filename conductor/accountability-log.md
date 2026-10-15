@@ -276,3 +276,6 @@ W4's Phase A security review as MANDATORY** (block at the top of the SPEC-10 pla
   A4 `f6e7af2`, A5 `f0b736c`, A6 `3788a6b`, B1 `2515ab9`, B2 `f7f9610`. Remaining: B2b, B3, Phase A + B
   security reviews (incl. 2 mandatory A3 authz findings), correctness review, B4 docs; then role propagation,
   the final sweep, push.
+- **2026-10-15: the user authorized "Commit B2b and resume from B3".** B2b committed by the orchestrator as
+  `f4df2a3` (message records the authorization and the gate evidence); W4 resumed from run `wf_22ded023-74a`
+  with B2b's report injected (A2..B2 replay from cache; B3 + reviews + docs run live).
