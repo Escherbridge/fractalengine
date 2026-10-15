@@ -1,5 +1,5 @@
 //! SPEC-4 §6 rebuild: empty-state and verified-checkpoint-plus-tail, over the same replay.
-//! Rationale: `canon_log/AGENTS.md` §rebuild-and-checkpoints.
+//! Rationale: `canon_log/AGENTS.md` §rebuild-and-checkpoints and §replay-payload-facts.
 
 use async_trait::async_trait;
 use fe_canonical_log::checkpoint::{
@@ -12,12 +12,15 @@ use fe_canonical_log::envelope::{Hash32, Scope};
 use fe_canonical_log::frontier::SortedFrontier;
 use fe_canonical_log::materialize::checkpoint_binding::CheckpointBinding;
 use fe_canonical_log::materialize::identity::ProjectionIdentity;
-use fe_canonical_log::materialize::traits::CausalMaterializer;
+use fe_canonical_log::materialize::traits::{CausalMaterializer, ProjectionMutation};
 
 use crate::canon_log::append_store::{SurrealVerifiedLogStore, SurrealVerseDagView};
 use crate::canon_log::apply_marker_store::SurrealApplyMarkerStore;
-use crate::canon_log::replay::{replay_to_frontier, ReplayError, ReplayOutcome};
-use crate::canon_log::StorageError;
+use crate::canon_log::replay::{
+    load_closure, replay_to_frontier_with_facts, NoReplayPayloadFacts, PayloadFactsGap,
+    ReplayError, ReplayFactsLookup, ReplayOutcome, ReplayPayloadFacts,
+};
+use crate::canon_log::{op_id_to_hex, StorageError};
 
 /// The projection tables a materializer owns, as the rebuild path needs to see them.
 ///
@@ -168,6 +171,17 @@ pub enum RebuildError {
     /// The materializer's own projection surface failed.
     #[error("projection surface failed: {0}")]
     Surface(String),
+    /// Withheld before any pass: resetting would discard applied rows whose own payload facts
+    /// this process can no longer re-derive (`canon_log/AGENTS.md` §replay-payload-facts).
+    /// Nothing was cleared, replayed, or recorded.
+    #[error(
+        "rebuild withheld: {} applied row(s) could not be re-derived from verified history here",
+        .unrederivable.len()
+    )]
+    WouldDiscardUnrederivableRows {
+        /// Each applied operation whose reduction needs facts it cannot have, sorted by id.
+        unrederivable: Vec<(Hash32, PayloadFactsGap)>,
+    },
 }
 
 /// What the caller is rebuilding, and what it currently believes.
@@ -185,8 +199,38 @@ pub struct RebuildRequest<'a> {
     pub checkpoint: Option<&'a AdmittedCheckpoint>,
 }
 
+/// [`rebuild_projection_with_facts`] with the legacy [`NoReplayPayloadFacts`] source: every
+/// reduction gets `None` for payload facts, exactly as before CDL-SPEC10 B2b.
+pub async fn rebuild_projection(
+    store: &SurrealVerifiedLogStore,
+    markers: &SurrealApplyMarkerStore,
+    materializer: &dyn CausalMaterializer,
+    surface: &dyn ProjectionSurface,
+    dag_view: &mut SurrealVerseDagView,
+    request: RebuildRequest<'_>,
+) -> Result<RebuildReport, RebuildError> {
+    rebuild_projection_with_facts(
+        store,
+        markers,
+        materializer,
+        surface,
+        dag_view,
+        request,
+        &NoReplayPayloadFacts,
+    )
+    .await
+}
+
 /// Rebuilds a projection from an admitted checkpoint when it reproduces, and from empty state
-/// whenever it does not.
+/// whenever it does not, re-deriving each operation's own payload facts from `facts`.
+///
+/// When `facts` re-derives, the rebuild first checks that every APPLIED operation in the
+/// closure could be reduced again: an applied row whose reduction needs its own payload facts
+/// and whose facts `facts` cannot re-derive (a crypto-shredded scope key, say) would be lost
+/// for good by the empty-state reset, so the whole rebuild is withheld with
+/// [`RebuildError::WouldDiscardUnrederivableRows`] before anything is touched. A pre-shred row
+/// is kept, never silently dropped and never `Excluded` (`canon_log/AGENTS.md`
+/// §replay-payload-facts).
 ///
 /// §6.2 makes a checkpoint an accelerator and never an authority, and this function spends that
 /// sentence twice. First, an unsigned or wrongly-bound checkpoint cannot reach it at all: the
@@ -207,24 +251,42 @@ pub struct RebuildRequest<'a> {
 /// Only the from-empty pass records it. A checkpoint-accelerated pass replayed a tail on top of
 /// rows THIS process did not derive from verified operations, and §6.2 forbids presenting a
 /// signature — however good — as the replay this crate did not run.
-pub async fn rebuild_projection(
+pub async fn rebuild_projection_with_facts(
     store: &SurrealVerifiedLogStore,
     markers: &SurrealApplyMarkerStore,
     materializer: &dyn CausalMaterializer,
     surface: &dyn ProjectionSurface,
     dag_view: &mut SurrealVerseDagView,
     request: RebuildRequest<'_>,
+    facts: &dyn ReplayPayloadFacts,
 ) -> Result<RebuildReport, RebuildError> {
-    let mut refused_accelerator = None;
-    let mut accelerated: Option<(RebuildSource, ReplayOutcome, Hash32)> = None;
-
-    if let Some(checkpoint) = request.checkpoint {
-        let replay = replay_to_frontier(
+    // Before ANY pass, so a refused accelerator still leaves no trace when the reset is withheld.
+    if facts.rederives() {
+        let unrederivable = unrederivable_applied_rows(
             store,
             markers,
             materializer,
             request.identity,
             request.frontier,
+            facts,
+        )
+        .await?;
+        if !unrederivable.is_empty() {
+            return Err(RebuildError::WouldDiscardUnrederivableRows { unrederivable });
+        }
+    }
+
+    let mut refused_accelerator = None;
+    let mut accelerated: Option<(RebuildSource, ReplayOutcome, Hash32)> = None;
+
+    if let Some(checkpoint) = request.checkpoint {
+        let replay = replay_to_frontier_with_facts(
+            store,
+            markers,
+            materializer,
+            request.identity,
+            request.frontier,
+            facts,
         )
         .await?;
         let projection_root_hash = surface
@@ -270,12 +332,13 @@ pub async fn rebuild_projection(
         .map_err(|error| RebuildError::Surface(format!("{error:#}")))?;
     markers.clear_projection(request.identity).await?;
 
-    let replay = replay_to_frontier(
+    let replay = replay_to_frontier_with_facts(
         store,
         markers,
         materializer,
         request.identity,
         request.frontier,
+        facts,
     )
     .await?;
 
@@ -296,4 +359,61 @@ pub async fn rebuild_projection(
         projection_root_hash,
         replay_verified_recorded,
     })
+}
+
+/// Every operation in `frontier`'s closure whose apply marker records `applied` but whose
+/// reduction, handed no facts, asks for its own payload that `facts` cannot re-derive.
+///
+/// `reduce` is pure by contract (SPEC-4 §4), so asking it again with `None` is the exact test of
+/// "would an empty-state replay reproduce this row": a reduction that needs no facts answers
+/// the same with or without them and is never counted.
+async fn unrederivable_applied_rows(
+    store: &SurrealVerifiedLogStore,
+    markers: &SurrealApplyMarkerStore,
+    materializer: &dyn CausalMaterializer,
+    identity: &ProjectionIdentity,
+    frontier: &SortedFrontier,
+    facts: &dyn ReplayPayloadFacts,
+) -> Result<Vec<(Hash32, PayloadFactsGap)>, StorageError> {
+    let (present, _missing) = load_closure(store, frontier).await?;
+    let mut op_ids: Vec<Hash32> = present.keys().copied().collect();
+    op_ids.sort();
+
+    let mut unrederivable = Vec::new();
+    for op_id in op_ids {
+        if markers.disposition_of(identity, op_id).await?.as_deref() != Some("applied") {
+            continue;
+        }
+        let Some(bytes) = store.envelope_bytes(op_id).await? else {
+            return Err(StorageError::malformed(
+                "rebuild preflight",
+                format!("{} vanished from the verified log", op_id_to_hex(op_id)),
+            ));
+        };
+        if Hash32::of(&bytes) != op_id {
+            return Err(StorageError::malformed(
+                "rebuild preflight",
+                format!(
+                    "{} was substituted in the verified log",
+                    op_id_to_hex(op_id)
+                ),
+            ));
+        }
+        let ReplayFactsLookup::Unavailable {
+            ciphertext_hash,
+            gap,
+        } = facts.payload_facts(op_id, &bytes).await
+        else {
+            continue;
+        };
+        let without_facts = materializer.reduce(&present[&op_id], &bytes, None).await;
+        if matches!(
+            without_facts,
+            ProjectionMutation::ReferencedArtifactUnavailable { artifact_id }
+                if artifact_id == ciphertext_hash
+        ) {
+            unrederivable.push((op_id, gap));
+        }
+    }
+    Ok(unrederivable)
 }

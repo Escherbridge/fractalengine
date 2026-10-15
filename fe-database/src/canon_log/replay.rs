@@ -1,13 +1,19 @@
-//! SPEC-4 §4 deterministic causal replay against the durable apply markers.
-//! Rationale: `canon_log/AGENTS.md` §replay-eligibility.
+//! SPEC-4 §4 deterministic causal replay against the durable apply markers, with an optional
+//! replay-time payload facts source. Rationale: `canon_log/AGENTS.md` §replay-eligibility and
+//! §replay-payload-facts.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use async_trait::async_trait;
+use fe_canonical_log::compose::QuarantineReason;
 use fe_canonical_log::envelope::Hash32;
 use fe_canonical_log::frontier::SortedFrontier;
+use fe_canonical_log::materialize::errors::AdmissionOutcome;
 use fe_canonical_log::materialize::identity::ProjectionIdentity;
 use fe_canonical_log::materialize::ordering::{deterministic_causal_order, OrderingError};
-use fe_canonical_log::materialize::traits::{CausalMaterializer, VerifiedEnvelopeMeta};
+use fe_canonical_log::materialize::traits::{
+    verify_candidate, CandidateVerifier, CausalMaterializer, PayloadFacts, VerifiedEnvelopeMeta,
+};
 
 use crate::canon_log::append_store::SurrealVerifiedLogStore;
 use crate::canon_log::apply_marker_store::{
@@ -42,6 +48,168 @@ pub enum PendingReason {
         /// The substrate's own message.
         detail: String,
     },
+    /// The reduction needs the operation's OWN payload facts and the replay facts source could
+    /// not re-derive them (`canon_log/AGENTS.md` §replay-payload-facts).
+    ///
+    /// Distinct from [`Self::ReferencedArtifactUnavailable`] so a crypto-shredded scope key is
+    /// visible as such; like it, the marker does not move, any row already projected stays, and
+    /// the operation is never `Excluded`.
+    PayloadFactsUnavailable {
+        /// The payload ciphertext the operation's signed `PayloadRef` commits to.
+        ciphertext_hash: Hash32,
+        /// Why the facts could not be re-derived here.
+        gap: PayloadFactsGap,
+    },
+}
+
+/// Why a replay facts source could not re-derive an operation's own payload facts.
+///
+/// Every variant is an availability state of THIS process, never a decision about the
+/// operation, which was already admitted with valid facts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PayloadFactsGap {
+    /// No held scope key opens the payload: crypto-shredded (SPEC-5 §5.5.4) or never delivered.
+    ScopeKeyUnavailable,
+    /// The payload ciphertext is not in the local artifact store.
+    CiphertextUnavailable,
+    /// The verifier interprets no schema for this kind or `schema_hash` (not registered).
+    SchemaNotInterpreted,
+    /// The held bytes no longer authenticate or validate here; carries the verifier's reason.
+    PayloadNotVerifiable {
+        /// The verifier's own message.
+        detail: String,
+    },
+}
+
+/// What a [`ReplayPayloadFacts`] source answered for one operation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReplayFactsLookup {
+    /// The source does not re-derive facts (the legacy wrapper): `reduce` gets `None` and its
+    /// pre-B2b outcome stands unchanged.
+    NotConsulted,
+    /// The operation is in the no-payload form; there are no facts to derive.
+    NoPayload,
+    /// The operation's own decrypted, schema-validated facts, bound to its `op_id`.
+    Derived(PayloadFacts),
+    /// The facts exist in signed bytes but cannot be re-derived here.
+    Unavailable {
+        /// The payload ciphertext the operation's signed `PayloadRef` commits to.
+        ciphertext_hash: Hash32,
+        /// Why.
+        gap: PayloadFactsGap,
+    },
+}
+
+/// Where a replay pass gets each operation's own payload facts (CDL-SPEC10 B2b).
+///
+/// An implementation may only open the operation's OWN committed payload; it never reads a
+/// hexon, a statistics artifact, or an asset blob, so the G2 bright line still holds.
+#[async_trait]
+pub trait ReplayPayloadFacts: Send + Sync {
+    /// Whether this source re-derives facts at all; `false` keeps every pre-B2b behaviour,
+    /// including skipping the rebuild's re-derivability check.
+    fn rederives(&self) -> bool {
+        true
+    }
+
+    /// The facts of `op_id`, whose stored canonical bytes are `envelope_bytes`.
+    async fn payload_facts(&self, op_id: Hash32, envelope_bytes: &[u8]) -> ReplayFactsLookup;
+}
+
+/// The legacy source: no facts, ever. [`replay_to_frontier`] and `rebuild_projection` use it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NoReplayPayloadFacts;
+
+#[async_trait]
+impl ReplayPayloadFacts for NoReplayPayloadFacts {
+    fn rederives(&self) -> bool {
+        false
+    }
+
+    async fn payload_facts(&self, _op_id: Hash32, _envelope_bytes: &[u8]) -> ReplayFactsLookup {
+        ReplayFactsLookup::NotConsulted
+    }
+}
+
+/// Re-derives facts through a [`CandidateVerifier`]'s own `verify_payload`, with the
+/// ciphertext resolved from the verifier's store: for the durable verifier, the W4-7
+/// `SurrealArtifactStore` ciphertext, `SecretStoreScopeKeyCustody` key, and
+/// `RegisteredSchemaSet`.
+///
+/// The verifier is a snapshot of custody: build it after the last shred
+/// (`durable_candidate_verifier`, or `ComposedCandidateVerifier::new` over parts whose custody
+/// ran the shred), or a stale snapshot still holds the destroyed key.
+pub struct VerifierReplayFacts<'a, V: ?Sized> {
+    verifier: &'a V,
+}
+
+impl<'a, V: CandidateVerifier + ?Sized> VerifierReplayFacts<'a, V> {
+    /// Re-derives through `verifier`.
+    pub fn new(verifier: &'a V) -> Self {
+        Self { verifier }
+    }
+}
+
+#[async_trait]
+impl<V: CandidateVerifier + ?Sized> ReplayPayloadFacts for VerifierReplayFacts<'_, V> {
+    async fn payload_facts(&self, op_id: Hash32, envelope_bytes: &[u8]) -> ReplayFactsLookup {
+        // The mandatory ingress again: the facts must be bound to bytes that verify as `op_id`.
+        let candidate = match verify_candidate(envelope_bytes) {
+            Ok(candidate) if candidate.meta.op_id == op_id => candidate,
+            Ok(_) => {
+                return ReplayFactsLookup::Unavailable {
+                    ciphertext_hash: op_id,
+                    gap: PayloadFactsGap::PayloadNotVerifiable {
+                        detail: "stored bytes are not the requested operation".to_string(),
+                    },
+                }
+            }
+            Err(outcome) => {
+                return ReplayFactsLookup::Unavailable {
+                    ciphertext_hash: op_id,
+                    gap: PayloadFactsGap::PayloadNotVerifiable {
+                        detail: outcome.to_string(),
+                    },
+                }
+            }
+        };
+        let ciphertext_hash = candidate.envelope.unsigned.payload.ciphertext_hash;
+        let unavailable = |gap| ReplayFactsLookup::Unavailable {
+            ciphertext_hash,
+            gap,
+        };
+        match self.verifier.verify_payload(&candidate, None).await {
+            Ok(None) => ReplayFactsLookup::NoPayload,
+            // The same binding `admit_candidate_with_facts` enforces: never another op's facts.
+            Ok(Some(facts))
+                if facts.op_id == op_id && facts.schema_hash == candidate.meta.schema_hash =>
+            {
+                ReplayFactsLookup::Derived(facts)
+            }
+            Ok(Some(_)) => unavailable(PayloadFactsGap::PayloadNotVerifiable {
+                detail: "verifier returned facts bound to another operation".to_string(),
+            }),
+            Err(outcome) => unavailable(facts_gap(outcome)),
+        }
+    }
+}
+
+/// Maps a `verify_payload` refusal at replay onto the availability vocabulary.
+fn facts_gap(outcome: AdmissionOutcome) -> PayloadFactsGap {
+    match outcome {
+        AdmissionOutcome::AuthorizationEvidenceUnavailable { reason }
+            if matches!(reason.reason(), QuarantineReason::PayloadKeyUnavailable) =>
+        {
+            PayloadFactsGap::ScopeKeyUnavailable
+        }
+        AdmissionOutcome::OpaquePayload { .. } => PayloadFactsGap::CiphertextUnavailable,
+        AdmissionOutcome::UnknownKind { .. } | AdmissionOutcome::UnknownSchema { .. } => {
+            PayloadFactsGap::SchemaNotInterpreted
+        }
+        other => PayloadFactsGap::PayloadNotVerifiable {
+            detail: other.to_string(),
+        },
+    }
 }
 
 /// A selected head that cannot be resolved because its causal closure is incomplete.
@@ -91,19 +259,51 @@ pub enum ReplayError {
     Ordering(#[from] OrderingError),
 }
 
-/// Replays the causal closure of `frontier` into one projection, resumably.
+/// Replays the causal closure of `frontier` into one projection, resumably, handing every
+/// reduction `None` for payload facts ([`NoReplayPayloadFacts`]).
 ///
-/// Eligibility is read from the DURABLE apply markers, never from an in-process set: a replay
-/// interrupted halfway resumes from exactly where the markers say it stopped, and a child stays
-/// pending until its parents carry markers for this same materializer version (§4.2). Concurrent
-/// siblings are ordered by the §4.3 `(wall_ms, counter, author_public_key)` key, so the result
-/// does not depend on the order operations arrived in.
+/// Unchanged by CDL-SPEC10 B2b: a reduction that needs facts stays pending under
+/// [`PendingReason::ReferencedArtifactUnavailable`]. Use [`replay_to_frontier_with_facts`] to
+/// re-derive them.
 pub async fn replay_to_frontier(
     store: &SurrealVerifiedLogStore,
     markers: &SurrealApplyMarkerStore,
     materializer: &dyn CausalMaterializer,
     identity: &ProjectionIdentity,
     frontier: &SortedFrontier,
+) -> Result<ReplayOutcome, ReplayError> {
+    replay_to_frontier_with_facts(
+        store,
+        markers,
+        materializer,
+        identity,
+        frontier,
+        &NoReplayPayloadFacts,
+    )
+    .await
+}
+
+/// [`replay_to_frontier`], with each not-yet-processed operation's own payload facts taken
+/// from `facts` (`canon_log/AGENTS.md` §replay-payload-facts).
+///
+/// Facts are looked up only for operations about to be reduced; an already-marked operation
+/// is skipped before any lookup, so a row projected before a crypto-shred is never touched.
+/// When the reduction asks for its own payload (`ReferencedArtifactUnavailable` naming its own
+/// ciphertext) and `facts` answered `Unavailable`, the position stays pending under
+/// [`PendingReason::PayloadFactsUnavailable`], never `Excluded`.
+///
+/// Eligibility is read from the DURABLE apply markers, never from an in-process set: a replay
+/// interrupted halfway resumes from exactly where the markers say it stopped, and a child stays
+/// pending until its parents carry markers for this same materializer version (§4.2). Concurrent
+/// siblings are ordered by the §4.3 `(wall_ms, counter, author_public_key)` key, so the result
+/// does not depend on the order operations arrived in.
+pub async fn replay_to_frontier_with_facts(
+    store: &SurrealVerifiedLogStore,
+    markers: &SurrealApplyMarkerStore,
+    materializer: &dyn CausalMaterializer,
+    identity: &ProjectionIdentity,
+    frontier: &SortedFrontier,
+    facts: &dyn ReplayPayloadFacts,
 ) -> Result<ReplayOutcome, ReplayError> {
     let (present, missing) = load_closure(store, frontier).await?;
 
@@ -198,16 +398,20 @@ pub async fn replay_to_frontier(
             .into());
         }
 
-        // No replay-time decrypted-payload source exists yet, so no facts are passed; a
-        // reduction that needs them stays pending (`materialize/AGENTS.md` §payload-facts).
-        let mutation = materializer.reduce(&meta, &bytes, None).await;
+        // The operation's OWN payload facts, re-derived from bytes that hash to `op_id`
+        // (`materialize/AGENTS.md` §payload-facts); the legacy source answers `NotConsulted`.
+        let lookup = facts.payload_facts(op_id, &bytes).await;
+        let derived = match &lookup {
+            ReplayFactsLookup::Derived(payload_facts) => Some(payload_facts),
+            _ => None,
+        };
+        let mutation = materializer.reduce(&meta, &bytes, derived).await;
         let committable = match CommittableMutation::try_from_projection(&mutation) {
             Ok(committable) => committable,
             Err(NotCommittable::ReferencedArtifactUnavailable { artifact_id }) => {
-                outcome.pending.push((
-                    op_id,
-                    PendingReason::ReferencedArtifactUnavailable { artifact_id },
-                ));
+                outcome
+                    .pending
+                    .push((op_id, unavailable_reason(artifact_id, lookup)));
                 continue;
             }
         };
@@ -239,12 +443,27 @@ pub async fn replay_to_frontier(
     Ok(outcome)
 }
 
+/// The pending reason for a reduction that could not construct `artifact_id`: the facts gap
+/// when it asked for its own payload and the facts source said why it could not have it.
+fn unavailable_reason(artifact_id: Hash32, lookup: ReplayFactsLookup) -> PendingReason {
+    match lookup {
+        ReplayFactsLookup::Unavailable {
+            ciphertext_hash,
+            gap,
+        } if ciphertext_hash == artifact_id => PendingReason::PayloadFactsUnavailable {
+            ciphertext_hash,
+            gap,
+        },
+        _ => PendingReason::ReferencedArtifactUnavailable { artifact_id },
+    }
+}
+
 /// The admitted operations of a closure, and the ancestors that are not locally admitted.
-type CausalClosure = (HashMap<Hash32, VerifiedEnvelopeMeta>, HashSet<Hash32>);
+pub(crate) type CausalClosure = (HashMap<Hash32, VerifiedEnvelopeMeta>, HashSet<Hash32>);
 
 /// Walks `parents_of` from every selected head, returning what is locally admitted and what is
 /// not. A parent that cannot be read is absent, which halts its head rather than skipping it.
-async fn load_closure(
+pub(crate) async fn load_closure(
     store: &SurrealVerifiedLogStore,
     frontier: &SortedFrontier,
 ) -> Result<CausalClosure, StorageError> {

@@ -214,7 +214,8 @@ is sent, so a materializer cannot shadow the marker's own values.
 in topological order, then reduces in `deterministic_causal_order` — `(wall_ms, counter,
 author_public_key)` per §4.3 — so the result depends on the DAG and nothing else. Four
 insertion permutations of the same DAG produce the same projection root; that is
-`causal_and_concurrent_order_is_arrival_independent`.
+`causal_and_concurrent_order_is_arrival_independent`. Where each reduction's own payload facts
+come from on replay is §replay-payload-facts.
 
 Eligibility is read from the **durable marker**, not from an in-process set. That is what makes
 replay resumable: a pass interrupted halfway resumes exactly where the markers say it stopped,
@@ -266,6 +267,92 @@ so `rebuild_projection` is the only caller that can exist. **Only the from-empty
 it.** A checkpoint-accelerated pass replayed a tail on top of rows this process did not derive
 from verified operations, so presenting its frontier as replay-verified would be presenting a
 signature as a replay. The report says which happened in `replay_verified_recorded`.
+
+## §replay-payload-facts
+
+CDL-SPEC10 B2b, 2026-10-14, on the RUNBOOK §4 AC-33 default (owner post-review pending;
+reversal moderate: this section plus the `observation-plane.md` Errata). Ledger row
+`CDL-REPLAY-PAYLOAD-FACTS`.
+
+**The gap it closes.** `CausalMaterializer::reduce` takes the operation's own
+`Option<&PayloadFacts>` (`fe-canonical-log` `materialize/AGENTS.md` §payload-facts), but replay
+holds only stored envelope bytes. A payload-needing reduction handed `None` returns
+`ReferencedArtifactUnavailable` naming its own payload ciphertext, so the durable path could
+never project a kind-5 `observation_batch` reference row, and CDL-SPEC10 B3's
+`rebuild_from_log_reproduces_observation_reference_rows` could not pass.
+
+**Shape: additive, never a changed call site.**
+
+| Entry point | Facts source | Behaviour |
+| --- | --- | --- |
+| `replay::replay_to_frontier`, `rebuild::rebuild_projection` | `NoReplayPayloadFacts` | Unchanged: `None` to every reduction; no preflight (`rederives() == false`) |
+| `replay::replay_to_frontier_with_facts`, `rebuild::rebuild_projection_with_facts` | any `ReplayPayloadFacts` | Facts looked up per not-yet-marked operation; see below |
+
+`VerifierReplayFacts::new(&verifier)` is the production source. For each operation about to be
+reduced it re-runs the mandatory ingress on the stored bytes (`verify_candidate`, refusing bytes
+that are not the requested `op_id`), then calls the verifier's own
+`CandidateVerifier::verify_payload(candidate, None)`. For `DurableCandidateVerifier` that
+resolves the ciphertext from `SurrealArtifactStore` (length and hash against the signed
+`PayloadRef`), the key from `SecretStoreScopeKeyCustody` (key id against the signed encryption
+map), AEAD-opens under the §5.2 AAD, and validates against `RegisteredSchemaSet`. Facts whose
+`op_id`/`schema_hash` differ from the candidate's are refused, the same binding
+`admit_candidate_with_facts` enforces. There is no second decryption path.
+
+**Why this keeps replay deterministic.** The facts are a function of signed bytes plus
+content-addressed ciphertext, authenticated by AEAD, so any peer that can derive them derives
+the same value and the same row. Key availability is local, but it only decides *pending vs
+applied*, never *what* is applied. That is the same rule as every other availability gap here.
+Authorization is deliberately not re-asked at replay: it was decided at admission, and re-asking
+would make replay depend on today's authority state.
+
+**When facts cannot be re-derived** (`PayloadFactsGap`):
+
+| Gap | Cause |
+| --- | --- |
+| `ScopeKeyUnavailable` | No held key opens the payload: crypto-shredded (SPEC-5 §5.5.4) or never delivered |
+| `CiphertextUnavailable` | The ciphertext is not in the artifact store |
+| `SchemaNotInterpreted` | The verifier has no registration for the kind or schema (for example, B3 not yet wired) |
+| `PayloadNotVerifiable` | The held bytes no longer authenticate or validate here |
+
+The reduction is still called with `None`. If it then asks for its own payload
+(`ReferencedArtifactUnavailable` whose id is the operation's ciphertext hash), the position is
+pending under `PendingReason::PayloadFactsUnavailable { ciphertext_hash, gap }`, a reason
+distinct from `ReferencedArtifactUnavailable`. A reduction that needs no facts applies normally,
+so a shredded key never stalls a kind that ignores its payload. The marker never moves, and the
+operation is never `Excluded`: `Excluded` is terminal §4.6 evidence, and two peers would then
+disagree about a result one of them never computed.
+
+**The pre-shred row is kept.** SPEC-5 §5.5 rule 3: shredding does not revoke plaintext already
+decrypted, so a row projected while the key was held is legitimate derived state.
+
+- *Replay* skips an already-marked operation before any facts lookup, so the row and its marker
+  are never re-reduced, overwritten, or retracted.
+- *Rebuild* would destroy it: the empty-state reset (§rebuild-and-checkpoints) drops every row,
+  and the replay could never reproduce it. So `rebuild_projection_with_facts` first checks every
+  operation in the closure whose marker records `applied`. For each one whose facts the source
+  answers `Unavailable` and whose reduction with `None` asks for its own payload, it collects
+  `(op_id, gap)`. If any exist, it returns `RebuildError::WouldDiscardUnrederivableRows` before
+  ANY pass. Nothing is reset, replayed, or recorded, so a refused accelerator still leaves no
+  trace. Re-asking `reduce` is exact because `reduce` is pure (SPEC-4 §4). The cost is one extra
+  decryption per applied payload-bearing operation, which is acceptable on the rare rebuild
+  path. To deliberately discard such rows, a caller must do it outside this function. No force
+  flag exists.
+
+**Snapshot rule (security).** `DurableCandidateVerifier` is a custody snapshot, as
+§production-verifier says. A verifier built before a shred still holds the destroyed key in
+memory and would still re-derive. Shred through the verifier's own custody
+(`into_parts().scope_keys.shred(..)`, then `ComposedCandidateVerifier::new`), or rebuild it with
+`durable_candidate_verifier`, before building a `VerifierReplayFacts`. A destroyed index row is
+never reloaded.
+
+**G2 holds.** A source opens only the operation's own committed payload. It never reads a
+hexon, a statistics artifact, or an asset blob. A missing hexon stays invisible to replay and
+surfaces only at hydration (SPEC-10 §5).
+
+Tests: `fe-database/tests/canon_log_replay_payload_facts_test.rs`
+(`replay_rederives_payload_facts_through_custody`,
+`a_shredded_scope_key_leaves_replay_pending_and_keeps_the_pre_shred_row`), both over the real DB
+thread with a drop-and-join restart.
 
 ## §epoch-state
 
@@ -582,3 +669,9 @@ SPEC-4 §8 names thirteen tests. Eleven are in
 `fe-database/tests/canon_log_materialization_test.rs` under their exact spec names; tests 12
 and 13 belong to the pure reduction contract and live in `fe-canonical-log`
 (`materialize/traits.rs`), because they are about what a reduction may read, not about storage.
+
+CDL-SPEC10 B2b's replay-payload-facts flows (§replay-payload-facts) are in
+`fe-database/tests/canon_log_replay_payload_facts_test.rs`. They are implementation tests of
+the RUNBOOK §4 AC-33 default, not SPEC-10 §10 conformance names. SPEC-10 test 16
+(`rebuild_from_log_reproduces_observation_reference_rows`) is CDL-SPEC10 B3's and consumes this
+source.

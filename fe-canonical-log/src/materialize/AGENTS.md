@@ -123,12 +123,21 @@ so CDL-SPEC10 B1/B3 consume this signature instead of adding a second, narrower 
   `ReferencedArtifactUnavailable { artifact_id: PayloadRef::ciphertext_hash }`: the payload
   ciphertext is a "payload artifact" in §4 rule 8's list, the position stays pending replay,
   and the apply marker does not move. Never `Excluded`, never a default.
-- **Interim gap (deferred).** `fe-database` `canon_log::replay::replay_to_frontier` has no
-  decrypted-payload source yet and passes `None` to every reduction, so a payload-needing kind
-  stays pending in the durable replay path. Re-deriving facts at replay needs the ciphertext
-  source and scope-key custody W4-3/W4-7 compose (and must answer what a crypto-shredded key
-  means for replay). Trigger: the first payload-needing `CausalMaterializer` wired to
-  `replay_to_frontier` — CDL-SPEC10 B1 or W4-9.
+- **Replay-time facts (CDL-SPEC10 B2b, 2026-10-14; closes the former interim gap).** The
+  durable replay path re-derives facts through a source, never through `reduce`:
+  `fe-database` `canon_log::replay::replay_to_frontier_with_facts` /
+  `rebuild::rebuild_projection_with_facts` take a `ReplayPayloadFacts`, and
+  `VerifierReplayFacts` answers it with the verifier's own `verify_payload` (the W4-7 ciphertext
+  store, scope-key custody, and `RegisteredSchemaSet`), bound to the stored bytes' `op_id` and
+  `schema_hash` exactly as admission binds them. The reduction still receives only
+  `Option<&PayloadFacts>`, so G2 is untouched. The legacy `replay_to_frontier` /
+  `rebuild_projection` (every pre-B2b call site) pass the `NoReplayPayloadFacts` wrapper and
+  keep their `None` outcome. When the source cannot re-derive (a crypto-shredded or absent scope
+  key, a missing ciphertext, an unregistered schema), the position is pending under the distinct
+  `PendingReason::PayloadFactsUnavailable`, never `Excluded`, and a row projected before the
+  shred is kept: replay skips marked operations before any lookup, and a from-empty rebuild that
+  would discard such a row is withheld. Full design: `fe-database/src/canon_log/AGENTS.md`
+  §replay-payload-facts; spec side: `observation-plane.md` Errata (2026-10-14).
 
 ## M2 -- `VerifiedEnvelopeMeta` carries `scope`
 

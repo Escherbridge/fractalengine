@@ -908,4 +908,23 @@ these named tests:
 
 ### Errata
 
-None.
+Implementation default under the 2026-10-13 pre-approval (RUNBOOK §4, critic tick 7 AC-33,
+unasked). It lands with CDL-SPEC10 B2b and is pending owner post-review (§11.1); reversal
+moderate.
+
+- **§4.4 rule 3 scope (2026-10-14).** Rule 3 says a kind-5 reduction can always construct
+  its references and "MUST NOT return `referenced_artifact_unavailable`". That rule covers
+  the artifacts the payload *names*: the hexon, the statistics artifact, and each asset blob.
+  Their identities and stored lengths are bound in signed bytes, so their absence is visible
+  only at hydration (§5). The rule does not cover the operation's *own* encrypted payload.
+  Under SPEC-4 §4 rule 8, that ciphertext is a payload artifact. A reduction that does not
+  hold its own decrypted, schema-validated payload (rule 2's only payload input) cannot build
+  the reference row. It MUST NOT invent a field. It returns `referenced_artifact_unavailable`
+  naming the payload's `ciphertext_hash`, and the position stays pending, unchanged from
+  SPEC-4. Replay re-derives that payload through the verifier's own payload check:
+  ciphertext by content address, scope key from local custody, and the registered schema. A
+  crypto-shredded or undelivered scope key leaves the position pending under a reason
+  distinct from `referenced_artifact_unavailable`, never `excluded`. A reference row
+  projected before the shred is kept: SPEC-5 §5.5 rule 3 says shredding does not revoke
+  plaintext already decrypted. A rebuild that would discard such a row is refused rather
+  than run. Implementation: `fe-database/src/canon_log/AGENTS.md` §replay-payload-facts.
