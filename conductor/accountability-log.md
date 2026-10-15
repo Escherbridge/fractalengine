@@ -348,3 +348,22 @@ is prompt context only, no bypass). All three directives ACCEPTED:
   the old prompt → at W5 close verify RP-10 recorded RP-4s/RP-9/RP-9b verdict+sha and the full sha list; fix with a
   follow-up docs edit if not. Model tier: RP-10 runs on sonnet, not the plan's haiku — kept (it records security
   verdicts across 6+ files; accuracy over cost), deviation logged here.
+
+### W5 orchestrator findings (rolling)
+- RP-1 `a373ae5` GREEN (11-step gate). **OF-3 (orchestrator-raised, security-relevant):** RP-1 left a PRIVATE
+  duplicate scope-chain parser (`parent_scope`/`verse_id_of` in `fe-policy/src/role_grants.rs`) beside
+  `fe-database/src/scope.rs`'s `parent_scope`/`parse_scope`; the plan's preferred option was ONE parser (move the
+  pure parser into fe-policy, re-export from fe-database). Two parsers of the same scope string are a
+  parser-differential risk on an authority path (the role model and the DB plane could disagree on which subtree
+  a scope names). No W5 slice owns `scope.rs`. Trigger: at W5 close, grep for both parsers; if still duplicated,
+  a W5b slice unifies them (+ a differential test over the existing scope fixtures) BEFORE W6 — not deferred to
+  the second campaign. RP-1's second open note (`EffectiveRoles::diff` direction semantics) is non-blocking —
+  RP-2 re-validates every promoted statement; RP-9b to sanity-check.
+- W6 planned (track `decisions_20261012_impl_20261015`, @389b6c7, 13 slices, opus planner, no cargo). Orchestrator
+  dispositions: (a) A14 relay access token KEPT as in-scope — the ratified "self-hosted relay" decision needs a
+  credential path for a token-gated relay (an ungated self-hosted relay is an open relay); env-only
+  (`FE_SECRET_FRACTALENGINE_SYNC_RELAY_TOKEN`), never in `RelayConfig` (Debug-logged) — critic may challenge.
+  (b) W6-7a (client-claim auth core) runs on OPUS, not "sonnet, escalate on failure": auth path, many call sites.
+  (c) OSS-1.3 is DONE (deny.toml + CI licences step `da3e6a1`, CI run 38498925963 "licenses ok"); W6-11 corrects
+  the stale ledger lines. (d) W6 script `.omc/plans/w6-decisions-20261012.js` builds the AC-52 review guard into
+  the slice loop from the start. Launch only after W5 closes, critic tick 9 runs, and OF-3 is resolved.

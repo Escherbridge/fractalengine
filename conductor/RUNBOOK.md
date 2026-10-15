@@ -542,7 +542,9 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
     It halted at RP-0 (real E0308 at `observation_plane_test.rs:1609`; repair plan `0213b79`). **Relaunched fresh**
     as `wf_4f099aec-bc1` (task `wsu9cgmlh`) with `known_issues.RP-0` and foreground-only gate mechanics.
   - Next: **W5 role propagation** (`conductor/tracks/role_propagation_20261013/plan.md`, security
-    review mandatory) → **campaign final sweep** per `conductor/final-sweep-manifest.md` (full `cargo test
+    review mandatory) → **W6 = §7 step 5, the 2026-10-12 decisions** (track
+    `decisions_20261012_impl_20261015`, being planned in parallel with W5; the earlier "Next" line skipped this
+    step — corrected 2026-10-15) → **campaign final sweep** per `conductor/final-sweep-manifest.md` (full `cargo test
     --workspace` incl. doctests, feature-matrix tests, harness 17 scenarios ×2, e2e scripts, packaged GUI + relay
     smoke, fe-database `--ignored`) → push on green → watch CI → end-of-campaign report (artifact).
 
