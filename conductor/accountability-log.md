@@ -314,3 +314,16 @@ was wrong). All 11 directives ACCEPTED → Brief A `cc631ae` (RP plan C11–C21,
   overrides bypass in the RP script). AC-49: RP-0 fixups. AC-50/51 LOW: ledger rows + bookkeeping.
 - Machine at 848 processes / 2.9 GB free RAM at tick time (B2b's DLL-init crash hit at 689) — none are this
   session's strays; RP gates carry the retry-once rule.
+
+### W5 HALT at RP-0 — 2026-10-15
+- W5 `wf_e00ce792-9fa` halted at RP-0 (gate_green=false, no commit) — the gate_green halt worked as designed.
+  RP-0's own background `cargo check` later finished EXIT:101 with a REAL compile error:
+  `fe-database/tests/observation_plane_test.rs:1609` compares `report.uncovered[0].table` (an
+  `ObservationTable`) to `"iot_reading"` (a `&str`). Its 4 edited files remain uncommitted in the tree.
+- Second occurrence of "agent backgrounds a long gate, result forced before it ends" (after B2b). Root causes:
+  cold build cache (incremental + PDBs pruned before W4/W5) and machine pressure (~850 processes) push a cold
+  workspace check past an agent's per-command limit. Repair (no orchestrator commit — the halt is respected,
+  per the user's earlier ruling): (1) orchestrator warms the cache as sole builder (check --keep-going,
+  clippy, feature-matrix checks; NO commit); (2) W5 script now mandates foreground gate steps at the max
+  timeout and re-run-on-timeout (never background cargo); (3) relaunch W5 fresh with `known_issues.RP-0`
+  naming the type error, so RP-0's executor fixes it, gates, and commits through its own gate.
