@@ -296,3 +296,21 @@ W4's Phase A security review as MANDATORY** (block at the top of the SPEC-10 pla
 - Open for critic tick 8: `seal_observations` signs any rows handed (INFO, no live caller); oversized-window
   split path implemented but untested (B3 deferral); device_payload-before-device_format denied (→ RP-4
   Deferred Parent); typed-error nits (untyped 500 for foreign verse_id; boolean JSON Schema).
+
+### Tick 8 (W4 close / RP pre-launch) — 2026-10-15 09:08 MDT · VERDICT: ON_TRACK (2 HIGH, 7 MED, 2 LOW)
+Report: `.omc/accountability/tick-20261015-0908.md`. Verified: every W4 review fix real in code; the B2b
+orchestrator commit `f4df2a3` contains exactly the six files the gate verified (all edits precede gate.sh
+start) and the user's authorization was genuine and timestamped. Correction logged (my "concurrent" claim
+was wrong). All 11 directives ACCEPTED → Brief A `cc631ae` (RP plan C11–C21, RUNBOOK §4 assumptions, ledger).
+- AC-41 HIGH: + RP-4s DB-plane security review and RP-9b correctness review (W4's correctness pass caught a
+  HIGH both security passes missed).
+- AC-42 HIGH: durable re-emit of local role statements at startup/replica-open (an owner's revocation in a
+  closed verse was never published); T23.
+- AC-43..AC-47 MED: three-valued confinement (foreign→Denied, unknown→Deferred Parent); enrolment floor →
+  Deferred AuthorRole / Deferred Manifest + has_any_role; C3 superseded (false premise — interim VERSE#<hex>
+  rows untouched); API effective role = min(token max_role, converged role); RP-4b STREAMED-TERRAIN-PIN with
+  precedence installed > petal-authored > TOFU.
+- AC-48 MED: gate text + B2b lessons (never return while own cargo runs; retry once on 0xc0000142; NO generic
+  overrides bypass in the RP script). AC-49: RP-0 fixups. AC-50/51 LOW: ledger rows + bookkeeping.
+- Machine at 848 processes / 2.9 GB free RAM at tick time (B2b's DLL-init crash hit at 689) — none are this
+  session's strays; RP gates carry the retry-once rule.
