@@ -317,7 +317,7 @@ would make replay depend on today's authority state.
 | --- | --- |
 | `ScopeKeyUnavailable` | No held key opens the payload: crypto-shredded (SPEC-5 §5.5.4) or never delivered |
 | `CiphertextUnavailable` | The ciphertext is not in the artifact store |
-| `SchemaNotInterpreted` | The verifier has no registration for the kind or schema (for example, B3 not yet wired) |
+| `SchemaNotInterpreted` | The verifier has no registration for the kind or schema (for example, a caller that built its own `RegisteredSchemaSet` instead of `durable_observation_verifier`, which is the one that calls `ensure_observation_batch_schema`) |
 | `PayloadNotVerifiable` | The held bytes no longer authenticate or validate here |
 
 The reduction is still called with `None`. If it then asks for its own payload

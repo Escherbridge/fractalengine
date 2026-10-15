@@ -110,6 +110,31 @@ to the row.
 | D-CL33 | **`preview_kind` registry.** `0` invalid, `1` = `telemetry_sample_v1` (canonical CBOR `{anchor, metric, value_nano: i64, units, recorded_at_ms}`, no floats), `2..=1023` reserved for specification registration, `1024` and above application/experimental. A registry-aware receiver drops unregistered and unhandled kinds; structural SPEC-7 decoding is unchanged. Live display travels as a preview and durable history as batches (SPEC-7 §7.1 rule 4). Codec only: no transport while CANON-WS is closed. Rejected: no registry, string-named kinds, per-verse negotiation. | PRE-APPROVED 2026-10-13 (owner pre-approved the draft's defaults; post-review pending) |
 | D-CL34 | **Provisional wire numbers join the CDL-PROV ratification index** with no interop claim, under D-CL24(3): lane class 5 and AAD domain `fe-segment-bulk-artifact-v1`; the bulk-artifact inner-body keys; kind-5 payload keys 0–10 (key 10 `stats_stored_length` added to the planned 0–9 so every artifact reference carries its stored length, SPEC-6 §2.1 rule 4); the `ObservationSource`/`DecoderIdentity` keys and `source_class` values 1–5; the `telemetry_sample_v1` keys; and the domains `fe-schema-observation-batch-v1`, `fe-observation-source-id-v1`, and `fe-legacy-identifier-v1`. The legacy-identifier mapping must become the same function as SPEC-8's candidate scope derivation once that is ratified. Rejected: hold Phase B until ratification. | PRE-APPROVED 2026-10-13 (owner pre-approved the draft's defaults; post-review pending) |
 
+### D-CL30..34 implementation and review verdicts (2026-10-15, CDL-SPEC10 B4 close-out)
+
+D-CL30 through D-CL34 are now **implemented as specified**, with no normative
+deviation from the rows above. The Status column is unchanged by this
+note — each row stays `PRE-APPROVED 2026-10-13 (owner pre-approved the
+draft's defaults; post-review pending)`; implementation completion and the
+owner's post-review of the defaults are separate gates, and only the second
+is still open.
+
+Landing commits — Phase A (A1 draft + errata text, A2 `6b456e4`, A3
+`65f39ec`, A3b `01e9668`, A4 `f6e7af2`, A5 `f0b736c`, A6 `3788a6b`) and Phase
+B (B1 `2515ab9`, B2 `f7f9610`, B2b `f4df2a3`, B3 `446fa3c`). Three
+review-and-fix passes closed the findings each raised:
+
+| Review | Verdict | Commit |
+| --- | --- | --- |
+| Phase A security review-and-fix | **FIXED** | `e3ad8e8` |
+| Phase B security review-and-fix | **FIXED** | `1c5f8ef` |
+| Correctness review-and-fix | **FIXED** | `d098b65` |
+
+TESTS ARE WRITTEN, NOT RUN — every commit above says so in its own message.
+This note records implementation and review completion only; it is not a
+test-passing claim. The campaign-end workspace sweep remains the gate for
+that, alongside CDL-W4's (see `metadata.json` `G-WAVE-4`/`SPEC-10-observation`).
+
 ## CDL Wave 4 decisions and errata (2026-10-13/14)
 
 Recorded at CDL-W4 close-out (`campaign-plan-w4-20261013.md` §4 "Docs to update";
@@ -145,7 +170,10 @@ Batch ratification is still open (ledger `CDL-PROV`).
 
 No PENDING-RATIFICATION entries. D-CL1 through D-CL29 are canonical as of
 2026-08-16. D-CL30 through D-CL34 are pre-approved as of 2026-10-13 and await
-owner post-review; until it happens they bind implementation exactly as written.
+owner post-review; until it happens they bind implementation exactly as
+written. They are now implemented exactly as written (2026-10-15, CDL-SPEC10
+Phase A + B, see the subsection above) — implementation status, not
+ratification status; the post-review gate above is unaffected.
 E-W4-1 is owner-confirmed as of 2026-10-13, not pending. CDL-W4's four
 provisional wire-number domains (above) ship with no interop claim and await the
 same D-CL24(3) batch ratification as the rest of the `CDL-PROV` register.

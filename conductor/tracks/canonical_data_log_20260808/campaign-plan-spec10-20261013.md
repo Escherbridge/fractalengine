@@ -1245,3 +1245,48 @@ owns a shared piece; this plan notes the dependency.
 **Cross-plan note.** A6's device-payload blob fetch uses `SyncCommand::FetchBlob` over the blob
 ALPN. PAS-P3P4 S8b may add an iroh-blobs request filter, and its brief requires that filter to
 key on verse membership so A6 and `two_peer_blob_exchange` keep working.
+
+---
+
+## 9. Retro (2026-10-15, B4 close-out)
+
+**What landed.** Both phases of this campaign plan are in the tree. Phase A —
+A1 (spec draft + G3/G6 errata text), A2 `6b456e4` (bulk-artifact lane +
+source-identity vocabulary), A3 `65f39ec` (R5 data layer: descriptors,
+device payloads, GC, replication), A3b `01e9668` (`ReadDb` guard), A4
+`f6e7af2` (REST surface), A5 `f0b736c` (MCP parity + BI query), A6 `3788a6b`
+(two-peer device-payload flow + Phase A docs close). Phase B — B1 `2515ab9`
+(kind-5 observation module), B2 `f7f9610` (columnar hexon codec), B2b
+`f4df2a3` (replay-time payload facts), B3 `446fa3c` (shadow sealer,
+reference materializer, hydrator). Three review-and-fix passes closed every
+finding each raised: Phase A security (`e3ad8e8`), Phase B security
+(`1c5f8ef`), and a correctness pass (`d098b65`) that fixed SurrealDB's
+null-option rejection on unlinked rows, made `RegisterDeviceFormat` publish
+its row so peers actually see declared formats, and tightened the inbound
+`device_payload` gate to SPEC-10 §2.2 rule 5 (format declared locally, every
+asset's MIME matches). This B4 slice closes the loop in docs: the decision
+register, doneness ledger, track plan and metadata now say DONE-pending-sweep
+with their landing commits, `commit-preview-wire.md` cross-references the
+`preview_kind` registry under D-CL33, and a stale "B3 not yet wired" note in
+`fe-database/src/canon_log/AGENTS.md` is corrected.
+
+**What is still open, on purpose.** None of this flips SPEC-10's Status line
+to Owner-approved — that is the owner's post-review of the draft's four
+pre-approved defaults (operation kind, hexon container, segmentby entity,
+preview registry; campaign plan §7.1), a decision only the owner makes, not a
+code gate. None of this runs `cargo`: every commit above says "tests
+deferred," and the campaign-end workspace sweep (shared with CDL-W4) is the
+one place that claim gets to become "tests passing." Phase B stays behind
+`MigrationMode::DualEmitShadow`/`ShadowRebuild`; the live default is
+`legacy_only`, so nothing about the hot `iot_reading`/`device_payload` path
+changed for a user who has not flipped the mode. Decoder plugins, network
+rollout, relay seeding, inbound P2P and the `canonical_authoritative_local`
+cutover remain exactly as owner-gated as the campaign plan's §6 deferral
+audit always said they would.
+
+**Mutation check on this slice itself.** This is a docs-only close-out; its
+"test" is internal consistency — every commit SHA cited above resolves
+(verified against `git log`), the JSON edits re-parse, and no status line
+claims a result (owner approval, a green sweep) that has not actually
+happened. If a future pass flips any status word here to something stronger
+than the commit evidence supports, that is the regression to catch.

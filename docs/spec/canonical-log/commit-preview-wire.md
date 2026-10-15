@@ -444,3 +444,17 @@ named tests:
 - **Preview isolation is a security boundary:** A drag hint can be useful even
   when it is dropped. Letting that hint enter durable storage would recreate
   the unsafe write path this protocol is designed to remove.
+
+## Errata
+
+- **2026-10-15 (CDL-SPEC10 D-CL33, owner-ratified under D-CL28's precedent for
+  spec-cross-reference errata).** Section 7.1 rule 1's "registered non-zero
+  `preview_kind`" is registered by `docs/spec/canonical-log/observation-plane.md`
+  §6: `0` stays invalid, `1` = `telemetry_sample_v1` (canonical CBOR
+  `{anchor, metric, value_nano: i64, units, recorded_at_ms}`, no floats),
+  `2..=1023` are reserved for specification registration, and `1024` and above
+  are application/experimental. This section's own structural decoding rules
+  (7.1, 7.2) are unchanged — the registry only interprets an already-decoded
+  `preview_kind`, and an unregistered or unhandled kind is dropped, never
+  treated as a protocol error. Implemented `fe-canonical-log/src/wire/preview.rs`
+  (`TELEMETRY_SAMPLE_PREVIEW_KIND`), CDL-SPEC10 B1 (`2515ab9`).

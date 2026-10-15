@@ -55,6 +55,24 @@ code-complete and reviewed, tests written but not yet run. Network rollout,
 relay seeding and inbound P2P on the canonical path remain owner-gated (NO-GO)
 per this plan's own `network_enablement: prohibited`.
 
+**Status as of 2026-10-15:** `CDL-SPEC10` (SPEC-10 observation plane + errata
+G3/G6, `campaign-plan-spec10-20261013.md`) is also DONE-pending-sweep. Both
+phases landed: Phase A (A1 draft, A2 `6b456e4`, A3 `65f39ec`, A3b `01e9668`,
+A4 `f6e7af2`, A5 `f0b736c`, A6 `3788a6b`) and Phase B (B1 `2515ab9`, B2
+`f7f9610`, B2b `f4df2a3`, B3 `446fa3c`), closed by three review-and-fix passes
+— Phase A security FIXED (`e3ad8e8`), Phase B security FIXED (`1c5f8ef`),
+correctness FIXED (`d098b65`) — and this B4 docs close-out. D-CL30..34 are
+implemented as specified; the SPEC-10 Status line stays `PRE-APPROVED
+2026-10-13 (owner pre-approved the draft's defaults; post-review pending)` —
+owner post-review of the draft's defaults is a separate, non-blocking step.
+TESTS ARE WRITTEN, NOT RUN for either CDL-W4 or CDL-SPEC10: the single
+campaign-end workspace sweep this plan's Execution rules call for still
+covers both. Phase B runs only under `MigrationMode::DualEmitShadow`/
+`ShadowRebuild`; the live default stays `legacy_only` (SPEC-8 §3 rule 1), so
+the hot tables are unaffected until the owner flips the mode. Network
+rollout, relay seeding, inbound P2P, PLUG-HOST decoder plugins, and the
+`canonical_authoritative_local` cutover remain owner-gated (NO-GO), unchanged.
+
 ## Execution rules
 
 - `HARD-2` through `HARD-4` have one owner because they share `ws.rs`.
