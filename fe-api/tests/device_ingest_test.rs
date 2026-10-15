@@ -177,6 +177,13 @@ async fn seed_chain(h: &ApiHarness) -> (String, String, String, String) {
     (verse, fractal, petal, node)
 }
 
+/// The verse-level scope a format declaration needs: formats are verse-wide,
+/// so a petal-scoped Manager token does not cover them (see
+/// `petal_scoped_manager_cannot_declare_a_verse_wide_format`).
+fn verse_scope(verse_id: &str) -> String {
+    fe_database::build_scope(verse_id, None, None)
+}
+
 async fn register_format(
     h: &ApiHarness,
     token: &str,
@@ -202,6 +209,19 @@ async fn post_payload(
     node_id: &str,
     files: &[&[u8]],
 ) -> (StatusCode, serde_json::Value) {
+    post_payload_with_id(h, token, petal_id, format_id, node_id, None, files).await
+}
+
+/// [`post_payload`] plus an optional client `payload_id` text field.
+async fn post_payload_with_id(
+    h: &ApiHarness,
+    token: &str,
+    petal_id: &str,
+    format_id: &str,
+    node_id: &str,
+    payload_id: Option<&str>,
+    files: &[&[u8]],
+) -> (StatusCode, serde_json::Value) {
     let boundary = "DEVICEPAYLOADBOUNDARY";
     let mut body = Vec::new();
     let mut push_text = |name: &str, value: &str| {
@@ -214,6 +234,9 @@ async fn post_payload(
     };
     push_text("format_id", format_id);
     push_text("node_id", node_id);
+    if let Some(payload_id) = payload_id {
+        push_text("payload_id", payload_id);
+    }
     for (i, bytes) in files.iter().enumerate() {
         body.extend_from_slice(
             format!(
@@ -269,7 +292,7 @@ async fn register_format_ingest_multipart_payload_then_fetch_each_blob() {
     serve_device_commands(&h);
     let (verse, fractal, petal, node) = seed_chain(&h).await;
     let scope = fe_database::build_scope(&verse, Some(&fractal), Some(&petal));
-    let manager = h.mint_token(&scope, "manager");
+    let manager = h.mint_token(&verse_scope(&verse), "manager");
     let editor = h.mint_token(&scope, "editor");
     let viewer = h.mint_token(&scope, "viewer");
 
@@ -355,7 +378,7 @@ async fn device_routes_authz_and_limits() {
         serve_device_commands(&h);
         let (verse, fractal, petal, node) = seed_chain(&h).await;
         let scope = fe_database::build_scope(&verse, Some(&fractal), Some(&petal));
-        let manager = h.mint_token(&scope, "manager");
+        let manager = h.mint_token(&verse_scope(&verse), "manager");
         let viewer = h.mint_token(&scope, "viewer");
         register_format(&h, &manager, &verse, "acme.x/y@1", "text/plain").await;
 
@@ -383,12 +406,9 @@ async fn device_routes_authz_and_limits() {
     {
         let h = ApiHarness::spawn().await.expect("spawn harness");
         serve_device_commands(&h);
-        let (verse, fractal, petal, node) = seed_chain(&h).await;
+        let (verse, _fractal, petal, node) = seed_chain(&h).await;
         let (other_verse, ..) = seed_chain(&h).await;
-        let manager = h.mint_token(
-            &fe_database::build_scope(&verse, Some(&fractal), Some(&petal)),
-            "manager",
-        );
+        let manager = h.mint_token(&verse_scope(&verse), "manager");
         register_format(&h, &manager, &verse, "acme.x/y@1", "text/plain").await;
         let foreign = h.mint_token(&format!("VERSE#{other_verse}"), "editor");
 
@@ -403,7 +423,7 @@ async fn device_routes_authz_and_limits() {
         serve_device_commands(&h);
         let (verse, fractal, petal, node) = seed_chain(&h).await;
         let scope = fe_database::build_scope(&verse, Some(&fractal), Some(&petal));
-        let manager = h.mint_token(&scope, "manager");
+        let manager = h.mint_token(&verse_scope(&verse), "manager");
         let editor = h.mint_token(&scope, "editor");
         register_format(&h, &manager, &verse, "acme.x/y@1", "text/plain").await;
 
@@ -421,7 +441,7 @@ async fn device_routes_authz_and_limits() {
         serve_device_commands(&h);
         let (verse, fractal, petal, node) = seed_chain(&h).await;
         let scope = fe_database::build_scope(&verse, Some(&fractal), Some(&petal));
-        let manager = h.mint_token(&scope, "manager");
+        let manager = h.mint_token(&verse_scope(&verse), "manager");
         let editor = h.mint_token(&scope, "editor");
         register_format(&h, &manager, &verse, "acme.x/y@1", "text/plain").await;
 
@@ -472,7 +492,7 @@ async fn device_asset_cannot_be_placed_as_a_scene_node() {
     serve_device_commands(&h);
     let (verse, fractal, petal, node) = seed_chain(&h).await;
     let scope = fe_database::build_scope(&verse, Some(&fractal), Some(&petal));
-    let manager = h.mint_token(&scope, "manager");
+    let manager = h.mint_token(&verse_scope(&verse), "manager");
     let editor = h.mint_token(&scope, "editor");
 
     register_format(
@@ -520,7 +540,7 @@ async fn html_payload_is_served_as_attachment_with_nosniff() {
     serve_device_commands(&h);
     let (verse, fractal, petal, node) = seed_chain(&h).await;
     let scope = fe_database::build_scope(&verse, Some(&fractal), Some(&petal));
-    let manager = h.mint_token(&scope, "manager");
+    let manager = h.mint_token(&verse_scope(&verse), "manager");
     let editor = h.mint_token(&scope, "editor");
     let viewer = h.mint_token(&scope, "viewer");
 
@@ -555,7 +575,7 @@ async fn readings_posted_with_payload_id_join_to_the_payload() {
     serve_device_commands(&h);
     let (verse, fractal, petal, node) = seed_chain(&h).await;
     let scope = fe_database::build_scope(&verse, Some(&fractal), Some(&petal));
-    let manager = h.mint_token(&scope, "manager");
+    let manager = h.mint_token(&verse_scope(&verse), "manager");
     let editor = h.mint_token(&scope, "editor");
 
     register_format(
@@ -603,4 +623,106 @@ async fn readings_posted_with_payload_id_join_to_the_payload() {
         )
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+}
+
+/// CDL-SPEC10 Phase A security (MANDATORY finding 2 + ULID validation): a
+/// malformed client `payload_id` is a 400 before any byte is stored, and a
+/// caller in another petal replaying a taken id gets a 409 whose body names
+/// none of the existing payload's asset ids.
+#[tokio::test]
+async fn client_payload_id_is_validated_and_a_foreign_replay_learns_nothing() {
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    serve_device_commands(&h);
+    let (verse_a, fractal_a, petal_a, node_a) = seed_chain(&h).await;
+    let (verse_b, fractal_b, petal_b, node_b) = seed_chain(&h).await;
+    let scope_a = fe_database::build_scope(&verse_a, Some(&fractal_a), Some(&petal_a));
+    let scope_b = fe_database::build_scope(&verse_b, Some(&fractal_b), Some(&petal_b));
+    for verse in [&verse_a, &verse_b] {
+        let manager = h.mint_token(&verse_scope(verse), "manager");
+        register_format(
+            &h,
+            &manager,
+            verse,
+            "acme.x/y@1",
+            "application/octet-stream",
+        )
+        .await;
+    }
+    let editor_a = h.mint_token(&scope_a, "editor");
+    let editor_b = h.mint_token(&scope_b, "editor");
+
+    // Malformed id -> 400, and no asset row was written for the file.
+    let (status, body) = post_payload_with_id(
+        &h,
+        &editor_a,
+        &petal_a,
+        "acme.x/y@1",
+        &node_a,
+        Some("client-chosen-1"),
+        &[b"bytes"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let mut res = h.db.query("SELECT asset_id FROM asset").await.unwrap();
+    let assets: Vec<serde_json::Value> = res.take(0).unwrap_or_default();
+    assert!(
+        assets.is_empty(),
+        "no byte stored before the id check: {assets:?}"
+    );
+
+    // Petal A ingests with a client id.
+    let client_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    let (status, body) = post_payload_with_id(
+        &h,
+        &editor_a,
+        &petal_a,
+        "acme.x/y@1",
+        &node_a,
+        Some(client_id),
+        &[b"petal a secret"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let victim_asset = body["asset_ids"][0].as_str().expect("asset id").to_string();
+
+    // Petal B replays it: 409, nothing about petal A's payload in the body.
+    let (status, body) = post_payload_with_id(
+        &h,
+        &editor_b,
+        &petal_b,
+        "acme.x/y@1",
+        &node_b,
+        Some(client_id),
+        &[b"petal b bytes"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.get("asset_ids").is_none(), "{body}");
+    assert!(!body.to_string().contains(&victim_asset), "{body}");
+}
+
+/// A format is verse-wide and immutable per id, so only a token whose scope
+/// covers the whole verse may declare one: a petal-scoped Manager gets the
+/// oracle-identical 404 and nothing is written (otherwise it could squat a
+/// format id, with the wrong MIME, for every other petal of the verse).
+#[tokio::test]
+async fn petal_scoped_manager_cannot_declare_a_verse_wide_format() {
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    serve_device_commands(&h);
+    let (verse, fractal, petal, _node) = seed_chain(&h).await;
+    let petal_manager = h.mint_token(
+        &fe_database::build_scope(&verse, Some(&fractal), Some(&petal)),
+        "manager",
+    );
+
+    let (status, body) =
+        register_format(&h, &petal_manager, &verse, "acme.x/y@1", "text/plain").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"], fe_api::rest::NOT_FOUND_OR_DENIED, "{body}");
+    let mut res =
+        h.db.query("SELECT format_id FROM device_format")
+            .await
+            .unwrap();
+    let rows: Vec<serde_json::Value> = res.take(0).unwrap_or_default();
+    assert!(rows.is_empty(), "{rows:?}");
 }

@@ -28,8 +28,9 @@ pub const IOT_INGEST_RATE_PER_SEC: u32 = 10;
 
 /// Max asset files one device-payload ingest call may carry (CDL-SPEC10 A4
 /// §device-ingest; R5 assumption 5) — "a list of records" (SPEC-10 §2.3),
-/// not an unbounded one.
-pub const DEVICE_PAYLOAD_MAX_ASSETS: usize = 32;
+/// not an unbounded one. Re-exported from fe-runtime so REST, MCP, the
+/// DB-thread door and the inbound replication gate share ONE bound.
+pub const DEVICE_PAYLOAD_MAX_ASSETS: usize = fe_runtime::messages::DEVICE_PAYLOAD_MAX_ASSETS;
 
 /// Default shareable-URL TTL (1 hour) — plan D2.
 pub const SHARE_DEFAULT_TTL_SECS: u64 = 3600;

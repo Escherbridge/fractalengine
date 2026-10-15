@@ -14,7 +14,7 @@ use fe_database::{BlobStore, BlobStoreHandle};
 use fe_runtime::blob_store::mock::MockBlobStore;
 use fe_runtime::messages::{
     DeviceFormatRejection, DevicePayloadIngestRejection, DevicePayloadInput, IotReadingInput,
-    ReplicatedRowOutcome, SourceClass,
+    ReplicatedRowOutcome, SourceClass, DEVICE_PAYLOAD_MAX_ASSETS,
 };
 use fe_sdk::device_format::DeviceFormatDescriptor;
 
@@ -26,6 +26,8 @@ const PETAL: &str = "petal-1";
 const OTHER_VERSE: &str = "verse-2";
 const OTHER_PETAL: &str = "petal-2";
 const FORMAT_MIME: &str = "application/octet-stream";
+/// A client-chosen retry id (the door accepts only ULIDs).
+const CLIENT_PAYLOAD_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 
 async fn setup_db() -> Db {
     fe_database::op_log::init_hlc(0);
@@ -301,6 +303,38 @@ async fn invalid_payload_batch_writes_nothing() {
                 )
             },
         ),
+        (
+            "client payload_id is not a ULID",
+            DevicePayloadInput {
+                node_id: "node-a".to_string(),
+                format_id: "acme.thermo/frame@1".to_string(),
+                asset_ids: vec![good_asset.clone()],
+                recorded_at: None,
+                payload_id: Some("client-chosen-1".to_string()),
+            },
+            |e| {
+                matches!(
+                    e.rejection(),
+                    Some(DevicePayloadIngestRejection::InvalidPayloadId { .. })
+                )
+            },
+        ),
+        (
+            "more asset ids than the shared cap",
+            DevicePayloadInput {
+                node_id: "node-a".to_string(),
+                format_id: "acme.thermo/frame@1".to_string(),
+                asset_ids: vec![good_asset.clone(); DEVICE_PAYLOAD_MAX_ASSETS + 1],
+                recorded_at: None,
+                payload_id: None,
+            },
+            |e| {
+                matches!(
+                    e.rejection(),
+                    Some(DevicePayloadIngestRejection::TooManyAssets { .. })
+                )
+            },
+        ),
     ];
 
     for (name, input, matches_rejection) in cases {
@@ -340,7 +374,7 @@ async fn retried_payload_with_same_client_id_is_idempotent() {
         format_id: "acme.thermo/frame@1".to_string(),
         asset_ids: vec![asset_id],
         recorded_at: None,
-        payload_id: Some("client-chosen-1".to_string()),
+        payload_id: Some(CLIENT_PAYLOAD_ID.to_string()),
     };
 
     let (first_id, _) = insert_device_payloads(
@@ -369,7 +403,7 @@ async fn retried_payload_with_same_client_id_is_idempotent() {
     .expect("retried ingest");
 
     assert_eq!(first_id, second_id);
-    assert_eq!(first_id, "client-chosen-1");
+    assert_eq!(first_id, CLIENT_PAYLOAD_ID);
     let rows = list_device_payloads(&db, PETAL, None, None, None, None)
         .await
         .unwrap();
@@ -1180,4 +1214,523 @@ async fn register_format_conflict_and_idempotent_redeclare() {
         err,
         DeviceFormatError::Rejected(DeviceFormatRejection::ConflictingMime { .. })
     ));
+}
+
+// ---------------------------------------------------------------------------
+// Phase A security review-and-fix (CDL-SPEC10, 2026-10-15)
+// ---------------------------------------------------------------------------
+
+/// Ingest one single-asset payload into `petal_id` as `source_did`.
+#[allow(clippy::too_many_arguments)]
+async fn ingest_one(
+    db: &Db,
+    handle: &BlobStoreHandle,
+    petal_id: &str,
+    verse_id: &str,
+    node_id: &str,
+    asset_id: &str,
+    source_did: &str,
+    payload_id: Option<&str>,
+) -> Result<(String, Vec<String>), DevicePayloadIngestError> {
+    insert_device_payloads(
+        db,
+        petal_id,
+        Some(verse_id),
+        source_did,
+        SourceClass::Device,
+        &DevicePayloadInput {
+            node_id: node_id.to_string(),
+            format_id: "acme.thermo/frame@1".to_string(),
+            asset_ids: vec![asset_id.to_string()],
+            recorded_at: None,
+            payload_id: payload_id.map(str::to_string),
+        },
+        Some(handle),
+        None,
+    )
+    .await
+}
+
+/// MANDATORY finding 2 (IDOR on idempotent retry): a known client
+/// `payload_id` is a retry only for the same petal AND the same principal.
+/// Anyone else replaying the id gets a conflict that carries no asset ids, and
+/// nothing is written. Mutation check: restoring the unscoped
+/// return-existing-row branch hands the foreign caller petal Q's asset ids.
+#[tokio::test]
+async fn retry_from_another_petal_or_principal_gets_a_conflict_and_no_asset_ids() {
+    let db = setup_db().await;
+    let (_store, handle) = blob_store();
+    seed_hierarchy(&db, VERSE, FRACTAL, PETAL, "node-a").await;
+    seed_hierarchy(&db, OTHER_VERSE, "fractal-2", OTHER_PETAL, "node-b").await;
+    declare_format(&db, VERSE, "acme.thermo/frame@1", FORMAT_MIME).await;
+    declare_format(&db, OTHER_VERSE, "acme.thermo/frame@1", FORMAT_MIME).await;
+    let victim_asset = seed_asset(&db, &handle, b"victim", PETAL, FORMAT_MIME).await;
+    let attacker_asset = seed_asset(&db, &handle, b"attacker", OTHER_PETAL, FORMAT_MIME).await;
+
+    let (victim_id, victim_assets) = ingest_one(
+        &db,
+        &handle,
+        PETAL,
+        VERSE,
+        "node-a",
+        &victim_asset,
+        "did:key:z6MkVictim",
+        Some(CLIENT_PAYLOAD_ID),
+    )
+    .await
+    .expect("victim ingest");
+    assert_eq!(victim_assets, vec![victim_asset.clone()]);
+
+    // Another petal replays the id: conflict, no asset ids, no second row.
+    let err = ingest_one(
+        &db,
+        &handle,
+        OTHER_PETAL,
+        OTHER_VERSE,
+        "node-b",
+        &attacker_asset,
+        "did:key:z6MkAttacker",
+        Some(&victim_id),
+    )
+    .await
+    .expect_err("a foreign petal never gets the existing row");
+    assert_eq!(
+        err.rejection(),
+        Some(DevicePayloadIngestRejection::PayloadIdConflict)
+    );
+    assert!(
+        !format!("{err:?}").contains(&victim_asset),
+        "the conflict names nothing about the existing row: {err:?}"
+    );
+
+    // Same petal, different principal: also a conflict.
+    let err = ingest_one(
+        &db,
+        &handle,
+        PETAL,
+        VERSE,
+        "node-a",
+        &victim_asset,
+        "did:key:z6MkOtherEditor",
+        Some(&victim_id),
+    )
+    .await
+    .expect_err("another principal's retry is not a retry");
+    assert_eq!(
+        err.rejection(),
+        Some(DevicePayloadIngestRejection::PayloadIdConflict)
+    );
+
+    // The real retry still works.
+    let (again, assets) = ingest_one(
+        &db,
+        &handle,
+        PETAL,
+        VERSE,
+        "node-a",
+        &victim_asset,
+        "did:key:z6MkVictim",
+        Some(&victim_id),
+    )
+    .await
+    .expect("same petal + same principal is an idempotent retry");
+    assert_eq!(again, victim_id);
+    assert_eq!(assets, vec![victim_asset]);
+
+    assert!(
+        list_device_payloads(&db, OTHER_PETAL, None, None, None, None)
+            .await
+            .unwrap()
+            .is_empty(),
+        "nothing was written into the replaying petal"
+    );
+}
+
+/// The door publishes a payload only into its petal's OWN verse: a caller
+/// naming a foreign verse as the replication target is refused, nothing is
+/// written and nothing is emitted.
+#[tokio::test]
+async fn payload_naming_a_foreign_replication_verse_is_refused() {
+    let db = setup_db().await;
+    let (_store, handle) = blob_store();
+    seed_hierarchy(&db, VERSE, FRACTAL, PETAL, "node-a").await;
+    seed_hierarchy(&db, OTHER_VERSE, "fractal-2", OTHER_PETAL, "node-b").await;
+    declare_format(&db, VERSE, "acme.thermo/frame@1", FORMAT_MIME).await;
+    let asset_id = seed_asset(&db, &handle, b"bytes", PETAL, FORMAT_MIME).await;
+    let (repl_tx, repl_rx) = crossbeam::channel::bounded(8);
+
+    let err = insert_device_payloads(
+        &db,
+        PETAL,
+        Some(OTHER_VERSE),
+        "did:key:z6MkEditor",
+        SourceClass::Device,
+        &DevicePayloadInput {
+            node_id: "node-a".to_string(),
+            format_id: "acme.thermo/frame@1".to_string(),
+            asset_ids: vec![asset_id],
+            recorded_at: None,
+            payload_id: None,
+        },
+        Some(&handle),
+        Some(&repl_tx),
+    )
+    .await
+    .expect_err("a foreign replication verse is refused");
+    assert!(matches!(err, DevicePayloadIngestError::Db(_)), "{err:?}");
+    assert!(repl_rx.try_recv().is_err(), "nothing was emitted");
+    assert!(list_device_payloads(&db, PETAL, None, None, None, None)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+/// MANDATORY finding 1 (cross-tenant reference): a reading ingested into
+/// petal P that names petal Q's payload is refused as unknown and nothing is
+/// written, so no reading ever links across petals. Mutation check: dropping
+/// the petal filter from `fetch_known_payloads` admits the batch.
+#[tokio::test]
+async fn reading_cannot_link_to_another_petals_payload() {
+    let db = setup_db().await;
+    let (_store, handle) = blob_store();
+    seed_hierarchy(&db, VERSE, FRACTAL, PETAL, "node-a").await;
+    seed_hierarchy(&db, OTHER_VERSE, "fractal-2", OTHER_PETAL, "node-b").await;
+    declare_format(&db, OTHER_VERSE, "acme.thermo/frame@1", FORMAT_MIME).await;
+    let foreign_asset = seed_asset(&db, &handle, b"foreign", OTHER_PETAL, FORMAT_MIME).await;
+    let (foreign_payload, _) = ingest_one(
+        &db,
+        &handle,
+        OTHER_PETAL,
+        OTHER_VERSE,
+        "node-b",
+        &foreign_asset,
+        "did:key:z6MkOther",
+        None,
+    )
+    .await
+    .expect("foreign payload");
+
+    let err = insert_readings_with_replication(
+        &db,
+        PETAL,
+        Some(VERSE),
+        "did:key:z6MkEditor",
+        SourceClass::Device,
+        &[IotReadingInput {
+            node_id: "node-a".to_string(),
+            metric: "temperature_c".to_string(),
+            value: 21.0,
+            units: "C".to_string(),
+            recorded_at: None,
+            payload_id: Some(foreign_payload),
+        }],
+        Some(&handle),
+        None,
+    )
+    .await
+    .expect_err("a foreign petal's payload is unknown here");
+    assert!(matches!(
+        err,
+        fe_database::handlers::iot_reading::IotIngestError::UnknownPayload(_)
+    ));
+    let mut res = db.query("SELECT * FROM iot_reading").await.unwrap();
+    let rows: Vec<serde_json::Value> = res.take(0).unwrap_or_default();
+    assert!(rows.is_empty(), "nothing links across petals");
+}
+
+/// The inbound twin of the finding above: a replicated reading whose
+/// `payload_id` names another petal's payload is denied, while one linking
+/// its own petal's payload applies.
+#[tokio::test]
+async fn inbound_reading_linking_a_foreign_petal_payload_is_denied() {
+    let db = setup_db().await;
+    let (_store, handle) = blob_store();
+    seed_hierarchy(&db, VERSE, FRACTAL, PETAL, "node-a").await;
+    db.query(
+        "CREATE petal CONTENT { petal_id: 'petal-3', fractal_id: $fid, name: 'p3', \
+         created_at: '2026-10-14T00:00:00Z' }",
+    )
+    .bind(("fid", FRACTAL.to_string()))
+    .await
+    .unwrap()
+    .check()
+    .unwrap();
+    db.query(
+        "CREATE node CONTENT { node_id: 'node-c', petal_id: 'petal-3', display_name: 'c', \
+         position: <geometry<point>> [0.0, 0.0], elevation: 0.0, rotation: [0.0, 0.0, 0.0, 1.0], \
+         scale: [1.0, 1.0, 1.0], interactive: false, created_at: '2026-10-14T00:00:00Z' }",
+    )
+    .await
+    .unwrap()
+    .check()
+    .unwrap();
+    seed_role(&db, "did:key:z6MkEditor", VERSE, "editor").await;
+    declare_format(&db, VERSE, "acme.thermo/frame@1", FORMAT_MIME).await;
+    let asset_c = seed_asset(&db, &handle, b"c", "petal-3", FORMAT_MIME).await;
+    let (payload_c, _) = ingest_one(
+        &db,
+        &handle,
+        "petal-3",
+        VERSE,
+        "node-c",
+        &asset_c,
+        "did:key:z6MkEditor",
+        None,
+    )
+    .await
+    .expect("petal-3 payload");
+    let asset_a = seed_asset(&db, &handle, b"a", PETAL, FORMAT_MIME).await;
+    let (payload_a, _) = ingest_one(
+        &db,
+        &handle,
+        PETAL,
+        VERSE,
+        "node-a",
+        &asset_a,
+        "did:key:z6MkEditor",
+        None,
+    )
+    .await
+    .expect("petal-1 payload");
+
+    let reading = |reading_id: &str, payload_id: &str| {
+        serde_json::to_vec(&serde_json::json!({
+            "reading_id": reading_id, "node_id": "node-a", "petal_id": PETAL,
+            "metric": "t", "value": 1.0, "units": "C",
+            "recorded_at": "2026-10-14T00:00:00Z", "recorded_at_ms": 0,
+            "hlc_timestamp": 0, "source_did": "did:key:z6MkEditor",
+            "payload_id": payload_id,
+        }))
+        .unwrap()
+    };
+
+    let foreign = apply_replicated_row_handler(
+        &db,
+        VERSE,
+        "iot_reading",
+        "reading-foreign",
+        &reading("reading-foreign", &payload_c),
+        "did:key:z6MkEditor",
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(foreign, ReplicatedRowOutcome::Denied);
+
+    let own = apply_replicated_row_handler(
+        &db,
+        VERSE,
+        "iot_reading",
+        "reading-own",
+        &reading("reading-own", &payload_a),
+        "did:key:z6MkEditor",
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(own, ReplicatedRowOutcome::Applied);
+}
+
+/// Inbound rows whose references or own fields cannot be read are denied
+/// instead of skipped (table-driven over each shape hole the review found).
+/// Mutation check: restoring any `continue`/`if let Some` skip turns its row
+/// from `Denied` to `Applied`.
+#[tokio::test]
+async fn inbound_device_rows_with_unreadable_fields_are_denied() {
+    let db = setup_db().await;
+    seed_hierarchy(&db, VERSE, FRACTAL, PETAL, "node-a").await;
+    seed_role(&db, "did:key:z6MkManager", VERSE, "manager").await;
+    db.query(
+        "CREATE asset CONTENT { asset_id: 'asset-local-1', name: 'a', \
+         content_type: $ct, size_bytes: 1, content_hash: $h, petal_id: $pid, \
+         created_at: '2026-10-14T00:00:00Z' }",
+    )
+    .bind(("ct", FORMAT_MIME.to_string()))
+    .bind(("h", "11".repeat(32)))
+    .bind(("pid", PETAL.to_string()))
+    .await
+    .unwrap()
+    .check()
+    .unwrap();
+
+    let payload = |patch: serde_json::Value| {
+        let mut row = serde_json::json!({
+            "payload_id": "payload-shape", "node_id": "node-a", "petal_id": PETAL,
+            "verse_id": VERSE, "format_id": "acme.thermo/frame@1",
+            "recorded_at": "2026-10-14T00:00:00Z", "recorded_at_ms": 0,
+            "hlc_timestamp": 0, "asset_ids": ["asset-local-1"], "source_did": "x",
+        });
+        for (key, value) in patch.as_object().unwrap() {
+            if value.is_null() {
+                row.as_object_mut().unwrap().remove(key);
+            } else {
+                row[key] = value.clone();
+            }
+        }
+        row
+    };
+    let asset = |patch: serde_json::Value| {
+        let mut row = serde_json::json!({
+            "asset_id": "asset-shape", "name": "x", "content_type": FORMAT_MIME,
+            "size_bytes": 3, "content_hash": "ab".repeat(32), "petal_id": PETAL,
+            "created_at": "2026-10-14T00:00:00Z",
+        });
+        for (key, value) in patch.as_object().unwrap() {
+            row[key] = value.clone();
+        }
+        row
+    };
+    let format = |patch: serde_json::Value| {
+        let mut row = serde_json::json!({
+            "format_id": "acme.thermo/shape@1", "verse_id": VERSE, "mime": FORMAT_MIME,
+            "declared_by": "did:key:z6MkManager", "created_at": "2026-10-14T00:00:00Z",
+        });
+        for (key, value) in patch.as_object().unwrap() {
+            row[key] = value.clone();
+        }
+        row
+    };
+
+    let cases: Vec<(&str, &str, serde_json::Value)> = vec![
+        (
+            "payload without node_id",
+            "device_payload",
+            payload(serde_json::json!({ "node_id": null })),
+        ),
+        (
+            "payload without asset_ids",
+            "device_payload",
+            payload(serde_json::json!({ "asset_ids": null })),
+        ),
+        (
+            "payload with empty asset_ids",
+            "device_payload",
+            payload(serde_json::json!({ "asset_ids": [] })),
+        ),
+        (
+            "payload with a non-string asset id",
+            "device_payload",
+            payload(serde_json::json!({ "asset_ids": ["asset-local-1", 7] })),
+        ),
+        (
+            "payload over the asset cap",
+            "device_payload",
+            payload(
+                serde_json::json!({ "asset_ids": vec!["asset-local-1"; DEVICE_PAYLOAD_MAX_ASSETS + 1] }),
+            ),
+        ),
+        (
+            "payload claiming a foreign verse_id",
+            "device_payload",
+            payload(serde_json::json!({ "verse_id": OTHER_VERSE })),
+        ),
+        (
+            "asset with a path-escaping id",
+            "asset",
+            asset(serde_json::json!({ "asset_id": "../../etc/passwd" })),
+        ),
+        (
+            "asset with a malformed hash",
+            "asset",
+            asset(serde_json::json!({ "content_hash": "not-hex" })),
+        ),
+        (
+            "asset with a negative size",
+            "asset",
+            asset(serde_json::json!({ "size_bytes": -1_000_000_000_i64 })),
+        ),
+        (
+            "asset with a header-breaking content_type",
+            "asset",
+            asset(serde_json::json!({ "content_type": "text/html\r\nX: 1" })),
+        ),
+        (
+            "format with a malformed format_id",
+            "device_format",
+            format(serde_json::json!({ "format_id": "not-a-format" })),
+        ),
+        (
+            "format with a malformed mime",
+            "device_format",
+            format(serde_json::json!({ "mime": "nonsense" })),
+        ),
+    ];
+
+    for (name, table, row) in cases {
+        let record_id = row
+            .get("payload_id")
+            .or_else(|| row.get("asset_id"))
+            .or_else(|| row.get("format_id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("x")
+            .to_string();
+        let outcome = apply_replicated_row_handler(
+            &db,
+            VERSE,
+            table,
+            &record_id,
+            &serde_json::to_vec(&row).unwrap(),
+            "did:key:z6MkManager",
+            None,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(outcome, ReplicatedRowOutcome::Denied, "{name}");
+    }
+
+    for (table, key) in [
+        ("device_payload", "payload_id"),
+        ("asset", "asset_id"),
+        ("device_format", "format_id"),
+    ] {
+        let mut res = db
+            .query(format!("SELECT {key} FROM {table}"))
+            .await
+            .unwrap();
+        let rows: Vec<serde_json::Value> = res.take(0).unwrap_or_default();
+        let planted = rows
+            .iter()
+            .filter(|r| r[key].as_str().is_some_and(|id| id != "asset-local-1"))
+            .count();
+        assert_eq!(planted, 0, "no denied {table} row was stored: {rows:?}");
+    }
+}
+
+/// An inbound asset row never charges (or credits) a local uploader's quota:
+/// its `owner_did` is dropped on apply, so `SUM(size_bytes) WHERE owner_did`
+/// cannot be moved by a peer.
+#[tokio::test]
+async fn inbound_asset_row_is_never_attributed_to_a_local_uploader() {
+    let db = setup_db().await;
+    seed_hierarchy(&db, VERSE, FRACTAL, PETAL, "node-a").await;
+    seed_role(&db, "did:key:z6MkEditor", VERSE, "editor").await;
+    let row = serde_json::json!({
+        "asset_id": "asset-quota-1", "name": "big.bin", "content_type": FORMAT_MIME,
+        "size_bytes": 9_000_000_000_i64, "content_hash": "ab".repeat(32),
+        "owner_did": "did:key:z6MkLocalVictim", "petal_id": PETAL,
+        "created_at": "2026-10-14T00:00:00Z",
+    });
+    let outcome = apply_replicated_row_handler(
+        &db,
+        VERSE,
+        "asset",
+        "asset-quota-1",
+        &serde_json::to_vec(&row).unwrap(),
+        "did:key:z6MkEditor",
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+
+    let mut res = db
+        .query(
+            "SELECT math::sum(size_bytes) AS used FROM asset \
+             WHERE owner_did = 'did:key:z6MkLocalVictim' GROUP ALL",
+        )
+        .await
+        .unwrap();
+    let rows: Vec<serde_json::Value> = res.take(0).unwrap_or_default();
+    let used = rows.first().and_then(|r| r["used"].as_i64()).unwrap_or(0);
+    assert_eq!(used, 0, "the peer's row counts against no local quota");
 }

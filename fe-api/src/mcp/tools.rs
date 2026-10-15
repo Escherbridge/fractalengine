@@ -666,20 +666,29 @@ pub(super) fn register_device_format(call: ToolCall<'_>) -> ToolFuture<'_> {
                 .unwrap_or("")
                 .to_string(),
         };
+        let correlation_id = ulid::Ulid::new().to_string();
         let cmd = DbCommand::RegisterDeviceFormat {
             verse_id,
             descriptor,
             declared_by: call.claims.sub.clone(),
-            correlation_id: None,
+            correlation_id: Some(correlation_id.clone()),
         };
         match crate::rest::db_round_trip(call.state, cmd).await? {
             DbResult::DeviceFormatRegistered {
                 verse_id,
                 format_id,
+                correlation_id: Some(echoed),
+            } if echoed == correlation_id => {
+                Ok(json!({ "verse_id": verse_id, "format_id": format_id }))
+            }
+            DbResult::DeviceFormatRejected {
+                reason,
+                correlation_id: Some(echoed),
                 ..
-            } => Ok(json!({ "verse_id": verse_id, "format_id": format_id })),
-            DbResult::DeviceFormatRejected { reason, .. } => Err(reason.to_string()),
-            DbResult::Error(e) => Err(db_failure("register_device_format", &e)),
+            } if echoed == correlation_id => Err(reason.to_string()),
+            DbResult::RequestFailed { error, .. } => {
+                Err(db_failure("register_device_format", &error))
+            }
             _ => Err("register_device_format failed".to_string()),
         }
     })
@@ -688,13 +697,18 @@ pub(super) fn register_device_format(call: ToolCall<'_>) -> ToolFuture<'_> {
 pub(super) fn list_device_formats(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
         let verse_id = scope_parts(&call)?.verse_id;
+        let correlation_id = ulid::Ulid::new().to_string();
         let cmd = DbCommand::ListDeviceFormats {
             verse_id,
-            correlation_id: None,
+            correlation_id: Some(correlation_id.clone()),
         };
         match crate::rest::db_round_trip(call.state, cmd).await? {
-            DbResult::DeviceFormatsListed { formats, .. } => Ok(json!({ "formats": formats })),
-            DbResult::Error(e) => Err(db_failure("list_device_formats", &e)),
+            DbResult::DeviceFormatsListed {
+                formats,
+                correlation_id: Some(echoed),
+                ..
+            } if echoed == correlation_id => Ok(json!({ "formats": formats })),
+            DbResult::RequestFailed { error, .. } => Err(db_failure("list_device_formats", &error)),
             _ => Err("list_device_formats failed".to_string()),
         }
     })
@@ -723,6 +737,13 @@ pub(super) fn ingest_device_payload(call: ToolCall<'_>) -> ToolFuture<'_> {
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
             .map(str::to_string);
+        // A client retry id is refused before any byte is stored.
+        if payload_id
+            .as_deref()
+            .is_some_and(|id| !crate::types::is_valid_ulid(id))
+        {
+            return Err("invalid payload_id".to_string());
+        }
 
         let files: Vec<String> = match call.args.get("files") {
             Some(Value::Array(items)) if !items.is_empty() => items
@@ -780,6 +801,7 @@ pub(super) fn ingest_device_payload(call: ToolCall<'_>) -> ToolFuture<'_> {
             asset_ids.push(asset.asset_id);
         }
 
+        let correlation_id = ulid::Ulid::new().to_string();
         let cmd = DbCommand::InsertDevicePayloads {
             petal_id,
             verse_id: Some(verse_id),
@@ -797,16 +819,25 @@ pub(super) fn ingest_device_payload(call: ToolCall<'_>) -> ToolFuture<'_> {
                 recorded_at,
                 payload_id,
             },
-            correlation_id: None,
+            correlation_id: Some(correlation_id.clone()),
         };
         match crate::rest::db_round_trip(call.state, cmd).await? {
             DbResult::DevicePayloadsInserted {
                 payload_id,
                 asset_ids,
+                correlation_id: Some(echoed),
                 ..
-            } => Ok(json!({ "payload_id": payload_id, "asset_ids": asset_ids })),
-            DbResult::DevicePayloadsRejected { reason, .. } => Err(reason.to_string()),
-            DbResult::Error(e) => Err(db_failure("ingest_device_payload", &e)),
+            } if echoed == correlation_id => {
+                Ok(json!({ "payload_id": payload_id, "asset_ids": asset_ids }))
+            }
+            DbResult::DevicePayloadsRejected {
+                reason,
+                correlation_id: Some(echoed),
+                ..
+            } if echoed == correlation_id => Err(reason.to_string()),
+            DbResult::RequestFailed { error, .. } => {
+                Err(db_failure("ingest_device_payload", &error))
+            }
             _ => Err("ingest_device_payload failed".to_string()),
         }
     })
@@ -829,17 +860,27 @@ pub(super) fn list_device_payloads(call: ToolCall<'_>) -> ToolFuture<'_> {
             .map(str::to_string);
         let from_ms = call.args.get("from_ms").and_then(Value::as_i64);
         let to_ms = call.args.get("to_ms").and_then(Value::as_i64);
+        // Correlated (never FIFO-paired): an uncorrelated list reply can be
+        // handed to ANOTHER caller's waiter after a wildcard `Error` skews
+        // the queue — another petal's rows (fe-runtime §api-reply-correlation).
+        let correlation_id = ulid::Ulid::new().to_string();
         let cmd = DbCommand::ListDevicePayloads {
             petal_id,
             node_id,
             format_id,
             from_ms,
             to_ms,
-            correlation_id: None,
+            correlation_id: Some(correlation_id.clone()),
         };
         match crate::rest::db_round_trip(call.state, cmd).await? {
-            DbResult::DevicePayloadsListed { payloads, .. } => Ok(json!({ "payloads": payloads })),
-            DbResult::Error(e) => Err(db_failure("list_device_payloads", &e)),
+            DbResult::DevicePayloadsListed {
+                payloads,
+                correlation_id: Some(echoed),
+                ..
+            } if echoed == correlation_id => Ok(json!({ "payloads": payloads })),
+            DbResult::RequestFailed { error, .. } => {
+                Err(db_failure("list_device_payloads", &error))
+            }
             _ => Err("list_device_payloads failed".to_string()),
         }
     })

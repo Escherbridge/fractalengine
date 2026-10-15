@@ -411,7 +411,9 @@ DB-thread's own handle elsewhere).
 through `db_reader` (§iot-ingest's append-only fast path, bypassing the DB
 thread). `ReadDb::writable(&self) -> &Db` is the single named escape hatch
 for that path — `insert_readings_with_replication` still takes the raw
-`&Db` the fe-database handler expects. Grep for `.writable()` before adding
+`&Db` the fe-database handler expects. It is `pub(crate)`: code outside
+fe-api (the harness, binaries, integration tests) can hold a `ReadDb` but can
+never turn it back into a writer. Grep for `.writable()` before adding
 a second caller; a new write surface on `db_reader` should be a deliberate,
 reviewed decision, not an accidental one.
 
@@ -1254,6 +1256,19 @@ functions for the same reason).
      same tradeoff for the pre-existing IoT/asset path).
   4. 201 `{payload_id, asset_ids}` (asset ids keep ingest order — the DB
      handler returns them verbatim, including on an idempotent retry).
+- **Client `payload_id` (Phase A security review, 2026-10-15).** REST and
+  MCP refuse a non-ULID id (400 / tool error) before any byte is stored; the
+  DB door re-checks it. A taken id is a retry only for the same petal and the
+  same principal; anyone else gets **409** (`PayloadIdConflict`, mapped by
+  `device::payload_rejection_status`) with a body that names nothing about the
+  existing payload.
+- **MCP device tools are correlated.** `register_device_format`,
+  `list_device_formats`, `ingest_device_payload` and `list_device_payloads`
+  send a correlation id and accept only the reply that echoes it, and the DB
+  arms answer failures with `RequestFailed` (`handlers::correlated_failure`).
+  An uncorrelated list reply can otherwise be paired with another caller's
+  waiter after a wildcard `Error` skews the queue, handing it another petal's
+  rows (fe-runtime §api-reply-correlation).
 - **`GET /api/v1/petals/{p}/iot/payloads?node_id&format_id&from&to`** —
   Viewer+, petal scope. Thin `ListDevicePayloadsQuery` → `DbCommand::
   ListDevicePayloads` → `{payloads}`.

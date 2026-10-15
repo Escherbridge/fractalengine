@@ -188,7 +188,9 @@ check, `is_valid_format_id`.
 `device_format.rs` holds [`DeviceFormatDescriptor`] — `{format_id, mime, schema, description}` —
 the serde-only shape a device extension declares before its payloads (R5: "a declared format
 descriptor"). `is_well_formed` validates `format_id` via [`source_class::is_valid_format_id`] and
-requires a non-blank `mime`; it does NOT check uniqueness against an existing declaration in the
+`mime` via `is_valid_mime` (a `type/subtype` RFC 6838 token pair with optional `; params`, at most
+255 bytes, no control characters; the fe-database door and its inbound replication gate share it,
+and a blob response's `Content-Type` is built from it); it does NOT check uniqueness against an existing declaration in the
 same verse — that conflict check belongs to `fe-database::handlers::device_payload`, which is the
 only place that can see other rows. `schema` is informative JSON Schema only: R5 says payload bytes
 are stored opaque, so nothing in this crate or fe-database validates bytes against it in v1.

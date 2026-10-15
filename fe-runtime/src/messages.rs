@@ -41,6 +41,12 @@ pub struct IotReadingInput {
 // R5: device payload / format descriptor wire shapes (CDL-SPEC10 A3)
 // ---------------------------------------------------------------------------
 
+/// Max asset ids one device payload may carry — the ONE bound every door
+/// (REST, MCP, the DB-thread ingest handler) and the inbound replication gate
+/// enforce (fe-database `src/AGENTS.md` §device-payload; "shared cores +
+/// separate guards = drift").
+pub const DEVICE_PAYLOAD_MAX_ASSETS: usize = 32;
+
 /// One device payload to ingest: a format descriptor id plus the ordered list
 /// of already-stored asset ids that make up this payload's opaque bytes
 /// (R5: "allow for multiple records (a list of records)"). Defined here, like
@@ -113,6 +119,14 @@ pub enum DevicePayloadIngestRejection {
     EmptyAssetList,
     /// `recorded_at` is not RFC-3339.
     InvalidTimestamp { raw: String },
+    /// More than [`DEVICE_PAYLOAD_MAX_ASSETS`] asset ids.
+    TooManyAssets { max: usize },
+    /// A client-supplied `payload_id` is not a ULID.
+    InvalidPayloadId { raw: String },
+    /// A client-supplied `payload_id` is already taken by a row this caller
+    /// may not treat as its own retry (another petal or another principal).
+    /// Deliberately carries nothing about the existing row.
+    PayloadIdConflict,
 }
 
 impl std::fmt::Display for DevicePayloadIngestRejection {
@@ -136,6 +150,13 @@ impl std::fmt::Display for DevicePayloadIngestRejection {
             Self::InvalidTimestamp { raw } => {
                 write!(f, "invalid recorded_at '{raw}' (expected RFC-3339)")
             }
+            Self::TooManyAssets { max } => {
+                write!(f, "at most {max} asset ids per device payload")
+            }
+            Self::InvalidPayloadId { raw } => {
+                write!(f, "invalid payload_id '{raw}' (expected a ULID)")
+            }
+            Self::PayloadIdConflict => write!(f, "payload_id is already in use"),
         }
     }
 }
@@ -149,6 +170,8 @@ pub enum DeviceFormatRejection {
     InvalidFormatId { format_id: String },
     /// `mime` is blank.
     EmptyMime,
+    /// `mime` is not a `type/subtype` token (fe-sdk `is_valid_mime`).
+    InvalidMime { mime: String },
     /// A `device_format` with this id already exists for the verse with a
     /// DIFFERENT mime (the row is immutable per key — R5 assumption 7).
     ConflictingMime {
@@ -167,6 +190,9 @@ impl std::fmt::Display for DeviceFormatRejection {
                 )
             }
             Self::EmptyMime => write!(f, "mime must be non-empty"),
+            Self::InvalidMime { mime } => {
+                write!(f, "invalid mime '{mime}' (expected type/subtype)")
+            }
             Self::ConflictingMime {
                 format_id,
                 existing_mime,

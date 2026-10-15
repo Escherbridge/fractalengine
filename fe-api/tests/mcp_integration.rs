@@ -3054,7 +3054,8 @@ async fn mcp_device_payload_full_loop() {
         .await
         .expect("node");
     let scope = fe_database::build_scope(&verse, Some(&fractal), Some(&petal));
-    let manager = claims(&scope, "manager");
+    // Formats are verse-wide: declaring one needs a verse-scoped Manager.
+    let manager = claims(&fe_database::build_scope(&verse, None, None), "manager");
     let editor = claims(&scope, "editor");
     let viewer = claims(&scope, "viewer");
 

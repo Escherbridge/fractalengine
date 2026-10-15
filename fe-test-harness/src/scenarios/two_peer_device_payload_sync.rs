@@ -418,7 +418,8 @@ pub fn run() -> Result<TestResult> {
             format_id: format_id.clone(),
             asset_ids: vec![asset_id1.clone(), asset_id2.clone()],
             recorded_at: None,
-            payload_id: Some("payload-dp1".into()),
+            // A client retry id is a ULID (the door refuses anything else).
+            payload_id: Some("01ARZ3NDEKTSV4RRFFQ69G5FAV".into()),
         },
         correlation_id: None,
     });

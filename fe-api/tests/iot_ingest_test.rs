@@ -166,6 +166,13 @@ async fn count_readings(db: &Db) -> usize {
     res.take::<Vec<serde_json::Value>>(0).unwrap().len()
 }
 
+/// [`count_readings`] through the API's read-only handle (`ReadDb::writable`
+/// is crate-private: tests read, they never write, through `db_reader`).
+async fn count_reader_readings(db: &fe_api::db_reader::ReadDb) -> usize {
+    let mut res = db.query("SELECT * FROM iot_reading").await.unwrap();
+    res.take::<Vec<serde_json::Value>>(0).unwrap().len()
+}
+
 // ---------------------------------------------------------------------------
 // FR-4 — ingestion endpoint
 // ---------------------------------------------------------------------------
@@ -252,7 +259,7 @@ async fn ingest_rejects_wrong_scope_role_and_foreign_anchor() {
     assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     assert_eq!(
-        count_readings(state.db_reader.as_ref().unwrap().writable()).await,
+        count_reader_readings(state.db_reader.as_ref().unwrap()).await,
         0
     );
 }
@@ -277,7 +284,7 @@ async fn ingest_enforces_batch_cap_and_rejects_empty() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
     assert_eq!(
-        count_readings(state.db_reader.as_ref().unwrap().writable()).await,
+        count_reader_readings(state.db_reader.as_ref().unwrap()).await,
         0
     );
 }

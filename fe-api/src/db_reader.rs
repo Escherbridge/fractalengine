@@ -53,9 +53,10 @@ impl ReadDb {
     }
 
     /// Escape hatch for the one documented write exception (§iot-readings:
-    /// the API-thread append-only insert path in `iot.rs`). Grep for
+    /// the API-thread append-only insert path in `iot.rs`). Crate-private so
+    /// no code outside fe-api can turn a `ReadDb` back into a writer; grep for
     /// existing callers before adding a new one here.
-    pub fn writable(&self) -> &Db {
+    pub(crate) fn writable(&self) -> &Db {
         &self.0
     }
 }

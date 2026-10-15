@@ -261,8 +261,23 @@ recorded_at(_ms), hlc_timestamp, asset_ids: array<string>, source_did}` —
   replication-only `verse_id` — every asset exists/anchored/MIME-matched,
   timestamp parses), durable insert, THEN publish (asset rows first, then
   the payload row — SPEC-10 §2.3 ingestion-story order), THEN record
-  §window-membership. A known client `payload_id` is an idempotent no-op
-  checked BEFORE validation re-runs.
+  §window-membership. A client `payload_id` must be a ULID
+  (`is_valid_payload_id`). A known one is an idempotent no-op ONLY when the
+  existing row is in the same petal AND has the same `source_did`; any other
+  holder of the id gets `PayloadIdConflict`, which names nothing about the
+  existing row (Phase A review, MANDATORY finding 2: returning the row's
+  `asset_ids` to any replayer was an IDOR). `fetch_payload` is petal-scoped
+  and `payload_id_taken` answers only yes/no. A caller-supplied replication
+  `verse_id` must be the petal's own verse, or the call fails before anything
+  is written, so a payload is never published into a foreign verse's
+  replica. `asset_ids` is bounded by the ONE shared cap,
+  `fe_runtime::messages::DEVICE_PAYLOAD_MAX_ASSETS` (REST, MCP, this door and
+  the inbound gate all read it).
+- `payload_in_petal` — `pub(crate)`, the petal-scoped payload link check the
+  inbound `iot_reading` gate uses; the reading door's own
+  `fetch_known_payloads` filters by the reading's petal the same way
+  (MANDATORY finding 1: an unscoped lookup let a reading in petal P link to
+  petal Q's payload).
 - `record_window_membership` — `pub(crate)`, shared with
   `handlers::iot_reading`; see §window-membership.
 - `node_is_in_petal` / `asset_anchored_to_petal` — `pub(crate)`, shared with
@@ -276,7 +291,14 @@ column is `array<string>`, so `SELECT VALUE asset_ids` returns one `Vec<String>`
 per row that must be flattened client-side, unlike the scalar `strings()`
 helper the node-reference query uses). Without this, an asset referenced only
 by a device payload would be deleted after the grace period — a data-loss
-trap found in the campaign plan's §2.2 recon.
+trap found in the campaign plan's §2.2 recon. The query fails closed: an
+undecodable result aborts the pass instead of reading as "nothing
+referenced".
+
+**Placement.** `crud::create_node_with_asset_handler` refuses any asset whose
+`content_type` is not `model/gltf-binary`/`model/gltf+json`, so a device
+payload asset never becomes a `blob://<hash>.bin` scene path handed to the
+AssetServer even if a caller skips fe-api's `place_asset_core` check.
 
 **Inbound replication (`handlers::replicated_row`).**
 - `asset`: insert-if-absent, never overwrite, ANCHORED rows only (a legacy
@@ -299,6 +321,21 @@ trap found in the campaign plan's §2.2 recon.
   `device_format` needs **Manager+** (`RoleLevel::can_manage()`, schema-defining
   like branch controls — "strictest reader", critic C3); `asset`/`device_payload`
   use the standard Editor+ `evaluate_write` gate every other table uses.
+- **Inbound shape (Phase A security review, 2026-10-15).** A check that skips
+  what it cannot read is a check a peer can step around, so the gate denies
+  instead of skipping: unparseable JSON on any R5 table; a `device_payload`
+  with no `node_id`, no/empty/oversized `asset_ids`, a non-string entry, or a
+  `verse_id` other than the replica's. `apply_anchored_asset_row` denies an
+  `asset_id` that fails `fe_runtime::safe_id::is_safe_path_id` (the legacy
+  backfill joins it into a path), a missing/non-hex `content_hash`, a missing
+  or negative `size_bytes` and a `content_type` that fails
+  `fe_sdk::device_format::is_valid_mime`, and DROPS `owner_did`: the upload
+  quota sums `size_bytes` by `owner_did`, so a peer could otherwise exhaust
+  (or, with a negative size, refund) a local uploader's quota.
+  `apply_device_format_row` applies the local door's `format_id` and MIME
+  grammar. An inbound `iot_reading` whose `payload_id` is not a payload of
+  the reading's own petal is denied (the reading's own petal confinement is
+  still the pre-existing gap RP-4 owns).
 
 ## §window-membership (SPEC-10 §3.4 rule 5, CDL-SPEC10 A3, A1 hand-back item 3)
 

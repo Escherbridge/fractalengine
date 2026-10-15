@@ -587,10 +587,16 @@ pub(crate) async fn create_node_with_asset_handler(
     let Some(content_hash) = asset_row.get("content_hash").and_then(|v| v.as_str()) else {
         anyhow::bail!("CreateNodeWithAsset asset {asset_id} has no blob content_hash");
     };
+    // Only scene formats become a `SceneRoot`: an R5 device-payload asset
+    // (declared-MIME opaque bytes) is never handed to the AssetServer
+    // (`src/AGENTS.md` §device-payload; fe-api `place_asset_core` refuses
+    // first, this is the DB-thread authority behind it).
     let ext = match asset_row.get("content_type").and_then(|v| v.as_str()) {
         Some("model/gltf-binary") => "glb",
         Some("model/gltf+json") => "gltf",
-        _ => "bin",
+        other => anyhow::bail!(
+            "CreateNodeWithAsset asset {asset_id} is not a scene asset (content_type {other:?})"
+        ),
     };
     let asset_path = format!("blob://{content_hash}.{ext}");
 
@@ -2100,6 +2106,38 @@ mod asset_ingest_tests {
         assert_eq!(rows[0]["asset_id"], asset_id.as_str());
         assert_eq!(rows[0]["rotation"], serde_json::json!([0.5, 0.0, 0.0]));
         assert_eq!(rows[0]["elevation"], 2.0);
+    }
+
+    /// CDL-SPEC10 Phase A security: an R5 device-payload asset (declared
+    /// non-scene MIME) is refused at the DB-thread authority, so no
+    /// `blob://<hash>.bin` scene path is ever handed to the AssetServer even
+    /// if a caller skips fe-api's `place_asset_core` guard.
+    #[tokio::test]
+    async fn place_asset_refuses_a_non_scene_asset_and_writes_no_node() {
+        let (db, store, hash) = setup().await;
+        let asset_id = create_asset_handler(
+            &db,
+            &store,
+            &AssetRegistration {
+                name: "frame.html".into(),
+                content_type: "text/html".into(),
+                size_bytes: 12,
+                content_hash: hash,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let err = create_node_with_asset_handler(
+            &db, "petal-1", "frame", &asset_id, [0.0; 3], [0.0; 3], [1.0; 3],
+        )
+        .await
+        .expect_err("a non-scene asset must not become a node");
+        assert!(err.to_string().contains("not a scene asset"), "{err}");
+        let mut res = db.query("SELECT node_id FROM node").await.unwrap();
+        let rows: Vec<serde_json::Value> = res.take(0).unwrap_or_default();
+        assert!(rows.is_empty(), "no node row on a refused placement");
     }
 
     /// DEC-C21 M7: promotion refuses a path_id owned by another petal (no

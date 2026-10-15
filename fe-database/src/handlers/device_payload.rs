@@ -3,12 +3,12 @@
 //! shape: durable-first, then one `ReplicationEvent` per accepted row.
 
 use fe_query::{Filter, InsertBuilder, QueryBuilder, QueryValue};
-use fe_sdk::device_format::DeviceFormatDescriptor;
+use fe_sdk::device_format::{is_valid_mime, DeviceFormatDescriptor};
 use fe_sdk::source_class::{is_valid_format_id, SourceClass};
 
 use fe_runtime::messages::{
     DeviceFormatDto, DeviceFormatRejection, DevicePayloadDto, DevicePayloadIngestRejection,
-    DevicePayloadInput,
+    DevicePayloadInput, DEVICE_PAYLOAD_MAX_ASSETS,
 };
 
 use crate::op_log::next_hlc_timestamp;
@@ -67,6 +67,12 @@ pub async fn register_format(
     }
     if descriptor.mime.trim().is_empty() {
         return Err(DeviceFormatRejection::EmptyMime.into());
+    }
+    if !is_valid_mime(&descriptor.mime) {
+        return Err(DeviceFormatRejection::InvalidMime {
+            mime: descriptor.mime.clone(),
+        }
+        .into());
     }
 
     if let Some(existing) = fetch_format(db, verse_id, &descriptor.format_id)
@@ -193,19 +199,46 @@ pub async fn insert_device_payloads(
     blob_store: Option<&BlobStoreHandle>,
     repl_tx: Option<&ReplicationSender>,
 ) -> Result<(String, Vec<String>), DevicePayloadIngestError> {
-    // Idempotent retry: a known client `payload_id` returns the existing row
-    // untouched, before any other validation re-runs.
+    // Idempotent retry (§device-payload "retry is same-petal, same-principal"):
+    // a client `payload_id` must be a ULID, and a known one is a retry ONLY
+    // when the existing row is in this petal AND was ingested by this same
+    // principal. Any other holder of the id gets a conflict that names
+    // nothing about the existing row — returning its `asset_ids` would let a
+    // caller in petal P read petal Q's asset ids by replaying an id (IDOR).
     if let Some(payload_id) = payload.payload_id.as_deref() {
-        if let Some(existing) = fetch_payload(db, payload_id)
+        if !is_valid_payload_id(payload_id) {
+            return Err(DevicePayloadIngestRejection::InvalidPayloadId {
+                raw: payload_id.to_string(),
+            }
+            .into());
+        }
+        match fetch_payload(db, petal_id, payload_id)
             .await
             .map_err(|e| DevicePayloadIngestError::Db(e.to_string()))?
         {
-            return Ok((existing.payload_id, existing.asset_ids));
+            Some(existing) if existing.source_did == source_did => {
+                return Ok((existing.payload_id, existing.asset_ids));
+            }
+            Some(_) => return Err(DevicePayloadIngestRejection::PayloadIdConflict.into()),
+            None => {
+                if payload_id_taken(db, payload_id)
+                    .await
+                    .map_err(|e| DevicePayloadIngestError::Db(e.to_string()))?
+                {
+                    return Err(DevicePayloadIngestRejection::PayloadIdConflict.into());
+                }
+            }
         }
     }
 
     if payload.asset_ids.is_empty() {
         return Err(DevicePayloadIngestRejection::EmptyAssetList.into());
+    }
+    if payload.asset_ids.len() > DEVICE_PAYLOAD_MAX_ASSETS {
+        return Err(DevicePayloadIngestRejection::TooManyAssets {
+            max: DEVICE_PAYLOAD_MAX_ASSETS,
+        }
+        .into());
     }
 
     // The anchor must be an existing node of this petal (scope integrity,
@@ -226,6 +259,16 @@ pub async fn insert_device_payloads(
     let owning_verse = owning_verse_id(db, petal_id)
         .await
         .map_err(|e| DevicePayloadIngestError::Db(e.to_string()))?;
+    // The caller's replication `verse_id` names the replica the row is
+    // published into; it must be the petal's OWN verse, or a petal's payload
+    // (and its asset rows) would be published into a foreign verse's replica.
+    if let Some(claimed) = verse_id {
+        if owning_verse.as_deref() != Some(claimed) {
+            return Err(DevicePayloadIngestError::Db(format!(
+                "verse_id '{claimed}' does not own petal '{petal_id}'"
+            )));
+        }
+    }
     let descriptor = match &owning_verse {
         Some(v) => fetch_format(db, v, &payload.format_id)
             .await
@@ -356,16 +399,60 @@ pub async fn insert_device_payloads(
     Ok((payload_id, payload.asset_ids.clone()))
 }
 
-/// The `device_payload` row for `payload_id`, or `None`.
-async fn fetch_payload(db: &Db, payload_id: &str) -> anyhow::Result<Option<DevicePayloadDto>> {
+/// Whether a client-supplied `payload_id` is a canonical ULID (26 Crockford
+/// characters that decode — the same id shape the server mints).
+pub fn is_valid_payload_id(payload_id: &str) -> bool {
+    payload_id.len() == 26 && ulid::Ulid::from_string(payload_id).is_ok()
+}
+
+/// The `device_payload` row for `payload_id` IN `petal_id`, or `None` —
+/// petal-scoped so no caller can read another petal's row through it.
+async fn fetch_payload(
+    db: &Db,
+    petal_id: &str,
+    payload_id: &str,
+) -> anyhow::Result<Option<DevicePayloadDto>> {
     let q = QueryBuilder::new()
         .select(&["*"])
+        .from("device_payload")
+        .filter(Filter::eq("payload_id", payload_id))
+        .and(Filter::eq("petal_id", petal_id))
+        .build();
+    let mut res = exec_query(db, &q).await?;
+    let rows: Vec<serde_json::Value> = res.take(0)?;
+    Ok(rows.into_iter().next().map(payload_dto_from_row))
+}
+
+/// Whether ANY `device_payload` row holds `payload_id` — a bare yes/no for
+/// the conflict decision, never a row.
+async fn payload_id_taken(db: &Db, payload_id: &str) -> anyhow::Result<bool> {
+    let q = QueryBuilder::new()
+        .select(&["payload_id"])
         .from("device_payload")
         .filter(Filter::eq("payload_id", payload_id))
         .build();
     let mut res = exec_query(db, &q).await?;
     let rows: Vec<serde_json::Value> = res.take(0)?;
-    Ok(rows.into_iter().next().map(payload_dto_from_row))
+    Ok(!rows.is_empty())
+}
+
+/// Whether `payload_id` names a `device_payload` row anchored to `petal_id`.
+/// `pub(crate)` so the reading door and the inbound `iot_reading` gate share
+/// this one petal-scoped link check.
+pub(crate) async fn payload_in_petal(
+    db: &Db,
+    petal_id: &str,
+    payload_id: &str,
+) -> anyhow::Result<bool> {
+    let q = QueryBuilder::new()
+        .select(&["payload_id"])
+        .from("device_payload")
+        .filter(Filter::eq("payload_id", payload_id))
+        .and(Filter::eq("petal_id", petal_id))
+        .build();
+    let mut res = exec_query(db, &q).await?;
+    let rows: Vec<serde_json::Value> = res.take(0)?;
+    Ok(!rows.is_empty())
 }
 
 /// List `device_payload` rows for `petal_id`, optionally filtered by anchor

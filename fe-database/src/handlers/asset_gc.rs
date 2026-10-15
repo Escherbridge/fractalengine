@@ -48,7 +48,9 @@ pub async fn gc_unreferenced_assets(
         .query("SELECT VALUE asset_ids FROM device_payload")
         .await?
         .check()?;
-    let asset_id_groups: Vec<Vec<String>> = asset_ids_res.take(0).unwrap_or_default();
+    // Fail closed: an undecodable reference set aborts the pass rather than
+    // reading as "nothing referenced" and collecting every payload's assets.
+    let asset_id_groups: Vec<Vec<String>> = asset_ids_res.take(0)?;
     referenced.extend(asset_id_groups.into_iter().flatten());
     let mut res = db
         .query("SELECT asset_id, content_hash, created_at FROM asset")

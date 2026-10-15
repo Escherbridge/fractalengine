@@ -352,7 +352,10 @@ async fn admit_inbound_row(
     // device-enrolment checks above and the W3 enrolment floor — a
     // signature/reference check is never something authority should be
     // allowed to bypass, bootstrap window or not.
-    if matches!(table, "asset" | "device_payload" | "device_format") {
+    if matches!(
+        table,
+        "asset" | "device_payload" | "device_format" | "iot_reading"
+    ) {
         if let Some(reason) = r5_referential_confinement(db, verse_id, table, row_bytes).await? {
             tracing::warn!(
                 verse_id,
@@ -415,9 +418,13 @@ async fn admit_inbound_row(
 
 /// R5 referential confinement (critic C4, pre-empting the P2P-REF-CONFINE
 /// ledger row): every reference inside an `asset` / `device_payload` /
-/// `device_format` row must resolve to THIS replica's verse. `Some(reason)`
-/// denies; `None` allows. A reference unknown locally is denied for now
-/// (role propagation RP-4 later turns this into `Deferred Parent`).
+/// `device_format` row must resolve to THIS replica's verse, and an
+/// `iot_reading`'s optional `payload_id` link must name a payload of the
+/// reading's own petal. `Some(reason)` denies; `None` allows. A reference
+/// unknown locally is denied for now (role propagation RP-4 later turns this
+/// into `Deferred Parent`). A reference list that is absent, empty, oversized
+/// or not all strings is denied too: a check that skips what it cannot read
+/// is a check a peer can step around (`src/AGENTS.md` §device-payload).
 async fn r5_referential_confinement(
     db: &Db,
     verse_id: &str,
@@ -430,8 +437,7 @@ async fn r5_referential_confinement(
         return Ok(None);
     }
     let Ok(row) = serde_json::from_slice::<serde_json::Value>(row_bytes) else {
-        // Malformed JSON surfaces once, from the apply function itself.
-        return Ok(None);
+        return Ok(Some(format!("{table} row is not valid JSON")));
     };
 
     match table {
@@ -448,32 +454,73 @@ async fn r5_referential_confinement(
             if let Some(reason) = confine_petal_to_verse(db, verse_id, petal_id).await? {
                 return Ok(Some(reason));
             }
-            if let Some(node_id) = row.get("node_id").and_then(|v| v.as_str()) {
-                if !crate::handlers::device_payload::node_is_in_petal(db, petal_id, node_id).await?
-                {
-                    return Ok(Some(format!(
-                        "device_payload anchor node '{node_id}' is not known in petal '{petal_id}'"
-                    )));
+            match row.get("verse_id") {
+                None | Some(serde_json::Value::Null) => {}
+                Some(v) if v.as_str() == Some(verse_id) => {}
+                Some(_) => {
+                    return Ok(Some(
+                        "device_payload verse_id does not match the replica's verse".to_string(),
+                    ))
                 }
             }
-            if let Some(asset_ids) = row.get("asset_ids").and_then(|v| v.as_array()) {
-                for entry in asset_ids {
-                    let Some(asset_id) = entry.as_str() else {
-                        continue;
-                    };
-                    if !crate::handlers::device_payload::asset_anchored_to_petal(
-                        db, asset_id, petal_id,
-                    )
+            let Some(node_id) = row.get("node_id").and_then(|v| v.as_str()) else {
+                return Ok(Some("device_payload row has no node_id".to_string()));
+            };
+            if !crate::handlers::device_payload::node_is_in_petal(db, petal_id, node_id).await? {
+                return Ok(Some(format!(
+                    "device_payload anchor node '{node_id}' is not known in petal '{petal_id}'"
+                )));
+            }
+            let Some(asset_ids) = row.get("asset_ids").and_then(|v| v.as_array()) else {
+                return Ok(Some("device_payload row has no asset_ids list".to_string()));
+            };
+            if asset_ids.is_empty()
+                || asset_ids.len() > fe_runtime::messages::DEVICE_PAYLOAD_MAX_ASSETS
+            {
+                return Ok(Some(format!(
+                    "device_payload asset_ids must hold 1..={} entries",
+                    fe_runtime::messages::DEVICE_PAYLOAD_MAX_ASSETS
+                )));
+            }
+            for entry in asset_ids {
+                let Some(asset_id) = entry.as_str() else {
+                    return Ok(Some(
+                        "device_payload asset_ids entry is not a string".to_string(),
+                    ));
+                };
+                if !crate::handlers::device_payload::asset_anchored_to_petal(db, asset_id, petal_id)
                     .await?
-                    {
-                        return Ok(Some(format!(
-                            "device_payload asset_ids entry '{asset_id}' is not anchored to petal '{petal_id}'"
-                        )));
-                    }
+                {
+                    return Ok(Some(format!(
+                        "device_payload asset_ids entry '{asset_id}' is not anchored to petal '{petal_id}'"
+                    )));
                 }
             }
             Ok(None)
         }
+        // Only the R5 `payload_id` link is confined here; the reading's own
+        // petal confinement is the pre-existing node/petal gap RP-4 owns.
+        "iot_reading" => match row.get("payload_id") {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(link) => {
+                let (Some(payload_id), Some(petal_id)) =
+                    (link.as_str(), row.get("petal_id").and_then(|v| v.as_str()))
+                else {
+                    return Ok(Some(
+                        "iot_reading payload_id link is malformed or has no petal".to_string(),
+                    ));
+                };
+                if crate::handlers::device_payload::payload_in_petal(db, petal_id, payload_id)
+                    .await?
+                {
+                    Ok(None)
+                } else {
+                    Ok(Some(format!(
+                        "iot_reading payload_id '{payload_id}' is not a payload of petal '{petal_id}'"
+                    )))
+                }
+            }
+        },
         "device_format" => match row.get("verse_id").and_then(|v| v.as_str()) {
             Some(row_verse) if row_verse == verse_id => Ok(None),
             Some(row_verse) => Ok(Some(format!(
@@ -691,6 +738,17 @@ async fn apply_anchored_asset_row(
         );
         return Ok(ReplicatedRowOutcome::Denied);
     }
+    if let Some(reason) = inbound_asset_shape_violation(&row, record_id) {
+        tracing::warn!(record_id, reason, "inbound asset row denied");
+        return Ok(ReplicatedRowOutcome::Denied);
+    }
+    // A peer must not charge (or, with a negative size, credit) a local
+    // principal's upload quota, which sums `size_bytes` by `owner_did`
+    // (fe-api §asset-ingest): an inbound row is never attributed to a local
+    // uploader (`src/AGENTS.md` §device-payload).
+    if let Some(fields) = row.as_object_mut() {
+        fields.remove("owner_did");
+    }
 
     let asset_id = row
         .get("asset_id")
@@ -721,6 +779,43 @@ async fn apply_anchored_asset_row(
     Ok(ReplicatedRowOutcome::Applied)
 }
 
+/// Why an inbound `asset` row's own fields are unsafe to store, or `None`.
+/// The id is joined into a filesystem path by the legacy backfill, the hash
+/// names a blob-store file, the size feeds the upload quota and the
+/// `content_type` becomes a response `Content-Type`; each is checked with the
+/// shared guard the local path uses.
+fn inbound_asset_shape_violation(row: &serde_json::Value, record_id: &str) -> Option<&'static str> {
+    let asset_id = row
+        .get("asset_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or(record_id);
+    if !fe_runtime::safe_id::is_safe_path_id(asset_id) {
+        return Some("asset_id is not a safe path id");
+    }
+    let hash_ok = row
+        .get("content_hash")
+        .and_then(|v| v.as_str())
+        .is_some_and(|hex| crate::hash_from_hex(hex).is_ok());
+    if !hash_ok {
+        return Some("content_hash is absent or not a 32-byte hex digest");
+    }
+    if !row
+        .get("size_bytes")
+        .and_then(|v| v.as_i64())
+        .is_some_and(|size| size >= 0)
+    {
+        return Some("size_bytes is absent or negative");
+    }
+    if !row
+        .get("content_type")
+        .and_then(|v| v.as_str())
+        .is_some_and(fe_sdk::device_format::is_valid_mime)
+    {
+        return Some("content_type is not a type/subtype mime");
+    }
+    None
+}
+
 /// Insert-if-absent, never-overwrite, immutable-per-key apply for an inbound
 /// `device_format` row (R5: "immutable per key; re-declaring with a
 /// different MIME is a conflict" — the admission gate, not this function,
@@ -746,6 +841,19 @@ async fn apply_device_format_row(
         .and_then(|v| v.as_str())
         .map(str::to_string)
         .unwrap_or_else(|| record_id.to_string());
+    // The local door's grammar, applied to the peer's row (strictest reader).
+    let mime_ok = row
+        .get("mime")
+        .and_then(|v| v.as_str())
+        .is_some_and(fe_sdk::device_format::is_valid_mime);
+    if !fe_sdk::source_class::is_valid_format_id(&format_id) || !mime_ok {
+        tracing::warn!(
+            record_id,
+            format_id,
+            "inbound device_format row has a malformed format_id or mime — denied"
+        );
+        return Ok(ReplicatedRowOutcome::Denied);
+    }
     let Some(verse_id) = row
         .get("verse_id")
         .and_then(|v| v.as_str())

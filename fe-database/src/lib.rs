@@ -1498,14 +1498,14 @@ pub fn spawn_db_thread_shared(
                             }),
                             Err(e) => match e.rejection() {
                                 Some(reason) => send_result(&tx, DbResult::DeviceFormatRejected { verse_id, reason, correlation_id }),
-                                None => send_result(&tx, DbResult::Error(format!("RegisterDeviceFormat failed: {e}"))),
+                                None => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("RegisterDeviceFormat failed: {e}"))),
                             },
                         }
                     }
                     Ok(DbCommand::ListDeviceFormats { verse_id, correlation_id }) => {
                         match handlers::device_payload::list_device_formats(&db, &verse_id).await {
                             Ok(formats) => send_result(&tx, DbResult::DeviceFormatsListed { verse_id, formats, correlation_id }),
-                            Err(e) => send_result(&tx, DbResult::Error(format!("ListDeviceFormats failed: {e}"))),
+                            Err(e) => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("ListDeviceFormats failed: {e}"))),
                         }
                     }
                     Ok(DbCommand::InsertDevicePayloads { petal_id, verse_id, source_did, source_class, payload, correlation_id }) => {
@@ -1516,7 +1516,7 @@ pub fn spawn_db_thread_shared(
                             Ok((payload_id, asset_ids)) => send_result(&tx, DbResult::DevicePayloadsInserted { petal_id, payload_id, asset_ids, correlation_id }),
                             Err(e) => match e.rejection() {
                                 Some(reason) => send_result(&tx, DbResult::DevicePayloadsRejected { petal_id, reason, correlation_id }),
-                                None => send_result(&tx, DbResult::Error(format!("InsertDevicePayloads failed: {e}"))),
+                                None => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("InsertDevicePayloads failed: {e}"))),
                             },
                         }
                     }
@@ -1525,7 +1525,7 @@ pub fn spawn_db_thread_shared(
                             &db, &petal_id, node_id.as_deref(), format_id.as_deref(), from_ms, to_ms,
                         ).await {
                             Ok(payloads) => send_result(&tx, DbResult::DevicePayloadsListed { petal_id, payloads, correlation_id }),
-                            Err(e) => send_result(&tx, DbResult::Error(format!("ListDevicePayloads failed: {e}"))),
+                            Err(e) => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("ListDevicePayloads failed: {e}"))),
                         }
                     }
                     // --- Hexon crate registry (Phase 8) ---

@@ -9,7 +9,9 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use axum_extra::extract::Multipart;
 use fe_identity::api_token::ApiClaims;
-use fe_runtime::messages::{DbCommand, DbResult, DevicePayloadInput, SourceClass};
+use fe_runtime::messages::{
+    DbCommand, DbResult, DevicePayloadIngestRejection, DevicePayloadInput, SourceClass,
+};
 use fe_sdk::device_format::DeviceFormatDescriptor;
 use serde::Deserialize;
 
@@ -251,6 +253,10 @@ pub async fn ingest_device_payload(
             "at least one 'file' field is required",
         );
     }
+    // A client retry id is refused before any byte is stored.
+    if payload_id.as_deref().is_some_and(|id| !is_valid_ulid(id)) {
+        return err(StatusCode::BAD_REQUEST, "invalid payload_id");
+    }
 
     let Some(verse_id) = fe_database::parse_scope(&scope)
         .ok()
@@ -329,7 +335,7 @@ pub async fn ingest_device_payload(
             correlation_id: Some(echoed),
             ..
         }) if echoed == correlation_id => {
-            err(StatusCode::UNPROCESSABLE_ENTITY, &reason.to_string())
+            err(payload_rejection_status(&reason), &reason.to_string())
         }
         Ok(other) => {
             tracing::error!("InsertDevicePayloads reply mismatch (not ours): {other:?}");
@@ -339,6 +345,16 @@ pub async fn ingest_device_payload(
             tracing::warn!("InsertDevicePayloads round trip failed: {e}");
             err(StatusCode::BAD_GATEWAY, "device payload ingest failed")
         }
+    }
+}
+
+/// HTTP status for a typed ingest rejection: a taken retry id is a 409 (its
+/// body names nothing about the holder), a malformed one a 400, the rest 422.
+pub(crate) fn payload_rejection_status(reason: &DevicePayloadIngestRejection) -> StatusCode {
+    match reason {
+        DevicePayloadIngestRejection::PayloadIdConflict => StatusCode::CONFLICT,
+        DevicePayloadIngestRejection::InvalidPayloadId { .. } => StatusCode::BAD_REQUEST,
+        _ => StatusCode::UNPROCESSABLE_ENTITY,
     }
 }
 

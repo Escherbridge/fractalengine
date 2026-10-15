@@ -145,8 +145,9 @@ pub async fn insert_readings_with_replication(
     }
 
     // R5 "decoded from / sent with this payload": a `payload_id` must name an
-    // existing `device_payload` row (all-or-nothing, like the anchor check).
-    let known_payloads = fetch_known_payloads(db, &payload_ids).await?;
+    // existing `device_payload` row OF THIS PETAL (all-or-nothing, like the
+    // anchor check) — a reading can never link to another petal's payload.
+    let known_payloads = fetch_known_payloads(db, petal_id, &payload_ids).await?;
     for id in &payload_ids {
         if !known_payloads.contains(id) {
             return Err(IotIngestError::UnknownPayload(id.clone()));
@@ -252,9 +253,11 @@ pub async fn insert_readings_with_replication(
     Ok(written)
 }
 
-/// Return the subset of `payload_ids` that exist as `device_payload` rows.
+/// Return the subset of `payload_ids` that exist as `device_payload` rows
+/// anchored to `petal_id` (petal-scoped: a foreign petal's id reads as unknown).
 async fn fetch_known_payloads(
     db: &Db,
+    petal_id: &str,
     payload_ids: &[String],
 ) -> Result<Vec<String>, IotIngestError> {
     if payload_ids.is_empty() {
@@ -269,7 +272,8 @@ async fn fetch_known_payloads(
     let q = QueryBuilder::new()
         .select(&["payload_id"])
         .from("device_payload")
-        .filter(Filter::is_in("payload_id", ids))
+        .filter(Filter::eq("petal_id", petal_id))
+        .and(Filter::is_in("payload_id", ids))
         .build();
     let mut res = exec_query(db, &q)
         .await
