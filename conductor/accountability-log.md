@@ -279,3 +279,18 @@ W4's Phase A security review as MANDATORY** (block at the top of the SPEC-10 pla
 - **2026-10-15: the user authorized "Commit B2b and resume from B3".** B2b committed by the orchestrator as
   `f4df2a3` (message records the authorization and the gate evidence); W4 resumed from run `wf_22ded023-74a`
   with B2b's report injected (A2..B2 replay from cache; B3 + reviews + docs run live).
+
+### W4 close — 2026-10-15
+- **W4 CDL-SPEC10 DONE** (`26833b9..0333029`): A2..B3 all gate_green (B2b committed by the orchestrator with
+  the user's authorization, `f4df2a3`). Phase A security `e3ad8e8` FIXED (both mandatory A3 authz findings
+  verified in code: `fetch_known_payloads` petal-scoped; retry = same petal + same principal; plus 3 MED:
+  unreadable inbound refs skipped, inbound asset quota abuse via negative size, MCP FIFO reply cross-petal
+  leak; 8 L incl. `ReadDb::writable` was pub, asset GC failed open). Phase B security `1c5f8ef` FIXED (2 HIGH
+  functional: reader refused its own writer's hexons; all-null stats blocked sealing; 3 MED incl. a
+  signing-oracle re-read and a narrower-frontier rebuild dropping a pre-shred row; zip-bomb test could never
+  pass). Correctness review `d098b65` FIXED (HIGH: ingest doors wrote JSON null into option<string> — every
+  iot_reading without payload_id would have failed, i.e. the whole existing IoT ingest; 2 MED: device_format
+  never replicated; inbound payload skipped §2.2 rule 5). Docs `0333029`.
+- Open for critic tick 8: `seal_observations` signs any rows handed (INFO, no live caller); oversized-window
+  split path implemented but untested (B3 deferral); device_payload-before-device_format denied (→ RP-4
+  Deferred Parent); typed-error nits (untyped 500 for foreign verse_id; boolean JSON Schema).

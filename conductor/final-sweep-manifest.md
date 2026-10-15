@@ -429,3 +429,138 @@ Reviewer fixed a seeding-toggle reorder race (FIFO mutation worker), publish-on-
 - test_remove_tileset
 - an_installed_download_completes_and_discards_its_cache
 
+## W4 CDL-SPEC10 (`26833b9..0333029`)
+
+Generated 2026-10-15 from the W4 journal (`wf_22ded023-74a`). NO line is truncated. B2b tests are listed from its committed report (`f4df2a3`).
+
+**A2 (`6b456e4`) — tests written (12):**
+- artifact.rs: bulk_artifact_seals_through_single_door_and_round_trips (SPEC-6 test 18; real XChaCha seal and open for shard/tile/asset; artifact_id == BLAKE3(stored bytes); also covers oversize and wrong-key pack refusals)
+- artifact.rs: bulk_artifact_refused_under_retired_epoch_key (test 19)
+- artifact.rs: bulk_artifact_nonce_reuse_refused (test 20, including cross-lane reuse)
+- receipt.rs: bulk_lane_body_mismatch_rejected (test 21, both directions through the ReceiptPipeline; also covers topic-key/outer-key mismatch quarantine and admission of the honest pairing)
+- artifact.rs: bulk_artifact_object_class_table (test 22, table-driven class bits plus a content_length mismatch)
+- discovery_labels.rs: bulk_artifact_discovery_is_payload_lane_petal_affine (test 23; label equals the payload-lane label; header scope, non-bulk class and unauthorized peer refused)
+- artifact.rs: bulk_lane_key_permits_bulk_artifact (AC-35)
+- compose/storage.rs: sealed_proof_environment_opens_a_bulk_artifact_lane_and_refuses_a_retired_key (C1; real ScopeKeyLifecycle epoch bump and crypto_shred; impostor-petal body refused with ForeignLaneArtifact; open_payload_shard on lane 5 gives LaneBodyMismatch)
+- crypto/artifact_aad.rs: a_payload_shard_aad_cannot_open_a_bulk_artifact_ciphertext; EVERY_LANE tests now cover 5 lanes (renamed every_lane_produces_a_distinct_preimage)
+- identity.rs: observation_source_cbor_canonical_round_trip_and_refusals (SPEC-10 test 17: float, unknown key, duplicate key, non-canonical length, class 0 and 6, decoder on a non-decoder class, decoder class without decoder or without format_id, malformed format_id, short principal; plus DecoderIdentity length and NFC refusals)
+- identity.rs: analytics_source_identity_dedupes_and_sorts_batch_ids (SPEC-10 test 18), analytics_source_identity_from_a_checkpoint_binds_its_tuple, source_id_binds_the_class_and_the_label (hand-encoded preimage), observation_sources_sort_by_canonical_bytes
+- fe-sdk source_class.rs: wire_values_round_trip_and_zero_or_unknown_is_never_a_class, serde_names_match_the_display_names, format_id_grammar_table
+
+**A3 (`65f39ec`) — tests written (22):**
+- fe-database/tests/device_payload_test.rs::device_payload_ingest_records_asset_list_and_lists_it_back
+- fe-database/tests/device_payload_test.rs::invalid_payload_batch_writes_nothing (table-driven: unknown format, foreign anchor, foreign asset anchor, mime mismatch, empty asset list, bad timestamp)
+- fe-database/tests/device_payload_test.rs::retried_payload_with_same_client_id_is_idempotent
+- fe-database/tests/device_payload_test.rs::payload_referenced_asset_survives_gc_and_orphan_is_collected
+- fe-database/tests/device_payload_test.rs::readings_link_to_their_payload
+- fe-database/tests/device_payload_test.rs::inbound_anchored_asset_row_insert_if_absent
+- fe-database/tests/device_payload_test.rs::inbound_device_payload_is_union_append_only
+- fe-database/tests/device_payload_test.rs::payload_emits_asset_rows_before_payload_row_after_durable_insert
+- fe-database/tests/device_payload_test.rs::inbound_device_rows_referencing_another_verse_are_denied (table-driven)
+- fe-database/tests/device_payload_test.rs::an_editor_authored_inbound_device_format_is_denied_and_a_manager_one_applies
+- fe-database/tests/device_payload_test.rs::pre_manifest_device_rows_follow_the_declared_bootstrap_rule
+- fe-database/tests/device_payload_test.rs::inbound_replicated_rows_never_enter_window_membership
+- fe-database/tests/device_payload_test.rs::simulated_readings_carry_source_class_simulation_not_inferred_from_did
+- fe-database/tests/device_payload_test.rs::register_format_conflict_and_idempotent_redeclare
+- fe-database/src/handlers/asset_backfill.rs::backfill_ignores_path_escaping_asset_ids
+- fe-database/src/handlers/asset_backfill.rs::backfill_repoints_a_row_whose_recorded_hash_disagrees_with_its_file
+- fe-database/src/schema.rs::device_format_schema_is_keyed_by_format_id_and_carries_verse_and_mime
+- fe-database/src/schema.rs::device_payload_schema_carries_an_ordered_asset_id_array
+- fe-database/src/schema.rs::observation_window_member_schema_constrains_table_to_the_two_hot_tables
+- fe-database/src/schema.rs::observation_window_member_is_never_in_the_admin_clearable_or_replicated_set
+- fe-database/src/replication_mode.rs::device_payload_replicates_as_timeseries_keyed_on_its_own_id
+- fe-runtime/src/app.rs::device_format_and_device_payload_replies_reach_only_their_own_waiter
+
+**A3b (`01e9668`) — tests written (2):**
+- fe-api/src/db_reader.rs: compile_fail doctest on ReadDb (read_db_compile_fail_doctest) proving .delete(("table","id")) fails with E0599 -- genuinely fails to compile, unlike a Deref-based design would. Not run (doctests aren't covered by --tests/--all-targets and the campaign forbids cargo test this session); will run at the final sweep's full test pass.
+- No new #[test]/#[tokio::test] functions were needed per the slice's own acceptance ('zero behaviour change' -- no new assertions beyond the doctest); all pre-existing db_reader-touching tests were updated only at the type level (construction-site wrapping, two helper-signature renames) and compile unchanged.
+
+**A4 (`f6e7af2`) — tests written (5):**
+- register_format_ingest_multipart_payload_then_fetch_each_blob -- Manager declares a format, Editor POSTs 2 files, 201; GET /assets/by-id/{id} round-trips identical bytes with the descriptor MIME, attachment disposition and nosniff; GET .../iot/payloads lists the payload with asset_ids in order.
+- device_routes_authz_and_limits -- viewer ingest 403, editor register-format 403, foreign petal 404 (oracle-identical NOT_FOUND_OR_DENIED text), 33 files 413, over-quota 413, unknown format_id 422, malformed petal_id ULID 400.
+- device_asset_cannot_be_placed_as_a_scene_node -- a device-payload (non-GLB) asset_id passed to REST create_node is refused with a GLB-specific error, not placed.
+- html_payload_is_served_as_attachment_with_nosniff -- a text/html device payload still serves as attachment + nosniff (the stored-XSS regression).
+- readings_posted_with_payload_id_join_to_the_payload -- a reading posted with a real payload_id is accepted; the same call with an unknown payload_id is a 422 batch rejection.
+
+**A5 (`f0b736c`) — tests written (5):**
+- fe-api/tests/mcp_integration.rs::mcp_device_payload_full_loop -- register_device_format -> ingest_device_payload (2 base64 files) -> list_device_payloads -> REST GET /api/v1/assets/by-id/{id} returns byte-identical content, through a real ApiHarness + production fe-database handlers
+- fe-api/tests/analytics_scope_test.rs::query_device_payload_is_scoped_to_token_petals -- two petals' device_payload rows, a petal-A-scoped token's SELECT * FROM device_payload through guard_and_prepare_query/run_guarded_query returns only petal A's row; mutation check: removing DEVICE_PAYLOAD from PETAL_SCOPED_TABLES/ALLOWED_TABLES turns it red
+- fe-api/tests/mcp_integration.rs::mcp_structured_fuzz_never_panics_or_leaks_to_channel -- extended (not newly written) to cover the 4 new tools via fuzz_baseline_args' 8 new keys, so the existing every-tool-reaches-its-handler + never-panics + never-leaks-to-channel-on-denial invariants now also exercise register_device_format/list_device_formats/ingest_device_payload/list_device_payloads
+- fe-api/tests/mcp_integration.rs::tools_list_inventory -- unchanged test, but EXPECTED_TOOLS now includes the 4 new tools (and the pre-existing missing set_petal_render_distance), so its tools/list == dispatch-table identity check covers the new rows
+- fe-api/src/mcp/mod.rs::table_rows_are_well_formed -- unchanged test body, TOOLS.len() assertion updated to 36 so the well-formedness checks (role floor, description names its role, schema required-key for scoped tools) run over the 4 new rows too
+
+**A6 (`3788a6b`) — tests written (1):**
+- fe-test-harness scenario 17 (two_peer_device_payload_sync::run): device_format + 2 asset rows + device_payload all cross the real transport and apply in order with ordered asset_ids on READ-BACK; a genuine blob miss on bob followed by FetchBlob yields byte-identical content via BlobReady once present; a re-delivered device_payload (same payload_id) stays exactly one row on bob
+
+**B1 (`2515ab9`) — tests written (8):**
+- fe-canonical-log/tests/observation_batch_flow.rs::observation_batch_op_signs_admits_and_reduces_to_reference_only (SPEC-10 test 1: real signed kind-5 envelope -> ComposedCandidateVerifier -> admit_candidate_with_facts -> reduce = exactly one Apply whose row carries the §4.3 fields; replay gives an equal mutation)
+- fe-canonical-log/tests/observation_batch_flow.rs::observation_batch_structural_refusals (SPEC-10 test 2: zero parents, no-payload form, verse-wide scope and resource scope give invalid_envelope; inverted HLC or sensor range, zero count, more anchors than count, unsorted anchors, asset refs or sources, an unknown key and a spliced CBOR float give invalid_payload; a foreign schema hash gives unknown_schema; the untouched payload still admits)
+- fe-canonical-log/tests/observation_batch_flow.rs::unupgraded_peer_quarantines_kind5_without_evicting_missing_parent_backlog (SPEC-10 test 3: 96 real kind-5 batches through a pre-SPEC-10 registry give unknown_kind and are declined only against their own class budget. A real kind-1 MissingParent backlog survives the flood and a budget-tightening eviction. Promotion through SpecRegisteredKinds then admits under the upgraded registry)
+- fe-canonical-log/tests/observation_batch_flow.rs::reduce_is_identical_whether_or_not_the_hexon_is_present (SPEC-10 test 4: a peer holding the hexon and stats bytes and an empty peer reduce identically; a None-facts reduction is pending on the op's own ciphertext hash, not the hexon id)
+- fe-canonical-log/src/wire/preview.rs::telemetry_preview_registry_accepts_kind1_drops_unregistered_and_rejects_op_fields (SPEC-10 test 5, table-driven)
+- fe-canonical-log/src/wire/preview.rs::telemetry_values_quantize_half_to_even_and_refuse_unsendable_values (round vs truncate, NaN/inf, overflow)
+- fe-canonical-log/src/observation/payload.rs::normalized_parts_round_trip_canonically_and_raw_ingest_order_is_refused
+- fe-canonical-log/src/observation/mod.rs::an_upgraded_build_promotes_quarantined_kind5_but_not_application_kinds
+
+**B2 (`f7f9610`) — tests written (11):**
+- fe-format/src/signature.rs::canonical_json_bytes_matches_canonical_json
+- fe-format/src/archive.rs::observation_packer_tests::export_stored_deterministic_is_byte_identical_and_stored_in_order
+- fe-format/src/archive.rs::observation_packer_tests::export_stored_deterministic_round_trips_through_import_and_read_member
+- fe-format/src/archive.rs::observation_packer_tests::read_member_refuses_a_declared_size_bomb_without_allocation
+- fe-query/.../observation/writer.rs::civil_date_tests::known_dates_round_trip
+- fe-query/.../observation/mod.rs::tests::observation_hexon_round_trip_honours_segment_and_order_profile (SPEC-10 conformance test 6)
+- fe-query/.../observation/mod.rs::tests::same_rows_any_input_order_produce_identical_hexon_bytes (conformance test 7)
+- fe-query/.../observation/mod.rs::tests::empty_batch_is_refused
+- fe-query/.../observation/mod.rs::tests::out_of_range_source_index_is_refused
+- fe-query/.../observation/mod.rs::tests::zip_bomb_observation_hexon_refused_without_allocation (conformance test 9)
+- fe-query/.../observation/mod.rs::tests::profile_violations_rejected (conformance test 8, subset — see open_issues)
+
+**B2b (`f4df2a3`) — tests written:**
+- fe-database/tests/canon_log_replay_payload_facts_test.rs::replay_rederives_payload_facts_through_custody: admits a kind-5 operation live and captures its live facts and reference row. Checks that the legacy replay_to_frontier still leaves it pending as ReferencedArtifactUnavailable on its own ciphertext with no row. After a drop-and-join restart, VerifierReplayFacts re-derives exactly the live facts, and rebuild_projection_with_facts from empty reproduces the identical reference row, marker 'applied' and replay-verified.
+- fe-database/tests/canon_log_replay_payload_facts_test.rs::a_shredded_scope_key_leaves_replay_pending_and_keeps_the_pre_shred_row: batch A is projected, then the key is shredded through the verifier's own custody. Batch B stays pending with PayloadFactsUnavailable{ScopeKeyUnavailable}, is never excluded and has no marker. A is already processed and its row is byte-identical. A from-empty rebuild is refused with WouldDiscardUnrederivableRows([(A, ScopeKeyUnavailable)]) and leaves the row and marker intact. The same outcome holds after a drop-and-join restart with a freshly loaded verifier.
+
+**B3 (`446fa3c`) — tests written (13):**
+- fe-database/tests/observation_plane_test.rs::legacy_only_ingest_creates_no_observation_candidate (SPEC-10 test 13)
+- fe-database/tests/observation_plane_test.rs::shadow_mode_seals_window_commits_batch_and_hydrates_parity_with_legacy (test 14; three hydrations give the same catalog_root)
+- fe-database/tests/observation_plane_test.rs::sealer_never_signs_replicated_observations (test 15)
+- fe-database/tests/observation_plane_test.rs::rebuild_from_log_reproduces_observation_reference_rows (test 16; C8 drop+join restart)
+- fe-database/tests/observation_plane_test.rs::hydration_rejects_a_hexon_that_disagrees_with_its_signed_batch (test 10; table: row count, anchor set, hlc range, asset set, unused source, out-of-range source index)
+- fe-database/tests/observation_plane_test.rs::conflicting_duplicate_observation_is_retained_as_evidence_not_resolved (test 12)
+- fe-database/tests/observation_plane_test.rs::missing_hexon_surfaces_unavailable_at_hydration_not_reduce (test 11)
+- fe-database/tests/observation_plane_test.rs::analytics_identity_records_the_batches_it_read (test 19)
+- fe-database/src/canon_log/observation/mod.rs: only_the_shadow_modes_enable_the_observation_plane, a_window_is_a_half_open_hlc_interval, a_source_needs_a_did_key_principal_and_never_a_bare_decoder_class
+- fe-database/src/canon_log/observation/hydrator.rs: duplicates_collapse_and_conflicts_name_every_batch
+- fe-database/src/migration/mapping_inventory.rs: observation_family_maps_under_the_spec10_schema_and_d_cl20_stays_refused
+- fe-database/src/migration/comparator.rs: observation_values_compare_by_exact_ieee_bit_pattern
+- fe-database/src/schema.rs: observation_plane_tables_are_never_admin_clearable
+
+**Phase A security (`e3ad8e8`) — must cover:**
+- fe-database/tests/device_payload_test.rs (new: retry_from_another_petal_or_principal_gets_a_conflict_and_no_asset_ids, payload_naming_a_foreign_replication_verse_is_refused, reading_cannot_link_to_another_petals_payload, inbound_reading_linking_a_foreign_petal_payload_is_denied, inbound_device_rows_with_unreadable_fields_are_denied, inbound_asset_row_is_never_attributed_to_a_local_uploader; changed: invalid_payload_batch_writes_nothing +2 rows, retried_payload_with_same_client_id_is_idempotent now uses a ULID)
+- fe-database/src/handlers/crud.rs::tests::place_asset_refuses_a_non_scene_asset_and_writes_no_node
+- fe-sdk/src/device_format.rs::tests::mime_grammar_table
+- fe-api/tests/device_ingest_test.rs (all tests; managers now verse-scoped; new client_payload_id_is_validated_and_a_foreign_replay_learns_nothing, petal_scoped_manager_cannot_declare_a_verse_wide_format)
+- fe-api/tests/mcp_integration.rs::mcp_device_payload_full_loop (verse-scoped manager, correlated replies) + tools fuzz baseline
+- fe-api/tests/iot_ingest_test.rs (count_reader_readings)
+- fe-database/src/handlers/replicated_row.rs in-file tests (iot_reading union path unchanged for payload_id-less rows)
+- fe-database/tests/observation_plane_test.rs (window membership unaffected)
+- harness scenario 17 two_peer_device_payload_sync (client payload_id now a ULID; inbound asset rows lose owner_did)
+- fe-runtime app.rs routing tests (device arms now reply RequestFailed on DB error)
+
+**Phase B security (`1c5f8ef`) — must cover:**
+- fe-query --features parquet: columnar::observation::tests (round_trip, same_rows_any_input_order, profile_violations_rejected, zip_bomb_observation_hexon_refused_without_allocation, scalar_only_batch_with_all_null_payload_ids_reads_back, dictionary_encoded_member_is_refused_before_decoding, non_finite_value_is_refused_by_writer_and_reader). These confirm the ARROW:schema and field-compare fix, which no build-only gate could prove.
+- fe-database tests/observation_plane_test.rs, all tests, especially shadow_mode_seals_window_commits_batch_and_hydrates_parity_with_legacy (it confirms the door digest round-trips through SurrealDB: f64 bits, recorded_at text, option payload_id, asset content_hash) and the new sealer_never_signs_a_hot_row_replaced_after_the_door_accepted_it
+- fe-database tests/canon_log_replay_payload_facts_test.rs::a_shredded_scope_key_leaves_replay_pending_and_keeps_the_pre_shred_row (new narrower-frontier withheld assertion)
+- fe-database lib unit tests: canon_log::observation::hydrator::tests::a_batch_repeating_an_observation_id_disagrees_with_its_payload, schema tests (door_digest field)
+- fe-database tests/device_payload_test.rs and iot_reading_test.rs (the door now writes door_digest into observation_window_member in shadow modes)
+- fe-format archive observation_packer_tests and fe-canonical-log tests/observation_batch_flow.rs (unchanged, but part of Phase B)
+
+**Correctness review (`d098b65`) — must cover:**
+- fe-database/tests/device_payload_test.rs: new tests declared_format_replicates_and_a_peer_applies_it, inbound_payload_needs_a_declared_format_and_its_mime and unlinked_reading_and_verseless_payload_store_with_option_fields_absent; changed tests inbound_device_payload_is_union_append_only and inbound_device_rows_with_unreadable_fields_are_denied (format now declared, planted filter widened); plus every other test in the file, since the door rows changed
+- fe-database/tests/iot_reading_test.rs (all of them; every reading here has payload_id None, so they prove the null-strip fix)
+- fe-api/tests/iot_ingest_test.rs, fe-api/tests/device_ingest_test.rs, fe-api/tests/mcp_integration.rs::mcp_device_payload_full_loop (REST/MCP doors over the changed rows)
+- fe-database/tests/observation_plane_test.rs, all SPEC-10 tests 10-16 and 19 and sealer_never_signs_a_hot_row_replaced_after_the_door_accepted_it (they ingest unlinked readings through the door, and the door digest must match the read-back with payload_id absent)
+- harness scenario 17 two_peer_device_payload_sync: the format now crosses through the real RegisterDeviceFormat door, and the payload passes the new format/MIME confinement on bob
+- harness scenario 16 / two_peer_timeseries_sync (iot_reading wire bytes no longer carry payload_id:null)
+- fe-runtime app.rs routing tests (unchanged, but they cover the device reply families)
+- All 19 SPEC-10 §10 conformance tests exist under their exact names: tests 1-4 in fe-canonical-log/tests/observation_batch_flow.rs; 5 in wire/preview.rs; 6-9 in fe-query columnar/observation/mod.rs (features parquet); 10-16 and 19 in fe-database/tests/observation_plane_test.rs; 17-18 in materialize/identity.rs
+

@@ -147,6 +147,7 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 | Critic tick 5 | accountability critic | 4M 2L (A3 caveat, W2b, W4 plan C6–C9) | ON_TRACK → all ACCEPTED |
 | Critic tick 6 | accountability critic | 1M (manifest truncation — orchestrator bug, 73 lines restored) 3L | ON_TRACK → all ACCEPTED |
 | W3 CDL-W4 `38dd271..381264e` | per-slice gates + security (W4-3..8) + correctness (W4-1,2,5,9) review-and-fix | security 1M 3L; correctness 2M 3L; C6 NO_GO greps clean | FIXED (tests at final sweep) |
+| W4 CDL-SPEC10 `26833b9..0333029` | per-slice gates (feature matrix) + Phase A + Phase B security + correctness review-and-fix | secA 5M 8L (2 mandatory authz); secB 2H (writer/reader round-trip; all-null stats) 3M 3L; review 1H (null into option<string> broke all IoT ingest) 2M | FIXED (tests at final sweep) |
 | Critic tick 1 | accountability critic | 2H 3M 3L (R7 not in plan bodies; push gate) | DRIFTING → all ACCEPTED |
 | Critic tick 2 (pre-push) | accountability critic | 1H 2M 2L (AC-9 packaged binary never launched; AC-10 MCP upload_asset gate gap; AC-11 stale QUICKSTART wording; AC-12/AC-13 ledger + KTX2-test residuals) | ON_TRACK → all ACCEPTED |
 | Critic tick 3 (W1 launch) | accountability critic | 4M 1L (AC-14 push-freeze until CI run concludes; AC-15 relay `main()` never smoke-tested; AC-16 S9 ledger-edit scope override; AC-17 per-slice gate coverage; AC-18 stale docs/manifest) | ON_TRACK → all ACCEPTED |
