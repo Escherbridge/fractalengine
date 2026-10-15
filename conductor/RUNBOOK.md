@@ -539,7 +539,9 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
     reviewed (security + correctness review-and-fix, all FIXED) — see the §2 review ledger.
   - **W5 role propagation launched** `wf_e00ce792-9fa` (task `wr9fq1u0y`), base `b8ae366` after critic tick 8's
     amendments `cc631ae` (RP-0, RP-4b, RP-4s, RP-9b; durable re-emit; three-valued confinement; API role cap).
-  - Next: critic tick 8 → **W5 role propagation** (`conductor/tracks/role_propagation_20261013/plan.md`, security
+    It halted at RP-0 (real E0308 at `observation_plane_test.rs:1609`; repair plan `0213b79`). **Relaunched fresh**
+    as `wf_4f099aec-bc1` (task `wsu9cgmlh`) with `known_issues.RP-0` and foreground-only gate mechanics.
+  - Next: **W5 role propagation** (`conductor/tracks/role_propagation_20261013/plan.md`, security
     review mandatory) → **campaign final sweep** per `conductor/final-sweep-manifest.md` (full `cargo test
     --workspace` incl. doctests, feature-matrix tests, harness 17 scenarios ×2, e2e scripts, packaged GUI + relay
     smoke, fe-database `--ignored`) → push on green → watch CI → end-of-campaign report (artifact).

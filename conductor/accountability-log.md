@@ -327,3 +327,8 @@ was wrong). All 11 directives ACCEPTED → Brief A `cc631ae` (RP plan C11–C21,
   clippy, feature-matrix checks; NO commit); (2) W5 script now mandates foreground gate steps at the max
   timeout and re-run-on-timeout (never background cargo); (3) relaunch W5 fresh with `known_issues.RP-0`
   naming the type error, so RP-0's executor fixes it, gates, and commits through its own gate.
+- Repair executed: cache warmed as sole builder (all four feature-matrix checks and clippies EXIT 0; workspace
+  check EXIT 101 only on the one E0308, no other errors). W5 relaunched FRESH as `wf_4f099aec-bc1` (base
+  `b8ae366`, `from:0`, `known_issues.RP-0` = the type error + the 4 uncommitted files). The script carries the
+  AC-48 GATE MECHANICS text (foreground at 600 s, re-run on timeout, never background cargo) and NO generic
+  overrides bypass. The orchestrator did NOT commit RP-0's files; RP-0 commits through its own gate.
