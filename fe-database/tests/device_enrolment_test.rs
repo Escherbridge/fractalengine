@@ -44,11 +44,13 @@ use fe_database::canon_log::device_enrolment::{
     LOCAL_DEVICE_KEY_ACCOUNT,
 };
 use fe_database::canon_log::op_id_to_hex;
+use fe_database::handlers::inbound_admissions::InboundAdmissions;
 use fe_database::handlers::replicated_row::apply_replicated_row_handler;
 use fe_database::{repo::Db, spawn_db_thread_shared, DbThread, ReplicationEvent};
 use fe_identity::{InMemoryBackend, NodeKeypair, SecretStore};
+use fe_policy::RoleStatementPayload;
 use fe_runtime::blob_store::mock::MockBlobStore;
-use fe_runtime::messages::{DbCommand, DbResult, ReplicatedRowOutcome};
+use fe_runtime::messages::{DbCommand, DbResult, DeferralReason, ReplicatedRowOutcome};
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 const VERSE_ID: &str = "verse-enrol";
@@ -580,23 +582,197 @@ fn a_principal_without_a_role_cannot_enrol_but_can_always_revoke() {
     assert_eq!(
         outcomes,
         [
-            ReplicatedRowOutcome::Denied,
+            ReplicatedRowOutcome::Deferred(DeferralReason::AuthorRole {
+                did: principal(REMOVED).did
+            }),
             ReplicatedRowOutcome::AppliedTombstone,
             ReplicatedRowOutcome::Applied,
-            ReplicatedRowOutcome::Applied,
+            ReplicatedRowOutcome::Deferred(DeferralReason::Manifest),
         ],
-        "role-None enrolment denied; its revocation, a default-access Viewer's enrolment and a \
-         pre-manifest enrolment all land"
+        "role-None enrolment deferred until a role lands (AC-44a); its revocation and a \
+         default-access Viewer's enrolment land; a pre-manifest enrolment waits for the \
+         manifest (AC-44b)"
     );
     assert_eq!(rt.block_on(stored_row(&db, &floored.record_id)), None);
     assert_eq!(
         rt.block_on(stored_row(&db, &revocation.record_id)),
         Some(revocation)
     );
-    assert_eq!(
-        rt.block_on(stored_row(&db, &pre_manifest.record_id)),
-        Some(pre_manifest)
-    );
+    assert_eq!(rt.block_on(stored_row(&db, &pre_manifest.record_id)), None);
+}
+
+/// AC-44 / T27 (critic tick 8): the W4-8 enrolment branch never needs Editor — a Viewer's
+/// self-signed enrolment applies with no deferral — while a principal with no membership
+/// anywhere in the verse is `Deferred AuthorRole` and applies (with no re-delivery) once ANY
+/// role lands for them, even a petal-scoped one that resolves to `None` at the verse scope;
+/// and a pre-manifest enrolment is `Deferred Manifest` and applies once the manifest lands.
+#[test]
+fn a_viewers_enrolment_never_needs_editor_and_a_pre_membership_enrolment_is_deferred_then_applied()
+{
+    const OWNER: &str = "did:key:z6MkEnrolmentOwner";
+    const CLOSED_VERSE: &str = "verse-closed";
+    const LATE_VERSE: &str = "verse-late";
+    const VIEWER: u8 = 0x41;
+    const OUTSIDER: u8 = 0x42;
+    const EARLY: u8 = 0x43;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let harness = Harness::open(dir.path(), None, None);
+    let db = harness.db();
+    let rt = runtime();
+    let mut admissions = InboundAdmissions::new();
+    let manifest = |verse: &str, default_access: &str| {
+        serde_json::to_vec(&serde_json::json!({
+            "verse_id": verse, "name": "Closed", "created_by": OWNER,
+            "created_at": "2026-10-15T00:00:00Z", "default_access": default_access,
+        }))
+        .expect("manifest json")
+    };
+    let owner_grant = |verse: &str, scope: &str, peer: &str, role: &str, hlc: u64| {
+        let payload = RoleStatementPayload {
+            scope: scope.to_string(),
+            peer_did: peer.to_string(),
+            grantor_did: OWNER.to_string(),
+            role: role.to_string(),
+            revoked: false,
+            hlc,
+        };
+        (
+            verse.to_string(),
+            format!("{scope}/{peer}/{OWNER}"),
+            serde_json::to_vec(&payload).expect("payload json"),
+        )
+    };
+
+    rt.block_on(async {
+        // A verse where nobody is a member by default.
+        let reports = admissions
+            .apply(
+                &db,
+                CLOSED_VERSE,
+                "verse",
+                CLOSED_VERSE,
+                &manifest(CLOSED_VERSE, "none"),
+                OWNER,
+                None,
+            )
+            .await;
+        assert_eq!(reports[0].outcome, ReplicatedRowOutcome::Applied);
+
+        // A verse-level Viewer enrols: no Editor needed, never deferred.
+        let verse_scope = fe_database::build_scope(CLOSED_VERSE, None, None);
+        let (verse, key, bytes) = owner_grant(
+            CLOSED_VERSE,
+            &verse_scope,
+            &principal(VIEWER).did,
+            "viewer",
+            1,
+        );
+        let reports = admissions
+            .apply(&db, &verse, "role", &key, &bytes, OWNER, None)
+            .await;
+        assert_eq!(reports[0].outcome, ReplicatedRowOutcome::Applied);
+        let viewer_row = row_for(&enrolment_bytes(VIEWER, 0x0d, 1_000));
+        let reports = admissions
+            .apply(
+                &db,
+                CLOSED_VERSE,
+                DEVICE_ENROLMENT_TABLE,
+                &viewer_row.record_id,
+                &row_json(&viewer_row),
+                &principal(VIEWER).did,
+                None,
+            )
+            .await;
+        assert_eq!(reports[0].outcome, ReplicatedRowOutcome::Applied);
+        assert_eq!(
+            stored_row(&db, &viewer_row.record_id).await,
+            Some(viewer_row)
+        );
+
+        // A principal with no membership anywhere: deferred, not denied, not stored.
+        let outsider_row = row_for(&enrolment_bytes(OUTSIDER, 0x0d, 1_000));
+        let reports = admissions
+            .apply(
+                &db,
+                CLOSED_VERSE,
+                DEVICE_ENROLMENT_TABLE,
+                &outsider_row.record_id,
+                &row_json(&outsider_row),
+                &principal(OUTSIDER).did,
+                None,
+            )
+            .await;
+        assert_eq!(
+            reports[0].outcome,
+            ReplicatedRowOutcome::Deferred(DeferralReason::AuthorRole {
+                did: principal(OUTSIDER).did
+            })
+        );
+        assert_eq!(stored_row(&db, &outsider_row.record_id).await, None);
+
+        // The owner grants the outsider a PETAL-scoped role: still `None` at the verse scope,
+        // but a member — the queued enrolment applies with no second delivery.
+        let petal_scope =
+            fe_database::build_scope(CLOSED_VERSE, Some("fractal-x"), Some("petal-x"));
+        let (verse, key, bytes) = owner_grant(
+            CLOSED_VERSE,
+            &petal_scope,
+            &principal(OUTSIDER).did,
+            "viewer",
+            2,
+        );
+        let reports = admissions
+            .apply(&db, &verse, "role", &key, &bytes, OWNER, None)
+            .await;
+        assert_eq!(reports[0].outcome, ReplicatedRowOutcome::Applied);
+        assert!(
+            reports.iter().any(|r| r.record_id == outsider_row.record_id
+                && r.outcome == ReplicatedRowOutcome::Applied),
+            "the deferred enrolment is retried and applied: {reports:?}"
+        );
+        assert_eq!(
+            stored_row(&db, &outsider_row.record_id).await,
+            Some(outsider_row)
+        );
+
+        // Pre-manifest: deferred on the manifest, applied when it lands.
+        let early_row = row_for(&enrolment_bytes(EARLY, 0x0d, 1_000));
+        let reports = admissions
+            .apply(
+                &db,
+                LATE_VERSE,
+                DEVICE_ENROLMENT_TABLE,
+                &early_row.record_id,
+                &row_json(&early_row),
+                &principal(EARLY).did,
+                None,
+            )
+            .await;
+        assert_eq!(
+            reports[0].outcome,
+            ReplicatedRowOutcome::Deferred(DeferralReason::Manifest)
+        );
+        assert_eq!(stored_row(&db, &early_row.record_id).await, None);
+        let reports = admissions
+            .apply(
+                &db,
+                LATE_VERSE,
+                "verse",
+                LATE_VERSE,
+                &manifest(LATE_VERSE, "viewer"),
+                OWNER,
+                None,
+            )
+            .await;
+        assert_eq!(reports[0].outcome, ReplicatedRowOutcome::Applied);
+        assert!(
+            reports.iter().any(|r| r.record_id == early_row.record_id
+                && r.outcome == ReplicatedRowOutcome::Applied),
+            "the pre-manifest enrolment applies once the manifest lands: {reports:?}"
+        );
+        assert_eq!(stored_row(&db, &early_row.record_id).await, Some(early_row));
+        assert!(admissions.is_empty(), "nothing is left waiting");
+    });
 }
 
 #[test]
@@ -610,6 +786,8 @@ fn a_revocation_survives_a_late_enrolment_replay() {
     let enrolment = row_for(&enrolment_bytes(0x31, 0x0d, 9_000));
     let revocation = row_for(&revocation_bytes(0x31, 0x0d, 5_000));
     assert_eq!(enrolment.record_id, revocation.record_id);
+    // The manifest has converged (default access viewer), so the enrolment floor passes (AC-44).
+    rt.block_on(seed_verse_row(&db, VERSE_ID));
 
     let outcomes = rt.block_on(async {
         [
@@ -760,6 +938,8 @@ fn cdl_r2_delivery_acceptance() {
     let recipient = principal(RECIPIENT);
     let enrolled_device = device(0x0d);
     rt.block_on(async {
+        // The manifest has converged (default access viewer): enrolments pass the floor (AC-44).
+        seed_verse_row(&db, VERSE_ID).await;
         seed_canonical_role(&db, MANAGER, "manager").await;
         seed_canonical_role(&db, EDITOR, "editor").await;
         bump_verse_to_epoch_one(&db).await;

@@ -219,6 +219,9 @@ impl TestPeer {
 
                 // ReplicatedRowApplied echoes dropped on a full result channel.
                 let mut replicated_echo_dropped: u64 = 0;
+                // RP-3: the SAME deferred-admission queue the production loop uses.
+                let mut admissions =
+                    fe_database::handlers::inbound_admissions::InboundAdmissions::new();
 
                 // Command loop (simplified version of fe-database::spawn_db_thread_with_sync)
                 loop {
@@ -1089,41 +1092,40 @@ impl TestPeer {
                             row_bytes,
                             author_did,
                         }) => {
-                            let outcome = match fe_database::handlers::replicated_row::apply_replicated_row_handler(
-                                &db,
-                                &verse_id,
-                                &table,
-                                &record_id,
-                                &row_bytes,
-                                &author_did,
-                                // The harness consumes no scene changes.
-                                None,
-                            )
-                            .await
-                            {
-                                Ok(outcome) => outcome,
-                                Err(e) => {
-                                    tracing::warn!("ApplyReplicatedRow failed: {e}");
-                                    fe_runtime::messages::ReplicatedRowOutcome::Failed
-                                }
-                            };
+                            // RP-3: one entry point with production — queues a Deferred
+                            // content row and retries the rows this apply unblocked.
+                            let reports = admissions
+                                .apply(
+                                    &db,
+                                    &verse_id,
+                                    &table,
+                                    &record_id,
+                                    &row_bytes,
+                                    &author_did,
+                                    // The harness consumes no scene changes.
+                                    None,
+                                )
+                                .await;
                             // Unsolicited echo → try_send + drop-and-count (§replication-
                             // backpressure): a blocking send here deadlocked the DB thread
                             // against a driver that never drains echoes (fe-test-harness
                             // AGENTS.md §peer-model). Awaited replies keep blocking sends.
-                            match db_result_tx.try_send(DbResult::ReplicatedRowApplied {
-                                verse_id,
-                                table,
-                                record_id,
-                                outcome,
-                            }) {
-                                Ok(()) | Err(crossbeam::channel::TrySendError::Disconnected(_)) => {}
-                                Err(crossbeam::channel::TrySendError::Full(_)) => {
-                                    replicated_echo_dropped += 1;
-                                    tracing::warn!(
-                                        dropped_total = replicated_echo_dropped,
-                                        "harness peer: result channel full — ReplicatedRowApplied echo dropped"
-                                    );
+                            for report in reports {
+                                match db_result_tx.try_send(DbResult::ReplicatedRowApplied {
+                                    verse_id: report.verse_id,
+                                    table: report.table,
+                                    record_id: report.record_id,
+                                    outcome: report.outcome,
+                                }) {
+                                    Ok(())
+                                    | Err(crossbeam::channel::TrySendError::Disconnected(_)) => {}
+                                    Err(crossbeam::channel::TrySendError::Full(_)) => {
+                                        replicated_echo_dropped += 1;
+                                        tracing::warn!(
+                                            dropped_total = replicated_echo_dropped,
+                                            "harness peer: result channel full — ReplicatedRowApplied echo dropped"
+                                        );
+                                    }
                                 }
                             }
                         }

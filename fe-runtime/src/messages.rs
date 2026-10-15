@@ -991,9 +991,27 @@ pub enum ReplicatedRowOutcome {
     AppliedTombstone,
     /// Apply failed — row left untouched, error logged by the DB thread.
     Failed,
-    /// The A3 role gate denied the row (resolved role below Editor at the
-    /// verse scope, deny-by-default) — never applied, never re-emitted.
+    /// The row is permanently refused (a structural violation, a forged or
+    /// cross-verse statement, a failed signature) — never applied, never
+    /// re-emitted, never retried.
     Denied,
+    /// The row failed only because something has not converged yet (role
+    /// propagation §2.4): not applied now, retried when the awaited fact lands.
+    /// A content row waits in the DB thread's in-memory `InboundAdmissions`
+    /// queue; a role statement is held durably in `role_statement_pending`.
+    Deferred(DeferralReason),
+}
+
+/// What a [`ReplicatedRowOutcome::Deferred`] row is waiting for (plan §2.4).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum DeferralReason {
+    /// No verse manifest (verse row) has converged locally yet.
+    Manifest,
+    /// A referenced parent row (`table`, `id`) is not known locally yet.
+    Parent { table: String, id: String },
+    /// The author (or a role statement's grantor) resolves below the
+    /// threshold the row needs; retried when that DID's effective role rises.
+    AuthorRole { did: String },
 }
 
 #[derive(Debug, Clone, Message)]

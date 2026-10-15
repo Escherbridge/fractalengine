@@ -13,6 +13,7 @@ pub mod elevated_query;
 pub mod entity;
 pub mod entity_property;
 pub mod field_def;
+pub mod inbound_admissions;
 pub mod invite;
 pub mod iot_reading;
 pub mod node_log;

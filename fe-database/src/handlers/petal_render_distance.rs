@@ -411,7 +411,7 @@ mod tests {
         );
 
         // Peer DB where the author has no granted role (viewer by default) —
-        // the whole row is denied.
+        // the whole row is deferred (RP-3: retried once the role lands), never applied.
         let denying_peer_db = db_with_petal("p1").await;
         let outcome = apply_replicated_row_handler(
             &denying_peer_db,
@@ -426,8 +426,17 @@ mod tests {
         .expect("apply ok");
         assert!(matches!(
             outcome,
-            fe_runtime::messages::ReplicatedRowOutcome::Denied
+            fe_runtime::messages::ReplicatedRowOutcome::Deferred(
+                fe_runtime::messages::DeferralReason::AuthorRole { .. }
+            )
         ));
+        assert_eq!(
+            get_petal_render_distance_handler(&denying_peer_db, "p1")
+                .await
+                .expect("get ok"),
+            None,
+            "a deferred row never touches the peer's petal"
+        );
     }
 
     #[tokio::test]

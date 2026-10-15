@@ -879,6 +879,62 @@ the DB plane around it.
   (pinned by `elevated_writable_tables_never_include_role_tables`), nor in
   fe-api `/query`'s `ALLOWED_TABLES` (plan §7 A7, RP-9 records it).
 
+## §inbound-admissions (role_propagation_20261013 RP-3)
+
+Inbound rows (`DbCommand::ApplyReplicatedRow`) have three verdicts:
+`Applied`-family, `Denied` (structural — permanent), and
+`Deferred(DeferralReason)` (not converged yet — retried). Plan §2.4.
+
+- **Role statements (`role/{scope}/{peer}/{grantor}`).** Routed by
+  `apply_replicated_row_reporting` BEFORE the Editor+ gate to
+  `apply_role_statement`: parse the key, parse the payload, run
+  `fe_policy::validate_statement` against the ATTESTED author (owner `None`
+  pre-manifest → only the owner-independent checks); any failure is `Denied`.
+  An interim `VERSE#<hex>` scope is `Denied` (T18). Then
+  `role_grants::submit_statement`: `Admitted` → `Applied` and the partition's
+  risen DIDs become retry triggers; `Superseded` → `Applied` (idempotent) unless
+  the key's live version is held, then `Deferred`; `Held` and
+  `RefusedOverBudget` → `Deferred(Manifest)` pre-manifest, else
+  `Deferred(AuthorRole{grantor})`. A `Doc::del` (empty entry) is
+  `NotApplicable` — revocation is a non-empty `revoked: true` statement.
+  Role statements are durable in `role_statement_pending` (§role-propagation),
+  never in the in-memory queue, and never wait on `Parent`: the cache is keyed
+  by scope strings, so a grant for a petal not known yet takes effect when the
+  petal row lands.
+- **Manifest landing.** A `verse` apply that changes the owner (first
+  manifest, or a `created_by` change) runs `repartition(verse, None)`, which
+  promotes every pre-manifest hold the owner empowers; its risen DIDs and a
+  `Manifest` trigger feed the content retries.
+- **A3 gate.** An author below the threshold (Editor+ write gate; Manager+
+  for `device_format`) is `Deferred(AuthorRole{author})`, not `Denied`.
+  Structural checks (scope injection, R5 confinement, AC-34's pre-manifest
+  `device_format`/`asset` rule, the petal terrain/render-distance shape checks)
+  stay `Denied` (RP-4 turns unknown-parent/pre-manifest cases into `Parent`/
+  `Manifest` deferrals).
+- **Enrolment (AC-44, T27).** `canon_device_enrolment` stays first: signature
+  and self-authorship failures are `Denied`. An ENROLMENT then waits for the
+  manifest (`Deferred(Manifest)`) and for membership — the principal resolves
+  to a role at the verse scope (owner / explicit row / `default_access`) OR
+  `EffectiveRoles::has_any_role` (a petal-scoped member) — else
+  `Deferred(AuthorRole{principal})`. Revocations stay unfloored.
+- **`InboundAdmissions` (content rows).** The ONE entry point both the
+  production loop (`lib.rs`) and the test harness (`fe-test-harness`
+  `peer.rs`) call. A deferred content row is queued by
+  `(verse, table, record_id, author)` with its latest bytes and indexed by
+  wait reason; caps `DEFERRED_PER_VERSE` 4096 and `DEFERRED_PER_AUTHOR` 512 per
+  verse, drop-oldest, counted (`deferred_admission_drop_count()`). Retries are
+  a worklist, not recursion: triggers are a `Manifest` landing, an applied row
+  (`Parent{table, record_id}`), and each risen DID (`AuthorRole`); a local
+  `AssignRole`/`RevokeRole` retries every `AuthorRole` waiter of its verse.
+  Every settled retry is echoed as its own `ReplicatedRowApplied`. It
+  terminates: each retry consumes a queued row, a row re-queues only if still
+  deferred, and triggers come only from applies (a bound guards bugs). No
+  channel is awaited (self-drain rule). A restart or overflow loses queued
+  content rows; the snapshot replay on the next replica open re-feeds them
+  (plan §7 A4). A content-row flood can delay content, never change roles.
+- **One-shot callers.** `apply_replicated_row_handler` (tests, earlier
+  phases) returns the outcome alone and never retries a `Deferred` row.
+
 ## §timeseries-settings (M2/F6)
 
 `handlers/verse_settings.rs` owns the per-verse timeseries fabric settings

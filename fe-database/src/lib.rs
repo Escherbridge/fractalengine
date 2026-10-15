@@ -541,6 +541,22 @@ pub fn spawn_db_thread_shared(
                 tracing::warn!("Result channel closed — UI may have shut down");
             }
             use handlers::send_result;
+            // RP-3: the deferred-admission queue for inbound content rows — lives for the
+            // loop, retried in-line (src/AGENTS.md §inbound-admissions).
+            let mut admissions = handlers::inbound_admissions::InboundAdmissions::new();
+            let echo_rows = |reports: Vec<handlers::inbound_admissions::RowReport>| {
+                for report in reports {
+                    send_result(
+                        &tx,
+                        DbResult::ReplicatedRowApplied {
+                            verse_id: report.verse_id,
+                            table: report.table,
+                            record_id: report.record_id,
+                            outcome: report.outcome,
+                        },
+                    );
+                }
+            };
 
             #[allow(clippy::while_let_loop)]
             loop {
@@ -864,7 +880,14 @@ pub fn spawn_db_thread_shared(
                     }
                     Ok(DbCommand::AssignRole { peer_did, scope, role }) => {
                         match handlers::rbac::assign_role_handler(&db, &blob_store, repl_tx.as_ref(), &local_did, &peer_did, &scope, &role).await {
-                            Ok(()) => send_result(&tx, DbResult::RoleAssigned { peer_did, scope, role }),
+                            Ok(()) => {
+                                let verse = role_grants::verse_of_scope(&scope);
+                                send_result(&tx, DbResult::RoleAssigned { peer_did, scope, role });
+                                // A local grant can unblock deferred inbound content rows.
+                                if let Some(verse) = verse {
+                                    echo_rows(admissions.retry_author_roles(&db, &verse, entity_change_tx.as_ref()).await);
+                                }
+                            }
                             Err(e) => send_result(&tx, DbResult::Error(format!("Assign role failed: {e}"))),
                         }
                     }
@@ -879,7 +902,13 @@ pub fn spawn_db_thread_shared(
                                         "RevokeRole: the target still holds its role through another grantor or inheritance"
                                     );
                                 }
-                                send_result(&tx, DbResult::RoleRevoked { peer_did, scope })
+                                let verse = role_grants::verse_of_scope(&scope);
+                                send_result(&tx, DbResult::RoleRevoked { peer_did, scope });
+                                // An owner revoke of a pin can raise the peer back to an
+                                // inherited role, so deferred rows are retried here too.
+                                if let Some(verse) = verse {
+                                    echo_rows(admissions.retry_author_roles(&db, &verse, entity_change_tx.as_ref()).await);
+                                }
                             }
                             Err(e) => send_result(&tx, DbResult::Error(format!("Revoke role failed: {e}"))),
                         }
@@ -1606,35 +1635,23 @@ pub fn spawn_db_thread_shared(
                     // replication sender and this arm passes none, so an
                     // applied row can never re-enter the outbound bridge
                     // (loop-free by construction). A3: the handler gates
-                    // admission on the author's role at the verse scope
-                    // (fe-policy deny-by-default, Editor+) before applying.
+                    // admission on the author's role (fe-policy, Editor+);
+                    // RP-3: `InboundAdmissions` queues a Deferred content row and
+                    // retries every row the apply unblocked — one echo per row settled.
                     Ok(DbCommand::ApplyReplicatedRow { verse_id, table, record_id, row_bytes, author_did }) => {
-                        match handlers::replicated_row::apply_replicated_row_handler(
-                            &db,
-                            &verse_id,
-                            &table,
-                            &record_id,
-                            &row_bytes,
-                            &author_did,
-                            entity_change_tx.as_ref(),
-                        ).await {
-                            Ok(outcome) => send_result(
-                                &tx,
-                                DbResult::ReplicatedRowApplied { verse_id, table, record_id, outcome },
-                            ),
-                            Err(e) => {
-                                tracing::warn!("Applying replicated row failed: {e}");
-                                send_result(
-                                    &tx,
-                                    DbResult::ReplicatedRowApplied {
-                                        verse_id,
-                                        table,
-                                        record_id,
-                                        outcome: fe_runtime::messages::ReplicatedRowOutcome::Failed,
-                                    },
-                                );
-                            }
-                        }
+                        echo_rows(
+                            admissions
+                                .apply(
+                                    &db,
+                                    &verse_id,
+                                    &table,
+                                    &record_id,
+                                    &row_bytes,
+                                    &author_did,
+                                    entity_change_tx.as_ref(),
+                                )
+                                .await,
+                        );
                     }
                     Ok(DbCommand::ReemitLocalRoleStatements { verse_id }) => {
                         match role_grants::reemit_local_statements(

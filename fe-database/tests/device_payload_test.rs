@@ -13,8 +13,8 @@ use fe_database::handlers::replicated_row::apply_replicated_row_handler;
 use fe_database::{BlobStore, BlobStoreHandle};
 use fe_runtime::blob_store::mock::MockBlobStore;
 use fe_runtime::messages::{
-    DeviceFormatRejection, DevicePayloadIngestRejection, DevicePayloadInput, IotReadingInput,
-    ReplicatedRowOutcome, SourceClass, DEVICE_PAYLOAD_MAX_ASSETS,
+    DeferralReason, DeviceFormatRejection, DevicePayloadIngestRejection, DevicePayloadInput,
+    IotReadingInput, ReplicatedRowOutcome, SourceClass, DEVICE_PAYLOAD_MAX_ASSETS,
 };
 use fe_sdk::device_format::DeviceFormatDescriptor;
 
@@ -624,7 +624,7 @@ async fn inbound_anchored_asset_row_insert_if_absent() {
     .unwrap();
     assert_eq!(outcome, ReplicatedRowOutcome::NotApplicable);
 
-    // A Viewer-authored row is denied.
+    // A Viewer-authored row is deferred (RP-3: retried when the role rises), never applied.
     let outcome = apply_replicated_row_handler(
         &db,
         VERSE,
@@ -641,7 +641,12 @@ async fn inbound_anchored_asset_row_insert_if_absent() {
     )
     .await
     .unwrap();
-    assert_eq!(outcome, ReplicatedRowOutcome::Denied);
+    assert_eq!(
+        outcome,
+        ReplicatedRowOutcome::Deferred(DeferralReason::AuthorRole {
+            did: "did:key:z6MkViewer".to_string()
+        })
+    );
 }
 
 #[tokio::test]
@@ -726,7 +731,7 @@ async fn inbound_device_payload_is_union_append_only() {
     .unwrap();
     assert_eq!(outcome, ReplicatedRowOutcome::NotApplicable);
 
-    // A Viewer-authored row is denied.
+    // A Viewer-authored row is deferred (RP-3: retried when the role rises), never applied.
     let mut viewer_row = row.clone();
     viewer_row["payload_id"] = serde_json::json!("payload-remote-2");
     let outcome = apply_replicated_row_handler(
@@ -740,7 +745,12 @@ async fn inbound_device_payload_is_union_append_only() {
     )
     .await
     .unwrap();
-    assert_eq!(outcome, ReplicatedRowOutcome::Denied);
+    assert_eq!(
+        outcome,
+        ReplicatedRowOutcome::Deferred(DeferralReason::AuthorRole {
+            did: "did:key:z6MkViewer".to_string()
+        })
+    );
 }
 
 /// Real `repl_tx` capture: asset rows emit before the payload row, after the
@@ -903,7 +913,7 @@ async fn inbound_device_rows_referencing_another_verse_are_denied() {
 /// Critic C3 ("strictest reader"): `device_format` needs Manager+, not just
 /// Editor+ like `asset`/`device_payload`.
 #[tokio::test]
-async fn an_editor_authored_inbound_device_format_is_denied_and_a_manager_one_applies() {
+async fn an_editor_authored_inbound_device_format_is_deferred_and_a_manager_one_applies() {
     let db = setup_db().await;
     seed_hierarchy(&db, VERSE, FRACTAL, PETAL, "node-a").await;
     seed_role(&db, "did:key:z6MkEditor", VERSE, "editor").await;
@@ -930,7 +940,9 @@ async fn an_editor_authored_inbound_device_format_is_denied_and_a_manager_one_ap
     .unwrap();
     assert_eq!(
         outcome,
-        ReplicatedRowOutcome::Denied,
+        ReplicatedRowOutcome::Deferred(DeferralReason::AuthorRole {
+            did: "did:key:z6MkEditor".to_string()
+        }),
         "Editor is below the device_format floor"
     );
 

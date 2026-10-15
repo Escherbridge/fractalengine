@@ -9,14 +9,19 @@
 //! resolved from the local tables at the verse scope — never from the wire —
 //! and must reach Editor+ (the same fe-policy standard write gate as the
 //! local path). See [`admit_inbound_row`]. The one exception is `canon_device_enrolment`,
-//! gated on signed self-authorship plus a Viewer floor for enrolments (`canon_log/AGENTS.md`
+//! gated on signed self-authorship plus a membership floor for enrolments (`canon_log/AGENTS.md`
 //! §device-enrolment).
+//!
+//! Role propagation RP-3: a row that fails only because something has not converged is
+//! `Deferred` (never applied now, retried by [`super::inbound_admissions`]); `role` doc
+//! entries are per-grantor role statements with their own gate (`apply_role_statement`) —
+//! see src/AGENTS.md §inbound-admissions.
 //!
 //! M2/F5: dispatch is keyed on [`ReplicationMode::for_table`] — `Row` tables
 //! take the tombstone-aware merge, `Timeseries` tables (`iot_reading`) the
 //! append-only union CRDT (see [`apply_timeseries_row`]).
 
-use fe_runtime::messages::{NodeDto, ReplicatedRowOutcome, SceneChange};
+use fe_runtime::messages::{DeferralReason, NodeDto, ReplicatedRowOutcome, SceneChange};
 
 use crate::merge::{apply_replicated_node, MergeApplied};
 use crate::replication_mode::ReplicationMode;
@@ -40,6 +45,10 @@ pub type SceneChangeSender = tokio::sync::broadcast::Sender<SceneChange>;
 /// DB (the real dispatch loop lives in fe-database's own thread and is not
 /// callable against `Mem` — statement-parity isn't enough here, the apply
 /// logic itself must be the production one).
+///
+/// A `Deferred` outcome from this one-shot entry point is NOT retried: the
+/// dispatch loops go through [`super::inbound_admissions::InboundAdmissions::apply`],
+/// which queues deferred content rows and retries them when the awaited fact lands.
 #[allow(clippy::too_many_arguments)]
 pub async fn apply_replicated_row_handler(
     db: &Db,
@@ -50,6 +59,53 @@ pub async fn apply_replicated_row_handler(
     author_did: &str,
     entity_change_tx: Option<&SceneChangeSender>,
 ) -> anyhow::Result<ReplicatedRowOutcome> {
+    apply_replicated_row_reporting(
+        db,
+        verse_id,
+        table,
+        record_id,
+        row_bytes,
+        author_did,
+        entity_change_tx,
+    )
+    .await
+    .map(|report| report.outcome)
+}
+
+/// One inbound apply's outcome plus the retry triggers it fires for the
+/// deferred-admission queue (src/AGENTS.md §inbound-admissions).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplyReport {
+    pub outcome: ReplicatedRowOutcome,
+    /// DIDs whose effective role rose because of this apply (an admitted role
+    /// statement and the partition it ran, or a manifest that set the owner).
+    pub risen_dids: Vec<String>,
+    /// The verse manifest landed with this apply (the verse row was unknown before).
+    pub manifest_landed: bool,
+}
+
+impl ApplyReport {
+    /// A report that fires no retry trigger.
+    pub fn of(outcome: ReplicatedRowOutcome) -> Self {
+        Self {
+            outcome,
+            risen_dids: Vec::new(),
+            manifest_landed: false,
+        }
+    }
+}
+
+/// [`apply_replicated_row_handler`] plus the retry triggers the apply fired.
+#[allow(clippy::too_many_arguments)]
+pub async fn apply_replicated_row_reporting(
+    db: &Db,
+    verse_id: &str,
+    table: &str,
+    record_id: &str,
+    row_bytes: &[u8],
+    author_did: &str,
+    entity_change_tx: Option<&SceneChangeSender>,
+) -> anyhow::Result<ApplyReport> {
     tracing::debug!(
         verse_id,
         table,
@@ -57,8 +113,23 @@ pub async fn apply_replicated_row_handler(
         author = author_did,
         "Applying inbound replicated row"
     );
-    // A3: admission precedes dispatch — a denied row is never applied and
-    // never re-emitted (there is no replication sender in scope anyway).
+    // RP-3: role statements bypass the Editor+ write gate — their gate is the
+    // fe-policy validator plus durable placement (plan §2.4).
+    if table == crate::role_grants::ROLE_DOC_TABLE {
+        return apply_role_statement(db, verse_id, record_id, row_bytes, author_did).await;
+    }
+    // The manifest-apply path must notice the owner becoming known (or
+    // changing) so the role partition promotes pre-manifest holds.
+    let manifest_before = if table == "verse" {
+        Some((
+            row_exists(db, "verse", "verse_id", verse_id).await?,
+            crate::role_grants::verse_owner(db, verse_id).await?,
+        ))
+    } else {
+        None
+    };
+    // A3: admission precedes dispatch — a denied or deferred row is never
+    // applied and never re-emitted (there is no replication sender in scope).
     match admit_inbound_row(db, verse_id, table, record_id, row_bytes, author_did).await? {
         Admission::Allow => {}
         Admission::Deny(reason) => {
@@ -68,14 +139,145 @@ pub async fn apply_replicated_row_handler(
                 record_id,
                 author = author_did,
                 reason = %reason,
-                "Inbound replicated row DENIED at the verse-scope role gate — not applied"
+                "Inbound replicated row DENIED at the admission gate — not applied"
             );
-            return Ok(ReplicatedRowOutcome::Denied);
+            return Ok(ApplyReport::of(ReplicatedRowOutcome::Denied));
+        }
+        Admission::Defer(reason) => {
+            tracing::debug!(
+                verse_id,
+                table,
+                record_id,
+                author = author_did,
+                ?reason,
+                "Inbound replicated row DEFERRED until it can be judged — not applied"
+            );
+            return Ok(ApplyReport::of(ReplicatedRowOutcome::Deferred(reason)));
         }
     }
     // Per-table semantics: `Timeseries` tables take the append-only union
     // path (A12), everything else the tombstone-aware row merge (N-4).
-    dispatch_by_mode(db, verse_id, table, record_id, row_bytes, entity_change_tx).await
+    let outcome =
+        dispatch_by_mode(db, verse_id, table, record_id, row_bytes, entity_change_tx).await?;
+    let mut report = ApplyReport::of(outcome);
+    if let (Some((known_before, owner_before)), ReplicatedRowOutcome::Applied) =
+        (manifest_before, &report.outcome)
+    {
+        report.manifest_landed = !known_before;
+        let owner_after = crate::role_grants::verse_owner(db, verse_id).await?;
+        if owner_after != owner_before {
+            // `prior = None` seeds the owner and every admitted peer as risen,
+            // which promotes every held statement the new owner empowers.
+            let changed = crate::role_grants::repartition(db, verse_id, None).await?;
+            report.risen_dids = changed.risen;
+        }
+    }
+    Ok(report)
+}
+
+// ---------------------------------------------------------------------------
+// RP-3: inbound role statements (plan §2.1, §2.4)
+// ---------------------------------------------------------------------------
+
+/// Apply one inbound `role/{scope}/{peer}/{grantor}` statement: validate it
+/// against the attested author (fe-policy; a failure is a permanent deny),
+/// then place it durably — admitted, held in `role_statement_pending`,
+/// superseded, or refused over its grantor's budget — repartitioning on
+/// admission. Never enters the in-memory content queue and never waits on
+/// `Parent`: the materializer works on scope strings (src/AGENTS.md
+/// §inbound-admissions).
+async fn apply_role_statement(
+    db: &Db,
+    verse_id: &str,
+    record_id: &str,
+    row_bytes: &[u8],
+    author_did: &str,
+) -> anyhow::Result<ApplyReport> {
+    // A `Doc::del` carries no HLC and iroh's `del` is a prefix delete;
+    // revocation is a non-empty `revoked: true` statement (§2.1).
+    if row_bytes.is_empty() {
+        tracing::debug!(
+            verse_id,
+            record_id,
+            "empty-entry delete on the role table — not applicable"
+        );
+        return Ok(ApplyReport::of(ReplicatedRowOutcome::NotApplicable));
+    }
+    let deny = |reason: String| {
+        tracing::warn!(
+            verse_id,
+            record_id,
+            author = author_did,
+            reason = %reason,
+            "Inbound role statement DENIED — not applied"
+        );
+        Ok(ApplyReport::of(ReplicatedRowOutcome::Denied))
+    };
+    let key = match fe_policy::StatementKey::parse(record_id) {
+        Ok(key) => key,
+        Err(reason) => return deny(reason.to_string()),
+    };
+    let payload: fe_policy::RoleStatementPayload = match serde_json::from_slice(row_bytes) {
+        Ok(payload) => payload,
+        Err(e) => return deny(format!("role statement payload is malformed: {e}")),
+    };
+    let owner = crate::role_grants::verse_owner(db, verse_id).await?;
+    let stmt =
+        match fe_policy::validate_statement(verse_id, owner.as_deref(), &key, author_did, &payload)
+        {
+            Ok(stmt) => stmt,
+            Err(reason) => return deny(reason.to_string()),
+        };
+    // An interim `VERSE#<hex>` authority key is structurally out of reach (AC-45, T18).
+    if crate::role_grants::verse_of_scope(&stmt.scope).as_deref() != Some(verse_id) {
+        return deny("role statement scope is not a hierarchy scope of this verse".to_string());
+    }
+
+    let waiting = match owner {
+        None => DeferralReason::Manifest,
+        Some(_) => DeferralReason::AuthorRole {
+            did: stmt.grantor_did.clone(),
+        },
+    };
+    let (placement, changed) = crate::role_grants::submit_statement(db, verse_id, &stmt).await?;
+    use crate::role_grants::Placement;
+    let report = match placement {
+        Placement::Admitted => ApplyReport {
+            outcome: ReplicatedRowOutcome::Applied,
+            risen_dids: changed.risen,
+            manifest_landed: false,
+        },
+        // Not newer than the live version: idempotent, nothing written. The
+        // key is still deferred while that live version sits in the held store.
+        Placement::Superseded => {
+            if held_statement_key_exists(db, &stmt).await? {
+                ApplyReport::of(ReplicatedRowOutcome::Deferred(waiting))
+            } else {
+                ApplyReport::of(ReplicatedRowOutcome::Applied)
+            }
+        }
+        // Persisted in `role_statement_pending`; the partition promotes it.
+        Placement::Held => ApplyReport::of(ReplicatedRowOutcome::Deferred(waiting)),
+        // Not persisted (counted); the replica keeps it and the sync-plane
+        // re-read forwards it again once its grantor is empowered (§2.5).
+        Placement::RefusedOverBudget => ApplyReport::of(ReplicatedRowOutcome::Deferred(waiting)),
+    };
+    Ok(report)
+}
+
+/// Whether `stmt`'s key currently lives in the held store.
+async fn held_statement_key_exists(
+    db: &Db,
+    stmt: &fe_policy::RoleStatement,
+) -> anyhow::Result<bool> {
+    let mut res = db
+        .query("SELECT statement_key FROM role_statement_pending WHERE statement_key = $k LIMIT 1")
+        .bind(("k", crate::role_grants::statement_record_id(stmt)))
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("held role statement lookup failed: {e}"))?;
+    let rows: Vec<serde_json::Value> = res.take(0)?;
+    Ok(!rows.is_empty())
 }
 
 /// Apply one inbound row according to its table's [`ReplicationMode`].
@@ -241,11 +443,16 @@ enum Admission {
     Allow,
     /// The row is denied — never applied, never re-emitted.
     Deny(String),
+    /// The row cannot be judged yet (plan §2.4) — not applied now, retried
+    /// when the awaited fact lands.
+    Defer(DeferralReason),
 }
 
 /// A3: gate one inbound row on the author's role at the verse scope.
 ///
-/// Deny-by-default, roles resolved from the **local** tables, never the
+/// An author below the threshold is `Defer(AuthorRole)` (RP-3) — never
+/// applied now, retried when their role rises; `Deny` is kept for structural
+/// violations. Deny-by-default, roles resolved from the **local** tables, never the
 /// wire: [`crate::role_manager::resolve_role`] walks the verse owner
 /// (`created_by`) → explicit `role` rows up the scope chain → the verse's
 /// `default_access`. Nothing pins `default_access` to a safe value at the
@@ -333,15 +540,17 @@ async fn admit_inbound_row(
             Ok(row_kind) => row_kind,
             Err(reason) => return Ok(Admission::Deny(reason)),
         };
-        if row_kind == SelfAuthoredRow::Enrolment
-            && row_exists(db, "verse", "verse_id", verse_id).await?
-        {
-            let verse_scope = crate::scope::build_scope(verse_id, None, None);
-            let role = crate::role_manager::resolve_role(db, author_did, &verse_scope).await?;
-            if role == fe_policy::RoleLevel::None {
-                return Ok(Admission::Deny(
-                    "device enrolment by a principal with no role in this verse".to_string(),
-                ));
+        // AC-44: an ENROLMENT waits for the manifest, then for membership —
+        // a floor failure is Deferred (retried when the principal's role
+        // rises), never Denied; revocations stay unfloored.
+        if row_kind == SelfAuthoredRow::Enrolment {
+            if !row_exists(db, "verse", "verse_id", verse_id).await? {
+                return Ok(Admission::Defer(DeferralReason::Manifest));
+            }
+            if !is_verse_member(db, verse_id, author_did).await? {
+                return Ok(Admission::Defer(DeferralReason::AuthorRole {
+                    did: author_did.to_string(),
+                }));
             }
         }
         return Ok(Admission::Allow);
@@ -402,18 +611,51 @@ async fn admit_inbound_row(
 
     let verse_scope = crate::scope::build_scope(verse_id, None, None);
     let role = crate::role_manager::resolve_role(db, author_did, &verse_scope).await?;
+    // RP-3 step 3: an insufficient role has not converged yet — it is not a
+    // structural violation — so the row is Deferred until the author's role rises.
+    let below_threshold = Admission::Defer(DeferralReason::AuthorRole {
+        did: author_did.to_string(),
+    });
     // R5 (critic C3, "strictest reader"): `device_format` is schema-defining
     // (like branch controls), so its post-manifest floor is Manager+ —
     // stricter than the standard Editor+ write gate every other table uses.
     if table == "device_format" && !role.can_manage() {
-        return Ok(Admission::Deny(format!(
-            "device_format requires Manager+ at the verse scope (resolved role: {role})"
-        )));
+        tracing::debug!(
+            verse_id,
+            record_id,
+            %role,
+            "device_format requires Manager+ at the verse scope — deferred"
+        );
+        return Ok(below_threshold);
     }
     match crate::rbac::evaluate_write(author_did, &role.to_string(), &verse_scope) {
         fe_policy::Decision::Allow => Ok(Admission::Allow),
-        fe_policy::Decision::Deny(reason) => Ok(Admission::Deny(reason)),
+        fe_policy::Decision::Deny(reason) => {
+            tracing::debug!(
+                verse_id,
+                table,
+                record_id,
+                reason = %reason,
+                "author below the write threshold — deferred"
+            );
+            Ok(below_threshold)
+        }
     }
+}
+
+/// AC-44(c) enrolment membership: the principal resolves to a role at the
+/// verse scope (owner, an explicit row or `default_access`), or holds any
+/// effective role at any scope of the verse — a petal-scoped member resolves
+/// to `None` at the verse scope yet must still be able to enrol.
+async fn is_verse_member(db: &Db, verse_id: &str, did: &str) -> anyhow::Result<bool> {
+    let verse_scope = crate::scope::build_scope(verse_id, None, None);
+    if crate::role_manager::resolve_role(db, did, &verse_scope).await? != fe_policy::RoleLevel::None
+    {
+        return Ok(true);
+    }
+    Ok(crate::role_grants::load_effective_roles(db, verse_id)
+        .await?
+        .is_some_and(|effective| effective.has_any_role(did)))
 }
 
 /// R5 referential confinement (critic C4, pre-empting the P2P-REF-CONFINE
@@ -1556,7 +1798,7 @@ mod tests {
         let outcome = apply_replicated_row_handler(
             &db,
             "v1",
-            "role",
+            "some_unreplicated_table",
             "whatever",
             br#"{"role":"editor"}"#,
             "did:key:peer-a",
@@ -1640,8 +1882,10 @@ mod tests {
         ));
     }
 
+    /// RP-3: a Viewer's row is not converged-yet, not structural — Deferred
+    /// (the dispatch loop's `InboundAdmissions` retries it), never applied now.
     #[tokio::test]
-    async fn viewer_role_row_is_denied_never_applied() {
+    async fn viewer_role_row_is_deferred_never_applied() {
         let db = schema_db().await;
         seed_verse_with_roles(&db, "v1", &[("did:key:peer-view", "viewer")]).await;
         let (scene_tx, mut scene_rx) = tokio::sync::broadcast::channel::<SceneChange>(8);
@@ -1657,7 +1901,12 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(outcome, ReplicatedRowOutcome::Denied);
+        assert_eq!(
+            outcome,
+            ReplicatedRowOutcome::Deferred(DeferralReason::AuthorRole {
+                did: "did:key:peer-view".to_string()
+            })
+        );
 
         // READ-BACK: the Viewer's row never touched the durable store…
         let rows = select_json(
@@ -1665,13 +1914,13 @@ mod tests {
             "SELECT node_id FROM node WHERE node_id = 'node-gated-2'",
         )
         .await;
-        assert!(rows.is_empty(), "denied row must not be persisted");
+        assert!(rows.is_empty(), "deferred row must not be persisted");
         // …and emitted no scene change (never re-emitted anywhere).
         assert!(scene_rx.try_recv().is_err());
     }
 
     #[tokio::test]
-    async fn unknown_peer_row_is_denied() {
+    async fn unknown_peer_row_is_deferred_never_applied() {
         let db = schema_db().await;
         // No role row for the author: resolution falls to the verse's
         // default_access ("viewer"), which must not admit a writer.
@@ -1688,7 +1937,12 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(outcome, ReplicatedRowOutcome::Denied);
+        assert_eq!(
+            outcome,
+            ReplicatedRowOutcome::Deferred(DeferralReason::AuthorRole {
+                did: "did:key:peer-unknown".to_string()
+            })
+        );
 
         let rows = select_json(
             &db,
@@ -1698,22 +1952,22 @@ mod tests {
         assert!(rows.is_empty(), "unknown peer's row must not be persisted");
     }
 
-    /// F20/M1 finding 2 (reconciliation second chance): a row denied because
+    /// F20/M1 finding 2 (reconciliation second chance): a row deferred because
     /// its author's role had not yet converged locally must apply when the
     /// same row is **replayed** (the startup reconciliation path re-applies a
     /// replica's snapshot) with the same authenticated author DID — this only
     /// works because live delivery and snapshot replay attribute authorship
     /// identically (fe-sync imports the endpoint identity as the docs
-    /// author). Re-delivery denial must stay harmless: the denied replay
-    /// leaves no trace.
+    /// author). A deferred delivery leaves no trace. (The in-process retry
+    /// without any replay is `InboundAdmissions`, tests/role_propagation_inbound_test.rs.)
     #[tokio::test]
-    async fn denied_row_converges_on_replay_after_role_lands() {
+    async fn deferred_row_converges_on_replay_after_role_lands() {
         let db = schema_db().await;
         // The verse manifest has converged; carol's Editor role row has NOT.
         seed_verse_with_roles(&db, "v1", &[]).await;
         let row = gated_node_row("node-replay-1");
 
-        // First delivery (live): carol resolves to default_access viewer → denied.
+        // First delivery (live): carol resolves to default_access viewer → deferred.
         let outcome = apply_replicated_row_handler(
             &db,
             "v1",
@@ -1725,7 +1979,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(outcome, ReplicatedRowOutcome::Denied);
+        assert!(matches!(outcome, ReplicatedRowOutcome::Deferred(_)));
         assert!(
             select_json(
                 &db,
@@ -1733,7 +1987,7 @@ mod tests {
             )
             .await
             .is_empty(),
-            "denied row must not be persisted"
+            "deferred row must not be persisted"
         );
 
         // The role row lands (e.g. it replicated later than carol's rows).
@@ -1757,7 +2011,7 @@ mod tests {
         assert_eq!(
             outcome,
             ReplicatedRowOutcome::Applied,
-            "the second chance must converge the previously denied row"
+            "the second chance must converge the previously deferred row"
         );
 
         // READ-BACK: converged durably.
@@ -1818,7 +2072,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_peer_verse_update_is_denied() {
+    async fn unknown_peer_verse_update_is_deferred() {
         let db = schema_db().await;
         seed_verse_with_roles(&db, "v1", &[]).await;
 
@@ -1830,7 +2084,12 @@ mod tests {
             apply_replicated_row_handler(&db, "v1", "verse", "v1", &update, "did:key:peer-b", None)
                 .await
                 .unwrap();
-        assert_eq!(outcome, ReplicatedRowOutcome::Denied);
+        assert_eq!(
+            outcome,
+            ReplicatedRowOutcome::Deferred(DeferralReason::AuthorRole {
+                did: "did:key:peer-b".to_string()
+            })
+        );
 
         // READ-BACK: the verse row is untouched.
         let rows = select_json(&db, "SELECT name FROM verse WHERE verse_id = 'v1'").await;
@@ -2234,9 +2493,9 @@ mod tests {
     }
 
     /// A3 still governs the timeseries path: a peer below Editor at the verse
-    /// scope cannot inject readings (deny-by-default is uniform across modes).
+    /// scope cannot inject readings (uniform across modes) — Deferred, never applied.
     #[tokio::test]
-    async fn timeseries_reading_from_viewer_is_denied() {
+    async fn timeseries_reading_from_viewer_is_deferred() {
         let db = schema_db().await;
         seed_verse_with_roles(&db, "v1", &[("did:key:viewer", "viewer")]).await;
 
@@ -2251,7 +2510,16 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(outcome, ReplicatedRowOutcome::Denied);
-        assert_eq!(reading_count(&db).await, 0, "denied rows are never applied");
+        assert_eq!(
+            outcome,
+            ReplicatedRowOutcome::Deferred(DeferralReason::AuthorRole {
+                did: "did:key:viewer".to_string()
+            })
+        );
+        assert_eq!(
+            reading_count(&db).await,
+            0,
+            "deferred rows are never applied"
+        );
     }
 }
