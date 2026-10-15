@@ -477,6 +477,17 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
   PAS-P5 A3 caveat + ledger rows). PDBs pruned before W2b launch (RUNBOOK §5). **W2b fixups
   launched** (one sonnet executor → one opus review-and-fix). Next: **W3 = CDL-W4** once W2b
   closes.
+- **CURRENT STATE (consolidated 2026-10-15 — several earlier §8 inserts silently missed their anchors;
+  `conductor/accountability-log.md` is the complete chronological record):**
+  - Pushed: origin/main `53a4c4c` (W0–W0d; CI green run 38498925963, packaged `latest` published).
+  - Local, unpushed (held for the final sweep): W1 PAS-P3P4 `53a4c4c..069f8ea`; W2 PAS-P5 `4865a54..e7762d9`;
+    W2b `474ab9b`; W3 CDL-W4 `38dd271..381264e`; W3b `78eab0e`; W4 CDL-SPEC10 `26833b9..0333029` (B2b `f4df2a3`
+    committed by the orchestrator with the user's explicit authorization after a gate-timing halt). Every phase
+    reviewed (security + correctness review-and-fix, all FIXED) — see the §2 review ledger.
+  - Next: critic tick 8 → **W5 role propagation** (`conductor/tracks/role_propagation_20261013/plan.md`, security
+    review mandatory) → **campaign final sweep** per `conductor/final-sweep-manifest.md` (full `cargo test
+    --workspace` incl. doctests, feature-matrix tests, harness 17 scenarios ×2, e2e scripts, packaged GUI + relay
+    smoke, fe-database `--ignored`) → push on green → watch CI → end-of-campaign report (artifact).
 
 ### 2026-10-12 — handoff after the completeness campaign
 - Done: retro (§1); 5-round grill loop → §3 decisions; pushed `a064144..4765bc5`; untracked
