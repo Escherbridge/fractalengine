@@ -332,3 +332,19 @@ was wrong). All 11 directives ACCEPTED → Brief A `cc631ae` (RP plan C11–C21,
   `b8ae366`, `from:0`, `known_issues.RP-0` = the type error + the 4 uncommitted files). The script carries the
   AC-48 GATE MECHANICS text (foreground at 600 s, re-run on timeout, never background cargo) and NO generic
   overrides bypass. The orchestrator did NOT commit RP-0's files; RP-0 commits through its own gate.
+
+### Tick 8b (W5 relaunch boundary) — 2026-10-15 · VERDICT: ON_TRACK (1 MED, 2 LOW)
+Report: `.omc/accountability/tick-20261015-8b.md`. Verified: RP-0 committed `15ae606` through its own 11-step
+foreground gate (all EXIT 0); `b8ae366..aa595e8` holds only orchestrator docs commits; AC-48 holds (`known_issues`
+is prompt context only, no bypass). All three directives ACCEPTED:
+- AC-52 MED: the script halted only on `gate_green`, so a review slice returning `BLOCKED` or leaving an unfixed
+  CRITICAL/HIGH would not stop the run (same latent gap in W3/W4 scripts). Script patched for any relaunch
+  (`reviewBlocked()` after the slice loop halt, RP-9 and RP-9b; `reports` now carry `verdict`). The LIVE run loaded
+  the old script, so the guard is enforced by the orchestrator: `wait_slice.py` now prints `AC52_HALT` with each
+  unfixed CRITICAL/HIGH; on that signal → TaskStop `wsu9cgmlh`, repair, relaunch `from:<index>`.
+- AC-53 LOW: slip logged — W5 was relaunched (15:51:05Z) before `TaskStop wr9fq1u0y` (15:53:54Z). Harmless (run
+  record `completed` 15:46:32Z, zero cargo), but the order is TaskStop + no-cargo check BEFORE any `Workflow` call.
+- AC-54 LOW: the patched RP-10 prompt now receives RP-4s verdict+sha, base and every slice sha. The live run uses
+  the old prompt → at W5 close verify RP-10 recorded RP-4s/RP-9/RP-9b verdict+sha and the full sha list; fix with a
+  follow-up docs edit if not. Model tier: RP-10 runs on sonnet, not the plan's haiku — kept (it records security
+  verdicts across 6+ files; accuracy over cost), deviation logged here.
