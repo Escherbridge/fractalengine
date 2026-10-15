@@ -561,6 +561,7 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
             petal_id,
             terrain,
             correlation_id,
+            ..
         } => {
             match &terrain {
                 Some(t) => m.terrain.insert(petal_id.clone(), t.clone()),

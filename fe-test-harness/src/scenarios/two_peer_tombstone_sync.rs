@@ -18,6 +18,7 @@ use fe_runtime::messages::{DbCommand, DbResult, ReplicatedRowOutcome};
 use fe_sync::messages::SyncCommand;
 
 use crate::peer::TestPeer;
+use crate::scenarios::scaffold;
 use crate::TestResult;
 
 /// How long to wait for each row to cross the real transport.
@@ -155,6 +156,19 @@ pub fn run() -> Result<TestResult> {
             "READ-BACK failed: bob's store never converged the verse manifest",
         ));
     }
+
+    // RP-4: bob confines the node row to a petal it knows.
+    scaffold::publish_scaffold(
+        &alice,
+        &[&bob],
+        &scaffold::Scaffold {
+            verse_id: &verse_id,
+            owner_did: &alice_did,
+            fractal_id: "fractal-a5",
+            petal_id: "petal-a5",
+        },
+        &[],
+    )?;
 
     // 4. Leg 1: a live node row crosses and applies.
     let node_row = serde_json::json!({

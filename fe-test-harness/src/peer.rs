@@ -958,7 +958,7 @@ impl TestPeer {
                             }
                         }
                         // Petal terrain — test harness stub echoes the set value.
-                        Ok(DbCommand::SetPetalTerrain { petal_id, terrain, correlation_id }) => {
+                        Ok(DbCommand::SetPetalTerrain { petal_id, terrain, correlation_id, .. }) => {
                             if let Err(e) = db_result_tx.send(DbResult::PetalTerrainLoaded {
                                 petal_id,
                                 terrain,
@@ -1779,7 +1779,9 @@ async fn generate_invite(
 ) -> anyhow::Result<String> {
     // Look up verse row for namespace_id and name.
     let mut result: surrealdb::IndexedResults = db
-        .query("SELECT namespace_id, name FROM verse WHERE verse_id = $vid LIMIT 1")
+        .query(
+            "SELECT namespace_id, name, created_by, created_at FROM verse WHERE verse_id = $vid LIMIT 1",
+        )
         .bind(("vid", verse_id.to_string()))
         .await?;
     let rows: Vec<serde_json::Value> = result.take(0)?;
@@ -1811,11 +1813,16 @@ async fn generate_invite(
     let expiry = now + (expiry_hours as u64) * 3600;
 
     let creator_node_addr = hex::encode(keypair.verifying_key().to_bytes());
+    // RP-4 step 4: the invite pins the verse OWNER (signed), never the inviter.
+    let owner_did = row["created_by"].as_str().unwrap_or_default().to_string();
+    let verse_created_at = row["created_at"].as_str().unwrap_or_default().to_string();
 
     let mut invite = fe_database::invite::VerseInvite {
         namespace_id,
         namespace_secret,
         creator_node_addr,
+        owner_did,
+        verse_created_at,
         verse_name,
         verse_id: verse_id.to_string(),
         expiry_timestamp: expiry,
@@ -1861,14 +1868,14 @@ async fn join_verse(
     let existing: Vec<serde_json::Value> = check.take(0)?;
 
     if existing.is_empty() {
-        let now = chrono::Utc::now().to_rfc3339();
+        // The signed owner pin (production `join_verse_by_invite_handler`).
         let _: Option<serde_json::Value> = db
             .create("verse")
             .content(serde_json::json!({
                 "verse_id": verse_id,
                 "name": verse_name,
-                "created_by": invite.creator_node_addr,
-                "created_at": now,
+                "created_by": invite.owner_did,
+                "created_at": invite.verse_created_at,
                 "namespace_id": namespace_id,
             }))
             .await?;

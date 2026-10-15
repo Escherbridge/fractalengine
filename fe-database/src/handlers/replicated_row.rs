@@ -5,12 +5,11 @@
 //! sender, so an applied row can never re-enter the outbound bridge — the
 //! dispatch arm is the only caller and it passes none either.
 //!
-//! A3: admission is role-gated here (deny-by-default). The author's role is
-//! resolved from the local tables at the verse scope — never from the wire —
-//! and must reach Editor+ (the same fe-policy standard write gate as the
-//! local path). See [`admit_inbound_row`]. The one exception is `canon_device_enrolment`,
-//! gated on signed self-authorship plus a membership floor for enrolments (`canon_log/AGENTS.md`
-//! §device-enrolment).
+//! A3: admission is gated here (deny-by-default): verse id → enrolment → manifest wait →
+//! referential confinement → the author's role, resolved from the local tables (never the
+//! wire) at the row's deepest scope — see [`admit_inbound_row`] and src/AGENTS.md §handlers
+//! "replicated_row". `canon_device_enrolment` is gated on signed self-authorship plus a
+//! membership floor for enrolments (`canon_log/AGENTS.md` §device-enrolment).
 //!
 //! Role propagation RP-3: a row that fails only because something has not converged is
 //! `Deferred` (never applied now, retried by [`super::inbound_admissions`]); `role` doc
@@ -434,7 +433,8 @@ async fn apply_row_mode(
 }
 
 // ---------------------------------------------------------------------------
-// A3: the inbound role gate
+// A3: the inbound admission gate — verse id → enrolment → manifest wait →
+// referential confinement → role at the row's deepest scope (RP-4)
 // ---------------------------------------------------------------------------
 
 /// Verdict of the inbound admission gate.
@@ -448,51 +448,86 @@ enum Admission {
     Defer(DeferralReason),
 }
 
-/// A3: gate one inbound row on the author's role at the verse scope.
-///
-/// An author below the threshold is `Defer(AuthorRole)` (RP-3) — never
-/// applied now, retried when their role rises; `Deny` is kept for structural
-/// violations. Deny-by-default, roles resolved from the **local** tables, never the
-/// wire: [`crate::role_manager::resolve_role`] walks the verse owner
-/// (`created_by`) → explicit `role` rows up the scope chain → the verse's
-/// `default_access`. Nothing pins `default_access` to a safe value at the
-/// schema level — the column carries only a `DEFAULT 'viewer'`
-/// (schema.rs), no `ASSERT` — so the safe values are enforced where they
-/// are written: `set_default_access` (local path) and `apply_static_row`
-/// (inbound replicated manifests, which reject anything outside
-/// `"viewer"`/`"none"`) together keep an unknown peer from ever resolving
-/// to a writer through this table. The decision itself is
-/// [`crate::rbac::evaluate_write`] — the same fe-policy standard write gate
-/// as the local path (Write = Editor+), so inbound and local writes can
-/// never drift apart in threshold.
-///
-/// **Bootstrap window:** rows for a verse this store does not know yet are
-/// admitted. A peer only receives rows over a replica it deliberately opened
-/// (namespace capability in hand) — that capability is the admission until
-/// the verse manifest converges and real roles become resolvable. Denying
-/// here would deadlock convergence at the root: the verse row itself, which
-/// the gate keys on, arrives over this same path (the A2 two-peer flow
-/// depends on this). The window closes the moment the manifest lands; every
-/// row after it is role-gated. A capability-holder could always plant a
-/// manifest first anyway, so this rule gates nothing extra — it only keeps
-/// out-of-order sync (petal rows arriving before the verse row) from being
-/// permanently lost.
-///
-/// **Cross-verse referential confinement (known gap, future hardening):**
-/// this gate confines a row to the replica's verse (`verse_id` match for
-/// verse rows; the manifest's scope for interior rows) but does not verify
-/// that an admitted interior row's *references* (a node row's `petal_id`,
-/// a petal row's `fractal_id`, …) belong to that same verse — an Editor
-/// admitted in verse A could push rows referencing verse B's ids. Full
-/// referential-confinement checking is recorded on the conductor board (the
-/// p2p_mycelium_completion FUTURE-HARDENING note) and belongs at this
-/// admission gate once the verse-manifest/role bootstrap contract is
-/// specified; it is deliberately out of M1 scope for the pre-existing
-/// tables. **R5 (CDL-SPEC10 A3, critic C4) closes this gap for its own three
-/// new tables** — `asset`, `device_payload` and `device_format` — via
-/// [`r5_referential_confinement`], run role-independently BEFORE the
-/// bootstrap window below. The pre-existing node/petal/fractal gap is
-/// unchanged; role propagation RP-4 generalizes the pattern.
+/// The role floor a confined row must clear.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Floor {
+    /// The fe-policy standard write gate (Editor+) at every gated scope.
+    Write,
+    /// Manager+ at the VERSE scope: verse governance fields and `device_format`.
+    ManageVerse,
+}
+
+/// What referential confinement concluded about one row.
+enum Confined {
+    /// Every reference is in this verse: gate the author against `floor` at
+    /// each of `scopes` (the row's deepest scope, plus a durable row's current
+    /// scope when the row moves it).
+    Gate { scopes: Vec<String>, floor: Floor },
+    /// Settled before the role gate (denied or deferred).
+    Stop(Admission),
+}
+
+/// Where a referenced row sits relative to the replica's verse (AC-43: three
+/// outcomes, never a boolean that conflates "foreign" with "not here yet").
+enum Located {
+    /// Known locally and in this verse; carries its hierarchy scope (or id).
+    Here(String),
+    /// Known locally but in another verse, or mismatched — Denied.
+    Foreign(String),
+    /// Not known locally yet — Deferred until it lands.
+    Unknown(DeferralReason),
+}
+
+/// `Located::Here`'s payload, or return the stop the other two outcomes imply.
+macro_rules! here_or_stop {
+    ($located:expr) => {
+        match $located {
+            Located::Here(value) => value,
+            Located::Foreign(reason) => return Ok(Confined::Stop(Admission::Deny(reason))),
+            Located::Unknown(reason) => return Ok(Confined::Stop(Admission::Defer(reason))),
+        }
+    };
+}
+
+fn deny(reason: impl Into<String>) -> anyhow::Result<Confined> {
+    Ok(Confined::Stop(Admission::Deny(reason.into())))
+}
+
+fn defer(reason: DeferralReason) -> anyhow::Result<Confined> {
+    Ok(Confined::Stop(Admission::Defer(reason)))
+}
+
+fn parent(table: &str, id: &str) -> DeferralReason {
+    DeferralReason::Parent {
+        table: table.to_string(),
+        id: id.to_string(),
+    }
+}
+
+/// Verse fields a replicated manifest may never change (T9).
+const VERSE_IDENTITY_FIELDS: [&str; 4] = ["verse_id", "created_by", "created_at", "namespace_id"];
+/// Verse fields whose change needs Manager+ at the verse scope (RP-4 step 2).
+const VERSE_GOVERNANCE_FIELDS: [&str; 4] = [
+    "default_access",
+    "ts_mode",
+    "ts_replication_factor",
+    "ts_bucket_width_ms",
+];
+
+/// Tables the inbound path writes; any other table is `NotApplicable` at dispatch.
+fn is_applied_table(table: &str) -> bool {
+    matches!(
+        table,
+        "verse" | "fractal" | "petal" | "node" | "asset" | "device_format"
+    ) || ReplicationMode::for_table(table) == ReplicationMode::Timeseries
+}
+
+/// A3: admit one inbound row. Gate order (RP-4, src/AGENTS.md §handlers
+/// "replicated_row"): verse id check → enrolment verify → manifest wait →
+/// referential confinement → the author's role at the row's deepest scope.
+/// Roles come from the local tables only, never the wire; a sub-threshold
+/// author is `Defer(AuthorRole)`, a missing manifest or parent `Defer`, and
+/// only structural violations `Deny`.
 async fn admit_inbound_row(
     db: &Db,
     verse_id: &str,
@@ -503,8 +538,14 @@ async fn admit_inbound_row(
 ) -> anyhow::Result<Admission> {
     // A verse row claiming a different verse than the replica it arrived on
     // is a scope-injection attempt: the gate would judge the replica's verse
-    // while the row lands under the payload's (which, pre-manifest, would
-    // also slip through the bootstrap window unchecked). Never trust it.
+    // while the row lands under the payload's. Never trust it. The wire key
+    // too: `apply_static_row` falls back to it when the payload names no
+    // `verse_id`, so a key naming another verse would MERGE into that verse.
+    if table == "verse" && record_id != verse_id {
+        return Ok(Admission::Deny(
+            "verse row key does not match the replica's verse".to_string(),
+        ));
+    }
     if table == "verse" {
         if let Some(claimed) = serde_json::from_slice::<serde_json::Value>(row_bytes)
             .ok()
@@ -530,19 +571,16 @@ async fn admit_inbound_row(
     }
 
     // Device enrolment (owner R2, W4-8): admitted iff the signed artifact verifies AND its
-    // principal is the entry author. It must run BEFORE the bootstrap window, or a forged
-    // pre-manifest enrolment would slip in unchecked. Once the manifest has converged an
-    // ENROLMENT (never a revocation) also needs a role above None; see canon_log/AGENTS.md
-    // §device-enrolment "Membership floor".
+    // principal is the entry author — verified FIRST, so a forged enrolment is Denied even
+    // before the manifest. An ENROLMENT (never a revocation) then waits for the manifest and
+    // for membership (AC-44); see canon_log/AGENTS.md §device-enrolment "Membership floor".
+    // Principal-keyed and verse-agnostic, so exempt from referential confinement.
     if table == crate::canon_log::device_enrolment::DEVICE_ENROLMENT_TABLE {
         use crate::canon_log::device_enrolment::{admit_replicated_enrolment, SelfAuthoredRow};
         let row_kind = match admit_replicated_enrolment(record_id, row_bytes, author_did) {
             Ok(row_kind) => row_kind,
             Err(reason) => return Ok(Admission::Deny(reason)),
         };
-        // AC-44: an ENROLMENT waits for the manifest, then for membership —
-        // a floor failure is Deferred (retried when the principal's role
-        // rises), never Denied; revocations stay unfloored.
         if row_kind == SelfAuthoredRow::Enrolment {
             if !row_exists(db, "verse", "verse_id", verse_id).await? {
                 return Ok(Admission::Defer(DeferralReason::Manifest));
@@ -556,91 +594,107 @@ async fn admit_inbound_row(
         return Ok(Admission::Allow);
     }
 
-    // R5 (CDL-SPEC10 A3, critic C4/AC-34): role-independent referential
-    // confinement runs BEFORE the bootstrap window, exactly like the
-    // device-enrolment checks above and the W3 enrolment floor — a
-    // signature/reference check is never something authority should be
-    // allowed to bypass, bootstrap window or not.
-    if matches!(
-        table,
-        "asset" | "device_payload" | "device_format" | "iot_reading"
-    ) {
-        if let Some(reason) = r5_referential_confinement(db, verse_id, table, row_bytes).await? {
+    // A table the inbound path never writes, or an empty `del` entry on a
+    // table without tombstone semantics, is a no-op at dispatch
+    // (`NotApplicable`): there is nothing to judge, and nothing to queue.
+    if !is_applied_table(table) || (row_bytes.is_empty() && table != "node") {
+        return Ok(Admission::Allow);
+    }
+
+    // First-manifest rule (RP-4 step 3): before a manifest exists, ONLY the
+    // verse row is admitted — trust on first use; a joined store already
+    // holds its invite-pinned manifest (`handlers::invite`), so a manifest
+    // naming another owner meets the immutable-identity check instead. Every
+    // other row waits for the manifest (role statements are held durably by
+    // `apply_role_statement`, which runs before this gate).
+    if !row_exists(db, "verse", "verse_id", verse_id).await? {
+        if table == "verse" {
+            tracing::debug!(
+                verse_id,
+                record_id,
+                "first verse manifest — trust on first use"
+            );
+            return Ok(Admission::Allow);
+        }
+        return Ok(Admission::Defer(DeferralReason::Manifest));
+    }
+
+    let (scopes, floor) = match confine(db, verse_id, table, record_id, row_bytes).await? {
+        Confined::Gate { scopes, floor } => (scopes, floor),
+        Confined::Stop(Admission::Deny(reason)) => {
             tracing::warn!(
                 verse_id,
                 table,
                 record_id,
                 author = author_did,
                 reason = %reason,
-                "R5 referential confinement denied an inbound row"
+                "referential confinement denied an inbound row"
             );
             return Ok(Admission::Deny(reason));
         }
-    }
+        Confined::Stop(other) => return Ok(other),
+    };
+    role_gate(db, verse_id, table, record_id, author_did, &scopes, floor).await
+}
 
-    // Bootstrap window (see the doc comment above).
-    if !row_exists(db, "verse", "verse_id", verse_id).await? {
-        // AC-34: `device_format`/`asset` fail closed pre-manifest (explicit
-        // per-table choice, mirrors the W3 enrolment floor's "fail closed,
-        // re-publish" residual) — their own rows carry no local reference
-        // the confinement check above could have denied on, so without this
-        // an unauthenticated pre-manifest peer could plant either table.
-        // `device_payload` needs no extra rule here: the confinement check
-        // above already denies it whenever its petal/node/asset references
-        // are not locally known, which a missing verse row normally implies.
-        if matches!(table, "device_format" | "asset") {
-            tracing::debug!(
-                verse_id,
-                table,
-                record_id,
-                "pre-manifest: device_format/asset rows fail closed until the manifest converges"
-            );
-            return Ok(Admission::Deny(
-                "device_format/asset rows are denied before the verse manifest converges"
-                    .to_string(),
-            ));
+/// The role gate (RP-4 step 6): the author's role, resolved from the local
+/// tables at each gated scope — `resolve_role` walks up the chain over the
+/// materialized cache, so this is `role_at`, the function grant authority and
+/// the sync-plane gates use. An Editor appointed by a petal Manager passes in
+/// that petal and is deferred elsewhere. A sub-threshold author has not
+/// converged yet — `Defer(AuthorRole)`, retried when their role rises.
+async fn role_gate(
+    db: &Db,
+    verse_id: &str,
+    table: &str,
+    record_id: &str,
+    author_did: &str,
+    scopes: &[String],
+    floor: Floor,
+) -> anyhow::Result<Admission> {
+    let below_threshold = || {
+        Admission::Defer(DeferralReason::AuthorRole {
+            did: author_did.to_string(),
+        })
+    };
+    match floor {
+        Floor::ManageVerse => {
+            let verse_scope = crate::scope::build_scope(verse_id, None, None);
+            let role = crate::role_manager::resolve_role(db, author_did, &verse_scope).await?;
+            if let fe_policy::Decision::Deny(reason) =
+                crate::rbac::evaluate_manage(author_did, role, &verse_scope)
+            {
+                tracing::debug!(
+                    verse_id,
+                    table,
+                    record_id,
+                    %role,
+                    reason = %reason,
+                    "needs Manager+ at the verse scope — deferred"
+                );
+                return Ok(below_threshold());
+            }
         }
-        tracing::debug!(
-            verse_id,
-            table,
-            record_id,
-            "verse manifest not converged yet — bootstrap admission"
-        );
-        return Ok(Admission::Allow);
-    }
-
-    let verse_scope = crate::scope::build_scope(verse_id, None, None);
-    let role = crate::role_manager::resolve_role(db, author_did, &verse_scope).await?;
-    // RP-3 step 3: an insufficient role has not converged yet — it is not a
-    // structural violation — so the row is Deferred until the author's role rises.
-    let below_threshold = Admission::Defer(DeferralReason::AuthorRole {
-        did: author_did.to_string(),
-    });
-    // R5 (critic C3, "strictest reader"): `device_format` is schema-defining
-    // (like branch controls), so its post-manifest floor is Manager+ —
-    // stricter than the standard Editor+ write gate every other table uses.
-    if table == "device_format" && !role.can_manage() {
-        tracing::debug!(
-            verse_id,
-            record_id,
-            %role,
-            "device_format requires Manager+ at the verse scope — deferred"
-        );
-        return Ok(below_threshold);
-    }
-    match crate::rbac::evaluate_write(author_did, &role.to_string(), &verse_scope) {
-        fe_policy::Decision::Allow => Ok(Admission::Allow),
-        fe_policy::Decision::Deny(reason) => {
-            tracing::debug!(
-                verse_id,
-                table,
-                record_id,
-                reason = %reason,
-                "author below the write threshold — deferred"
-            );
-            Ok(below_threshold)
+        Floor::Write => {
+            for scope in scopes {
+                let role = crate::role_manager::resolve_role(db, author_did, scope).await?;
+                if let fe_policy::Decision::Deny(reason) =
+                    crate::rbac::evaluate_write(author_did, &role.to_string(), scope)
+                {
+                    tracing::debug!(
+                        verse_id,
+                        table,
+                        record_id,
+                        scope = %scope,
+                        reason = %reason,
+                        "author below the write threshold at the row's scope — deferred"
+                    );
+                    return Ok(below_threshold());
+                }
+            }
         }
     }
+    Ok(Admission::Allow)
 }
 
 /// AC-44(c) enrolment membership: the principal resolves to a role at the
@@ -658,168 +712,458 @@ async fn is_verse_member(db: &Db, verse_id: &str, did: &str) -> anyhow::Result<b
         .is_some_and(|effective| effective.has_any_role(did)))
 }
 
-/// R5 referential confinement (critic C4, pre-empting the P2P-REF-CONFINE
-/// ledger row): every reference inside an `asset` / `device_payload` /
-/// `device_format` row must resolve to THIS replica's verse, and an
-/// `iot_reading`'s optional `payload_id` link must name a payload of the
-/// reading's own petal. `Some(reason)` denies; `None` allows. A reference
-/// unknown locally is denied for now (role propagation RP-4 later turns this
-/// into `Deferred Parent`). A reference list that is absent, empty, oversized
-/// or not all strings is denied too: a check that skips what it cannot read
-/// is a check a peer can step around (`src/AGENTS.md` §device-payload).
-async fn r5_referential_confinement(
+// ---------------------------------------------------------------------------
+// Referential confinement (P2P-REF-CONFINE, RP-4 step 5) — the ONE
+// parent-chain resolver every table shares (CDL-SPEC10 A3's included)
+// ---------------------------------------------------------------------------
+
+/// Confine one row of a known verse: every reference it carries, AND the
+/// current parent of the durable row it would change, must resolve to this
+/// replica's verse. Returns the scopes and floor its author must clear.
+async fn confine(
     db: &Db,
     verse_id: &str,
     table: &str,
+    record_id: &str,
     row_bytes: &[u8],
-) -> anyhow::Result<Option<String>> {
-    if row_bytes.is_empty() {
-        // An empty entry (del marker) carries no references; the per-table
-        // apply function below decides applicability on its own.
-        return Ok(None);
-    }
-    let Ok(row) = serde_json::from_slice::<serde_json::Value>(row_bytes) else {
-        return Ok(Some(format!("{table} row is not valid JSON")));
-    };
-
-    match table {
-        "asset" => match row.get("petal_id").and_then(|v| v.as_str()) {
-            // Un-anchored rows are denied by `apply_anchored_asset_row`
-            // itself; nothing to confine on an absent reference.
-            None => Ok(None),
-            Some(petal_id) => confine_petal_to_verse(db, verse_id, petal_id).await,
-        },
-        "device_payload" => {
-            let Some(petal_id) = row.get("petal_id").and_then(|v| v.as_str()) else {
-                return Ok(Some("device_payload row has no petal_id".to_string()));
-            };
-            if let Some(reason) = confine_petal_to_verse(db, verse_id, petal_id).await? {
-                return Ok(Some(reason));
-            }
-            match row.get("verse_id") {
-                None | Some(serde_json::Value::Null) => {}
-                Some(v) if v.as_str() == Some(verse_id) => {}
-                Some(_) => {
-                    return Ok(Some(
-                        "device_payload verse_id does not match the replica's verse".to_string(),
-                    ))
-                }
-            }
-            let Some(node_id) = row.get("node_id").and_then(|v| v.as_str()) else {
-                return Ok(Some("device_payload row has no node_id".to_string()));
-            };
-            if !crate::handlers::device_payload::node_is_in_petal(db, petal_id, node_id).await? {
-                return Ok(Some(format!(
-                    "device_payload anchor node '{node_id}' is not known in petal '{petal_id}'"
-                )));
-            }
-            let Some(asset_ids) = row.get("asset_ids").and_then(|v| v.as_array()) else {
-                return Ok(Some("device_payload row has no asset_ids list".to_string()));
-            };
-            if asset_ids.is_empty()
-                || asset_ids.len() > fe_runtime::messages::DEVICE_PAYLOAD_MAX_ASSETS
-            {
-                return Ok(Some(format!(
-                    "device_payload asset_ids must hold 1..={} entries",
-                    fe_runtime::messages::DEVICE_PAYLOAD_MAX_ASSETS
-                )));
-            }
-            for entry in asset_ids {
-                let Some(asset_id) = entry.as_str() else {
-                    return Ok(Some(
-                        "device_payload asset_ids entry is not a string".to_string(),
-                    ));
-                };
-                if !crate::handlers::device_payload::asset_anchored_to_petal(db, asset_id, petal_id)
-                    .await?
-                {
-                    return Ok(Some(format!(
-                        "device_payload asset_ids entry '{asset_id}' is not anchored to petal '{petal_id}'"
-                    )));
-                }
-            }
-            // SPEC-10 §2.2 rule 5, the local door's rule applied to the peer's
-            // row (strictest reader): the format is declared for THIS verse and
-            // every listed asset carries its MIME.
-            let Some(format_id) = row.get("format_id").and_then(|v| v.as_str()) else {
-                return Ok(Some("device_payload row has no format_id".to_string()));
-            };
-            let Some(format) =
-                crate::handlers::device_payload::fetch_format(db, verse_id, format_id).await?
-            else {
-                return Ok(Some(format!(
-                    "device_payload format '{format_id}' is not declared locally for verse '{verse_id}'"
-                )));
-            };
-            for asset_id in asset_ids.iter().filter_map(|v| v.as_str()) {
-                if !crate::handlers::device_payload::asset_has_content_type(
-                    db,
-                    asset_id,
-                    &format.mime,
-                )
-                .await?
-                {
-                    return Ok(Some(format!(
-                        "device_payload asset '{asset_id}' does not carry format '{format_id}''s MIME"
-                    )));
-                }
-            }
-            Ok(None)
+) -> anyhow::Result<Confined> {
+    // The empty `del` entry reaches here only for `node` (the wire tombstone).
+    let row: serde_json::Value = if row_bytes.is_empty() {
+        serde_json::json!({})
+    } else {
+        match serde_json::from_slice(row_bytes) {
+            Ok(row @ serde_json::Value::Object(_)) => row,
+            _ => return deny(format!("{table} row is not a JSON object")),
         }
-        // Only the R5 `payload_id` link is confined here; the reading's own
-        // petal confinement is the pre-existing node/petal gap RP-4 owns.
-        "iot_reading" => match row.get("payload_id") {
-            None | Some(serde_json::Value::Null) => Ok(None),
-            Some(link) => {
-                let (Some(payload_id), Some(petal_id)) =
-                    (link.as_str(), row.get("petal_id").and_then(|v| v.as_str()))
-                else {
-                    return Ok(Some(
-                        "iot_reading payload_id link is malformed or has no petal".to_string(),
-                    ));
-                };
-                if crate::handlers::device_payload::payload_in_petal(db, petal_id, payload_id)
-                    .await?
-                {
-                    Ok(None)
-                } else {
-                    Ok(Some(format!(
-                        "iot_reading payload_id '{payload_id}' is not a payload of petal '{petal_id}'"
-                    )))
-                }
-            }
-        },
-        "device_format" => match row.get("verse_id").and_then(|v| v.as_str()) {
-            Some(row_verse) if row_verse == verse_id => Ok(None),
-            Some(row_verse) => Ok(Some(format!(
-                "device_format verse_id '{row_verse}' does not match the replica's verse '{verse_id}'"
-            ))),
-            None => Ok(Some("device_format row has no verse_id".to_string())),
-        },
-        _ => Ok(None),
+    };
+    match table {
+        "verse" => confine_verse(db, verse_id, &row).await,
+        "fractal" => confine_fractal(db, verse_id, record_id, &row).await,
+        "petal" => confine_petal(db, verse_id, record_id, &row).await,
+        "node" => confine_node(db, verse_id, record_id, &row).await,
+        "asset" => confine_asset(db, verse_id, &row).await,
+        "device_payload" => confine_device_payload(db, verse_id, &row).await,
+        "device_format" => confine_device_format(verse_id, &row),
+        "iot_reading" => confine_reading(db, verse_id, &row).await,
+        other => deny(format!("no confinement rule for table '{other}'")),
     }
 }
 
-/// Whether `petal_id` is a locally-known petal belonging to `verse_id`.
-async fn confine_petal_to_verse(
+/// Immutable identity (T9) and governance fields (RP-4 steps 1-2).
+async fn confine_verse(
     db: &Db,
     verse_id: &str,
-    petal_id: &str,
-) -> anyhow::Result<Option<String>> {
-    let Some(scope) = crate::handlers::crud::resolve_petal_scope_handler(db, petal_id).await?
+    row: &serde_json::Value,
+) -> anyhow::Result<Confined> {
+    let Some(stored) = lookup_row(db, "verse", "verse_id", verse_id, "*").await? else {
+        return defer(DeferralReason::Manifest);
+    };
+    for field in VERSE_IDENTITY_FIELDS {
+        let Some(new) = present(row, field) else {
+            continue;
+        };
+        match present(&stored, field) {
+            Some(old) if json_eq(old, new) => {}
+            // A replica id the local row never had may be filled in once.
+            None if field == "namespace_id" => {}
+            _ => {
+                return deny(format!(
+                    "verse {field} is immutable — a replicated manifest may not change it"
+                ))
+            }
+        }
+    }
+    let governance_change = VERSE_GOVERNANCE_FIELDS.iter().any(|field| {
+        present(row, field)
+            .is_some_and(|new| !present(&stored, field).is_some_and(|old| json_eq(old, new)))
+    });
+    Ok(Confined::Gate {
+        scopes: vec![crate::scope::build_scope(verse_id, None, None)],
+        floor: if governance_change {
+            Floor::ManageVerse
+        } else {
+            Floor::Write
+        },
+    })
+}
+
+async fn confine_fractal(
+    db: &Db,
+    verse_id: &str,
+    record_id: &str,
+    row: &serde_json::Value,
+) -> anyhow::Result<Confined> {
+    let fractal_id = str_field(row, "fractal_id").unwrap_or(record_id);
+    if !is_scope_safe_id(fractal_id) {
+        return deny(format!("fractal id '{fractal_id}' cannot form a scope"));
+    }
+    let claimed = str_field(row, "verse_id");
+    if claimed.is_some_and(|claimed| claimed != verse_id) {
+        return deny("fractal verse_id does not match the replica's verse");
+    }
+    match lookup_row(db, "fractal", "fractal_id", fractal_id, "verse_id").await? {
+        Some(durable) if str_field(&durable, "verse_id") != Some(verse_id) => {
+            return deny(format!(
+                "fractal '{fractal_id}' currently belongs to another verse"
+            ))
+        }
+        None if claimed.is_none() => return deny("fractal row names no verse"),
+        _ => {}
+    }
+    Ok(Confined::Gate {
+        scopes: vec![crate::scope::build_scope(verse_id, Some(fractal_id), None)],
+        floor: Floor::Write,
+    })
+}
+
+async fn confine_petal(
+    db: &Db,
+    verse_id: &str,
+    record_id: &str,
+    row: &serde_json::Value,
+) -> anyhow::Result<Confined> {
+    let petal_id = str_field(row, "petal_id").unwrap_or(record_id);
+    if !is_scope_safe_id(petal_id) {
+        return deny(format!("petal id '{petal_id}' cannot form a scope"));
+    }
+    let Some(fractal_id) = str_field(row, "fractal_id") else {
+        return deny("petal row has no fractal_id");
+    };
+    here_or_stop!(locate_fractal(db, verse_id, fractal_id).await?);
+    let mut scopes = vec![crate::scope::build_scope(
+        verse_id,
+        Some(fractal_id),
+        Some(petal_id),
+    )];
+    if let Some(durable) = lookup_row(db, "petal", "petal_id", petal_id, "fractal_id").await? {
+        let Some(durable_fractal) = str_field(&durable, "fractal_id") else {
+            return deny(format!("petal '{petal_id}' has no durable fractal"));
+        };
+        if durable_fractal != fractal_id {
+            here_or_stop!(match locate_fractal(db, verse_id, durable_fractal).await? {
+                Located::Foreign(reason) => Located::Foreign(format!(
+                    "petal '{petal_id}' currently belongs to another verse: {reason}"
+                )),
+                other => other,
+            });
+            scopes.push(crate::scope::build_scope(
+                verse_id,
+                Some(durable_fractal),
+                Some(petal_id),
+            ));
+        }
+    }
+    Ok(Confined::Gate {
+        scopes,
+        floor: Floor::Write,
+    })
+}
+
+/// A node row, a partial row, or the empty-entry tombstone: the payload's
+/// petal and the durable row's current petal must both be in this verse; a
+/// row naming no petal for a node unknown locally waits for that node.
+async fn confine_node(
+    db: &Db,
+    verse_id: &str,
+    record_id: &str,
+    row: &serde_json::Value,
+) -> anyhow::Result<Confined> {
+    let node_id = str_field(row, "node_id").unwrap_or(record_id);
+    let mut scopes = Vec::new();
+    match present(row, "petal_id") {
+        None => {}
+        Some(serde_json::Value::String(petal_id)) => {
+            scopes.push(here_or_stop!(locate_petal(db, verse_id, petal_id).await?));
+        }
+        Some(_) => return deny("node petal_id is not a string"),
+    }
+    match lookup_row(db, "node", "node_id", node_id, "petal_id").await? {
+        Some(durable) => match str_field(&durable, "petal_id") {
+            Some(durable_petal) => {
+                let scope = here_or_stop!(match locate_petal(db, verse_id, durable_petal).await? {
+                    Located::Foreign(reason) => Located::Foreign(format!(
+                        "node '{node_id}' currently belongs to another verse: {reason}"
+                    )),
+                    other => other,
+                });
+                if !scopes.contains(&scope) {
+                    scopes.push(scope);
+                }
+            }
+            None if scopes.is_empty() => {
+                return deny(format!("node '{node_id}' has no petal to confine it"))
+            }
+            None => {}
+        },
+        None if scopes.is_empty() => return defer(parent("node", node_id)),
+        None => {}
+    }
+    Ok(Confined::Gate {
+        scopes,
+        floor: Floor::Write,
+    })
+}
+
+/// `asset` (CDL-SPEC10 A3): anchored rows only; the anchor petal must be here.
+async fn confine_asset(
+    db: &Db,
+    verse_id: &str,
+    row: &serde_json::Value,
+) -> anyhow::Result<Confined> {
+    let Some(petal_id) = str_field(row, "petal_id") else {
+        return deny("asset row is not anchored to a petal (un-anchored rows never replicate)");
+    };
+    let scope = here_or_stop!(locate_petal(db, verse_id, petal_id).await?);
+    Ok(Confined::Gate {
+        scopes: vec![scope],
+        floor: Floor::Write,
+    })
+}
+
+/// `device_payload` (CDL-SPEC10 A3, SPEC-10 §2.2 rule 5 as the strictest
+/// reader): petal → anchor node → every listed asset → the declared format →
+/// each asset's MIME. A reference list that is absent, empty, oversized or not
+/// all strings is denied: a check that skips what it cannot read is a check a
+/// peer can step around (`src/AGENTS.md` §device-payload).
+async fn confine_device_payload(
+    db: &Db,
+    verse_id: &str,
+    row: &serde_json::Value,
+) -> anyhow::Result<Confined> {
+    let Some(petal_id) = str_field(row, "petal_id") else {
+        return deny("device_payload row has no petal_id");
+    };
+    let scope = here_or_stop!(locate_petal(db, verse_id, petal_id).await?);
+    match present(row, "verse_id") {
+        None => {}
+        Some(v) if v.as_str() == Some(verse_id) => {}
+        Some(_) => return deny("device_payload verse_id does not match the replica's verse"),
+    }
+    let Some(node_id) = str_field(row, "node_id") else {
+        return deny("device_payload row has no node_id");
+    };
+    here_or_stop!(locate_node_in_petal(db, node_id, petal_id).await?);
+    let Some(asset_ids) = row.get("asset_ids").and_then(|v| v.as_array()) else {
+        return deny("device_payload row has no asset_ids list");
+    };
+    if asset_ids.is_empty() || asset_ids.len() > fe_runtime::messages::DEVICE_PAYLOAD_MAX_ASSETS {
+        return deny(format!(
+            "device_payload asset_ids must hold 1..={} entries",
+            fe_runtime::messages::DEVICE_PAYLOAD_MAX_ASSETS
+        ));
+    }
+    let Some(asset_ids) = asset_ids
+        .iter()
+        .map(|entry| entry.as_str())
+        .collect::<Option<Vec<&str>>>()
     else {
-        return Ok(Some(format!("petal '{petal_id}' is not known locally")));
+        return deny("device_payload asset_ids entry is not a string");
     };
-    let Ok(parts) = crate::scope::parse_scope(&scope) else {
-        return Ok(Some(format!("petal '{petal_id}' has an unparseable scope")));
+    let mut content_types = Vec::with_capacity(asset_ids.len());
+    for asset_id in &asset_ids {
+        let Some(asset) =
+            lookup_row(db, "asset", "asset_id", asset_id, "petal_id, content_type").await?
+        else {
+            return defer(parent("asset", asset_id));
+        };
+        if str_field(&asset, "petal_id") != Some(petal_id) {
+            return deny(format!(
+                "device_payload asset_ids entry '{asset_id}' is not anchored to petal '{petal_id}'"
+            ));
+        }
+        content_types.push(str_field(&asset, "content_type").map(str::to_string));
+    }
+    let Some(format_id) = str_field(row, "format_id") else {
+        return deny("device_payload row has no format_id");
     };
-    if parts.verse_id != verse_id {
-        return Ok(Some(format!(
-            "petal '{petal_id}' belongs to verse '{}', not the replica's '{verse_id}'",
-            parts.verse_id
+    let format = db
+        .query("SELECT mime FROM device_format WHERE verse_id = $vid AND format_id = $fid LIMIT 1")
+        .bind(("vid", verse_id.to_string()))
+        .bind(("fid", format_id.to_string()))
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("device_format lookup failed: {e}"))?
+        .take::<Vec<serde_json::Value>>(0)?;
+    let Some(mime) = format
+        .first()
+        .and_then(|f| str_field(f, "mime"))
+        .map(str::to_string)
+    else {
+        return defer(parent("device_format", format_id));
+    };
+    for (asset_id, content_type) in asset_ids.iter().zip(&content_types) {
+        if content_type.as_deref() != Some(mime.as_str()) {
+            return deny(format!(
+                "device_payload asset '{asset_id}' does not carry format '{format_id}''s MIME"
+            ));
+        }
+    }
+    Ok(Confined::Gate {
+        scopes: vec![scope],
+        floor: Floor::Write,
+    })
+}
+
+/// `device_format` (R5, critic C3): schema-defining, so Manager+ at the verse.
+fn confine_device_format(verse_id: &str, row: &serde_json::Value) -> anyhow::Result<Confined> {
+    match str_field(row, "verse_id") {
+        Some(row_verse) if row_verse == verse_id => Ok(Confined::Gate {
+            scopes: vec![crate::scope::build_scope(verse_id, None, None)],
+            floor: Floor::ManageVerse,
+        }),
+        Some(row_verse) => deny(format!(
+            "device_format verse_id '{row_verse}' does not match the replica's verse '{verse_id}'"
+        )),
+        None => deny("device_format row has no verse_id"),
+    }
+}
+
+/// `iot_reading`: its petal is here, its anchor node is a node of that petal,
+/// and an R5 `payload_id` link names a payload of the same petal.
+async fn confine_reading(
+    db: &Db,
+    verse_id: &str,
+    row: &serde_json::Value,
+) -> anyhow::Result<Confined> {
+    let Some(petal_id) = str_field(row, "petal_id") else {
+        return deny("iot_reading row has no petal_id");
+    };
+    let scope = here_or_stop!(locate_petal(db, verse_id, petal_id).await?);
+    let Some(node_id) = str_field(row, "node_id") else {
+        return deny("iot_reading row has no node_id");
+    };
+    here_or_stop!(locate_node_in_petal(db, node_id, petal_id).await?);
+    if let Some(link) = present(row, "payload_id") {
+        let Some(payload_id) = link.as_str() else {
+            return deny("iot_reading payload_id link is malformed");
+        };
+        match lookup_row(db, "device_payload", "payload_id", payload_id, "petal_id").await? {
+            None => return defer(parent("device_payload", payload_id)),
+            Some(payload) if str_field(&payload, "petal_id") == Some(petal_id) => {}
+            Some(_) => {
+                return deny(format!(
+                    "iot_reading payload_id '{payload_id}' is not a payload of petal '{petal_id}'"
+                ))
+            }
+        }
+    }
+    Ok(Confined::Gate {
+        scopes: vec![scope],
+        floor: Floor::Write,
+    })
+}
+
+/// A fractal: here (its verse scope), foreign, or unknown locally.
+async fn locate_fractal(db: &Db, verse_id: &str, fractal_id: &str) -> anyhow::Result<Located> {
+    if !is_scope_safe_id(fractal_id) {
+        return Ok(Located::Foreign(format!(
+            "fractal id '{fractal_id}' cannot form a scope"
         )));
     }
-    Ok(None)
+    Ok(
+        match lookup_row(db, "fractal", "fractal_id", fractal_id, "verse_id").await? {
+            None => Located::Unknown(parent("fractal", fractal_id)),
+            Some(fractal) => match str_field(&fractal, "verse_id") {
+                Some(owner) if owner == verse_id => {
+                    Located::Here(crate::scope::build_scope(verse_id, Some(fractal_id), None))
+                }
+                Some(owner) => Located::Foreign(format!(
+                    "fractal '{fractal_id}' belongs to verse '{owner}', not the replica's '{verse_id}'"
+                )),
+                None => Located::Foreign(format!("fractal '{fractal_id}' names no verse")),
+            },
+        },
+    )
+}
+
+/// A petal: here (its full scope), foreign, or unknown locally (it, or its fractal).
+async fn locate_petal(db: &Db, verse_id: &str, petal_id: &str) -> anyhow::Result<Located> {
+    if !is_scope_safe_id(petal_id) {
+        return Ok(Located::Foreign(format!(
+            "petal id '{petal_id}' cannot form a scope"
+        )));
+    }
+    let Some(petal) = lookup_row(db, "petal", "petal_id", petal_id, "fractal_id").await? else {
+        return Ok(Located::Unknown(parent("petal", petal_id)));
+    };
+    let Some(fractal_id) = str_field(&petal, "fractal_id") else {
+        return Ok(Located::Foreign(format!(
+            "petal '{petal_id}' has no fractal"
+        )));
+    };
+    Ok(match locate_fractal(db, verse_id, fractal_id).await? {
+        Located::Here(_) => Located::Here(crate::scope::build_scope(
+            verse_id,
+            Some(fractal_id),
+            Some(petal_id),
+        )),
+        other => other,
+    })
+}
+
+/// A node of `petal_id`: here, a node of another petal (mismatch), or unknown.
+async fn locate_node_in_petal(db: &Db, node_id: &str, petal_id: &str) -> anyhow::Result<Located> {
+    Ok(
+        match lookup_row(db, "node", "node_id", node_id, "petal_id").await? {
+            None => Located::Unknown(parent("node", node_id)),
+            Some(node) if str_field(&node, "petal_id") == Some(petal_id) => {
+                Located::Here(node_id.to_string())
+            }
+            Some(_) => Located::Foreign(format!(
+                "node '{node_id}' is not a node of petal '{petal_id}'"
+            )),
+        },
+    )
+}
+
+/// An id that cannot smuggle a scope boundary (`#`) into `build_scope`.
+fn is_scope_safe_id(id: &str) -> bool {
+    !id.is_empty() && !id.contains('#')
+}
+
+/// `fields` of the row keyed `id_field = id` in `table`, or `None` when no
+/// such row exists locally. `table`/`id_field`/`fields` are static names;
+/// tolerates an absent table like [`row_exists`].
+async fn lookup_row(
+    db: &Db,
+    table: &str,
+    id_field: &str,
+    id: &str,
+    fields: &str,
+) -> anyhow::Result<Option<serde_json::Value>> {
+    let res = db
+        .query(format!("SELECT {fields} FROM {table} WHERE {id_field} = $rid LIMIT 1").as_str())
+        .bind(("rid", id.to_string()))
+        .await
+        .map_err(|e| anyhow::anyhow!("replicated {table} lookup failed: {e}"))?
+        .check();
+    let rows: Vec<serde_json::Value> = match res {
+        Ok(mut r) => r
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("replicated {table} lookup take failed: {e}"))?,
+        Err(e) if e.to_string().contains("does not exist") => Vec::new(),
+        Err(e) => return Err(anyhow::anyhow!("replicated {table} lookup failed: {e}")),
+    };
+    Ok(rows.into_iter().next())
+}
+
+/// A string field of a JSON row.
+fn str_field<'a>(row: &'a serde_json::Value, field: &str) -> Option<&'a str> {
+    row.get(field).and_then(|v| v.as_str())
+}
+
+/// A field that is present and not null (absence and `null` both mean `NONE`).
+fn present<'a>(row: &'a serde_json::Value, field: &str) -> Option<&'a serde_json::Value> {
+    row.get(field).filter(|v| !v.is_null())
+}
+
+/// JSON equality that treats numerically equal numbers as equal (a stored
+/// `int` and a wire `2.0` are the same setting).
+fn json_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    match (a.as_f64(), b.as_f64()) {
+        (Some(x), Some(y)) if a.is_number() && b.is_number() => x == y,
+        _ => a == b,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1704,9 +2048,8 @@ mod tests {
     #[tokio::test]
     async fn node_row_with_geojson_position_applies_geometry_safe() {
         let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[("did:key:peer-a", "editor")]).await;
         let (scene_tx, mut scene_rx) = tokio::sync::broadcast::channel::<SceneChange>(8);
-        // No verse row is seeded — this row rides the bootstrap window (the
-        // gated variant is `editor_role_row_applies_and_reads_back`).
         // Position arrives as the GeoJSON Point Surreal serializes from a
         // geometry<point> column.
         let row = serde_json::to_vec(&serde_json::json!({
@@ -1762,6 +2105,7 @@ mod tests {
     #[tokio::test]
     async fn node_tombstone_row_emits_node_removed() {
         let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[("did:key:peer-a", "editor")]).await;
         let (scene_tx, mut scene_rx) = tokio::sync::broadcast::channel::<SceneChange>(8);
         let row = serde_json::to_vec(&serde_json::json!({
             "node_id": "node-del-1",
@@ -1813,8 +2157,10 @@ mod tests {
     // A3: the inbound role gate — deny-by-default, roles from local tables
     // -------------------------------------------------------------------
 
-    /// Seed a verse row (owner = `created_by`) plus optional explicit role
-    /// rows at the verse scope, exactly as the production paths write them.
+    /// Seed a verse row (owner = `created_by`) with `fractal-1` → `petal-1` →
+    /// nodes `node-a`/`node-b` (so confinement resolves every reference the
+    /// fixtures below carry) plus optional explicit role rows at the verse
+    /// scope, exactly as the production paths write them.
     async fn seed_verse_with_roles(db: &Db, verse_id: &str, roles: &[(&str, &str)]) {
         let _: Option<serde_json::Value> = db
             .create("verse")
@@ -1827,12 +2173,34 @@ mod tests {
             }))
             .await
             .expect("seed verse");
+        seed_interior(db, verse_id).await;
         let scope = crate::scope::build_scope(verse_id, None, None);
         for (did, role) in roles {
             crate::rbac::assign_role(db, did, &scope, role)
                 .await
                 .expect("seed role");
         }
+    }
+
+    /// `fractal-1` (in `verse_id`) → `petal-1` → nodes `node-a` and `node-b`.
+    async fn seed_interior(db: &Db, verse_id: &str) {
+        db.query(
+            "CREATE fractal CONTENT { fractal_id: 'fractal-1', verse_id: $vid, \
+             owner_did: 'did:key:owner-a', name: 'F', created_at: '2026-10-07T00:00:00Z' };
+             CREATE petal CONTENT { petal_id: 'petal-1', fractal_id: 'fractal-1', name: 'P', \
+             node_id: 'did:key:owner-a', created_at: '2026-10-07T00:00:00Z' };
+             CREATE node CONTENT { node_id: 'node-a', petal_id: 'petal-1', display_name: 'a', \
+             position: <geometry<point>> [0.0, 0.0], elevation: 0.0, rotation: [0.0, 0.0, 0.0, 1.0], \
+             scale: [1.0, 1.0, 1.0], interactive: false, created_at: '2026-10-07T00:00:00Z' };
+             CREATE node CONTENT { node_id: 'node-b', petal_id: 'petal-1', display_name: 'b', \
+             position: <geometry<point>> [0.0, 0.0], elevation: 0.0, rotation: [0.0, 0.0, 0.0, 1.0], \
+             scale: [1.0, 1.0, 1.0], interactive: false, created_at: '2026-10-07T00:00:00Z' };",
+        )
+        .bind(("vid", verse_id.to_string()))
+        .await
+        .expect("seed interior")
+        .check()
+        .expect("seed interior check");
     }
 
     fn gated_node_row(node_id: &str) -> Vec<u8> {
@@ -2120,31 +2488,562 @@ mod tests {
         assert!(rows.is_empty(), "foreign verse_id must not be planted");
     }
 
+    /// RP-4 step 3 (first-manifest rule): before the manifest only the verse
+    /// row is admitted. Out-of-order interior rows are Deferred — never
+    /// applied unchecked — and land, with no second delivery, once the
+    /// manifest and their parents do (manifest → fractal → petal → node).
     #[tokio::test]
-    async fn node_row_before_verse_manifest_applies_bootstrap() {
+    async fn node_row_before_verse_manifest_is_deferred_then_applied_when_the_manifest_lands() {
+        use crate::handlers::inbound_admissions::InboundAdmissions;
         let db = schema_db().await;
-        // Out-of-order sync: interior rows can arrive before the verse
-        // manifest converges — they ride the bootstrap window (see
-        // admit_inbound_row) instead of being permanently lost.
-        let outcome = apply_replicated_row_handler(
-            &db,
-            "v1",
-            "node",
-            "node-boot-1",
-            &gated_node_row("node-boot-1"),
-            "did:key:peer-any",
-            None,
-        )
-        .await
-        .unwrap();
-        assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+        let mut queue = InboundAdmissions::new();
+        const OWNER: &str = "did:key:owner-a";
 
+        let early = queue
+            .apply(
+                &db,
+                "v1",
+                "node",
+                "node-boot-1",
+                &gated_node_row("node-boot-1"),
+                OWNER,
+                None,
+            )
+            .await;
+        assert_eq!(
+            early[0].outcome,
+            ReplicatedRowOutcome::Deferred(DeferralReason::Manifest)
+        );
+        assert!(select_json(&db, "SELECT node_id FROM node")
+            .await
+            .is_empty());
+
+        let fractal = serde_json::to_vec(&serde_json::json!({
+            "fractal_id": "fractal-1", "verse_id": "v1", "owner_did": OWNER,
+            "name": "F", "created_at": "2026-10-07T00:00:00Z",
+        }))
+        .unwrap();
+        let petal = serde_json::to_vec(&serde_json::json!({
+            "petal_id": "petal-1", "fractal_id": "fractal-1", "name": "P",
+            "node_id": OWNER, "created_at": "2026-10-07T00:00:00Z",
+        }))
+        .unwrap();
+        // The petal also arrives before the manifest; the fractal after it.
+        queue
+            .apply(&db, "v1", "petal", "petal-1", &petal, OWNER, None)
+            .await;
+        let manifest = serde_json::to_vec(&serde_json::json!({
+            "verse_id": "v1", "name": "V", "created_by": OWNER,
+            "created_at": "2026-10-07T00:00:00Z", "default_access": "viewer",
+        }))
+        .unwrap();
+        let reports = queue
+            .apply(&db, "v1", "verse", "v1", &manifest, OWNER, None)
+            .await;
+        assert_eq!(reports[0].outcome, ReplicatedRowOutcome::Applied);
+        assert_eq!(
+            queue.waiting_reason("v1", "petal", "petal-1", OWNER),
+            Some(&DeferralReason::Parent {
+                table: "fractal".to_string(),
+                id: "fractal-1".to_string()
+            }),
+            "after the manifest the petal waits on its fractal"
+        );
+
+        let reports = queue
+            .apply(&db, "v1", "fractal", "fractal-1", &fractal, OWNER, None)
+            .await;
+        assert!(
+            reports
+                .iter()
+                .any(|r| r.record_id == "node-boot-1" && r.outcome == ReplicatedRowOutcome::Applied),
+            "fractal → petal → node settle in one worklist: {reports:?}"
+        );
+        assert!(queue.is_empty());
         let rows = select_json(
             &db,
             "SELECT node_id FROM node WHERE node_id = 'node-boot-1'",
         )
         .await;
         assert_eq!(rows.len(), 1);
+    }
+
+    // -------------------------------------------------------------------
+    // RP-4: owner integrity, referential confinement, scope-precise roles
+    // -------------------------------------------------------------------
+
+    fn manifest(fields: serde_json::Value) -> Vec<u8> {
+        let mut row = serde_json::json!({
+            "verse_id": "v1", "name": "Gated Verse", "created_by": "did:key:owner-a",
+            "created_at": "2026-10-07T00:00:00Z", "default_access": "viewer",
+        });
+        for (key, value) in fields.as_object().unwrap() {
+            row[key] = value.clone();
+        }
+        serde_json::to_vec(&row).unwrap()
+    }
+
+    async fn verse_field(db: &Db, field: &str) -> serde_json::Value {
+        let rows = select_json(
+            db,
+            &format!("SELECT {field} FROM verse WHERE verse_id = 'v1'"),
+        )
+        .await;
+        rows[0][field].clone()
+    }
+
+    /// T9: the manifest MERGE used to let any admitted Editor rewrite
+    /// `created_by` (owner takeover). Identity fields are immutable for
+    /// everyone — the owner included — and only a real change is refused.
+    #[tokio::test]
+    async fn an_editor_cannot_rewrite_created_by_through_a_replicated_manifest() {
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[("did:key:peer-ed", "editor")]).await;
+
+        for (field, value, author) in [
+            (
+                "created_by",
+                serde_json::json!("did:key:peer-ed"),
+                "did:key:peer-ed",
+            ),
+            (
+                "created_at",
+                serde_json::json!("2030-01-01T00:00:00Z"),
+                "did:key:owner-a",
+            ),
+        ] {
+            let outcome = apply_replicated_row_handler(
+                &db,
+                "v1",
+                "verse",
+                "v1",
+                &manifest(serde_json::json!({ field: value })),
+                author,
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(outcome, ReplicatedRowOutcome::Denied, "{field}");
+        }
+        assert_eq!(verse_field(&db, "created_by").await, "did:key:owner-a");
+        assert_eq!(
+            crate::role_manager::resolve_role(&db, "did:key:peer-ed", "VERSE#v1")
+                .await
+                .unwrap(),
+            fe_policy::RoleLevel::Editor,
+            "the Editor never became the owner"
+        );
+
+        // The same manifest carrying the unchanged identity still applies (a rename).
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "verse",
+            "v1",
+            &manifest(serde_json::json!({ "name": "Renamed" })),
+            "did:key:peer-ed",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+        assert_eq!(verse_field(&db, "name").await, "Renamed");
+    }
+
+    /// RP-4 step 2: governance fields need Manager+ at the VERSE scope — an
+    /// Editor and a petal Manager are deferred (verse settings lie above a
+    /// petal Manager's subtree); a verse Manager's change applies.
+    #[tokio::test]
+    async fn an_editor_or_petal_manager_cannot_flip_ts_mode_or_default_access_but_a_verse_manager_can(
+    ) {
+        let db = schema_db().await;
+        seed_verse_with_roles(
+            &db,
+            "v1",
+            &[
+                ("did:key:editor", "editor"),
+                ("did:key:verse-manager", "manager"),
+            ],
+        )
+        .await;
+        crate::rbac::assign_role(
+            &db,
+            "did:key:petal-manager",
+            "VERSE#v1-FRACTAL#fractal-1-PETAL#petal-1",
+            "manager",
+        )
+        .await
+        .unwrap();
+
+        for change in [
+            serde_json::json!({ "ts_mode": "sharded" }),
+            serde_json::json!({ "default_access": "none" }),
+            serde_json::json!({ "ts_replication_factor": 3 }),
+        ] {
+            for author in ["did:key:editor", "did:key:petal-manager"] {
+                let outcome = apply_replicated_row_handler(
+                    &db,
+                    "v1",
+                    "verse",
+                    "v1",
+                    &manifest(change.clone()),
+                    author,
+                    None,
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    outcome,
+                    ReplicatedRowOutcome::Deferred(DeferralReason::AuthorRole {
+                        did: author.to_string()
+                    }),
+                    "{author} {change}"
+                );
+            }
+        }
+        assert_eq!(
+            verse_field(&db, "ts_mode").await,
+            "mirror",
+            "schema default kept"
+        );
+        assert_eq!(verse_field(&db, "default_access").await, "viewer");
+
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "verse",
+            "v1",
+            &manifest(serde_json::json!({ "ts_mode": "sharded", "default_access": "none" })),
+            "did:key:verse-manager",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+        assert_eq!(verse_field(&db, "ts_mode").await, "sharded");
+        assert_eq!(verse_field(&db, "default_access").await, "none");
+    }
+
+    /// Seed a second verse `v2` with `fractal-2` → `petal-2` → `node-foreign`.
+    async fn seed_foreign_verse(db: &Db) {
+        db.query(
+            "CREATE verse CONTENT { verse_id: 'v2', name: 'Other', created_by: 'did:key:owner-a', \
+             created_at: '2026-10-07T00:00:00Z', default_access: 'viewer' };
+             CREATE fractal CONTENT { fractal_id: 'fractal-2', verse_id: 'v2', \
+             owner_did: 'did:key:owner-a', name: 'F2', created_at: '2026-10-07T00:00:00Z' };
+             CREATE petal CONTENT { petal_id: 'petal-2', fractal_id: 'fractal-2', name: 'P2', \
+             node_id: 'did:key:owner-a', created_at: '2026-10-07T00:00:00Z' };
+             CREATE node CONTENT { node_id: 'node-foreign', petal_id: 'petal-2', display_name: 'f', \
+             position: <geometry<point>> [0.0, 0.0], elevation: 0.0, rotation: [0.0, 0.0, 0.0, 1.0], \
+             scale: [1.0, 1.0, 1.0], interactive: false, created_at: '2026-10-07T00:00:00Z' };",
+        )
+        .await
+        .expect("seed foreign verse")
+        .check()
+        .expect("seed foreign verse check");
+    }
+
+    fn node_in(node_id: &str, petal_id: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "node_id": node_id, "petal_id": petal_id, "display_name": "N",
+            "position": { "type": "Point", "coordinates": [1.0, 1.0] },
+            "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0],
+            "created_at": "2026-10-07T00:00:00Z",
+        }))
+        .unwrap()
+    }
+
+    /// P2P-REF-CONFINE acceptance: an Editor admitted in v1 cannot plant a
+    /// node under v2's petal through v1's replica — known-foreign is Denied.
+    #[tokio::test]
+    async fn a_node_row_referencing_a_foreign_verses_petal_is_denied() {
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[("did:key:peer-ed", "editor")]).await;
+        seed_foreign_verse(&db).await;
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "node",
+            "node-planted",
+            &node_in("node-planted", "petal-2"),
+            "did:key:owner-a",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Denied);
+        assert!(select_json(
+            &db,
+            "SELECT node_id FROM node WHERE node_id = 'node-planted'"
+        )
+        .await
+        .is_empty());
+    }
+
+    /// T11: a tombstone (the empty `del` entry, and a payload tombstone that
+    /// names a v1 petal) aimed through v1's replica at v2's node is Denied —
+    /// the durable row's parent is confined too — and the node survives.
+    #[tokio::test]
+    async fn a_tombstone_aimed_at_a_foreign_verses_node_is_denied_and_the_node_survives() {
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[("did:key:peer-ed", "editor")]).await;
+        seed_foreign_verse(&db).await;
+        let payload_tombstone = serde_json::to_vec(&serde_json::json!({
+            "node_id": "node-foreign", "petal_id": "petal-1",
+            "tombstone": { "hlc": 99, "source_did": "did:key:peer-ed" },
+        }))
+        .unwrap();
+        for bytes in [Vec::new(), payload_tombstone] {
+            let outcome = apply_replicated_row_handler(
+                &db,
+                "v1",
+                "node",
+                "node-foreign",
+                &bytes,
+                "did:key:peer-ed",
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(outcome, ReplicatedRowOutcome::Denied);
+        }
+        let rows = select_json(
+            &db,
+            "SELECT tombstone, petal_id FROM node WHERE node_id = 'node-foreign'",
+        )
+        .await;
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0]["tombstone"].is_null(), "the foreign node survives");
+        assert_eq!(rows[0]["petal_id"], "petal-2");
+    }
+
+    /// T11: moving v2's node into a v1 petal through v1's replica is Denied
+    /// (the payload's petal is here, but the durable row's is not).
+    #[tokio::test]
+    async fn a_node_reparent_from_a_foreign_verse_is_denied() {
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[("did:key:peer-ed", "editor")]).await;
+        seed_foreign_verse(&db).await;
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "node",
+            "node-foreign",
+            &node_in("node-foreign", "petal-1"),
+            "did:key:owner-a",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Denied);
+        let rows = select_json(
+            &db,
+            "SELECT petal_id FROM node WHERE node_id = 'node-foreign'",
+        )
+        .await;
+        assert_eq!(rows[0]["petal_id"], "petal-2", "the node was not stolen");
+    }
+
+    /// RP-4 step 5: an unknown parent is Deferred `Parent` (never Denied) and
+    /// the row applies with no second delivery when the parent lands; a
+    /// petal row naming no fractal is structural and Denied.
+    #[tokio::test]
+    async fn a_petal_row_whose_fractal_arrives_later_is_deferred_then_applied() {
+        use crate::handlers::inbound_admissions::InboundAdmissions;
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[]).await;
+        let mut queue = InboundAdmissions::new();
+        const OWNER: &str = "did:key:owner-a";
+        let petal = serde_json::to_vec(&serde_json::json!({
+            "petal_id": "petal-late", "fractal_id": "fractal-late", "name": "Late",
+            "node_id": OWNER, "created_at": "2026-10-07T00:00:00Z",
+        }))
+        .unwrap();
+        let reports = queue
+            .apply(&db, "v1", "petal", "petal-late", &petal, OWNER, None)
+            .await;
+        assert_eq!(
+            reports[0].outcome,
+            ReplicatedRowOutcome::Deferred(DeferralReason::Parent {
+                table: "fractal".to_string(),
+                id: "fractal-late".to_string()
+            })
+        );
+
+        let fractal = serde_json::to_vec(&serde_json::json!({
+            "fractal_id": "fractal-late", "verse_id": "v1", "owner_did": OWNER,
+            "name": "F", "created_at": "2026-10-07T00:00:00Z",
+        }))
+        .unwrap();
+        let reports = queue
+            .apply(&db, "v1", "fractal", "fractal-late", &fractal, OWNER, None)
+            .await;
+        assert!(reports
+            .iter()
+            .any(|r| r.record_id == "petal-late" && r.outcome == ReplicatedRowOutcome::Applied));
+        assert_eq!(
+            select_json(
+                &db,
+                "SELECT petal_id FROM petal WHERE petal_id = 'petal-late'"
+            )
+            .await
+            .len(),
+            1
+        );
+
+        let orphan = serde_json::to_vec(&serde_json::json!({
+            "petal_id": "petal-orphan", "name": "O", "node_id": OWNER,
+            "created_at": "2026-10-07T00:00:00Z",
+        }))
+        .unwrap();
+        let outcome =
+            apply_replicated_row_handler(&db, "v1", "petal", "petal-orphan", &orphan, OWNER, None)
+                .await
+                .unwrap();
+        assert_eq!(
+            outcome,
+            ReplicatedRowOutcome::Denied,
+            "no fractal_id is structural"
+        );
+    }
+
+    /// RP-4 step 6: the author's role is resolved at the row's DEEPEST scope.
+    /// An Editor appointed for petal-1 only (by the owner's statement, so the
+    /// role is real materialized state) is admitted in petal-1 and deferred in
+    /// a sibling petal — before RP-4 the verse-scope gate deferred them everywhere.
+    #[tokio::test]
+    async fn a_petal_scoped_editor_is_admitted_for_that_petal_and_deferred_elsewhere() {
+        use crate::handlers::inbound_admissions::InboundAdmissions;
+        const OWNER: &str = "did:key:owner-a";
+        const EDITOR: &str = "did:key:petal-editor";
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[]).await;
+        db.query(
+            "CREATE petal CONTENT { petal_id: 'petal-sibling', fractal_id: 'fractal-1', name: 'S', \
+             node_id: 'did:key:owner-a', created_at: '2026-10-07T00:00:00Z' }",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        let scope = "VERSE#v1-FRACTAL#fractal-1-PETAL#petal-1";
+        let statement = fe_policy::RoleStatementPayload {
+            scope: scope.to_string(),
+            peer_did: EDITOR.to_string(),
+            grantor_did: OWNER.to_string(),
+            role: "editor".to_string(),
+            revoked: false,
+            hlc: 1,
+        };
+        let mut queue = InboundAdmissions::new();
+        let reports = queue
+            .apply(
+                &db,
+                "v1",
+                "role",
+                &format!("{scope}/{EDITOR}/{OWNER}"),
+                &serde_json::to_vec(&statement).unwrap(),
+                OWNER,
+                None,
+            )
+            .await;
+        assert_eq!(reports[0].outcome, ReplicatedRowOutcome::Applied);
+
+        let here = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "node",
+            "node-in-petal",
+            &node_in("node-in-petal", "petal-1"),
+            EDITOR,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(here, ReplicatedRowOutcome::Applied);
+
+        let elsewhere = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "node",
+            "node-in-sibling",
+            &node_in("node-in-sibling", "petal-sibling"),
+            EDITOR,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            elsewhere,
+            ReplicatedRowOutcome::Deferred(DeferralReason::AuthorRole {
+                did: EDITOR.to_string()
+            })
+        );
+
+        // Moving their node into the sibling petal needs Editor at BOTH ends.
+        let moved = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "node",
+            "node-in-petal",
+            &node_in("node-in-petal", "petal-sibling"),
+            EDITOR,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(moved, ReplicatedRowOutcome::Deferred(_)));
+        let rows = select_json(
+            &db,
+            "SELECT petal_id FROM node WHERE node_id = 'node-in-petal'",
+        )
+        .await;
+        assert_eq!(rows[0]["petal_id"], "petal-1");
+    }
+
+    /// The scope-injection guard covers the wire key too: a payload naming no
+    /// `verse_id` falls back to the key in `apply_static_row`, so a v1 row
+    /// keyed `v2` would otherwise MERGE into verse v2 while v1 was judged.
+    #[tokio::test]
+    async fn a_verse_row_keyed_to_another_verse_is_denied() {
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[("did:key:peer-ed", "editor")]).await;
+        seed_foreign_verse(&db).await;
+        let rename = serde_json::to_vec(&serde_json::json!({ "name": "Hijacked" })).unwrap();
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "verse",
+            "v2",
+            &rename,
+            "did:key:peer-ed",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Denied);
+        let rows = select_json(&db, "SELECT name FROM verse WHERE verse_id = 'v2'").await;
+        assert_eq!(rows[0]["name"], "Other");
+    }
+
+    /// A node row whose `petal_id` would smuggle a scope boundary (`#`) into
+    /// the role scope is structural and Denied.
+    #[tokio::test]
+    async fn a_reference_id_carrying_a_scope_boundary_is_denied() {
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[]).await;
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "node",
+            "node-x",
+            &node_in("node-x", "petal-1-PETAL#other"),
+            "did:key:owner-a",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Denied);
     }
 
     // -------------------------------------------------------------------

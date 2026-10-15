@@ -2,7 +2,9 @@
 //!
 //! A [`VerseInvite`] encodes everything a remote peer needs to join a verse:
 //! the namespace ID (and optionally the write-capability secret), the
-//! creator's node address, and an ed25519 signature for tamper detection.
+//! inviter's node address, the verse owner pin (`owner_did` + the manifest's
+//! `created_at`), and an ed25519 signature over all of them (RP-4 step 4, T10 —
+//! see src/AGENTS.md §handlers "replicated_row").
 //!
 //! Invite strings are JSON serialised then URL-safe base64 encoded so they
 //! can be safely pasted into chat, QR codes, or CLI arguments.
@@ -20,8 +22,15 @@ pub struct VerseInvite {
     pub namespace_id: String,
     /// Hex-encoded namespace secret. `None` means read-only access.
     pub namespace_secret: Option<String>,
-    /// Serialised creator node address (node ID hex for now).
+    /// The INVITER's node address (ed25519 public key hex) — verifies the
+    /// signature; becomes the joiner's `verse_member.invited_by`, never the owner.
     pub creator_node_addr: String,
+    /// The verse owner's `did:key` (the inviter's `verse.created_by`) — the
+    /// joiner's owner pin, written as its local `verse.created_by`.
+    pub owner_did: String,
+    /// The verse manifest's `created_at`, pinned with the owner so the owner's
+    /// replicated manifest matches the joiner's immutable identity fields.
+    pub verse_created_at: String,
     /// Human-readable verse name.
     pub verse_name: String,
     /// ULID of the verse.
@@ -50,6 +59,8 @@ impl VerseInvite {
             }
         }
         push_field(&mut buf, &self.creator_node_addr);
+        push_field(&mut buf, &self.owner_did);
+        push_field(&mut buf, &self.verse_created_at);
         push_field(&mut buf, &self.verse_name);
         push_field(&mut buf, &self.verse_id);
         buf.extend_from_slice(&self.expiry_timestamp.to_le_bytes());
@@ -125,6 +136,8 @@ mod tests {
             namespace_id: "aabbccdd".to_string(),
             namespace_secret: Some("secrethex".to_string()),
             creator_node_addr: "node123".to_string(),
+            owner_did: "did:key:z6MkOwner".to_string(),
+            verse_created_at: "2026-10-15T00:00:00Z".to_string(),
             verse_name: "Test Verse".to_string(),
             verse_id: "verse-ulid-001".to_string(),
             expiry_timestamp: u64::MAX, // far future
@@ -163,6 +176,25 @@ mod tests {
         assert!(!invite.verify(&kp.verifying_key()));
     }
 
+    /// T10: the owner pin is inside the signed bytes — swapping the owner (or
+    /// the pinned manifest timestamp) after signing fails verification.
+    #[test]
+    fn a_tampered_invite_owner_did_fails_signature_verification() {
+        let kp = NodeKeypair::generate();
+        let mut invite = make_invite(&kp);
+        invite.owner_did = "did:key:z6MkAttacker".to_string();
+        assert!(!invite.verify(&kp.verifying_key()));
+
+        let mut invite = make_invite(&kp);
+        invite.verse_created_at = "2030-01-01T00:00:00Z".to_string();
+        assert!(!invite.verify(&kp.verifying_key()));
+
+        // Round-tripped through the invite string, the untampered pin still verifies.
+        let parsed = VerseInvite::from_invite_string(&make_invite(&kp).to_invite_string()).unwrap();
+        assert_eq!(parsed.owner_did, "did:key:z6MkOwner");
+        assert!(parsed.verify(&kp.verifying_key()));
+    }
+
     #[test]
     fn tampered_namespace_secret_detected() {
         let kp = NodeKeypair::generate();
@@ -178,6 +210,8 @@ mod tests {
             namespace_id: "aabb".to_string(),
             namespace_secret: None,
             creator_node_addr: "node1".to_string(),
+            owner_did: "did:key:z6MkOwner".to_string(),
+            verse_created_at: "2026-10-15T00:00:00Z".to_string(),
             verse_name: "RO Verse".to_string(),
             verse_id: "v-ro".to_string(),
             expiry_timestamp: u64::MAX,
@@ -197,6 +231,8 @@ mod tests {
             namespace_id: "aa".to_string(),
             namespace_secret: None,
             creator_node_addr: "n".to_string(),
+            owner_did: "did:key:z6MkOwner".to_string(),
+            verse_created_at: "2026-10-15T00:00:00Z".to_string(),
             verse_name: "Exp".to_string(),
             verse_id: "v-exp".to_string(),
             expiry_timestamp: 0, // already expired

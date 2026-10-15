@@ -151,6 +151,7 @@ fn persist(
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
         terrain: Some(terrain.clone()),
+        auth: fe_runtime::messages::CallerAuth::Local,
         correlation_id: None,
     }) {
         Ok(()) => {
@@ -693,6 +694,7 @@ fn persist_doc(
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
         terrain: Some(terrain.clone()),
+        auth: fe_runtime::messages::CallerAuth::Local,
         correlation_id: None,
     }) {
         Ok(()) => {
@@ -2010,6 +2012,7 @@ mod tests {
                 petal_id,
                 terrain: Some(doc),
                 correlation_id: None,
+                ..
             } => {
                 assert_eq!(petal_id, "petal-1");
                 assert_eq!(doc["proposals"][0]["delta"], json!(2.0));

@@ -236,6 +236,9 @@ impl InboundAdmissions {
             report.outcome,
             ReplicatedRowOutcome::Applied | ReplicatedRowOutcome::AppliedTombstone
         );
+        // RP-4 `Parent{table, id}` waiters (fractal, petal, node, asset, device_payload,
+        // device_format): every replicated table is keyed on its own id column, so the applied
+        // row's wire record id IS the id a child names.
         let parent_trigger = (applied && !is_role_statement).then(|| {
             (
                 verse_id.clone(),
@@ -405,9 +408,14 @@ mod tests {
             .expect("in-memory SurrealDB");
         db.use_ns("test").use_db("test").await.expect("ns/db");
         crate::schema::apply_all(&db).await.expect("schema apply");
+        // A full chain, so the rows below pass confinement and wait on their author's role.
         db.query(
             "CREATE verse CONTENT { verse_id: 'v-cap', name: 'V', created_by: 'did:key:owner', \
-             created_at: '2026-10-15T00:00:00Z', default_access: 'viewer' }",
+             created_at: '2026-10-15T00:00:00Z', default_access: 'viewer' };
+             CREATE fractal CONTENT { fractal_id: 'f-cap', verse_id: 'v-cap', \
+             owner_did: 'did:key:owner', name: 'F', created_at: '2026-10-15T00:00:00Z' };
+             CREATE petal CONTENT { petal_id: 'petal-cap', fractal_id: 'f-cap', name: 'P', \
+             node_id: 'did:key:owner', created_at: '2026-10-15T00:00:00Z' };",
         )
         .await
         .expect("seed verse")

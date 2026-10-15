@@ -15,7 +15,7 @@ const RULES: &[(&str, &str)] = &[
     ),
     (
         "orphaned_creator",
-        "Claim locally-created verses with no other peers",
+        "Claim locally-created verses whose creator is a non-did:key placeholder",
     ),
 ];
 
@@ -126,30 +126,53 @@ async fn fix_missing_default_access(db: &Db) -> anyhow::Result<()> {
 // Rule: Claim locally-created verses with orphaned creator DIDs
 // ---------------------------------------------------------------------------
 
-async fn check_orphaned_creators(db: &Db, local_did: &str) -> anyhow::Result<usize> {
+/// Verses this rule may claim (role propagation RP-4, owner integrity — see
+/// src/AGENTS.md §reconcile): the creator is NOT a `did:key:` identity
+/// (a legacy placeholder or a pre-RP-4 hex inviter address — a real owner is
+/// always a did:key, and a replicated or invite-pinned verse's owner is never
+/// claimed), and no invite ever joined this store to the verse (a
+/// `verse_member` row whose inviter is someone else).
+async fn claimable_verses(db: &Db, local_did: &str) -> anyhow::Result<Vec<(String, String)>> {
     let mut result = db
-        .query("SELECT count() AS c FROM verse WHERE created_by != $did GROUP ALL")
+        .query("SELECT verse_id, created_by FROM verse WHERE created_by != $did")
         .bind(("did", local_did.to_string()))
         .await?;
     let rows: Vec<serde_json::Value> = result.take(0)?;
-    Ok(extract_count(&rows))
+    let mut claimable = Vec::new();
+    for row in &rows {
+        let Some(verse_id) = row.get("verse_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let creator = row.get("created_by").and_then(|v| v.as_str()).unwrap_or("");
+        if creator.starts_with("did:key:") {
+            continue;
+        }
+        let mut joined = db
+            .query(
+                "SELECT count() AS c FROM verse_member \
+                 WHERE verse_id = $vid AND invited_by != peer_did GROUP ALL",
+            )
+            .bind(("vid", verse_id.to_string()))
+            .await?;
+        let joined_rows: Vec<serde_json::Value> = joined.take(0)?;
+        if extract_count(&joined_rows) > 0 {
+            continue;
+        }
+        claimable.push((verse_id.to_string(), creator.to_string()));
+    }
+    Ok(claimable)
+}
+
+async fn check_orphaned_creators(db: &Db, local_did: &str) -> anyhow::Result<usize> {
+    Ok(claimable_verses(db, local_did).await?.len())
 }
 
 async fn fix_orphaned_creators(db: &Db, local_did: &str) -> anyhow::Result<()> {
     let did = local_did.to_string();
 
-    // Find verses not owned by us
-    let mut result = db
-        .query("SELECT verse_id, created_by FROM verse WHERE created_by != $did")
-        .bind(("did", did.clone()))
-        .await?;
-    let rows: Vec<serde_json::Value> = result.take(0)?;
-
-    for row in &rows {
-        let Some(verse_id) = row.get("verse_id").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let old_did = row.get("created_by").and_then(|v| v.as_str()).unwrap_or("");
+    for (verse_id, old_did) in claimable_verses(db, local_did).await? {
+        let verse_id = verse_id.as_str();
+        let old_did = old_did.as_str();
 
         // Only claim if no OTHER peers are members (besides old creator and us).
         let mut member_check = db
@@ -211,4 +234,68 @@ fn extract_count(rows: &[serde_json::Value]) -> usize {
         .and_then(|r| r.get("c"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn mem_db() -> Db {
+        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+            .await
+            .expect("mem db");
+        db.use_ns("test").use_db("test").await.expect("ns/db");
+        crate::schema::apply_all(&db).await.expect("schema");
+        db
+    }
+
+    async fn owner_of(db: &Db, verse_id: &str) -> String {
+        let rows: Vec<serde_json::Value> = db
+            .query("SELECT created_by FROM verse WHERE verse_id = $v")
+            .bind(("v", verse_id.to_string()))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        rows[0]["created_by"].as_str().unwrap().to_string()
+    }
+
+    /// RP-4 owner integrity (the RP-3 restart finding): a verse that arrived
+    /// over a replica (a remote did:key owner, no member rows) and a verse
+    /// joined by invite are never claimed at startup — only a local
+    /// placeholder creator is. Before the fix every replicated verse became
+    /// the local node's after a restart.
+    #[tokio::test]
+    async fn startup_reconcile_never_claims_a_replicated_or_joined_verse() {
+        let db = mem_db().await;
+        let local = fe_identity::NodeKeypair::generate().to_did_key();
+        let remote = fe_identity::NodeKeypair::generate().to_did_key();
+        db.query(
+            "CREATE verse CONTENT { verse_id: 'replicated', name: 'R', created_by: $remote, \
+             created_at: '2026-10-15T00:00:00Z', default_access: 'viewer' };
+             CREATE verse CONTENT { verse_id: 'joined-legacy', name: 'J', created_by: 'abcdef0123', \
+             created_at: '2026-10-15T00:00:00Z', default_access: 'viewer' };
+             CREATE verse_member CONTENT { member_id: 'm1', verse_id: 'joined-legacy', \
+             peer_did: $local, status: 'active', invited_by: 'abcdef0123', invite_sig: 's', \
+             invite_timestamp: '2026-10-15T00:00:00Z' };
+             CREATE verse CONTENT { verse_id: 'placeholder', name: 'P', created_by: 'old-local', \
+             created_at: '2026-10-15T00:00:00Z', default_access: 'viewer' };",
+        )
+        .bind(("remote", remote.clone()))
+        .bind(("local", local.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+        reconcile(&db, &local).await.unwrap();
+
+        assert_eq!(owner_of(&db, "replicated").await, remote);
+        assert_eq!(owner_of(&db, "joined-legacy").await, "abcdef0123");
+        assert_eq!(
+            owner_of(&db, "placeholder").await,
+            local,
+            "a local placeholder is still claimed"
+        );
+    }
 }

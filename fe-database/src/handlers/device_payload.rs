@@ -509,25 +509,6 @@ async fn payload_id_taken(db: &Db, payload_id: &str) -> anyhow::Result<bool> {
     Ok(!rows.is_empty())
 }
 
-/// Whether `payload_id` names a `device_payload` row anchored to `petal_id`.
-/// `pub(crate)` so the reading door and the inbound `iot_reading` gate share
-/// this one petal-scoped link check.
-pub(crate) async fn payload_in_petal(
-    db: &Db,
-    petal_id: &str,
-    payload_id: &str,
-) -> anyhow::Result<bool> {
-    let q = QueryBuilder::new()
-        .select(&["payload_id"])
-        .from("device_payload")
-        .filter(Filter::eq("payload_id", payload_id))
-        .and(Filter::eq("petal_id", petal_id))
-        .build();
-    let mut res = exec_query(db, &q).await?;
-    let rows: Vec<serde_json::Value> = res.take(0)?;
-    Ok(!rows.is_empty())
-}
-
 /// List `device_payload` rows for `petal_id`, optionally filtered by anchor
 /// node, format and a `[from_ms, to_ms]` recorded-time window.
 pub async fn list_device_payloads(
@@ -593,10 +574,8 @@ fn payload_dto_from_row(row: serde_json::Value) -> DevicePayloadDto {
     }
 }
 
-/// Whether `node_id` is an existing node of `petal_id`. `pub(crate)` so the
-/// inbound replicated-row referential-confinement check
-/// (`handlers::replicated_row`) shares this exact query rather than a second
-/// hand-rolled one ("shared cores + separate guards = drift", RUNBOOK §5).
+/// Whether `node_id` is an existing node of `petal_id` (the local door; the
+/// inbound gate's three-valued twin is `replicated_row::locate_node_in_petal`).
 pub(crate) async fn node_is_in_petal(
     db: &Db,
     petal_id: &str,
@@ -607,42 +586,6 @@ pub(crate) async fn node_is_in_petal(
         .from("node")
         .filter(Filter::eq("petal_id", petal_id))
         .and(Filter::eq("node_id", node_id))
-        .build();
-    let mut res = exec_query(db, &q).await?;
-    let rows: Vec<serde_json::Value> = res.take(0)?;
-    Ok(!rows.is_empty())
-}
-
-/// Whether `asset_id` exists and is anchored to `petal_id`. `pub(crate)` for
-/// the same reason as [`node_is_in_petal`].
-pub(crate) async fn asset_anchored_to_petal(
-    db: &Db,
-    asset_id: &str,
-    petal_id: &str,
-) -> anyhow::Result<bool> {
-    let q = QueryBuilder::new()
-        .select(&["asset_id"])
-        .from("asset")
-        .filter(Filter::eq("asset_id", asset_id))
-        .and(Filter::eq("petal_id", petal_id))
-        .build();
-    let mut res = exec_query(db, &q).await?;
-    let rows: Vec<serde_json::Value> = res.take(0)?;
-    Ok(!rows.is_empty())
-}
-
-/// Whether `asset_id` exists with exactly `content_type` (SPEC-10 §2.2 rule 5's
-/// MIME match) — `pub(crate)` for the inbound gate, like [`asset_anchored_to_petal`].
-pub(crate) async fn asset_has_content_type(
-    db: &Db,
-    asset_id: &str,
-    content_type: &str,
-) -> anyhow::Result<bool> {
-    let q = QueryBuilder::new()
-        .select(&["asset_id"])
-        .from("asset")
-        .filter(Filter::eq("asset_id", asset_id))
-        .and(Filter::eq("content_type", content_type))
         .build();
     let mut res = exec_query(db, &q).await?;
     let rows: Vec<serde_json::Value> = res.take(0)?;

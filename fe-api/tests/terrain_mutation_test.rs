@@ -10,7 +10,7 @@ use axum::http::{Request, StatusCode};
 use serde_json::json;
 
 use fe_runtime::app::PendingApiRequests;
-use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
+use fe_runtime::messages::{ApiCommand, CallerAuth, DbCommand, DbResult};
 use fractalengine_test_harness::api::{body_json_lenient, ApiHarness, SeededHierarchy};
 
 /// How the simulated DB thread behaves around each API set.
@@ -29,6 +29,9 @@ enum DbMode {
 fn serve_db_thread(h: &ApiHarness, mode: DbMode) {
     let rx = h.api_command_receiver();
     let db = (*h.db).clone();
+    // The harness node owns the seeded verse, so the DB thread's node-role cap
+    // (role propagation AC-46) never lowers the API caller here.
+    let local_did = h.did();
     let blob_store = h
         .state
         .blob_store
@@ -46,6 +49,7 @@ fn serve_db_thread(h: &ApiHarness, mode: DbMode) {
                 DbCommand::SetPetalTerrain {
                     petal_id,
                     terrain,
+                    auth,
                     correlation_id,
                 } => {
                     if mode == DbMode::PetalVanishes {
@@ -62,8 +66,10 @@ fn serve_db_thread(h: &ApiHarness, mode: DbMode) {
                         let gui_echo = rt.block_on(
                             fe_database::handlers::petal_terrain::set_petal_terrain_reply(
                                 &db,
+                                &local_did,
                                 petal_id.clone(),
                                 Some(gui_config()),
+                                CallerAuth::Local,
                                 None,
                                 &blob_store,
                                 None,
@@ -77,8 +83,10 @@ fn serve_db_thread(h: &ApiHarness, mode: DbMode) {
                     rt.block_on(
                         fe_database::handlers::petal_terrain::set_petal_terrain_reply(
                             &db,
+                            &local_did,
                             petal_id,
                             terrain,
+                            auth,
                             None,
                             &blob_store,
                             correlation_id,

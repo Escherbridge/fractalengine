@@ -1070,3 +1070,76 @@ fn cdl_r2_delivery_acceptance() {
         })
     );
 }
+
+/// RP-4 step 3 (critic AC-44(b), T17): narrowing the bootstrap window to the manifest does not
+/// reopen W4 risk 2. Before any manifest, an enrolment is VERIFIED FIRST: a forged signature
+/// or a relayed (non-self-authored) row is Denied outright, and only a genuine self-signed
+/// enrolment is held — Deferred `Manifest`, never stored until the manifest lands.
+#[test]
+fn a_pre_manifest_enrolment_row_is_verified_first_and_a_forged_one_is_denied() {
+    let rt = runtime();
+    rt.block_on(async {
+        let db: Db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+            .await
+            .expect("mem db");
+        db.use_ns("test").use_db("test").await.expect("ns/db");
+        fe_database::schema::apply_all(&db).await.expect("schema");
+        const PRE: &str = "verse-pre-manifest";
+
+        let claimed = DeviceEnrolmentV1 {
+            principal: principal(0x51),
+            device_key: device(0x0d).public_key(),
+            enrolled_at_ms: 1_000,
+        };
+        let forged = SignedDeviceEnrolment {
+            body: claimed.clone(),
+            signature: sign_domain(
+                &signing_key(0x52),
+                DEVICE_ENROLMENT_DOMAIN,
+                &claimed.encode_canonical().expect("body"),
+            ),
+        }
+        .encode_canonical()
+        .expect("forged bytes");
+        let forged_row = EnrolmentRow {
+            record_id: op_id_to_hex(enrolment_record_id(&claimed.principal, claimed.device_key)),
+            principal_did: claimed.principal.did.clone(),
+            device_key_hex: hex::encode(claimed.device_key.0),
+            artifact_cbor: BASE64.encode(&forged),
+            revoked: false,
+        };
+        let genuine = row_for(&enrolment_bytes(0x53, 0x0d, 1_000));
+
+        let cases = [
+            (
+                "a forged signature",
+                forged_row,
+                principal(0x51).did,
+                ReplicatedRowOutcome::Denied,
+            ),
+            (
+                "a genuine enrolment relayed by another author",
+                genuine.clone(),
+                principal(0x52).did,
+                ReplicatedRowOutcome::Denied,
+            ),
+            (
+                "a genuine self-signed enrolment",
+                genuine,
+                principal(0x53).did,
+                ReplicatedRowOutcome::Deferred(DeferralReason::Manifest),
+            ),
+        ];
+        for (case, row, author, expected) in cases {
+            assert_eq!(
+                apply_inbound(&db, PRE, &row, &author).await,
+                expected,
+                "{case}"
+            );
+            assert!(
+                stored_row(&db, &row.record_id).await.is_none(),
+                "{case}: nothing is stored before the manifest"
+            );
+        }
+    });
+}

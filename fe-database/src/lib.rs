@@ -233,10 +233,12 @@ fn caller_auth_to_context(auth: &fe_runtime::messages::CallerAuth) -> fe_policy:
 }
 
 /// Resolve the caller's `AuthContext` for a lifecycle mutation at `scope`.
-/// `Identified`/`Anonymous` carry an already-resolved role (see
-/// `caller_auth_to_context`); a `Local` caller asserts none, so the DB thread
-/// resolves the local user's real role at the scope here (N-5: no UI-side role
-/// assertion). A failed lookup is treated as `none` → denied. See
+/// A `Local` caller asserts no role, so the DB thread resolves the local
+/// user's real role at the scope (N-5: no UI-side role assertion). An
+/// `Identified` (API) caller's already-validated token role is capped at the
+/// node's own converged role — `min(token, role_at(local_did, scope))`, AC-46
+/// — so a token minted before a remote demotion cannot keep writing rows every
+/// peer defers. A failed lookup is `none` → denied. See
 /// fe-database/src/AGENTS.md §Authorization (N-5).
 async fn lifecycle_auth_context(
     db: &crate::repo::Db,
@@ -246,20 +248,67 @@ async fn lifecycle_auth_context(
 ) -> fe_policy::AuthContext {
     use fe_runtime::messages::CallerAuth;
     match auth {
-        CallerAuth::Local => {
-            let role = handlers::rbac::resolve_local_role_handler(db, local_did, scope)
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::warn!("lifecycle: local role resolution failed for {scope}: {e}");
-                    "none".to_string()
-                });
-            fe_policy::AuthContext::Did {
-                did: local_did.to_string(),
-                role: fe_policy::RoleLevel::from(role.as_str()),
-            }
-        }
-        other => caller_auth_to_context(other),
+        CallerAuth::Local => fe_policy::AuthContext::Did {
+            did: local_did.to_string(),
+            role: node_role_at(db, local_did, scope).await,
+        },
+        // AC-46: an API token's role is capped by the node's own converged role.
+        CallerAuth::Identified { did, role } => fe_policy::AuthContext::Did {
+            did: did.clone(),
+            role: fe_policy::RoleLevel::from(role.as_str())
+                .min(node_role_at(db, local_did, scope).await),
+        },
+        CallerAuth::Anonymous => caller_auth_to_context(auth),
     }
+}
+
+/// This node's own converged role at `scope` (`role_at` over the materialized
+/// cache) — what every peer's A3 gate judges the rows this node publishes by.
+/// The ONE helper behind the replicated-write cap (role propagation AC-46,
+/// src/AGENTS.md §handlers "replicated_row"). A failed lookup is `None`.
+async fn node_role_at(db: &crate::repo::Db, local_did: &str, scope: &str) -> fe_policy::RoleLevel {
+    match handlers::rbac::resolve_local_role_handler(db, local_did, scope).await {
+        Ok(role) => fe_policy::RoleLevel::from(role.as_str()),
+        Err(e) => {
+            tracing::warn!("node role resolution failed for {scope}: {e}");
+            fe_policy::RoleLevel::None
+        }
+    }
+}
+
+/// AC-46 for the role-less replicated-write doors (IoT readings, device
+/// payloads, device formats): the API validated the token's role upstream; the
+/// effective role is `min(token, node)`, so the write also needs the NODE to
+/// clear `floor` at `scope` — otherwise it would apply locally while every peer
+/// defers it. `Err` carries the refusal for the caller's reply.
+async fn require_node_role(
+    db: &crate::repo::Db,
+    local_did: &str,
+    scope: &str,
+    floor: fe_policy::RoleLevel,
+    what: &str,
+) -> Result<(), String> {
+    let role = node_role_at(db, local_did, scope).await;
+    if role.is_at_least(floor) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{what} refused: this node holds {role} at {scope}, below {floor} — peers would defer its rows"
+        ))
+    }
+}
+
+/// The scope a replicated petal write lands in, when the petal is known.
+async fn replicated_petal_scope(
+    db: &crate::repo::Db,
+    verse_id: Option<&str>,
+    petal_id: &str,
+) -> Option<String> {
+    verse_id?;
+    handlers::crud::resolve_petal_scope_handler(db, petal_id)
+        .await
+        .ok()
+        .flatten()
 }
 
 /// Build the stable `fe://verse/fractal/petal/node` URI (FR-4) from a petal
@@ -1415,8 +1464,8 @@ pub fn spawn_db_thread_shared(
                         ).await;
                         send_result(&tx, reply);
                     }
-                    Ok(DbCommand::SetPetalTerrain { petal_id, terrain, correlation_id }) => {
-                        let reply = handlers::petal_terrain::set_petal_terrain_reply(&db, petal_id, terrain, repl_tx.as_ref(), &blob_store, correlation_id).await;
+                    Ok(DbCommand::SetPetalTerrain { petal_id, terrain, auth, correlation_id }) => {
+                        let reply = handlers::petal_terrain::set_petal_terrain_reply(&db, &local_did, petal_id, terrain, auth, repl_tx.as_ref(), &blob_store, correlation_id).await;
                         send_result(&tx, reply);
                     }
                     Ok(DbCommand::GetPetalTerrain { petal_id, correlation_id }) => {
@@ -1527,40 +1576,55 @@ pub fn spawn_db_thread_shared(
                     // accepted row; see §iot-readings). Harness peers and
                     // the sim lab ingest through this arm.
                     Ok(DbCommand::InsertIotReadings { petal_id, verse_id, source_did, readings, source_class, correlation_id }) => {
-                        match handlers::iot_reading::insert_readings_with_replication(
-                            &db,
-                            &petal_id,
-                            verse_id.as_deref(),
-                            &source_did,
-                            source_class,
-                            &readings,
-                            Some(&blob_store),
-                            repl_tx.as_ref(),
-                        ).await {
-                            Ok(written) => send_result(&tx, DbResult::IotReadingsInserted { petal_id, written, correlation_id }),
-                            // F24: a validation failure keeps its typed shape
-                            // across the seam (`IotReadingsRejected`, the
-                            // 422-class family) so the API fallback maps real
-                            // HTTP statuses; only DB failures degrade to the
-                            // generic `Error` reply.
-                            Err(e) => match e.validation_rejection() {
-                                Some(reason) => send_result(&tx, DbResult::IotReadingsRejected { petal_id, reason, correlation_id }),
-                                None => send_result(&tx, DbResult::Error(format!("IoT readings ingest failed: {e}"))),
-                            },
+                        // AC-46: a replicated write needs the NODE's own role too.
+                        let refused = match replicated_petal_scope(&db, verse_id.as_deref(), &petal_id).await {
+                            Some(scope) => require_node_role(&db, &local_did, &scope, fe_policy::RoleLevel::Editor, "InsertIotReadings").await.err(),
+                            None => None,
+                        };
+                        if let Some(refusal) = refused {
+                            send_result(&tx, handlers::correlated_failure(&correlation_id, refusal));
+                        } else {
+                            match handlers::iot_reading::insert_readings_with_replication(
+                                &db,
+                                &petal_id,
+                                verse_id.as_deref(),
+                                &source_did,
+                                source_class,
+                                &readings,
+                                Some(&blob_store),
+                                repl_tx.as_ref(),
+                            ).await {
+                                Ok(written) => send_result(&tx, DbResult::IotReadingsInserted { petal_id, written, correlation_id }),
+                                // F24: a validation failure keeps its typed shape
+                                // across the seam (`IotReadingsRejected`, the
+                                // 422-class family) so the API fallback maps real
+                                // HTTP statuses; only DB failures degrade to the
+                                // generic `Error` reply.
+                                Err(e) => match e.validation_rejection() {
+                                    Some(reason) => send_result(&tx, DbResult::IotReadingsRejected { petal_id, reason, correlation_id }),
+                                    None => send_result(&tx, DbResult::Error(format!("IoT readings ingest failed: {e}"))),
+                                },
+                            }
                         }
                     }
                     // --- R5 device formats / payloads (CDL-SPEC10 A3) ---
                     Ok(DbCommand::RegisterDeviceFormat { verse_id, descriptor, declared_by, correlation_id }) => {
-                        match handlers::device_payload::register_format_with_replication(
-                            &db, &verse_id, &descriptor, &declared_by, Some(&blob_store), repl_tx.as_ref(),
-                        ).await {
-                            Ok(()) => send_result(&tx, DbResult::DeviceFormatRegistered {
-                                verse_id, format_id: descriptor.format_id, correlation_id,
-                            }),
-                            Err(e) => match e.rejection() {
-                                Some(reason) => send_result(&tx, DbResult::DeviceFormatRejected { verse_id, reason, correlation_id }),
-                                None => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("RegisterDeviceFormat failed: {e}"))),
-                            },
+                        // AC-46: a peer admits a device_format only from a verse Manager.
+                        let verse_scope = build_scope(&verse_id, None, None);
+                        if let Err(refusal) = require_node_role(&db, &local_did, &verse_scope, fe_policy::RoleLevel::Manager, "RegisterDeviceFormat").await {
+                            send_result(&tx, handlers::correlated_failure(&correlation_id, refusal));
+                        } else {
+                            match handlers::device_payload::register_format_with_replication(
+                                &db, &verse_id, &descriptor, &declared_by, Some(&blob_store), repl_tx.as_ref(),
+                            ).await {
+                                Ok(()) => send_result(&tx, DbResult::DeviceFormatRegistered {
+                                    verse_id, format_id: descriptor.format_id, correlation_id,
+                                }),
+                                Err(e) => match e.rejection() {
+                                    Some(reason) => send_result(&tx, DbResult::DeviceFormatRejected { verse_id, reason, correlation_id }),
+                                    None => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("RegisterDeviceFormat failed: {e}"))),
+                                },
+                            }
                         }
                     }
                     Ok(DbCommand::ListDeviceFormats { verse_id, correlation_id }) => {
@@ -1570,15 +1634,24 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::InsertDevicePayloads { petal_id, verse_id, source_did, source_class, payload, correlation_id }) => {
-                        match handlers::device_payload::insert_device_payloads(
-                            &db, &petal_id, verse_id.as_deref(), &source_did, source_class, &payload,
-                            Some(&blob_store), repl_tx.as_ref(),
-                        ).await {
-                            Ok((payload_id, asset_ids)) => send_result(&tx, DbResult::DevicePayloadsInserted { petal_id, payload_id, asset_ids, correlation_id }),
-                            Err(e) => match e.rejection() {
-                                Some(reason) => send_result(&tx, DbResult::DevicePayloadsRejected { petal_id, reason, correlation_id }),
-                                None => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("InsertDevicePayloads failed: {e}"))),
-                            },
+                        // AC-46: a replicated write needs the NODE's own role too.
+                        let refused = match replicated_petal_scope(&db, verse_id.as_deref(), &petal_id).await {
+                            Some(scope) => require_node_role(&db, &local_did, &scope, fe_policy::RoleLevel::Editor, "InsertDevicePayloads").await.err(),
+                            None => None,
+                        };
+                        if let Some(refusal) = refused {
+                            send_result(&tx, handlers::correlated_failure(&correlation_id, refusal));
+                        } else {
+                            match handlers::device_payload::insert_device_payloads(
+                                &db, &petal_id, verse_id.as_deref(), &source_did, source_class, &payload,
+                                Some(&blob_store), repl_tx.as_ref(),
+                            ).await {
+                                Ok((payload_id, asset_ids)) => send_result(&tx, DbResult::DevicePayloadsInserted { petal_id, payload_id, asset_ids, correlation_id }),
+                                Err(e) => match e.rejection() {
+                                    Some(reason) => send_result(&tx, DbResult::DevicePayloadsRejected { petal_id, reason, correlation_id }),
+                                    None => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("InsertDevicePayloads failed: {e}"))),
+                                },
+                            }
                         }
                     }
                     Ok(DbCommand::ListDevicePayloads { petal_id, node_id, format_id, from_ms, to_ms, correlation_id }) => {

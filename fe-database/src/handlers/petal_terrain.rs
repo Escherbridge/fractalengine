@@ -1,7 +1,8 @@
 use tracing::instrument;
 
-use fe_runtime::messages::DbResult;
+use fe_runtime::messages::{CallerAuth, DbResult};
 
+use crate::handlers::visibility_groups::authorize_edit;
 use crate::op_log::commit_operation_atomic;
 use crate::repo::Db;
 use crate::types::{NodeId, OpLogEntry, OpType};
@@ -11,15 +12,28 @@ use crate::{replicate_row_with_petal, BlobStoreHandle, ReplicationSender};
 /// op-logging the write before it mutates (§log-first-commit, campaign plan
 /// §3 S6 step 8 — closes the prior parity gap: this write used to neither
 /// op-log nor replicate) and replicating the read-back row (the authoritative
-/// echo) to the verse. Errors when no petal row matched.
+/// echo) to the verse. Editor+ at the petal scope comes first (RP-4 step 7,
+/// the shape of `set_petal_render_distance_handler`): a write every peer would
+/// defer is refused locally instead of silently diverging. Errors when no
+/// petal row matched.
+#[allow(clippy::too_many_arguments)]
 #[instrument(skip(db, terrain, repl_tx, blob_store))]
 pub(crate) async fn set_petal_terrain_handler(
     db: &Db,
+    local_did: &str,
+    auth: &CallerAuth,
     petal_id: &str,
     terrain: Option<&serde_json::Value>,
     repl_tx: Option<&ReplicationSender>,
     blob_store: &BlobStoreHandle,
 ) -> anyhow::Result<Option<serde_json::Value>> {
+    let scope = crate::handlers::crud::resolve_petal_scope_handler(db, petal_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("SetPetalTerrain: scope lookup failed: {e}"))?
+        .ok_or_else(|| anyhow::anyhow!("SetPetalTerrain: no petal {petal_id}"))?;
+    authorize_edit(db, local_did, auth, scope.clone(), "SetPetalTerrain")
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
     // S8b: the writer satisfies the strictest reader — a terrain peers would
     // deny on receipt is refused here too, before the op-log or any mutation.
     if let Some(config) = terrain {
@@ -63,20 +77,16 @@ pub(crate) async fn set_petal_terrain_handler(
     // Replicate the read-back row — best-effort: a verse/scope lookup failure
     // never fails the write itself (the DB mutation already committed).
     if let Ok(row_json) = serde_json::to_vec(&row) {
-        if let Ok(Some(scope)) =
-            crate::handlers::crud::resolve_petal_scope_handler(db, petal_id).await
-        {
-            if let Ok(parts) = crate::scope::parse_scope(&scope) {
-                replicate_row_with_petal(
-                    repl_tx,
-                    blob_store,
-                    &parts.verse_id,
-                    "petal",
-                    petal_id,
-                    &row_json,
-                    Some(petal_id.to_string()),
-                );
-            }
+        if let Ok(parts) = crate::scope::parse_scope(&scope) {
+            replicate_row_with_petal(
+                repl_tx,
+                blob_store,
+                &parts.verse_id,
+                "petal",
+                petal_id,
+                &row_json,
+                Some(petal_id.to_string()),
+            );
         }
     }
     Ok(stored)
@@ -86,15 +96,28 @@ pub(crate) async fn set_petal_terrain_handler(
 /// `correlation_id`; on failure a correlated `PetalTerrainSetFailed` for an
 /// API set, the legacy wildcard `Error` for a GUI set (`None`).
 /// See fe-runtime src/AGENTS.md §api-reply-correlation.
+#[allow(clippy::too_many_arguments)]
 pub async fn set_petal_terrain_reply(
     db: &Db,
+    local_did: &str,
     petal_id: String,
     terrain: Option<serde_json::Value>,
+    auth: CallerAuth,
     repl_tx: Option<&ReplicationSender>,
     blob_store: &BlobStoreHandle,
     correlation_id: Option<String>,
 ) -> DbResult {
-    match set_petal_terrain_handler(db, &petal_id, terrain.as_ref(), repl_tx, blob_store).await {
+    match set_petal_terrain_handler(
+        db,
+        local_did,
+        &auth,
+        &petal_id,
+        terrain.as_ref(),
+        repl_tx,
+        blob_store,
+    )
+    .await
+    {
         Ok(terrain) => DbResult::PetalTerrainLoaded {
             petal_id,
             terrain,
@@ -271,6 +294,8 @@ mod tests {
 
         let stored = set_petal_terrain_handler(
             &author_db,
+            "owner-did",
+            &CallerAuth::Local,
             "p1",
             Some(&terrain),
             Some(&repl_tx),
@@ -375,9 +400,17 @@ mod tests {
             serde_json::json!({ "elevation_api_key_env": "AWS_SECRET_ACCESS_KEY" }),
             serde_json::json!({ "cache_dir": "../../outside" }),
         ] {
-            let err = set_petal_terrain_handler(&db, "p1", Some(&bad), Some(&repl_tx), &blob_store)
-                .await
-                .expect_err("refused");
+            let err = set_petal_terrain_handler(
+                &db,
+                "owner-did",
+                &CallerAuth::Local,
+                "p1",
+                Some(&bad),
+                Some(&repl_tx),
+                &blob_store,
+            )
+            .await
+            .expect_err("refused");
             assert!(err.to_string().contains("shape check"), "{err:#}");
         }
         assert_eq!(get_petal_terrain_handler(&db, "p1").await.unwrap(), None);
@@ -385,9 +418,68 @@ mod tests {
 
         let good =
             serde_json::json!({ "cache_dir": "terrain_cache", "tileset_hexon_uris": ["ts-1"] });
-        let stored = set_petal_terrain_handler(&db, "p1", Some(&good), Some(&repl_tx), &blob_store)
-            .await
-            .expect("a well-formed terrain still writes");
+        let stored = set_petal_terrain_handler(
+            &db,
+            "owner-did",
+            &CallerAuth::Local,
+            "p1",
+            Some(&good),
+            Some(&repl_tx),
+            &blob_store,
+        )
+        .await
+        .expect("a well-formed terrain still writes");
         assert_eq!(stored, Some(good));
+    }
+
+    async fn op_log_count(db: &Db) -> i64 {
+        let rows: Vec<serde_json::Value> = db
+            .query("SELECT count() AS n FROM op_log GROUP ALL")
+            .await
+            .expect("count op_log")
+            .take(0)
+            .expect("count rows");
+        rows.first().and_then(|r| r["n"].as_i64()).unwrap_or(0)
+    }
+
+    /// RP-4 step 7 (AC-21(d)): a Viewer's local `SetPetalTerrain` (the GUI's
+    /// `Local` and an API token alike) is refused by `authorize_edit` before the
+    /// shape check, the op-log entry, the row write and any replication send,
+    /// so a local edit can never diverge from what every peer accepts.
+    #[tokio::test]
+    async fn a_viewers_local_set_petal_terrain_is_refused_and_nothing_is_written() {
+        use fe_runtime::blob_store::mock::MockBlobStore;
+
+        let db = db_with_full_hierarchy("p1").await;
+        let blob_store: BlobStoreHandle = std::sync::Arc::new(MockBlobStore::new());
+        let (repl_tx, repl_rx) = crossbeam::channel::bounded(4);
+        let terrain = serde_json::json!({ "tileset_hexon_uris": ["tileset-a"] });
+        let before = op_log_count(&db).await;
+
+        // No role row: the local node resolves to the verse default, `viewer`.
+        let viewer_token = CallerAuth::Identified {
+            did: "api".to_string(),
+            role: "viewer".to_string(),
+        };
+        for auth in [CallerAuth::Local, viewer_token] {
+            let err = set_petal_terrain_handler(
+                &db,
+                "viewer-did",
+                &auth,
+                "p1",
+                Some(&terrain),
+                Some(&repl_tx),
+                &blob_store,
+            )
+            .await
+            .expect_err("a Viewer may not set the petal terrain");
+            assert!(
+                err.to_string().contains("SetPetalTerrain denied"),
+                "{err:#}"
+            );
+        }
+        assert_eq!(get_petal_terrain_handler(&db, "p1").await.unwrap(), None);
+        assert_eq!(op_log_count(&db).await, before, "no op-log entry");
+        assert!(repl_rx.try_recv().is_err(), "nothing was replicated");
     }
 }

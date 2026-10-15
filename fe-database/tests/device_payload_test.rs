@@ -8,6 +8,7 @@ use fe_database::handlers::device_payload::{
     insert_device_payloads, list_device_formats, list_device_payloads, register_format,
     register_format_with_replication, DeviceFormatError, DevicePayloadIngestError,
 };
+use fe_database::handlers::inbound_admissions::{InboundAdmissions, RowReport};
 use fe_database::handlers::iot_reading::insert_readings_with_replication;
 use fe_database::handlers::replicated_row::apply_replicated_row_handler;
 use fe_database::{BlobStore, BlobStoreHandle};
@@ -964,11 +965,11 @@ async fn an_editor_authored_inbound_device_format_is_deferred_and_a_manager_one_
     );
 }
 
-/// Critic tick 7 AC-34: role-independent checks run before the bootstrap
-/// window — without ANY local knowledge of the verse/petal/node/assets, all
-/// three new tables fail closed, not open.
+/// RP-4 step 3 (supersedes critic tick 7 AC-34's pre-manifest Deny): without
+/// ANY local knowledge of the verse, all three tables wait for the manifest —
+/// never applied unchecked (fail closed), never lost either (Deferred).
 #[tokio::test]
-async fn pre_manifest_device_rows_follow_the_declared_bootstrap_rule() {
+async fn pre_manifest_device_rows_are_deferred_on_the_manifest() {
     let db = setup_db().await; // schema applied, but NO verse/petal/node rows at all.
 
     let asset_row = serde_json::to_vec(&serde_json::json!({
@@ -990,7 +991,7 @@ async fn pre_manifest_device_rows_follow_the_declared_bootstrap_rule() {
     .unwrap();
     assert_eq!(
         outcome,
-        ReplicatedRowOutcome::Denied,
+        ReplicatedRowOutcome::Deferred(DeferralReason::Manifest),
         "asset fails closed pre-manifest"
     );
 
@@ -1012,7 +1013,7 @@ async fn pre_manifest_device_rows_follow_the_declared_bootstrap_rule() {
     .unwrap();
     assert_eq!(
         outcome,
-        ReplicatedRowOutcome::Denied,
+        ReplicatedRowOutcome::Deferred(DeferralReason::Manifest),
         "device_format fails closed pre-manifest"
     );
 
@@ -1035,7 +1036,7 @@ async fn pre_manifest_device_rows_follow_the_declared_bootstrap_rule() {
     .unwrap();
     assert_eq!(
         outcome,
-        ReplicatedRowOutcome::Denied,
+        ReplicatedRowOutcome::Deferred(DeferralReason::Manifest),
         "device_payload is denied when its petal/node/assets are not locally known"
     );
 }
@@ -1887,8 +1888,8 @@ async fn declared_format_replicates_and_a_peer_applies_it() {
 }
 
 /// SPEC-10 §2.2 rule 5 on the inbound path (strictest reader): a peer's payload
-/// is denied while its format is undeclared locally and while a listed asset
-/// carries another MIME; the same payload over a matching asset applies.
+/// waits while its format is undeclared locally (RP-4: Deferred) and is denied
+/// while a listed asset carries another MIME; over a matching asset it applies.
 #[tokio::test]
 async fn inbound_payload_needs_a_declared_format_and_its_mime() {
     let db = setup_db().await;
@@ -1923,7 +1924,11 @@ async fn inbound_payload_needs_a_declared_format_and_its_mime() {
             "payload-early",
             "asset-raw",
             false,
-            ReplicatedRowOutcome::Denied,
+            // RP-4 (AC-43): an undeclared format is not known yet — Deferred, not Denied.
+            ReplicatedRowOutcome::Deferred(DeferralReason::Parent {
+                table: "device_format".to_string(),
+                id: "acme.thermo/frame@1".to_string(),
+            }),
             "undeclared format",
         ),
         (
@@ -2034,4 +2039,329 @@ async fn unlinked_reading_and_verseless_payload_store_with_option_fields_absent(
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].payload_id, payload_id);
     assert_eq!(listed[0].verse_id, None);
+}
+
+// ---------------------------------------------------------------------------
+// Role propagation RP-4 (critic tick 8 AC-43): three-valued confinement —
+// known-here applies, known-foreign is Denied, unknown is Deferred `Parent`
+// and applies with no second delivery once the parent lands.
+// ---------------------------------------------------------------------------
+
+const EDITOR: &str = "did:key:z6MkEditor";
+const MANAGER: &str = "did:key:z6MkManager";
+const FORMAT_ID: &str = "acme.thermo/frame@1";
+
+fn parent(table: &str, id: &str) -> ReplicatedRowOutcome {
+    ReplicatedRowOutcome::Deferred(DeferralReason::Parent {
+        table: table.to_string(),
+        id: id.to_string(),
+    })
+}
+
+fn settled(reports: &[RowReport], record_id: &str) -> bool {
+    reports
+        .iter()
+        .any(|r| r.record_id == record_id && r.outcome == ReplicatedRowOutcome::Applied)
+}
+
+fn payload_row(payload_id: &str, asset_ids: &[&str]) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "payload_id": payload_id, "node_id": "node-a", "petal_id": PETAL,
+        "verse_id": VERSE, "format_id": FORMAT_ID,
+        "recorded_at": "2026-10-14T00:00:00Z", "recorded_at_ms": 0, "hlc_timestamp": 0,
+        "asset_ids": asset_ids, "source_did": EDITOR,
+    }))
+    .unwrap()
+}
+
+fn asset_row(asset_id: &str, petal_id: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "asset_id": asset_id, "name": "a", "content_type": FORMAT_MIME, "size_bytes": 1,
+        "content_hash": "5a".repeat(32), "petal_id": petal_id,
+        "created_at": "2026-10-14T00:00:00Z",
+    }))
+    .unwrap()
+}
+
+fn format_row() -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "format_id": FORMAT_ID, "verse_id": VERSE, "mime": FORMAT_MIME,
+        "declared_by": MANAGER, "created_at": "2026-10-14T00:00:00Z",
+    }))
+    .unwrap()
+}
+
+async fn payload_ids(db: &Db) -> Vec<String> {
+    list_device_payloads(db, PETAL, None, None, None, None)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|p| p.payload_id)
+        .collect()
+}
+
+/// A `device_payload` before its `device_format` (the W4 residual): Deferred
+/// `Parent{device_format}`, then applied by the format's arrival alone.
+#[tokio::test]
+async fn a_device_payload_before_its_format_is_deferred_then_applied() {
+    let db = setup_db().await;
+    seed_hierarchy(&db, VERSE, FRACTAL, PETAL, "node-a").await;
+    seed_role(&db, EDITOR, VERSE, "editor").await;
+    seed_role(&db, MANAGER, VERSE, "manager").await;
+    let mut queue = InboundAdmissions::new();
+    queue
+        .apply(
+            &db,
+            VERSE,
+            "asset",
+            "asset-1",
+            &asset_row("asset-1", PETAL),
+            EDITOR,
+            None,
+        )
+        .await;
+
+    let reports = queue
+        .apply(
+            &db,
+            VERSE,
+            "device_payload",
+            "payload-1",
+            &payload_row("payload-1", &["asset-1"]),
+            EDITOR,
+            None,
+        )
+        .await;
+    assert_eq!(reports[0].outcome, parent("device_format", FORMAT_ID));
+    assert!(payload_ids(&db).await.is_empty());
+
+    let reports = queue
+        .apply(
+            &db,
+            VERSE,
+            "device_format",
+            FORMAT_ID,
+            &format_row(),
+            MANAGER,
+            None,
+        )
+        .await;
+    assert!(settled(&reports, "payload-1"), "{reports:?}");
+    assert_eq!(payload_ids(&db).await, vec!["payload-1".to_string()]);
+    assert!(queue.is_empty());
+}
+
+/// A `device_payload` before its `asset`s: Deferred on the first missing
+/// asset, then on the next, and applied once the last one lands.
+#[tokio::test]
+async fn a_device_payload_before_its_assets_is_deferred_then_applied() {
+    let db = setup_db().await;
+    seed_hierarchy(&db, VERSE, FRACTAL, PETAL, "node-a").await;
+    seed_role(&db, EDITOR, VERSE, "editor").await;
+    declare_format(&db, VERSE, FORMAT_ID, FORMAT_MIME).await;
+    let mut queue = InboundAdmissions::new();
+
+    let reports = queue
+        .apply(
+            &db,
+            VERSE,
+            "device_payload",
+            "payload-2",
+            &payload_row("payload-2", &["asset-x", "asset-y"]),
+            EDITOR,
+            None,
+        )
+        .await;
+    assert_eq!(reports[0].outcome, parent("asset", "asset-x"));
+
+    let reports = queue
+        .apply(
+            &db,
+            VERSE,
+            "asset",
+            "asset-x",
+            &asset_row("asset-x", PETAL),
+            EDITOR,
+            None,
+        )
+        .await;
+    assert!(!settled(&reports, "payload-2"));
+    assert_eq!(
+        queue.waiting_reason(VERSE, "device_payload", "payload-2", EDITOR),
+        Some(&DeferralReason::Parent {
+            table: "asset".to_string(),
+            id: "asset-y".to_string()
+        })
+    );
+
+    let reports = queue
+        .apply(
+            &db,
+            VERSE,
+            "asset",
+            "asset-y",
+            &asset_row("asset-y", PETAL),
+            EDITOR,
+            None,
+        )
+        .await;
+    assert!(settled(&reports, "payload-2"), "{reports:?}");
+    assert_eq!(payload_ids(&db).await, vec!["payload-2".to_string()]);
+}
+
+/// An `iot_reading` linked to a payload that has not arrived: Deferred
+/// `Parent{device_payload}`, applied when the payload lands.
+#[tokio::test]
+async fn a_reading_before_its_payload_is_deferred_then_applied() {
+    let db = setup_db().await;
+    seed_hierarchy(&db, VERSE, FRACTAL, PETAL, "node-a").await;
+    seed_role(&db, EDITOR, VERSE, "editor").await;
+    declare_format(&db, VERSE, FORMAT_ID, FORMAT_MIME).await;
+    let mut queue = InboundAdmissions::new();
+    queue
+        .apply(
+            &db,
+            VERSE,
+            "asset",
+            "asset-r",
+            &asset_row("asset-r", PETAL),
+            EDITOR,
+            None,
+        )
+        .await;
+    let reading = serde_json::to_vec(&serde_json::json!({
+        "reading_id": "reading-early", "node_id": "node-a", "petal_id": PETAL,
+        "metric": "t", "value": 1.0, "units": "C", "recorded_at": "2026-10-14T00:00:00Z",
+        "recorded_at_ms": 0, "hlc_timestamp": 0, "source_did": EDITOR,
+        "payload_id": "payload-r",
+    }))
+    .unwrap();
+
+    let reports = queue
+        .apply(
+            &db,
+            VERSE,
+            "iot_reading",
+            "reading-early",
+            &reading,
+            EDITOR,
+            None,
+        )
+        .await;
+    assert_eq!(reports[0].outcome, parent("device_payload", "payload-r"));
+
+    let reports = queue
+        .apply(
+            &db,
+            VERSE,
+            "device_payload",
+            "payload-r",
+            &payload_row("payload-r", &["asset-r"]),
+            EDITOR,
+            None,
+        )
+        .await;
+    assert!(settled(&reports, "reading-early"), "{reports:?}");
+    let mut res = db
+        .query("SELECT payload_id FROM iot_reading WHERE reading_id = 'reading-early'")
+        .await
+        .unwrap();
+    let rows: Vec<serde_json::Value> = res.take(0).unwrap();
+    assert_eq!(rows[0]["payload_id"], "payload-r");
+}
+
+/// Known-foreign never leaks into Deferred: an asset that exists locally but
+/// is anchored to another verse's petal is Denied at once, and nothing queues.
+#[tokio::test]
+async fn a_payload_naming_a_known_foreign_asset_is_denied_not_deferred() {
+    let db = setup_db().await;
+    seed_hierarchy(&db, VERSE, FRACTAL, PETAL, "node-a").await;
+    seed_hierarchy(&db, OTHER_VERSE, "fractal-2", OTHER_PETAL, "node-b").await;
+    seed_role(&db, EDITOR, VERSE, "editor").await;
+    declare_format(&db, VERSE, FORMAT_ID, FORMAT_MIME).await;
+    let (_store, handle) = blob_store();
+    let foreign_asset = seed_asset(&db, &handle, b"f", OTHER_PETAL, FORMAT_MIME).await;
+    let mut queue = InboundAdmissions::new();
+
+    let reports = queue
+        .apply(
+            &db,
+            VERSE,
+            "device_payload",
+            "payload-f",
+            &payload_row("payload-f", &[&foreign_asset]),
+            EDITOR,
+            None,
+        )
+        .await;
+    assert_eq!(reports[0].outcome, ReplicatedRowOutcome::Denied);
+    assert!(
+        queue.is_empty(),
+        "a known-foreign reference is never queued"
+    );
+    assert!(payload_ids(&db).await.is_empty());
+}
+
+/// CDL-SPEC10 A3's "unknown petal → Denied" becomes Deferred `Parent{petal}`:
+/// the payload applies once its petal (and the petal's anchor node) land.
+#[tokio::test]
+async fn a_device_payload_whose_petal_arrives_later_is_deferred_then_applied() {
+    const LATE: &str = "petal-late";
+    let db = setup_db().await;
+    seed_hierarchy(&db, VERSE, FRACTAL, PETAL, "node-a").await;
+    seed_role(&db, EDITOR, VERSE, "editor").await;
+    declare_format(&db, VERSE, FORMAT_ID, FORMAT_MIME).await;
+    let mut queue = InboundAdmissions::new();
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "payload_id": "payload-late", "node_id": "node-late", "petal_id": LATE,
+        "verse_id": VERSE, "format_id": FORMAT_ID,
+        "recorded_at": "2026-10-14T00:00:00Z", "recorded_at_ms": 0, "hlc_timestamp": 0,
+        "asset_ids": ["asset-late"], "source_did": EDITOR,
+    }))
+    .unwrap();
+
+    let reports = queue
+        .apply(
+            &db,
+            VERSE,
+            "device_payload",
+            "payload-late",
+            &payload,
+            EDITOR,
+            None,
+        )
+        .await;
+    assert_eq!(reports[0].outcome, parent("petal", LATE));
+
+    let petal = serde_json::to_vec(&serde_json::json!({
+        "petal_id": LATE, "fractal_id": FRACTAL, "name": "late", "node_id": EDITOR,
+        "created_at": "2026-10-14T00:00:00Z",
+    }))
+    .unwrap();
+    let node = serde_json::to_vec(&serde_json::json!({
+        "node_id": "node-late", "petal_id": LATE, "display_name": "n",
+        "position": { "type": "Point", "coordinates": [0.0, 0.0] },
+        "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0],
+        "created_at": "2026-10-14T00:00:00Z",
+    }))
+    .unwrap();
+    queue
+        .apply(&db, VERSE, "petal", LATE, &petal, EDITOR, None)
+        .await;
+    queue
+        .apply(&db, VERSE, "node", "node-late", &node, EDITOR, None)
+        .await;
+    let reports = queue
+        .apply(
+            &db,
+            VERSE,
+            "asset",
+            "asset-late",
+            &asset_row("asset-late", LATE),
+            EDITOR,
+            None,
+        )
+        .await;
+    assert!(settled(&reports, "payload-late"), "{reports:?}");
+    assert!(queue.is_empty());
 }

@@ -903,6 +903,10 @@ pub enum DbCommand {
     SetPetalTerrain {
         petal_id: String,
         terrain: Option<serde_json::Value>,
+        /// Editor+ at the petal scope, enforced by the DB thread (role
+        /// propagation RP-4 step 7 — the `SetPetalRenderDistance` shape): the
+        /// GUI sends `Local`, the API the role it already validated.
+        auth: CallerAuth,
         /// API-originated sets carry a fresh id the DB thread echoes on
         /// `PetalTerrainLoaded`/`PetalTerrainSetFailed`; GUI sets send `None`
         /// (fe-runtime src/AGENTS.md §api-reply-correlation).

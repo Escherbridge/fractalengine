@@ -38,6 +38,7 @@ use fe_runtime::messages::{ApiCommand, DbCommand, DbResult, ReplicatedRowOutcome
 use fe_sync::messages::{SyncCommand, SyncEvent};
 
 use crate::peer::TestPeer;
+use crate::scenarios::scaffold;
 use crate::TestResult;
 
 const WAIT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -129,6 +130,25 @@ async fn run_async() -> Result<TestResult> {
     // the open a moment keeps this scenario's timing comparable to its
     // sibling rather than relying on that retry path).
     std::thread::sleep(std::time::Duration::from_millis(300));
+
+    // RP-4: before the manifest bob admits nothing but the verse row, and he
+    // confines the reading to a petal and anchor node he knows — so alice's
+    // manifest and hierarchy cross first (then the scaffold's sync events are
+    // drained so step 6 observes the API-originated row).
+    let alice_did = alice.keypair.to_did_key();
+    scaffold::publish_manifest(&alice, &[&bob], &verse_id, &alice_did, "CrossThread Verse")?;
+    scaffold::publish_scaffold(
+        &alice,
+        &[&bob],
+        &scaffold::Scaffold {
+            verse_id: &verse_id,
+            owner_did: &alice_did,
+            fractal_id: &fractal_id,
+            petal_id: &petal_id,
+        },
+        &[&node_id],
+    )?;
+    while bob.sync_evt_rx.try_recv().is_ok() {}
 
     // 3. A REAL ApiState with NO db_reader — api_cmd_tx is bridged below to
     //    alice's REAL db_cmd_tx/db_result_rx, not a mock emulator.

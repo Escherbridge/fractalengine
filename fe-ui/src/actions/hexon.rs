@@ -168,6 +168,7 @@ pub(crate) fn set_petal_map(
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
         terrain,
+        auth: fe_runtime::messages::CallerAuth::Local,
         correlation_id: None,
     }) {
         Ok(()) => {
@@ -203,6 +204,7 @@ pub(crate) fn set_petal_map_scale(
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
         terrain: Some(terrain),
+        auth: fe_runtime::messages::CallerAuth::Local,
         correlation_id: None,
     }) {
         Ok(()) => {

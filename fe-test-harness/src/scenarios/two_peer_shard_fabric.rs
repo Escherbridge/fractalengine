@@ -37,6 +37,7 @@ use fe_runtime::messages::{DbCommand, DbResult, ReplicatedRowOutcome};
 use fe_sync::messages::{SyncCommand, SyncEvent};
 
 use crate::peer::TestPeer;
+use crate::scenarios::scaffold;
 use crate::TestResult;
 
 /// How long to wait for ledger/declaration convergence over the real transport.
@@ -273,6 +274,19 @@ pub fn run() -> Result<TestResult> {
         })
         .map_err(|e| anyhow::anyhow!("{who}'s fabric never saw both peer declarations: {e}"))?;
     }
+
+    // RP-4: bob confines each reading to a petal and anchor node it knows.
+    scaffold::publish_scaffold(
+        &alice,
+        &[&bob],
+        &scaffold::Scaffold {
+            verse_id: &verse_id,
+            owner_did: &alice_did,
+            fractal_id: "fractal-f6",
+            petal_id: "petal-f6",
+        },
+        &["node-f6"],
+    )?;
 
     // --- Leg 1 (A13): balanced R=2 plans both peers, ledger crosses. ------
     let reading_a = reading_row("reading-f6-a", 21.5, 0)?;

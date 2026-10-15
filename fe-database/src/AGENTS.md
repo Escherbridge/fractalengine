@@ -292,17 +292,17 @@ recorded_at(_ms), hlc_timestamp, asset_ids: array<string>, source_did}` —
   replica. `asset_ids` is bounded by the ONE shared cap,
   `fe_runtime::messages::DEVICE_PAYLOAD_MAX_ASSETS` (REST, MCP, this door and
   the inbound gate all read it).
-- `payload_in_petal` — `pub(crate)`, the petal-scoped payload link check the
-  inbound `iot_reading` gate uses; the reading door's own
-  `fetch_known_payloads` filters by the reading's petal the same way
+- Payload links are petal-scoped: the reading door's `fetch_known_payloads`
+  filters by the reading's petal, and so does the inbound `iot_reading` gate
   (MANDATORY finding 1: an unscoped lookup let a reading in petal P link to
   petal Q's payload).
 - `record_window_membership` — `pub(crate)`, shared with
   `handlers::iot_reading`; see §window-membership.
-- `node_is_in_petal` / `asset_anchored_to_petal` — `pub(crate)`, shared with
-  `handlers::replicated_row`'s R5 referential-confinement check (§replication
-  inbound, below) so the local-write validation and the inbound-admission
-  validation can never drift onto two different queries.
+- `node_is_in_petal` — `pub(crate)`, the local door's anchor check. The
+  inbound gate no longer shares the boolean helpers (role propagation RP-4,
+  AC-43): a boolean conflates "foreign" with "not here yet", so
+  `handlers::replicated_row` resolves the same rows three-valued
+  (`locate_petal`/`locate_node_in_petal`, one resolver for every table).
 
 **Blob GC extension (`handlers::asset_gc`).** The referenced-asset set now
 also flattens every `device_payload.asset_ids` array (a dedicated query — the
@@ -332,28 +332,28 @@ AssetServer even if a caller skips fe-api's `place_asset_core` check.
   payload naming it stayed unusable there.
 - `device_payload`: the generalized `Timeseries` union path, keyed on
   `payload_id`.
-- **Admission (critic C3/C4, AC-34).** `r5_referential_confinement` runs
-  role-independently, BEFORE the bootstrap window, for all three tables:
-  `asset.petal_id`, `device_payload.{petal_id, node_id, asset_ids[*]}` and
-  `device_format.verse_id` must all resolve to the replica's OWN verse, or
-  the row is denied — a reference unknown locally is denied, not deferred
-  (role propagation RP-4 owns turning this into `Deferred Parent`). Pre-manifest
-  (bootstrap window): `device_format`/`asset` fail closed explicitly (their own
-  rows carry no reference the confinement check would otherwise deny on);
-  `device_payload` is already denied whenever its references are not locally
-  known, which an absent verse row normally implies. Post-manifest:
-  `device_format` needs **Manager+** (`RoleLevel::can_manage()`, schema-defining
-  like branch controls — "strictest reader", critic C3); `asset`/`device_payload`
-  use the standard Editor+ `evaluate_write` gate every other table uses.
+- **Admission (critic C3/C4; role propagation RP-4, AC-43).** All three tables go
+  through the ONE parent-chain resolver every replicated table shares (§handlers
+  "replicated_row"): `asset.petal_id`, `device_payload.{petal_id, node_id,
+  asset_ids[*], format_id}` and `device_format.verse_id` must resolve to the
+  replica's OWN verse. Three-valued: known-here passes, known-foreign or
+  mismatched is **Denied**, unknown locally is **Deferred `Parent{table, id}`**
+  (`petal`, `node`, `asset`, `device_format` keyed by `format_id`,
+  `device_payload` for an `iot_reading` link) and applies with no second
+  delivery when that parent lands. Before the manifest every one of them is
+  Deferred `Manifest` (supersedes AC-34's pre-manifest Deny). `device_format`
+  needs **Manager+ at the verse scope** (schema-defining — "strictest reader",
+  critic C3); `asset`/`device_payload` use the standard Editor+ gate at the
+  petal's scope.
 - **Inbound shape (Phase A security review, 2026-10-15).** A check that skips
   what it cannot read is a check a peer can step around, so the gate denies
   instead of skipping: unparseable JSON on any R5 table; a `device_payload`
   with no `node_id`, no/empty/oversized `asset_ids`, a non-string entry, or a
   `verse_id` other than the replica's. Last, the door's SPEC-10 §2.2 rule 5
   applies to the peer's row: its `format_id` must be declared locally for the
-  replica's verse and every listed asset must carry that format's MIME
-  (`asset_has_content_type`); an undeclared format is denied like any other
-  locally-unknown reference. `apply_anchored_asset_row` denies an
+  replica's verse and every listed asset must carry that format's MIME; an
+  undeclared format is Deferred `Parent{device_format}` (RP-4), a MIME
+  mismatch on a known asset is Denied. `apply_anchored_asset_row` denies an
   `asset_id` that fails `fe_runtime::safe_id::is_safe_path_id` (the legacy
   backfill joins it into a path), a missing/non-hex `content_hash`, a missing
   or negative `size_bytes` and a `content_type` that fails
@@ -361,9 +361,9 @@ AssetServer even if a caller skips fe-api's `place_asset_core` check.
   quota sums `size_bytes` by `owner_did`, so a peer could otherwise exhaust
   (or, with a negative size, refund) a local uploader's quota.
   `apply_device_format_row` applies the local door's `format_id` and MIME
-  grammar. An inbound `iot_reading` whose `payload_id` is not a payload of
-  the reading's own petal is denied (the reading's own petal confinement is
-  still the pre-existing gap RP-4 owns).
+  grammar. An inbound `iot_reading` must name a petal of the replica's verse
+  and a node of that petal; a `payload_id` link must name a payload of the
+  same petal (another petal's: Denied; not known yet: Deferred).
 
 ## §window-membership (SPEC-10 §3.4 rule 5, CDL-SPEC10 A3, A1 hand-back item 3)
 
@@ -489,6 +489,17 @@ P2P because peers on different client versions all reach the same correct
 state, new rules are additive (old clients ignore fields they don't know
 about), and no coordination between peers is needed. `RULES` is an ordered,
 append-only list.
+
+**`orphaned_creator` never claims a replicated or joined verse (role propagation
+RP-4, owner integrity).** It used to rewrite `verse.created_by` to the local DID
+for any verse with no third member — so after a restart an invitee (whose join
+writes no other member row) claimed every replicated verse as Owner and judged
+role statements against the wrong owner. It now claims only a verse whose creator
+is NOT a `did:key:` identity (a legacy placeholder or a pre-RP-4 hex inviter
+address) AND that no invite ever joined (no `verse_member` row with
+`invited_by != peer_did`). Claiming a verse after a keypair rotation (old
+`did:key` creator) is no longer automatic — deliberately: a real owner is always
+a did:key, and the rule cannot tell an old local identity from a remote owner.
 
 ## §hlc
 
@@ -704,21 +715,56 @@ one sub-module per domain:
   never accepting SQL from the wire
 - `node_log` — append-only per-node operation log (§node-log)
 - `replicated_row` — inbound P2P row apply (A3+A4): `DbCommand::ApplyReplicatedRow`
-  → **role-gated admission** (`admit_inbound_row`: the author's role resolved
-  from the local tables at the verse scope via `role_manager::resolve_role`,
-  decided by the same fe-policy standard write gate as the local path —
-  deny-by-default, Editor+, never wire-supplied) → **per-table mode dispatch**
+  → **admission** (`admit_inbound_row`; role propagation RP-4 — see the gate
+  paragraph below) → **per-table mode dispatch**
   (`dispatch_by_mode`: `ReplicationMode::Row` → whole-row merge; `Timeseries`
   → append-only union for `iot_reading`, §replication-mode) →
   geometry-safe, tombstone-honoring durable write (`merge.rs`) + petal-scoped
   `SceneChange`;
-  loop-free by construction (no replication sender in scope). Two admission
-  rules worth knowing: a **bootstrap window** admits rows for a verse this
-  store does not know yet (replica capability = the admission; denying would
-  deadlock the verse manifest's own convergence — A2 depends on it, and
-  out-of-order sync would otherwise permanently lose interior rows), and a
-  verse row whose payload `verse_id` ≠ the replica's verse is denied
-  (scope-injection guard). The wire **tombstone form is the empty entry**
+  loop-free by construction (no replication sender in scope). **The gate
+  (RP-4), in this order:** (1) a verse row whose payload `verse_id` ≠ the
+  replica's verse is denied (scope-injection guard); (2) `canon_device_enrolment`
+  is verified first (signature + self-authorship, Denied on failure even before
+  the manifest), then waits for the manifest and for membership
+  (canon_log/AGENTS.md §device-enrolment); (3) **first-manifest rule** — before
+  a manifest exists ONLY the verse row is admitted (trust on first use); every
+  other row is `Deferred Manifest` and retried when it lands (the old bootstrap
+  window that admitted everything is gone — deferral now retries, so nothing is
+  lost); (4) **referential confinement** (P2P-REF-CONFINE): one parent-chain
+  resolver (`locate_fractal`/`locate_petal`/`locate_node_in_petal`) confines
+  every row — `fractal.verse_id`, `petal.fractal_id` (required), `node.petal_id`
+  (a tombstone or partial row uses the durable row's petal; an unknown node with
+  no petal waits on `Parent{node}`), `iot_reading.{petal_id, node_id,
+  payload_id}`, and the §device-payload tables — AND the durable row's CURRENT
+  parent (a cross-verse re-parent or tombstone is Denied). Three-valued:
+  known-here → its scope; known-foreign → `Denied`; unknown → `Deferred
+  Parent{table, id}`. An id carrying `#` cannot form a scope and is Denied;
+  (5) **role at the row's deepest scope** (`resolve_role` over the
+  materialized cache = `role_at`): an Editor appointed for one petal passes
+  there and is `Deferred AuthorRole` elsewhere; a row that MOVES a durable row
+  needs Editor+ at both the old and the new scope. **Verse manifests:** the
+  identity fields `verse_id`/`created_by`/`created_at`/`namespace_id` are
+  immutable (a change is Denied for everyone, the owner included — T9, the
+  MERGE used to let an Editor rewrite `created_by`; a missing `namespace_id` may
+  be filled once); a change to a governance field (`default_access`, `ts_mode`,
+  `ts_replication_factor`, `ts_bucket_width_ms`) needs **Manager+ at the verse
+  scope** (a petal or fractal Manager is deferred — verse settings lie above
+  their subtree); `name`/`view_hidden` follow the Editor+ gate. **Invite owner
+  pin (T10):** `VerseInvite` signs `owner_did` + `verse_created_at` (the
+  inviter's `verse.created_by`/`created_at`, a did:key — a non-did owner is
+  refused at generate and at join); the joiner writes them as its local
+  manifest, so the owner's rows resolve to Owner and a manifest naming another
+  owner meets the immutable-identity check (Denied — the pin IS the local
+  manifest, so it is never a "first" manifest; relays that open a replica
+  without an invite stay trust-on-first-use, D-23). **API role cap (AC-46,
+  T26):** `lifecycle_auth_context` caps an `Identified` caller at
+  `min(token role, role_at(local_did, scope))` (`node_role_at`, the one
+  helper), which also covers `authorize_edit` (`SetPetalTerrain` — now gated,
+  RP-4 step 7 — `SetPetalRenderDistance`, visibility groups, node lifecycle);
+  the role-less doors (`InsertIotReadings`, `InsertDevicePayloads` when they
+  replicate, `RegisterDeviceFormat`) require the NODE itself to clear Editor+
+  at the petal / Manager+ at the verse (`require_node_role`), so a token minted
+  before a remote demotion cannot write rows every peer defers. The wire **tombstone form is the empty entry**
   (`Doc::del`): the handler synthesizes the node payload and resolves the
   scene change's petal from the durable row; an empty entry on a static
   hierarchy table is `NotApplicable` (no tombstone semantics there). A
@@ -907,10 +953,11 @@ Inbound rows (`DbCommand::ApplyReplicatedRow`) have three verdicts:
   `Manifest` trigger feed the content retries.
 - **A3 gate.** An author below the threshold (Editor+ write gate; Manager+
   for `device_format`) is `Deferred(AuthorRole{author})`, not `Denied`.
-  Structural checks (scope injection, R5 confinement, AC-34's pre-manifest
-  `device_format`/`asset` rule, the petal terrain/render-distance shape checks)
-  stay `Denied` (RP-4 turns unknown-parent/pre-manifest cases into `Parent`/
-  `Manifest` deferrals).
+  Structural checks (scope injection, a known-foreign reference, immutable
+  manifest identity, the petal terrain/render-distance shape checks) stay
+  `Denied`; since RP-4 an unknown parent is `Deferred(Parent{table, id})` and
+  any non-verse row before the manifest `Deferred(Manifest)` (§handlers
+  "replicated_row").
 - **Enrolment (AC-44, T27).** `canon_device_enrolment` stays first: signature
   and self-authorship failures are `Denied`. An ENROLMENT then waits for the
   manifest (`Deferred(Manifest)`) and for membership — the principal resolves

@@ -1220,6 +1220,7 @@ mod tests {
         DbCommand::SetPetalTerrain {
             petal_id: "p".to_string(),
             terrain: Some(serde_json::json!({ "enabled": true })),
+            auth: crate::messages::CallerAuth::Local,
             correlation_id: correlation_id.map(str::to_string),
         }
     }

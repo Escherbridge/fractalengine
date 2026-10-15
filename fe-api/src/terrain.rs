@@ -244,6 +244,13 @@ pub(crate) async fn set_petal_terrain_core(
     let cmd = DbCommand::SetPetalTerrain {
         petal_id: petal_id.to_string(),
         terrain,
+        // The API layer already authorized Editor+; the DB thread re-checks it,
+        // capped by the node's own converged role (role propagation RP-4, AC-46)
+        // — the same trust boundary as `render_distance.rs`.
+        auth: fe_runtime::messages::CallerAuth::Identified {
+            did: "api".to_string(),
+            role: "editor".to_string(),
+        },
         correlation_id: Some(correlation_id.clone()),
     };
     if state

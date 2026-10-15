@@ -27,6 +27,7 @@ use fe_runtime::messages::{DbCommand, DbResult, ReplicatedRowOutcome};
 use fe_sync::messages::SyncCommand;
 
 use crate::peer::TestPeer;
+use crate::scenarios::scaffold;
 use crate::TestResult;
 
 /// How long to wait for a row to cross the real transport.
@@ -210,6 +211,19 @@ pub fn run() -> Result<TestResult> {
         DbResult::QueryResult { .. } => {}
         other => anyhow::bail!("unexpected manifest read-back result: {other:?}"),
     }
+
+    // RP-4: bob confines each reading to a petal and anchor node it knows.
+    scaffold::publish_scaffold(
+        &alice,
+        &[&bob],
+        &scaffold::Scaffold {
+            verse_id: &verse_id,
+            owner_did: &alice_did,
+            fractal_id: "fractal-a12",
+            petal_id: "petal-a12",
+        },
+        &["node-a12"],
+    )?;
 
     // --- Leg 1: a reading crosses the real transport and applies. ---------
     let reading_a = reading_row(

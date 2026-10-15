@@ -41,6 +41,7 @@ use fe_runtime::messages::{DbCommand, DbResult, IotReadingInput};
 use fe_sync::messages::{SyncCommand, SyncEvent};
 
 use crate::peer::TestPeer;
+use crate::scenarios::scaffold;
 use crate::TestResult;
 
 /// How long to wait for ledger/declaration convergence over the real transport.
@@ -537,9 +538,40 @@ pub fn run() -> Result<TestResult> {
     })
     .map_err(|e| anyhow!("the three peer declarations never converged: {e}"))?;
 
+    // RP-4: every peer confines a reading to a petal (and anchor node) it
+    // knows, so the owner publishes the shared petal and her own anchor.
+    let fractal_id = ulid::Ulid::new().to_string();
+    scaffold::publish_scaffold(
+        &alice,
+        &[&bob, &carol],
+        &scaffold::Scaffold {
+            verse_id: &verse_id,
+            owner_did: &alice_did,
+            fractal_id: &fractal_id,
+            petal_id: &petal_id,
+        },
+        &[],
+    )?;
+
     // 4. Each peer ingests its own anchor's readings (3 buckets each) through
     //    the real ingestion leg — the rows live distributed by placement.
     let anchor_alice = create_anchor(&alice, &petal_id, "anchor-alice")?;
+    scaffold::publish_and_await(
+        &alice,
+        &[&bob, &carol],
+        &verse_id,
+        "node",
+        &anchor_alice,
+        &serde_json::json!({
+            "node_id": anchor_alice,
+            "petal_id": petal_id,
+            "display_name": "anchor-alice",
+            "position": { "type": "Point", "coordinates": [0.0, 0.0] },
+            "rotation": [0.0, 0.0, 0.0, 1.0],
+            "scale": [1.0, 1.0, 1.0],
+            "created_at": chrono::Utc::now().to_rfc3339(),
+        }),
+    )?;
     let anchor_bob = create_anchor(&bob, &petal_id, "anchor-bob")?;
     let anchor_carol = create_anchor(&carol, &petal_id, "anchor-carol")?;
 
