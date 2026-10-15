@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use fe_database::handlers::device_payload::{
-    insert_device_payloads, list_device_payloads, register_format, DeviceFormatError,
-    DevicePayloadIngestError,
+    insert_device_payloads, list_device_formats, list_device_payloads, register_format,
+    register_format_with_replication, DeviceFormatError, DevicePayloadIngestError,
 };
 use fe_database::handlers::iot_reading::insert_readings_with_replication;
 use fe_database::handlers::replicated_row::apply_replicated_row_handler;
@@ -650,8 +650,10 @@ async fn inbound_device_payload_is_union_append_only() {
     seed_hierarchy(&db, VERSE, FRACTAL, PETAL, "node-a").await;
     seed_role(&db, "did:key:z6MkEditor", VERSE, "editor").await;
     seed_role(&db, "did:key:z6MkViewer", VERSE, "viewer").await;
-    // The referenced asset must already be known locally (production order:
-    // asset rows apply before the payload row — see the emission-order test).
+    // The format arrives first (its own door replicates it), then the
+    // referenced asset (production order: asset rows apply before the payload
+    // row — see the emission-order test).
+    declare_format(&db, VERSE, "acme.thermo/frame@1", FORMAT_MIME).await;
     db.query(
         "CREATE asset CONTENT { asset_id: 'asset-local-1', name: 'a', \
          content_type: $ct, size_bytes: 1, content_hash: $h, petal_id: $pid, \
@@ -1540,6 +1542,9 @@ async fn inbound_device_rows_with_unreadable_fields_are_denied() {
     let db = setup_db().await;
     seed_hierarchy(&db, VERSE, FRACTAL, PETAL, "node-a").await;
     seed_role(&db, "did:key:z6MkManager", VERSE, "manager").await;
+    // Declared so each payload case below is denied by ITS named defect, not
+    // by the format/MIME confinement check that runs last.
+    declare_format(&db, VERSE, "acme.thermo/frame@1", FORMAT_MIME).await;
     db.query(
         "CREATE asset CONTENT { asset_id: 'asset-local-1', name: 'a', \
          content_type: $ct, size_bytes: 1, content_hash: $h, petal_id: $pid, \
@@ -1690,7 +1695,11 @@ async fn inbound_device_rows_with_unreadable_fields_are_denied() {
         let rows: Vec<serde_json::Value> = res.take(0).unwrap_or_default();
         let planted = rows
             .iter()
-            .filter(|r| r[key].as_str().is_some_and(|id| id != "asset-local-1"))
+            .filter(|r| {
+                r[key]
+                    .as_str()
+                    .is_some_and(|id| id != "asset-local-1" && id != "acme.thermo/frame@1")
+            })
             .count();
         assert_eq!(planted, 0, "no denied {table} row was stored: {rows:?}");
     }
@@ -1733,4 +1742,228 @@ async fn inbound_asset_row_is_never_attributed_to_a_local_uploader() {
     let rows: Vec<serde_json::Value> = res.take(0).unwrap_or_default();
     let used = rows.first().and_then(|r| r["used"].as_i64()).unwrap_or(0);
     assert_eq!(used, 0, "the peer's row counts against no local quota");
+}
+
+// ---------------------------------------------------------------------------
+// CDL-SPEC10 review-and-fix (2026-10-15)
+// ---------------------------------------------------------------------------
+
+/// A format declared at the door reaches a peer: the door publishes the NEW row
+/// (keyed by `format_id`), the peer's inbound gate applies those exact bytes, and
+/// an idempotent re-declare publishes nothing.
+#[tokio::test]
+async fn declared_format_replicates_and_a_peer_applies_it() {
+    let alice = setup_db().await;
+    let bob = setup_db().await;
+    let (store, handle) = blob_store();
+    seed_hierarchy(&bob, VERSE, FRACTAL, PETAL, "node-a").await;
+    seed_role(&bob, "did:key:z6MkManager", VERSE, "manager").await;
+    let (repl_tx, repl_rx) = crossbeam::channel::bounded(8);
+    let descriptor = DeviceFormatDescriptor {
+        format_id: "acme.thermo/frame@1".to_string(),
+        mime: FORMAT_MIME.to_string(),
+        schema: None,
+        description: String::new(),
+    };
+
+    register_format_with_replication(
+        &alice,
+        VERSE,
+        &descriptor,
+        "did:key:z6MkManager",
+        Some(&handle),
+        Some(&repl_tx),
+    )
+    .await
+    .expect("declare + publish");
+    let event = repl_rx.try_recv().expect("the new format is published");
+    assert!(repl_rx.try_recv().is_err(), "exactly one event");
+    assert_eq!(event.verse_id, VERSE);
+    assert_eq!(event.table, "device_format");
+    assert_eq!(event.record_id, "acme.thermo/frame@1");
+
+    let bytes = store
+        .bytes_for(&event.content_hash)
+        .expect("row bytes stored");
+    let outcome = apply_replicated_row_handler(
+        &bob,
+        VERSE,
+        "device_format",
+        &event.record_id,
+        &bytes,
+        "did:key:z6MkManager",
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+    let formats = list_device_formats(&bob, VERSE).await.unwrap();
+    assert_eq!(formats.len(), 1);
+    assert_eq!(formats[0].format_id, "acme.thermo/frame@1");
+    assert_eq!(formats[0].mime, FORMAT_MIME);
+
+    register_format_with_replication(
+        &alice,
+        VERSE,
+        &descriptor,
+        "did:key:z6MkManager",
+        Some(&handle),
+        Some(&repl_tx),
+    )
+    .await
+    .expect("idempotent re-declare");
+    assert!(
+        repl_rx.try_recv().is_err(),
+        "a re-declare publishes nothing"
+    );
+}
+
+/// SPEC-10 §2.2 rule 5 on the inbound path (strictest reader): a peer's payload
+/// is denied while its format is undeclared locally and while a listed asset
+/// carries another MIME; the same payload over a matching asset applies.
+#[tokio::test]
+async fn inbound_payload_needs_a_declared_format_and_its_mime() {
+    let db = setup_db().await;
+    seed_hierarchy(&db, VERSE, FRACTAL, PETAL, "node-a").await;
+    seed_role(&db, "did:key:z6MkEditor", VERSE, "editor").await;
+    for (asset_id, content_type) in [("asset-html", "text/html"), ("asset-raw", FORMAT_MIME)] {
+        db.query(
+            "CREATE asset CONTENT { asset_id: $aid, name: 'a', content_type: $ct, \
+             size_bytes: 1, content_hash: $h, petal_id: $pid, created_at: '2026-10-14T00:00:00Z' }",
+        )
+        .bind(("aid", asset_id.to_string()))
+        .bind(("ct", content_type.to_string()))
+        .bind(("h", "11".repeat(32)))
+        .bind(("pid", PETAL.to_string()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    }
+    let payload = |payload_id: &str, asset_id: &str| {
+        serde_json::to_vec(&serde_json::json!({
+            "payload_id": payload_id, "node_id": "node-a", "petal_id": PETAL,
+            "verse_id": VERSE, "format_id": "acme.thermo/frame@1",
+            "recorded_at": "2026-10-14T00:00:00Z", "recorded_at_ms": 0, "hlc_timestamp": 0,
+            "asset_ids": [asset_id], "source_did": "did:key:z6MkEditor",
+        }))
+        .unwrap()
+    };
+
+    let cases = [
+        (
+            "payload-early",
+            "asset-raw",
+            false,
+            ReplicatedRowOutcome::Denied,
+            "undeclared format",
+        ),
+        (
+            "payload-html",
+            "asset-html",
+            true,
+            ReplicatedRowOutcome::Denied,
+            "foreign MIME",
+        ),
+        (
+            "payload-raw",
+            "asset-raw",
+            true,
+            ReplicatedRowOutcome::Applied,
+            "matching MIME",
+        ),
+    ];
+    for (payload_id, asset_id, declared, expected, name) in cases {
+        if declared {
+            declare_format(&db, VERSE, "acme.thermo/frame@1", FORMAT_MIME).await;
+        }
+        let outcome = apply_replicated_row_handler(
+            &db,
+            VERSE,
+            "device_payload",
+            payload_id,
+            &payload(payload_id, asset_id),
+            "did:key:z6MkEditor",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, expected, "{name}");
+    }
+    let ids: Vec<String> = list_device_payloads(&db, PETAL, None, None, None, None)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|p| p.payload_id)
+        .collect();
+    assert_eq!(ids, vec!["payload-raw".to_string()]);
+}
+
+/// `option<string>` fields reject an explicit JSON null: an unlinked reading and a
+/// verse-less payload must store (and publish) with the field ABSENT. Before the
+/// fix every reading without a `payload_id` failed its insert.
+#[tokio::test]
+async fn unlinked_reading_and_verseless_payload_store_with_option_fields_absent() {
+    let db = setup_db().await;
+    let (store, handle) = blob_store();
+    seed_hierarchy(&db, VERSE, FRACTAL, PETAL, "node-a").await;
+    declare_format(&db, VERSE, "acme.thermo/frame@1", FORMAT_MIME).await;
+    let (repl_tx, repl_rx) = crossbeam::channel::bounded(8);
+
+    let written = insert_readings_with_replication(
+        &db,
+        PETAL,
+        Some(VERSE),
+        "did:key:z6MkSensor",
+        SourceClass::Device,
+        &[IotReadingInput {
+            node_id: "node-a".to_string(),
+            metric: "temperature_c".to_string(),
+            value: 21.5,
+            units: "C".to_string(),
+            recorded_at: None,
+            payload_id: None,
+        }],
+        Some(&handle),
+        Some(&repl_tx),
+    )
+    .await
+    .expect("an unlinked reading is accepted");
+    assert_eq!(written, 1);
+    let event = repl_rx.try_recv().expect("the reading is published");
+    let published: serde_json::Value =
+        serde_json::from_slice(&store.bytes_for(&event.content_hash).unwrap()).unwrap();
+    assert!(published.get("payload_id").is_none(), "{published}");
+    let mut res = db
+        .query("SELECT * FROM iot_reading WHERE payload_id = NONE")
+        .await
+        .unwrap();
+    let rows: Vec<serde_json::Value> = res.take(0).unwrap();
+    assert_eq!(rows.len(), 1, "stored with payload_id NONE");
+
+    let asset_id = seed_asset(&db, &handle, b"frame", PETAL, FORMAT_MIME).await;
+    let (payload_id, _) = insert_device_payloads(
+        &db,
+        PETAL,
+        None,
+        "did:key:z6MkEditor",
+        SourceClass::Device,
+        &DevicePayloadInput {
+            node_id: "node-a".to_string(),
+            format_id: "acme.thermo/frame@1".to_string(),
+            asset_ids: vec![asset_id],
+            recorded_at: None,
+            payload_id: None,
+        },
+        None,
+        None,
+    )
+    .await
+    .expect("a verse-less payload is accepted");
+    let listed = list_device_payloads(&db, PETAL, None, None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].payload_id, payload_id);
+    assert_eq!(listed[0].verse_id, None);
 }

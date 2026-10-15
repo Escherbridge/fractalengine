@@ -496,6 +496,32 @@ async fn r5_referential_confinement(
                     )));
                 }
             }
+            // SPEC-10 §2.2 rule 5, the local door's rule applied to the peer's
+            // row (strictest reader): the format is declared for THIS verse and
+            // every listed asset carries its MIME.
+            let Some(format_id) = row.get("format_id").and_then(|v| v.as_str()) else {
+                return Ok(Some("device_payload row has no format_id".to_string()));
+            };
+            let Some(format) =
+                crate::handlers::device_payload::fetch_format(db, verse_id, format_id).await?
+            else {
+                return Ok(Some(format!(
+                    "device_payload format '{format_id}' is not declared locally for verse '{verse_id}'"
+                )));
+            };
+            for asset_id in asset_ids.iter().filter_map(|v| v.as_str()) {
+                if !crate::handlers::device_payload::asset_has_content_type(
+                    db,
+                    asset_id,
+                    &format.mime,
+                )
+                .await?
+                {
+                    return Ok(Some(format!(
+                        "device_payload asset '{asset_id}' does not carry format '{format_id}''s MIME"
+                    )));
+                }
+            }
             Ok(None)
         }
         // Only the R5 `payload_id` link is confined here; the reading's own

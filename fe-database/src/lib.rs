@@ -1492,7 +1492,9 @@ pub fn spawn_db_thread_shared(
                     }
                     // --- R5 device formats / payloads (CDL-SPEC10 A3) ---
                     Ok(DbCommand::RegisterDeviceFormat { verse_id, descriptor, declared_by, correlation_id }) => {
-                        match handlers::device_payload::register_format(&db, &verse_id, &descriptor, &declared_by).await {
+                        match handlers::device_payload::register_format_with_replication(
+                            &db, &verse_id, &descriptor, &declared_by, Some(&blob_store), repl_tx.as_ref(),
+                        ).await {
                             Ok(()) => send_result(&tx, DbResult::DeviceFormatRegistered {
                                 verse_id, format_id: descriptor.format_id, correlation_id,
                             }),

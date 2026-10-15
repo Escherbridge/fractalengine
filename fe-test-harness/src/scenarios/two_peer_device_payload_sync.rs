@@ -24,17 +24,17 @@
 //! 3. a re-delivered `device_payload` row (same `payload_id`) does not
 //!    duplicate.
 //!
-//! The fractal/petal/node/device_format rows are published the way
+//! The verse/fractal/petal/node rows are published the way
 //! `two_peer_timeseries_sync.rs`/`two_peer_tombstone_sync.rs` publish their
 //! manual rows (`publish_row`: blob-store the row bytes, then
-//! `SyncCommand::WriteRowEntry`) rather than through a replicating DbCommand,
-//! because none of `CreateFractal`/`CreatePetal`/`CreateNode`/
-//! `RegisterDeviceFormat` carry a replication sender in this harness (or, for
-//! `RegisterDeviceFormat`, in the real `fe-database` handler either — see
-//! fe-test-harness `src/AGENTS.md` §scenarios row 17's open-issue note). Only
-//! `InsertDevicePayloads` replicates on its own (it explicitly emits the
-//! referenced `asset` rows, then the `device_payload` row, through
-//! `crate::replicate_row_with_petal` — CDL-SPEC10 A3).
+//! `SyncCommand::WriteRowEntry`), because none of `CreateFractal`/
+//! `CreatePetal`/`CreateNode` carry a replication sender in this harness.
+//! The `device_format` and `device_payload` rows go through the REAL doors
+//! only: `RegisterDeviceFormat` publishes its new row
+//! (`register_format_with_replication`, CDL-SPEC10 review-and-fix) and
+//! `InsertDevicePayloads` publishes the referenced `asset` rows, then the
+//! `device_payload` row (`crate::replicate_row_with_petal`, CDL-SPEC10 A3) —
+//! so leg 1 fails if either door stops replicating.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -135,8 +135,8 @@ pub fn run() -> Result<TestResult> {
     })?;
 
     // 1. Alice creates the verse, then her own local fractal/petal/node
-    //    scaffold and device-format declaration (all local-only so far —
-    //    nothing has crossed the wire yet).
+    //    scaffold (all local-only so far — nothing has crossed the wire yet;
+    //    the device format is declared at step 5, once the replica is open).
     alice.send(DbCommand::CreateVerse {
         name: "Device Verse".into(),
     });
@@ -190,35 +190,6 @@ pub fn run() -> Result<TestResult> {
 
     let format_id = "acme.sensor/frame@1".to_string();
     let mime = "application/octet-stream".to_string();
-    alice.send(DbCommand::RegisterDeviceFormat {
-        verse_id: verse_id.clone(),
-        descriptor: DeviceFormatDescriptor {
-            format_id: format_id.clone(),
-            mime: mime.clone(),
-            schema: None,
-            description: "A6 harness scenario test frame".into(),
-        },
-        declared_by: alice_did.clone(),
-        correlation_id: None,
-    });
-    match alice.wait_for(
-        |r| {
-            matches!(
-                r,
-                DbResult::DeviceFormatRegistered { .. } | DbResult::DeviceFormatRejected { .. }
-            )
-        },
-        Duration::from_secs(30),
-    )? {
-        DbResult::DeviceFormatRegistered { .. } => {}
-        DbResult::DeviceFormatRejected { reason, .. } => {
-            return Ok(TestResult::fail(
-                NAME,
-                &format!("alice's own format registration was rejected: {reason}"),
-            ));
-        }
-        _ => unreachable!(),
-    }
 
     // 2. Open the verse replica on both sides (bob dials alice).
     let ns_secret_hex = alice
@@ -346,22 +317,40 @@ pub fn run() -> Result<TestResult> {
         ));
     }
 
-    // 5. Publish the device_format declaration. The admission gate requires
-    //    Manager+ at the verse scope — alice (Owner) satisfies it.
-    let format_row = serde_json::json!({
-        "format_id": format_id,
-        "verse_id": verse_id,
-        "mime": mime,
-        "declared_by": alice_did,
-        "created_at": now,
+    // 5. Alice declares the format through the REAL door, which publishes the
+    //    row itself (register_format_with_replication) — no hand-publish. The
+    //    admission gate requires Manager+ at the verse scope; alice (Owner)
+    //    satisfies it. Declared only now, after the manifest converged, so the
+    //    row is not refused by bob's pre-manifest fail-closed rule.
+    alice.send(DbCommand::RegisterDeviceFormat {
+        verse_id: verse_id.clone(),
+        descriptor: DeviceFormatDescriptor {
+            format_id: format_id.clone(),
+            mime: mime.clone(),
+            schema: None,
+            description: "A6 harness scenario test frame".into(),
+        },
+        declared_by: alice_did.clone(),
+        correlation_id: None,
     });
-    publish_row(
-        &alice,
-        &verse_id,
-        "device_format",
-        &format_id,
-        &serde_json::to_vec(&format_row)?,
-    )?;
+    match alice.wait_for(
+        |r| {
+            matches!(
+                r,
+                DbResult::DeviceFormatRegistered { .. } | DbResult::DeviceFormatRejected { .. }
+            )
+        },
+        Duration::from_secs(30),
+    )? {
+        DbResult::DeviceFormatRegistered { .. } => {}
+        DbResult::DeviceFormatRejected { reason, .. } => {
+            return Ok(TestResult::fail(
+                NAME,
+                &format!("alice's own format registration was rejected: {reason}"),
+            ));
+        }
+        _ => unreachable!(),
+    }
     let outcome = wait_row_outcome(&bob, "device_format", &format_id)?;
     if outcome != ReplicatedRowOutcome::Applied {
         return Ok(TestResult::fail(

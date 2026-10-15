@@ -60,6 +60,20 @@ pub async fn register_format(
     descriptor: &DeviceFormatDescriptor,
     declared_by: &str,
 ) -> Result<(), DeviceFormatError> {
+    register_format_with_replication(db, verse_id, descriptor, declared_by, None, None).await
+}
+
+/// [`register_format`], then — durable first — publish the NEW row to
+/// `verse_id`'s replica keyed by `format_id` (the inbound
+/// `apply_device_format_row` key). An idempotent re-declare emits nothing.
+pub async fn register_format_with_replication(
+    db: &Db,
+    verse_id: &str,
+    descriptor: &DeviceFormatDescriptor,
+    declared_by: &str,
+    blob_store: Option<&BlobStoreHandle>,
+    repl_tx: Option<&ReplicationSender>,
+) -> Result<(), DeviceFormatError> {
     if !is_valid_format_id(&descriptor.format_id) {
         return Err(DeviceFormatRejection::InvalidFormatId {
             format_id: descriptor.format_id.clone(),
@@ -90,21 +104,46 @@ pub async fn register_format(
         return Ok(()); // same mime re-declared: idempotent no-op.
     }
 
-    db.query(
-        "CREATE device_format CONTENT { \
-         format_id: $fid, verse_id: $vid, mime: $mime, schema: $schema, \
-         declared_by: $by, created_at: $now }",
-    )
-    .bind(("fid", descriptor.format_id.clone()))
-    .bind(("vid", verse_id.to_string()))
-    .bind(("mime", descriptor.mime.clone()))
-    .bind(("schema", descriptor.schema.clone()))
-    .bind(("by", declared_by.to_string()))
-    .bind(("now", chrono::Utc::now().to_rfc3339()))
-    .await
-    .map_err(|e| DeviceFormatError::Db(e.to_string()))?
-    .check()
-    .map_err(|e| DeviceFormatError::Db(e.to_string()))?;
+    // `schema` is `option<object>`: an absent schema must be omitted, not null.
+    let row = crate::repo::strip_json_nulls(serde_json::json!({
+        "format_id": descriptor.format_id,
+        "verse_id": verse_id,
+        "mime": descriptor.mime,
+        "schema": descriptor.schema,
+        "declared_by": declared_by,
+        "created_at": chrono::Utc::now().to_rfc3339(),
+    }));
+    db.query("CREATE device_format CONTENT $row")
+        .bind(("row", row.clone()))
+        .await
+        .map_err(|e| DeviceFormatError::Db(e.to_string()))?
+        .check()
+        .map_err(|e| DeviceFormatError::Db(e.to_string()))?;
+
+    // Durable first, then publish (§device-payload: `device_format` replicates
+    // insert-if-absent; without this emit a peer never learns a declared format).
+    if let Some(store) = blob_store {
+        match serde_json::to_vec(&row) {
+            Ok(bytes) => crate::replicate_row(
+                repl_tx,
+                store,
+                verse_id,
+                "device_format",
+                &descriptor.format_id,
+                &bytes,
+            ),
+            Err(e) => tracing::warn!(
+                format_id = %descriptor.format_id,
+                verse_id,
+                "device format declared but not serialised for replication: {e}"
+            ),
+        }
+    } else if repl_tx.is_some() {
+        tracing::warn!(
+            verse_id,
+            "device format declared: replication sender wired but blob store missing — not published"
+        );
+    }
     Ok(())
 }
 
@@ -321,7 +360,8 @@ pub async fn insert_device_payloads(
         .clone()
         .unwrap_or_else(|| ulid::Ulid::new().to_string());
 
-    let row = serde_json::json!({
+    // `verse_id` is `option<string>`: a `None` must be absent, never JSON null.
+    let row = crate::repo::strip_json_nulls(serde_json::json!({
         "payload_id": payload_id.clone(),
         "node_id": payload.node_id,
         "petal_id": petal_id,
@@ -332,7 +372,7 @@ pub async fn insert_device_payloads(
         "hlc_timestamp": hlc_packed as i64,
         "asset_ids": payload.asset_ids,
         "source_did": source_did,
-    });
+    }));
     let q = InsertBuilder::insert_into("device_payload")
         .values(row.clone())
         .build();
@@ -575,6 +615,24 @@ pub(crate) async fn asset_anchored_to_petal(
         .from("asset")
         .filter(Filter::eq("asset_id", asset_id))
         .and(Filter::eq("petal_id", petal_id))
+        .build();
+    let mut res = exec_query(db, &q).await?;
+    let rows: Vec<serde_json::Value> = res.take(0)?;
+    Ok(!rows.is_empty())
+}
+
+/// Whether `asset_id` exists with exactly `content_type` (SPEC-10 §2.2 rule 5's
+/// MIME match) — `pub(crate)` for the inbound gate, like [`asset_anchored_to_petal`].
+pub(crate) async fn asset_has_content_type(
+    db: &Db,
+    asset_id: &str,
+    content_type: &str,
+) -> anyhow::Result<bool> {
+    let q = QueryBuilder::new()
+        .select(&["asset_id"])
+        .from("asset")
+        .filter(Filter::eq("asset_id", asset_id))
+        .and(Filter::eq("content_type", content_type))
         .build();
     let mut res = exec_query(db, &q).await?;
     let rows: Vec<serde_json::Value> = res.take(0)?;

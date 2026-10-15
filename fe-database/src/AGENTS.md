@@ -194,7 +194,11 @@ durable-but-unpublished (warns once when a sender is wired but the context is
 missing) — never to a failed ingest.
 
 **R5 `payload_id` link + `source_class` (CDL-SPEC10 A3).** `iot_reading.payload_id`
-(additive, `option<string>`) is "decoded from / sent with this payload" — a
+(additive, `option<string>`) is "decoded from / sent with this payload". An
+unlinked reading OMITS the field (`repo::strip_json_nulls` on the door row):
+SurrealDB's `option<T>` rejects an explicit JSON null, so a `"payload_id":
+null` row fails its insert — the same rule covers `device_payload.verse_id`
+and `device_format.schema`. A
 `Some` value must name an existing `device_payload` row or the whole batch is
 rejected (`IotIngestError::UnknownPayload`, same all-or-nothing validation
 pass as the anchor check). `source_class` is NOT a column on `iot_reading`
@@ -305,7 +309,12 @@ AssetServer even if a caller skips fe-api's `place_asset_core` check.
   `petal_id: NONE` row is never shadowed by a peer's).
 - `device_format`: insert-if-absent, immutable per key (re-declaration is
   silently ignored, never a conflict error — the admission gate is what
-  refuses a bad actor, not this apply function).
+  refuses a bad actor, not this apply function). Outbound, the DB-thread
+  `RegisterDeviceFormat` arm calls `register_format_with_replication`, which
+  publishes a NEWLY created row (record id = `format_id`, durable first); an
+  idempotent re-declare publishes nothing. Before the CDL-SPEC10
+  review-and-fix a declared format never left its peer, so every inbound
+  payload naming it stayed unusable there.
 - `device_payload`: the generalized `Timeseries` union path, keyed on
   `payload_id`.
 - **Admission (critic C3/C4, AC-34).** `r5_referential_confinement` runs
@@ -325,7 +334,11 @@ AssetServer even if a caller skips fe-api's `place_asset_core` check.
   what it cannot read is a check a peer can step around, so the gate denies
   instead of skipping: unparseable JSON on any R5 table; a `device_payload`
   with no `node_id`, no/empty/oversized `asset_ids`, a non-string entry, or a
-  `verse_id` other than the replica's. `apply_anchored_asset_row` denies an
+  `verse_id` other than the replica's. Last, the door's SPEC-10 §2.2 rule 5
+  applies to the peer's row: its `format_id` must be declared locally for the
+  replica's verse and every listed asset must carry that format's MIME
+  (`asset_has_content_type`); an undeclared format is denied like any other
+  locally-unknown reference. `apply_anchored_asset_row` denies an
   `asset_id` that fails `fe_runtime::safe_id::is_safe_path_id` (the legacy
   backfill joins it into a path), a missing/non-hex `content_hash`, a missing
   or negative `size_bytes` and a `content_type` that fails

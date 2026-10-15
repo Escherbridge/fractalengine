@@ -1130,7 +1130,9 @@ impl TestPeer {
                         // real fe-database handlers, mirroring the
                         // `InsertIotReadings` arm above.
                         Ok(DbCommand::RegisterDeviceFormat { verse_id, descriptor, declared_by, correlation_id }) => {
-                            match fe_database::handlers::device_payload::register_format(&db, &verse_id, &descriptor, &declared_by).await {
+                            match fe_database::handlers::device_payload::register_format_with_replication(
+                                &db, &verse_id, &descriptor, &declared_by, Some(&db_blob_store), Some(&db_repl_tx),
+                            ).await {
                                 Ok(()) => {
                                     db_result_tx.send(DbResult::DeviceFormatRegistered {
                                         verse_id, format_id: descriptor.format_id, correlation_id,

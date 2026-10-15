@@ -183,7 +183,9 @@ pub async fn insert_readings_with_replication(
         };
         let (hlc_packed, _hlc_str) = next_hlc_timestamp();
         let reading_id = ulid::Ulid::new().to_string();
-        let row = serde_json::json!({
+        // `strip_json_nulls`: `payload_id` is `option<string>`, which rejects an
+        // explicit JSON null — an unlinked reading must OMIT the field (NONE).
+        let row = crate::repo::strip_json_nulls(serde_json::json!({
             "reading_id": reading_id.clone(),
             "node_id": r.node_id,
             "petal_id": petal_id,
@@ -195,7 +197,7 @@ pub async fn insert_readings_with_replication(
             "hlc_timestamp": hlc_packed as i64,
             "source_did": source_did,
             "payload_id": r.payload_id,
-        });
+        }));
         // The door's commitment to exactly what it accepted (`canon_log/AGENTS.md`
         // §observation, door digest); recorded only when membership is.
         let door_digest = reading_door_digest(&HotReading {
