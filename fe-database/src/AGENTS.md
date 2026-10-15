@@ -383,7 +383,10 @@ the explicit field, that DID would otherwise read as `device`/`connector`.
   the local HLC is monotonic, so a closed window stays closed.
 
 The table also gained `sealed_op_id` and `uncovered` (both `option<string>`),
-written only by the B3 sealer (`canon_log/AGENTS.md` §observation).
+written only by the B3 sealer (`canon_log/AGENTS.md` §observation), and
+`door_digest` (`option<string>`, Phase B security review 2026-10-15), written
+by the door: a commitment to the exact accepted row that the sealer re-checks
+before signing (`canon_log/AGENTS.md` §observation, door digest).
 
 **AC-7 (asset_backfill path guard).** `asset_backfill.rs`'s legacy-file join
 (`dir.join(format!("{asset_id}.{ext}"))`) was safe only because inbound

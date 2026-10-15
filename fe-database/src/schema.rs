@@ -363,7 +363,13 @@ define_table! {
         /// Why this accepted row can never be sealed (SPEC-10 §8 rule 3,
         /// `legacy_succeeded_without_candidate`); `NONE` when coverable.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        uncovered: Option<String> => "TYPE option<string>"
+        uncovered: Option<String> => "TYPE option<string>",
+        /// Hex BLAKE3 commitment to the exact observation the door accepted
+        /// (`canon_log/AGENTS.md` §observation, door digest): the sealer signs
+        /// only a hot row that still matches it, so a row deleted and then
+        /// re-supplied by replication is never signed. `NONE` = unbound.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        door_digest: Option<String> => "TYPE option<string>"
     }
 }
 
@@ -1200,6 +1206,7 @@ mod tests {
         assert!(s.contains("DEFINE TABLE IF NOT EXISTS observation_window_member SCHEMAFULL"));
         assert!(s.contains("ASSERT $value IN ['iot_reading', 'device_payload']"));
         assert!(s.contains("source_class ON TABLE observation_window_member TYPE string"));
+        assert!(s.contains("door_digest ON TABLE observation_window_member TYPE option<string>"));
     }
 
     #[test]

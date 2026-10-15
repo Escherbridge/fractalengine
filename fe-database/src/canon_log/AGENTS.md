@@ -335,7 +335,10 @@ decrypted, so a row projected while the key was held is legitimate derived state
   are never re-reduced, overwritten, or retracted.
 - *Rebuild* would destroy it: the empty-state reset (§rebuild-and-checkpoints) drops every row,
   and the replay could never reproduce it. So `rebuild_projection_with_facts` first checks every
-  operation in the closure whose marker records `applied`. For each one whose facts the source
+  operation whose marker for this projection records `applied` — every one, not only the
+  requested frontier's closure, because the reset drops the whole projection and a narrower
+  frontier would lose an out-of-closure pre-shred row just the same (Phase B security review,
+  2026-10-15). For each one whose facts the source
   answers `Unavailable` and whose reduction with `None` asks for its own payload, it collects
   `(op_id, gap)`. If any exist, it returns `RebuildError::WouldDiscardUnrederivableRows` before
   ANY pass. Nothing is reset, replayed, or recorded, so a refused accelerator still leaves no
@@ -388,6 +391,17 @@ rule 4).
 (§3.4 rule 6) and never scans `iot_reading`/`device_payload` or filters on `source_did`, so a
 replicated row stamped with this node's DID can never be selected
 (`sealer_never_signs_replicated_observations`).
+
+**Door digest (Phase B security review, 2026-10-15).** Reading back by id is only safe while the
+hot row is the one the door wrote (§3.4 rule 6), and `device_payload`/`asset` are
+admin-clearable: after a clear, union replication can re-supply the same id with author-chosen
+columns. So each member also records `door_digest`, a BLAKE3 commitment (domain
+`fe-observation-door-digest-v1`) to every field the sealer signs — for a reading the value by
+bit pattern, for a payload each listed asset's content hash as the door resolved it
+(`observation::{reading_door_digest, payload_door_digest}`). `resolve_members` recomputes it from
+the row it reads back; a mismatch or a missing digest marks the member `uncovered` (§8 rule 3),
+never signed (`sealer_never_signs_a_hot_row_replaced_after_the_door_accepted_it`). The parity
+comparison resolves through the same function, so a replaced row is also a reported divergence.
 
 **Windows.** A window is `(petal, window_bucket)`, the bucket being the door's ingestion-HLC
 minute. It is closed once `now - close_grace_ms` is past its end (grace default 10 s, so an

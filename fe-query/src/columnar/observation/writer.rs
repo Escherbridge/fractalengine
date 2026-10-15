@@ -65,6 +65,11 @@ pub fn write_observation_hexon(
         return Err(ObservationHexonError::EmptyBatch);
     }
     for r in readings {
+        if !r.value.is_finite() {
+            return Err(ObservationHexonError::NonFiniteValue {
+                reading_id: r.reading_id.clone(),
+            });
+        }
         if r.source_index as usize >= source_count {
             return Err(ObservationHexonError::SourceIndexOutOfRange {
                 index: r.source_index,
@@ -302,10 +307,13 @@ fn group_by_anchor<T>(rows: &[T], anchor_of: impl Fn(&T) -> [u8; 32]) -> Vec<&[T
 
 fn write_readings_parquet(rows: &[ResolvedReading]) -> Result<Vec<u8>> {
     let schema = Arc::new(profile::readings_arrow_schema());
-    let props = profile::writer_properties();
     let mut buf = Vec::new();
     {
-        let mut writer = ArrowWriter::try_new(&mut buf, schema.clone(), Some(props))?;
+        let mut writer = ArrowWriter::try_new_with_options(
+            &mut buf,
+            schema.clone(),
+            profile::arrow_writer_options(),
+        )?;
         // One `.write()` + `.flush()` per anchor group forces a row-group
         // boundary at every anchor change (§3.2 rule 5); `ArrowWriter::write`
         // itself splits further at `MAX_ROW_GROUP_ROWS` within a group
@@ -366,10 +374,13 @@ fn readings_batch(
 
 fn write_payload_refs_parquet(rows: &[ResolvedPayloadRef]) -> Result<Vec<u8>> {
     let schema = Arc::new(profile::payload_refs_arrow_schema());
-    let props = profile::writer_properties();
     let mut buf = Vec::new();
     {
-        let mut writer = ArrowWriter::try_new(&mut buf, schema.clone(), Some(props))?;
+        let mut writer = ArrowWriter::try_new_with_options(
+            &mut buf,
+            schema.clone(),
+            profile::arrow_writer_options(),
+        )?;
         for group in group_by_anchor(rows, |r| r.anchor) {
             let batch = payload_refs_batch(schema.clone(), group)?;
             writer.write(&batch)?;
@@ -544,10 +555,13 @@ fn write_stats_parquet(
 ) -> Result<Vec<u8>> {
     let rows = compute_stats_rows(readings, payloads);
     let schema = Arc::new(profile::stats_arrow_schema());
-    let props = profile::writer_properties();
     let mut buf = Vec::new();
     {
-        let mut writer = ArrowWriter::try_new(&mut buf, schema.clone(), Some(props))?;
+        let mut writer = ArrowWriter::try_new_with_options(
+            &mut buf,
+            schema.clone(),
+            profile::arrow_writer_options(),
+        )?;
         if !rows.is_empty() {
             let batch = stats_batch(schema, &rows)?;
             writer.write(&batch)?;

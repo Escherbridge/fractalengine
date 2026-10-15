@@ -75,6 +75,8 @@ pub enum ObservationHexonError {
     EmptyBatch,
     /// A row's `source_index` is not less than the caller's `source_count`.
     SourceIndexOutOfRange { index: u32, source_count: usize },
+    /// A reading's value is NaN or infinite (§3.2 rule 2: every `DOUBLE` must be finite).
+    NonFiniteValue { reading_id: String },
     /// A lower-level archive/zip/parquet I/O failure (message only — the
     /// originating error type is `anyhow`/`zip`/`parquet`-internal and not
     /// meaningfully distinguishable at this layer).
@@ -96,6 +98,9 @@ impl std::fmt::Display for ObservationHexonError {
                 f,
                 "source_index {index} is not less than source_count {source_count}"
             ),
+            Self::NonFiniteValue { reading_id } => {
+                write!(f, "reading {reading_id} holds a non-finite value")
+            }
             Self::Io(msg) => write!(f, "{msg}"),
             Self::ProfileViolation(msg) => {
                 write!(f, "observation hexon violates its profile: {msg}")
@@ -270,30 +275,51 @@ mod tests {
         ));
     }
 
-    /// Conformance test 9 (`zip_bomb_observation_hexon_refused_without_allocation`),
-    /// exercised through the public `read_observation_hexon` entry point.
+    /// Conformance test 9 (`zip_bomb_observation_hexon_refused_without_allocation`): a member
+    /// that inflates past the per-entry limit is refused from the central directory alone — by
+    /// the storage-method rule before any decompression, and by `read_member`'s declared-size
+    /// cap before any buffer is reserved.
     #[test]
     fn zip_bomb_observation_hexon_refused_without_allocation() {
-        let manifest = obs_manifest();
-        let bomb =
-            vec![0u8; (fe_format::limits::MAX_ENTRY_UNCOMPRESSED_BYTES + (8 << 20)) as usize];
-        // A real archive whose `observations/readings.parquet` member is a
-        // raw oversized blob (not even valid Parquet) — `read_member`'s
-        // decompression-limit guard must refuse it before `read_observation_hexon`
-        // ever tries to parse it as Parquet.
-        let members: [(&str, &[u8]); 2] = [
-            (profile::READINGS_MEMBER, bomb.as_slice()),
-            (profile::PAYLOAD_REFS_MEMBER, b"x"),
-        ];
-        let bytes = HexonArchive::export_stored_deterministic(&manifest, &members).unwrap();
-        assert!(
-            bytes.len() < (4 << 20),
-            "a Stored zip of zeros still compresses small on disk… wait, Stored means no \
-             compression — this fixture is intentionally the oversized bytes themselves, \
-             proving the cap triggers on real size, not a zip-bomb trick"
-        );
-        let err = read_observation_hexon(&bytes).unwrap_err();
-        assert!(matches!(err, ObservationHexonError::Io(_)));
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+
+        let stored = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored)
+            .last_modified_time(zip::DateTime::default());
+        let deflated = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .compression_level(Some(1));
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file(profile::MANIFEST_MEMBER, stored).unwrap();
+        zip.write_all(&serde_json::to_vec(&obs_manifest()).unwrap())
+            .unwrap();
+        zip.start_file(profile::ENTRIES_MEMBER, stored).unwrap();
+        zip.write_all(br#"{"entries":[]}"#).unwrap();
+        zip.start_file(profile::READINGS_MEMBER, deflated).unwrap();
+        let chunk = vec![0u8; 1 << 20];
+        for _ in 0..(fe_format::limits::MAX_ENTRY_UNCOMPRESSED_BYTES / (1 << 20) + 8) {
+            zip.write_all(&chunk).unwrap();
+        }
+        zip.start_file(profile::PAYLOAD_REFS_MEMBER, stored)
+            .unwrap();
+        zip.write_all(b"x").unwrap();
+        let bytes = zip.finish().unwrap().into_inner();
+        assert!(bytes.len() < (4 << 20), "the bomb must compress small");
+
+        match read_observation_hexon(&bytes) {
+            Err(ObservationHexonError::ProfileViolation(message)) => {
+                assert!(message.contains("storage method"), "{message}")
+            }
+            other => panic!("a deflated bomb member must be refused, got {other:?}"),
+        }
+        let err = HexonArchive::read_member(
+            &bytes,
+            profile::READINGS_MEMBER,
+            fe_format::limits::MAX_ENTRY_UNCOMPRESSED_BYTES,
+        )
+        .expect_err("the declared size is over the per-entry cap");
+        assert!(format!("{err:#}").contains(fe_format::limits::DECOMPRESSION_LIMIT_ERROR));
     }
 
     /// Conformance test 8 (`profile_violations_rejected`), the subset
@@ -390,6 +416,132 @@ mod tests {
             read_observation_hexon(&bytes).unwrap_err(),
             ObservationHexonError::ProfileViolation(_)
         ));
+    }
+
+    /// A one-row `readings.parquet` member written with `props` (bypassing the pinned writer)
+    /// so the reader's own refusals can be exercised on bytes the writer would never emit.
+    fn readings_member_with(
+        value: f64,
+        props: parquet::file::properties::WriterProperties,
+    ) -> Vec<u8> {
+        use arrow::array::{
+            FixedSizeBinaryArray, Float64Array, Int32Array, Int64Array, StringArray,
+        };
+        use std::sync::Arc;
+        let schema = Arc::new(profile::readings_arrow_schema());
+        let text = |v: &str| Arc::new(StringArray::from(vec![v])) as arrow::array::ArrayRef;
+        let anchor = fe_sdk::legacy_identifier(fe_sdk::LegacyTable::Node, "n1").expect("anchor");
+        let batch = arrow::array::RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                text("r1"),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(std::iter::once(anchor)).expect("anchor"),
+                ),
+                text("n1"),
+                text("temp"),
+                Arc::new(Float64Array::from(vec![value])),
+                text("celsius"),
+                text("2026-10-14T00:00:00.000+00:00"),
+                Arc::new(Int64Array::from(vec![1_760_400_000_010i64])),
+                Arc::new(Int64Array::from(vec![10i64])),
+                Arc::new(Int32Array::from(vec![0i32])),
+                Arc::new(StringArray::from(vec![None::<&str>])),
+                Arc::new(Int32Array::from(vec![0i32])),
+            ],
+        )
+        .expect("batch");
+        let mut buf = Vec::new();
+        let options = parquet::arrow::arrow_writer::ArrowWriterOptions::new()
+            .with_properties(props)
+            .with_skip_arrow_metadata(true);
+        let mut writer =
+            parquet::arrow::ArrowWriter::try_new_with_options(&mut buf, schema, options)
+                .expect("writer");
+        writer.write(&batch).expect("write");
+        writer.close().expect("close");
+        buf
+    }
+
+    fn hexon_with_readings_member(readings_member: &[u8]) -> Vec<u8> {
+        let built = write_observation_hexon(
+            "did:key:z6Mktest",
+            &[],
+            &[payload_ref("p1", "n2", "vendor.x/y@1", 45, 0)],
+            1,
+        )
+        .expect("payload-only batch");
+        let payload_refs_bytes = HexonArchive::read_member(
+            &built.hexon_bytes,
+            profile::PAYLOAD_REFS_MEMBER,
+            fe_format::limits::MAX_ENTRY_UNCOMPRESSED_BYTES,
+        )
+        .unwrap()
+        .unwrap();
+        let members: [(&str, &[u8]); 2] = [
+            (profile::READINGS_MEMBER, readings_member),
+            (profile::PAYLOAD_REFS_MEMBER, &payload_refs_bytes),
+        ];
+        HexonArchive::export_stored_deterministic(&obs_manifest(), &members).unwrap()
+    }
+
+    /// A scalar batch's `payload_id` chunk is all null, so parquet writes its null_count without
+    /// a min/max; §3.2 rule 7 must not refuse it (or no scalar-only batch could ever hydrate).
+    #[test]
+    fn scalar_only_batch_with_all_null_payload_ids_reads_back() {
+        let readings = vec![
+            reading("r1", "n1", "temp", 1.0, 10, 0),
+            reading("r2", "n2", "temp", 2.0, 20, 0),
+        ];
+        assert!(readings.iter().all(|r| r.payload_id.is_none()));
+        let built = write_observation_hexon("did:key:z6Mktest", &readings, &[], 1).unwrap();
+        let decoded = read_observation_hexon(&built.hexon_bytes).expect("scalar-only batch");
+        assert_eq!(decoded.readings.len(), 2);
+        assert!(decoded.readings.iter().all(|r| r.payload_id.is_none()));
+    }
+
+    /// §3.1 rule 6 / §3.2 rule 1: a dictionary-encoded member (which can expand one stored string
+    /// into every row) is refused from its page headers, before any column is decoded; the same
+    /// rows under the pinned PLAIN profile read back.
+    #[test]
+    fn dictionary_encoded_member_is_refused_before_decoding() {
+        let plain = readings_member_with(1.0, profile::writer_properties());
+        assert!(read_observation_hexon(&hexon_with_readings_member(&plain)).is_ok());
+
+        let dictionary_props = parquet::file::properties::WriterProperties::builder()
+            .set_writer_version(parquet::file::properties::WriterVersion::PARQUET_1_0)
+            .set_dictionary_enabled(true)
+            .set_statistics_enabled(parquet::file::properties::EnabledStatistics::Chunk)
+            .set_created_by(profile::CREATED_BY.to_string())
+            .set_key_value_metadata(Some(vec![parquet::format::KeyValue::new(
+                profile::FORMAT_VERSION_KEY.to_string(),
+                profile::FORMAT_VERSION_VALUE.to_string(),
+            )]))
+            .build();
+        let dictionary = readings_member_with(1.0, dictionary_props);
+        match read_observation_hexon(&hexon_with_readings_member(&dictionary)) {
+            Err(ObservationHexonError::ProfileViolation(message)) => {
+                assert!(message.contains("PLAIN v1 data pages"), "{message}")
+            }
+            other => panic!("a dictionary-encoded member must be refused, got {other:?}"),
+        }
+    }
+
+    /// §3.2 rule 2: the writer never emits a non-finite DOUBLE and the reader refuses one.
+    #[test]
+    fn non_finite_value_is_refused_by_writer_and_reader() {
+        let readings = vec![reading("r1", "n1", "temp", f64::INFINITY, 10, 0)];
+        assert!(matches!(
+            write_observation_hexon("did:key:z6Mktest", &readings, &[], 1).unwrap_err(),
+            ObservationHexonError::NonFiniteValue { .. }
+        ));
+        let member = readings_member_with(f64::INFINITY, profile::writer_properties());
+        match read_observation_hexon(&hexon_with_readings_member(&member)) {
+            Err(ObservationHexonError::ProfileViolation(message)) => {
+                assert!(message.contains("non-finite"), "{message}")
+            }
+            other => panic!("a non-finite value must be refused, got {other:?}"),
+        }
     }
 
     fn obs_manifest() -> HexonManifest {

@@ -11,6 +11,7 @@ use fe_runtime::messages::{
     DevicePayloadInput, DEVICE_PAYLOAD_MAX_ASSETS,
 };
 
+use crate::canon_log::observation::{payload_door_digest, HotPayload};
 use crate::op_log::next_hlc_timestamp;
 use crate::query_helpers::exec_query;
 use crate::repo::Db;
@@ -384,6 +385,27 @@ pub async fn insert_device_payloads(
     // only. Never gated on replication being wired — B3's sealer needs this
     // regardless of whether the payload was published.
     let (hlc_wall_ms, hlc_counter) = unpack_hlc(hlc_packed);
+    let door_digest = asset_content_hashes_of(&payload.asset_ids, &assets).map_or_else(
+        // An asset with no content hash can never be sealed (§8 rule 3); a digest that is not
+        // 64 hex digits never matches, so the member stays unbound.
+        || "unresolved-asset-content-hash".to_string(),
+        |hashes| {
+            payload_door_digest(
+                &HotPayload {
+                    payload_id: payload_id.clone(),
+                    node_id: payload.node_id.clone(),
+                    petal_id: petal_id.to_string(),
+                    format_id: payload.format_id.clone(),
+                    recorded_at: recorded.to_rfc3339(),
+                    recorded_at_ms: recorded.timestamp_millis(),
+                    hlc_timestamp: hlc_packed as i64,
+                    asset_ids: payload.asset_ids.clone(),
+                    source_did: source_did.to_string(),
+                },
+                &hashes,
+            )
+        },
+    );
     record_window_membership(
         db,
         "device_payload",
@@ -392,6 +414,7 @@ pub async fn insert_device_payloads(
         source_class,
         hlc_wall_ms,
         hlc_counter,
+        &door_digest,
     )
     .await
     .map_err(|e| DevicePayloadIngestError::Db(e.to_string()))?;
@@ -603,6 +626,25 @@ async fn fetch_assets(
         .collect())
 }
 
+/// Each listed asset's BLAKE3 content hash, in list order, as the door validated it; `None`
+/// when any asset row carries no 32-byte hex `content_hash`.
+fn asset_content_hashes_of(
+    asset_ids: &[String],
+    assets: &std::collections::HashMap<String, AssetRow>,
+) -> Option<Vec<[u8; 32]>> {
+    asset_ids
+        .iter()
+        .map(|asset_id| {
+            let text = assets
+                .get(asset_id)?
+                .row_json
+                .get("content_hash")?
+                .as_str()?;
+            hex::decode(text).ok()?.try_into().ok()
+        })
+        .collect()
+}
+
 /// Unpack a `next_hlc_timestamp` packed value into `(wall_ms, counter)` as
 /// signed ints (matching `op_log::init_hlc`'s own unpacking).
 fn unpack_hlc(packed: u64) -> (i64, i64) {
@@ -619,6 +661,9 @@ fn unpack_hlc(packed: u64) -> (i64, i64) {
 ///
 /// Gated on the SPEC-8 mode (SPEC-10 §8 rule 2): in `legacy_only` and
 /// `seam_ready` it records nothing, so the ingest path stays byte-identical.
+/// `door_digest` binds the member to the exact accepted row (`canon_log/AGENTS.md`
+/// §observation, door digest).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn record_window_membership(
     db: &Db,
     table: &str,
@@ -627,6 +672,7 @@ pub(crate) async fn record_window_membership(
     source_class: SourceClass,
     hlc_wall_ms: i64,
     hlc_counter: i64,
+    door_digest: &str,
 ) -> anyhow::Result<()> {
     if !crate::canon_log::observation::door_records_window_membership() {
         return Ok(());
@@ -637,7 +683,8 @@ pub(crate) async fn record_window_membership(
         "CREATE observation_window_member CONTENT { \
          id: $id, table: $table, row_id: $row_id, petal_id: $petal_id, \
          source_class: $source_class, window_bucket: $window_bucket, \
-         hlc_wall_ms: $hlc_wall_ms, hlc_counter: $hlc_counter }",
+         hlc_wall_ms: $hlc_wall_ms, hlc_counter: $hlc_counter, \
+         door_digest: $door_digest }",
     )
     .bind(("id", id))
     .bind(("table", table.to_string()))
@@ -647,6 +694,7 @@ pub(crate) async fn record_window_membership(
     .bind(("window_bucket", window_bucket))
     .bind(("hlc_wall_ms", hlc_wall_ms))
     .bind(("hlc_counter", hlc_counter))
+    .bind(("door_digest", door_digest.to_string()))
     .await?
     .check()
     .map_err(|e| anyhow::anyhow!("observation_window_member CREATE failed: {e}"))?;

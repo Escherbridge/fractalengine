@@ -809,6 +809,65 @@ fn sealer_never_signs_replicated_observations() {
     });
 }
 
+/// SPEC-10 §3.4 rules 5-6 (Phase B security review): membership binds the exact row the door
+/// accepted. A hot row whose columns change under the same id after the door (an admin clear
+/// followed by union re-replication of author-chosen columns) is marked uncovered and never
+/// signed; the untouched member next to it still seals and hydrates.
+#[test]
+fn sealer_never_signs_a_hot_row_replaced_after_the_door_accepted_it() {
+    let _mode = migration_mode(Some("shadow_rebuild"));
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = runtime();
+    let secrets: Arc<dyn SecretStore> = Arc::new(InMemoryBackend::new());
+    let chain = node_chain();
+    let chain_id = Hash32::of(&chain);
+    let harness = Harness::open(dir.path());
+    runtime.block_on(async {
+        let db = harness.db();
+        seed_canon(&db, &secrets, &chain).await;
+        seed_legacy(&db).await;
+        let replaced = ingest_reading(&db, NODE_A, 20.0, None).await;
+        let kept = ingest_reading(&db, NODE_B, 21.0, None).await;
+        db.query("UPDATE iot_reading SET value = 99.0, source_did = $did WHERE reading_id = $id")
+            .bind(("did", did(NODE)))
+            .bind(("id", replaced.clone()))
+            .await
+            .expect("substitute the hot row")
+            .check()
+            .expect("substitute check");
+
+        let verifier = verifier(&db, &secrets).await;
+        let author = signing_key(NODE);
+        let report = sealer(
+            MigrationMode::ShadowRebuild,
+            &db,
+            &verifier,
+            &author,
+            chain_id,
+        )
+        .expect("shadow sealer")
+        .seal_closed_windows(i64::MAX)
+        .await
+        .expect("seal");
+        assert_eq!(
+            report.batches.iter().map(|batch| batch.count).sum::<u64>(),
+            1,
+            "only the untouched member is signed: {report:?}"
+        );
+        assert_eq!(report.uncovered.len(), 1, "{report:?}");
+        assert_eq!(report.uncovered[0].row_id, replaced);
+        assert!(
+            report.uncovered[0]
+                .reason
+                .contains("not the observation the door accepted"),
+            "{report:?}"
+        );
+
+        hydrate(&db, &verifier, chain_id).await;
+        assert_eq!(catalog_reading_ids(&db).await, vec![kept]);
+    });
+}
+
 // ---------------------------------------------------------------------------
 // SPEC-10 §10 test 16 (C8 restart)
 // ---------------------------------------------------------------------------

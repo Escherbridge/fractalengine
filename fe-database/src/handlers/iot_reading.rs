@@ -3,6 +3,7 @@
 use fe_query::{Filter, InsertBuilder, QueryBuilder, QueryValue};
 use fe_sdk::source_class::SourceClass;
 
+use crate::canon_log::observation::{reading_door_digest, HotReading};
 use crate::handlers::device_payload::record_window_membership;
 use crate::op_log::next_hlc_timestamp;
 use crate::query_helpers::exec_query;
@@ -171,7 +172,8 @@ pub async fn insert_readings_with_replication(
     // Parse every timestamp up-front so a bad row aborts before any insert
     // (the all-or-nothing validation contract in §iot-readings). HLC + id are
     // also assigned up-front, exactly as the pre-F5 loop did.
-    let mut prepared: Vec<(String, u64, serde_json::Value)> = Vec::with_capacity(readings.len());
+    let mut prepared: Vec<(String, u64, serde_json::Value, String)> =
+        Vec::with_capacity(readings.len());
     for r in readings {
         let recorded = match &r.recorded_at {
             Some(raw) => chrono::DateTime::parse_from_rfc3339(raw)
@@ -194,10 +196,25 @@ pub async fn insert_readings_with_replication(
             "source_did": source_did,
             "payload_id": r.payload_id,
         });
-        prepared.push((reading_id, hlc_packed, row));
+        // The door's commitment to exactly what it accepted (`canon_log/AGENTS.md`
+        // §observation, door digest); recorded only when membership is.
+        let door_digest = reading_door_digest(&HotReading {
+            reading_id: reading_id.clone(),
+            node_id: r.node_id.clone(),
+            petal_id: petal_id.to_string(),
+            metric: r.metric.clone(),
+            value: r.value,
+            units: r.units.clone(),
+            recorded_at: recorded.to_rfc3339(),
+            recorded_at_ms: recorded.timestamp_millis(),
+            hlc_timestamp: hlc_packed as i64,
+            payload_id: r.payload_id.clone(),
+            source_did: source_did.to_string(),
+        });
+        prepared.push((reading_id, hlc_packed, row, door_digest));
     }
 
-    for (reading_id, hlc_packed, row) in prepared {
+    for (reading_id, hlc_packed, row, door_digest) in prepared {
         // No geometry columns on the row, so InsertBuilder is legal here
         // (AGENTS.md §geometry-inserts applies only to geometry-typed columns).
         let q = InsertBuilder::insert_into("iot_reading")
@@ -244,6 +261,7 @@ pub async fn insert_readings_with_replication(
                 source_class,
                 hlc_wall_ms,
                 hlc_counter,
+                &door_digest,
             )
             .await
             .map_err(|e| IotIngestError::Db(e.to_string()))?;

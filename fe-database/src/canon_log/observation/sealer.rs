@@ -320,6 +320,10 @@ impl<'a> ObservationSealer<'a> {
 
     /// Seals explicit rows as one batch in `petal_id`, outside window membership: the building
     /// block the window path wraps, for a caller that already holds door-accepted rows.
+    ///
+    /// It signs whatever rows it is handed, so it is a fixture seam, never a live entry point:
+    /// feeding it anything but this node's own door accepts breaks SPEC-10 §3.4 rule 5. The live
+    /// path is [`Self::seal_closed_windows`].
     pub async fn seal_observations(
         &mut self,
         petal_id: &str,

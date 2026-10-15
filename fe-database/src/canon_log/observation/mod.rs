@@ -200,6 +200,7 @@ pub(crate) struct WindowMember {
     pub(crate) window_bucket: i64,
     pub(crate) sealed_op_id: Option<String>,
     pub(crate) uncovered: Option<String>,
+    pub(crate) door_digest: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -214,10 +215,12 @@ struct WindowMemberRow {
     sealed_op_id: Option<String>,
     #[serde(default)]
     uncovered: Option<String>,
+    #[serde(default)]
+    door_digest: Option<String>,
 }
 
 const MEMBER_FIELDS: &str =
-    "`table`, row_id, petal_id, source_class, window_bucket, sealed_op_id, uncovered";
+    "`table`, row_id, petal_id, source_class, window_bucket, sealed_op_id, uncovered, door_digest";
 
 /// Reads members matching `condition` (a SurrealQL boolean over the member row).
 pub(crate) async fn load_members(
@@ -253,6 +256,7 @@ pub(crate) async fn load_members(
                 window_bucket: parsed.window_bucket,
                 sealed_op_id: parsed.sealed_op_id,
                 uncovered: parsed.uncovered,
+                door_digest: parsed.door_digest,
             })
         })
         .collect()
@@ -291,6 +295,53 @@ pub(crate) struct HotPayload {
     pub(crate) asset_ids: Vec<String>,
     #[serde(default)]
     pub(crate) source_did: String,
+}
+
+/// NUL-terminated domain of the door digest.
+const DOOR_DIGEST_DOMAIN: &[u8] = b"fe-observation-door-digest-v1\0";
+
+fn door_digest(fields: &impl serde::Serialize) -> String {
+    let mut preimage = DOOR_DIGEST_DOMAIN.to_vec();
+    preimage.extend(serde_json::to_vec(fields).expect("strings and integers serialize"));
+    hex::encode(Hash32::of(&preimage).0)
+}
+
+/// The door's commitment to an accepted reading: every field the sealer signs, the value by bit
+/// pattern (`canon_log/AGENTS.md` §observation, door digest).
+pub(crate) fn reading_door_digest(hot: &HotReading) -> String {
+    door_digest(&(
+        ObservationTable::Reading.as_str(),
+        &hot.reading_id,
+        &hot.node_id,
+        &hot.petal_id,
+        &hot.metric,
+        hot.value.to_bits(),
+        &hot.units,
+        &hot.recorded_at,
+        hot.recorded_at_ms,
+        hot.hlc_timestamp,
+        &hot.payload_id,
+        &hot.source_did,
+    ))
+}
+
+/// The door's commitment to an accepted device payload, including each listed asset's content
+/// hash as the door resolved it.
+pub(crate) fn payload_door_digest(hot: &HotPayload, asset_content_hashes: &[[u8; 32]]) -> String {
+    let hashes: Vec<String> = asset_content_hashes.iter().map(hex::encode).collect();
+    door_digest(&(
+        ObservationTable::Payload.as_str(),
+        &hot.payload_id,
+        &hot.node_id,
+        &hot.petal_id,
+        &hot.format_id,
+        &hot.recorded_at,
+        hot.recorded_at_ms,
+        hot.hlc_timestamp,
+        &hot.asset_ids,
+        &hot.source_did,
+        hashes,
+    ))
 }
 
 /// A member resolved into everything the hexon and the comparison need.
@@ -481,6 +532,7 @@ fn resolve_one(
             if !hot.value.is_finite() {
                 return Err("non-finite value".to_string());
             }
+            check_door_digest(member, &reading_door_digest(hot))?;
             let source = observation_source(source_class, &hot.source_did, None)?;
             Ok(ResolvedObservation::Reading {
                 hot: hot.clone(),
@@ -505,6 +557,7 @@ fn resolve_one(
                         .ok_or_else(|| format!("asset {asset_id} has no content hash"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            check_door_digest(member, &payload_door_digest(hot, &asset_content_hashes))?;
             let source = observation_source(source_class, &hot.source_did, Some(&hot.format_id))?;
             Ok(ResolvedObservation::Payload {
                 hot: hot.clone(),
@@ -512,6 +565,17 @@ fn resolve_one(
                 source,
             })
         }
+    }
+}
+
+/// §3.4 rules 5-6: the row read back by id must still be the observation the door accepted. A
+/// hot row deleted (an admin clear) and then re-supplied by replication carries author-chosen
+/// columns under the same id; signing it would make this node a signing oracle.
+fn check_door_digest(member: &WindowMember, hot_digest: &str) -> Result<(), String> {
+    match member.door_digest.as_deref() {
+        Some(recorded) if recorded == hot_digest => Ok(()),
+        Some(_) => Err("the hot row is not the observation the door accepted".to_string()),
+        None => Err("the door recorded no digest for this observation".to_string()),
     }
 }
 

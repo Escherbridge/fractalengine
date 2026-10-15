@@ -11,8 +11,10 @@ use bytes::Bytes;
 use fe_format::manifest::HexonType;
 use fe_format::HexonArchive;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use parquet::basic::Compression;
+use parquet::basic::{Compression, Encoding};
+use parquet::column::page::Page;
 use parquet::file::metadata::{ParquetMetaData, RowGroupMetaData};
+use parquet::file::reader::{FileReader, SerializedFileReader};
 
 use super::profile;
 use super::{ObservationHexonError, Result};
@@ -139,8 +141,10 @@ pub fn read_observation_hexon(bytes: &[u8]) -> Result<ObservationHexon> {
 fn read_readings_member(raw: Vec<u8>) -> Result<(Vec<ReadingOut>, u16)> {
     let bytes = Bytes::from(raw);
     let probe = ParquetRecordBatchReaderBuilder::try_new(bytes.clone())?;
+    // Fields only: the inferred schema's metadata map carries the file's one pinned
+    // key-value entry, which `check_file_metadata` checks on its own.
     let expected_schema = profile::readings_arrow_schema();
-    if probe.schema().as_ref() != &expected_schema {
+    if probe.schema().fields() != expected_schema.fields() {
         return Err(ObservationHexonError::ProfileViolation(format!(
             "observations/readings.parquet: schema mismatch (missing/extra/wrong-type column); got {:?}",
             probe.schema()
@@ -149,6 +153,7 @@ fn read_readings_member(raw: Vec<u8>) -> Result<(Vec<ReadingOut>, u16)> {
     let metadata = probe.metadata().clone();
     let format_version = check_file_metadata(&metadata, "observations/readings.parquet")?;
     drop(probe);
+    check_pages_and_row_bound(&bytes, &metadata, "observations/readings.parquet")?;
 
     let mut rows = Vec::new();
     let mut row_group_sizes = Vec::with_capacity(metadata.num_row_groups());
@@ -194,6 +199,13 @@ fn decode_readings_batch(
     let source_index = i32_col(batch, "source_index")?;
 
     for i in 0..batch.num_rows() {
+        // §3.2 rule 2: floats are allowed inside the hexon, but every DOUBLE must be finite.
+        if !value.value(i).is_finite() {
+            return Err(ObservationHexonError::ProfileViolation(format!(
+                "reading {} holds a non-finite value (§3.2 rule 2)",
+                reading_id.value(i)
+            )));
+        }
         out.push(ReadingOut {
             reading_id: reading_id.value(i).to_string(),
             anchor: fixed32_value(anchor, i)?,
@@ -223,8 +235,10 @@ fn decode_readings_batch(
 fn read_payload_refs_member(raw: Vec<u8>) -> Result<(Vec<PayloadRefOut>, u16)> {
     let bytes = Bytes::from(raw);
     let probe = ParquetRecordBatchReaderBuilder::try_new(bytes.clone())?;
+    // Fields only: the inferred schema's metadata map carries the file's one pinned
+    // key-value entry, which `check_file_metadata` checks on its own.
     let expected_schema = profile::payload_refs_arrow_schema();
-    if probe.schema().as_ref() != &expected_schema {
+    if probe.schema().fields() != expected_schema.fields() {
         return Err(ObservationHexonError::ProfileViolation(format!(
             "observations/payload_refs.parquet: schema mismatch (missing/extra/wrong-type column); got {:?}",
             probe.schema()
@@ -233,6 +247,7 @@ fn read_payload_refs_member(raw: Vec<u8>) -> Result<(Vec<PayloadRefOut>, u16)> {
     let metadata = probe.metadata().clone();
     let format_version = check_file_metadata(&metadata, "observations/payload_refs.parquet")?;
     drop(probe);
+    check_pages_and_row_bound(&bytes, &metadata, "observations/payload_refs.parquet")?;
 
     let mut rows = Vec::new();
     let mut row_group_sizes = Vec::with_capacity(metadata.num_row_groups());
@@ -440,14 +455,72 @@ fn check_row_group_profile(rg: &RowGroupMetaData, member: &str) -> Result<()> {
                 col.column_path()
             ))
         })?;
-        if stats.min_bytes_opt().is_none()
-            || stats.max_bytes_opt().is_none()
-            || stats.null_count_opt().is_none()
+        // An all-null chunk (a scalar batch's `payload_id`) has no value to take a min or max
+        // of; parquet writes its null_count alone. Every other chunk carries all three.
+        let all_null = stats.null_count_opt() == u64::try_from(col.num_values()).ok();
+        if stats.null_count_opt().is_none()
+            || (!all_null && (stats.min_bytes_opt().is_none() || stats.max_bytes_opt().is_none()))
         {
             return Err(ObservationHexonError::ProfileViolation(format!(
                 "{member}: column {:?} is missing min/max/null_count statistics (§3.2 rule 7)",
                 col.column_path()
             )));
+        }
+    }
+    Ok(())
+}
+
+/// Bytes every conforming row stores in its non-null PLAIN `anchor` column
+/// (`FIXED_LEN_BYTE_ARRAY(32)`, §3.2 rules 3-4): a hard lower bound on a member's size per row.
+const MIN_PLAIN_BYTES_PER_ROW: u64 = 32;
+
+/// §3.1 rule 6 / §3.2 rule 1, checked on page headers BEFORE any column is decoded: every page
+/// is a v1 data page with PLAIN values and RLE levels (the pinned writer emits nothing else —
+/// no dictionary page, no other encoding), and the declared row total fits the member's own
+/// bytes at the PLAIN anchor width. Without this, a dictionary page or an RLE run lets a small
+/// member declare rows whose decoded strings dwarf the decompression limits.
+fn check_pages_and_row_bound(
+    bytes: &Bytes,
+    metadata: &ParquetMetaData,
+    member: &str,
+) -> Result<()> {
+    let mut declared_rows: u64 = 0;
+    for row_group in metadata.row_groups() {
+        let rows = u64::try_from(row_group.num_rows()).map_err(|_| {
+            ObservationHexonError::ProfileViolation(format!(
+                "{member}: a row group declares a negative row count"
+            ))
+        })?;
+        declared_rows = declared_rows.saturating_add(rows);
+    }
+    if declared_rows.saturating_mul(MIN_PLAIN_BYTES_PER_ROW) > bytes.len() as u64 {
+        return Err(ObservationHexonError::ProfileViolation(format!(
+            "{member}: declares {declared_rows} rows, more than its {} bytes can hold",
+            bytes.len()
+        )));
+    }
+    let reader = SerializedFileReader::new(bytes.clone())?;
+    for row_group_index in 0..reader.num_row_groups() {
+        let row_group = reader.get_row_group(row_group_index)?;
+        for column in 0..row_group.num_columns() {
+            for page in row_group.get_column_page_reader(column)? {
+                match page? {
+                    Page::DataPage {
+                        encoding: Encoding::PLAIN,
+                        def_level_encoding: Encoding::RLE,
+                        rep_level_encoding: Encoding::RLE,
+                        ..
+                    } => {}
+                    other => {
+                        return Err(ObservationHexonError::ProfileViolation(format!(
+                            "{member}: row group {row_group_index} column {column} holds a {:?} \
+                             page encoded {:?}; only PLAIN v1 data pages are pinned (§3.2 rule 1)",
+                            other.page_type(),
+                            other.encoding()
+                        )))
+                    }
+                }
+            }
         }
     }
     Ok(())

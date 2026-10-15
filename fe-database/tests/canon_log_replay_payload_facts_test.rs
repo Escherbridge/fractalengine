@@ -660,6 +660,32 @@ fn a_shredded_scope_key_leaves_replay_pending_and_keeps_the_pre_shred_row() {
                 other => panic!("expected the rebuild to be withheld, got {other:?}"),
             }
             assert_eq!(reference_rows(&db).await, pre_shred_rows);
+
+            // A narrower frontier whose closure does not even reach `first` resets the same
+            // projection, so it is withheld too: every applied row counts, not the closure's.
+            let narrower = rebuild_projection_with_facts(
+                &store,
+                &markers,
+                &ObservationBatchMaterializer,
+                &ReferenceSurface { db: db.clone() },
+                &mut dag_view,
+                RebuildRequest {
+                    identity: &identity(),
+                    frontier: &frontier(bump),
+                    checkpoint: None,
+                },
+                &facts,
+            )
+            .await;
+            assert!(
+                matches!(
+                    &narrower,
+                    Err(RebuildError::WouldDiscardUnrederivableRows { unrederivable })
+                        if unrederivable == &vec![(first.op_id, PayloadFactsGap::ScopeKeyUnavailable)]
+                ),
+                "a narrower-frontier rebuild must be withheld too, got {narrower:?}"
+            );
+            assert_eq!(reference_rows(&db).await, pre_shred_rows);
             assert_eq!(
                 disposition(&db, first.op_id).await.as_deref(),
                 Some("applied")

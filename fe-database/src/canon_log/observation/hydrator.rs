@@ -587,7 +587,17 @@ fn check_against_payload(
     let mut sensor = Vec::with_capacity(rows as usize);
     let mut used_sources = BTreeSet::new();
     let mut asset_refs = BTreeSet::new();
+    // §3.4 rule 3: an observation appears at most once per batch. A batch repeating an id is
+    // malformed as a whole, never a §5.3 rule 4 conflict between the batch and itself.
+    let mut reading_ids = BTreeSet::new();
+    let mut payload_ids = BTreeSet::new();
     for row in &hexon.readings {
+        if !reading_ids.insert(row.reading_id.as_str()) {
+            return Err(format!(
+                "reading {} appears twice in one batch",
+                row.reading_id
+            ));
+        }
         if !row.value.is_finite() {
             return Err(format!(
                 "reading {} holds a non-finite value",
@@ -601,6 +611,12 @@ fn check_against_payload(
         used_sources.insert(row.source_index);
     }
     for row in &hexon.payload_refs {
+        if !payload_ids.insert(row.payload_id.as_str()) {
+            return Err(format!(
+                "payload {} appears twice in one batch",
+                row.payload_id
+            ));
+        }
         check_anchor(&row.anchor, &row.anchor_node_id)?;
         if row.asset_ids.is_empty() || row.asset_ids.len() != row.asset_content_hashes.len() {
             return Err(format!(
@@ -996,6 +1012,68 @@ pub(crate) async fn catalog_payloads(db: &Db) -> Result<Vec<CatalogPayload>, Sto
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fe_canonical_log::envelope::Hlc;
+    use fe_canonical_log::materialize::identity::{ObservationSource, SourceClass};
+    use fe_canonical_log::observation::{HlcRange, SensorTimeRange};
+    use fe_query::columnar::observation::ReadingOut;
+
+    /// SPEC-10 §3.4 rule 3 at hydration: a batch that carries one `reading_id` twice (under two
+    /// HLCs, so the per-anchor order still holds) is `observation_batch_invalid` as a whole;
+    /// the same rows with distinct ids agree with the signed payload.
+    #[test]
+    fn a_batch_repeating_an_observation_id_disagrees_with_its_payload() {
+        let node = "01HNODE0000000000000000000";
+        let anchor = node_anchor(node).expect("anchor").0;
+        let row = |reading_id: &str, wall_ms: i64| ReadingOut {
+            reading_id: reading_id.to_string(),
+            anchor,
+            anchor_node_id: node.to_string(),
+            metric: "t".to_string(),
+            value: 1.0,
+            units: String::new(),
+            recorded_at: String::new(),
+            recorded_at_ms: 5,
+            hlc_wall_ms: wall_ms,
+            hlc_counter: 0,
+            payload_id: None,
+            source_index: 0,
+        };
+        let source = ObservationSource::new(
+            SourceClass::Device,
+            ObservationSource::source_id_for(SourceClass::Device, "device"),
+            [7; 32],
+            None,
+            None,
+        )
+        .expect("source");
+        let parts = ObservationBatchPayloadParts {
+            hexon_artifact_id: Hash32([1; 32]),
+            hexon_stored_length: 1,
+            hlc_range: HlcRange {
+                min: Hlc::new(10, 0),
+                max: Hlc::new(20, 0),
+            },
+            sensor_time_range: SensorTimeRange {
+                min_ms: 5,
+                max_ms: 5,
+            },
+            stats_hash: Hash32([2; 32]),
+            count: 2,
+            anchors: vec![Identifier32(anchor)],
+            asset_refs: Vec::new(),
+            sources: vec![source],
+            hexon_format_version: 1,
+            stats_stored_length: 1,
+        };
+        let hexon = |second: &str| ObservationHexon {
+            readings: vec![row("r1", 10), row(second, 20)],
+            payload_refs: Vec::new(),
+            hexon_format_version: 1,
+        };
+        assert_eq!(check_against_payload(&parts, &hexon("r2")), Ok(()));
+        let refused = check_against_payload(&parts, &hexon("r1")).expect_err("repeated id");
+        assert!(refused.contains("appears twice"), "{refused}");
+    }
 
     fn reading(op: &str, value: f64) -> CatalogReading {
         CatalogReading {

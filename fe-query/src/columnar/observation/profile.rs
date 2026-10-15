@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
+use parquet::arrow::arrow_writer::ArrowWriterOptions;
 use parquet::basic::Compression;
 use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersion};
 use parquet::format::KeyValue;
@@ -131,4 +132,13 @@ pub fn writer_properties() -> WriterProperties {
             FORMAT_VERSION_VALUE.to_string(),
         )]))
         .build()
+}
+
+/// [`writer_properties`] as `ArrowWriter` options, with the embedded `ARROW:schema` entry
+/// skipped: §3.2 rule 1 pins exactly ONE key-value metadata entry, and `ArrowWriter` would
+/// otherwise add a second.
+pub fn arrow_writer_options() -> ArrowWriterOptions {
+    ArrowWriterOptions::new()
+        .with_properties(writer_properties())
+        .with_skip_arrow_metadata(true)
 }

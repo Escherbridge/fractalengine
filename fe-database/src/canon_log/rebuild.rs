@@ -17,8 +17,8 @@ use fe_canonical_log::materialize::traits::{CausalMaterializer, ProjectionMutati
 use crate::canon_log::append_store::{SurrealVerifiedLogStore, SurrealVerseDagView};
 use crate::canon_log::apply_marker_store::SurrealApplyMarkerStore;
 use crate::canon_log::replay::{
-    load_closure, replay_to_frontier_with_facts, NoReplayPayloadFacts, PayloadFactsGap,
-    ReplayError, ReplayFactsLookup, ReplayOutcome, ReplayPayloadFacts,
+    replay_to_frontier_with_facts, NoReplayPayloadFacts, PayloadFactsGap, ReplayError,
+    ReplayFactsLookup, ReplayOutcome, ReplayPayloadFacts,
 };
 use crate::canon_log::{op_id_to_hex, StorageError};
 
@@ -262,15 +262,9 @@ pub async fn rebuild_projection_with_facts(
 ) -> Result<RebuildReport, RebuildError> {
     // Before ANY pass, so a refused accelerator still leaves no trace when the reset is withheld.
     if facts.rederives() {
-        let unrederivable = unrederivable_applied_rows(
-            store,
-            markers,
-            materializer,
-            request.identity,
-            request.frontier,
-            facts,
-        )
-        .await?;
+        let unrederivable =
+            unrederivable_applied_rows(store, markers, materializer, request.identity, facts)
+                .await?;
         if !unrederivable.is_empty() {
             return Err(RebuildError::WouldDiscardUnrederivableRows { unrederivable });
         }
@@ -361,9 +355,11 @@ pub async fn rebuild_projection_with_facts(
     })
 }
 
-/// Every operation in `frontier`'s closure whose apply marker records `applied` but whose
-/// reduction, handed no facts, asks for its own payload that `facts` cannot re-derive.
+/// Every operation this projection has APPLIED whose reduction, handed no facts, asks for its
+/// own payload that `facts` cannot re-derive.
 ///
+/// Every applied marker, not only `frontier`'s closure: the empty-state reset drops the whole
+/// projection, so a pre-shred row outside a narrower frontier would be lost just the same.
 /// `reduce` is pure by contract (SPEC-4 §4), so asking it again with `None` is the exact test of
 /// "would an empty-state replay reproduce this row": a reduction that needs no facts answers
 /// the same with or without them and is never counted.
@@ -372,19 +368,17 @@ async fn unrederivable_applied_rows(
     markers: &SurrealApplyMarkerStore,
     materializer: &dyn CausalMaterializer,
     identity: &ProjectionIdentity,
-    frontier: &SortedFrontier,
     facts: &dyn ReplayPayloadFacts,
 ) -> Result<Vec<(Hash32, PayloadFactsGap)>, StorageError> {
-    let (present, _missing) = load_closure(store, frontier).await?;
-    let mut op_ids: Vec<Hash32> = present.keys().copied().collect();
-    op_ids.sort();
-
     let mut unrederivable = Vec::new();
-    for op_id in op_ids {
+    for op_id in markers.processed_op_ids(identity).await? {
         if markers.disposition_of(identity, op_id).await?.as_deref() != Some("applied") {
             continue;
         }
-        let Some(bytes) = store.envelope_bytes(op_id).await? else {
+        let (Some(bytes), Some(meta)) = (
+            store.envelope_bytes(op_id).await?,
+            store.meta_of(op_id).await?,
+        ) else {
             return Err(StorageError::malformed(
                 "rebuild preflight",
                 format!("{} vanished from the verified log", op_id_to_hex(op_id)),
@@ -406,7 +400,7 @@ async fn unrederivable_applied_rows(
         else {
             continue;
         };
-        let without_facts = materializer.reduce(&present[&op_id], &bytes, None).await;
+        let without_facts = materializer.reduce(&meta, &bytes, None).await;
         if matches!(
             without_facts,
             ProjectionMutation::ReferencedArtifactUnavailable { artifact_id }
@@ -415,5 +409,6 @@ async fn unrederivable_applied_rows(
             unrederivable.push((op_id, gap));
         }
     }
+    unrederivable.sort_by_key(|(op_id, _)| *op_id);
     Ok(unrederivable)
 }

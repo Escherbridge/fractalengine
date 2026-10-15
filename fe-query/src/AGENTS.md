@@ -225,6 +225,22 @@ feature-gated path that never gets its own build silently bitrots).
   epoch-ms → RFC 3339 formatter (Howard Hinnant's `civil_from_days` algorithm) used only for the
   manifest's `created_at`/`updated_at` (a pure function of the batch's max ingestion HLC wall time,
   per §3.1 rule 4). Adding chrono/time for one field was judged not worth a new dependency edge.
+- **Exactly one key-value entry (§3.2 rule 1).** `ArrowWriter` embeds an `ARROW:schema` entry by
+  default; every member is written through `profile::arrow_writer_options()`, which skips it. The
+  reader therefore compares the inferred schema's FIELDS with the profile (the inferred schema's
+  metadata map carries the pinned key-value entry, which `check_file_metadata` checks on its own).
+  Before the Phase B security review the writer emitted two entries and the whole-schema compare
+  included metadata, so the reader refused every hexon the writer produced.
+- **Reader bounds before decoding (§3.1 rule 6, §3.2 rule 1).** `check_pages_and_row_bound` reads
+  page headers only and refuses any page that is not a v1 data page with PLAIN values and RLE
+  levels (no dictionary page: one stored string referenced by every row would otherwise decode
+  into every row), and a declared row total above `member bytes / 32` (each conforming row stores
+  a 32-byte PLAIN `anchor`). Both run before any column is decoded.
+- **All-null chunks (§3.2 rule 7).** A scalar batch's `payload_id` chunk is all null; parquet
+  writes its `null_count` with no min/max. The reader requires `null_count` everywhere and
+  min/max on every chunk that holds a value.
+- **Finite doubles (§3.2 rule 2).** The writer refuses a non-finite reading value
+  (`NonFiniteValue`) and the reader refuses one as a profile violation.
 - **Error type.** `ObservationHexonError` distinguishes a caller-input defect (`EmptyBatch`,
   `SourceIndexOutOfRange`, `LegacyIdentifier`) from a profile violation found in bytes being read
   back (`ProfileViolation`, with a message naming the rule) — B3 can branch on the variant instead
