@@ -16,11 +16,11 @@ use crate::query_helpers::exec_query;
 use crate::repo::Db;
 use crate::{BlobStoreHandle, ReplicationSender};
 
-/// Sensor-time window width used to bucket `observation_window_member` rows
-/// (SPEC-10 §3.4 rule 5). One minute, the same order of magnitude as the
-/// distributed-query bucket width (`fe-test-harness` `bucket_ms`); B3's
-/// sealer brief fixes the durable batch width, this is only the local
-/// bookkeeping grain — assumption, reversal cost: cheap (one constant).
+/// Ingestion-HLC window width that buckets `observation_window_member` rows
+/// (SPEC-10 §3.4 rule 2: "one half-open interval of ingestion HLC wall time").
+/// CDL-SPEC10 B3 confirmed the one-minute width and moved the bucket from
+/// sensor time to ingestion HLC, so a late sensor timestamp can never land in
+/// an already-sealed window (`canon_log/AGENTS.md` §observation).
 pub const OBSERVATION_WINDOW_BUCKET_MS: i64 = 60_000;
 
 // ---------------------------------------------------------------------------
@@ -347,7 +347,6 @@ pub async fn insert_device_payloads(
         &payload_id,
         petal_id,
         source_class,
-        recorded.timestamp_millis(),
         hlc_wall_ms,
         hlc_counter,
     )
@@ -530,19 +529,22 @@ fn unpack_hlc(packed: u64) -> (i64, i64) {
 /// (`handlers::replicated_row`) must never reach this function, under any
 /// input, including a replicated row whose `source_did` names this node
 /// itself (the signing-oracle gap this table exists to close).
-#[allow(clippy::too_many_arguments)]
+///
+/// Gated on the SPEC-8 mode (SPEC-10 §8 rule 2): in `legacy_only` and
+/// `seam_ready` it records nothing, so the ingest path stays byte-identical.
 pub(crate) async fn record_window_membership(
     db: &Db,
     table: &str,
     row_id: &str,
     petal_id: &str,
     source_class: SourceClass,
-    recorded_at_ms: i64,
     hlc_wall_ms: i64,
     hlc_counter: i64,
 ) -> anyhow::Result<()> {
-    let window_bucket =
-        (recorded_at_ms / OBSERVATION_WINDOW_BUCKET_MS) * OBSERVATION_WINDOW_BUCKET_MS;
+    if !crate::canon_log::observation::door_records_window_membership() {
+        return Ok(());
+    }
+    let window_bucket = crate::canon_log::observation::window_bucket_of(hlc_wall_ms);
     let id = ulid::Ulid::new().to_string();
     db.query(
         "CREATE observation_window_member CONTENT { \

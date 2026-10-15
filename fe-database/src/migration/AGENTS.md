@@ -68,6 +68,15 @@ mapping first. The one reviewed mapping that exists (`UpdateNodeTransform`,
 own run charter, on its own inventory value (§equivalence-harness); `seeded()`
 is unchanged.
 
+**Observation family (CDL-SPEC10 B3).** `register_observation_family()` maps
+`InsertIotReadings` and `InsertDevicePayloads` (`OBSERVATION_FAMILY_MUTATION_KINDS`) onto
+the approved SPEC-10 kind-5 schema hash and `observation-batch-reference@1`. Like the
+`UpdateNodeTransform` charter it is called on a run charter's own inventory; `seeded()` is
+unchanged and `RegisterDeviceFormat` stays unmapped (SPEC-10 §8 rule 7). The comparator's
+`QuantizedValue::f64_bit_pattern` is the observation family's exact-bit `value` rule
+(SPEC-10 §8 rule 4): bytes, so §5.3.3's no-float rule still holds. Rationale:
+`canon_log/AGENTS.md` §observation.
+
 ## §bypass-counter
 
 `record_bypass()`/`bypass_count()` follow the same process-global `AtomicU64`

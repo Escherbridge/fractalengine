@@ -331,9 +331,22 @@ as the caller passed it, never inferred from `source_did`. This is why
 though its `source_did` is the simulation lab's own host-peer DID: without
 the explicit field, that DID would otherwise read as `device`/`connector`.
 
-`OBSERVATION_WINDOW_BUCKET_MS` (one minute) is an assumption, not a spec
-number — B3's sealer brief fixes the durable batch width; this is only the
-local bookkeeping grain. Reversal cost: cheap (one constant).
+`OBSERVATION_WINDOW_BUCKET_MS` (one minute) is the sealing window width.
+**CDL-SPEC10 B3 (2026-10-15) changed two things here:**
+
+- **Mode gate (SPEC-10 §8 rule 2).** `record_window_membership` now records
+  only when `FE_MIGRATION_MODE` is `dual_emit_shadow` or `shadow_rebuild`
+  (`canon_log::observation::door_records_window_membership`, read per call).
+  In `legacy_only`/`seam_ready` the door writes nothing extra, so the ingest
+  path is byte-identical to the pre-SPEC-10 one. An unreadable flag records
+  nothing (the direction in which this node signs nothing).
+- **Bucket = ingestion HLC, not sensor time (§3.4 rule 2).**
+  `window_bucket = window_bucket_of(hlc_wall_ms)`. Bucketing by `recorded_at_ms`
+  would let a late sensor timestamp land in a window the sealer already closed;
+  the local HLC is monotonic, so a closed window stays closed.
+
+The table also gained `sealed_op_id` and `uncovered` (both `option<string>`),
+written only by the B3 sealer (`canon_log/AGENTS.md` §observation).
 
 **AC-7 (asset_backfill path guard).** `asset_backfill.rs`'s legacy-file join
 (`dir.join(format!("{asset_id}.{ext}"))`) was safe only because inbound

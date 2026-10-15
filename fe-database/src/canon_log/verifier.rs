@@ -16,6 +16,10 @@ use fe_canonical_log::compose::{
 use fe_canonical_log::envelope::Hash32;
 use fe_canonical_log::kind::OperationKind;
 use fe_canonical_log::materialize::errors::AdmissionOutcome;
+use fe_canonical_log::observation::{
+    observation_batch_schema_hash, validate_observation_batch_plaintext,
+    OBSERVATION_BATCH_OPERATION_KIND,
+};
 use fe_identity::SecretStore;
 
 use crate::canon_log::admission::{
@@ -199,6 +203,24 @@ impl PayloadSchemaRegistry for RegisteredSchemaSet {
     }
 }
 
+/// Registers the SPEC-10 kind-5 `observation_batch` schema (CDL-SPEC10 B3, critic C6) on `schemas`.
+///
+/// A call, never a constructor edit (critic C3), and idempotent: a repeat registration of the same
+/// `(kind 5, observation schema)` pair is already the state this asks for. Until it runs, the
+/// durable verifier keeps quarantining kind 5 as `unknown_kind` (SPEC-10 §4.1 rule 4).
+pub fn ensure_observation_batch_schema(
+    schemas: &RegisteredSchemaSet,
+) -> Result<(), SchemaRegistrationError> {
+    match schemas.register(
+        OBSERVATION_BATCH_OPERATION_KIND,
+        observation_batch_schema_hash(),
+        validate_observation_batch_plaintext,
+    ) {
+        Ok(()) | Err(SchemaRegistrationError::AlreadyRegistered { .. }) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// The production composed verifier: every seam a durable fe-database source.
 pub type DurableCandidateVerifier = ComposedCandidateVerifier<
     ChainStore,
@@ -276,6 +298,19 @@ pub async fn durable_candidate_verifier(
         verifier,
         lifecycle_replay,
     })
+}
+
+/// [`durable_candidate_verifier`] with the kind-5 observation schema registered: the verifier
+/// the SPEC-10 sealer, reference replay and hydrator use (`canon_log/AGENTS.md` §observation).
+pub async fn durable_observation_verifier(
+    db: &Db,
+    secret_store: Arc<dyn SecretStore>,
+    interim_authority_anchor: Option<Hash32>,
+) -> Result<LoadedVerifier, DurableVerifierError> {
+    let loaded = durable_candidate_verifier(db, secret_store, interim_authority_anchor).await?;
+    ensure_observation_batch_schema(&loaded.verifier.parts().schemas)
+        .expect("kind 5 is a registrable operation kind");
+    Ok(loaded)
 }
 
 /// One durable admission: the append, and what the lifecycle did with it.

@@ -170,8 +170,7 @@ pub async fn insert_readings_with_replication(
     // Parse every timestamp up-front so a bad row aborts before any insert
     // (the all-or-nothing validation contract in §iot-readings). HLC + id are
     // also assigned up-front, exactly as the pre-F5 loop did.
-    let mut prepared: Vec<(String, i64, u64, serde_json::Value)> =
-        Vec::with_capacity(readings.len());
+    let mut prepared: Vec<(String, u64, serde_json::Value)> = Vec::with_capacity(readings.len());
     for r in readings {
         let recorded = match &r.recorded_at {
             Some(raw) => chrono::DateTime::parse_from_rfc3339(raw)
@@ -194,10 +193,10 @@ pub async fn insert_readings_with_replication(
             "source_did": source_did,
             "payload_id": r.payload_id,
         });
-        prepared.push((reading_id, recorded.timestamp_millis(), hlc_packed, row));
+        prepared.push((reading_id, hlc_packed, row));
     }
 
-    for (reading_id, recorded_at_ms, hlc_packed, row) in prepared {
+    for (reading_id, hlc_packed, row) in prepared {
         // No geometry columns on the row, so InsertBuilder is legal here
         // (AGENTS.md §geometry-inserts applies only to geometry-typed columns).
         let q = InsertBuilder::insert_into("iot_reading")
@@ -242,7 +241,6 @@ pub async fn insert_readings_with_replication(
                 &reading_id,
                 petal_id,
                 source_class,
-                recorded_at_ms,
                 hlc_wall_ms,
                 hlc_counter,
             )

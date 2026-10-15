@@ -23,6 +23,15 @@ pub enum QuantizedValue {
     },
 }
 
+impl QuantizedValue {
+    /// A legacy or shadow `f64` as its exact IEEE-754 bit pattern, big-endian: the SPEC-10 §8
+    /// rule 4 observation-family comparison (no tolerance; `-0.0` and `0.0` differ, as do two
+    /// NaN payloads). Bytes rather than a float variant, so §5.3.3's no-float rule still holds.
+    pub fn f64_bit_pattern(value: f64) -> Self {
+        Self::Bytes(value.to_bits().to_be_bytes().to_vec())
+    }
+}
+
 /// A deterministic canonical export: sorted field-path -> quantized value.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CanonicalExport {
@@ -198,4 +207,36 @@ pub fn compare_prefix_history(
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SPEC-10 §8 rule 4: observation values compare by exact bit pattern, never by `==`.
+    #[test]
+    fn observation_values_compare_by_exact_ieee_bit_pattern() {
+        let export = |value: f64| CanonicalExport {
+            fields: BTreeMap::from([(
+                "iot_reading/r1/value".to_string(),
+                QuantizedValue::f64_bit_pattern(value),
+            )]),
+        };
+        let compare = |legacy: f64, shadow: f64| {
+            compare_projections(
+                "run",
+                "corr",
+                "scope",
+                "cand",
+                &export(legacy),
+                &export(shadow),
+            )
+        };
+        assert!(compare(21.5, 21.5).is_equal());
+        assert!(
+            !compare(0.0, -0.0).is_equal(),
+            "signed zero is a different reading"
+        );
+        assert!(!compare(21.5, 21.500_000_000_000_004).is_equal());
+    }
 }

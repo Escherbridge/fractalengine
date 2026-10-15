@@ -98,6 +98,19 @@ const OTHER_DISPATCHED_MUTATION_KINDS: &[&str] = &[
     "InsertDevicePayloads",
 ];
 
+/// The SPEC-10 observation family: the two ingest-door mutation kinds whose accepted rows the
+/// shadow sealer commits as kind-5 `observation_batch` operations (CDL-SPEC10 B3). Neither is a
+/// D-CL20 kind; `RegisterDeviceFormat` is not in the family (SPEC-10 §8 rule 7: `device_format`
+/// is not graduated).
+pub const OBSERVATION_FAMILY_MUTATION_KINDS: [&str; 2] =
+    ["InsertIotReadings", "InsertDevicePayloads"];
+
+/// The materializer the observation family maps onto, as `{id}@{version}`.
+pub fn observation_family_materializer_version() -> String {
+    let version = fe_canonical_log::observation::ObservationBatchMaterializer::version();
+    format!("{}@{}", version.materializer_id, version.version)
+}
+
 /// Registry of every currently-dispatched mutation kind's canonical-mapping
 /// status (§4.2).
 #[derive(Debug, Clone)]
@@ -135,6 +148,23 @@ impl MappingInventory {
             );
         }
         Self { statuses }
+    }
+
+    /// Registers the observation family as `Mapped` under the approved SPEC-10 schema (kind-5
+    /// `observation_batch` schema hash, the reference materializer). `seeded()` stays all
+    /// `UnmappedDeferred`; a shadow-mode run charter calls this on its own inventory, exactly as
+    /// the equivalence harness does for `UpdateNodeTransform`. D-CL20 kinds stay refused.
+    pub fn register_observation_family(&mut self) -> Result<(), MappingRegistrationError> {
+        let schema_hash_hex =
+            hex::encode(fe_canonical_log::observation::observation_batch_schema_hash().as_bytes());
+        for kind in OBSERVATION_FAMILY_MUTATION_KINDS {
+            self.register_mapped(
+                kind,
+                schema_hash_hex.clone(),
+                observation_family_materializer_version(),
+            )?;
+        }
+        Ok(())
     }
 
     /// The mapping status of `mutation_kind`, or `None` if it isn't a known
@@ -266,5 +296,43 @@ pub fn bypass_count_for(kind: &str) -> u64 {
     match D_CL20_MUTATION_KINDS.iter().position(|k| *k == kind) {
         Some(index) => D_CL20_BYPASS_COUNTS[index].load(Ordering::Relaxed),
         None => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// CDL-SPEC10 B3: the observation family maps onto the SPEC-10 schema; nothing else moves,
+    /// and the six D-CL20 kinds stay refused (SPEC-10 §8 rule 8).
+    #[test]
+    fn observation_family_maps_under_the_spec10_schema_and_d_cl20_stays_refused() {
+        let mut inventory = MappingInventory::seeded();
+        let unmapped_before = inventory.unmapped_count();
+        inventory
+            .register_observation_family()
+            .expect("the observation family is registrable");
+
+        let schema_hash_hex =
+            hex::encode(fe_canonical_log::observation::observation_batch_schema_hash().as_bytes());
+        for kind in OBSERVATION_FAMILY_MUTATION_KINDS {
+            assert_eq!(
+                inventory.status(kind),
+                Some(&MappingStatus::Mapped {
+                    schema_hash_hex: schema_hash_hex.clone(),
+                    materializer_version: "observation-batch-reference@1".to_string(),
+                }),
+                "{kind}"
+            );
+        }
+        assert_eq!(inventory.unmapped_count(), unmapped_before - 2);
+        assert!(!inventory.is_mapped("RegisterDeviceFormat"));
+        for kind in D_CL20_MUTATION_KINDS {
+            assert!(matches!(
+                inventory.register_mapped(kind, String::new(), String::new()),
+                Err(MappingRegistrationError::DCl20Blocked { .. })
+            ));
+        }
+        assert!(!MappingInventory::seeded().is_mapped("InsertIotReadings"));
     }
 }

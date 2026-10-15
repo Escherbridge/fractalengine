@@ -9,6 +9,7 @@ pub mod author_lifecycle;
 pub mod canonical_epoch;
 pub mod chain_store;
 pub mod device_enrolment;
+pub mod observation;
 pub mod rebuild;
 pub mod replay;
 pub mod scope_key_custody;

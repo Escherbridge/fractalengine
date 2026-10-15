@@ -122,6 +122,16 @@ fn blob_store() -> (Arc<MockBlobStore>, BlobStoreHandle) {
     (store, handle)
 }
 
+/// SPEC-10 §8 rule 2 (CDL-SPEC10 B3): the door records window membership only in the shadow
+/// modes. Every test in this binary that sets the process-global mode sets this same value and
+/// none clears it, so concurrent tests never observe a different answer.
+fn enable_shadow_window_membership() {
+    std::env::set_var(
+        fe_database::migration::mode::MIGRATION_MODE_ENV_VAR,
+        "dual_emit_shadow",
+    );
+}
+
 async fn window_members(db: &Db, table: &str, row_id: &str) -> Vec<serde_json::Value> {
     let mut res = db
         .query("SELECT * FROM observation_window_member WHERE table = $t AND row_id = $r")
@@ -988,6 +998,7 @@ async fn pre_manifest_device_rows_follow_the_declared_bootstrap_rule() {
 
 #[tokio::test]
 async fn inbound_replicated_rows_never_enter_window_membership() {
+    enable_shadow_window_membership();
     let db = setup_db().await;
     let (_store, handle) = blob_store();
     seed_hierarchy(&db, VERSE, FRACTAL, PETAL, "node-a").await;
@@ -1065,6 +1076,7 @@ async fn inbound_replicated_rows_never_enter_window_membership() {
 
 #[tokio::test]
 async fn simulated_readings_carry_source_class_simulation_not_inferred_from_did() {
+    enable_shadow_window_membership();
     let db = setup_db().await;
     let (_store, handle) = blob_store();
     seed_hierarchy(&db, VERSE, FRACTAL, PETAL, "node-a").await;

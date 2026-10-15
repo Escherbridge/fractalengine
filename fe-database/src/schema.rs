@@ -350,10 +350,20 @@ define_table! {
         /// recorded here, never inferred, so B3's sealer can build the G6
         /// `ObservationSource` set without re-deriving it from `source_did`.
         source_class:  String => "TYPE string",
-        /// Sensor-time bucket this row belongs to (ms, caller-policy width).
+        /// Ingestion-HLC wall-time bucket start (ms) of the sealing window
+        /// (SPEC-10 §3.4 rule 2; `canon_log/AGENTS.md` §observation).
         window_bucket: i64    => "TYPE int",
         hlc_wall_ms:   i64    => "TYPE int",
-        hlc_counter:   i64    => "TYPE int"
+        hlc_counter:   i64    => "TYPE int",
+        /// Hex `op_id` of the kind-5 batch that sealed this row (CDL-SPEC10
+        /// B3); `NONE` while pending. Claimed before the append, released if
+        /// the append never lands (`canon_log/AGENTS.md` §observation).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sealed_op_id: Option<String> => "TYPE option<string>",
+        /// Why this accepted row can never be sealed (SPEC-10 §8 rule 3,
+        /// `legacy_succeeded_without_candidate`); `NONE` when coverable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uncovered: Option<String> => "TYPE option<string>"
     }
 }
 
@@ -524,6 +534,106 @@ define_table! {
     }
 }
 
+define_table! {
+    /// SPEC-10 §4.4 kind-5 reference row, written ONLY by
+    /// `ObservationBatchMaterializer` through the apply-marker commit; the field set is exactly
+    /// `ObservationBatchReference::to_row` after `cbor_to_json` (byte fields as lowercase hex).
+    /// Derived from `verified_op_log`, so not admin-clearable (`canon_log/AGENTS.md`
+    /// §observation).
+    table "observation_batch" => ObservationBatchRow (id: op_id) {
+        op_id:                String      => "TYPE string",
+        verse_id:             String      => "TYPE string",
+        petal_id:             String      => "TYPE string",
+        author_public_key:    String      => "TYPE string",
+        hlc_wall_ms:          i64         => "TYPE int",
+        hlc_counter:          i64         => "TYPE int",
+        hexon_artifact_id:    String      => "TYPE string",
+        hexon_stored_length:  i64         => "TYPE int",
+        hlc_min_wall_ms:      i64         => "TYPE int",
+        hlc_min_counter:      i64         => "TYPE int",
+        hlc_max_wall_ms:      i64         => "TYPE int",
+        hlc_max_counter:      i64         => "TYPE int",
+        sensor_time_min_ms:   i64         => "TYPE int",
+        sensor_time_max_ms:   i64         => "TYPE int",
+        stats_hash:           String      => "TYPE string",
+        count:                i64         => "TYPE int",
+        anchors:              Vec<String> => "TYPE array<string>",
+        asset_refs:           Vec<String> => "TYPE array<string>",
+        /// Each source's canonical signed bytes, lowercase hex, in signed order.
+        sources:              Vec<String> => "TYPE array<string>",
+        hexon_format_version: i64         => "TYPE int",
+        stats_stored_length:  i64         => "TYPE int",
+    }
+}
+
+define_table! {
+    /// SPEC-10 §5 hydrated catalog: one scalar reading per `reading_id`, the union of every
+    /// hydrated batch (`op_ids` names each batch that carried an identical copy). Derived and
+    /// rebuildable; local-only, never REST/MCP/BI-queryable (§5.1 rule 3).
+    table "observation_catalog_reading" => ObservationCatalogReading (id: reading_id) {
+        reading_id:     String      => "TYPE string",
+        op_ids:         Vec<String> => "TYPE array<string>",
+        verse_id:       String      => "TYPE string",
+        petal_id:       String      => "TYPE string",
+        anchor:         String      => "TYPE string",
+        anchor_node_id: String      => "TYPE string",
+        metric:         String      => "TYPE string",
+        value:          f64         => "TYPE float",
+        /// `f64::to_bits` as 16 lowercase hex digits: the exact IEEE-754 pattern (§8 rule 4).
+        value_bits:     String      => "TYPE string",
+        units:          String      => "TYPE string",
+        recorded_at:    String      => "TYPE string",
+        recorded_at_ms: i64         => "TYPE int",
+        hlc_wall_ms:    i64         => "TYPE int",
+        hlc_counter:    i64         => "TYPE int",
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        payload_id:     Option<String> => "TYPE option<string>",
+        /// The row's `ObservationSource`, canonical bytes as lowercase hex.
+        source:         String      => "TYPE string",
+    }
+}
+
+define_table! {
+    /// SPEC-10 §5 hydrated catalog: one device-payload reference per `payload_id`.
+    table "observation_catalog_payload" => ObservationCatalogPayload (id: payload_id) {
+        payload_id:           String      => "TYPE string",
+        op_ids:               Vec<String> => "TYPE array<string>",
+        verse_id:             String      => "TYPE string",
+        petal_id:             String      => "TYPE string",
+        anchor:               String      => "TYPE string",
+        anchor_node_id:       String      => "TYPE string",
+        format_id:            String      => "TYPE string",
+        recorded_at:          String      => "TYPE string",
+        recorded_at_ms:       i64         => "TYPE int",
+        hlc_wall_ms:          i64         => "TYPE int",
+        hlc_counter:          i64         => "TYPE int",
+        asset_ids:            Vec<String> => "TYPE array<string>",
+        asset_content_hashes: Vec<String> => "TYPE array<string>",
+        source:               String      => "TYPE string",
+    }
+}
+
+define_table! {
+    /// SPEC-10 §5.3 rule 4 conflict evidence: an identifier two hydrated batches disagree on.
+    /// Neither copy enters the catalog; this row names every batch involved.
+    table "observation_catalog_conflict" => ObservationCatalogConflict (id: conflict_key) {
+        /// `{observation_table}:{row_id}`.
+        conflict_key:      String      => "TYPE string",
+        observation_table: String      => "TYPE string ASSERT $value IN ['iot_reading', 'device_payload']",
+        row_id:            String      => "TYPE string",
+        op_ids:            Vec<String> => "TYPE array<string>",
+    }
+}
+
+define_table! {
+    /// SPEC-10 §5.3 rule 1: the one hydration outcome of each admitted kind-5 batch.
+    table "observation_hydration" => ObservationHydration (id: op_id) {
+        op_id:   String => "TYPE string",
+        outcome: String => "TYPE string ASSERT $value IN ['hydrated', 'referenced_artifact_unavailable', 'observation_batch_invalid']",
+        detail:  String => "TYPE string DEFAULT ''",
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Convenience helpers
 // ---------------------------------------------------------------------------
@@ -574,6 +684,11 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     Repo::<CanonSealedArtifact>::apply_schema(db).await?;
     Repo::<CanonScopeKeyIndex>::apply_schema(db).await?;
     Repo::<CanonDeviceEnrolment>::apply_schema(db).await?;
+    Repo::<ObservationBatchRow>::apply_schema(db).await?;
+    Repo::<ObservationCatalogReading>::apply_schema(db).await?;
+    Repo::<ObservationCatalogPayload>::apply_schema(db).await?;
+    Repo::<ObservationCatalogConflict>::apply_schema(db).await?;
+    Repo::<ObservationHydration>::apply_schema(db).await?;
 
     // Critical indexes for query performance
     db.query("DEFINE INDEX IF NOT EXISTS idx_node_petal ON TABLE node FIELDS petal_id")
@@ -727,6 +842,11 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
         .await?.check().map_err(|e| anyhow::anyhow!("idx_canon_scope_key_index_key: {e}"))?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_canon_device_enrolment_record ON TABLE canon_device_enrolment FIELDS record_id UNIQUE")
         .await?.check().map_err(|e| anyhow::anyhow!("idx_canon_device_enrolment_record: {e}"))?;
+    // SPEC-10 §4.4 rule 1: one reference row per kind-5 operation (CDL-SPEC10 B3).
+    db.query("DEFINE INDEX IF NOT EXISTS idx_observation_batch_op_id ON TABLE observation_batch FIELDS op_id UNIQUE")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_observation_batch_op_id: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_observation_window_member_sealed ON TABLE observation_window_member FIELDS sealed_op_id")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_observation_window_member_sealed: {e}"))?;
 
     Ok(())
 }
@@ -1035,6 +1155,21 @@ mod tests {
         // table is local-only by construction — it must never be reachable
         // from the admin dump/clear surface or the replicated-row path.
         assert!(!ALL_TABLE_NAMES.contains(&ObservationWindowMember::TABLE_NAME));
+    }
+
+    #[test]
+    fn observation_plane_tables_are_never_admin_clearable() {
+        // SPEC-10 §5.1 rule 3 / SPEC-4 §1.4 (CDL-SPEC10 B3): the reference projection and the
+        // hydrated catalog are local-only and never on the admin dump/clear surface.
+        for table in [
+            ObservationBatchRow::TABLE_NAME,
+            ObservationCatalogReading::TABLE_NAME,
+            ObservationCatalogPayload::TABLE_NAME,
+            ObservationCatalogConflict::TABLE_NAME,
+            ObservationHydration::TABLE_NAME,
+        ] {
+            assert!(!ALL_TABLE_NAMES.contains(&table), "{table}");
+        }
     }
 
     // --- DeviceFormat / DevicePayload schema ---

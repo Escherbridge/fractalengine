@@ -22,6 +22,12 @@ through one admission branch and one apply arm. That is legacy-row-plane data (p
 signatures), not canonical-log traffic: no operation envelope, segment or `/ws/canonical` frame
 moves. See §device-enrolment.
 
+**A second, narrower exception: the observation door gate (CDL-SPEC10 B3).** The two
+hot-plane ingest doors call `observation::door_records_window_membership()` and
+`window_bucket_of()`, which read only the local `FE_MIGRATION_MODE` flag and do arithmetic. In
+the default `legacy_only` mode the answer is "record nothing", so the live ingest path is
+unchanged. Nothing else in `observation` is reachable from a live handler (§observation).
+
 Dormant is a fact about wiring, not a licence for untested code: every gate here has a test,
 and the two obligations `fe-canonical-log`'s `capability/AGENTS.md` §revalidation and
 `branch/AGENTS.md` hand to Wave 3 are discharged in this module (see §obligations-discharged).
@@ -354,6 +360,136 @@ Tests: `fe-database/tests/canon_log_replay_payload_facts_test.rs`
 `a_shredded_scope_key_leaves_replay_pending_and_keeps_the_pre_shred_row`), both over the real DB
 thread with a drop-and-join restart.
 
+## §observation
+
+CDL-SPEC10 B3, 2026-10-15. SPEC-10 (`docs/spec/canonical-log/observation-plane.md`) is
+authoritative. `observation/` is the storage half of the observation plane; the pure half (kind
+5, payload codec, reduction) is `fe-canonical-log` `src/observation/`, and the hexon codec is
+`fe-query` `columnar/observation`. Nothing here touches a network: the artifact store is the
+local `canon_sealed_artifact` table, never the iroh blob store (CDL-NET stays NO_GO).
+
+| File | SPEC-10 | Contents |
+| --- | --- | --- |
+| `observation/mod.rs` | §3.4, §7.1, §8 | mode gates, the door gate, window grain, member/hot-row resolution, `observation_source`, the reference projection (`materialize_`/`rebuild_observation_references`, `ObservationReferenceSurface`) |
+| `observation/sealer.rs` | §3.4, §4.2 | `ObservationSealer`, `sealing_context`, `seal_shard`, `sign_observation_batch`, `branch_heads` |
+| `observation/hydrator.rs` | §5, §7.3 | `hydrate_observation_catalog`, the catalog types, `read_observation_batches` |
+| `observation/parity.rs` | §8 rule 4 | `compare_catalog_with_legacy` |
+
+**Modes (§8 table).** The door records membership and the sealer runs only in `dual_emit_shadow`
+and `shadow_rebuild`; hydration and comparison only in `shadow_rebuild`. Every entry point takes
+the mode explicitly (`ObservationSealer::new`, `hydrate_observation_catalog`,
+`compare_catalog_with_legacy`, the reference replay and rebuild) and refuses with `ModeDisabled`
+otherwise; only the door reads the process flag itself. Parity never flips the flag (SPEC-8 §3
+rule 4).
+
+**Membership is read, never derived (§3.4 rule 5).** The sealer selects ONLY
+`observation_window_member` rows, which only the two local doors write (fe-database
+`src/AGENTS.md` §window-membership). It reads each member's hot row back by the recorded id
+(§3.4 rule 6) and never scans `iot_reading`/`device_payload` or filters on `source_did`, so a
+replicated row stamped with this node's DID can never be selected
+(`sealer_never_signs_replicated_observations`).
+
+**Windows.** A window is `(petal, window_bucket)`, the bucket being the door's ingestion-HLC
+minute. It is closed once `now - close_grace_ms` is past its end (grace default 10 s, so an
+accept that took its HLC just before the boundary still lands in it). The width is the door
+constant `OBSERVATION_WINDOW_BUCKET_MS`, sealer policy and not a canonical number (§3.4 rule 2).
+
+**One sealing step, in order** (`ObservationSealer::prepare`, then `commit`):
+
+1. `sealing_context`: the chain's leaf epoch must still be the durable current epoch of its
+   epoch scope, and custody must hold the PETAL key at that epoch. The operation payload, the
+   hexon and the statistics artifact are all sealed under that one key (§4.2 rule 4); the
+   composed verifier finds it because its key lookup starts at the operation's exact scope.
+2. Write the hexon (B2), then read it back: a hexon that hydration would refuse (decompression
+   limits) is never signed.
+3. Seal both artifacts as `BulkArtifact`/`shard` through `seal_artifact`, the one SPEC-6 door.
+4. **§4.2 rule 2 self-check** (B1 §append-shard chose the sealer): `verify_chain_bytes` for
+   `append/shard` at each artifact's exact stored length. `SegmentTooLarge` means oversized.
+5. Build the payload from the writer's summary plus the artifact ids and lengths, and sign kind
+   5 over the branch heads with a fresh process HLC.
+6. Re-read the epoch. A bump discards the whole seal and starts again (§4.2 rule 4, three
+   attempts).
+7. Store both artifacts, **claim** the members (`sealed_op_id = op`), then
+   `admit_and_append_durably`. A refused admission releases the claim. A crash between the
+   claim and the append leaves a claim naming an operation that is not in `verified_op_log`;
+   every pass first releases such orphans. That ordering keeps "at most one batch per
+   observation by this author" (§3.4 rule 3) true across crashes. It assumes one sealer per
+   store: the claim is counted, and a short count releases everything and refuses with
+   `ConcurrentClaim`. Artifacts stored for a refused batch stay as unreferenced, local,
+   content-addressed bytes; nothing names them.
+8. Replay the reference projection to the new operation through B2b's `VerifierReplayFacts`.
+
+**Oversize (§3.4 rule 4).** A group that is too large splits into anchor halves, then (one
+anchor left) into `(hlc, id)` halves. A single observation that still does not fit is marked
+`uncovered`, never dropped silently. Other uncoverable members (§8 rule 3) are marked
+`uncovered` with the reason too: a `source_did` that is not an Ed25519 `did:key`, a non-finite
+value, no ingestion HLC, a missing hot row or asset hash, or a `decoder` class with no
+`DecoderIdentity` at the door. They count as `legacy_succeeded_without_candidate` in the parity
+report.
+
+**Sources (§7).** The class is the door's recorded `source_class`; the principal and the §7.2
+`source_label` are both the door's recorded `source_did`. Assumption (the door records no other
+label today): the `client` claim, connector id, or fleet id that §7.2 names is not available, so
+the DID stands in for every class. The class is inside the hash, so classes stay distinct.
+Reversal: record the label at the door (cheap, an additive column).
+
+**Reference projection.** `ObservationBatchMaterializer` (B1) writes `observation_batch` rows.
+The table is SCHEMAFULL in `schema.rs` with exactly the `to_row` fields and a UNIQUE `op_id`
+index, and is not in `ALL_TABLE_NAMES`. Integer fields are `int` (i64): a value above `i64::MAX`
+cannot be stored, so the commit fails and the position stays pending (`MaterializationFailed`),
+never fabricated. `ObservationReferenceSurface::reset_to_empty` drops every row, so there is one
+reference projection per store.
+
+**Hydration (§5).** `hydrate_observation_catalog` rebuilds the whole catalog on each call from
+every kind-5 operation of the branch (re-verified on read), so the catalog is a function of the
+admitted batch set and the outcomes (`catalog_root`, §5.3 rule 5). Per batch, in §5.2 order:
+
+1. The operation's own payload facts through `VerifierReplayFacts` (unavailable: retryable).
+2. The hydrator's chain must grant `fetch`, `decrypt` and `materialize` on `shard` in the batch
+   scope (§5.1 rule 1). Missing or refused is `referenced_artifact_unavailable`, never invalid.
+3. Each artifact must be held, re-hash to its id, and have the signed length (else unavailable).
+   It is then opened by `SealedProofEnvironment::open_bulk_artifact` under the batch's petal
+   topic: an absent key is unavailable; failed authentication, a wrong lane, a foreign topic, or
+   a class other than `shard` is invalid.
+4. `read_observation_hexon` (the profile), then the payload cross-check: row total, anchor set
+   (and each anchor is the §4.5 id of its node), HLC and sensor extrema, asset-hash set, every
+   source index in range and every source used, format version, and finite values.
+5. The pinned writer, re-run over the decoded rows, must reproduce the hexon AND the statistics
+   artifact byte for byte (§3.2 rule 8). That one comparison proves every §3.3 rule 3 aggregate
+   and the manifest's determinism, so there is no second statistics reader.
+
+Catalog rows live in `observation_catalog_{reading,payload}`, keyed by row id. Identical copies
+collapse into one row naming every batch; differing copies contribute nothing and go to
+`observation_catalog_conflict`, naming every batch (§5.3 rules 3-4). `observation_hydration`
+holds each outcome. None of these tables is in `ALL_TABLE_NAMES` or the fe-api query allowlist
+(§5.1 rule 3).
+
+**Analytics (G6, §7.3).** `read_observation_batches(base, op_ids)` returns the catalog rows of
+exactly those batches and an `AnalyticsSourceIdentity` whose observation input set is the sorted,
+deduplicated `op_ids`. A listed batch whose outcome is not `hydrated` fails the read
+(`BatchNotHydrated`), so the set never silently shrinks.
+
+**Parity (§8 rule 4).** `compare_catalog_with_legacy` compares only members whose claim names an
+operation in the verified log, field by field through `migration::comparator`, with `value`
+compared by exact IEEE-754 bit pattern (`QuantizedValue::f64_bit_pattern`). The legacy side's
+anchor and source are re-derived exactly as the sealer derives them.
+`ObservationParityReport::run_counters` feeds SPEC-8 §6.1 capture completeness and projection
+parity.
+
+**Mapping inventory.** `MappingInventory::register_observation_family` maps `InsertIotReadings`
+and `InsertDevicePayloads` onto the kind-5 schema hash and `observation-batch-reference@1`.
+`seeded()` is unchanged, and the D-CL20 kinds stay refused (§8 rule 8).
+
+**Not wired live (deliberate).** No scheduler calls the sealer or the hydrator: nothing in the
+running engine holds a chain granting the node `append/op` and `append/shard` (no live capability
+issuance exists), and §parallel-and-dormant keeps `canon_log` out of the dispatch loop. A caller
+with such a chain constructs `ObservationSealer` in a shadow mode and calls
+`seal_closed_windows(now)`.
+
+Tests: `fe-database/tests/observation_plane_test.rs` (SPEC-10 §10 tests 10-16 and 19, a real DB
+thread per test, the restart case with drop-and-join), plus unit tests in `observation/*.rs`,
+`migration/mapping_inventory.rs` and `migration/comparator.rs`.
+
 ## §epoch-state
 
 `scope_epoch_state` persists `current_epoch` and the admitted bump operation IDs per exact
@@ -669,6 +805,9 @@ SPEC-4 §8 names thirteen tests. Eleven are in
 `fe-database/tests/canon_log_materialization_test.rs` under their exact spec names; tests 12
 and 13 belong to the pure reduction contract and live in `fe-canonical-log`
 (`materialize/traits.rs`), because they are about what a reduction may read, not about storage.
+
+SPEC-10 §10 tests 10-16 and 19 are in `fe-database/tests/observation_plane_test.rs` under
+their exact names (§observation).
 
 CDL-SPEC10 B2b's replay-payload-facts flows (§replay-payload-facts) are in
 `fe-database/tests/canon_log_replay_payload_facts_test.rs`. They are implementation tests of
