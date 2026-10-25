@@ -127,6 +127,41 @@ pub trait VerseReplicator: Send + Sync {
     /// arrive through the live pump when the content lands).
     fn snapshot(&self) -> ReplicatorFuture<'_, anyhow::Result<Vec<RowChange>>>;
 
+    /// Entries authored by `author_id` whose table matches one of
+    /// `prefixes` (each a bare table name, e.g. `"role"` or `"role/"` —
+    /// a trailing slash is stripped). This is the §2.5 "re-read on
+    /// empowerment" seam: when a grantor's `role_at` rises, the sync
+    /// thread replays exactly this — their `role`/`__shards`/`__holders`/
+    /// `verse` entries — straight from the replica through the same
+    /// inbound apply path a live row takes, recovering whatever this
+    /// author's statements the fabric held back while they lacked
+    /// authority (the fabric never stores a held statement itself; the
+    /// replica already does).
+    ///
+    /// The default filters [`VerseReplicator::snapshot`] — correct but
+    /// O(whole replica) per call. [`IrohDocsReplicator`] overrides it with
+    /// a direct `Query::author(..).key_prefix(..)` per prefix; every other
+    /// implementation (the mock, `fe-sim`'s virtual transport) inherits
+    /// this default unchanged.
+    fn entries_by_author(
+        &self,
+        author_id: &str,
+        prefixes: &[&str],
+    ) -> ReplicatorFuture<'_, anyhow::Result<Vec<RowChange>>> {
+        let author_id = author_id.to_string();
+        let tables: Vec<String> = prefixes
+            .iter()
+            .map(|p| p.trim_end_matches('/').to_string())
+            .collect();
+        Box::pin(async move {
+            let all = self.snapshot().await?;
+            Ok(all
+                .into_iter()
+                .filter(|c| c.author_id == author_id && tables.iter().any(|t| t == &c.table))
+                .collect())
+        })
+    }
+
     /// Close the replica, flushing any pending state.
     fn close(&self) -> ReplicatorFuture<'_, anyhow::Result<()>>;
 }
@@ -141,6 +176,14 @@ pub trait VerseReplicator: Send + Sync {
 /// Every `write_row` call broadcasts a `RowChange` to all active subscribers.
 pub struct MockVerseReplicator {
     entries: Mutex<HashMap<String, Vec<u8>>>,
+    /// RP-5 §2.5 step 3: `role/` keys need per-(key, author) retention so a
+    /// unit test can exercise the "snapshot reads every author" guarantee
+    /// without a real iroh loopback (`entries` is single-author-per-key,
+    /// matching `single_latest_per_key` — exactly the gap role rows must
+    /// NOT have). Seeded by `write_row` (for this instance's own author)
+    /// and by `seed_role_entry` (to simulate another author's write
+    /// landing in the shared doc); read by `snapshot`.
+    role_entries: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
     subscribers: Mutex<Vec<mpsc::Sender<RowChange>>>,
     author_id: String,
     closed: Mutex<bool>,
@@ -150,6 +193,7 @@ impl MockVerseReplicator {
     pub fn new(author_id: impl Into<String>) -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
+            role_entries: Mutex::new(HashMap::new()),
             subscribers: Mutex::new(Vec::new()),
             author_id: author_id.into(),
             closed: Mutex::new(false),
@@ -168,6 +212,20 @@ impl MockVerseReplicator {
             .lock()
             .map(|m| m.contains_key(&key))
             .unwrap_or(false)
+    }
+
+    /// Test-only: seed another author's `role/{record_id}` entry directly
+    /// into this replica's store, simulating a peer's write landing in the
+    /// shared doc without standing up a real loopback transport (RP-5
+    /// §2.5 step 3). Scoped to `role` because that is the one table whose
+    /// multi-author semantics need exercising here.
+    pub fn seed_role_entry(&self, record_id: &str, author_id: &str, data: &[u8]) {
+        self.role_entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(record_id.to_string())
+            .or_default()
+            .insert(author_id.to_string(), data.to_vec());
     }
 }
 
@@ -193,6 +251,14 @@ impl VerseReplicator for MockVerseReplicator {
                 .lock()
                 .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?
                 .insert(key, data.clone());
+            if table == "role" {
+                self.role_entries
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?
+                    .entry(record_id.clone())
+                    .or_default()
+                    .insert(self.author_id.clone(), data.clone());
+            }
 
             // Notify subscribers. `is_tombstone` is derived from the row content so
             // a soft-deleted node propagates as a tombstone the merge path honors
@@ -238,6 +304,11 @@ impl VerseReplicator for MockVerseReplicator {
                 .lock()
                 .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?
                 .clone();
+            let role_entries = self
+                .role_entries
+                .lock()
+                .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?
+                .clone();
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -247,6 +318,14 @@ impl VerseReplicator for MockVerseReplicator {
                 let Some((table, record_id)) = key.split_once('/') else {
                     continue;
                 };
+                if table == "role" {
+                    // RP-5 §2.5 step 3: `role` rows come exclusively from
+                    // `role_entries` below (ALL authors), never from the
+                    // single-author `entries` map — a single-winner view
+                    // here would reproduce the exact `single_latest_per_key`
+                    // shadowing bug this step closes.
+                    continue;
+                }
                 out.push(RowChange {
                     table: table.to_string(),
                     record_id: record_id.to_string(),
@@ -256,6 +335,19 @@ impl VerseReplicator for MockVerseReplicator {
                     is_tombstone: row_is_tombstone(&data),
                     data,
                 });
+            }
+            for (record_id, by_author) in role_entries {
+                for (author_id, data) in by_author {
+                    out.push(RowChange {
+                        table: "role".to_string(),
+                        record_id: record_id.clone(),
+                        content_hash: *blake3::hash(&data).as_bytes(),
+                        author_id,
+                        timestamp: now,
+                        is_tombstone: row_is_tombstone(&data),
+                        data,
+                    });
+                }
             }
             Ok(out)
         })
@@ -709,71 +801,68 @@ impl VerseReplicator for IrohDocsReplicator {
 
             // Latest entry per key (a key may have been written by several
             // authors); `include_empty` keeps `Doc::del` tombstones in the set.
-            let query = iroh_docs::store::Query::single_latest_per_key()
+            let latest_query = iroh_docs::store::Query::single_latest_per_key()
                 .include_empty()
                 .build();
-            let stream = doc
-                .get_many(query)
-                .await
-                .map_err(|e| anyhow::anyhow!("get_many for reconciliation: {e}"))?;
-            let mut stream = std::pin::pin!(stream);
+            let mut out = collect_query_rows(&doc, &blobs, latest_query).await;
+            // RP-5 §2.5 step 3: `role` statements must be read from ALL
+            // authors — `single_latest_per_key` picks the single physically
+            // newest entry for a KEY across every author who wrote it, so a
+            // later forged entry on the owner's own key (grantor mismatch,
+            // denied by `validate_statement`) would shadow the owner's
+            // genuine entry from this pass entirely, hiding it from every
+            // fresh peer whose only source is this snapshot. Drop the
+            // single-winner `role` rows this pass picked up and replace them
+            // with every author's entry under the `role/` prefix.
+            out.retain(|c| c.table != "role");
+            let role_query = iroh_docs::store::Query::key_prefix("role/")
+                .include_empty()
+                .build();
+            out.extend(collect_query_rows(&doc, &blobs, role_query).await);
+            Ok(out)
+        })
+    }
 
+    fn entries_by_author(
+        &self,
+        author_id: &str,
+        prefixes: &[&str],
+    ) -> ReplicatorFuture<'_, anyhow::Result<Vec<RowChange>>> {
+        let author_id = author_id.to_string();
+        let tables: Vec<String> = prefixes
+            .iter()
+            .map(|p| p.trim_end_matches('/').to_string())
+            .collect();
+        Box::pin(async move {
+            if let Some(reason) = self.open_error() {
+                anyhow::bail!("replica is not replicating: document open failed: {reason}");
+            }
+            let Some(doc) = self.live_doc() else {
+                return VerseReplicator::entries_by_author(
+                    &self.inner,
+                    &author_id,
+                    &tables.iter().map(String::as_str).collect::<Vec<_>>(),
+                )
+                .await;
+            };
+            let Some(stack) = self.engine_holder.stack() else {
+                anyhow::bail!("document open but stack unavailable");
+            };
+            let blobs = stack.blob_store().clone();
+            let author = match author_id_from_did_key(&author_id) {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::debug!(author = %author_id, "entries_by_author: not a parseable did:key — nothing to re-read: {e}");
+                    return Ok(Vec::new());
+                }
+            };
             let mut out = Vec::new();
-            while let Some(entry) = stream.next().await {
-                let entry = match entry {
-                    Ok(entry) => entry,
-                    Err(e) => {
-                        tracing::warn!(ns = %self.namespace_id, "reconciliation query entry failed: {e}");
-                        continue;
-                    }
-                };
-                let key = String::from_utf8_lossy(entry.key()).into_owned();
-                let Some((table, record_id)) = key.split_once('/') else {
-                    tracing::warn!(key = %key, "replica entry key not in table/id form — skipped");
-                    continue;
-                };
-                let meta = (
-                    table.to_string(),
-                    record_id.to_string(),
-                    *entry.content_hash().as_bytes(),
-                    author_did_key(&entry.author()),
-                    entry.timestamp(),
-                );
-                if entry.record().is_empty() {
-                    // Deletion marker: no content to read.
-                    out.push(RowChange {
-                        table: meta.0,
-                        record_id: meta.1,
-                        content_hash: meta.2,
-                        author_id: meta.3,
-                        timestamp: meta.4,
-                        is_tombstone: true,
-                        data: Vec::new(),
-                    });
-                    continue;
-                }
-                match read_blob_bytes(&blobs, &entry.content_hash()).await {
-                    Ok(data) => {
-                        let data = data.to_vec();
-                        out.push(RowChange {
-                            table: meta.0,
-                            record_id: meta.1,
-                            content_hash: meta.2,
-                            author_id: meta.3,
-                            timestamp: meta.4,
-                            is_tombstone: row_is_tombstone(&data),
-                            data,
-                        });
-                    }
-                    Err(e) => {
-                        // Content not local yet — the live pump emits it when
-                        // the download completes, so nothing is lost.
-                        tracing::debug!(
-                            key = %key,
-                            "reconciliation snapshot: content not local — deferred to live pump: {e}"
-                        );
-                    }
-                }
+            for table in &tables {
+                let query = iroh_docs::store::Query::author(author)
+                    .key_prefix(format!("{table}/"))
+                    .include_empty()
+                    .build();
+                out.extend(collect_query_rows(&doc, &blobs, query).await);
             }
             Ok(out)
         })
@@ -896,6 +985,93 @@ pub(crate) fn peer_did_key(peer: &iroh::PublicKey) -> String {
 fn author_did_key(author: &AuthorId) -> String {
     fe_identity::did_key::did_key_from_public_key_bytes(author.as_bytes())
         .unwrap_or_else(|| author.to_string())
+}
+
+/// Inverse of [`author_did_key`]: parse an app-level `did:key` string back
+/// to the iroh-docs `AuthorId` it was derived from — the §2.5 re-read seam
+/// (`entries_by_author`) needs this to query the replica by author.
+fn author_id_from_did_key(did: &str) -> anyhow::Result<AuthorId> {
+    let verifying_key = fe_identity::did_key::public_key_from_did_key(did)?;
+    Ok(AuthorId::from(verifying_key.to_bytes()))
+}
+
+/// Shared `doc.get_many(query)` → `Vec<RowChange>` loop, used by both
+/// `snapshot` passes (single-latest-per-key, then the §2.5 all-authors
+/// `role/` pass) and by `entries_by_author` (once per table prefix). A
+/// `get_many` failure or a malformed key is a loud warn, never a
+/// propagated error — the same best-effort stance the single pass this
+/// replaces already took per entry.
+async fn collect_query_rows(
+    doc: &Doc,
+    blobs: &iroh_blobs::api::Store,
+    query: iroh_docs::store::Query,
+) -> Vec<RowChange> {
+    let stream = match doc.get_many(query).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("replica query failed: {e}");
+            return Vec::new();
+        }
+    };
+    let mut stream = std::pin::pin!(stream);
+    let mut out = Vec::new();
+    while let Some(entry) = stream.next().await {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                tracing::warn!("replica query entry failed: {e}");
+                continue;
+            }
+        };
+        let key = String::from_utf8_lossy(entry.key()).into_owned();
+        let Some((table, record_id)) = key.split_once('/') else {
+            tracing::warn!(key = %key, "replica entry key not in table/id form — skipped");
+            continue;
+        };
+        let meta = (
+            table.to_string(),
+            record_id.to_string(),
+            *entry.content_hash().as_bytes(),
+            author_did_key(&entry.author()),
+            entry.timestamp(),
+        );
+        if entry.record().is_empty() {
+            // Deletion marker: no content to read.
+            out.push(RowChange {
+                table: meta.0,
+                record_id: meta.1,
+                content_hash: meta.2,
+                author_id: meta.3,
+                timestamp: meta.4,
+                is_tombstone: true,
+                data: Vec::new(),
+            });
+            continue;
+        }
+        match read_blob_bytes(blobs, &entry.content_hash()).await {
+            Ok(data) => {
+                let data = data.to_vec();
+                out.push(RowChange {
+                    table: meta.0,
+                    record_id: meta.1,
+                    content_hash: meta.2,
+                    author_id: meta.3,
+                    timestamp: meta.4,
+                    is_tombstone: row_is_tombstone(&data),
+                    data,
+                });
+            }
+            Err(e) => {
+                // Content not local yet — the live pump emits it when the
+                // download completes, so nothing is lost.
+                tracing::debug!(
+                    key = %key,
+                    "replica query: content not local — deferred to live pump: {e}"
+                );
+            }
+        }
+    }
+    out
 }
 
 /// Read one blob's full content bytes from the iroh-blobs store.
@@ -1633,6 +1809,126 @@ mod tests {
         // Close must leave the swarm cleanly on both sides.
         alice.close().await.unwrap();
         bob.close().await.unwrap();
+    }
+
+    /// RP-5 §2.5 step 3: `single_latest_per_key` picks the single
+    /// PHYSICALLY newest entry at a key across every author who wrote it —
+    /// so an attacker who writes a forged, later-timestamped entry to the
+    /// SAME key as the owner's genuine role statement (grantor mismatch,
+    /// permanently denied once read) would shadow the owner's real entry
+    /// from that query entirely. `snapshot()`'s all-authors `role/` pass
+    /// must still surface the owner's genuine entry alongside the forged
+    /// one. Two real endpoints, two real authors, over loopback.
+    #[tokio::test]
+    async fn snapshot_replay_sees_the_owners_role_statement_despite_a_later_forged_entry_on_the_same_key(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let (Some(ep_owner), Some(ep_attacker)) = (
+            bind_loopback_endpoint(51).await,
+            bind_loopback_endpoint(52).await,
+        ) else {
+            return; // sandboxed environment without UDP — tolerated
+        };
+
+        let stack_owner = Arc::new(
+            DocsStack::spawn(ep_owner.clone(), tmp.path().join("owner"))
+                .await
+                .expect("owner stack spawns"),
+        );
+        let stack_attacker = Arc::new(
+            DocsStack::spawn(ep_attacker.clone(), tmp.path().join("attacker"))
+                .await
+                .expect("attacker stack spawns"),
+        );
+        let holder_owner = Arc::new(IrohDocsEngineHolder::online(stack_owner.clone()));
+        let holder_attacker = Arc::new(IrohDocsEngineHolder::online(stack_attacker.clone()));
+
+        let secret = [11u8; 32];
+        let ns_id_hex = hex::encode(secret);
+        let owner = IrohDocsReplicator::new(
+            "verse-r5".to_string(),
+            ns_id_hex.clone(),
+            hex::encode(secret),
+            "did:key:owner-app".to_string(),
+            holder_owner,
+        );
+        let attacker = IrohDocsReplicator::new(
+            "verse-r5".to_string(),
+            ns_id_hex,
+            hex::encode(secret),
+            "did:key:attacker-app".to_string(),
+            holder_attacker,
+        );
+        owner.open_document().await.expect("owner opens doc");
+        attacker.open_document().await.expect("attacker opens doc");
+
+        // F20: the AUTHENTICATED author is the endpoint identity, never the
+        // app-level did string passed to `new` — the owner's genuine grant
+        // and the attacker's forgery must both be keyed on this.
+        let owner_did = peer_did_key(&ep_owner.id());
+        let attacker_did = peer_did_key(&ep_attacker.id());
+        let record_id = format!("VERSE#verse-r5/did:key:peer/{owner_did}");
+
+        let mut owner_rx = owner.subscribe().await.expect("owner subscribes");
+        let mut attacker_rx = attacker.subscribe().await.expect("attacker subscribes");
+        attacker
+            .start_sync(vec![ep_owner.addr()])
+            .await
+            .expect("attacker syncs with owner");
+        owner
+            .start_sync(Vec::new())
+            .await
+            .expect("owner's doc serves entries");
+
+        // The owner's genuine role statement.
+        let genuine = br#"{"scope":"VERSE#verse-r5","peer_did":"did:key:peer","grantor_did":"PLACEHOLDER","role":"editor","revoked":false,"hlc":1}"#;
+        let genuine = String::from_utf8_lossy(genuine).replace("PLACEHOLDER", &owner_did);
+        owner
+            .write_row("role", &record_id, genuine.as_bytes())
+            .await
+            .expect("owner writes the genuine statement");
+
+        // Wait for the genuine entry to actually reach the attacker side —
+        // this is what makes the attacker's write strictly LATER (real
+        // wall-clock time), the exact precondition under which
+        // `single_latest_per_key` would pick the forgery over the original.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(20), attacker_rx.recv())
+            .await
+            .expect("the genuine entry reaches the attacker side");
+
+        // The attacker writes a forged entry to the SAME key, claiming the
+        // owner as grantor — the key itself is just a string; nothing
+        // about iroh-docs stops another author writing to it.
+        let forged = br#"{"scope":"VERSE#verse-r5","peer_did":"did:key:peer","grantor_did":"PLACEHOLDER","role":"manager","revoked":false,"hlc":99}"#;
+        let forged = String::from_utf8_lossy(forged).replace("PLACEHOLDER", &owner_did);
+        attacker
+            .write_row("role", &record_id, forged.as_bytes())
+            .await
+            .expect("attacker writes the forged statement");
+
+        // Wait for the forgery to reach the owner's own store too.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(20), owner_rx.recv())
+            .await
+            .expect("the forged entry reaches the owner side");
+
+        let snap = owner.snapshot().await.expect("owner snapshots the doc");
+        let role_rows: Vec<&RowChange> = snap.iter().filter(|c| c.table == "role").collect();
+        let owner_row = role_rows
+            .iter()
+            .find(|c| c.author_id == owner_did && c.record_id == record_id)
+            .expect(
+                "the owner's genuine entry must be visible despite a later forged entry on the \
+                 same key — this is exactly what the all-authors `role/` pass exists for",
+            );
+        assert_eq!(owner_row.data, genuine.as_bytes());
+        let attacker_row = role_rows
+            .iter()
+            .find(|c| c.author_id == attacker_did && c.record_id == record_id)
+            .expect("the forged entry is also visible (and separately denied by validate_statement)");
+        assert_eq!(attacker_row.data, forged.as_bytes());
+
+        owner.close().await.unwrap();
+        attacker.close().await.unwrap();
     }
 
     /// F20/M1 finding 3: the app-level `derive_namespace_id` must produce

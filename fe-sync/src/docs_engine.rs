@@ -19,15 +19,205 @@
 //! <dir>/.fe-store-format   — store format marker (see p2p_store_migration.rs)
 //! ```
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::{Context as _, Result};
 
 use iroh::protocol::Router;
+use iroh_blobs::provider::events::{
+    AbortReason, ConnectMode, EventMask, EventSender, ProviderMessage, RequestMode,
+};
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::BlobsProtocol;
 use iroh_docs::protocol::Docs;
 use iroh_gossip::Gossip;
+
+/// One verse's admission snapshot for the blob-ALPN request filter: the
+/// owner, whether the verse is open to anyone (`default_access` at or
+/// above Viewer), and every DID an admitted role statement currently
+/// resolves to Viewer+ (`VerseFabric::access_snapshot`, `src/AGENTS.md`
+/// §role-view).
+#[derive(Clone, Default)]
+pub struct VerseAccessSnapshot {
+    pub owner_did: Option<String>,
+    pub open_to_all: bool,
+    pub viewer_dids: HashSet<String>,
+}
+
+impl VerseAccessSnapshot {
+    fn admits(&self, did: &str) -> bool {
+        self.owner_did.as_deref() == Some(did) || self.open_to_all || self.viewer_dids.contains(did)
+    }
+}
+
+/// RP-5 §transport-admission-control item 5 / `AGENTS.md` §tileset-security
+/// "Risk 2" (critic tick 4, AC-21(e)): shared state for the blobs-ALPN
+/// `GetRequest` filter. Keyed by verse, because a tileset root is learned
+/// per verse (`TilesetProviderMap`) and a verse's role view is per-verse
+/// too. A hash this gate has never recorded as a tileset root carries "no
+/// tileset context" and is let through unconditionally — row-entry content
+/// and `two_peer_blob_exchange` fetches are exactly that case (the risk
+/// note's requirement). The sync thread updates this after every event that
+/// can move a verse's role view or tileset-root bookkeeping; it starts
+/// empty, which correctly refuses every gated hash until at least one verse
+/// is open ("a requester with no role in any open verse is refused" is also
+/// the zero-verse case).
+#[derive(Clone, Default)]
+pub struct BlobAccessGate(Arc<GateState>);
+
+#[derive(Default)]
+struct GateState {
+    verse_access: RwLock<HashMap<String, VerseAccessSnapshot>>,
+    /// tileset root hash -> the verse it was learned on.
+    tileset_roots: RwLock<HashMap<[u8; 32], String>>,
+    /// `connection_id -> did:key`, recorded at `ClientConnected` and
+    /// dropped at `ConnectionClosed` — a `GetRequest` event carries no
+    /// identity of its own, only the `connection_id` it arrived on.
+    connections: Mutex<HashMap<u64, String>>,
+}
+
+impl BlobAccessGate {
+    /// Replace one verse's access snapshot (called after the fabric's role
+    /// view settles).
+    pub fn set_verse_access(&self, verse_id: &str, snapshot: VerseAccessSnapshot) {
+        self.0
+            .verse_access
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(verse_id.to_string(), snapshot);
+    }
+
+    /// Record (or re-affirm) that `root` is a tileset root learned on
+    /// `verse_id` — the reverse lookup the `GetRequest` filter needs.
+    pub fn record_tileset_root(&self, verse_id: &str, root: [u8; 32]) {
+        self.0
+            .tileset_roots
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(root, verse_id.to_string());
+    }
+
+    /// Forget everything learned about a verse that has closed.
+    pub fn forget_verse(&self, verse_id: &str) {
+        self.0
+            .verse_access
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(verse_id);
+        self.0
+            .tileset_roots
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, v| v != verse_id);
+    }
+
+    /// Admission decision for one requested hash: `true` when the hash
+    /// carries no tracked tileset context (unaffected), or when it does and
+    /// `did` holds Viewer+ in the verse that root was learned on.
+    fn admits_hash(&self, did: &str, hash: &[u8; 32]) -> bool {
+        let Some(verse_id) = self
+            .0
+            .tileset_roots
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(hash)
+            .cloned()
+        else {
+            return true;
+        };
+        self.0
+            .verse_access
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&verse_id)
+            .is_some_and(|snapshot| snapshot.admits(did))
+    }
+
+    fn note_connected(&self, connection_id: u64, did: Option<String>) {
+        if let Some(did) = did {
+            self.0
+                .connections
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(connection_id, did);
+        }
+    }
+
+    fn note_closed(&self, connection_id: u64) {
+        self.0
+            .connections
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&connection_id);
+    }
+
+    fn did_for_connection(&self, connection_id: u64) -> Option<String> {
+        self.0
+            .connections
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&connection_id)
+            .cloned()
+    }
+}
+
+/// Build the blobs-ALPN `EventSender` implementing the request filter:
+/// intercepts `GetRequest` (the whole-blob/HashSeq-root fetch shape
+/// tileset downloads use — `AGENTS.md` §tileset-transfer) and consults
+/// [`BlobAccessGate`]; anything without tracked tileset context passes
+/// through untouched. `ClientConnected`/`ConnectionClosed` are
+/// notify-only — just enough to map a `GetRequest`'s `connection_id` to the
+/// dialing `EndpointId`'s did:key, since the request event itself carries
+/// no identity.
+fn spawn_blob_access_filter(gate: BlobAccessGate) -> EventSender {
+    let mask = EventMask {
+        connected: ConnectMode::Notify,
+        get: RequestMode::Intercept,
+        ..EventMask::DEFAULT
+    };
+    let (events, mut rx) = EventSender::channel(64, mask);
+    tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            match msg {
+                ProviderMessage::ClientConnectedNotify(notify) => {
+                    let did = notify
+                        .endpoint_id
+                        .map(|id| crate::replicator::peer_did_key(&id));
+                    gate.note_connected(notify.connection_id, did);
+                }
+                ProviderMessage::ConnectionClosed(msg) => {
+                    gate.note_closed(msg.inner.connection_id);
+                }
+                ProviderMessage::GetRequestReceived(msg) => {
+                    let hash: [u8; 32] = msg.inner.request.hash.into();
+                    let connection_id = msg.inner.connection_id;
+                    let did = gate.did_for_connection(connection_id);
+                    let admitted = did.as_deref().is_some_and(|d| gate.admits_hash(d, &hash));
+                    let decision = if admitted {
+                        Ok(())
+                    } else {
+                        tracing::warn!(
+                            connection_id,
+                            "blob-ALPN GetRequest refused — requester holds no role in the \
+                             tileset's verse (AC-21(e))"
+                        );
+                        Err(AbortReason::Permission)
+                    };
+                    let _ = msg.tx.send(decision).await;
+                    // Drain the per-request update channel so the
+                    // responder's progress sends never block on a reader we
+                    // otherwise never consult.
+                    let mut updates = msg.rx;
+                    tokio::spawn(async move { while let Ok(Some(_)) = updates.recv().await {} });
+                }
+                _ => {}
+            }
+        }
+    });
+    events
+}
 
 /// Env var selecting the persistent P2P data dir.
 pub const P2P_DIR_ENV_VAR: &str = "FE_P2P_DIR";
@@ -65,6 +255,10 @@ pub struct DocsStack {
     docs: Docs,
     router: Router,
     data_dir: PathBuf,
+    /// RP-5 step 6 (AC-21(e)): the blob-ALPN request filter's shared state.
+    /// The sync thread updates it via [`DocsStack::blob_access_gate`] as
+    /// verses open/close and their role views settle.
+    blob_access_gate: BlobAccessGate,
 }
 
 impl DocsStack {
@@ -117,7 +311,13 @@ impl DocsStack {
         let blob_store = FsStore::load(data_dir.join("blobs"))
             .await
             .map_err(|e| anyhow::anyhow!("opening persistent iroh-blobs store: {e}"))?;
-        let blobs = BlobsProtocol::new(&blob_store, None);
+        // RP-5 step 6 / AC-21(e): the blob-ALPN request filter (closes
+        // `AGENTS.md` §tileset-security "Risk 2"). Built fresh per stack —
+        // the sync thread populates it as verses open and their role views
+        // settle (`DocsStack::blob_access_gate`).
+        let blob_access_gate = BlobAccessGate::default();
+        let blob_events = spawn_blob_access_filter(blob_access_gate.clone());
+        let blobs = BlobsProtocol::new(&blob_store, Some(blob_events));
         let gossip = Gossip::builder()
             // F7's distributed-query transport rides gossip envelopes (the
             // request carries a shard list; responses carry per-shard
@@ -177,7 +377,16 @@ impl DocsStack {
             docs,
             router,
             data_dir,
+            blob_access_gate,
         })
+    }
+
+    /// The blob-ALPN request filter's shared state (RP-5 step 6 /
+    /// AC-21(e)) — the sync thread calls `set_verse_access`/
+    /// `record_tileset_root`/`forget_verse` on this as verses open, close,
+    /// and their role views settle.
+    pub fn blob_access_gate(&self) -> &BlobAccessGate {
+        &self.blob_access_gate
     }
 
     /// The bound endpoint the stack rides on.
@@ -378,6 +587,127 @@ mod tests {
         };
         let result = DocsStack::spawn(endpoint, &bad_dir).await;
         assert!(result.is_err(), "spawn under a file path must fail");
+    }
+
+    /// RP-5 step 6 / AC-21(e): the blob-ALPN `GetRequest` filter refuses a
+    /// requester with no role in any open verse and serves the same
+    /// requester once it holds Viewer+ in the verse the root was learned
+    /// on — the end-to-end proof for `BlobAccessGate`/
+    /// `spawn_blob_access_filter`. Two real stacks over loopback.
+    #[tokio::test]
+    async fn a_verse_stranger_is_refused_the_blob_alpn_and_an_open_verse_viewer_is_served() {
+        use fe_runtime::blob_transport::BlobTransport;
+
+        let (Some(provider_ep), Some(requester_ep)) =
+            (bind_test_endpoint(61).await, bind_test_endpoint(62).await)
+        else {
+            return; // sandboxed environment without UDP — tolerated
+        };
+
+        let provider_dir = tempfile::TempDir::new().unwrap();
+        let requester_dir = tempfile::TempDir::new().unwrap();
+        let provider_stack = Arc::new(
+            DocsStack::spawn(provider_ep.clone(), provider_dir.path())
+                .await
+                .expect("provider stack spawns"),
+        );
+        let requester_stack = Arc::new(
+            DocsStack::spawn(requester_ep.clone(), requester_dir.path())
+                .await
+                .expect("requester stack spawns"),
+        );
+
+        let provider_transport = crate::blob_transport::IrohBlobTransport::from_stack(&provider_stack);
+        let hash = provider_transport
+            .add(bytes::Bytes::from_static(b"tileset root bytes"))
+            .await
+            .expect("provider stores the root blob");
+        provider_stack
+            .blob_access_gate()
+            .record_tileset_root("verse-1", hash);
+
+        let requester_did = crate::replicator::peer_did_key(&requester_ep.id());
+        let provider_addr =
+            crate::blob_transport::IrohBlobTransport::provider_ref(&provider_ep.addr())
+                .expect("provider address resolves");
+        let requester_transport =
+            crate::blob_transport::IrohBlobTransport::from_stack(&requester_stack);
+
+        // No verse access registered at all for this hash's verse — refused.
+        let refused = requester_transport.fetch(&provider_addr, hash, 1024).await;
+        assert!(
+            refused.is_err(),
+            "a requester with no role in any open verse must be refused"
+        );
+
+        // The SAME requester, now a declared Viewer of the root's verse, is served.
+        provider_stack.blob_access_gate().set_verse_access(
+            "verse-1",
+            VerseAccessSnapshot {
+                owner_did: None,
+                open_to_all: false,
+                viewer_dids: [requester_did].into_iter().collect(),
+            },
+        );
+        let served = requester_transport.fetch(&provider_addr, hash, 1024).await;
+        assert!(
+            served.is_ok(),
+            "a verse Viewer must be served the tileset root: {:?}",
+            served.err()
+        );
+        assert_eq!(served.unwrap().as_ref(), b"tileset root bytes");
+
+        provider_stack.shutdown().await;
+        requester_stack.shutdown().await;
+    }
+
+    /// A hash never recorded as a tileset root (ordinary row-entry content,
+    /// or a `two_peer_blob_exchange` hash) carries no tileset context and
+    /// is unaffected by the filter — the risk note's explicit requirement.
+    #[tokio::test]
+    async fn a_hash_with_no_tileset_context_is_unaffected_by_the_filter() {
+        use fe_runtime::blob_transport::BlobTransport;
+
+        let (Some(provider_ep), Some(requester_ep)) =
+            (bind_test_endpoint(63).await, bind_test_endpoint(64).await)
+        else {
+            return;
+        };
+        let provider_dir = tempfile::TempDir::new().unwrap();
+        let requester_dir = tempfile::TempDir::new().unwrap();
+        let provider_stack = Arc::new(
+            DocsStack::spawn(provider_ep.clone(), provider_dir.path())
+                .await
+                .expect("provider stack spawns"),
+        );
+        let requester_stack = Arc::new(
+            DocsStack::spawn(requester_ep.clone(), requester_dir.path())
+                .await
+                .expect("requester stack spawns"),
+        );
+
+        let provider_transport = crate::blob_transport::IrohBlobTransport::from_stack(&provider_stack);
+        let hash = provider_transport
+            .add(bytes::Bytes::from_static(b"an ordinary row-entry blob"))
+            .await
+            .expect("provider stores the blob");
+        // Deliberately NOT recorded as a tileset root — no `verse_access`
+        // registered anywhere either.
+
+        let provider_addr =
+            crate::blob_transport::IrohBlobTransport::provider_ref(&provider_ep.addr())
+                .expect("provider address resolves");
+        let requester_transport =
+            crate::blob_transport::IrohBlobTransport::from_stack(&requester_stack);
+        let result = requester_transport.fetch(&provider_addr, hash, 1024).await;
+        assert!(
+            result.is_ok(),
+            "a hash with no tracked tileset context must pass through: {:?}",
+            result.err()
+        );
+
+        provider_stack.shutdown().await;
+        requester_stack.shutdown().await;
     }
 
     #[test]

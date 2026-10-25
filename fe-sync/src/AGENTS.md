@@ -796,12 +796,16 @@ why:
   `seed_reconciliation` snapshot through the same `note_*` seam the live
   pump uses. One writer per shard ledger key (the peer that first saw the
   shard plans and publishes); conflicts resolve by the doc's
-  latest-per-entry semantics. **Ledger admission (F23):** `note_entry`
+  latest-per-entry semantics. **Ledger admission (F23 + RP-5):** `note_entry`
   enforces `__peers` self-declaration (the row key must name its own signed
   author — a forged `__peers/{other_did}` capacity row is dropped; see
-  §transport-admission-control item 4). The `__shards` Editor+ gate was
-  evaluated and NOT implemented (no role data reaches the sync plane) — the
-  residual is recorded in §transport-admission-control item 5.
+  §transport-admission-control item 4). The `__shards` Editor+ gate — once
+  evaluated and NOT implemented because no role data reached the sync plane
+  — is now CLOSED by RP-5's role view (§role-view): a `__shards` row needs
+  Editor+ at the shard's own petal scope (`VerseFabric::role_at`, folding in
+  `default_access`); a row that cannot be judged yet (role not converged, or
+  the petal unknown locally) is quarantined, not dropped — see §role-view
+  "Quarantine" and §transport-admission-control item 5 (now CLOSED).
 - **`note_verse_row` learns settings from BOTH directions of verse-doc
   traffic**: outbound writes parse the manifest blob before publishing
   (`handle_write_row_entry`), inbound rows/snapshot replay through
@@ -857,6 +861,114 @@ why:
   the real loopback transport — mode switching via the manifest, ledger
   crossing, capacity exclusion, smallest-peer-never-caps, and the
   never-homeless last resort).
+
+## §role-view (RP-5, role_propagation_20261013)
+
+The sync plane's OWN materialized role view, independent of — and running
+alongside — the DB plane's `role_grant`/`role_statement_pending` tables
+(fe-database `src/AGENTS.md` §role-propagation). `VerseFabric` owns it
+(`sharding.rs`); it exists because the gates this crate already needs
+(`__shards` admission, the compute requester, a manifest's settings) had no
+role data to resolve against before this track (§transport-admission-
+control item 5's old residual). Both planes call the exact same pure
+function, `fe_policy::role_grants`'s `materialize`/`validate_statement`/
+`EffectiveRoles::{role_at, authority, admissible}` (plan §2.2) — so a
+`fabric_and_db_materialize_identical_effective_roles_from_the_same_statements`-
+style parity holds by construction, not by coincidence.
+
+- **Owner, pinned once.** `VerseFabric::learn_owner` takes a verse
+  manifest's `created_by` the first time one is seen (inbound OR our own
+  outbound write) and never relearns it — the same immutability rule the
+  DB plane's `created_by` field keeps (T9). Everything downstream
+  (`role_at`, `admissible`) is `EffectiveRoles::default()` (nobody has any
+  role) until the owner is known, which is the correct pre-manifest answer
+  with no special-casing needed.
+- **Admitted statements, not a pending table.** `role_statements: HashMap<
+  (scope, peer_did, grantor_did), RoleStatement>` holds only statements
+  `EffectiveRoles::admissible` currently accepts — one per key, the latest
+  by `fe_policy::latest_per_grantor`'s tie-break. A statement that fails
+  `admissible` is **discarded on arrival, never stored** — unlike the DB
+  plane's `role_statement_pending` table, the fabric has nothing of its own
+  to persist: the replica (iroh-docs, or the mock in tests) already holds
+  the row durably, so re-fetching it later is enough (see "Re-read on
+  empowerment" below). This is why the fabric needs no flood budget of its
+  own either — the replica bounds what it can ever hold.
+- **`rematerialize` runs the demote cascade to a fixpoint.** Every
+  admission (an insert) or empowerment (the owner learned, or a statement
+  admitted) calls `rematerialize`: recompute `fe_policy::materialize` over
+  the current statement set, diff against the previous view (queuing every
+  RISEN did into `reread_queue`), then drop any now-inadmissible statement
+  and recompute again — looping until a pass removes nothing. This is what
+  makes concurrent revocation converge (plan §0's refinement #1): revoking
+  a Manager cascades to invalidate every statement THEY made that depended
+  on their own authority, in one call, regardless of insertion order.
+- **`role_at(peer, scope)` folds in `default_access`.** The one function
+  every gate in this crate calls (mirroring the DB plane's A3 gate and
+  local grant authority, same `fe_policy` function underneath): the
+  explicit materialized role, or `default_access` (parsed from the
+  manifest's `default_access` field, restricted to `{viewer, none}` —
+  anything else is treated as `none`, never silently mapped through
+  `RoleLevel::from`) when nothing explicit applies.
+- **Gated `note_verse_row`.** A verse manifest's `ts_*`/`default_access`
+  settings are adopted from the FIRST manifest unconditionally (trust on
+  first use — nobody has authority yet to gate against) and from every
+  LATER manifest only when its author is the owner or Manager+ AT THE
+  VERSE SCOPE. A petal/fractal Manager's or an Editor's manifest edit is
+  ignored: verse settings sit above their subtree (R7).
+- **Petal -> fractal map.** `note_petal_row` learns it from `petal` rows.
+  A `__shards`/`__holders` doc key carries only the petal id, but
+  `fe_policy::build_scope` needs the fractal segment too (it panics on a
+  petal id with no fractal) — `VerseFabric::petal_scope` is the lookup that
+  builds the full scope string on demand, returning `None` when the petal
+  hasn't converged locally yet.
+- **Quarantine (the `__shards` gate's retry seam).** A gated row that
+  cannot be judged yet — the author's role hasn't converged, or the row's
+  petal is unknown — is held in a capped, drop-oldest FIFO (1024/verse,
+  `VerseFabric::quarantine_len`/`quarantine_evicted` for diagnostics), not
+  denied. It is re-evaluated on every `rematerialize` (any role-view
+  change) and on every new `petal` row. The cap is an accelerator, not the
+  safety net: an evicted row is still durably in the replica, and the
+  re-read on empowerment below recovers it regardless of eviction.
+- **Re-read on empowerment — the durable, flood-proof retry.** When
+  `rematerialize`'s diff finds a DID whose `role_at` rose at ANY scope, that
+  DID is pushed onto `reread_queue` (deduplicated). The sync thread's
+  command loop drains it at the top of every iteration
+  (`drain_reread_queues`, `sync_thread.rs`) — never inline inside the
+  handler that raised the DID's role, so a slow drain never delays that
+  handler's own return. For each queued DID it calls
+  `VerseReplicator::entries_by_author(did, ["role/", "__shards/",
+  "__holders/", "verse/"])` and feeds every entry straight through
+  `handle_inbound_row_change`, the SAME path a live row takes. This is a
+  provided trait method (default: filters `snapshot()` — correct but
+  O(whole replica); `IrohDocsReplicator` overrides it with
+  `Query::author(id).key_prefix(table/)` per table, `AnyReplicator`
+  forwards to whichever arm is active, and `fe-sim`'s `VirtualReplica`
+  inherits the default unmodified — none of them needed editing beyond
+  `AnyReplicator`). Because the read goes straight to the local docs store
+  and is never routed through the aggregated inbound channel the command
+  loop itself drains, it cannot deadlock the §inbound-apply self-drain
+  rule.
+- **Snapshot reads `role/` from ALL authors (step 3).** `single_latest_per_key`
+  picks the single PHYSICALLY newest entry at a key across every author who
+  wrote it — so an attacker who writes a forged, later entry to the SAME
+  key as the owner's genuine statement (always structurally denied by
+  `validate_statement`'s grantor-mismatch check once read) would shadow the
+  genuine entry from that query entirely, and a fresh peer whose only
+  source is this snapshot would never see it: a convergence DoS. `snapshot()`
+  therefore drops whatever `single_latest_per_key` returned for the `role`
+  table and replaces it with a SEPARATE `Query::key_prefix("role/")` pass
+  (no `single_latest_per_key` aggregation — one entry per `(key, author)`),
+  so the owner's genuine entry and the attacker's forgery are both visible,
+  independently. `MockVerseReplicator` mirrors this with a second,
+  per-`(record_id, author)` store for the `role` table only (`role_entries`,
+  seeded by `write_row` for its own author and by the test-only
+  `seed_role_entry` for a simulated foreign author) — every other table
+  stays the single-author-per-key shape it always was.
+- **Not this crate's job.** `fe-sync` never resolves WHICH statements are
+  structurally valid beyond calling `fe_policy::validate_statement` — the
+  rules themselves (what `owner`/unknown-role strings mean, the subtree
+  authority walk) live in `fe-policy` (`fe-policy/src/AGENTS.md`
+  §role-grants) and are shared verbatim with the DB plane.
 
 ## §distributed-query (M2/F7 — A15/A16/A17)
 
@@ -1052,6 +1164,15 @@ shape is unit-testable without a gossip stack.
    still binds the claim on direct deliveries. **This one was implemented**
    (not just evaluated) — it fits the seam naturally: the fabric already
    holds the peer set, and every sanctioned requester is a declared peer.
+6. **Requester role (RP-5, §role-view).** A declared requester still needs
+   Viewer+ at the REQUESTED PETAL's scope: `VerseFabric::role_at(from_did,
+   petal_scope)`, `default_access` folded in as the ⊥ fallback. An
+   unconverged petal map (no scope string buildable yet) falls back to
+   `default_access` directly — there is nothing to quarantine and retry on
+   a live gossip request. Below Viewer → `drop_reason::INSUFFICIENT_ROLE`.
+   This is the item 5 residual's mirror image on the read side: item 5
+   gates WHO may WRITE a `__shards` row, this gates WHO may READ a petal's
+   readings through the compute plane.
 
 `VerseFabric::note_entry` (`sharding.rs`, ledger admission):
 
@@ -1063,29 +1184,26 @@ shape is unit-testable without a gossip stack.
    dropped with a warn. The honest path is unaffected: replica open,
    `SetShardDeclaration`, and the restart snapshot all write the local
    peer's OWN key under its own author identity.
-5. **`__shards` Editor+ gate — evaluated, NOT implemented (residual
-   recorded for orchestrator review).** The requested gate needs the author's
-   ROLE resolved at the verse scope. Roles are **DB-thread state** (the local
-   `role` table — see fe-database §handlers / §rbac-policy; `admit_inbound_row`
-   resolves them from local tables, never the wire), and `__shards`/`__peers`
-   rows are consumed at the sync seam and never reach the DB thread — so the
-   sync plane has NO role information to gate on, and the manifest doc row
-   carries only `created_by`/`default_access`, not per-peer roles. No honest
-   seam-side gate is constructible today. The weaker shape available (require
-   the author to be a declared peer) does not close the hole — a declared
-   peer can still publish a false ledger row (claiming hosts that do not hold
-   the shard, or omitting itself) — so implementing it would be a gate that
-   looks like protection without being one; per the feature's instruction
-   ("do not force a broken gate"), it was NOT implemented. **Residual risk:**
-   a declared fabric peer can inject a `__shards` ledger row that misdirects
-   placement/retention. Impact is bounded: retention is receive-side
-   (over-retention is idempotent under union semantics, a wrongly-dropped
-   hosted row is the real loss), and the merge's per-shard attribution means
-   a false host set can at worst make a shard look `missing`/`covered` —
-   metadata honesty, not silent data corruption. The durable fix is a
-   role-bearing ledger (roles ride the doc, or a signed shard-claim
-   envelope), which is the same per-operation-signing dependency as the
-   relayed-attribution residual above.
+5. **`__shards` Editor+ gate — CLOSED (RP-5, role_propagation_20261013).**
+   Previously evaluated and NOT implemented: the gate needed the author's
+   role resolved at the shard's scope, but roles were DB-thread-only state
+   (the local `role` table) and `__shards`/`__peers` rows are consumed at
+   the sync seam and never reach the DB thread, so the sync plane had no
+   role information to gate on. RP-5 closes this by giving the sync plane
+   its OWN role view (§role-view): `VerseFabric` now runs the shared
+   `fe_policy::role_grants` materializer over `role` doc rows (both
+   directions) independently of, and in addition to, the DB plane's own
+   admission of the same rows. `admit_shard_entry` (`sharding.rs`) requires
+   Editor+ at the shard's own petal scope (`role_at`, `default_access`
+   folded in as the ⊥ fallback) before a `__shards` row is applied; a row
+   whose author's role hasn't converged yet, or whose petal isn't known
+   locally yet, is **quarantined** (capped at 1024/verse, drop-oldest with
+   a counter) rather than denied — the replica still holds it, and the
+   §role-view re-read on empowerment (or the next replica open's
+   reconciliation replay, for a petal-map wait) recovers it. A declared
+   peer below Editor at the shard's petal can no longer inject a ledger row
+   that misdirects placement/retention; the old residual risk this item
+   recorded is gone with it.
 
 ### §gossip-bootstrap — the Join-drop race (fixed 2026-10-08)
 
@@ -1438,19 +1556,33 @@ and what stops it. Each guard has a named regression test.
   marker, so a restart never turns it into a full download and auto-install.
   Test: `a_streamed_bundle_cache_is_not_resumed_as_a_full_download`.
 
-**Risk 2 — blob-ALPN request filter: decided NOT to add one now.** The
-blobs ALPN (`docs_engine.rs`, `BlobsProtocol::new(&store, None)`) serves
-any hash to anyone who asks. The brief allows a filter only if it keys on
-verse membership, so `FetchBlob`/`two_peer_blob_exchange` and CDL-SPEC10
-A6's device-payload fetch keep working. A serving node has no
-authoritative membership to key on: roles do not replicate until role
-propagation (RP) lands, and a gossip-observed allowlist would be
-attacker-populated (anyone who knows a verse id can join its topic). iroh-docs
-also fetches entry content over this ALPN, so a wrong allowlist breaks
-replication, not just tilesets. Exposure stays "hash as capability": a
-blob is servable only to someone who already knows its 256-bit hash.
-Tileset roots are broadcast only on verse topics, and tilesets are meant
-to be shared there. Row-blob hashes live in replica entries that only
-namespace holders see. **Revisit trigger:** when RP replicates roles,
-intercept `RequestMode` with an `EventSender` that admits a connection
-whose `EndpointId` maps to a role in any open verse.
+**Risk 2 — blob-ALPN request filter: CLOSED (RP-5 step 6, critic tick 4
+AC-21(e)), partially.** The revisit trigger ("when RP replicates roles...")
+has fired: `docs_engine.rs::spawn_blob_access_filter` now builds
+`BlobsProtocol::new(&store, Some(event_sender))` with `get:
+RequestMode::Intercept` (the rest of the mask stays at the `None`/
+`Disabled` defaults, so `get_many`/`push`/`observe` are untouched). The
+filter keys on the REQUESTED HASH, not the connection: `BlobAccessGate`
+holds a `root hash -> verse_id` reverse map (populated from
+`TilesetProviderMap`'s authoritative root for a tileset id, re-affirmed
+after every inbound ad) and a per-verse access snapshot
+(`VerseFabric::access_snapshot` — owner, `default_access`, and every DID
+an admitted role statement currently resolves to Viewer+). A `GetRequest`
+for a hash NOT in that reverse map carries **no tileset context** and is
+let through unconditionally — this is how `FetchBlob`/
+`two_peer_blob_exchange` and CDL-SPEC10 A6's device-payload fetch, and
+ordinary iroh-docs entry-content fetches, stay unaffected exactly as this
+risk note originally required. A `GetRequest` for a hash that IS a tracked
+tileset root is admitted only if the requesting `EndpointId` (mapped to a
+did:key the same way the A3/§role-view gates do, via a
+`ClientConnected`-notify-populated `connection_id -> did` table, since the
+request event itself carries no identity) holds Viewer+ in the verse that
+root was learned on. `ConnectMode` stays at `Notify` (never `Intercept`) —
+this is a hash-keyed filter, not a membership-gated connection accept.
+**"Partially" — the residual this leaves, recorded honestly (critic tick 8
+C20, ledger row BLOB-HASH-CAPABILITY):** a hash never recorded as a
+tileset root — an ordinary row/asset blob, or a `two_peer_blob_exchange`
+hash — stays open over this ALPN to anyone who knows its 256-bit hash,
+exactly as before. Closing THAT needs a membership-keyed filter for every
+hash this ALPN serves, or namespace rotation — out of this item's scope;
+it is a separate, still-open trigger.

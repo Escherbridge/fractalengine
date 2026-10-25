@@ -1043,6 +1043,9 @@ pub mod drop_reason {
     /// Raw/latest request for a petal this verse's ledger knows no shard
     /// for — legitimately not answering.
     pub const PETAL_UNKNOWN: &str = "petal unknown here";
+    /// RP-5 step 5: the requester resolves below Viewer at the requested
+    /// petal's scope (`VerseFabric::role_at`, `default_access` folded in).
+    pub const INSUFFICIENT_ROLE: &str = "requester below Viewer at the requested petal";
     /// The verse topic's sender is gone (replica closed mid-request).
     pub const TOPIC_CLOSED: &str = "topic closed under us";
 }
@@ -1147,10 +1150,10 @@ pub fn handle_gossip_incoming(
                 );
                 return GossipDisposition::Dropped(drop_reason::FORGED_SENDER);
             }
-            let declared = fabrics
-                .get(&incoming.verse_id)
-                .map(|f| f.peers.contains_key(&from_did))
-                .unwrap_or(false);
+            let Some(fabric) = fabrics.get(&incoming.verse_id) else {
+                return GossipDisposition::Dropped(drop_reason::UNDECLARED_REQUESTER);
+            };
+            let declared = fabric.peers.contains_key(&from_did);
             if !declared {
                 tracing::warn!(
                     request_id,
@@ -1158,6 +1161,30 @@ pub fn handle_gossip_incoming(
                     "compute request from a peer not declared in this verse's fabric — dropped"
                 );
                 return GossipDisposition::Dropped(drop_reason::UNDECLARED_REQUESTER);
+            }
+            // RP-5 step 5 / §2.5: the requester needs Viewer+ at the
+            // requested petal's scope — `role_at` with `default_access`
+            // already folded in (⊥ falls back to the manifest's default).
+            // An unconverged petal map (no `fe_policy::build_scope` string
+            // yet) falls back to `default_access` directly: this is a live
+            // gossip request, not a storable row, so there is nothing to
+            // quarantine and retry here.
+            let petal_id = spec.petal_id();
+            let requester_role = match fabric.petal_scope(&incoming.verse_id, petal_id) {
+                Some(scope) => fabric.role_at(&from_did, &scope),
+                // The petal hasn't converged locally yet — nothing to
+                // resolve a scope string against, so the ⊥ fallback
+                // applies directly.
+                None => fabric.default_access(),
+            };
+            if !requester_role.is_at_least(fe_policy::RoleLevel::Viewer) {
+                tracing::warn!(
+                    request_id,
+                    requester = %from_did,
+                    petal = petal_id,
+                    "compute requester below Viewer at the requested petal — dropped"
+                );
+                return GossipDisposition::Dropped(drop_reason::INSUFFICIENT_ROLE);
             }
             // Petal containment (unchanged, the honest narrow boundary): the
             // petal prefix bounds the read surface — aggregate shard lists
@@ -1306,10 +1333,12 @@ mod tests {
         settings: VerseTimeseriesSettings,
         shards: &[(&str, i64, i64, &[&str])],
     ) -> VerseFabric {
-        let mut fabric = VerseFabric {
-            settings,
-            ..Default::default()
-        };
+        let mut fabric = VerseFabric::default();
+        fabric.settings = settings;
+        // RP-5: these fixtures predate the role view and test
+        // settlement/merge/responder behavior, not requester gating — open
+        // the verse to everyone so the new Viewer+ gate never fires here.
+        fabric.set_default_access_for_test(fe_policy::RoleLevel::Viewer);
         for (key, start, end, hosts) in shards {
             fabric.shards.insert(
                 key.to_string(),
@@ -2269,7 +2298,13 @@ mod tests {
         let transport = DistributedTransport::new("did:local".into(), None, evt_tx);
         let requester_did = crate::replicator::peer_did_key(&requester_node());
         let mut fabric = VerseFabric::default();
-        fabric.note_verse_row(&serde_json::json!({"ts_mode": "sharded"}));
+        fabric.note_verse_row(
+            "v-1",
+            &serde_json::json!({
+                "created_by": "did:key:owner", "ts_mode": "sharded", "default_access": "viewer"
+            }),
+            "did:key:owner",
+        );
         fabric.note_shard_row(&serde_json::json!({
             "shard": "p1/a/0", "hosts": [requester_did.clone()],
             "mode": "sharded", "replication_factor": 1, "bucket_width_ms": 60_000,
@@ -2385,6 +2420,123 @@ mod tests {
             ),
             GossipDisposition::Dropped(drop_reason::UNDECLARED_REQUESTER)
         );
+    }
+
+    /// RP-5 step 5: the requester needs Viewer+ at the REQUESTED petal's
+    /// scope — a petal-scoped Viewer is served for that petal and dropped
+    /// for a sibling petal, a verse-scoped Viewer is served everywhere, and
+    /// a stranger (no grant anywhere, `default_access = none`) is dropped.
+    #[test]
+    fn requester_gate_resolves_at_the_requested_petal() {
+        let owner = "did:key:owner";
+        let petal_viewer_node = test_node_id(21);
+        let petal_viewer_did = crate::replicator::peer_did_key(&petal_viewer_node);
+        let verse_viewer_node = test_node_id(22);
+        let verse_viewer_did = crate::replicator::peer_did_key(&verse_viewer_node);
+        let stranger_node = test_node_id(23);
+        let stranger_did = crate::replicator::peer_did_key(&stranger_node);
+
+        let mut fabric = VerseFabric::default();
+        fabric.note_verse_row(
+            "v-1",
+            &serde_json::json!({ "created_by": owner, "default_access": "none" }),
+            owner,
+        );
+        fabric.note_petal_row("v-1", &serde_json::json!({ "petal_id": "p1", "fractal_id": "f1" }));
+        fabric.note_petal_row("v-1", &serde_json::json!({ "petal_id": "p2", "fractal_id": "f1" }));
+        // A ledger row for both petals so a "served" case reaches the
+        // (empty) sender lookup instead of the earlier PETAL_UNKNOWN check
+        // — isolating this test to the requester gate specifically.
+        for petal in ["p1", "p2"] {
+            fabric.note_shard_row(&serde_json::json!({
+                "shard": format!("{petal}/a/0"), "hosts": [owner],
+                "row_count": 1, "size_bytes": 1,
+            }));
+        }
+
+        let petal_scope = fe_policy::build_scope("v-1", Some("f1"), Some("p1"));
+        fabric.note_role_row(
+            "v-1",
+            &format!("{petal_scope}/{petal_viewer_did}/{owner}"),
+            owner,
+            &serde_json::to_vec(&serde_json::json!({
+                "scope": petal_scope, "peer_did": petal_viewer_did, "grantor_did": owner,
+                "role": "viewer", "revoked": false, "hlc": 1,
+            }))
+            .unwrap(),
+        );
+        let verse_scope = fe_policy::build_scope("v-1", None, None);
+        fabric.note_role_row(
+            "v-1",
+            &format!("{verse_scope}/{verse_viewer_did}/{owner}"),
+            owner,
+            &serde_json::to_vec(&serde_json::json!({
+                "scope": verse_scope, "peer_did": verse_viewer_did, "grantor_did": owner,
+                "role": "viewer", "revoked": false, "hlc": 2,
+            }))
+            .unwrap(),
+        );
+        // Every requester must be a declared fabric peer first — this test
+        // is about the gate AFTER `UNDECLARED_REQUESTER`.
+        for did in [&petal_viewer_did, &verse_viewer_did, &stranger_did] {
+            fabric.note_peer_declaration(did, PeerDeclaration::default());
+        }
+        let fabrics = HashMap::from([("v-1".to_string(), fabric)]);
+        let (evt_tx, _evt_rx) = crossbeam::channel::bounded(8);
+        let transport = DistributedTransport::new("did:local".into(), None, evt_tx);
+        let senders: HashMap<String, TopicSender> = HashMap::new();
+
+        let cases: Vec<(&str, iroh::EndpointId, String, &str, &'static str)> = vec![
+            (
+                "a petal viewer is served for their own petal",
+                petal_viewer_node,
+                petal_viewer_did.clone(),
+                "p1",
+                drop_reason::TOPIC_CLOSED,
+            ),
+            (
+                "the same petal viewer is dropped for a sibling petal",
+                petal_viewer_node,
+                petal_viewer_did,
+                "p2",
+                drop_reason::INSUFFICIENT_ROLE,
+            ),
+            (
+                "a verse viewer is served everywhere",
+                verse_viewer_node,
+                verse_viewer_did,
+                "p2",
+                drop_reason::TOPIC_CLOSED,
+            ),
+            (
+                "a stranger is dropped",
+                stranger_node,
+                stranger_did,
+                "p1",
+                drop_reason::INSUFFICIENT_ROLE,
+            ),
+        ];
+        for (label, node, did, petal_id, expected_reason) in cases {
+            let env = request_envelope(
+                "req-1",
+                "v-1",
+                &did,
+                TsQueryKind::AllReadings {
+                    petal_id: petal_id.to_string(),
+                },
+                Vec::new(),
+            );
+            assert_eq!(
+                handle_gossip_incoming(
+                    &transport,
+                    &fabrics,
+                    &senders,
+                    gossip_incoming("v-1", node, true, &env)
+                ),
+                GossipDisposition::Dropped(expected_reason),
+                "{label}"
+            );
+        }
     }
 
     #[test]

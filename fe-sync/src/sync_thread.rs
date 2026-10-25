@@ -314,6 +314,20 @@ impl VerseReplicator for AnyReplicator {
         }
     }
 
+    /// RP-5 §2.5: forwards to each arm's own `entries_by_author` — the
+    /// iroh arm overrides it (`replicator.rs`); the virtual arm inherits
+    /// the trait's default (no edit needed in `fe-sim`).
+    fn entries_by_author(
+        &self,
+        author_id: &str,
+        prefixes: &[&str],
+    ) -> ReplicatorFuture<'_, anyhow::Result<Vec<RowChange>>> {
+        match self {
+            Self::Iroh(r) => r.entries_by_author(author_id, prefixes),
+            Self::Virtual(r) => r.entries_by_author(author_id, prefixes),
+        }
+    }
+
     fn close(&self) -> ReplicatorFuture<'_, anyhow::Result<()>> {
         match self {
             Self::Iroh(r) => r.close(),
@@ -762,6 +776,16 @@ pub fn spawn_sync_thread_with_transport(
             // inbound gossip compute traffic + home-relay status).
             loop {
                 evt_tx.flush();
+                // RP-5 §2.5 re-read on empowerment: drains every open
+                // verse's `reread_queue` (filled whenever a DID's role
+                // rose) by replaying that DID's `role`/`__shards`/
+                // `__holders`/`verse` entries straight from the local
+                // replica through the inbound apply path. Runs at the top
+                // of the loop, not inline inside the handler that raised
+                // the DID's role, so a slow drain never delays that
+                // handler's own return — "the select loop drains it".
+                drain_reread_queues(&mut fabrics, &replicas, &local_did, &evt_tx, &db_cmd_tx, &docs_stack)
+                    .await;
                 tokio::select! {
                     // Wakes the loop to drain a backlog queued while the
                     // channel was full (§event-outbox / self-drain rule).
@@ -793,6 +817,7 @@ pub fn spawn_sync_thread_with_transport(
                                 &evt_tx,
                                 &db_cmd_tx,
                             );
+                            sync_blob_access_gate(&docs_stack, &verse_id, fabric);
                         }
                     }
                     maybe_gossip = gossip_inbound_rx.recv() => {
@@ -803,12 +828,29 @@ pub fn spawn_sync_thread_with_transport(
                             // collide. A malformed/foreign frame falls
                             // through to `handle_gossip_incoming` unchanged.
                             match decode_tileset_ad(&incoming.content) {
-                                Some(ad) => handle_inbound_tileset_ad(
-                                    &mut tileset_providers,
-                                    &evt_tx,
-                                    &incoming,
-                                    ad,
-                                ),
+                                Some(ad) => {
+                                    // RP-5 step 6 / AC-21(e): mirror the
+                                    // (possibly just-updated) authoritative
+                                    // root for this tileset id into the
+                                    // blob-ALPN filter's reverse lookup —
+                                    // idempotent, so running it after every
+                                    // ad (accepted or refused) is harmless.
+                                    let tileset_id = ad.tileset_id.clone();
+                                    handle_inbound_tileset_ad(
+                                        &mut tileset_providers,
+                                        &evt_tx,
+                                        &incoming,
+                                        ad,
+                                    );
+                                    if let (Some(stack), Some(choice)) = (
+                                        docs_stack.as_ref(),
+                                        tileset_providers.root_for(&tileset_id),
+                                    ) {
+                                        stack
+                                            .blob_access_gate()
+                                            .record_tileset_root(&incoming.verse_id, choice.root);
+                                    }
+                                }
                                 None => {
                                     handle_gossip_incoming(
                                         &transport,
@@ -893,6 +935,11 @@ pub fn spawn_sync_thread_with_transport(
                                     local_declaration,
                                 )
                                 .await;
+                                sync_blob_access_gate(
+                                    &docs_stack,
+                                    &verse_id,
+                                    fabrics.entry(verse_id.clone()).or_default(),
+                                );
                             }
                             Some(SyncCommand::CloseVerseReplica { verse_id }) => {
                                 // S8b verse binding: ads learned on a verse
@@ -910,6 +957,13 @@ pub fn spawn_sync_thread_with_transport(
                                     &mut gossip_pumps,
                                     &verse_id,
                                 );
+                                // RP-5 step 6: the blob-ALPN filter forgets
+                                // this verse's access snapshot and tileset
+                                // roots too — a closed verse's role view is
+                                // no longer authoritative.
+                                if let Some(stack) = &docs_stack {
+                                    stack.blob_access_gate().forget_verse(&verse_id);
+                                }
                             }
                             Some(SyncCommand::WriteRowEntry {
                                 verse_id,
@@ -929,6 +983,11 @@ pub fn spawn_sync_thread_with_transport(
                                     &content_hash,
                                 )
                                 .await;
+                                sync_blob_access_gate(
+                                    &docs_stack,
+                                    &verse_id,
+                                    fabrics.entry(verse_id.clone()).or_default(),
+                                );
                             }
                             Some(SyncCommand::UpdateNodeTransform {
                                 verse_id,
@@ -1220,7 +1279,12 @@ fn handle_inbound_row_change(
     // fabric re-learns settings, peer declarations, and the shard ledger
     // after a restart. Sync-plane rows (`__shards`/`__peers`) are consumed
     // here and never forwarded to the DB thread.
-    fabric.note_entry(change);
+    // RP-5: the fabric also builds its OWN sync-plane role view from `role`
+    // rows (§2.5) — independent of, and in addition to, the DB plane's own
+    // admission of the SAME rows (RP-2/RP-3's `role_grant`/pending tables).
+    // `role` and `petal` are ordinary DB-plane tables and must still be
+    // forwarded below; only `__shards`/`__peers` are sync-plane-only.
+    fabric.note_entry(verse_id, change);
     if change.table == SHARD_TABLE || change.table == PEER_DECL_TABLE {
         return;
     }
@@ -1300,6 +1364,64 @@ fn handle_inbound_row_change(
             );
         }
         Err(crossbeam::channel::TrySendError::Disconnected(_)) => {}
+    }
+}
+
+/// RP-5 §2.5 "re-read on empowerment": drain every open verse's
+/// `reread_queue` and replay each queued DID's `role`/`__shards`/
+/// `__holders`/`verse` entries straight from the local replica through the
+/// SAME inbound apply path a live row takes. This is how a statement the
+/// fabric held back (its grantor lacked authority) — and which the fabric
+/// itself never stores — is recovered once that grantor is empowered: the
+/// replica already holds it durably, so re-fetching it is enough. The read
+/// is awaited directly here, never through a channel only this loop drains
+/// (the §inbound-apply self-drain rule).
+async fn drain_reread_queues(
+    fabrics: &mut HashMap<String, VerseFabric>,
+    replicas: &HashMap<String, Box<dyn VerseReplicator>>,
+    local_did: &str,
+    evt_tx: &dyn EventSink,
+    db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
+    docs_stack: &Option<Arc<DocsStack>>,
+) {
+    for (verse_id, fabric) in fabrics.iter_mut() {
+        let dids = fabric.drain_reread_queue();
+        if dids.is_empty() {
+            continue;
+        }
+        let Some(replicator) = replicas.get(verse_id) else {
+            continue;
+        };
+        for did in dids {
+            match replicator
+                .entries_by_author(&did, &["role/", "__shards/", "__holders/", "verse/"])
+                .await
+            {
+                Ok(entries) => {
+                    for change in entries {
+                        handle_inbound_row_change(
+                            fabric, verse_id, &change, local_did, evt_tx, db_cmd_tx,
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(verse_id, did, "role re-read on empowerment failed: {e}");
+                }
+            }
+        }
+        sync_blob_access_gate(docs_stack, verse_id, fabric);
+    }
+}
+
+/// Mirror this verse's current role view into the blob-ALPN request
+/// filter's shared state (RP-5 step 6 / AC-21(e)). A no-op when no P2P
+/// stack is online — an offline or virtual transport has no blobs ALPN to
+/// gate.
+fn sync_blob_access_gate(docs_stack: &Option<Arc<DocsStack>>, verse_id: &str, fabric: &VerseFabric) {
+    if let Some(stack) = docs_stack {
+        stack
+            .blob_access_gate()
+            .set_verse_access(verse_id, fabric.access_snapshot());
     }
 }
 
@@ -1751,10 +1873,20 @@ async fn handle_write_row_entry(
     // manifest, and on the first sight of a timeseries row plan the shard's
     // host set and publish its ledger row.
     let mut ledger_publish: Option<(String, Vec<u8>)> = None;
+    if table == "role" {
+        // RP-5: feed our OWN outbound role statements (local grant/revoke)
+        // into the fabric too, so a local gate (e.g. the compute requester
+        // check) reflects a role we just assigned without waiting for a
+        // round trip through the replica.
+        fabric.note_role_row(verse_id, record_id, author_did, &data);
+    }
     if let Ok(row) = serde_json::from_slice::<serde_json::Value>(&data) {
         match table {
             "verse" => {
-                fabric.note_verse_row(&row);
+                fabric.note_verse_row(verse_id, &row, author_did);
+            }
+            "petal" => {
+                fabric.note_petal_row(verse_id, &row);
             }
             "iot_reading" => {
                 if let Some(shard) = ShardId::of_reading_row(&row, fabric.settings.bucket_width_ms)
@@ -4902,9 +5034,13 @@ mod tests {
         // sharded mode with a converged ledger placing the shard on peer-b
         // only → the local peer is not a host → skip.
         let mut fabric = VerseFabric::default();
-        fabric.note_verse_row(&serde_json::json!({
-            "ts_mode": "sharded", "ts_bucket_width_ms": 86_400_000
-        }));
+        fabric.note_verse_row(
+            "v-1",
+            &serde_json::json!({
+                "created_by": "did:key:local", "ts_mode": "sharded", "ts_bucket_width_ms": 86_400_000
+            }),
+            "did:key:local",
+        );
         fabric.note_shard_row(&serde_json::json!({
             "shard": "p1/a1/20284", "hosts": ["did:key:peer-b"],
             "mode": "sharded", "replication_factor": 1, "bucket_width_ms": 86_400_000,
@@ -4929,9 +5065,13 @@ mod tests {
 
         // The same row when the local peer IS the host applies normally.
         let mut fabric = VerseFabric::default();
-        fabric.note_verse_row(&serde_json::json!({
-            "ts_mode": "sharded", "ts_bucket_width_ms": 86_400_000
-        }));
+        fabric.note_verse_row(
+            "v-1",
+            &serde_json::json!({
+                "created_by": "did:key:local", "ts_mode": "sharded", "ts_bucket_width_ms": 86_400_000
+            }),
+            "did:key:local",
+        );
         fabric.note_shard_row(&serde_json::json!({
             "shard": "p1/a1/20284", "hosts": ["did:key:local"],
             "mode": "sharded", "replication_factor": 1, "bucket_width_ms": 86_400_000,
@@ -4998,6 +5138,54 @@ mod tests {
             "peer declaration consumed into the fabric"
         );
 
+        // RP-5: a `__shards` row needs Editor+ at the shard's petal scope
+        // (`AGENTS.md` §transport-admission-control item 5, CLOSED). Admit
+        // the owner, the petal map, and peer-b's Editor grant first so this
+        // test's shard row converges — the point under test is DB-thread
+        // non-forwarding, not the gate itself (that has its own dedicated
+        // tests in `sharding.rs`).
+        let manifest_row = RowChange {
+            table: "verse".to_string(),
+            record_id: "v-1".to_string(),
+            content_hash: [0u8; 32],
+            author_id: "did:key:owner".to_string(),
+            timestamp: 0,
+            is_tombstone: false,
+            data: serde_json::to_vec(&serde_json::json!({
+                "verse_id": "v-1", "created_by": "did:key:owner",
+            }))
+            .unwrap(),
+        };
+        handle_inbound_row_change(&mut fabric, "v-1", &manifest_row, "did:key:local", &evt_tx, &None);
+        let petal_row = RowChange {
+            table: "petal".to_string(),
+            record_id: "p1".to_string(),
+            content_hash: [0u8; 32],
+            author_id: "did:key:owner".to_string(),
+            timestamp: 0,
+            is_tombstone: false,
+            data: serde_json::to_vec(&serde_json::json!({ "petal_id": "p1", "fractal_id": "f1" }))
+                .unwrap(),
+        };
+        handle_inbound_row_change(&mut fabric, "v-1", &petal_row, "did:key:local", &evt_tx, &None);
+        let petal_scope = fe_policy::build_scope("v-1", Some("f1"), Some("p1"));
+        let grant_record_id = format!("{petal_scope}/did:key:peer-b/did:key:owner");
+        let grant_row = RowChange {
+            table: "role".to_string(),
+            record_id: grant_record_id,
+            content_hash: [0u8; 32],
+            author_id: "did:key:owner".to_string(),
+            timestamp: 0,
+            is_tombstone: false,
+            data: serde_json::to_vec(&serde_json::json!({
+                "scope": petal_scope, "peer_did": "did:key:peer-b", "grantor_did": "did:key:owner",
+                "role": "editor", "revoked": false, "hlc": 1,
+            }))
+            .unwrap(),
+        };
+        handle_inbound_row_change(&mut fabric, "v-1", &grant_row, "did:key:local", &evt_tx, &None);
+        while evt_rx.try_recv().is_ok() {}
+
         let shard_row = RowChange {
             table: SHARD_TABLE.to_string(),
             record_id: "p1/a1/1".to_string(),
@@ -5023,6 +5211,239 @@ mod tests {
         assert!(
             db_rx.try_recv().is_err(),
             "sync-plane rows never reach the DB thread"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // RP-5 §2.5: re-read on empowerment (role statements held, then
+    // recovered straight from the replica once their grantor is empowered)
+    // -------------------------------------------------------------------------
+
+    /// R7: a role statement whose grantor had no authority when it arrived
+    /// is never retained by the fabric (it is held only in the replica).
+    /// Once the owner empowers that grantor, `drain_reread_queues` replays
+    /// the grantor's entries straight from the replica through the inbound
+    /// apply path, and the held statement is admitted.
+    #[tokio::test]
+    async fn a_held_role_statement_is_reread_from_the_replica_when_its_grantor_is_empowered() {
+        let (evt_tx, _evt_rx) = crossbeam::channel::bounded(32);
+        let mut fabrics: HashMap<String, VerseFabric> = HashMap::new();
+        let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
+
+        let owner = "did:key:owner";
+        let m = "did:key:m";
+        let x = "did:key:x";
+        let verse_id = "v-r7";
+        let verse_scope = fe_policy::build_scope(verse_id, None, None);
+
+        // M's statement lives in the replica (as it would after a real
+        // inbound delivery), even though the fabric cannot admit it yet.
+        let replicator = MockVerseReplicator::new(m);
+        replicator
+            .write_row(
+                "role",
+                &format!("{verse_scope}/{x}/{m}"),
+                &serde_json::to_vec(&serde_json::json!({
+                    "scope": verse_scope, "peer_did": x, "grantor_did": m,
+                    "role": "editor", "revoked": false, "hlc": 1,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        replicas.insert(verse_id.to_string(), Box::new(replicator));
+
+        let fabric = fabrics.entry(verse_id.to_string()).or_default();
+        fabric.note_entry(
+            verse_id,
+            &RowChange {
+                table: "verse".into(),
+                record_id: verse_id.into(),
+                content_hash: [0; 32],
+                author_id: owner.into(),
+                timestamp: 0,
+                is_tombstone: false,
+                data: serde_json::to_vec(&serde_json::json!({ "created_by": owner })).unwrap(),
+            },
+        );
+        // M's statement arrives inbound (the live pump) — M has no
+        // authority yet, so it is discarded, never stored.
+        fabric.note_entry(
+            verse_id,
+            &RowChange {
+                table: "role".into(),
+                record_id: format!("{verse_scope}/{x}/{m}"),
+                content_hash: [0; 32],
+                author_id: m.into(),
+                timestamp: 0,
+                is_tombstone: false,
+                data: serde_json::to_vec(&serde_json::json!({
+                    "scope": verse_scope, "peer_did": x, "grantor_did": m,
+                    "role": "editor", "revoked": false, "hlc": 1,
+                }))
+                .unwrap(),
+            },
+        );
+        assert_eq!(
+            fabric.role_at(x, &verse_scope),
+            fe_policy::RoleLevel::None,
+            "M's statement must not be retained before M has any authority"
+        );
+        assert!(fabric.drain_reread_queue().is_empty());
+
+        // The owner grants M Manager — M is now empowered and queued for
+        // the re-read.
+        fabric.note_entry(
+            verse_id,
+            &RowChange {
+                table: "role".into(),
+                record_id: format!("{verse_scope}/{m}/{owner}"),
+                content_hash: [0; 32],
+                author_id: owner.into(),
+                timestamp: 0,
+                is_tombstone: false,
+                data: serde_json::to_vec(&serde_json::json!({
+                    "scope": verse_scope, "peer_did": m, "grantor_did": owner,
+                    "role": "manager", "revoked": false, "hlc": 2,
+                }))
+                .unwrap(),
+            },
+        );
+
+        drain_reread_queues(&mut fabrics, &replicas, "did:key:local", &evt_tx, &None, &None).await;
+
+        let fabric = fabrics.get(verse_id).expect("fabric still present");
+        assert_eq!(
+            fabric.role_at(x, &verse_scope),
+            fe_policy::RoleLevel::Editor,
+            "the re-read must recover M's held statement from the replica once M is empowered"
+        );
+    }
+
+    /// T12: a flood of strangers' `__shards` rows can evict a legitimately
+    /// quarantined Editor's row from the fabric's IN-MEMORY quarantine, but
+    /// that row is not lost — it is durably in the replica (as any inbound
+    /// row would be), and the re-read on empowerment recovers it once the
+    /// owner grants Editor, even though the fabric's own in-memory
+    /// quarantine can no longer find it.
+    #[tokio::test]
+    async fn a_quarantine_flood_cannot_lose_a_legit_editors_shards_row() {
+        let (evt_tx, _evt_rx) = crossbeam::channel::bounded(32);
+        let mut fabrics: HashMap<String, VerseFabric> = HashMap::new();
+        let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
+
+        let owner = "did:key:owner";
+        let editor = "did:key:editor";
+        let verse_id = "v-t12";
+        let petal_scope = fe_policy::build_scope(verse_id, Some("f1"), Some("p1"));
+
+        // The editor's `__shards` row is durably in the replica (as an
+        // inbound row would be), authored by the editor.
+        let replicator = MockVerseReplicator::new(editor);
+        replicator
+            .write_row(
+                SHARD_TABLE,
+                "p1/a1/1",
+                br#"{"shard":"p1/a1/1","hosts":["did:key:editor"],"mode":"sharded","replication_factor":1,"bucket_width_ms":1000,"range_start_ms":0,"range_end_ms":1000,"row_count":1,"size_bytes":1}"#,
+            )
+            .await
+            .unwrap();
+        replicas.insert(verse_id.to_string(), Box::new(replicator));
+
+        let fabric = fabrics.entry(verse_id.to_string()).or_default();
+        fabric.note_entry(
+            verse_id,
+            &RowChange {
+                table: "verse".into(),
+                record_id: verse_id.into(),
+                content_hash: [0; 32],
+                author_id: owner.into(),
+                timestamp: 0,
+                is_tombstone: false,
+                data: serde_json::to_vec(&serde_json::json!({ "created_by": owner })).unwrap(),
+            },
+        );
+        fabric.note_entry(
+            verse_id,
+            &RowChange {
+                table: "petal".into(),
+                record_id: "p1".into(),
+                content_hash: [0; 32],
+                author_id: owner.into(),
+                timestamp: 0,
+                is_tombstone: false,
+                data: serde_json::to_vec(&serde_json::json!({ "petal_id": "p1", "fractal_id": "f1" }))
+                    .unwrap(),
+            },
+        );
+
+        // The legit row arrives inbound (unknown role yet) — quarantined.
+        fabric.note_entry(
+            verse_id,
+            &RowChange {
+                table: SHARD_TABLE.into(),
+                record_id: "p1/a1/1".into(),
+                content_hash: [0; 32],
+                author_id: editor.into(),
+                timestamp: 0,
+                is_tombstone: false,
+                data: br#"{"shard":"p1/a1/1","hosts":["did:key:editor"],"mode":"sharded","replication_factor":1,"bucket_width_ms":1000,"range_start_ms":0,"range_end_ms":1000,"row_count":1,"size_bytes":1}"#.to_vec(),
+            },
+        );
+        assert_eq!(fabric.quarantine_len(), 1);
+
+        // Flood past the cap with strangers' rows on other shards — the
+        // legit row is evicted (drop-oldest).
+        for i in 0..1100 {
+            let shard_key = format!("p1/a{i}/1");
+            fabric.note_entry(
+                verse_id,
+                &RowChange {
+                    table: SHARD_TABLE.into(),
+                    record_id: shard_key.clone(),
+                    content_hash: [0; 32],
+                    author_id: "did:key:flooder".into(),
+                    timestamp: 0,
+                    is_tombstone: false,
+                    data: serde_json::to_vec(&serde_json::json!({
+                        "shard": shard_key, "hosts": ["did:key:flooder"],
+                        "row_count": 1, "size_bytes": 1,
+                    }))
+                    .unwrap(),
+                },
+            );
+        }
+        assert!(fabric.quarantine_evicted() > 0, "the flood must have evicted something");
+        assert!(
+            !fabric.shards.contains_key("p1/a1/1"),
+            "the legit row must not have survived in the in-memory quarantine alone"
+        );
+
+        // The owner grants Editor — the re-read recovers the row straight
+        // from the replica, which the in-memory eviction never touched.
+        fabric.note_entry(
+            verse_id,
+            &RowChange {
+                table: "role".into(),
+                record_id: format!("{petal_scope}/{editor}/{owner}"),
+                content_hash: [0; 32],
+                author_id: owner.into(),
+                timestamp: 0,
+                is_tombstone: false,
+                data: serde_json::to_vec(&serde_json::json!({
+                    "scope": petal_scope, "peer_did": editor, "grantor_did": owner,
+                    "role": "editor", "revoked": false, "hlc": 1,
+                }))
+                .unwrap(),
+            },
+        );
+
+        drain_reread_queues(&mut fabrics, &replicas, "did:key:local", &evt_tx, &None, &None).await;
+
+        let fabric = fabrics.get(verse_id).expect("fabric still present");
+        assert!(
+            fabric.shards.contains_key("p1/a1/1"),
+            "the re-read must recover the legit row from the replica despite the in-memory eviction"
         );
     }
 
