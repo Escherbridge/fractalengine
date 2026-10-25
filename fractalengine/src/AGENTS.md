@@ -908,9 +908,14 @@ Editor+-gated (RP-4) and every writer validates its `did:key` grammar
 (fe-database `is_valid_inbound_petal_terrain`, fe-api
 `validate_publisher_pins`, fe-terrain `terrain_config_from_petal_json`).
 
-- **Recording** (`record_publisher_pin`): a header verified under a
-  petal-authored pin REPLACES a recorded TOFU pin; every other source only
-  fills an empty `KnownTilesetPublishers` slot, so TOFU never overrides.
+- **Recording** (`record_publisher_pin`): node-global sources (installed,
+  TOFU, first contact) only fill an empty `KnownTilesetPublishers` slot, so
+  TOFU never overrides. A header verified under a PETAL-AUTHORED pin is never
+  recorded: `KnownTilesetPublishers` is keyed by tileset id alone (node-global),
+  so recording a petal-scoped pin would let an Editor on petal X poison the
+  TOFU fallback that petal Y trusts (pin poisoning, security review 2026-10-24;
+  the petal pin is re-read from `ActivePetalTerrain` on every check anyway).
+  Test: `a_petal_authored_pin_never_poisons_the_global_tofu_map`.
 - **First contact on the streamed path** (AC-31 default): with no pin at
   all, the verified header's publisher becomes the TOFU pin
   (`verify_streamed_meta` verifies the header first so a container's

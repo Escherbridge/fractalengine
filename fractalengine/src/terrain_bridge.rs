@@ -959,9 +959,10 @@ fn resolve_publisher_pin(
     }
 }
 
-/// Record a verified publisher: a petal-authored pin REPLACES a recorded
-/// TOFU pin; every other source only fills an empty slot (TOFU never
-/// overrides — AC-47). Bounded by [`MAX_KNOWN_PUBLISHERS`].
+/// Record a verified publisher into the node-global TOFU map: node-global
+/// sources fill an empty slot only; a petal-authored pin is petal-scoped and
+/// never recorded (pin-poisoning fix — AC-47). Bounded by
+/// [`MAX_KNOWN_PUBLISHERS`]. See `src/AGENTS.md` §tileset-p2p.
 fn record_publisher_pin(
     known: &mut KnownTilesetPublishers,
     tileset_id: &str,
@@ -972,9 +973,9 @@ fn record_publisher_pin(
         return;
     }
     match source {
-        PinSource::PetalAuthored => {
-            known.0.insert(tileset_id.to_string(), publisher_did);
-        }
+        // Petal-scoped trust never writes node-global state; the petal pin is
+        // re-read from the active petal's TerrainConfig on every check.
+        PinSource::PetalAuthored => {}
         PinSource::Installed | PinSource::Tofu | PinSource::FirstContact => {
             known
                 .0
@@ -1204,7 +1205,7 @@ fn send_cancel(sender: &fe_sync::SyncCommandSender, tileset_id: &str) {
 }
 
 /// Main-thread half: a verified publisher becomes this node's pin (a TOFU
-/// pin never overwrites one; a petal-authored pin replaces a TOFU pin —
+/// pin never overwrites one; a petal-authored pin is never recorded —
 /// [`record_publisher_pin`]); a refusal is shown on the download's tracker.
 fn record_install_verdict(
     known: &mut KnownTilesetPublishers,
@@ -1433,7 +1434,7 @@ pub fn drive_streamed_tilesets(
                 Ok((source, publisher)) => {
                     // RP-4b step 3: the streamed path records its first-contact
                     // pin too (symmetric with the install flow); a petal-authored
-                    // pin replaces a recorded TOFU pin.
+                    // pin is never recorded (OF-5 pin poisoning).
                     if let Some(publisher_did) = publisher {
                         record_publisher_pin(
                             &mut known_publishers,
@@ -1863,6 +1864,21 @@ pub fn request_demanded_bundles(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_petal_authored_pin_never_poisons_the_global_tofu_map() {
+        let mut known = KnownTilesetPublishers::default();
+        // Editor on petal X verifies against their petal pin: no global write.
+        record_publisher_pin(&mut known, "ts-1", "did:key:attacker".into(), PinSource::PetalAuthored);
+        assert!(known.0.is_empty(), "petal-scoped trust wrote node-global state");
+        // On petal Y (no pin anywhere) the first verified header becomes TOFU.
+        record_publisher_pin(&mut known, "ts-1", "did:key:legit".into(), PinSource::FirstContact);
+        assert_eq!(known.0.get("ts-1").map(String::as_str), Some("did:key:legit"));
+        // Neither a later petal pin nor a later first contact overrides it.
+        record_publisher_pin(&mut known, "ts-1", "did:key:attacker".into(), PinSource::PetalAuthored);
+        record_publisher_pin(&mut known, "ts-1", "did:key:attacker".into(), PinSource::FirstContact);
+        assert_eq!(known.0.get("ts-1").map(String::as_str), Some("did:key:legit"));
+    }
 
     #[test]
     fn proposal_overlay_allowance_tracks_mesh_headroom() {
