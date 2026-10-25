@@ -621,3 +621,15 @@ fe-sync tests only (localized files).
   may BE the squatter); "contest only pre-convergence" re-opens the snapshot-shadowing correction R6 built. The
   reviewer's rate-limit / verse-level-authority-to-unmap-a-petal-with-holders idea is recorded as a next-campaign
   hardening candidate alongside DB confine_petal parity. Availability-only; fails closed; no bypass.
+
+### R6b close (2026-10-25) — OF-11a/b + OF-12a history-cap addendum · FIXED · CAMPAIGN FINAL CODE EVENT
+- Commit `f437d4b` (sharding.rs + AGENTS.md only): OF-11a — contested own replay now gated into the normal claim
+  path (`current.is_some() || contested_petals.contains_key(petal_id)`); live local writes keep authority. OF-11b —
+  claims REFUSED at cap, refused fractal ids force-remembered in `contested_claimed_fractals` and folded into the
+  settlement proof (eviction can never shrink what settling must prove); refused-only scoping keeps legitimate
+  role-lapse resolution intact. Addendum — `push_mapping_layer` never evicts the locally-authoritative or
+  sole-distinct-fractal history layer; a move is refused when every layer is protected.
+- Gates: fe-sync 293/0 (+4/3/17 integration), clippy 1.99 clean, harness role-propagation PASS. Mutation-checked
+  tests incl. a 5th-move-refused → full rollback-to-local-layer flow.
+- STOP-RULE now ACTIVE: further MED/LOW on the contested-petal/blob-gate seam batch to the next campaign.
+  Campaign HEAD `f437d4b`; push + in-app verify remain user-gated.
