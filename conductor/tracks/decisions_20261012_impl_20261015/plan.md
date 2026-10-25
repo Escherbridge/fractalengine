@@ -82,9 +82,9 @@ iroh-relay 1.3 container. None of this may weaken W5's authority model.
 
 W5 RP-4 step 8 (`role_propagation_20261013/plan.md:945-957`) defines the effective API role for
 replicated writes as `min(token max_role, role_at(local_did, scope))`. One helper applies it,
-shared by `lifecycle_auth_context` (`fe-database/src/lib.rs:240-262` today) and every
+shared by `lifecycle_auth_context` (`fe-database/src/lib.rs:244-266` @483b538) and every
 replicated-write door. `local_did` is the **node**. The node's `sub` claim and the node's
-replicated authorship are the same identity (`fe-database/src/lib.rs:491-493` derives
+replicated authorship are the same identity (`fe-database/src/lib.rs:543` derives
 `local_did` from the node keypair, and `fe-identity/src/api_token.rs:84` sets
 `sub: keypair.to_did_key()`).
 
@@ -93,7 +93,7 @@ W6 rules. W6-7a implements them; W6-9 attacks them.
 1. **`client` is never an authorization subject.**
    - `fe-api/src/endpoint.rs:49-53` (`caller_auth`) keeps `did: claims.sub.clone()`.
    - `fe-api/src/auth.rs:58-64` (`api_token_context`) keeps `subject: claims.sub.clone()`.
-   - `fe-database/src/lib.rs:223-231` (`caller_auth_to_context`) and W5's cap helper are not
+   - `fe-database/src/lib.rs:225-234` (`caller_auth_to_context`) and W5's cap helper are not
      edited by W6.
    - Test: `a_client_claim_naming_a_manager_did_gains_no_role` (threat TC-1).
 2. **`client` never changes `max_role`, and never bypasses the cap.** Mint keeps its existing
@@ -118,7 +118,7 @@ W6 rules. W6-7a implements them; W6-9 attacks them.
 
 | File | W5 slices | W6 region |
 |---|---|---|
-| `fe-database/src/lib.rs` | RP-2, RP-3, RP-4, RP-6 | `DbCommand::MintApiToken` arm (`:873-882` @389b6c7) — W6-7a |
+| `fe-database/src/lib.rs` | RP-2, RP-3, RP-4, RP-6 | `DbCommand::MintApiToken` arm (`:982-+` @483b538) — W6-7a |
 | `fe-runtime/src/messages.rs` | RP-3 (`ReplicatedRowOutcome::Deferred`), RP-6 | `MintApiToken` (`:569-574`), `ApiTokenMinted` (`:1123-1130`), `ApiTokenInfo` (`:1415-1425`) — W6-7a |
 | `fe-test-harness/src/peer.rs` | RP-3, RP-6, RP-8 | harness `MintApiToken` arm (`:585-640`) — W6-7a |
 | `fe-database/src/handlers/elevated_query.rs` | RP-2 (role tables pinned out of `ELEVATED_WRITABLE_TABLES`) | new `MAX_ELEVATED_STATEMENTS` + check in `elevated_query_reply` (`:48`) — W6-2 |

@@ -33,9 +33,34 @@
   "spec": "./spec.md",
   "progress": { "done": 0, "open": 13, "plan": "./plan.md" },
   "partitions": {
-    "computed_at": "2026-10-15T00:00:00Z",
-    "computed_at_commit": "389b6c7",
-    "confidence": "planned",
+    "computed_at": "2026-10-25T00:00:00Z",
+    "computed_at_commit": "483b538",
+    "confidence": "verified",
+    "w6_0_notes": {
+      "w5_final_commit": "9fbf7b9",
+      "composition_rule_status": "PASS — caller_auth (endpoint.rs:49-53) and api_token_context (auth.rs:58-64) unchanged; both use claims.sub, never claims.client",
+      "ac46_helper": {
+        "name": "node_role_at",
+        "location": "fe-database/src/lib.rs:270",
+        "signature": "async fn node_role_at(db: &Db, local_did: &str, scope: &str) -> RoleLevel",
+        "computation": "min(token max_role, role_at(local_did, scope))",
+        "called_from": [
+          "lifecycle_auth_context (lib.rs:244+) — applied to all identified-path mutations",
+          "require_node_role (lib.rs:285+) — explicit gate for IoT/device/format doors",
+          "authorize_edit (visibility_groups.rs:91+) — applied to SetPetalTerrain/RenderDistance"
+        ]
+      },
+      "ac46_door_coverage": {
+        "InsertReadings": "✓ require_node_role at lib.rs:1586",
+        "RegisterDeviceFormat": "✓ require_node_role at lib.rs:1619",
+        "InsertDevicePayloads": "✓ require_node_role at lib.rs:1644",
+        "SetPetalTerrain": "✓ authorize_edit → lifecycle_auth_context → node_role_at",
+        "SetPetalRenderDistance": "✓ authorize_edit → lifecycle_auth_context → node_role_at",
+        "CreateAsset": "✗ NOT AC-46 capped (dispatch at lib.rs:718 calls create_asset_reply without require_node_role) — OPEN FOR W6-9"
+      },
+      "uploadowner_choke_point": "upload.rs:154-160 (unchanged from plan, uses claims.sub)",
+      "device_payload_asset_rows": "✓ emit replicated asset rows (lib.rs dispatch InsertDevicePayloads at 1641-1657; device_payload.rs:395-406 emits asset rows with owner_did)"
+    },
     "slices": [
       { "id": "W6-0", "task": "re-ground every plan citation against W5's final commit; record W5's AC-46 helper name/site and whether CreateAsset + InsertDevicePayloads asset rows are capped; halt if W5 changed caller_auth/api_token_context/ApiClaims/UploadOwner", "model": "haiku", "depends_on": [],
         "owns": ["conductor/tracks/decisions_20261012_impl_20261015/plan.md", "conductor/tracks/decisions_20261012_impl_20261015/metadata.json"] },
