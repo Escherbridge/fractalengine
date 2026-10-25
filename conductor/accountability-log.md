@@ -633,3 +633,21 @@ fe-sync tests only (localized files).
   tests incl. a 5th-move-refused → full rollback-to-local-layer flow.
 - STOP-RULE now ACTIVE: further MED/LOW on the contested-petal/blob-gate seam batch to the next campaign.
   Campaign HEAD `f437d4b`; push + in-app verify remain user-gated.
+
+### OF-13 (review of R6b commit f437d4b, 2026-10-25) — 3 MED · STOP-RULE EXERCISED → next-campaign batch
+Severity check done before invoking the rule: all three are fail-closed availability/fidelity on the contested-
+petal mechanism, no bypass. Batched as the opening worklist of the next fe-sync campaign slice ("petal-map
+hardening"), with fix shapes:
+- OF-13a (push_mapping_layer evict scan includes pushed_at-1): the incumbent the new layer just replaced can be
+  evicted when its fractal is duplicated → lapse-rollback restores a wrong older mapping. Fix: scan 0..pushed_at-1,
+  or store the replaced fractal on the new PetalMapping so lapse checks don't depend on stack position.
+- OF-13b (contested_claimed_fractals never pruned/cleared): a refused fractal from a since-revoked author blocks
+  settlement indefinitely (petal stays unmapped until a local write); also not cleared in the locally-authoritative
+  branch. Fix: store (author, fractal), re-check author Editor+ at settle time, drop lapsed; clear the map wherever
+  contested_petals is removed.
+- OF-13c (refused move silently dropped): when every history layer is protected, the authorized move is refused
+  with only a warn — not quarantined for retry. Fix: push_mapping_layer returns applied:bool; on refusal quarantine
+  the row (QuarantineKind::Petal) so freed room retries it; skip reverdicts on refusal.
+Also carried to that slice: OF-12b verse-authority-to-unmap-with-holders hardening, DB confine_petal parity,
+reverdict_petal_mappings author-indexing (R6 efficiency note). Push recommendation UNCHANGED (all local-only,
+fail-closed).
