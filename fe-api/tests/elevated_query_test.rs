@@ -424,3 +424,46 @@ async fn owner_cannot_rewrite_privilege_rows_through_elevated_sql() {
     assert_eq!(roles, vec!["viewer".to_string()]);
     assert_eq!(owners, vec![h.did()]);
 }
+
+/// FEAPI-ELEV: a script over the 32-statement cap is refused — by the API's
+/// own fast-fail, before it ever reaches the DB thread — and writes nothing.
+#[tokio::test]
+async fn an_elevated_script_over_the_statement_cap_is_refused_and_writes_nothing() {
+    let h = ApiHarness::spawn_with_elevated_query_allowed()
+        .await
+        .expect("spawn harness");
+    let _outputs = serve_db_thread(&h);
+    let hier = h.seed_hierarchy().await.expect("seed hierarchy");
+    let owner = h.mint_token(&hier.verse_scope(), "owner");
+
+    let mut sql = String::new();
+    for i in 0..33 {
+        sql.push_str(&format!(
+            "CREATE node CONTENT {{ node_id: 'cap-{i}', petal_id: $pid, display_name: 'n', \
+             position: <geometry<point>> [0.0, 0.0], elevation: 0.0, \
+             rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0, 1.0, 1.0], interactive: true, \
+             created_at: '2026-01-01T00:00:00Z' }};"
+        ));
+    }
+    let body = elevated(&h, &owner, &sql, json!({ "pid": hier.petal_id })).await;
+    assert_eq!(body["ok"], false, "{body}");
+    let error = body["error"].as_str().unwrap_or_default();
+    assert_eq!(
+        error, "elevated script has 33 statements; the limit is 32",
+        "{error}"
+    );
+    assert!(body["data"].is_null(), "nothing executed: {body}");
+    assert!(
+        elevated_op_log_rows(&h).await.is_empty(),
+        "nothing was op-logged"
+    );
+
+    let mut res = h
+        .db
+        .query("SELECT count() AS n FROM node WHERE petal_id = $pid GROUP ALL")
+        .bind(("pid", hier.petal_id.clone()))
+        .await
+        .expect("count nodes");
+    let rows: Vec<serde_json::Value> = res.take(0).expect("node count");
+    assert_eq!(rows[0]["n"], 0, "no node was created: {rows:?}");
+}

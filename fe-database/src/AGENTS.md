@@ -696,7 +696,10 @@ one sub-module per domain:
   blocklist, `QueryResult`/`QueryFailed` echoing the caller's correlation id
 - `elevated_query` — `ElevatedQuery` reply (`elevated_query_reply`), the
   `/api/v1/query/elevated` single-writer path (fe-api AGENTS.md
-  §elevated-query): DB-side table mirror `ELEVATED_WRITABLE_TABLES`; a
+  §elevated-query): refused before any work when `request.statements.len()`
+  exceeds `MAX_ELEVATED_STATEMENTS` (32, the single definition — fe-api's
+  `validate_elevated_sql` fast-fails against it first, but this check is the
+  authority); DB-side table mirror `ELEVATED_WRITABLE_TABLES`; a
   read-only script runs as-is; a write script is capped at
   `ELEVATED_DIFF_MAX_ROWS` (20 000) rows across its write tables, then
   snapshot → `commit_operation_atomic` (one `OpType::ElevatedQuery` entry) →

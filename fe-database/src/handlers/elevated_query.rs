@@ -20,6 +20,13 @@ pub const ELEVATED_WRITABLE_TABLES: [&str; 6] =
 /// Upper bound on the rows a write script's tables may hold (the diff reads them all twice).
 pub const ELEVATED_DIFF_MAX_ROWS: usize = 20_000;
 
+/// Upper bound on an elevated script's top-level statements (empty ones
+/// excluded, a `FOR`/`IF` block counts as one). The single definition fe-api's
+/// `validate_elevated_sql` fast-fails against; this DB-side check is the
+/// authority — it runs before any snapshot, query or op-log work (fe-api
+/// AGENTS.md §elevated-query; fe-database/src/AGENTS.md §handlers).
+pub const MAX_ELEVATED_STATEMENTS: usize = 32;
+
 /// Write tables the inbound replication applier handles, with their domain id field.
 const REPLICATED_TABLES: [(&str, &str); 3] = [
     ("node", "node_id"),
@@ -50,7 +57,12 @@ pub async fn elevated_query_reply(
     sinks: ElevatedSinks<'_>,
     request: ElevatedRequest,
 ) -> DbResult {
-    let outcome = if request.write_tables.is_empty() {
+    let outcome = if request.statements.len() > MAX_ELEVATED_STATEMENTS {
+        Err(format!(
+            "elevated script has {} statements; the limit is {MAX_ELEVATED_STATEMENTS}",
+            request.statements.len()
+        ))
+    } else if request.write_tables.is_empty() {
         run_read_only(db, &request).await
     } else {
         run_write(db, &sinks, &request).await
@@ -667,5 +679,48 @@ mod tests {
         let logs: Vec<serde_json::Value> = counts.take(1).expect("op_log count");
         assert_eq!(rows[0]["n"], ELEVATED_DIFF_MAX_ROWS + 1);
         assert_eq!(logs[0]["n"], 0, "nothing was op-logged");
+    }
+
+    /// The DB thread is the cap's authority: it refuses an over-cap request
+    /// before any snapshot, query or op-log work, even if a caller bypassed
+    /// the API's own fast-fail check.
+    #[tokio::test]
+    async fn the_db_thread_refuses_an_elevated_request_over_the_statement_cap() {
+        let db = mem_db().await;
+        let blob_store: BlobStoreHandle =
+            Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
+        let statements: Vec<&str> = std::iter::repeat_n("SELECT 1", MAX_ELEVATED_STATEMENTS + 1)
+            .collect();
+        let reply = elevated_query_reply(
+            &db,
+            ElevatedSinks {
+                blob_store: &blob_store,
+                repl_tx: None,
+                entity_change_tx: None,
+            },
+            request(&statements, &[]),
+        )
+        .await;
+        let DbResult::RequestFailed {
+            error,
+            correlation_id,
+        } = reply
+        else {
+            panic!("expected RequestFailed, got {reply:?}");
+        };
+        assert_eq!(correlation_id, "c1");
+        assert_eq!(
+            error,
+            format!(
+                "elevated script has {} statements; the limit is {MAX_ELEVATED_STATEMENTS}",
+                MAX_ELEVATED_STATEMENTS + 1
+            )
+        );
+        let mut counts = db
+            .query("SELECT count() AS n FROM op_log GROUP ALL")
+            .await
+            .expect("counts");
+        let logs: Vec<serde_json::Value> = counts.take(0).expect("op_log count");
+        assert_eq!(logs[0]["n"], 0, "nothing was op-logged: {logs:?}");
     }
 }

@@ -449,7 +449,15 @@ pub fn validate_elevated_sql(sql: &str, allowed_tables: &[&str]) -> Result<Eleva
     let mut write_tables: Vec<String> = writes.iter().map(|t| t.to_ascii_lowercase()).collect();
     write_tables.sort();
     write_tables.dedup();
-    let statements = split_elevated_statements(sql)
+    let split = split_elevated_statements(sql);
+    if split.len() > fe_database::handlers::elevated_query::MAX_ELEVATED_STATEMENTS {
+        return Err(format!(
+            "elevated script has {} statements; the limit is {}",
+            split.len(),
+            fe_database::handlers::elevated_query::MAX_ELEVATED_STATEMENTS
+        ));
+    }
+    let statements = split
         .into_iter()
         .map(|statement| {
             let upper = statement.to_ascii_uppercase();
@@ -1617,6 +1625,57 @@ mod tests {
             split_elevated_statements(r"SELECT 'a\';b' FROM node; RETURN 1"),
             vec![r"SELECT 'a\';b' FROM node", "RETURN 1"],
             "an escaped quote does not end the string"
+        );
+    }
+
+    /// FEAPI-ELEV: the cap counts top-level statements only — a `;` inside a
+    /// string literal or `{ }`/`(…)`/`[…]` nesting is not a split point
+    /// (`split_elevated_statements`), and a trailing run of empty statements
+    /// is dropped before counting (AGENTS.md §elevated-query).
+    #[test]
+    fn elevated_statement_cap_counts_top_level_statements() {
+        const TABLES: &[&str] = &["NODE"];
+
+        let exactly_32 = "SELECT * FROM node;".repeat(32);
+        assert!(
+            validate_elevated_sql(&exactly_32, TABLES).is_ok(),
+            "32 statements is at the cap"
+        );
+
+        let over_33 = "SELECT * FROM node;".repeat(33);
+        let err = validate_elevated_sql(&over_33, TABLES).unwrap_err();
+        assert_eq!(
+            err,
+            format!(
+                "elevated script has 33 statements; the limit is {}",
+                fe_database::handlers::elevated_query::MAX_ELEVATED_STATEMENTS
+            )
+        );
+
+        // 33 semicolons inside one string literal: still one statement.
+        let semis_in_string = format!(
+            "SELECT * FROM node WHERE x = '{}'",
+            ";".repeat(33)
+        );
+        assert!(
+            validate_elevated_sql(&semis_in_string, TABLES).is_ok(),
+            "semicolons in a string literal are not split points"
+        );
+
+        // 40 semicolons inside one statement's `{ }` braces: still one statement.
+        let semis_in_braces = format!(
+            "UPDATE node SET tags = {{ {} }}",
+            "a: 1;".repeat(40)
+        );
+        assert!(
+            validate_elevated_sql(&semis_in_braces, TABLES).is_ok(),
+            "semicolons nested in braces are not split points"
+        );
+
+        // A trailing run of empty statements is dropped, not counted.
+        assert!(
+            validate_elevated_sql("SELECT * FROM node;;;", TABLES).is_ok(),
+            "trailing empty statements are not counted"
         );
     }
 

@@ -720,6 +720,18 @@ deny-by-default (fe-policy's ratified stance), mirroring `FE_SIM_ALLOW`
   means only that backstop fired — the DB thread still finishes the script
   and its late reply is dropped by the entry's pop-and-drop (fe-runtime
   §api-reply-correlation), so a timed-out write MAY have landed.
+- **32-statement cap (FEAPI-ELEV).** `MAX_ELEVATED_STATEMENTS` (fe-database
+  `handlers/elevated_query.rs`) is the single definition, enforced twice:
+  `validate_elevated_sql` fast-fails on the same count right after
+  `split_elevated_statements` — before the `TIMEOUT` suffix map, so a
+  trailing run of empty statements never counts — and `elevated_query_reply`
+  repeats the check as the authority, before any snapshot, query or op-log
+  work (a caller that reached the DB thread without going through the API
+  gets the same refusal). The cap counts top-level statements only: a
+  `FOR`/`IF` block is one statement however many inner statements it holds,
+  and a `;` inside a string, an escaped identifier or `()`/`[]`/`{}` nesting
+  is not a split point. Over the cap: `elevated script has {n} statements;
+  the limit is 32`, the same `ok:false` envelope as every other refusal.
 - **Single writer, exactly like the typed handlers** (fe-database
   `handlers/elevated_query.rs`, `src/AGENTS.md` §handlers). Every script —
   reads too — runs on the DB thread; `db_reader` is never used, so the
@@ -788,11 +800,15 @@ deny-by-default (fe-policy's ratified stance), mirroring `FE_SIM_ALLOW`
   carrying the bumped `edit_seq`, one `NodeAdded`; a failing second
   statement rolls back the first and the log; a long scan hits the DB-side
   TIMEOUT in < 7 s and the next script still runs; works with
-  `db_reader: None`; privilege rewrites refused and rows unchanged),
+  `db_reader: None`; privilege rewrites refused and rows unchanged; a script
+  over the 32-statement cap is refused with nothing op-logged —
+  `an_elevated_script_over_the_statement_cap_is_refused_and_writes_nothing`),
   `tests/record_id_read_test.rs` (Owner cannot read a seeded `role:victim`
   by id; the same vectors on `/query`) + `query_guard` units
-  `elevated_write_targets_must_be_plain_whitelisted_tables` and
-  `elevated_plan_bounds_every_dml_and_names_its_write_tables`.
+  `elevated_write_targets_must_be_plain_whitelisted_tables`,
+  `elevated_plan_bounds_every_dml_and_names_its_write_tables` and
+  `elevated_statement_cap_counts_top_level_statements` + fe-database
+  `handlers::elevated_query::tests::the_db_thread_refuses_an_elevated_request_over_the_statement_cap`.
 
 ## §export
 
