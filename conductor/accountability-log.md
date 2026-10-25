@@ -651,3 +651,8 @@ hardening"), with fix shapes:
 Also carried to that slice: OF-12b verse-authority-to-unmap-with-holders hardening, DB confine_petal parity,
 reverdict_petal_mappings author-indexing (R6 efficiency note). Push recommendation UNCHANGED (all local-only,
 fail-closed).
+
+- OF-13 addendum (2026-10-25, duplicate review batch): findings re-reported = OF-13b/OF-13c, no new gaps. One
+  improved fix shape absorbed into OF-13c: store `from_fractal` on each PetalMapping so the rollback authority
+  check is position-independent — then moves are ALWAYS applied and no refusal path exists at all (preferred over
+  quarantine-and-retry). OF-13b shape confirmed: bounded (author, fractal) pairs, lapse-pruned at settle.
