@@ -568,3 +568,18 @@ gates `cargo check -p fe-sync -p fe-database -p fractalengine --tests`, before W
   clippy 1.99 + fmt + feature matrix, fix-and-commit) → R5 THE sweep (full tests + harness 18 + e2e + relay
   container per conductor/final-sweep-manifest.md; fixes failures; LM Studio capacity-freeing kill authorized).
   AC-52 holds: unfixed CRITICAL/HIGH or BLOCKED halts. Push stays HELD until the user confirms on a green sweep.
+
+### OF-10 (background security review of refine R1's commit, 2026-10-25) — third-order findings · QUEUED for post-sweep R6
+Severity trajectory across review generations: OF-6/8/9 HIGHs → now 3 MEDs on the redesign itself — converging.
+Not injectable into the running refine workflow (prompts fixed); R6 fix slice runs AFTER R5's sweep, then re-runs
+fe-sync tests only (localized files).
+- OF-10a MED (sharding.rs petal-map first-writer-wins): the OF-9 gate authorizes the author at the scope THE AUTHOR
+  chose — first authorized inbound mapping squats. Fix shape: require authority consistent with the petal's creation
+  (DB plane confine_petal parity), or hold conflicting first mappings pending until one authoritative wins; on
+  conflict re-check the incumbent author's authority.
+- OF-10b MED (sharding.rs repin_owner_from_local / rematerialize): petal mappings admitted under the OLD role view
+  survive an owner re-pin. Fix shape: keep per-mapping author provenance; on rematerialize/re-pin, re-check every
+  mapping (Editor+ at both scopes) and re-quarantine failures — or rebuild petal_fractals from the replica on re-pin.
+- OF-10c MED (sync_thread.rs UNVOUCHED_FETCH_CONTEXT = "\u{0}unvouched-provider" sentinel verse id in the learned
+  set): replace with an explicit unvouched/never-seed flag on RootBinding, or reject the sentinel id in
+  set_verse_access and verse-open paths. Sentinel-in-data is a collision-shaped fail-open waiting for a refactor.
