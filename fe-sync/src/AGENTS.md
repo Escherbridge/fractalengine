@@ -1018,45 +1018,62 @@ diagnostics echo.
   renders a partial with its own `RESPONDER_EXEC_CAP_MS` budget, replying as
   a topic broadcast (the topic is exactly the replica members — everyone
   else's `route` ignores foreign request ids).
-- **Creator copies are load-bearing — the responder answers EVERY
-  requested shard (SYNC-RESPONDER, reverted 2026-10-11).** A responder runs
-  the shard list it was asked for verbatim (aggregates) or the whole petal
-  (raw/latest); it does NOT narrow to shards it formally hosts. This is a
-  correctness requirement, not wasted DB work: roles are store-local and
-  never replicate (`role` rows are `NotApplicable` inbound), so in a
-  sharded/balanced fabric a non-owner host resolves a non-owner author to the
-  manifest's `viewer` default and DENIES that author's readings at the A3
-  inbound gate (`admit_inbound_row`, fe-database `src/AGENTS.md` §handlers
-  `replicated_row`). The author's own durable creator copy is then the ONLY
-  copy of those rows, and the author is not a ledger host for them. Commit
-  7a74214 added `hosted_subset` filtering (ledgered as "a pure efficiency
-  win, not a correctness fix") — that was
-  false: the author dropped the request as `NOT_HOSTED`, the denying host
-  answered an honest-looking covered-empty, and the merged result was
-  silently incomplete. The harness `distributed_query` scenario caught it
-  (leg 1 never matched ground truth); provisioning Editor roles in the
-  harness would have made it pass by hiding the production default, so the
-  filter was reverted instead. The merge already does the right thing with
-  a non-host's rows (`merge_aggregates`: a formal host's NON-EMPTY answer
-  wins, else any non-empty answer; `fold_attribution` credits row-bearing
-  shards as covered). Pinned by
-  `a_non_host_authors_creator_copy_serves_rows_its_denying_host_refused`
-  (requester → author + denying host over an in-process wire; both the
-  aggregate and the raw leg fail if filtering is reintroduced).
-  **Deferred — responder filtering waits on role propagation.** Re-enable
-  hosted-shard filtering only once a host can admit every legitimate
-  author's rows, i.e. roles propagate (a role-bearing ledger or signed role
-  claims). That is the same per-operation-signing dependency as
-  §transport-admission-control item 5; ledger row SYNC-ROLE-PROPAGATION.
-  **Settlement residual (open, not fixed here):** the collector settles a
-  query once every EXPECTED host (ledger hosts) answered and the local
-  partial resolved — or, for aggregates, once every shard has a non-empty
-  partial. A non-host author is never expected, so if the denying host's
-  empty answer lands before the author's creator copy, the query settles
-  without it (aggregate and raw alike). Delivery order decides; the pinning
-  test fixes the author-first order. Closing this needs either role
-  propagation (the host then holds the rows) or a short grace window after
-  formal-host settlement for unexpected answerers.
+- **Responder filtering is RE-ENABLED (SYNC-RESPONDER, RP-7
+  2026-10-24) — provisional, revertible on its own.** The §2.6 filter: an
+  aggregate request answers only the shards where
+  `local ∈ hosts(shard) ∪ holders(shard)`, or the ledger holds NO entry for
+  that shard at all here — an absent entry can never prove non-hosting
+  (replication lag is unknowable), so it is answered, not silently skipped.
+  **Hosted-only filtering is documented as permanently unsafe** for exactly
+  this reason. A raw/latest request answers iff the responder hosts or
+  holds ANY shard of the requested petal, or the petal is unknown here
+  (unchanged from the pre-filter `PETAL_UNKNOWN` gate). A request the
+  filter leaves nothing to answer drops with `drop_reason::NOT_HOSTED`
+  (`handle_gossip_incoming`, named and unit-testable without a gossip
+  stack).
+
+  **Why re-enabling is safe now.** This crate reverted the equivalent
+  `hosted_subset` filter on 2026-10-11 (ledgered then as "a pure efficiency
+  win, not a correctness fix" — that was false) because roles were
+  store-local and never replicated: a non-owner host resolved a non-owner
+  author to the manifest's `viewer` default and DENIED that author's
+  readings at the A3 inbound gate (`admit_inbound_row`, fe-database
+  `src/AGENTS.md` §handlers `replicated_row`), so the author's own durable
+  creator copy was the ONLY copy of those rows and the author was not a
+  ledger host for them. A hosted-shard filter then made the author drop the
+  request as `NOT_HOSTED`, the denying host answered an honest-looking
+  covered-empty, and the merged result was silently incomplete (the harness
+  `distributed_query` scenario caught it; provisioning Editor roles in the
+  harness would have hidden the production default instead of fixing it, so
+  the filter was reverted). RP-6 (§2.6 settlement) closes that hole from the
+  OTHER side: a non-host author now DECLARES itself a holder
+  (`__holders/{shard}/{did}`, admitted Editor+ at the shard's petal scope)
+  the first time it writes into a shard it does not host, and the collector
+  explicitly waits `HOLDER_WAIT_MS` for every admitted holder before
+  settling — closing the settlement-order hole that made the 2026-10-11
+  revert necessary. `hosts ∪ holders(shard)` is therefore exactly the
+  expected-answerer set the collector already waits for: the filter answers
+  for precisely the peers whose silence the settlement logic already
+  notices, never for a peer the collector would otherwise have to guess
+  about. The merge still does the right thing with a holder's rows
+  (`merge_aggregates`: a formal host's NON-EMPTY answer wins, else any
+  non-empty answer; `fold_attribution` credits row-bearing shards as
+  covered) — RP-7 only stops OTHER peers from answering pointlessly.
+
+  **Revert trigger (critic tick C7, RUNBOOK §3 sequencing).** This filter
+  shipped as its OWN commit and is reverted alone — restoring the old
+  no-filter pinning test — if any RP-6 settlement test or the harness
+  `distributed_query` scenario (RP-8) is red in the final sweep; it never
+  ships on a red RP-6. RP-9's critic pass must explicitly endorse keeping
+  it. Pinned by
+  `a_declared_holder_serves_its_creator_copy_and_a_non_holder_stays_silent`
+  (requester → declared holder + denying host over an in-process wire, host
+  delivered FIRST — the order the pre-RP-6 settlement and the old filter
+  both failed on — plus a third peer that is neither host nor holder and
+  must stay silent; both the aggregate and the raw leg) and
+  `the_responder_answers_an_unknown_ledger_shard` (the safe direction: a
+  shard this responder's own ledger has no entry for is answered, not
+  skipped).
 - **Diagnostics echo is non-blocking.** The collector runs as a task on the
   sync thread's current-thread runtime (§sync-thread-blocking-io), so its
   `ComputeResultReady` echo is a `try_send` (drop-and-warn when the event

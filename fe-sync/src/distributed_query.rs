@@ -1165,6 +1165,10 @@ pub mod drop_reason {
     /// Raw/latest request for a petal this verse's ledger knows no shard
     /// for — legitimately not answering.
     pub const PETAL_UNKNOWN: &str = "petal unknown here";
+    /// §2.6 responder filter (RP-7, re-enabled): local is neither a ledger
+    /// host nor an admitted holder of any shard the filter left standing —
+    /// an honest "I have nothing for this" silence, never a wire error.
+    pub const NOT_HOSTED: &str = "neither hosting nor holding any requested shard";
     /// RP-5 step 5: the requester resolves below Viewer at the requested
     /// petal's scope (`VerseFabric::role_at`, `default_access` folded in).
     pub const INSUFFICIENT_ROLE: &str = "requester below Viewer at the requested petal";
@@ -1195,9 +1199,46 @@ pub mod drop_reason {
 ///    convergence (a responder that has not converged the requester's
 ///    declaration yet refuses until it does).
 ///
-/// After admission the responder renders EVERY requested shard — it does not
-/// narrow to shards it formally hosts: a non-host's creator copy is the only
-/// copy of rows a denying host refused (see `AGENTS.md` §distributed-query).
+/// **The §2.6 responder filter (SYNC-RESPONDER, re-enabled RP-7).** After
+/// admission, an aggregate request answers only the shards where
+/// `local ∈ hosts(shard) ∪ holders(shard)`, or the ledger holds no entry for
+/// that shard at all here — an absent entry can never prove non-hosting
+/// (replication lag is unknowable), so it is answered, not skipped; see
+/// `AGENTS.md` §distributed-query, "hosted-only filtering is never safe". A
+/// raw/latest request answers iff the responder hosts or holds ANY shard of
+/// the requested petal, or the petal is unknown here. A request the filter
+/// leaves nothing for drops with `drop_reason::NOT_HOSTED`.
+///
+/// §2.6 responder filter — per-shard test for an aggregate request: this
+/// responder answers `shard_key` iff it is a ledger host or an admitted
+/// holder of it, or the shard has no ledger entry at all here. An absent
+/// entry can never prove non-hosting — replication lag is unknowable — so
+/// the honest default is to answer (see `AGENTS.md` §distributed-query,
+/// "hosted-only filtering is never safe").
+fn responder_covers_shard(fabric: &VerseFabric, local_did: &str, shard_key: &str) -> bool {
+    match fabric.shards.get(shard_key) {
+        Some(entry) => {
+            entry.hosts.iter().any(|h| h == local_did)
+                || fabric
+                    .shard_holders(shard_key)
+                    .is_some_and(|holders| holders.contains(local_did))
+        }
+        None => true,
+    }
+}
+
+/// §2.6 responder filter — petal-level test for a raw/latest request: this
+/// responder answers iff it hosts or holds ANY shard the local ledger knows
+/// for `petal_prefix`. The caller has already confirmed the petal itself is
+/// known here (`drop_reason::PETAL_UNKNOWN` fires first) — unlike the
+/// per-shard test, there is no "unknown petal" fallback at this point.
+fn responder_covers_petal(fabric: &VerseFabric, local_did: &str, petal_prefix: &str) -> bool {
+    fabric.shards.values().any(|entry| {
+        entry.shard.starts_with(petal_prefix)
+            && responder_covers_shard(fabric, local_did, &entry.shard)
+    })
+}
+
 pub fn handle_gossip_incoming(
     transport: &DistributedTransport,
     fabrics: &HashMap<String, VerseFabric>,
@@ -1316,6 +1357,7 @@ pub fn handle_gossip_incoming(
             // was sent for.
             let petal_prefix = format!("{}/", spec.petal_id());
             let is_aggregate = matches!(spec, TsQueryKind::WindowAggregate { .. });
+            let mut shards = shards;
             if is_aggregate {
                 if shards.is_empty() || shards.len() > MAX_TARGET_SHARDS {
                     tracing::warn!(
@@ -1330,6 +1372,18 @@ pub fn handle_gossip_incoming(
                         "compute request shards do not match its petal — ignored"
                     );
                     return GossipDisposition::Dropped(drop_reason::SHARD_LIST_MISMATCH);
+                }
+                // §2.6 responder filter: narrow to the shards this
+                // responder actually hosts or holds (or has no ledger
+                // entry for at all — `responder_covers_shard`). A request
+                // the filter leaves nothing for is not answered.
+                shards.retain(|s| responder_covers_shard(fabric, &transport.local_did, &s.shard));
+                if shards.is_empty() {
+                    tracing::debug!(
+                        request_id,
+                        "no requested shard is hosted or held here — not answering (§2.6)"
+                    );
+                    return GossipDisposition::Dropped(drop_reason::NOT_HOSTED);
                 }
             } else {
                 // Raw/latest: the shard list (RP-6 — carried only so the
@@ -1348,16 +1402,25 @@ pub fn handle_gossip_incoming(
                 }
                 // Answer only when this verse's ledger knows the petal (no
                 // rows could be hosted for an unknown petal anyway).
-                let petal_known = fabrics
-                    .get(&incoming.verse_id)
-                    .map(|f| f.shards.keys().any(|k| k.starts_with(&petal_prefix)))
-                    .unwrap_or(false);
+                let petal_known = fabric.shards.keys().any(|k| k.starts_with(&petal_prefix));
                 if !petal_known {
                     tracing::debug!(
                         request_id,
                         "compute request petal unknown here — not answering"
                     );
                     return GossipDisposition::Dropped(drop_reason::PETAL_UNKNOWN);
+                }
+                // §2.6 responder filter: a raw/latest request is answered
+                // iff this responder hosts or holds any shard of the
+                // petal — the per-shard list above is honesty metadata
+                // only, never a narrowing input here.
+                if !responder_covers_petal(fabric, &transport.local_did, &petal_prefix) {
+                    tracing::debug!(
+                        request_id,
+                        "neither hosting nor holding any shard of this petal — not answering \
+                         (§2.6)"
+                    );
+                    return GossipDisposition::Dropped(drop_reason::NOT_HOSTED);
                 }
             }
             let Some(sender) =
@@ -2434,9 +2497,12 @@ mod tests {
     }
 
     /// A transport whose local peer is `did:local`, plus the verse fabric
-    /// with `p1/a/0` sharded to the requester and the requester DECLARED
-    /// (the honest requester shape). Returns the requester's own did:key —
-    /// the identity its endpoint authenticates as.
+    /// with `p1/a/0` sharded to the requester AND `did:local` and the
+    /// requester DECLARED (the honest requester shape). `did:local` hosts
+    /// the shard too (RP-7) so the §2.6 responder filter trivially passes
+    /// here — this fixture isolates the ADMISSION gates (1-3), not the
+    /// filter. Returns the requester's own did:key — the identity its
+    /// endpoint authenticates as.
     fn admission_setup() -> (
         DistributedTransport,
         HashMap<String, VerseFabric>,
@@ -2455,7 +2521,7 @@ mod tests {
             "did:key:owner",
         );
         fabric.note_shard_row(&serde_json::json!({
-            "shard": "p1/a/0", "hosts": [requester_did.clone()],
+            "shard": "p1/a/0", "hosts": [requester_did.clone(), "did:local"],
             "mode": "sharded", "replication_factor": 1, "bucket_width_ms": 60_000,
             "range_start_ms": 0, "range_end_ms": 60_000, "row_count": 1, "size_bytes": 10
         }));
@@ -2596,9 +2662,11 @@ mod tests {
         // A ledger row for both petals so a "served" case reaches the
         // (empty) sender lookup instead of the earlier PETAL_UNKNOWN check
         // — isolating this test to the requester gate specifically.
+        // "did:local" hosts every shard too (RP-7) so the §2.6 responder
+        // filter never interferes with that isolation.
         for petal in ["p1", "p2"] {
             fabric.note_shard_row(&serde_json::json!({
-                "shard": format!("{petal}/a/0"), "hosts": [owner],
+                "shard": format!("{petal}/a/0"), "hosts": [owner, "did:local"],
                 "row_count": 1, "size_bytes": 1,
             }));
         }
@@ -2692,9 +2760,11 @@ mod tests {
     fn honest_direct_request_from_a_declared_peer_is_admitted() {
         // Every gate passes: verse matches the arrival topic, from_did is
         // the authenticated sender's did:key, the requester is declared,
-        // and the aggregate shard list sits inside the spec's petal.
-        // Reaching the (empty) gossip-sender lookup — TOPIC_CLOSED —
-        // proves admission passed; only the un-fakeable GossipSender
+        // and the aggregate shard list sits inside the spec's petal. The
+        // §2.6 responder filter also passes trivially — `admission_setup`
+        // declares "did:local" a host of the requested shard. Reaching the
+        // (empty) gossip-sender lookup — TOPIC_CLOSED — proves admission
+        // (and the filter) passed; only the un-fakeable GossipSender
         // stands between here and the responder spawn.
         let (transport, fabrics, senders, requester_did) = admission_setup();
         let from = requester_node();
@@ -2713,6 +2783,43 @@ mod tests {
                 gossip_incoming("v-1", from, true, &env)
             ),
             GossipDisposition::Dropped(drop_reason::TOPIC_CLOSED)
+        );
+    }
+
+    /// §2.6, the safe direction: a shard this responder's own ledger has no
+    /// entry for at all is answered, never silently skipped — an absent
+    /// ledger entry can never prove non-hosting (replication lag is
+    /// unknowable; hosted-only filtering is documented as permanently
+    /// unsafe in `AGENTS.md` §distributed-query).
+    #[test]
+    fn the_responder_answers_an_unknown_ledger_shard() {
+        let (transport, fabrics, senders, requester_did) = admission_setup();
+        // `admission_setup` ledgers only "p1/a/0" — "p1/ghost/0" sits inside
+        // the same petal (so petal containment passes) but has no ledger
+        // entry here at all, local included.
+        let from = requester_node();
+        let env = request_envelope(
+            "req-1",
+            "v-1",
+            &requester_did,
+            agg_spec(0, 60_000),
+            vec![PartialShard {
+                shard: "p1/ghost/0".into(),
+                anchor_node_id: "ghost".into(),
+                range_start_ms: 0,
+                range_end_ms: 60_000,
+            }],
+        );
+        assert_eq!(
+            handle_gossip_incoming(
+                &transport,
+                &fabrics,
+                &senders,
+                gossip_incoming("v-1", from, true, &env)
+            ),
+            GossipDisposition::Dropped(drop_reason::TOPIC_CLOSED),
+            "an unknown shard is answered (reaching the un-fakeable sender lookup), never \
+             dropped as NOT_HOSTED"
         );
     }
 
@@ -2870,7 +2977,7 @@ mod tests {
         );
     }
 
-    // ── Creator copies are load-bearing (SYNC-RESPONDER reverted) ──────────
+    // ── §2.6 responder filter (SYNC-RESPONDER, re-enabled RP-7) ─────────────
 
     /// A virtual topic that hands every broadcast frame to the test — the
     /// "wire" between in-process peers, pumped by hand for a fixed order.
@@ -2950,15 +3057,17 @@ mod tests {
         )
     }
 
-    /// Production default: roles never replicate, so the formal host of a
-    /// non-owner author's shard DENIED those readings at the A3 gate and
-    /// holds nothing for it; the author's creator copy is the only copy. A
-    /// fan-out must still return the author's rows — the responder answers
-    /// every requested shard, not just the ones it formally hosts.
-    /// Re-adding responder hosted-shard filtering makes the author drop the
-    /// request (it is not a ledger host) and both legs come back empty.
+    /// §2.6, re-enabled (RP-7): a declared holder's creator copy reaches the
+    /// merged outcome, and a peer that is neither a ledger host nor an
+    /// admitted holder of the shard stays silent. The HOST is delivered
+    /// FIRST — the order the old (reverted) hosted-shard filter, and the
+    /// pre-RP-6 settlement, could not survive; RP-6 closed that by making
+    /// the collector wait for every declared holder before settling. Fails
+    /// if the filter regresses to hosted-only (bob, a non-host holder, goes
+    /// silent) or to no filter at all (dave, neither host nor holder,
+    /// answers).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_non_host_authors_creator_copy_serves_rows_its_denying_host_refused() {
+    async fn a_declared_holder_serves_its_creator_copy_and_a_non_holder_stays_silent() {
         let shard = "p1/b/0";
         let reading = reading_row("r-b1", "b", 12.5, 1_000);
         let cases = [
@@ -2971,6 +3080,14 @@ mod tests {
                 },
                 TsPartialRows {
                     per_shard: vec![shard_rows(shard, Vec::new())],
+                    deferred_shards: vec![shard.to_string()],
+                    ..TsPartialRows::empty()
+                },
+                TsPartialRows {
+                    per_shard: vec![shard_rows(
+                        shard,
+                        vec![agg_row("impostor", 1.0, 1, 1.0, 1.0)],
+                    )],
                     ..TsPartialRows::empty()
                 },
             ),
@@ -2983,15 +3100,25 @@ mod tests {
                     rows: vec![reading.clone()],
                     ..TsPartialRows::empty()
                 },
-                TsPartialRows::empty(),
+                TsPartialRows {
+                    deferred_shards: vec![shard.to_string()],
+                    ..TsPartialRows::empty()
+                },
+                TsPartialRows {
+                    rows: vec![reading_row("r-impostor", "impostor", 1.0, 1_000)],
+                    ..TsPartialRows::empty()
+                },
             ),
         ];
-        for (label, spec, author_copy, host_copy) in cases {
-            // Alice queries (holds nothing locally); bob authored the rows
-            // but is NOT the shard's host; carol hosts it but denied them.
+        for (label, spec, holder_copy, host_copy, dave_copy) in cases {
+            // Alice queries (holds nothing locally); bob is the author AND
+            // a declared holder; carol is the formal host, answering empty
+            // with `deferred_shards=[shard]` (host honesty, RP-6); dave
+            // hosts and holds nothing and must never answer.
             let alice = wire_peer(7, None);
-            let bob = wire_peer(8, Some(author_copy));
+            let bob = wire_peer(8, Some(holder_copy));
             let carol = wire_peer(9, Some(host_copy));
+            let dave = wire_peer(10, Some(dave_copy));
             let mut fabric = fabric_with_shards(
                 VerseTimeseriesSettings {
                     mode: TimeseriesMode::Sharded,
@@ -3000,44 +3127,40 @@ mod tests {
                 },
                 &[(shard, 0, 60_000, &[carol.did.as_str()])],
             );
-            for peer in [&alice, &bob, &carol] {
+            converge_role_view(&mut fabric, &[bob.did.as_str()], &[(shard, bob.did.as_str())]);
+            for peer in [&alice, &bob, &carol, &dave] {
                 fabric.note_peer_declaration(&peer.did, PeerDeclaration::default());
             }
             let fabrics = HashMap::from([("v-1".to_string(), fabric)]);
 
-            let (reply, outcome_rx) = crossbeam::channel::bounded(1);
-            submit_distributed_query(
-                &alice.transport,
-                &fabrics,
-                &alice.senders,
-                DistributedQueryCall {
-                    request: fe_runtime::distributed_query::DistributedQueryRequest {
-                        request_id: format!("q-{label}"),
-                        verse_id: "v-1".into(),
-                        spec,
-                        timeout_ms: 3_000,
-                        row_cap: 0,
-                    },
-                    reply,
-                },
-            );
+            let outcome_rx = submit(&alice, &fabrics, &format!("q-{label}"), spec, 3_000);
             let request = alice
                 .wire
                 .recv_timeout(Duration::from_secs(5))
                 .expect("alice broadcasts the request");
+            // The HOST first — the order the old filter and the pre-RP-6
+            // settlement both failed on.
+            deliver(&carol, &fabrics, &alice, request.clone());
             deliver(&bob, &fabrics, &alice, request.clone());
-            deliver(&carol, &fabrics, &alice, request);
-            // The author's answer first (the order that lets it count — see
-            // AGENTS.md §distributed-query settlement residual), then the
-            // host's honest-looking empty.
-            if let Ok(frame) = bob.wire.recv_timeout(Duration::from_secs(2)) {
-                deliver(&alice, &fabrics, &bob, frame);
-            }
+            assert_eq!(
+                deliver(&dave, &fabrics, &alice, request),
+                GossipDisposition::Dropped(drop_reason::NOT_HOSTED),
+                "{label}: dave is neither a host nor a holder of the shard"
+            );
             let host_frame = carol
                 .wire
                 .recv_timeout(Duration::from_secs(5))
                 .expect("the formal host answers");
             deliver(&alice, &fabrics, &carol, host_frame);
+            let holder_frame = bob
+                .wire
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the declared holder answers");
+            deliver(&alice, &fabrics, &bob, holder_frame);
+            assert!(
+                dave.wire.recv_timeout(Duration::from_millis(300)).is_err(),
+                "{label}: a non-host, non-holder responder must never broadcast a frame"
+            );
 
             let outcome = outcome_rx
                 .recv_timeout(Duration::from_secs(5))
@@ -3046,7 +3169,7 @@ mod tests {
             assert_eq!(
                 outcome.rows.len(),
                 1,
-                "{label}: the author's creator copy must reach the merged outcome"
+                "{label}: the holder's creator copy must reach the merged outcome"
             );
             assert_eq!(outcome.rows[0]["node_id"], "b", "{label}");
             if label == "WindowAggregate" {
@@ -3063,7 +3186,7 @@ mod tests {
             assert!(outcome.meta.missing_shards.is_empty(), "{label}");
             assert!(
                 outcome.meta.answered_hosts.contains(&bob.did),
-                "{label}: the author is credited as an answering peer"
+                "{label}: the holder is credited as an answering peer"
             );
         }
     }
