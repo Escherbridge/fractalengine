@@ -173,12 +173,18 @@ impl TrackedContent {
 pub enum TilesetContent {
     /// This node published `root` (`fe/tileset/` tag, at publish or rebuilt
     /// from tags at start-up).
-    Published { root: [u8; 32], children: Vec<[u8; 32]> },
+    Published {
+        root: [u8; 32],
+        children: Vec<[u8; 32]>,
+    },
     /// This node stopped publishing `root` (it stays tracked).
     Unpublished { root: [u8; 32] },
     /// This node resolved `root`'s children for a download or streamed cache
     /// (BEFORE any child is fetched into the store).
-    Resolved { root: [u8; 32], children: Vec<[u8; 32]> },
+    Resolved {
+        root: [u8; 32],
+        children: Vec<[u8; 32]>,
+    },
 }
 
 /// RP-5 §transport-admission-control item 5 / `AGENTS.md` §tileset-security
@@ -347,7 +353,11 @@ impl BlobAccessGate {
         if own.is_none() && parents.is_none() {
             return true;
         }
-        let access = self.0.verse_access.read().unwrap_or_else(|e| e.into_inner());
+        let access = self
+            .0
+            .verse_access
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
         // A parent link with no binding (never expected) is a claimant that
         // admits no one — fail closed.
         let claimants: Vec<Option<&RootBinding>> = own
@@ -462,7 +472,11 @@ impl BlobAccessGate {
     }
 
     /// Whether the requester on `connection_id` may read every hash in `hashes`.
-    fn admits_connection<'a>(&self, connection_id: u64, mut hashes: impl Iterator<Item = &'a [u8; 32]>) -> bool {
+    fn admits_connection<'a>(
+        &self,
+        connection_id: u64,
+        mut hashes: impl Iterator<Item = &'a [u8; 32]>,
+    ) -> bool {
         let Some(did) = self.did_for_connection(connection_id) else {
             return false;
         };
@@ -535,8 +549,13 @@ fn spawn_blob_access_filter(gate: BlobAccessGate) -> EventSender {
                     answer_intercepted!(msg, admitted, connection_id, "get");
                 }
                 ProviderMessage::GetManyRequestReceived(msg) => {
-                    let hashes: Vec<[u8; 32]> =
-                        msg.inner.request.hashes.iter().map(|h| (*h).into()).collect();
+                    let hashes: Vec<[u8; 32]> = msg
+                        .inner
+                        .request
+                        .hashes
+                        .iter()
+                        .map(|h| (*h).into())
+                        .collect();
                     let connection_id = msg.inner.connection_id;
                     let admitted = gate.admits_connection(connection_id, hashes.iter());
                     answer_intercepted!(msg, admitted, connection_id, "get_many");
@@ -956,7 +975,8 @@ mod tests {
                 .expect("requester stack spawns"),
         );
 
-        let provider_transport = crate::blob_transport::IrohBlobTransport::from_stack(&provider_stack);
+        let provider_transport =
+            crate::blob_transport::IrohBlobTransport::from_stack(&provider_stack);
         let hash = provider_transport
             .add(bytes::Bytes::from_static(b"tileset root bytes"))
             .await
@@ -1025,7 +1045,8 @@ mod tests {
                 .expect("requester stack spawns"),
         );
 
-        let provider_transport = crate::blob_transport::IrohBlobTransport::from_stack(&provider_stack);
+        let provider_transport =
+            crate::blob_transport::IrohBlobTransport::from_stack(&provider_stack);
         let hash = provider_transport
             .add(bytes::Bytes::from_static(b"an ordinary row-entry blob"))
             .await
@@ -1114,11 +1135,20 @@ mod tests {
 
         let gate = BlobAccessGate::load(path.clone());
         gate.set_verse_access("v", viewers(&["did:key:viewer"]));
-        assert!(!gate.admits_hash("did:key:stranger", &bundle), "still tracked: denies");
-        assert!(!gate.admits_hash("did:key:viewer", &bundle), "no binding until re-fetched");
+        assert!(
+            !gate.admits_hash("did:key:stranger", &bundle),
+            "still tracked: denies"
+        );
+        assert!(
+            !gate.admits_hash("did:key:viewer", &bundle),
+            "no binding until re-fetched"
+        );
 
         gate.record_tileset_root("v", root);
-        assert!(gate.admits_hash("did:key:viewer", &bundle), "the re-fetch re-learns a clean binding");
+        assert!(
+            gate.admits_hash("did:key:viewer", &bundle),
+            "the re-fetch re-learns a clean binding"
+        );
         assert!(gate.admits_hash("did:key:viewer", &root));
 
         let restarted = BlobAccessGate::load(path);
@@ -1208,17 +1238,25 @@ mod tests {
                 .await
                 .expect("requester stack spawns"),
         );
-        let provider_transport = crate::blob_transport::IrohBlobTransport::from_stack(&provider_stack);
+        let provider_transport =
+            crate::blob_transport::IrohBlobTransport::from_stack(&provider_stack);
         let bundle = provider_transport
             .add(bytes::Bytes::from_static(b"protected bundle"))
             .await
             .expect("provider stores the bundle");
-        let root = provider_transport.add_hash_seq(&[bundle]).await.expect("tracked root");
-        provider_stack.blob_access_gate().record_tileset_root("verse-1", root);
-        provider_stack.blob_access_gate().track_content(TilesetContent::Resolved {
-            root,
-            children: vec![bundle],
-        });
+        let root = provider_transport
+            .add_hash_seq(&[bundle])
+            .await
+            .expect("tracked root");
+        provider_stack
+            .blob_access_gate()
+            .record_tileset_root("verse-1", root);
+        provider_stack
+            .blob_access_gate()
+            .track_content(TilesetContent::Resolved {
+                root,
+                children: vec![bundle],
+            });
         // The laundering vehicle: byte-identical HashSeq content, but a
         // DIFFERENT hash (one extra child), never tracked as a tileset root.
         let decoy = provider_transport
@@ -1252,16 +1290,24 @@ mod tests {
             get(untracked_seq, true).await.is_err(),
             "a child-range request through an untracked HashSeq must be refused"
         );
-        let requester_transport = crate::blob_transport::IrohBlobTransport::from_stack(&requester_stack);
+        let requester_transport =
+            crate::blob_transport::IrohBlobTransport::from_stack(&requester_stack);
         assert!(
-            requester_transport.read_local(bundle).await.expect("local read").is_none(),
+            requester_transport
+                .read_local(bundle)
+                .await
+                .expect("local read")
+                .is_none(),
             "the protected bundle must not land on the stranger"
         );
         assert!(
             get(untracked_seq, false).await.is_ok(),
             "a raw request for an untracked blob stays unaffected"
         );
-        assert!(get(root, true).await.is_err(), "a stranger is refused the tracked root's children");
+        assert!(
+            get(root, true).await.is_err(),
+            "a stranger is refused the tracked root's children"
+        );
 
         let requester_did = crate::replicator::peer_did_key(&requester_ep.id());
         provider_stack
@@ -1292,16 +1338,28 @@ mod tests {
         });
         gate.set_verse_access("v", viewers(&["did:key:viewer"]));
         assert!(gate.admits_hash("did:key:viewer", &bundle));
-        assert!(!gate.admits_hash("did:key:stranger", &bundle), "direct child fetch bypassed the gate");
+        assert!(
+            !gate.admits_hash("did:key:stranger", &bundle),
+            "direct child fetch bypassed the gate"
+        );
         assert!(!gate.admits_hash("did:key:stranger", &index));
 
         gate.forget_verse("v");
-        assert!(!gate.admits_hash("did:key:viewer", &bundle), "a closed verse's content must deny");
+        assert!(
+            !gate.admits_hash("did:key:viewer", &bundle),
+            "a closed verse's content must deny"
+        );
 
         // Outside a runtime `persist` writes synchronously, so the file is current.
         let restarted = BlobAccessGate::load(path);
-        assert!(!restarted.admits_hash("did:key:stranger", &bundle), "restart re-opened the child");
-        assert!(!restarted.admits_hash("did:key:stranger", &root), "restart re-opened the root");
+        assert!(
+            !restarted.admits_hash("did:key:stranger", &bundle),
+            "restart re-opened the child"
+        );
+        assert!(
+            !restarted.admits_hash("did:key:stranger", &root),
+            "restart re-opened the root"
+        );
         restarted.set_verse_access("v", viewers(&["did:key:viewer"]));
         assert!(restarted.admits_hash("did:key:viewer", &bundle));
     }
@@ -1348,17 +1406,25 @@ mod tests {
         let requester_stack = DocsStack::spawn(requester_ep.clone(), requester_dir.path())
             .await
             .expect("requester stack spawns");
-        let provider_transport = crate::blob_transport::IrohBlobTransport::from_stack(&provider_stack);
+        let provider_transport =
+            crate::blob_transport::IrohBlobTransport::from_stack(&provider_stack);
         let child = provider_transport
             .add(bytes::Bytes::from_static(b"protected bundle"))
             .await
             .expect("provider stores the bundle");
-        let root = provider_transport.add_hash_seq(&[child]).await.expect("hash seq");
-        provider_stack.blob_access_gate().record_tileset_root("verse-1", root);
-        provider_stack.blob_access_gate().track_content(TilesetContent::Resolved {
-            root,
-            children: vec![child],
-        });
+        let root = provider_transport
+            .add_hash_seq(&[child])
+            .await
+            .expect("hash seq");
+        provider_stack
+            .blob_access_gate()
+            .record_tileset_root("verse-1", root);
+        provider_stack
+            .blob_access_gate()
+            .track_content(TilesetContent::Resolved {
+                root,
+                children: vec![child],
+            });
 
         let conn = requester_ep
             .connect(provider_ep.addr(), iroh_blobs::ALPN)
@@ -1367,7 +1433,10 @@ mod tests {
         let refused = requester_stack
             .blob_store()
             .remote()
-            .execute_get_many(conn, iroh_blobs::protocol::GetManyRequest::from_iter([child]))
+            .execute_get_many(
+                conn,
+                iroh_blobs::protocol::GetManyRequest::from_iter([child]),
+            )
             .complete()
             .await;
         assert!(refused.is_err(), "get_many must be gated like get");
@@ -1375,7 +1444,11 @@ mod tests {
         let requester_transport =
             crate::blob_transport::IrohBlobTransport::from_stack(&requester_stack);
         assert!(
-            requester_transport.read_local(child).await.expect("local read").is_none(),
+            requester_transport
+                .read_local(child)
+                .await
+                .expect("local read")
+                .is_none(),
             "no protected blob may land on the stranger"
         );
 

@@ -93,6 +93,17 @@ pub struct ContextTarget {
 
 /// Which floating dialog is currently open. At most one at a time.
 /// Replaces 7 separate dialog-state resources.
+///
+/// `large_enum_variant` is allowed rather than satisfied: exactly one
+/// `ActiveDialog` exists per app (held in a Bevy resource), it changes only
+/// when a dialog opens/closes/switches tabs, and every render/update site
+/// matches it by reference (`&mut ActiveDialog` in `ResMut`). Boxing
+/// `EntitySettings`'s ~20 fields would add an allocation and an indirection
+/// to every field access across its 15 call sites to save ~220 bytes on a
+/// value that is never copied in a hot path — the same trade the lint exists
+/// to prompt against, per the precedent at
+/// `fe-api/src/canonical_ws/handler.rs::PinnedSessionStatus`.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Default)]
 pub enum ActiveDialog {
     #[default]

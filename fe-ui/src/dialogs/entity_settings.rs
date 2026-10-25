@@ -6,6 +6,7 @@ use bevy_egui::egui;
 use super::{ActiveDialog, EntitySettingsType, SettingsTab};
 use crate::actions::UiManager;
 use crate::theme;
+use crate::verse_manager::db_results::tokens::mint_command;
 use fe_runtime::messages::{DbCommand, EntityType};
 
 /// Build a hierarchical scope string from entity settings dialog context.
@@ -600,22 +601,14 @@ pub fn render_entity_settings_dialog(
                         )
                         .clicked()
                     {
-                        // Mirrors `verse_manager::db_results::tokens::mint_command`
-                        // exactly (blank client -> None, else trimmed) — keep
-                        // in sync if that shape ever changes.
-                        let client_did = if client_trimmed.is_empty() {
-                            None
-                        } else {
-                            Some(client_trimmed.to_string())
-                        };
                         db_tx
-                            .send(DbCommand::MintApiToken {
-                                scope: api_token_scope_buf.clone(),
-                                max_role: api_token_role_buf.clone(),
-                                ttl_hours: *api_token_expiry_buf,
-                                label: None,
-                                client_did,
-                            })
+                            .send(mint_command(
+                                api_token_scope_buf.clone(),
+                                api_token_role_buf.clone(),
+                                *api_token_expiry_buf,
+                                None,
+                                client_trimmed,
+                            ))
                             .ok();
                     }
 

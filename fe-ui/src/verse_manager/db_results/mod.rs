@@ -8,7 +8,7 @@ mod properties;
 mod query;
 mod roles;
 mod terrain;
-mod tokens;
+pub(crate) mod tokens;
 
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;

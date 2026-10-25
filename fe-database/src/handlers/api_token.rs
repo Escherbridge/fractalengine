@@ -253,14 +253,12 @@ mod tests {
         assert_eq!(claims.client.as_deref(), Some(named.as_str()));
         assert_eq!(claims.sub, node_did, "the client never replaces sub");
 
-        let blank_a =
-            mint_api_token_handler(&db, &node, &node_did, SCOPE, "viewer", 1, None, None)
-                .await
-                .expect("blank mint a");
-        let blank_b =
-            mint_api_token_handler(&db, &node, &node_did, SCOPE, "viewer", 1, None, None)
-                .await
-                .expect("blank mint b");
+        let blank_a = mint_api_token_handler(&db, &node, &node_did, SCOPE, "viewer", 1, None, None)
+            .await
+            .expect("blank mint a");
+        let blank_b = mint_api_token_handler(&db, &node, &node_did, SCOPE, "viewer", 1, None, None)
+            .await
+            .expect("blank mint b");
         for blank in [&blank_a, &blank_b] {
             assert!(fe_identity::validate_client_did(&blank.client).is_ok());
             assert_ne!(blank.client, node_did);
@@ -306,17 +304,9 @@ mod tests {
         let x25519 = fe_identity::DeviceKeypair::generate().to_did_key();
         let with_control = format!("{}\n", fe_identity::new_client_did());
         for bad in ["not-a-did", x25519.as_str(), "", with_control.as_str()] {
-            let refused = mint_api_token_handler(
-                &db,
-                &node,
-                &node_did,
-                SCOPE,
-                "viewer",
-                1,
-                None,
-                Some(bad),
-            )
-            .await;
+            let refused =
+                mint_api_token_handler(&db, &node, &node_did, SCOPE, "viewer", 1, None, Some(bad))
+                    .await;
             assert!(refused.is_err(), "client {bad:?} must be refused");
         }
         assert!(token_rows(&db).await.is_empty(), "nothing is stored");

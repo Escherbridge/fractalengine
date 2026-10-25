@@ -124,9 +124,14 @@ fn wait_table_settled(
 ) -> Result<ReplicatedRowOutcome> {
     let deadline = Instant::now() + timeout;
     loop {
-        let remaining = deadline.checked_duration_since(Instant::now()).ok_or_else(|| {
-            anyhow!("timed out waiting for a settled {table} outcome on {}", receiver.name)
-        })?;
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or_else(|| {
+                anyhow!(
+                    "timed out waiting for a settled {table} outcome on {}",
+                    receiver.name
+                )
+            })?;
         match receiver.wait_for(
             |r| matches!(r, DbResult::ReplicatedRowApplied { verse_id: v, table: t, .. } if v == verse_id && t == table),
             remaining,
@@ -147,10 +152,7 @@ fn assign_role(granter: &TestPeer, peer_did: &str, scope: &str, role: &str) -> R
         scope: scope.to_string(),
         role: role.to_string(),
     });
-    match granter.wait_for(
-        |r| matches!(r, DbResult::RoleAssigned { .. }),
-        SYNC_TIMEOUT,
-    )? {
+    match granter.wait_for(|r| matches!(r, DbResult::RoleAssigned { .. }), SYNC_TIMEOUT)? {
         DbResult::RoleAssigned { .. } => Ok(()),
         other => bail!("unexpected result assigning role: {other:?}"),
     }
@@ -199,10 +201,7 @@ fn revoke_role(owner: &TestPeer, peer_did: &str, scope: &str) -> Result<()> {
         peer_did: peer_did.to_string(),
         scope: scope.to_string(),
     });
-    match owner.wait_for(
-        |r| matches!(r, DbResult::RoleRevoked { .. }),
-        SYNC_TIMEOUT,
-    )? {
+    match owner.wait_for(|r| matches!(r, DbResult::RoleRevoked { .. }), SYNC_TIMEOUT)? {
         DbResult::RoleRevoked { .. } => Ok(()),
         other => bail!("unexpected result revoking role: {other:?}"),
     }
@@ -356,7 +355,13 @@ pub fn run() -> Result<TestResult> {
     }
     std::thread::sleep(Duration::from_millis(500));
 
-    scaffold::publish_manifest(&alice, &non_owner, &verse_a_id, &alice_did, "Role Propagation Verse")?;
+    scaffold::publish_manifest(
+        &alice,
+        &non_owner,
+        &verse_a_id,
+        &alice_did,
+        "Role Propagation Verse",
+    )?;
 
     let fractal_id = ulid::Ulid::new().to_string();
     let petal_p0 = ulid::Ulid::new().to_string();
@@ -370,7 +375,14 @@ pub fn run() -> Result<TestResult> {
         "name": "Role Propagation Fractal",
         "created_at": now,
     });
-    scaffold::publish_and_await(&alice, &non_owner, &verse_a_id, "fractal", &fractal_id, &fractal)?;
+    scaffold::publish_and_await(
+        &alice,
+        &non_owner,
+        &verse_a_id,
+        "fractal",
+        &fractal_id,
+        &fractal,
+    )?;
     for (petal_id, label) in [(&petal_p0, "P0"), (&petal_p1, "P1"), (&petal_p2, "P2")] {
         let petal = serde_json::json!({
             "petal_id": petal_id,
@@ -422,7 +434,7 @@ pub fn run() -> Result<TestResult> {
         |r| matches!(r, DbResult::IotReadingsInserted { .. }),
         Duration::from_secs(30),
     )? {
-        DbResult::IotReadingsInserted { written, .. } if written == 1 => {}
+        DbResult::IotReadingsInserted { written: 1, .. } => {}
         other => bail!("unexpected result ingesting bob's reading: {other:?}"),
     }
     match wait_table_settled(&carol, &verse_a_id, "iot_reading", SYNC_TIMEOUT)? {
@@ -430,7 +442,9 @@ pub fn run() -> Result<TestResult> {
         other => {
             return Ok(TestResult::fail(
                 NAME,
-                &format!("leg 1: carol did not admit bob's reading with no local provisioning: {other:?}"),
+                &format!(
+                "leg 1: carol did not admit bob's reading with no local provisioning: {other:?}"
+            ),
             ))
         }
     }
@@ -439,7 +453,13 @@ pub fn run() -> Result<TestResult> {
     //     admits dave's row through a grantor whose own authority traces
     //     back to the owner. ------------------------------------------------
     assign_role(&alice, &bob_did, &verse_a_scope, "manager")?;
-    assign_role_retrying(&bob, &dave_did, &verse_a_scope, "editor", AUTH_CONVERGE_TIMEOUT)?;
+    assign_role_retrying(
+        &bob,
+        &dave_did,
+        &verse_a_scope,
+        "editor",
+        AUTH_CONVERGE_TIMEOUT,
+    )?;
 
     let node_dave = format!("dave-{}", ulid::Ulid::new());
     scaffold::publish_and_await(
@@ -456,7 +476,13 @@ pub fn run() -> Result<TestResult> {
     //     row and Defers his row in the SIBLING petal P2, where erin has no
     //     authority at all. ------------------------------------------------
     assign_role(&alice, &erin_did, &petal_p1_scope, "manager")?;
-    assign_role_retrying(&erin, &frank_did, &petal_p1_scope, "editor", AUTH_CONVERGE_TIMEOUT)?;
+    assign_role_retrying(
+        &erin,
+        &frank_did,
+        &petal_p1_scope,
+        "editor",
+        AUTH_CONVERGE_TIMEOUT,
+    )?;
 
     let node_frank_p1 = format!("frank-p1-{}", ulid::Ulid::new());
     scaffold::publish_and_await(
@@ -546,7 +572,13 @@ pub fn run() -> Result<TestResult> {
         .map_err(|e| anyhow!("failed to open carol's verse-B replica: {e}"))?;
     std::thread::sleep(Duration::from_millis(500));
 
-    scaffold::publish_manifest(&alice, &[&carol], &verse_b_id, &alice_did, "Confinement Verse B")?;
+    scaffold::publish_manifest(
+        &alice,
+        &[&carol],
+        &verse_b_id,
+        &alice_did,
+        "Confinement Verse B",
+    )?;
     let fractal_b_id = ulid::Ulid::new().to_string();
     let petal_b_id = ulid::Ulid::new().to_string();
     scaffold::publish_scaffold(
@@ -571,7 +603,11 @@ pub fn run() -> Result<TestResult> {
         &verse_a_id,
         "node",
         &forged_node,
-        &serde_json::to_vec(&node_row(&forged_node, &petal_b_id, "Forged Cross-Verse Node"))?,
+        &serde_json::to_vec(&node_row(
+            &forged_node,
+            &petal_b_id,
+            "Forged Cross-Verse Node",
+        ))?,
     )?;
     match wait_outcome(&carol, "node", &forged_node, SYNC_TIMEOUT)? {
         ReplicatedRowOutcome::Denied => {}

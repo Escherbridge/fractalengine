@@ -1849,7 +1849,10 @@ async fn an_outbound_asset_row_never_carries_the_uploader_client() {
     let wire: serde_json::Value =
         serde_json::from_slice(&store.bytes_for(&event.content_hash).unwrap()).unwrap();
     assert_eq!(wire["asset_id"], asset_id.as_str(), "it is the asset row");
-    assert!(wire.get("content_hash").is_some(), "the row is otherwise whole");
+    assert!(
+        wire.get("content_hash").is_some(),
+        "the row is otherwise whole"
+    );
     assert!(
         wire.get("owner_did").is_none(),
         "the uploader client never leaves the node: {wire}"

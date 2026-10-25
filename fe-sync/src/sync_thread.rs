@@ -1433,7 +1433,10 @@ async fn drain_reread_queues(
         };
         for did in dids {
             match replicator
-                .entries_by_author(&did, &["role/", "__shards/", "__holders/", "verse/", "petal/"])
+                .entries_by_author(
+                    &did,
+                    &["role/", "__shards/", "__holders/", "verse/", "petal/"],
+                )
                 .await
             {
                 Ok(entries) => {
@@ -1456,7 +1459,11 @@ async fn drain_reread_queues(
 /// filter's shared state (RP-5 step 6 / AC-21(e)). A no-op when no P2P
 /// stack is online — an offline or virtual transport has no blobs ALPN to
 /// gate.
-fn sync_blob_access_gate(docs_stack: &Option<Arc<DocsStack>>, verse_id: &str, fabric: &VerseFabric) {
+fn sync_blob_access_gate(
+    docs_stack: &Option<Arc<DocsStack>>,
+    verse_id: &str,
+    fabric: &VerseFabric,
+) {
     if let Some(stack) = docs_stack {
         stack
             .blob_access_gate()
@@ -1579,13 +1586,19 @@ async fn reassert_own_rows(
     db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
     fabric: &mut VerseFabric,
 ) {
-    match replicator.entries_by_author(local_did, &["verse/", "petal/"]).await {
+    match replicator
+        .entries_by_author(local_did, &["verse/", "petal/"])
+        .await
+    {
         Ok(entries) => {
             for change in entries {
                 handle_inbound_row_change(fabric, verse_id, &change, local_did, evt_tx, db_cmd_tx);
             }
         }
-        Err(e) => tracing::warn!(verse_id, "re-asserting our own manifest/petal rows failed: {e}"),
+        Err(e) => tracing::warn!(
+            verse_id,
+            "re-asserting our own manifest/petal rows failed: {e}"
+        ),
     }
 }
 
@@ -1992,7 +2005,10 @@ async fn handle_write_row_entry(
     // names a shard the ledger defines) and before the reading (a requester
     // that sees the reading already expects our answer).
     if let Some((holder_key, holder_bytes)) = holder_publish {
-        if let Err(e) = repl.write_row(HOLDERS_TABLE, &holder_key, &holder_bytes).await {
+        if let Err(e) = repl
+            .write_row(HOLDERS_TABLE, &holder_key, &holder_bytes)
+            .await
+        {
             tracing::warn!(
                 verse_id,
                 holder = %holder_key,
@@ -2561,9 +2577,7 @@ impl TilesetProviderMap {
             .iter()
             .flat_map(|(id, entries)| {
                 let same_id = id == tileset_id;
-                entries
-                    .iter()
-                    .filter(move |e| same_id || e.root == root)
+                entries.iter().filter(move |e| same_id || e.root == root)
             })
             .map(|e| e.verse_id.clone())
             .collect()
@@ -2580,7 +2594,11 @@ impl TilesetProviderMap {
                     .iter()
                     .filter(move |e| e.authenticated && (same_id || e.root == root))
             })
-            .filter_map(|e| IrohBlobTransport::parse_provider(&e.provider).ok().map(|a| a.id))
+            .filter_map(|e| {
+                IrohBlobTransport::parse_provider(&e.provider)
+                    .ok()
+                    .map(|a| a.id)
+            })
             .collect()
     }
 
@@ -4597,7 +4615,10 @@ mod tests {
             );
         }
         let bound = flooded.verses_for("valley", root);
-        assert!(bound.contains("victim-verse"), "the flood evicted the victim verse: {bound:?}");
+        assert!(
+            bound.contains("victim-verse"),
+            "the flood evicted the victim verse: {bound:?}"
+        );
         assert!(bound.contains("attacker-verse"));
 
         // (b) The victim's root re-advertised under a FRESH id on the
@@ -4655,9 +4676,26 @@ mod tests {
         let (attacker, third_party) = (provider_addr(7), provider_addr(8));
         let laundered = [43u8; 32];
         let mut map = TilesetProviderMap::default();
-        map.record("attacker-verse", "bait".to_string(), attacker.clone(), laundered, true, 1, String::new());
-        map.record("attacker-verse", "bait".to_string(), third_party.clone(), laundered, false, 1, String::new());
-        let (providers, root, _) = resolve_providers_and_root(&map, "bait", None).expect("resolves");
+        map.record(
+            "attacker-verse",
+            "bait".to_string(),
+            attacker.clone(),
+            laundered,
+            true,
+            1,
+            String::new(),
+        );
+        map.record(
+            "attacker-verse",
+            "bait".to_string(),
+            third_party.clone(),
+            laundered,
+            false,
+            1,
+            String::new(),
+        );
+        let (providers, root, _) =
+            resolve_providers_and_root(&map, "bait", None).expect("resolves");
         assert_eq!(root, laundered);
         assert!(providers.contains(&third_party));
 
@@ -4671,9 +4709,18 @@ mod tests {
 
         // Control: every provider vouched — secondary seeding works.
         let honest = [44u8; 32];
-        map.record("home-verse", "valley".to_string(), provider_addr(9), honest, true, 1, String::new());
+        map.record(
+            "home-verse",
+            "valley".to_string(),
+            provider_addr(9),
+            honest,
+            true,
+            1,
+            String::new(),
+        );
         gate.set_verse_access("home-verse", open_to("did:key:home-viewer"));
-        let (providers, root, _) = resolve_providers_and_root(&map, "valley", None).expect("resolves");
+        let (providers, root, _) =
+            resolve_providers_and_root(&map, "valley", None).expect("resolves");
         bind_fetched_root(Some(&gate), &map, "valley", root, &providers);
         assert!(gate.admits_hash("did:key:home-viewer", &honest));
     }
@@ -4969,7 +5016,9 @@ mod tests {
         let local = "did:key:joiner";
         let manifest = |author: &str, created_by: &str, extra: serde_json::Value| {
             let mut row = serde_json::json!({ "verse_id": "v-1", "created_by": created_by });
-            row.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            row.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
             RowChange {
                 table: "verse".to_string(),
                 record_id: "v-1".to_string(),
@@ -4984,7 +5033,11 @@ mod tests {
         handle_inbound_row_change(
             &mut fabric,
             "v-1",
-            &manifest("did:key:attacker", "did:key:attacker", serde_json::json!({ "default_access": "viewer" })),
+            &manifest(
+                "did:key:attacker",
+                "did:key:attacker",
+                serde_json::json!({ "default_access": "viewer" }),
+            ),
             local,
             &evt_tx,
             &None,
@@ -4995,28 +5048,46 @@ mod tests {
         handle_inbound_row_change(
             &mut fabric,
             "v-1",
-            &manifest(local, "did:key:owner", serde_json::json!({ "default_access": "none" })),
+            &manifest(
+                local,
+                "did:key:owner",
+                serde_json::json!({ "default_access": "none" }),
+            ),
             local,
             &evt_tx,
             &None,
         );
         assert_eq!(fabric.to_dump_json()["owner_did"], "did:key:owner");
-        assert!(!fabric.access_snapshot("v-1").open_to_all, "the false owner's open access survived");
+        assert!(
+            !fabric.access_snapshot("v-1").open_to_all,
+            "the false owner's open access survived"
+        );
 
         // The genuine owner's newer settings, then our stale entry again.
         handle_inbound_row_change(
             &mut fabric,
             "v-1",
-            &manifest("did:key:owner", "did:key:owner", serde_json::json!({ "ts_mode": "sharded" })),
+            &manifest(
+                "did:key:owner",
+                "did:key:owner",
+                serde_json::json!({ "ts_mode": "sharded" }),
+            ),
             local,
             &evt_tx,
             &None,
         );
-        assert_eq!(fabric.settings.mode, fe_runtime::timeseries::TimeseriesMode::Sharded);
+        assert_eq!(
+            fabric.settings.mode,
+            fe_runtime::timeseries::TimeseriesMode::Sharded
+        );
         handle_inbound_row_change(
             &mut fabric,
             "v-1",
-            &manifest(local, "did:key:owner", serde_json::json!({ "ts_mode": "mirror" })),
+            &manifest(
+                local,
+                "did:key:owner",
+                serde_json::json!({ "ts_mode": "mirror" }),
+            ),
             local,
             &evt_tx,
             &None,
@@ -5532,7 +5603,14 @@ mod tests {
             }))
             .unwrap(),
         };
-        handle_inbound_row_change(&mut fabric, "v-1", &manifest_row, "did:key:local", &evt_tx, &None);
+        handle_inbound_row_change(
+            &mut fabric,
+            "v-1",
+            &manifest_row,
+            "did:key:local",
+            &evt_tx,
+            &None,
+        );
         let petal_row = RowChange {
             table: "petal".to_string(),
             record_id: "p1".to_string(),
@@ -5543,7 +5621,14 @@ mod tests {
             data: serde_json::to_vec(&serde_json::json!({ "petal_id": "p1", "fractal_id": "f1" }))
                 .unwrap(),
         };
-        handle_inbound_row_change(&mut fabric, "v-1", &petal_row, "did:key:local", &evt_tx, &None);
+        handle_inbound_row_change(
+            &mut fabric,
+            "v-1",
+            &petal_row,
+            "did:key:local",
+            &evt_tx,
+            &None,
+        );
         let petal_scope = fe_policy::build_scope("v-1", Some("f1"), Some("p1"));
         let grant_record_id = format!("{petal_scope}/did:key:peer-b/did:key:owner");
         let grant_row = RowChange {
@@ -5559,7 +5644,14 @@ mod tests {
             }))
             .unwrap(),
         };
-        handle_inbound_row_change(&mut fabric, "v-1", &grant_row, "did:key:local", &evt_tx, &None);
+        handle_inbound_row_change(
+            &mut fabric,
+            "v-1",
+            &grant_row,
+            "did:key:local",
+            &evt_tx,
+            &None,
+        );
         while evt_rx.try_recv().is_ok() {}
 
         let shard_row = RowChange {
@@ -5638,8 +5730,15 @@ mod tests {
         let third = write_reading("r-3");
         for (reading_id, hash) in [("r-1", &first), ("r-2", &second)] {
             handle_write_row_entry(
-                &replicas, &mut pending, &mut fabric, &blob_store, local, "v-hold", "iot_reading",
-                reading_id, hash,
+                &replicas,
+                &mut pending,
+                &mut fabric,
+                &blob_store,
+                local,
+                "v-hold",
+                "iot_reading",
+                reading_id,
+                hash,
             )
             .await;
         }
@@ -5648,16 +5747,28 @@ mod tests {
         while let Ok(change) = writes.try_recv() {
             published.push(change);
         }
-        let holder_writes: Vec<&RowChange> =
-            published.iter().filter(|c| c.table == HOLDERS_TABLE).collect();
-        assert_eq!(holder_writes.len(), 1, "declared once per shard, not once per reading");
+        let holder_writes: Vec<&RowChange> = published
+            .iter()
+            .filter(|c| c.table == HOLDERS_TABLE)
+            .collect();
+        assert_eq!(
+            holder_writes.len(),
+            1,
+            "declared once per shard, not once per reading"
+        );
         assert_eq!(holder_writes[0].record_id, "p1/a1/20284/did:key:local");
-        let holder_pos = published.iter().position(|c| c.table == HOLDERS_TABLE).unwrap();
+        let holder_pos = published
+            .iter()
+            .position(|c| c.table == HOLDERS_TABLE)
+            .unwrap();
         let reading_pos = published
             .iter()
             .position(|c| c.table == "iot_reading")
             .expect("the reading was published");
-        assert!(holder_pos < reading_pos, "the declaration lands before the reading");
+        assert!(
+            holder_pos < reading_pos,
+            "the declaration lands before the reading"
+        );
 
         // Restart: a fresh fabric replays our own snapshot rows.
         let (evt_tx, _evt_rx) = crossbeam::channel::bounded(64);
@@ -5685,8 +5796,15 @@ mod tests {
         );
         seed_fabric(&mut restarted);
         handle_write_row_entry(
-            &replicas, &mut pending, &mut restarted, &blob_store, local, "v-hold", "iot_reading",
-            "r-3", &third,
+            &replicas,
+            &mut pending,
+            &mut restarted,
+            &blob_store,
+            local,
+            "v-hold",
+            "iot_reading",
+            "r-3",
+            &third,
         )
         .await;
         let after_restart: Vec<RowChange> = std::iter::from_fn(|| writes.try_recv().ok()).collect();
@@ -5797,7 +5915,15 @@ mod tests {
             },
         );
 
-        drain_reread_queues(&mut fabrics, &replicas, "did:key:local", &evt_tx, &None, &None).await;
+        drain_reread_queues(
+            &mut fabrics,
+            &replicas,
+            "did:key:local",
+            &evt_tx,
+            &None,
+            &None,
+        )
+        .await;
 
         let fabric = fabrics.get(verse_id).expect("fabric still present");
         assert_eq!(
@@ -5859,8 +5985,10 @@ mod tests {
                 author_id: owner.into(),
                 timestamp: 0,
                 is_tombstone: false,
-                data: serde_json::to_vec(&serde_json::json!({ "petal_id": "p1", "fractal_id": "f1" }))
-                    .unwrap(),
+                data: serde_json::to_vec(
+                    &serde_json::json!({ "petal_id": "p1", "fractal_id": "f1" }),
+                )
+                .unwrap(),
             },
         );
 
@@ -5900,7 +6028,10 @@ mod tests {
                 },
             );
         }
-        assert!(fabric.quarantine_evicted() > 0, "the flood must have evicted something");
+        assert!(
+            fabric.quarantine_evicted() > 0,
+            "the flood must have evicted something"
+        );
         assert!(
             !fabric.shards.contains_key("p1/a1/1"),
             "the legit row must not have survived in the in-memory quarantine alone"
@@ -5925,7 +6056,15 @@ mod tests {
             },
         );
 
-        drain_reread_queues(&mut fabrics, &replicas, "did:key:local", &evt_tx, &None, &None).await;
+        drain_reread_queues(
+            &mut fabrics,
+            &replicas,
+            "did:key:local",
+            &evt_tx,
+            &None,
+            &None,
+        )
+        .await;
 
         let fabric = fabrics.get(verse_id).expect("fabric still present");
         assert!(
@@ -5945,10 +6084,15 @@ mod tests {
         let mut fabrics: HashMap<String, VerseFabric> = HashMap::new();
         let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
         let (owner, editor, verse_id) = ("did:key:owner", "did:key:editor", "v-petal");
-        let petal_row = serde_json::to_vec(&serde_json::json!({ "petal_id": "p2", "fractal_id": "f1" })).unwrap();
+        let petal_row =
+            serde_json::to_vec(&serde_json::json!({ "petal_id": "p2", "fractal_id": "f1" }))
+                .unwrap();
 
         let replicator = MockVerseReplicator::new(editor);
-        replicator.write_row("petal", "p2", &petal_row).await.unwrap();
+        replicator
+            .write_row("petal", "p2", &petal_row)
+            .await
+            .unwrap();
         replicas.insert(verse_id.to_string(), Box::new(replicator));
 
         let fabric = fabrics.entry(verse_id.to_string()).or_default();
@@ -5963,14 +6107,30 @@ mod tests {
         };
         fabric.note_entry(
             verse_id,
-            &change("verse", verse_id.into(), owner, serde_json::to_vec(&serde_json::json!({ "created_by": owner })).unwrap()),
+            &change(
+                "verse",
+                verse_id.into(),
+                owner,
+                serde_json::to_vec(&serde_json::json!({ "created_by": owner })).unwrap(),
+            ),
         );
-        fabric.note_entry(verse_id, &change("petal", "p2".into(), editor, petal_row.clone()));
-        assert_eq!(fabric.petal_scope(verse_id, "p2"), None, "held until the editor is empowered");
+        fabric.note_entry(
+            verse_id,
+            &change("petal", "p2".into(), editor, petal_row.clone()),
+        );
+        assert_eq!(
+            fabric.petal_scope(verse_id, "p2"),
+            None,
+            "held until the editor is empowered"
+        );
         for i in 0..1100 {
             let key = format!("p9/a{i}/1");
-            let data = serde_json::to_vec(&serde_json::json!({ "shard": key, "hosts": [] })).unwrap();
-            fabric.note_entry(verse_id, &change(SHARD_TABLE, key.clone(), "did:key:flooder", data));
+            let data =
+                serde_json::to_vec(&serde_json::json!({ "shard": key, "hosts": [] })).unwrap();
+            fabric.note_entry(
+                verse_id,
+                &change(SHARD_TABLE, key.clone(), "did:key:flooder", data),
+            );
         }
         assert!(fabric.quarantine_evicted() > 0);
 
@@ -5980,8 +6140,24 @@ mod tests {
             "role": "editor", "revoked": false, "hlc": 1,
         }))
         .unwrap();
-        fabric.note_entry(verse_id, &change("role", format!("{fractal_scope}/{editor}/{owner}"), owner, grant));
-        drain_reread_queues(&mut fabrics, &replicas, "did:key:local", &evt_tx, &None, &None).await;
+        fabric.note_entry(
+            verse_id,
+            &change(
+                "role",
+                format!("{fractal_scope}/{editor}/{owner}"),
+                owner,
+                grant,
+            ),
+        );
+        drain_reread_queues(
+            &mut fabrics,
+            &replicas,
+            "did:key:local",
+            &evt_tx,
+            &None,
+            &None,
+        )
+        .await;
 
         assert_eq!(
             fabrics[verse_id].petal_scope(verse_id, "p2"),

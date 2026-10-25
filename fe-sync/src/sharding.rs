@@ -69,7 +69,10 @@ fn resolve_role(
 /// key plus one trailing DID segment.
 pub fn parse_holder_key(record_id: &str) -> Option<(&str, &str)> {
     let (shard_key, did) = record_id.rsplit_once('/')?;
-    if did.is_empty() || shard_key.split('/').count() != 3 || shard_key.split('/').any(str::is_empty) {
+    if did.is_empty()
+        || shard_key.split('/').count() != 3
+        || shard_key.split('/').any(str::is_empty)
+    {
         return None;
     }
     Some((shard_key, did))
@@ -429,7 +432,12 @@ impl VerseFabric {
     /// Manager+ (RP-5 step 2, `role_at` at the verse scope) — a petal/fractal
     /// Manager's or an Editor's edit is ignored, because verse settings lie
     /// above their subtree. Returns whether the fabric's settings changed.
-    pub fn note_verse_row(&mut self, verse_id: &str, row: &serde_json::Value, author_id: &str) -> bool {
+    pub fn note_verse_row(
+        &mut self,
+        verse_id: &str,
+        row: &serde_json::Value,
+        author_id: &str,
+    ) -> bool {
         self.note_verse_row_from(verse_id, row, author_id, RowOrigin::Inbound)
     }
 
@@ -439,7 +447,12 @@ impl VerseFabric {
     /// owner — replacing a different pin a replicated manifest set first
     /// (R1) — and, as the first or correcting manifest, its settings are
     /// adopted outright.
-    pub fn note_local_verse_row(&mut self, verse_id: &str, row: &serde_json::Value, local_did: &str) -> bool {
+    pub fn note_local_verse_row(
+        &mut self,
+        verse_id: &str,
+        row: &serde_json::Value,
+        local_did: &str,
+    ) -> bool {
         self.note_verse_row_from(verse_id, row, local_did, RowOrigin::LocalWrite)
     }
 
@@ -450,7 +463,12 @@ impl VerseFabric {
     /// edit by someone else can exist), so its settings are adopted outright
     /// only when it just replaced a false owner, and otherwise pass the
     /// ordinary inbound authority gate.
-    pub fn note_own_replayed_verse_row(&mut self, verse_id: &str, row: &serde_json::Value, local_did: &str) -> bool {
+    pub fn note_own_replayed_verse_row(
+        &mut self,
+        verse_id: &str,
+        row: &serde_json::Value,
+        local_did: &str,
+    ) -> bool {
         self.note_verse_row_from(verse_id, row, local_did, RowOrigin::OwnReplay)
     }
 
@@ -493,12 +511,20 @@ impl VerseFabric {
         };
         if !adopt_outright {
             let Some(owner) = self.owner_did.clone() else {
-                tracing::debug!(verse_id, author = author_id, "verse manifest settings ignored — no owner pinned yet");
+                tracing::debug!(
+                    verse_id,
+                    author = author_id,
+                    "verse manifest settings ignored — no owner pinned yet"
+                );
                 return false;
             };
             let verse_scope = fe_policy::build_scope(verse_id, None, None);
             let is_owner = owner == author_id;
-            if !is_owner && !self.role_at(author_id, &verse_scope).is_at_least(RoleLevel::Manager) {
+            if !is_owner
+                && !self
+                    .role_at(author_id, &verse_scope)
+                    .is_at_least(RoleLevel::Manager)
+            {
                 tracing::debug!(
                     verse_id,
                     author = author_id,
@@ -591,7 +617,12 @@ impl VerseFabric {
     /// (R1): it maps a petal not mapped yet outright, but — being possibly
     /// stale — a MOVE of an already-mapped petal passes the ordinary gate
     /// under `local_did`.
-    pub fn note_own_replayed_petal_row(&mut self, verse_id: &str, row: &serde_json::Value, local_did: &str) {
+    pub fn note_own_replayed_petal_row(
+        &mut self,
+        verse_id: &str,
+        row: &serde_json::Value,
+        local_did: &str,
+    ) {
         self.admit_petal_entry(verse_id, row, local_did, RowOrigin::OwnReplay);
     }
 
@@ -609,7 +640,12 @@ impl VerseFabric {
             return;
         };
         if !is_scope_safe_id(petal_id) || !is_scope_safe_id(fractal_id) {
-            tracing::debug!(verse_id, petal_id, fractal_id, "petal row with a scope-unsafe id — dropped");
+            tracing::debug!(
+                verse_id,
+                petal_id,
+                fractal_id,
+                "petal row with a scope-unsafe id — dropped"
+            );
             return;
         }
         let current = self.petal_fractals.get(petal_id).cloned();
@@ -623,10 +659,14 @@ impl VerseFabric {
         };
         if gated {
             let target = fe_policy::build_scope(verse_id, Some(fractal_id), Some(petal_id));
-            let mut authorized = self.role_at(author_id, &target).is_at_least(RoleLevel::Editor);
+            let mut authorized = self
+                .role_at(author_id, &target)
+                .is_at_least(RoleLevel::Editor);
             if let Some(current_fractal) = current.as_deref() {
                 let from = fe_policy::build_scope(verse_id, Some(current_fractal), Some(petal_id));
-                authorized &= self.role_at(author_id, &from).is_at_least(RoleLevel::Editor);
+                authorized &= self
+                    .role_at(author_id, &from)
+                    .is_at_least(RoleLevel::Editor);
             }
             if !authorized {
                 tracing::debug!(
@@ -657,7 +697,11 @@ impl VerseFabric {
     /// map comes back with the next open's replay").
     pub fn petal_scope(&self, verse_id: &str, petal_id: &str) -> Option<String> {
         let fractal_id = self.petal_fractals.get(petal_id)?;
-        Some(fe_policy::build_scope(verse_id, Some(fractal_id), Some(petal_id)))
+        Some(fe_policy::build_scope(
+            verse_id,
+            Some(fractal_id),
+            Some(petal_id),
+        ))
     }
 
     /// The verse manifest's `default_access` (§2.2's ⊥ fallback) — exposed
@@ -696,13 +740,23 @@ impl VerseFabric {
     /// `role_at` gate as `__shards`). A row that cannot be judged yet is
     /// quarantined, never dropped: the replica holds it, and the §2.5
     /// re-read on empowerment recovers it.
-    pub fn note_holder_row(&mut self, verse_id: &str, record_id: &str, author_id: &str, data: &[u8]) {
+    pub fn note_holder_row(
+        &mut self,
+        verse_id: &str,
+        record_id: &str,
+        author_id: &str,
+        data: &[u8],
+    ) {
         if data.is_empty() {
             self.withdraw_holder(verse_id, record_id, author_id);
             return;
         }
         let Some((_, holder_did)) = parse_holder_key(record_id) else {
-            tracing::debug!(verse_id, record_id, "malformed holder declaration key — dropped");
+            tracing::debug!(
+                verse_id,
+                record_id,
+                "malformed holder declaration key — dropped"
+            );
             return;
         };
         if holder_did != author_id {
@@ -717,12 +771,20 @@ impl VerseFabric {
         self.admit_holder_entry(verse_id, record_id, author_id, data);
     }
 
-    fn admit_holder_entry(&mut self, verse_id: &str, record_id: &str, author_id: &str, data: &[u8]) {
+    fn admit_holder_entry(
+        &mut self,
+        verse_id: &str,
+        record_id: &str,
+        author_id: &str,
+        data: &[u8],
+    ) {
         let Some((shard_key, holder_did)) = parse_holder_key(record_id) else {
             return;
         };
         let admitted = match self.petal_scope(verse_id, ShardId::petal_of_key(shard_key)) {
-            Some(scope) => self.role_at(author_id, &scope).is_at_least(RoleLevel::Editor),
+            Some(scope) => self
+                .role_at(author_id, &scope)
+                .is_at_least(RoleLevel::Editor),
             None => false,
         };
         if admitted {
@@ -758,8 +820,11 @@ impl VerseFabric {
                 self.holders.remove(shard_key);
             }
         }
-        self.quarantine
-            .retain(|q| !(q.kind == QuarantineKind::Holder && q.record_id == record_id && q.author_id == author_id));
+        self.quarantine.retain(|q| {
+            !(q.kind == QuarantineKind::Holder
+                && q.record_id == record_id
+                && q.author_id == author_id)
+        });
     }
 
     /// OF-7a: re-verdict every admitted holder against the current role
@@ -820,7 +885,11 @@ impl VerseFabric {
     /// `Some((record_id, payload))` the first time the local peer writes a
     /// reading into a shard it does NOT host, `None` when it hosts the shard
     /// (or the shard is not in the ledger yet) or has already declared it.
-    pub fn local_holding_row(&mut self, shard: &ShardId, local_did: &str) -> Option<(String, Vec<u8>)> {
+    pub fn local_holding_row(
+        &mut self,
+        shard: &ShardId,
+        local_did: &str,
+    ) -> Option<(String, Vec<u8>)> {
         let key = shard.key();
         let hosts = self.shard_hosts(&key)?;
         if hosts.iter().any(|h| h == local_did) || self.local_holdings.contains(&key) {
@@ -861,7 +930,11 @@ impl VerseFabric {
         let payload: fe_policy::RoleStatementPayload = match serde_json::from_slice(data) {
             Ok(p) => p,
             Err(e) => {
-                tracing::debug!(verse_id, record_id, "malformed role statement payload — discarded: {e}");
+                tracing::debug!(
+                    verse_id,
+                    record_id,
+                    "malformed role statement payload — discarded: {e}"
+                );
                 return;
             }
         };
@@ -966,7 +1039,9 @@ impl VerseFabric {
     fn admit_shard_entry(&mut self, verse_id: &str, record_id: &str, author_id: &str, data: &[u8]) {
         let petal_id = ShardId::petal_of_key(record_id);
         let admitted = match self.petal_scope(verse_id, petal_id) {
-            Some(scope) => self.role_at(author_id, &scope).is_at_least(RoleLevel::Editor),
+            Some(scope) => self
+                .role_at(author_id, &scope)
+                .is_at_least(RoleLevel::Editor),
             None => false,
         };
         if admitted {
@@ -978,7 +1053,13 @@ impl VerseFabric {
         self.quarantine_row(QuarantineKind::Shard, record_id, author_id, data);
     }
 
-    fn quarantine_row(&mut self, kind: QuarantineKind, record_id: &str, author_id: &str, data: &[u8]) {
+    fn quarantine_row(
+        &mut self,
+        kind: QuarantineKind,
+        record_id: &str,
+        author_id: &str,
+        data: &[u8],
+    ) {
         if self.quarantine.len() >= QUARANTINE_CAP {
             self.quarantine.pop_front();
             self.quarantine_evicted += 1;
@@ -1006,7 +1087,12 @@ impl VerseFabric {
                 }
                 QuarantineKind::Petal => {
                     if let Ok(petal_row) = serde_json::from_slice::<serde_json::Value>(&row.data) {
-                        self.admit_petal_entry(verse_id, &petal_row, &row.author_id, RowOrigin::Inbound);
+                        self.admit_petal_entry(
+                            verse_id,
+                            &petal_row,
+                            &row.author_id,
+                            RowOrigin::Inbound,
+                        );
                     }
                 }
             }
@@ -1220,7 +1306,12 @@ impl VerseFabric {
                 }
             }
             SHARD_TABLE if !change.data.is_empty() => {
-                self.admit_shard_entry(verse_id, &change.record_id, &change.author_id, &change.data);
+                self.admit_shard_entry(
+                    verse_id,
+                    &change.record_id,
+                    &change.author_id,
+                    &change.data,
+                );
             }
             HOLDERS_TABLE => {
                 self.note_holder_row(verse_id, &change.record_id, &change.author_id, &change.data);
@@ -1287,7 +1378,14 @@ mod tests {
     }
 
     /// A `role/{scope}/{peer}/{grantor}` doc row change.
-    fn role_change(scope: &str, peer: &str, grantor: &str, role: &str, revoked: bool, hlc: u64) -> crate::replicator::RowChange {
+    fn role_change(
+        scope: &str,
+        peer: &str,
+        grantor: &str,
+        role: &str,
+        revoked: bool,
+        hlc: u64,
+    ) -> crate::replicator::RowChange {
         let record_id = format!("{scope}/{peer}/{grantor}");
         let payload = serde_json::json!({
             "scope": scope, "peer_did": peer, "grantor_did": grantor,
@@ -1304,7 +1402,12 @@ mod tests {
         }
     }
 
-    fn verse_change(verse_id: &str, created_by: &str, author: &str, extra: serde_json::Value) -> crate::replicator::RowChange {
+    fn verse_change(
+        verse_id: &str,
+        created_by: &str,
+        author: &str,
+        extra: serde_json::Value,
+    ) -> crate::replicator::RowChange {
         let mut row = serde_json::json!({ "verse_id": verse_id, "created_by": created_by });
         if let serde_json::Value::Object(extra_map) = extra {
             if let serde_json::Value::Object(row_map) = &mut row {
@@ -1357,7 +1460,10 @@ mod tests {
 
     fn fabric_with_owner(verse_id: &str) -> VerseFabric {
         let mut fabric = VerseFabric::default();
-        fabric.note_entry(verse_id, &verse_change(verse_id, OWNER, OWNER, serde_json::json!({})));
+        fabric.note_entry(
+            verse_id,
+            &verse_change(verse_id, OWNER, OWNER, serde_json::json!({})),
+        );
         assert_eq!(fabric.owner_did(), Some(OWNER));
         fabric
     }
@@ -1514,7 +1620,11 @@ mod tests {
         let mut fabric = fabric_with_owner("v1");
         // Mirror default: unknown shard retains.
         assert_eq!(fabric.retention_for("p/a/1", "local"), Retention::Retain);
-        fabric.note_verse_row("v1", &serde_json::json!({"created_by": OWNER, "ts_mode": "sharded"}), OWNER);
+        fabric.note_verse_row(
+            "v1",
+            &serde_json::json!({"created_by": OWNER, "ts_mode": "sharded"}),
+            OWNER,
+        );
         fabric.note_shard_row(&serde_json::json!({
             "shard": "p/a/1", "hosts": ["peer-b"], "row_count": 1, "size_bytes": 1
         }));
@@ -1531,7 +1641,11 @@ mod tests {
             fabric.transfer_route_for(&["a".to_string()]),
             TransferRoute::Broadcast
         );
-        fabric.note_verse_row("v1", &serde_json::json!({"created_by": OWNER, "ts_mode": "balanced"}), OWNER);
+        fabric.note_verse_row(
+            "v1",
+            &serde_json::json!({"created_by": OWNER, "ts_mode": "balanced"}),
+            OWNER,
+        );
         assert_eq!(
             fabric.transfer_route_for(&["a".to_string(), "b".to_string()]),
             TransferRoute::Targeted(vec!["a".to_string(), "b".to_string()])
@@ -1577,7 +1691,10 @@ mod tests {
         // under its OWN author identity — the record key does not name the
         // author, so the declaration is refused.
         let mut fabric = VerseFabric::default();
-        fabric.note_entry("v1", &peer_decl_change("did:key:honest", "did:key:attacker"));
+        fabric.note_entry(
+            "v1",
+            &peer_decl_change("did:key:honest", "did:key:attacker"),
+        );
         assert!(
             !fabric.peers.contains_key("did:key:honest"),
             "a forged foreign-DID declaration must never enter the fabric"
@@ -1623,7 +1740,12 @@ mod tests {
         let mut fabric = fabric_with_owner("v1");
         fabric.note_entry(
             "v1",
-            &verse_change("v1", OWNER, OWNER, serde_json::json!({"ts_mode": "sharded"})),
+            &verse_change(
+                "v1",
+                OWNER,
+                OWNER,
+                serde_json::json!({"ts_mode": "sharded"}),
+            ),
         );
         assert_eq!(fabric.settings.mode, TimeseriesMode::Sharded);
 
@@ -1685,18 +1807,37 @@ mod tests {
                 fabric.note_entry("v1", &petal_change("p1", "f1"));
                 fabric.note_entry(
                     "v1",
-                    &role_change(&(case.scope)(verse), case.grantor, OWNER, case.role, false, 1),
+                    &role_change(
+                        &(case.scope)(verse),
+                        case.grantor,
+                        OWNER,
+                        case.role,
+                        false,
+                        1,
+                    ),
                 );
             } else {
                 fabric.note_entry(
                     "v1",
-                    &role_change(&(case.scope)(verse), case.grantor, OWNER, case.role, false, 1),
+                    &role_change(
+                        &(case.scope)(verse),
+                        case.grantor,
+                        OWNER,
+                        case.role,
+                        false,
+                        1,
+                    ),
                 );
             }
             let before = fabric.settings.mode;
             fabric.note_entry(
                 "v1",
-                &verse_change(verse, OWNER, case.grantor, serde_json::json!({"ts_mode": "sharded"})),
+                &verse_change(
+                    verse,
+                    OWNER,
+                    case.grantor,
+                    serde_json::json!({"ts_mode": "sharded"}),
+                ),
             );
             if case.expect_adopted {
                 assert_eq!(
@@ -1852,7 +1993,10 @@ mod tests {
             "M's statement must not be retained before M has any authority"
         );
 
-        fabric.note_entry("v1", &role_change(&verse_scope, m, OWNER, "manager", false, 2));
+        fabric.note_entry(
+            "v1",
+            &role_change(&verse_scope, m, OWNER, "manager", false, 2),
+        );
         assert!(fabric.drain_reread_queue().contains(&m.to_string()));
     }
 
@@ -1870,11 +2014,20 @@ mod tests {
         let mgr = "did:key:mgr";
         let editor = "did:key:editor";
 
-        fabric.note_entry("v1", &role_change(&verse_scope, mgr, OWNER, "manager", false, 1));
-        fabric.note_entry("v1", &role_change(&verse_scope, editor, OWNER, "editor", false, 2));
+        fabric.note_entry(
+            "v1",
+            &role_change(&verse_scope, mgr, OWNER, "manager", false, 1),
+        );
+        fabric.note_entry(
+            "v1",
+            &role_change(&verse_scope, editor, OWNER, "editor", false, 2),
+        );
         // mgr tries to demote editor below their owner-granted level — a
         // Manager-sourced statement can only raise, never lower.
-        fabric.note_entry("v1", &role_change(&verse_scope, editor, mgr, "viewer", false, 3));
+        fabric.note_entry(
+            "v1",
+            &role_change(&verse_scope, editor, mgr, "viewer", false, 3),
+        );
 
         let direct = fe_policy::materialize(OWNER, fabric.role_statements.values());
         assert_eq!(
@@ -1913,34 +2066,60 @@ mod tests {
         let petal_scope = fe_policy::build_scope("v1", Some("f1"), Some("p1"));
         let viewer = "did:key:viewer";
         let editor = "did:key:editor";
-        fabric.note_entry("v1", &role_change(&petal_scope, viewer, OWNER, "viewer", false, 1));
-        fabric.note_entry("v1", &role_change(&petal_scope, editor, OWNER, "editor", false, 2));
+        fabric.note_entry(
+            "v1",
+            &role_change(&petal_scope, viewer, OWNER, "viewer", false, 1),
+        );
+        fabric.note_entry(
+            "v1",
+            &role_change(&petal_scope, editor, OWNER, "editor", false, 2),
+        );
 
         fabric.note_entry("v1", &holder_change("p1/a1/1", viewer, viewer));
         assert!(
-            fabric.shard_holders("p1/a1/1").is_none_or(|h| !h.contains(viewer)),
+            fabric
+                .shard_holders("p1/a1/1")
+                .is_none_or(|h| !h.contains(viewer)),
             "a Viewer's self-declaration must never make it an expected answerer"
         );
         assert_eq!(fabric.quarantine_len(), 1, "held, not discarded");
 
         fabric.note_entry("v1", &holder_change("p1/a1/1", editor, editor));
-        assert!(fabric.shard_holders("p1/a1/1").is_some_and(|h| h.contains(editor)));
+        assert!(fabric
+            .shard_holders("p1/a1/1")
+            .is_some_and(|h| h.contains(editor)));
 
         // Declaring SOMEONE ELSE a holder is a forgery, dropped outright.
         fabric.note_entry("v1", &holder_change("p1/a2/1", editor, viewer));
         assert!(fabric.shard_holders("p1/a2/1").is_none());
-        assert_eq!(fabric.quarantine_len(), 1, "a forged row is not even quarantined");
+        assert_eq!(
+            fabric.quarantine_len(),
+            1,
+            "a forged row is not even quarantined"
+        );
 
         // Once the owner raises the Viewer to Editor, the held row matures.
-        fabric.note_entry("v1", &role_change(&petal_scope, viewer, OWNER, "editor", false, 3));
-        assert!(fabric.shard_holders("p1/a1/1").is_some_and(|h| h.contains(viewer)));
+        fabric.note_entry(
+            "v1",
+            &role_change(&petal_scope, viewer, OWNER, "editor", false, 3),
+        );
+        assert!(fabric
+            .shard_holders("p1/a1/1")
+            .is_some_and(|h| h.contains(viewer)));
     }
 
     #[test]
     fn local_holding_row_is_issued_once_and_only_for_an_unhosted_known_shard() {
         let mut fabric = fabric_with_owner("v1");
-        let shard = ShardId { petal_id: "p1".into(), anchor_node_id: "a1".into(), bucket: 1 };
-        assert!(fabric.local_holding_row(&shard, "did:key:local").is_none(), "unknown shard");
+        let shard = ShardId {
+            petal_id: "p1".into(),
+            anchor_node_id: "a1".into(),
+            bucket: 1,
+        };
+        assert!(
+            fabric.local_holding_row(&shard, "did:key:local").is_none(),
+            "unknown shard"
+        );
         fabric.note_shard_row(&serde_json::json!({
             "shard": "p1/a1/1", "hosts": ["did:key:host"], "row_count": 1, "size_bytes": 1
         }));
@@ -1948,16 +2127,28 @@ mod tests {
             .local_holding_row(&shard, "did:key:local")
             .expect("first reading into an unhosted shard declares a holding");
         assert_eq!(record_id, "p1/a1/1/did:key:local");
-        assert_eq!(parse_holder_key(&record_id), Some(("p1/a1/1", "did:key:local")));
-        assert!(fabric.local_holding_row(&shard, "did:key:local").is_none(), "once per shard");
-        assert!(fabric.local_holding_row(&shard, "did:key:host").is_none(), "a host never declares");
+        assert_eq!(
+            parse_holder_key(&record_id),
+            Some(("p1/a1/1", "did:key:local"))
+        );
+        assert!(
+            fabric.local_holding_row(&shard, "did:key:local").is_none(),
+            "once per shard"
+        );
+        assert!(
+            fabric.local_holding_row(&shard, "did:key:host").is_none(),
+            "a host never declares"
+        );
     }
 
     #[test]
     fn answerer_view_rejects_only_when_converged() {
         let mut fabric = fabric_with_owner("v1");
         let petal_scope = fe_policy::build_scope("v1", Some("f1"), Some("p1"));
-        fabric.note_entry("v1", &role_change(&petal_scope, "did:key:editor", OWNER, "editor", false, 1));
+        fabric.note_entry(
+            "v1",
+            &role_change(&petal_scope, "did:key:editor", OWNER, "editor", false, 1),
+        );
         // Petal unknown: nothing to judge against.
         assert_eq!(
             fabric.answerer_view("v1", "p1").verdict("did:key:viewer"),
@@ -1986,13 +2177,27 @@ mod tests {
             }),
             "did:key:relay",
         );
-        assert!(!changed, "an unsigned-by-creator manifest must adopt nothing");
+        assert!(
+            !changed,
+            "an unsigned-by-creator manifest must adopt nothing"
+        );
         assert_eq!(fabric.owner_did(), None);
         assert_eq!(fabric.default_access(), RoleLevel::None);
         assert_ne!(fabric.settings.mode, TimeseriesMode::Sharded);
-        assert_eq!(fabric.drain_reread_queue(), vec!["did:key:attacker".to_string()]);
+        assert_eq!(
+            fabric.drain_reread_queue(),
+            vec!["did:key:attacker".to_string()]
+        );
 
-        fabric.note_entry("v1", &verse_change("v1", OWNER, OWNER, serde_json::json!({"ts_mode": "sharded"})));
+        fabric.note_entry(
+            "v1",
+            &verse_change(
+                "v1",
+                OWNER,
+                OWNER,
+                serde_json::json!({"ts_mode": "sharded"}),
+            ),
+        );
         assert_eq!(fabric.owner_did(), Some(OWNER));
         assert_eq!(fabric.settings.mode, TimeseriesMode::Sharded);
 
@@ -2016,14 +2221,38 @@ mod tests {
         fabric.note_entry("v1", &petal_change("p1", "f1"));
         let petal_scope = fe_policy::build_scope("v1", Some("f1"), Some("p1"));
         let verse_scope = fe_policy::build_scope("v1", None, None);
-        fabric.note_entry("v1", &role_change(&petal_scope, "did:key:petal-viewer", OWNER, "viewer", false, 1));
-        fabric.note_entry("v1", &role_change(&verse_scope, "did:key:verse-viewer", OWNER, "viewer", false, 2));
+        fabric.note_entry(
+            "v1",
+            &role_change(
+                &petal_scope,
+                "did:key:petal-viewer",
+                OWNER,
+                "viewer",
+                false,
+                1,
+            ),
+        );
+        fabric.note_entry(
+            "v1",
+            &role_change(
+                &verse_scope,
+                "did:key:verse-viewer",
+                OWNER,
+                "viewer",
+                false,
+                2,
+            ),
+        );
         let snapshot = fabric.access_snapshot("v1");
         assert!(!snapshot.viewer_dids.contains("did:key:petal-viewer"));
         assert!(snapshot.viewer_dids.contains("did:key:verse-viewer"));
     }
 
-    fn petal_change_by(petal_id: &str, fractal_id: &str, author: &str) -> crate::replicator::RowChange {
+    fn petal_change_by(
+        petal_id: &str,
+        fractal_id: &str,
+        author: &str,
+    ) -> crate::replicator::RowChange {
         let mut change = petal_change(petal_id, fractal_id);
         change.author_id = author.to_string();
         change
@@ -2041,10 +2270,16 @@ mod tests {
         let mut fabric = fabric_with_owner("v1");
         let attacker = "did:key:attacker";
         let attacker_fractal = fe_policy::build_scope("v1", Some("fa"), None);
-        fabric.note_entry("v1", &role_change(&attacker_fractal, attacker, OWNER, "manager", false, 1));
+        fabric.note_entry(
+            "v1",
+            &role_change(&attacker_fractal, attacker, OWNER, "manager", false, 1),
+        );
         fabric.note_entry("v1", &petal_change("p1", "fv"));
         let victim_scope = fe_policy::build_scope("v1", Some("fv"), Some("p1"));
-        assert_eq!(fabric.petal_scope("v1", "p1").as_deref(), Some(victim_scope.as_str()));
+        assert_eq!(
+            fabric.petal_scope("v1", "p1").as_deref(),
+            Some(victim_scope.as_str())
+        );
 
         // Re-parent attempt: Editor+ at the target scope, none at the current one.
         fabric.note_entry("v1", &petal_change_by("p1", "fa", attacker));
@@ -2054,7 +2289,10 @@ mod tests {
             "a petal row from a Manager of another fractal re-parented the victim petal"
         );
         fabric.note_entry("v1", &shard_change("p1/a1/1", attacker, &[attacker]));
-        assert!(!fabric.shards.contains_key("p1/a1/1"), "the attacker's grant must not enclose p1");
+        assert!(
+            !fabric.shards.contains_key("p1/a1/1"),
+            "the attacker's grant must not enclose p1"
+        );
 
         // A first mapping planted by a stranger is held, not learned.
         fabric.note_entry("v1", &petal_change_by("p9", "fv", "did:key:stranger"));
@@ -2072,7 +2310,10 @@ mod tests {
 
         // The stranger is granted Editor on fv: their held p9 row matures.
         let fv = fe_policy::build_scope("v1", Some("fv"), None);
-        fabric.note_entry("v1", &role_change(&fv, "did:key:stranger", OWNER, "editor", false, 2));
+        fabric.note_entry(
+            "v1",
+            &role_change(&fv, "did:key:stranger", OWNER, "editor", false, 2),
+        );
         assert_eq!(
             fabric.petal_scope("v1", "p9"),
             Some(fe_policy::build_scope("v1", Some("fv"), Some("p9")))
@@ -2091,11 +2332,21 @@ mod tests {
         let verse_scope = fe_policy::build_scope("v1", None, None);
         fabric.note_entry(
             "v1",
-            &verse_change("v1", attacker, attacker, serde_json::json!({ "default_access": "viewer" })),
+            &verse_change(
+                "v1",
+                attacker,
+                attacker,
+                serde_json::json!({ "default_access": "viewer" }),
+            ),
         );
-        fabric.note_entry("v1", &role_change(&verse_scope, "did:key:crony", attacker, "manager", false, 1));
+        fabric.note_entry(
+            "v1",
+            &role_change(&verse_scope, "did:key:crony", attacker, "manager", false, 1),
+        );
         assert_eq!(fabric.owner_did(), Some(attacker));
-        assert!(fabric.role_at("did:key:crony", &verse_scope).is_at_least(RoleLevel::Manager));
+        assert!(fabric
+            .role_at("did:key:crony", &verse_scope)
+            .is_at_least(RoleLevel::Manager));
 
         fabric.note_local_verse_row(
             "v1",
@@ -2103,9 +2354,16 @@ mod tests {
             "did:key:joiner",
         );
         assert_eq!(fabric.owner_did(), Some(OWNER));
-        assert_eq!(fabric.default_access(), RoleLevel::None, "the false owner's open access must not survive");
+        assert_eq!(
+            fabric.default_access(),
+            RoleLevel::None,
+            "the false owner's open access must not survive"
+        );
         assert_eq!(fabric.role_at(attacker, &verse_scope), RoleLevel::None);
-        assert_eq!(fabric.role_at("did:key:crony", &verse_scope), RoleLevel::None);
+        assert_eq!(
+            fabric.role_at("did:key:crony", &verse_scope),
+            RoleLevel::None
+        );
         assert!(!fabric.access_snapshot("v1").open_to_all);
     }
 
@@ -2118,15 +2376,28 @@ mod tests {
         fabric.note_entry("v1", &petal_change("p1", "f1"));
         let petal_scope = fe_policy::build_scope("v1", Some("f1"), Some("p1"));
         let (erin, frank) = ("did:key:erin", "did:key:frank");
-        fabric.note_entry("v1", &role_change(&petal_scope, erin, OWNER, "editor", false, 1));
-        fabric.note_entry("v1", &role_change(&petal_scope, frank, OWNER, "editor", false, 2));
+        fabric.note_entry(
+            "v1",
+            &role_change(&petal_scope, erin, OWNER, "editor", false, 1),
+        );
+        fabric.note_entry(
+            "v1",
+            &role_change(&petal_scope, frank, OWNER, "editor", false, 2),
+        );
         fabric.note_entry("v1", &holder_change("p1/a1/1", erin, erin));
         fabric.note_entry("v1", &holder_change("p1/a1/1", frank, frank));
-        assert!(fabric.shard_holders("p1/a1/1").is_some_and(|h| h.contains(erin) && h.contains(frank)));
+        assert!(fabric
+            .shard_holders("p1/a1/1")
+            .is_some_and(|h| h.contains(erin) && h.contains(frank)));
 
-        fabric.note_entry("v1", &role_change(&petal_scope, erin, OWNER, "editor", true, 3));
+        fabric.note_entry(
+            "v1",
+            &role_change(&petal_scope, erin, OWNER, "editor", true, 3),
+        );
         assert!(
-            fabric.shard_holders("p1/a1/1").is_some_and(|h| !h.contains(erin)),
+            fabric
+                .shard_holders("p1/a1/1")
+                .is_some_and(|h| !h.contains(erin)),
             "a revoked holder must not stay an expected answerer"
         );
 
@@ -2134,12 +2405,20 @@ mod tests {
         forged.data.clear();
         forged.is_tombstone = true;
         fabric.note_entry("v1", &forged);
-        assert!(fabric.shard_holders("p1/a1/1").is_some_and(|h| h.contains(frank)), "forged withdrawal");
+        assert!(
+            fabric
+                .shard_holders("p1/a1/1")
+                .is_some_and(|h| h.contains(frank)),
+            "forged withdrawal"
+        );
 
         let mut withdrawal = holder_change("p1/a1/1", frank, frank);
         withdrawal.data.clear();
         withdrawal.is_tombstone = true;
         fabric.note_entry("v1", &withdrawal);
-        assert!(fabric.shard_holders("p1/a1/1").is_none(), "a withdrawn holder must be dropped");
+        assert!(
+            fabric.shard_holders("p1/a1/1").is_none(),
+            "a withdrawn holder must be dropped"
+        );
     }
 }

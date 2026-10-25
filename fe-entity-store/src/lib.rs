@@ -225,11 +225,7 @@ impl EntityStore {
     /// Widen an ingress (`f32`, A8) position to the egress (`f64`, EGR-F32)
     /// shape `EntitySnapshot::position` stores.
     fn widen_position(position: [f32; 3]) -> [f64; 3] {
-        [
-            position[0] as f64,
-            position[1] as f64,
-            position[2] as f64,
-        ]
+        [position[0] as f64, position[1] as f64, position[2] as f64]
     }
 
     /// Push a log entry, trimming the front so the window stays within the cap.

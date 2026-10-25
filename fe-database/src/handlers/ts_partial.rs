@@ -296,9 +296,16 @@ mod tests {
             shard("p1/node-a/0", "node-a", 0, 60),
             shard("p1/node-b/0", "node-b", 0, 60),
         ];
-        let partial = execute_ts_partial(&db, "v-def", &spec, &shards, PARTIAL_ROW_CAP, &InboundAdmissions::new())
-            .await
-            .expect("partial");
+        let partial = execute_ts_partial(
+            &db,
+            "v-def",
+            &spec,
+            &shards,
+            PARTIAL_ROW_CAP,
+            &InboundAdmissions::new(),
+        )
+        .await
+        .expect("partial");
         assert!(!partial.truncated);
         let a = partial.per_shard.iter().find(|s| s.shard == "p1/node-a/0");
         let b = partial.per_shard.iter().find(|s| s.shard == "p1/node-b/0");
@@ -332,9 +339,16 @@ mod tests {
             petal_id: "p1".into(),
         };
         let shards = vec![shard("p1/node-a/0", "node-a", 0, 60)];
-        let partial = execute_ts_partial(&db, "v-def", &spec, &shards, PARTIAL_ROW_CAP, &InboundAdmissions::new())
-            .await
-            .expect("partial");
+        let partial = execute_ts_partial(
+            &db,
+            "v-def",
+            &spec,
+            &shards,
+            PARTIAL_ROW_CAP,
+            &InboundAdmissions::new(),
+        )
+        .await
+        .expect("partial");
         let row = &partial.per_shard[0].rows[0];
         assert_eq!(row["sum_value"].as_f64(), Some(60.0));
         assert_eq!(row["sample_count"].as_i64(), Some(3));
@@ -359,9 +373,16 @@ mod tests {
             end_ms: 60,
             petal_id: "p1".into(),
         };
-        let partial = execute_ts_partial(&db, "v-def", &spec, &[], PARTIAL_ROW_CAP, &InboundAdmissions::new())
-            .await
-            .expect("partial");
+        let partial = execute_ts_partial(
+            &db,
+            "v-def",
+            &spec,
+            &[],
+            PARTIAL_ROW_CAP,
+            &InboundAdmissions::new(),
+        )
+        .await
+        .expect("partial");
         assert_eq!(partial.rows.len(), 1);
         assert_eq!(partial.rows[0]["reading_id"], "r1");
         assert!(partial.per_shard.is_empty());
@@ -383,9 +404,16 @@ mod tests {
             petal_id: "p1".into(),
             metric: None,
         };
-        let partial = execute_ts_partial(&db, "v-def", &spec, &[], PARTIAL_ROW_CAP, &InboundAdmissions::new())
-            .await
-            .expect("partial");
+        let partial = execute_ts_partial(
+            &db,
+            "v-def",
+            &spec,
+            &[],
+            PARTIAL_ROW_CAP,
+            &InboundAdmissions::new(),
+        )
+        .await
+        .expect("partial");
         assert_eq!(partial.rows.len(), 2);
         for row in &partial.rows {
             match row["node_id"].as_str() {
@@ -415,9 +443,16 @@ mod tests {
         let spec = TsQueryKind::AllReadings {
             petal_id: "p1".into(),
         };
-        let partial = execute_ts_partial(&db, "v-def", &spec, &[], PARTIAL_ROW_CAP, &InboundAdmissions::new())
-            .await
-            .expect("partial");
+        let partial = execute_ts_partial(
+            &db,
+            "v-def",
+            &spec,
+            &[],
+            PARTIAL_ROW_CAP,
+            &InboundAdmissions::new(),
+        )
+        .await
+        .expect("partial");
         let ids: Vec<&str> = partial
             .rows
             .iter()
@@ -483,26 +518,51 @@ mod tests {
         let mut admissions = InboundAdmissions::new();
         let row = serde_json::to_vec(&reading("r-def", "node-a", 1.0, 30)).expect("reading json");
         admissions
-            .apply(&db, "v-def", "iot_reading", "r-def", &row, "did:key:stranger", None)
+            .apply(
+                &db,
+                "v-def",
+                "iot_reading",
+                "r-def",
+                &row,
+                "did:key:stranger",
+                None,
+            )
             .await;
-        assert_eq!(admissions.len(), 1, "a stranger's reading waits in the queue");
+        assert_eq!(
+            admissions.len(),
+            1,
+            "a stranger's reading waits in the queue"
+        );
 
-        let spec = TsQueryKind::AllReadings { petal_id: "p1".into() };
+        let spec = TsQueryKind::AllReadings {
+            petal_id: "p1".into(),
+        };
         let shards = vec![
             shard("p1/node-a/0", "node-a", 0, 60),
             shard("p1/node-a/1", "node-a", 60, 120),
             shard("p1/node-b/0", "node-b", 0, 60),
         ];
-        let partial = execute_ts_partial(&db, "v-def", &spec, &shards, PARTIAL_ROW_CAP, &admissions)
-            .await
-            .expect("partial");
-        assert!(partial.rows.is_empty(), "the deferred reading is not in the store");
+        let partial =
+            execute_ts_partial(&db, "v-def", &spec, &shards, PARTIAL_ROW_CAP, &admissions)
+                .await
+                .expect("partial");
+        assert!(
+            partial.rows.is_empty(),
+            "the deferred reading is not in the store"
+        );
         assert_eq!(partial.deferred_shards, vec!["p1/node-a/0".to_string()]);
 
         // An empty queue reports nothing deferred.
-        let clean = execute_ts_partial(&db, "v-def", &spec, &shards, PARTIAL_ROW_CAP, &InboundAdmissions::new())
-            .await
-            .expect("partial");
+        let clean = execute_ts_partial(
+            &db,
+            "v-def",
+            &spec,
+            &shards,
+            PARTIAL_ROW_CAP,
+            &InboundAdmissions::new(),
+        )
+        .await
+        .expect("partial");
         assert!(clean.deferred_shards.is_empty());
     }
 
@@ -531,20 +591,47 @@ mod tests {
         let row = serde_json::to_vec(&reading("r-x", "node-a", 1.0, 30)).expect("reading json");
         // Delivered on another verse's replica (no manifest there: deferred).
         admissions
-            .apply(&db, "v-other", "iot_reading", "r-x", &row, "did:key:stranger", None)
+            .apply(
+                &db,
+                "v-other",
+                "iot_reading",
+                "r-x",
+                &row,
+                "did:key:stranger",
+                None,
+            )
             .await;
         // Delivered on the query's verse, but under a key that is not its id.
         admissions
-            .apply(&db, "v-def", "iot_reading", "r-forged", &row, "did:key:stranger", None)
+            .apply(
+                &db,
+                "v-def",
+                "iot_reading",
+                "r-forged",
+                &row,
+                "did:key:stranger",
+                None,
+            )
             .await;
-        assert_eq!(admissions.len_for_verse("v-other"), 1, "the cross-verse row is queued");
-        assert_eq!(admissions.len_for_verse("v-def"), 1, "the forged-key row is queued");
+        assert_eq!(
+            admissions.len_for_verse("v-other"),
+            1,
+            "the cross-verse row is queued"
+        );
+        assert_eq!(
+            admissions.len_for_verse("v-def"),
+            1,
+            "the forged-key row is queued"
+        );
 
-        let spec = TsQueryKind::AllReadings { petal_id: "p1".into() };
+        let spec = TsQueryKind::AllReadings {
+            petal_id: "p1".into(),
+        };
         let shards = vec![shard("p1/node-a/0", "node-a", 0, 60)];
-        let partial = execute_ts_partial(&db, "v-def", &spec, &shards, PARTIAL_ROW_CAP, &admissions)
-            .await
-            .expect("partial");
+        let partial =
+            execute_ts_partial(&db, "v-def", &spec, &shards, PARTIAL_ROW_CAP, &admissions)
+                .await
+                .expect("partial");
         assert!(
             partial.deferred_shards.is_empty(),
             "neither crafted deferral may mark the formal host's shard: {:?}",
@@ -561,26 +648,47 @@ mod tests {
             end_ms: 60,
             petal_id: "p1".into(),
         };
-        assert!(execute_ts_partial(&db, "v-def", &bad_window, &[], PARTIAL_ROW_CAP, &InboundAdmissions::new())
-            .await
-            .is_err());
+        assert!(execute_ts_partial(
+            &db,
+            "v-def",
+            &bad_window,
+            &[],
+            PARTIAL_ROW_CAP,
+            &InboundAdmissions::new()
+        )
+        .await
+        .is_err());
         let inverted = TsQueryKind::WindowAggregate {
             metric: "m".into(),
             start_ms: 60,
             end_ms: 0,
             petal_id: "p1".into(),
         };
-        assert!(execute_ts_partial(&db, "v-def", &inverted, &[], PARTIAL_ROW_CAP, &InboundAdmissions::new())
-            .await
-            .is_err());
+        assert!(execute_ts_partial(
+            &db,
+            "v-def",
+            &inverted,
+            &[],
+            PARTIAL_ROW_CAP,
+            &InboundAdmissions::new()
+        )
+        .await
+        .is_err());
         let empty_window = TsQueryKind::ReadingsInWindow {
             metric: "m".into(),
             start_ms: 0,
             end_ms: 0,
             petal_id: "p1".into(),
         };
-        assert!(execute_ts_partial(&db, "v-def", &empty_window, &[], PARTIAL_ROW_CAP, &InboundAdmissions::new())
-            .await
-            .is_err());
+        assert!(execute_ts_partial(
+            &db,
+            "v-def",
+            &empty_window,
+            &[],
+            PARTIAL_ROW_CAP,
+            &InboundAdmissions::new()
+        )
+        .await
+        .is_err());
     }
 }

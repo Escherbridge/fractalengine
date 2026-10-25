@@ -101,13 +101,9 @@ pub(crate) fn render(
             render_pen_options(ui, tool_panel_state, path_state, ui_mgr, verse_mgr)
         }
         ToolOptionsArm::Brush => render_brush_options(ui, sculpt_state, ui_mgr, active_petal_id),
-        ToolOptionsArm::Measure => render_measure_options(
-            ui,
-            measure,
-            measure_world_scale,
-            ui_mgr,
-            active_petal_id,
-        ),
+        ToolOptionsArm::Measure => {
+            render_measure_options(ui, measure, measure_world_scale, ui_mgr, active_petal_id)
+        }
     }
     // Never-blank (`ui_ux.md §7`): an arm without live controls falls back to
     // the descriptor's calm "(soon)" lines — one table, no duplicated copy.

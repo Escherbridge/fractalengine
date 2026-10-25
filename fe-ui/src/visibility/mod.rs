@@ -184,7 +184,10 @@ impl VisibilityState {
         if self.promoted_stamp_alias.get(&marker_id) == Some(&node_id) {
             return;
         }
-        if let Some(previous) = self.promoted_stamp_alias.insert(marker_id.clone(), node_id.clone()) {
+        if let Some(previous) = self
+            .promoted_stamp_alias
+            .insert(marker_id.clone(), node_id.clone())
+        {
             self.promoted_stamp_marker.remove(&previous);
         }
         if let Some(stale_marker) = self.promoted_stamp_marker.insert(node_id, marker_id) {
@@ -1307,7 +1310,10 @@ mod tests {
         let marker = crate::verse_manager::stamp_marker_id("track1", 0);
         state.register_promoted_stamp_alias(marker.clone(), "node-123".to_string());
         state.set_node_override("track1", OverrideState::Hide);
-        assert!(!pickable("node-123", &nav_in_p1(), &state), "row id must follow its hidden track");
+        assert!(
+            !pickable("node-123", &nav_in_p1(), &state),
+            "row id must follow its hidden track"
+        );
 
         let epoch = state.epoch();
         state.register_promoted_stamp_alias(marker.clone(), "node-123".to_string());
@@ -1316,7 +1322,10 @@ mod tests {
         state.register_promoted_stamp_alias(marker, "node-456".to_string());
         assert!(state.epoch() > epoch);
         assert!(!pickable("node-456", &nav_in_p1(), &state));
-        assert!(pickable("node-123", &nav_in_p1(), &state), "the retired row no longer follows the track");
+        assert!(
+            pickable("node-123", &nav_in_p1(), &state),
+            "the retired row no longer follows the track"
+        );
     }
 
     #[test]

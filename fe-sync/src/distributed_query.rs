@@ -229,7 +229,10 @@ pub fn plan_distributed_query(
         });
         shard_hosts.insert(entry.shard.clone(), entry.hosts.clone());
         if let Some(holders) = fabric.shard_holders(&entry.shard) {
-            shard_holders.insert(entry.shard.clone(), holders.iter().cloned().collect::<Vec<_>>());
+            shard_holders.insert(
+                entry.shard.clone(),
+                holders.iter().cloned().collect::<Vec<_>>(),
+            );
         }
     }
     let mut expected_hosts: BTreeSet<String> = shard_hosts
@@ -370,7 +373,10 @@ pub fn merge_partials(
         .iter()
         .filter(|shard| {
             let mut deferred = false;
-            for r in usable.iter().filter(|r| plan.is_formal_host(&r.host, &shard.shard)) {
+            for r in usable
+                .iter()
+                .filter(|r| plan.is_formal_host(&r.host, &shard.shard))
+            {
                 if r.partial.deferred_shards.iter().any(|d| d == &shard.shard) {
                     deferred = true;
                 } else {
@@ -624,7 +630,10 @@ fn covered_by_answered_hosts(
     let mut covered = Vec::new();
     let mut missing = Vec::new();
     for shard in &plan.target_shards {
-        if responses.iter().any(|r| plan.settles_shard(r, &shard.shard)) {
+        if responses
+            .iter()
+            .any(|r| plan.settles_shard(r, &shard.shard))
+        {
             covered.push(shard.shard.clone());
         } else {
             missing.push(shard.shard.clone());
@@ -1093,8 +1102,8 @@ async fn collect_distributed_query(transport: DistributedTransport, task: Collec
                 })
             });
         let now = tokio::time::Instant::now();
-        let settled = shards_settled_by_hosts
-            || (hosts_done && (holders_done || now >= holder_deadline));
+        let settled =
+            shards_settled_by_hosts || (hosts_done && (holders_done || now >= holder_deadline));
         if settled {
             break;
         }
@@ -1442,25 +1451,23 @@ pub fn handle_gossip_incoming(
             else {
                 return GossipDisposition::Dropped(drop_reason::TOPIC_CLOSED);
             };
-            tokio::spawn(respond_to_compute_request(
-                transport.clone(),
-                sender.clone(),
-                incoming.verse_id.clone(),
+            tokio::spawn(respond_to_compute_request(ComputeResponseArgs {
+                transport: transport.clone(),
+                sender: sender.clone(),
+                verse_id: incoming.verse_id.clone(),
                 request_id,
                 spec,
                 shards,
-                timeout_ms.min(MAX_QUERY_TIMEOUT_MS),
-                effective_row_cap(row_cap),
-            ));
+                timeout_ms: timeout_ms.min(MAX_QUERY_TIMEOUT_MS),
+                row_cap: effective_row_cap(row_cap),
+            }));
             GossipDisposition::Answered
         }
     }
 }
 
-/// The responder task: execute the requested partial on the local DB thread
-/// and broadcast the answer. Absence of an answer is the requester's signal
-/// that this host had nothing (or was too slow) — never an error path here.
-async fn respond_to_compute_request(
+/// Bundles the responder task's inputs (clippy::too_many_arguments).
+struct ComputeResponseArgs {
     transport: DistributedTransport,
     sender: TopicSender,
     verse_id: String,
@@ -1469,7 +1476,22 @@ async fn respond_to_compute_request(
     shards: Vec<PartialShard>,
     timeout_ms: u64,
     row_cap: usize,
-) {
+}
+
+/// The responder task: execute the requested partial on the local DB thread
+/// and broadcast the answer. Absence of an answer is the requester's signal
+/// that this host had nothing (or was too slow) — never an error path here.
+async fn respond_to_compute_request(args: ComputeResponseArgs) {
+    let ComputeResponseArgs {
+        transport,
+        sender,
+        verse_id,
+        request_id,
+        spec,
+        shards,
+        timeout_ms,
+        row_cap,
+    } = args;
     let Some(db) = transport.db_cmd_tx.clone() else {
         return; // a peer with no DB thread cannot answer
     };
@@ -1630,7 +1652,8 @@ mod tests {
                 ("p2/a/0", 0, 60_000, &["did:a"]),
             ],
         );
-        let plan = plan_distributed_query("v-1", &agg_spec(0, 120_000), &fabric, "did:local").unwrap();
+        let plan =
+            plan_distributed_query("v-1", &agg_spec(0, 120_000), &fabric, "did:local").unwrap();
         let keys: Vec<&str> = plan
             .target_shards
             .iter()
@@ -1687,14 +1710,16 @@ mod tests {
             })
             .collect();
         let fabric = fabric_with_shards(settings, &shards);
-        let err = plan_distributed_query("v-1", &agg_spec(0, i64::MAX), &fabric, "did:local").unwrap_err();
+        let err = plan_distributed_query("v-1", &agg_spec(0, i64::MAX), &fabric, "did:local")
+            .unwrap_err();
         assert!(err.contains("shards"), "honest over-cap error: {err}");
     }
 
     #[test]
     fn plan_empty_ledger_is_an_empty_plan() {
         let fabric = VerseFabric::default();
-        let plan = plan_distributed_query("v-1", &agg_spec(0, 1_000), &fabric, "did:local").unwrap();
+        let plan =
+            plan_distributed_query("v-1", &agg_spec(0, 1_000), &fabric, "did:local").unwrap();
         assert!(plan.target_shards.is_empty());
         assert!(plan.expected_hosts.is_empty());
     }
@@ -1854,7 +1879,8 @@ mod tests {
             bucket_width_ms: 60_000,
         };
         let fabric = fabric_with_shards(settings, &[("p1/a/0", 0, 60_000, &["did:a", "did:b"])]);
-        let plan = plan_distributed_query("v-1", &agg_spec(0, 60_000), &fabric, "did:local").unwrap();
+        let plan =
+            plan_distributed_query("v-1", &agg_spec(0, 60_000), &fabric, "did:local").unwrap();
         let partial = |host: &str, sum: f64, count: u64| PartialResponse {
             host: host.into(),
             partial: TsPartialRows {
@@ -1896,7 +1922,8 @@ mod tests {
             },
             &[("p1/a/0", 0, 60_000, &["did:host"])],
         );
-        let plan = plan_distributed_query("v-1", &agg_spec(0, 60_000), &fabric, "did:host").unwrap();
+        let plan =
+            plan_distributed_query("v-1", &agg_spec(0, 60_000), &fabric, "did:host").unwrap();
         let host_full = PartialResponse {
             host: "did:host".into(),
             partial: TsPartialRows {
@@ -1959,9 +1986,13 @@ mod tests {
                 &[("p1/a/1", 60_000, 120_000, hosts)],
             )
         };
-        let r1_plan =
-            plan_distributed_query("v-1", &agg_spec(0, 120_000), &mk_fabric(&["did:offline"]), "did:a")
-                .unwrap();
+        let r1_plan = plan_distributed_query(
+            "v-1",
+            &agg_spec(0, 120_000),
+            &mk_fabric(&["did:offline"]),
+            "did:a",
+        )
+        .unwrap();
         let r2_fabric = fabric_with_shards(
             VerseTimeseriesSettings {
                 mode: TimeseriesMode::Balanced,
@@ -1970,7 +2001,8 @@ mod tests {
             },
             &[("p1/a/1", 60_000, 120_000, &["did:offline", "did:a"])],
         );
-        let r2_plan = plan_distributed_query("v-1", &agg_spec(0, 120_000), &r2_fabric, "did:a").unwrap();
+        let r2_plan =
+            plan_distributed_query("v-1", &agg_spec(0, 120_000), &r2_fabric, "did:a").unwrap();
 
         // Case 1: the local peer holds nothing (empty partial) — the offline
         // host's shard is genuinely invisible at R=1.
@@ -2392,7 +2424,8 @@ mod tests {
             VerseTimeseriesSettings::default(),
             &[("p1/a/0", 0, 60_000, &["did:failed-host"])],
         );
-        let plan = plan_distributed_query("v-1", &agg_spec(0, 60_000), &fabric, "did:local").unwrap();
+        let plan =
+            plan_distributed_query("v-1", &agg_spec(0, 60_000), &fabric, "did:local").unwrap();
         let failed = PartialResponse {
             host: "did:failed-host".into(),
             partial: TsPartialRows::failed(),
@@ -2429,7 +2462,8 @@ mod tests {
             },
             &[("p1/a/0", 0, 60_000, &["did:failed-host", "did:mirror"])],
         );
-        let plan = plan_distributed_query("v-1", &agg_spec(0, 60_000), &fabric, "did:local").unwrap();
+        let plan =
+            plan_distributed_query("v-1", &agg_spec(0, 60_000), &fabric, "did:local").unwrap();
         let failed = PartialResponse {
             host: "did:failed-host".into(),
             partial: TsPartialRows::failed(),
@@ -2674,8 +2708,16 @@ mod tests {
             &serde_json::json!({ "created_by": owner, "default_access": "none" }),
             owner,
         );
-        fabric.note_petal_row("v-1", &serde_json::json!({ "petal_id": "p1", "fractal_id": "f1" }), owner);
-        fabric.note_petal_row("v-1", &serde_json::json!({ "petal_id": "p2", "fractal_id": "f1" }), owner);
+        fabric.note_petal_row(
+            "v-1",
+            &serde_json::json!({ "petal_id": "p1", "fractal_id": "f1" }),
+            owner,
+        );
+        fabric.note_petal_row(
+            "v-1",
+            &serde_json::json!({ "petal_id": "p2", "fractal_id": "f1" }),
+            owner,
+        );
         // A ledger row for both petals so a "served" case reaches the
         // (empty) sender lookup instead of the earlier PETAL_UNKNOWN check
         // — isolating this test to the requester gate specifically.
@@ -3144,7 +3186,11 @@ mod tests {
                 },
                 &[(shard, 0, 60_000, &[carol.did.as_str()])],
             );
-            converge_role_view(&mut fabric, &[bob.did.as_str()], &[(shard, bob.did.as_str())]);
+            converge_role_view(
+                &mut fabric,
+                &[bob.did.as_str()],
+                &[(shard, bob.did.as_str())],
+            );
             for peer in [&alice, &bob, &carol, &dave] {
                 fabric.note_peer_declaration(&peer.did, PeerDeclaration::default());
             }
@@ -3212,7 +3258,12 @@ mod tests {
 
     const OWNER_DID: &str = "did:key:owner";
 
-    fn row_change(table: &str, record_id: String, author: &str, data: serde_json::Value) -> crate::replicator::RowChange {
+    fn row_change(
+        table: &str,
+        record_id: String,
+        author: &str,
+        data: serde_json::Value,
+    ) -> crate::replicator::RowChange {
         crate::replicator::RowChange {
             table: table.to_string(),
             record_id,
@@ -3350,7 +3401,11 @@ mod tests {
                 },
                 &[(shard, 0, 60_000, &[carol.did.as_str()])],
             );
-            converge_role_view(&mut fabric, &[bob.did.as_str()], &[(shard, bob.did.as_str())]);
+            converge_role_view(
+                &mut fabric,
+                &[bob.did.as_str()],
+                &[(shard, bob.did.as_str())],
+            );
             for peer in [&alice, &bob, &carol] {
                 fabric.note_peer_declaration(&peer.did, PeerDeclaration::default());
             }
@@ -3379,9 +3434,17 @@ mod tests {
                 .recv_timeout(Duration::from_secs(5))
                 .expect("alice merges an outcome");
             assert!(outcome.error.is_none(), "{label}: {:?}", outcome.error);
-            assert_eq!(outcome.rows.len(), 1, "{label}: the holder's rows must be merged");
+            assert_eq!(
+                outcome.rows.len(),
+                1,
+                "{label}: the holder's rows must be merged"
+            );
             assert_eq!(outcome.rows[0]["node_id"], "b", "{label}");
-            assert_eq!(outcome.meta.covered_shards, vec![shard.to_string()], "{label}");
+            assert_eq!(
+                outcome.meta.covered_shards,
+                vec![shard.to_string()],
+                "{label}"
+            );
             assert!(outcome.meta.answered_hosts.contains(&bob.did), "{label}");
             assert!(outcome.meta.missing_holders.is_empty(), "{label}");
             assert!(outcome.meta.rejected_answerers.is_empty(), "{label}");
@@ -3408,7 +3471,11 @@ mod tests {
             },
             &[(shard, 0, 60_000, &[carol.did.as_str()])],
         );
-        converge_role_view(&mut fabric, &[bob.did.as_str()], &[(shard, bob.did.as_str())]);
+        converge_role_view(
+            &mut fabric,
+            &[bob.did.as_str()],
+            &[(shard, bob.did.as_str())],
+        );
         for peer in [&alice, &bob, &carol] {
             fabric.note_peer_declaration(&peer.did, PeerDeclaration::default());
         }
@@ -3492,9 +3559,19 @@ mod tests {
                     partial: partial(vec![shard.to_string()]),
                 }],
             );
-            assert!(!deferred.meta.covered_shards.contains(&shard.to_string()), "{spec:?}");
-            assert_eq!(deferred.meta.incomplete_shards, vec![shard.to_string()], "{spec:?}");
-            assert!(deferred.meta.missing_shards.is_empty(), "{spec:?}: the host answered");
+            assert!(
+                !deferred.meta.covered_shards.contains(&shard.to_string()),
+                "{spec:?}"
+            );
+            assert_eq!(
+                deferred.meta.incomplete_shards,
+                vec![shard.to_string()],
+                "{spec:?}"
+            );
+            assert!(
+                deferred.meta.missing_shards.is_empty(),
+                "{spec:?}: the host answered"
+            );
 
             // The same empty answer WITHOUT deferred rows is authoritative.
             let settled = merge_partials(
@@ -3505,7 +3582,11 @@ mod tests {
                     partial: partial(Vec::new()),
                 }],
             );
-            assert_eq!(settled.meta.covered_shards, vec![shard.to_string()], "{spec:?}");
+            assert_eq!(
+                settled.meta.covered_shards,
+                vec![shard.to_string()],
+                "{spec:?}"
+            );
             assert!(settled.meta.incomplete_shards.is_empty(), "{spec:?}");
         }
     }
@@ -3638,7 +3719,12 @@ mod tests {
                 ],
             );
             let answerer = case.answerer.to_string();
-            assert_eq!(outcome.rows.len(), usize::from(case.expect_kept), "{}", case.label);
+            assert_eq!(
+                outcome.rows.len(),
+                usize::from(case.expect_kept),
+                "{}",
+                case.label
+            );
             assert_eq!(
                 outcome.meta.rejected_answerers.contains(&answerer),
                 case.expect_rejected,

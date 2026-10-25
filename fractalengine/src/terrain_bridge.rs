@@ -1524,8 +1524,7 @@ pub fn drive_streamed_tilesets(
                         let verdict_tx = verdicts.tx.clone();
                         let registry = tileset_registry.as_ref().map(|r| Arc::clone(&r.0));
                         let known_pin = known_publishers.0.get(&tileset_id).cloned();
-                        let petal_pin =
-                            petal_publisher_pin(active_terrain.as_deref(), &tileset_id);
+                        let petal_pin = petal_publisher_pin(active_terrain.as_deref(), &tileset_id);
                         // Off the main thread: the installed pin opens the
                         // store's archive and the header check hashes every
                         // header member.
@@ -1542,16 +1541,14 @@ pub fn drive_streamed_tilesets(
                                 .map(|h| fe_runtime::blob_store::hash_from_hex(h))
                                 .collect::<anyhow::Result<Vec<_>>>()
                             {
-                                Ok(resolved_chunk_hashes) => {
-                                    verify_install_meta_and_send(
-                                        &sender,
-                                        &tileset_id,
-                                        &meta_json,
-                                        &ad_publisher_did,
-                                        pin.as_deref(),
-                                        resolved_chunk_hashes,
-                                    )
-                                }
+                                Ok(resolved_chunk_hashes) => verify_install_meta_and_send(
+                                    &sender,
+                                    &tileset_id,
+                                    &meta_json,
+                                    &ad_publisher_did,
+                                    pin.as_deref(),
+                                    resolved_chunk_hashes,
+                                ),
                                 Err(e) => {
                                     send_cancel(&sender, &tileset_id);
                                     Err(format!("unparsable chunk hash in the meta reply: {e}"))
@@ -1616,13 +1613,17 @@ pub fn drive_streamed_tilesets(
                     let tileset_id_for_thread = tileset_id.clone();
                     std::thread::spawn(move || {
                         let (pin, pin_source) = resolve_publisher_pin(
-                            registry
-                                .and_then(|r| r.store().installed_publisher(&tileset_id_for_thread)),
+                            registry.and_then(|r| {
+                                r.store().installed_publisher(&tileset_id_for_thread)
+                            }),
                             petal_pin,
                             known_pin,
                         );
-                        let outcome =
-                            verify_streamed_meta(&tileset_id_for_thread, &meta_json, pin.as_deref());
+                        let outcome = verify_streamed_meta(
+                            &tileset_id_for_thread,
+                            &meta_json,
+                            pin.as_deref(),
+                        );
                         if verdict_tx
                             .send(StreamedMetaVerdict {
                                 tileset_id: tileset_id_for_thread,
@@ -1869,15 +1870,44 @@ mod tests {
     fn a_petal_authored_pin_never_poisons_the_global_tofu_map() {
         let mut known = KnownTilesetPublishers::default();
         // Editor on petal X verifies against their petal pin: no global write.
-        record_publisher_pin(&mut known, "ts-1", "did:key:attacker".into(), PinSource::PetalAuthored);
-        assert!(known.0.is_empty(), "petal-scoped trust wrote node-global state");
+        record_publisher_pin(
+            &mut known,
+            "ts-1",
+            "did:key:attacker".into(),
+            PinSource::PetalAuthored,
+        );
+        assert!(
+            known.0.is_empty(),
+            "petal-scoped trust wrote node-global state"
+        );
         // On petal Y (no pin anywhere) the first verified header becomes TOFU.
-        record_publisher_pin(&mut known, "ts-1", "did:key:legit".into(), PinSource::FirstContact);
-        assert_eq!(known.0.get("ts-1").map(String::as_str), Some("did:key:legit"));
+        record_publisher_pin(
+            &mut known,
+            "ts-1",
+            "did:key:legit".into(),
+            PinSource::FirstContact,
+        );
+        assert_eq!(
+            known.0.get("ts-1").map(String::as_str),
+            Some("did:key:legit")
+        );
         // Neither a later petal pin nor a later first contact overrides it.
-        record_publisher_pin(&mut known, "ts-1", "did:key:attacker".into(), PinSource::PetalAuthored);
-        record_publisher_pin(&mut known, "ts-1", "did:key:attacker".into(), PinSource::FirstContact);
-        assert_eq!(known.0.get("ts-1").map(String::as_str), Some("did:key:legit"));
+        record_publisher_pin(
+            &mut known,
+            "ts-1",
+            "did:key:attacker".into(),
+            PinSource::PetalAuthored,
+        );
+        record_publisher_pin(
+            &mut known,
+            "ts-1",
+            "did:key:attacker".into(),
+            PinSource::FirstContact,
+        );
+        assert_eq!(
+            known.0.get("ts-1").map(String::as_str),
+            Some("did:key:legit")
+        );
     }
 
     #[test]
@@ -3792,7 +3822,10 @@ mod tests {
         );
         assert_eq!(impostor_recorded, None, "a refused header pins nothing");
         let (owner_pending, owner_recorded) = run(&owner);
-        assert!(!owner_pending, "the petal-pinned publisher's header resolves");
+        assert!(
+            !owner_pending,
+            "the petal-pinned publisher's header resolves"
+        );
         assert_eq!(owner_recorded, Some(owner_did.clone()));
     }
 
@@ -3932,7 +3965,13 @@ mod tests {
             (PinSource::FirstContact, Some("b"), None, Some("a"), false),
             (PinSource::FirstContact, Some("a"), None, None, true),
             (PinSource::Tofu, Some("t"), Some("p"), Some("t"), false),
-            (PinSource::PetalAuthored, Some("p"), Some("p"), Some("t"), true),
+            (
+                PinSource::PetalAuthored,
+                Some("p"),
+                Some("p"),
+                Some("t"),
+                true,
+            ),
             (PinSource::FirstContact, None, None, Some("a"), false),
         ] {
             assert_eq!(

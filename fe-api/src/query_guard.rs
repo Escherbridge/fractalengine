@@ -1653,20 +1653,14 @@ mod tests {
         );
 
         // 33 semicolons inside one string literal: still one statement.
-        let semis_in_string = format!(
-            "SELECT * FROM node WHERE x = '{}'",
-            ";".repeat(33)
-        );
+        let semis_in_string = format!("SELECT * FROM node WHERE x = '{}'", ";".repeat(33));
         assert!(
             validate_elevated_sql(&semis_in_string, TABLES).is_ok(),
             "semicolons in a string literal are not split points"
         );
 
         // 40 semicolons inside one statement's `{ }` braces: still one statement.
-        let semis_in_braces = format!(
-            "UPDATE node SET tags = {{ {} }}",
-            "a: 1;".repeat(40)
-        );
+        let semis_in_braces = format!("UPDATE node SET tags = {{ {} }}", "a: 1;".repeat(40));
         assert!(
             validate_elevated_sql(&semis_in_braces, TABLES).is_ok(),
             "semicolons nested in braces are not split points"

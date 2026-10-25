@@ -699,9 +699,7 @@ mod tests {
 
         // Custom http://relay.example (non-loopback plaintext): refused.
         let insecure = RelayConfig::Custom(vec!["http://relay.example".to_string()]);
-        let err = insecure
-            .to_relay_mode_with_token(Some(&token))
-            .unwrap_err();
+        let err = insecure.to_relay_mode_with_token(Some(&token)).unwrap_err();
         assert!(
             matches!(err, RelayConfigError::InsecureTokenTransport { .. }),
             "{err:?}"

@@ -1924,7 +1924,9 @@ mod tests {
         let attacker_row = role_rows
             .iter()
             .find(|c| c.author_id == attacker_did && c.record_id == record_id)
-            .expect("the forged entry is also visible (and separately denied by validate_statement)");
+            .expect(
+                "the forged entry is also visible (and separately denied by validate_statement)",
+            );
         assert_eq!(attacker_row.data, forged.as_bytes());
 
         owner.close().await.unwrap();

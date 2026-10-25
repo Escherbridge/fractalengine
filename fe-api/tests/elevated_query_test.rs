@@ -458,12 +458,11 @@ async fn an_elevated_script_over_the_statement_cap_is_refused_and_writes_nothing
         "nothing was op-logged"
     );
 
-    let mut res = h
-        .db
-        .query("SELECT count() AS n FROM node WHERE petal_id = $pid GROUP ALL")
-        .bind(("pid", hier.petal_id.clone()))
-        .await
-        .expect("count nodes");
+    let mut res =
+        h.db.query("SELECT count() AS n FROM node WHERE petal_id = $pid GROUP ALL")
+            .bind(("pid", hier.petal_id.clone()))
+            .await
+            .expect("count nodes");
     let rows: Vec<serde_json::Value> = res.take(0).expect("node count");
     assert_eq!(rows[0]["n"], 0, "no node was created: {rows:?}");
 }

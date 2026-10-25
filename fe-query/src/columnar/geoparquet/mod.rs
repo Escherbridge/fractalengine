@@ -217,9 +217,8 @@ pub fn read_nodes_parquet_raw_wkb(path: &Path) -> Result<Vec<[f64; 3]>> {
         File::open(path).with_context(|| format!("opening parquet file {}", path.display()))?;
     let builder =
         ParquetRecordBatchReaderBuilder::try_new(file).context("reading parquet footer")?;
-    let geometry_column = geometry_column_from_meta(
-        builder.metadata().file_metadata().key_value_metadata(),
-    );
+    let geometry_column =
+        geometry_column_from_meta(builder.metadata().file_metadata().key_value_metadata());
     let reader = builder.build().context("building parquet reader")?;
     let mut out = Vec::new();
     for batch in reader {
@@ -494,14 +493,20 @@ mod tests {
     #[test]
     fn wkb_axis_order_follows_the_output_frame() {
         // Local engine (1, 2, 3) -> WKB (1, -3, 2).
-        assert_eq!(codec::engine_to_wkb([1.0, 2.0, 3.0], false), [1.0, -3.0, 2.0]);
+        assert_eq!(
+            codec::engine_to_wkb([1.0, 2.0, 3.0], false),
+            [1.0, -3.0, 2.0]
+        );
         // Lon/lat: identity (export.rs already stores [lon, lat, ele]).
         assert_eq!(
             codec::engine_to_wkb([-122.3, 47.6, 12.0], true),
             [-122.3, 47.6, 12.0]
         );
         // Inverse recovers the engine frame.
-        assert_eq!(codec::wkb_to_engine([1.0, -3.0, 2.0], false), [1.0, 2.0, 3.0]);
+        assert_eq!(
+            codec::wkb_to_engine([1.0, -3.0, 2.0], false),
+            [1.0, 2.0, 3.0]
+        );
         assert_eq!(
             codec::wkb_to_engine([-122.3, 47.6, 12.0], true),
             [-122.3, 47.6, 12.0]

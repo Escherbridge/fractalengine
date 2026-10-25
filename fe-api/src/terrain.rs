@@ -202,9 +202,8 @@ impl IntoResponse for TerrainWriteError {
 fn validate_publisher_pins(config: &TerrainConfig) -> Result<(), String> {
     config.validate_publisher_pins()?;
     for (tileset_id, did) in &config.tileset_publisher_dids {
-        fe_identity::did_key::public_key_from_did_key(did).map_err(|e| {
-            format!("publisher pin for {tileset_id:?} is not a valid did:key: {e}")
-        })?;
+        fe_identity::did_key::public_key_from_did_key(did)
+            .map_err(|e| format!("publisher pin for {tileset_id:?} is not a valid did:key: {e}"))?;
     }
     Ok(())
 }

@@ -1,7 +1,9 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use datafusion::arrow::array::{Float32Array, Float64Array, RecordBatch, StringBuilder, UInt64Array};
+use datafusion::arrow::array::{
+    Float32Array, Float64Array, RecordBatch, StringBuilder, UInt64Array,
+};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::Session;
 use datafusion::datasource::memory::MemTable;

@@ -709,8 +709,8 @@ mod tests {
         let db = mem_db().await;
         let blob_store: BlobStoreHandle =
             Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
-        let statements: Vec<&str> = std::iter::repeat_n("SELECT 1", MAX_ELEVATED_STATEMENTS + 1)
-            .collect();
+        let statements: Vec<&str> =
+            std::iter::repeat_n("SELECT 1", MAX_ELEVATED_STATEMENTS + 1).collect();
         let reply = elevated_query_reply(
             &db,
             ElevatedSinks {

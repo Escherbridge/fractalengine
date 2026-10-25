@@ -17,6 +17,7 @@ use crate::panels::widgets::{meters_to_world, world_to_meters};
 use crate::plugin::{InspectorFormState, InspectorTab, LocalUserRole, API_TOKEN_PAGE_SIZE};
 use crate::terrain_map::PetalMapState;
 use crate::theme;
+use crate::verse_manager::db_results::tokens::mint_command;
 use crate::verse_manager::VerseManager;
 use fe_runtime::messages::DbCommand;
 
@@ -738,22 +739,14 @@ fn inspector_api_access_section(
                     )
                     .clicked()
                 {
-                    // Mirrors `verse_manager::db_results::tokens::mint_command`
-                    // exactly (blank client -> None, else trimmed) — keep in
-                    // sync if that shape ever changes.
-                    let client_did = if client_trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(client_trimmed.to_string())
-                    };
                     db_tx
-                        .send(DbCommand::MintApiToken {
-                            scope: inspector.api_token_scope_buf.clone(),
-                            max_role: inspector.api_token_role_buf.clone(),
-                            ttl_hours: inspector.api_token_expiry_buf,
-                            label: Some(format!("node:{}", node_id)),
-                            client_did,
-                        })
+                        .send(mint_command(
+                            inspector.api_token_scope_buf.clone(),
+                            inspector.api_token_role_buf.clone(),
+                            inspector.api_token_expiry_buf,
+                            Some(format!("node:{}", node_id)),
+                            client_trimmed,
+                        ))
                         .ok();
                 }
 

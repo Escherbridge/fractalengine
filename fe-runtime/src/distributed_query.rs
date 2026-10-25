@@ -355,7 +355,10 @@ mod tests {
         )
         .unwrap();
         assert!(!legacy.failed && !legacy.truncated && legacy.is_empty());
-        assert!(legacy.deferred_shards.is_empty(), "pre-RP-6 peers defer nothing");
+        assert!(
+            legacy.deferred_shards.is_empty(),
+            "pre-RP-6 peers defer nothing"
+        );
         // The failed constructor is empty-but-flagged.
         let failed = TsPartialRows::failed();
         assert!(failed.failed && failed.is_empty());

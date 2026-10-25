@@ -585,10 +585,8 @@ mod inner {
                 .package_tiles_chunked(&tiles, "did:key:z6Mkbuilder", Some(&key), 1)
                 .expect("package_tiles_chunked failed");
 
-            let path = std::env::temp_dir().join(format!(
-                "fe_builder_crs_test_{}.hexon",
-                std::process::id()
-            ));
+            let path = std::env::temp_dir()
+                .join(format!("fe_builder_crs_test_{}.hexon", std::process::id()));
             std::fs::write(&path, &container).unwrap();
             let index = HexonArchiveIndex::open(&path).expect("open container");
 

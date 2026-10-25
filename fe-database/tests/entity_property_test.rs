@@ -231,11 +231,13 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
     let petal_id = seed_hierarchy(&db);
     let node_id = create_node(&db, &petal_id, "Dimension 5.00 m", [0.0, 0.0, 0.0]);
 
-    let anchors = serde_json::json!([
-        [0.0, 0.0, 0.0],
-        [3.0, 0.0, 4.0],
-    ]);
-    set_property(&db, &node_id, "node_kind", serde_json::json!("dimension_callout"));
+    let anchors = serde_json::json!([[0.0, 0.0, 0.0], [3.0, 0.0, 4.0],]);
+    set_property(
+        &db,
+        &node_id,
+        "node_kind",
+        serde_json::json!("dimension_callout"),
+    );
     set_property(&db, &node_id, "dimension.mode", serde_json::json!("tape"));
     set_property(&db, &node_id, "dimension.anchors", anchors.clone());
     set_property(&db, &node_id, "dimension.closed", serde_json::json!(false));

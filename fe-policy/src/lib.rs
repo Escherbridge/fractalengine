@@ -25,5 +25,7 @@ pub use role_grants::{
 pub use role_level::RoleLevel;
 // Scope-string parser — single home (W5b, OF-3); fe-database's `scope` module
 // re-exports these so `fe_database::{parse_scope, build_scope, ...}` is unchanged.
-pub use scope::{build_scope, parent_scope, parse_scope, scope_level, ScopeError, ScopeLevel, ScopeParts};
+pub use scope::{
+    build_scope, parent_scope, parse_scope, scope_level, ScopeError, ScopeLevel, ScopeParts,
+};
 pub use types::{scope_contains, Action, AuthContext, Decision, Scope};

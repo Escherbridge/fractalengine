@@ -176,7 +176,11 @@ async fn analytics_nodes_table_serves_f64_positions() {
     let pos_x = body["data"]["data"][0]["pos_x"]
         .as_f64()
         .expect("pos_x is a JSON number");
-    assert_eq!(pos_x.to_bits(), x.to_bits(), "pos_x must be served Float64 bit-exact");
+    assert_eq!(
+        pos_x.to_bits(),
+        x.to_bits(),
+        "pos_x must be served Float64 bit-exact"
+    );
 }
 
 #[tokio::test]

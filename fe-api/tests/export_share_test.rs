@@ -308,7 +308,11 @@ async fn parquet_and_csv_exports_carry_f64_positions_bit_exact() {
     let snaps = read_parquet_back(&body_bytes(resp).await);
     assert_eq!(snaps.len(), 1);
     assert_eq!(snaps[0].position[0].to_bits(), x.to_bits(), "x bit-exact");
-    assert_eq!(snaps[0].position[1].to_bits(), ele.to_bits(), "y/elevation bit-exact");
+    assert_eq!(
+        snaps[0].position[1].to_bits(),
+        ele.to_bits(),
+        "y/elevation bit-exact"
+    );
     assert_eq!(snaps[0].position[2].to_bits(), z.to_bits(), "z bit-exact");
 
     let resp = export_csv(
@@ -508,7 +512,7 @@ async fn parquet_export_geometry_is_east_north_up_locally_and_lon_lat_ele_for_la
     let db = setup_test_db().await;
     let pa = ulid();
     seed_petal(&db, &pa, true).await; // terrain origin configured
-    // Engine frame: x = 10, elevation (y) = 2, z = -5.
+                                      // Engine frame: x = 10, elevation (y) = 2, z = -5.
     seed_node(&db, &pa, "n1", 10.0, -5.0, 2.0).await;
     let state = test_state(db);
     let claims = test_claims("VERSE#v1", "viewer");
@@ -742,7 +746,11 @@ async fn export_readings_anchor_position_is_f64_bit_exact() {
     assert_eq!(rows.len(), 1);
     let anchor = rows[0].anchor_position.expect("anchor resolves");
     assert_eq!(anchor[0].to_bits(), x.to_bits(), "anchor x bit-exact");
-    assert_eq!(anchor[1].to_bits(), ele.to_bits(), "anchor y/elevation bit-exact");
+    assert_eq!(
+        anchor[1].to_bits(),
+        ele.to_bits(),
+        "anchor y/elevation bit-exact"
+    );
     assert_eq!(anchor[2].to_bits(), z.to_bits(), "anchor z bit-exact");
 }
 

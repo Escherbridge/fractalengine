@@ -11,7 +11,7 @@
 //!
 //! See `fe-ui/src/verse_manager/AGENTS.md` for the submodule map.
 
-mod db_results;
+pub(crate) mod db_results;
 mod lifecycle_events;
 mod node_index;
 mod path_asset_materialize;

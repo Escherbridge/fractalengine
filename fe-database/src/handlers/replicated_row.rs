@@ -1912,7 +1912,13 @@ mod tests {
         }))
         .unwrap();
         let outcome = apply_replicated_row_handler(
-            &db, "v-tofu", "verse", "v-tofu", &placeholder, "did:key:peer-x", None,
+            &db,
+            "v-tofu",
+            "verse",
+            "v-tofu",
+            &placeholder,
+            "did:key:peer-x",
+            None,
         )
         .await
         .unwrap();
@@ -1930,14 +1936,24 @@ mod tests {
         }))
         .unwrap();
         let outcome = apply_replicated_row_handler(
-            &db, "v-tofu", "verse", "v-tofu", &real, "did:key:z6MkRealOwner", None,
+            &db,
+            "v-tofu",
+            "verse",
+            "v-tofu",
+            &real,
+            "did:key:z6MkRealOwner",
+            None,
         )
         .await
         .unwrap();
         assert_eq!(outcome, ReplicatedRowOutcome::Applied);
 
         crate::reconcile::reconcile(&db, local).await.unwrap();
-        let rows = select_json(&db, "SELECT created_by FROM verse WHERE verse_id = 'v-tofu'").await;
+        let rows = select_json(
+            &db,
+            "SELECT created_by FROM verse WHERE verse_id = 'v-tofu'",
+        )
+        .await;
         assert_eq!(rows[0]["created_by"], "did:key:z6MkRealOwner");
     }
 
@@ -2757,10 +2773,17 @@ mod tests {
         .await;
         let fill = |ns: &str| manifest(serde_json::json!({ "namespace_id": ns }));
 
-        let outcome =
-            apply_replicated_row_handler(&db, "v1", "verse", "v1", &fill("ns-attacker"), "did:key:editor", None)
-                .await
-                .unwrap();
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "verse",
+            "v1",
+            &fill("ns-attacker"),
+            "did:key:editor",
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             outcome,
             ReplicatedRowOutcome::Deferred(DeferralReason::AuthorRole {
@@ -2770,7 +2793,13 @@ mod tests {
         assert!(verse_field(&db, "namespace_id").await.is_null());
 
         let outcome = apply_replicated_row_handler(
-            &db, "v1", "verse", "v1", &fill("ns-real"), "did:key:verse-manager", None,
+            &db,
+            "v1",
+            "verse",
+            "v1",
+            &fill("ns-real"),
+            "did:key:verse-manager",
+            None,
         )
         .await
         .unwrap();
@@ -3072,7 +3101,10 @@ mod tests {
         };
 
         for (petal_id, pins) in [
-            ("petal-bad-grammar", serde_json::json!({ "ts-a": "did:key:zNotAKey" })),
+            (
+                "petal-bad-grammar",
+                serde_json::json!({ "ts-a": "did:key:zNotAKey" }),
+            ),
             ("petal-bad-type", serde_json::json!({ "ts-a": 42 })),
             ("petal-unbound", serde_json::json!({ "ts-other": real_pin })),
             ("petal-not-a-map", serde_json::json!([real_pin])),

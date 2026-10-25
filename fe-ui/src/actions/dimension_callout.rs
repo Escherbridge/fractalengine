@@ -84,7 +84,9 @@ pub(crate) fn callout_from_measure(state: &MeasureState) -> Option<CalloutGeomet
 /// The property bag a callout node carries, in a stable key order (the
 /// `SetNodeProperty` echo send order, and the order the correlation-echo test
 /// asserts). Pure — the endpoint contract is testable without a DB.
-pub(crate) fn callout_properties(geometry: &CalloutGeometry) -> Vec<(&'static str, serde_json::Value)> {
+pub(crate) fn callout_properties(
+    geometry: &CalloutGeometry,
+) -> Vec<(&'static str, serde_json::Value)> {
     vec![
         ("node_kind", serde_json::json!(DIMENSION_CALLOUT_NODE_KIND)),
         ("dimension.mode", serde_json::json!(mode_str(geometry.mode))),
@@ -98,16 +100,17 @@ pub(crate) fn callout_properties(geometry: &CalloutGeometry) -> Vec<(&'static st
 /// midpoint).
 pub(crate) fn callout_anchor_position(geometry: &CalloutGeometry) -> [f32; 3] {
     let n = (geometry.anchors.len().max(1)) as f64;
-    let sum = geometry
-        .anchors
-        .iter()
-        .fold([0.0f64; 3], |mut acc, a| {
-            acc[0] += a[0];
-            acc[1] += a[1];
-            acc[2] += a[2];
-            acc
-        });
-    [(sum[0] / n) as f32, (sum[1] / n) as f32, (sum[2] / n) as f32]
+    let sum = geometry.anchors.iter().fold([0.0f64; 3], |mut acc, a| {
+        acc[0] += a[0];
+        acc[1] += a[1];
+        acc[2] += a[2];
+        acc
+    });
+    [
+        (sum[0] / n) as f32,
+        (sum[1] / n) as f32,
+        (sum[2] / n) as f32,
+    ]
 }
 
 /// Display name for a freshly-created callout node, e.g. `"Dimension 12.5 m"`.
@@ -147,8 +150,12 @@ fn parse_callout_bag(properties: &serde_json::Value) -> Option<CalloutGeometry> 
         Some("area") => MeasureMode::Area,
         _ => return None,
     };
-    let closed = properties.get("dimension.closed").and_then(|v| v.as_bool())?;
-    let anchors_raw = properties.get("dimension.anchors").and_then(|v| v.as_array())?;
+    let closed = properties
+        .get("dimension.closed")
+        .and_then(|v| v.as_bool())?;
+    let anchors_raw = properties
+        .get("dimension.anchors")
+        .and_then(|v| v.as_array())?;
     if anchors_raw.is_empty() || anchors_raw.len() > MAX_CALLOUT_ANCHORS {
         return None;
     }
@@ -251,7 +258,12 @@ impl DimensionCalloutMap {
     }
 
     /// Bind `node_id` to its owning petal + geometry.
-    pub(crate) fn record(&mut self, node_id: &str, petal_id: Option<String>, geometry: CalloutGeometry) {
+    pub(crate) fn record(
+        &mut self,
+        node_id: &str,
+        petal_id: Option<String>,
+        geometry: CalloutGeometry,
+    ) {
         self.nodes.insert(node_id.to_string(), (petal_id, geometry));
     }
 
@@ -558,7 +570,10 @@ mod tests {
         // A plain echo (no correlation) emits no callout keys.
         let mut map = DimensionCalloutMap::default();
         bind_created_callout(&db_sender, &mut map, "node-8", "p1", None);
-        assert!(rx.try_recv().is_err(), "a plain echo must not write anything");
+        assert!(
+            rx.try_recv().is_err(),
+            "a plain echo must not write anything"
+        );
 
         // A foreign (earthwork) correlation emits no callout keys either.
         let mut map = DimensionCalloutMap::default();
@@ -575,7 +590,10 @@ mod tests {
         let mut map = DimensionCalloutMap::default();
         bind_created_callout(&db_sender, &mut map, "node-10", "p1", Some("callout:c99"));
         bind_created_callout(&db_sender, &mut map, "node-11", "p1", Some("callout:"));
-        assert!(rx.try_recv().is_err(), "an unknown callout id must not write anything");
+        assert!(
+            rx.try_recv().is_err(),
+            "an unknown callout id must not write anything"
+        );
         assert!(map.node_geometry("node-10").is_none());
         assert!(map.node_geometry("node-11").is_none());
     }
@@ -611,7 +629,11 @@ mod tests {
         vis.set_node_override("hidden-node", OverrideState::Hide);
 
         let result = visible_callouts(&map, &nav, &vis);
-        assert_eq!(result.len(), 1, "only the visible, same-petal callout survives");
+        assert_eq!(
+            result.len(),
+            1,
+            "only the visible, same-petal callout survives"
+        );
         assert_eq!(result[0], &visible_geo);
     }
 

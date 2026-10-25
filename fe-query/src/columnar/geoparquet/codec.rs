@@ -166,7 +166,10 @@ pub(super) fn readings_to_batch(
     let recorded_at_ms = Int64Array::from_iter_values(rows.iter().map(|r| r.recorded_at_ms));
     let wkb: BinaryArray = rows
         .iter()
-        .map(|r| r.anchor_position.map(|p| point_z_to_wkb(engine_to_wkb(p, lonlat))))
+        .map(|r| {
+            r.anchor_position
+                .map(|p| point_z_to_wkb(engine_to_wkb(p, lonlat)))
+        })
         .collect();
     RecordBatch::try_new(
         schema,

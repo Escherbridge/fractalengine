@@ -36,7 +36,10 @@ pub fn publish_and_await(
     record_id: &str,
     row: &serde_json::Value,
 ) -> Result<()> {
-    if receivers.iter().any(|receiver| std::ptr::eq(*receiver, author)) {
+    if receivers
+        .iter()
+        .any(|receiver| std::ptr::eq(*receiver, author))
+    {
         bail!(
             "{table}/{record_id}: author {} is listed as its own receiver — own rows are never \
              echoed back, so that wait can only time out",

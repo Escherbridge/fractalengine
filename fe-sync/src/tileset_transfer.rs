@@ -916,7 +916,12 @@ impl TilesetTransfer {
             .map_err(transport_err)?;
         let mut reported = 0;
         for (_, root) in tags {
-            let Some(seq) = self.transport.read_local(root).await.map_err(transport_err)? else {
+            let Some(seq) = self
+                .transport
+                .read_local(root)
+                .await
+                .map_err(transport_err)?
+            else {
                 continue;
             };
             let Some(children) = decode_hash_seq(&seq) else {

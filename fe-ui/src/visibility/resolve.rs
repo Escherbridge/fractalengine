@@ -155,7 +155,11 @@ fn owning_track_id<'a>(node_id: &'a str, state: &'a VisibilityState) -> Option<&
 /// GPX-HIDE-CASCADE track lookup — it never consults solo (A10: solo is not
 /// extended to a soloed track's stamps) and never cascades itself (a track
 /// is never a stamp, so there is only one level).
-fn lattice_hidden_reason(node_id: &str, ancestry: NodeAncestry, state: &VisibilityState) -> HiddenReason {
+fn lattice_hidden_reason(
+    node_id: &str,
+    ancestry: NodeAncestry,
+    state: &VisibilityState,
+) -> HiddenReason {
     match own_override(node_id, state) {
         OverrideState::Show => return HiddenReason::NotHidden,
         OverrideState::Hide => return HiddenReason::OverrideHide,
@@ -589,7 +593,8 @@ mod tests {
                         name: "G".into(),
                         visible: false,
                     });
-                    s.group_membership.insert("track1".into(), vec!["g1".into()]);
+                    s.group_membership
+                        .insert("track1".into(), vec!["g1".into()]);
                 },
                 HiddenReason::OwningPath("track1".to_string()),
             ),
@@ -632,7 +637,8 @@ mod tests {
                         name: "G".into(),
                         visible: false,
                     });
-                    s.group_membership.insert("track1".into(), vec!["g1".into()]);
+                    s.group_membership
+                        .insert("track1".into(), vec!["g1".into()]);
                     s.set_node_override("track1", OverrideState::Show);
                 },
                 HiddenReason::NotHidden,
@@ -641,14 +647,21 @@ mod tests {
         for (label, node_id, setup, expected) in cases {
             let mut state = VisibilityState::default();
             setup(&mut state);
-            assert_eq!(node_hidden_reason(node_id, ancestry(), &state), expected, "{label}");
+            assert_eq!(
+                node_hidden_reason(node_id, ancestry(), &state),
+                expected,
+                "{label}"
+            );
         }
     }
 
     #[test]
     fn owning_path_toggles_to_show_like_ancestor_and_group() {
         assert_eq!(
-            toggle_node_override(&HiddenReason::OwningPath("track1".into()), OverrideState::Auto),
+            toggle_node_override(
+                &HiddenReason::OwningPath("track1".into()),
+                OverrideState::Auto
+            ),
             OverrideState::Show
         );
     }

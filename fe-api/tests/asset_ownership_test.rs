@@ -441,7 +441,10 @@ async fn mcp_call(
 
 /// The text of an MCP tool response that must be an error.
 fn mcp_error_text(resp: &serde_json::Value) -> String {
-    assert_eq!(resp["result"]["isError"], true, "expected a tool error: {resp}");
+    assert_eq!(
+        resp["result"]["isError"], true,
+        "expected a tool error: {resp}"
+    );
     resp["result"]["content"][0]["text"]
         .as_str()
         .unwrap_or_default()
@@ -453,8 +456,14 @@ async fn upload_ok(h: &ApiHarness, token: &str, petal_id: &str, bytes: &[u8]) ->
     let (status, body) = upload(h, token, petal_id, bytes).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     (
-        body["data"]["asset_id"].as_str().expect("asset_id").to_string(),
-        body["data"]["content_hash"].as_str().expect("hash").to_string(),
+        body["data"]["asset_id"]
+            .as_str()
+            .expect("asset_id")
+            .to_string(),
+        body["data"]["content_hash"]
+            .as_str()
+            .expect("hash")
+            .to_string(),
     )
 }
 
@@ -491,7 +500,11 @@ async fn two_clients_of_one_node_have_separate_quota_buckets() {
     // … but client B of the same node has its own.
     let (first_b, _) = upload_ok(&h, &token_b, &petals[0], &glb(600, 3)).await;
     assert_eq!(owner_of(&h, &first_b).await, client_b.as_str());
-    assert_eq!(asset_rows(&h).await.len(), 2, "only the refused upload is missing");
+    assert_eq!(
+        asset_rows(&h).await.len(),
+        2,
+        "only the refused upload is missing"
+    );
 }
 
 #[tokio::test]
@@ -542,11 +555,36 @@ async fn unplaced_upload_reach_follows_the_owner_key() {
     let a_up = (a_asset.as_str(), a_hash.as_str());
     let node_up = (node_asset.as_str(), node_hash.as_str());
     let rows = [
-        ("client A reads its own unplaced upload", a, a_up, StatusCode::OK),
-        ("client B, same petal, reads A's unplaced upload", b, a_up, StatusCode::NOT_FOUND),
-        ("a legacy token reads a node-level upload", l, node_up, StatusCode::OK),
-        ("a legacy token reads client A's unplaced upload", l, a_up, StatusCode::NOT_FOUND),
-        ("client B reads a node-level upload (shared)", b, node_up, StatusCode::OK),
+        (
+            "client A reads its own unplaced upload",
+            a,
+            a_up,
+            StatusCode::OK,
+        ),
+        (
+            "client B, same petal, reads A's unplaced upload",
+            b,
+            a_up,
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "a legacy token reads a node-level upload",
+            l,
+            node_up,
+            StatusCode::OK,
+        ),
+        (
+            "a legacy token reads client A's unplaced upload",
+            l,
+            a_up,
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "client B reads a node-level upload (shared)",
+            b,
+            node_up,
+            StatusCode::OK,
+        ),
     ];
     for (label, token, (asset_id, hash), want) in rows {
         for uri in [
@@ -556,7 +594,11 @@ async fn unplaced_upload_reach_follows_the_owner_key() {
             let (status, got) = fetch(&h, token, &uri).await;
             assert_eq!(status, want, "{label}: {uri}");
             if want == StatusCode::OK {
-                let expected = if asset_id == a_asset { &a_bytes } else { &node_bytes };
+                let expected = if asset_id == a_asset {
+                    &a_bytes
+                } else {
+                    &node_bytes
+                };
                 assert_eq!(&got, expected, "{label}: {uri}");
             }
         }

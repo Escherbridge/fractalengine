@@ -52,16 +52,12 @@ fn container_runtime() -> Option<&'static str> {
             }
         };
     }
-    for rt in ["docker", "podman"] {
-        if Command::new(rt)
+    ["docker", "podman"].into_iter().find(|rt| {
+        Command::new(rt)
             .arg("info")
             .output()
             .is_ok_and(|out| out.status.success())
-        {
-            return Some(rt);
-        }
-    }
-    None
+    })
 }
 
 /// A running `iroh-relay --dev` container on `127.0.0.1`. Removed by its
@@ -96,7 +92,15 @@ impl RelayContainer {
         );
 
         let mut cmd = Command::new(runtime);
-        cmd.args(["run", "-d", "--rm", "--name", &name, "-p", "127.0.0.1::3340"]);
+        cmd.args([
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            &name,
+            "-p",
+            "127.0.0.1::3340",
+        ]);
         if let Some((host_path, container_path)) = config_mount {
             cmd.arg("-v")
                 .arg(format!("{}:{}:ro", host_path.display(), container_path));
@@ -138,7 +142,11 @@ impl RelayContainer {
             return None;
         };
 
-        let container = Self { runtime, name, port };
+        let container = Self {
+            runtime,
+            name,
+            port,
+        };
         if container.wait_healthy(Duration::from_secs(60)) {
             println!(
                 "iroh-relay container {} started on 127.0.0.1:{}",
@@ -166,7 +174,8 @@ impl RelayContainer {
             if let Ok(mut stream) = TcpStream::connect_timeout(&addr, PROBE_TIMEOUT) {
                 let _ = stream.set_read_timeout(Some(PROBE_TIMEOUT));
                 let _ = stream.set_write_timeout(Some(PROBE_TIMEOUT));
-                let request = b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+                let request =
+                    b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
                 if stream.write_all(request).is_ok() {
                     let mut buf = Vec::new();
                     if stream.read_to_end(&mut buf).is_ok() {
@@ -400,9 +409,8 @@ async fn relay_assisted_tileset_fetch_through_a_self_hosted_iroh_relay() {
     // this node's own relay map already holds may be dialed (S8b).
     let allowed_relays: Vec<iroh::RelayUrl> =
         relay_config.to_relay_mode().unwrap().relay_map().urls();
-    let bob_transport = Arc::new(
-        IrohBlobTransport::from_stack(&bob_stack).with_allowed_relays(allowed_relays),
-    );
+    let bob_transport =
+        Arc::new(IrohBlobTransport::from_stack(&bob_stack).with_allowed_relays(allowed_relays));
 
     // Alice's address with every direct IP path stripped — bob can only
     // ever reach her through the relay.
@@ -560,7 +568,8 @@ async fn a_token_gated_relay_admits_the_configured_token_and_refuses_others() {
     };
     let relay_config = RelayConfig::parse(&container.relay_url()).expect("valid relay url");
 
-    let Some(good) = token_endpoint(87, &relay_config, Some(RelayAccessToken::new(real_token))).await
+    let Some(good) =
+        token_endpoint(87, &relay_config, Some(RelayAccessToken::new(real_token))).await
     else {
         return;
     };
