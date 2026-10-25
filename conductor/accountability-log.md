@@ -610,3 +610,14 @@ fe-sync tests only (localized files).
 - STOP-RULE (orchestrator): review generations on this seam ran HIGH→HIGH→MED→MED with each fix shrinking blast
   radius; after R6b, further MED/LOW findings on the contested-petal/blob-gate seam batch to the next campaign's
   review unless a CRITICAL/HIGH appears. The loop must terminate on a judgment, not on reviewer exhaustion.
+
+### OF-12 (second review of R6 commit 6141914, 2026-10-25) — dispositions under the stop-rule
+- OF-12a MED (cap eviction defeats contest) = OF-11b, already in R6b's live brief; NEW sub-point folded into R6b
+  mid-flight via agent message: the mapping-HISTORY cap must also never evict the locally-authoritative layer or
+  the only layer for a distinct fractal.
+- OF-12b MED (cross-scope un-mapping availability): ACCEPTED RESIDUAL per the OF-11 stop-rule — this is exactly
+  the availability trade-off R6 chose and documented (fe-sync/src/AGENTS.md §role-view, tick 11). The suggested
+  "keep the incumbent unless challenger has authority at the incumbent's scope" re-opens the squat (the incumbent
+  may BE the squatter); "contest only pre-convergence" re-opens the snapshot-shadowing correction R6 built. The
+  reviewer's rate-limit / verse-level-authority-to-unmap-a-petal-with-holders idea is recorded as a next-campaign
+  hardening candidate alongside DB confine_petal parity. Availability-only; fails closed; no bypass.
