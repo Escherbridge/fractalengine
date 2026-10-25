@@ -86,6 +86,10 @@ pub struct VisibilityState {
     /// runs (`verse_manager/db_results/properties.rs`); session-only,
     /// rebuilt every load.
     pub(crate) promoted_stamp_alias: HashMap<String, String>,
+    /// Reverse index of `promoted_stamp_alias` (node row id -> marker id),
+    /// kept in lockstep by `register_promoted_stamp_alias` so the resolver's
+    /// owning-track lookup is O(1), not a scan per resolved node (refine R3).
+    pub(crate) promoted_stamp_marker: HashMap<String, String>,
     /// Bumped by exactly 1 on every real mutation below. `sync_node_visibility`
     /// gates its apply pass on this instead of `ResMut::is_changed()` (F3a:
     /// `gardener_ui_system` derefs `&mut VisibilityState` unconditionally every
@@ -172,11 +176,20 @@ impl VisibilityState {
     }
 
     /// Registers a promoted stamp's marker id -> node row id alias (A11).
-    /// Bumps `epoch` unconditionally (matches the other setters) — a fresh
-    /// alias can change the resolved hidden reason for the marker id
-    /// without any other field changing, so the apply pass must re-run.
+    /// Bumps `epoch` on a new or changed alias — it can change the resolved
+    /// hidden reason for the marker id without any other field changing, so
+    /// the apply pass must re-run; re-registering the same pair (every
+    /// properties reload) is a no-op, like `clear_solo` when already clear.
     pub(crate) fn register_promoted_stamp_alias(&mut self, marker_id: String, node_id: String) {
-        self.promoted_stamp_alias.insert(marker_id, node_id);
+        if self.promoted_stamp_alias.get(&marker_id) == Some(&node_id) {
+            return;
+        }
+        if let Some(previous) = self.promoted_stamp_alias.insert(marker_id.clone(), node_id.clone()) {
+            self.promoted_stamp_marker.remove(&previous);
+        }
+        if let Some(stale_marker) = self.promoted_stamp_marker.insert(node_id, marker_id) {
+            self.promoted_stamp_alias.remove(&stale_marker);
+        }
         self.bump_epoch();
     }
 
@@ -1280,6 +1293,30 @@ mod tests {
         state.set_node_override("track1", OverrideState::Hide);
 
         assert!(pickable(&marker, &nav_in_p1(), &state));
+    }
+
+    /// Refine R3: a promoted stamp resolved by its own ROW id still follows
+    /// its track (through the reverse alias index), a re-registration of the
+    /// same pair does not manufacture an epoch bump, and re-pointing a marker
+    /// at a new row retires the old row's link to the track. Mutation check:
+    /// drop the reverse-index write (or the stale-entry removal) and the
+    /// first (or last) assertion goes red.
+    #[test]
+    fn a_promoted_stamps_row_id_follows_its_track_through_the_alias_index() {
+        let mut state = VisibilityState::default();
+        let marker = crate::verse_manager::stamp_marker_id("track1", 0);
+        state.register_promoted_stamp_alias(marker.clone(), "node-123".to_string());
+        state.set_node_override("track1", OverrideState::Hide);
+        assert!(!pickable("node-123", &nav_in_p1(), &state), "row id must follow its hidden track");
+
+        let epoch = state.epoch();
+        state.register_promoted_stamp_alias(marker.clone(), "node-123".to_string());
+        assert_eq!(state.epoch(), epoch, "an unchanged alias is not a mutation");
+
+        state.register_promoted_stamp_alias(marker, "node-456".to_string());
+        assert!(state.epoch() > epoch);
+        assert!(!pickable("node-456", &nav_in_p1(), &state));
+        assert!(pickable("node-123", &nav_in_p1(), &state), "the retired row no longer follows the track");
     }
 
     #[test]

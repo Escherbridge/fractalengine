@@ -180,6 +180,16 @@ with a `tracing::warn!` bug guard if the bound is hit (plan §5 risk 1).
   (AC-44c): a petal-scoped member resolves to `RoleLevel::None` at the
   verse scope (R7 subtree semantics give them no wider authority), so the
   floor cannot use `role_at` at the verse scope alone.
+- **`diff` is per cell, never best-across-scopes (refine R3, RP-1's open
+  note).** `risen` = every DID whose `role_at` rose at ANY `(scope, did)`
+  cell either snapshot mentions (pins, blocks, Manager grants); `fallen`
+  likewise; an owner change counts the new owner risen and the old one
+  fallen; a DID may be in both. The sync plane seeds its §2.5 re-read on
+  empowerment from `risen` (fe-sync `sharding.rs::rematerialize`), so a
+  best-role comparison silently dropped a Manager at fractal A newly
+  empowered at fractal B, and never queued a freshly pinned owner whose
+  pre-manifest statements had been discarded. Mirrors the DB plane's
+  `changed_between` (fe-database `role_grants.rs`).
 - **The scope-chain parser is `crate::scope::{parent_scope, parse_scope}`**
   (see §scope-parser) — unified there in W5b/OF-3; this module no longer
   carries its own copy.

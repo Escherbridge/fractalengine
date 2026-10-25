@@ -400,45 +400,51 @@ impl EffectiveRoles {
         rows
     }
 
-    /// Reports, for every DID mentioned in either snapshot, whether its best
-    /// effective role across the scopes it is mentioned at rose, fell, or
-    /// stayed the same — the §2.4 demote/promote worklist's seed. A caller
-    /// re-checks `admissible` for a specific pending statement's own scope;
-    /// this only narrows which DIDs are worth re-checking at all.
+    /// Reports every DID whose effective role ROSE at any cell (`scope`,
+    /// `did`) either snapshot mentions (pins, blocks, Manager grants) in
+    /// `risen`, and every DID whose role FELL at any such cell in `fallen`;
+    /// an owner change counts the new owner risen and the old one fallen.
+    /// Per cell, never "best across scopes" (refine R3): a Manager at
+    /// fractal A newly empowered at fractal B must still be risen, or the
+    /// §2.5 re-read on empowerment never recovers what it holds at B. A DID
+    /// may appear in both lists. The §2.4 worklist seed — a caller re-checks
+    /// `admissible` per statement; this only narrows which DIDs to re-check.
     pub fn diff(&self, previous: &EffectiveRoles) -> ChangedDids {
-        let mut scopes_by_did: HashMap<String, HashSet<String>> = HashMap::new();
-        for ((scope, peer), _) in self.owner_pins.iter().chain(self.mgr.iter()) {
-            scopes_by_did
-                .entry(peer.clone())
-                .or_default()
-                .insert(scope.clone());
-        }
-        for ((scope, peer), _) in previous.owner_pins.iter().chain(previous.mgr.iter()) {
-            scopes_by_did
-                .entry(peer.clone())
-                .or_default()
-                .insert(scope.clone());
+        let mut cells: std::collections::BTreeSet<(&str, &str)> = std::collections::BTreeSet::new();
+        for roles in [self, previous] {
+            let keyed = roles
+                .owner_pins
+                .keys()
+                .chain(roles.owner_blocks.iter())
+                .chain(roles.mgr.keys());
+            cells.extend(keyed.map(|(scope, peer)| (scope.as_str(), peer.as_str())));
         }
 
-        let mut changed = ChangedDids::default();
-        for (did, scopes) in scopes_by_did {
-            let old_best = scopes
-                .iter()
-                .map(|s| previous.role_at(&did, s))
-                .max()
-                .unwrap_or(RoleLevel::None);
-            let new_best = scopes
-                .iter()
-                .map(|s| self.role_at(&did, s))
-                .max()
-                .unwrap_or(RoleLevel::None);
-            match new_best.cmp(&old_best) {
-                std::cmp::Ordering::Greater => changed.risen.push(did),
-                std::cmp::Ordering::Less => changed.fallen.push(did),
+        let mut risen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut fallen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (scope, did) in cells {
+            match self.role_at(did, scope).cmp(&previous.role_at(did, scope)) {
+                std::cmp::Ordering::Greater => {
+                    risen.insert(did.to_string());
+                }
+                std::cmp::Ordering::Less => {
+                    fallen.insert(did.to_string());
+                }
                 std::cmp::Ordering::Equal => {}
             }
         }
-        changed
+        if self.owner_did != previous.owner_did {
+            if let Some(owner) = &self.owner_did {
+                risen.insert(owner.clone());
+            }
+            if let Some(owner) = &previous.owner_did {
+                fallen.insert(owner.clone());
+            }
+        }
+        ChangedDids {
+            risen: risen.into_iter().collect(),
+            fallen: fallen.into_iter().collect(),
+        }
     }
 }
 
@@ -1246,6 +1252,43 @@ mod tests {
         );
         let changed2 = promoted.diff(&viewer);
         assert!(changed2.risen.contains(&"did:key:m2".to_string()));
+    }
+
+    /// Refine R3: `diff` is per cell. A Manager at fractal A newly made
+    /// Manager at fractal B rose at B even though their best role did not
+    /// change — the sync plane's §2.5 re-read keys off `risen`, so a
+    /// best-across-scopes diff never re-read what they hold at B. An owner
+    /// change raises the new owner and drops the old. Mutation check:
+    /// compare max-over-scopes again, or drop the owner clause, and the
+    /// matching assertion goes red.
+    #[test]
+    fn diff_reports_a_rise_at_one_scope_even_when_the_best_role_is_unchanged() {
+        let at_a = stmt(
+            "VERSE#v1-FRACTAL#a",
+            "did:key:m",
+            OWNER,
+            GrantedRole::Manager,
+            false,
+            1,
+        );
+        let at_b = stmt(
+            "VERSE#v1-FRACTAL#b",
+            "did:key:m",
+            OWNER,
+            GrantedRole::Manager,
+            false,
+            2,
+        );
+        let before = materialize(OWNER, std::slice::from_ref(&at_a));
+        let after = materialize(OWNER, &[at_a, at_b]);
+        let changed = after.diff(&before);
+        assert_eq!(changed.risen, vec!["did:key:m".to_string()]);
+        assert!(changed.fallen.is_empty());
+
+        let repinned = materialize("did:key:new-owner", std::iter::empty::<&RoleStatement>());
+        let changed = repinned.diff(&materialize(OWNER, std::iter::empty::<&RoleStatement>()));
+        assert_eq!(changed.risen, vec!["did:key:new-owner".to_string()]);
+        assert_eq!(changed.fallen, vec![OWNER.to_string()]);
     }
 
     #[test]

@@ -5749,6 +5749,10 @@ mod tests {
                 data: serde_json::to_vec(&serde_json::json!({ "created_by": owner })).unwrap(),
             },
         );
+        // Pinning the owner raises them to Owner everywhere, so they are
+        // queued for the §2.5 re-read (statements they made before the
+        // manifest landed were discarded — refine R3, `EffectiveRoles::diff`).
+        assert_eq!(fabric.drain_reread_queue(), vec![owner.to_string()]);
         // M's statement arrives inbound (the live pump) — M has no
         // authority yet, so it is discarded, never stored.
         fabric.note_entry(

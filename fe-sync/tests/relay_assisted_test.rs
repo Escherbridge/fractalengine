@@ -154,10 +154,18 @@ impl RelayContainer {
         }
     }
 
+    /// Poll `/healthz` until a 200 or `timeout`. Every socket op is bounded
+    /// (refine R3): the runtime's port forwarder accepts a connection before
+    /// the relay listens, and an unbounded `read_to_end` on such a socket
+    /// could outlive the deadline, which is only checked between attempts.
     fn wait_healthy(&self, timeout: Duration) -> bool {
+        const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
         let deadline = Instant::now() + timeout;
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], self.port));
         while Instant::now() < deadline {
-            if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", self.port)) {
+            if let Ok(mut stream) = TcpStream::connect_timeout(&addr, PROBE_TIMEOUT) {
+                let _ = stream.set_read_timeout(Some(PROBE_TIMEOUT));
+                let _ = stream.set_write_timeout(Some(PROBE_TIMEOUT));
                 let request = b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
                 if stream.write_all(request).is_ok() {
                     let mut buf = Vec::new();

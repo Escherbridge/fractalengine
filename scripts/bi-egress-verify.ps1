@@ -394,7 +394,13 @@ try {
     # 'Continue', but Invoke-DuckDbJson returns an empty array on unparseable
     # output, which the Assert-True "found" checks catch.
     Write-Host "  --- ENU axis order via DuckDB spatial (EGR-WKB) ---"
-    $spatialPrelude = "INSTALL spatial; LOAD spatial;"
+    # Each Invoke-DuckDbJson is a fresh duckdb process, so httpfs must be
+    # loaded here too (the share URLs are http). With `spatial` loaded,
+    # read_parquet's GeoParquet conversion would hand back `position` as an
+    # already-decoded GEOMETRY, which ST_GeomFromWKB does not take: turning
+    # the conversion off keeps the column the raw WKB BLOB the codec wrote,
+    # so this check reads the exact bytes a GIS reader parses (refine R3).
+    $spatialPrelude = "$prelude INSTALL spatial; LOAD spatial; SET enable_geoparquet_conversion=false;"
     $enuNodeRows = Invoke-DuckDbJson "$spatialPrelude SELECT ST_X(ST_GeomFromWKB(position)) AS e, ST_Y(ST_GeomFromWKB(position)) AS n, ST_Z(ST_GeomFromWKB(position)) AS u FROM read_parquet('$nodeShareUrl') WHERE node_id = '$enuCheckNodeId';"
     Write-Host "  $(($enuNodeRows | ConvertTo-Json -Compress))"
     Assert-True ($enuNodeRows.Count -eq 1) "ENU check node found in node parquet"

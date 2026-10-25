@@ -140,17 +140,13 @@ fn own_override(node_id: &str, state: &VisibilityState) -> OverrideState {
 
 /// The track id that owns `node_id`, if it names a stamp instance — either
 /// directly (its spawned marker id, `{track}::stamp::{i}`) or, once
-/// promoted, by walking the A11 alias map (`marker id -> promoted node id`)
-/// backwards from the promoted row's own id. `None` for anything else.
+/// promoted, through the A11 alias's reverse index (`promoted node id ->
+/// marker id`, `VisibilityState::promoted_stamp_marker`). `None` otherwise.
 fn owning_track_id<'a>(node_id: &'a str, state: &'a VisibilityState) -> Option<&'a str> {
     if let Some((track, _)) = crate::verse_manager::parse_stamp_marker_id(node_id) {
         return Some(track);
     }
-    let marker = state
-        .promoted_stamp_alias
-        .iter()
-        .find(|(_, promoted)| promoted.as_str() == node_id)
-        .map(|(marker, _)| marker.as_str())?;
+    let marker = state.promoted_stamp_marker.get(node_id)?;
     crate::verse_manager::parse_stamp_marker_id(marker).map(|(track, _)| track)
 }
 

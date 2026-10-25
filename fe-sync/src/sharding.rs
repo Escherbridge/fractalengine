@@ -86,8 +86,8 @@ pub enum AnswererVerdict {
     /// answerer is reported in `meta.rejected_answerers`.
     Rejected,
     /// The view has not converged (no owner pinned, or the petal's scope is
-    /// unknown locally) — its rows are kept and the answerer is reported in
-    /// `meta.unverified_answerers`.
+    /// unknown locally) — its rows are excluded (OF-7c, fail closed) and the
+    /// answerer is reported in `meta.unverified_answerers`.
     Unverified,
 }
 

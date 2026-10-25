@@ -124,6 +124,9 @@ $duckdb = '.\tools\duckdb\duckdb.exe'
 
   ```sql
   INSTALL spatial; LOAD spatial;
+  -- keep `position` as the raw WKB blob (with spatial loaded, DuckDB would
+  -- otherwise auto-convert it to GEOMETRY and ST_GeomFromWKB would not apply)
+  SET enable_geoparquet_conversion = false;
   SELECT node_id,
          ST_X(ST_GeomFromWKB(position)) AS east,
          ST_Y(ST_GeomFromWKB(position)) AS north,

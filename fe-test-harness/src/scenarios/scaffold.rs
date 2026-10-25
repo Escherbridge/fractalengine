@@ -25,7 +25,9 @@ pub struct Scaffold<'a> {
 }
 
 /// Publish one row from `author` (blob-store, then `WriteRowEntry`) and wait until every
-/// receiver reports it `Applied`.
+/// receiver reports it `Applied`. The author is never a receiver: its own row is never echoed
+/// back to its DB (sync-thread loop prevention), so such a wait could only time out — refused
+/// up front instead (refine R3).
 pub fn publish_and_await(
     author: &TestPeer,
     receivers: &[&TestPeer],
@@ -34,6 +36,13 @@ pub fn publish_and_await(
     record_id: &str,
     row: &serde_json::Value,
 ) -> Result<()> {
+    if receivers.iter().any(|receiver| std::ptr::eq(*receiver, author)) {
+        bail!(
+            "{table}/{record_id}: author {} is listed as its own receiver — own rows are never \
+             echoed back, so that wait can only time out",
+            author.name
+        );
+    }
     let content_hash = author.blob_store.add_blob(&serde_json::to_vec(row)?)?;
     author
         .sync_cmd_tx

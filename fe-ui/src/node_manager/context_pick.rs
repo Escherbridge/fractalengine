@@ -792,8 +792,7 @@ mod tests {
         index.tracks.insert("track-c".into(), track("p2"));
         let hidden_a = stamp_marker_id("track-a", 0);
 
-        // (label, active petal, hidden id — "*" hides every stamp, a bare
-        // track id (GPX-HIDE-CASCADE) hides every one of ITS stamps,
+        // (label, active petal, hidden marker id — "*" hides every stamp,
         // expected track)
         let cases = [
             (
@@ -810,24 +809,35 @@ mod tests {
             ),
             ("everything hidden: no stamp", Some("p1"), Some("*"), None),
             ("no active petal", None, None, None),
-            (
-                "hidden track (W6-5 cascade): its stamps are skipped",
-                Some("p1"),
-                Some("track-a"),
-                Some("track-b"),
-            ),
         ];
         for (label, petal, hidden, expected) in cases {
             let picked = nearest_visible_ground_stamp(&index, petal, 0.0, 0.0, |id| {
-                hidden.is_none_or(|h| {
-                    h != "*"
-                        && h != id
-                        && crate::verse_manager::parse_stamp_marker_id(id)
-                            .is_none_or(|(track, _)| track != h)
-                })
+                hidden.is_none_or(|h| h != "*" && h != id)
             });
             assert_eq!(picked.map(|(t, _)| t).as_deref(), expected, "{label}");
         }
+
+        // W6-5 GPX-HIDE-CASCADE through the PRODUCTION predicate (the same
+        // `pickable` the right-click path passes): hiding track-a's own
+        // override skips its stamps. Refine R3: this case used to encode the
+        // cascade in the test's own closure, so it could not fail if the
+        // resolver's cascade broke.
+        let nav = crate::navigation_manager::NavigationManager {
+            active_verse_id: Some("v1".into()),
+            active_fractal_id: Some("f1".into()),
+            active_petal_id: Some("p1".into()),
+            ..Default::default()
+        };
+        let mut visibility = crate::visibility::VisibilityState::default();
+        visibility.set_node_override("track-a", crate::visibility::OverrideState::Hide);
+        let picked = nearest_visible_ground_stamp(&index, Some("p1"), 0.0, 0.0, |id| {
+            crate::visibility::pickable(id, &nav, &visibility)
+        });
+        assert_eq!(
+            picked.map(|(t, _)| t).as_deref(),
+            Some("track-b"),
+            "a hidden track's stamps must be skipped by the ground-stamp tier"
+        );
     }
 
     // --- F10: right-click must agree with left-click's PathSegment tier ---

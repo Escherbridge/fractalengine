@@ -567,6 +567,17 @@ mod tests {
             rx.try_recv().is_err(),
             "a foreign correlation must not write anything"
         );
+
+        // Refine R3 (create-echo race): a `callout:` echo whose id this
+        // session never stashed (another session's create, or a replayed
+        // echo after the stash was consumed) and an empty id are no-ops —
+        // no panic, no write, no phantom geometry.
+        let mut map = DimensionCalloutMap::default();
+        bind_created_callout(&db_sender, &mut map, "node-10", "p1", Some("callout:c99"));
+        bind_created_callout(&db_sender, &mut map, "node-11", "p1", Some("callout:"));
+        assert!(rx.try_recv().is_err(), "an unknown callout id must not write anything");
+        assert!(map.node_geometry("node-10").is_none());
+        assert!(map.node_geometry("node-11").is_none());
     }
 
     #[test]

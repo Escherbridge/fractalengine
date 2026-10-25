@@ -450,7 +450,8 @@ counter). It is re-evaluated whenever the role view or the petal map changes.
   below Editor at the shard's petal scope in the requester's role view (`role_at`, §2.5), are
   discarded and listed in
   `meta.rejected_answerers`. If the requester's role view has not converged on that answerer,
-  the rows are kept and the answerer is listed in `meta.unverified_answerers`.
+  the rows are kept and the answerer is listed in `meta.unverified_answerers`. **Superseded
+  by W5s OF-7c:** an unverified answerer's rows are EXCLUDED (fail closed); it is still listed.
 - **Responder filter.** A responder answers a shard iff local ∈ hosts ∪ holders(shard), or the
   ledger has no entry for that shard. Raw and latest queries are answered iff the responder
   hosts or holds any shard of the petal, or the petal is unknown. **Hosted-only filtering never

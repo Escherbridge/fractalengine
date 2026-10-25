@@ -216,7 +216,7 @@ pub struct DistributedQueryMeta {
     #[serde(default)]
     pub rejected_answerers: Vec<String>,
     /// Unexpected answerers the requester's role view could not judge yet
-    /// (not converged) — their rows were kept.
+    /// (not converged) — their rows were EXCLUDED (OF-7c, fail closed).
     #[serde(default)]
     pub unverified_answerers: Vec<String>,
 }

@@ -391,9 +391,12 @@ pub fn run() -> Result<TestResult> {
     assign_role(&alice, &bob_did, &verse_a_scope, "editor")?;
 
     let node_bob = create_local_node(&bob, &petal_p0, "Bob's Anchor")?;
+    // Receivers exclude bob himself: the sync thread never echoes an
+    // own-author row to its DB (`handle_inbound_row_change` loop prevention),
+    // so waiting on bob's own `ReplicatedRowApplied` could only time out.
     scaffold::publish_and_await(
         &bob,
-        &non_owner,
+        &[&carol, &dave, &erin, &frank],
         &verse_a_id,
         "node",
         &node_bob,
