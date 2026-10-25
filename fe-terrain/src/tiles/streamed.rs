@@ -433,6 +433,10 @@ mod tests {
     use super::*;
     use fe_format::manifest::{BundleEntry, ElevationEncoding, TilesetMeta};
 
+    /// The full Web Mercator extent: the fixtures' y = 0 tiles sit above lat 85.0,
+    /// so a ±85.0 box would not cover them.
+    const WORLD_BOUNDS: [f64; 4] = [-85.051_128_78, -180.0, 85.051_128_78, 180.0];
+
     /// A 2-bundle index over zoom 10: bundle 0 covers x in [0,1], bundle 1
     /// covers x in [2,3] (y fixed at 0) — enough to exercise bundle_for /
     /// covers / pin / release without a real archive.
@@ -441,7 +445,7 @@ mod tests {
             schema: 1,
             tileset_id: "streamed-test".into(),
             tileset_meta: TilesetMeta {
-                bounds: [-85.0, -180.0, 85.0, 180.0],
+                bounds: WORLD_BOUNDS,
                 min_zoom: 10,
                 max_zoom: 10,
                 tile_size: 256,
@@ -504,7 +508,7 @@ mod tests {
     /// A bundle archive carrying one elevation tile at `(10, x, 0)`.
     fn bundle_archive(x: u32, byte: u8) -> Vec<u8> {
         let meta = TilesetMeta {
-            bounds: [-85.0, -180.0, 85.0, 180.0],
+            bounds: WORLD_BOUNDS,
             min_zoom: 10,
             max_zoom: 10,
             tile_size: 256,
@@ -649,7 +653,7 @@ mod tests {
     /// A sealed MONOLITHIC `HeaderDoc` (HashSeq child-0 shape) signed by `key`.
     fn sealed_monolithic_header(key: &ed25519_dalek::SigningKey, hexon_id: &str) -> HeaderDoc {
         let meta = TilesetMeta {
-            bounds: [-85.0, -180.0, 85.0, 180.0],
+            bounds: WORLD_BOUNDS,
             min_zoom: 10,
             max_zoom: 10,
             tile_size: 256,
@@ -724,7 +728,7 @@ mod tests {
         assert!(honest.resident_bytes() > 0);
 
         let meta = TilesetMeta {
-            bounds: [-85.0, -180.0, 85.0, 180.0],
+            bounds: WORLD_BOUNDS,
             min_zoom: 10,
             max_zoom: 10,
             tile_size: 256,

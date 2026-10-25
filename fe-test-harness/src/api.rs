@@ -198,6 +198,14 @@ impl ApiHarness {
             with_blob_store,
             upload_quota_bytes,
         } = options;
+        // Production DB startup initialises the HLC before any op-log write; the
+        // harness bypasses that startup, so do it once per process here.
+        static HLC: std::sync::Once = std::sync::Once::new();
+        HLC.call_once(|| {
+            if fe_database::op_log::snapshot_hlc().packed().is_none() {
+                fe_database::op_log::init_hlc(0);
+            }
+        });
         let db: Db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
             .await
             .context("in-memory SurrealDB")?;

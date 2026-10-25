@@ -423,14 +423,19 @@ async fn relay_assisted_tileset_fetch_through_a_self_hosted_iroh_relay() {
         .expect("fetch over the self-hosted relay");
     assert_eq!(children.len(), 1 + 3, "index + 3 bundles");
 
+    // Bob knew alice ONLY by her relay URL, so first contact went through the relay. These
+    // are full production endpoints on one host, so iroh may then hole-punch a direct path
+    // and retire the relay one — legitimate, and why "no direct path ever" is proven by
+    // `a_relay_only_dialer_reaches_its_peer_solely_through_the_relay` (an IP-less dialer)
+    // rather than here.
     let conn = bob
         .inner()
         .connect(alice_relay_only, iroh_blobs::ALPN)
         .await
-        .expect("connect over the relay");
+        .expect("connect from a relay-only address");
     assert!(
-        conn.paths().iter().any(|p| p.is_relay()),
-        "expected at least one relay path on a relay-only address"
+        conn.paths().iter().next().is_some(),
+        "a connection dialed from a relay-only address has a live path"
     );
 
     alice_stack.shutdown().await;

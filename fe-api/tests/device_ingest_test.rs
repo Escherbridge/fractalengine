@@ -370,6 +370,70 @@ async fn register_format_ingest_multipart_payload_then_fetch_each_blob() {
 /// distinct status and writes nothing further (table-driven: role, scope,
 /// per-route limits, unknown format, malformed id). The happy row is
 /// `register_format_ingest_multipart_payload_then_fetch_each_blob`.
+/// R5 flow: a device token (client X) ingests a payload; a dashboard viewer
+/// token of the SAME petal but another client (Y) reads every blob by id —
+/// the payload's petal confers reference reach, so a never-placeable device
+/// asset is not locked to its uploading client. A viewer scoped to another
+/// petal of the same verse still gets the uniform 404.
+#[tokio::test]
+async fn another_clients_viewer_reads_a_device_payloads_blobs_through_its_petal() {
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    serve_device_commands(&h);
+    let (verse, fractal, petal, node) = seed_chain(&h).await;
+    let other_petal = h
+        .seed_petal(&fractal, "Other Petal", None)
+        .await
+        .expect("other petal");
+    let scope = fe_database::build_scope(&verse, Some(&fractal), Some(&petal));
+    let manager = h.mint_token(&verse_scope(&verse), "manager");
+    let device_client = fe_identity::NodeKeypair::generate().to_did_key();
+    let dashboard_client = fe_identity::NodeKeypair::generate().to_did_key();
+    let device = h.mint_client_token(&scope, "editor", &device_client);
+    let dashboard = h.mint_client_token(&scope, "viewer", &dashboard_client);
+    let outsider = h.mint_token(
+        &fe_database::build_scope(&verse, Some(&fractal), Some(&other_petal)),
+        "viewer",
+    );
+
+    let (status, body) = register_format(
+        &h,
+        &manager,
+        &verse,
+        "acme.thermo/frame@1",
+        "application/octet-stream",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let file_a = b"client X frame".to_vec();
+    let (status, body) = post_payload(
+        &h,
+        &device,
+        &petal,
+        "acme.thermo/frame@1",
+        &node,
+        &[&file_a],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let asset_id = body["asset_ids"][0].as_str().expect("asset id").to_string();
+    let path = format!("/api/v1/assets/by-id/{asset_id}");
+
+    let (status, _, got) = fetch(&h, &dashboard, &path).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "another client of the petal reads it"
+    );
+    assert_eq!(got, file_a);
+
+    let (status, _, _) = fetch(&h, &outsider, &path).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a sibling petal's viewer does not"
+    );
+}
+
 #[tokio::test]
 async fn device_routes_authz_and_limits() {
     // -- Viewer ingest -> 403 ------------------------------------------------

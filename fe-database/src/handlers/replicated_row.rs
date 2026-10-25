@@ -1207,6 +1207,12 @@ async fn apply_static_row(
     let mut row: serde_json::Value = serde_json::from_slice(row_bytes)
         .map_err(|e| anyhow::anyhow!("replicated row {table}/{record_id}: bad JSON: {e}"))?;
     strip_toplevel_nulls(&mut row);
+    // The SurrealDB `id` is the AUTHOR's local record identity (a `RETURN AFTER` read-back
+    // carries it), never wire data: MERGEing it into an existing row fails, and on CREATE it
+    // would let a peer choose the local record id. Rows are keyed by `id_field` alone.
+    if let Some(object) = row.as_object_mut() {
+        object.remove("id");
+    }
 
     // A3 deny-by-default (F20 fold-in): an inbound verse manifest is the
     // only writer that could hand an unknown peer a write role — `resolve_role`

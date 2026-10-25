@@ -144,7 +144,7 @@ impl ScenarioSession {
             .ok_or_else(|| anyhow::anyhow!("ingest peer '{host_name}' missing"))?;
         let host_did = host.did();
 
-        // --- Setup the hierarchy on the ingest host (real DbCommands). ------
+        // --- Create the verse on the ingest host (real DbCommand). ----------
         host.peer.send(DbCommand::CreateVerse {
             name: script.fleet.verse_name.clone(),
         });
@@ -156,54 +156,12 @@ impl ScenarioSession {
             other => anyhow::bail!("unexpected CreateVerse result: {other:?}"),
         };
 
-        host.peer.send(DbCommand::CreateFractal {
-            verse_id: verse_id.clone(),
-            name: "Sim Fractal".into(),
-        });
-        let fractal_id = match host.peer.wait_for(
-            |r| matches!(r, DbResult::FractalCreated { .. }),
-            DB_REPLY_BUDGET,
-        )? {
-            DbResult::FractalCreated { id, .. } => id,
-            other => anyhow::bail!("unexpected CreateFractal result: {other:?}"),
-        };
-
-        host.peer.send(DbCommand::CreatePetal {
-            fractal_id,
-            name: "Sim Petal".into(),
-        });
-        let petal_id = match host.peer.wait_for(
-            |r| matches!(r, DbResult::PetalCreated { .. }),
-            DB_REPLY_BUDGET,
-        )? {
-            DbResult::PetalCreated { id, .. } => id,
-            other => anyhow::bail!("unexpected CreatePetal result: {other:?}"),
-        };
-
-        // Anchor nodes — one per fleet anchor, correlated so each reply is
-        // unambiguous. anchor name → durable node id (the reading's node_id).
-        let mut anchor_node_ids: HashMap<String, String> = HashMap::new();
-        for anchor in &script.fleet.anchors {
-            host.peer.send(DbCommand::CreateNode {
-                petal_id: petal_id.clone(),
-                name: anchor.clone(),
-                position: [0.0, 0.0, 0.0],
-                correlation_id: Some(format!("sim-anchor:{anchor}")),
-            });
-            let node_id = match host.peer.wait_for(
-                |r| {
-                    matches!(r, DbResult::NodeCreated { ref correlation_id, .. }
-                        if correlation_id.as_deref() == Some(format!("sim-anchor:{anchor}").as_str()))
-                },
-                DB_REPLY_BUDGET,
-            )? {
-                DbResult::NodeCreated { id, .. } => id,
-                other => anyhow::bail!("unexpected CreateNode result: {other:?}"),
-            };
-            anchor_node_ids.insert(anchor.clone(), node_id);
-        }
-
         // --- Open the replica on every peer (all on the shared hub doc). ----
+        // Production order (AGENTS.md §scenario-runner): the replica opens
+        // BEFORE any fractal/petal/node is created, so every hierarchy row the
+        // host writes below replicates. A row written with no replica open is
+        // never published, and a peer then defers every reading on its
+        // missing anchor node forever (RP-4 `Parent` wait).
         let ns_secret_hex = host
             .peer
             .namespace_secret(&verse_id)
@@ -260,25 +218,23 @@ impl ScenarioSession {
             .iter()
             .map(|(name, peer)| (peer.did(), name.clone()))
             .collect();
-        let node_to_anchor: HashMap<String, String> = anchor_node_ids
-            .iter()
-            .map(|(anchor, node)| (node.clone(), anchor.clone()))
-            .collect();
-        let run = Run {
+        // `petal_id` / `node_to_anchor` are filled once the hierarchy exists.
+        let mut run = Run {
             clock,
             net,
             peers,
             host_name: host_name.clone(),
             verse_id: verse_id.clone(),
-            petal_id,
+            petal_id: String::new(),
             origin_ms: script.fleet.start_ms,
             settings,
             ingested: 0,
             did_to_name,
-            node_to_anchor,
+            node_to_anchor: HashMap::new(),
         };
 
-        // The manifest must converge BEFORE the fleet starts, and every
+        // The manifest must converge BEFORE the hierarchy is written (every
+        // peer then judges the host's rows against a pinned owner), and every
         // fabric must know every peer's declaration + the mode before the
         // first shard is planned. Settling never advances the clock.
         for name in script.fleet.peers.iter().filter(|p| **p != host_name) {
@@ -296,6 +252,122 @@ impl ScenarioSession {
                 let peers_known = dump["peers"].as_object().map(|p| p.len()).unwrap_or(0);
                 Ok(peers_known == script.fleet.peers.len()
                     && dump["settings"]["mode"].as_str() == Some(run.settings.mode.as_str()))
+            })?;
+        }
+
+        // --- Build the hierarchy on the ingest host (real DbCommands). ------
+        let host = run.peer(&host_name)?;
+        host.peer.send(DbCommand::CreateFractal {
+            verse_id: verse_id.clone(),
+            name: "Sim Fractal".into(),
+        });
+        let fractal_id = match host.peer.wait_for(
+            |r| matches!(r, DbResult::FractalCreated { .. }),
+            DB_REPLY_BUDGET,
+        )? {
+            DbResult::FractalCreated { id, .. } => id,
+            other => anyhow::bail!("unexpected CreateFractal result: {other:?}"),
+        };
+
+        host.peer.send(DbCommand::CreatePetal {
+            fractal_id: fractal_id.clone(),
+            name: "Sim Petal".into(),
+        });
+        let petal_id = match host.peer.wait_for(
+            |r| matches!(r, DbResult::PetalCreated { .. }),
+            DB_REPLY_BUDGET,
+        )? {
+            DbResult::PetalCreated { id, .. } => id,
+            other => anyhow::bail!("unexpected CreatePetal result: {other:?}"),
+        };
+
+        // Anchor nodes — one per fleet anchor, correlated so each reply is
+        // unambiguous. anchor name → durable node id (the reading's node_id).
+        let mut anchor_node_ids: HashMap<String, String> = HashMap::new();
+        for anchor in &script.fleet.anchors {
+            host.peer.send(DbCommand::CreateNode {
+                petal_id: petal_id.clone(),
+                name: anchor.clone(),
+                position: [0.0, 0.0, 0.0],
+                correlation_id: Some(format!("sim-anchor:{anchor}")),
+            });
+            let node_id = match host.peer.wait_for(
+                |r| {
+                    matches!(r, DbResult::NodeCreated { ref correlation_id, .. }
+                        if correlation_id.as_deref() == Some(format!("sim-anchor:{anchor}").as_str()))
+                },
+                DB_REPLY_BUDGET,
+            )? {
+                DbResult::NodeCreated { id, .. } => id,
+                other => anyhow::bail!("unexpected CreateNode result: {other:?}"),
+            };
+            anchor_node_ids.insert(anchor.clone(), node_id);
+        }
+
+        // The harness peer's create commands write locally only (the GUI DB
+        // thread's emission seam is not in the harness), so publish the
+        // hierarchy rows like the manifest — parent order, the same shapes as
+        // fe-test-harness `scenarios/scaffold.rs` (RP-4: a joiner confines
+        // every content row to parents it already knows).
+        let now = rfc3339_from_ms(run.clock.now_ms());
+        let publish = |table: &str, record_id: &str, row: serde_json::Value| -> Result<()> {
+            let content_hash = host.peer.blob_store.add_blob(&serde_json::to_vec(&row)?)?;
+            host.peer
+                .sync_cmd_tx
+                .send(SyncCommand::WriteRowEntry {
+                    verse_id: verse_id.clone(),
+                    table: table.into(),
+                    record_id: record_id.to_string(),
+                    content_hash,
+                })
+                .map_err(|e| anyhow::anyhow!("{table} WriteRowEntry failed: {e}"))
+        };
+        publish(
+            "fractal",
+            &fractal_id,
+            serde_json::json!({
+                "fractal_id": fractal_id, "verse_id": verse_id, "owner_did": host_did,
+                "name": "Sim Fractal", "created_at": now,
+            }),
+        )?;
+        publish(
+            "petal",
+            &petal_id,
+            serde_json::json!({
+                "petal_id": petal_id, "fractal_id": fractal_id, "name": "Sim Petal",
+                "node_id": host_did, "created_at": now,
+            }),
+        )?;
+        for anchor in &script.fleet.anchors {
+            let node_id = &anchor_node_ids[anchor];
+            publish(
+                "node",
+                node_id,
+                serde_json::json!({
+                    "node_id": node_id, "petal_id": petal_id, "display_name": anchor,
+                    "position": { "type": "Point", "coordinates": [0.0, 0.0] },
+                    "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0],
+                    "created_at": now,
+                }),
+            )?;
+        }
+        run.petal_id = petal_id.clone();
+        run.node_to_anchor = anchor_node_ids
+            .iter()
+            .map(|(anchor, node)| (node.clone(), anchor.clone()))
+            .collect();
+
+        // Every peer holds every anchor node before the fleet starts, so the
+        // first reading is judged against a present parent (never a deferral
+        // race that would make the run timing-dependent).
+        let anchors = script.fleet.anchors.len();
+        for name in script.fleet.peers.iter().filter(|p| **p != host_name) {
+            run.settle_probe(&format!("anchor nodes on {name}"), || {
+                let rows = raw_query(
+                    &run.peer(name)?.peer,
+                    &format!("SELECT node_id FROM node WHERE petal_id = '{petal_id}'"),
+                )?;
+                Ok(rows.len() == anchors)
             })?;
         }
 

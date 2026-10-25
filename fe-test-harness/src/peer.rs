@@ -99,8 +99,13 @@ impl TestPeer {
 
         let local_did = keypair.to_did_key();
 
-        // DB channels
-        let (db_cmd_tx, db_cmd_rx) = crossbeam::channel::bounded::<DbCommand>(64);
+        // DB channels. The command channel takes production's capacity (fe-runtime
+        // `CHANNEL_BUFFER`): the sync thread forwards inbound rows into it with
+        // drop-on-full, so a smaller buffer drops rows production would keep. Every other
+        // channel stays bounded(64) — the DEC-C13 deadlock guard is sized against it
+        // (src/AGENTS.md §peer-model "Bounded-channel discipline").
+        let (db_cmd_tx, db_cmd_rx) =
+            crossbeam::channel::bounded::<DbCommand>(fe_runtime::channels::CHANNEL_BUFFER);
         let (db_result_tx, db_result_rx) = crossbeam::channel::bounded::<DbResult>(64);
 
         // Replication channel (bridges DB writes into sync commands) — M2/F7:

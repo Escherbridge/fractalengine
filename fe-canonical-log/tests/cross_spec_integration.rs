@@ -686,22 +686,46 @@ async fn commit_submit_ack_delta_flows_over_the_composed_verifier() {
         "the commit pipeline must route through the composed verifier's SPEC-3 check"
     );
 
-    // The SAME capability chain that gated SPEC-4 admission above also gates a SPEC-7 wire
-    // `authorize` for this operation's own author: one capability artifact, two specs.
+    // SPEC-7 wire `authorize` runs the same SPEC-3 chain walk for this author. A structural
+    // append needs a kind allowlist (§4.7), and a kind-less session request against a kind
+    // allowlist is refused (§2.4 step 8, "absence is refusal") — so the chain that admitted the
+    // kind-2 op above is refused at the wire, while the same author's unrestricted chain over
+    // the same grant is authorized.
     let wire_verifier = ChainCapabilityVerifier::for_requester(
         support::principal_of(&author),
         support::ManagerView::at_epoch(support::principal_of(&author), verse_scope, support::EPOCH),
         support::FixedClock(support::NOW_MS),
     );
+    assert!(
+        wire_verifier
+            .verify(
+                &chain_bytes,
+                Verb::Append.bit(),
+                ObjectClass::Operation.bit(),
+                &verse_scope,
+            )
+            .await
+            .is_err(),
+        "a kind-allowlisted chain never authorizes a kind-less wire session"
+    );
+    let (unrestricted_chain, _) = support::self_issued_chain_with_caveats(
+        &author,
+        &[Verb::Append, Verb::Fetch],
+        &[ObjectClass::Operation],
+        verse_scope,
+        verse_scope,
+        support::EPOCH,
+        fe_canonical_log::capability::Caveats::default(),
+    );
     let authorized = wire_verifier
         .verify(
-            &chain_bytes,
+            &unrestricted_chain,
             Verb::Append.bit(),
             ObjectClass::Operation.bit(),
             &verse_scope,
         )
         .await
-        .expect("wire authorize over the same chain");
+        .expect("wire authorize over the author's unrestricted chain");
     assert_eq!(authorized.leaf_principal, support::principal_of(&author));
 
     // A subscriber of a SIBLING petal must never receive this delta (§4.3.3): the committed

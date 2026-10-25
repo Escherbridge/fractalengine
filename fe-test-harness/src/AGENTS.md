@@ -22,7 +22,12 @@ caller-supplied `NodeKeypair`: the sim lab seeds identities so DID-ordered
 shard placement repeats run to run (fe-sim `src/AGENTS.md` §identity).
 
 **Bounded-channel discipline (DEC-C13, 2026-10-09).** Every peer channel is
-bounded(64), and the DB/sync threads' result/event sends to the driver are
+bounded(64) EXCEPT the DB command channel, which takes production's
+`fe_runtime::channels::CHANNEL_BUFFER` (256; R5 sweep 2026-10-25): the sync
+thread forwards inbound rows into it with drop-on-full, and since RP-4's
+inbound gate made each apply slower, a 64 buffer dropped ~20% of a 320-row
+mirror burst that production's 256 keeps (fe-sim's deadlock guard then never
+converged). The DB/sync threads' result/event sends to the driver are
 mostly BLOCKING — correct for awaited replies (the driver is in `wait_for`),
 deadlock-prone for unsolicited output nobody waits for. Two rules:
 

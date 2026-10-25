@@ -15,6 +15,9 @@ use fractalengine_test_harness::api::{body_json_lenient, ApiHarness, SeededHiera
 fn serve_db_thread(h: &ApiHarness) {
     let rx = h.api_command_receiver();
     let db = (*h.db).clone();
+    // The harness node owns the seeded verse, so the DB thread's node-role cap
+    // (role propagation AC-46) never lowers the API caller here.
+    let local_did = h.did();
     let blob_store = h
         .state
         .blob_store
@@ -37,7 +40,7 @@ fn serve_db_thread(h: &ApiHarness) {
                 } => rt.block_on(
                     fe_database::handlers::petal_render_distance::set_petal_render_distance_reply(
                         &db,
-                        "local-did",
+                        &local_did,
                         petal_id,
                         render_distance,
                         auth,
@@ -58,6 +61,9 @@ fn serve_db_thread(h: &ApiHarness) {
                 ),
                 other => DbResult::Error(format!("not serviced by this test: {other:?}")),
             };
+            if let DbResult::RequestFailed { error, .. } = &reply {
+                eprintln!("DB thread refused the request: {error}");
+            }
             pending.try_deliver(reply);
         }
     });

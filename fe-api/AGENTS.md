@@ -347,8 +347,13 @@ token, fail-closed on any lookup failure:
    peer-replicated rows), equals `claims.sub` (a **node-level** upload: every
    token of the node shares it), or equals the token's `owner_key` (A5).
 2. **Reference scan** (legacy rows, assets shared into other petals): EVERY
-   referencing node's petal (capped: 10 000 rows / 256 distinct petals,
-   fail-closed beyond) — any in scope → `Covered`; all outside → `Foreign`.
+   referencing node's petal AND every referencing `device_payload` row's
+   petal (capped: 10 000 rows per scan / 256 distinct petals, fail-closed
+   beyond) — any in scope → `Covered`; all outside → `Foreign`. The payload
+   leg (R5 sweep 2026-10-25) exists because a device-payload asset is never
+   placeable: without it, a dashboard token of another client could list a
+   payload (Viewer+) yet never fetch its blobs. Test:
+   `another_clients_viewer_reads_a_device_payloads_blobs_through_its_petal`.
 3. **Unplaced**: an owned row whose anchor is not covered, or that belongs
    to another client → `Foreign`; a legacy row (no owner/petal) →
    `Unreferenced` (unchanged behaviour).

@@ -50,7 +50,7 @@ async fn seed_hierarchy(db: &Db, verse_id: &str, fractal_id: &str, petal_id: &st
          CREATE fractal CONTENT { fractal_id: $fid, verse_id: $vid, owner_did: 'did:key:z6MkOwner', \
          name: 'f', created_at: '2026-10-14T00:00:00Z' };
          CREATE petal CONTENT { petal_id: $pid, fractal_id: $fid, name: 'p', \
-         created_at: '2026-10-14T00:00:00Z' };
+         node_id: 'did:key:z6MkOwner', created_at: '2026-10-14T00:00:00Z' };
          CREATE node CONTENT { node_id: $nid, petal_id: $pid, display_name: 'anchor', \
          position: <geometry<point>> [0.0, 0.0], elevation: 0.0, rotation: [0.0, 0.0, 0.0, 1.0], \
          scale: [1.0, 1.0, 1.0], interactive: false, created_at: '2026-10-14T00:00:00Z' };",
@@ -1519,7 +1519,7 @@ async fn inbound_reading_linking_a_foreign_petal_payload_is_denied() {
     seed_hierarchy(&db, VERSE, FRACTAL, PETAL, "node-a").await;
     db.query(
         "CREATE petal CONTENT { petal_id: 'petal-3', fractal_id: $fid, name: 'p3', \
-         created_at: '2026-10-14T00:00:00Z' }",
+         node_id: 'did:key:z6MkOwner', created_at: '2026-10-14T00:00:00Z' }",
     )
     .bind(("fid", FRACTAL.to_string()))
     .await

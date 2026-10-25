@@ -533,14 +533,12 @@ mod tests {
             ("10/0/1".to_string(), bad.clone()),
         ];
         let bytes = tileset("tamper", &tiles);
-        let mut sealed = seal(&bytes, &key).expect("seal");
+        let sealed = seal(&bytes, &key).expect("seal");
 
-        // Flip one byte inside the second tile's (Stored, uncompressed) bytes.
-        let pos = sealed
-            .windows(bad.len())
-            .position(|w| w == bad.as_slice())
-            .expect("tile bytes must appear verbatim (Stored compression)");
-        sealed[pos] ^= 0xFF;
+        // Flip one byte of the second tile, re-zipped with a fresh CRC (a real tamperer).
+        let sealed = crate::test_support::tamper_member(&sealed, |name, _| {
+            name == "terrain/tiles/10/0/1.png"
+        });
 
         let path = temp_path("tamper");
         std::fs::write(&path, &sealed).unwrap();
@@ -632,16 +630,11 @@ mod tests {
             "an out-of-range seq is just absent"
         );
 
-        // Tamper with chunk 1's distinctive tile bytes (all 0x01) directly in
-        // the outer container; the signed index still commits to the
-        // original hash, so only chunk 1's read is refused.
-        let marker = vec![1u8; 32];
-        let pos = sealed
-            .windows(marker.len())
-            .position(|w| w == marker.as_slice())
-            .expect("chunk 1 tile bytes present");
-        let mut tampered = sealed.clone();
-        tampered[pos] ^= 0xFF;
+        // Tamper with chunk 1 in the outer container (fresh CRC); the signed
+        // index still commits to the original hash, so only chunk 1's read is
+        // refused.
+        let tampered =
+            crate::test_support::tamper_member(&sealed, |name, _| name == "chunks/1.hexon");
         let tampered_path = temp_path("container_tampered");
         std::fs::write(&tampered_path, &tampered).unwrap();
         let tampered_index = HexonArchiveIndex::open(&tampered_path).expect("open tampered");

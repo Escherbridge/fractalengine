@@ -78,6 +78,34 @@ fn tileset_bytes(id: &str, tiles: &[(String, Vec<u8>)]) -> Vec<u8> {
     HexonArchive::export_tileset(manifest(id), &meta, tiles, &[], None).expect("export_tileset")
 }
 
+/// Flip the first byte of member `path` and re-zip it with a FRESH CRC, raw-copying every
+/// other member in order — a real tamperer recomputes the CRC, so only the signed digest
+/// can catch it (an in-place flip trips zip's own CRC check first).
+fn rezip_with_tampered_member(bytes: &[u8], path: &str) -> Vec<u8> {
+    use std::io::{Cursor, Read, Write};
+    let mut source = zip::ZipArchive::new(Cursor::new(bytes)).expect("source zip");
+    let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for index in 0..source.len() {
+        let (name, method, mut data) = {
+            let mut file = source.by_index(index).expect("member");
+            let mut data = Vec::new();
+            file.read_to_end(&mut data).expect("member bytes");
+            (file.name().to_string(), file.compression(), data)
+        };
+        if name == path {
+            data[0] ^= 0xFF;
+            let options = zip::write::SimpleFileOptions::default().compression_method(method);
+            out.start_file(name.as_str(), options)
+                .expect("start member");
+            out.write_all(&data).expect("write member");
+        } else {
+            out.raw_copy_file(source.by_index_raw(index).expect("raw member"))
+                .expect("raw copy");
+        }
+    }
+    out.finish().expect("finish zip").into_inner()
+}
+
 // ---------------------------------------------------------------------------
 // install_tileset: integrity + path safety
 // ---------------------------------------------------------------------------
@@ -91,12 +119,8 @@ fn tampered_sealed_tileset_install_is_refused_and_store_is_unchanged() {
 
     let marker = vec![7u8; 256];
     let bytes = tileset_bytes("tamper-install", &[("10/1/2".into(), marker.clone())]);
-    let mut sealed = seal(&bytes, &key).expect("seal");
-    let pos = sealed
-        .windows(marker.len())
-        .position(|w| w == marker.as_slice())
-        .expect("tile bytes must appear verbatim (Stored compression)");
-    sealed[pos] ^= 0xFF;
+    let sealed = seal(&bytes, &key).expect("seal");
+    let sealed = rezip_with_tampered_member(&sealed, "terrain/tiles/10/1/2.png");
 
     let err = store
         .install_tileset(&sealed)

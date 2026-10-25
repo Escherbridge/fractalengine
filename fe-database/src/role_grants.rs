@@ -78,6 +78,16 @@ pub fn verse_of_scope(scope: &str) -> Option<String> {
     if is_interim_authority_verse_id(&parts.verse_id) {
         return None;
     }
+    // `parse_scope` folds an unknown trailing segment (e.g. an interim `-RESOURCE#<hex>`
+    // key) into the last id; no hierarchy id contains `#`, so such a scope is not ours.
+    let ids = [
+        Some(&parts.verse_id),
+        parts.fractal_id.as_ref(),
+        parts.petal_id.as_ref(),
+    ];
+    if ids.into_iter().flatten().any(|id| id.contains('#')) {
+        return None;
+    }
     Some(parts.verse_id)
 }
 

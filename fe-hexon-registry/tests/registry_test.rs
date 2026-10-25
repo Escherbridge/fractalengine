@@ -637,7 +637,8 @@ async fn asset_and_download_routes_carry_nosniff_and_attachment_headers() {
         .unwrap();
     assert_protected(&asset_resp);
     let body = asset_resp.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(body.as_ref(), fixtures::ALPINE_V1_BLOB);
+    // Unversioned URIs resolve to the latest version (src/index.rs `resolve`).
+    assert_eq!(body.as_ref(), fixtures::ALPINE_V12_BLOB);
 
     let download_resp = router
         .clone()

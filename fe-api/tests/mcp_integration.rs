@@ -101,6 +101,8 @@ struct Model {
     assets: Vec<(String, String)>, // (asset_id, content_hash)
     /// asset_id -> (owner_did, anchor petal_id), as `CreateAsset` writes them.
     asset_owners: HashMap<String, (Option<String>, Option<String>)>,
+    /// asset_id -> content_type, as `CreateAsset` writes it (place_asset's GLB gate reads it).
+    asset_types: HashMap<String, String>,
     terrain: HashMap<String, serde_json::Value>, // petal_id -> stored terrain
     log: Vec<serde_json::Value>,
 }
@@ -475,6 +477,7 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
             m.assets.push((asset_id.clone(), content_hash.clone()));
             m.asset_owners
                 .insert(asset_id.clone(), (owner_did, petal_id));
+            m.asset_types.insert(asset_id.clone(), content_type);
             DbResult::AssetCreated {
                 asset_id,
                 content_hash,
@@ -590,6 +593,18 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
                         Some(json!({ "asset_id": id, "owner_did": owner, "petal_id": petal }))
                     })
                     .collect();
+                return DbResult::QueryResult {
+                    data,
+                    correlation_id,
+                };
+            }
+            // upload.rs::place_asset_core: the asset's content_type (GLB gate).
+            if let Some(aid) = vars.get("aid").and_then(|v| v.as_str()) {
+                let data = m
+                    .asset_types
+                    .get(aid)
+                    .map(|ct| vec![json!({ "content_type": ct })])
+                    .unwrap_or_default();
                 return DbResult::QueryResult {
                     data,
                     correlation_id,
@@ -1971,7 +1986,8 @@ async fn every_scoped_tool_rejects_a_foreign_scope_token() {
             spec.name
         );
     }
-    assert_eq!(scoped, 23, "every non-Global/None row is scope-checked");
+    // 23 + set_petal_render_distance (S6) + the four CDL-SPEC10 device tools.
+    assert_eq!(scoped, 28, "every non-Global/None row is scope-checked");
     assert!(
         model.lock().unwrap().log.is_empty(),
         "no denied call may write"
@@ -2294,8 +2310,8 @@ async fn place_asset_rejects_a_foreign_scope_asset() {
     );
     assert_eq!(
         model.lock().unwrap().logged("CreateNodeWithAsset").len(),
-        placed_before + 1, // only the unknown id reached the DB (which refused it)
-        "the foreign asset never reached CreateNodeWithAsset"
+        placed_before, // the unknown id is refused at the API (no asset row), never sent
+        "neither the foreign nor the unknown asset reached CreateNodeWithAsset"
     );
 
     // Own flow: a fresh upload places, and placing it again (now referenced

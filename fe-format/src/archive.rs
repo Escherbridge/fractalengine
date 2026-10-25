@@ -889,12 +889,9 @@ mod import_integrity_tests {
             None,
         )
         .unwrap();
-        let mut sealed = seal(&bytes, &key).expect("seal");
-        let pos = sealed
-            .windows(marker.len())
-            .position(|w| w == marker.as_slice())
-            .expect("gpx bytes must appear verbatim");
-        sealed[pos] ^= 0xFF;
+        let sealed = seal(&bytes, &key).expect("seal");
+        // The GPX member is deflated, so tamper its decoded bytes and re-zip (fresh CRC).
+        let sealed = crate::test_support::tamper_member(&sealed, |_, data| data == marker);
 
         let err = HexonArchive::import(&sealed).expect_err("tampered sealed archive is refused");
         assert!(

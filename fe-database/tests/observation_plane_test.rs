@@ -372,7 +372,7 @@ async fn seed_legacy(db: &Db) {
          CREATE fractal CONTENT { fractal_id: $fid, verse_id: $vid, owner_did: 'did:key:z6MkOwner', \
          name: 'f', created_at: '2026-10-14T00:00:00Z' };
          CREATE petal CONTENT { petal_id: $pid, fractal_id: $fid, name: 'p', \
-         created_at: '2026-10-14T00:00:00Z' };",
+         node_id: 'did:key:z6MkOwner', created_at: '2026-10-14T00:00:00Z' };",
     )
     .bind(("vid", VERSE_ID.to_string()))
     .bind(("fid", FRACTAL_ID.to_string()))
@@ -1602,9 +1602,10 @@ fn an_oversized_window_splits_by_anchor_then_hlc_and_a_single_oversized_observat
             .expect("seal_closed_windows must terminate, not hang")
             .expect("seal closed windows");
 
-        // Every member ends sealed or uncovered; no member is in two batches,
-        // and the batches' member sets are disjoint (each batch here is a
-        // singleton — the split path never re-merges groups).
+        // Every member ends sealed or uncovered and no member is in two batches.
+        // `split_group` halves by anchor HASH order, so a half holding two small
+        // anchors that fits the cap legitimately seals as one 2-member batch —
+        // batch sizes depend on hash order; only the sealed total is invariant.
         assert_eq!(report.uncovered.len(), 1, "{:?}", report.uncovered);
         assert_eq!(report.uncovered[0].table, ObservationTable::Reading);
         assert_eq!(report.uncovered[0].row_id, huge);
@@ -1612,9 +1613,11 @@ fn an_oversized_window_splits_by_anchor_then_hlc_and_a_single_oversized_observat
             report.uncovered[0].reason,
             "a single observation exceeds the sealed artifact bound"
         );
-        for batch in &report.batches {
-            assert_eq!(batch.count, 1, "{:?}", report.batches);
-        }
+        assert!(
+            report.batches.iter().all(|b| b.count >= 1),
+            "{:?}",
+            report.batches
+        );
         assert_eq!(
             report.batches.iter().map(|b| b.count).sum::<u64>(),
             3,

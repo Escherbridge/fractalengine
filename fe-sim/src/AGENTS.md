@@ -183,6 +183,17 @@ walks it: advance the clock to each action, apply/ingest/query, `step()`.
   be delivered. The clock does not move during it. Then two barriers: the
   manifest row on every joiner, and every fabric knowing every `__peers`
   declaration + the mode (placement sees only the peers it knows).
+- **Hierarchy after the replica (R5, 2026-10-25)**: the fractal, petal and
+  anchor nodes are created on the host AFTER the replicas open and the
+  manifest barriers pass — production order (the GUI opens the verse replica
+  on navigation, before anything is created in it). The harness peer's
+  create commands write locally only, so the driver then publishes the
+  fractal → petal → anchor rows itself (like the manifest; same shapes as
+  fe-test-harness `scenarios/scaffold.rs`). Since RP-4 a joiner defers every
+  inbound reading on a missing anchor node (`Parent` wait) — the old setup
+  never published the hierarchy and left every joiner at 0 readings. A third
+  barrier waits until every joiner holds every anchor node, so the first
+  reading never races its parent.
 - **Write barrier per tick** (`settle_writes`): after the ingest reply, wait
   until the hub doc holds every ingested reading. The DB→bridge→sync leg is
   async; without this, a row could hit the hub after the clock moved on —
@@ -241,8 +252,9 @@ one-shot runner cannot drift (pinned by
 status snapshot between every call reproduce the one-shot fingerprint).
 
 - **Lifecycle.** `start(script, root_dir)` = validate → take
-  `SCENARIO_RUN_LOCK` → install the HLC source → spawn peers, hierarchy,
-  replica opens, manifest, membership barriers → merge the action list
+  `SCENARIO_RUN_LOCK` → install the HLC source → spawn peers, create the
+  verse, replica opens, manifest, membership barriers, hierarchy + anchor
+  barrier → merge the action list
   (owned `Action`s, cursor 0). `step(n)` executes the next `n` actions with
   part A's exact barriers (`execute` is the old loop body verbatim).
   `inject_fault(event)` applies a fault NOW behind the same `settle_writes`

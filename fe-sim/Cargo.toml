@@ -27,6 +27,9 @@ chrono = "0.4"
 ulid = { workspace = true }
 tempfile = "3"
 
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
+
 [[bin]]
 name = "fe-sim"
 path = "src/main.rs"

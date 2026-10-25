@@ -111,6 +111,35 @@ pub fn self_issued_chain(
     epoch_scope: Scope,
     scope_epoch: u64,
 ) -> (Vec<u8>, Hash32) {
+    // SPEC-3 §4.7: a structural append (kinds 2-4) needs an explicit kind allowlist;
+    // every named SPEC-1/SPEC-10 kind this suite appends is listed.
+    let caveats = Caveats {
+        allowed_operation_kinds: Some(vec![1, 2, 3, 4, 5]),
+        ..Caveats::default()
+    };
+    self_issued_chain_with_caveats(
+        author,
+        verbs,
+        classes,
+        grant_scope,
+        epoch_scope,
+        scope_epoch,
+        caveats,
+    )
+}
+
+/// [`self_issued_chain`] with explicit caveats (e.g. `Caveats::default()` for a chain that a
+/// kind-less request such as a wire `authorize` can satisfy — SPEC-3 §2.4 step 8 refuses a
+/// request naming no kind against a kind allowlist).
+pub fn self_issued_chain_with_caveats(
+    author: &SigningKey,
+    verbs: &[Verb],
+    classes: &[ObjectClass],
+    grant_scope: Scope,
+    epoch_scope: Scope,
+    scope_epoch: u64,
+    caveats: Caveats,
+) -> (Vec<u8>, Hash32) {
     let principal = principal_of(author);
     let certificate = UnsignedCertificate {
         capability_version: CAPABILITY_VERSION,
@@ -126,7 +155,7 @@ pub fn self_issued_chain(
         not_before_ms: NOT_BEFORE_MS,
         not_after_ms: NOT_BEFORE_MS + ONE_HOUR_MS,
         delegation_depth: 0,
-        caveats: Caveats::default(),
+        caveats,
     }
     .sign(author)
     .expect("sign root certificate");

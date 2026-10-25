@@ -784,6 +784,9 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
             ("key", "scope, peer_did, grantor_did", " UNIQUE"),
             ("verse_grantor", "verse_id, grantor_did", ""),
             ("verse", "verse_id", ""),
+            // Every live-version lookup/delete is `WHERE statement_key = $k`; unindexed it
+            // full-scans the held table per inbound statement (quadratic under a flood).
+            ("statement", "statement_key", ""),
         ] {
             db.query(format!(
                 "DEFINE INDEX IF NOT EXISTS idx_{table}_{suffix} ON TABLE {table} FIELDS {fields}{unique}"

@@ -111,6 +111,25 @@ pub async fn asset_reach(state: &ApiState, claims: &ApiClaims, asset_ids: &[Stri
         .iter()
         .filter_map(|row| field(row, "petal_id"))
         .collect();
+    // A device payload references its blobs the way a node references its model: the
+    // payload's petal confers reference reach (its Viewer+ list already names these ids),
+    // so another client's token can read a device's blobs — never placeable, they would
+    // otherwise stay own-client-only forever (AGENTS.md §assets).
+    let payload_sql = format!(
+        "SELECT petal_id FROM device_payload WHERE asset_ids CONTAINSANY $aids \
+         LIMIT {MAX_ASSET_REFERENCE_ROWS}"
+    );
+    let Some(payload_rows) = crate::gis::run_select(
+        state,
+        &payload_sql,
+        vec![("aids".to_string(), serde_json::json!(asset_ids))],
+    )
+    .await
+    else {
+        tracing::warn!("asset payload-reference lookup failed; denying");
+        return AssetReach::Foreign;
+    };
+    petals.extend(payload_rows.iter().filter_map(|row| field(row, "petal_id")));
     petals.sort_unstable();
     petals.dedup();
     if !petals.is_empty() {

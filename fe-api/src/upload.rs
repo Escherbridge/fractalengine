@@ -505,18 +505,23 @@ pub async fn place_asset_core(
     // opaque bytes, R5) protects the renderer by never becoming a `SceneRoot`
     // — refused here, the one place both REST `create_node` and MCP
     // `place_asset` funnel through, rather than duplicated at each caller.
-    let content_type: Option<String> = crate::gis::run_select(
+    let asset_row = crate::gis::run_select(
         state,
         "SELECT content_type FROM asset WHERE asset_id = $aid LIMIT 1",
         vec![("aid".to_string(), serde_json::json!(asset_id))],
     )
     .await
-    .and_then(|rows| rows.first().cloned())
-    .and_then(|row| {
-        row.get("content_type")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-    });
+    .and_then(|rows| rows.first().cloned());
+    // A missing row (or a failed lookup) answers exactly like a foreign id: naming
+    // "not a GLB" here would tell a caller the id does not exist (existence oracle).
+    let Some(asset_row) = asset_row else {
+        tracing::warn!(asset_id, petal_id, "place_asset refused: no such asset");
+        return Err(UNKNOWN_ASSET.to_string());
+    };
+    let content_type = asset_row
+        .get("content_type")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
     if content_type.as_deref() != Some(GLB_CONTENT_TYPE) {
         tracing::warn!(
             asset_id,

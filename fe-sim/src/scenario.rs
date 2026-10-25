@@ -1095,8 +1095,19 @@ mod tests {
     /// transport loss. Counts, min/max, and raw values compare exactly.
     const EPS: f64 = 1e-9;
 
+    /// Opt-in test logging: silent unless `RUST_LOG` is set (triage aid).
+    pub(crate) fn init_test_tracing() {
+        if std::env::var_os("RUST_LOG").is_some() {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+                .with_test_writer()
+                .try_init();
+        }
+    }
+
     /// Run `script` twice in fresh directories (the repeat-run pattern).
     fn run_twice(script: &ScenarioScript) -> (ScenarioOutcome, ScenarioOutcome) {
+        init_test_tracing();
         let dir_a = tempfile::tempdir().expect("run A tempdir");
         let a = run_scenario(script, dir_a.path()).expect("scenario run A");
         let dir_b = tempfile::tempdir().expect("run B tempdir");
@@ -1735,6 +1746,7 @@ mod tests {
     /// message naming the drain — a loud CI failure, never a silent hang.
     #[test]
     fn mirror_replica_retaining_hundreds_of_rows_between_barriers_never_deadlocks() {
+        init_test_tracing();
         const DEADLOCK_BUDGET: Duration = Duration::from_secs(300);
         let script = ScenarioScript::parse(
             r#"{

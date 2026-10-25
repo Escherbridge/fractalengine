@@ -86,17 +86,24 @@ impl Harness {
         let dir = tempfile::tempdir().expect("temp dir");
         let db_path = dir.path().join("fe.db").to_string_lossy().to_string();
 
-        let db_thread = spawn_db_thread_shared(
-            cmd_rx,
-            res_tx,
-            blob_store,
-            None,
-            None,
-            None,
-            None,
-            Some(db_path),
-            None,
-        )
+        // `spawn_db_thread_shared` refuses to run inside a Tokio runtime (it owns its own);
+        // these tests are `#[tokio::test]`, so spawn it from a plain OS thread.
+        let db_thread = std::thread::spawn(move || {
+            spawn_db_thread_shared(
+                cmd_rx,
+                res_tx,
+                blob_store,
+                None,
+                None,
+                None,
+                None,
+                Some(db_path),
+                None,
+            )
+            .map_err(|e| format!("{e:?}"))
+        })
+        .join()
+        .expect("db spawner thread")
         .expect("spawn db thread");
 
         let h = Harness {

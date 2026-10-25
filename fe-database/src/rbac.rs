@@ -82,9 +82,14 @@ pub async fn require_manage_role(
 /// Check whether `peer_did` may write at `scope` (fe-policy engine decision).
 /// Returns Ok(role) on success, Err on permission denied or DB error.
 pub async fn require_write_role(db: &Db, peer_did: &str, scope: &str) -> anyhow::Result<RoleId> {
-    let role = get_role(db, peer_did, scope).await?;
-    match evaluate_write(peer_did, &role.0, scope) {
-        Decision::Allow => Ok(role),
+    // Resolved like `require_manage_role` (verse owner → scope chain → default_access); an
+    // exact-scope `role` lookup denied the verse's own creator once R7 dropped the implicit
+    // petal-owner row.
+    let role = crate::role_manager::resolve_role(db, peer_did, scope)
+        .await?
+        .to_string();
+    match evaluate_write(peer_did, &role, scope) {
+        Decision::Allow => Ok(RoleId(role)),
         Decision::Deny(reason) => anyhow::bail!("permission denied: {reason}"),
     }
 }

@@ -2117,7 +2117,9 @@ mod tests {
             ("10/0/1".to_string(), vec![9u8, 10, 11, 12, 13, 14, 15, 16]),
         ];
         let meta = fe_format::manifest::TilesetMeta {
-            bounds: [45.0, -122.0, 46.0, -121.0],
+            // The real extent of tiles 10/0/0 and 10/0/1 (Web Mercator top-left corner):
+            // a streamed source answers `covers` from these bounds.
+            bounds: [84.9, -180.0, 85.051_128_78, -179.6],
             min_zoom: 10,
             max_zoom: 10,
             tile_size: 256,
@@ -2218,6 +2220,8 @@ mod tests {
         let victim_path = store.base_dir().join("victim.hexon");
         let before = std::fs::read(&victim_path).unwrap();
         let registry = fe_terrain::tiles::TilesetRegistry::new(store);
+        // Startup indexing, as the host does before serving (`load_all`).
+        assert_eq!(registry.load_all(), vec!["victim".to_string()]);
 
         let bundles = fe_terrain::tiles::bundle_tileset(
             &synthetic_tileset("victim"),
@@ -3826,7 +3830,12 @@ mod tests {
             !owner_pending,
             "the petal-pinned publisher's header resolves"
         );
-        assert_eq!(owner_recorded, Some(owner_did.clone()));
+        // OF-5: petal pins apply at resolve time only and are never recorded into the
+        // node-global TOFU map (another petal's Editor could otherwise poison it).
+        assert_eq!(
+            owner_recorded, None,
+            "a petal-authored pin is never recorded"
+        );
     }
 
     /// RP-4b step 3 (T25): with nothing installed or authored, the first
@@ -3881,13 +3890,16 @@ mod tests {
         );
     }
 
-    /// RP-4b (AC-47 precedence): a petal-authored pin REPLACES an earlier
-    /// first-contact TOFU pin — the petal's publisher resolves even though
-    /// TOFU recorded someone else — and the old TOFU publisher can no longer
-    /// override it.
+    /// RP-4b (AC-47 precedence, OF-5 semantics): a petal-authored pin OVERRIDES
+    /// an earlier first-contact TOFU pin at resolve time — the petal's publisher
+    /// resolves even though TOFU recorded someone else, and the old TOFU
+    /// publisher cannot override it while the petal pin is active — but the
+    /// recorded TOFU entry itself is left untouched (petal pins are never
+    /// recorded).
     #[test]
     fn a_petal_authored_pin_overrides_an_earlier_first_contact_tofu_pin() {
         let tofu = ed25519_dalek::SigningKey::from_bytes(&[95u8; 32]);
+        let tofu_did = fe_format::verifying_key_to_did(&tofu.verifying_key());
         let authored = ed25519_dalek::SigningKey::from_bytes(&[96u8; 32]);
         let authored_did = fe_format::verifying_key_to_did(&authored.verifying_key());
         let tileset_id = "rp4b-precedence";
@@ -3922,8 +3934,8 @@ mod tests {
                 .resource::<KnownTilesetPublishers>()
                 .0
                 .get(tileset_id),
-            Some(&authored_did),
-            "the petal-authored pin replaced the recorded TOFU pin"
+            Some(&tofu_did),
+            "OF-5: the petal-authored pin decides resolution but never rewrites the TOFU map"
         );
 
         re_pend(&mut app, tileset_id);
