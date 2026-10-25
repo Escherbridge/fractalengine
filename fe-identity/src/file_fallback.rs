@@ -11,29 +11,23 @@ fn key_file_path(dir: &Path, account: &str) -> PathBuf {
     dir.join(format!("{account}.key"))
 }
 
-/// Load the seed from `<dir>/<account>.key`, or generate and securely persist
-/// a new one if the file does not exist yet. Any OTHER I/O error (permission
-/// denied, a corrupt/truncated file, a lost creation race) is returned —
-/// this tier is meant to be durable, so a failure must be visible to the
-/// caller (which falls through to the loud-ephemeral path) rather than
-/// silently minting or exposing key material.
-pub fn load_or_generate(dir: &Path, account: &str) -> anyhow::Result<NodeKeypair> {
-    let path = key_file_path(dir, account);
-    match std::fs::read_to_string(&path) {
+/// Try to read a seed from `path`. `Ok(None)` means the file does not exist
+/// yet (the only case callers should treat as "generate a fresh one");
+/// anything else wrong with an EXISTING file (corrupt content, a real I/O
+/// error) is `Err` — this tier must never silently treat a damaged file as
+/// absent and mint a second, different identity on top of it.
+fn try_read_seed(path: &Path) -> anyhow::Result<Option<NodeKeypair>> {
+    match std::fs::read_to_string(path) {
         Ok(hex_str) => {
-            warn_if_permissions_loosened(&path);
+            warn_if_permissions_loosened(path);
             let bytes = hex::decode(hex_str.trim())
                 .map_err(|e| anyhow::anyhow!("corrupt file-tier key at {}: {e}", path.display()))?;
             let arr: [u8; 32] = bytes.try_into().map_err(|_| {
                 anyhow::anyhow!("file-tier key at {} is not 32 bytes", path.display())
             })?;
-            NodeKeypair::from_bytes(&arr)
+            Ok(Some(NodeKeypair::from_bytes(&arr)?))
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let kp = NodeKeypair::generate();
-            create_key_file_securely(&path, &kp)?;
-            Ok(kp)
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(anyhow::anyhow!(
             "could not read file-tier key at {}: {e}",
             path.display()
@@ -41,12 +35,68 @@ pub fn load_or_generate(dir: &Path, account: &str) -> anyhow::Result<NodeKeypair
     }
 }
 
+/// Load the seed from `<dir>/<account>.key`, or generate and securely
+/// persist a new one if the file does not exist yet.
+pub fn load_or_generate(dir: &Path, account: &str) -> anyhow::Result<NodeKeypair> {
+    let path = key_file_path(dir, account);
+    match try_read_seed(&path)? {
+        Some(kp) => Ok(kp),
+        None => {
+            let kp = NodeKeypair::generate();
+            create_key_file_securely(&path, &kp)?;
+            Ok(kp)
+        }
+    }
+}
+
+/// Like [`load_or_generate`], but migrates a legacy key file (the
+/// pre-per-user-dir, CWD-relative `data/identity/` location) into `dir`
+/// first. `dir` is authoritative: if it already holds a key, the legacy
+/// path is never consulted. Otherwise, a key found at `legacy_dir` is
+/// re-stored securely at `dir` and the legacy file is deleted — read-only
+/// at the old path (we never write there), one-shot (nothing to migrate on
+/// the next launch once this succeeds). A crash between the new write and
+/// the old delete leaves the legacy file in place, which is harmless: the
+/// next launch finds `dir`'s file via `try_read_seed` and returns without
+/// touching `legacy_dir` again; the stale copy can be cleaned up by hand.
+pub fn load_or_generate_migrating(
+    dir: &Path,
+    legacy_dir: &Path,
+    account: &str,
+) -> anyhow::Result<NodeKeypair> {
+    let path = key_file_path(dir, account);
+    if let Some(kp) = try_read_seed(&path)? {
+        return Ok(kp);
+    }
+    let legacy_path = key_file_path(legacy_dir, account);
+    if let Some(kp) = try_read_seed(&legacy_path)? {
+        create_key_file_securely(&path, &kp)?;
+        match std::fs::remove_file(&legacy_path) {
+            Ok(()) => tracing::info!(
+                from = %legacy_path.display(),
+                to = %path.display(),
+                "migrated the file-tier identity to the per-user data directory"
+            ),
+            Err(e) => tracing::warn!(
+                path = %legacy_path.display(),
+                error = %e,
+                "migrated identity to the new location but could not remove the legacy file"
+            ),
+        }
+        return Ok(kp);
+    }
+    let kp = NodeKeypair::generate();
+    create_key_file_securely(&path, &kp)?;
+    Ok(kp)
+}
+
 /// Create `path` holding the seed hex as its only content, with permissions
-/// restricted AT creation — never a separate `chmod` after the fact, so
-/// there is no window where the key sits world-readable. `create_new` makes
-/// this atomic: a concurrent first-run race (two launches racing to create
-/// the same file) loses with an `AlreadyExists` error instead of silently
-/// reopening or truncating whatever the winner wrote.
+/// restricted AT creation — never a separate step after the fact, so there
+/// is no window where the key sits more broadly readable than intended.
+/// `create_new` makes this atomic: a concurrent first-run race (two
+/// launches racing to create the same file) loses with an `AlreadyExists`
+/// error instead of silently reopening or truncating whatever the winner
+/// wrote.
 #[cfg(unix)]
 fn create_key_file_securely(path: &Path, kp: &NodeKeypair) -> anyhow::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -65,13 +115,41 @@ fn create_key_file_securely(path: &Path, kp: &NodeKeypair) -> anyhow::Result<()>
     Ok(())
 }
 
-/// Windows has no POSIX "other" principal to leak to — the app-data
-/// directory a caller passes in already carries a per-user NTFS ACL
-/// inherited from the user profile, so no extra ACL tightening is
-/// attempted here (ACL APIs are also unavailable through `std`). Creation
-/// is still atomic (`create_new`) and every I/O error propagates — a failed
-/// create is a hard failure here too, never a silent reopen.
-#[cfg(not(unix))]
+/// Windows (our primary platform): `create_new` still makes creation
+/// atomic, but — unlike unix — there is no mode bit to set in the same
+/// `open()` call, and we do NOT rely on whatever ACL the parent directory's
+/// inheritance hands us (a security-review follow-up: an inherited ACL can
+/// be broader than owner-only, e.g. `BUILTIN\Users`). Immediately after
+/// creating the file we set an explicit, protected (non-inheriting),
+/// owner-only DACL (`windows_acl::restrict_to_owner`). If that fails for
+/// ANY reason, we delete what we just wrote and return `Err` — the tier
+/// FAILS CLOSED, never leaving a plaintext seed at a possibly-inherited
+/// ACL. The caller (`keychain::load_or_generate_keypair_durable`) treats
+/// this exactly like any other file-tier failure and falls through to the
+/// loud ephemeral tier.
+#[cfg(windows)]
+fn create_key_file_securely(path: &Path, kp: &NodeKeypair) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        file.write_all(hex::encode(kp.seed_bytes()).as_bytes())?;
+    } // close the handle before touching the file's security descriptor
+    if let Err(e) = windows_acl::restrict_to_owner(path) {
+        let _ = std::fs::remove_file(path);
+        return Err(e.context(
+            "could not set an owner-only DACL on the file-tier identity key; \
+             refusing to leave it at the (possibly inherited) default ACL",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn create_key_file_securely(path: &Path, kp: &NodeKeypair) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -103,6 +181,106 @@ fn warn_if_permissions_loosened(path: &Path) {
 
 #[cfg(not(unix))]
 fn warn_if_permissions_loosened(_path: &Path) {}
+
+/// Minimal `advapi32` FFI for setting an owner-only, non-inheriting DACL on
+/// the file-tier key file. DPAPI (`CryptProtectData`/`CryptUnprotectData`
+/// via the `windows` crate) was the preferred design for at-rest encryption,
+/// but it is not currently a direct dependency anywhere in this workspace
+/// (only a deep transitive one via `keyring`/Tauri, with no DPAPI bindings
+/// exposed) and its failure modes are decrypt-time (profile/SID binding
+/// edge cases) — exactly the "identity silently stops loading" class of bug
+/// this whole F6 fix exists to eliminate. An explicit, fail-closed DACL has
+/// no such decrypt-time fragility and needs no new crate: these three
+/// `advapi32`/`kernel32` functions have a stable Win32 ABI, so a direct
+/// `extern "system"` binding avoids adding `windows`/`windows-sys` as a new
+/// dependency just for this. See fe-identity/src/AGENTS.md §identity-tiers.
+#[cfg(windows)]
+mod windows_acl {
+    use std::ffi::c_void;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    type Bool = i32;
+    type DWord = u32;
+
+    /// SDDL: Protected DACL (no inheritance), one ACE granting
+    /// `FILE_ALL_ACCESS` to the Owner (`OW` resolves to whoever owns the
+    /// object, i.e. the creating user).
+    const OWNER_ONLY_SDDL: &str = "D:P(A;;FA;;;OW)";
+    const SDDL_REVISION_1: DWord = 1;
+    const DACL_SECURITY_INFORMATION: DWord = 0x0000_0004;
+    const PROTECTED_DACL_SECURITY_INFORMATION: DWord = 0x8000_0000;
+
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            string_security_descriptor: *const u16,
+            string_sd_revision: DWord,
+            security_descriptor: *mut *mut c_void,
+            security_descriptor_size: *mut u32,
+        ) -> Bool;
+
+        fn SetFileSecurityW(
+            file_name: *const u16,
+            security_information: DWord,
+            security_descriptor: *mut c_void,
+        ) -> Bool;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LocalFree(hmem: *mut c_void) -> *mut c_void;
+    }
+
+    fn wide_null(path: &Path) -> Vec<u16> {
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    /// Restrict `path` to an owner-only, protected (non-inheriting) DACL.
+    /// Returns `Err` on ANY failure, including a failure to even build the
+    /// security descriptor — the caller must treat that as a hard tier
+    /// failure, never silently keep the file at whatever ACL it inherited.
+    pub(crate) fn restrict_to_owner(path: &Path) -> anyhow::Result<()> {
+        let sddl: Vec<u16> = OWNER_ONLY_SDDL
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let path_w = wide_null(path);
+        // SAFETY: `sddl`/`path_w` are NUL-terminated UTF-16 buffers kept
+        // alive for the duration of each call; `sd` is only ever read by
+        // `SetFileSecurityW` and freed exactly once via `LocalFree`, after
+        // which it is never dereferenced again.
+        unsafe {
+            let mut sd: *mut c_void = std::ptr::null_mut();
+            let converted = ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut sd,
+                std::ptr::null_mut(),
+            );
+            if converted == 0 || sd.is_null() {
+                return Err(anyhow::anyhow!(
+                    "ConvertStringSecurityDescriptorToSecurityDescriptorW failed: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            let set_ok = SetFileSecurityW(
+                path_w.as_ptr(),
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                sd,
+            );
+            let set_err = std::io::Error::last_os_error();
+            LocalFree(sd);
+            if set_ok == 0 {
+                return Err(anyhow::anyhow!("SetFileSecurityW failed: {set_err}"));
+            }
+        }
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -172,6 +350,94 @@ mod tests {
         create_key_file_securely(&path, &kp).expect("create");
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "key file must be created owner-only (0600)");
+    }
+
+    /// Windows security follow-up: the seed round-trips through the
+    /// protected (owner-only, non-inheriting) form, and `icacls` — an
+    /// independent tool, not our own FFI — confirms the broad groups a
+    /// freshly created temp file would otherwise inherit (`Everyone`,
+    /// `BUILTIN\Users`) are absent.
+    #[cfg(windows)]
+    #[test]
+    fn windows_key_file_round_trips_through_the_owner_only_acl() {
+        let dir = tempdir();
+        let kp = NodeKeypair::generate();
+        let path = dir.path().join("node_keypair.key");
+        create_key_file_securely(&path, &kp).expect("secure create succeeds");
+
+        let loaded = try_read_seed(&path)
+            .expect("read back ok")
+            .expect("file present");
+        assert_eq!(loaded.seed_bytes(), kp.seed_bytes());
+
+        if let Ok(output) = std::process::Command::new("icacls").arg(&path).output() {
+            let listing = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                !listing.contains("Everyone") && !listing.contains("BUILTIN\\Users"),
+                "key file must not carry a broad inherited ACL entry: {listing}"
+            );
+        }
+    }
+
+    /// Windows security follow-up: when `restrict_to_owner` itself is
+    /// exercised directly, it must succeed on a file this process just
+    /// created (owner always holds WRITE_DAC on their own objects).
+    #[cfg(windows)]
+    #[test]
+    fn restrict_to_owner_succeeds_on_a_freshly_created_file() {
+        let dir = tempdir();
+        let path = dir.path().join("probe.key");
+        std::fs::write(&path, b"probe").expect("write probe file");
+        windows_acl::restrict_to_owner(&path).expect("restrict_to_owner should succeed");
+    }
+
+    /// Migration: a legacy plaintext key file at the old CWD-relative
+    /// location is loaded, re-stored securely at the new per-user
+    /// directory, and the legacy file is removed — "migrates it" means
+    /// the legacy copy is gone, not duplicated.
+    #[test]
+    fn legacy_key_file_migrates_to_the_new_directory_and_is_removed() {
+        let new_dir = tempdir();
+        let legacy_dir = tempdir();
+        let legacy_kp = NodeKeypair::generate();
+        create_key_file_securely(
+            &legacy_dir.path().join("node_keypair.key"),
+            &legacy_kp,
+        )
+        .expect("seed the legacy location");
+
+        let migrated = load_or_generate_migrating(new_dir.path(), legacy_dir.path(), "node_keypair")
+            .expect("migration ok");
+        assert_eq!(migrated.seed_bytes(), legacy_kp.seed_bytes());
+        assert!(
+            new_dir.path().join("node_keypair.key").exists(),
+            "the key must now live at the new, authoritative location"
+        );
+        assert!(
+            !legacy_dir.path().join("node_keypair.key").exists(),
+            "the legacy copy must be removed once migrated"
+        );
+
+        // A second launch must be stable: dir already has the key, so the
+        // (now-empty) legacy dir is never consulted again.
+        let second = load_or_generate_migrating(new_dir.path(), legacy_dir.path(), "node_keypair")
+            .expect("second launch ok");
+        assert_eq!(second.seed_bytes(), legacy_kp.seed_bytes());
+    }
+
+    /// Migration: when NEITHER location has a key yet, a fresh one is
+    /// generated directly at the new, authoritative directory.
+    #[test]
+    fn migrating_loader_generates_fresh_at_the_new_dir_when_neither_exists() {
+        let new_dir = tempdir();
+        let legacy_dir = tempdir();
+        let kp = load_or_generate_migrating(new_dir.path(), legacy_dir.path(), "node_keypair")
+            .expect("fresh generate ok");
+        assert!(new_dir.path().join("node_keypair.key").exists());
+        assert!(!legacy_dir.path().join("node_keypair.key").exists());
+        let second = load_or_generate_migrating(new_dir.path(), legacy_dir.path(), "node_keypair")
+            .expect("second launch ok");
+        assert_eq!(kp.seed_bytes(), second.seed_bytes());
     }
 
     /// Minimal temp-dir helper (no `tempfile` dependency in this crate):

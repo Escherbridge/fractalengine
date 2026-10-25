@@ -72,17 +72,35 @@ fn main() {
         Arc::new(fe_identity::OsKeystoreBackend::new());
 
     // Load or generate a persistent node keypair across three durability
-    // tiers: OS keystore -> a key file beside the DB/p2p stores -> (only if
-    // BOTH fail) an in-process ephemeral key. A silent ephemeral fallback
-    // here used to mint a DID that no longer matches a verse's created_by,
-    // locking the local user out of their own verse as a mere Viewer (F6
-    // in-app lockout root cause; see src/AGENTS.md §identity-tiers and
-    // fe-database/src/AGENTS.md §reconcile "ClaimOrphanedVerse" for the
-    // explicit recovery path once that has already happened once).
-    let identity_fallback_dir = std::path::Path::new(DB_PATH)
+    // tiers: OS keystore -> a key file under the per-user data directory ->
+    // (only if BOTH fail) an in-process ephemeral key. A silent ephemeral
+    // fallback here used to mint a DID that no longer matches a verse's
+    // created_by, locking the local user out of their own verse as a mere
+    // Viewer (F6 in-app lockout root cause; see src/AGENTS.md
+    // §identity-tiers and fe-database/src/AGENTS.md §reconcile
+    // "ClaimOrphanedVerse" for the explicit recovery path once that has
+    // already happened once).
+    //
+    // Security follow-up: the file tier must live under a per-user OS data
+    // directory (`%LOCALAPPDATA%\fractalengine\identity` on Windows), NOT
+    // a path derived from `DB_PATH` — that path is CWD-relative and could
+    // resolve somewhere unexpected depending on how the binary is launched.
+    // `legacy_identity_dir` is the pre-this-fix location (still CWD-relative,
+    // beside the DB/p2p stores) kept as a one-shot, read-only migration
+    // source — see `fe_identity::file_fallback::load_or_generate_migrating`.
+    let legacy_identity_dir = std::path::Path::new(DB_PATH)
         .parent()
         .unwrap_or_else(|| std::path::Path::new("data"))
         .join("identity");
+    let identity_fallback_dir = dirs::data_local_dir()
+        .map(|d| d.join("fractalengine").join("identity"))
+        .unwrap_or_else(|| {
+            tracing::warn!(
+                "could not resolve a per-user data directory; using the legacy \
+                 CWD-relative identity directory instead"
+            );
+            legacy_identity_dir.clone()
+        });
     let fe_identity::TieredKeypair {
         keypair: node_kp,
         source: identity_source,
@@ -90,6 +108,7 @@ fn main() {
         &secret_store,
         "node_keypair",
         &identity_fallback_dir,
+        &legacy_identity_dir,
     );
     let identity_banner_message = match identity_source {
         fe_identity::KeypairSource::Keystore | fe_identity::KeypairSource::FileFallback => None,

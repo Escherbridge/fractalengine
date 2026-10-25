@@ -39,10 +39,16 @@ A third tier between the OS keystore and an ephemeral identity — see
 user's own verses). `load_or_generate_keypair_durable` tries the keystore
 first (`Ok(None)` keeps the plain generate-then-persist path unchanged —
 only an `Err`, read OR write, falls through); on fallthrough,
-`file_fallback::load_or_generate(dir, account)` reads/creates
-`<dir>/<account>.key`; only if THAT also fails does it mint
-`KeypairSource::Ephemeral`. A successful file-tier load attempts a
-best-effort heal-back write into the keystore (never fatal if it fails).
+`file_fallback::load_or_generate_migrating(dir, legacy_dir, account)`
+reads/creates `<dir>/<account>.key`, migrating in a legacy key found at
+`<legacy_dir>/<account>.key` if `dir` doesn't have one yet (read-only at
+the legacy path — write the new copy, delete the legacy one); only if
+THAT also fails does it mint `KeypairSource::Ephemeral`. A successful
+file-tier load attempts a best-effort heal-back write into the keystore
+(never fatal if it fails). `dir` is resolved by the caller
+(`fractalengine/src/main.rs`) to a per-user OS data directory — never a
+path derived from a CWD-relative file like the DB path, which could
+resolve somewhere unexpected depending on launch directory.
 
 **Security: permissions are set AT creation, never after (security-review
 fix).** `file_fallback::create_key_file_securely` opens with
@@ -52,12 +58,40 @@ default (world-readable) permissions between a `write` and a later `chmod`.
 `create_new` also makes creation atomic: a concurrent first-run race (two
 launches, same account, same empty fallback dir) has the LOSER get
 `AlreadyExists` and propagate it as `Err`, never silently reopen or
-truncate the winner's file. On Windows there is no POSIX "other" principal
-to leak to and no ACL API in `std`, so the per-user NTFS ACL the app-data
-directory already inherits is relied on instead (documented, not
-enforced) — `create_new` still makes creation atomic there too. Every
-error from this path is real (never `.ok()`'d away): a failed secure
-create returns `Err` from `load_or_generate`, which `load_or_generate_keypair_durable`
+truncate the winner's file.
+
+**Windows does NOT rely on the inherited ACL (second security-review
+pass).** A freshly created file's inherited ACL can be broader than
+owner-only (e.g. `BUILTIN\Users`), so immediately after `create_new`
+creates the file, `windows_acl::restrict_to_owner` sets an explicit,
+PROTECTED (non-inheriting) DACL granting only the Owner full access —
+`ConvertStringSecurityDescriptorToSecurityDescriptorW` + `SetFileSecurityW`
+with SDDL `"D:P(A;;FA;;;OW)"`, bound via a minimal direct `extern "system"`
+declaration (NOT the `windows`/`windows-sys` crate — neither is a direct
+dependency here, and the surface needed is three stable-ABI functions, so
+adding either crate just for this was judged not worth it; see the
+DPAPI-vs-DACL tradeoff below). If setting the DACL errors for ANY reason,
+`create_key_file_securely` deletes the file it just wrote and returns
+`Err` — the tier fails CLOSED, never leaving a plaintext seed at a
+possibly-inherited ACL.
+
+**Why a DACL and not DPAPI.** `CryptProtectData`/`CryptUnprotectData` (via
+the `windows` crate) was the first-choice design for at-rest encryption,
+but (a) `windows` is only a deep transitive dependency in this workspace
+(via `keyring`/Tauri, with no DPAPI bindings exposed — adding it directly
+just for two functions means picking a version/feature set and reviewing
+unsafe FFI with blob-lifetime and `LocalFree` bookkeeping), and (b) DPAPI's
+failure mode is DECRYPT-time, not just create-time — a profile/SID-binding
+edge case (roaming profiles, machine-vs-user scope mismatches) could make
+a previously-written key silently fail to decrypt on a later launch, which
+is exactly the "identity silently stops loading" bug class this whole F6
+fix exists to eliminate. An explicit, fail-closed DACL has no such
+decrypt-time fragility: a key that was ever created successfully stays
+readable by its owner forever, with no cryptographic machinery to desync.
+
+Every error from this path is real (never `.ok()`'d away): a failed
+secure create returns `Err` from `load_or_generate`/
+`load_or_generate_migrating`, which `load_or_generate_keypair_durable`
 treats exactly like a file-tier read failure — fall through to the loud
 ephemeral tier, never a silently open-permissioned key file.
 

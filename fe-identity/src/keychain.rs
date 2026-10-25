@@ -90,11 +90,14 @@ pub struct TieredKeypair {
 }
 
 /// Load (or create) a node keypair across three durability tiers: the OS
-/// keystore, then a file under `fallback_dir`, then — only if both of those
-/// fail — an in-process ephemeral key. Unlike [`load_or_generate_keypair`]
-/// this never returns `Err`: the ephemeral tier always succeeds, so the
-/// caller instead inspects [`TieredKeypair::source`] to decide whether to
-/// warn the user (fe-identity/src/AGENTS.md §identity-tiers).
+/// keystore, then a file under `fallback_dir` (migrating in a legacy key
+/// found at `legacy_fallback_dir`, if any — see
+/// [`crate::file_fallback::load_or_generate_migrating`]), then — only if
+/// both of those fail — an in-process ephemeral key. Unlike
+/// [`load_or_generate_keypair`] this never returns `Err`: the ephemeral
+/// tier always succeeds, so the caller instead inspects
+/// [`TieredKeypair::source`] to decide whether to warn the user
+/// (fe-identity/src/AGENTS.md §identity-tiers).
 ///
 /// `Ok(None)` from the keystore (first run) keeps the existing
 /// generate-then-persist behavior unchanged — it never touches the file
@@ -106,6 +109,7 @@ pub fn load_or_generate_keypair_durable(
     store: &Arc<dyn SecretStore>,
     account: &str,
     fallback_dir: &std::path::Path,
+    legacy_fallback_dir: &std::path::Path,
 ) -> TieredKeypair {
     match load_or_generate_keypair(store, account) {
         Ok(keypair) => TieredKeypair {
@@ -118,7 +122,11 @@ pub fn load_or_generate_keypair_durable(
                 error = %keystore_error,
                 "keystore unavailable, trying the file-tier identity fallback"
             );
-            match crate::file_fallback::load_or_generate(fallback_dir, account) {
+            match crate::file_fallback::load_or_generate_migrating(
+                fallback_dir,
+                legacy_fallback_dir,
+                account,
+            ) {
                 Ok(keypair) => {
                     // Heal-back: best-effort, never fatal — staying on the
                     // file tier is fine if the keystore is still down.
@@ -273,12 +281,14 @@ mod tests {
     #[test]
     fn file_tier_fallback_yields_the_same_did_across_two_launches_when_keystore_errors() {
         let dir = TempDir::new("durable");
+        let legacy_dir = TempDir::new("durable-legacy");
         let store: Arc<dyn SecretStore> = Arc::new(AlwaysFailingStore);
 
-        let first = load_or_generate_keypair_durable(&store, "node_keypair", &dir.0);
+        let first = load_or_generate_keypair_durable(&store, "node_keypair", &dir.0, &legacy_dir.0);
         assert_eq!(first.source, KeypairSource::FileFallback);
 
-        let second = load_or_generate_keypair_durable(&store, "node_keypair", &dir.0);
+        let second =
+            load_or_generate_keypair_durable(&store, "node_keypair", &dir.0, &legacy_dir.0);
         assert_eq!(second.source, KeypairSource::FileFallback);
 
         assert_eq!(
@@ -298,11 +308,21 @@ mod tests {
         let blocking_file = base.0.join("blocks-the-subdir");
         std::fs::write(&blocking_file, b"not a directory").unwrap();
         let unusable_fallback_dir = blocking_file.join("identity");
+        let legacy_dir = TempDir::new("blocked-parent-legacy");
 
         let store: Arc<dyn SecretStore> = Arc::new(AlwaysFailingStore);
-        let first = load_or_generate_keypair_durable(&store, "node_keypair", &unusable_fallback_dir);
-        let second =
-            load_or_generate_keypair_durable(&store, "node_keypair", &unusable_fallback_dir);
+        let first = load_or_generate_keypair_durable(
+            &store,
+            "node_keypair",
+            &unusable_fallback_dir,
+            &legacy_dir.0,
+        );
+        let second = load_or_generate_keypair_durable(
+            &store,
+            "node_keypair",
+            &unusable_fallback_dir,
+            &legacy_dir.0,
+        );
         assert_eq!(first.source, KeypairSource::Ephemeral);
         assert_eq!(second.source, KeypairSource::Ephemeral);
         assert_ne!(

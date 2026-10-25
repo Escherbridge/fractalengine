@@ -24,17 +24,51 @@ peer's verse I never joined".
 
 The fix is a third, durable tier in between: `fe_identity
 ::load_or_generate_keypair_durable` tries the keystore, then a key file
-under `<DB_PATH's parent>/identity/<account>.key` (sibling of the DB and
-P2P stores — same `data/` root FE_DB_PATH/FE_P2P_DIR already use), and
-only mints an ephemeral key if BOTH fail. A file-tier load also attempts to
-heal the identity back into the keystore (best-effort, never fatal) so a
-later launch — once the keystore recovers — prefers it again.
-`KeypairSource::Ephemeral` is the one case that still degrades silently
-from the DID's point of view, so it is surfaced LOUDLY: `tracing::error!`
-plus `fe_ui::plugin::IdentityBanner`, a session-sticky, click-to-dismiss
-warning in the status bar (`fe-ui/src/panels/AGENTS.md` §identity-banner) —
-"Your saved identity could not be loaded — running with a temporary
-identity; existing content may appear read-only."
+under a per-user OS data directory, and only mints an ephemeral key if
+BOTH fail. A file-tier load also attempts to heal the identity back into
+the keystore (best-effort, never fatal) so a later launch — once the
+keystore recovers — prefers it again. `KeypairSource::Ephemeral` is the
+one case that still degrades silently from the DID's point of view, so it
+is surfaced LOUDLY: `tracing::error!` plus `fe_ui::plugin::IdentityBanner`,
+a session-sticky, click-to-dismiss warning in the status bar
+(`fe-ui/src/panels/AGENTS.md` §identity-banner) — "Your saved identity
+could not be loaded — running with a temporary identity; existing content
+may appear read-only."
+
+**Security follow-up (same-day, pre-ship review).** Two issues in the
+first cut of the file tier, both fixed before any release used it:
+
+1. **The fallback dir must not be CWD-relative.** The first cut derived it
+   from `DB_PATH`'s parent (`data/identity/`), which resolves relative to
+   whatever directory the process happened to be launched from — fine for
+   the DB file (which already has that caveat, `packaged_root` not
+   withstanding) but wrong for identity material that must be found
+   regardless of launch directory. It now resolves via `dirs::data_local_dir()`
+   (`%LOCALAPPDATA%\fractalengine\identity` on Windows — `dirs` was already
+   a `fractalengine` dependency, nothing new added); `legacy_identity_dir`
+   (the old CWD-relative path) is kept as a one-shot, read-only migration
+   source (`fe_identity::file_fallback::load_or_generate_migrating` — read
+   from legacy, write securely to the new dir, delete legacy; a crash
+   mid-migration just leaves the legacy file for the next launch to retry,
+   never a window with neither file present).
+2. **Windows must not rely on an inherited ACL for the seed.** The DACL a
+   freshly created file inherits from its parent directory can be broader
+   than owner-only (e.g. `BUILTIN\Users`). DPAPI (`CryptProtectData` via the
+   `windows` crate) was the first-choice design, but `windows` is only a
+   deep transitive dependency here (via `keyring`/Tauri, no DPAPI surface
+   exposed) and its failure mode is decrypt-time (profile/SID-binding edge
+   cases) — exactly the "identity silently stops loading" bug class this
+   fix exists to kill. Instead, `fe_identity::file_fallback::windows_acl::
+   restrict_to_owner` sets an explicit, protected (non-inheriting),
+   owner-only DACL via `advapi32`'s `SetFileSecurityW` + an SDDL string
+   (`"D:P(A;;FA;;;OW)"`), immediately after `create_new` creates the file.
+   **Fails closed:** if the DACL set errors for any reason, the file is
+   deleted and the whole file tier reports `Err`, falling through to the
+   loud ephemeral tier rather than ever leaving a plaintext seed at a
+   possibly-inherited ACL. Three Win32 functions, bound via a minimal
+   direct `extern "system"` declaration rather than adding `windows`/
+   `windows-sys` as a new dependency for such a small surface — see
+   `fe-identity/src/AGENTS.md` §identity-tiers for the full rationale.
 
 **If this has already happened once** (a verse is now orphaned under a
 stale `did:key:`), the explicit, user-confirmed `DbCommand::
