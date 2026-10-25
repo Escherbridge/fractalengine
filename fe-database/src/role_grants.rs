@@ -707,16 +707,81 @@ pub async fn reemit_local_statements(
         };
         statements.extend(select_statements(db, &sql, table, binds).await?);
     }
-    let live = latest_per_grantor(statements.iter());
-    let mut emitted = 0;
+    let mut live = latest_per_grantor(statements.iter());
+    // Revocations take the first bridge slots: if the budget runs out, what is lost is a
+    // grant (re-emitted next open), never a revocation (src/AGENTS.md §role-propagation).
+    live.sort_by_key(|stmt| !stmt.revoked);
+    let Some(tx) = repl_tx else { return Ok(0) };
+    let deadline = tokio::time::Instant::now() + REEMIT_BACKPRESSURE_BUDGET;
+    let (mut emitted, mut dropped, mut dropped_revocations) = (0, 0, 0);
     for stmt in &live {
         let Some(stmt_verse) = verse_of_scope(&stmt.scope) else {
             continue;
         };
-        publish_statement(repl_tx, blob_store, &stmt_verse, stmt);
-        emitted += 1;
+        if publish_paced(tx, blob_store, &stmt_verse, stmt, deadline).await {
+            emitted += 1;
+        } else {
+            dropped += 1;
+            dropped_revocations += usize::from(stmt.revoked);
+        }
+    }
+    if dropped > 0 {
+        tracing::warn!(
+            emitted,
+            dropped,
+            dropped_revocations,
+            "role statement re-emit hit its backpressure budget — the rest retry at the next replica open"
+        );
     }
     Ok(emitted)
+}
+
+/// How long one re-emit may wait on a full replication bridge before dropping the rest.
+const REEMIT_BACKPRESSURE_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+/// Pause between retries of a re-emitted statement while the bridge is full.
+const REEMIT_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(5);
+
+/// Publish one statement, waiting (async, never past `deadline`) while the bridge is full —
+/// the re-emit is AC-42's only second chance, so it may not drop on a momentary burst the
+/// way live publishes do. `false` = not delivered (counted as a replication drop).
+async fn publish_paced(
+    tx: &ReplicationSender,
+    blob_store: &BlobStoreHandle,
+    verse_id: &str,
+    stmt: &RoleStatement,
+    deadline: tokio::time::Instant,
+) -> bool {
+    let record_id = statement_record_id(stmt);
+    let content_hash = match blob_store.add_blob(&statement_payload_bytes(stmt)) {
+        Ok(hash) => hash,
+        Err(e) => {
+            tracing::error!(record_id, "role statement re-emit: blob write failed: {e}");
+            return false;
+        }
+    };
+    let mut event = crate::ReplicationEvent {
+        verse_id: verse_id.to_string(),
+        table: ROLE_DOC_TABLE.to_string(),
+        record_id,
+        content_hash,
+        petal_id: None,
+    };
+    loop {
+        match tx.try_send(event) {
+            Ok(()) => return true,
+            Err(crossbeam::channel::TrySendError::Full(back))
+                if tokio::time::Instant::now() < deadline =>
+            {
+                event = back;
+                tokio::time::sleep(REEMIT_RETRY_PAUSE).await;
+            }
+            Err(crossbeam::channel::TrySendError::Full(_)) => {
+                crate::note_replication_drop();
+                return false;
+            }
+            Err(crossbeam::channel::TrySendError::Disconnected(_)) => return false,
+        }
+    }
 }
 
 /// DB-startup sequence: the one-shot legacy migration, a repartition of every verse (crash

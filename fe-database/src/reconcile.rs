@@ -126,6 +126,13 @@ async fn fix_missing_default_access(db: &Db) -> anyhow::Result<()> {
 // Rule: Claim locally-created verses with orphaned creator DIDs
 // ---------------------------------------------------------------------------
 
+/// Whether `creator` is an owner identity `orphaned_creator` never claims. The
+/// inbound first-manifest gate admits ONLY such creators (OF-4), so a
+/// replicated manifest can never be claimed here (src/AGENTS.md §reconcile).
+pub(crate) fn is_owner_identity(creator: &str) -> bool {
+    creator.starts_with("did:key:")
+}
+
 /// Verses this rule may claim (role propagation RP-4, owner integrity — see
 /// src/AGENTS.md §reconcile): the creator is NOT a `did:key:` identity
 /// (a legacy placeholder or a pre-RP-4 hex inviter address — a real owner is
@@ -144,7 +151,7 @@ async fn claimable_verses(db: &Db, local_did: &str) -> anyhow::Result<Vec<(Strin
             continue;
         };
         let creator = row.get("created_by").and_then(|v| v.as_str()).unwrap_or("");
-        if creator.starts_with("did:key:") {
+        if is_owner_identity(creator) {
             continue;
         }
         let mut joined = db

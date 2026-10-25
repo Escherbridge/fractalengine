@@ -57,11 +57,8 @@ pub async fn elevated_query_reply(
     sinks: ElevatedSinks<'_>,
     request: ElevatedRequest,
 ) -> DbResult {
-    let outcome = if request.statements.len() > MAX_ELEVATED_STATEMENTS {
-        Err(format!(
-            "elevated script has {} statements; the limit is {MAX_ELEVATED_STATEMENTS}",
-            request.statements.len()
-        ))
+    let outcome = if let Some(refusal) = statement_boundary_refusal(&request.statements) {
+        Err(refusal)
     } else if request.write_tables.is_empty() {
         run_read_only(db, &request).await
     } else {
@@ -77,6 +74,29 @@ pub async fn elevated_query_reply(
             error,
             correlation_id: request.correlation_id,
         },
+    }
+}
+
+/// EL-1/EL-3: the cap, judged by SurrealQL's OWN parser over the exact text
+/// that will run — never the API's split alone. A count that differs from the
+/// request's statement list means the splitter and the engine disagree on a
+/// boundary (e.g. a `/'/` regex literal swallowing a `;`), which would hide
+/// statements from the cap and from their per-statement `TIMEOUT`: refused.
+fn statement_boundary_refusal(statements: &[String]) -> Option<String> {
+    if statements.len() > MAX_ELEVATED_STATEMENTS {
+        return Some(format!(
+            "elevated script has {} statements; the limit is {MAX_ELEVATED_STATEMENTS}",
+            statements.len()
+        ));
+    }
+    match surrealdb_core::syn::parse(&statements.join(";\n")) {
+        Ok(ast) if ast.num_statements() == statements.len() => None,
+        Ok(ast) => Some(format!(
+            "elevated script statement boundaries are ambiguous: {} listed, {} parsed",
+            statements.len(),
+            ast.num_statements()
+        )),
+        Err(e) => Some(format!("elevated script does not parse: {e}")),
     }
 }
 
@@ -722,5 +742,44 @@ mod tests {
             .expect("counts");
         let logs: Vec<serde_json::Value> = counts.take(0).expect("op_log count");
         assert_eq!(logs[0]["n"], 0, "nothing was op-logged: {logs:?}");
+    }
+
+    /// EL-1/EL-3 (refine R2): a `/'/` regex literal makes the API splitter read
+    /// a quoted string where SurrealQL sees three statements — one listed entry
+    /// hiding a `DELETE` with no `TIMEOUT`. The DB counts with SurrealQL's own
+    /// parser and refuses the mismatch before anything runs.
+    #[tokio::test]
+    async fn a_statement_hidden_from_the_api_split_is_refused_before_running() {
+        let db = mem_db().await;
+        db.query("CREATE room CONTENT { petal_id: 'p1', name: 'lobby' }")
+            .await
+            .expect("seed")
+            .check()
+            .expect("seed ok");
+        let blob_store: BlobStoreHandle =
+            Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
+        let smuggled = "SELECT * FROM room WHERE name = /'/; DELETE room; \
+                        SELECT * FROM room WHERE name = /'/ TIMEOUT 5s";
+        let reply = elevated_query_reply(
+            &db,
+            ElevatedSinks {
+                blob_store: &blob_store,
+                repl_tx: None,
+                entity_change_tx: None,
+            },
+            request(&[smuggled], &["room"]),
+        )
+        .await;
+        assert!(
+            matches!(reply, DbResult::RequestFailed { .. }),
+            "expected RequestFailed, got {reply:?}"
+        );
+        let rooms: Vec<serde_json::Value> = db
+            .query("SELECT name FROM room")
+            .await
+            .expect("rooms")
+            .take(0)
+            .expect("rows");
+        assert_eq!(rooms.len(), 1, "the hidden DELETE never ran");
     }
 }

@@ -609,6 +609,20 @@ async fn admit_inbound_row(
     // `apply_role_statement`, which runs before this gate).
     if !row_exists(db, "verse", "verse_id", verse_id).await? {
         if table == "verse" {
+            // OF-4: a TOFU manifest must name a did:key owner. A placeholder
+            // creator would be claimed by reconcile's `orphaned_creator` at the
+            // next startup — the invitee-becomes-owner corruption.
+            let creator = serde_json::from_slice::<serde_json::Value>(row_bytes)
+                .ok()
+                .and_then(|row| str_field(&row, "created_by").map(str::to_string));
+            if !creator
+                .as_deref()
+                .is_some_and(crate::reconcile::is_owner_identity)
+            {
+                return Ok(Admission::Deny(
+                    "first verse manifest does not name a did:key owner".to_string(),
+                ));
+            }
             tracing::debug!(
                 verse_id,
                 record_id,
@@ -758,14 +772,16 @@ async fn confine_verse(
     let Some(stored) = lookup_row(db, "verse", "verse_id", verse_id, "*").await? else {
         return defer(DeferralReason::Manifest);
     };
+    let mut namespace_fill = false;
     for field in VERSE_IDENTITY_FIELDS {
         let Some(new) = present(row, field) else {
             continue;
         };
         match present(&stored, field) {
             Some(old) if json_eq(old, new) => {}
-            // A replica id the local row never had may be filled in once.
-            None if field == "namespace_id" => {}
+            // A replica id the local row never had may be filled in once — by a verse
+            // Manager+ only: it picks the namespace this node opens next (refine R2).
+            None if field == "namespace_id" => namespace_fill = true,
             _ => {
                 return deny(format!(
                     "verse {field} is immutable — a replicated manifest may not change it"
@@ -773,10 +789,11 @@ async fn confine_verse(
             }
         }
     }
-    let governance_change = VERSE_GOVERNANCE_FIELDS.iter().any(|field| {
-        present(row, field)
-            .is_some_and(|new| !present(&stored, field).is_some_and(|old| json_eq(old, new)))
-    });
+    let governance_change = namespace_fill
+        || VERSE_GOVERNANCE_FIELDS.iter().any(|field| {
+            present(row, field)
+                .is_some_and(|new| !present(&stored, field).is_some_and(|old| json_eq(old, new)))
+        });
     Ok(Confined::Gate {
         scopes: vec![crate::scope::build_scope(verse_id, None, None)],
         floor: if governance_change {
@@ -1881,6 +1898,49 @@ mod tests {
         assert_eq!(rows[0]["name"], "Replicated Verse");
     }
 
+    /// OF-4 (refine R2): a trust-on-first-use manifest naming a placeholder
+    /// creator is denied — reconcile's `orphaned_creator` would otherwise hand
+    /// the replicated verse to this node at the next startup. The real owner's
+    /// manifest then lands, and a startup reconcile leaves its owner alone.
+    #[tokio::test]
+    async fn a_first_manifest_without_a_did_key_owner_is_denied_and_never_claimed() {
+        let db = schema_db().await;
+        let local = "did:key:z6MkLocalNode";
+        let placeholder = serde_json::to_vec(&serde_json::json!({
+            "verse_id": "v-tofu", "name": "V", "created_by": "local-placeholder",
+            "created_at": "2026-10-07T00:00:00Z", "default_access": "viewer",
+        }))
+        .unwrap();
+        let outcome = apply_replicated_row_handler(
+            &db, "v-tofu", "verse", "v-tofu", &placeholder, "did:key:peer-x", None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Denied);
+        assert!(
+            select_json(&db, "SELECT verse_id FROM verse WHERE verse_id = 'v-tofu'")
+                .await
+                .is_empty(),
+            "a denied manifest leaves no verse row to claim"
+        );
+
+        let real = serde_json::to_vec(&serde_json::json!({
+            "verse_id": "v-tofu", "name": "V", "created_by": "did:key:z6MkRealOwner",
+            "created_at": "2026-10-07T00:00:00Z", "default_access": "viewer",
+        }))
+        .unwrap();
+        let outcome = apply_replicated_row_handler(
+            &db, "v-tofu", "verse", "v-tofu", &real, "did:key:z6MkRealOwner", None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+
+        crate::reconcile::reconcile(&db, local).await.unwrap();
+        let rows = select_json(&db, "SELECT created_by FROM verse WHERE verse_id = 'v-tofu'").await;
+        assert_eq!(rows[0]["created_by"], "did:key:z6MkRealOwner");
+    }
+
     #[tokio::test]
     async fn verse_row_merge_updates_existing() {
         let db = schema_db().await;
@@ -2678,6 +2738,44 @@ mod tests {
         .unwrap();
         assert_eq!(outcome, ReplicatedRowOutcome::Applied);
         assert_eq!(verse_field(&db, "name").await, "Renamed");
+    }
+
+    /// Refine R2: filling a namespace_id the local verse row never had picks the
+    /// replica this node opens next — an Editor's fill is deferred (it would let
+    /// any Editor redirect the verse), a verse Manager's applies once.
+    #[tokio::test]
+    async fn only_a_verse_manager_may_fill_in_a_missing_namespace_id() {
+        let db = schema_db().await;
+        seed_verse_with_roles(
+            &db,
+            "v1",
+            &[
+                ("did:key:editor", "editor"),
+                ("did:key:verse-manager", "manager"),
+            ],
+        )
+        .await;
+        let fill = |ns: &str| manifest(serde_json::json!({ "namespace_id": ns }));
+
+        let outcome =
+            apply_replicated_row_handler(&db, "v1", "verse", "v1", &fill("ns-attacker"), "did:key:editor", None)
+                .await
+                .unwrap();
+        assert_eq!(
+            outcome,
+            ReplicatedRowOutcome::Deferred(DeferralReason::AuthorRole {
+                did: "did:key:editor".to_string()
+            })
+        );
+        assert!(verse_field(&db, "namespace_id").await.is_null());
+
+        let outcome = apply_replicated_row_handler(
+            &db, "v1", "verse", "v1", &fill("ns-real"), "did:key:verse-manager", None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+        assert_eq!(verse_field(&db, "namespace_id").await, "ns-real");
     }
 
     /// RP-4 step 2: governance fields need Manager+ at the VERSE scope — an

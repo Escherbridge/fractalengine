@@ -11,6 +11,7 @@ use std::time::Duration;
 use fe_database::{build_scope, spawn_db_thread_shared, DbThread};
 use fe_policy::RoleStatementPayload;
 use fe_runtime::blob_store::mock::MockBlobStore;
+use fe_runtime::blob_store::{hash_to_hex, BlobStore};
 use fe_runtime::messages::{CallerAuth, DbCommand, DbResult, ReplicatedRowOutcome};
 use fe_sdk::device_format::DeviceFormatDescriptor;
 
@@ -26,19 +27,21 @@ struct Node {
     res_rx: crossbeam::channel::Receiver<DbResult>,
     db: Option<fe_database::repo::Db>,
     join: Option<std::thread::JoinHandle<()>>,
+    blobs: Arc<MockBlobStore>,
 }
 
 impl Node {
     fn open(dir: &std::path::Path, keypair: fe_identity::NodeKeypair) -> Self {
         let (cmd_tx, cmd_rx) = crossbeam::channel::bounded::<DbCommand>(64);
         let (res_tx, res_rx) = crossbeam::channel::bounded::<DbResult>(256);
+        let blobs = Arc::new(MockBlobStore::new());
         let DbThread {
             join_handle,
             shared_db,
         } = spawn_db_thread_shared(
             cmd_rx,
             res_tx,
-            Arc::new(MockBlobStore::new()),
+            blobs.clone(),
             None,
             Some(keypair),
             None,
@@ -52,6 +55,7 @@ impl Node {
             res_rx,
             db: Some(shared_db),
             join: Some(join_handle),
+            blobs,
         };
         node.until(|r| matches!(r, DbResult::Started));
         node
@@ -123,6 +127,30 @@ impl Node {
         self.until(|r| match r {
             DbResult::DeviceFormatRegistered { correlation_id, .. }
             | DbResult::DeviceFormatRejected { correlation_id, .. } => {
+                correlation_id.as_deref() == Some(correlation)
+            }
+            DbResult::RequestFailed { correlation_id, .. } => correlation_id == correlation,
+            _ => false,
+        })
+    }
+}
+
+impl Node {
+    /// The metadata-only `CreateAsset` fe-api's upload doors send after storing the bytes
+    /// (TC-7): anchored at the test petal, attributed to a client owner key.
+    fn create_asset(&self, bytes: &[u8], correlation: &str) -> DbResult {
+        let hash = self.blobs.add_blob(bytes).expect("blob stored API-side");
+        self.send(DbCommand::CreateAsset {
+            name: format!("asset-{correlation}"),
+            content_type: "model/gltf-binary".to_string(),
+            size_bytes: bytes.len() as u64,
+            content_hash: hash_to_hex(&hash),
+            owner_did: Some("client-a".to_string()),
+            petal_id: Some(PETAL.to_string()),
+            correlation_id: Some(correlation.to_string()),
+        });
+        self.until(|r| match r {
+            DbResult::AssetCreated { correlation_id, .. } => {
                 correlation_id.as_deref() == Some(correlation)
             }
             DbResult::RequestFailed { correlation_id, .. } => correlation_id == correlation,
@@ -223,6 +251,13 @@ fn an_api_token_minted_before_the_nodes_demotion_cannot_write_after_it() {
         node.register_format("acme.thermo/before@1", "format-before"),
         DbResult::DeviceFormatRegistered { .. }
     ));
+    assert!(
+        matches!(
+            node.create_asset(b"glTF-before", "asset-before"),
+            DbResult::AssetCreated { .. }
+        ),
+        "an anchored upload registers while the node holds Editor+ at the petal"
+    );
 
     // The owner demotes the node (a replicated revocation of the owner's own grant).
     let (revoke_key, revoke) = statement(&owner, &local, "none", true, 2);
@@ -242,6 +277,12 @@ fn an_api_token_minted_before_the_nodes_demotion_cannot_write_after_it() {
     assert!(
         matches!(refused, DbResult::RequestFailed { .. }),
         "the role-less door is capped too: {refused:?}"
+    );
+    // TC-7 / W6-0: the upload door is capped by the same helper (anchored asset rows replicate).
+    let refused = node.create_asset(b"glTF-after", "asset-after");
+    assert!(
+        matches!(refused, DbResult::RequestFailed { .. }),
+        "a stale token's upload must not register an anchored asset: {refused:?}"
     );
 
     // READ-BACK: nothing the stale token sent landed.
@@ -272,4 +313,19 @@ fn an_api_token_minted_before_the_nodes_demotion_cannot_write_after_it() {
         })
         .expect("rows");
     assert!(formats.is_empty(), "no post-demotion format was declared");
+    let assets: Vec<serde_json::Value> = rt
+        .block_on(async {
+            db.query("SELECT name FROM asset WHERE petal_id = $p ORDER BY name")
+                .bind(("p", PETAL.to_string()))
+                .await
+                .expect("select assets")
+                .take(0)
+        })
+        .expect("rows");
+    let names: Vec<&str> = assets.iter().filter_map(|a| a["name"].as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["asset-asset-before"],
+        "only the pre-demotion upload registered"
+    );
 }

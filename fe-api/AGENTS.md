@@ -371,7 +371,8 @@ DID for every caller. A token minted through the production door
 `did:key`, requested or freshly generated (fe-identity `src/AGENTS.md`
 §api-token "client claim"). `owner_key(claims) = client.unwrap_or(sub)` is
 the ONE place fe-api reads `claims.client`, and `UploadOwner::new` is its one
-caller on the write side, so every upload door inherits it (REST multipart,
+caller on the write side (and `UploadOwner`'s only constructor — its fields
+are private, refine R2), so every upload door inherits it (REST multipart,
 MCP `upload_asset`, REST/MCP device ingest). It keys three things only:
 `asset.owner_did`, the per-owner quota (§asset-ingest) and the unplaced-reach
 own-read clause above. It is **never an authorization subject**:
@@ -381,6 +382,9 @@ role ceiling stays `max_role`, W5's AC-46 cap resolves the node — so a
 `a_client_claim_naming_a_manager_did_gains_no_role`). Check order on an
 upload: JWT verify (incl. the `client` grammar) → `jti` revocation → role +
 anchor-petal scope → AC-46 cap where replicated → reach/quota by owner key.
+The upload doors' AC-46 cap runs on the DB thread at `CreateAsset` (TC-7,
+refine R2): a stale token's bytes may already be in the blob store when the
+registration is refused — an unregistered blob that no asset row reaches.
 `owner_did` stays local: the device-payload emission strips it from outbound
 asset rows and peers strip it inbound (fe-database `handlers/device_payload.rs`
 `outbound_asset_row_bytes`, `replicated_row.rs`). Rotation caveat: a re-minted
@@ -761,6 +765,13 @@ deny-by-default (fe-policy's ratified stance), mirroring `FE_SIM_ALLOW`
   and a `;` inside a string, an escaped identifier or `()`/`[]`/`{}` nesting
   is not a split point. Over the cap: `elevated script has {n} statements;
   the limit is 32`, the same `ok:false` envelope as every other refusal.
+  The splitter does not model SurrealQL regex literals (`/…/`), so a `/'/`
+  could make it read a "string" across real `;` boundaries (EL-1). The DB
+  side therefore re-counts the joined script with SurrealQL's own parser and
+  refuses any mismatch (`statement boundaries are ambiguous`) — refine R2,
+  fe-database `src/AGENTS.md` §handlers "elevated_query". EL-2 verdict (kept):
+  `FOR` stays allowed — a keyword ban is lexer-free here and would refuse any
+  string containing the word "for"; the endpoint is Owner-only and opt-in.
 - **Single writer, exactly like the typed handlers** (fe-database
   `handlers/elevated_query.rs`, `src/AGENTS.md` §handlers). Every script —
   reads too — runs on the DB thread; `db_reader` is never used, so the

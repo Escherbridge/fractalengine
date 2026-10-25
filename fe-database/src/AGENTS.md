@@ -500,6 +500,13 @@ address) AND that no invite ever joined (no `verse_member` row with
 `invited_by != peer_did`). Claiming a verse after a keypair rotation (old
 `did:key` creator) is no longer automatic — deliberately: a real owner is always
 a did:key, and the rule cannot tell an old local identity from a remote owner.
+**The inbound side closes the loop (refine R2, OF-4 verify):** a trust-on-first-use
+manifest whose `created_by` is not a `did:key:` identity is Denied at the admission
+gate (§handlers "replicated_row" step 3), using the SAME predicate
+(`reconcile::is_owner_identity`) — so no replicated manifest can ever land in the
+shape this rule claims (the residual RP-4 left: a peer publishing a placeholder
+creator would have handed its verse to every receiver at their next restart).
+`held_role_statements_survive_restart` runs the restart with no extra member row.
 
 ## §hlc
 
@@ -699,7 +706,11 @@ one sub-module per domain:
   §elevated-query): refused before any work when `request.statements.len()`
   exceeds `MAX_ELEVATED_STATEMENTS` (32, the single definition — fe-api's
   `validate_elevated_sql` fast-fails against it first, but this check is the
-  authority); DB-side table mirror `ELEVATED_WRITABLE_TABLES`; a
+  authority), OR when SurrealQL's own parser (`surrealdb_core::syn::parse`,
+  same 3.0.5 the engine runs) counts a different number of statements in the
+  joined script (EL-1/EL-3, refine R2: the API splitter does not model regex
+  literals, so `/'/` could hide `;`-separated statements from the cap and from
+  their `TIMEOUT`); DB-side table mirror `ELEVATED_WRITABLE_TABLES`; a
   read-only script runs as-is; a write script is capped at
   `ELEVATED_DIFF_MAX_ROWS` (20 000) rows across its write tables, then
   snapshot → `commit_operation_atomic` (one `OpType::ElevatedQuery` entry) →
@@ -730,7 +741,8 @@ one sub-module per domain:
   is verified first (signature + self-authorship, Denied on failure even before
   the manifest), then waits for the manifest and for membership
   (canon_log/AGENTS.md §device-enrolment); (3) **first-manifest rule** — before
-  a manifest exists ONLY the verse row is admitted (trust on first use); every
+  a manifest exists ONLY the verse row is admitted (trust on first use — and only
+  when its `created_by` is a `did:key:` identity, §reconcile OF-4); every
   other row is `Deferred Manifest` and retried when it lands (the old bootstrap
   window that admitted everything is gone — deferral now retries, so nothing is
   lost); (4) **referential confinement** (P2P-REF-CONFINE): one parent-chain
@@ -749,7 +761,9 @@ one sub-module per domain:
   identity fields `verse_id`/`created_by`/`created_at`/`namespace_id` are
   immutable (a change is Denied for everyone, the owner included — T9, the
   MERGE used to let an Editor rewrite `created_by`; a missing `namespace_id` may
-  be filled once); a change to a governance field (`default_access`, `ts_mode`,
+  be filled once, and that fill is a governance change — it picks the replica
+  this node opens next, so an Editor's fill is deferred, refine R2); a change to
+  a governance field (`default_access`, `ts_mode`,
   `ts_replication_factor`, `ts_bucket_width_ms`) needs **Manager+ at the verse
   scope** (a petal or fractal Manager is deferred — verse settings lie above
   their subtree); `name`/`view_hidden` follow the Editor+ gate. **Invite owner
@@ -765,8 +779,10 @@ one sub-module per domain:
   helper), which also covers `authorize_edit` (`SetPetalTerrain` — now gated,
   RP-4 step 7 — `SetPetalRenderDistance`, visibility groups, node lifecycle);
   the role-less doors (`InsertIotReadings`, `InsertDevicePayloads` when they
-  replicate, `RegisterDeviceFormat`) require the NODE itself to clear Editor+
-  at the petal / Manager+ at the verse (`require_node_role`), so a token minted
+  replicate, `RegisterDeviceFormat`, and `CreateAsset` for an anchored upload —
+  W6 TC-7, refine R2: its row replicates with the device payloads that list it;
+  an anchor petal that does not resolve is refused) require the NODE itself to
+  clear Editor+ at the petal / Manager+ at the verse (`require_node_role`), so a token minted
   before a remote demotion cannot write rows every peer defers. The wire **tombstone form is the empty entry**
   (`Doc::del`): the handler synthesizes the node payload and resolves the
   scene change's petal from the durable row; an empty entry on a static
@@ -899,6 +915,15 @@ the DB plane around it.
   never replay a superseded grant past a later revocation) at DB startup and
   on `DbCommand::ReemitLocalRoleStatements`, which the sync thread sends
   after every successful replica open. iroh dedupes identical bytes.
+  **Paced, revocations first (refine R2, the RP-2 watch item):** the re-emit is
+  the only second chance, so unlike live publishes it does not drop on a full
+  bridge — `publish_paced` retries every 5 ms within a 2 s budget per call
+  (async sleep; the deadline keeps the DB loop live even if the bridge and the
+  sync thread stall each other), revocations take the first slots, and only
+  past the budget are the rest counted as `replication_drop_count` drops (a
+  warn names how many were revocations; the next replica open retries them).
+  Before this a node with more live statements than the 256-slot bridge
+  dropped the same deterministic tail on every re-emit.
 - **Startup (`role_grants::startup`).** After `reconcile` (which may change
   an owner) and before `Started`: the migration below, `repartition_all`
   (crash repair between a statement write and its partition), then the

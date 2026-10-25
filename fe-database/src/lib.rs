@@ -142,6 +142,11 @@ pub fn replication_drop_count() -> u64 {
     REPLICATION_DROPS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Count one replication event dropped on a full bridge; returns the new total.
+pub(crate) fn note_replication_drop() -> u64 {
+    REPLICATION_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+}
+
 /// Serialise row data as JSON, write to blob store, and send a
 /// `ReplicationEvent` to be bridged to the sync thread.
 ///
@@ -716,8 +721,23 @@ pub fn spawn_db_thread_shared(
                     }
                     // F13 API asset ingest: metadata only — bytes were stored API-side.
                     Ok(DbCommand::CreateAsset { name, content_type, size_bytes, content_hash, owner_did, petal_id, correlation_id }) => {
-                        let registration = handlers::crud::AssetRegistration { name, content_type, size_bytes, content_hash, owner_did, petal_id };
-                        send_result(&tx, handlers::crud::create_asset_reply(&db, &blob_store, registration, correlation_id).await);
+                        // AC-46/TC-7: an anchored asset row replicates (device-payload emission),
+                        // so the NODE must clear Editor at the anchor petal; an anchor that does
+                        // not resolve is refused (fail closed). Un-anchored rows never replicate.
+                        let refused = match petal_id.as_deref() {
+                            None => None,
+                            Some(anchor) => match handlers::crud::resolve_petal_scope_handler(&db, anchor).await {
+                                Ok(Some(scope)) => require_node_role(&db, &local_did, &scope, fe_policy::RoleLevel::Editor, "CreateAsset").await.err(),
+                                Ok(None) => Some(format!("CreateAsset refused: anchor petal {anchor} is not known locally")),
+                                Err(e) => Some(format!("CreateAsset refused: anchor petal scope lookup failed: {e}")),
+                            },
+                        };
+                        if let Some(refusal) = refused {
+                            send_result(&tx, handlers::correlated_failure(&correlation_id, refusal));
+                        } else {
+                            let registration = handlers::crud::AssetRegistration { name, content_type, size_bytes, content_hash, owner_did, petal_id };
+                            send_result(&tx, handlers::crud::create_asset_reply(&db, &blob_store, registration, correlation_id).await);
+                        }
                     }
                     // Fire-and-forget maintenance (src/AGENTS.md §handlers asset_gc): a
                     // failure is only logged — an uncorrelated `Error` would reach the

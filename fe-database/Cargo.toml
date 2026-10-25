@@ -18,6 +18,10 @@ fe-canonical-log = { path = "../fe-canonical-log" }
 # SPEC-10 §4.5 legacy_identifier (migration/AGENTS.md §transform-mapping).
 fe-sdk = { path = "../fe-sdk" }
 surrealdb = { workspace = true }
+# SurrealQL's own parser counts an elevated script's statements (EL-1/EL-3,
+# src/AGENTS.md §handlers "elevated"). The exact version `surrealdb` already
+# pulls in, no extra features — so it never rebuilds the engine.
+surrealdb-core = { version = "=3.0.5", default-features = false }
 async-trait = "0.1"
 tokio = { workspace = true }
 tracing = { workspace = true }

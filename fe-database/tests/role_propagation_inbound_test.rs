@@ -580,19 +580,12 @@ fn held_role_statements_survive_restart() {
             author_role(MANAGER)
         );
         assert!(keys(&rt.block_on(held(&node.db()))).contains(&held_stmt.record_id));
-        // reconcile's `orphaned_creator` rule claims, at startup, any verse with no member
-        // other than its creator and this node — a replicated verse included (a pre-existing
-        // owner-integrity gap reported for RP-4). A third member keeps the real owner here.
-        rt.block_on(query(
-            &node.db(),
-            &format!(
-                "CREATE verse_member CONTENT {{ member_id: 'm-1', verse_id: '{VERSE}', \
-                 peer_did: 'did:key:z6MkThirdMember', status: 'active', invited_by: '{OWNER}', \
-                 invite_sig: 'sig', invite_timestamp: '2026-10-15T00:00:00Z' }}"
-            ),
-        ));
+        // OF-4: NO extra verse_member row here — the replicated verse has no member
+        // besides its owner, the exact shape reconcile's `orphaned_creator` used to claim
+        // for this node at the next startup.
     }
 
+    // The restart runs reconcile (orphaned_creator included) before any command.
     let node = Node::open(dir.path());
     let db = node.db();
     assert_eq!(

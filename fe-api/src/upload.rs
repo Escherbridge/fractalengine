@@ -151,11 +151,12 @@ pub(crate) fn owner_key(claims: &fe_identity::api_token::ApiClaims) -> &str {
 
 /// Who an upload is attributed to: the token's [`owner_key`] and the
 /// authorized anchor petal (the `asset.owner_did` / `asset.petal_id`
-/// columns — §assets).
+/// columns — §assets). Fields are private so every door goes through
+/// [`UploadOwner::new`] (TC-1/TC-4: the owner key is never hand-built).
 #[derive(Debug, Clone)]
 pub struct UploadOwner {
-    pub owner_did: String,
-    pub petal_id: String,
+    owner_did: String,
+    petal_id: String,
 }
 
 impl UploadOwner {
