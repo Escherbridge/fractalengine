@@ -324,6 +324,25 @@ fn is_scope_safe_id(id: &str) -> bool {
     !id.is_empty() && !id.contains('#')
 }
 
+/// How many past mappings a petal keeps for move rollback (OF-10b).
+const PETAL_MAPPING_HISTORY_CAP: usize = 4;
+/// How many competing claims a contested petal keeps (OF-10a); an evicted
+/// claim is quarantined, and the replica still holds it.
+const PETAL_CLAIMS_CAP: usize = 8;
+
+/// One admitted `petal -> fractal` mapping and who authorized it (R6,
+/// OF-10a/b) — `src/AGENTS.md` §role-view "Petal -> fractal map".
+#[derive(Debug, Clone)]
+struct PetalMapping {
+    fractal_id: String,
+    /// The signed author whose Editor+ admitted it; `None` = this node's own
+    /// write or own replay of an unmapped petal (locally authoritative, never
+    /// re-verdicted or contested).
+    author: Option<String>,
+    /// The admitted row, re-quarantined if `author` loses its authority.
+    row: Vec<u8>,
+}
+
 #[derive(Debug, Clone)]
 struct QuarantinedRow {
     kind: QuarantineKind,
@@ -362,8 +381,14 @@ pub struct VerseFabric {
     effective: fe_policy::EffectiveRoles,
     /// `petal_id -> fractal_id`, learned from `petal` rows (§2.5) — a
     /// `__shards`/`__holders` key carries only the petal id, but
-    /// `fe_policy::build_scope` needs the fractal segment too.
-    petal_fractals: HashMap<String, String>,
+    /// `fe_policy::build_scope` needs the fractal segment too. Each entry is
+    /// the mapping history, last = current; earlier entries are what a move
+    /// replaced, restored if the move's author loses authority (OF-10b).
+    petal_fractals: HashMap<String, Vec<PetalMapping>>,
+    /// Petals whose inbound mappings conflict with no author holding Editor+
+    /// at every claimed scope (OF-10a): unmapped — fail closed — until such
+    /// an author's row, a local write, or a lapsed claimant settles them.
+    contested_petals: HashMap<String, Vec<PetalMapping>>,
     /// DIDs whose `role_at` rose since the last materialization, drained by
     /// the sync thread's command loop (§2.5 re-read on empowerment).
     reread_queue: VecDeque<String>,
@@ -390,6 +415,7 @@ impl Default for VerseFabric {
             role_statements: HashMap::new(),
             effective: fe_policy::EffectiveRoles::default(),
             petal_fractals: HashMap::new(),
+            contested_petals: HashMap::new(),
             reread_queue: VecDeque::new(),
             quarantine: VecDeque::new(),
             quarantine_evicted: 0,
@@ -603,6 +629,9 @@ impl VerseFabric {
     /// legitimate Managers of it. A row that fails is quarantined, never
     /// dropped — re-judged on every role change, and re-read from the
     /// replica on its author's empowerment (`petal/` is in the re-read set).
+    /// Conflicting first mappings with no dominant author are contested
+    /// (OF-10a) and every inbound mapping is re-verdicted on role change
+    /// (OF-10b) — `src/AGENTS.md` §role-view "Petal -> fractal map".
     pub fn note_petal_row(&mut self, verse_id: &str, row: &serde_json::Value, author_id: &str) {
         self.admit_petal_entry(verse_id, row, author_id, RowOrigin::Inbound);
     }
@@ -648,58 +677,273 @@ impl VerseFabric {
             );
             return;
         }
-        let current = self.petal_fractals.get(petal_id).cloned();
-        if current.as_deref() == Some(fractal_id) {
-            return;
-        }
+        let data = serde_json::to_vec(row).unwrap_or_default();
+        let current = self
+            .petal_fractals
+            .get(petal_id)
+            .and_then(|history| history.last())
+            .cloned();
         let gated = match origin {
             RowOrigin::Inbound => true,
             RowOrigin::LocalWrite => false,
             RowOrigin::OwnReplay => current.is_some(),
         };
-        if gated {
-            let target = fe_policy::build_scope(verse_id, Some(fractal_id), Some(petal_id));
-            let mut authorized = self
-                .role_at(author_id, &target)
-                .is_at_least(RoleLevel::Editor);
-            if let Some(current_fractal) = current.as_deref() {
-                let from = fe_policy::build_scope(verse_id, Some(current_fractal), Some(petal_id));
-                authorized &= self
-                    .role_at(author_id, &from)
-                    .is_at_least(RoleLevel::Editor);
+        if !gated {
+            // Locally authoritative: settles a contest, replaces any history.
+            let moved = current
+                .as_ref()
+                .is_some_and(|cur| cur.fractal_id != fractal_id);
+            let was_unmapped = current.is_none();
+            self.contested_petals.remove(petal_id);
+            self.petal_fractals.insert(
+                petal_id.to_string(),
+                vec![PetalMapping {
+                    fractal_id: fractal_id.to_string(),
+                    author: None,
+                    row: data,
+                }],
+            );
+            if moved || was_unmapped {
+                self.reverdict_holders(verse_id);
+                self.reevaluate_quarantine(verse_id);
             }
-            if !authorized {
-                tracing::debug!(
-                    verse_id,
-                    petal_id,
-                    fractal_id,
-                    author = author_id,
-                    "petal row author lacks Editor+ at the petal's scope(s) — mapping quarantined"
-                );
-                let data = serde_json::to_vec(row).unwrap_or_default();
-                self.quarantine_row(QuarantineKind::Petal, petal_id, author_id, &data);
-                return;
-            }
+            return;
         }
-        self.petal_fractals
-            .insert(petal_id.to_string(), fractal_id.to_string());
-        if current.is_some() {
-            // A move changes the petal's scope chain: a holder admitted
-            // under the old one must clear the new one.
+        let claim = PetalMapping {
+            fractal_id: fractal_id.to_string(),
+            author: Some(author_id.to_string()),
+            row: data,
+        };
+        let authorized = self.editor_at(verse_id, author_id, fractal_id, petal_id);
+        if current
+            .as_ref()
+            .is_some_and(|cur| cur.fractal_id == fractal_id)
+        {
+            // Same mapping: an authorized newer row refreshes an inbound
+            // provenance, so the mapping outlives its creator's demotion
+            // while any current Editor+ still asserts it (OF-10b); the older
+            // layer stays below it, restored if this author lapses first.
+            let inbound_incumbent = current.as_ref().is_some_and(|cur| cur.author.is_some());
+            if authorized && inbound_incumbent {
+                if let Some(history) = self.petal_fractals.get_mut(petal_id) {
+                    if history.last().is_some_and(|top| top.author == claim.author) {
+                        history.pop();
+                    }
+                    history.push(claim);
+                    if history.len() > PETAL_MAPPING_HISTORY_CAP {
+                        history.remove(0);
+                    }
+                }
+            }
+            return;
+        }
+        if !authorized {
+            tracing::debug!(
+                verse_id,
+                petal_id,
+                fractal_id,
+                author = author_id,
+                "petal row author lacks Editor+ at the petal's scope — mapping quarantined"
+            );
+            self.quarantine_row(QuarantineKind::Petal, petal_id, author_id, &claim.row);
+            return;
+        }
+        if self.contested_petals.contains_key(petal_id) {
+            self.add_petal_claim(petal_id, claim);
+            if self.settle_contested_petal(verse_id, petal_id) {
+                self.reverdict_holders(verse_id);
+                self.reevaluate_quarantine(verse_id);
+            }
+            return;
+        }
+        let Some(current) = current else {
+            self.petal_fractals
+                .insert(petal_id.to_string(), vec![claim]);
+            self.reevaluate_quarantine(verse_id);
+            return;
+        };
+        if self.editor_at(verse_id, author_id, &current.fractal_id, petal_id) {
+            // A move by an author with authority over BOTH scopes.
+            let history = self.petal_fractals.entry(petal_id.to_string()).or_default();
+            history.push(claim);
+            if history.len() > PETAL_MAPPING_HISTORY_CAP {
+                history.remove(0);
+            }
             self.reverdict_holders(verse_id);
+            self.reevaluate_quarantine(verse_id);
+            return;
         }
+        // OF-10a: Editor+ at its own target scope only. The incumbent stands
+        // when it is local or its author ALSO has authority at the
+        // challenger's scope; otherwise neither side dominates — the first
+        // writer is no evidence of the petal's real home, so the petal is
+        // contested (unmapped, fail-closed) until an author with authority
+        // at every claimed scope settles it.
+        let incumbent_dominates = match current.author.as_deref() {
+            None => true,
+            Some(incumbent) => self.editor_at(verse_id, incumbent, fractal_id, petal_id),
+        };
+        if incumbent_dominates {
+            tracing::debug!(
+                verse_id,
+                petal_id,
+                fractal_id,
+                author = author_id,
+                "petal re-parent without authority at the current scope — quarantined"
+            );
+            self.quarantine_row(QuarantineKind::Petal, petal_id, author_id, &claim.row);
+            return;
+        }
+        tracing::warn!(
+            verse_id,
+            petal_id,
+            incumbent_fractal = %current.fractal_id,
+            challenger_fractal = fractal_id,
+            challenger = author_id,
+            "conflicting petal mappings with no dominant author — petal contested (unmapped) \
+             until an author with authority over every claimed scope settles it"
+        );
+        self.petal_fractals.remove(petal_id);
+        self.contested_petals
+            .insert(petal_id.to_string(), vec![current, claim]);
+        self.reverdict_holders(verse_id);
         self.reevaluate_quarantine(verse_id);
+    }
+
+    /// Editor+ (the fe-policy write floor, R1's petal-row floor) at
+    /// `petal_id`'s scope under `fractal_id`.
+    fn editor_at(&self, verse_id: &str, did: &str, fractal_id: &str, petal_id: &str) -> bool {
+        let scope = fe_policy::build_scope(verse_id, Some(fractal_id), Some(petal_id));
+        self.role_at(did, &scope).is_at_least(RoleLevel::Editor)
+    }
+
+    /// Add (or refresh, per `(author, fractal)`) one claim on a contested
+    /// petal; past the cap the oldest claim is quarantined.
+    fn add_petal_claim(&mut self, petal_id: &str, claim: PetalMapping) {
+        let Some(claims) = self.contested_petals.get_mut(petal_id) else {
+            return;
+        };
+        claims.retain(|c| !(c.author == claim.author && c.fractal_id == claim.fractal_id));
+        claims.push(claim);
+        let evicted = (claims.len() > PETAL_CLAIMS_CAP).then(|| claims.remove(0));
+        if let Some(old) = evicted {
+            let author = old.author.unwrap_or_default();
+            self.quarantine_row(QuarantineKind::Petal, petal_id, &author, &old.row);
+        }
+    }
+
+    /// Re-judge one contested petal (OF-10a): claims whose author lost
+    /// Editor+ at its own scope are quarantined; the petal maps when the
+    /// surviving claims agree on one fractal, or when one claimant holds
+    /// Editor+ at EVERY claimed scope (the latest such wins). `true` when
+    /// the petal left the contested state (mapped, or no claim survived).
+    fn settle_contested_petal(&mut self, verse_id: &str, petal_id: &str) -> bool {
+        let Some(claims) = self.contested_petals.remove(petal_id) else {
+            return false;
+        };
+        let (valid, lapsed): (Vec<PetalMapping>, Vec<PetalMapping>) =
+            claims.into_iter().partition(|c| {
+                self.editor_at(
+                    verse_id,
+                    c.author.as_deref().unwrap_or_default(),
+                    &c.fractal_id,
+                    petal_id,
+                )
+            });
+        for old in lapsed {
+            let author = old.author.unwrap_or_default();
+            self.quarantine_row(QuarantineKind::Petal, petal_id, &author, &old.row);
+        }
+        let fractals: BTreeSet<&str> = valid.iter().map(|c| c.fractal_id.as_str()).collect();
+        let winner = if fractals.len() <= 1 {
+            valid.last()
+        } else {
+            valid.iter().rev().find(|c| {
+                let author = c.author.as_deref().unwrap_or_default();
+                fractals
+                    .iter()
+                    .all(|f| self.editor_at(verse_id, author, f, petal_id))
+            })
+        };
+        match winner.cloned() {
+            Some(winner) => {
+                tracing::info!(verse_id, petal_id, fractal_id = %winner.fractal_id, "contested petal settled");
+                self.petal_fractals
+                    .insert(petal_id.to_string(), vec![winner]);
+                true
+            }
+            None if valid.is_empty() => true,
+            None => {
+                self.contested_petals.insert(petal_id.to_string(), valid);
+                false
+            }
+        }
+    }
+
+    /// The petal's current mapping is inbound-authored and its author no
+    /// longer holds Editor+ at its scope (or, for a move, at the scope it
+    /// replaced).
+    fn top_mapping_lapsed(&self, verse_id: &str, petal_id: &str) -> bool {
+        let Some(history) = self.petal_fractals.get(petal_id) else {
+            return false;
+        };
+        let Some(top) = history.last() else {
+            return false;
+        };
+        let Some(author) = top.author.as_deref() else {
+            return false;
+        };
+        let previous = history.len().checked_sub(2).map(|i| &history[i]);
+        !(self.editor_at(verse_id, author, &top.fractal_id, petal_id)
+            && previous
+                .is_none_or(|prev| self.editor_at(verse_id, author, &prev.fractal_id, petal_id)))
+    }
+
+    /// OF-10b: re-verdict every inbound-authored mapping against the current
+    /// role view (an owner re-pin, a revocation, the demote cascade) — see
+    /// [`Self::top_mapping_lapsed`]. A lapsed mapping is quarantined and the
+    /// one it replaced restored (itself re-verdicted), or the petal is
+    /// unmapped. Mirrors `reverdict_holders`; contested petals are re-judged
+    /// too.
+    fn reverdict_petal_mappings(&mut self, verse_id: &str) {
+        let petal_ids: Vec<String> = self.petal_fractals.keys().cloned().collect();
+        for petal_id in petal_ids {
+            while self.top_mapping_lapsed(verse_id, &petal_id) {
+                let Some(history) = self.petal_fractals.get_mut(&petal_id) else {
+                    break;
+                };
+                let Some(dropped) = history.pop() else {
+                    break;
+                };
+                if history.is_empty() {
+                    self.petal_fractals.remove(&petal_id);
+                }
+                let author = dropped.author.unwrap_or_default();
+                tracing::info!(
+                    verse_id,
+                    petal_id = %petal_id,
+                    fractal_id = %dropped.fractal_id,
+                    author = %author,
+                    "petal mapping's author lost Editor+ — mapping withdrawn and quarantined"
+                );
+                self.quarantine_row(QuarantineKind::Petal, &petal_id, &author, &dropped.row);
+            }
+        }
+        let contested: Vec<String> = self.contested_petals.keys().cloned().collect();
+        for petal_id in contested {
+            self.settle_contested_petal(verse_id, &petal_id);
+        }
     }
 
     /// Build a petal's scope string from just its id via the learned
     /// petal->fractal map. `None` when the petal hasn't converged locally
-    /// yet — the caller quarantines (§2.5: "a row waiting only on the petal
-    /// map comes back with the next open's replay").
+    /// yet, or is contested — the caller quarantines (§2.5: "a row waiting
+    /// only on the petal map comes back with the next open's replay").
     pub fn petal_scope(&self, verse_id: &str, petal_id: &str) -> Option<String> {
-        let fractal_id = self.petal_fractals.get(petal_id)?;
+        let mapping = self.petal_fractals.get(petal_id)?.last()?;
         Some(fe_policy::build_scope(
             verse_id,
-            Some(fractal_id),
+            Some(&mapping.fractal_id),
             Some(petal_id),
         ))
     }
@@ -992,6 +1236,7 @@ impl VerseFabric {
     fn rematerialize(&mut self, verse_id: &str) {
         let Some(owner) = self.owner_did.clone() else {
             self.effective = fe_policy::EffectiveRoles::default();
+            self.reverdict_petal_mappings(verse_id);
             self.reverdict_holders(verse_id);
             self.reevaluate_quarantine(verse_id);
             return;
@@ -1018,6 +1263,8 @@ impl VerseFabric {
                 self.role_statements.remove(&key);
             }
         }
+        // Mappings before holders: a holder's scope comes from the map.
+        self.reverdict_petal_mappings(verse_id);
         self.reverdict_holders(verse_id);
         self.reevaluate_quarantine(verse_id);
     }
@@ -2419,6 +2666,99 @@ mod tests {
         assert!(
             fabric.shard_holders("p1/a1/1").is_none(),
             "a withdrawn holder must be dropped"
+        );
+    }
+
+    /// OF-10a: a first-arriving mapping from a Manager of ANOTHER fractal
+    /// (the squat) cannot hold a petal against its real home — the genuine
+    /// row contests it (unmapped, so the squatter's grant encloses nothing),
+    /// and the contest settles to the claim whose author keeps authority.
+    #[test]
+    fn a_first_arriving_squat_cannot_hold_a_petal_against_its_real_home() {
+        let mut fabric = fabric_with_owner("v1");
+        let (mallory, alice) = ("did:key:mallory", "did:key:alice");
+        let fa = fe_policy::build_scope("v1", Some("fa"), None);
+        let fv = fe_policy::build_scope("v1", Some("fv"), None);
+        fabric.note_entry("v1", &role_change(&fa, mallory, OWNER, "manager", false, 1));
+        fabric.note_entry("v1", &role_change(&fv, alice, OWNER, "editor", false, 2));
+
+        fabric.note_entry("v1", &petal_change_by("p1", "fa", mallory));
+        fabric.note_entry("v1", &petal_change_by("p1", "fv", alice));
+        assert_eq!(
+            fabric.petal_scope("v1", "p1"),
+            None,
+            "the first writer's mapping must not outrank the petal's genuine row"
+        );
+        fabric.note_entry("v1", &shard_change("p1/a1/1", mallory, &[mallory]));
+        assert!(
+            !fabric.shards.contains_key("p1/a1/1"),
+            "a contested petal must not be enclosed by the squatter's grant"
+        );
+
+        // The squatter's grant is revoked: their claim lapses, the genuine one settles.
+        fabric.note_entry("v1", &role_change(&fa, mallory, OWNER, "manager", true, 3));
+        assert_eq!(
+            fabric.petal_scope("v1", "p1"),
+            Some(fe_policy::build_scope("v1", Some("fv"), Some("p1")))
+        );
+
+        // An author with authority over BOTH claimed scopes settles a contest outright.
+        fabric.note_entry("v1", &role_change(&fa, mallory, OWNER, "manager", false, 4));
+        fabric.note_entry("v1", &petal_change_by("p2", "fa", mallory));
+        fabric.note_entry("v1", &petal_change_by("p2", "fv", alice));
+        assert_eq!(fabric.petal_scope("v1", "p2"), None);
+        fabric.note_entry("v1", &petal_change("p2", "fv"));
+        assert_eq!(
+            fabric.petal_scope("v1", "p2"),
+            Some(fe_policy::build_scope("v1", Some("fv"), Some("p2")))
+        );
+    }
+
+    /// OF-10b: a mapping admitted under an OLD role view does not outlive
+    /// it. A false owner's mapping is withdrawn when this node's own
+    /// manifest corrects the pin; a move whose author is later demoted rolls
+    /// back to the mapping it replaced.
+    #[test]
+    fn a_petal_mapping_admitted_under_a_stale_role_view_is_withdrawn_on_re_pin_or_demotion() {
+        let mut fabric = VerseFabric::default();
+        let attacker = "did:key:attacker";
+        fabric.note_entry(
+            "v1",
+            &verse_change("v1", attacker, attacker, serde_json::json!({})),
+        );
+        fabric.note_entry("v1", &petal_change_by("p1", "fa", attacker));
+        assert!(fabric.petal_scope("v1", "p1").is_some());
+
+        fabric.note_local_verse_row(
+            "v1",
+            &serde_json::json!({ "verse_id": "v1", "created_by": OWNER }),
+            "did:key:joiner",
+        );
+        assert_eq!(fabric.owner_did(), Some(OWNER));
+        assert_eq!(
+            fabric.petal_scope("v1", "p1"),
+            None,
+            "the false owner's mapping survived the owner re-pin"
+        );
+
+        let (alice, carol) = ("did:key:alice", "did:key:carol");
+        let fv = fe_policy::build_scope("v1", Some("fv"), None);
+        let fw = fe_policy::build_scope("v1", Some("fw"), None);
+        fabric.note_entry("v1", &role_change(&fv, alice, OWNER, "editor", false, 1));
+        fabric.note_entry("v1", &role_change(&fv, carol, OWNER, "editor", false, 2));
+        fabric.note_entry("v1", &role_change(&fw, carol, OWNER, "editor", false, 3));
+        fabric.note_entry("v1", &petal_change_by("p2", "fv", alice));
+        fabric.note_entry("v1", &petal_change_by("p2", "fw", carol));
+        assert_eq!(
+            fabric.petal_scope("v1", "p2"),
+            Some(fe_policy::build_scope("v1", Some("fw"), Some("p2")))
+        );
+
+        fabric.note_entry("v1", &role_change(&fw, carol, OWNER, "editor", true, 4));
+        assert_eq!(
+            fabric.petal_scope("v1", "p2"),
+            Some(fe_policy::build_scope("v1", Some("fv"), Some("p2"))),
+            "a demoted mover's re-parent must roll back to the mapping it replaced"
         );
     }
 }

@@ -1016,11 +1016,46 @@ style parity holds by construction, not by coincidence.
   is quarantined (`QuarantineKind::Petal`), re-judged on every role change,
   and `petal/` is in the re-read-on-empowerment prefix set. Our own outbound
   petal write is locally admitted (`note_local_petal_row`). A move re-verdicts
-  admitted holders. Residual (same as the DB plane, by construction): the
-  FIRST authorized mapping for a never-seen petal id wins on this node — a
-  squat needs Editor+ under the squatter's own fractal and the victim's
-  ULID before the genuine row lands, and both planes then agree. Test:
+  admitted holders. Test:
   `a_petal_row_without_authority_over_its_scopes_never_bends_the_scope_chain`.
+  **Provenance + contest (R6, OF-10a/b).** Each mapping remembers its
+  `PetalMapping` provenance — the signed author whose Editor+ admitted it
+  (`None` for our own write / own replay of an unmapped petal: locally
+  authoritative, never re-verdicted or contested) — plus a short history
+  (cap 4) of what a move replaced.
+  - *No first-writer-wins (OF-10a).* Before R6 the first authorized
+    mapping squatted: a Manager of fractal `fa` who knew a victim petal's
+    ULID mapped it under `fa` first, and the genuine row (author Editor+ at
+    `fv` only) then failed the move gate forever. Now a conflicting row
+    whose author is Editor+ at its own target but NOT at the incumbent's
+    scope is quarantined only if the incumbent dominates (local, or its
+    author is ALSO Editor+ at the challenger's scope); otherwise the petal
+    becomes **contested** — removed from the map, `petal_scope` = `None`,
+    so every gate on it fails closed and neither side's grant encloses it.
+    It settles (`settle_contested_petal`) when a claim's author holds
+    Editor+ at EVERY claimed scope (latest wins — the owner or a verse
+    Editor re-asserting the row), when lapsed claimants (revoked, re-judged
+    on every `rematerialize`) leave one fractal standing, or on a local
+    write. This also catches the snapshot-shadowing variant: a later
+    attacker row hides the genuine one from a fresh joiner's latest-per-key
+    snapshot, but the §2.5 re-read replays the genuine author's own
+    `petal/` entry, which then contests. Residual (fail-closed
+    availability only): an insider with Editor+ in any fractal who knows a
+    petal's ULID can contest it on peers whose incumbent is inbound, until
+    an author with authority over both scopes re-asserts it.
+  - *Re-verdict on role change (OF-10b).* `rematerialize` (every owner
+    pin/re-pin, admission, revocation, demote cascade) runs
+    `reverdict_petal_mappings` before `reverdict_holders`: an inbound
+    mapping whose author lost Editor+ at its scope — or, for a move, at
+    the scope it replaced — is quarantined and the previous layer restored
+    (itself re-verdicted), else the petal is unmapped. So a false owner's
+    mappings die with the re-pin, and the map converges with what a fresh
+    joiner would judge under the current view. A newer same-fractal row
+    from a current Editor+ refreshes provenance (pushed as a layer), so a
+    petal outlives its creator's demotion while anyone authorized still
+    asserts it. Tests:
+    `a_first_arriving_squat_cannot_hold_a_petal_against_its_real_home`,
+    `a_petal_mapping_admitted_under_a_stale_role_view_is_withdrawn_on_re_pin_or_demotion`.
 - **Quarantine (the `__shards` gate's retry seam).** A gated row that
   cannot be judged yet — the author's role hasn't converged, or the row's
   petal is unknown — is held in a capped, drop-oldest FIFO (1024/verse,
@@ -1744,11 +1779,14 @@ is set only by an AUTHORITATIVE local event and gossip never mutates it.*
   one (`IrohBlobTransport` and iroh-docs fetch raw). Test:
   `a_child_range_request_through_an_untracked_hash_seq_cannot_launder_a_tracked_bundle`.
 - **Persistence.** The map persists to `<p2p_dir>/blob-access-gate.json`
-  (`format: 2`) and loads before the router accepts a request; a format-1
+  (`format: 3`) and loads before the router accepts a request; a format-1
   (W5s) file's `learned` sets — which may carry gossip narrowing — are
   DROPPED on load (fail-closed; the next own fetch re-learns: the
-  reversibility OF-8b asked for). Test:
-  `a_pre_r1_state_file_drops_its_gossip_narrowed_bindings_and_relearns_on_the_next_fetch`.
+  reversibility OF-8b asked for). A format-2 (R1) file's in-data
+  `"\u{0}unvouched-provider"` marker is migrated to the `never_seed` flag
+  (R6). Tests:
+  `a_pre_r1_state_file_drops_its_gossip_narrowed_bindings_and_relearns_on_the_next_fetch`,
+  `an_unvouched_root_stays_unseeded_even_if_a_verse_snapshot_collides_with_the_old_sentinel`.
   A closed verse only drops its snapshot — its roots stay tracked and DENY
   rather than fall back to "untracked → admit".
 - **Provenance rule (R1).** A relayed hint can name a THIRD-PARTY provider
@@ -1756,9 +1794,13 @@ is set only by an AUTHORITATIVE local event and gossip never mutates it.*
   other verse; re-serving those bytes to the hint's verse would launder
   them one hop past that provider's own policy. So when any provider a
   fetch may use never VOUCHED for the tileset/root itself (no
-  authenticated entry from that endpoint — `vouched_providers`), the fetch
-  context also gets `UNVOUCHED_FETCH_CONTEXT`, a verse id no snapshot ever
-  exists for: the root is fetched for local use but never secondary-seeded.
+  authenticated entry from that endpoint — `vouched_providers`), the root
+  is bound `never_seed` (`bind_fetched_root(.., vouched: false)`): fetched
+  for local use but never secondary-seeded; the flag is fixed with the
+  first fetch decision like `learned`. (R1 marked this with a sentinel
+  verse id inside `learned`; OF-10c replaced it with the flag because a
+  sentinel in data is one colliding `set_verse_access` away from failing
+  open.)
   Test: `a_root_fetched_through_an_unvouched_provider_is_never_secondary_seeded`.
 - **Residuals (fail-closed availability only, recorded):** (1) a fetch
   context may include verses an attacker advertised the tileset/root on

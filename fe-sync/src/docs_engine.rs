@@ -61,8 +61,14 @@ pub const BLOB_GATE_FILE: &str = "blob-access-gate.json";
 /// `learned` set after the fetch, so a format-1 `learned` set may carry
 /// attacker narrowing; it is dropped on load (fail-closed: the root denies
 /// on the learned path until this node's next own fetch re-learns it).
+/// Format 2 (R1) marked an unvouched fetch with [`LEGACY_UNVOUCHED_SENTINEL`]
+/// inside `learned`; format 3 (R6, OF-10c) migrates it to `never_seed`.
 /// See `src/AGENTS.md` §tileset-security "binding model".
-const GATE_STATE_FORMAT: u32 = 2;
+const GATE_STATE_FORMAT: u32 = 3;
+
+/// The format-2 in-data marker for an unvouched fetch context — only ever
+/// read back during the format-3 migration, never written.
+const LEGACY_UNVOUCHED_SENTINEL: &str = "\u{0}unvouched-provider";
 
 /// What this node learned about one tileset HashSeq it serves, published,
 /// or fetched — and therefore how a request for it is admitted. Binding
@@ -81,6 +87,10 @@ struct RootBinding {
     /// verse has no snapshot and denies). Fixed once set — neither a later
     /// fetch nor any inbound ad changes it (OF-8b).
     learned: std::collections::BTreeSet<String>,
+    /// The first fetch went through a provider that never vouched for the
+    /// root (R1 provenance rule): fetched for local use, never re-served on
+    /// the learned path. Fixed with `learned`, at the first fetch decision.
+    never_seed: bool,
     /// The HashSeq's children (index + bundles), once known (OF-6b).
     /// Content-addressed, so set once.
     children: Vec<String>,
@@ -96,11 +106,17 @@ impl RootBinding {
     /// The learned (secondary-seeder) path: `did` is a Viewer+ of every
     /// verse of the fixed fetch context.
     fn learned_admits(&self, did: &str, access: &HashMap<String, VerseAccessSnapshot>) -> bool {
-        !self.learned.is_empty()
+        !self.never_seed
+            && !self.learned.is_empty()
             && self
                 .learned
                 .iter()
                 .all(|v| access.get(v).is_some_and(|s| s.admits(did)))
+    }
+
+    /// The first fetch decision has fixed this root's learned binding.
+    fn is_fetch_bound(&self) -> bool {
+        self.never_seed || !self.learned.is_empty()
     }
 }
 
@@ -141,10 +157,17 @@ impl TrackedContent {
     /// anything was dropped.
     fn upgrade(&mut self) -> bool {
         let mut dropped = false;
-        if self.format < GATE_STATE_FORMAT {
+        if self.format < 2 {
             for binding in self.roots.values_mut() {
                 dropped |= !binding.learned.is_empty();
                 binding.learned.clear();
+            }
+        }
+        if self.format < 3 {
+            for binding in self.roots.values_mut() {
+                if binding.learned.remove(LEGACY_UNVOUCHED_SENTINEL) {
+                    binding.never_seed = true;
+                }
             }
         }
         self.format = GATE_STATE_FORMAT;
@@ -257,9 +280,9 @@ impl BlobAccessGate {
             .insert(verse_id.to_string(), snapshot);
     }
 
-    /// [`Self::bind_fetched_root`] with a single-verse fetch context.
+    /// [`Self::bind_fetched_root`] with a single-verse, vouched fetch context.
     pub fn record_tileset_root(&self, verse_id: &str, root: [u8; 32]) {
-        self.bind_fetched_root(root, std::iter::once(verse_id));
+        self.bind_fetched_root(root, std::iter::once(verse_id), true);
     }
 
     /// This node decided to fetch `root` in the context of `verses` (every
@@ -270,8 +293,15 @@ impl BlobAccessGate {
     /// has no entry point here at all — never changes it, so neither can
     /// re-bind a root another verse already owns, nor narrow it after the
     /// fact (the pre-R1 gossip narrowing + persisted overflow was an
-    /// attacker-triggerable durable refuse-everyone state).
-    pub fn bind_fetched_root<'a>(&self, root: [u8; 32], verses: impl IntoIterator<Item = &'a str>) {
+    /// attacker-triggerable durable refuse-everyone state). `vouched: false`
+    /// (some provider never vouched for the root) binds it `never_seed`
+    /// (OF-10c: a flag, not a sentinel verse id inside `learned`).
+    pub fn bind_fetched_root<'a>(
+        &self,
+        root: [u8; 32],
+        verses: impl IntoIterator<Item = &'a str>,
+        vouched: bool,
+    ) {
         let context: std::collections::BTreeSet<String> =
             verses.into_iter().map(str::to_string).collect();
         let changed = {
@@ -279,8 +309,9 @@ impl BlobAccessGate {
             let key = hex::encode(root);
             let newly_tracked = !tracked.roots.contains_key(&key);
             let binding = tracked.roots.entry(key).or_default();
-            if binding.learned.is_empty() && !context.is_empty() {
+            if !binding.is_fetch_bound() && (!context.is_empty() || !vouched) {
                 binding.learned = context;
+                binding.never_seed = !vouched;
                 true
             } else {
                 if !context.is_empty() && binding.learned != context {
@@ -1097,7 +1128,7 @@ mod tests {
 
         for i in 0..100 {
             let verse = format!("attacker-verse-{i}");
-            gate.bind_fetched_root(root, ["attacker-verse", verse.as_str()]);
+            gate.bind_fetched_root(root, ["attacker-verse", verse.as_str()], true);
         }
         assert!(
             !gate.admits_hash("did:key:attacker", &root),
@@ -1155,8 +1186,64 @@ mod tests {
         restarted.set_verse_access("v", viewers(&["did:key:viewer"]));
         assert!(
             restarted.admits_hash("did:key:viewer", &bundle),
-            "a format-2 binding survives the restart"
+            "a format-3 binding survives the restart"
         );
+    }
+
+    /// OF-10c: an unvouched fetch is an explicit `never_seed` flag, not a
+    /// sentinel verse id inside `learned`. A format-2 file's sentinel
+    /// migrates to the flag on load — so even a snapshot registered under
+    /// the old sentinel id (the collision a refactor could introduce) opens
+    /// nothing — and a later vouched fetch never re-binds it.
+    #[test]
+    fn an_unvouched_root_stays_unseeded_even_if_a_verse_snapshot_collides_with_the_old_sentinel() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(BLOB_GATE_FILE);
+        let (root, bundle) = ([21u8; 32], [22u8; 32]);
+        let format_two = serde_json::json!({
+            "format": 2,
+            "roots": {
+                hex::encode(root): {
+                    "published": false,
+                    "learned": ["v", LEGACY_UNVOUCHED_SENTINEL],
+                    "children": [hex::encode(bundle)],
+                }
+            }
+        });
+        std::fs::write(&path, serde_json::to_vec(&format_two).unwrap()).unwrap();
+
+        let open_to_all = VerseAccessSnapshot {
+            owner_did: None,
+            open_to_all: true,
+            viewer_dids: HashSet::new(),
+        };
+        let gate = BlobAccessGate::load(path.clone());
+        gate.set_verse_access("v", viewers(&["did:key:viewer"]));
+        gate.set_verse_access(LEGACY_UNVOUCHED_SENTINEL, open_to_all.clone());
+        gate.record_tileset_root("v", root);
+        assert!(
+            !gate.admits_hash("did:key:viewer", &root)
+                && !gate.admits_hash("did:key:viewer", &bundle),
+            "a root fetched through an unvouched provider was secondary-seeded"
+        );
+
+        let fresh = [23u8; 32];
+        gate.bind_fetched_root(fresh, ["v"], false);
+        gate.record_tileset_root("v", fresh);
+        assert!(!gate.admits_hash("did:key:viewer", &fresh));
+
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted["format"], GATE_STATE_FORMAT);
+        assert!(
+            !persisted.to_string().contains("unvouched-provider"),
+            "the sentinel must not be written back"
+        );
+        let restarted = BlobAccessGate::load(path);
+        restarted.set_verse_access("v", viewers(&["did:key:viewer"]));
+        restarted.set_verse_access(LEGACY_UNVOUCHED_SENTINEL, open_to_all);
+        assert!(!restarted.admits_hash("did:key:viewer", &root));
+        assert!(!restarted.admits_hash("did:key:viewer", &fresh));
     }
 
     /// OF-8a (HIGH): a fetched HashSeq whose child list names a VICTIM

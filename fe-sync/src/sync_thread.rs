@@ -2999,13 +2999,12 @@ fn offline_meta_event(peer_id: String, tileset_id: String) -> SyncEvent {
 /// the store (the gate then re-serves it only to a Viewer+ of all of them).
 /// Only the FIRST fetch decision binds; see `BlobAccessGate::bind_fetched_root`.
 ///
-/// Provenance rule (R1): when any of `providers` never VOUCHED for this
-/// tileset/root itself (a relayed hint's named provider, or an explicit
-/// override nobody vouched for), the context also gets
-/// [`UNVOUCHED_FETCH_CONTEXT`], a verse no snapshot ever exists for — so the
-/// root is fetched for local use but never secondary-seeded. A hint can name
-/// a third-party provider that serves THIS node on the strength of its
-/// membership in some other verse; re-serving those bytes to the hint's
+/// Provenance rule (R1, flag since R6/OF-10c): when any of `providers` never
+/// VOUCHED for this tileset/root itself (a relayed hint's named provider, or
+/// an explicit override nobody vouched for), the root is bound as
+/// `never_seed` — fetched for local use but never secondary-seeded. A hint
+/// can name a third-party provider that serves THIS node on the strength of
+/// its membership in some other verse; re-serving those bytes to the hint's
 /// verse would launder them one hop past the provider's own policy.
 fn bind_fetched_root(
     gate: Option<&BlobAccessGate>,
@@ -3015,21 +3014,14 @@ fn bind_fetched_root(
     providers: &[ProviderRef],
 ) {
     if let Some(gate) = gate {
-        let mut verses = providers_map.verses_for(tileset_id, root);
+        let verses = providers_map.verses_for(tileset_id, root);
         let vouched = providers_map.vouched_providers(tileset_id, root);
         let all_vouched = providers.iter().all(|provider| {
             IrohBlobTransport::parse_provider(provider).is_ok_and(|addr| vouched.contains(&addr.id))
         });
-        if !all_vouched {
-            verses.insert(UNVOUCHED_FETCH_CONTEXT.to_string());
-        }
-        gate.bind_fetched_root(root, verses.iter().map(String::as_str));
+        gate.bind_fetched_root(root, verses.iter().map(String::as_str), all_vouched);
     }
 }
-
-/// Fetch-context marker for a root fetched through a provider that never
-/// vouched for it: no verse has this id, so the learned path denies (R1).
-const UNVOUCHED_FETCH_CONTEXT: &str = "\u{0}unvouched-provider";
 
 /// Handle [`SyncCommand::RequestTilesetMeta`]: resolve the tileset's root
 /// from a prior advertisement (or `peer_id` as an explicit provider
