@@ -138,6 +138,7 @@ Containers have no OS keychain; the relay's `fe-identity` build excludes
 |----------|-------------|
 | `FE_KEYSTORE_BACKEND` | Set to `env` (image default) — env-var-backed secret store |
 | `FE_SECRET_{SERVICE}_{ACCOUNT}` | One variable per secret; names uppercased, non-alphanumerics replaced with `_` |
+| `FE_SECRET_FRACTALENGINE_SYNC_RELAY_TOKEN` | Relay access token (A14, W6-8) — sent as `Authorization: Bearer` only to a `Custom` relay over TLS or loopback `http://`, never to the default n0 relays (`fe-sync/src/AGENTS.md` §relay-health) |
 
 ```bash
 docker run -p 8765:8765 -v relay-data:/data \

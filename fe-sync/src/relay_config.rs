@@ -6,6 +6,8 @@
 
 use std::str::FromStr;
 
+use fe_identity::SecretStore;
+
 /// Which relay servers [`crate::endpoint::SyncEndpoint`] should bind against.
 ///
 /// The default matches iroh's own out-of-the-box behavior (n0-hosted relay
@@ -32,6 +34,11 @@ pub enum RelayConfigError {
     Empty,
     /// One of the supplied URLs failed iroh's `RelayUrl` parser.
     InvalidUrl { raw: String, reason: String },
+    /// A [`RelayAccessToken`] was configured for a `Custom` URL that is
+    /// neither `https://` nor loopback `http://` (A14) — refused before the
+    /// token is ever sent, so it can never leak over a transport an
+    /// eavesdropper could read.
+    InsecureTokenTransport { raw: String },
 }
 
 impl std::fmt::Display for RelayConfigError {
@@ -39,6 +46,10 @@ impl std::fmt::Display for RelayConfigError {
         match self {
             Self::Empty => write!(f, "relay URL list was empty after parsing"),
             Self::InvalidUrl { raw, reason } => write!(f, "invalid relay URL {raw:?}: {reason}"),
+            Self::InsecureTokenTransport { raw } => write!(
+                f,
+                "refusing to send a relay access token to {raw:?}: not https and not loopback http"
+            ),
         }
     }
 }
@@ -156,6 +167,102 @@ impl RelayConfig {
     pub fn is_default_infra(&self) -> bool {
         matches!(self, Self::Default)
     }
+
+    /// Like [`Self::to_relay_mode`], but attaches `token` as a bearer token
+    /// to every relay in the map — only for [`Self::Custom`], and only when
+    /// every one of its URLs is secure for carrying it (A14; RL-2). A `None`
+    /// token, or `Default`/`Disabled`, behaves exactly like
+    /// [`Self::to_relay_mode`]: there is no operator-controlled relay on
+    /// `Default`/`Disabled` to attach a token to, and the n0 fleet never
+    /// sees it either way.
+    pub fn to_relay_mode_with_token(
+        &self,
+        token: Option<&RelayAccessToken>,
+    ) -> Result<iroh::RelayMode, RelayConfigError> {
+        let mode = self.to_relay_mode()?;
+        let (Self::Custom(urls), Some(token)) = (self, token) else {
+            return Ok(mode);
+        };
+        for raw in urls {
+            let url = iroh::RelayUrl::from_str(raw).map_err(|e| RelayConfigError::InvalidUrl {
+                raw: raw.clone(),
+                reason: e.to_string(),
+            })?;
+            if !token_transport_is_secure(&url) {
+                return Err(RelayConfigError::InsecureTokenTransport { raw: raw.clone() });
+            }
+        }
+        let iroh::RelayMode::Custom(map) = mode else {
+            unreachable!("RelayConfig::Custom always converts to RelayMode::Custom")
+        };
+        Ok(iroh::RelayMode::Custom(
+            map.with_auth_token(token.as_str().to_string()),
+        ))
+    }
+}
+
+/// `(service, account)` fe-identity's `EnvBackend` reads the relay access
+/// token from — `FE_SECRET_FRACTALENGINE_SYNC_RELAY_TOKEN` (A14).
+const RELAY_TOKEN_SECRET_SERVICE: &str = "fractalengine";
+const RELAY_TOKEN_SECRET_ACCOUNT: &str = "sync_relay_token";
+
+/// An operator-supplied relay access token, attached as an `Authorization:
+/// Bearer` header only to [`RelayConfig::Custom`] relays reached over TLS or
+/// loopback (`RelayConfig::to_relay_mode_with_token`, A14).
+///
+/// `Debug` redacts the value to `RelayAccessToken(***)`. There is
+/// deliberately no `Display` and no `Serialize`/`Deserialize` impl, so the
+/// token can never leak through a `?relay_config`-style log line
+/// (`endpoint.rs`'s and `sync_thread.rs`'s existing `Debug` logs stay safe
+/// without an edit, because the token never lives on [`RelayConfig`] or
+/// `settings.ron` — only ever on this standalone type, read fresh from the
+/// environment at bind time).
+#[derive(Clone, PartialEq, Eq)]
+pub struct RelayAccessToken(String);
+
+impl std::fmt::Debug for RelayAccessToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RelayAccessToken(***)")
+    }
+}
+
+impl RelayAccessToken {
+    /// Wrap a raw token value (test and CLI construction).
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    /// Read the relay access token from
+    /// `FE_SECRET_FRACTALENGINE_SYNC_RELAY_TOKEN` via fe-identity's
+    /// [`fe_identity::EnvBackend`]. `None` when unset — the common case,
+    /// since most deployments run tokenless (or `Default`/n0) relays.
+    pub fn from_env() -> Option<Self> {
+        fe_identity::EnvBackend::new()
+            .get(RELAY_TOKEN_SECRET_SERVICE, RELAY_TOKEN_SECRET_ACCOUNT)
+            .ok()
+            .flatten()
+            .map(Self)
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// `true` if a bearer token may safely be sent to `url`: TLS (`https`), or
+/// plain `http` to a loopback host (a local dev relay container — the token
+/// never crosses a real network either way).
+fn token_transport_is_secure(url: &iroh::RelayUrl) -> bool {
+    if url.scheme() == "https" {
+        return true;
+    }
+    url.scheme() == "http"
+        && url.host_str().is_some_and(|host| {
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        })
 }
 
 /// Observed reachability of the configured relay(s), surfaced to consumers via
@@ -539,5 +646,77 @@ mod tests {
         assert!(RelayHealth::Degraded.is_problem());
         assert!(RelayHealth::Unreachable.is_problem());
         assert!(!RelayHealth::Disabled.is_problem());
+    }
+
+    // -------------------------------------------------------------------
+    // RelayAccessToken / to_relay_mode_with_token (A14, W6-8)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn relay_tokens_attach_only_to_custom_relays_over_tls_or_loopback() {
+        let token = RelayAccessToken::new("s3cr3t-token");
+
+        // Default and Disabled never carry a token: there is no
+        // operator-controlled relay to attach it to.
+        assert_eq!(
+            RelayConfig::Default
+                .to_relay_mode_with_token(Some(&token))
+                .unwrap(),
+            iroh::RelayMode::Default
+        );
+        assert_eq!(
+            RelayConfig::Disabled
+                .to_relay_mode_with_token(Some(&token))
+                .unwrap(),
+            iroh::RelayMode::Disabled
+        );
+
+        // Custom https: attached.
+        let https = RelayConfig::Custom(vec!["https://relay.example.com".to_string()]);
+        match https.to_relay_mode_with_token(Some(&token)).unwrap() {
+            iroh::RelayMode::Custom(map) => {
+                let url: iroh::RelayUrl = "https://relay.example.com".parse().unwrap();
+                assert_eq!(
+                    map.get(&url).unwrap().auth_token.as_deref(),
+                    Some("s3cr3t-token")
+                );
+            }
+            other => panic!("expected RelayMode::Custom, got {other:?}"),
+        }
+
+        // Custom http://127.0.0.1 (loopback): attached.
+        let loopback = RelayConfig::Custom(vec!["http://127.0.0.1:3340".to_string()]);
+        match loopback.to_relay_mode_with_token(Some(&token)).unwrap() {
+            iroh::RelayMode::Custom(map) => {
+                let url: iroh::RelayUrl = "http://127.0.0.1:3340".parse().unwrap();
+                assert_eq!(
+                    map.get(&url).unwrap().auth_token.as_deref(),
+                    Some("s3cr3t-token")
+                );
+            }
+            other => panic!("expected RelayMode::Custom, got {other:?}"),
+        }
+
+        // Custom http://relay.example (non-loopback plaintext): refused.
+        let insecure = RelayConfig::Custom(vec!["http://relay.example".to_string()]);
+        let err = insecure
+            .to_relay_mode_with_token(Some(&token))
+            .unwrap_err();
+        assert!(
+            matches!(err, RelayConfigError::InsecureTokenTransport { .. }),
+            "{err:?}"
+        );
+
+        // No token: Custom behaves exactly like `to_relay_mode`, even over
+        // plaintext — refusing a token is not the same as refusing the URL.
+        assert!(insecure.to_relay_mode_with_token(None).is_ok());
+    }
+
+    #[test]
+    fn a_relay_access_token_never_appears_in_debug_output() {
+        let token = RelayAccessToken::new("super-secret-relay-token-value");
+        let rendered = format!("{token:?}");
+        assert_eq!(rendered, "RelayAccessToken(***)");
+        assert!(!rendered.contains("super-secret-relay-token-value"));
     }
 }

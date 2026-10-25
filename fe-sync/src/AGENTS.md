@@ -685,6 +685,59 @@ across `#[test]` functions in the same test binary would be order-dependent;
 the pure decision of *whether* to warn (`RelayConfig::is_default_infra`) is
 what's tested instead.
 
+### Self-hosting iroh-relay 1.x (IROH-1X relay-assisted AC, W6-8)
+
+Production `Custom` relays should run the `iroh-relay` binary (the
+`iroh-relay` crate's `server` feature), self-hosted rather than the default
+n0 fleet. `--dev` (the flag `fe-sync/tests/relay_assisted_test.rs` runs the
+container with) is **test-only**: it binds plain HTTP, defaults
+`access = everyone`, and has QUIC address discovery off. It is never the
+production invocation — production needs TLS/ACME (the binary's own `--tls`
+flags, or a reverse proxy terminating TLS in front of it) and an access
+control mode narrower than "everyone", normally `access.shared_token` in its
+TOML config:
+
+```toml
+http_bind_addr = "0.0.0.0:3340"
+access.shared_token = ["<a real token>"]
+```
+
+The tests pin `n0computer/iroh-relay:v1.3.0` by digest (A13) and manage the
+container's whole lifecycle themselves (start, `/healthz` poll, an
+exact-name `rm -f` in a `Drop` guard that also runs on panic) through
+`docker` or `podman` (`FE_CONTAINER_RUNTIME` override, else the first
+runtime whose `<rt> info` succeeds); with neither available they skip,
+unless `FE_REQUIRE_RELAY_CONTAINER=1` turns the skip into a failure — the
+CI step's contract, same shape as `skip_unless_required` in
+`p2p_store_migration.rs` §store-migration.
+
+**Relay access token (A14).** `relay_config::RelayAccessToken` is a
+standalone newtype — never a field of `RelayConfig` itself — read from
+`FE_SECRET_FRACTALENGINE_SYNC_RELAY_TOKEN` via fe-identity's `EnvBackend`
+(`RelayAccessToken::from_env`), and attached as `Authorization: Bearer` only
+to `RelayConfig::Custom` relays reached over `https://` or loopback `http://`
+(`RelayConfig::to_relay_mode_with_token`; a non-loopback plaintext URL is
+refused with `RelayConfigError::InsecureTokenTransport` before the token is
+ever sent — RL-2). `Default` and `Disabled` never carry it: there is no
+operator relay to attach it to, and the n0 fleet must never see an
+operator's token. `SyncEndpoint::new` delegates to
+`SyncEndpoint::with_relay_token(secret, relay_config,
+RelayAccessToken::from_env())`, so production (`sync_thread.rs:527`'s only
+call site) picks up the token with **no edit to that file**. The token's
+`Debug` redacts to `RelayAccessToken(***)`, and it has no `Display` or
+`Serialize` impl, so the existing `?relay_config`-style logs
+(`endpoint.rs`, `sync_thread.rs:459`) stay safe without an edit either —
+the token simply never lives on the type those logs format (RL-1).
+
+The token-gated test leg runs `iroh-relay --config-path` against a 3-line
+TOML whose `access.shared_token` entry is a decoy; the real, per-run random
+token is passed as `IROH_RELAY_ACCESS_TOKEN` through the child container
+process's own **environment** (`docker`/`podman run -e
+IROH_RELAY_ACCESS_TOKEN`, no `=value` on argv) — `iroh-relay` itself treats
+that env var as an override that replaces its config's token list
+entirely. The token is never written to a file, a log, or this process's
+own environment.
+
 ## §lifecycle-forwarding (`lifecycle.rs`, track `node_lifecycle_addressing_20260725` FR-6)
 
 `LifecycleForwarder` wraps a `crossbeam::channel::Sender<LifecycleEvent>` (the

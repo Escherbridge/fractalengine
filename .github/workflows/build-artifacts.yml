@@ -439,6 +439,28 @@ jobs:
           grep -q 'p2p_store_migration::tests::legacy_v035_fixture_migrates_and_reads_back \.\.\. ok' \
             "$RUNNER_TEMP/store-migration-test.log"
 
+      # IROH-1X's last acceptance criterion (fe-sync/src/AGENTS.md
+      # §relay-health "Self-hosting iroh-relay 1.x"): relay-assisted
+      # connectivity against a locally run iroh-relay 1.3 container. Same
+      # -p set + skip-or-fail contract as the store-migration step above.
+      # Windows CI cannot run Linux containers, so this step only runs on
+      # the Linux job; the test self-skips there instead of failing.
+      - name: Relay-assisted acceptance (iroh-relay 1.3 container required)
+        timeout-minutes: 30
+        shell: bash
+        env:
+          FE_REQUIRE_RELAY_CONTAINER: "1"
+          FE_CONTAINER_RUNTIME: docker
+        run: |
+          cargo test --release -p fe-ui -p fe-terrain -p fractalengine -p fe-sync --test relay_assisted_test \
+            -- --color never 2>&1 | tee "$RUNNER_TEMP/relay-assisted-test.log"
+          for t in relay_assisted_tileset_fetch_through_a_self_hosted_iroh_relay \
+                   a_relay_only_dialer_reaches_its_peer_solely_through_the_relay \
+                   a_provider_naming_an_untrusted_relay_is_never_dialed \
+                   a_token_gated_relay_admits_the_configured_token_and_refuses_others; do
+            grep -q "$t \.\.\. ok" "$RUNNER_TEMP/relay-assisted-test.log"
+          done
+
       # One artifact per platform holding both archives. The .tar.gz keeps the
       # binary's executable bit (upload-artifact drops Unix modes on loose files).
       - name: Upload packages

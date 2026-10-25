@@ -11,7 +11,7 @@ use std::time::Duration;
 use anyhow::Result;
 use iroh::address_lookup::MemoryLookup;
 
-use crate::relay_config::RelayConfig;
+use crate::relay_config::{RelayAccessToken, RelayConfig};
 
 /// Wraps an [`iroh::Endpoint`] with convenience accessors for the sync thread.
 pub struct SyncEndpoint {
@@ -22,6 +22,10 @@ pub struct SyncEndpoint {
     address_book: MemoryLookup,
     /// Whether any relay is configured (`false` for [`RelayConfig::Disabled`]).
     relay_enabled: bool,
+    /// Whether a [`RelayAccessToken`] was attached at bind time (status
+    /// surface only, A14 — the token value itself never lives on this
+    /// struct; `to_relay_mode_with_token` consumes it before `bind()`).
+    relay_token_configured: bool,
 }
 
 /// How long [`SyncEndpoint::node_addr`] waits for a home relay — iroh's own
@@ -83,8 +87,27 @@ impl SyncEndpoint {
     /// Built on `presets::Minimal` (crypto provider only): no pkarr/DNS
     /// address publishing — peers are addressed out-of-band through the
     /// in-memory address book, exactly as on 0.35.
+    ///
+    /// Delegates to [`Self::with_relay_token`] with
+    /// [`RelayAccessToken::from_env`], so production picks up an operator's
+    /// relay token with **no edit to this call's callers** (A14;
+    /// `fe-sync/src/sync_thread.rs:527` is this method's only production
+    /// call site and is unchanged by W6-8).
     pub async fn new(secret_key: iroh::SecretKey, relay_config: &RelayConfig) -> Result<Self> {
-        let relay_mode = relay_config.to_relay_mode()?;
+        Self::with_relay_token(secret_key, relay_config, RelayAccessToken::from_env()).await
+    }
+
+    /// Like [`Self::new`], but with an explicit relay access token instead
+    /// of reading [`RelayAccessToken::from_env`] — the test seam for a
+    /// token-gated relay (A14).
+    pub async fn with_relay_token(
+        secret_key: iroh::SecretKey,
+        relay_config: &RelayConfig,
+        token: Option<RelayAccessToken>,
+    ) -> Result<Self> {
+        let relay_mode = relay_config
+            .to_relay_mode_with_token(token.as_ref())
+            .map_err(|e| anyhow::anyhow!("resolving relay mode: {e}"))?;
         if relay_config.is_default_infra() {
             warn_default_relay_once();
         }
@@ -98,15 +121,20 @@ impl SyncEndpoint {
             .await
             .map_err(|e| anyhow::anyhow!("binding iroh endpoint: {e}"))?;
         BOUND_ENDPOINTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // Only a boolean crosses into this log line — never the token
+        // itself, and `relay_config` (the `?`-Debug'd value here and at
+        // `sync_thread.rs:459`) never holds it either (A14/RL-1).
         tracing::info!(
             congestion_controller = "bbr3",
             relay_config = ?relay_config,
+            relay_token_configured = token.is_some(),
             "iroh endpoint bound"
         );
         Ok(Self {
             endpoint,
             address_book,
             relay_enabled: !matches!(relay_config, RelayConfig::Disabled),
+            relay_token_configured: token.is_some(),
         })
     }
 
@@ -155,6 +183,12 @@ impl SyncEndpoint {
     /// Whether a relay is configured for this endpoint.
     pub fn relay_enabled(&self) -> bool {
         self.relay_enabled
+    }
+
+    /// Whether a [`RelayAccessToken`] was attached at bind time (status
+    /// surface only — A14).
+    pub fn relay_token_configured(&self) -> bool {
+        self.relay_token_configured
     }
 
     /// A reference to the inner endpoint, for protocol integration.
