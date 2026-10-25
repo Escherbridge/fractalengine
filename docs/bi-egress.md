@@ -116,10 +116,20 @@ $duckdb = '.\tools\duckdb\duckdb.exe'
 ```
 
 **Schema notes:**
-- Nodes parquet: `node_id`, `petal_id` (VARCHAR); `position` (GeoParquet **WKB** `Point Z` geometry — local frame `x, elevation, z` or, with `coords=latlon`, `lon, lat, ele`); `rotation_x/y/z`, `scale_x/y/z` (FLOAT); `properties` (JSON text); `updated_at_ms` (UBIGINT). There are no `position_x/y/z` columns in parquet.
-- Nodes CSV: `node_id,petal_id,x_m,y_m,z_m` (or `lon,lat,ele_m`), then rotation/scale/properties/updated_at_ms.
+- Nodes parquet: `node_id`, `petal_id` (VARCHAR); `position` (GeoParquet **WKB** `Point Z` geometry — **east, north, up** in the local frame, or, with `coords=latlon`, `lon, lat, ele`); `rotation_x/y/z`, `scale_x/y/z` (FLOAT); `properties` (JSON text); `updated_at_ms` (UBIGINT). There are no `position_x/y/z` columns in parquet.
+- Nodes CSV: `node_id,petal_id,x_m,y_m,z_m` (or `lon,lat,ele_m`), then rotation/scale/properties/updated_at_ms. CSV always stays in the engine frame (`x, elevation, z`) — the WKB east-north-up reorder below is parquet-only.
 - Readings: `reading_id, node_id, petal_id, metric, value (DOUBLE), units, recorded_at, recorded_at_ms (BIGINT)` plus the anchor node's position (`position` WKB in parquet; `anchor_x_m/anchor_y_m/anchor_z_m` or `anchor_lon/anchor_lat/anchor_ele_m` in CSV).
-- GeoParquet `geo` metadata: petal-local exports carry `crs: null` (unspecified — local meters have no standard CRS); `coords=latlon` exports omit `crs` (= OGC:CRS84, lon/lat). The human-readable label is in the custom `fe:crs` key. Stock DuckDB reads both without settings; only parquet produced before 2026-10-09 needs `SET enable_geoparquet_conversion=false;`.
+- GeoParquet `geo` metadata: petal-local exports carry `crs: null` (unspecified — local meters have no standard CRS) plus an informational `fe:axes: "east,north,up"` key; `coords=latlon` exports omit both `crs` and `fe:axes` (= OGC:CRS84, lon/lat). The human-readable label is in the custom `fe:crs` key. Stock DuckDB reads both without settings; only parquet produced before 2026-10-09 needs `SET enable_geoparquet_conversion=false;`.
+- **Axis order (parquet only, EGR-WKB):** the engine stores positions as `[x, y, z]` with `y` up. The WKB column reorders petal-local output to GIS-standard east-north-up — `[east, north, up] = [x, -z, y]` — so a spatial reader's `ST_X`/`ST_Y`/`ST_Z` line up with compass east/north and height, with no sign-flip surprise. `coords=latlon` output is unaffected (already `[lon, lat, ele]`). Use DuckDB's `spatial` extension to read it directly:
+
+  ```sql
+  INSTALL spatial; LOAD spatial;
+  SELECT node_id,
+         ST_X(ST_GeomFromWKB(position)) AS east,
+         ST_Y(ST_GeomFromWKB(position)) AS north,
+         ST_Z(ST_GeomFromWKB(position)) AS up
+  FROM read_parquet('<node share url>');
+  ```
 
 Range requests work: DuckDB's httpfs issues ranged GETs and the relay answers 206 Partial Content. Every export carries a strong `ETag` and honors `If-Range` (a stale validator gets the full body, never a mismatched slice).
 

@@ -62,6 +62,10 @@ impl GeoParquetMeta {
         });
         if !self.lonlat_crs84 {
             column["crs"] = serde_json::Value::Null;
+            // EGR-WKB, A7: informational only — the reorder itself is
+            // decided from `crs`'s presence (see `lonlat_from_meta`), not
+            // from this string.
+            column["fe:axes"] = serde_json::Value::String("east,north,up".into());
         }
         let doc = serde_json::json!({
             "version": "1.0.0",
@@ -106,7 +110,7 @@ fn write_nodes_to<W: std::io::Write + Send>(
     meta: &GeoParquetMeta,
 ) -> Result<()> {
     let schema = Arc::new(codec::nodes_schema(&meta.primary_geometry_column));
-    let batch = codec::snapshots_to_batch(schema.clone(), snapshots)?;
+    let batch = codec::snapshots_to_batch(schema.clone(), snapshots, meta.lonlat_crs84)?;
     let props = WriterProperties::builder()
         .set_key_value_metadata(Some(vec![KeyValue::new(
             GEO_KEY.to_string(),
@@ -140,7 +144,7 @@ fn write_readings_to<W: std::io::Write + Send>(
     meta: &GeoParquetMeta,
 ) -> Result<()> {
     let schema = Arc::new(codec::readings_schema(&meta.primary_geometry_column));
-    let batch = codec::readings_to_batch(schema.clone(), rows)?;
+    let batch = codec::readings_to_batch(schema.clone(), rows, meta.lonlat_crs84)?;
     let props = WriterProperties::builder()
         .set_key_value_metadata(Some(vec![KeyValue::new(
             GEO_KEY.to_string(),
@@ -155,41 +159,74 @@ fn write_readings_to<W: std::io::Write + Send>(
 }
 
 /// Read reading rows back from a GeoParquet-shaped file (test/read-back use).
+/// EGR-WKB: the output frame is read off the file's own `geo` metadata, so a
+/// local file inverts east-north-up back to engine-frame; a lon/lat file is
+/// identity.
 pub fn read_readings_parquet(path: &Path) -> Result<Vec<ReadingSnapshot>> {
     let file =
         File::open(path).with_context(|| format!("opening parquet file {}", path.display()))?;
     let builder =
         ParquetRecordBatchReaderBuilder::try_new(file).context("reading parquet footer")?;
-    let geometry_column =
-        geometry_column_from_meta(builder.metadata().file_metadata().key_value_metadata());
+    let kvs = builder.metadata().file_metadata().key_value_metadata();
+    let geometry_column = geometry_column_from_meta(kvs);
+    let lonlat = lonlat_from_meta(kvs, &geometry_column);
     let reader = builder.build().context("building parquet reader")?;
     let mut out = Vec::new();
     for batch in reader {
         codec::batch_to_readings(
             &batch.context("decoding record batch")?,
             &geometry_column,
+            lonlat,
             &mut out,
         )?;
     }
     Ok(out)
 }
 
-/// Read entity snapshots back from a GeoParquet file.
+/// Read entity snapshots back from a GeoParquet file (see
+/// [`read_readings_parquet`]'s EGR-WKB note — the same frame inversion
+/// applies here).
 pub fn read_nodes_parquet(path: &Path) -> Result<Vec<EntitySnapshot>> {
     let file =
         File::open(path).with_context(|| format!("opening parquet file {}", path.display()))?;
     let builder =
         ParquetRecordBatchReaderBuilder::try_new(file).context("reading parquet footer")?;
-    let geometry_column =
-        geometry_column_from_meta(builder.metadata().file_metadata().key_value_metadata());
+    let kvs = builder.metadata().file_metadata().key_value_metadata();
+    let geometry_column = geometry_column_from_meta(kvs);
+    let lonlat = lonlat_from_meta(kvs, &geometry_column);
     let reader = builder.build().context("building parquet reader")?;
     let mut out = Vec::new();
     for batch in reader {
         codec::batch_to_snapshots(
             &batch.context("decoding record batch")?,
             &geometry_column,
+            lonlat,
             &mut out,
         )?;
+    }
+    Ok(out)
+}
+
+/// Read nodes back WITHOUT inverting the WKB output frame — the raw decoded
+/// `[f64; 3]` WKB point, verbatim. Verification tooling only (confirms the
+/// written axis order directly, the way a real GIS reader's `ST_X/ST_Y/ST_Z`
+/// would see it); ordinary callers want [`read_nodes_parquet`], which always
+/// returns engine-frame positions.
+pub fn read_nodes_parquet_raw_wkb(path: &Path) -> Result<Vec<[f64; 3]>> {
+    let file =
+        File::open(path).with_context(|| format!("opening parquet file {}", path.display()))?;
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new(file).context("reading parquet footer")?;
+    let geometry_column = geometry_column_from_meta(
+        builder.metadata().file_metadata().key_value_metadata(),
+    );
+    let reader = builder.build().context("building parquet reader")?;
+    let mut out = Vec::new();
+    for batch in reader {
+        out.extend(codec::raw_wkb_points(
+            &batch.context("decoding record batch")?,
+            &geometry_column,
+        )?);
     }
     Ok(out)
 }
@@ -215,6 +252,25 @@ fn geometry_column_from_meta(kvs: Option<&Vec<KeyValue>>) -> String {
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
         .and_then(|doc| doc.get("primary_column")?.as_str().map(str::to_string))
         .unwrap_or_else(|| DEFAULT_GEOMETRY_COLUMN.to_string())
+}
+
+/// EGR-WKB: resolve whether the geometry column holds lon/lat (CRS84 — the
+/// spec `crs` key is absent) or petal-local east-north-up (`crs: null`,
+/// present) from the file's own `geo` metadata — never a caller-supplied
+/// flag, so a written file round-trips correctly no matter who wrote it.
+/// Defaults to local (`false`) when metadata is missing/unparseable, matching
+/// [`GeoParquetMeta::default`].
+fn lonlat_from_meta(kvs: Option<&Vec<KeyValue>>, geometry_column: &str) -> bool {
+    kvs.and_then(|kvs| kvs.iter().find(|kv| kv.key == GEO_KEY))
+        .and_then(|kv| kv.value.as_deref())
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|doc| {
+            doc.get("columns")?
+                .get(geometry_column)?
+                .as_object()
+                .map(|column| !column.contains_key("crs"))
+        })
+        .unwrap_or(false)
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -427,5 +483,67 @@ mod tests {
         });
         assert!(!lonlat.as_object().unwrap().contains_key("crs"));
         assert_eq!(lonlat["fe:crs"], "EPSG:4326");
+    }
+
+    /// EGR-WKB: the WKB geometry column is east-north-up for petal-local
+    /// output and identity for lon/lat; `read_nodes_parquet` always hands
+    /// callers engine-frame positions back, no matter which frame the file
+    /// was written in. Mutation check: drop the `engine_to_wkb`/`wkb_to_engine`
+    /// calls (or swap their sign), and the raw-WKB or the `fe:axes` assertion
+    /// goes red.
+    #[test]
+    fn wkb_axis_order_follows_the_output_frame() {
+        // Local engine (1, 2, 3) -> WKB (1, -3, 2).
+        assert_eq!(codec::engine_to_wkb([1.0, 2.0, 3.0], false), [1.0, -3.0, 2.0]);
+        // Lon/lat: identity (export.rs already stores [lon, lat, ele]).
+        assert_eq!(
+            codec::engine_to_wkb([-122.3, 47.6, 12.0], true),
+            [-122.3, 47.6, 12.0]
+        );
+        // Inverse recovers the engine frame.
+        assert_eq!(codec::wkb_to_engine([1.0, -3.0, 2.0], false), [1.0, 2.0, 3.0]);
+        assert_eq!(
+            codec::wkb_to_engine([-122.3, 47.6, 12.0], true),
+            [-122.3, 47.6, 12.0]
+        );
+
+        let path = tmp("wkb_axis_local");
+        write_nodes_parquet(&path, &[snap("n1", [1.0, 2.0, 3.0], None, 1)]).unwrap();
+
+        // The raw WKB component order IS the output frame (what a real GIS
+        // reader's ST_X/ST_Y/ST_Z would see): east, north, up.
+        let raw = read_nodes_parquet_raw_wkb(&path).unwrap();
+        assert_eq!(raw, vec![[1.0, -3.0, 2.0]]);
+
+        // read_nodes_parquet inverts it back to engine-frame (1, 2, 3).
+        let back = read_nodes_parquet(&path).unwrap();
+        assert_eq!(back[0].position, [1.0, 2.0, 3.0]);
+
+        // fe:axes is present only on local (ENU) output.
+        let geo: serde_json::Value =
+            serde_json::from_str(&read_geo_metadata(&path).unwrap().unwrap()).unwrap();
+        assert_eq!(geo["columns"]["position"]["fe:axes"], "east,north,up");
+        let _ = std::fs::remove_file(&path);
+
+        let path2 = tmp("wkb_axis_lonlat");
+        let meta = GeoParquetMeta {
+            crs: "EPSG:4326".into(),
+            lonlat_crs84: true,
+            ..Default::default()
+        };
+        write_nodes_parquet_with_meta(&path2, &[snap("n2", [-122.3, 47.6, 12.0], None, 2)], &meta)
+            .unwrap();
+        let raw2 = read_nodes_parquet_raw_wkb(&path2).unwrap();
+        assert_eq!(raw2, vec![[-122.3, 47.6, 12.0]]);
+        let geo2: serde_json::Value =
+            serde_json::from_str(&read_geo_metadata(&path2).unwrap().unwrap()).unwrap();
+        assert!(
+            !geo2["columns"]["position"]
+                .as_object()
+                .unwrap()
+                .contains_key("fe:axes"),
+            "fe:axes must be absent on lon/lat output"
+        );
+        let _ = std::fs::remove_file(&path2);
     }
 }

@@ -939,6 +939,16 @@ in-memory; no temp files) or local CSV serialization.
   §egress-precision); the old `f32` narrowing (≈1 m at mid-latitudes) is
   gone. Rotation/scale stay `f32` (D-54) — no BI consumer computes distance
   over them.
+- **EGR-WKB: the parquet WKB geometry column is east-north-up for
+  petal-local output.** `parquet_response` passes the already-existing
+  `out.coords == Coords::LatLon` flag into fe-query (`fe-query/src/AGENTS.md`
+  §geoparquet), which reorders `[x, y, z]` (engine, y up) to
+  `[east, north, up] = [x, -z, y]` in the WKB bytes only; lon/lat output is
+  identity, because it is already `[lon, lat, ele]` here in `row_to_snapshot`.
+  **CSV and the analytics `pos_*` columns are unaffected (A7)** — they stay
+  engine-frame, `x_m,y_m,z_m` / `lon,lat,ele_m` headers unchanged. A real GIS
+  reader (DuckDB's `spatial` extension, `ST_X/ST_Y/ST_Z`) sees ENU directly;
+  `scripts/bi-egress-verify.ps1`'s "ENU axis order" section proves it live.
 - Status mapping: 400 bad query/coords/table, 403 role, 404 unknown or
   out-of-scope petal (§existence-oracle), 413 row-cap/byte-ceiling (enforced on the readings path too — the
   anchor join is bounded by the already-capped distinct-node-id count, and

@@ -235,10 +235,14 @@ try {
     $petalToken = Mint-Token "VERSE#$verseId-FRACTAL#$fractalId-PETAL#$petalId" 'owner' 'petal1'
 
     $nodePath = "/api/v1/verses/$verseId/fractals/$fractalId/petals/$petalId/nodes"
+    # EnuCheckNode's position is f32-representable exact binary fractions
+    # (REST ingress is [f32;3]) so the EGR-WKB ENU assertions below compare
+    # equal, not approximate, doubles.
     $nodeSpecs = @(
         @{ name = 'AnchorAlpha'; position = @(1.0, 2.0, 3.0) },
         @{ name = 'AnchorBeta';  position = @(10.0, 0.0, -5.0) },
-        @{ name = 'PlainNode';   position = @(-3.5, 1.5, 0.0) }
+        @{ name = 'PlainNode';   position = @(-3.5, 1.5, 0.0) },
+        @{ name = 'EnuCheckNode'; position = @(1234.5625, 12.25, -987.75) }
     )
     $nodeIds = @()
     foreach ($spec in $nodeSpecs) {
@@ -248,6 +252,7 @@ try {
     }
     $anchorAlpha = $nodeIds[0]
     $anchorBeta = $nodeIds[1]
+    $enuCheckNodeId = $nodeIds[3]
 
     # A SECOND petal in the same verse with its own node: the foreign rows the
     # scope-bypass vectors below must never surface through petal P1's links.
@@ -378,6 +383,36 @@ try {
     Assert-Equal ([int]$nodeGeom[0].n) $nodeSpecs.Count "node parquet: every position geometry is non-null"
     $anchorGeom = Invoke-DuckDbJson "$prelude SELECT count(*) AS n FROM read_parquet('$readingsShareUrl') WHERE position IS NOT NULL;"
     Assert-Equal ([int]$anchorGeom[0].n) $readingSpecs.Count "readings parquet: every live-anchor geometry is non-null"
+
+    # -----------------------------------------------------------------------
+    # EGR-WKB: east-north-up axis order, read through a real GIS reader
+    # -----------------------------------------------------------------------
+    # DuckDB's `spatial` extension is the actual consumer this contract is
+    # for: it decodes the GeoParquet WKB column and gives back ST_X/ST_Y/ST_Z
+    # exactly as any other spatial tool would. A failed INSTALL (offline) is
+    # a real FAIL below, never a silent skip -- $ErrorActionPreference is
+    # 'Continue', but Invoke-DuckDbJson returns an empty array on unparseable
+    # output, which the Assert-True "found" checks catch.
+    Write-Host "  --- ENU axis order via DuckDB spatial (EGR-WKB) ---"
+    $spatialPrelude = "INSTALL spatial; LOAD spatial;"
+    $enuNodeRows = Invoke-DuckDbJson "$spatialPrelude SELECT ST_X(ST_GeomFromWKB(position)) AS e, ST_Y(ST_GeomFromWKB(position)) AS n, ST_Z(ST_GeomFromWKB(position)) AS u FROM read_parquet('$nodeShareUrl') WHERE node_id = '$enuCheckNodeId';"
+    Write-Host "  $(($enuNodeRows | ConvertTo-Json -Compress))"
+    Assert-True ($enuNodeRows.Count -eq 1) "ENU check node found in node parquet"
+    if ($enuNodeRows.Count -eq 1) {
+        Assert-Equal ([double]::Parse([string]$enuNodeRows[0].e, $ic)) 1234.5625 "node parquet geometry: east (ST_X) equals engine x"
+        Assert-Equal ([double]::Parse([string]$enuNodeRows[0].n, $ic)) 987.75 "node parquet geometry: north (ST_Y) equals engine -z"
+        Assert-Equal ([double]::Parse([string]$enuNodeRows[0].u, $ic)) 12.25 "node parquet geometry: up (ST_Z) equals engine y/elevation"
+    }
+
+    $enuAnchorRows = Invoke-DuckDbJson "$spatialPrelude SELECT ST_X(ST_GeomFromWKB(position)) AS e, ST_Y(ST_GeomFromWKB(position)) AS n, ST_Z(ST_GeomFromWKB(position)) AS u FROM read_parquet('$readingsShareUrl') WHERE node_id = '$anchorAlpha' ORDER BY recorded_at_ms LIMIT 1;"
+    Write-Host "  $(($enuAnchorRows | ConvertTo-Json -Compress))"
+    Assert-True ($enuAnchorRows.Count -eq 1) "ENU check readings anchor found in readings parquet"
+    if ($enuAnchorRows.Count -eq 1) {
+        # anchorAlpha's engine position is (1.0, 2.0, 3.0): e=x=1.0, n=-z=-3.0, u=y=2.0.
+        Assert-Equal ([double]::Parse([string]$enuAnchorRows[0].e, $ic)) 1.0 "readings parquet anchor geometry: east (ST_X) equals engine x"
+        Assert-Equal ([double]::Parse([string]$enuAnchorRows[0].n, $ic)) -3.0 "readings parquet anchor geometry: north (ST_Y) equals engine -z"
+        Assert-Equal ([double]::Parse([string]$enuAnchorRows[0].u, $ic)) 2.0 "readings parquet anchor geometry: up (ST_Z) equals engine y/elevation"
+    }
 
     Write-Host "  --- readings CSV via DuckDB read_csv ---"
     # skip=1 drops the leading '# crs=' comment line; the next line is the header.

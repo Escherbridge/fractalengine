@@ -212,6 +212,17 @@ fn read_parquet_geo_meta(bytes: &[u8]) -> serde_json::Value {
     serde_json::from_str(&raw).unwrap()
 }
 
+/// Write parquet body bytes to a temp file and decode the geometry column's
+/// raw WKB points, with NO frame inversion (EGR-WKB verification — what a
+/// real GIS reader's `ST_X/ST_Y/ST_Z` would see). `read_parquet_back` is the
+/// ordinary engine-frame read-back.
+fn read_parquet_raw_wkb(bytes: &[u8]) -> Vec<[f64; 3]> {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("export.parquet");
+    std::fs::write(&path, bytes).unwrap();
+    fe_query::columnar::geoparquet::read_nodes_parquet_raw_wkb(&path).unwrap()
+}
+
 /// Write readings parquet body bytes to a temp file and read rows back (READ-BACK).
 fn read_readings_parquet_back(bytes: &[u8]) -> Vec<fe_entity_store::ReadingSnapshot> {
     let dir = tempfile::tempdir().unwrap();
@@ -484,6 +495,86 @@ async fn export_csv_local_vs_latlon_landmine() {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+/// EGR-WKB: petal-local parquet geometry is WKB east-north-up; lon/lat
+/// geometry stays identity (already `[lon, lat, ele]` from `row_to_snapshot`);
+/// CSV keeps the engine frame regardless (A7 regression guard). Mutation
+/// check: drop fe-query's `engine_to_wkb` reorder (or swap its sign) and the
+/// raw-WKB assertion goes red.
+#[tokio::test]
+async fn parquet_export_geometry_is_east_north_up_locally_and_lon_lat_ele_for_latlon() {
+    let db = setup_test_db().await;
+    let pa = ulid();
+    seed_petal(&db, &pa, true).await; // terrain origin configured
+    // Engine frame: x = 10, elevation (y) = 2, z = -5.
+    seed_node(&db, &pa, "n1", 10.0, -5.0, 2.0).await;
+    let state = test_state(db);
+    let claims = test_claims("VERSE#v1", "viewer");
+
+    // Local: the raw WKB point is east-north-up: (x, -z, y) = (10, 5, 2).
+    let resp = export_parquet(
+        State(state.clone()),
+        Extension(claims.clone()),
+        Path(pa.clone()),
+        Query(params(None, Some("local"))),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = body_bytes(resp).await;
+    assert_eq!(
+        read_parquet_raw_wkb(&bytes),
+        vec![[10.0, 5.0, 2.0]],
+        "local WKB geometry must be east-north-up"
+    );
+    // read_nodes_parquet still hands back the engine frame, unchanged.
+    let back = read_parquet_back(&bytes);
+    assert_eq!(back[0].position, [10.0, 2.0, -5.0]);
+
+    // CSV keeps the engine frame and its header regardless (A7).
+    let resp = export_csv(
+        State(state.clone()),
+        Extension(claims.clone()),
+        Path(pa.clone()),
+        Query(params(None, Some("local"))),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let csv = String::from_utf8(body_bytes(resp).await).unwrap();
+    assert!(csv.lines().nth(1).unwrap().contains("x_m,y_m,z_m"), "{csv}");
+    let row: Vec<&str> = csv.lines().nth(2).unwrap().split(',').collect();
+    let (csv_x, csv_y, csv_z): (f64, f64, f64) = (
+        row[2].parse().unwrap(),
+        row[3].parse().unwrap(),
+        row[4].parse().unwrap(),
+    );
+    assert_eq!(
+        (csv_x, csv_y, csv_z),
+        (10.0, 2.0, -5.0),
+        "CSV must stay in the engine frame, never WKB-reordered"
+    );
+
+    // Lon/lat: identity -- the raw WKB point equals the projection's own
+    // (lon, lat, ele) output exactly.
+    let resp = export_parquet(
+        State(state.clone()),
+        Extension(claims),
+        Path(pa),
+        Query(params(None, Some("latlon"))),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let raw_latlon = read_parquet_raw_wkb(&body_bytes(resp).await);
+    let proj = Projection::new(ORIGIN_LAT, ORIGIN_LON, ORIGIN_ELE);
+    let (lat, lon, ele) = proj.local_to_wgs84(10.0, 2.0, -5.0);
+    assert_eq!(
+        raw_latlon,
+        vec![[lon, lat, ele]],
+        "lon/lat WKB geometry must be identity, in (lon, lat, ele) order"
+    );
 }
 
 #[tokio::test]

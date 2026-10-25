@@ -139,6 +139,22 @@ footer metadata; `codec.rs` owns the snapshot↔Arrow/WKB mapping.
   defines an absent `crs` as OGC:CRS84 (lon/lat), exactly the `[lon, lat,
   ele]` order fe-api writes. Petal-local output keeps an explicit `crs: null`
   (null ≠ absent: null = "unspecified").
+- **EGR-WKB: the WKB geometry column is east-north-up for petal-local
+  output, not the engine frame.** `codec::engine_to_wkb`/`wkb_to_engine`
+  (pure, `[x, y, z]` ↔ `[east, north, up] = [x, -z, y]`) sit between the
+  snapshot and the WKB bytes: `snapshots_to_batch`/`readings_to_batch` take a
+  `lonlat: bool` (always `meta.lonlat_crs84` — no new parameter crosses the
+  crate boundary) and apply the reorder on write; lon/lat output is identity,
+  because `export.rs::row_to_snapshot` already stores `[lon, lat, ele]`
+  there. On read, `read_nodes_parquet`/`read_readings_parquet` decide the
+  inverse from the **file's own** `geo` metadata (`lonlat_from_meta`: `crs`
+  absent ⇒ lon/lat ⇒ identity; `crs: null` ⇒ local ⇒ invert), never from a
+  caller flag — a file round-trips correctly no matter who wrote it, and
+  `read_nodes_parquet_raw_wkb` exists only to inspect the pre-inversion WKB
+  bytes (verification tooling, mirrors what `ST_X/ST_Y/ST_Z` sees). Local
+  output also gets an informational `fe:axes: "east,north,up"` key, absent on
+  lon/lat output. **A7: the reorder is WKB-only** — CSV and the analytics
+  `pos_*` columns stay engine-frame; see `fe-api/AGENTS.md` §export.
 
 ## §timeseries (iot_spatial_reporting_20260714)
 

@@ -32,10 +32,13 @@ pub(super) fn nodes_schema(geometry_column: &str) -> Schema {
     ])
 }
 
-/// Map snapshots into a single RecordBatch matching [`nodes_schema`].
+/// Map snapshots into a single RecordBatch matching [`nodes_schema`]. `lonlat`
+/// is `meta.lonlat_crs84` (EGR-WKB) — selects the WKB output frame via
+/// [`engine_to_wkb`]; identity for lon/lat, east-north-up for petal-local.
 pub(super) fn snapshots_to_batch(
     schema: Arc<Schema>,
     snapshots: &[EntitySnapshot],
+    lonlat: bool,
 ) -> Result<RecordBatch> {
     let node_ids: StringArray = snapshots.iter().map(|s| Some(s.node_id.as_str())).collect();
     let petal_ids: StringArray = snapshots
@@ -44,7 +47,7 @@ pub(super) fn snapshots_to_batch(
         .collect();
     let wkb: BinaryArray = snapshots
         .iter()
-        .map(|s| Some(point_z_to_wkb(s.position)))
+        .map(|s| Some(point_z_to_wkb(engine_to_wkb(s.position, lonlat))))
         .collect();
     let f32_values = |get: &dyn Fn(&EntitySnapshot) -> f32| -> ArrayRef {
         Arc::new(Float32Array::from_iter_values(snapshots.iter().map(get)))
@@ -74,9 +77,12 @@ pub(super) fn snapshots_to_batch(
 }
 
 /// Decode one RecordBatch back into snapshots (node_log is not exported; reads back empty).
+/// `lonlat` is the frame the file's own `geo` metadata records (EGR-WKB) —
+/// inverted via [`wkb_to_engine`] so callers always get engine-frame positions.
 pub(super) fn batch_to_snapshots(
     batch: &RecordBatch,
     geometry_column: &str,
+    lonlat: bool,
     out: &mut Vec<EntitySnapshot>,
 ) -> Result<()> {
     let node_ids = str_col(batch, "node_id")?;
@@ -113,7 +119,7 @@ pub(super) fn batch_to_snapshots(
         out.push(EntitySnapshot {
             node_id: node_ids.value(i).to_string(),
             petal_id: petal_ids.value(i).to_string(),
-            position: wkb_to_point_z(wkb.value(i))?,
+            position: wkb_to_engine(wkb_to_point_z(wkb.value(i))?, lonlat),
             rotation: [rot[0].value(i), rot[1].value(i), rot[2].value(i)],
             scale: [scale[0].value(i), scale[1].value(i), scale[2].value(i)],
             properties,
@@ -143,10 +149,12 @@ pub(super) fn readings_schema(geometry_column: &str) -> Schema {
 
 /// Map reading rows into a single RecordBatch matching [`readings_schema`].
 /// `value` is `Float64` (unlike node position's `Float32`) so BI consumers
-/// get the sensor reading back bit-exact.
+/// get the sensor reading back bit-exact. `lonlat` mirrors
+/// [`snapshots_to_batch`]'s frame selection, applied to the anchor position.
 pub(super) fn readings_to_batch(
     schema: Arc<Schema>,
     rows: &[ReadingSnapshot],
+    lonlat: bool,
 ) -> Result<RecordBatch> {
     let reading_ids: StringArray = rows.iter().map(|r| Some(r.reading_id.as_str())).collect();
     let node_ids: StringArray = rows.iter().map(|r| Some(r.node_id.as_str())).collect();
@@ -158,7 +166,7 @@ pub(super) fn readings_to_batch(
     let recorded_at_ms = Int64Array::from_iter_values(rows.iter().map(|r| r.recorded_at_ms));
     let wkb: BinaryArray = rows
         .iter()
-        .map(|r| r.anchor_position.map(point_z_to_wkb))
+        .map(|r| r.anchor_position.map(|p| point_z_to_wkb(engine_to_wkb(p, lonlat))))
         .collect();
     RecordBatch::try_new(
         schema,
@@ -178,9 +186,11 @@ pub(super) fn readings_to_batch(
 }
 
 /// Decode one RecordBatch back into reading rows (sibling of `batch_to_snapshots`).
+/// `lonlat` mirrors `batch_to_snapshots`'s inversion, applied to the anchor.
 pub(super) fn batch_to_readings(
     batch: &RecordBatch,
     geometry_column: &str,
+    lonlat: bool,
     out: &mut Vec<ReadingSnapshot>,
 ) -> Result<()> {
     let reading_ids = str_col(batch, "reading_id")?;
@@ -211,7 +221,7 @@ pub(super) fn batch_to_readings(
         let anchor_position = if wkb.is_null(i) {
             None
         } else {
-            Some(wkb_to_point_z(wkb.value(i))?)
+            Some(wkb_to_engine(wkb_to_point_z(wkb.value(i))?, lonlat))
         };
         out.push(ReadingSnapshot {
             reading_id: reading_ids.value(i).to_string(),
@@ -226,6 +236,25 @@ pub(super) fn batch_to_readings(
         });
     }
     Ok(())
+}
+
+/// Decode every row's geometry column as a raw WKB point, with NO frame
+/// inversion (verification tooling only — see
+/// `super::read_nodes_parquet_raw_wkb`).
+pub(super) fn raw_wkb_points(batch: &RecordBatch, geometry_column: &str) -> Result<Vec<[f64; 3]>> {
+    let wkb = batch
+        .column_by_name(geometry_column)
+        .with_context(|| format!("missing geometry column `{geometry_column}`"))?
+        .as_any()
+        .downcast_ref::<BinaryArray>()
+        .with_context(|| format!("geometry column `{geometry_column}` is not Binary"))?;
+    let mut out = Vec::with_capacity(batch.num_rows());
+    for i in 0..batch.num_rows() {
+        if !wkb.is_null(i) {
+            out.push(wkb_to_point_z(wkb.value(i))?);
+        }
+    }
+    Ok(out)
 }
 
 /// Fetch a named Utf8 column from a batch.
@@ -248,9 +277,37 @@ fn f32_col<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Float32Array> {
         .with_context(|| format!("column `{name}` is not Float32"))
 }
 
-/// Encode a petal-local position as little-endian ISO WKB Point Z. `f64`
+/// EGR-WKB: convert an engine-frame position (`[x, y, z]`, y = up) into the
+/// frame the WKB geometry column actually encodes. Lon/lat output is already
+/// `[lon, lat, ele]` (`export.rs::row_to_snapshot`), so it passes through
+/// unchanged; petal-local output is reordered to east-north-up, the
+/// convention a real GIS reader (`ST_X/ST_Y/ST_Z`) expects. A7: this reorder
+/// is WKB-only — CSV and the analytics columns stay engine-frame. Pure; see
+/// [`wkb_to_engine`] for the inverse.
+pub(super) fn engine_to_wkb(position: [f64; 3], lonlat: bool) -> [f64; 3] {
+    if lonlat {
+        position
+    } else {
+        let [x, y, z] = position;
+        [x, -z, y]
+    }
+}
+
+/// Inverse of [`engine_to_wkb`] — recovers the engine-frame position from a
+/// decoded WKB point, given the frame the file's `geo` metadata records.
+pub(super) fn wkb_to_engine(position: [f64; 3], lonlat: bool) -> [f64; 3] {
+    if lonlat {
+        position
+    } else {
+        let [e, n, u] = position;
+        [e, u, -n]
+    }
+}
+
+/// Encode a position as little-endian ISO WKB Point Z, verbatim. `f64`
 /// end to end (EGR-F32) — WKB already stored doubles; the source value no
-/// longer loses precision before it gets here.
+/// longer loses precision before it gets here. Callers pass the already
+/// frame-selected triple (see [`engine_to_wkb`]).
 fn point_z_to_wkb(position: [f64; 3]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(WKB_POINT_Z_LEN);
     buf.push(1u8); // little-endian
@@ -261,8 +318,9 @@ fn point_z_to_wkb(position: [f64; 3]) -> Vec<u8> {
     buf
 }
 
-/// Decode a little-endian ISO WKB Point Z back to a petal-local position
-/// (`f64`, EGR-F32 — no narrowing to f32).
+/// Decode a little-endian ISO WKB Point Z back to its raw stored triple,
+/// verbatim (`f64`, EGR-F32 — no narrowing to f32). Callers invert the frame
+/// themselves (see [`wkb_to_engine`]).
 fn wkb_to_point_z(wkb: &[u8]) -> Result<[f64; 3]> {
     if wkb.len() != WKB_POINT_Z_LEN {
         bail!("WKB length {} != expected {WKB_POINT_Z_LEN}", wkb.len());

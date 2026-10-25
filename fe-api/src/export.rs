@@ -348,7 +348,12 @@ impl<'a> RangeRequest<'a> {
     }
 }
 
-/// Serialize an export to a parquet HTTP response (DuckDB-httpfs-friendly headers).
+/// Serialize an export to a parquet HTTP response (DuckDB-httpfs-friendly
+/// headers). EGR-WKB: the WKB geometry column fe-query writes is
+/// east-north-up for petal-local output (identity for lon/lat, which is
+/// already `[lon, lat, ele]` below) — the reorder is decided entirely from
+/// `lonlat_crs84` here; it never crosses back into CSV or the analytics
+/// columns, which stay engine-frame (A7).
 pub(crate) fn parquet_response(
     out: &ExportOutput,
     filename: &str,
