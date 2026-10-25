@@ -30,6 +30,22 @@ manager calls. See `fe-ui/src/ui_shell/AGENTS.md` for the manager topology, the
   windows, and the toast overlay itself. The topbar/left/right rendering is
   delegated to `ui_shell` managers. **No left tool-inspector panel** as of
   Phase 5 (FR-8, RATIFIED Q-1) — see §tool-inspector below.
+
+## §identity-banner (F6)
+
+`status_bar.rs` renders `plugin::IdentityBanner.message` as a persistent,
+click-to-dismiss warning segment — deliberately NOT `UiManager`'s toast
+(`actions/mod.rs::show_toast`), which auto-fades after 2s and would be easy
+to miss for a warning the user needs to act on ("identity could not be
+loaded, running ephemeral"). It mirrors the existing persistent
+guard-error segment (`ModalManagerState::last_error`, Q-5/FR-7) in shape —
+unguarded `status_bar` call, session-sticky — but adds an explicit dismiss
+since this is advisory, not a disabled panel. The GUI binary
+(`fractalengine/src/main.rs`) sets the message once at startup via
+`app.insert_resource`; `GardenerConsolePlugin::build` only `init_resource`s
+a `None` default for any other harness that builds this plugin without that
+step. See `fractalengine/src/AGENTS.md` §identity-tiers for when the message
+is set.
 - `toolbar.rs` — the `Tool` enum + the single-source tool data: `TOOL_DEFS`,
   `shortcut_hint_line`, `active_tool_hint`/`stash_active_tool`,
   `mode_button_fill`, and (Phase 5, FR-8) `tool_tooltip_text` — the rich

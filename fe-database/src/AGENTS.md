@@ -508,6 +508,20 @@ shape this rule claims (the residual RP-4 left: a peer publishing a placeholder
 creator would have handed its verse to every receiver at their next restart).
 `held_role_statements_survive_restart` runs the restart with no extra member row.
 
+**`ClaimOrphanedVerse` (F6) is the one explicit exception, not a reopening of
+OF-4.** `handlers::claim_orphaned_verse` is a user-confirmed command, never
+automatic, for the shape `orphaned_creator` refuses on purpose: a verse this
+node itself created under a PRIOR local identity (an OS-keystore read error
+minted a new, unpersisted DID — see `fractalengine/src/AGENTS.md`
+§identity-tiers). It reuses `is_owner_identity` the same way the inbound gate
+does, but to require `did:key:`-shaped (not to deny it), and factors the
+shared "never invited a third party" check out of `claimable_verses` into
+`reconcile::verse_never_shared` so both call sites stay provably identical.
+It additionally refuses if any `role_grant`/`role_statement_pending` row in
+the verse names a grantor other than the stale creator — a role issued by
+anyone else means this verse's role fabric is not purely local-to-self, even
+if no `verse_member` row recorded how.
+
 ## §hlc
 
 `op_log.rs` replaced the former static `LAMPORT_CLOCK: AtomicU64` with a
@@ -943,6 +957,22 @@ the DB plane around it.
 - **Petal creators are not owners (R7).** `create_petal_handler` and the
   seeder no longer write a `role: "owner"` row at petal scope; the creator
   keeps the role they resolve to from the enclosing scope.
+- **Owner resolution needs no cache invalidation (F6 diagnosis).** The F6
+  in-app lockout investigation considered, and ruled out, two hypotheses
+  before landing on the real root cause (an unpersisted ephemeral identity,
+  `fractalengine/src/AGENTS.md` §identity-tiers): (b) that the viewer badge
+  and the actual write gate read different role sources — they don't, both
+  the UI badge and `rbac::require_manage_role`'s gate resolve through the
+  same `resolve_local_role_handler` → `role_manager::resolve_role`; and (c)
+  that a stale materialized `role` row with `role: "owner"` for the old
+  identity was shadowing the new one — it isn't read at all, because
+  `resolve_role`'s owner check (`peer_did == verse.owner_did`) compares
+  `verse.created_by` LIVE, never the cache. So `ClaimOrphanedVerse` only
+  has to fix `verse.created_by`; the owner-level UI/gate both see it on the
+  very next resolve, same frame, no repartition or re-emit needed. A legacy
+  `role: "owner"` row for the old identity is dead weight, cleaned up only
+  by the ordinary `migrate_legacy_role_rows` pass (unconditionally drops
+  every `role = "owner"` row, R7) — never a functional requirement.
 - **Admin (`admin.rs`).** `KnownTable` includes `role_grant` and
   `role_statement_pending` (reset/dump/load cover them). `clear_table` on
   `role` or either statement table rebuilds the cache from the remaining

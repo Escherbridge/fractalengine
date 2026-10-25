@@ -32,6 +32,9 @@ pub fn render_entity_settings_dialog(
     ctx: &egui::Context,
     ui_mgr: &mut UiManager,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
+    // F6: gates the "Claim Ownership" section (Verse only) — see
+    // `dialogs/AGENTS.md` §claim-ownership.
+    local_role: &crate::plugin::LocalUserRole,
 ) {
     // Early-return guard: only render when EntitySettings is active.
     let ActiveDialog::EntitySettings {
@@ -50,6 +53,7 @@ pub fn render_entity_settings_dialog(
         ref mut invite_expiry_buf,
         ref mut generated_invite_link,
         ref mut pending_delete,
+        ref mut pending_claim_ownership,
         ref mut api_tokens,
         ref mut api_tokens_loading,
         ref mut api_token_scope_buf,
@@ -239,6 +243,72 @@ pub fn render_entity_settings_dialog(
                                     })
                                     .ok();
                             }
+                        }
+                    }
+
+                    // --- Claim Ownership (F6, Verse only) ---
+                    // Shown whenever this node is not already Owner here;
+                    // the DB handler (`ClaimOrphanedVerse`) enforces the
+                    // real eligibility guard (never-shared, did:key-orphaned
+                    // creator) and refuses with a typed reason surfaced as a
+                    // toast — a click on an ineligible verse is a no-op,
+                    // never a silent one. OF-4 stays dead: this is explicit,
+                    // user-confirmed, never automatic.
+                    if *entity_type == EntitySettingsType::Verse
+                        && local_role.role != Some(fe_database::RoleLevel::Owner)
+                    {
+                        ui.add_space(20.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new("Claim Ownership")
+                                .color(theme::TEXT_SECTION)
+                                .strong(),
+                        );
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(
+                                "If this verse was created on this device under a previous \
+                                 identity and has never been shared with anyone else, you \
+                                 can reclaim ownership of it.",
+                            )
+                            .small()
+                            .color(theme::TEXT_DIM),
+                        );
+                        ui.add_space(4.0);
+                        if !*pending_claim_ownership {
+                            if ui
+                                .add(egui::Button::new("Claim Ownership").fill(theme::BG_BUTTON))
+                                .clicked()
+                            {
+                                *pending_claim_ownership = true;
+                            }
+                        } else {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Confirm — this only succeeds for a verse never shared \
+                                     with anyone.",
+                                )
+                                .color(theme::STATUS_OFFLINE),
+                            );
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add(egui::Button::new("Confirm Claim").fill(theme::BG_SAVE))
+                                    .clicked()
+                                {
+                                    db_tx
+                                        .send(DbCommand::ClaimOrphanedVerse {
+                                            verse_id: entity_id.clone(),
+                                            correlation_id: None,
+                                        })
+                                        .ok();
+                                    *pending_claim_ownership = false;
+                                }
+                                if ui.add(egui::Button::new("Cancel").fill(theme::BG_BUTTON)).clicked()
+                                {
+                                    *pending_claim_ownership = false;
+                                }
+                            });
                         }
                     }
 

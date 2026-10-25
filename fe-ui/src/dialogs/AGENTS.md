@@ -25,6 +25,26 @@ in egui temp data because their state lives outside `ActiveDialog`. New
 destructive actions must adopt this convention — never a single-click
 irreversible send (ux hardening batch 2026-07-17).
 
+## §claim-ownership (F6)
+
+`entity_settings.rs`'s General tab (Verse only) shows "Claim Ownership"
+whenever `local_role.role != Some(RoleLevel::Owner)` — not just when a
+viewer badge is literally rendered, since the dialog has no separate
+"orphaned" signal client-side. It follows §destructive-confirm's two-step
+pattern (`pending_claim_ownership`, mirroring `pending_delete`) even though
+the action isn't destructive, because it needs the same "explicit, not a
+single click" property OF-4 requires. The real eligibility guard (never
+shared, `did:key:`-shaped stale creator, no foreign role grant) lives
+entirely in the DB handler (`fe-database/src/handlers/claim_orphaned_verse.rs`)
+— a confirmed click on an ineligible verse sends `DbCommand::
+ClaimOrphanedVerse` anyway and gets back a typed `OrphanedVerseClaimRefused`,
+surfaced as a toast (`verse_manager/db_results/roles.rs::
+handle_orphaned_verse_claim_refused`) rather than failing silently. On
+success (`OrphanedVerseClaimed`), `handle_orphaned_verse_claimed` flips
+`LocalUserRole.role` to `Owner` directly when the claimed verse is the
+active one — no extra round-trip, since the claim's success already is
+what the next `resolve_role` would say.
+
 Node Options' Delete Node now routes through the sync-safe spine path
 (`UiAction::DeleteNode { cascade: true }` → `actions::node::handle_delete` →
 `DbCommand::CascadeTombstoneNode { auth: CallerAuth::Local }`), NOT the legacy

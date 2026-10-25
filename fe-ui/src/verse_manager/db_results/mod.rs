@@ -249,6 +249,28 @@ pub(super) fn apply_db_results(
                 verse_id,
                 default_access,
             } => roles::handle_verse_default_access_set(verse_id, default_access),
+            DbResult::OrphanedVerseClaimed {
+                verse_id,
+                old_did,
+                new_did,
+                ..
+            } => roles::handle_orphaned_verse_claimed(
+                verse_id,
+                old_did,
+                new_did,
+                &nav,
+                &mut local_role,
+                &mut ui_mgr,
+                caches.time.elapsed_secs_f64(),
+            ),
+            DbResult::OrphanedVerseClaimRefused {
+                verse_id, reason, ..
+            } => roles::handle_orphaned_verse_claim_refused(
+                verse_id,
+                reason,
+                &mut ui_mgr,
+                caches.time.elapsed_secs_f64(),
+            ),
             // M2/F6: authoritative persisted timeseries settings — fold into the
             // settings surface's per-verse map (A13).
             DbResult::VerseTimeseriesSettingsSet {

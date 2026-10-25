@@ -7,6 +7,46 @@ terrain + webview), and bridges the background threads to Bevy resources.
 turn fe-ui's queued ops into real side effects (the UI crate has no DB / blob /
 filesystem access by design).
 
+## §identity-tiers (F6 in-app lockout root cause)
+
+The node keypair load used to be two-tier: OS keystore, else a bare
+in-process `NodeKeypair::generate()` on ANY keystore error — including a
+transient one (locked Credential Manager, Secret Service hiccup). A fresh
+ephemeral DID doesn't match any verse's `created_by`, so `role_manager
+::resolve_role`'s owner check (`fe-database/src/role_manager.rs:46-68`)
+correctly falls through to `default_access` and the local user becomes a
+mere Viewer of their own verse — on their own machine, with their own data
+still sitting there under the OLD did. The startup `reconcile` rule
+(`orphaned_creator`) correctly refuses to auto-fix this: it never claims a
+`did:key:`-shaped creator (OF-4; `fe-database/src/AGENTS.md` §reconcile), on
+purpose, because it can't distinguish "my own old identity" from "a remote
+peer's verse I never joined".
+
+The fix is a third, durable tier in between: `fe_identity
+::load_or_generate_keypair_durable` tries the keystore, then a key file
+under `<DB_PATH's parent>/identity/<account>.key` (sibling of the DB and
+P2P stores — same `data/` root FE_DB_PATH/FE_P2P_DIR already use), and
+only mints an ephemeral key if BOTH fail. A file-tier load also attempts to
+heal the identity back into the keystore (best-effort, never fatal) so a
+later launch — once the keystore recovers — prefers it again.
+`KeypairSource::Ephemeral` is the one case that still degrades silently
+from the DID's point of view, so it is surfaced LOUDLY: `tracing::error!`
+plus `fe_ui::plugin::IdentityBanner`, a session-sticky, click-to-dismiss
+warning in the status bar (`fe-ui/src/panels/AGENTS.md` §identity-banner) —
+"Your saved identity could not be loaded — running with a temporary
+identity; existing content may appear read-only."
+
+**If this has already happened once** (a verse is now orphaned under a
+stale `did:key:`), the explicit, user-confirmed `DbCommand::
+ClaimOrphanedVerse` (`fe-database/src/handlers/claim_orphaned_verse.rs`,
+`fe-database/src/AGENTS.md` §reconcile) is the recovery path — OF-4 still
+refuses to do this automatically, but a user who clicks "Claim ownership"
+on a verse they know is theirs, that was never shared with anyone, can
+recover it. The `share_signer` keypair (A24/DEC-C9, a separate keystore
+slot) deliberately keeps its original two-tier fallback — losing it only
+costs previously issued share links, never verse ownership, so it is out of
+scope here.
+
 ## §proposal-budget
 
 `terrain_bridge::sync_proposal_overlay_budget` mirrors fe-ui's

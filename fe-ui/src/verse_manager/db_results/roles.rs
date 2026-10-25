@@ -3,6 +3,7 @@
 
 use crate::actions::UiManager;
 use crate::dialogs::ActiveDialog;
+use crate::navigation_manager::NavigationManager;
 
 /// `VerseInviteGenerated`: open the invite dialog with the fresh invite string.
 pub(super) fn handle_verse_invite_generated(invite_string: &str, ui_mgr: &mut UiManager) {
@@ -96,6 +97,40 @@ pub(super) fn handle_local_role_resolved(
     let level = fe_database::RoleLevel::from(role);
     bevy::log::info!("Local role resolved at {}: {} ({:?})", scope, role, level);
     local_role.role = Some(level);
+}
+
+/// `OrphanedVerseClaimed` (F6): this node now owns `verse_id`. If it's the
+/// active verse, flip the cached role badge straight to Owner — no need to
+/// round-trip a fresh `LocalRoleResolved` fetch, since `resolve_role`'s
+/// owner check is a live `created_by` comparison, never a cache (the claim
+/// having landed on the DB side already tells us what the next resolve
+/// would say). See `fe-database/src/AGENTS.md` §role-propagation.
+pub(super) fn handle_orphaned_verse_claimed(
+    verse_id: &str,
+    old_did: &str,
+    new_did: &str,
+    nav: &NavigationManager,
+    local_role: &mut crate::plugin::LocalUserRole,
+    ui_mgr: &mut UiManager,
+    now_secs: f64,
+) {
+    if nav.active_verse_id.as_deref() == Some(verse_id) {
+        local_role.role = Some(fe_database::RoleLevel::Owner);
+    }
+    bevy::log::info!("Claimed orphaned verse {verse_id}: {old_did} -> {new_did}");
+    ui_mgr.show_toast("Verse ownership claimed — you are now Owner.", now_secs);
+}
+
+/// `OrphanedVerseClaimRefused`: surface the typed reason as a toast so a
+/// refused claim is visible, never a silent no-op.
+pub(super) fn handle_orphaned_verse_claim_refused(
+    verse_id: &str,
+    reason: &str,
+    ui_mgr: &mut UiManager,
+    now_secs: f64,
+) {
+    bevy::log::warn!("ClaimOrphanedVerse refused for {verse_id}: {reason}");
+    ui_mgr.show_toast(format!("Could not claim verse: {reason}"), now_secs);
 }
 
 /// `VerseDefaultAccessSet`: log-only acknowledgement.

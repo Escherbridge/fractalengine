@@ -253,8 +253,10 @@ mod tests {
 
     #[test]
     fn templates_scope_to_active_petal_when_present() {
-        let mut nav = NavigationManager::default();
-        nav.active_petal_id = Some("petal-123".to_string());
+        let nav = NavigationManager {
+            active_petal_id: Some("petal-123".to_string()),
+            ..Default::default()
+        };
         let node_mgr = NodeManager::default();
         let templates = query_templates(&nav, &node_mgr);
         assert_eq!(templates.len(), 1);

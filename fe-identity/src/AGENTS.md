@@ -31,6 +31,36 @@ All three modules share one `(service, account)` namespace in the
 `"node_keypair"`) and any X25519 device-key account (e.g. `"device_keypair"`)
 distinct so entries don't collide.
 
+## §identity-tiers (`keychain::load_or_generate_keypair_durable`, `file_fallback.rs`, F6)
+
+A third tier between the OS keystore and an ephemeral identity — see
+`fractalengine/src/AGENTS.md` §identity-tiers for the in-app bug this fixes
+(a transient keystore error used to mint an unpersisted DID, orphaning the
+user's own verses). `load_or_generate_keypair_durable` tries the keystore
+first (`Ok(None)` keeps the plain generate-then-persist path unchanged —
+only an `Err`, read OR write, falls through); on fallthrough,
+`file_fallback::load_or_generate(dir, account)` reads/creates
+`<dir>/<account>.key`; only if THAT also fails does it mint
+`KeypairSource::Ephemeral`. A successful file-tier load attempts a
+best-effort heal-back write into the keystore (never fatal if it fails).
+
+**Security: permissions are set AT creation, never after (security-review
+fix).** `file_fallback::create_key_file_securely` opens with
+`OpenOptions::create_new(true)` plus `.mode(0o600)` on unix in the SAME
+syscall that creates the file — there is no window where the seed sits at
+default (world-readable) permissions between a `write` and a later `chmod`.
+`create_new` also makes creation atomic: a concurrent first-run race (two
+launches, same account, same empty fallback dir) has the LOSER get
+`AlreadyExists` and propagate it as `Err`, never silently reopen or
+truncate the winner's file. On Windows there is no POSIX "other" principal
+to leak to and no ACL API in `std`, so the per-user NTFS ACL the app-data
+directory already inherits is relied on instead (documented, not
+enforced) — `create_new` still makes creation atomic there too. Every
+error from this path is real (never `.ok()`'d away): a failed secure
+create returns `Err` from `load_or_generate`, which `load_or_generate_keypair_durable`
+treats exactly like a file-tier read failure — fall through to the loud
+ephemeral tier, never a silently open-permissioned key file.
+
 ## §x25519-device-key (`x25519.rs`)
 
 `DeviceKeypair` wraps an `x25519_dalek::StaticSecret` (dependency approved

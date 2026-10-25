@@ -144,6 +144,23 @@ fn mesh_instance_watchdog(
     budget.exceeded = exceeded;
 }
 
+/// Session-sticky startup warning shown when the node identity fell back to
+/// an EPHEMERAL tier (fractalengine/src/AGENTS.md §identity-tiers) — unlike
+/// `UiManager`'s toast this does not auto-fade, since the user may not be
+/// looking at the exact moment it appears; it clears only via `dismiss()`
+/// (status bar's click-to-dismiss segment, mirroring the persistent
+/// guard-error pattern in `ui_shell/modal.rs`).
+#[derive(Resource, Default)]
+pub struct IdentityBanner {
+    pub message: Option<String>,
+}
+
+impl IdentityBanner {
+    pub fn dismiss(&mut self) {
+        self.message = None;
+    }
+}
+
 /// Sidebar visibility state.
 #[derive(Resource)]
 pub struct SidebarState {
@@ -679,6 +696,11 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<ToolState>();
         app.init_resource::<InspectorFormState>();
         app.init_resource::<LocalUserRole>();
+        // Startup identity-degradation banner (src/AGENTS.md §identity-tiers).
+        // The GUI binary inserts the real value before this plugin builds;
+        // `init_resource` is a safety default (`None`) for any other harness
+        // that adds this plugin without that step.
+        app.init_resource::<IdentityBanner>();
         app.init_resource::<DashboardState>();
         app.init_resource::<CameraFocusTarget>();
         app.init_resource::<ViewportCursorWorld>();
@@ -882,6 +904,9 @@ struct MiscUiParams<'w> {
     // S6: session-only per-petal render-distance override, read/written by
     // the Settings section's "Session override" field.
     render_override: ResMut<'w, crate::settings::PetalRenderOverride>,
+    // F6: startup identity-degradation banner, read + dismissed by the
+    // status bar's persistent warning segment.
+    identity_banner: ResMut<'w, IdentityBanner>,
 }
 
 /// ui_shell_architecture_20260724 (FR-4/5/6): the area-manager state resources,
@@ -954,6 +979,7 @@ fn gardener_ui_system(
         &mut misc.measure_state,
         &misc.downloads,
         &mut misc.render_override,
+        &mut misc.identity_banner,
     );
     viewport_rect.0 = rect;
 

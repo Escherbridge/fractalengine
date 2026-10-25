@@ -133,6 +133,23 @@ pub(crate) fn is_owner_identity(creator: &str) -> bool {
     creator.starts_with("did:key:")
 }
 
+/// Whether `verse_id` has ever been joined by another peer: `true` when no
+/// `verse_member` row records an invite from someone other than the joining
+/// peer themself. Shared by this rule and the explicit `ClaimOrphanedVerse`
+/// command (`handlers::claim_orphaned_verse`) — both must refuse a verse
+/// that was ever shared, so the predicate lives in exactly one place.
+pub(crate) async fn verse_never_shared(db: &Db, verse_id: &str) -> anyhow::Result<bool> {
+    let mut joined = db
+        .query(
+            "SELECT count() AS c FROM verse_member \
+             WHERE verse_id = $vid AND invited_by != peer_did GROUP ALL",
+        )
+        .bind(("vid", verse_id.to_string()))
+        .await?;
+    let joined_rows: Vec<serde_json::Value> = joined.take(0)?;
+    Ok(extract_count(&joined_rows) == 0)
+}
+
 /// Verses this rule may claim (role propagation RP-4, owner integrity — see
 /// src/AGENTS.md §reconcile): the creator is NOT a `did:key:` identity
 /// (a legacy placeholder or a pre-RP-4 hex inviter address — a real owner is
@@ -154,15 +171,7 @@ async fn claimable_verses(db: &Db, local_did: &str) -> anyhow::Result<Vec<(Strin
         if is_owner_identity(creator) {
             continue;
         }
-        let mut joined = db
-            .query(
-                "SELECT count() AS c FROM verse_member \
-                 WHERE verse_id = $vid AND invited_by != peer_did GROUP ALL",
-            )
-            .bind(("vid", verse_id.to_string()))
-            .await?;
-        let joined_rows: Vec<serde_json::Value> = joined.take(0)?;
-        if extract_count(&joined_rows) > 0 {
+        if !verse_never_shared(db, verse_id).await? {
             continue;
         }
         claimable.push((verse_id.to_string(), creator.to_string()));

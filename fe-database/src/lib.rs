@@ -1503,6 +1503,10 @@ pub fn spawn_db_thread_shared(
                         let reply = handlers::petal_render_distance::get_petal_render_distance_reply(&db, petal_id, correlation_id).await;
                         send_result(&tx, reply);
                     }
+                    Ok(DbCommand::ClaimOrphanedVerse { verse_id, correlation_id }) => {
+                        let reply = handlers::claim_orphaned_verse::claim_orphaned_verse_reply(&db, &local_did, verse_id, correlation_id).await;
+                        send_result(&tx, reply);
+                    }
                     Ok(DbCommand::CreateFieldDef { scope, entity_type, key, value_type, default_val }) => {
                         match handlers::field_def::create_field_def_handler(&db, &scope, &entity_type, &key, &value_type, default_val.as_ref(), &local_did).await {
                             Ok(field_def_id) => send_result(&tx, DbResult::FieldDefCreated { field_def_id, scope, key }),

@@ -946,6 +946,20 @@ pub enum DbCommand {
         petal_id: String,
         correlation_id: Option<String>,
     },
+    // --- Explicit orphaned-verse recovery (F6 in-app lockout root cause) ---
+    /// User-confirmed, EXPLICIT claim of a verse whose `created_by` is a
+    /// `did:key:` identity that no longer matches this node's local DID (an
+    /// identity rotation/loss orphaned it). Unlike the startup `reconcile`
+    /// rule (`orphaned_creator`), this command is allowed to adopt a
+    /// `did:key:`-shaped creator — but ONLY for a verse this store has never
+    /// shared (no foreign `verse_member`/`role_grant`/`role_statement_pending`
+    /// row). GUI-only today, so `correlation_id` is always `None`; replies
+    /// `OrphanedVerseClaimed` or `OrphanedVerseClaimRefused`. See
+    /// fe-database/src/AGENTS.md §reconcile "ClaimOrphanedVerse".
+    ClaimOrphanedVerse {
+        verse_id: String,
+        correlation_id: Option<String>,
+    },
     // --- Device enrolment (CDL-R2, W4-8) ---
     /// Sign this node's X25519 device key into a self-signed SPEC-3 §10.2.1 enrolment (owner
     /// R2), store it, and publish the row into `verse_id`'s replica. Explicit only: nothing
@@ -1402,6 +1416,22 @@ pub enum DbResult {
     PetalRenderDistanceLoaded {
         petal_id: String,
         render_distance: Option<f32>,
+        correlation_id: Option<String>,
+    },
+    /// `ClaimOrphanedVerse` succeeded: the verse's `created_by` now reads
+    /// `new_did` (always this node's local DID today).
+    OrphanedVerseClaimed {
+        verse_id: String,
+        old_did: String,
+        new_did: String,
+        correlation_id: Option<String>,
+    },
+    /// `ClaimOrphanedVerse` was refused before any write — `reason` is a
+    /// human-readable rendering of `ClaimRefusalReason` (fe-database
+    /// `handlers::claim_orphaned_verse`); OF-4 stays dead regardless of reason.
+    OrphanedVerseClaimRefused {
+        verse_id: String,
+        reason: String,
         correlation_id: Option<String>,
     },
     /// Typed failure of a correlated command whose family has no

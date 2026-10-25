@@ -190,6 +190,10 @@ pub enum ActiveDialog {
         generated_invite_link: Option<String>,
         // Confirmation state
         pending_delete: bool,
+        /// F6: two-step confirm for "Claim ownership" (Verse only) — the
+        /// DB handler (`ClaimOrphanedVerse`) enforces real eligibility; this
+        /// is just the explicit-click gate. See `dialogs/AGENTS.md` §claim-ownership.
+        pending_claim_ownership: bool,
         // API Access tab state
         api_tokens: Vec<ApiTokenEntry>,
         api_tokens_loading: bool,

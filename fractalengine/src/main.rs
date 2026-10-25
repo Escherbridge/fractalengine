@@ -71,17 +71,33 @@ fn main() {
     let secret_store: Arc<dyn fe_identity::SecretStore> =
         Arc::new(fe_identity::OsKeystoreBackend::new());
 
-    // Load or generate a persistent node keypair. The 32-byte seed is stored
-    // in the secret store so the node identity survives across launches,
-    // preserving P2P reconnection and invite verification.
-    let node_kp = match fe_identity::load_or_generate_keypair(&secret_store, "node_keypair") {
-        Ok(kp) => kp,
-        Err(e) => {
-            tracing::warn!(
-                "Could not load/store keypair in secret store, generating ephemeral: {e}"
-            );
-            fe_identity::NodeKeypair::generate()
-        }
+    // Load or generate a persistent node keypair across three durability
+    // tiers: OS keystore -> a key file beside the DB/p2p stores -> (only if
+    // BOTH fail) an in-process ephemeral key. A silent ephemeral fallback
+    // here used to mint a DID that no longer matches a verse's created_by,
+    // locking the local user out of their own verse as a mere Viewer (F6
+    // in-app lockout root cause; see src/AGENTS.md §identity-tiers and
+    // fe-database/src/AGENTS.md §reconcile "ClaimOrphanedVerse" for the
+    // explicit recovery path once that has already happened once).
+    let identity_fallback_dir = std::path::Path::new(DB_PATH)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("data"))
+        .join("identity");
+    let fe_identity::TieredKeypair {
+        keypair: node_kp,
+        source: identity_source,
+    } = fe_identity::load_or_generate_keypair_durable(
+        &secret_store,
+        "node_keypair",
+        &identity_fallback_dir,
+    );
+    let identity_banner_message = match identity_source {
+        fe_identity::KeypairSource::Keystore | fe_identity::KeypairSource::FileFallback => None,
+        fe_identity::KeypairSource::Ephemeral => Some(
+            "Your saved identity could not be loaded — running with a temporary identity; \
+             existing content may appear read-only."
+                .to_string(),
+        ),
     };
     let iroh_secret = node_kp.to_iroh_secret();
     let local_did = node_kp.to_did_key();
@@ -358,6 +374,12 @@ fn main() {
     app.insert_resource(PeerRegistry::default());
     app.insert_resource(LocalUserRole::default());
     app.insert_resource(fe_database::SecretStoreRes(secret_store));
+    // Loud, dismissible startup warning when identity durability fell back
+    // to the ephemeral tier (src/AGENTS.md §identity-tiers). `None` when
+    // every launch used the keystore or the file tier, i.e. almost always.
+    app.insert_resource(fe_ui::plugin::IdentityBanner {
+        message: identity_banner_message,
+    });
 
     // ---- API Gateway thread ----
     // Channel: API thread sends ApiCommand -> tx, Bevy drains from rx.

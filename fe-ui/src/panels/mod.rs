@@ -130,6 +130,9 @@ pub fn gardener_console(
     downloads: &crate::terrain_map::TilesetDownloads,
     // S6: session-only per-petal render-distance override (Settings section).
     render_override: &mut crate::settings::PetalRenderOverride,
+    // F6: startup identity-degradation banner (persistent, click-to-dismiss
+    // segment in the status bar) — see `panels/AGENTS.md` §identity-banner.
+    identity_banner: &mut crate::plugin::IdentityBanner,
 ) -> egui::Rect {
     // Repair conditional editor state; see `panels/AGENTS.md` §numeric-boundary.
     path_editor_card::sanitize_path_editor_numeric_state(path_state);
@@ -157,6 +160,7 @@ pub fn gardener_console(
         modal,
         hierarchy,
         vis_state,
+        identity_banner,
     );
 
     // Left sidebar (FR-3 shell_ux_sidebar): user-sticky. The manager applies
@@ -289,7 +293,7 @@ pub fn gardener_console(
                     crate::dialogs::render_node_options_dialog(ctx, ui_mgr, hierarchy, db_tx)
                 });
                 let _ = guarded(modal, "dialog_entity_settings", || {
-                    crate::dialogs::render_entity_settings_dialog(ctx, ui_mgr, db_tx)
+                    crate::dialogs::render_entity_settings_dialog(ctx, ui_mgr, db_tx, local_role)
                 });
                 // FR-2 (shell_ux_sidebar): the Map Manager is a right-sidebar
                 // section now (`ui_shell::right_sidebar::render_maps_section`),
@@ -473,6 +477,7 @@ mod tests {
         let mut measure_state = crate::node_manager::measure::MeasureState::default();
         let downloads = crate::terrain_map::TilesetDownloads::default();
         let mut render_override = crate::settings::PetalRenderOverride::default();
+        let mut identity_banner = crate::plugin::IdentityBanner::default();
 
         {
             let mut render = |section: Option<RightSidebarSection>, active_tool: Tool| {
@@ -521,6 +526,7 @@ mod tests {
                         &mut measure_state,
                         &downloads,
                         &mut render_override,
+                        &mut identity_banner,
                     );
                 });
             };

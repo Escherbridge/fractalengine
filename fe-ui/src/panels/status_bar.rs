@@ -27,6 +27,9 @@ pub(crate) fn status_bar(
     // available to cache in here directly).
     hierarchy: &VerseManager,
     vis_state: &mut VisibilityState,
+    // F6: startup identity-degradation warning — session-sticky until the
+    // user clicks it away (fractalengine/src/AGENTS.md §identity-tiers).
+    identity_banner: &mut crate::plugin::IdentityBanner,
 ) {
     egui::TopBottomPanel::bottom("statusbar")
         .exact_height(22.0)
@@ -129,6 +132,24 @@ pub(crate) fn status_bar(
                             .small()
                             .color(theme::STATUS_OFFLINE),
                     );
+                }
+
+                // F6: identity-degradation banner — session-sticky (no
+                // auto-fade like a toast, since the user may not be looking
+                // when it first appears), clears only on click.
+                if let Some(msg) = identity_banner.message.clone() {
+                    ui.separator();
+                    let resp = ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!("\u{26A0} {msg} (click to dismiss)"))
+                                .small()
+                                .color(theme::STATUS_OFFLINE),
+                        )
+                        .sense(egui::Sense::click()),
+                    );
+                    if resp.clicked() {
+                        identity_banner.dismiss();
+                    }
                 }
             });
         });
