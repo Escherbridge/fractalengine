@@ -487,3 +487,24 @@ gates `cargo check -p fe-sync -p fe-database -p fractalengine --tests`, before W
 - Next: W5s security fix slice (OF-6a..e, OF-7a..c verify-and-fix vs final file state + adopt/commit OF-5),
   then critic review of W6 script FF adaptation, then W6 launch. RP-4s/RP-9/RP-9b remain merged into the
   post-W6 refine phase per the FF directive.
+
+### W5s close (2026-10-25) — OF-5 + OF-6a..e + OF-7a..c: ALL REAL, ALL FIXED
+- Commits: `6c7a071` (OF-5 terrain pin poisoning) + `9fbf7b9` (OF-6/OF-7, fe-sync+fe-database). Gate
+  `cargo check -p fe-sync -p fe-database -p fractalengine -p fractalengine-test-harness --tests` exit 0 (1m31s).
+  10 flow tests written (not run). AGENTS.md sections updated. Verdict: every queued finding was a genuine gap —
+  including OF-7a (rematerialize's cascade only re-checked quarantined rows, never admitted holders) and OF-7c
+  (RP-7 rewrote responder filtering but not the merge).
+- Key mechanisms: OF-6a roots now map to a GROW-ONLY verse set with Viewer+ required in EVERY learned verse (ads
+  can only make access stricter); OF-6b gate state persists to <p2p_dir>/blob-access-gate.json and reloads before
+  the router accepts requests, child hashes tracked at publish/meta-resolution/catalog/startup-scan, closed verses
+  DENY; OF-6d owner pinned only from a self-signed manifest or this node's own DB-admitted write (invite T10 kept).
+- WATCH (sweep triage hints): (1) publishers now gate their own tilesets — two_peer_tileset_stream depends on
+  default_access:viewer reaching alice's role view via her own manifest write; check that path first if red.
+  (2) secondary seeders fail closed when a downloaded root is later advertised under a second verse (griefing
+  trade-off, documented in fe-sync AGENTS.md). (3) OF-6d residual: first self-signed manifest wins on an
+  invite-less relay open (same class as D-23).
+- Deviation (kept): both commit trailers say "Claude Opus 5.5 (1M context)", not "Claude Fable 5" — accurate to the
+  executing model, local-only; not worth history surgery. BLOB-HASH-CAPABILITY (non-tileset hash-capability blobs)
+  remains open as its own ledger row, out of W5s scope.
+- Next: W6 FF launch (script .omc/plans/w6-decisions-20261012.js, adapted: check-only gate, W6-9/10 merged into
+  refine, no-deferrals, trailer fixed), base `9fbf7b9`.
