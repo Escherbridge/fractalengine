@@ -569,12 +569,13 @@ pub(crate) fn row_to_snapshot(
     let z = coords[1].as_f64().unwrap_or(0.0);
     let y = row["elevation"].as_f64().unwrap_or(0.0);
 
+    // Position stays f64 end to end (EGR-F32) — no narrowing cast here.
     let position = match proj {
         Some(p) => {
             let (lat, lon, ele) = p.local_to_wgs84(x, y, z);
-            [lon as f32, lat as f32, ele as f32]
+            [lon, lat, ele]
         }
-        None => [x as f32, y as f32, z as f32],
+        None => [x, y, z],
     };
 
     let properties = match row.get("properties") {
@@ -610,12 +611,13 @@ pub(crate) fn reading_row_to_snapshot(
     anchor: Option<&(f64, f64, f64)>,
     proj: Option<&fe_terrain::projection::Projection>,
 ) -> ReadingSnapshot {
+    // Position stays f64 end to end (EGR-F32) — no narrowing cast here.
     let anchor_position = anchor.map(|&(x, y, z)| match proj {
         Some(p) => {
             let (lat, lon, ele) = p.local_to_wgs84(x, y, z);
-            [lon as f32, lat as f32, ele as f32]
+            [lon, lat, ele]
         }
-        None => [x as f32, y as f32, z as f32],
+        None => [x, y, z],
     });
     ReadingSnapshot {
         reading_id: row["reading_id"].as_str().unwrap_or_default().to_string(),

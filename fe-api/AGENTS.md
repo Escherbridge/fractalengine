@@ -857,9 +857,9 @@ in-memory; no temp files) or local CSV serialization.
   tombstoned-but-still-present node keeps its last known position) maps to
   `anchor_position: None`, which the parquet writer encodes as a **null**
   geometry cell (unlike the nodes writer, whose geometry column is
-  non-nullable) rather than fabricating `[0,0,0]`. `value` is `Float64` end to
-  end (reading rows, the Arrow column, and CSV) — unlike node positions'
-  `Float32` — so BI consumers get the sensor value back bit-exact.
+  non-nullable) rather than fabricating `[0,0,0]`. `value` and the anchor
+  position are both `Float64` end to end (EGR-F32) — rows, the Arrow column,
+  and CSV — so BI consumers get both back bit-exact.
 - Parquet responses ship `Content-Type: application/vnd.apache.parquet`,
   `Content-Length` (axum), and `Accept-Ranges: bytes` so DuckDB httpfs can
   `read_parquet('<url>')` (plan D1).
@@ -933,9 +933,12 @@ in-memory; no temp files) or local CSV serialization.
   terrain origin. The GeoParquet `geo` metadata OMITS the spec `crs` key for
   latlon output (absent = OGC:CRS84, exactly our lon/lat order — M4 minor
   #7) while petal-local output keeps `crs: null` (DEC-C16); `fe:crs` carries
-  the label in both. Precision note: parquet positions pass through
-  `EntitySnapshot`'s `f32` (≈1 m at mid-latitudes) — acceptable v1, revisit if
-  survey-grade egress is needed.
+  the label in both. **Precision (EGR-F32, closed):** positions — node and
+  reading-anchor, parquet and CSV, local and latlon — are `f64` end to end
+  through `EntitySnapshot`/`ReadingSnapshot` (`fe-entity-store/src/AGENTS.md`
+  §egress-precision); the old `f32` narrowing (≈1 m at mid-latitudes) is
+  gone. Rotation/scale stay `f32` (D-54) — no BI consumer computes distance
+  over them.
 - Status mapping: 400 bad query/coords/table, 403 role, 404 unknown or
   out-of-scope petal (§existence-oracle), 413 row-cap/byte-ceiling (enforced on the readings path too — the
   anchor join is bounded by the already-capped distinct-node-id count, and

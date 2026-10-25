@@ -15,6 +15,8 @@ Substantive module rationale lives beside the code in
   `EntityStore` side-tables so `EntitySnapshot` stays source-compatible for
   fe-query/fe-api.
 - **§node-log-cap** — the last-K in-memory op-log window.
+- **§egress-precision** — `position`/`anchor_position` are `f64` end to end
+  (EGR-F32); ingress and rotation/scale stay `f32` (D-54).
 
 Program vocabulary (`DbCommand` op variants + `LifecycleEvent`) is owned by
 `fe-runtime/src/messages.rs`; delete/promote authorization by `fe-policy`

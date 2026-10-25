@@ -118,6 +118,12 @@ footer metadata; `codec.rs` owns the snapshot↔Arrow/WKB mapping.
   (BI/DuckDB-friendly); `properties` is a nullable JSON-string Utf8 column;
   `node_log` is intentionally NOT exported (audit log ≠ analytics egress)
   and reads back empty.
+- **Position is `f64` end to end (EGR-F32).** `point_z_to_wkb`/`wkb_to_point_z`
+  take/return `[f64; 3]` — WKB already stored doubles on the wire, so this
+  closed a precision gap on the Rust side, not a wire-format change. The
+  `pos_x`/`pos_y`/`pos_z` columns in `columnar::provider`'s analytics table
+  are `Float64` for the same reason; `rot_*`/`scale_*` stay `Float32`
+  (D-54 — no BI consumer computes distance over rotation/scale).
 - **CRS honesty (FR-5 seam) + DEC-C16 spec compliance:** the `geo` metadata
   `crs` key is always spec-legal `null` (petal-local frames have no PROJJSON
   CRS; `null` means "unspecified", never a silent EPSG:4326 claim). The

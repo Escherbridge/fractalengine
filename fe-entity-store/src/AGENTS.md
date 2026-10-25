@@ -37,6 +37,29 @@ Invariants and boundaries:
   nothing asymptotically, and keeping `Vec` avoids rippling the serialized
   `EntitySnapshot` shape through fe-api consumers.
 
+## §egress-precision — f64 positions end to end (EGR-F32)
+
+`EntitySnapshot::position` and `ReadingSnapshot::anchor_position` are `f64`,
+not `f32`. `rotation`/`scale` stay `f32` (D-54 stands — unaffected).
+
+- **Why only position.** BI consumers (`fe-api` export/analytics) compute
+  distances and area over position; a silent f32 narrowing cost ~1 m at
+  mid-latitudes, which is a real BI-survey-grade defect (the old precision
+  note in `fe-api/AGENTS.md` §export). Rotation/scale have no such
+  consumer, so widening them would only cost BI bandwidth for no gain.
+- **Ingress stays f32 (A8).** The wire shape — `fe_runtime::messages::NodeDto`/
+  `SceneChange::{NodeAdded,NodeTransform,TransformFailed}`, and this crate's
+  own mirror `NodeSnapshot`/`SceneChange` — is untouched. The widening
+  happens at exactly one seam: the private `EntityStore::widen_position`
+  helper, called from every `apply_scene_change` arm that writes
+  `EntitySnapshot::position`. No other site casts a position.
+- **Readers that build `EntitySnapshot` directly** (`fe-api::export::row_to_snapshot`,
+  `fe-api::entity_store_bridge::snapshot_from_node_row`) read the SurrealDB
+  `position`/`elevation` columns as `f64` straight through — SurrealDB's
+  `geometry<point>`/`float` columns are f64 already, so there is no
+  precision to lose reading them, only the egress-side narrowing this slice
+  removes.
+
 ## §addressing — stable node addresses (FR-4, `address.rs`)
 
 Track `node_lifecycle_addressing_20260725`, decision **Q-1 OVERRIDE**: the

@@ -268,6 +268,58 @@ async fn export_parquet_round_trips_and_is_scope_filtered() {
     assert!(!crs.contains("4326"), "{crs}");
 }
 
+/// EGR-F32: a position with no clean f32 representation survives both
+/// export formats bit-exact. Mutation check: reintroduce `as f32` anywhere
+/// on the position path (`row_to_snapshot`, `point_z_to_wkb`/`wkb_to_point_z`,
+/// the CSV cell) and the `to_bits` comparisons go red.
+#[tokio::test]
+async fn parquet_and_csv_exports_carry_f64_positions_bit_exact() {
+    let db = setup_test_db().await;
+    let pa = ulid();
+    seed_petal(&db, &pa, false).await;
+    let x = 123_456.789_012_345_67_f64;
+    let z = -98_765.432_109_876_5_f64;
+    let ele = 0.000_123_456_789_012_f64;
+    seed_node(&db, &pa, "n1", x, z, ele).await;
+    let state = test_state(db);
+    let claims = test_claims("VERSE#v1", "viewer");
+
+    let resp = export_parquet(
+        State(state.clone()),
+        Extension(claims.clone()),
+        Path(pa.clone()),
+        Query(params(None, None)),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let snaps = read_parquet_back(&body_bytes(resp).await);
+    assert_eq!(snaps.len(), 1);
+    assert_eq!(snaps[0].position[0].to_bits(), x.to_bits(), "x bit-exact");
+    assert_eq!(snaps[0].position[1].to_bits(), ele.to_bits(), "y/elevation bit-exact");
+    assert_eq!(snaps[0].position[2].to_bits(), z.to_bits(), "z bit-exact");
+
+    let resp = export_csv(
+        State(state),
+        Extension(claims),
+        Path(pa.clone()),
+        Query(params(None, None)),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let csv = String::from_utf8(body_bytes(resp).await).unwrap();
+    let row: Vec<&str> = csv.lines().nth(2).unwrap().split(',').collect();
+    let (csv_x, csv_y, csv_z): (f64, f64, f64) = (
+        row[2].parse().unwrap(),
+        row[3].parse().unwrap(),
+        row[4].parse().unwrap(),
+    );
+    assert_eq!(csv_x.to_bits(), x.to_bits(), "csv x bit-exact");
+    assert_eq!(csv_y.to_bits(), ele.to_bits(), "csv y/elevation bit-exact");
+    assert_eq!(csv_z.to_bits(), z.to_bits(), "csv z bit-exact");
+}
+
 #[tokio::test]
 async fn export_rejects_bad_role_scope_and_injection() {
     let db = setup_test_db().await;
@@ -393,11 +445,14 @@ async fn export_csv_local_vs_latlon_landmine() {
         row[3].parse().unwrap(),
         row[4].parse().unwrap(),
     );
+    // EGR-F32: position is f64 end to end, so the CSV cell round-trips the
+    // projection's own f64 output bit-exact — no epsilon needed. Mutation
+    // check: reintroduce `as f32` in `row_to_snapshot` and this goes red.
     let proj = Projection::new(ORIGIN_LAT, ORIGIN_LON, ORIGIN_ELE);
     let (exp_lat, exp_lon, exp_ele) = proj.local_to_wgs84(100.0, 10.0, 0.0);
-    assert!((lat - exp_lat).abs() < 1e-4, "lat {lat} vs {exp_lat}");
-    assert!((lon - exp_lon).abs() < 1e-4, "lon {lon} vs {exp_lon}");
-    assert!((ele - exp_ele).abs() < 1e-2, "ele {ele} vs {exp_ele}");
+    assert_eq!(lat, exp_lat, "lat must round-trip bit-exact");
+    assert_eq!(lon, exp_lon, "lon must round-trip bit-exact");
+    assert_eq!(ele, exp_ele, "ele must round-trip bit-exact");
     assert!(
         (lat - ORIGIN_LAT).abs() > 1e-7 || (lon - ORIGIN_LON).abs() > 1e-7,
         "coordinates were not actually converted"
@@ -557,11 +612,46 @@ async fn export_readings_latlon_converts_anchor_position() {
         row[9].parse().unwrap(),
         row[10].parse().unwrap(),
     );
+    // EGR-F32: the anchor position is f64 end to end, so this round-trips
+    // the projection's own f64 output bit-exact — no epsilon needed.
     let proj = Projection::new(ORIGIN_LAT, ORIGIN_LON, ORIGIN_ELE);
     let (exp_lat, exp_lon, exp_ele) = proj.local_to_wgs84(100.0, 10.0, 0.0);
-    assert!((lat - exp_lat).abs() < 1e-4, "lat {lat} vs {exp_lat}");
-    assert!((lon - exp_lon).abs() < 1e-4, "lon {lon} vs {exp_lon}");
-    assert!((ele - exp_ele).abs() < 1e-2, "ele {ele} vs {exp_ele}");
+    assert_eq!(lat, exp_lat, "lat must round-trip bit-exact");
+    assert_eq!(lon, exp_lon, "lon must round-trip bit-exact");
+    assert_eq!(ele, exp_ele, "ele must round-trip bit-exact");
+}
+
+/// EGR-F32: the readings-anchor position round-trips through the same
+/// f64 WKB path as a node's own geometry. Mutation check: reintroduce `as
+/// f32` on the anchor path and the `to_bits` comparisons go red.
+#[tokio::test]
+async fn export_readings_anchor_position_is_f64_bit_exact() {
+    let db = setup_test_db().await;
+    let pa = ulid();
+    seed_petal(&db, &pa, false).await;
+    let x = 123_456.789_012_345_67_f64;
+    let z = -98_765.432_109_876_5_f64;
+    let ele = 0.000_123_456_789_012_f64;
+    seed_node(&db, &pa, "anchor-a", x, z, ele).await;
+    seed_reading(&db, &pa, "anchor-a", "temperature_c", 1.0).await;
+    let state = test_state(db);
+    let claims = test_claims("VERSE#v1", "viewer");
+
+    let resp = export_parquet(
+        State(state),
+        Extension(claims),
+        Path(pa),
+        Query(params(Some("SELECT * FROM iot_reading"), None)),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let rows = read_readings_parquet_back(&body_bytes(resp).await);
+    assert_eq!(rows.len(), 1);
+    let anchor = rows[0].anchor_position.expect("anchor resolves");
+    assert_eq!(anchor[0].to_bits(), x.to_bits(), "anchor x bit-exact");
+    assert_eq!(anchor[1].to_bits(), ele.to_bits(), "anchor y/elevation bit-exact");
+    assert_eq!(anchor[2].to_bits(), z.to_bits(), "anchor z bit-exact");
 }
 
 // (Non-whitelisted tables, e.g. `verse`, are still covered by

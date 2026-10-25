@@ -14,7 +14,10 @@ pub use address::{AddressError, NodeAddress};
 pub struct EntitySnapshot {
     pub node_id: String,
     pub petal_id: String,
-    pub position: [f32; 3],
+    /// BI egress carries this at full `f64` precision end to end (EGR-F32,
+    /// `fe-entity-store/src/AGENTS.md` §egress-precision); ingress stays
+    /// `f32` (A8) and is widened at the `apply_scene_change` boundary.
+    pub position: [f64; 3],
     pub rotation: [f32; 3],
     pub scale: [f32; 3],
     pub properties: Option<serde_json::Value>,
@@ -44,7 +47,8 @@ pub struct ReadingSnapshot {
     pub recorded_at_ms: i64,
     /// Local-meters `[x, y, z]`, or (when exported with `coords=latlon`)
     /// `[lon, lat, ele]` — same axis-order convention as `EntitySnapshot::position`.
-    pub anchor_position: Option<[f32; 3]>,
+    /// `f64` end to end (EGR-F32), mirroring `EntitySnapshot::position`.
+    pub anchor_position: Option<[f64; 3]>,
 }
 
 /// A log entry recording a single operation on a node (see AGENTS.md §node-log-cap).
@@ -216,6 +220,16 @@ impl EntityStore {
     /// The configured last-K cap for in-memory node logs.
     pub fn node_log_cap(&self) -> usize {
         self.node_log_cap
+    }
+
+    /// Widen an ingress (`f32`, A8) position to the egress (`f64`, EGR-F32)
+    /// shape `EntitySnapshot::position` stores.
+    fn widen_position(position: [f32; 3]) -> [f64; 3] {
+        [
+            position[0] as f64,
+            position[1] as f64,
+            position[2] as f64,
+        ]
     }
 
     /// Push a log entry, trimming the front so the window stays within the cap.
@@ -628,7 +642,7 @@ impl EntityStore {
                 let mut snapshot = EntitySnapshot {
                     node_id: node.node_id.clone(),
                     petal_id: node.petal_id.clone(),
-                    position: node.position,
+                    position: Self::widen_position(node.position),
                     rotation: [node.rotation[0], node.rotation[1], node.rotation[2]],
                     scale: node.scale,
                     properties: None,
@@ -665,7 +679,7 @@ impl EntityStore {
                 ..
             } => {
                 if let Some(mut snapshot) = self.get(node_id) {
-                    snapshot.position = *position;
+                    snapshot.position = Self::widen_position(*position);
                     snapshot.rotation = *rotation;
                     snapshot.scale = *scale;
                     snapshot.updated_at_ms = timestamp_ms;
@@ -699,7 +713,7 @@ impl EntityStore {
                 ..
             } => {
                 if let Some(mut snapshot) = self.get(node_id) {
-                    snapshot.position = *position;
+                    snapshot.position = Self::widen_position(*position);
                     snapshot.rotation = *rotation;
                     snapshot.scale = *scale;
                     snapshot.updated_at_ms = timestamp_ms;

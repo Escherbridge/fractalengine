@@ -142,6 +142,42 @@ async fn analytics_scopes_the_registered_table_to_the_authorized_petal() {
     );
 }
 
+/// EGR-F32: the analytics `nodes` table's `pos_x` column is `Float64`, so a
+/// value with no clean f32 representation survives the SQL round trip
+/// bit-exact. Mutation check: reintroduce `Float32Array` on `pos_x` in
+/// `columnar::provider` and the `to_bits` comparison goes red.
+#[tokio::test]
+async fn analytics_nodes_table_serves_f64_positions() {
+    let db = setup_test_db().await;
+    let petal_id = ulid::Ulid::new().to_string();
+    seed_petal(&db, &petal_id).await;
+
+    let x = 123_456.789_012_345_67_f64;
+    let mut snap = snapshot("n1", &petal_id);
+    snap.position = [x, 0.0, 0.0];
+    let store = Arc::new(EntityStore::new());
+    store.upsert(snap);
+    let state = state(Some(db), store);
+
+    let response = execute_analytics_query(
+        State(state),
+        Extension(claims("VERSE#v1", "viewer")),
+        Json(AnalyticsQueryRequest {
+            sql: "SELECT pos_x FROM nodes".to_string(),
+            petal_id,
+        }),
+    )
+    .await
+    .into_response();
+    let body = body_json(response).await;
+
+    assert_eq!(body["ok"], true, "analytics response: {body}");
+    let pos_x = body["data"]["data"][0]["pos_x"]
+        .as_f64()
+        .expect("pos_x is a JSON number");
+    assert_eq!(pos_x.to_bits(), x.to_bits(), "pos_x must be served Float64 bit-exact");
+}
+
 #[tokio::test]
 async fn analytics_rejects_a_petal_outside_the_token_scope() {
     let db = setup_test_db().await;

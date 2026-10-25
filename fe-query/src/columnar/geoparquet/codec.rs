@@ -248,19 +248,22 @@ fn f32_col<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Float32Array> {
         .with_context(|| format!("column `{name}` is not Float32"))
 }
 
-/// Encode a petal-local position as little-endian ISO WKB Point Z.
-fn point_z_to_wkb(position: [f32; 3]) -> Vec<u8> {
+/// Encode a petal-local position as little-endian ISO WKB Point Z. `f64`
+/// end to end (EGR-F32) — WKB already stored doubles; the source value no
+/// longer loses precision before it gets here.
+fn point_z_to_wkb(position: [f64; 3]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(WKB_POINT_Z_LEN);
     buf.push(1u8); // little-endian
     buf.extend_from_slice(&WKB_POINT_Z.to_le_bytes());
     for component in position {
-        buf.extend_from_slice(&f64::from(component).to_le_bytes());
+        buf.extend_from_slice(&component.to_le_bytes());
     }
     buf
 }
 
-/// Decode a little-endian ISO WKB Point Z back to a petal-local position.
-fn wkb_to_point_z(wkb: &[u8]) -> Result<[f32; 3]> {
+/// Decode a little-endian ISO WKB Point Z back to a petal-local position
+/// (`f64`, EGR-F32 — no narrowing to f32).
+fn wkb_to_point_z(wkb: &[u8]) -> Result<[f64; 3]> {
     if wkb.len() != WKB_POINT_Z_LEN {
         bail!("WKB length {} != expected {WKB_POINT_Z_LEN}", wkb.len());
     }
@@ -274,7 +277,7 @@ fn wkb_to_point_z(wkb: &[u8]) -> Result<[f32; 3]> {
     if geom_type != WKB_POINT_Z {
         bail!("unsupported WKB geometry type {geom_type} (expected Point Z {WKB_POINT_Z})");
     }
-    let mut position = [0f32; 3];
+    let mut position = [0f64; 3];
     for (i, slot) in position.iter_mut().enumerate() {
         let start = 5 + i * 8;
         let raw = f64::from_le_bytes(
@@ -282,7 +285,7 @@ fn wkb_to_point_z(wkb: &[u8]) -> Result<[f32; 3]> {
                 .try_into()
                 .context("WKB coord bytes")?,
         );
-        *slot = raw as f32;
+        *slot = raw;
     }
     Ok(position)
 }

@@ -231,7 +231,7 @@ mod tests {
         ))
     }
 
-    fn snap(id: &str, pos: [f32; 3], props: Option<serde_json::Value>, ts: u64) -> EntitySnapshot {
+    fn snap(id: &str, pos: [f64; 3], props: Option<serde_json::Value>, ts: u64) -> EntitySnapshot {
         EntitySnapshot {
             node_id: id.into(),
             petal_id: "p1".into(),
@@ -331,7 +331,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    fn reading(id: &str, node_id: &str, value: f64, anchor: Option<[f32; 3]>) -> ReadingSnapshot {
+    fn reading(id: &str, node_id: &str, value: f64, anchor: Option<[f64; 3]>) -> ReadingSnapshot {
         ReadingSnapshot {
             reading_id: id.into(),
             node_id: node_id.into(),

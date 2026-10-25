@@ -125,7 +125,7 @@ mod tests {
     use super::*;
     use fe_entity_store::EntitySnapshot;
 
-    fn make_snap(node_id: &str, petal_id: &str, x: f32) -> EntitySnapshot {
+    fn make_snap(node_id: &str, petal_id: &str, x: f64) -> EntitySnapshot {
         EntitySnapshot {
             node_id: node_id.into(),
             petal_id: petal_id.into(),

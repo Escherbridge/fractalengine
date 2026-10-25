@@ -48,12 +48,14 @@ pub fn snapshot_from_node_row(
         .pointer("/position/coordinates")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| anyhow::anyhow!("node {node_id} has no position.coordinates array"))?;
+    // Position stays f64 end to end (EGR-F32); only rotation/scale are f32 (D-54).
     let position = [
-        required_row_number(coordinates, 0, "position.coordinates")?,
+        required_position_component(coordinates, 0, "position.coordinates")?,
         row.get("elevation")
             .and_then(serde_json::Value::as_f64)
-            .ok_or_else(|| anyhow::anyhow!("node {node_id} has no elevation"))? as f32,
-        required_row_number(coordinates, 1, "position.coordinates")?,
+            .filter(|v| v.is_finite())
+            .ok_or_else(|| anyhow::anyhow!("node {node_id} has no elevation"))?,
+        required_position_component(coordinates, 1, "position.coordinates")?,
     ];
     let rotation = required_row_array3(row, "rotation")?;
     let scale = required_row_array3(row, "scale")?;
@@ -167,6 +169,20 @@ fn required_row_number(
         anyhow::bail!("node row has invalid {field}[{index}]");
     }
     Ok(value)
+}
+
+/// Read one finite f64 position component from a direct local node row
+/// array — unlike [`required_row_number`], never narrowed to f32 (EGR-F32).
+fn required_position_component(
+    values: &[serde_json::Value],
+    index: usize,
+    field: &str,
+) -> anyhow::Result<f64> {
+    values
+        .get(index)
+        .and_then(serde_json::Value::as_f64)
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| anyhow::anyhow!("node row has invalid {field}[{index}]"))
 }
 
 /// Read the three visible transform components used by the analytics snapshot.

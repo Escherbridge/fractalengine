@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use datafusion::arrow::array::{Float32Array, RecordBatch, StringBuilder, UInt64Array};
+use datafusion::arrow::array::{Float32Array, Float64Array, RecordBatch, StringBuilder, UInt64Array};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::Session;
 use datafusion::datasource::memory::MemTable;
@@ -56,9 +56,10 @@ pub fn entity_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("node_id", DataType::Utf8, false),
         Field::new("petal_id", DataType::Utf8, false),
-        Field::new("pos_x", DataType::Float32, false),
-        Field::new("pos_y", DataType::Float32, false),
-        Field::new("pos_z", DataType::Float32, false),
+        // f64 end to end (EGR-F32) — unlike rot_*/scale_*, which stay Float32 (D-54).
+        Field::new("pos_x", DataType::Float64, false),
+        Field::new("pos_y", DataType::Float64, false),
+        Field::new("pos_z", DataType::Float64, false),
         Field::new("rot_x", DataType::Float32, false),
         Field::new("rot_y", DataType::Float32, false),
         Field::new("rot_z", DataType::Float32, false),
@@ -115,9 +116,9 @@ pub fn snapshots_to_batch(
         vec![
             Arc::new(node_ids.finish()),
             Arc::new(petal_ids.finish()),
-            Arc::new(Float32Array::from(pos_x)),
-            Arc::new(Float32Array::from(pos_y)),
-            Arc::new(Float32Array::from(pos_z)),
+            Arc::new(Float64Array::from(pos_x)),
+            Arc::new(Float64Array::from(pos_y)),
+            Arc::new(Float64Array::from(pos_z)),
             Arc::new(Float32Array::from(rot_x)),
             Arc::new(Float32Array::from(rot_y)),
             Arc::new(Float32Array::from(rot_z)),
@@ -164,7 +165,7 @@ mod tests {
     use super::*;
     use datafusion::arrow::array::{Array, StringArray};
 
-    fn make_snap(node_id: &str, petal_id: &str, x: f32) -> EntitySnapshot {
+    fn make_snap(node_id: &str, petal_id: &str, x: f64) -> EntitySnapshot {
         EntitySnapshot {
             node_id: node_id.into(),
             petal_id: petal_id.into(),
@@ -202,7 +203,7 @@ mod tests {
             .column_by_name("pos_x")
             .unwrap()
             .as_any()
-            .downcast_ref::<Float32Array>()
+            .downcast_ref::<Float64Array>()
             .unwrap();
         assert_eq!(col.value(0), 1.0);
         assert_eq!(col.value(1), 2.0);
