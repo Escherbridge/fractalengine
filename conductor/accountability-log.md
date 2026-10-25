@@ -656,3 +656,38 @@ fail-closed).
   improved fix shape absorbed into OF-13c: store `from_fractal` on each PetalMapping so the rollback authority
   check is position-independent — then moves are ALWAYS applied and no refusal path exists at all (preferred over
   quarantine-and-retry). OF-13b shape confirmed: bounded (author, fractal) pairs, lapse-pruned at settle.
+
+### In-app verification findings (user, 2026-10-25 19:13) — batch F1-F6 · 4 lanes launched · PUSH HELD
+- F1 long strings expand Inspector panel (clip+tooltip) / F2 Query tab not full height / F3 query hint invites
+  wrong table names ("SELECT * FROM Duck" → table does not exist; prefill selected-node + all-nodes templates)
+  → one fe-ui executor (no cargo).
+- F4 "does send-data-to-node + query-back work at all?" → executor writes AND RUNS the e2e flow test on the real
+  scoped-query seam (sole cargo user this wave).
+- F5 terrain proposals save but show NO visible delta — the whole point is volume reporting (cut/fill estimates,
+  assets-in-volume). Industry anchor: existing-vs-proposed surface pair + cut/fill heatmap + volume report.
+  Reusables: sculpt_earthwork_regions baked cut/fill volume math. → opus planner drafts track
+  terrain_proposal_delta_viz_20261025 (docs only).
+- F6 CRITICAL-for-UX: local user resolves as 'viewer' at own petal — SetPetalTerrain denied (log pasted; GUI badge
+  agrees). The DENY is the new gates working; the ROLE is wrong. Hypotheses: created_by/identity mismatch or
+  migration seeding gap for pre-campaign verses. → read-only diagnosis agent; fix constrained by OF-4 (no blanket
+  orphaned-creator adoption). Fix lands after diagnosis, then ONE serial gate at the join (check + targeted tests).
+- Push (141 commits) HELD until F6 fix + this batch lands.
+- F4 RESULT (2026-10-25): e2e WORKS — node property + iot_reading written via real DbCommands, read back through
+  RawQuery on a real SurrealKV store (test node_data_written_on_both_planes_reads_back_through_query_tab_raw_query,
+  commit 6f32a57, 1/0 twice). User's failure was table naming (nodes live in `node`, keyed node_id, petal_id column).
+  TWO new product findings routed: (i) Query tab's Scope label is COSMETIC — fe-ui actions/query.rs:28-31 drops
+  scope, RawQuery runs unscoped → UI lane makes templates scope-filtered + label honest; SERVER-SIDE scope
+  enforcement for RawQuery = follow-up F7 (local-only caller today, so privacy impact nil single-user, but the
+  contract should be real before any remote exposure). (ii) hint text wrong: RETURN is in BLOCKED_KEYWORDS.
+- F6 DIAGNOSIS (agent, full report in session): root cause = silent ephemeral identity fallback
+  fractalengine/src/main.rs:77-85 (keystore Err → unpersisted new keypair, did changes across launches);
+  RBAC + OF-4 guard behaving correctly on orphaned data. Fix plan: loud failure + file-tier fallback + explicit
+  user-confirmed ClaimOrphanedVerse gated by the reconcile never-shared predicate; 3 tests incl. OF-4-shaped
+  negative. Implementation at wave join.
+- BATCH CLOSE (2026-10-25): F1-F3 UI `ad8c88d` (truncate()-at-source clipping + tooltips, full-height query tab,
+  scoped literal-SQL templates, honest hint); F4 e2e `6f32a57` (VERDICT: works); F5 track `52eccdc`
+  (terrain_proposal_delta_viz_20261025, 12 ODs with defaults); F6 `65af7fc` (3-tier identity: keystore→file
+  (0o600-at-creation, create_new atomic, fail-closed — security finding fixed PRE-commit)→loud ephemeral banner;
+  ClaimOrphanedVerse sharing reconcile's verse_never_shared predicate, OF-4-shaped negative test; Verse Settings
+  "Claim Ownership" two-step confirm). JOIN GATE: check+clippy clean, 0 failures / 28 test binaries (fe-ui 1012,
+  fe-database 275). F7 (server-side RawQuery scope enforcement) remains queued. Push decision now live.
