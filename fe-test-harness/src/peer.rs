@@ -579,12 +579,97 @@ impl TestPeer {
                         | Ok(DbCommand::UpdateFractalDescription { .. })
                         | Ok(DbCommand::DeleteEntity { .. })
                         | Ok(DbCommand::ResolveRolesForPeers { .. })
-                        | Ok(DbCommand::AssignRole { .. })
-                        | Ok(DbCommand::RevokeRole { .. })
                         | Ok(DbCommand::ReemitLocalRoleStatements { .. })
                         | Ok(DbCommand::GenerateScopedInvite { .. })
                         | Ok(DbCommand::ResolveLocalRole { .. }) => {
-                            // Entity settings commands — not implemented in test harness.
+                            // Entity settings commands — not implemented in test harness
+                            // (their handlers are `pub(crate)` in fe-database, so the
+                            // harness — an external crate — has no seam to call them).
+                        }
+                        // RP-8: the real `fe-database` statement handlers (RP-2 §2.3),
+                        // with a replication sender so a local grant/revoke actually
+                        // publishes — mirrors the production arm (`fe-database/src/
+                        // lib.rs` `AssignRole`/`RevokeRole`) byte-for-byte, including the
+                        // RP-3 retry of content rows a role change unblocked.
+                        Ok(DbCommand::AssignRole { peer_did, scope, role }) => {
+                            match fe_database::handlers::rbac::assign_role_handler(
+                                &db,
+                                &db_blob_store,
+                                Some(&db_repl_tx),
+                                &db_local_did,
+                                &peer_did,
+                                &scope,
+                                &role,
+                            )
+                            .await
+                            {
+                                Ok(()) => {
+                                    let verse = fe_database::role_grants::verse_of_scope(&scope);
+                                    db_result_tx
+                                        .send(DbResult::RoleAssigned { peer_did, scope, role })
+                                        .ok();
+                                    if let Some(verse) = verse {
+                                        for report in
+                                            admissions.retry_author_roles(&db, &verse, None).await
+                                        {
+                                            db_result_tx
+                                                .try_send(DbResult::ReplicatedRowApplied {
+                                                    verse_id: report.verse_id,
+                                                    table: report.table,
+                                                    record_id: report.record_id,
+                                                    outcome: report.outcome,
+                                                })
+                                                .ok();
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    db_result_tx
+                                        .send(DbResult::Error(format!("Assign role failed: {e}")))
+                                        .ok();
+                                }
+                            }
+                        }
+                        Ok(DbCommand::RevokeRole { peer_did, scope }) => {
+                            match fe_database::handlers::rbac::revoke_role_handler(
+                                &db,
+                                &db_blob_store,
+                                Some(&db_repl_tx),
+                                &db_local_did,
+                                &peer_did,
+                                &scope,
+                            )
+                            .await
+                            {
+                                Ok(_report) => {
+                                    let verse = fe_database::role_grants::verse_of_scope(&scope);
+                                    db_result_tx
+                                        .send(DbResult::RoleRevoked { peer_did, scope })
+                                        .ok();
+                                    // An owner revoke of a pin can raise the peer back to
+                                    // an inherited role, so deferred rows are retried here
+                                    // too (parity with the production arm).
+                                    if let Some(verse) = verse {
+                                        for report in
+                                            admissions.retry_author_roles(&db, &verse, None).await
+                                        {
+                                            db_result_tx
+                                                .try_send(DbResult::ReplicatedRowApplied {
+                                                    verse_id: report.verse_id,
+                                                    table: report.table,
+                                                    record_id: report.record_id,
+                                                    outcome: report.outcome,
+                                                })
+                                                .ok();
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    db_result_tx
+                                        .send(DbResult::Error(format!("Revoke role failed: {e}")))
+                                        .ok();
+                                }
+                            }
                         }
                         Ok(DbCommand::MintApiToken {
                             scope,

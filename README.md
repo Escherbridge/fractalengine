@@ -129,6 +129,9 @@ cd fuzz && cargo +nightly fuzz run jwt_parse -- -max_total_time=60
 
 # Single crate
 cargo test -p fe-identity
+
+# P2P scenario harness (real loopback iroh, no Bevy/GPU) — 18 scenarios
+cargo run -p fractalengine-test-harness
 ```
 
 ---

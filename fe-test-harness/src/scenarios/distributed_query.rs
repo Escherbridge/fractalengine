@@ -12,11 +12,22 @@
 //! per row), so the fleet's rows are spread across peers by shard placement —
 //! the union lives distributed, not on one host.
 //!
+//! RP-8: before ingest, alice (the owner) grants bob and carol Editor
+//! through the real `AssignRole` handler — the production flow, not local
+//! seeding. Without it, a reading replicates onto whichever peer a shard
+//! places as host, and an inbound reading's role gate (RP-4 `Floor::Write`,
+//! Editor+) would Defer it forever on any host that is not its own author.
+//!
 //! Legs:
 //!
+//! 0. **Ledger host-truth (RP-8, new)**: every host a shard's ledger entry
+//!    names genuinely holds that shard's row locally, polled against the
+//!    ingesting peers' ground truth — before leg 1's fan-out ever asks.
 //! 1. **A15 aggregate across 3 peers**: a window aggregate (mean/min/max/
 //!    count) fanned out from alice returns exactly the same result as the
-//!    same query over the union of all rows (computed in-test).
+//!    same query over the union of all rows (computed in-test). Now that
+//!    roles gate admission, this is also the host-first delivery order:
+//!    each peer answers as the declared HOST of its own shards.
 //! 2. **A15 raw union dedupe**: a raw window query returns every row once,
 //!    deduped by `reading_id` — an over-retained duplicate on a non-host is
 //!    folded away.
@@ -25,7 +36,10 @@
 //!    missing.
 //! 5. **A16 R=1 offline host**: a shard only its single host holds is
 //!    invisible once that host leaves the topic — it lands in
-//!    `missing_shards` and the host in `missing_hosts`.
+//!    `missing_shards` and the host in `missing_hosts`. 5a's creator-copy
+//!    answer still passes under role gating: it is admitted through alice's
+//!    RP-6 holder declaration (`__holders`), not through the host/role
+//!    check the merge otherwise applies to an unexpected answerer.
 //! 6. **A16 R=2 surviving mirror**: after switching to `balanced` R=2, a
 //!    shard whose two hosts include the departed peer stays covered — the
 //!    surviving mirror serves it.
@@ -113,6 +127,25 @@ fn publish_row(
         })
         .map_err(|e| anyhow!("failed to send WriteRowEntry for {record_id}: {e}"))?;
     Ok(())
+}
+
+/// RP-8: assign a role as the OWNER through the real `AssignRole` handler
+/// (never contended — a single attempt suffices). See
+/// `scenarios/role_propagation.rs` for the full grant/revoke/retry surface
+/// this scenario only needs one slice of.
+fn assign_role(granter: &TestPeer, peer_did: &str, scope: &str, role: &str) -> Result<()> {
+    granter.send(DbCommand::AssignRole {
+        peer_did: peer_did.to_string(),
+        scope: scope.to_string(),
+        role: role.to_string(),
+    });
+    match granter.wait_for(
+        |r| matches!(r, DbResult::RoleAssigned { .. }),
+        Duration::from_secs(30),
+    )? {
+        DbResult::RoleAssigned { .. } => Ok(()),
+        other => bail!("unexpected result assigning role: {other:?}"),
+    }
 }
 
 /// Create an anchor node in `petal_id` on this peer and return its id.
@@ -553,6 +586,15 @@ pub fn run() -> Result<TestResult> {
         &[],
     )?;
 
+    // RP-8: the production flow — the owner grants Editor BEFORE any
+    // reading ever replicates, not local seeding. A reading's inbound role
+    // gate (RP-4 `Floor::Write`) would otherwise Defer it forever on
+    // whichever peer a shard places as host when that peer is not the
+    // reading's own author.
+    let verse_scope = fe_database::build_scope(&verse_id, None, None);
+    assign_role(&alice, &bob_did, &verse_scope, "editor")?;
+    assign_role(&alice, &carol_did, &verse_scope, "editor")?;
+
     // 4. Each peer ingests its own anchor's readings (3 buckets each) through
     //    the real ingestion leg — the rows live distributed by placement.
     let anchor_alice = create_anchor(&alice, &petal_id, "anchor-alice")?;
@@ -618,6 +660,57 @@ pub fn run() -> Result<TestResult> {
             expected_shards.len()
         )
     })?;
+
+    // --- Leg 0 (RP-8, ledger host-truth): every host a shard's ledger entry
+    //     names genuinely holds that shard's row locally — polled against
+    //     the ingesting peers' ground truth — before leg 1's fan-out ever
+    //     asks a single one of them to answer. -----------------------------
+    let host_by_did: HashMap<&str, &TestPeer> = [
+        (alice_did.as_str(), &alice),
+        (bob_did.as_str(), &bob),
+        (carol_did.as_str(), &carol),
+    ]
+    .into_iter()
+    .collect();
+    let host_truth_dump = ledger_dump(&alice, &verse_id)?;
+    for (i, (anchor, _value)) in union.iter().enumerate() {
+        let bucket = B0 + (i % 3) as i64;
+        let shard = format!("{petal_id}/{anchor}/{bucket}");
+        let Some(hosts) = host_truth_dump["shards"][shard.as_str()]["hosts"].as_array() else {
+            return Ok(TestResult::fail(
+                NAME,
+                &format!("leg 0: shard {shard} has no host list in alice's ledger"),
+            ));
+        };
+        let where_row = format!(
+            " WHERE node_id = '{anchor}' AND recorded_at_ms = {}",
+            bucket_ms(bucket)
+        );
+        for host_did in hosts.iter().filter_map(|v| v.as_str()) {
+            let Some(host_peer) = host_by_did.get(host_did) else {
+                return Ok(TestResult::fail(
+                    NAME,
+                    &format!("leg 0: shard {shard} names an unknown host {host_did}"),
+                ));
+            };
+            let deadline = std::time::Instant::now() + SYNC_TIMEOUT;
+            loop {
+                if !read_readings(host_peer, &where_row)?.is_empty() {
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Ok(TestResult::fail(
+                        NAME,
+                        &format!(
+                            "leg 0: shard {shard}'s declared host {host_did} never durably \
+                             holds its own row"
+                        ),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(300));
+            }
+        }
+    }
 
     // --- Leg 1 (A15): aggregate across three peers == union ground truth. ---
     let expected = expected_aggregate(&union);

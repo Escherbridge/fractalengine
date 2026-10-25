@@ -112,6 +112,10 @@ fn main() {
             "Two-Peer Device-Payload Sync (CDL-SPEC10 A6)",
             scenarios::two_peer_device_payload_sync::run,
         ),
+        (
+            "Role Propagation (RP-8)",
+            scenarios::role_propagation::run,
+        ),
     ];
 
     let mut passed = 0;

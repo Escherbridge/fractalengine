@@ -4,6 +4,7 @@ pub mod blob_roundtrip;
 pub mod distributed_query;
 pub mod invite_flow;
 pub mod migration;
+pub mod role_propagation;
 pub mod scaffold;
 pub mod two_peer_blob_exchange;
 pub mod two_peer_device_payload_sync;
