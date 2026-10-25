@@ -87,6 +87,7 @@ pub use handlers::seed::seed_default_data;
 pub use model_url_meta::ModelUrlMeta;
 pub use replication_mode::ReplicationMode;
 pub use role_level::RoleLevel;
+// `scope`'s parser now lives in fe-policy (see fe-policy/AGENTS.md §scope-parser); these names are unchanged.
 pub use scope::{build_scope, parent_scope, parse_scope, scope_contains, ScopeParts};
 pub use types::*;
 

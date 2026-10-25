@@ -1,380 +1,101 @@
-use std::fmt;
+//! Hierarchical scope string parsing — see fe-policy/AGENTS.md §scope-parser.
+//! The pure parser moved into fe-policy (W5b, OF-3): this module is now a
+//! re-export so every `fe_database::{parse_scope, build_scope, parent_scope,
+//! scope_level, ScopeParts}` call site across the workspace is unchanged.
+//! The parser's own unit tests live with the implementation in
+//! `fe-policy/src/scope.rs`; the tests below are the differential check the
+//! unification promised — both public entry points must agree, always.
 
-/// Level of a parsed scope string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScopeLevel {
-    Verse,
-    Fractal,
-    Petal,
-}
-
-/// Parsed components of a hierarchical scope string.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScopeParts {
-    pub verse_id: String,
-    pub fractal_id: Option<String>,
-    pub petal_id: Option<String>,
-}
-
-/// Errors that can occur during scope parsing or building.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ScopeError {
-    /// Input string was empty.
-    Empty,
-    /// String does not begin with `VERSE#`.
-    MissingVersePrefix,
-    /// Verse ID segment is empty.
-    EmptyVerseId,
-    /// A `PETAL#` segment was present without a preceding `FRACTAL#` segment.
-    PetalWithoutFractal,
-    /// String contains an unrecognized segment prefix.
-    UnrecognizedSegment(String),
-    /// A `FRACTAL#` segment was present without a corresponding ID value.
-    EmptyFractalId,
-    /// A `PETAL#` segment was present without a corresponding ID value.
-    EmptyPetalId,
-}
-
-impl fmt::Display for ScopeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ScopeError::Empty => write!(f, "scope string is empty"),
-            ScopeError::MissingVersePrefix => write!(f, "scope must start with 'VERSE#'"),
-            ScopeError::EmptyVerseId => write!(f, "verse_id must not be empty"),
-            ScopeError::PetalWithoutFractal => {
-                write!(f, "PETAL# segment requires a preceding FRACTAL# segment")
-            }
-            ScopeError::UnrecognizedSegment(s) => {
-                write!(f, "unrecognized scope segment: '{}'", s)
-            }
-            ScopeError::EmptyFractalId => write!(f, "fractal_id must not be empty"),
-            ScopeError::EmptyPetalId => write!(f, "petal_id must not be empty"),
-        }
-    }
-}
-
-impl std::error::Error for ScopeError {}
-
-/// Build a hierarchical scope string `VERSE#<v>[-FRACTAL#<f>[-PETAL#<p>]]`;
-/// panics if `petal_id` is `Some` without `fractal_id`.
-pub fn build_scope(verse_id: &str, fractal_id: Option<&str>, petal_id: Option<&str>) -> String {
-    if petal_id.is_some() && fractal_id.is_none() {
-        panic!("build_scope: petal_id requires fractal_id (invalid hierarchy)");
-    }
-
-    let mut s = format!("VERSE#{}", verse_id);
-    if let Some(fid) = fractal_id {
-        s.push_str(&format!("-FRACTAL#{}", fid));
-        if let Some(pid) = petal_id {
-            s.push_str(&format!("-PETAL#{}", pid));
-        }
-    }
-    s
-}
-
-/// Parse a scope string into its constituent parts.
-///
-/// Accepts any string produced by [`build_scope`].
-pub fn parse_scope(scope: &str) -> Result<ScopeParts, ScopeError> {
-    if scope.is_empty() {
-        return Err(ScopeError::Empty);
-    }
-
-    // Segments are separated by '-' but only at the top-level keyword boundaries
-    // (VERSE#, FRACTAL#, PETAL#). We split by '-' then reassemble segments that
-    // belong to each keyword prefix.
-    //
-    // Because IDs themselves might contain '-', we instead split on the known
-    // boundary markers: "-FRACTAL#" and "-PETAL#".
-
-    // Validate and strip VERSE# prefix
-    if !scope.starts_with("VERSE#") {
-        return Err(ScopeError::MissingVersePrefix);
-    }
-
-    let rest = &scope["VERSE#".len()..];
-
-    // Find the optional -FRACTAL# boundary
-    let (verse_part, after_verse) = if let Some(idx) = rest.find("-FRACTAL#") {
-        (&rest[..idx], Some(&rest[idx + 1..]))
-    } else {
-        (rest, None)
-    };
-
-    if verse_part.is_empty() {
-        return Err(ScopeError::EmptyVerseId);
-    }
-
-    let verse_id = verse_part.to_string();
-
-    let (fractal_id, petal_id) = match after_verse {
-        None => (None, None),
-        Some(fractal_and_rest) => {
-            // fractal_and_rest starts with "FRACTAL#..."
-            if !fractal_and_rest.starts_with("FRACTAL#") {
-                return Err(ScopeError::UnrecognizedSegment(
-                    fractal_and_rest.to_string(),
-                ));
-            }
-            let after_fractal_prefix = &fractal_and_rest["FRACTAL#".len()..];
-
-            let (fid, after_fractal) = if let Some(idx) = after_fractal_prefix.find("-PETAL#") {
-                (
-                    &after_fractal_prefix[..idx],
-                    Some(&after_fractal_prefix[idx + 1..]),
-                )
-            } else {
-                (after_fractal_prefix, None)
-            };
-
-            if fid.is_empty() {
-                return Err(ScopeError::EmptyFractalId);
-            }
-
-            let fractal_id = Some(fid.to_string());
-
-            let petal_id = match after_fractal {
-                None => None,
-                Some(petal_seg) => {
-                    if !petal_seg.starts_with("PETAL#") {
-                        return Err(ScopeError::UnrecognizedSegment(petal_seg.to_string()));
-                    }
-                    let pid = &petal_seg["PETAL#".len()..];
-                    if pid.is_empty() {
-                        return Err(ScopeError::EmptyPetalId);
-                    }
-                    Some(pid.to_string())
-                }
-            };
-
-            (fractal_id, petal_id)
-        }
-    };
-
-    Ok(ScopeParts {
-        verse_id,
-        fractal_id,
-        petal_id,
-    })
-}
-
-/// Returns the parent scope (petal → fractal → verse), or `None` if already
-/// at verse level.
-pub fn parent_scope(scope: &str) -> Option<String> {
-    // Walk from the right: look for the last occurrence of "-PETAL#" or "-FRACTAL#"
-    if let Some(idx) = scope.rfind("-PETAL#") {
-        return Some(scope[..idx].to_string());
-    }
-    if let Some(idx) = scope.rfind("-FRACTAL#") {
-        return Some(scope[..idx].to_string());
-    }
-    // Already at verse level
-    None
-}
-
-/// Returns the [`ScopeLevel`] of a scope string.
-pub fn scope_level(scope: &str) -> Result<ScopeLevel, ScopeError> {
-    let parts = parse_scope(scope)?;
-    if parts.petal_id.is_some() {
-        Ok(ScopeLevel::Petal)
-    } else if parts.fractal_id.is_some() {
-        Ok(ScopeLevel::Fractal)
-    } else {
-        Ok(ScopeLevel::Verse)
-    }
-}
-
-/// Scope containment now lives in fe-policy (single home for authz math);
-/// re-exported so `fe_database::scope_contains` paths keep working.
+pub use fe_policy::scope::{
+    build_scope, parent_scope, parse_scope, scope_level, ScopeError, ScopeLevel, ScopeParts,
+};
 pub use fe_policy::scope_contains;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod differential_tests {
+    //! Drives `fe_database::scope::*` (this module, re-exported) and
+    //! `fe_policy::scope::*` (the canonical implementation) over the same
+    //! fixtures and asserts byte-identical results — the guard OF-3 asked
+    //! for against a future re-duplication of this parser.
 
-    // --- build_scope ---
-
-    #[test]
-    fn build_verse_only() {
-        assert_eq!(build_scope("v1", None, None), "VERSE#v1");
+    /// Well-formed, malformed, interim `VERSE#<hex>` authority keys (see
+    /// `fe-database/src/role_grants.rs::is_interim_authority_verse_id` and
+    /// `fe-database/src/canon_log/canonical_epoch.rs::interim_authority_scope_key`),
+    /// and a deep verse/fractal/petal chain with hyphen-bearing ids.
+    fn fixtures() -> Vec<&'static str> {
+        vec![
+            // well-formed
+            "VERSE#v1",
+            "VERSE#v1-FRACTAL#f1",
+            "VERSE#v1-FRACTAL#f1-PETAL#p1",
+            "VERSE#verse-abc-FRACTAL#fractal-xyz-PETAL#petal-123",
+            // malformed
+            "",
+            "FRACTAL#f1",
+            "PETAL#p1",
+            "random-string",
+            "VERSE#",
+            "VERSE#v1-FRACTAL#",
+            "VERSE#v1-FRACTAL#f1-PETAL#",
+            // interim authority verse key (canon_log §interim-authority): 64
+            // lowercase hex, no FRACTAL#/PETAL# segments — structurally out
+            // of the hierarchy parser's reach, same as any other verse id.
+            "VERSE#a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+            // the full canonical-log interim key shape (verse hex + a
+            // -PETAL#<hex> segment with no preceding -FRACTAL#, plus the
+            // -RESOURCE#<hex> suffix `parse_scope` does not know about at
+            // all): both entry points must still land on the same outcome.
+            "VERSE#a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1-PETAL#b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2-RESOURCE#c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        ]
     }
 
     #[test]
-    fn build_verse_fractal() {
-        assert_eq!(build_scope("v1", Some("f1"), None), "VERSE#v1-FRACTAL#f1");
-    }
-
-    #[test]
-    fn build_verse_fractal_petal() {
-        assert_eq!(
-            build_scope("v1", Some("f1"), Some("p1")),
-            "VERSE#v1-FRACTAL#f1-PETAL#p1"
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "petal_id requires fractal_id")]
-    fn build_petal_without_fractal_panics() {
-        build_scope("v1", None, Some("p1"));
-    }
-
-    // --- parse_scope ---
-
-    #[test]
-    fn parse_verse_only() {
-        let s = build_scope("v1", None, None);
-        let parts = parse_scope(&s).unwrap();
-        assert_eq!(parts.verse_id, "v1");
-        assert_eq!(parts.fractal_id, None);
-        assert_eq!(parts.petal_id, None);
-    }
-
-    #[test]
-    fn parse_verse_fractal() {
-        let s = build_scope("v1", Some("f1"), None);
-        let parts = parse_scope(&s).unwrap();
-        assert_eq!(parts.verse_id, "v1");
-        assert_eq!(parts.fractal_id, Some("f1".to_string()));
-        assert_eq!(parts.petal_id, None);
-    }
-
-    #[test]
-    fn parse_verse_fractal_petal() {
-        let s = build_scope("v1", Some("f1"), Some("p1"));
-        let parts = parse_scope(&s).unwrap();
-        assert_eq!(parts.verse_id, "v1");
-        assert_eq!(parts.fractal_id, Some("f1".to_string()));
-        assert_eq!(parts.petal_id, Some("p1".to_string()));
-    }
-
-    #[test]
-    fn parse_round_trip() {
-        let cases = [
-            build_scope("verse-abc", None, None),
-            build_scope("verse-abc", Some("fractal-xyz"), None),
-            build_scope("verse-abc", Some("fractal-xyz"), Some("petal-123")),
-        ];
-        for s in &cases {
-            let parts = parse_scope(s).unwrap();
-            let rebuilt = build_scope(
-                &parts.verse_id,
-                parts.fractal_id.as_deref(),
-                parts.petal_id.as_deref(),
+    fn parse_scope_agrees_across_both_entry_points() {
+        for scope in fixtures() {
+            assert_eq!(
+                crate::scope::parse_scope(scope),
+                fe_policy::scope::parse_scope(scope),
+                "parse_scope diverged for {scope:?}"
             );
-            assert_eq!(*s, rebuilt);
         }
     }
 
     #[test]
-    fn parse_error_empty() {
-        assert_eq!(parse_scope(""), Err(ScopeError::Empty));
+    fn parent_scope_agrees_across_both_entry_points() {
+        for scope in fixtures() {
+            assert_eq!(
+                crate::scope::parent_scope(scope),
+                fe_policy::scope::parent_scope(scope),
+                "parent_scope diverged for {scope:?}"
+            );
+        }
     }
 
     #[test]
-    fn parse_error_missing_verse_prefix() {
-        assert_eq!(
-            parse_scope("FRACTAL#f1"),
-            Err(ScopeError::MissingVersePrefix)
-        );
-        assert_eq!(parse_scope("PETAL#p1"), Err(ScopeError::MissingVersePrefix));
-        assert_eq!(
-            parse_scope("random-string"),
-            Err(ScopeError::MissingVersePrefix)
-        );
+    fn scope_level_agrees_across_both_entry_points() {
+        for scope in fixtures() {
+            assert_eq!(
+                crate::scope::scope_level(scope),
+                fe_policy::scope::scope_level(scope),
+                "scope_level diverged for {scope:?}"
+            );
+        }
     }
 
     #[test]
-    fn parse_error_empty_verse_id() {
-        assert_eq!(parse_scope("VERSE#"), Err(ScopeError::EmptyVerseId));
-    }
-
-    // --- parent_scope ---
-
-    #[test]
-    fn parent_of_petal_is_fractal() {
-        let s = build_scope("v", Some("f"), Some("p"));
-        assert_eq!(parent_scope(&s), Some(build_scope("v", Some("f"), None)));
-    }
-
-    #[test]
-    fn parent_of_fractal_is_verse() {
-        let s = build_scope("v", Some("f"), None);
-        assert_eq!(parent_scope(&s), Some(build_scope("v", None, None)));
-    }
-
-    #[test]
-    fn parent_of_verse_is_none() {
-        let s = build_scope("v", None, None);
-        assert_eq!(parent_scope(&s), None);
-    }
-
-    // --- scope_level ---
-
-    #[test]
-    fn scope_level_verse() {
-        let s = build_scope("v1", None, None);
-        assert_eq!(scope_level(&s).unwrap(), ScopeLevel::Verse);
-    }
-
-    #[test]
-    fn scope_level_fractal() {
-        let s = build_scope("v1", Some("f1"), None);
-        assert_eq!(scope_level(&s).unwrap(), ScopeLevel::Fractal);
-    }
-
-    #[test]
-    fn scope_level_petal() {
-        let s = build_scope("v1", Some("f1"), Some("p1"));
-        assert_eq!(scope_level(&s).unwrap(), ScopeLevel::Petal);
-    }
-
-    #[test]
-    fn scope_level_error_on_invalid() {
-        assert!(scope_level("").is_err());
-        assert!(scope_level("bad-input").is_err());
-    }
-
-    // --- scope_contains ---
-
-    #[test]
-    fn verse_contains_fractal_and_petal() {
-        let verse = build_scope("v1", None, None);
-        let fractal = build_scope("v1", Some("f1"), None);
-        let petal = build_scope("v1", Some("f1"), Some("p1"));
-        assert!(scope_contains(&verse, &fractal));
-        assert!(scope_contains(&verse, &petal));
-    }
-
-    #[test]
-    fn fractal_contains_petal() {
-        let fractal = build_scope("v1", Some("f1"), None);
-        let petal = build_scope("v1", Some("f1"), Some("p1"));
-        assert!(scope_contains(&fractal, &petal));
-    }
-
-    #[test]
-    fn petal_does_not_contain_fractal() {
-        let fractal = build_scope("v1", Some("f1"), None);
-        let petal = build_scope("v1", Some("f1"), Some("p1"));
-        assert!(!scope_contains(&petal, &fractal));
-    }
-
-    #[test]
-    fn exact_scope_match() {
-        let s = build_scope("v1", Some("f1"), None);
-        assert!(scope_contains(&s, &s));
-    }
-
-    #[test]
-    fn different_verse_ids_not_contained() {
-        let v1 = build_scope("v1", None, None);
-        let v2 = build_scope("v2", None, None);
-        assert!(!scope_contains(&v1, &v2));
-    }
-
-    #[test]
-    fn partial_id_not_a_boundary() {
-        // VERSE#v1 should NOT contain VERSE#v11
-        assert!(!scope_contains("VERSE#v1", "VERSE#v11"));
+    fn build_scope_agrees_across_both_entry_points() {
+        let cases: Vec<(&str, Option<&str>, Option<&str>)> = vec![
+            ("v1", None, None),
+            ("v1", Some("f1"), None),
+            ("v1", Some("f1"), Some("p1")),
+            ("verse-abc", Some("fractal-xyz"), Some("petal-123")),
+        ];
+        for (verse_id, fractal_id, petal_id) in cases {
+            assert_eq!(
+                crate::scope::build_scope(verse_id, fractal_id, petal_id),
+                fe_policy::scope::build_scope(verse_id, fractal_id, petal_id),
+                "build_scope diverged for {verse_id:?}/{fractal_id:?}/{petal_id:?}"
+            );
+        }
     }
 }

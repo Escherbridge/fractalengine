@@ -157,40 +157,14 @@ impl fmt::Display for RejectReason {
 
 impl std::error::Error for RejectReason {}
 
-/// Mirrors `fe_database::scope::parent_scope` (kept as a private duplicate
-/// here — see AGENTS.md §role-grants on why RP-1 does not edit
-/// `fe-database/src/scope.rs` to unify the two).
-fn parent_scope(scope: &str) -> Option<String> {
-    if let Some(idx) = scope.rfind("-PETAL#") {
-        return Some(scope[..idx].to_string());
-    }
-    if let Some(idx) = scope.rfind("-FRACTAL#") {
-        return Some(scope[..idx].to_string());
-    }
-    None
-}
-
-/// Extracts the verse id from a `VERSE#<v>[-FRACTAL#<f>[-PETAL#<p>]]` scope
-/// string, or `None` if it does not start with `VERSE#` or the id is empty.
-fn verse_id_of(scope: &str) -> Option<&str> {
-    let rest = scope.strip_prefix("VERSE#")?;
-    let verse_id = match rest.find("-FRACTAL#") {
-        Some(idx) => &rest[..idx],
-        None => rest,
-    };
-    if verse_id.is_empty() {
-        None
-    } else {
-        Some(verse_id)
-    }
-}
-
 /// `S` followed by its ancestors up to (and including) the verse scope —
-/// `chain(S)` in §2.2.
+/// `chain(S)` in §2.2. Walks via `crate::scope::parent_scope`, the single
+/// scope-chain parser (see AGENTS.md §scope-parser — W5b/OF-3 unified this
+/// with what used to be a private duplicate here).
 fn scope_chain(scope: &str) -> Vec<String> {
     let mut chain = vec![scope.to_string()];
     let mut current = scope.to_string();
-    while let Some(parent) = parent_scope(&current) {
+    while let Some(parent) = crate::scope::parent_scope(&current) {
         chain.push(parent.clone());
         current = parent;
     }
@@ -220,8 +194,9 @@ pub fn validate_statement(
         return Err(RejectReason::PayloadKeyMismatch);
     }
 
-    let verse_id = verse_id_of(&key_parts.scope).ok_or(RejectReason::MalformedScope)?;
-    if verse_id != replica_verse {
+    let scope_parts =
+        crate::scope::parse_scope(&key_parts.scope).map_err(|_| RejectReason::MalformedScope)?;
+    if scope_parts.verse_id != replica_verse {
         return Err(RejectReason::CrossVerseScope);
     }
 
@@ -409,7 +384,7 @@ impl EffectiveRoles {
                 continue;
             }
             if let Some(mgr_val) = self.mgr.get(&key) {
-                let inherited = match parent_scope(&scope) {
+                let inherited = match crate::scope::parent_scope(&scope) {
                     Some(parent) => self.role_at(&peer, &parent),
                     None => RoleLevel::None,
                 };

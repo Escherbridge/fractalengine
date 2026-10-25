@@ -82,6 +82,32 @@ unchanged.
 Deferred (not this slice): causal-DAG membership ops (blocked on per-op
 signing, decisions §D5-1).
 
+## §scope-parser (`scope.rs`)
+
+The `VERSE#v[-FRACTAL#f[-PETAL#p]]` string parser (`build_scope`,
+`parse_scope`, `parent_scope`, `scope_level`, `ScopeParts`, `ScopeError`,
+`ScopeLevel`) moved here verbatim from `fe-database/src/scope.rs` (W5b,
+OF-3). RP-1 had left a second, private copy of `parent_scope` (plus a
+`verse_id_of` helper) inside `role_grants.rs` rather than touch
+`fe-database`, documented at the time as an intentional duplicate — but two
+parsers of the same wire-level scope string sitting on an authority path is
+exactly a parser-differential risk: the role model and the DB plane could
+silently disagree on which subtree a scope names (e.g. one accepting a
+malformed segment the other rejects). This slice collapses that back to
+**one parser**: fe-policy owns the implementation and its unit tests
+(`scope.rs`'s own `#[cfg(test)] mod tests`); `fe-database/src/scope.rs` is
+now a re-export plus a differential test that drives both public entry
+points (`fe_database::scope::*` and `fe_policy::scope::*`) over the same
+fixture set (well-formed, malformed, interim `VERSE#<hex>` authority keys,
+deep chains) and asserts identical results — the regression guard against
+either side re-diverging. `role_grants.rs`'s `scope_chain`/`validate_statement`
+now call `crate::scope::{parent_scope, parse_scope}` instead of the removed
+private copies; `validate_statement` is stricter as a result (it now fully
+parses the scope via `parse_scope` instead of the old `verse_id_of`'s
+loose prefix scan, so a scope with a malformed inner segment is rejected as
+`RejectReason::MalformedScope` instead of silently taking only its leading
+verse id).
+
 ## §node-lifecycle (`node_lifecycle.rs`)
 
 Track `node_lifecycle_addressing_20260725` FR-1. Node delete/cascade and stamp
@@ -154,13 +180,9 @@ with a `tracing::warn!` bug guard if the bound is hit (plan §5 risk 1).
   (AC-44c): a petal-scoped member resolves to `RoleLevel::None` at the
   verse scope (R7 subtree semantics give them no wider authority), so the
   floor cannot use `role_at` at the verse scope alone.
-- **The scope-chain parser here is a private, intentional duplicate** of
-  `fe_database::scope::{parent_scope, parse_scope}` — RP-1 owns only
-  `fe-policy/**`, so it mirrors that logic rather than editing
-  `fe-database/src/scope.rs` to re-export one shared parser (the plan's
-  preferred alternative). A later slice that touches both files is free to
-  unify them; until then, keep any edit to the scope-string grammar in sync
-  across both copies.
+- **The scope-chain parser is `crate::scope::{parent_scope, parse_scope}`**
+  (see §scope-parser) — unified there in W5b/OF-3; this module no longer
+  carries its own copy.
 - **`latest_per_grantor`** is last-writer-wins by `hlc` within a
   `(scope, peer_did, grantor_did)` key — a single author, so HLC skew can
   only reorder that author's own statements (T7) — tie-broken on the
