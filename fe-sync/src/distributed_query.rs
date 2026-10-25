@@ -2674,8 +2674,8 @@ mod tests {
             &serde_json::json!({ "created_by": owner, "default_access": "none" }),
             owner,
         );
-        fabric.note_petal_row("v-1", &serde_json::json!({ "petal_id": "p1", "fractal_id": "f1" }));
-        fabric.note_petal_row("v-1", &serde_json::json!({ "petal_id": "p2", "fractal_id": "f1" }));
+        fabric.note_petal_row("v-1", &serde_json::json!({ "petal_id": "p1", "fractal_id": "f1" }), owner);
+        fabric.note_petal_row("v-1", &serde_json::json!({ "petal_id": "p2", "fractal_id": "f1" }), owner);
         // A ledger row for both petals so a "served" case reaches the
         // (empty) sender lookup instead of the earlier PETAL_UNKNOWN check
         // — isolating this test to the requester gate specifically.

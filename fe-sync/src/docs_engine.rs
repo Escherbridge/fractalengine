@@ -57,39 +57,50 @@ impl VerseAccessSnapshot {
 /// content across restarts (OF-6b).
 pub const BLOB_GATE_FILE: &str = "blob-access-gate.json";
 
-/// Most verses one learned root may be bound to; past it the learned path
-/// denies outright (fail-closed — an ad flood can never reopen a root).
-const MAX_LEARNED_VERSES: usize = 64;
+/// Persisted gate-state format. Format 1 (W5s) let gossip ads grow a root's
+/// `learned` set after the fetch, so a format-1 `learned` set may carry
+/// attacker narrowing; it is dropped on load (fail-closed: the root denies
+/// on the learned path until this node's next own fetch re-learns it).
+/// See `src/AGENTS.md` §tileset-security "binding model".
+const GATE_STATE_FORMAT: u32 = 2;
 
 /// What this node learned about one tileset HashSeq it serves, published,
-/// or fetched — and therefore how a request for it is admitted.
+/// or fetched — and therefore how a request for it is admitted. Binding
+/// model (R1, OF-8): every field is set only by an AUTHORITATIVE local
+/// event (own publish, own fetch decision, own HashSeq resolution) and
+/// gossip never mutates it — `src/AGENTS.md` §tileset-security.
 #[derive(Clone, Default, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 struct RootBinding {
     /// This node publishes it (`fe/tileset/` tag): a Viewer+ of ANY open
     /// verse is admitted — the publish path advertises to every joined verse.
     published: bool,
-    /// Verses the root was fetched or advertised on. A Viewer+ of EVERY one
-    /// of them is admitted (a closed verse has no snapshot and denies), so
-    /// a re-advertisement under another verse can only narrow access, never
-    /// widen it (OF-6a).
+    /// The fetch context of this node's FIRST own fetch decision for the
+    /// root: every verse the root (or its tileset id) was advertised on at
+    /// that moment. A Viewer+ of EVERY one of them is admitted (a closed
+    /// verse has no snapshot and denies). Fixed once set — neither a later
+    /// fetch nor any inbound ad changes it (OF-8b).
     learned: std::collections::BTreeSet<String>,
-    /// Set once `learned` hit [`MAX_LEARNED_VERSES`]: the learned path denies.
-    learned_overflow: bool,
     /// The HashSeq's children (index + bundles), once known (OF-6b).
+    /// Content-addressed, so set once.
     children: Vec<String>,
 }
 
 impl RootBinding {
-    fn admits(&self, did: &str, access: &HashMap<String, VerseAccessSnapshot>) -> bool {
-        let via_publish = self.published && access.values().any(|s| s.admits(did));
-        let via_learned = !self.learned_overflow
-            && !self.learned.is_empty()
+    /// The publish path: this node publishes the root and `did` is a
+    /// Viewer+ of some open verse.
+    fn publish_admits(&self, did: &str, access: &HashMap<String, VerseAccessSnapshot>) -> bool {
+        self.published && access.values().any(|s| s.admits(did))
+    }
+
+    /// The learned (secondary-seeder) path: `did` is a Viewer+ of every
+    /// verse of the fixed fetch context.
+    fn learned_admits(&self, did: &str, access: &HashMap<String, VerseAccessSnapshot>) -> bool {
+        !self.learned.is_empty()
             && self
                 .learned
                 .iter()
-                .all(|v| access.get(v).is_some_and(|s| s.admits(did)));
-        via_publish || via_learned
+                .all(|v| access.get(v).is_some_and(|s| s.admits(did)))
     }
 }
 
@@ -97,6 +108,8 @@ impl RootBinding {
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 struct TrackedContent {
+    /// [`GATE_STATE_FORMAT`] of the persisted file (absent = format 1).
+    format: u32,
     roots: HashMap<String, RootBinding>,
     #[serde(skip)]
     child_roots: HashMap<[u8; 32], HashSet<[u8; 32]>>,
@@ -107,18 +120,35 @@ impl TrackedContent {
         self.roots.entry(hex::encode(root)).or_default()
     }
 
-    /// Attach `children` to `root` (idempotent); `true` when anything changed.
+    /// Attach `children` to `root` once (a root's HashSeq is content-
+    /// addressed, so its child list can never legitimately change);
+    /// `true` when anything changed. A child already claimed by ANOTHER
+    /// root gains `root` as a second claimant — which can only NARROW its
+    /// admission (see [`BlobAccessGate::admits_hash`]), never widen it.
     fn set_children(&mut self, root: &[u8; 32], children: &[[u8; 32]]) -> bool {
-        let hexed: Vec<String> = children.iter().map(hex::encode).collect();
         let binding = self.binding_mut(root);
-        if binding.children == hexed {
+        if !binding.children.is_empty() || children.is_empty() {
             return false;
         }
-        binding.children = hexed;
+        binding.children = children.iter().map(hex::encode).collect();
         for child in children {
             self.child_roots.entry(*child).or_default().insert(*root);
         }
         true
+    }
+
+    /// Bring a just-loaded state to [`GATE_STATE_FORMAT`]; `true` when
+    /// anything was dropped.
+    fn upgrade(&mut self) -> bool {
+        let mut dropped = false;
+        if self.format < GATE_STATE_FORMAT {
+            for binding in self.roots.values_mut() {
+                dropped |= !binding.learned.is_empty();
+                binding.learned.clear();
+            }
+        }
+        self.format = GATE_STATE_FORMAT;
+        dropped
     }
 
     /// Rebuild the child index after a load (it is never persisted itself).
@@ -152,15 +182,18 @@ pub enum TilesetContent {
 }
 
 /// RP-5 §transport-admission-control item 5 / `AGENTS.md` §tileset-security
-/// "Risk 2" (critic tick 4, AC-21(e)), hardened by W5s (OF-6a/b): shared
-/// state for the blobs-ALPN request filter. Tracks every tileset HashSeq
-/// this node publishes or fetches — root AND children — with how each is
-/// admitted ([`RootBinding`]). A tracked hash is never forgotten (a closed
-/// verse's roots deny, they do not fall back to "unknown"), and the whole
-/// map is persisted to [`BLOB_GATE_FILE`] so a restart never re-opens it.
-/// A hash this gate does not track carries no tileset context and is let
-/// through unconditionally — row-entry content and `two_peer_blob_exchange`
-/// fetches are exactly that case. See `src/AGENTS.md` §tileset-security.
+/// "Risk 2" (critic tick 4, AC-21(e)), hardened by W5s (OF-6a/b) and
+/// redesigned by R1 (OF-8): shared state for the blobs-ALPN request filter.
+/// Tracks every tileset HashSeq this node publishes or fetches — root AND
+/// children — with how each is admitted ([`RootBinding`]). A tracked hash
+/// is never forgotten (a closed verse's roots deny, they do not fall back
+/// to "unknown"), and the whole map is persisted to [`BLOB_GATE_FILE`] so a
+/// restart never re-opens it. A raw-blob request for a hash this gate does
+/// not track carries no tileset context and is let through unconditionally
+/// — row-entry content and `two_peer_blob_exchange` fetches are exactly
+/// that case; a HashSeq (child-range) request is admitted only for a
+/// tracked root whose children are known. See `src/AGENTS.md`
+/// §tileset-security.
 #[derive(Clone, Default)]
 pub struct BlobAccessGate(Arc<GateState>);
 
@@ -193,6 +226,13 @@ impl BlobAccessGate {
             }),
             Err(_) => TrackedContent::default(),
         };
+        if tracked.upgrade() {
+            tracing::warn!(
+                path = %path.display(),
+                "blob access gate state predates the fixed fetch-context binding — learned \
+                 verse sets dropped (fail-closed until this node re-fetches each root)"
+            );
+        }
         tracked.reindex();
         Self(Arc::new(GateState {
             tracked: RwLock::new(tracked),
@@ -211,55 +251,40 @@ impl BlobAccessGate {
             .insert(verse_id.to_string(), snapshot);
     }
 
-    /// Bind `root` — a tileset this node fetches in `verse_id`'s context —
-    /// to that verse (tracking it if new). Only this node's own fetch
-    /// decisions call this; an inbound ad goes through
-    /// [`Self::note_advertised_root`], which can never START tracking.
+    /// [`Self::bind_fetched_root`] with a single-verse fetch context.
     pub fn record_tileset_root(&self, verse_id: &str, root: [u8; 32]) {
-        self.bind_learned(root, std::iter::once(verse_id), true);
+        self.bind_fetched_root(root, std::iter::once(verse_id));
     }
 
-    /// [`Self::record_tileset_root`] for every verse a fetched root was
-    /// advertised on (the "all mapped verses" rule — OF-6a).
+    /// This node decided to fetch `root` in the context of `verses` (every
+    /// verse it was advertised on — OF-6a's "all mapped verses" rule): track
+    /// it BEFORE the fetch puts any of it in the store, and fix its learned
+    /// binding to that context if it has none yet. The FIRST authoritative
+    /// learn wins (OF-8): a later fetch context — and any inbound ad, which
+    /// has no entry point here at all — never changes it, so neither can
+    /// re-bind a root another verse already owns, nor narrow it after the
+    /// fact (the pre-R1 gossip narrowing + persisted overflow was an
+    /// attacker-triggerable durable refuse-everyone state).
     pub fn bind_fetched_root<'a>(&self, root: [u8; 32], verses: impl IntoIterator<Item = &'a str>) {
-        self.bind_learned(root, verses, true);
-    }
-
-    /// An accepted inbound ad re-advertised `root` on `verse_id`: add that
-    /// verse to an ALREADY-tracked root's learned set (narrowing access —
-    /// every learned verse must admit). An untracked root is ignored: this
-    /// node does not hold it, and gossip must never decide what is gated.
-    pub fn note_advertised_root(&self, verse_id: &str, root: [u8; 32]) {
-        self.bind_learned(root, std::iter::once(verse_id), false);
-    }
-
-    fn bind_learned<'a>(
-        &self,
-        root: [u8; 32],
-        verses: impl IntoIterator<Item = &'a str>,
-        may_track: bool,
-    ) {
+        let context: std::collections::BTreeSet<String> =
+            verses.into_iter().map(str::to_string).collect();
         let changed = {
             let mut tracked = self.0.tracked.write().unwrap_or_else(|e| e.into_inner());
             let key = hex::encode(root);
-            if !may_track && !tracked.roots.contains_key(&key) {
-                return;
-            }
+            let newly_tracked = !tracked.roots.contains_key(&key);
             let binding = tracked.roots.entry(key).or_default();
-            let mut changed = false;
-            for verse in verses {
-                if binding.learned.contains(verse) {
-                    continue;
+            if binding.learned.is_empty() && !context.is_empty() {
+                binding.learned = context;
+                true
+            } else {
+                if !context.is_empty() && binding.learned != context {
+                    tracing::debug!(
+                        root = %hex::encode(root),
+                        "tileset root already bound to its first fetch context — later context ignored"
+                    );
                 }
-                if binding.learned.len() >= MAX_LEARNED_VERSES {
-                    changed |= !binding.learned_overflow;
-                    binding.learned_overflow = true;
-                    break;
-                }
-                binding.learned.insert(verse.to_string());
-                changed = true;
+                newly_tracked
             }
-            changed
         };
         if changed {
             self.persist();
@@ -301,10 +326,21 @@ impl BlobAccessGate {
             .remove(verse_id);
     }
 
-    /// Admission decision for one requested hash: `true` when the hash is
-    /// neither a tracked tileset root nor a child of one (unaffected), or
-    /// when ANY tracked root it belongs to admits `did` ([`RootBinding`]).
-    fn admits_hash(&self, did: &str, hash: &[u8; 32]) -> bool {
+    /// Admission decision for one requested hash. `true` when the hash is
+    /// neither a tracked tileset root nor a child of one (unaffected).
+    /// Otherwise its CLAIMANTS are its own binding (when it is a root) plus
+    /// every root listing it as a child, and it is admitted when either
+    /// - some claimant is a root THIS node publishes and admits `did` on
+    ///   the publish path (an own publish is the most authoritative learn —
+    ///   this node holds the bytes and chose to distribute them), or
+    /// - EVERY claimant admits `did` on its learned path.
+    ///
+    /// The AND is the OF-8a fix: a fetched HashSeq's child list is
+    /// attacker-shaped content, so a root listing a victim tileset's
+    /// children can only add a claimant that must ALSO admit — it narrows,
+    /// it never lends its own (attacker-controlled) membership to the
+    /// victim's bytes, whatever order the two roots were learned in.
+    pub(crate) fn admits_hash(&self, did: &str, hash: &[u8; 32]) -> bool {
         let tracked = self.0.tracked.read().unwrap_or_else(|e| e.into_inner());
         let own = tracked.roots.get(&hex::encode(hash));
         let parents = tracked.child_roots.get(hash);
@@ -312,14 +348,52 @@ impl BlobAccessGate {
             return true;
         }
         let access = self.0.verse_access.read().unwrap_or_else(|e| e.into_inner());
-        own.into_iter()
+        // A parent link with no binding (never expected) is a claimant that
+        // admits no one — fail closed.
+        let claimants: Vec<Option<&RootBinding>> = own
+            .map(Some)
+            .into_iter()
             .chain(
                 parents
                     .into_iter()
                     .flatten()
-                    .filter_map(|p| tracked.roots.get(&hex::encode(p))),
+                    .map(|p| tracked.roots.get(&hex::encode(p))),
             )
-            .any(|binding| binding.admits(did, &access))
+            .collect();
+        claimants
+            .iter()
+            .flatten()
+            .any(|binding| binding.publish_admits(did, &access))
+            || claimants
+                .iter()
+                .all(|binding| binding.is_some_and(|b| b.learned_admits(did, &access)))
+    }
+
+    /// The hashes one `GetRequest` for `hash` would stream: `hash` alone for
+    /// a raw-blob request; for a request whose ranges reach into a HashSeq's
+    /// children, the root plus every child — known only for a tracked root
+    /// whose children were recorded. `None` (refuse) for a child-range
+    /// request on any other hash: iroh-blobs would stream whatever children
+    /// that blob lists, and an untracked HashSeq (say, a replicated row's
+    /// content blob listing a protected tileset's bundle hashes) would
+    /// otherwise launder tracked bytes past the per-hash gate. No client in
+    /// this workspace sends child-range requests (`IrohBlobTransport` and
+    /// iroh-docs fetch raw blobs).
+    fn get_request_hashes(&self, hash: [u8; 32], reaches_children: bool) -> Option<Vec<[u8; 32]>> {
+        if !reaches_children {
+            return Some(vec![hash]);
+        }
+        let tracked = self.0.tracked.read().unwrap_or_else(|e| e.into_inner());
+        let binding = tracked.roots.get(&hex::encode(hash))?;
+        if binding.children.is_empty() {
+            return None;
+        }
+        let mut hashes = Vec::with_capacity(binding.children.len() + 1);
+        hashes.push(hash);
+        for child in &binding.children {
+            hashes.push(fe_runtime::blob_store::hash_from_hex(child).ok()?);
+        }
+        Some(hashes)
     }
 
     /// Write the current tracked state to [`BLOB_GATE_FILE`] — on the
@@ -418,11 +492,13 @@ macro_rules! answer_intercepted {
 }
 
 /// Build the blobs-ALPN `EventSender` implementing the request filter:
-/// intercepts `GetRequest`, `GetManyRequest` (every requested hash must be
-/// admitted) and `ObserveRequest` (a bitfield is an existence oracle) and
-/// consults [`BlobAccessGate`]; `push` stays `Disabled` (the
-/// `EventMask::DEFAULT` value, pinned explicitly here — OF-6c). Anything
-/// without tracked tileset context passes through untouched.
+/// intercepts `GetRequest` (every hash it would stream must be admitted —
+/// a child-range request only for a tracked root, R1), `GetManyRequest`
+/// (every requested hash must be admitted; each is a raw blob) and
+/// `ObserveRequest` (a bitfield is an existence oracle) and consults
+/// [`BlobAccessGate`]; `push` stays `Disabled` (the `EventMask::DEFAULT`
+/// value, pinned explicitly here — OF-6c). A raw-blob request without
+/// tracked tileset context passes through untouched.
 /// `ClientConnected`/`ConnectionClosed` are notify-only — just enough to map
 /// a request's `connection_id` to the dialing `EndpointId`'s did:key.
 fn spawn_blob_access_filter(gate: BlobAccessGate) -> EventSender {
@@ -449,8 +525,13 @@ fn spawn_blob_access_filter(gate: BlobAccessGate) -> EventSender {
                 }
                 ProviderMessage::GetRequestReceived(msg) => {
                     let hash: [u8; 32] = msg.inner.request.hash.into();
+                    let ranges = &msg.inner.request.ranges;
+                    let reaches_children = !ranges.is_empty() && !ranges.is_blob();
                     let connection_id = msg.inner.connection_id;
-                    let admitted = gate.admits_connection(connection_id, std::iter::once(&hash));
+                    let admitted = match gate.get_request_hashes(hash, reaches_children) {
+                        Some(hashes) => gate.admits_connection(connection_id, hashes.iter()),
+                        None => false,
+                    };
                     answer_intercepted!(msg, admitted, connection_id, "get");
                 }
                 ProviderMessage::GetManyRequestReceived(msg) => {
@@ -976,12 +1057,15 @@ mod tests {
         }
     }
 
-    /// OF-6a: an attacker who re-advertises a victim verse's tileset root
-    /// on their OWN verse (where they self-grant Viewer) never gains access —
-    /// the ad can only narrow the learned set, never remap it — and an ad
-    /// can never start tracking a root this node does not fetch.
+    /// OF-6a + OF-8b (R1 binding model): a root's binding is fixed at this
+    /// node's FIRST own fetch decision. A later fetch of the same root in an
+    /// attacker's verse context neither grants the attacker access (no
+    /// remap) nor locks the original verse's viewers out (no narrowing —
+    /// pre-R1, every accepted ad narrowed the set and 64 of them persisted a
+    /// refuse-everyone overflow). Gossip has no entry point into the gate
+    /// at all any more.
     #[test]
-    fn a_root_re_advertised_under_an_attacker_verse_never_grants_the_attacker_access() {
+    fn a_root_bound_to_its_first_fetch_context_is_never_rebound_or_narrowed() {
         let gate = BlobAccessGate::default();
         let root = [7u8; 32];
         gate.record_tileset_root("victim-verse", root);
@@ -990,18 +1074,206 @@ mod tests {
         assert!(gate.admits_hash("did:key:victim-viewer", &root));
         assert!(!gate.admits_hash("did:key:attacker", &root));
 
-        gate.note_advertised_root("attacker-verse", root);
+        for i in 0..100 {
+            let verse = format!("attacker-verse-{i}");
+            gate.bind_fetched_root(root, ["attacker-verse", verse.as_str()]);
+        }
         assert!(
             !gate.admits_hash("did:key:attacker", &root),
-            "a re-advertisement under the attacker's verse must not remap access"
+            "a later fetch context must not remap access"
+        );
+        assert!(
+            gate.admits_hash("did:key:victim-viewer", &root),
+            "a later fetch context must not narrow the first one (durable DoS)"
+        );
+    }
+
+    /// OF-8b reversibility: a format-1 state file (W5s — whose learned sets
+    /// may carry gossip narrowing, here persisted as overflow) loads with
+    /// its learned sets DROPPED: the root stays tracked and denies, and this
+    /// node's next own fetch re-learns a clean binding.
+    #[test]
+    fn a_pre_r1_state_file_drops_its_gossip_narrowed_bindings_and_relearns_on_the_next_fetch() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(BLOB_GATE_FILE);
+        let (root, bundle) = ([11u8; 32], [12u8; 32]);
+        let mut poisoned: std::collections::BTreeSet<String> =
+            (0..64).map(|i| format!("attacker-{i}")).collect();
+        poisoned.insert("v".to_string());
+        let format_one = serde_json::json!({
+            "roots": {
+                hex::encode(root): {
+                    "published": false,
+                    "learned": poisoned,
+                    "learned_overflow": true,
+                    "children": [hex::encode(bundle)],
+                }
+            }
+        });
+        std::fs::write(&path, serde_json::to_vec(&format_one).unwrap()).unwrap();
+
+        let gate = BlobAccessGate::load(path.clone());
+        gate.set_verse_access("v", viewers(&["did:key:viewer"]));
+        assert!(!gate.admits_hash("did:key:stranger", &bundle), "still tracked: denies");
+        assert!(!gate.admits_hash("did:key:viewer", &bundle), "no binding until re-fetched");
+
+        gate.record_tileset_root("v", root);
+        assert!(gate.admits_hash("did:key:viewer", &bundle), "the re-fetch re-learns a clean binding");
+        assert!(gate.admits_hash("did:key:viewer", &root));
+
+        let restarted = BlobAccessGate::load(path);
+        restarted.set_verse_access("v", viewers(&["did:key:viewer"]));
+        assert!(
+            restarted.admits_hash("did:key:viewer", &bundle),
+            "a format-2 binding survives the restart"
+        );
+    }
+
+    /// OF-8a (HIGH): a fetched HashSeq whose child list names a VICTIM
+    /// tileset's bundle hashes never lends its own verse's viewers access to
+    /// those bundles — in either learn order (pre-R1, `.any(..)` over the
+    /// parent roots admitted the attacker's viewers through the attacker's
+    /// root). An own PUBLISHED root listing the same bytes still serves them.
+    #[test]
+    fn a_fetched_hash_seq_listing_a_victims_children_never_lends_them_its_viewers() {
+        let (victim_root, attacker_root, published_root) = ([21u8; 32], [22u8; 32], [23u8; 32]);
+        let shared_bundle = [24u8; 32];
+        for victim_first in [true, false] {
+            let gate = BlobAccessGate::default();
+            gate.set_verse_access("victim-verse", viewers(&["did:key:victim-viewer"]));
+            gate.set_verse_access("attacker-verse", viewers(&["did:key:attacker"]));
+            let learn_victim = || {
+                gate.record_tileset_root("victim-verse", victim_root);
+                gate.track_content(TilesetContent::Resolved {
+                    root: victim_root,
+                    children: vec![shared_bundle],
+                });
+            };
+            let learn_attacker = || {
+                gate.record_tileset_root("attacker-verse", attacker_root);
+                gate.track_content(TilesetContent::Resolved {
+                    root: attacker_root,
+                    children: vec![shared_bundle],
+                });
+            };
+            if victim_first {
+                learn_victim();
+                learn_attacker();
+            } else {
+                learn_attacker();
+                learn_victim();
+            }
+            assert!(
+                !gate.admits_hash("did:key:attacker", &shared_bundle),
+                "the attacker's root lent its viewers the victim's bundle (victim_first={victim_first})"
+            );
+            assert!(!gate.admits_hash("did:key:stranger", &shared_bundle));
+
+            gate.track_content(TilesetContent::Published {
+                root: published_root,
+                children: vec![shared_bundle],
+            });
+            assert!(
+                gate.admits_hash("did:key:victim-viewer", &shared_bundle),
+                "an own publish of the same bytes serves them to any open-verse viewer"
+            );
+        }
+    }
+
+    /// R1 (HIGH, child-range laundering): a `GetRequest` whose ranges reach
+    /// into a HashSeq's children streams every child the root blob lists.
+    /// An UNTRACKED HashSeq this node happens to store (here: a raw blob
+    /// listing a protected bundle's hash, as a replicated row's content blob
+    /// could) must not carry a stranger past the per-hash gate; the same
+    /// blob fetched raw stays unaffected (untracked), and a viewer's
+    /// child-range request on the TRACKED root is served. Real loopback.
+    #[tokio::test]
+    async fn a_child_range_request_through_an_untracked_hash_seq_cannot_launder_a_tracked_bundle() {
+        use fe_runtime::blob_transport::BlobTransport;
+
+        let (Some(provider_ep), Some(requester_ep)) =
+            (bind_test_endpoint(67).await, bind_test_endpoint(68).await)
+        else {
+            return;
+        };
+        let provider_dir = tempfile::TempDir::new().unwrap();
+        let requester_dir = tempfile::TempDir::new().unwrap();
+        let provider_stack = Arc::new(
+            DocsStack::spawn(provider_ep.clone(), provider_dir.path())
+                .await
+                .expect("provider stack spawns"),
+        );
+        let requester_stack = Arc::new(
+            DocsStack::spawn(requester_ep.clone(), requester_dir.path())
+                .await
+                .expect("requester stack spawns"),
+        );
+        let provider_transport = crate::blob_transport::IrohBlobTransport::from_stack(&provider_stack);
+        let bundle = provider_transport
+            .add(bytes::Bytes::from_static(b"protected bundle"))
+            .await
+            .expect("provider stores the bundle");
+        let root = provider_transport.add_hash_seq(&[bundle]).await.expect("tracked root");
+        provider_stack.blob_access_gate().record_tileset_root("verse-1", root);
+        provider_stack.blob_access_gate().track_content(TilesetContent::Resolved {
+            root,
+            children: vec![bundle],
+        });
+        // The laundering vehicle: byte-identical HashSeq content, but a
+        // DIFFERENT hash (one extra child), never tracked as a tileset root.
+        let decoy = provider_transport
+            .add(bytes::Bytes::from_static(b"decoy"))
+            .await
+            .expect("decoy");
+        let untracked_seq = provider_transport
+            .add_hash_seq(&[bundle, decoy])
+            .await
+            .expect("untracked hash seq");
+
+        let get = |hash: [u8; 32], children: bool| {
+            let request = if children {
+                iroh_blobs::protocol::GetRequest::all(iroh_blobs::Hash::from(hash))
+            } else {
+                iroh_blobs::protocol::GetRequest::blob(iroh_blobs::Hash::from(hash))
+            };
+            let requester_ep = requester_ep.clone();
+            let provider_addr = provider_ep.addr();
+            let store = requester_stack.blob_store().clone();
+            async move {
+                let conn = requester_ep
+                    .connect(provider_addr, iroh_blobs::ALPN)
+                    .await
+                    .expect("blob ALPN connects");
+                store.remote().execute_get(conn, request).complete().await
+            }
+        };
+
+        assert!(
+            get(untracked_seq, true).await.is_err(),
+            "a child-range request through an untracked HashSeq must be refused"
+        );
+        let requester_transport = crate::blob_transport::IrohBlobTransport::from_stack(&requester_stack);
+        assert!(
+            requester_transport.read_local(bundle).await.expect("local read").is_none(),
+            "the protected bundle must not land on the stranger"
+        );
+        assert!(
+            get(untracked_seq, false).await.is_ok(),
+            "a raw request for an untracked blob stays unaffected"
+        );
+        assert!(get(root, true).await.is_err(), "a stranger is refused the tracked root's children");
+
+        let requester_did = crate::replicator::peer_did_key(&requester_ep.id());
+        provider_stack
+            .blob_access_gate()
+            .set_verse_access("verse-1", viewers(&[requester_did.as_str()]));
+        assert!(
+            get(root, true).await.is_ok(),
+            "a verse viewer's child-range request on the tracked root is served"
         );
 
-        // Gossip about a root this node never fetched does not gate (or
-        // un-gate) anything: it stays untracked.
-        let foreign = [9u8; 32];
-        gate.note_advertised_root("attacker-verse", foreign);
-        let tracked = gate.0.tracked.read().unwrap();
-        assert!(!tracked.roots.contains_key(&hex::encode(foreign)));
+        provider_stack.shutdown().await;
+        requester_stack.shutdown().await;
     }
 
     /// OF-6b: a HashSeq CHILD is gated like its root, a closed verse's root

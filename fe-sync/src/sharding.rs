@@ -296,6 +296,29 @@ fn parse_default_access(row: &serde_json::Value) -> RoleLevel {
 enum QuarantineKind {
     Shard,
     Holder,
+    /// A `petal` row whose author lacks Editor+ at the petal's scope(s) yet
+    /// (OF-9) — the petal->fractal map is the spine of every scope chain.
+    Petal,
+}
+
+/// Where a `verse`/`petal` row the fabric notes came from (R1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowOrigin {
+    /// A replicated row signed by another author — fully gated.
+    Inbound,
+    /// This node's own outbound write, just admitted by the local DB plane.
+    LocalWrite,
+    /// One of this node's own past entries replayed from the replica —
+    /// locally authoritative, but possibly stale.
+    OwnReplay,
+}
+
+/// An id that cannot smuggle a scope boundary (`#`) into
+/// `fe_policy::build_scope` — the DB plane's `is_scope_safe_id`
+/// (`fe-database/src/handlers/replicated_row.rs`), mirrored so both planes
+/// refuse the same petal rows.
+fn is_scope_safe_id(id: &str) -> bool {
+    !id.is_empty() && !id.contains('#')
 }
 
 #[derive(Debug, Clone)]
@@ -407,15 +430,28 @@ impl VerseFabric {
     /// Manager's or an Editor's edit is ignored, because verse settings lie
     /// above their subtree. Returns whether the fabric's settings changed.
     pub fn note_verse_row(&mut self, verse_id: &str, row: &serde_json::Value, author_id: &str) -> bool {
-        self.note_verse_row_from(verse_id, row, author_id, false)
+        self.note_verse_row_from(verse_id, row, author_id, RowOrigin::Inbound)
     }
 
     /// [`Self::note_verse_row`] for this node's OWN outbound manifest write:
     /// the local DB plane already admitted it (the creator's manifest, or an
     /// invite-pinned owner — fe-database T10), so its `created_by` pins the
-    /// owner and, as the first manifest, its settings are adopted outright.
+    /// owner — replacing a different pin a replicated manifest set first
+    /// (R1) — and, as the first or correcting manifest, its settings are
+    /// adopted outright.
     pub fn note_local_verse_row(&mut self, verse_id: &str, row: &serde_json::Value, local_did: &str) -> bool {
-        self.note_verse_row_from(verse_id, row, local_did, true)
+        self.note_verse_row_from(verse_id, row, local_did, RowOrigin::LocalWrite)
+    }
+
+    /// One of this node's OWN past manifest entries replayed from the
+    /// replica (snapshot, re-assert, live echo — R1). Its `created_by` is the
+    /// local authority on the owner, so it corrects a false pin like
+    /// [`Self::note_local_verse_row`]; but it may be STALE (a newer authorized
+    /// edit by someone else can exist), so its settings are adopted outright
+    /// only when it just replaced a false owner, and otherwise pass the
+    /// ordinary inbound authority gate.
+    pub fn note_own_replayed_verse_row(&mut self, verse_id: &str, row: &serde_json::Value, local_did: &str) -> bool {
+        self.note_verse_row_from(verse_id, row, local_did, RowOrigin::OwnReplay)
     }
 
     fn note_verse_row_from(
@@ -423,11 +459,14 @@ impl VerseFabric {
         verse_id: &str,
         row: &serde_json::Value,
         author_id: &str,
-        locally_admitted: bool,
+        origin: RowOrigin,
     ) -> bool {
         let first_manifest = self.owner_did.is_none();
+        let mut repinned = false;
         if let Some(created_by) = row.get("created_by").and_then(|v| v.as_str()) {
-            if locally_admitted || created_by == author_id {
+            if origin != RowOrigin::Inbound {
+                repinned = self.repin_owner_from_local(verse_id, created_by);
+            } else if created_by == author_id {
                 self.learn_owner(verse_id, created_by);
             } else if first_manifest
                 && !created_by.is_empty()
@@ -444,8 +483,14 @@ impl VerseFabric {
             }
         }
         // The local DB plane already admitted our own outbound manifest, so
-        // with no owner pinned yet it is adopted outright (as before OF-6d).
-        let adopt_outright = locally_admitted && first_manifest;
+        // with no owner pinned yet it is adopted outright (as before OF-6d) —
+        // and likewise when it just corrected a false owner pin (R1), whose
+        // settings (e.g. `default_access: viewer`) must not outlive it.
+        let adopt_outright = match origin {
+            RowOrigin::LocalWrite => first_manifest || repinned,
+            RowOrigin::OwnReplay => repinned,
+            RowOrigin::Inbound => false,
+        };
         if !adopt_outright {
             let Some(owner) = self.owner_did.clone() else {
                 tracing::debug!(verse_id, author = author_id, "verse manifest settings ignored — no owner pinned yet");
@@ -492,19 +537,117 @@ impl VerseFabric {
         self.rematerialize(verse_id);
     }
 
-    /// Learn one `petal -> fractal` mapping from a `petal` row (§2.5).
-    pub fn note_petal_row(&mut self, verse_id: &str, row: &serde_json::Value) {
+    /// This node's OWN DB-admitted manifest names `created_by` (the creator
+    /// itself, or an invite-pinned owner — fe-database T10): that is the
+    /// local authority on who owns the verse, so it pins the owner and, when
+    /// a replicated self-signed manifest pinned someone else first, REPLACES
+    /// that pin (R1). `seed_reconciliation` replays the replica before the
+    /// pending local writes flush, and any member holding the namespace
+    /// secret can author a self-signed `verse/` entry naming itself, so
+    /// first-self-signed-wins alone handed a fresh joiner's sync-plane owner
+    /// to whoever wrote first. Rematerializing under the corrected owner
+    /// runs the demote cascade over every statement the false owner made.
+    /// Returns `true` when it REPLACED a different, earlier pin.
+    fn repin_owner_from_local(&mut self, verse_id: &str, created_by: &str) -> bool {
+        if created_by.is_empty() || self.owner_did.as_deref() == Some(created_by) {
+            return false;
+        }
+        let replaced = self.owner_did.is_some();
+        if let Some(previous) = &self.owner_did {
+            tracing::warn!(
+                verse_id,
+                previous = %previous,
+                owner = created_by,
+                "sync-plane owner pin corrected by this node's own DB-admitted manifest"
+            );
+        }
+        self.owner_did = Some(created_by.to_string());
+        self.rematerialize(verse_id);
+        replaced
+    }
+
+    /// Learn one `petal -> fractal` mapping from an INBOUND (replicated or
+    /// snapshot) `petal` row (§2.5), gated like the DB plane's A3
+    /// `confine_petal` (OF-9): the signed author needs Editor+ (the
+    /// fe-policy write floor) at the petal's scope under the row's fractal,
+    /// AND — when the row MOVES an already-mapped petal — at its current
+    /// scope too. The map feeds every `role_at` scope chain, so an
+    /// unauthenticated row could otherwise re-parent a victim petal under an
+    /// attacker's fractal (their grant there suddenly enclosing it) or strip
+    /// legitimate Managers of it. A row that fails is quarantined, never
+    /// dropped — re-judged on every role change, and re-read from the
+    /// replica on its author's empowerment (`petal/` is in the re-read set).
+    pub fn note_petal_row(&mut self, verse_id: &str, row: &serde_json::Value, author_id: &str) {
+        self.admit_petal_entry(verse_id, row, author_id, RowOrigin::Inbound);
+    }
+
+    /// [`Self::note_petal_row`] for this node's OWN outbound petal write:
+    /// the local DB plane already admitted it, so it maps outright.
+    pub fn note_local_petal_row(&mut self, verse_id: &str, row: &serde_json::Value) {
+        self.admit_petal_entry(verse_id, row, "", RowOrigin::LocalWrite);
+    }
+
+    /// One of this node's OWN past petal entries replayed from the replica
+    /// (R1): it maps a petal not mapped yet outright, but — being possibly
+    /// stale — a MOVE of an already-mapped petal passes the ordinary gate
+    /// under `local_did`.
+    pub fn note_own_replayed_petal_row(&mut self, verse_id: &str, row: &serde_json::Value, local_did: &str) {
+        self.admit_petal_entry(verse_id, row, local_did, RowOrigin::OwnReplay);
+    }
+
+    fn admit_petal_entry(
+        &mut self,
+        verse_id: &str,
+        row: &serde_json::Value,
+        author_id: &str,
+        origin: RowOrigin,
+    ) {
         let (Some(petal_id), Some(fractal_id)) = (
             row.get("petal_id").and_then(|v| v.as_str()),
             row.get("fractal_id").and_then(|v| v.as_str()),
         ) else {
             return;
         };
-        if self.petal_fractals.get(petal_id).map(String::as_str) == Some(fractal_id) {
+        if !is_scope_safe_id(petal_id) || !is_scope_safe_id(fractal_id) {
+            tracing::debug!(verse_id, petal_id, fractal_id, "petal row with a scope-unsafe id — dropped");
             return;
+        }
+        let current = self.petal_fractals.get(petal_id).cloned();
+        if current.as_deref() == Some(fractal_id) {
+            return;
+        }
+        let gated = match origin {
+            RowOrigin::Inbound => true,
+            RowOrigin::LocalWrite => false,
+            RowOrigin::OwnReplay => current.is_some(),
+        };
+        if gated {
+            let target = fe_policy::build_scope(verse_id, Some(fractal_id), Some(petal_id));
+            let mut authorized = self.role_at(author_id, &target).is_at_least(RoleLevel::Editor);
+            if let Some(current_fractal) = current.as_deref() {
+                let from = fe_policy::build_scope(verse_id, Some(current_fractal), Some(petal_id));
+                authorized &= self.role_at(author_id, &from).is_at_least(RoleLevel::Editor);
+            }
+            if !authorized {
+                tracing::debug!(
+                    verse_id,
+                    petal_id,
+                    fractal_id,
+                    author = author_id,
+                    "petal row author lacks Editor+ at the petal's scope(s) — mapping quarantined"
+                );
+                let data = serde_json::to_vec(row).unwrap_or_default();
+                self.quarantine_row(QuarantineKind::Petal, petal_id, author_id, &data);
+                return;
+            }
         }
         self.petal_fractals
             .insert(petal_id.to_string(), fractal_id.to_string());
+        if current.is_some() {
+            // A move changes the petal's scope chain: a holder admitted
+            // under the old one must clear the new one.
+            self.reverdict_holders(verse_id);
+        }
         self.reevaluate_quarantine(verse_id);
     }
 
@@ -861,6 +1004,11 @@ impl VerseFabric {
                 QuarantineKind::Holder => {
                     self.admit_holder_entry(verse_id, &row.record_id, &row.author_id, &row.data);
                 }
+                QuarantineKind::Petal => {
+                    if let Ok(petal_row) = serde_json::from_slice::<serde_json::Value>(&row.data) {
+                        self.admit_petal_entry(verse_id, &petal_row, &row.author_id, RowOrigin::Inbound);
+                    }
+                }
             }
         }
     }
@@ -1048,7 +1196,7 @@ impl VerseFabric {
             "petal" => {
                 if !change.data.is_empty() {
                     if let Ok(row) = serde_json::from_slice::<serde_json::Value>(&change.data) {
-                        self.note_petal_row(verse_id, &row);
+                        self.note_petal_row(verse_id, &row, &change.author_id);
                     }
                 }
             }
@@ -1873,6 +2021,92 @@ mod tests {
         let snapshot = fabric.access_snapshot("v1");
         assert!(!snapshot.viewer_dids.contains("did:key:petal-viewer"));
         assert!(snapshot.viewer_dids.contains("did:key:verse-viewer"));
+    }
+
+    fn petal_change_by(petal_id: &str, fractal_id: &str, author: &str) -> crate::replicator::RowChange {
+        let mut change = petal_change(petal_id, fractal_id);
+        change.author_id = author.to_string();
+        change
+    }
+
+    /// OF-9 (HIGH): the petal->fractal map is gated like the DB plane's
+    /// `confine_petal`. A Manager of ANOTHER fractal can neither re-parent
+    /// a victim petal under their fractal (which would make their grant
+    /// enclose it — here: admit their `__shards` row for it) nor plant a
+    /// first mapping without authority there; a move by someone with
+    /// authority over BOTH scopes is learned; a held row matures once its
+    /// author is empowered.
+    #[test]
+    fn a_petal_row_without_authority_over_its_scopes_never_bends_the_scope_chain() {
+        let mut fabric = fabric_with_owner("v1");
+        let attacker = "did:key:attacker";
+        let attacker_fractal = fe_policy::build_scope("v1", Some("fa"), None);
+        fabric.note_entry("v1", &role_change(&attacker_fractal, attacker, OWNER, "manager", false, 1));
+        fabric.note_entry("v1", &petal_change("p1", "fv"));
+        let victim_scope = fe_policy::build_scope("v1", Some("fv"), Some("p1"));
+        assert_eq!(fabric.petal_scope("v1", "p1").as_deref(), Some(victim_scope.as_str()));
+
+        // Re-parent attempt: Editor+ at the target scope, none at the current one.
+        fabric.note_entry("v1", &petal_change_by("p1", "fa", attacker));
+        assert_eq!(
+            fabric.petal_scope("v1", "p1").as_deref(),
+            Some(victim_scope.as_str()),
+            "a petal row from a Manager of another fractal re-parented the victim petal"
+        );
+        fabric.note_entry("v1", &shard_change("p1/a1/1", attacker, &[attacker]));
+        assert!(!fabric.shards.contains_key("p1/a1/1"), "the attacker's grant must not enclose p1");
+
+        // A first mapping planted by a stranger is held, not learned.
+        fabric.note_entry("v1", &petal_change_by("p9", "fv", "did:key:stranger"));
+        assert_eq!(fabric.petal_scope("v1", "p9"), None);
+        // A scope-smuggling id is dropped outright.
+        fabric.note_entry("v1", &petal_change("p8", "fv-PETAL#p1"));
+        assert_eq!(fabric.petal_scope("v1", "p8"), None);
+
+        // The owner (authority over both scopes) moves p1: learned.
+        fabric.note_entry("v1", &petal_change("p1", "fw"));
+        assert_eq!(
+            fabric.petal_scope("v1", "p1"),
+            Some(fe_policy::build_scope("v1", Some("fw"), Some("p1")))
+        );
+
+        // The stranger is granted Editor on fv: their held p9 row matures.
+        let fv = fe_policy::build_scope("v1", Some("fv"), None);
+        fabric.note_entry("v1", &role_change(&fv, "did:key:stranger", OWNER, "editor", false, 2));
+        assert_eq!(
+            fabric.petal_scope("v1", "p9"),
+            Some(fe_policy::build_scope("v1", Some("fv"), Some("p9")))
+        );
+    }
+
+    /// R1 (owner integrity, the OF-6d residual): a replicated SELF-SIGNED
+    /// manifest naming its author creator pins first (snapshot replay runs
+    /// before this node's pending writes flush); this node's own DB-admitted
+    /// manifest then corrects the pin, drops the false owner's settings, and
+    /// the demote cascade drops every statement the false owner made.
+    #[test]
+    fn this_nodes_own_manifest_corrects_an_owner_pinned_by_a_forged_self_signed_manifest() {
+        let mut fabric = VerseFabric::default();
+        let attacker = "did:key:attacker";
+        let verse_scope = fe_policy::build_scope("v1", None, None);
+        fabric.note_entry(
+            "v1",
+            &verse_change("v1", attacker, attacker, serde_json::json!({ "default_access": "viewer" })),
+        );
+        fabric.note_entry("v1", &role_change(&verse_scope, "did:key:crony", attacker, "manager", false, 1));
+        assert_eq!(fabric.owner_did(), Some(attacker));
+        assert!(fabric.role_at("did:key:crony", &verse_scope).is_at_least(RoleLevel::Manager));
+
+        fabric.note_local_verse_row(
+            "v1",
+            &serde_json::json!({ "verse_id": "v1", "created_by": OWNER, "default_access": "none" }),
+            "did:key:joiner",
+        );
+        assert_eq!(fabric.owner_did(), Some(OWNER));
+        assert_eq!(fabric.default_access(), RoleLevel::None, "the false owner's open access must not survive");
+        assert_eq!(fabric.role_at(attacker, &verse_scope), RoleLevel::None);
+        assert_eq!(fabric.role_at("did:key:crony", &verse_scope), RoleLevel::None);
+        assert!(!fabric.access_snapshot("v1").open_to_all);
     }
 
     /// OF-7a: an admitted holder whose Editor role is REVOKED stops being an

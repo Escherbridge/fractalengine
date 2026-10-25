@@ -12,7 +12,7 @@
 //! no async API, so a bridge thread forwards commands into a tokio channel
 //! before the select.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -837,22 +837,19 @@ pub fn spawn_sync_thread_with_transport(
                             // through to `handle_gossip_incoming` unchanged.
                             match decode_tileset_ad(&incoming.content) {
                                 Some(ad) => {
-                                    // RP-5 step 6 / OF-6a: an ACCEPTED ad
-                                    // can only add its arrival verse to a
-                                    // root this node already tracks (every
-                                    // learned verse must then admit) — it
-                                    // never starts tracking, never remaps.
-                                    let accepted = handle_inbound_tileset_ad(
+                                    // R1 (OF-8): an ad feeds ONLY the
+                                    // provider map. It never touches the
+                                    // blob access gate — a root's binding is
+                                    // fixed by this node's own first fetch
+                                    // decision (`bind_fetched_root`), and
+                                    // gossip can neither start, remap nor
+                                    // narrow it.
+                                    handle_inbound_tileset_ad(
                                         &mut tileset_providers,
                                         &evt_tx,
                                         &incoming,
                                         ad,
                                     );
-                                    if let (Some(stack), Some(root)) = (docs_stack.as_ref(), accepted) {
-                                        stack
-                                            .blob_access_gate()
-                                            .note_advertised_root(&incoming.verse_id, root);
-                                    }
                                 }
                                 None => {
                                     handle_gossip_incoming(
@@ -1291,7 +1288,29 @@ fn handle_inbound_row_change(
     // admission of the SAME rows (RP-2/RP-3's `role_grant`/pending tables).
     // `role` and `petal` are ordinary DB-plane tables and must still be
     // forwarded below; only `__shards`/`__peers` are sync-plane-only.
-    fabric.note_entry(verse_id, change);
+    // R1: a `verse`/`petal` entry signed by OUR OWN key was written by this
+    // node after its DB plane admitted it — locally authoritative but
+    // possibly stale (a restart replays it through here): it corrects a
+    // false owner pin / maps an unmapped petal, and otherwise passes the
+    // ordinary gates (`VerseFabric::note_own_replayed_*`).
+    if change.author_id == local_did && !change.data.is_empty() {
+        let own_row = || serde_json::from_slice::<serde_json::Value>(&change.data).ok();
+        match change.table.as_str() {
+            "verse" => {
+                if let Some(row) = own_row() {
+                    fabric.note_own_replayed_verse_row(verse_id, &row, local_did);
+                }
+            }
+            "petal" => {
+                if let Some(row) = own_row() {
+                    fabric.note_own_replayed_petal_row(verse_id, &row, local_did);
+                }
+            }
+            _ => fabric.note_entry(verse_id, change),
+        }
+    } else {
+        fabric.note_entry(verse_id, change);
+    }
     if change.table == HOLDERS_TABLE {
         // RP-6: our OWN holder declaration replayed from the snapshot is how
         // the fabric re-learns, after a restart, that it was already
@@ -1389,7 +1408,7 @@ fn handle_inbound_row_change(
 
 /// RP-5 §2.5 "re-read on empowerment": drain every open verse's
 /// `reread_queue` and replay each queued DID's `role`/`__shards`/
-/// `__holders`/`verse` entries straight from the local replica through the
+/// `__holders`/`verse`/`petal` entries straight from the local replica through the
 /// SAME inbound apply path a live row takes. This is how a statement the
 /// fabric held back (its grantor lacked authority) — and which the fabric
 /// itself never stores — is recovered once that grantor is empowered: the
@@ -1414,7 +1433,7 @@ async fn drain_reread_queues(
         };
         for did in dids {
             match replicator
-                .entries_by_author(&did, &["role/", "__shards/", "__holders/", "verse/"])
+                .entries_by_author(&did, &["role/", "__shards/", "__holders/", "verse/", "petal/"])
                 .await
             {
                 Ok(entries) => {
@@ -1543,6 +1562,31 @@ async fn seed_reconciliation(
         forwarded,
         "Reconciliation: replayed replica entries through the inbound apply path"
     );
+}
+
+/// R1: replay THIS node's own `verse/` and `petal/` entries by author after
+/// the snapshot. The snapshot is latest-per-key, so a later foreign entry on
+/// the same key (say, a forged self-signed manifest naming its author the
+/// creator) hides ours from it; replayed by author, our own DB-admitted
+/// manifest still corrects the sync-plane owner pin and our own petals still
+/// map (`handle_inbound_row_change` notes own-signed rows as locally
+/// admitted). Best-effort, like the snapshot.
+async fn reassert_own_rows(
+    replicator: &dyn VerseReplicator,
+    verse_id: &str,
+    local_did: &str,
+    evt_tx: &dyn EventSink,
+    db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
+    fabric: &mut VerseFabric,
+) {
+    match replicator.entries_by_author(local_did, &["verse/", "petal/"]).await {
+        Ok(entries) => {
+            for change in entries {
+                handle_inbound_row_change(fabric, verse_id, &change, local_did, evt_tx, db_cmd_tx);
+            }
+        }
+        Err(e) => tracing::warn!(verse_id, "re-asserting our own manifest/petal rows failed: {e}"),
+    }
 }
 
 /// Handle [`SyncCommand::OpenVerseReplica`].
@@ -1696,6 +1740,7 @@ async fn handle_open_verse_replica(
     // failed online open (no document to snapshot).
     if replicator.open_error().is_none() {
         seed_reconciliation(&replicator, verse_id, local_did, evt_tx, db_cmd_tx, fabric).await;
+        reassert_own_rows(&replicator, verse_id, local_did, evt_tx, db_cmd_tx, fabric).await;
     }
 
     let open_failed_reason = replicator.open_error();
@@ -1908,7 +1953,8 @@ async fn handle_write_row_entry(
                 fabric.note_local_verse_row(verse_id, &row, author_did);
             }
             "petal" => {
-                fabric.note_petal_row(verse_id, &row);
+                // OF-9: our own outbound write — locally admitted.
+                fabric.note_local_petal_row(verse_id, &row);
             }
             "iot_reading" => {
                 if let Some(shard) = ShardId::of_reading_row(&row, fabric.settings.bucket_width_ms)
@@ -2442,11 +2488,20 @@ impl TilesetProviderMap {
             seen,
         });
         while entries.len() > MAX_PROVIDERS_PER_TILESET {
-            let victim = entries
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, e)| (e.authenticated, e.seen))
-                .map(|(i, _)| i)
+            // R1: hint-only first, then an entry whose verse another entry
+            // still represents, then the oldest — so a flood of hints on
+            // one verse can never evict the last entry of ANOTHER verse
+            // and shrink the fetch context `verses_for` binds a root to
+            // (fewer verses = a wider learned binding).
+            let victim = (0..entries.len())
+                .min_by_key(|&i| {
+                    let e = &entries[i];
+                    let verse_shared = entries
+                        .iter()
+                        .enumerate()
+                        .any(|(j, other)| j != i && other.verse_id == e.verse_id);
+                    (e.authenticated, !verse_shared, e.seen)
+                })
                 .unwrap_or(0);
             entries.remove(victim);
         }
@@ -2494,15 +2549,38 @@ impl TilesetProviderMap {
             })
     }
 
-    /// Every verse an entry advertised `root` for `tileset_id` on (OF-6a:
-    /// a fetched root is bound to ALL of them).
+    /// The fetch context a root is bound to (OF-6a "all mapped verses",
+    /// widened by R1): every verse an entry advertised `tileset_id` on
+    /// (under any root) or advertised `root` on (under any tileset id).
+    /// The learned binding admits a Viewer+ of EVERY one of them, so a
+    /// larger context is only ever stricter — an ad re-using a victim's
+    /// root under a fresh id, or a victim's id with a fresh root, cannot
+    /// make this node bind protected bytes to the attacker's verse alone.
     fn verses_for(&self, tileset_id: &str, root: Hash32) -> std::collections::BTreeSet<String> {
         self.by_id
-            .get(tileset_id)
-            .into_iter()
-            .flatten()
-            .filter(|e| e.root == root)
+            .iter()
+            .flat_map(|(id, entries)| {
+                let same_id = id == tileset_id;
+                entries
+                    .iter()
+                    .filter(move |e| same_id || e.root == root)
+            })
             .map(|e| e.verse_id.clone())
+            .collect()
+    }
+
+    /// Endpoint ids that VOUCHED for themselves — an authenticated (direct,
+    /// provider == sender) entry — for `tileset_id` or for `root`.
+    fn vouched_providers(&self, tileset_id: &str, root: Hash32) -> HashSet<iroh::EndpointId> {
+        self.by_id
+            .iter()
+            .flat_map(|(id, entries)| {
+                let same_id = id == tileset_id;
+                entries
+                    .iter()
+                    .filter(move |e| e.authenticated && (same_id || e.root == root))
+            })
+            .filter_map(|e| IrohBlobTransport::parse_provider(&e.provider).ok().map(|a| a.id))
             .collect()
     }
 
@@ -2898,20 +2976,42 @@ fn offline_meta_event(peer_id: String, tileset_id: String) -> SyncEvent {
     )
 }
 
-/// OF-6a: bind a root this node is about to fetch to EVERY verse it was
-/// advertised on, BEFORE the fetch puts any of it in the store (the gate
-/// then re-serves it only to a Viewer+ of all of them).
+/// OF-6a / R1: bind a root this node is about to fetch to its fetch context
+/// ([`TilesetProviderMap::verses_for`]), BEFORE the fetch puts any of it in
+/// the store (the gate then re-serves it only to a Viewer+ of all of them).
+/// Only the FIRST fetch decision binds; see `BlobAccessGate::bind_fetched_root`.
+///
+/// Provenance rule (R1): when any of `providers` never VOUCHED for this
+/// tileset/root itself (a relayed hint's named provider, or an explicit
+/// override nobody vouched for), the context also gets
+/// [`UNVOUCHED_FETCH_CONTEXT`], a verse no snapshot ever exists for — so the
+/// root is fetched for local use but never secondary-seeded. A hint can name
+/// a third-party provider that serves THIS node on the strength of its
+/// membership in some other verse; re-serving those bytes to the hint's
+/// verse would launder them one hop past the provider's own policy.
 fn bind_fetched_root(
     gate: Option<&BlobAccessGate>,
     providers_map: &TilesetProviderMap,
     tileset_id: &str,
     root: Hash32,
+    providers: &[ProviderRef],
 ) {
     if let Some(gate) = gate {
-        let verses = providers_map.verses_for(tileset_id, root);
+        let mut verses = providers_map.verses_for(tileset_id, root);
+        let vouched = providers_map.vouched_providers(tileset_id, root);
+        let all_vouched = providers.iter().all(|provider| {
+            IrohBlobTransport::parse_provider(provider).is_ok_and(|addr| vouched.contains(&addr.id))
+        });
+        if !all_vouched {
+            verses.insert(UNVOUCHED_FETCH_CONTEXT.to_string());
+        }
         gate.bind_fetched_root(root, verses.iter().map(String::as_str));
     }
 }
+
+/// Fetch-context marker for a root fetched through a provider that never
+/// vouched for it: no verse has this id, so the learned path denies (R1).
+const UNVOUCHED_FETCH_CONTEXT: &str = "\u{0}unvouched-provider";
 
 /// Handle [`SyncCommand::RequestTilesetMeta`]: resolve the tileset's root
 /// from a prior advertisement (or `peer_id` as an explicit provider
@@ -2944,7 +3044,7 @@ fn handle_request_tileset_meta(
                 return;
             }
         };
-    bind_fetched_root(gate, providers_map, tileset_id, root);
+    bind_fetched_root(gate, providers_map, tileset_id, root, &providers);
     let approx_size_bytes = providers_map.bytes_for(tileset_id);
     let peer_id = peer_id.to_string();
     let tileset_id = tileset_id.to_string();
@@ -2990,7 +3090,7 @@ fn handle_download_tileset(
                 return;
             }
         };
-    bind_fetched_root(gate, providers_map, &tileset_id, root);
+    bind_fetched_root(gate, providers_map, &tileset_id, root, &providers);
     let approx_size_bytes = providers_map.bytes_for(&tileset_id);
     let evt_tx = evt_tx.clone();
     tokio::spawn(async move {
@@ -4454,6 +4554,130 @@ mod tests {
         assert!(map.by_id.len() <= MAX_TRACKED_TILESETS);
     }
 
+    /// R1 (OF-8 fetch-context integrity): the verse set a fetched root is
+    /// bound to can never be SHRUNK by an attacker — a hint flood on their
+    /// own verse cannot evict the last entry of the victim's verse, and
+    /// re-advertising the victim's root under a fresh tileset id still binds
+    /// it to the victim's verse too. The end-to-end consequence is driven
+    /// through the real gate: the attacker's verse viewers stay refused.
+    #[test]
+    fn an_attacker_cannot_shrink_a_fetched_roots_bound_verse_set() {
+        let provider_addr = |seed: u8| {
+            let id = iroh::SecretKey::from_bytes(&[seed; 32]).public();
+            ProviderRef::new(serde_json::to_string(&iroh::EndpointAddr::new(id)).unwrap())
+        };
+        let viewers = |did: &str| crate::docs_engine::VerseAccessSnapshot {
+            owner_did: None,
+            open_to_all: false,
+            viewer_dids: [did.to_string()].into_iter().collect(),
+        };
+        let root = [42u8; 32];
+
+        // (a) A hint flood on the attacker's verse never evicts the victim
+        // verse's last (hint) entry.
+        let mut flooded = TilesetProviderMap::default();
+        assert!(flooded.record(
+            "victim-verse",
+            "valley".to_string(),
+            provider_addr(1),
+            root,
+            false,
+            1,
+            String::new(),
+        ));
+        for i in 0..(MAX_PROVIDERS_PER_TILESET * 3) {
+            flooded.record(
+                "attacker-verse",
+                "valley".to_string(),
+                ProviderRef::new(format!("attacker-{i}")),
+                root,
+                false,
+                1,
+                String::new(),
+            );
+        }
+        let bound = flooded.verses_for("valley", root);
+        assert!(bound.contains("victim-verse"), "the flood evicted the victim verse: {bound:?}");
+        assert!(bound.contains("attacker-verse"));
+
+        // (b) The victim's root re-advertised under a FRESH id on the
+        // attacker's verse, naming the victim's (vouched) publisher: the
+        // fetch context still carries the victim verse, so the attacker's
+        // verse viewers are refused through the real gate.
+        let mut map = TilesetProviderMap::default();
+        let publisher = provider_addr(1);
+        assert!(map.record(
+            "victim-verse",
+            "valley".to_string(),
+            publisher.clone(),
+            root,
+            true,
+            1,
+            String::new(),
+        ));
+        map.record(
+            "attacker-verse",
+            "fresh-id".to_string(),
+            publisher.clone(),
+            root,
+            false,
+            1,
+            String::new(),
+        );
+        let gate = BlobAccessGate::default();
+        gate.set_verse_access("victim-verse", viewers("did:key:victim-viewer"));
+        gate.set_verse_access("attacker-verse", viewers("did:key:attacker"));
+        bind_fetched_root(Some(&gate), &map, "fresh-id", root, &[publisher]);
+        assert!(
+            !gate.admits_hash("did:key:attacker", &root),
+            "the attacker's verse viewers must stay refused"
+        );
+    }
+
+    /// R1 provenance rule: a relayed hint on the attacker's verse names a
+    /// THIRD-PARTY provider (who would serve this node on the strength of
+    /// its membership elsewhere) and the attacker self-vouches as a provider
+    /// too. The root is fetched for local use, but bound with the
+    /// unvouched marker, so it is never re-served — to the attacker's verse
+    /// viewers or anyone. A fetch whose providers all vouched is re-served
+    /// to the context's viewers as before.
+    #[test]
+    fn a_root_fetched_through_an_unvouched_provider_is_never_secondary_seeded() {
+        let provider_addr = |seed: u8| {
+            let id = iroh::SecretKey::from_bytes(&[seed; 32]).public();
+            ProviderRef::new(serde_json::to_string(&iroh::EndpointAddr::new(id)).unwrap())
+        };
+        let open_to = |did: &str| crate::docs_engine::VerseAccessSnapshot {
+            owner_did: None,
+            open_to_all: false,
+            viewer_dids: [did.to_string()].into_iter().collect(),
+        };
+        let (attacker, third_party) = (provider_addr(7), provider_addr(8));
+        let laundered = [43u8; 32];
+        let mut map = TilesetProviderMap::default();
+        map.record("attacker-verse", "bait".to_string(), attacker.clone(), laundered, true, 1, String::new());
+        map.record("attacker-verse", "bait".to_string(), third_party.clone(), laundered, false, 1, String::new());
+        let (providers, root, _) = resolve_providers_and_root(&map, "bait", None).expect("resolves");
+        assert_eq!(root, laundered);
+        assert!(providers.contains(&third_party));
+
+        let gate = BlobAccessGate::default();
+        gate.set_verse_access("attacker-verse", open_to("did:key:attacker"));
+        bind_fetched_root(Some(&gate), &map, "bait", root, &providers);
+        assert!(
+            !gate.admits_hash("did:key:attacker", &laundered),
+            "bytes fetched through an unvouched provider were re-served to the hint's verse"
+        );
+
+        // Control: every provider vouched — secondary seeding works.
+        let honest = [44u8; 32];
+        map.record("home-verse", "valley".to_string(), provider_addr(9), honest, true, 1, String::new());
+        gate.set_verse_access("home-verse", open_to("did:key:home-viewer"));
+        let (providers, root, _) = resolve_providers_and_root(&map, "valley", None).expect("resolves");
+        bind_fetched_root(Some(&gate), &map, "valley", root, &providers);
+        assert!(gate.admits_hash("did:key:home-viewer", &honest));
+    }
+
     /// Flow test (S3 plan): direct + matching provider -> authenticated;
     /// relayed -> hint; malformed input never authenticates; a non-ad JSON
     /// frame (shaped like a `ComputeEnvelope`) decodes to `None` so it falls
@@ -4730,6 +4954,78 @@ mod tests {
             } if verse_id == "verse-1" && table == "node" && record_id == "node-42"
                 && row_bytes == &payload && author_did == "did:key:peer-a"
         ));
+    }
+
+    /// R1 owner integrity across a restart: the replica replays a forged
+    /// SELF-signed manifest (an attacker naming itself creator, opening the
+    /// verse to everyone) and then THIS node's own invite-pinned manifest
+    /// entry. The own-signed entry is locally authoritative: it corrects the
+    /// owner and drops the false owner's open access. A stale own entry
+    /// replayed after the genuine owner's newer settings does not override
+    /// them (it passes the ordinary authority gate).
+    #[test]
+    fn a_replayed_own_manifest_corrects_a_forged_owner_pin_without_overriding_newer_settings() {
+        let (evt_tx, _evt_rx) = crossbeam::channel::unbounded();
+        let local = "did:key:joiner";
+        let manifest = |author: &str, created_by: &str, extra: serde_json::Value| {
+            let mut row = serde_json::json!({ "verse_id": "v-1", "created_by": created_by });
+            row.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            RowChange {
+                table: "verse".to_string(),
+                record_id: "v-1".to_string(),
+                content_hash: [0u8; 32],
+                author_id: author.to_string(),
+                timestamp: 0,
+                is_tombstone: false,
+                data: serde_json::to_vec(&row).unwrap(),
+            }
+        };
+        let mut fabric = VerseFabric::default();
+        handle_inbound_row_change(
+            &mut fabric,
+            "v-1",
+            &manifest("did:key:attacker", "did:key:attacker", serde_json::json!({ "default_access": "viewer" })),
+            local,
+            &evt_tx,
+            &None,
+        );
+        assert_eq!(fabric.to_dump_json()["owner_did"], "did:key:attacker");
+        assert!(fabric.access_snapshot("v-1").open_to_all);
+
+        handle_inbound_row_change(
+            &mut fabric,
+            "v-1",
+            &manifest(local, "did:key:owner", serde_json::json!({ "default_access": "none" })),
+            local,
+            &evt_tx,
+            &None,
+        );
+        assert_eq!(fabric.to_dump_json()["owner_did"], "did:key:owner");
+        assert!(!fabric.access_snapshot("v-1").open_to_all, "the false owner's open access survived");
+
+        // The genuine owner's newer settings, then our stale entry again.
+        handle_inbound_row_change(
+            &mut fabric,
+            "v-1",
+            &manifest("did:key:owner", "did:key:owner", serde_json::json!({ "ts_mode": "sharded" })),
+            local,
+            &evt_tx,
+            &None,
+        );
+        assert_eq!(fabric.settings.mode, fe_runtime::timeseries::TimeseriesMode::Sharded);
+        handle_inbound_row_change(
+            &mut fabric,
+            "v-1",
+            &manifest(local, "did:key:owner", serde_json::json!({ "ts_mode": "mirror" })),
+            local,
+            &evt_tx,
+            &None,
+        );
+        assert_eq!(
+            fabric.settings.mode,
+            fe_runtime::timeseries::TimeseriesMode::Sharded,
+            "a stale own replay must not override a newer authorized edit"
+        );
     }
 
     #[test]
@@ -5631,6 +5927,62 @@ mod tests {
         assert!(
             fabric.shards.contains_key("p1/a1/1"),
             "the re-read must recover the legit row from the replica despite the in-memory eviction"
+        );
+    }
+
+    /// OF-9 + T12: an Editor's `petal` row is gated now, so it can be held in
+    /// the quarantine and EVICTED by a flood before the Editor's grant lands.
+    /// It is not lost: `petal/` is in the re-read-on-empowerment set, so the
+    /// grant pulls it back from the replica and the petal's scope chain
+    /// converges.
+    #[tokio::test]
+    async fn an_evicted_editors_petal_row_is_reread_from_the_replica_on_empowerment() {
+        let (evt_tx, _evt_rx) = crossbeam::channel::bounded(32);
+        let mut fabrics: HashMap<String, VerseFabric> = HashMap::new();
+        let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
+        let (owner, editor, verse_id) = ("did:key:owner", "did:key:editor", "v-petal");
+        let petal_row = serde_json::to_vec(&serde_json::json!({ "petal_id": "p2", "fractal_id": "f1" })).unwrap();
+
+        let replicator = MockVerseReplicator::new(editor);
+        replicator.write_row("petal", "p2", &petal_row).await.unwrap();
+        replicas.insert(verse_id.to_string(), Box::new(replicator));
+
+        let fabric = fabrics.entry(verse_id.to_string()).or_default();
+        let change = |table: &str, record_id: String, author: &str, data: Vec<u8>| RowChange {
+            table: table.into(),
+            record_id,
+            content_hash: [0; 32],
+            author_id: author.into(),
+            timestamp: 0,
+            is_tombstone: false,
+            data,
+        };
+        fabric.note_entry(
+            verse_id,
+            &change("verse", verse_id.into(), owner, serde_json::to_vec(&serde_json::json!({ "created_by": owner })).unwrap()),
+        );
+        fabric.note_entry(verse_id, &change("petal", "p2".into(), editor, petal_row.clone()));
+        assert_eq!(fabric.petal_scope(verse_id, "p2"), None, "held until the editor is empowered");
+        for i in 0..1100 {
+            let key = format!("p9/a{i}/1");
+            let data = serde_json::to_vec(&serde_json::json!({ "shard": key, "hosts": [] })).unwrap();
+            fabric.note_entry(verse_id, &change(SHARD_TABLE, key.clone(), "did:key:flooder", data));
+        }
+        assert!(fabric.quarantine_evicted() > 0);
+
+        let fractal_scope = fe_policy::build_scope(verse_id, Some("f1"), None);
+        let grant = serde_json::to_vec(&serde_json::json!({
+            "scope": fractal_scope, "peer_did": editor, "grantor_did": owner,
+            "role": "editor", "revoked": false, "hlc": 1,
+        }))
+        .unwrap();
+        fabric.note_entry(verse_id, &change("role", format!("{fractal_scope}/{editor}/{owner}"), owner, grant));
+        drain_reread_queues(&mut fabrics, &replicas, "did:key:local", &evt_tx, &None, &None).await;
+
+        assert_eq!(
+            fabrics[verse_id].petal_scope(verse_id, "p2"),
+            Some(fe_policy::build_scope(verse_id, Some("f1"), Some("p2"))),
+            "the re-read must recover the evicted petal row from the replica"
         );
     }
 

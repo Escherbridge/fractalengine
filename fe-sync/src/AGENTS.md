@@ -938,9 +938,30 @@ style parity holds by construction, not by coincidence.
   creator pins nothing and adopts no settings; its claimed creator is queued
   on `reread_queue`, so the §2.5 re-read replays THAT DID's own `verse/`
   entry (a later Manager edit shadowing the owner's entry in the snapshot
-  cannot stall the pin). Residual (D-23 class): the first SELF-signed
-  manifest still wins a race on a relay that opened without an invite — the same immutability rule the
-  DB plane's `created_by` field keeps (T9). Everything downstream
+  cannot stall the pin). **Local correction (R1, 2026-10-25):** our own
+  locally-admitted manifest is the local authority on the owner, so
+  `repin_owner_from_local` REPLACES a different pin an inbound self-signed
+  manifest set first — `seed_reconciliation` replays the replica BEFORE the
+  pending local writes flush, and any member holding the namespace secret
+  can author a self-signed `verse/` entry naming itself, so
+  first-self-signed-wins alone handed a fresh joiner's sync-plane owner to
+  whoever wrote first. The correcting manifest's settings are adopted
+  outright (a false owner's `default_access: viewer` must not outlive it),
+  and `rematerialize` drops every statement the false owner made. The
+  same authority holds across a restart: a `verse`/`petal` entry signed by
+  OUR OWN key replayed from the replica is `RowOrigin::OwnReplay`
+  (`note_own_replayed_*`, routed by `handle_inbound_row_change`) — it
+  corrects a false pin / maps an unmapped petal, but being possibly STALE
+  its settings and petal MOVES pass the ordinary gates; and because the
+  snapshot is latest-per-key (a later forged `verse/` entry hides ours),
+  `reassert_own_rows` replays our own `verse/`+`petal/` entries by author
+  right after `seed_reconciliation`. Tests:
+  `this_nodes_own_manifest_corrects_an_owner_pinned_by_a_forged_self_signed_manifest`,
+  `a_replayed_own_manifest_corrects_a_forged_owner_pin_without_overriding_newer_settings`.
+  Residual (D-23 class): a node that never writes a manifest of its own
+  (a relay that opened without an invite) still pins the first SELF-signed
+  manifest it sees — the same immutability rule the DB plane's `created_by`
+  field keeps (T9). Everything downstream
   (`role_at`, `admissible`) is `EffectiveRoles::default()` (nobody has any
   role) until the owner is known, which is the correct pre-manifest answer
   with no special-casing needed.
@@ -981,7 +1002,25 @@ style parity holds by construction, not by coincidence.
   `fe_policy::build_scope` needs the fractal segment too (it panics on a
   petal id with no fractal) — `VerseFabric::petal_scope` is the lookup that
   builds the full scope string on demand, returning `None` when the petal
-  hasn't converged locally yet.
+  hasn't converged locally yet. **Gated (OF-9, R1 2026-10-25)** — the map is
+  the spine of every `role_at` scope chain, so an ungated row could
+  re-parent a victim petal under an attacker's fractal (their grant there
+  suddenly enclosing it) or strip legitimate Managers of it. An inbound row
+  is admitted exactly as the DB plane's A3 `confine_petal` admits it:
+  scope-safe ids (no `#`, mirrored `is_scope_safe_id`), the signed author
+  Editor+ (the fe-policy write floor) at the petal's scope under the row's
+  fractal, AND — when the row MOVES an already-mapped petal — Editor+ at its
+  current scope too. Editor+, not Manager+: the DB plane lets an Editor
+  create a petal, and a stricter sync gate would quarantine every
+  Editor-created petal's `__shards`/`__holders` rows forever. A failing row
+  is quarantined (`QuarantineKind::Petal`), re-judged on every role change,
+  and `petal/` is in the re-read-on-empowerment prefix set. Our own outbound
+  petal write is locally admitted (`note_local_petal_row`). A move re-verdicts
+  admitted holders. Residual (same as the DB plane, by construction): the
+  FIRST authorized mapping for a never-seen petal id wins on this node — a
+  squat needs Editor+ under the squatter's own fractal and the victim's
+  ULID before the genuine row lands, and both planes then agree. Test:
+  `a_petal_row_without_authority_over_its_scopes_never_bends_the_scope_chain`.
 - **Quarantine (the `__shards` gate's retry seam).** A gated row that
   cannot be judged yet — the author's role hasn't converged, or the row's
   petal is unknown — is held in a capped, drop-oldest FIFO (1024/verse,
@@ -998,7 +1037,7 @@ style parity holds by construction, not by coincidence.
   handler that raised the DID's role, so a slow drain never delays that
   handler's own return. For each queued DID it calls
   `VerseReplicator::entries_by_author(did, ["role/", "__shards/",
-  "__holders/", "verse/"])` and feeds every entry straight through
+  "__holders/", "verse/", "petal/"])` and feeds every entry straight through
   `handle_inbound_row_change`, the SAME path a live row takes. This is a
   provided trait method (default: filters `snapshot()` — correct but
   O(whole replica); `IrohDocsReplicator` overrides it with
@@ -1660,35 +1699,88 @@ children — as a `RootBinding`, plus a per-verse access snapshot
 (`VerseFabric::access_snapshot(verse_id)` — owner, `default_access`, and
 every DID an admitted role statement resolves to Viewer+ AT THE VERSE
 SCOPE; a petal-scoped grant never opens verse-bound tilesets, OF-6e).
-**W5s hardening (OF-6a/b, 2026-10-25):** a `RootBinding` is `published`
-(this node's `fe/tileset/` content — a Viewer+ of ANY open verse, the
-publish path advertising to every joined verse) and/or `learned` (verses
-the root was fetched or advertised on — a Viewer+ of EVERY one; a closed
-verse denies). Only this node's own fetch decisions start tracking
-(`bind_fetched_root` binds a root to every verse an ad named it on, BEFORE
-the fetch); an accepted inbound ad (`note_advertised_root`) can only ADD
-its arrival verse to an already-tracked root, so a re-advertisement under
-an attacker's verse narrows access, never remaps it (the pre-fix map
-`insert` let any peer self-grant Viewer on a victim root). Children are
-reported by `TilesetTransfer`'s `ContentObserver` at publish, at meta
-resolution (before any child is fetched), at catalog rebuild, and by the
-start-up `report_downloaded_content` tag scan; the whole map persists to
-`<p2p_dir>/blob-access-gate.json` and is loaded before the router accepts
-a request; a closed verse only drops its snapshot — its roots stay
-tracked and DENY rather than fall back to "untracked → admit". Residual:
-a learned root re-advertised under a second verse also stops being
-re-served to the first verse's viewers (fail-closed griefing of
-secondary seeders only; the publisher still serves). A `GetRequest`
+**Binding model (R1 redesign, 2026-10-25 — replaces the W5s OF-6a/b
+patches after OF-8 found two HIGHs in them).** One invariant: *a binding
+is set only by an AUTHORITATIVE local event and gossip never mutates it.*
+- A `RootBinding` is `published` (this node's `fe/tileset/` content — own
+  publish or catalog rebuild: a Viewer+ of ANY open verse, the publish path
+  advertising to every joined verse) and/or `learned` — the fetch context
+  of this node's FIRST own fetch decision (`bind_fetched_root`, called by
+  `RequestTilesetMeta`/`DownloadTileset` BEFORE any byte lands): every
+  verse the tileset id (any root) or the root (any id) was advertised on
+  then (`TilesetProviderMap::verses_for`); a Viewer+ of EVERY one is
+  admitted, a closed verse denies. **Fixed once set** — a later fetch
+  context never re-binds it (no remap, OF-6a) and never narrows it, and an
+  inbound ad has no entry point into the gate at all (the W5s
+  `note_advertised_root` is gone: its post-fetch narrowing plus a persisted
+  64-verse overflow was an attacker-triggerable, durable refuse-everyone
+  state, OF-8b). Fetch-context integrity: provider-map eviction never drops
+  the last entry of a verse while another verse holds several (a hint flood
+  on the attacker's verse cannot shrink the victim's binding to the
+  attacker's verse alone). Test:
+  `a_root_bound_to_its_first_fetch_context_is_never_rebound_or_narrowed`,
+  `an_attacker_cannot_shrink_a_fetched_roots_bound_verse_set`.
+- **Children: claimants AND-ed (OF-8a).** Children are reported by
+  `TilesetTransfer`'s `ContentObserver` (publish, meta resolution before
+  any child is fetched, catalog rebuild, the start-up
+  `report_downloaded_content` tag scan) and set once per root
+  (content-addressed). A hash's claimants are its own binding (if a root)
+  plus every root listing it; it is admitted iff some claimant is an own
+  PUBLISHED root that admits on the publish path, or EVERY claimant admits
+  on its learned path. A fetched HashSeq's child list is attacker-shaped
+  content: under the W5s `.any(..)` a fetched attacker tileset listing a
+  victim's bundle hashes lent the attacker's (self-controlled) membership
+  to the victim's bytes. Now such a listing only adds a claimant that must
+  ALSO admit — in either learn order. Test:
+  `a_fetched_hash_seq_listing_a_victims_children_never_lends_them_its_viewers`.
+- **Child-range requests (R1).** A `GetRequest` whose ranges reach past
+  offset 0 makes iroh-blobs stream every child the root blob lists. The
+  filter computes the hashes such a request would stream
+  (`get_request_hashes`): only a tracked root with recorded children is
+  answerable (root + every child must admit); a child-range request on any
+  other hash is refused — otherwise an UNTRACKED HashSeq this node stores
+  (a replicated row's content blob listing a protected bundle's hash)
+  launders tracked bytes past the per-hash gate. No workspace client sends
+  one (`IrohBlobTransport` and iroh-docs fetch raw). Test:
+  `a_child_range_request_through_an_untracked_hash_seq_cannot_launder_a_tracked_bundle`.
+- **Persistence.** The map persists to `<p2p_dir>/blob-access-gate.json`
+  (`format: 2`) and loads before the router accepts a request; a format-1
+  (W5s) file's `learned` sets — which may carry gossip narrowing — are
+  DROPPED on load (fail-closed; the next own fetch re-learns: the
+  reversibility OF-8b asked for). Test:
+  `a_pre_r1_state_file_drops_its_gossip_narrowed_bindings_and_relearns_on_the_next_fetch`.
+  A closed verse only drops its snapshot — its roots stay tracked and DENY
+  rather than fall back to "untracked → admit".
+- **Provenance rule (R1).** A relayed hint can name a THIRD-PARTY provider
+  that serves this node on the strength of this node's membership in some
+  other verse; re-serving those bytes to the hint's verse would launder
+  them one hop past that provider's own policy. So when any provider a
+  fetch may use never VOUCHED for the tileset/root itself (no
+  authenticated entry from that endpoint — `vouched_providers`), the fetch
+  context also gets `UNVOUCHED_FETCH_CONTEXT`, a verse id no snapshot ever
+  exists for: the root is fetched for local use but never secondary-seeded.
+  Test: `a_root_fetched_through_an_unvouched_provider_is_never_secondary_seeded`.
+- **Residuals (fail-closed availability only, recorded):** (1) a fetch
+  context may include verses an attacker advertised the tileset/root on
+  BEFORE this node's first fetch (only verses this node has open — ads
+  arrive only on joined topics), or an attacker hint may add an unvouched
+  provider; either narrows or disables secondary seeding of that root on
+  this node (the publisher still serves), never widens it. (2) A fetched
+  attacker HashSeq listing victim children narrows the victim's secondary
+  seeding the same way — and needs this node's own fetch decision of the
+  attacker's tileset; two legitimately fetched tilesets from different
+  verses sharing a byte-identical bundle narrow that bundle likewise (the
+  AND is the price of order-independence).
+A raw `GetRequest`
 for a hash NOT in that reverse map carries **no tileset context** and is
 let through unconditionally — this is how `FetchBlob`/
 `two_peer_blob_exchange` and CDL-SPEC10 A6's device-payload fetch, and
 ordinary iroh-docs entry-content fetches, stay unaffected exactly as this
-risk note originally required. A `GetRequest` for a hash that IS a tracked
-tileset root is admitted only if the requesting `EndpointId` (mapped to a
-did:key the same way the A3/§role-view gates do, via a
+risk note originally required. A request for a tracked hash is admitted
+only per the claimant rule above, for the requesting `EndpointId` (mapped
+to a did:key the same way the A3/§role-view gates do, via a
 `ClientConnected`-notify-populated `connection_id -> did` table, since the
-request event itself carries no identity) holds Viewer+ in the verse that
-root was learned on. `ConnectMode` stays at `Notify` (never `Intercept`) —
+request event itself carries no identity). `ConnectMode` stays at `Notify` (never `Intercept`) —
 this is a hash-keyed filter, not a membership-gated connection accept.
 **"Partially" — the residual this leaves, recorded honestly (critic tick 8
 C20, ledger row BLOB-HASH-CAPABILITY):** a hash never recorded as a
