@@ -23,6 +23,7 @@ pub async fn apply_api_token_schema(db: &Db) -> anyhow::Result<()> {
          DEFINE FIELD IF NOT EXISTS created_at ON api_token TYPE string;
          DEFINE FIELD IF NOT EXISTS expires_at ON api_token TYPE string;
          DEFINE FIELD IF NOT EXISTS revoked ON api_token TYPE bool DEFAULT false;
+         DEFINE FIELD IF NOT EXISTS client ON api_token TYPE option<string>;
          DEFINE INDEX IF NOT EXISTS idx_api_token_jti ON api_token FIELDS jti UNIQUE;",
     )
     .await?;
@@ -40,6 +41,10 @@ pub struct ApiTokenRecord {
     pub created_at: String,
     pub expires_at: String,
     pub revoked: bool,
+    /// The token's `client` claim (TOKEN-CLIENT-CLAIM); `None` on rows minted
+    /// before the claim existed (legacy, node-level tokens).
+    #[serde(default)]
+    pub client: Option<String>,
 }
 
 /// Store a newly minted API token's metadata.
@@ -47,10 +52,13 @@ pub async fn store_api_token(db: &Db, record: &ApiTokenRecord) -> anyhow::Result
     let mut val = serde_json::to_value(record)?;
     // Force revoked to false
     val["revoked"] = serde_json::Value::Bool(false);
-    // Remove label if it is null to satisfy SurrealDB option type constraint
-    if val["label"].is_null() {
-        if let serde_json::Value::Object(ref mut map) = val {
-            map.remove("label");
+    // Remove null optionals to satisfy SurrealDB's option<string> constraint
+    // (a JSON null is not NONE — W4 d098b65).
+    if let serde_json::Value::Object(ref mut map) = val {
+        for key in ["label", "client"] {
+            if map.get(key).is_some_and(serde_json::Value::is_null) {
+                map.remove(key);
+            }
         }
     }
     let q = InsertBuilder::insert_into("api_token").values(val).build();

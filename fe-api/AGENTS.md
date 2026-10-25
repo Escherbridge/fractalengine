@@ -333,35 +333,64 @@ opens up). Test: `html_payload_is_served_as_attachment_with_nosniff`
 
 **Asset scope = anchor petal + referencing nodes (DEC-C21; FEAPI-ASSET-OWNER
 2026-10-11, `assets::asset_reach`)**: an API upload writes two ownership
-columns on its `asset` row — `owner_did` (the token `sub`) and `petal_id`
+columns on its `asset` row — `owner_did` (the token's **owner key**, below) and `petal_id`
 (the **anchor petal** the upload was authorized against: the REST path petal
 / MCP `upload_asset`'s `PetalArg`). Legacy and GUI-imported rows leave both
 `NONE` (additive schema; no backfill). Two nodes (even in different petals)
 may still share one `asset_id`. `asset_reach` classifies the asset(s) for a
 token, fail-closed on any lookup failure:
 
-1. **Anchor first.** If any requested row's anchor petal is covered by the
-   token → `Covered`, with no reference scan — the uploader's petal can read
-   its upload before it is placed and after it is placed elsewhere.
+1. **Anchor first.** If any requested row the token may own-read has an
+   anchor petal the token covers → `Covered`, with no reference scan — the
+   uploader can read its upload before it is placed and after it is placed
+   elsewhere. A row is own-readable when its `owner_did` is absent (legacy /
+   peer-replicated rows), equals `claims.sub` (a **node-level** upload: every
+   token of the node shares it), or equals the token's `owner_key` (A5).
 2. **Reference scan** (legacy rows, assets shared into other petals): EVERY
    referencing node's petal (capped: 10 000 rows / 256 distinct petals,
    fail-closed beyond) — any in scope → `Covered`; all outside → `Foreign`.
-3. **Unplaced**: an owned row whose anchor is not covered → `Foreign`; a
-   legacy row (no owner/petal) → `Unreferenced` (unchanged behaviour).
+3. **Unplaced**: an owned row whose anchor is not covered, or that belongs
+   to another client → `Foreign`; a legacy row (no owner/petal) →
+   `Unreferenced` (unchanged behaviour).
 
 Reads (by-hash, by-id) require `Covered`; MCP `place_asset` refuses `Foreign`
 (so a token can neither launder another tenant's placed asset into its own
 petal nor claim another tenant's still-unplaced upload) with the same text as
-an unknown id. **`owner_did` alone grants nothing:** every token this node
-accepts is minted by the node keypair, so `sub` is the node DID for every
-caller — an "uploader-only" rule keyed on `sub` would let any token read any
-tenant's unplaced upload. The tenant boundary is the token scope, hence the
-anchor petal. `owner_did` is recorded for the quota (§asset-ingest) and for a
-future per-caller subject claim. Consequences, all deliberate: a legacy
+an unknown id. **`owner_did` never widens reach:** the tenant boundary is
+the token scope, hence the anchor petal; the owner clause only *narrows*
+unplaced reach inside it. Consequences, all deliberate: a legacy
 never-placed asset is not readable until placed; a deny-by-default miss (row
 cap) is a false 404, never a leak; the `asset` table is not in the `/query`
 read whitelist (§query-guard). Indexes: `idx_asset_owner` (quota sums),
 `idx_asset_content_hash` (by-hash reads, GC).
+
+**Owner key (TOKEN-CLIENT-CLAIM, 2026-10-25, `upload::owner_key`).** Every
+token this node accepts is minted by the node keypair, so `sub` is the node
+DID for every caller. A token minted through the production door
+(`DbCommand::MintApiToken`) also carries a `client` claim — an ed25519
+`did:key`, requested or freshly generated (fe-identity `src/AGENTS.md`
+§api-token "client claim"). `owner_key(claims) = client.unwrap_or(sub)` is
+the ONE place fe-api reads `claims.client`, and `UploadOwner::new` is its one
+caller on the write side, so every upload door inherits it (REST multipart,
+MCP `upload_asset`, REST/MCP device ingest). It keys three things only:
+`asset.owner_did`, the per-owner quota (§asset-ingest) and the unplaced-reach
+own-read clause above. It is **never an authorization subject**:
+`endpoint::caller_auth` and `auth::api_token_context` keep `claims.sub`, the
+role ceiling stays `max_role`, W5's AC-46 cap resolves the node — so a
+`client` naming a Manager's DID gains nothing (threat TC-1,
+`a_client_claim_naming_a_manager_did_gains_no_role`). Check order on an
+upload: JWT verify (incl. the `client` grammar) → `jti` revocation → role +
+anchor-petal scope → AC-46 cap where replicated → reach/quota by owner key.
+`owner_did` stays local: the device-payload emission strips it from outbound
+asset rows and peers strip it inbound (fe-database `handlers/device_payload.rs`
+`outbound_asset_row_bytes`, `replicated_row.rs`). Rotation caveat: a re-minted
+client cannot read its predecessor's *unplaced* uploads (placed ones keep
+reference reach) — re-mint with the same client DID (GUI "Client DID" field,
+CLI `--client`) for continuity. Tests (`tests/asset_ownership_test.rs`):
+`two_clients_of_one_node_have_separate_quota_buckets`,
+`a_legacy_token_uploads_into_the_node_level_bucket`,
+`unplaced_upload_reach_follows_the_owner_key`,
+`a_client_claim_naming_a_manager_did_gains_no_role`.
 
 **Directory-asset extension point**: the asset model is heading toward "any
 file, or a directory of files behind a placeholder" (the P2P bucket / "3D
@@ -1555,8 +1584,8 @@ closed: REST 503 / MCP error) → owner quota check (below) →
 `spawn_blocking { base64 decode (length pre-checked so oversize never
 allocates) → validate_glb → BLAKE3 + add_blob }` → `DbCommand::CreateAsset
 {name, content_type, size_bytes, content_hash, owner_did, petal_id,
-correlation_id}` (an `UploadOwner` = token `sub` + authorized anchor petal;
-§assets) → correlated `DbResult::AssetCreated`. The DB side is the public
+correlation_id}` (an `UploadOwner` = the token's `owner_key` — `client`, else
+`sub` — + authorized anchor petal; §assets) → correlated `DbResult::AssetCreated`. The DB side is the public
 `handlers::crud::create_asset_reply`, which tests reuse to service the
 channel.
 
@@ -1627,8 +1656,10 @@ channel.
   length for multipart, the base64-derived upper bound for MCP. Over →
   `UploadError::QuotaExceeded` (REST 413, MCP tool error) and neither a blob
   nor a row is written; a failed lookup fails closed (`RegisterFailed`).
-  Keyed by `owner_did` = token `sub` = the node DID (§assets), so today it is
-  a node-wide cap on API-registered bytes, not per tenant. Soft: two
+  Keyed by `owner_did` = the token's `owner_key` (§assets): each API client
+  has its own bucket, and legacy (client-less) tokens share one node-level
+  bucket keyed on `sub`. Client churn per node is bounded by the per-sub
+  active-token cap (50, `api_token_store::MAX_ACTIVE_TOKENS_PER_SUB`). Soft: two
   concurrent uploads can each pass the check and overshoot by one upload.
   Re-uploading identical bytes counts again (each upload adds a row).
 - **Blob GC (FEAPI-BLOB-GC, 2026-10-11).** A fire-and-forget

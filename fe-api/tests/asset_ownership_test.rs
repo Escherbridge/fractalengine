@@ -411,3 +411,217 @@ async fn ktx2_texture_upload_is_refused_and_writes_nothing() {
         "a PNG-textured GLB is accepted: {body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// TOKEN-CLIENT-CLAIM (W6-7a): upload ownership, quota and unplaced reach key
+// on the token's `client` claim, or on `sub` (the node) for a legacy token —
+// fe-api/AGENTS.md §assets "owner key". The client is never an authority.
+// ---------------------------------------------------------------------------
+
+/// Call an MCP tool through the full router (`POST /mcp`, Bearer auth).
+async fn mcp_call(
+    h: &ApiHarness,
+    token: &str,
+    tool: &str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    let (status, body) = h
+        .post_json(
+            "/mcp",
+            Some(token),
+            &serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": tool, "arguments": arguments },
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{tool}: {body}");
+    body
+}
+
+/// The text of an MCP tool response that must be an error.
+fn mcp_error_text(resp: &serde_json::Value) -> String {
+    assert_eq!(resp["result"]["isError"], true, "expected a tool error: {resp}");
+    resp["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Upload `bytes` and return (asset_id, content_hash); panics unless 201.
+async fn upload_ok(h: &ApiHarness, token: &str, petal_id: &str, bytes: &[u8]) -> (String, String) {
+    let (status, body) = upload(h, token, petal_id, bytes).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    (
+        body["data"]["asset_id"].as_str().expect("asset_id").to_string(),
+        body["data"]["content_hash"].as_str().expect("hash").to_string(),
+    )
+}
+
+/// The `owner_did` recorded on `asset_id`'s row.
+async fn owner_of(h: &ApiHarness, asset_id: &str) -> serde_json::Value {
+    asset_rows(h)
+        .await
+        .into_iter()
+        .find(|row| row["asset_id"] == asset_id)
+        .map(|row| row["owner_did"].clone())
+        .expect("asset row")
+}
+
+#[tokio::test]
+async fn two_clients_of_one_node_have_separate_quota_buckets() {
+    let h = ApiHarness::spawn_with_upload_quota(1000)
+        .await
+        .expect("spawn harness");
+    serve_create_asset(&h);
+    let (verse, fractal, petals) = seed_petals(&h, &["Clients"]).await;
+    let scope = fe_database::build_scope(&verse, Some(&fractal), Some(&petals[0]));
+    let client_a = fe_identity::new_client_did();
+    let client_b = fe_identity::new_client_did();
+    let token_a = h.mint_client_token(&scope, "editor", &client_a);
+    let token_b = h.mint_client_token(&scope, "editor", &client_b);
+
+    let (first_a, _) = upload_ok(&h, &token_a, &petals[0], &glb(600, 1)).await;
+    assert_eq!(owner_of(&h, &first_a).await, client_a.as_str());
+
+    // Client A's bucket is full …
+    let (status, body) = upload(&h, &token_a, &petals[0], &glb(600, 2)).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+
+    // … but client B of the same node has its own.
+    let (first_b, _) = upload_ok(&h, &token_b, &petals[0], &glb(600, 3)).await;
+    assert_eq!(owner_of(&h, &first_b).await, client_b.as_str());
+    assert_eq!(asset_rows(&h).await.len(), 2, "only the refused upload is missing");
+}
+
+#[tokio::test]
+async fn a_legacy_token_uploads_into_the_node_level_bucket() {
+    let h = ApiHarness::spawn_with_upload_quota(1000)
+        .await
+        .expect("spawn harness");
+    serve_create_asset(&h);
+    let (verse, fractal, petals) = seed_petals(&h, &["Legacy bucket"]).await;
+    let scope = fe_database::build_scope(&verse, Some(&fractal), Some(&petals[0]));
+    let legacy_one = h.mint_token(&scope, "editor");
+    let legacy_two = h.mint_token(&scope, "editor");
+
+    let (asset_id, _) = upload_ok(&h, &legacy_one, &petals[0], &glb(600, 4)).await;
+    assert_eq!(
+        owner_of(&h, &asset_id).await,
+        h.did().as_str(),
+        "a legacy token's upload is owned by the node (sub)"
+    );
+
+    // A second legacy token of the same node shares that bucket.
+    let (status, body) = upload(&h, &legacy_two, &petals[0], &glb(600, 5)).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+
+    // A client token is never charged to the node-level bucket.
+    let client = fe_identity::new_client_did();
+    let client_token = h.mint_client_token(&scope, "editor", &client);
+    let (client_asset, _) = upload_ok(&h, &client_token, &petals[0], &glb(600, 6)).await;
+    assert_eq!(owner_of(&h, &client_asset).await, client.as_str());
+}
+
+#[tokio::test]
+async fn unplaced_upload_reach_follows_the_owner_key() {
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    serve_create_asset(&h);
+    let (verse, fractal, petals) = seed_petals(&h, &["Shared petal"]).await;
+    let scope = fe_database::build_scope(&verse, Some(&fractal), Some(&petals[0]));
+    let token_a = h.mint_client_token(&scope, "editor", &fe_identity::new_client_did());
+    let token_b = h.mint_client_token(&scope, "editor", &fe_identity::new_client_did());
+    let legacy = h.mint_token(&scope, "editor");
+
+    let a_bytes = glb(64, 7);
+    let (a_asset, a_hash) = upload_ok(&h, &token_a, &petals[0], &a_bytes).await;
+    let node_bytes = glb(64, 8);
+    let (node_asset, node_hash) = upload_ok(&h, &legacy, &petals[0], &node_bytes).await;
+
+    let (a, b, l) = (token_a.as_str(), token_b.as_str(), legacy.as_str());
+    let a_up = (a_asset.as_str(), a_hash.as_str());
+    let node_up = (node_asset.as_str(), node_hash.as_str());
+    let rows = [
+        ("client A reads its own unplaced upload", a, a_up, StatusCode::OK),
+        ("client B, same petal, reads A's unplaced upload", b, a_up, StatusCode::NOT_FOUND),
+        ("a legacy token reads a node-level upload", l, node_up, StatusCode::OK),
+        ("a legacy token reads client A's unplaced upload", l, a_up, StatusCode::NOT_FOUND),
+        ("client B reads a node-level upload (shared)", b, node_up, StatusCode::OK),
+    ];
+    for (label, token, (asset_id, hash), want) in rows {
+        for uri in [
+            format!("/api/v1/assets/by-id/{asset_id}"),
+            format!("/api/v1/assets/{hash}"),
+        ] {
+            let (status, got) = fetch(&h, token, &uri).await;
+            assert_eq!(status, want, "{label}: {uri}");
+            if want == StatusCode::OK {
+                let expected = if asset_id == a_asset { &a_bytes } else { &node_bytes };
+                assert_eq!(&got, expected, "{label}: {uri}");
+            }
+        }
+    }
+
+    // Client B cannot place A's unplaced upload over MCP: the uniform text.
+    let resp = mcp_call(
+        &h,
+        &token_b,
+        "place_asset",
+        serde_json::json!({ "petal_id": petals[0], "asset_id": a_asset, "name": "Taken" }),
+    )
+    .await;
+    assert_eq!(mcp_error_text(&resp), fe_api::upload::UNKNOWN_ASSET);
+
+    // Once A places it, B reaches it by reference like any placed asset.
+    reference_asset(&h, &petals[0], &a_asset).await;
+    let (status, got) = fetch(&h, &token_b, &format!("/api/v1/assets/by-id/{a_asset}")).await;
+    assert_eq!(status, StatusCode::OK, "placed: reference reach");
+    assert_eq!(got, a_bytes);
+}
+
+/// Threat TC-1: a `client` claim naming a verse Manager's DID grants nothing —
+/// the token stays exactly as strong as its `max_role`, and the client only
+/// becomes the upload owner key.
+#[tokio::test]
+async fn a_client_claim_naming_a_manager_did_gains_no_role() {
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    serve_create_asset(&h);
+    let (verse, _fractal, petals) = seed_petals(&h, &["Escalation"]).await;
+    let manager_did = fe_identity::NodeKeypair::generate().to_did_key();
+    h.db.query("CREATE role CONTENT { peer_did: $did, scope: $scope, role: 'manager' }")
+        .bind(("did", manager_did.clone()))
+        .bind(("scope", format!("VERSE#{verse}")))
+        .await
+        .expect("seed manager role")
+        .check()
+        .expect("seed manager role check");
+    let token = h.mint_client_token(&format!("VERSE#{verse}"), "editor", &manager_did);
+
+    // REST Manager-only door: refused on role.
+    let (status, body) = h
+        .post_json(
+            &format!("/api/v1/verses/{verse}/device-formats"),
+            Some(&token),
+            &serde_json::json!({ "format_id": "acme.thermo/frame@1", "mime": "application/octet-stream" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "insufficient permissions");
+
+    // MCP Manager-only tools: refused on role.
+    for (tool, args) in [
+        (
+            "register_device_format",
+            serde_json::json!({ "verse_id": verse, "format_id": "acme.thermo/frame@1",
+                                "mime": "application/octet-stream" }),
+        ),
+        ("create_verse", serde_json::json!({ "name": "Usurped" })),
+    ] {
+        let resp = mcp_call(&h, &token, tool, args).await;
+        assert_eq!(mcp_error_text(&resp), "insufficient permissions", "{tool}");
+    }
+
+    // The token is still a working editor token; the client only keys ownership.
+    let (asset_id, _) = upload_ok(&h, &token, &petals[0], &glb(64, 9)).await;
+    assert_eq!(owner_of(&h, &asset_id).await, manager_did.as_str());
+}

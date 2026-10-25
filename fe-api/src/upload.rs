@@ -142,8 +142,16 @@ pub enum GlbPayload {
     Base64(String),
 }
 
-/// Who an upload is attributed to: the token subject and the authorized
-/// anchor petal (the `asset.owner_did` / `asset.petal_id` columns — §assets).
+/// The upload owner key of a token: its `client` claim, or `sub` (the node)
+/// for a legacy token. Ownership/quota/reach only — never an authorization
+/// subject (AGENTS.md §assets "owner key").
+pub(crate) fn owner_key(claims: &fe_identity::api_token::ApiClaims) -> &str {
+    claims.client.as_deref().unwrap_or(&claims.sub)
+}
+
+/// Who an upload is attributed to: the token's [`owner_key`] and the
+/// authorized anchor petal (the `asset.owner_did` / `asset.petal_id`
+/// columns — §assets).
 #[derive(Debug, Clone)]
 pub struct UploadOwner {
     pub owner_did: String,
@@ -151,10 +159,10 @@ pub struct UploadOwner {
 }
 
 impl UploadOwner {
-    /// Attribute an upload to `claims.sub`, anchored at the authorized `petal_id`.
+    /// Attribute an upload to [`owner_key`], anchored at the authorized `petal_id`.
     pub fn new(claims: &fe_identity::api_token::ApiClaims, petal_id: &str) -> Self {
         Self {
-            owner_did: claims.sub.clone(),
+            owner_did: owner_key(claims).to_string(),
             petal_id: petal_id.to_string(),
         }
     }

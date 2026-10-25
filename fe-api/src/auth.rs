@@ -127,6 +127,7 @@ mod tests {
             iat: 0,
             exp: u64::MAX,
             jti: "jti-auth-test".to_string(),
+            client: None,
         }
     }
 

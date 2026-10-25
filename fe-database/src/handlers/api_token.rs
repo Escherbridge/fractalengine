@@ -22,12 +22,23 @@ fn now_rfc3339() -> String {
         .unwrap_or_default()
 }
 
+/// A token minted by [`mint_api_token_handler`].
+#[derive(Debug, Clone)]
+pub(crate) struct MintedApiToken {
+    pub token: String,
+    pub jti: String,
+    pub expires_at: String,
+    /// The token's `client` claim — the requested DID, or a fresh one.
+    pub client: String,
+}
+
 /// Mint a new API token and persist its metadata.
 ///
 /// **Authorization:** The caller's role at `scope` must be Manager or Owner,
-/// and the requested `max_role` must not exceed the caller's own role.
-///
-/// Returns `(jwt_string, jti, created_at, expires_at)` on success.
+/// and the requested `max_role` must not exceed the caller's own role. The
+/// `client` claim is resolved during input validation and is never consulted
+/// for authorization (fe-identity/src/AGENTS.md §api-token "client claim").
+#[allow(clippy::too_many_arguments)]
 #[instrument(skip(db, keypair))]
 pub(crate) async fn mint_api_token_handler(
     db: &Db,
@@ -37,7 +48,8 @@ pub(crate) async fn mint_api_token_handler(
     max_role: &str,
     ttl_hours: u32,
     label: Option<&str>,
-) -> anyhow::Result<(String, String, String, String)> {
+    client_did: Option<&str>,
+) -> anyhow::Result<MintedApiToken> {
     // Validate max_role is a known value (owner is excluded — tokens cannot be minted with owner role)
     if !matches!(max_role, "viewer" | "editor" | "manager") {
         anyhow::bail!("invalid max_role: must be viewer, editor, or manager");
@@ -50,6 +62,8 @@ pub(crate) async fn mint_api_token_handler(
     if ttl_hours > 30 * 24 {
         anyhow::bail!("TTL exceeds 30 day maximum");
     }
+    // Validate (or generate) the client before any read or write.
+    let client = fe_identity::resolve_client_did(client_did)?;
 
     // --- Authorization: caller must have Manager+ role at the requested scope ---
     let caller_role = resolve_role(db, local_did, scope).await?;
@@ -83,7 +97,8 @@ pub(crate) async fn mint_api_token_handler(
 
     let jti = ulid::Ulid::new().to_string();
     let ttl_secs = (ttl_hours as u64) * 3600;
-    let token = fe_identity::api_token::mint_api_token(keypair, scope, max_role, ttl_secs, &jti)?;
+    let token =
+        fe_identity::mint_client_api_token(keypair, scope, max_role, ttl_secs, &jti, &client)?;
 
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -102,13 +117,19 @@ pub(crate) async fn mint_api_token_handler(
         max_role: max_role.to_string(),
         label: label.map(|s| s.to_string()),
         sub: local_did.to_string(),
-        created_at: created_at.clone(),
+        created_at,
         expires_at: expires_at.clone(),
         revoked: false,
+        client: Some(client.clone()),
     };
     api_token_store::store_api_token(db, &record).await?;
 
-    Ok((token, jti, created_at, expires_at))
+    Ok(MintedApiToken {
+        token,
+        jti,
+        expires_at,
+        client,
+    })
 }
 
 /// Revoke an API token by JTI. Only the token's owner (`local_did`) can revoke it.
@@ -163,6 +184,164 @@ fn records_to_info(records: Vec<api_token_store::ApiTokenRecord>) -> Vec<ApiToke
             expires_at: r.expires_at,
             revoked: r.revoked,
             sub: r.sub,
+            client: r.client,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::handlers::replicated_row::apply_replicated_row_handler;
+
+    const VERSE: &str = "verse-token";
+    const SCOPE: &str = "VERSE#verse-token";
+
+    /// A store whose verse is owned by `owner` (so `owner` mints as Owner).
+    async fn owned_store(owner: &str) -> Db {
+        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+            .await
+            .expect("mem db");
+        db.use_ns("test").use_db("test").await.expect("ns/db");
+        crate::schema::apply_all(&db).await.expect("schema");
+        api_token_store::apply_api_token_schema(&db)
+            .await
+            .expect("token schema");
+        let manifest = serde_json::to_vec(&serde_json::json!({
+            "verse_id": VERSE, "name": "Tokens", "created_by": owner,
+            "created_at": "2026-10-25T00:00:00Z", "namespace_id": "cd".repeat(32),
+            "default_access": "viewer", "ts_mode": "balanced",
+            "ts_replication_factor": 2, "ts_bucket_width_ms": 3_600_000,
+        }))
+        .unwrap();
+        apply_replicated_row_handler(&db, VERSE, "verse", VERSE, &manifest, owner, None)
+            .await
+            .expect("verse manifest");
+        db
+    }
+
+    async fn token_rows(db: &Db) -> Vec<serde_json::Value> {
+        let mut res = db.query("SELECT * FROM api_token").await.unwrap();
+        res.take(0).unwrap()
+    }
+
+    /// TOKEN-CLIENT-CLAIM at the production mint door: a named client lands
+    /// in the JWT, the bookkeeping row and the token list; two blank mints get
+    /// two distinct, valid fresh clients; `sub` stays the node.
+    #[tokio::test]
+    async fn minting_records_the_requested_client_and_a_blank_request_gets_a_fresh_one() {
+        let node = fe_identity::NodeKeypair::generate();
+        let node_did = node.to_did_key();
+        let db = owned_store(&node_did).await;
+        let named = fe_identity::new_client_did();
+
+        let minted = mint_api_token_handler(
+            &db,
+            &node,
+            &node_did,
+            SCOPE,
+            "editor",
+            1,
+            Some("ci"),
+            Some(&named),
+        )
+        .await
+        .expect("named mint");
+        assert_eq!(minted.client, named);
+        let claims =
+            fe_identity::verify_api_token(&minted.token, &node.verifying_key()).expect("verify");
+        assert_eq!(claims.client.as_deref(), Some(named.as_str()));
+        assert_eq!(claims.sub, node_did, "the client never replaces sub");
+
+        let blank_a =
+            mint_api_token_handler(&db, &node, &node_did, SCOPE, "viewer", 1, None, None)
+                .await
+                .expect("blank mint a");
+        let blank_b =
+            mint_api_token_handler(&db, &node, &node_did, SCOPE, "viewer", 1, None, None)
+                .await
+                .expect("blank mint b");
+        for blank in [&blank_a, &blank_b] {
+            assert!(fe_identity::validate_client_did(&blank.client).is_ok());
+            assert_ne!(blank.client, node_did);
+            assert_ne!(blank.client, named);
+            let c = fe_identity::verify_api_token(&blank.token, &node.verifying_key()).unwrap();
+            assert_eq!(c.client.as_deref(), Some(blank.client.as_str()));
+        }
+        assert_ne!(
+            blank_a.client, blank_b.client,
+            "each blank mint is a new client"
+        );
+
+        let (listed, total) = list_api_tokens_handler(&db, &node_did, 0, 10)
+            .await
+            .unwrap();
+        assert_eq!(total, 3);
+        let client_of = |jti: &str| {
+            listed
+                .iter()
+                .find(|t| t.jti == jti)
+                .expect("listed")
+                .client
+                .clone()
+        };
+        assert_eq!(client_of(&minted.jti), Some(named.clone()));
+        assert_eq!(client_of(&blank_a.jti), Some(blank_a.client.clone()));
+        assert_eq!(client_of(&blank_b.jti), Some(blank_b.client.clone()));
+        let (scoped, _) = list_api_tokens_by_scope_handler(&db, SCOPE, 0, 10)
+            .await
+            .unwrap();
+        assert!(scoped
+            .iter()
+            .any(|t| t.jti == minted.jti && t.client.as_deref() == Some(named.as_str())));
+    }
+
+    /// TC-5: a malformed client is refused at the mint door and leaves no
+    /// bookkeeping row behind; a legacy row (no client column) still lists.
+    #[tokio::test]
+    async fn a_malformed_client_did_is_refused_at_mint_and_nothing_is_stored() {
+        let node = fe_identity::NodeKeypair::generate();
+        let node_did = node.to_did_key();
+        let db = owned_store(&node_did).await;
+        let x25519 = fe_identity::DeviceKeypair::generate().to_did_key();
+        let with_control = format!("{}\n", fe_identity::new_client_did());
+        for bad in ["not-a-did", x25519.as_str(), "", with_control.as_str()] {
+            let refused = mint_api_token_handler(
+                &db,
+                &node,
+                &node_did,
+                SCOPE,
+                "viewer",
+                1,
+                None,
+                Some(bad),
+            )
+            .await;
+            assert!(refused.is_err(), "client {bad:?} must be refused");
+        }
+        assert!(token_rows(&db).await.is_empty(), "nothing is stored");
+
+        // A row stored before the claim existed still lists, as client None.
+        api_token_store::store_api_token(
+            &db,
+            &api_token_store::ApiTokenRecord {
+                jti: "legacy".into(),
+                scope: SCOPE.into(),
+                max_role: "viewer".into(),
+                label: None,
+                sub: node_did.clone(),
+                created_at: "2026-10-25T00:00:00+00:00".into(),
+                expires_at: "2999-01-01T00:00:00+00:00".into(),
+                revoked: false,
+                client: None,
+            },
+        )
+        .await
+        .expect("a legacy row stores without a client value");
+        let (listed, _) = list_api_tokens_handler(&db, &node_did, 0, 10)
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].client, None);
+    }
 }

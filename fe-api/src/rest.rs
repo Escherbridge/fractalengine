@@ -2437,6 +2437,7 @@ mod tests {
             iat: 0,
             exp: u64::MAX,
             jti: "jti-1".to_string(),
+            client: None,
         };
 
         // 1. The asset table is NOT queryable (DEC-C21: removed from the

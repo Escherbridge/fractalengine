@@ -23,19 +23,21 @@ pub fn run() -> Result<TestResult> {
         max_role: "editor".to_string(),
         ttl_hours: 24,
         label: Some("Test Token".to_string()),
+        client_did: None,
     });
     let mint_result = alice.wait_for(
         |r| matches!(r, DbResult::ApiTokenMinted { .. }),
         std::time::Duration::from_secs(30),
     )?;
 
-    let (token, jti) = match &mint_result {
+    let (token, jti, client) = match &mint_result {
         DbResult::ApiTokenMinted {
             token,
             jti,
             scope,
             max_role,
             label,
+            client,
             ..
         } => {
             assert_eq!(scope, "VERSE#test-verse-1", "scope mismatch");
@@ -43,7 +45,9 @@ pub fn run() -> Result<TestResult> {
             assert_eq!(label.as_deref(), Some("Test Token"), "label mismatch");
             assert!(!token.is_empty(), "token should not be empty");
             assert!(!jti.is_empty(), "jti should not be empty");
-            (token.clone(), jti.clone())
+            // A blank client request mints a fresh, valid ed25519 did:key.
+            fe_identity::validate_client_did(client)?;
+            (token.clone(), jti.clone(), client.clone())
         }
         other => anyhow::bail!("Expected ApiTokenMinted, got: {other:?}"),
     };
@@ -56,6 +60,16 @@ pub fn run() -> Result<TestResult> {
     assert_eq!(claims.jti, jti);
     assert!(claims.exp > claims.iat, "exp should be after iat");
     assert_eq!(claims.exp - claims.iat, 24 * 3600, "TTL should be 24 hours");
+    assert_eq!(
+        claims.client.as_deref(),
+        Some(client.as_str()),
+        "the JWT carries the minted client"
+    );
+    assert_eq!(
+        claims.sub,
+        alice.keypair.to_did_key(),
+        "sub stays the node, never the client"
+    );
 
     // 4. List tokens — should contain our minted token
     alice.send(DbCommand::ListApiTokens {
@@ -76,6 +90,7 @@ pub fn run() -> Result<TestResult> {
             assert_eq!(tok.scope, "VERSE#test-verse-1");
             assert_eq!(tok.max_role, "editor");
             assert!(!tok.revoked, "token should not be revoked yet");
+            assert_eq!(tok.client.as_deref(), Some(client.as_str()));
         }
         other => anyhow::bail!("Expected ApiTokensListed, got: {other:?}"),
     }
@@ -120,11 +135,13 @@ pub fn run() -> Result<TestResult> {
     }
 
     // 7. Mint a second token with different scope to test multiple tokens
+    let named_client = fe_identity::new_client_did();
     alice.send(DbCommand::MintApiToken {
         scope: "VERSE#test-verse-2".to_string(),
         max_role: "viewer".to_string(),
         ttl_hours: 1,
         label: None,
+        client_did: Some(named_client.clone()),
     });
     let mint2 = alice.wait_for(
         |r| matches!(r, DbResult::ApiTokenMinted { .. }),
@@ -135,10 +152,12 @@ pub fn run() -> Result<TestResult> {
             jti,
             max_role,
             label,
+            client,
             ..
         } => {
             assert_eq!(max_role, "viewer");
             assert!(label.is_none(), "label should be None");
+            assert_eq!(client, &named_client, "a requested client is minted as-is");
             jti.clone()
         }
         other => anyhow::bail!("Expected ApiTokenMinted, got: {other:?}"),
@@ -200,6 +219,7 @@ pub fn run_edge_cases() -> Result<TestResult> {
         max_role: "viewer".to_string(),
         ttl_hours: 1,
         label: None,
+        client_did: None,
     });
     let empty_scope = alice
         .db_result_rx
@@ -220,6 +240,7 @@ pub fn run_edge_cases() -> Result<TestResult> {
         max_role: "viewer".to_string(),
         ttl_hours: 31 * 24, // 31 days > 30 day max
         label: None,
+        client_did: None,
     });
     let excess_ttl = alice
         .db_result_rx
@@ -257,6 +278,7 @@ pub fn run_edge_cases() -> Result<TestResult> {
         max_role: "editor".to_string(),
         ttl_hours: 1,
         label: None,
+        client_did: None,
     });
     let mint_for_double = alice.wait_for(
         |r| matches!(r, DbResult::ApiTokenMinted { .. }),
@@ -305,6 +327,7 @@ pub fn run_edge_cases() -> Result<TestResult> {
         max_role: "viewer".to_string(),
         ttl_hours: 1,
         label: None,
+        client_did: None,
     });
     let mint_for_wrong_key = alice.wait_for(
         |r| matches!(r, DbResult::ApiTokenMinted { .. }),

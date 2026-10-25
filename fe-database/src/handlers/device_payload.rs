@@ -401,7 +401,7 @@ pub async fn insert_device_payloads(
                     verse_id,
                     "asset",
                     asset_id,
-                    &serde_json::to_vec(&asset.row_json).unwrap_or_default(),
+                    &outbound_asset_row_bytes(&asset.row_json),
                     asset.petal_id.clone(),
                 );
             }
@@ -635,6 +635,17 @@ async fn fetch_assets(
             ))
         })
         .collect())
+}
+
+/// An asset row as it goes on the wire: `owner_did` (the uploading API
+/// client or node — a local quota/reach key) never leaves the node (A6;
+/// peers strip it inbound too, `replicated_row.rs`).
+fn outbound_asset_row_bytes(row: &serde_json::Value) -> Vec<u8> {
+    let mut row = row.clone();
+    if let Some(fields) = row.as_object_mut() {
+        fields.remove("owner_did");
+    }
+    serde_json::to_vec(&row).unwrap_or_default()
 }
 
 /// Each listed asset's BLAKE3 content hash, in list order, as the door validated it; `None`

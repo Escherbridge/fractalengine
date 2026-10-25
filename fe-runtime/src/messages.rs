@@ -571,6 +571,10 @@ pub enum DbCommand {
         max_role: String,
         ttl_hours: u32,
         label: Option<String>,
+        /// Ed25519 `did:key` of the API client to mint for; `None` mints a
+        /// fresh client. Validated by the DB door (fe-identity
+        /// `validate_client_did`); never an authorization subject.
+        client_did: Option<String>,
     },
     /// Revoke an API token by JTI. Ownership is enforced server-side
     /// using the `sub` provided by the caller (from the token info).
@@ -1160,6 +1164,8 @@ pub enum DbResult {
         max_role: String,
         expires_at: String,
         label: Option<String>,
+        /// The minted token's `client` claim (requested or freshly generated).
+        client: String,
     },
     ApiTokenRevoked {
         jti: String,
@@ -1455,6 +1461,8 @@ pub struct ApiTokenInfo {
     pub revoked: bool,
     /// DID of the node that minted this token.
     pub sub: String,
+    /// The token's `client` claim; `None` for a legacy (node-level) token.
+    pub client: Option<String>,
 }
 
 #[derive(Debug, Clone)]

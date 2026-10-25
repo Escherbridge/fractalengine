@@ -677,17 +677,25 @@ impl TestPeer {
                             max_role,
                             ttl_hours,
                             label,
+                            client_did,
                         }) => {
                             let jti = ulid::Ulid::new().to_string();
                             let ttl_secs = (ttl_hours as u64) * 3600;
-                            match fe_identity::api_token::mint_api_token(
-                                &invite_keypair,
-                                &scope,
-                                &max_role,
-                                ttl_secs,
-                                &jti,
-                            ) {
-                                Ok(token) => {
+                            // Same Some→validate / None→fresh rule as the DB door.
+                            let minted = fe_identity::resolve_client_did(client_did.as_deref())
+                                .and_then(|client| {
+                                    fe_identity::api_token::mint_client_api_token(
+                                        &invite_keypair,
+                                        &scope,
+                                        &max_role,
+                                        ttl_secs,
+                                        &jti,
+                                        &client,
+                                    )
+                                    .map(|token| (token, client))
+                                });
+                            match minted {
+                                Ok((token, client)) => {
                                     let now_ts = std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .unwrap_or_default()
@@ -715,6 +723,7 @@ impl TestPeer {
                                             created_at: created_at.clone(),
                                             expires_at: expires_at.clone(),
                                             revoked: false,
+                                            client: Some(client.clone()),
                                         };
                                     match fe_database::api_token_store::store_api_token(
                                         &db, &record,
@@ -730,6 +739,7 @@ impl TestPeer {
                                                     max_role,
                                                     expires_at,
                                                     label,
+                                                    client,
                                                 })
                                                 .ok();
                                         }
@@ -799,6 +809,7 @@ impl TestPeer {
                                             expires_at: r.expires_at,
                                             revoked: r.revoked,
                                             sub: r.sub,
+                                            client: r.client,
                                         })
                                         .collect();
                                     db_result_tx

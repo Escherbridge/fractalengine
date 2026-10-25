@@ -1657,6 +1657,7 @@ mod tests {
             expires_at: "t1".into(),
             revoked: false,
             sub: "did:me".into(),
+            client: None,
         }];
         tokens::handle_api_tokens_listed(&infos, 1, &mut ui, &mut ins);
         assert_eq!(ins.api_tokens.len(), 1);

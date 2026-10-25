@@ -408,6 +408,7 @@ async fn test_api_token_store_roundtrip() {
         created_at: "2099-01-01T00:00:00Z".to_string(),
         expires_at: "2099-01-02T00:00:00Z".to_string(),
         revoked: false,
+        client: None,
     };
 
     // Store
@@ -503,6 +504,7 @@ async fn test_api_token_store_list_wrong_sub() {
         created_at: "2099-01-01T00:00:00Z".to_string(),
         expires_at: "2099-01-02T00:00:00Z".to_string(),
         revoked: false,
+        client: None,
     };
     store_api_token(&db, &record).await.expect("store");
 
@@ -542,6 +544,7 @@ async fn test_api_token_store_multiple_tokens() {
             created_at: "2099-01-01T00:00:00Z".to_string(),
             expires_at: "2099-01-02T00:00:00Z".to_string(),
             revoked: false,
+            client: None,
         };
         store_api_token(&db, &record).await.expect("store");
     }

@@ -53,6 +53,7 @@ fn test_claims(scope: &str, role: &str) -> ApiClaims {
         iat: 0,
         exp: u64::MAX,
         jti: "jti-test".to_string(),
+        client: None,
     }
 }
 

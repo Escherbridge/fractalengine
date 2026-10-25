@@ -281,6 +281,20 @@ impl ApiHarness {
         .expect("mint api token")
     }
 
+    /// Mint a real signed API token carrying a `client` claim (the upload
+    /// owner key — fe-api AGENTS.md §assets); `sub` stays the harness node.
+    pub fn mint_client_token(&self, scope: &str, max_role: &str, client: &str) -> String {
+        fe_identity::api_token::mint_client_api_token(
+            &self.keypair,
+            scope,
+            max_role,
+            TOKEN_TTL_SECS,
+            &ulid::Ulid::new().to_string(),
+            client,
+        )
+        .expect("mint client api token")
+    }
+
     // -- requests -------------------------------------------------------------
 
     /// Fire an arbitrary request through the full router (no network).

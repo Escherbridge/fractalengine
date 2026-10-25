@@ -76,8 +76,16 @@ pub async fn asset_reach(state: &ApiState, claims: &ApiClaims, asset_ids: &[Stri
             .and_then(serde_json::Value::as_str)
             .map(str::to_string)
     };
+    // Anchor reach counts only rows this token may own-read (A5): unowned
+    // (legacy/replicated), node-level (`owner_did == sub`), or this token's own
+    // owner key. Another client's unplaced upload is never anchor-reachable.
+    let owner_key = crate::upload::owner_key(claims);
     let mut anchors: Vec<String> = owner_rows
         .iter()
+        .filter(|row| match field(row, "owner_did") {
+            None => true,
+            Some(owner) => owner == claims.sub || owner == owner_key,
+        })
         .filter_map(|row| field(row, "petal_id"))
         .collect();
     anchors.sort_unstable();
@@ -112,9 +120,10 @@ pub async fn asset_reach(state: &ApiState, claims: &ApiClaims, asset_ids: &[Stri
             AssetReach::Foreign
         };
     }
-    // Unplaced: an owned upload is reachable only through its anchor petal
-    // (checked above); `owner_did` alone grants nothing — every token this
-    // node mints carries the node DID as `sub` (AGENTS.md §assets).
+    // Unplaced: an owned upload is reachable only through its anchor petal,
+    // and only by its own owner key or, for a node-level upload, by every
+    // token of the node (checked above). `owner_did` never widens scope on its
+    // own — reach still needs the anchor petal in scope (AGENTS.md §assets).
     let owned = owner_rows
         .iter()
         .any(|row| field(row, "owner_did").is_some() || field(row, "petal_id").is_some());
@@ -612,6 +621,7 @@ mod tests {
             iat: 0,
             exp: u64::MAX,
             jti: "jti-test".to_string(),
+            client: None,
         }
     }
 

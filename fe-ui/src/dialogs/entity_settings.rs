@@ -574,6 +574,7 @@ pub fn render_entity_settings_dialog(
                                 max_role: api_token_role_buf.clone(),
                                 ttl_hours: *api_token_expiry_buf,
                                 label: None,
+                                client_did: None,
                             })
                             .ok();
                     }

@@ -498,6 +498,7 @@ fn claims(scope: &str, role: &str) -> ApiClaims {
         iat: 0,
         exp: u64::MAX,
         jti: "distributed-query-jti".to_string(),
+        client: None,
     }
 }
 

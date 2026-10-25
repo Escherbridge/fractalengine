@@ -715,6 +715,7 @@ fn inspector_api_access_section(
                             max_role: inspector.api_token_role_buf.clone(),
                             ttl_hours: inspector.api_token_expiry_buf,
                             label: Some(format!("node:{}", node_id)),
+                            client_did: None,
                         })
                         .ok();
                 }

@@ -547,6 +547,7 @@ mod tests {
             iat: 0,
             exp: 0,
             jti: "j1".into(),
+            client: None,
         };
         match caller_auth(&claims) {
             CallerAuth::Identified { did, role } => {

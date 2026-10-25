@@ -1813,6 +1813,60 @@ async fn inbound_asset_row_is_never_attributed_to_a_local_uploader() {
     assert_eq!(used, 0, "the peer's row counts against no local quota");
 }
 
+/// TOKEN-CLIENT-CLAIM A6 (threat TC-6): the asset row a device ingest
+/// publishes to verse peers never carries `owner_did` (the uploading API
+/// client's DID), while the local row keeps it for quota and reach.
+#[tokio::test]
+async fn an_outbound_asset_row_never_carries_the_uploader_client() {
+    let db = setup_db().await;
+    let (store, handle) = blob_store();
+    seed_hierarchy(&db, VERSE, FRACTAL, PETAL, "node-a").await;
+    declare_format(&db, VERSE, "acme.thermo/frame@1", FORMAT_MIME).await;
+    let asset_id = seed_asset(&db, &handle, b"client bytes", PETAL, FORMAT_MIME).await;
+    let (repl_tx, repl_rx) = crossbeam::channel::bounded(8);
+
+    insert_device_payloads(
+        &db,
+        PETAL,
+        Some(VERSE),
+        "did:key:z6MkEditor",
+        SourceClass::Device,
+        &DevicePayloadInput {
+            node_id: "node-a".to_string(),
+            format_id: "acme.thermo/frame@1".to_string(),
+            asset_ids: vec![asset_id.clone()],
+            recorded_at: None,
+            payload_id: None,
+        },
+        Some(&handle),
+        Some(&repl_tx),
+    )
+    .await
+    .expect("ingest with replication");
+
+    let event = repl_rx.try_recv().expect("the asset row is published");
+    assert_eq!(event.table, "asset");
+    let wire: serde_json::Value =
+        serde_json::from_slice(&store.bytes_for(&event.content_hash).unwrap()).unwrap();
+    assert_eq!(wire["asset_id"], asset_id.as_str(), "it is the asset row");
+    assert!(wire.get("content_hash").is_some(), "the row is otherwise whole");
+    assert!(
+        wire.get("owner_did").is_none(),
+        "the uploader client never leaves the node: {wire}"
+    );
+
+    let mut res = db
+        .query("SELECT owner_did FROM asset WHERE asset_id = $aid")
+        .bind(("aid", asset_id))
+        .await
+        .unwrap();
+    let rows: Vec<serde_json::Value> = res.take(0).unwrap();
+    assert_eq!(
+        rows[0]["owner_did"], "did:key:z6MkEditor",
+        "the local row keeps its owner"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // CDL-SPEC10 review-and-fix (2026-10-15)
 // ---------------------------------------------------------------------------

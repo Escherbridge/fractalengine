@@ -107,3 +107,30 @@ that control the process environment: it mints a real token from a hex seed
 via the same `mint_api_token` call — the relay verifies Bearer JWTs against
 the keypair loaded from `FE_SECRET_FRACTALENGINE_NODE_KEYPAIR`, so a token
 minted from the same seed passes the production `auth_middleware` unchanged.
+
+### client claim (TOKEN-CLIENT-CLAIM, 2026-10-25)
+
+`ApiClaims.client: Option<String>` names the API *client* a token was minted
+for — an ed25519 `did:key`. It is `#[serde(default, skip_serializing_if =
+"Option::is_none")]`, so a legacy token (no client) decodes unchanged and
+re-encodes byte-identically.
+
+- **Ownership key only, never an authorization subject.** `sub` stays the
+  issuing node DID; roles, the AC-46 cap and every `AuthContext`/`CallerAuth`
+  key on `sub`. fe-api reads `client` in exactly one place (`owner_key`, the
+  upload owner / quota / unplaced-reach key — fe-api `AGENTS.md` §assets).
+  Naming a Manager's DID as `client` therefore grants nothing (threat TC-1).
+- **Grammar** (`validate_client_did`): non-empty, ≤ `MAX_CLIENT_DID_LEN`
+  (128) bytes, decodes via `public_key_from_did_key` (ed25519 multicodec only —
+  an x25519 device DID is refused) AND re-encodes to the identical string, so
+  one key cannot form two owner buckets through alternate spellings. Checked at
+  mint (`mint_client_api_token`) and again at verify (`verify_api_token`), so a
+  correctly-signed token carrying a bad client is still refused.
+- **Mint doors.** `mint_api_token` / `mint_api_token_at` keep minting legacy
+  tokens (the many test/CLI call sites stay untouched). The production door —
+  `DbCommand::MintApiToken` (fe-database `handlers/api_token.rs`) and the
+  harness DB loop — applies one rule, `resolve_client_did`: a requested client
+  is validated, a blank one gets `new_client_did()` (a fresh key whose secret
+  half is dropped), then `mint_client_api_token` signs it. The
+  CLI example stays legacy unless `--client <did:key>` or `--new-client` is
+  passed (A3) and echoes the client to stderr.
