@@ -598,3 +598,15 @@ fe-sync tests only (localized files).
 - OPEN (carried, with owners): DB-plane confine_petal first-authorized-writer (sync now stricter than DB — R6
   deferred, needs DB-plane change; candidate for next campaign), T28/BLOB-HASH-CAPABILITY, relay message signing
   (S-1), D-23 relay-without-invite owner pin, in-app GUI verify (user-gated), PUSH (user-gated, ~133 commits).
+
+### OF-11 (background security review of R6 commit 6141914, 2026-10-25) — 2 MED on contested-petal machinery · R6b
+- OF-11a MED (sharding.rs OwnReplay fail-open drift): `RowOrigin::OwnReplay => current.is_some()` — a CONTESTED
+  petal has no current mapping, so a stale own replay (which reassert_own_rows fires automatically post-snapshot)
+  takes the unconditional local-authority path and silently settles the contest, bypassing arbitration. Fix: gate
+  OwnReplay when mapped OR contested; a contested own replay enters the normal claim path with the local DID.
+- OF-11b MED (sharding.rs PETAL_CLAIMS_CAP evicts oldest): claim flooding by authors holding Editor+ somewhere can
+  evict the victim's claim, letting survivors settle without the evicted fractal. Fix: at cap REFUSE new claims
+  (or cap per fractal), and/or settling requires authority over every fractal EVER claimed during this contest.
+- STOP-RULE (orchestrator): review generations on this seam ran HIGH→HIGH→MED→MED with each fix shrinking blast
+  radius; after R6b, further MED/LOW findings on the contested-petal/blob-gate seam batch to the next campaign's
+  review unless a CRITICAL/HIGH appears. The loop must terminate on a judgment, not on reviewer exhaustion.
