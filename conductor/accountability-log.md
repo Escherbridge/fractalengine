@@ -508,3 +508,20 @@ gates `cargo check -p fe-sync -p fe-database -p fractalengine --tests`, before W
   remains open as its own ledger row, out of W5s scope.
 - Next: W6 FF launch (script .omc/plans/w6-decisions-20261012.js, adapted: check-only gate, W6-9/10 merged into
   refine, no-deferrals, trailer fixed), base `9fbf7b9`.
+
+### OF-8 (background security review of W5s commit 9fbf7b9, 2026-10-25) — second-order findings · QUEUED for refine phase
+- OF-8a MED (docs_engine.rs, any-parent admission — NEW GAP in the OF-6b fix): a child hash is admitted when ANY
+  tracked parent root admits the requester (`.any(|binding| binding.admits(...))`). Confused deputy: an attacker
+  publishes a HashSeq that lists a victim tileset's child hashes as its own children; when meta-resolution
+  (`Resolved`) adds those parent links, the attacker's root — where they control membership — admits the victim's
+  children to the attacker's viewers. Fix shape (refine): a child is admitted only under EVERY root it belongs to,
+  or keyed to the verse it was FIRST tracked under; `Resolved` from a remote HashSeq must not add parent links to
+  hashes already tracked under another root; GetRequest ranges covering HashSeq children check each child.
+- OF-8b MED (sync_thread.rs, gossip-driven narrowing): ACKNOWLEDGED, not new — this is exactly the W5s "secondary
+  seeders can be griefed (fail-closed)" trade-off, consciously accepted and documented (W5s close WATCH item 2,
+  fe-sync AGENTS.md). Availability-only impact; the publisher still serves. ADOPT the reviewer's hardening into the
+  refine phase: narrow only on ads from a peer with authority over the root (original publisher / authenticated
+  provider in the first-learned verse), record other ads separately, and make narrowing reversible (clear on
+  re-fetch from the original verse).
+- Both routed to the merged refine review (with RP-4s/RP-9/RP-9b/W6-9/W6-10 scope). W6 running — no fe-sync edits
+  mid-run (same contention rule as OF-6/OF-7).
