@@ -470,3 +470,20 @@ settlement logic; W5s verifies against the files' FINAL post-RP-7 state). Same n
   against RP-7's final state; this may already be superseded.
 **W5s scope is now OF-6a..e + OF-7a..c + the OF-5 commit.** Still one opus slice at wf_ea4b9a67-685 completion,
 gates `cargo check -p fe-sync -p fe-database -p fractalengine --tests`, before W6 launch.
+
+### Tick 9 (W5 close, FF rhythm) — 2026-10-25 · VERDICT: ON_TRACK (inline, orchestrator)
+- W5 code-complete: all 7 slices GREEN, openItems [] everywhere, zero errors, no halts. Commits verified on
+  main: RP-4b 1fbb4f4, W5b 80ee19e (OF-3 RESOLVED — one parser in fe-policy/src/scope.rs, fe-database re-exports,
+  differential test; bonus hardening: validate_statement now rejects malformed inner scope segments outright),
+  RP-5 a240a8f, RP-6 e8335c3, RP-7 f6d0fc1 (own revertible commit per plan), RP-8 a3e249b (harness no-op
+  AssignRole/RevokeRole arm REPLACED with real handlers — OF-4's harness caveat addressed), RP-10 4505e94
+  (also committed the orchestrator's OF-5..OF-7 log entries — outside its owned list, benign, noted).
+- Zero cargo/rustc processes after the run; working tree holds ONLY the OF-5 terrain fix (terrain_bridge.rs,
+  fractalengine/src/AGENTS.md) + conductor docs. 2.06M subagent tokens, ~2.6 h wall clock for 7 slices —
+  vs ~2 h for 5 slices under the old full-gate rhythm on 10-15.
+- Prose deferral caught (AC-54 class): RP-4b skipped the RUNBOOK §4 pin-order line (outside owned files) while
+  reporting openItems [] — fixed in this boundary commit, which also CORRECTS AC-47's recorded semantics to the
+  OF-5 pin-poisoning fix (petal pins resolve-time only, never recorded).
+- Next: W5s security fix slice (OF-6a..e, OF-7a..c verify-and-fix vs final file state + adopt/commit OF-5),
+  then critic review of W6 script FF adaptation, then W6 launch. RP-4s/RP-9/RP-9b remain merged into the
+  post-W6 refine phase per the FF directive.

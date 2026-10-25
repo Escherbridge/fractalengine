@@ -358,10 +358,13 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
   remote demotion cannot keep writing rows every peer defers · default: as stated · to reverse:
   cheap (drop the cap).
 - **AC-47 streamed-terrain pin + precedence:** precedence is installed > petal-authored > TOFU; a
-  petal-authored pin REPLACES a recorded first-contact TOFU pin, never the reverse. The streamed
-  path records a first-contact pin in `KnownTilesetPublishers` on first contact (symmetric with
-  the installed path's TOFU) · default: record the first-contact pin · to reverse: cheap (drop
-  the recorded pin, rely only on the petal-authored pin — delete the write, keep the read).
+  petal-authored pin governs at RESOLVE time only and is NEVER recorded into the node-global
+  `KnownTilesetPublishers` TOFU map (OF-5 pin-poisoning fix 2026-10-24: the map is keyed by
+  tileset id alone, so recording a petal-scoped pin would let an Editor on petal X poison the
+  TOFU fallback petal Y trusts; the petal pin is re-read from `ActivePetalTerrain` each check).
+  The streamed path records a first-contact pin on first contact (symmetric with the installed
+  path's TOFU); node-global sources only fill an empty slot · default: record the first-contact
+  pin · to reverse: cheap (drop the recorded pin, rely only on the petal-authored pin).
 - **AC-45 interim authority rows untouched by RP:** the role migration and `rematerialize` touch
   ONLY rows whose scope `parse_scope`s to that verse's ULID — **never** a `VERSE#<hex>[-PETAL#<hex>]`
   interim-authority row (C3's original premise, that `DurableAuthorizationView::load` needed to
