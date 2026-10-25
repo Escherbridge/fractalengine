@@ -21,9 +21,16 @@ truth alignment → community/CI → metadata → ratification → preflight + p
 - [x] 1.2 Root `[workspace.package]` carries `license = "Apache-2.0"`,
       `repository`, `edition`, `rust-version`; all member crates inherit via
       `license.workspace = true` (spec FR-6).
-- [ ] 1.3 `deny.toml` allowlist correct (MIT/Apache-2.0/BSD/ISC/MPL-2.0 + BUSL
+- [x] 1.3 `deny.toml` allowlist correct (MIT/Apache-2.0/BSD/ISC/MPL-2.0 + BUSL
       exception scoped to `surrealdb*` only); `cargo deny check licenses` wired into
       `build-artifacts.yml` (spec FR-3).
+      — **DONE (2026-10-25, W6-11, tick confirmed against evidence already below):**
+        `da3e6a1` is the commit that wired `cargo deny … check advisories bans sources
+        licenses` into the Lint job (`deny.toml:8-28` allow-list, `:32-41` BUSL/font
+        exceptions; `.github/workflows/build-artifacts.yml:128-134` runs the check). CI run
+        `38498925963` (first fully green, on `53a4c4c`) logs `advisories ok, bans ok,
+        licenses ok, sources ok`. Warn-only by design (spec assumption A15); ledger
+        `doneness-ledger.md:157` and `tracks.md:310-311` corrected to match.
       — AUDIT 2026-10-10: PARTIAL — allowlist + `surrealdb`/`surrealdb-core`-only BUSL exception are correct (`deny.toml:4-32`), but no `cargo deny` step exists in `.github/workflows/build-artifacts.yml` (only the clippy step at :73).
       — 2026-10-11 (cargo-deny 0.20.2): CI WIRED for `advisories bans sources`. The
         lint job has an `EmbarkStudios/cargo-deny-action@v2` step after Clippy, and it

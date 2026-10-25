@@ -117,7 +117,7 @@ Tasks:
   (TDD: write test on the height→spacing/subdivision helper; then implement grid system.)
 - [x] Task: grid fade by camera-height threshold. (TDD: write test on the fade-alpha helper; then *(DONE 2026-10-11, commit pending — `ruler::grid_fade_alpha`, wired at 50 km to 200 km camera height; test `grid_fade_alpha_table`.)*
   wire rendering.)
-- [ ] Task: CAD-style dimension callouts persisted via the existing annotation/property store *(AUDIT 2026-10-10: OPEN + BLOCKED on ratification of outstanding_decisions D-11 (callout persistence shape, [USER]).)*
+- [x] Task: CAD-style dimension callouts persisted via the existing annotation/property store *(DONE-pending-sweep 2026-10-25 — W6-6, `8beb624`, `conductor/tracks/decisions_20261012_impl_20261015`: D-11 ratified 2026-10-12 (node_kind=dimension_callout). Measure's "Save as callout" queues a correlated CreateNode + SetNodeProperty bag (mode, f64 anchors, closed); `fe-ui/src/actions/dimension_callout.rs::hydrate_dimension_callout` is the strictest reader on reload; visibility-aware gizmo draw. TESTS WRITTEN, NOT RUN — unreviewed until the post-W6 refine phase (RP-4s/RP-9/RP-9b/W6-9/W6-10, FF directive 2026-10-24). The in-world text label is deferred — not drawn, only the gizmo geometry — since wiring it needs an egui-pass registration in `fe-ui/src/plugin.rs`, outside this slice's owned files; the created node's display name already carries the equivalent readout string.)*
   (resolve OQ-3 shape first). (TDD: write test round-tripping a dimension annotation through the
   property store; then wire.)
 - [ ] Verification: grid snaps to round metric spacing, re-subdivides on zoom, fades beyond

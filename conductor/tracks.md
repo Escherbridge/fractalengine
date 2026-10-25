@@ -307,8 +307,9 @@ _Link: [./tracks/oss_release_20260717/](./tracks/oss_release_20260717/) · in_pr
 
 Licence files, THIRD-PARTY-LICENSES (BUSL-1.1), README/SECURITY claims, crate
 descriptions done. 2026-10-10: README Status corrected, SECURITY.md stale "permissive
-sync gate" bullet replaced, root AGENTS.md SQLite line fixed. Open: cargo-deny CI step
-(OSS-1.3), placeholder-signature register now 20 sites (OSS-1.5), GHCR URL in
+sync gate" bullet replaced, root AGENTS.md SQLite line fixed, cargo-deny licenses CI step
+wired (OSS-1.3 DONE, `da3e6a1` — corrected 2026-10-25, W6-11; this line previously said
+"Open"). Open: placeholder-signature register now 20 sites (OSS-1.5), GHCR URL in
 BUILDING.md (OSS-2.4), fe-sdk docs, publish dry-runs, root `.glb` strays, pre-push
 preflight; user-gated: vulnerability reporting toggle, publishing gate, visibility.
 

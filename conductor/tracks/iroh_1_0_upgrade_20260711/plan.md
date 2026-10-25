@@ -120,10 +120,21 @@ Local 1.94 and CI stable 1.99 both satisfy it. Research is under `.omc/research/
       `two_peer_shard_fabric`, `api_db_sync_cross_thread`). Watch for an FsStore drop on
       the current-thread runtime and for the async-subscribe ordering against the
       Join-drop race.
-- [ ] Task: Spec acceptance criterion: relay-assisted connection verified against a 1.x
+- [x] Task: Spec acceptance criterion: relay-assisted connection verified against a 1.x
       relay. This needs an `iroh-relay` 1.3 server (feature `server`, dev mode or TLS),
       for example as an optional `docker/compose.dev.yml` service, and two peers with
-      `FE_SYNC_RELAY=http(s)://<relay>` whose direct IP paths are unusable. Not built yet.
+      `FE_SYNC_RELAY=http(s)://<relay>` whose direct IP paths are unusable.
+      — **DONE against a LOCAL container (2026-10-25, W6-11; built by W6-8, `f4f4627`,
+        `conductor/tracks/decisions_20261012_impl_20261015`):** `fe-sync/tests/relay_assisted_test.rs`
+        drives a managed, digest-pinned `n0computer/iroh-relay:v1.3.0` container
+        (`127.0.0.1`-only publish, exact-name RAII cleanup, skip-or-fail under
+        `FE_REQUIRE_RELAY_CONTAINER=1`) and proves two production `SyncEndpoint`s report it
+        as their home relay, a dialer with no IP transports still completes a tileset fetch,
+        an untrusted relay address is never dialed, and a token-gated relay admits only the
+        configured token. Required in CI Linux. TESTS WRITTEN, NOT RUN — unreviewed until the
+        post-W6 refine phase (RP-4s/RP-9/RP-9b/W6-9/W6-10, FF directive 2026-10-24).
+        **D-23 (which host is the production default) stays open** — this closes the AC
+        against a local/CI container only, not a provisioned production relay.
 - [ ] Task: Flag-day rollout, then commit/push (user-gated). Upgrade every deployed peer
       and relay together before 2026-12-31. Decide fixture packaging (commit / LFS / omit).
       Let the macOS CI run show whether the `socket2` shim (`Cargo.toml`, `TODO(iroh-1.x)`)

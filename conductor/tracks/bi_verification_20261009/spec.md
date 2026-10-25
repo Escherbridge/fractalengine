@@ -61,12 +61,23 @@ the VERIFICATION record specifically, per the F18 deliverable list.
 
 ## Known limitations (carried forward honestly, not fixed here)
 
-- WKB local-frame axes `(x, elevation, z)` can be misread by GIS readers as
+- ~~WKB local-frame axes `(x, elevation, z)` can be misread by GIS readers as
   `(x, north, z)` — predates M4, deferred until a real GIS-consumer
-  integration forces the decision.
-- `f32` anchor-position quantization (~1 m at lat/lon) — deferred until a
+  integration forces the decision.~~ **Fixed by W6, see EGR-WKB** (2026-10-25,
+  W6-11 bookkeeping; built by W6-4, `9a7be49ff0b9fca0f38cf1137499bf8f0651a3af`,
+  `conductor/tracks/decisions_20261012_impl_20261015`). Petal-local Parquet geometry
+  now writes `(x, -z, y)` = east, north, up; latlon output is untouched (identity).
+  `doneness-ledger.md` row `EGR-WKB`. TESTS WRITTEN, NOT RUN — unreviewed until the
+  post-W6 refine phase.
+- ~~`f32` anchor-position quantization (~1 m at lat/lon) — deferred until a
   consumer needs sub-meter anchors (the underlying `ReadingSnapshot` is
-  `f64`).
+  `f64`).~~ **Fixed by W6, see EGR-F32** (2026-10-25, W6-11 bookkeeping; built by
+  W6-3, `46ff528f60f7e32011e61c434b077c7a3e7973e3`). `EntitySnapshot.position` /
+  `ReadingSnapshot.anchor_position` are now `[f64;3]` end to end through BI egress
+  (Parquet WKB, CSV, analytics `pos_*`); ingress, REST DTOs, GPX/.hexon export and
+  rotation/scale stay `f32` (assumption A8 — outside "in egress"). `doneness-ledger.md`
+  row `EGR-F32`. TESTS WRITTEN, NOT RUN — unreviewed until the post-W6 refine phase
+  (RP-4s/RP-9/RP-9b/W6-9/W6-10, FF directive 2026-10-24).
 - On Windows (per-handle-lock platforms), `/api/v1/query` distributed mode
   and the public JSON share-redemption path both ride the DB-thread
   channel fallback under a bounded semaphore (F23's 4-permit honest-503

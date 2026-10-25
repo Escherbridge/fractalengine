@@ -564,3 +564,63 @@ Generated 2026-10-15 from the W4 journal (`wf_22ded023-74a`). NO line is truncat
 - fe-runtime app.rs routing tests (unchanged, but they cover the device reply families)
 - All 19 SPEC-10 §10 conformance tests exist under their exact names: tests 1-4 in fe-canonical-log/tests/observation_batch_flow.rs; 5 in wire/preview.rs; 6-9 in fe-query columnar/observation/mod.rs (features parquet); 10-16 and 19 in fe-database/tests/observation_plane_test.rs; 17-18 in materialize/identity.rs
 
+## W6 decisions_20261012_impl (`9fbf7b9..f4f4627`)
+
+**Core-suite rows (add to the table):**
+| **Relay-assisted acceptance (IROH-1X)** | Windows: `podman machine start` if stopped, then `$env:FE_REQUIRE_RELAY_CONTAINER='1'; $env:FE_CONTAINER_RUNTIME='podman'; cargo test -p fe-sync --test relay_assisted_test -- --nocapture` | All 4 tests `... ok` BY NAME (`relay_assisted_tileset_fetch_through_a_self_hosted_iroh_relay`, `a_relay_only_dialer_reaches_its_peer_solely_through_the_relay`, `a_provider_naming_an_untrusted_relay_is_never_dialed`, `a_token_gated_relay_admits_the_configured_token_and_refuses_others`); output shows `iroh-relay container fe-relay-test-… started` and its removal; ZERO `skipping:` lines; afterwards `podman ps -a --filter name=fe-relay-test-` lists nothing this run created (remove only the exact names the run printed) |
+| **BI egress e2e (W6 additions)** | `scripts/bi-egress-verify.ps1` (network needed for DuckDB `INSTALL spatial`) | New asserts pass: node parquet `ST_X/ST_Y/ST_Z` = east/north/up (`1234.5625`, `987.75`, `12.25`) + one readings-anchor ENU assert; a failed `INSTALL spatial` is a FAIL, not a skip |
+| **CI relay step (post-push)** | Watch the Linux job step "Relay-assisted acceptance (iroh-relay 1.3 container required)" on the pushed tip | Step green; its 4-name grep loop passed |
+
+**W6-1 (FEAPI-BUILDER-CRS) — must cover:**
+- fe-terrain `tiles::builder::tests::a_freshly_packaged_tileset_records_epsg_4326_in_its_raw_archive_meta`
+- fe-terrain `tiles::builder::tests::package_tiles_chunked_produces_a_container_that_verifies_sealed` (helper refactor)
+- fe-format manifest tests (`legacy_tileset_meta_deserializes_with_defaults` + `DEFAULT_TILESET_CRS` users), incl. `default_agrees_with_serde_defaults_for_a_legacy_archive`
+- `cargo test -p fe-terrain --features fetch,render` (builder sits behind it)
+
+**W6-2 (FEAPI-ELEV cap) — must cover:**
+- fe-api `query_guard::tests::elevated_statement_cap_counts_top_level_statements`
+- fe-api `--test elevated_query_test` (ALL, incl. new `an_elevated_script_over_the_statement_cap_is_refused_and_writes_nothing` and existing `long_scan_hits_the_db_side_timeout`)
+- fe-database `handlers::elevated_query::tests::the_db_thread_refuses_an_elevated_request_over_the_statement_cap` + existing `read_only_script_with_let_and_return_answers`, `a_write_over_a_table_past_the_diff_cap_is_refused_before_running`
+
+**W6-3 (EGR-F32) — must cover:**
+- fe-api `--test export_share_test` (ALL; new `parquet_and_csv_exports_carry_f64_positions_bit_exact`, `export_readings_anchor_position_is_f64_bit_exact`; TIGHTENED `export_csv_local_vs_latlon_landmine`, `export_readings_latlon_converts_anchor_position`)
+- fe-api `--test analytics_scope_test` (ALL; new `analytics_nodes_table_serves_f64_positions`)
+- fe-query `--features parquet` `columnar::geoparquet` + `columnar::provider` + `columnar::context` tests
+- fe-api lib `entity_store_bridge` tests
+
+**W6-4 (EGR-WKB) — must cover:**
+- fe-query `--features parquet` `columnar::geoparquet::tests::wkb_axis_order_follows_the_output_frame`, `round_trip_preserves_rows_and_geo_metadata`, `bytes_writer_matches_file_writer_round_trip`, `crs_key_absent_only_for_lonlat_output`
+- fe-api `export_share_test::parquet_export_geometry_is_east_north_up_locally_and_lon_lat_ele_for_latlon`
+- `scripts/bi-egress-verify.ps1` (row above)
+
+**W6-5 (GPX-HIDE-CASCADE) — must cover:**
+- fe-ui `visibility::resolve::tests::a_stamp_follows_its_owning_tracks_visibility_unless_its_own_override_wins`
+- fe-ui `visibility::tests::pickable_refuses_every_effectively_hidden_cause`, `compute_sync_decision_hides_a_hidden_tracks_stamps_and_spares_a_shown_one`, `a_promoted_stamps_persisted_view_state_beats_its_tracks_hide`
+- fe-ui `node_manager::context_pick::tests::the_ground_stamp_tier_skips_hidden_stamps_and_other_petals`
+- fe-ui `visibility::resolve::tests::owning_path_toggles_to_show_like_ancestor_and_group` (exhaustive-match coverage for `toggle_node_override`)
+- fe-ui `visibility::resolve::tests::owning_path_tooltip_names_the_track` (exhaustive-match coverage for `node_eye_tooltip`)
+- all of `fe-ui` `visibility::` (resolver change touches every consumer)
+
+**W6-6 (HS-P6-CALLOUT) — must cover:**
+- fe-ui `actions::dimension_callout::tests::{promote_builds_a_callout_bag_only_from_a_complete_measurement, hydrate_dimension_callout_accepts_only_a_complete_finite_bounded_bag, a_callout_correlation_echo_writes_the_bag_and_nothing_else_does, visible_callouts_skip_hidden_and_foreign_petal_callouts, a_deleted_callout_node_is_dropped_from_the_map}`
+- fe-database `--test entity_property_test` (ALL; new `a_dimension_callout_node_round_trips_through_the_property_store`)
+- fe-ui `node_manager::measure` tests (`reducer_table`, `readout_rows_carry_units`) and `actions::terrain_proposal` earthwork-echo tests (shared `handle_node_created`)
+- USER_GATED (not sweep): in-app promote → reload → callout re-renders (hexon_scale plan `:124`)
+
+**W6-7a/b (TOKEN-CLIENT-CLAIM) — must cover:**
+- fe-identity `api_token::tests::{a_client_token_round_trips_and_a_legacy_token_has_no_client, a_token_with_a_malformed_client_is_rejected}` + existing `session_token_rejected_as_api`, `tampered_token_rejected`
+- fe-database `handlers::api_token::tests::{minting_records_the_requested_client_and_a_blank_request_gets_a_fresh_one, a_malformed_client_did_is_refused_at_mint_and_nothing_is_stored}`
+- fe-database `--test device_payload_test` (ALL; new `an_outbound_asset_row_never_carries_the_uploader_client`)
+- fe-api `--test asset_ownership_test` (ALL; new `two_clients_of_one_node_have_separate_quota_buckets`, `a_legacy_token_uploads_into_the_node_level_bucket`, `unplaced_upload_reach_follows_the_owner_key`, `a_client_claim_naming_a_manager_did_gains_no_role`; existing 6 unchanged in meaning)
+- fe-api `--test mcp_integration`, `--test iot_ingest_test`, `--test device_ingest_test`, `--test gis_test`, `--test distributed_query_test` (claims literals + every upload door now via `owner_key`)
+- fe-ui `verse_manager::db_results::tokens::tests::{handle_api_token_minted_surfaces_the_client_for_both_mint_surfaces, a_blank_client_field_sends_none_and_a_filled_one_sends_it_trimmed, tokens_to_entries_carries_the_client_claim}`
+- harness `api_token_flow` scenario (in the 18-scenario ×2 harness run)
+- e2e `hexon-install-verify.ps1` / `hexon-serve-verify.ps1` / `bi-egress-verify.ps1` still green with LEGACY CLI tokens (A3 — legacy path regression)
+
+**W6-8 (IROH-1X) — must cover:**
+- the relay-assisted row above
+- fe-sync lib `relay_config::tests::{relay_tokens_attach_only_to_custom_relays_over_tls_or_loopback, a_relay_access_token_never_appears_in_debug_output}` + existing `endpoint::tests::*`
+- `scripts/relay-health-verify.ps1` (already a core row) still passes (no default change)
+
+**W6-9 / W6-10 must-cover:** W6-9 and W6-10 did not run as standalone slices — per the FF directive (2026-10-24, `conductor/accountability-log.md`), RP-4s/RP-9/RP-9b/W6-9/W6-10 are MERGED into one fresh-context security+correctness review-and-fix over the whole merged diff, in the post-W6 refine phase. Append that reviewer's `test_sweep_must_cover` list verbatim here once refine runs; until then every row above is unreviewed, not reviewed-and-passed.
+

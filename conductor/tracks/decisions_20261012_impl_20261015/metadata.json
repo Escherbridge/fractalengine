@@ -4,9 +4,9 @@
   "security_critical": true,
   "title": "Implement the 2026-10-12 decisions (campaign W6)",
   "description": "RUNBOOK section 7 step 5. Builds the still-open 2026-10-12 grill contracts on top of W5 (role propagation): a `client` claim at token mint that keys asset owner_did, the upload quota and unplaced-upload reach (sub stays the node DID and the sole authorization subject, under W5's AC-46 min(token max_role, role_at) cap); GPX track hide cascades to its stamps with a per-stamp override winning (one resolver change); dimension callouts as addressable node_kind=dimension_callout nodes; WKB petal-local frame east,north,up (x,-z,y) with latlon unchanged; f64 positions end to end in BI egress; fresh tilesets stamp crs=EPSG:4326; a 32-statement cap on /query/elevated (API fast-fail + DB authority); the OSS-1.3 ledger correction (already done in da3e6a1); and IROH-1X's relay-assisted acceptance test against a locally managed, digest-pinned iroh-relay 1.3 container (skip only without a usable runtime, fail under FE_REQUIRE_RELAY_CONTAINER=1, required in CI Linux), plus an env-only relay access token. D-23 (default relay) is NOT changed.",
-  "status": "planned",
+  "status": "implemented_pending_sweep",
   "created_at": "2026-10-15T00:00:00Z",
-  "updated_at": "2026-10-15T00:00:00Z",
+  "updated_at": "2026-10-25T00:00:00Z",
   "priority": "P1",
   "execution_order_note": "RUNBOOK section 7 step 5: runs strictly AFTER W5 role_propagation_20261013 closes (RP-10 committed), then the campaign final sweep. Slice W6-0 re-grounds every citation against W5's final commit before any code slice. Slices are strictly sequential; no tests until the campaign final sweep.",
   "ledger_rows": [
@@ -31,7 +31,12 @@
   "oss_1_3_resolution": "DONE: deny.toml:8-28 allow-list + :32-41 exceptions; .github/workflows/build-artifacts.yml:128-134 runs `check advisories bans sources licenses` (git blame da3e6a1); CI run 38498925963 lint log 2026-10-14T02:06:22Z 'advisories ok, bans ok, licenses ok, sources ok'. Ledger :29/:71/:114/:119 stale; :157 correct but mis-cited. Warn-only lint by R7 design.",
   "plan": "./plan.md",
   "spec": "./spec.md",
-  "progress": { "done": 0, "open": 13, "plan": "./plan.md" },
+  "progress": {
+    "done": 13,
+    "open": 0,
+    "plan": "./plan.md",
+    "note": "All 13 slices (W6-0..W6-11) landed. W6-9/W6-10 are MERGED into the post-W6 refine phase (RP-4s/RP-9/RP-9b, FF directive 2026-10-24, conductor/accountability-log.md) rather than run as standalone review slices here -- every W6 ledger row is DONE-pending-sweep and unreviewed until refine, never carrying a review verdict. No cargo test/clippy/fmt sweep has run on this diff; tests are written, not run, per the campaign's one-sweep-at-the-end rule."
+  },
   "partitions": {
     "computed_at": "2026-10-25T00:00:00Z",
     "computed_at_commit": "483b538",
