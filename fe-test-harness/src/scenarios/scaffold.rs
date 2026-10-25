@@ -85,6 +85,39 @@ pub fn publish_and_await(
     Ok(())
 }
 
+/// Create a fractal in `author`'s OWN DB (real `CreateFractal`), returning its id. An author's
+/// published rows are never echoed back to its DB, so a scaffold the author must itself judge
+/// against (a child row from a peer, a grant at a fractal/petal scope) is created locally first
+/// and then published under the same id.
+pub fn create_local_fractal(author: &TestPeer, verse_id: &str, name: &str) -> Result<String> {
+    author.send(fe_runtime::messages::DbCommand::CreateFractal {
+        verse_id: verse_id.to_string(),
+        name: name.to_string(),
+    });
+    match author.wait_for(
+        |r| matches!(r, DbResult::FractalCreated { .. }),
+        Duration::from_secs(30),
+    )? {
+        DbResult::FractalCreated { id, .. } => Ok(id),
+        other => bail!("unexpected result creating a local fractal: {other:?}"),
+    }
+}
+
+/// Create a petal in `author`'s OWN DB (real `CreatePetal`) — see [`create_local_fractal`].
+pub fn create_local_petal(author: &TestPeer, fractal_id: &str, name: &str) -> Result<String> {
+    author.send(fe_runtime::messages::DbCommand::CreatePetal {
+        fractal_id: fractal_id.to_string(),
+        name: name.to_string(),
+    });
+    match author.wait_for(
+        |r| matches!(r, DbResult::PetalCreated { .. }),
+        Duration::from_secs(30),
+    )? {
+        DbResult::PetalCreated { id, .. } => Ok(id),
+        other => bail!("unexpected result creating a local petal: {other:?}"),
+    }
+}
+
 /// The owner's verse manifest (the receivers' first manifest — trust on first use).
 pub fn publish_manifest(
     author: &TestPeer,

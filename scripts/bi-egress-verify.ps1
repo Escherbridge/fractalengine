@@ -401,7 +401,9 @@ try {
     # the conversion off keeps the column the raw WKB BLOB the codec wrote,
     # so this check reads the exact bytes a GIS reader parses (refine R3).
     $spatialPrelude = "$prelude INSTALL spatial; LOAD spatial; SET enable_geoparquet_conversion=false;"
-    $enuNodeRows = Invoke-DuckDbJson "$spatialPrelude SELECT ST_X(ST_GeomFromWKB(position)) AS e, ST_Y(ST_GeomFromWKB(position)) AS n, ST_Z(ST_GeomFromWKB(position)) AS u FROM read_parquet('$nodeShareUrl') WHERE node_id = '$enuCheckNodeId';"
+    # @(...) at the call site: a returned 1-element array unrolls to a bare
+    # [pscustomobject], which has no .Count in Windows PowerShell 5.1.
+    $enuNodeRows = @(Invoke-DuckDbJson "$spatialPrelude SELECT ST_X(ST_GeomFromWKB(position)) AS e, ST_Y(ST_GeomFromWKB(position)) AS n, ST_Z(ST_GeomFromWKB(position)) AS u FROM read_parquet('$nodeShareUrl') WHERE node_id = '$enuCheckNodeId';")
     Write-Host "  $(($enuNodeRows | ConvertTo-Json -Compress))"
     Assert-True ($enuNodeRows.Count -eq 1) "ENU check node found in node parquet"
     if ($enuNodeRows.Count -eq 1) {
@@ -410,7 +412,7 @@ try {
         Assert-Equal ([double]::Parse([string]$enuNodeRows[0].u, $ic)) 12.25 "node parquet geometry: up (ST_Z) equals engine y/elevation"
     }
 
-    $enuAnchorRows = Invoke-DuckDbJson "$spatialPrelude SELECT ST_X(ST_GeomFromWKB(position)) AS e, ST_Y(ST_GeomFromWKB(position)) AS n, ST_Z(ST_GeomFromWKB(position)) AS u FROM read_parquet('$readingsShareUrl') WHERE node_id = '$anchorAlpha' ORDER BY recorded_at_ms LIMIT 1;"
+    $enuAnchorRows = @(Invoke-DuckDbJson "$spatialPrelude SELECT ST_X(ST_GeomFromWKB(position)) AS e, ST_Y(ST_GeomFromWKB(position)) AS n, ST_Z(ST_GeomFromWKB(position)) AS u FROM read_parquet('$readingsShareUrl') WHERE node_id = '$anchorAlpha' ORDER BY recorded_at_ms LIMIT 1;")
     Write-Host "  $(($enuAnchorRows | ConvertTo-Json -Compress))"
     Assert-True ($enuAnchorRows.Count -eq 1) "ENU check readings anchor found in readings parquet"
     if ($enuAnchorRows.Count -eq 1) {

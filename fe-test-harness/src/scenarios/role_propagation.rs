@@ -363,10 +363,15 @@ pub fn run() -> Result<TestResult> {
         "Role Propagation Verse",
     )?;
 
-    let fractal_id = ulid::Ulid::new().to_string();
-    let petal_p0 = ulid::Ulid::new().to_string();
-    let petal_p1 = ulid::Ulid::new().to_string();
-    let petal_p2 = ulid::Ulid::new().to_string();
+    // The hierarchy is created on alice's own DB first (production shape): an
+    // author's published rows are never echoed back to its DB, and a grant at a
+    // fractal/petal scope (leg 3) requires that scope to exist on the granter
+    // (`AssignRole` precondition).
+    let fractal_id =
+        scaffold::create_local_fractal(&alice, &verse_a_id, "Role Propagation Fractal")?;
+    let petal_p0 = scaffold::create_local_petal(&alice, &fractal_id, "P0")?;
+    let petal_p1 = scaffold::create_local_petal(&alice, &fractal_id, "P1")?;
+    let petal_p2 = scaffold::create_local_petal(&alice, &fractal_id, "P2")?;
     let now = chrono::Utc::now().to_rfc3339();
     let fractal = serde_json::json!({
         "fractal_id": fractal_id,

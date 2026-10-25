@@ -149,3 +149,13 @@ A non-owner author's row that has not yet cleared the A3 role gate is `Deferred 
 Scenario 12 no longer exercises the no-role default itself (RP-8: alice grants bob and carol
 Editor before ingest, the production flow); that default, and the `AuthorRole` defer/retry path
 it depends on, is scenario 18's (`role_propagation.rs`) job to cover in isolation.
+
+**The author's own DB (R5 sweep 2026-10-25).** A published row is never echoed back to its
+author's DB (sync-thread loop prevention), so a scaffold the author must itself judge against —
+a peer's child row naming it, or an `AssignRole` at a fractal/petal scope (the grant precondition
+requires the scope to exist on the granter) — is created locally first with
+`scaffold::create_local_fractal` / `create_local_petal` (real `CreateFractal`/`CreatePetal`) and
+published under the returned ids. Every peer's anchor that another host may judge a reading
+against is published too (scenario 12 publishes bob's and carol's, not only alice's). A scenario
+that never publishes a manifest leaves every fabric without an owner or `default_access`, and
+since W5s/R1 a publisher's blob gate then refuses every requester (scenario 16 publishes one).

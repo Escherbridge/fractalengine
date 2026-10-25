@@ -2,17 +2,17 @@
   [PASS] found C:\Users\atooz\Programming\fractalengine-workspace\gis-tile-etl\dist\switzerland-zurich-alps.hexon
   [PASS] found C:\Users\atooz\Programming\fractalengine-workspace\gis-tile-etl\dist\japan-mount-fuji.hexon
 === install_sample_hexons run: 1st (fresh install) ===
-store: C:\Users\atooz\AppData\Local\Temp\fe-hexon-install-verify-20261011-111154\hexons
-installed tileset-switzerland-zurich-alps (Switzerland GÇö Zurich Alps)
-installed tileset-japan-mount-fuji (Japan GÇö Mount Fuji)
+store: C:\Users\atooz\AppData\Local\Temp\fe-hexon-install-verify-20261025-064159\hexons
+installed tileset-switzerland-zurich-alps (Switzerland — Zurich Alps)
+installed tileset-japan-mount-fuji (Japan — Mount Fuji)
 2 tileset(s) now installed
   [PASS] 1st run: installed switzerland tileset
   [PASS] 1st run: installed japan tileset
   [PASS] 1st run: registry reports 2 tilesets
 === install_sample_hexons run: 2nd (refresh, proves idempotency) ===
-store: C:\Users\atooz\AppData\Local\Temp\fe-hexon-install-verify-20261011-111154\hexons
-refreshed tileset-switzerland-zurich-alps (Switzerland GÇö Zurich Alps)
-refreshed tileset-japan-mount-fuji (Japan GÇö Mount Fuji)
+store: C:\Users\atooz\AppData\Local\Temp\fe-hexon-install-verify-20261025-064159\hexons
+refreshed tileset-switzerland-zurich-alps (Switzerland — Zurich Alps)
+refreshed tileset-japan-mount-fuji (Japan — Mount Fuji)
 2 tileset(s) now installed
   [PASS] 2nd run: refreshed (not re-installed/errored) switzerland tileset
   [PASS] 2nd run: refreshed (not re-installed/errored) japan tileset
@@ -21,8 +21,8 @@ refreshed tileset-japan-mount-fuji (Japan GÇö Mount Fuji)
   [PASS] registry.json lists exactly 2 tilesets
 === cargo test -p fe-terrain --test gis_hexon_install_test -- --ignored ===
    Compiling fe-terrain v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-terrain)
-    Finished `test` profile [unoptimized] target(s) in 4.20s
-     Running tests\gis_hexon_install_test.rs (target\debug\deps\gis_hexon_install_test-0e85efab5dd7d517.exe)
+    Finished `test` profile [unoptimized] target(s) in 3.90s
+     Running tests\gis_hexon_install_test.rs (target\debug\deps\gis_hexon_install_test-da054f73d6822c11.exe)
 
 running 1 test
 tileset-switzerland-zurich-alps: gsd=103.57 m/px (expected ~103.57), native_scale=0.009655 (expected ~0.009655)

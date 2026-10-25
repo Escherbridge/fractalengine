@@ -513,10 +513,13 @@ pub fn run() -> Result<TestResult> {
         .map_err(|v: Vec<u8>| anyhow!("secret must be 32 bytes, got {}", v.len()))?;
     let ns_id_hex = hex::encode(fe_database::derive_namespace_id(&secret_bytes));
 
-    // A petal id shared by every peer (each peer creates its own anchor node
+    // A petal shared by every peer (each peer creates its own anchor node
     // under it — the harness DB loop is per-peer, and the reader path
-    // validates anchors against the local store).
-    let petal_id = ulid::Ulid::new().to_string();
+    // validates anchors against the local store). Created in alice's own DB
+    // first (she judges bob's/carol's anchor rows against it — an author's
+    // published scaffold is never echoed back to her), then published below.
+    let fractal_id = scaffold::create_local_fractal(&alice, &verse_id, "Query Fractal")?;
+    let petal_id = scaffold::create_local_petal(&alice, &fractal_id, "Query Petal")?;
 
     // 2. Alice opens her replica; bob and carol dial her (their bootstrap).
     alice
@@ -573,7 +576,6 @@ pub fn run() -> Result<TestResult> {
 
     // RP-4: every peer confines a reading to a petal (and anchor node) it
     // knows, so the owner publishes the shared petal and her own anchor.
-    let fractal_id = ulid::Ulid::new().to_string();
     scaffold::publish_scaffold(
         &alice,
         &[&bob, &carol],
@@ -616,6 +618,31 @@ pub fn run() -> Result<TestResult> {
     )?;
     let anchor_bob = create_anchor(&bob, &petal_id, "anchor-bob")?;
     let anchor_carol = create_anchor(&carol, &petal_id, "anchor-carol")?;
+    // Each anchor reaches the other peers too: a shard of bob's/carol's
+    // readings may be placed on another host, which confines the reading to
+    // an anchor node it knows (RP-4 `Parent` wait) — unpublished, it would
+    // defer there forever.
+    for (author, others, anchor, name) in [
+        (&bob, [&alice, &carol], &anchor_bob, "anchor-bob"),
+        (&carol, [&alice, &bob], &anchor_carol, "anchor-carol"),
+    ] {
+        scaffold::publish_and_await(
+            author,
+            &others,
+            &verse_id,
+            "node",
+            anchor,
+            &serde_json::json!({
+                "node_id": anchor,
+                "petal_id": petal_id,
+                "display_name": name,
+                "position": { "type": "Point", "coordinates": [0.0, 0.0] },
+                "rotation": [0.0, 0.0, 0.0, 1.0],
+                "scale": [1.0, 1.0, 1.0],
+                "created_at": chrono::Utc::now().to_rfc3339(),
+            }),
+        )?;
+    }
 
     let values_alice = [10.0, 20.0, 30.0];
     let values_bob = [1.0, 2.0, 6.0];

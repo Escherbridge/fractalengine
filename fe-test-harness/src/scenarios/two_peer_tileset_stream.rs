@@ -199,6 +199,19 @@ pub fn run() -> Result<TestResult> {
         .map_err(|e| anyhow::anyhow!("failed to send OpenVerseReplica to alice: {e}"))?;
     std::thread::sleep(Duration::from_millis(500));
 
+    // 2b. The owner's verse manifest (production: the DB thread emits it on
+    //     CreateVerse; the harness peer writes locally only). The publisher's
+    //     blob gate (W5s OF-6 / refine R1) serves a tileset only to Viewer+ of
+    //     its verse, and bob is Viewer only through `default_access: viewer`.
+    let alice_did = alice.keypair.to_did_key();
+    crate::scenarios::scaffold::publish_manifest(
+        &alice,
+        &[&bob],
+        &verse_id,
+        &alice_did,
+        "Tileset Stream Verse",
+    )?;
+
     // 3. Alice bundles a synthetic tileset (256 KiB default cap — these tiny
     //    tiles ship as one bundle, S1's `a_tiny_tileset_ships_as_one_bundle`
     //    invariant) and publishes it.

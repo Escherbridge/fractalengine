@@ -1,0 +1,209 @@
+PAS-P1V relay-health-verify -- 2026-10-25T06:47:17.8502736-06:00
+  [PASS] relay (FE_SYNC_RELAY=default) reached /ready within 20s
+=== FE_SYNC_RELAY=default ===
+2026-10-25T12:47:19.107203Z  INFO fe_network: Network thread started
+2026-10-25T12:47:19.106575Z  INFO fe_relay: Starting FractalEngine Relay (headless)
+2026-10-25T12:47:19.107836Z  WARN fe_relay: FE_SECRET_FRACTALENGINE_SHARE_SIGNER is not set — generating an EPHEMERAL share-URL signing key: every share link minted by this relay stops verifying (401) after a restart. Export a 64-hex-char seed in FE_SECRET_FRACTALENGINE_SHARE_SIGNER to make share links survive restarts.
+2026-10-25T12:47:19.106680Z  INFO fe_relay: Co-locating the blob store with FE_DB_PATH blob_dir=C:\Users\atooz\AppData\Local\Temp\fe-relay-health-verify-20261025-064717\Default\blobs
+2026-10-25T12:47:19.109397Z  INFO libp2p_swarm: local_peer_id=12D3KooWGFVXZAYt5JT1AJNZqUgR73azHZeYijo6mjRLe16SnvBd
+2026-10-25T12:47:19.108995Z  INFO fe_database: Database thread started, initialising SurrealDB at C:\Users\atooz\AppData\Local\Temp\fe-relay-health-verify-20261025-064717\Default\db
+2026-10-25T12:47:19.109645Z  WARN fe_network: Discovery bootstrap error (continuing): Kademlia bootstrap failed: NoKnownPeers
+2026-10-25T12:47:19.109752Z  INFO surrealdb::core::kvs::ds: Starting kvs store at relative path surrealkv://C:\Users\atooz\AppData\Local\Temp\fe-relay-health-verify-20261025-064717\Default\db
+2026-10-25T12:47:19.110379Z  INFO surrealdb::core::kvs::surrealkv: Enabling value log separation: true
+2026-10-25T12:47:19.428857Z  INFO surrealdb::core::kvs::surrealkv: Setting value log max file size: 268435456
+2026-10-25T12:47:19.428916Z  INFO surrealdb::core::kvs::surrealkv: Setting value log threshold: 4096
+2026-10-25T12:47:19.428925Z  INFO surrealdb::core::kvs::surrealkv: Versioning enabled: false with retention period: 0ns
+2026-10-25T12:47:19.428931Z  INFO surrealdb::core::kvs::surrealkv: Versioning with versioned_index: false
+2026-10-25T12:47:19.595805Z  INFO surrealdb::core::kvs::surrealkv: Setting block cache capacity: 16020174848
+2026-10-25T12:47:19.595894Z  INFO surrealdb::core::kvs::surrealkv: Setting block size: 65536
+2026-10-25T12:47:19.596639Z  INFO surrealkv::lsm: === Starting LSM tree initialization ===
+2026-10-25T12:47:19.596655Z  INFO surrealkv::lsm: Database path: "C:\\Users\\atooz\\AppData\\Local\\Temp\\fe-relay-health-verify-20261025-064717\\Default\\db"
+2026-10-25T12:47:19.599941Z  INFO surrealkv::lsm: Manifest state: log_number=0, last_sequence=0
+2026-10-25T12:47:19.599974Z  INFO surrealkv::wal::recovery: Starting WAL recovery from directory: "C:\\Users\\atooz\\AppData\\Local\\Temp\\fe-relay-health-verify-20261025-064717\\Default\\db\\wal"
+2026-10-25T12:47:19.600225Z  INFO surrealkv::wal::recovery: Replaying WAL segments #00000000000000000000 to #00000000000000000000
+2026-10-25T12:47:19.600452Z  INFO surrealkv::wal::recovery: WAL recovery complete: 0 batches across 0 segments, 0 memtables created, max_seq_num=None
+2026-10-25T12:47:19.600578Z  INFO surrealkv::lsm: === LSM tree initialization complete ===
+2026-10-25T12:47:19.600741Z  INFO surrealdb::core::kvs::surrealkv: Sync mode: every transaction commit
+2026-10-25T12:47:19.600773Z  INFO surrealdb::core::kvs::surrealkv: Grouped commit: enabled (timeout=5000000ns, wait_threshold=12, max_batch_size=4096)
+2026-10-25T12:47:19.600860Z  INFO surrealdb::core::kvs::ds: Started surrealkv kvs store
+2026-10-25T12:47:20.154363Z  INFO fe_database::op_log: HLC initialised: wall_ms=1792932440154, counter=0, max_persisted=0
+2026-10-25T12:47:20.162707Z  INFO fe_database: Checking for base64 assets to migrate...
+2026-10-25T12:47:20.170361Z  INFO fe_database::role_grants: Legacy role rows migrated to role statements report=RoleMigrationReport { already_applied: false, dropped_owner_rows: 0, converted_to_statements: 0, dropped_other_rows: 0 }
+2026-10-25T12:47:20.173649Z  INFO fe_database: SurrealDB ready
+2026-10-25T12:47:20.175149Z  WARN seed_default_data{local_did="did:key:z6Mktzq8L8AoHGujq6m3kzdhPteaa45TsgeruR2PvAxx9n4z"}:seed_assets: fe_database::handlers::seed: assets/models/ not found — skipping asset seed
+2026-10-25T12:47:20.177041Z  INFO seed_default_data{local_did="did:key:z6Mktzq8L8AoHGujq6m3kzdhPteaa45TsgeruR2PvAxx9n4z"}: fe_database::handlers::seed: Seeded verse: Genesis Verse (01M5SHKT3F5RXK1EN64BWY4C0Y)
+2026-10-25T12:47:20.178861Z  INFO seed_default_data{local_did="did:key:z6Mktzq8L8AoHGujq6m3kzdhPteaa45TsgeruR2PvAxx9n4z"}: fe_database::handlers::seed: Seeded verse_member: did:key:z6Mktzq8L8AoHGujq6m3kzdhPteaa45TsgeruR2PvAxx9n4z
+2026-10-25T12:47:20.180404Z  INFO seed_default_data{local_did="did:key:z6Mktzq8L8AoHGujq6m3kzdhPteaa45TsgeruR2PvAxx9n4z"}: fe_database::handlers::seed: Seeded fractal: Genesis Fractal (01M5SHKT3JJF986R64J6JCN649)
+2026-10-25T12:47:20.186332Z  INFO seed_default_data{local_did="did:key:z6Mktzq8L8AoHGujq6m3kzdhPteaa45TsgeruR2PvAxx9n4z"}: fe_database::handlers::seed: Seeded petal: Genesis Petal (01M5SHKT3MF1X2996BSDYQT7BT)
+2026-10-25T12:47:20.193164Z  INFO seed_default_data{local_did="did:key:z6Mktzq8L8AoHGujq6m3kzdhPteaa45TsgeruR2PvAxx9n4z"}: fe_database::handlers::seed: Seeded room: Lobby
+2026-10-25T12:47:20.199790Z  INFO seed_default_data{local_did="did:key:z6Mktzq8L8AoHGujq6m3kzdhPteaa45TsgeruR2PvAxx9n4z"}: fe_database::handlers::seed: Seeded room: Workshop
+2026-10-25T12:47:20.206237Z  INFO seed_default_data{local_did="did:key:z6Mktzq8L8AoHGujq6m3kzdhPteaa45TsgeruR2PvAxx9n4z"}: fe_database::handlers::seed: Seeded room: Gallery
+2026-10-25T12:47:20.208262Z  INFO seed_default_data{local_did="did:key:z6Mktzq8L8AoHGujq6m3kzdhPteaa45TsgeruR2PvAxx9n4z"}: fe_database::handlers::seed: Seeded node: Welcome Beacon at XZ[0.0, 0.0] elev=0
+2026-10-25T12:47:20.210002Z  INFO seed_default_data{local_did="did:key:z6Mktzq8L8AoHGujq6m3kzdhPteaa45TsgeruR2PvAxx9n4z"}: fe_database::handlers::seed: Seeded node: Info Panel at XZ[3.0, 0.0] elev=1.2
+2026-10-25T12:47:20.211774Z  INFO seed_default_data{local_did="did:key:z6Mktzq8L8AoHGujq6m3kzdhPteaa45TsgeruR2PvAxx9n4z"}: fe_database::handlers::seed: Seeded node: Lucky Duck at XZ[-2.0, 2.0] elev=0
+2026-10-25T12:47:20.211866Z  INFO fe_relay: Starting sync thread node_id=d81a0714c81c5dd52b2b9cc41e294dcb2c481e9c698a67716c04ac06ee053a0b
+2026-10-25T12:47:20.212413Z  INFO fe_sync::sync_thread: Resolved relay config for sync thread relay_config=Default
+2026-10-25T12:47:20.212603Z  WARN fe_sync::endpoint: Using iroh's default public n0 relay servers — shared infrastructure that rate-limits relayed traffic. Configure a custom RelayConfig (FE_SYNC_RELAY or the Settings relay; self-host iroh-relay 1.x) for production. See fe-sync/src/AGENTS.md §relay-health. env_var="FE_SYNC_RELAY"
+2026-10-25T12:47:20.224236Z  INFO fe_relay: FE_SHUTDOWN_AFTER_SECS set — scheduling graceful shutdown secs=60
+2026-10-25T12:47:20.226790Z  INFO fe_relay: Hydrated analytics EntityStore through the DB thread's shared handle node_count=3
+2026-10-25T12:47:20.227432Z  INFO fe_relay: Loaded hexon tilesets into registry count=0
+2026-10-25T12:47:20.227700Z  INFO fe_relay: Relay ready -- entering headless event loop
+2026-10-25T12:47:20.230045Z  INFO fe_relay::replicas: Startup verse replica scan: requested hierarchy from DB thread
+2026-10-25T12:47:20.233263Z  INFO fe_api: API server listening on 127.0.0.1:18777
+2026-10-25T12:47:20.236467Z  INFO load_hierarchy_handler: fe_database::handlers::crud: Loaded hierarchy: 1 verses
+2026-10-25T12:47:20.253360Z  INFO fe_sync::endpoint: iroh endpoint bound congestion_controller="bbr3" relay_config=Default relay_token_configured=false
+2026-10-25T12:47:20.253397Z  INFO fe_sync::sync_thread: Sync thread started (online) node_id=d81a0714c81c5dd52b2b9cc41e294dcb2c481e9c698a67716c04ac06ee053a0b
+2026-10-25T12:47:20.328814Z  WARN fe_relay::replicas: no namespace_id available (row has none and no secret stored) — replica not opened verse_id="01M5SHKT3F5RXK1EN64BWY4C0Y"
+2026-10-25T12:47:20.328876Z  INFO fe_relay::replicas: Startup replica scan pass complete verses=1 opened=0
+2026-10-25T12:47:20.740412Z  INFO endpoint{id=d81a0714c8}:relay-actor: iroh::socket::transports::relay::actor: home is now relay https://usw1-1.relay.n0.iroh.link./, was None
+2026-10-25T12:47:20.969391Z  INFO iroh_docs::store::fs::migrations: Executed migration migration_004_populate_by_key_index (0 rows affected)
+2026-10-25T12:47:20.979767Z  INFO fe_sync::docs_engine: Docs author imported from the endpoint identity author=d81a0714c81c5dd52b2b9cc41e294dcb2c481e9c698a67716c04ac06ee053a0b node_id=d81a0714c8
+2026-10-25T12:47:20.979900Z  INFO fe_sync::docs_engine: P2P stack online: blobs + gossip + docs routed node_id=d81a0714c8 p2p_dir=C:\Users\atooz\AppData\Local\Temp\fe-relay-health-verify-20261025-064717\Default\p2p blobs_alpn=/iroh-bytes/4 gossip_alpn=/iroh-gossip/1 docs_alpn=/iroh-sync/1
+2026-10-25T12:47:20.980182Z  INFO fe_sync::sync_thread: Relay health changed (home-relay watcher) from=Unknown to=Healthy
+2026-10-25T12:47:20.983049Z  INFO fe_sync::status: SyncStatus updated: started — dialable address above (paste into FE_SYNC_BOOTSTRAP) online=true node_addr={"id":"d81a0714c81c5dd52b2b9cc41e294dcb2c481e9c698a67716c04ac06ee053a0b","addrs":[{"Relay":"https://usw1-1.relay.n0.iroh.link./"},{"Ip":"97.132.232.253:52123"},{"Ip":"172.18.48.1:52123"},{"Ip":"192.168.0.167:52123"}]}
+2026-10-25T12:47:20.983095Z  INFO fe_sync::status: SyncStatus updated: relay health changed health=Unknown
+2026-10-25T12:47:20.983110Z  INFO fe_sync::status: SyncStatus updated: relay health changed health=Healthy
+2026-10-25T12:47:20.983114Z  INFO fe_sync::status: Relay health updated health=Healthy
+2026-10-25T12:47:20.983105Z  INFO fe_sync::status: Relay health updated health=Unknown
+
+
+  [PASS] resolved relay config line names relay_config=Default
+  [PASS] default-relay rate-limit warning present (Default mode)
+  [PASS] a relay-health line was captured for Default mode
+  [PASS] relay (FE_SYNC_RELAY=http://127.0.0.1:3340) reached /ready within 20s
+=== FE_SYNC_RELAY=http://127.0.0.1:3340 ===
+2026-10-25T12:47:22.438538Z  INFO fe_relay: Starting FractalEngine Relay (headless)
+2026-10-25T12:47:22.438641Z  INFO fe_relay: Co-locating the blob store with FE_DB_PATH blob_dir=C:\Users\atooz\AppData\Local\Temp\fe-relay-health-verify-20261025-064717\Custom\blobs
+2026-10-25T12:47:22.439205Z  INFO fe_network: Network thread started
+2026-10-25T12:47:22.439906Z  WARN fe_relay: FE_SECRET_FRACTALENGINE_SHARE_SIGNER is not set — generating an EPHEMERAL share-URL signing key: every share link minted by this relay stops verifying (401) after a restart. Export a 64-hex-char seed in FE_SECRET_FRACTALENGINE_SHARE_SIGNER to make share links survive restarts.
+2026-10-25T12:47:22.440903Z  INFO fe_database: Database thread started, initialising SurrealDB at C:\Users\atooz\AppData\Local\Temp\fe-relay-health-verify-20261025-064717\Custom\db
+2026-10-25T12:47:22.441542Z  INFO surrealdb::core::kvs::ds: Starting kvs store at relative path surrealkv://C:\Users\atooz\AppData\Local\Temp\fe-relay-health-verify-20261025-064717\Custom\db
+2026-10-25T12:47:22.441643Z  INFO libp2p_swarm: local_peer_id=12D3KooWLnkJciikWpV4pV6y8dmbpRMx51sTKqTGZqcLkeBnPgWZ
+2026-10-25T12:47:22.441951Z  WARN fe_network: Discovery bootstrap error (continuing): Kademlia bootstrap failed: NoKnownPeers
+2026-10-25T12:47:22.442145Z  INFO surrealdb::core::kvs::surrealkv: Enabling value log separation: true
+2026-10-25T12:47:22.753630Z  INFO surrealdb::core::kvs::surrealkv: Setting value log max file size: 268435456
+2026-10-25T12:47:22.753702Z  INFO surrealdb::core::kvs::surrealkv: Setting value log threshold: 4096
+2026-10-25T12:47:22.753712Z  INFO surrealdb::core::kvs::surrealkv: Versioning enabled: false with retention period: 0ns
+2026-10-25T12:47:22.753720Z  INFO surrealdb::core::kvs::surrealkv: Versioning with versioned_index: false
+2026-10-25T12:47:22.923095Z  INFO surrealdb::core::kvs::surrealkv: Setting block cache capacity: 16020174848
+2026-10-25T12:47:22.923184Z  INFO surrealdb::core::kvs::surrealkv: Setting block size: 65536
+2026-10-25T12:47:22.923936Z  INFO surrealkv::lsm: === Starting LSM tree initialization ===
+2026-10-25T12:47:22.923952Z  INFO surrealkv::lsm: Database path: "C:\\Users\\atooz\\AppData\\Local\\Temp\\fe-relay-health-verify-20261025-064717\\Custom\\db"
+2026-10-25T12:47:22.926820Z  INFO surrealkv::lsm: Manifest state: log_number=0, last_sequence=0
+2026-10-25T12:47:22.926845Z  INFO surrealkv::wal::recovery: Starting WAL recovery from directory: "C:\\Users\\atooz\\AppData\\Local\\Temp\\fe-relay-health-verify-20261025-064717\\Custom\\db\\wal"
+2026-10-25T12:47:22.927049Z  INFO surrealkv::wal::recovery: Replaying WAL segments #00000000000000000000 to #00000000000000000000
+2026-10-25T12:47:22.927209Z  INFO surrealkv::wal::recovery: WAL recovery complete: 0 batches across 0 segments, 0 memtables created, max_seq_num=None
+2026-10-25T12:47:22.927296Z  INFO surrealkv::lsm: === LSM tree initialization complete ===
+2026-10-25T12:47:22.927432Z  INFO surrealdb::core::kvs::surrealkv: Sync mode: every transaction commit
+2026-10-25T12:47:22.927457Z  INFO surrealdb::core::kvs::surrealkv: Grouped commit: enabled (timeout=5000000ns, wait_threshold=12, max_batch_size=4096)
+2026-10-25T12:47:22.927532Z  INFO surrealdb::core::kvs::ds: Started surrealkv kvs store
+2026-10-25T12:47:23.491604Z  INFO fe_database::op_log: HLC initialised: wall_ms=1792932443491, counter=0, max_persisted=0
+2026-10-25T12:47:23.501836Z  INFO fe_database: Checking for base64 assets to migrate...
+2026-10-25T12:47:23.511377Z  INFO fe_database::role_grants: Legacy role rows migrated to role statements report=RoleMigrationReport { already_applied: false, dropped_owner_rows: 0, converted_to_statements: 0, dropped_other_rows: 0 }
+2026-10-25T12:47:23.516089Z  INFO fe_database: SurrealDB ready
+2026-10-25T12:47:23.517760Z  WARN seed_default_data{local_did="did:key:z6Mko5k4SYxJ8WkdW2RyUm4mQUt2CEqzknQukFd9ubSNhS3Y"}:seed_assets: fe_database::handlers::seed: assets/models/ not found — skipping asset seed
+2026-10-25T12:47:23.519922Z  INFO seed_default_data{local_did="did:key:z6Mko5k4SYxJ8WkdW2RyUm4mQUt2CEqzknQukFd9ubSNhS3Y"}: fe_database::handlers::seed: Seeded verse: Genesis Verse (01M5SHKXBXBV5Y10NS23QMPJRB)
+2026-10-25T12:47:23.522131Z  INFO seed_default_data{local_did="did:key:z6Mko5k4SYxJ8WkdW2RyUm4mQUt2CEqzknQukFd9ubSNhS3Y"}: fe_database::handlers::seed: Seeded verse_member: did:key:z6Mko5k4SYxJ8WkdW2RyUm4mQUt2CEqzknQukFd9ubSNhS3Y
+2026-10-25T12:47:23.524084Z  INFO seed_default_data{local_did="did:key:z6Mko5k4SYxJ8WkdW2RyUm4mQUt2CEqzknQukFd9ubSNhS3Y"}: fe_database::handlers::seed: Seeded fractal: Genesis Fractal (01M5SHKXC2TAV4JY6E7Q2FXHCF)
+2026-10-25T12:47:23.530446Z  INFO seed_default_data{local_did="did:key:z6Mko5k4SYxJ8WkdW2RyUm4mQUt2CEqzknQukFd9ubSNhS3Y"}: fe_database::handlers::seed: Seeded petal: Genesis Petal (01M5SHKXC49RHMTQFS4AGPMGKM)
+2026-10-25T12:47:23.538421Z  INFO seed_default_data{local_did="did:key:z6Mko5k4SYxJ8WkdW2RyUm4mQUt2CEqzknQukFd9ubSNhS3Y"}: fe_database::handlers::seed: Seeded room: Lobby
+2026-10-25T12:47:23.547000Z  INFO seed_default_data{local_did="did:key:z6Mko5k4SYxJ8WkdW2RyUm4mQUt2CEqzknQukFd9ubSNhS3Y"}: fe_database::handlers::seed: Seeded room: Workshop
+2026-10-25T12:47:23.554716Z  INFO seed_default_data{local_did="did:key:z6Mko5k4SYxJ8WkdW2RyUm4mQUt2CEqzknQukFd9ubSNhS3Y"}: fe_database::handlers::seed: Seeded room: Gallery
+2026-10-25T12:47:23.556934Z  INFO seed_default_data{local_did="did:key:z6Mko5k4SYxJ8WkdW2RyUm4mQUt2CEqzknQukFd9ubSNhS3Y"}: fe_database::handlers::seed: Seeded node: Welcome Beacon at XZ[0.0, 0.0] elev=0
+2026-10-25T12:47:23.558836Z  INFO seed_default_data{local_did="did:key:z6Mko5k4SYxJ8WkdW2RyUm4mQUt2CEqzknQukFd9ubSNhS3Y"}: fe_database::handlers::seed: Seeded node: Info Panel at XZ[3.0, 0.0] elev=1.2
+2026-10-25T12:47:23.560666Z  INFO seed_default_data{local_did="did:key:z6Mko5k4SYxJ8WkdW2RyUm4mQUt2CEqzknQukFd9ubSNhS3Y"}: fe_database::handlers::seed: Seeded node: Lucky Duck at XZ[-2.0, 2.0] elev=0
+2026-10-25T12:47:23.560778Z  INFO fe_relay: Starting sync thread node_id=803614b0057c9aef340dfb7355e0655b024491b1c9e9662848ec4a401201c4c7
+2026-10-25T12:47:23.561245Z  INFO fe_sync::sync_thread: Resolved relay config for sync thread relay_config=Custom(["http://127.0.0.1:3340"])
+2026-10-25T12:47:23.572382Z  INFO fe_relay: FE_SHUTDOWN_AFTER_SECS set — scheduling graceful shutdown secs=60
+2026-10-25T12:47:23.574578Z  INFO fe_relay: Hydrated analytics EntityStore through the DB thread's shared handle node_count=3
+2026-10-25T12:47:23.575083Z  INFO fe_relay: Loaded hexon tilesets into registry count=0
+2026-10-25T12:47:23.575376Z  INFO fe_relay: Relay ready -- entering headless event loop
+2026-10-25T12:47:23.576698Z  INFO fe_relay::replicas: Startup verse replica scan: requested hierarchy from DB thread
+2026-10-25T12:47:23.578307Z  INFO fe_api: API server listening on 127.0.0.1:18777
+2026-10-25T12:47:23.580775Z  INFO load_hierarchy_handler: fe_database::handlers::crud: Loaded hierarchy: 1 verses
+2026-10-25T12:47:23.586797Z  INFO fe_sync::endpoint: iroh endpoint bound congestion_controller="bbr3" relay_config=Custom(["http://127.0.0.1:3340"]) relay_token_configured=false
+2026-10-25T12:47:23.586830Z  INFO fe_sync::sync_thread: Sync thread started (online) node_id=803614b0057c9aef340dfb7355e0655b024491b1c9e9662848ec4a401201c4c7
+2026-10-25T12:47:23.677413Z  WARN fe_relay::replicas: no namespace_id available (row has none and no secret stored) — replica not opened verse_id="01M5SHKXBXBV5Y10NS23QMPJRB"
+2026-10-25T12:47:23.677572Z  INFO fe_relay::replicas: Startup replica scan pass complete verses=1 opened=0
+2026-10-25T12:47:28.589930Z  WARN fe_sync::endpoint: no home relay connected yet — advertising local addresses only timeout=5s
+2026-10-25T12:47:28.601235Z  INFO iroh_docs::store::fs::migrations: Executed migration migration_004_populate_by_key_index (0 rows affected)
+2026-10-25T12:47:28.611088Z  INFO fe_sync::docs_engine: Docs author imported from the endpoint identity author=803614b0057c9aef340dfb7355e0655b024491b1c9e9662848ec4a401201c4c7 node_id=803614b005
+2026-10-25T12:47:28.611234Z  INFO fe_sync::docs_engine: P2P stack online: blobs + gossip + docs routed node_id=803614b005 p2p_dir=C:\Users\atooz\AppData\Local\Temp\fe-relay-health-verify-20261025-064717\Custom\p2p blobs_alpn=/iroh-bytes/4 gossip_alpn=/iroh-gossip/1 docs_alpn=/iroh-sync/1
+2026-10-25T12:47:28.612147Z  INFO fe_sync::status: SyncStatus updated: started — dialable address above (paste into FE_SYNC_BOOTSTRAP) online=true node_addr={"id":"803614b0057c9aef340dfb7355e0655b024491b1c9e9662848ec4a401201c4c7","addrs":[{"Ip":"172.18.48.1:51771"},{"Ip":"192.168.0.167:51771"}]}
+2026-10-25T12:47:28.612189Z  INFO fe_sync::status: SyncStatus updated: relay health changed health=Unknown
+2026-10-25T12:47:28.612201Z  INFO fe_sync::status: Relay health updated health=Unknown
+
+
+  [PASS] resolved relay config line names relay_config=Custom
+  [PASS] default-relay rate-limit warning ABSENT (Custom mode)
+  [PASS] a relay-health line was captured for Custom mode
+  [PASS] relay (FE_SYNC_RELAY=disabled) reached /ready within 20s
+=== FE_SYNC_RELAY=disabled ===
+2026-10-25T12:47:29.053693Z  INFO fe_relay: Starting FractalEngine Relay (headless)
+2026-10-25T12:47:29.053799Z  INFO fe_relay: Co-locating the blob store with FE_DB_PATH blob_dir=C:\Users\atooz\AppData\Local\Temp\fe-relay-health-verify-20261025-064717\Disabled\blobs
+2026-10-25T12:47:29.054263Z  INFO fe_network: Network thread started
+2026-10-25T12:47:29.054883Z  WARN fe_relay: FE_SECRET_FRACTALENGINE_SHARE_SIGNER is not set — generating an EPHEMERAL share-URL signing key: every share link minted by this relay stops verifying (401) after a restart. Export a 64-hex-char seed in FE_SECRET_FRACTALENGINE_SHARE_SIGNER to make share links survive restarts.
+2026-10-25T12:47:29.055815Z  INFO fe_database: Database thread started, initialising SurrealDB at C:\Users\atooz\AppData\Local\Temp\fe-relay-health-verify-20261025-064717\Disabled\db
+2026-10-25T12:47:29.056359Z  INFO libp2p_swarm: local_peer_id=12D3KooWKYkfUScxYbFM8zykKGZ8Z9uQE9ah7UfFGhL4vbKaEbTh
+2026-10-25T12:47:29.056401Z  INFO surrealdb::core::kvs::ds: Starting kvs store at relative path surrealkv://C:\Users\atooz\AppData\Local\Temp\fe-relay-health-verify-20261025-064717\Disabled\db
+2026-10-25T12:47:29.056596Z  WARN fe_network: Discovery bootstrap error (continuing): Kademlia bootstrap failed: NoKnownPeers
+2026-10-25T12:47:29.056989Z  INFO surrealdb::core::kvs::surrealkv: Enabling value log separation: true
+2026-10-25T12:47:29.361920Z  INFO surrealdb::core::kvs::surrealkv: Setting value log max file size: 268435456
+2026-10-25T12:47:29.361976Z  INFO surrealdb::core::kvs::surrealkv: Setting value log threshold: 4096
+2026-10-25T12:47:29.361985Z  INFO surrealdb::core::kvs::surrealkv: Versioning enabled: false with retention period: 0ns
+2026-10-25T12:47:29.361990Z  INFO surrealdb::core::kvs::surrealkv: Versioning with versioned_index: false
+2026-10-25T12:47:29.544726Z  INFO surrealdb::core::kvs::surrealkv: Setting block cache capacity: 16020174848
+2026-10-25T12:47:29.544821Z  INFO surrealdb::core::kvs::surrealkv: Setting block size: 65536
+2026-10-25T12:47:29.545819Z  INFO surrealkv::lsm: === Starting LSM tree initialization ===
+2026-10-25T12:47:29.545842Z  INFO surrealkv::lsm: Database path: "C:\\Users\\atooz\\AppData\\Local\\Temp\\fe-relay-health-verify-20261025-064717\\Disabled\\db"
+2026-10-25T12:47:29.549771Z  INFO surrealkv::lsm: Manifest state: log_number=0, last_sequence=0
+2026-10-25T12:47:29.549822Z  INFO surrealkv::wal::recovery: Starting WAL recovery from directory: "C:\\Users\\atooz\\AppData\\Local\\Temp\\fe-relay-health-verify-20261025-064717\\Disabled\\db\\wal"
+2026-10-25T12:47:29.550087Z  INFO surrealkv::wal::recovery: Replaying WAL segments #00000000000000000000 to #00000000000000000000
+2026-10-25T12:47:29.550342Z  INFO surrealkv::wal::recovery: WAL recovery complete: 0 batches across 0 segments, 0 memtables created, max_seq_num=None
+2026-10-25T12:47:29.550494Z  INFO surrealkv::lsm: === LSM tree initialization complete ===
+2026-10-25T12:47:29.550690Z  INFO surrealdb::core::kvs::surrealkv: Sync mode: every transaction commit
+2026-10-25T12:47:29.550726Z  INFO surrealdb::core::kvs::surrealkv: Grouped commit: enabled (timeout=5000000ns, wait_threshold=12, max_batch_size=4096)
+2026-10-25T12:47:29.550820Z  INFO surrealdb::core::kvs::ds: Started surrealkv kvs store
+2026-10-25T12:47:30.110430Z  INFO fe_database::op_log: HLC initialised: wall_ms=1792932450110, counter=0, max_persisted=0
+2026-10-25T12:47:30.119562Z  INFO fe_database: Checking for base64 assets to migrate...
+2026-10-25T12:47:30.127262Z  INFO fe_database::role_grants: Legacy role rows migrated to role statements report=RoleMigrationReport { already_applied: false, dropped_owner_rows: 0, converted_to_statements: 0, dropped_other_rows: 0 }
+2026-10-25T12:47:30.130767Z  INFO fe_database: SurrealDB ready
+2026-10-25T12:47:30.132374Z  WARN seed_default_data{local_did="did:key:z6MkfEFhCQtxMUu4yWjoQ1bm4D7DsMs3xGxuELk37UdrDFZu"}:seed_assets: fe_database::handlers::seed: assets/models/ not found — skipping asset seed
+2026-10-25T12:47:30.134689Z  INFO seed_default_data{local_did="did:key:z6MkfEFhCQtxMUu4yWjoQ1bm4D7DsMs3xGxuELk37UdrDFZu"}: fe_database::handlers::seed: Seeded verse: Genesis Verse (01M5SHM3TMZYPVXKBSWTN2AKPJ)
+2026-10-25T12:47:30.136851Z  INFO seed_default_data{local_did="did:key:z6MkfEFhCQtxMUu4yWjoQ1bm4D7DsMs3xGxuELk37UdrDFZu"}: fe_database::handlers::seed: Seeded verse_member: did:key:z6MkfEFhCQtxMUu4yWjoQ1bm4D7DsMs3xGxuELk37UdrDFZu
+2026-10-25T12:47:30.138583Z  INFO seed_default_data{local_did="did:key:z6MkfEFhCQtxMUu4yWjoQ1bm4D7DsMs3xGxuELk37UdrDFZu"}: fe_database::handlers::seed: Seeded fractal: Genesis Fractal (01M5SHM3TRKFDAJ4396DHBV9NA)
+2026-10-25T12:47:30.144881Z  INFO seed_default_data{local_did="did:key:z6MkfEFhCQtxMUu4yWjoQ1bm4D7DsMs3xGxuELk37UdrDFZu"}: fe_database::handlers::seed: Seeded petal: Genesis Petal (01M5SHM3TTBFRYMW7MYE1PBY0Y)
+2026-10-25T12:47:30.151934Z  INFO seed_default_data{local_did="did:key:z6MkfEFhCQtxMUu4yWjoQ1bm4D7DsMs3xGxuELk37UdrDFZu"}: fe_database::handlers::seed: Seeded room: Lobby
+2026-10-25T12:47:30.158919Z  INFO seed_default_data{local_did="did:key:z6MkfEFhCQtxMUu4yWjoQ1bm4D7DsMs3xGxuELk37UdrDFZu"}: fe_database::handlers::seed: Seeded room: Workshop
+2026-10-25T12:47:30.165752Z  INFO seed_default_data{local_did="did:key:z6MkfEFhCQtxMUu4yWjoQ1bm4D7DsMs3xGxuELk37UdrDFZu"}: fe_database::handlers::seed: Seeded room: Gallery
+2026-10-25T12:47:30.168121Z  INFO seed_default_data{local_did="did:key:z6MkfEFhCQtxMUu4yWjoQ1bm4D7DsMs3xGxuELk37UdrDFZu"}: fe_database::handlers::seed: Seeded node: Welcome Beacon at XZ[0.0, 0.0] elev=0
+2026-10-25T12:47:30.170061Z  INFO seed_default_data{local_did="did:key:z6MkfEFhCQtxMUu4yWjoQ1bm4D7DsMs3xGxuELk37UdrDFZu"}: fe_database::handlers::seed: Seeded node: Info Panel at XZ[3.0, 0.0] elev=1.2
+2026-10-25T12:47:30.171981Z  INFO seed_default_data{local_did="did:key:z6MkfEFhCQtxMUu4yWjoQ1bm4D7DsMs3xGxuELk37UdrDFZu"}: fe_database::handlers::seed: Seeded node: Lucky Duck at XZ[-2.0, 2.0] elev=0
+2026-10-25T12:47:30.172092Z  INFO fe_relay: Starting sync thread node_id=0b86bd24570c9d1bb1d42acf766d9e872b0cd44b9d3f4b37a481acea7750ff9c
+2026-10-25T12:47:30.172463Z  INFO fe_sync::sync_thread: Resolved relay config for sync thread relay_config=Disabled
+2026-10-25T12:47:30.183503Z  INFO fe_relay: FE_SHUTDOWN_AFTER_SECS set — scheduling graceful shutdown secs=60
+2026-10-25T12:47:30.187453Z  INFO fe_relay: Hydrated analytics EntityStore through the DB thread's shared handle node_count=3
+2026-10-25T12:47:30.187934Z  INFO fe_relay: Loaded hexon tilesets into registry count=0
+2026-10-25T12:47:30.188163Z  INFO fe_relay: Relay ready -- entering headless event loop
+2026-10-25T12:47:30.189414Z  INFO fe_relay::replicas: Startup verse replica scan: requested hierarchy from DB thread
+2026-10-25T12:47:30.190971Z  INFO fe_api: API server listening on 127.0.0.1:18777
+2026-10-25T12:47:30.193395Z  INFO load_hierarchy_handler: fe_database::handlers::crud: Loaded hierarchy: 1 verses
+2026-10-25T12:47:30.201860Z  INFO fe_sync::endpoint: iroh endpoint bound congestion_controller="bbr3" relay_config=Disabled relay_token_configured=false
+2026-10-25T12:47:30.201919Z  INFO fe_sync::sync_thread: Sync thread started (online) node_id=0b86bd24570c9d1bb1d42acf766d9e872b0cd44b9d3f4b37a481acea7750ff9c
+2026-10-25T12:47:30.214748Z  INFO iroh_docs::store::fs::migrations: Executed migration migration_004_populate_by_key_index (0 rows affected)
+2026-10-25T12:47:30.224992Z  INFO fe_sync::docs_engine: Docs author imported from the endpoint identity author=0b86bd24570c9d1bb1d42acf766d9e872b0cd44b9d3f4b37a481acea7750ff9c node_id=0b86bd2457
+2026-10-25T12:47:30.225155Z  INFO fe_sync::docs_engine: P2P stack online: blobs + gossip + docs routed node_id=0b86bd2457 p2p_dir=C:\Users\atooz\AppData\Local\Temp\fe-relay-health-verify-20261025-064717\Disabled\p2p blobs_alpn=/iroh-bytes/4 gossip_alpn=/iroh-gossip/1 docs_alpn=/iroh-sync/1
+2026-10-25T12:47:30.239413Z  INFO fe_sync::status: SyncStatus updated: started — dialable address above (paste into FE_SYNC_BOOTSTRAP) online=true node_addr={"id":"0b86bd24570c9d1bb1d42acf766d9e872b0cd44b9d3f4b37a481acea7750ff9c","addrs":[{"Ip":"172.18.48.1:51784"},{"Ip":"192.168.0.167:51784"}]}
+2026-10-25T12:47:30.239481Z  INFO fe_sync::status: SyncStatus updated: relay health changed health=Disabled
+2026-10-25T12:47:30.239491Z  INFO fe_sync::status: Relay health updated health=Disabled
+2026-10-25T12:47:30.291797Z  WARN fe_relay::replicas: no namespace_id available (row has none and no secret stored) — replica not opened verse_id="01M5SHM3TMZYPVXKBSWTN2AKPJ"
+2026-10-25T12:47:30.291921Z  INFO fe_relay::replicas: Startup replica scan pass complete verses=1 opened=0
+
+
+  [PASS] resolved relay config line names relay_config=Disabled
+  [PASS] default-relay rate-limit warning ABSENT (Disabled mode)
+  [PASS] a relay-health line was captured for Disabled mode
+
+=== SUMMARY ===
+Checks: 12 / 12 passed
+PASS: relay-health-verify (PAS-P1V) - all checks passed

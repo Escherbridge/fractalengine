@@ -6,20 +6,20 @@
 
 .DESCRIPTION
     Boots `fe-relay.exe` three times, once per relay posture:
-      - `default`                   — iroh's n0-hosted public relays
-      - `http://127.0.0.1:3340`     — an operator-supplied Custom URL (no
+      - `default`                   -- iroh's n0-hosted public relays
+      - `http://127.0.0.1:3340`     -- an operator-supplied Custom URL (no
                                       local iroh-relay 1.x container is
-                                      assumed to be up for this run — R6: the
+                                      assumed to be up for this run -- R6: the
                                       relay host is still undecided, so this
                                       run only proves mode logging + a
                                       Degraded/Unknown health transition, not
                                       a reachable custom relay)
-      - `disabled`                  — no relay, direct/LAN-only
+      - `disabled`                  -- no relay, direct/LAN-only
 
     Each run gets a fresh `FE_P2P_DIR`/`FE_DB_PATH`, boots with
     `FE_SYNC_RELAY=disabled`'s sibling values substituted per mode, waits for
     `/ready` (bounded ~20s), captures stdout/stderr, and is torn down by its
-    OWN PID before the next mode starts — never a blind process-name kill.
+    OWN PID before the next mode starts -- never a blind process-name kill.
 
     Asserts, per mode, from the captured log:
       1. the resolved relay config line names the right mode
@@ -29,12 +29,12 @@
          relay servers") appears ONLY for `default`;
       3. a relay-health line ("SyncStatus updated: relay health changed")
          appears for every mode (`fe-sync/src/status.rs::drain_sync_events`,
-         already unconditional since S3 — this run is what captures it for
+         already unconditional since S3 -- this run is what captures it for
          the record, not a new log line).
 
     Output: this script's own PASS/FAIL to the console, and every mode's
-    captured log appended to `scripts/relay-health-verify.log` (committed —
-    campaign S9 pastes its PAS-P1V run excerpt from here into evidence.md §6).
+    captured log appended to `scripts/relay-health-verify.log` (committed --
+    campaign S9 pastes its PAS-P1V run excerpt from here into evidence.md S6).
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -81,7 +81,7 @@ New-Item -ItemType Directory -Path $script:WorkDir -Force | Out-Null
 $logPath = Join-Path $PSScriptRoot 'relay-health-verify.log'
 Write-Host "  Work dir: $script:WorkDir"
 Write-Host "  Log: $logPath"
-"PAS-P1V relay-health-verify — $(Get-Date -Format o)" | Set-Content -Path $logPath
+"PAS-P1V relay-health-verify -- $(Get-Date -Format o)" | Set-Content -Path $logPath
 function Log-Line($line) { $line | Add-Content -Path $logPath }
 
 $env:RUST_MIN_STACK = '134217728'
@@ -132,11 +132,19 @@ function Start-RelayMode($relaySpec, $bindAddr, $dbPath, $p2pDir, $outLog, $errL
     }
     if (-not $ready) { throw "relay (FE_SYNC_RELAY=$relaySpec) never became ready within 20s (log: $outLog / $errLog)" }
 
-    # A short grace window so the relay-health watcher's first transition
-    # (bind result -> Healthy/Degraded/Unknown) has landed in the log before
-    # teardown; the sync thread logs this immediately on bind (`endpoint.rs`),
-    # not after a round trip, so this is generous, not load-bearing.
-    Start-Sleep -Milliseconds 1500
+    # Wait (bounded) for the relay-health watcher's first transition to land in
+    # the log before teardown. The sync thread emits it right after
+    # `SyncEndpoint::node_addr`, which with a relay configured waits up to
+    # iroh's NET_REPORT_TIMEOUT for a home relay (`endpoint.rs`
+    # HOME_RELAY_WAIT) -- so an UNREACHABLE custom relay logs it only after
+    # that bound, well past a fixed short grace (R5 sweep).
+    $healthDeadline = (Get-Date).AddSeconds(20)
+    while ((Get-Date) -lt $healthDeadline) {
+        $seen = ((Get-Content $outLog -Raw -ErrorAction SilentlyContinue) + "`n" +
+                 (Get-Content $errLog -Raw -ErrorAction SilentlyContinue))
+        if ($seen -match 'SyncStatus updated: relay health changed') { break }
+        Start-Sleep -Milliseconds 250
+    }
 
     return @{
         Process = $proc; OutWriter = $outWriter; ErrWriter = $errWriter
