@@ -583,3 +583,18 @@ fe-sync tests only (localized files).
 - OF-10c MED (sync_thread.rs UNVOUCHED_FETCH_CONTEXT = "\u{0}unvouched-provider" sentinel verse id in the learned
   set): replace with an explicit unvouched/never-seed flag on RootBinding, or reject the sentinel id in
   set_verse_access and verse-open paths. Sentinel-in-data is a collision-shaped fail-open waiting for a refactor.
+
+### Tick 11 (campaign close) — 2026-10-25 · VERDICT: COMPLETE, GREEN, UNPUSHED
+- R6 `6141914`: OF-10a FIXED (contested-petal rule — conflicting mappings fail closed until an author with
+  authority over EVERY claimed fractal settles it; order of arrival no longer decides where a petal lives; known
+  availability residual: an Editor+ insider can contest a petal into unmapped state, documented §role-view),
+  OF-10b FIXED (per-mapping author provenance + reverdict_petal_mappings on every rematerialize, 4-deep rollback
+  stack), OF-10c FIXED (never_seed flag replaces the sentinel; state file format 2→3 with sentinel migration).
+  Mutation-checked tests; fe-sync 315/0; clippy 1.99 clean; harness role-propagation/distributed-query/shard-fabric PASS.
+- CAMPAIGN TOTALS (FF rhythm, 2026-10-24/25): W5 remainder (7 slices) + W5s (9 findings) + W6 (11 slices) +
+  refine R1-R5 + R6 = 24 agent runs, 0 unresolved findings, 10 review-batch findings queues (OF-5..OF-10) all
+  closed or dispositioned with evidence. Final sweep 4008/0/19 + harness 18/18 + relay acceptance PASS + workspace
+  clippy/fmt/feature-matrix green. 6 real product bugs found at the sweep, all cross-peer integration class.
+- OPEN (carried, with owners): DB-plane confine_petal first-authorized-writer (sync now stricter than DB — R6
+  deferred, needs DB-plane change; candidate for next campaign), T28/BLOB-HASH-CAPABILITY, relay message signing
+  (S-1), D-23 relay-without-invite owner pin, in-app GUI verify (user-gated), PUSH (user-gated, ~133 commits).

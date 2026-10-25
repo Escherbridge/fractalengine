@@ -570,3 +570,5 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
 - **`Artifact`** for every end-of-campaign report — trigger: "user rule: reports as artifacts,
   status + decisions on top, teach depth, diagrams".
 - **`/handoff rolling`** at each workflow boundary — trigger: "multi-hour campaign; keep §8 live".
+
+- **2026-10-25 (FF campaign close).** W5+W5s+W6+refine+R6 all GREEN: sweep 4008/0/19, harness 18/18, relay acceptance PASS, clippy/fmt/feature-matrix clean. HEAD `6141914`, ~133 commits ahead of origin, push + in-app verify user-gated. Review verdicts in the accountability log ticks 9-11 and conductor/tracks/role_propagation_20261013/review-refine-*.md. Next: user push decision -> watch CI -> backlog ratification (RUNBOOK §7 step 7).
