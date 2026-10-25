@@ -1056,6 +1056,20 @@ style parity holds by construction, not by coincidence.
     asserts it. Tests:
     `a_first_arriving_squat_cannot_hold_a_petal_against_its_real_home`,
     `a_petal_mapping_admitted_under_a_stale_role_view_is_withdrawn_on_re_pin_or_demotion`.
+  - *OF-11 hardening (R6b).* `OwnReplay` is now gated whenever the petal is
+    mapped OR contested — not just mapped — so a stale replayed own row can
+    no longer auto-settle a contest through the unconditional
+    locally-authoritative path; a contested own replay instead enters the
+    normal claim path under the local DID (test:
+    `a_stale_own_replay_cannot_settle_a_contested_petal`). Both capped lists
+    this seam owns now refuse growth at the cap instead of evicting — a
+    refused claim's fractal is remembered in `contested_claimed_fractals`
+    until the contest settles, and the 4-deep mapping-history rollback
+    stack never evicts its locally-authoritative layer or the sole record
+    of a distinct fractal — so neither cap can let a flood settle (or roll
+    back) past proof it hasn't earned (tests:
+    `a_claim_flood_cannot_evict_a_contested_fractal_from_the_settlement_proof`,
+    `a_full_mapping_history_cannot_rotate_out_the_locally_authoritative_layer`).
 - **Quarantine (the `__shards` gate's retry seam).** A gated row that
   cannot be judged yet — the author's role hasn't converged, or the row's
   petal is unknown — is held in a capped, drop-oldest FIFO (1024/verse,
