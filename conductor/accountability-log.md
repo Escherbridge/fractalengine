@@ -367,3 +367,46 @@ is prompt context only, no bypass). All three directives ACCEPTED:
   (c) OSS-1.3 is DONE (deny.toml + CI licences step `da3e6a1`, CI run 38498925963 "licenses ok"); W6-11 corrects
   the stale ledger lines. (d) W6 script `.omc/plans/w6-decisions-20261012.js` builds the AC-52 review guard into
   the slice loop from the start. Launch only after W5 closes, critic tick 9 runs, and OF-3 is resolved.
+- RP-2 `6bef9e5` GREEN (11-step gate; 21 files, +2818; 18 named tests incl. AC-42 durability:
+  `a_revocation_issued_while_the_replica_is_closed_reaches_peers_after_restart`,
+  `a_pending_writes_flood_cannot_drop_a_local_revocation`). Deferrals judged: test runs (rule); `RevokeReport::still_held`
+  UI → D-32 FR-4 per plan §2.3 (second campaign, backed — the DB logs + returns it meanwhile); T23 matrix row (already
+  in the plan). **Watch item for RP-4s:** startup re-emit rides the bounded drop-and-count bridge — a large local
+  statement set can drop entries at startup, replica-open re-emit is the only second chance; RP-4s must rule on it
+  (AC-42 reach). Still open: OF-3; `reconcile.rs` remains a direct writer of the role cache (harmless per RP-2 — RP-9b
+  to confirm).
+- Orchestrator slip (D, self-reported): while reading RP-2's result I started a `wait_slice.py` with a trailing `&`
+  inside a foreground call (the banned stray-watcher pattern); `kill %1` did not reap it. Found by exact command line
+  (PID 80404) and killed by exact PID; 0 remain. Watchers are armed ONLY via run_in_background.
+- RP-3 `2a44583` GREEN (11-step gate; 15 tests incl. the 720-order `role_statement_delivery_order_never_changes_the_final_role_set`).
+  **OF-4 (HIGH, owner integrity, found by RP-3, not its file):** `fe-database/src/reconcile.rs` rule `orphaned_creator`
+  runs at every DB startup and rewrites `verse.created_by` to the local DID for any verse whose only `verse_member`
+  rows are the creator + local node; `join_verse_by_invite` writes no `verse_member` rows → after a restart an
+  INVITEE claims every replicated verse as Owner locally, corrupting its role view under RP's owner-from-created_by
+  model. Routed as a deferral naming RP-4 (owner integrity) / RP-4s. Gate: if neither RP-4 nor RP-4s fixes it (rule
+  restricted to verses this node created, or dropped, + a restart test without the third-member workaround in
+  `held_role_statements_survive_restart`), treat as an unfixed HIGH under AC-52 → halt + repair before RP-5.
+  Also noted for RP-8/RP-9b: the harness DB loop still no-ops AssignRole/RevokeRole, so harness scenario 18 must not
+  rely on local grants being applied in the harness.
+
+### FF directive (W5 relaunch, fast-forward) — 2026-10-24 · USER OVERRIDE (logged per critic contract)
+- User directives (2026-10-24): (1) "a lot of the time keeps going to build times and test gates — fast forward:
+  get code complete, refine after"; (2) "pick this up again; most decisions should be complete; NO deferrals allowed".
+- Rhythm change: per-slice 11-step compile+clippy gate → per-slice `cargo check -p <touched crates> --tests` ONLY
+  (foreground, AC-48 mechanics kept: 600 s timeout, one re-run, never background cargo, 0xc0000142 retry-once).
+  Workspace clippy, test EXECUTION, and ALL review passes move to ONE refine phase after W6 code-complete:
+  RP-4s + RP-9 + RP-9b merge into a single fresh-context security+correctness review-and-fix over the whole
+  W5+W6 diff, then the final sweep (§7 step 6: full tests + harness + e2e → push on green).
+- This overrides critic tick 8 AC-41 (RP-4s "before RP-5"). Reason: gate wall-clock dominated the campaign; the
+  user accepts the rework risk of late review. Revert trigger: the refine-phase review finds a CRITICAL in the
+  RP-0..RP-4 foundations that invalidates RP-5+ work — then the review's fixes propagate forward before the sweep.
+- OF-3 stays IN-WAVE as new slice W5b (parser unification is code, not review; still gates W6): one scope-chain
+  parser, moved pure into fe-policy, re-exported from fe-database, + a differential test over the scope fixtures.
+- OF-4: RP-4 `4d3a1a6` claims the fix in its title ("owner integrity"); UNVERIFIED until the refine-phase review
+  confirms (reconcile.rs orphaned_creator restricted to locally-created verses or dropped, + restart test without
+  the third-member workaround in held_role_statements_survive_restart). AC-52 halt applies at the refine phase.
+- No-deferrals rule: every remaining slice implements its FULL plan section; slice results must return empty
+  openItems or the run halts. Test EXECUTION remains deferred to the sweep (standing rhythm, unchanged).
+- Relaunch safety: prior run `wf_4f099aec-bc1` belonged to the dead 2026-10-15 session (cross-session TaskStop
+  impossible); verified ZERO cargo/rustc processes before launch (632 total procs, no build lock). New run
+  `w5-ff-remainder`: RP-4b → W5b(OF-3) → RP-5 → RP-6 → RP-7 → RP-8 → RP-10, base `4d3a1a6`, strictly sequential.
