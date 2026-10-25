@@ -525,3 +525,15 @@ gates `cargo check -p fe-sync -p fe-database -p fractalengine --tests`, before W
   re-fetch from the original verse).
 - Both routed to the merged refine review (with RP-4s/RP-9/RP-9b/W6-9/W6-10 scope). W6 running — no fe-sync edits
   mid-run (same contention rule as OF-6/OF-7).
+
+### OF-9 (background security review, 2026-10-25) — sharding.rs note_petal_row · HIGH · QUEUED for refine phase
+- HIGH (unauthenticated scope mapping): `note_petal_row` accepts and OVERWRITES the petal→fractal map from any
+  replicated "petal" row, no author gate. The map feeds role_at's scope-chain resolution — remapping a petal under
+  an attacker-controlled fractal bends authority (their Manager grant suddenly encloses the victim petal) or breaks
+  it (legit Managers lose the petal). The structural spine of the role model, so HIGH is right.
+- Fix shape (refine): gate like other sync-plane rows — accept only when the attested author is Owner/Manager+ at
+  the TARGET fractal scope (`role_at(author, build_scope(verse, Some(fractal), None))`), else quarantine;
+  first-write-wins or require authority over BOTH old and new fractal on change; or learn the map only from petal
+  rows the DB plane reported Applied (one admission point — matches the InboundAdmissions tripwire).
+- Refine-phase security worklist now: OF-8a (any-parent admission), OF-8b hardening (authority-gated narrowing),
+  OF-9 (petal-row scope mapping), OF-4 verification, + the full RP-4s/RP-9/RP-9b/W6-9/W6-10 merged scope.
