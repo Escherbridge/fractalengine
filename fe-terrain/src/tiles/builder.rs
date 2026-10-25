@@ -218,6 +218,33 @@ mod inner {
             out
         }
 
+        /// Builds a fresh `TilesetMeta` for one of this file's three
+        /// construction sites (whole-archive export, per-chunk export, outer
+        /// container export). Never overrides `crs` — `..Default::default()`
+        /// already stamps `fe_format::manifest::DEFAULT_TILESET_CRS`, the
+        /// house rule in `fe-format/src/AGENTS.md` §scale. One helper means
+        /// one test (`a_freshly_packaged_tileset_records_epsg_4326_in_its_raw_archive_meta`)
+        /// covers every site a future `crs: None` regression could creep
+        /// back into.
+        fn fresh_tileset_meta(
+            &self,
+            bounds: [f64; 4],
+            min_zoom: u8,
+            max_zoom: u8,
+            tile_count: u32,
+        ) -> TilesetMeta {
+            TilesetMeta {
+                bounds,
+                min_zoom,
+                max_zoom,
+                tile_size: 256,
+                elevation_encoding: self.elevation_encoding.clone(),
+                tile_count,
+                region_name: self.region_name.clone(),
+                ..Default::default()
+            }
+        }
+
         /// Download tiles and package into a single `.hexon` archive.
         pub async fn package_hexon(
             &self,
@@ -262,17 +289,12 @@ mod inner {
                 manifest.signature = Some(sig);
             }
 
-            let meta = TilesetMeta {
-                bounds: self.bounds,
-                min_zoom: self.min_zoom,
-                max_zoom: self.max_zoom,
-                tile_size: 256,
-                elevation_encoding: self.elevation_encoding.clone(),
-                tile_count: result.tiles_downloaded,
-                region_name: self.region_name.clone(),
-                crs: None, // preserve pre-Default behavior exactly; see fe-format/src/AGENTS.md §scale
-                ..Default::default()
-            };
+            let meta = self.fresh_tileset_meta(
+                self.bounds,
+                self.min_zoom,
+                self.max_zoom,
+                result.tiles_downloaded,
+            );
 
             let archive_bytes = HexonArchive::export_tileset(
                 manifest,
@@ -368,17 +390,8 @@ mod inner {
                     signature: None,
                 };
 
-                let chunk_meta = TilesetMeta {
-                    bounds: chunk_bounds,
-                    min_zoom: slice.zoom,
-                    max_zoom: slice.zoom,
-                    tile_size: 256,
-                    elevation_encoding: self.elevation_encoding.clone(),
-                    tile_count,
-                    region_name: self.region_name.clone(),
-                    crs: None, // preserve pre-Default behavior exactly; see fe-format/src/AGENTS.md §scale
-                    ..Default::default()
-                };
+                let chunk_meta =
+                    self.fresh_tileset_meta(chunk_bounds, slice.zoom, slice.zoom, tile_count);
 
                 let chunk_archive = HexonArchive::export_tileset(
                     chunk_manifest,
@@ -433,17 +446,12 @@ mod inner {
                 integrity: None,
                 signature: None,
             };
-            let outer_meta = TilesetMeta {
-                bounds: self.bounds,
-                min_zoom: self.min_zoom,
-                max_zoom: self.max_zoom,
-                tile_size: 256,
-                elevation_encoding: self.elevation_encoding.clone(),
-                tile_count: tiles.len() as u32,
-                region_name: self.region_name.clone(),
-                crs: None,
-                ..Default::default()
-            };
+            let outer_meta = self.fresh_tileset_meta(
+                self.bounds,
+                self.min_zoom,
+                self.max_zoom,
+                tiles.len() as u32,
+            );
             let container_bytes =
                 HexonArchive::export_chunked(outer_manifest, &outer_meta, &chunk_inputs)
                     .context("failed to export chunked container")?;
@@ -545,6 +553,83 @@ mod inner {
                     "tile {key} must be covered by some chunk"
                 );
             }
+            let _ = std::fs::remove_file(&path);
+        }
+
+        /// FEAPI-BUILDER-CRS: a struct-level assert on `TilesetMeta.crs` is a
+        /// tautology — serde fills an absent key back in as
+        /// `Some("EPSG:4326")` on deserialize, so it would pass whether or
+        /// not the builder ever wrote the key. This reads the OUTER and every
+        /// per-chunk `terrain/tileset_meta.json` as raw bytes and asserts the
+        /// key is actually present in the archive. Mutation check:
+        /// reintroduce `crs: None` at any of the three builder.rs sites and
+        /// the written key goes missing, so this goes red.
+        #[test]
+        fn a_freshly_packaged_tileset_records_epsg_4326_in_its_raw_archive_meta() {
+            let key = SigningKey::from_bytes(&[42u8; 32]);
+            let builder = TilesetBuilder::new(
+                "CRS Region",
+                [45.0, -122.0, 46.0, -121.0],
+                10,
+                10,
+                ElevationEncoding::TerrainRgb,
+            );
+            // Same shape as the sealed-container test: big enough that the
+            // greedy size-fill must split into more than one chunk, so the
+            // per-chunk assertion below actually exercises >1 iteration.
+            let tiles: Vec<(String, Vec<u8>)> = (0..6u32)
+                .map(|x| (format!("10/{x}/0"), vec![x as u8; 300 * 1024]))
+                .collect();
+
+            let container = builder
+                .package_tiles_chunked(&tiles, "did:key:z6Mkbuilder", Some(&key), 1)
+                .expect("package_tiles_chunked failed");
+
+            let path = std::env::temp_dir().join(format!(
+                "fe_builder_crs_test_{}.hexon",
+                std::process::id()
+            ));
+            std::fs::write(&path, &container).unwrap();
+            let index = HexonArchiveIndex::open(&path).expect("open container");
+
+            let outer_raw = index
+                .read_member("terrain/tileset_meta.json")
+                .expect("read outer tileset_meta.json")
+                .expect("outer tileset_meta.json must be present");
+            let outer_value: serde_json::Value =
+                serde_json::from_slice(&outer_raw).expect("outer tileset_meta.json must be JSON");
+            assert_eq!(
+                outer_value["crs"],
+                fe_format::manifest::DEFAULT_TILESET_CRS,
+                "outer tileset_meta.json must carry the crs key"
+            );
+
+            let chunk_count = match index.layout() {
+                fe_format::Layout::Container { chunk_count } => chunk_count,
+                fe_format::Layout::Monolithic => panic!("expected a chunked container"),
+            };
+            assert!(chunk_count > 1, "fixture must produce more than one chunk");
+            for seq in 0..chunk_count {
+                let chunk_bytes = index
+                    .chunk(seq)
+                    .expect("read chunk")
+                    .unwrap_or_else(|| panic!("chunk {seq} must be present"));
+                let chunk_meta_raw = fe_format::HexonArchive::read_member(
+                    &chunk_bytes,
+                    "terrain/tileset_meta.json",
+                    fe_format::limits::MAX_JSON_ENTRY_BYTES,
+                )
+                .expect("read chunk tileset_meta.json")
+                .unwrap_or_else(|| panic!("chunk {seq} tileset_meta.json must be present"));
+                let chunk_value: serde_json::Value = serde_json::from_slice(&chunk_meta_raw)
+                    .expect("chunk tileset_meta.json must be JSON");
+                assert_eq!(
+                    chunk_value["crs"],
+                    fe_format::manifest::DEFAULT_TILESET_CRS,
+                    "chunk {seq} tileset_meta.json must carry the crs key"
+                );
+            }
+
             let _ = std::fs::remove_file(&path);
         }
     }

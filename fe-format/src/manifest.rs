@@ -78,15 +78,20 @@ pub struct TilesetMeta {
     pub scale_bounds: Option<[f64; 2]>,
 }
 
+/// CRS a fresh `TilesetMeta` stamps and a legacy (crs-less) archive defaults to.
+/// Single source for `default_crs`/`crs_or_default` and every producer that
+/// builds a `TilesetMeta` fresh (see `fe-format/src/AGENTS.md` §scale).
+pub const DEFAULT_TILESET_CRS: &str = "EPSG:4326";
+
 /// Default CRS for tilesets predating the `crs` field.
 fn default_crs() -> Option<String> {
-    Some("EPSG:4326".to_string())
+    Some(DEFAULT_TILESET_CRS.to_string())
 }
 
 impl TilesetMeta {
     /// Effective CRS, defaulting absent (legacy) values to EPSG:4326.
     pub fn crs_or_default(&self) -> &str {
-        self.crs.as_deref().unwrap_or("EPSG:4326")
+        self.crs.as_deref().unwrap_or(DEFAULT_TILESET_CRS)
     }
 }
 

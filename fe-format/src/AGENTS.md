@@ -173,15 +173,20 @@ byte-identical on re-export) — PAS-P5 signs it. The bundler itself
 `native_scale`, `ground_sample_distance_m`, `crs`, and `scale_bounds` were all
 added after v1.0.0 shipped, each `#[serde(default, ...)]` so legacy archives
 still parse. `TilesetMeta` has a hand-written `impl Default` (not
-`#[derive(Default)]`) whose `crs` agrees with `default_crs()` — the same
-`Some("EPSG:4326")` serde fills in for a crs-less archive — so a struct
-literal and a legacy-archive deserialize produce the same value; every other
-field is its type's zero value, matching serde's plain `#[serde(default)]`.
+`#[derive(Default)]`) whose `crs` agrees with `default_crs()` — both read
+`DEFAULT_TILESET_CRS` (`Some("EPSG:4326")` serde fills in for a crs-less
+archive) — so a struct literal and a legacy-archive deserialize produce the
+same value; every other field is its type's zero value, matching serde's
+plain `#[serde(default)]`.
 **Producers must build `TilesetMeta` as `TilesetMeta { <required + chosen
-fields>, ..Default::default() }`**, never an exhaustive literal — the next
-additive field gets a default instead of breaking every call site (this is
-why `native_scale`/`ground_sample_distance_m`/`crs`/`scale_bounds` each broke
-every producer when they were added).
+fields>, ..Default::default() }`, and must never override `crs`** — a fresh
+tileset always stamps `DEFAULT_TILESET_CRS` via `Default`, never an
+exhaustive literal — the next additive field gets a default instead of
+breaking every call site (this is why
+`native_scale`/`ground_sample_distance_m`/`crs`/`scale_bounds` each broke
+every producer when they were added). `fe-terrain/src/tiles/builder.rs`'s
+`fresh_tileset_meta` helper is the house example: one helper, no `crs`
+override, shared by all three of that file's construction sites.
 
 ## §signature (`signature.rs`)
 
