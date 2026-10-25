@@ -59,6 +59,19 @@ pub(super) fn handle_node_properties_loaded(
     // T2 hydration: a promoted stamp node (`node_kind == "stamp"`) re-binds its
     // id + persisted overrides so they survive restart (§stamped-assets).
     crate::actions::asset::hydrate_promoted_stamp(node_id, properties, stamp_state);
+    // GPX-HIDE-CASCADE A11: the same bag identifies the promoted stamp's
+    // owning track + instance index, so register the marker-id -> node-id
+    // alias the resolver needs (`VisibilityState::promoted_stamp_alias`) —
+    // this caller is the one place that has both ids (plan W6-5).
+    if properties.get("node_kind").and_then(|v| v.as_str()) == Some("stamp") {
+        if let (Some(path_id), Some(index)) = (
+            properties.get("path_id").and_then(|v| v.as_str()),
+            properties.get("instance_index").and_then(|v| v.as_u64()),
+        ) {
+            let marker_id = crate::verse_manager::stamp_marker_id(path_id, index as usize);
+            visibility.register_promoted_stamp_alias(marker_id, node_id.to_string());
+        }
+    }
     // T3 hydration: an earthwork region node (`node_kind == "earthwork_region"`)
     // re-binds region_id→node_id + seeds the volume gate (§sculpt).
     crate::actions::terrain_proposal::hydrate_earthwork_region(node_id, properties, earthwork_map);

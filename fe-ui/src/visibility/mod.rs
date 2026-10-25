@@ -78,6 +78,14 @@ pub struct VisibilityState {
     pub(crate) group_membership: HashMap<String, Vec<String>>,
     /// Transient isolate/solo overlay — never persisted (spec §3.1).
     pub(crate) solo: Option<SoloSet>,
+    /// GPX-HIDE-CASCADE (A11): a promoted stamp's spawned marker id ->
+    /// its own node row id. Lets the resolver find BOTH a promoted stamp's
+    /// own override under either key (a persisted `view.state` hydrates
+    /// onto the real row id, not the marker) and, walked backwards, its
+    /// owning track from the row id alone. Filled where `hydrate_promoted_stamp`
+    /// runs (`verse_manager/db_results/properties.rs`); session-only,
+    /// rebuilt every load.
+    pub(crate) promoted_stamp_alias: HashMap<String, String>,
     /// Bumped by exactly 1 on every real mutation below. `sync_node_visibility`
     /// gates its apply pass on this instead of `ResMut::is_changed()` (F3a:
     /// `gardener_ui_system` derefs `&mut VisibilityState` unconditionally every
@@ -161,6 +169,15 @@ impl VisibilityState {
         if self.solo.take().is_some() {
             self.bump_epoch();
         }
+    }
+
+    /// Registers a promoted stamp's marker id -> node row id alias (A11).
+    /// Bumps `epoch` unconditionally (matches the other setters) — a fresh
+    /// alias can change the resolved hidden reason for the marker id
+    /// without any other field changing, so the apply pass must re-run.
+    pub(crate) fn register_promoted_stamp_alias(&mut self, marker_id: String, node_id: String) {
+        self.promoted_stamp_alias.insert(marker_id, node_id);
+        self.bump_epoch();
     }
 
     /// The active petal's Group registry, in display order.
@@ -1166,42 +1183,103 @@ mod tests {
     fn pickable_refuses_every_effectively_hidden_cause() {
         let nav = nav_in_p1();
         type Setup = fn(&mut VisibilityState);
-        let cases: [(&str, Setup, bool); 6] = [
-            ("nothing hidden", |_| {}, true),
+        let cases: [(&str, &str, Setup, bool); 7] = [
+            ("nothing hidden", "n1", |_| {}, true),
             (
                 "own Hide override",
+                "n1",
                 |s| s.set_node_override("n1", OverrideState::Hide),
                 false,
             ),
             (
                 "hidden petal ancestor",
+                "n1",
                 |s| s.toggle_petal_hidden("p1"),
                 false,
             ),
             (
                 "hidden verse ancestor",
+                "n1",
                 |s| s.toggle_verse_hidden("v1"),
                 false,
             ),
             (
                 "solo excludes it",
+                "n1",
                 |s| s.set_solo(HashSet::from(["n2".to_string()])),
                 false,
             ),
             (
                 "Show override beats a hidden ancestor",
+                "n1",
                 |s| {
                     s.toggle_fractal_hidden("f1");
                     s.set_node_override("n1", OverrideState::Show);
                 },
                 true,
             ),
+            (
+                "owning track hidden -> its stamp is not pickable",
+                "track1::stamp::0",
+                |s| s.set_node_override("track1", OverrideState::Hide),
+                false,
+            ),
         ];
-        for (label, setup, expected) in cases {
+        for (label, node_id, setup, expected) in cases {
             let mut state = VisibilityState::default();
             setup(&mut state);
-            assert_eq!(pickable("n1", &nav, &state), expected, "{label}");
+            assert_eq!(pickable(node_id, &nav, &state), expected, "{label}");
         }
+    }
+
+    // --- GPX-HIDE-CASCADE (W6-5): the apply pass + A11 promoted override ---
+
+    #[test]
+    fn compute_sync_decision_hides_a_hidden_tracks_stamps_and_spares_a_shown_one() {
+        let mut state = VisibilityState::default();
+        state.set_node_override("track1", OverrideState::Hide);
+        // One of the three stamps has its own Show override — it must stay.
+        state.set_node_override("track1::stamp::2", OverrideState::Show);
+        let entities = [
+            (Entity::from_bits(1), "track1", "p1"), // the ribbon itself
+            (Entity::from_bits(2), "track1::stamp::0", "p1"),
+            (Entity::from_bits(3), "track1::stamp::1", "p1"),
+            (Entity::from_bits(4), "track1::stamp::2", "p1"), // Show wins
+        ];
+        let decision =
+            compute_sync_decision(&entities, &HashMap::new(), &HashSet::new(), &state, None);
+
+        assert_eq!(
+            decision.to_hide,
+            vec![
+                Entity::from_bits(1),
+                Entity::from_bits(2),
+                Entity::from_bits(3)
+            ]
+        );
+        assert!(decision.to_restore.is_empty());
+        assert!(
+            !decision.to_hide.contains(&Entity::from_bits(4)),
+            "the Show-overridden stamp must not be hidden by the cascade"
+        );
+    }
+
+    #[test]
+    fn a_promoted_stamps_persisted_view_state_beats_its_tracks_hide() {
+        let mut state = VisibilityState::default();
+        let marker = crate::verse_manager::stamp_marker_id("track1", 0);
+        // A11: register the alias, then hydrate the promoted row's
+        // persisted `view.state` the way `NodePropertiesLoaded` does.
+        state.register_promoted_stamp_alias(marker.clone(), "node-123".to_string());
+        crate::visibility::cache::hydrate_from_properties(
+            &mut state,
+            "node-123",
+            &serde_json::json!({ "view.state": "show" }),
+        );
+        // Hiding the track would otherwise cascade to the stamp.
+        state.set_node_override("track1", OverrideState::Hide);
+
+        assert!(pickable(&marker, &nav_in_p1(), &state));
     }
 
     #[test]

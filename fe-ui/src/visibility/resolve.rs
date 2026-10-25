@@ -4,12 +4,23 @@
 //! RATIFICATION #5:
 //!
 //!   solo (transient lens, outermost) > per-node override (Show/Hide) >
+//!   GPX-HIDE-CASCADE (a stamp follows its owning track) >
 //!   ancestor chain (verse/fractal/petal) > groups (ANY-hides)
 //!
 //! `Show`/`Hide` beat the ancestor chain AND groups — the ratified "escape
 //! hatch" (RATIFICATION table row 5: "override > ancestor chain >
 //! ANY-containing-hidden-group hides"), which supersedes the earlier draft's
 //! "ancestor chain is non-negotiable" language elsewhere in the spec.
+//!
+//! GPX-HIDE-CASCADE (`decisions_20261012_impl_20261015` spec A10/A11): a
+//! stamp instance's own override (Auto) defers to its OWNING TRACK's own
+//! override Hide or hidden-Group membership — never to the track's ancestor
+//! chain, which already hides the stamp directly since they share the same
+//! petal, and never to solo, which A10 does not extend from a soloed track
+//! to its stamps. [`owning_track_id`] finds the track from either the
+//! stamp's spawned marker id or, once promoted, the node-id alias A11 wires
+//! up (`VisibilityState::promoted_stamp_alias`); [`lattice_hidden_reason`] is
+//! the one-level, non-recursive lookup of the track's own state.
 //!
 //! Consumed by: the sidebar eye renderer (`panels/sidebar.rs`), the
 //! `sync_node_visibility` apply system (`visibility/mod.rs`), and — from
@@ -48,6 +59,13 @@ pub enum HiddenReason {
     /// Membership in a hidden Group (ANY-hides) and the override is `Auto`.
     /// Carries the group's display name for the sidebar tooltip.
     Group(String),
+    /// GPX-HIDE-CASCADE (A10): a stamp whose own override is `Auto` and
+    /// whose owning track is itself hidden by the track's own `Hide`
+    /// override or a hidden Group it belongs to. Carries the track's node
+    /// id for the sidebar tooltip. Never produced for the track's ancestor
+    /// chain (A10: that already hides the stamp directly, same petal) or
+    /// for solo (A10: not extended to a soloed track's stamps).
+    OwningPath(String),
 }
 
 /// The one pure resolver every consumer must call — see module docs for the
@@ -79,18 +97,86 @@ pub fn node_hidden_reason(
     }
 
     // 2. Per-node tri-state override — Show/Hide beat everything below.
-    match state
-        .node_overrides
-        .get(node_id)
-        .copied()
-        .unwrap_or_default()
-    {
+    match own_override(node_id, state) {
         OverrideState::Show => return HiddenReason::NotHidden,
         OverrideState::Hide => return HiddenReason::OverrideHide,
         OverrideState::Auto => {}
     }
 
-    // 3. Ancestor chain — any hidden verse/fractal/petal hides.
+    // 2.5. GPX-HIDE-CASCADE (A10): a stamp whose own override is Auto
+    // follows its owning track's own override Hide or hidden-Group
+    // membership. The track's ANCESTOR chain is deliberately not cascaded
+    // here — the stamp shares the track's petal, so step 3 below already
+    // hides it directly on the same grounds (A10: "the track's ancestor
+    // chain already hides the stamp directly").
+    if let Some(track_id) = owning_track_id(node_id, state) {
+        match lattice_hidden_reason(track_id, ancestry, state) {
+            HiddenReason::OverrideHide | HiddenReason::Group(_) => {
+                return HiddenReason::OwningPath(track_id.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    ancestor_or_group_reason(node_id, ancestry, state)
+}
+
+/// A node's own tri-state override. For a stamp passed by its SPAWNED
+/// marker id, also checks the promoted node id A11's alias
+/// (`VisibilityState::promoted_stamp_alias`) maps it onto — a promoted
+/// stamp's persisted `view.state` hydrates onto its real node row id, not
+/// the marker, so the marker-keyed lookup alone would miss it.
+fn own_override(node_id: &str, state: &VisibilityState) -> OverrideState {
+    if let Some(ov) = state.node_overrides.get(node_id) {
+        return *ov;
+    }
+    state
+        .promoted_stamp_alias
+        .get(node_id)
+        .and_then(|alias| state.node_overrides.get(alias))
+        .copied()
+        .unwrap_or_default()
+}
+
+/// The track id that owns `node_id`, if it names a stamp instance — either
+/// directly (its spawned marker id, `{track}::stamp::{i}`) or, once
+/// promoted, by walking the A11 alias map (`marker id -> promoted node id`)
+/// backwards from the promoted row's own id. `None` for anything else.
+fn owning_track_id<'a>(node_id: &'a str, state: &'a VisibilityState) -> Option<&'a str> {
+    if let Some((track, _)) = crate::verse_manager::parse_stamp_marker_id(node_id) {
+        return Some(track);
+    }
+    let marker = state
+        .promoted_stamp_alias
+        .iter()
+        .find(|(_, promoted)| promoted.as_str() == node_id)
+        .map(|(marker, _)| marker.as_str())?;
+    crate::verse_manager::parse_stamp_marker_id(marker).map(|(track, _)| track)
+}
+
+/// One-level, non-recursive lookup of `node_id`'s own lattice state: own
+/// override, then ancestor chain, then groups. Used directly for the
+/// GPX-HIDE-CASCADE track lookup — it never consults solo (A10: solo is not
+/// extended to a soloed track's stamps) and never cascades itself (a track
+/// is never a stamp, so there is only one level).
+fn lattice_hidden_reason(node_id: &str, ancestry: NodeAncestry, state: &VisibilityState) -> HiddenReason {
+    match own_override(node_id, state) {
+        OverrideState::Show => return HiddenReason::NotHidden,
+        OverrideState::Hide => return HiddenReason::OverrideHide,
+        OverrideState::Auto => {}
+    }
+    ancestor_or_group_reason(node_id, ancestry, state)
+}
+
+/// The shared tail of the lattice: ancestor chain, then groups. Shared by
+/// [`node_hidden_reason`] (for the node itself) and [`lattice_hidden_reason`]
+/// (for a cascade's owning track).
+fn ancestor_or_group_reason(
+    node_id: &str,
+    ancestry: NodeAncestry,
+    state: &VisibilityState,
+) -> HiddenReason {
+    // Ancestor chain — any hidden verse/fractal/petal hides.
     if state.hidden_verses.contains(ancestry.verse_id)
         || state.hidden_fractals.contains(ancestry.fractal_id)
         || state.hidden_petals.contains(ancestry.petal_id)
@@ -98,7 +184,7 @@ pub fn node_hidden_reason(
         return HiddenReason::Ancestor;
     }
 
-    // 4. Groups — hidden if ANY containing group is hidden.
+    // Groups — hidden if ANY containing group is hidden.
     if let Some(group_ids) = state.group_membership.get(node_id) {
         for group in group_ids
             .iter()
@@ -201,7 +287,9 @@ pub fn toggle_node_override(reason: &HiddenReason, current: OverrideState) -> Ov
     match reason {
         HiddenReason::NotHidden => OverrideState::Hide,
         HiddenReason::OverrideHide => OverrideState::Auto,
-        HiddenReason::Ancestor | HiddenReason::Group(_) => OverrideState::Show,
+        HiddenReason::Ancestor | HiddenReason::Group(_) | HiddenReason::OwningPath(_) => {
+            OverrideState::Show
+        }
         HiddenReason::Solo => current,
     }
 }
@@ -253,6 +341,9 @@ pub fn node_eye_tooltip(reason: &HiddenReason) -> String {
         HiddenReason::OverrideHide => "Hidden — click to show".to_string(),
         HiddenReason::Ancestor => "Hidden with ancestors — click to show anyway".to_string(),
         HiddenReason::Group(name) => format!("Hidden by Group '{name}' — click to show anyway"),
+        HiddenReason::OwningPath(track_id) => {
+            format!("Hidden with its path '{track_id}' — click to show anyway")
+        }
     }
 }
 
@@ -469,6 +560,107 @@ mod tests {
         // Would otherwise be fully visible with no overrides/ancestors/groups set.
         state.set_solo(HashSet::from(["other".to_string()]));
         assert!(!effective_visibility("n1", ancestry(), &state));
+    }
+
+    // --- GPX-HIDE-CASCADE (W6-5): a stamp follows its owning track ---
+
+    #[test]
+    fn a_stamp_follows_its_owning_tracks_visibility_unless_its_own_override_wins() {
+        type Setup = fn(&mut VisibilityState);
+        let stamp = "track1::stamp::0";
+        let cases: [(&str, &str, Setup, HiddenReason); 9] = [
+            (
+                "track Hide -> stamp OwningPath",
+                stamp,
+                |s| s.set_node_override("track1", OverrideState::Hide),
+                HiddenReason::OwningPath("track1".to_string()),
+            ),
+            (
+                "track Hide + stamp Show -> visible",
+                stamp,
+                |s| {
+                    s.set_node_override("track1", OverrideState::Hide);
+                    s.set_node_override("track1::stamp::0", OverrideState::Show);
+                },
+                HiddenReason::NotHidden,
+            ),
+            (
+                "track in a hidden group -> stamp hidden",
+                stamp,
+                |s| {
+                    s.groups.push(Group {
+                        id: "g1".into(),
+                        name: "G".into(),
+                        visible: false,
+                    });
+                    s.group_membership.insert("track1".into(), vec!["g1".into()]);
+                },
+                HiddenReason::OwningPath("track1".to_string()),
+            ),
+            (
+                "track visible + stamp Hide -> OverrideHide",
+                stamp,
+                |s| s.set_node_override("track1::stamp::0", OverrideState::Hide),
+                HiddenReason::OverrideHide,
+            ),
+            (
+                "hidden petal -> Ancestor (unchanged)",
+                stamp,
+                |s| s.toggle_petal_hidden("p1"),
+                HiddenReason::Ancestor,
+            ),
+            (
+                "solo with the stamp a member -> visible",
+                stamp,
+                |s| s.set_solo(HashSet::from(["track1::stamp::0".to_string()])),
+                HiddenReason::NotHidden,
+            ),
+            (
+                "solo with the track a member but the stamp not -> Solo",
+                stamp,
+                |s| s.set_solo(HashSet::from(["track1".to_string()])),
+                HiddenReason::Solo,
+            ),
+            (
+                "a non-stamp node with a ::stamp::-free id -> unaffected",
+                "plain-node",
+                |s| s.set_node_override("track1", OverrideState::Hide),
+                HiddenReason::NotHidden,
+            ),
+            (
+                "track override Show -> stamp visible even with the track's group hidden",
+                stamp,
+                |s| {
+                    s.groups.push(Group {
+                        id: "g1".into(),
+                        name: "G".into(),
+                        visible: false,
+                    });
+                    s.group_membership.insert("track1".into(), vec!["g1".into()]);
+                    s.set_node_override("track1", OverrideState::Show);
+                },
+                HiddenReason::NotHidden,
+            ),
+        ];
+        for (label, node_id, setup, expected) in cases {
+            let mut state = VisibilityState::default();
+            setup(&mut state);
+            assert_eq!(node_hidden_reason(node_id, ancestry(), &state), expected, "{label}");
+        }
+    }
+
+    #[test]
+    fn owning_path_toggles_to_show_like_ancestor_and_group() {
+        assert_eq!(
+            toggle_node_override(&HiddenReason::OwningPath("track1".into()), OverrideState::Auto),
+            OverrideState::Show
+        );
+    }
+
+    #[test]
+    fn owning_path_tooltip_names_the_track() {
+        let t = node_eye_tooltip(&HiddenReason::OwningPath("track1".into()));
+        assert!(t.contains("track1"));
     }
 
     // --- petal/fractal/verse scope helpers ---

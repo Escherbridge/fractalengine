@@ -792,7 +792,9 @@ mod tests {
         index.tracks.insert("track-c".into(), track("p2"));
         let hidden_a = stamp_marker_id("track-a", 0);
 
-        // (label, active petal, hidden marker id — "*" hides every stamp, expected track)
+        // (label, active petal, hidden id — "*" hides every stamp, a bare
+        // track id (GPX-HIDE-CASCADE) hides every one of ITS stamps,
+        // expected track)
         let cases = [
             (
                 "all visible: first in sorted order",
@@ -808,10 +810,21 @@ mod tests {
             ),
             ("everything hidden: no stamp", Some("p1"), Some("*"), None),
             ("no active petal", None, None, None),
+            (
+                "hidden track (W6-5 cascade): its stamps are skipped",
+                Some("p1"),
+                Some("track-a"),
+                Some("track-b"),
+            ),
         ];
         for (label, petal, hidden, expected) in cases {
             let picked = nearest_visible_ground_stamp(&index, petal, 0.0, 0.0, |id| {
-                hidden.is_none_or(|h| h != "*" && h != id)
+                hidden.is_none_or(|h| {
+                    h != "*"
+                        && h != id
+                        && crate::verse_manager::parse_stamp_marker_id(id)
+                            .is_none_or(|(track, _)| track != h)
+                })
             });
             assert_eq!(picked.map(|(t, _)| t).as_deref(), expected, "{label}");
         }

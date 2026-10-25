@@ -1029,8 +1029,22 @@ refused with a toast), the path bridge (`pointer::open_track_on_select`:
 a hidden track cannot open and an open one closes), path-segment clicks,
 foreign-anchor snapping (`ForeignSnapSources`) and camera focus
 (`plugin::apply_camera_focus`). Stamps are filtered on their OWN marker id
-(`stamp_marker_id`) — the same id `sync_node_visibility` hides; hiding a track
-does not hide its stamps (no inheritance invented — open question). An entity
+(`stamp_marker_id`) — the same id `sync_node_visibility` hides. GPX-HIDE-CASCADE
+(`decisions_20261012_impl_20261015` W6-5): a stamp whose own override is
+`Auto` follows its owning track's own `Hide` override or hidden-Group
+membership (`resolve::node_hidden_reason` step 2.5, `HiddenReason::OwningPath`)
+— a per-stamp `Show`/`Hide` override still wins outright (step 2 short-circuits
+before the cascade runs). Living inside the ONE resolver means every consumer
+gets the cascade for free with no extra wiring. Two things do NOT cascade
+(A10): the track's own ANCESTOR chain (the stamp shares the track's petal, so
+it is already hidden directly on the same grounds) and solo (membership is
+never extended from a soloed track to its stamps). A promoted stamp's
+persisted `view.state` (A11) still counts as its own override even though the
+resolver is called with the SPAWNED marker id, not the promoted row's real
+id — `VisibilityState::promoted_stamp_alias` (filled by
+`verse_manager/db_results/properties.rs` wherever `hydrate_promoted_stamp`
+runs) maps marker id -> promoted node id, and the resolver checks both keys
+before falling through to the cascade. An entity
 hidden OUTSIDE the lattice (a GPX ribbon whose map layer or `gis.track.visible`
 style is off sets `Visibility::Hidden` itself) is not a ray-pick or snap target
 either: `viewport_pick`, `context_pick` and `ForeignSnapSources` also require
