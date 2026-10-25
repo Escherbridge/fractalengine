@@ -527,7 +527,7 @@ impl TestPeer {
                             reply,
                         }) => {
                             let partial = fe_database::handlers::ts_partial::execute_ts_partial(
-                                &db, &spec, &shards, row_cap,
+                                &db, &spec, &shards, row_cap, &admissions,
                             )
                             .await
                             .unwrap_or_else(|reason| {

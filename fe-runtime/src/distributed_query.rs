@@ -140,6 +140,13 @@ pub struct TsPartialRows {
     /// a normal partial.
     #[serde(default)]
     pub failed: bool,
+    /// Requested shard keys for which the responder's DB still holds
+    /// DEFERRED readings (rows waiting in its inbound admission queue —
+    /// RP-6 §2.6 "host honesty"). A covered-empty answer on such a shard
+    /// never settles it; the requester reports it in
+    /// `meta.incomplete_shards`. Serde-defaulted for pre-RP-6 peers.
+    #[serde(default)]
+    pub deferred_shards: Vec<String>,
 }
 
 impl TsPartialRows {
@@ -150,6 +157,7 @@ impl TsPartialRows {
             rows: Vec::new(),
             truncated: false,
             failed: false,
+            deferred_shards: Vec::new(),
         }
     }
 
@@ -172,7 +180,7 @@ impl TsPartialRows {
 /// The honesty metadata every distributed result carries (A16): which shards
 /// contributed, which were invisible (all their hosts offline), which hosts
 /// never answered, and the fabric settings in force.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DistributedQueryMeta {
     /// Shard keys whose data contributed to the merged result.
     pub covered_shards: Vec<String>,
@@ -193,6 +201,24 @@ pub struct DistributedQueryMeta {
     pub replication_factor: u32,
     /// Some host's partial hit its row cap (the merge is incomplete).
     pub truncated: bool,
+    /// Shard keys a formal host answered for while its DB still held
+    /// deferred readings for them (RP-6 host honesty): the answer did not
+    /// settle the shard, so its result may be missing rows.
+    #[serde(default)]
+    pub incomplete_shards: Vec<String>,
+    /// Admitted holders (creator copies) that stayed silent through the
+    /// holder wait — awaited briefly, never until the full deadline.
+    #[serde(default)]
+    pub missing_holders: Vec<String>,
+    /// Unexpected answerers (neither host nor admitted holder) the
+    /// requester's role view resolves below Editor at the shard's petal
+    /// scope — their rows were discarded.
+    #[serde(default)]
+    pub rejected_answerers: Vec<String>,
+    /// Unexpected answerers the requester's role view could not judge yet
+    /// (not converged) — their rows were kept.
+    #[serde(default)]
+    pub unverified_answerers: Vec<String>,
 }
 
 /// The merged outcome of one distributed query, replied to the requester
@@ -313,6 +339,7 @@ mod tests {
             rows: vec![serde_json::json!({"reading_id": "r1"})],
             truncated: true,
             failed: false,
+            deferred_shards: vec!["p/a/1".into()],
         };
         let json = serde_json::to_string(&partial).unwrap();
         let back: TsPartialRows = serde_json::from_str(&json).unwrap();
@@ -328,6 +355,7 @@ mod tests {
         )
         .unwrap();
         assert!(!legacy.failed && !legacy.truncated && legacy.is_empty());
+        assert!(legacy.deferred_shards.is_empty(), "pre-RP-6 peers defer nothing");
         // The failed constructor is empty-but-flagged.
         let failed = TsPartialRows::failed();
         assert!(failed.failed && failed.is_empty());
@@ -347,11 +375,21 @@ mod tests {
                 mode: "sharded".into(),
                 replication_factor: 1,
                 truncated: false,
+                missing_holders: vec!["did:holder".into()],
+                ..DistributedQueryMeta::default()
             },
             error: None,
         };
         let json = serde_json::to_value(&outcome).unwrap();
         assert_eq!(json["meta"]["missing_hosts"][0], "did:offline");
         assert_eq!(json["meta"]["replication_factor"], 1);
+        assert_eq!(json["meta"]["missing_holders"][0], "did:holder");
+        // Wire compat: a pre-RP-6 meta (no RP-6 fields) still parses.
+        let legacy: DistributedQueryMeta = serde_json::from_value(serde_json::json!({
+            "covered_shards": [], "missing_shards": [], "answered_hosts": [],
+            "missing_hosts": [], "mode": "mirror", "replication_factor": 1, "truncated": false
+        }))
+        .unwrap();
+        assert!(legacy.rejected_answerers.is_empty() && legacy.incomplete_shards.is_empty());
     }
 }

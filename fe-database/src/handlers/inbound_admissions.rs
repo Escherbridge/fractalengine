@@ -111,6 +111,15 @@ impl InboundAdmissions {
         self.by_verse.get(verse_id).map_or(0, BTreeSet::len)
     }
 
+    /// The bytes of every queued row of `table`, across verses (read-only — RP-6's
+    /// `deferred_shards` honesty report reads which shards still have deferred readings).
+    pub fn deferred_rows_of_table<'a>(&'a self, table: &'a str) -> impl Iterator<Item = &'a [u8]> + 'a {
+        self.rows
+            .values()
+            .filter(move |row| row.key.table == table)
+            .map(|row| row.bytes.as_slice())
+    }
+
     /// What a queued row is waiting for, or `None` if it is not queued.
     pub fn waiting_reason(
         &self,

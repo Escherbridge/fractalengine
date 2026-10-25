@@ -777,6 +777,7 @@ mod tests {
                             mode: "mirror".into(),
                             replication_factor: 1,
                             truncated: false,
+                            ..Default::default()
                         },
                         error: None,
                     })

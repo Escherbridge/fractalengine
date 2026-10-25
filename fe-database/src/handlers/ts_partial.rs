@@ -17,6 +17,9 @@
 //! - `ReadingsInWindow` / `LatestPerAnchor` run ONE whole-window query: their
 //!   merges are union-dedupe-by-`reading_id` and max-by-timestamp, both exact
 //!   under duplicate answers, so no shard attribution is needed.
+//! - Every shape reports `deferred_shards` (RP-6 §2.6 host honesty): the
+//!   requested shards for which this host's inbound admission queue still
+//!   holds deferred readings, so a covered-empty answer never settles them.
 
 use fe_query::builder::timeseries::{
     latest_per_anchor, readings_for_petal, readings_in_window, window_aggregate_partial,
@@ -25,16 +28,71 @@ use fe_runtime::distributed_query::{
     clamp_partial_row_cap, PartialShard, TsPartialRows, TsQueryKind,
 };
 
+use crate::handlers::inbound_admissions::InboundAdmissions;
 use crate::query_helpers::exec_query;
 use crate::repo::Db;
 
+/// The requested shards that hold a reading still waiting in this host's
+/// deferred-admission queue (RP-6 §2.6): same petal, the shard's anchor,
+/// inside the shard's range and (for windowed shapes) the query window.
+fn deferred_shards_of(
+    spec: &TsQueryKind,
+    shards: &[PartialShard],
+    admissions: &InboundAdmissions,
+) -> Vec<String> {
+    let window = spec.window();
+    let mut out: Vec<String> = Vec::new();
+    for bytes in admissions.deferred_rows_of_table("iot_reading") {
+        let Ok(row) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+            continue;
+        };
+        let (Some(petal_id), Some(node_id), Some(ms)) = (
+            row.get("petal_id").and_then(|v| v.as_str()),
+            row.get("node_id").and_then(|v| v.as_str()),
+            row.get("recorded_at_ms").and_then(|v| v.as_i64()),
+        ) else {
+            continue;
+        };
+        if petal_id != spec.petal_id() {
+            continue;
+        }
+        if window.is_some_and(|(start, end)| ms < start || ms >= end) {
+            continue;
+        }
+        for shard in shards {
+            if shard.anchor_node_id == node_id
+                && shard.range_start_ms <= ms
+                && ms < shard.range_end_ms
+                && !out.contains(&shard.shard)
+            {
+                out.push(shard.shard.clone());
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Run the local partial for `spec` (see the module docs for the semantics).
 ///
-/// `shards` is only consulted by `WindowAggregate` (per-shard attribution);
-/// raw and latest partials ignore it and scan the local window. `row_cap`
-/// is clamped into the sanctioned range — an executing host never trusts an
-/// unbounded request.
+/// `shards` drives `WindowAggregate`'s per-shard attribution; raw and latest
+/// partials scan the local window instead. Every shape matches `shards`
+/// against `admissions` to report `deferred_shards`. `row_cap` is clamped
+/// into the sanctioned range — an executing host never trusts an unbounded
+/// request.
 pub async fn execute_ts_partial(
+    db: &Db,
+    spec: &TsQueryKind,
+    shards: &[PartialShard],
+    row_cap: usize,
+    admissions: &InboundAdmissions,
+) -> Result<TsPartialRows, String> {
+    let mut partial = execute_partial_rows(db, spec, shards, row_cap).await?;
+    partial.deferred_shards = deferred_shards_of(spec, shards, admissions);
+    Ok(partial)
+}
+
+async fn execute_partial_rows(
     db: &Db,
     spec: &TsQueryKind,
     shards: &[PartialShard],
@@ -92,6 +150,7 @@ pub async fn execute_ts_partial(
                 rows: Vec::new(),
                 truncated,
                 failed: false,
+                deferred_shards: Vec::new(),
             })
         }
         TsQueryKind::ReadingsInWindow {
@@ -116,6 +175,7 @@ pub async fn execute_ts_partial(
                 rows,
                 truncated,
                 failed: false,
+                deferred_shards: Vec::new(),
             })
         }
         TsQueryKind::LatestPerAnchor { petal_id, metric } => {
@@ -129,6 +189,7 @@ pub async fn execute_ts_partial(
                 rows,
                 truncated,
                 failed: false,
+                deferred_shards: Vec::new(),
             })
         }
         TsQueryKind::AllReadings { petal_id } => {
@@ -142,6 +203,7 @@ pub async fn execute_ts_partial(
                 rows,
                 truncated,
                 failed: false,
+                deferred_shards: Vec::new(),
             })
         }
     }
@@ -222,7 +284,7 @@ mod tests {
             shard("p1/node-a/0", "node-a", 0, 60),
             shard("p1/node-b/0", "node-b", 0, 60),
         ];
-        let partial = execute_ts_partial(&db, &spec, &shards, PARTIAL_ROW_CAP)
+        let partial = execute_ts_partial(&db, &spec, &shards, PARTIAL_ROW_CAP, &InboundAdmissions::new())
             .await
             .expect("partial");
         assert!(!partial.truncated);
@@ -258,7 +320,7 @@ mod tests {
             petal_id: "p1".into(),
         };
         let shards = vec![shard("p1/node-a/0", "node-a", 0, 60)];
-        let partial = execute_ts_partial(&db, &spec, &shards, PARTIAL_ROW_CAP)
+        let partial = execute_ts_partial(&db, &spec, &shards, PARTIAL_ROW_CAP, &InboundAdmissions::new())
             .await
             .expect("partial");
         let row = &partial.per_shard[0].rows[0];
@@ -285,7 +347,7 @@ mod tests {
             end_ms: 60,
             petal_id: "p1".into(),
         };
-        let partial = execute_ts_partial(&db, &spec, &[], PARTIAL_ROW_CAP)
+        let partial = execute_ts_partial(&db, &spec, &[], PARTIAL_ROW_CAP, &InboundAdmissions::new())
             .await
             .expect("partial");
         assert_eq!(partial.rows.len(), 1);
@@ -309,7 +371,7 @@ mod tests {
             petal_id: "p1".into(),
             metric: None,
         };
-        let partial = execute_ts_partial(&db, &spec, &[], PARTIAL_ROW_CAP)
+        let partial = execute_ts_partial(&db, &spec, &[], PARTIAL_ROW_CAP, &InboundAdmissions::new())
             .await
             .expect("partial");
         assert_eq!(partial.rows.len(), 2);
@@ -341,7 +403,7 @@ mod tests {
         let spec = TsQueryKind::AllReadings {
             petal_id: "p1".into(),
         };
-        let partial = execute_ts_partial(&db, &spec, &[], PARTIAL_ROW_CAP)
+        let partial = execute_ts_partial(&db, &spec, &[], PARTIAL_ROW_CAP, &InboundAdmissions::new())
             .await
             .expect("partial");
         let ids: Vec<&str> = partial
@@ -376,7 +438,7 @@ mod tests {
         // The executor clamps a requested cap of 1 up to MIN_PARTIAL_ROW_CAP
         // and truncates the 300-row window to exactly that floor, flagging
         // `truncated` so the merge reports incompleteness (A16).
-        let partial = execute_ts_partial(&db, &spec, &[], 1)
+        let partial = execute_ts_partial(&db, &spec, &[], 1, &InboundAdmissions::new())
             .await
             .expect("partial");
         assert_eq!(
@@ -385,6 +447,51 @@ mod tests {
         );
         assert!(partial.truncated, "a hit cap must flag truncated");
         assert!(partial.rows.len() <= fe_runtime::distributed_query::MAX_PARTIAL_ROW_CAP);
+    }
+
+    /// RP-6 §2.6 host honesty: a reading still waiting in this host's
+    /// deferred-admission queue makes its shard `deferred_shards`, so the
+    /// requester never reads this host's covered-empty answer as settled.
+    /// The row enters the queue through the ONE inbound entry point.
+    #[tokio::test]
+    async fn a_deferred_reading_marks_its_requested_shard_deferred() {
+        let db = schema_db().await;
+        db.query(
+            "CREATE verse CONTENT { verse_id: 'v-def', name: 'V', created_by: 'did:key:owner', \
+             created_at: '2026-10-15T00:00:00Z', default_access: 'viewer' };
+             CREATE fractal CONTENT { fractal_id: 'f-def', verse_id: 'v-def', \
+             owner_did: 'did:key:owner', name: 'F', created_at: '2026-10-15T00:00:00Z' };
+             CREATE petal CONTENT { petal_id: 'p1', fractal_id: 'f-def', name: 'P', \
+             node_id: 'did:key:owner', created_at: '2026-10-15T00:00:00Z' };",
+        )
+        .await
+        .expect("seed chain")
+        .check()
+        .expect("seed chain check");
+        let mut admissions = InboundAdmissions::new();
+        let row = serde_json::to_vec(&reading("r-def", "node-a", 1.0, 30)).expect("reading json");
+        admissions
+            .apply(&db, "v-def", "iot_reading", "r-def", &row, "did:key:stranger", None)
+            .await;
+        assert_eq!(admissions.len(), 1, "a stranger's reading waits in the queue");
+
+        let spec = TsQueryKind::AllReadings { petal_id: "p1".into() };
+        let shards = vec![
+            shard("p1/node-a/0", "node-a", 0, 60),
+            shard("p1/node-a/1", "node-a", 60, 120),
+            shard("p1/node-b/0", "node-b", 0, 60),
+        ];
+        let partial = execute_ts_partial(&db, &spec, &shards, PARTIAL_ROW_CAP, &admissions)
+            .await
+            .expect("partial");
+        assert!(partial.rows.is_empty(), "the deferred reading is not in the store");
+        assert_eq!(partial.deferred_shards, vec!["p1/node-a/0".to_string()]);
+
+        // An empty queue reports nothing deferred.
+        let clean = execute_ts_partial(&db, &spec, &shards, PARTIAL_ROW_CAP, &InboundAdmissions::new())
+            .await
+            .expect("partial");
+        assert!(clean.deferred_shards.is_empty());
     }
 
     #[tokio::test]
@@ -396,7 +503,7 @@ mod tests {
             end_ms: 60,
             petal_id: "p1".into(),
         };
-        assert!(execute_ts_partial(&db, &bad_window, &[], PARTIAL_ROW_CAP)
+        assert!(execute_ts_partial(&db, &bad_window, &[], PARTIAL_ROW_CAP, &InboundAdmissions::new())
             .await
             .is_err());
         let inverted = TsQueryKind::WindowAggregate {
@@ -405,7 +512,7 @@ mod tests {
             end_ms: 0,
             petal_id: "p1".into(),
         };
-        assert!(execute_ts_partial(&db, &inverted, &[], PARTIAL_ROW_CAP)
+        assert!(execute_ts_partial(&db, &inverted, &[], PARTIAL_ROW_CAP, &InboundAdmissions::new())
             .await
             .is_err());
         let empty_window = TsQueryKind::ReadingsInWindow {
@@ -414,7 +521,7 @@ mod tests {
             end_ms: 0,
             petal_id: "p1".into(),
         };
-        assert!(execute_ts_partial(&db, &empty_window, &[], PARTIAL_ROW_CAP)
+        assert!(execute_ts_partial(&db, &empty_window, &[], PARTIAL_ROW_CAP, &InboundAdmissions::new())
             .await
             .is_err());
     }

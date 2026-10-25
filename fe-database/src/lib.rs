@@ -1547,9 +1547,12 @@ pub fn spawn_db_thread_shared(
                     // §api-reply-correlation). The row cap is enforced in
                     // the handler against the caller's cap.
                     Ok(DbCommand::ExecuteTsPartial { spec, shards, row_cap, reply }) => {
+                        // RP-6 §2.6: the deferred-admission queue reports which
+                        // requested shards still hold deferred readings here.
                         match handlers::ts_partial::execute_ts_partial(
                             &db, &spec, &shards,
                             row_cap,
+                            &admissions,
                         ).await {
                             Ok(partial) => {
                                 if let Err(e) = reply.send(partial) {

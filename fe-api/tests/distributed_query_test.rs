@@ -69,6 +69,7 @@ fn canned_outcome() -> DistributedQueryOutcome {
             mode: "sharded".into(),
             replication_factor: 1,
             truncated: false,
+            ..DistributedQueryMeta::default()
         },
         error: None,
     }
@@ -87,6 +88,7 @@ fn empty_outcome() -> DistributedQueryOutcome {
             mode: "sharded".into(),
             replication_factor: 1,
             truncated: false,
+            ..DistributedQueryMeta::default()
         },
         error: None,
     }

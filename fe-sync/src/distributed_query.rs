@@ -33,7 +33,7 @@ use fe_runtime::messages::DbCommand;
 use iroh_gossip::api::GossipSender;
 
 use crate::messages::SyncEvent;
-use crate::sharding::VerseFabric;
+use crate::sharding::{AnswererVerdict, AnswererView, VerseFabric};
 
 /// Gossip max message size for the whole network (must be identical on every
 /// peer — all run this code). Sized for a realistic partial envelope; see
@@ -65,6 +65,12 @@ pub const MAX_QUERY_TIMEOUT_MS: u64 = 10_000;
 
 /// Cap on how long a responder waits for its own DB-thread partial.
 pub const RESPONDER_EXEC_CAP_MS: u64 = 5_000;
+
+/// How long a requester waits for an admitted holder (a creator copy, RP-6
+/// §2.6) once every host has answered — clamped to the query deadline. A
+/// silent holder is reported in `meta.missing_holders`, never awaited to the
+/// full deadline (plan A6).
+pub const HOLDER_WAIT_MS: u64 = 750;
 
 // ---------------------------------------------------------------------------
 // Wire envelopes
@@ -157,6 +163,16 @@ pub struct DistributedPlan {
     pub shard_hosts: BTreeMap<String, Vec<String>>,
     /// Remote peers expected to answer (host ≥1 target shard), local excluded.
     pub expected_hosts: BTreeSet<String>,
+    /// Admitted holders per target shard key (RP-6 §2.6 `__holders`).
+    pub shard_holders: BTreeMap<String, Vec<String>>,
+    /// Remote holders expected to answer that are not also hosts (local
+    /// excluded) — awaited for at most [`HOLDER_WAIT_MS`].
+    pub expected_holders: BTreeSet<String>,
+    /// The local peer's DID (its own partial is always trusted by the merge).
+    pub local_did: String,
+    /// The requester's role view at the queried petal's scope — the merge
+    /// filter's judge for unexpected answerers (RP-6 §2.6).
+    pub answerer_view: AnswererView,
     /// The verse's current fabric mode (reported in the honesty metadata).
     pub mode: String,
     /// The verse's current replication factor.
@@ -170,8 +186,10 @@ pub struct DistributedPlan {
 /// Window queries target every ledger shard whose range overlaps
 /// `[start_ms, end_ms)` (the ledger's recorded ranges, not recomputed buckets
 /// — robust to a bucket-width change since placement); latest-per-anchor
-/// targets every shard of the petal.
+/// targets every shard of the petal. Expected answerers are the ledger
+/// hosts plus the admitted holders (RP-6 §2.6).
 pub fn plan_distributed_query(
+    verse_id: &str,
     spec: &TsQueryKind,
     fabric: &VerseFabric,
     local_did: &str,
@@ -180,6 +198,7 @@ pub fn plan_distributed_query(
     let window = spec.window();
     let mut target_shards = Vec::new();
     let mut shard_hosts = BTreeMap::new();
+    let mut shard_holders = BTreeMap::new();
     for entry in fabric.shards.values() {
         if !entry.shard.starts_with(&petal_prefix) {
             continue;
@@ -209,6 +228,9 @@ pub fn plan_distributed_query(
             range_end_ms: entry.range_end_ms,
         });
         shard_hosts.insert(entry.shard.clone(), entry.hosts.clone());
+        if let Some(holders) = fabric.shard_holders(&entry.shard) {
+            shard_holders.insert(entry.shard.clone(), holders.iter().cloned().collect::<Vec<_>>());
+        }
     }
     let mut expected_hosts: BTreeSet<String> = shard_hosts
         .values()
@@ -217,10 +239,20 @@ pub fn plan_distributed_query(
         .cloned()
         .collect();
     expected_hosts.remove(local_did);
+    let expected_holders: BTreeSet<String> = shard_holders
+        .values()
+        .flatten()
+        .filter(|h| h.as_str() != local_did && !expected_hosts.contains(h.as_str()))
+        .cloned()
+        .collect();
     Ok(DistributedPlan {
         target_shards,
         shard_hosts,
         expected_hosts,
+        shard_holders,
+        expected_holders,
+        local_did: local_did.to_string(),
+        answerer_view: fabric.answerer_view(verse_id, spec.petal_id()),
         mode: fabric.settings.mode.as_str().to_string(),
         replication_factor: fabric.settings.replication_factor,
         bucket_width_ms: fabric.settings.bucket_width_ms,
@@ -270,19 +302,36 @@ pub fn merge_partials(
     plan: &DistributedPlan,
     responses: &[PartialResponse],
 ) -> DistributedQueryOutcome {
-    // Partition out failed partials (clone only on the rare failed path —
-    // the pure fns below keep their borrowed slices).
-    let usable_owned: Vec<PartialResponse>;
-    let usable: &[PartialResponse] = if responses.iter().any(|r| r.partial.failed) {
-        usable_owned = responses
-            .iter()
-            .filter(|r| !r.partial.failed)
-            .cloned()
-            .collect();
-        &usable_owned
-    } else {
-        responses
-    };
+    // RP-6 §2.6 merge filter, then the F23 failed-partial filter: an
+    // unexpected answerer (neither host nor admitted holder) the requester's
+    // role view resolves below Editor at the petal scope contributes nothing
+    // and is reported; one the view cannot judge yet is kept and reported.
+    let mut rejected_answerers: BTreeSet<String> = BTreeSet::new();
+    let mut unverified_answerers: BTreeSet<String> = BTreeSet::new();
+    let mut usable: Vec<PartialResponse> = Vec::with_capacity(responses.len());
+    for response in responses {
+        if response.partial.failed {
+            continue;
+        }
+        if !plan.is_expected_answerer(&response.host) {
+            match plan.answerer_view.verdict(&response.host) {
+                AnswererVerdict::Admitted => {}
+                AnswererVerdict::Rejected => {
+                    tracing::warn!(
+                        answerer = %response.host,
+                        "distributed query rows from a sub-Editor unexpected answerer discarded"
+                    );
+                    rejected_answerers.insert(response.host.clone());
+                    continue;
+                }
+                AnswererVerdict::Unverified => {
+                    unverified_answerers.insert(response.host.clone());
+                }
+            }
+        }
+        usable.push(response.clone());
+    }
+    let usable = usable.as_slice();
     let answered_hosts: BTreeSet<&str> = usable.iter().map(|r| r.host.as_str()).collect();
     let truncated = usable.iter().any(|r| r.partial.truncated);
 
@@ -299,14 +348,45 @@ pub fn merge_partials(
             let rows = merge_latest(usable);
             let attributed =
                 attribute_rows_to_shards(&rows, petal_id, plan.bucket_width_ms, &plan.shard_hosts);
-            let (covered, missing) = covered_by_answered_hosts(plan, &answered_hosts);
+            let (covered, missing) = covered_by_answered_hosts(plan, usable);
             let (covered, missing) = fold_attribution(covered, missing, attributed);
             (rows, covered, missing)
         }
     };
 
+    // Host honesty (RP-6 §2.6): a shard whose answering formal hosts ALL
+    // still hold deferred readings for it is incomplete — never settled
+    // covered-empty. It is reported in `incomplete_shards` instead of
+    // `missing_shards` (the host DID answer; its store is still converging).
+    let incomplete_shards: Vec<String> = plan
+        .target_shards
+        .iter()
+        .filter(|shard| {
+            let mut deferred = false;
+            for r in usable.iter().filter(|r| plan.is_formal_host(&r.host, &shard.shard)) {
+                if r.partial.deferred_shards.iter().any(|d| d == &shard.shard) {
+                    deferred = true;
+                } else {
+                    return false;
+                }
+            }
+            deferred
+        })
+        .map(|shard| shard.shard.clone())
+        .collect();
+    let missing_shards: Vec<String> = missing_shards
+        .into_iter()
+        .filter(|shard| !incomplete_shards.contains(shard))
+        .collect();
+
     let missing_hosts: Vec<String> = plan
         .expected_hosts
+        .iter()
+        .filter(|h| !answered_hosts.contains(h.as_str()))
+        .cloned()
+        .collect();
+    let missing_holders: Vec<String> = plan
+        .expected_holders
         .iter()
         .filter(|h| !answered_hosts.contains(h.as_str()))
         .cloned()
@@ -322,8 +402,37 @@ pub fn merge_partials(
             mode: plan.mode.clone(),
             replication_factor: plan.replication_factor,
             truncated,
+            incomplete_shards,
+            missing_holders,
+            rejected_answerers: rejected_answerers.into_iter().collect(),
+            unverified_answerers: unverified_answerers.into_iter().collect(),
         },
         error: None,
+    }
+}
+
+impl DistributedPlan {
+    /// Whether `host` is a formal ledger host of `shard`.
+    fn is_formal_host(&self, host: &str, shard: &str) -> bool {
+        self.shard_hosts
+            .get(shard)
+            .is_some_and(|hosts| hosts.iter().any(|h| h == host))
+    }
+
+    /// The local peer, a ledger host, or an admitted holder of any targeted
+    /// shard — an answerer the merge never needs to judge (RP-6 §2.6).
+    fn is_expected_answerer(&self, host: &str) -> bool {
+        host == self.local_did
+            || self.shard_hosts.values().flatten().any(|h| h == host)
+            || self.shard_holders.values().flatten().any(|h| h == host)
+    }
+
+    /// Whether a formal host's answer settles `shard`: it hosts the shard and
+    /// does not report deferred readings for it.
+    fn settles_shard(&self, response: &PartialResponse, shard: &str) -> bool {
+        !response.partial.failed
+            && self.is_formal_host(&response.host, shard)
+            && !response.partial.deferred_shards.iter().any(|d| d == shard)
     }
 }
 
@@ -354,16 +463,13 @@ fn merge_aggregates(
         // empty answer proves nothing about the shard's true contents, so it
         // can never mark a shard covered, while its over-retained rows still
         // contribute data (and coverage, because the data IS in the result).
-        let formal_hosts = plan.shard_hosts.get(&shard.shard);
-        let is_formal = |host: &str| {
-            formal_hosts
-                .map(|hs| hs.iter().any(|h| h == host))
-                .unwrap_or(false)
-        };
+        // RP-6 host honesty: a formal host reporting deferred readings for
+        // this shard is not authoritative for it (its rows still count as
+        // data, below the authoritative winner).
         let mut authoritative = false;
         let mut formal_rows: Option<&fe_runtime::distributed_query::ShardRows> = None;
         let mut any_rows: Option<&fe_runtime::distributed_query::ShardRows> = None;
-        for (host, resp) in &ordered {
+        for resp in ordered.values() {
             let Some(sr) = resp
                 .partial
                 .per_shard
@@ -372,7 +478,7 @@ fn merge_aggregates(
             else {
                 continue;
             };
-            if is_formal(host) {
+            if plan.settles_shard(resp, &shard.shard) {
                 authoritative = true;
                 if !sr.rows.is_empty() && formal_rows.is_none() {
                     formal_rows = Some(sr);
@@ -461,8 +567,7 @@ fn merge_raw(
         );
         ka.cmp(&kb)
     });
-    let answered: BTreeSet<&str> = responses.iter().map(|r| r.host.as_str()).collect();
-    let (covered, missing) = covered_by_answered_hosts(plan, &answered);
+    let (covered, missing) = covered_by_answered_hosts(plan, responses);
     (rows, covered, missing)
 }
 
@@ -497,20 +602,16 @@ fn merge_latest(responses: &[PartialResponse]) -> Vec<serde_json::Value> {
 }
 
 /// Shards covered by hosts that answered (raw/latest: any host that formally
-/// hosts the shard and sent any response covers it).
+/// hosts the shard and sent a response that does not report deferred
+/// readings for it covers it — RP-6 host honesty).
 fn covered_by_answered_hosts(
     plan: &DistributedPlan,
-    answered: &BTreeSet<&str>,
+    responses: &[PartialResponse],
 ) -> (Vec<String>, Vec<String>) {
     let mut covered = Vec::new();
     let mut missing = Vec::new();
     for shard in &plan.target_shards {
-        let hosts = plan
-            .shard_hosts
-            .get(&shard.shard)
-            .cloned()
-            .unwrap_or_default();
-        if hosts.iter().any(|h| answered.contains(h.as_str())) {
+        if responses.iter().any(|r| plan.settles_shard(r, &shard.shard)) {
             covered.push(shard.shard.clone());
         } else {
             missing.push(shard.shard.clone());
@@ -773,7 +874,12 @@ pub fn submit_distributed_query(
         );
         return;
     };
-    let plan = match plan_distributed_query(&request.spec, fabric, &transport.local_did) {
+    let plan = match plan_distributed_query(
+        &request.verse_id,
+        &request.spec,
+        fabric,
+        &transport.local_did,
+    ) {
         Ok(p) => p,
         Err(reason) => {
             transport.reply(&call.reply, error_outcome(&reason));
@@ -834,6 +940,7 @@ fn error_outcome(reason: &str) -> DistributedQueryOutcome {
             mode: "unknown".into(),
             replication_factor: 0,
             truncated: false,
+            ..DistributedQueryMeta::default()
         },
         error: Some(reason.to_string()),
     }
@@ -852,7 +959,11 @@ async fn collect_distributed_query(transport: DistributedTransport, task: Collec
         mut inbox,
         _permit,
     } = task;
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(request.timeout_ms);
+    let started = tokio::time::Instant::now();
+    let deadline = started + Duration::from_millis(request.timeout_ms);
+    // RP-6 §2.6: holders are awaited at most HOLDER_WAIT_MS (clamped to the
+    // deadline) once every host has answered.
+    let holder_deadline = started + Duration::from_millis(HOLDER_WAIT_MS.min(request.timeout_ms));
     let is_aggregate = matches!(request.spec, TsQueryKind::WindowAggregate { .. });
     let row_cap = effective_row_cap(request.row_cap);
 
@@ -865,13 +976,12 @@ async fn collect_distributed_query(transport: DistributedTransport, task: Collec
         .as_ref()
         .map(|db| {
             let (tx, rx) = crossbeam::channel::bounded::<TsPartialRows>(1);
+            // Every shape carries the target shards: aggregates attribute
+            // per shard, and every shape reports `deferred_shards` against
+            // them (RP-6 host honesty).
             let cmd = DbCommand::ExecuteTsPartial {
                 spec: request.spec.clone(),
-                shards: if is_aggregate {
-                    plan.target_shards.clone()
-                } else {
-                    Vec::new()
-                },
+                shards: plan.target_shards.clone(),
                 row_cap,
                 reply: tx,
             };
@@ -902,19 +1012,16 @@ async fn collect_distributed_query(transport: DistributedTransport, task: Collec
 
     // 2. Fan out over the verse's gossip topic (None → local-only query;
     //    offline mode still serves the local partial — P2P-first but
-    //    offline-friendly, D2). Aggregate requests carry the shard list for
-    //    per-shard attribution; raw/latest need none (dedupe/max merges).
+    //    offline-friendly, D2). Every request carries the shard list:
+    //    aggregates attribute per shard, and every responder reports its
+    //    `deferred_shards` against it (RP-6 host honesty).
     if let Some(sender) = &gossip_sender {
         let mut env = ComputeEnvelope::Request {
             request_id: request.request_id.clone(),
             verse_id: request.verse_id.clone(),
             from_did: transport.local_did.clone(),
             spec: request.spec.clone(),
-            shards: if is_aggregate {
-                plan.target_shards.clone()
-            } else {
-                Vec::new()
-            },
+            shards: plan.target_shards.clone(),
             timeout_ms: request.timeout_ms,
             row_cap,
         };
@@ -942,32 +1049,47 @@ async fn collect_distributed_query(transport: DistributedTransport, task: Collec
         );
     }
 
-    // 3. Gather until settled or deadline.
+    // 3. Gather until settled or deadline (RP-6 §2.6 settlement): every
+    //    host answered (and the local partial resolved) AND every admitted
+    //    holder answered or the holder wait ran out — or, for aggregates,
+    //    every shard is settled by a formal host's non-empty answer that
+    //    reports no deferred readings for it (holder rows would lose to it
+    //    in the merge anyway). A host's empty answer arriving first no
+    //    longer settles the query ahead of a declared holder's rows.
     let mut responses: Vec<PartialResponse> = Vec::new();
     loop {
         let answered: BTreeSet<&str> = responses.iter().map(|r| r.host.as_str()).collect();
-        let all_expected_answered = plan
-            .expected_hosts
+        let hosts_done = local_resolved
+            && plan
+                .expected_hosts
+                .iter()
+                .all(|h| answered.contains(h.as_str()));
+        let holders_done = plan
+            .expected_holders
             .iter()
             .all(|h| answered.contains(h.as_str()));
-        let settled = if is_aggregate {
-            // Every shard won by a non-empty partial, or fully answered out
-            // (no host can still contribute rows to it).
-            plan.target_shards.iter().all(|shard| {
+        let shards_settled_by_hosts = is_aggregate
+            && plan.target_shards.iter().all(|shard| {
                 responses.iter().any(|r| {
-                    r.partial
-                        .per_shard
-                        .iter()
-                        .any(|s| s.shard == shard.shard && !s.rows.is_empty())
+                    plan.settles_shard(r, &shard.shard)
+                        && r.partial
+                            .per_shard
+                            .iter()
+                            .any(|s| s.shard == shard.shard && !s.rows.is_empty())
                 })
-            }) || (all_expected_answered && local_resolved)
-        } else {
-            all_expected_answered && local_resolved
-        };
+            });
+        let now = tokio::time::Instant::now();
+        let settled = shards_settled_by_hosts
+            || (hosts_done && (holders_done || now >= holder_deadline));
         if settled {
             break;
         }
-        match tokio::time::timeout_at(deadline, inbox.recv()).await {
+        let wait_until = if hosts_done {
+            holder_deadline.min(deadline)
+        } else {
+            deadline
+        };
+        match tokio::time::timeout_at(wait_until, inbox.recv()).await {
             Ok(Some(routed)) => {
                 if routed.host == transport.local_did {
                     local_resolved = true;
@@ -978,7 +1100,7 @@ async fn collect_distributed_query(transport: DistributedTransport, task: Collec
                 });
             }
             Ok(None) => break, // registration lost (shutdown) — merge what we have
-            Err(_) => break,   // per-host deadline
+            Err(_) => break,   // holder wait (hosts all answered) or per-host deadline
         }
     }
 
@@ -1210,9 +1332,22 @@ pub fn handle_gossip_incoming(
                     return GossipDisposition::Dropped(drop_reason::SHARD_LIST_MISMATCH);
                 }
             } else {
-                // Raw/latest: no shard list rides the request; answer only
-                // when this verse's ledger knows the petal (no rows could be
-                // hosted for an unknown petal anyway).
+                // Raw/latest: the shard list (RP-6 — carried only so the
+                // responder can report `deferred_shards` against it) must
+                // still sit inside the spec's petal and the target cap.
+                if shards.len() > MAX_TARGET_SHARDS {
+                    tracing::warn!(request_id, "compute request with too many shards — ignored");
+                    return GossipDisposition::Dropped(drop_reason::MALFORMED);
+                }
+                if !shards.iter().all(|s| s.shard.starts_with(&petal_prefix)) {
+                    tracing::warn!(
+                        request_id,
+                        "compute request shards do not match its petal — ignored"
+                    );
+                    return GossipDisposition::Dropped(drop_reason::SHARD_LIST_MISMATCH);
+                }
+                // Answer only when this verse's ledger knows the petal (no
+                // rows could be hosted for an unknown petal anyway).
                 let petal_known = fabrics
                     .get(&incoming.verse_id)
                     .map(|f| f.shards.keys().any(|k| k.starts_with(&petal_prefix)))
@@ -1415,7 +1550,7 @@ mod tests {
                 ("p2/a/0", 0, 60_000, &["did:a"]),
             ],
         );
-        let plan = plan_distributed_query(&agg_spec(0, 120_000), &fabric, "did:local").unwrap();
+        let plan = plan_distributed_query("v-1", &agg_spec(0, 120_000), &fabric, "did:local").unwrap();
         let keys: Vec<&str> = plan
             .target_shards
             .iter()
@@ -1451,7 +1586,7 @@ mod tests {
             petal_id: "p1".into(),
             metric: None,
         };
-        let plan = plan_distributed_query(&spec, &fabric, "did:a").unwrap();
+        let plan = plan_distributed_query("v-1", &spec, &fabric, "did:a").unwrap();
         assert_eq!(plan.target_shards.len(), 2);
         assert_eq!(plan.expected_hosts, BTreeSet::from(["did:b".into()]));
         assert_eq!(plan.replication_factor, 2);
@@ -1472,14 +1607,14 @@ mod tests {
             })
             .collect();
         let fabric = fabric_with_shards(settings, &shards);
-        let err = plan_distributed_query(&agg_spec(0, i64::MAX), &fabric, "did:local").unwrap_err();
+        let err = plan_distributed_query("v-1", &agg_spec(0, i64::MAX), &fabric, "did:local").unwrap_err();
         assert!(err.contains("shards"), "honest over-cap error: {err}");
     }
 
     #[test]
     fn plan_empty_ledger_is_an_empty_plan() {
         let fabric = VerseFabric::default();
-        let plan = plan_distributed_query(&agg_spec(0, 1_000), &fabric, "did:local").unwrap();
+        let plan = plan_distributed_query("v-1", &agg_spec(0, 1_000), &fabric, "did:local").unwrap();
         assert!(plan.target_shards.is_empty());
         assert!(plan.expected_hosts.is_empty());
     }
@@ -1569,7 +1704,7 @@ mod tests {
                 ("p1/b/1", 60_000, 120_000, &["did:c"]),
             ],
         );
-        let plan = plan_distributed_query(&agg_spec(0, 120_000), &fabric, "did:a").unwrap();
+        let plan = plan_distributed_query("v-1", &agg_spec(0, 120_000), &fabric, "did:a").unwrap();
 
         let mk = |per_shard: Vec<(&str, Vec<serde_json::Value>)>| PartialResponse {
             host: String::new(),
@@ -1584,6 +1719,7 @@ mod tests {
                 rows: Vec::new(),
                 truncated: false,
                 failed: false,
+                deferred_shards: Vec::new(),
             },
         };
         // Host A answers its shards (sum/count per shard, exactly what the
@@ -1638,7 +1774,7 @@ mod tests {
             bucket_width_ms: 60_000,
         };
         let fabric = fabric_with_shards(settings, &[("p1/a/0", 0, 60_000, &["did:a", "did:b"])]);
-        let plan = plan_distributed_query(&agg_spec(0, 60_000), &fabric, "did:local").unwrap();
+        let plan = plan_distributed_query("v-1", &agg_spec(0, 60_000), &fabric, "did:local").unwrap();
         let partial = |host: &str, sum: f64, count: u64| PartialResponse {
             host: host.into(),
             partial: TsPartialRows {
@@ -1649,6 +1785,7 @@ mod tests {
                 rows: Vec::new(),
                 truncated: false,
                 failed: false,
+                deferred_shards: Vec::new(),
             },
         };
         let r1 = [partial("did:a", 30.0, 2), partial("did:b", 30.0, 2)];
@@ -1679,7 +1816,7 @@ mod tests {
             },
             &[("p1/a/0", 0, 60_000, &["did:host"])],
         );
-        let plan = plan_distributed_query(&agg_spec(0, 60_000), &fabric, "did:host").unwrap();
+        let plan = plan_distributed_query("v-1", &agg_spec(0, 60_000), &fabric, "did:host").unwrap();
         let host_full = PartialResponse {
             host: "did:host".into(),
             partial: TsPartialRows {
@@ -1690,6 +1827,7 @@ mod tests {
                 rows: Vec::new(),
                 truncated: false,
                 failed: false,
+                deferred_shards: Vec::new(),
             },
         };
         // "did:over" < "did:host" in DID order — the naive first-non-empty
@@ -1704,6 +1842,7 @@ mod tests {
                 rows: Vec::new(),
                 truncated: false,
                 failed: false,
+                deferred_shards: Vec::new(),
             },
         };
         for responses in [
@@ -1741,7 +1880,7 @@ mod tests {
             )
         };
         let r1_plan =
-            plan_distributed_query(&agg_spec(0, 120_000), &mk_fabric(&["did:offline"]), "did:a")
+            plan_distributed_query("v-1", &agg_spec(0, 120_000), &mk_fabric(&["did:offline"]), "did:a")
                 .unwrap();
         let r2_fabric = fabric_with_shards(
             VerseTimeseriesSettings {
@@ -1751,7 +1890,7 @@ mod tests {
             },
             &[("p1/a/1", 60_000, 120_000, &["did:offline", "did:a"])],
         );
-        let r2_plan = plan_distributed_query(&agg_spec(0, 120_000), &r2_fabric, "did:a").unwrap();
+        let r2_plan = plan_distributed_query("v-1", &agg_spec(0, 120_000), &r2_fabric, "did:a").unwrap();
 
         // Case 1: the local peer holds nothing (empty partial) — the offline
         // host's shard is genuinely invisible at R=1.
@@ -1765,6 +1904,7 @@ mod tests {
                 rows: Vec::new(),
                 truncated: false,
                 failed: false,
+                deferred_shards: Vec::new(),
             },
         };
         let o1 = merge_partials(
@@ -1797,6 +1937,7 @@ mod tests {
                 rows: Vec::new(),
                 truncated: false,
                 failed: false,
+                deferred_shards: Vec::new(),
             },
         };
         let o_local = merge_partials(
@@ -1833,7 +1974,7 @@ mod tests {
             VerseTimeseriesSettings::default(),
             &[("p1/a/0", 0, 60_000, &["did:b"])],
         );
-        let plan = plan_distributed_query(&agg_spec(0, 60_000), &fabric, "did:a").unwrap();
+        let plan = plan_distributed_query("v-1", &agg_spec(0, 60_000), &fabric, "did:a").unwrap();
         let answered_empty = PartialResponse {
             host: "did:b".into(),
             partial: TsPartialRows {
@@ -1844,6 +1985,7 @@ mod tests {
                 rows: Vec::new(),
                 truncated: false,
                 failed: false,
+                deferred_shards: Vec::new(),
             },
         };
         let outcome = merge_partials(&agg_spec(0, 60_000), &plan, &[answered_empty]);
@@ -1878,7 +2020,7 @@ mod tests {
             end_ms: 60_000,
             petal_id: "p1".into(),
         };
-        let plan = plan_distributed_query(&spec, &fabric, "did:a").unwrap();
+        let plan = plan_distributed_query("v-1", &spec, &fabric, "did:a").unwrap();
 
         // Both hosts return the SAME mirror rows — the union must dedupe.
         let resp = |host: &str, rows: &Vec<serde_json::Value>| PartialResponse {
@@ -1888,6 +2030,7 @@ mod tests {
                 rows: rows.clone(),
                 truncated: false,
                 failed: false,
+                deferred_shards: Vec::new(),
             },
         };
         let outcome = merge_partials(&spec, &plan, &[resp("did:a", &rows), resp("did:b", &rows)]);
@@ -1926,7 +2069,7 @@ mod tests {
         let spec = TsQueryKind::AllReadings {
             petal_id: "p1".into(),
         };
-        let plan = plan_distributed_query(&spec, &fabric, "did:a").unwrap();
+        let plan = plan_distributed_query("v-1", &spec, &fabric, "did:a").unwrap();
         let resp = |host: &str, rows: Vec<serde_json::Value>| PartialResponse {
             host: host.into(),
             partial: TsPartialRows {
@@ -1934,6 +2077,7 @@ mod tests {
                 rows,
                 truncated: false,
                 failed: false,
+                deferred_shards: Vec::new(),
             },
         };
         let outcome = merge_partials(
@@ -1962,7 +2106,7 @@ mod tests {
             VerseTimeseriesSettings::default(),
             &[("p1/a/0", 0, 60_000, &["did:a"])],
         );
-        let plan = plan_distributed_query(&spec, &fabric, "did:a").unwrap();
+        let plan = plan_distributed_query("v-1", &spec, &fabric, "did:a").unwrap();
         let older = reading_row("r1", "a", 1.0, 0);
         let newer = reading_row("r2", "a", 2.0, 30);
         let resp = |host: &str, rows: Vec<serde_json::Value>| PartialResponse {
@@ -1972,6 +2116,7 @@ mod tests {
                 rows,
                 truncated: false,
                 failed: false,
+                deferred_shards: Vec::new(),
             },
         };
         let outcome = merge_partials(
@@ -2014,6 +2159,7 @@ mod tests {
                 rows,
                 truncated: false,
                 failed: false,
+                deferred_shards: Vec::new(),
             },
         };
         let bytes = encode_envelope(&mut envelope).expect("fits after trimming");
@@ -2100,6 +2246,7 @@ mod tests {
                 rows: vec![huge_row.clone()],
                 truncated: false,
                 failed: false,
+                deferred_shards: Vec::new(),
             },
         };
         assert!(
@@ -2115,6 +2262,7 @@ mod tests {
                 rows: Vec::new(),
                 truncated: false,
                 failed: false,
+                deferred_shards: Vec::new(),
             },
         };
         assert!(
@@ -2164,7 +2312,7 @@ mod tests {
             VerseTimeseriesSettings::default(),
             &[("p1/a/0", 0, 60_000, &["did:failed-host"])],
         );
-        let plan = plan_distributed_query(&agg_spec(0, 60_000), &fabric, "did:local").unwrap();
+        let plan = plan_distributed_query("v-1", &agg_spec(0, 60_000), &fabric, "did:local").unwrap();
         let failed = PartialResponse {
             host: "did:failed-host".into(),
             partial: TsPartialRows::failed(),
@@ -2201,7 +2349,7 @@ mod tests {
             },
             &[("p1/a/0", 0, 60_000, &["did:failed-host", "did:mirror"])],
         );
-        let plan = plan_distributed_query(&agg_spec(0, 60_000), &fabric, "did:local").unwrap();
+        let plan = plan_distributed_query("v-1", &agg_spec(0, 60_000), &fabric, "did:local").unwrap();
         let failed = PartialResponse {
             host: "did:failed-host".into(),
             partial: TsPartialRows::failed(),
@@ -2216,6 +2364,7 @@ mod tests {
                 rows: Vec::new(),
                 truncated: false,
                 failed: false,
+                deferred_shards: Vec::new(),
             },
         };
         let outcome = merge_partials(&agg_spec(0, 60_000), &plan, &[failed, mirror]);
@@ -2679,6 +2828,7 @@ mod tests {
                 rows: vec![serde_json::json!({"reading_id": "r1"})],
                 truncated: false,
                 failed: false,
+                deferred_shards: Vec::new(),
             },
         );
         assert_eq!(
@@ -2914,6 +3064,407 @@ mod tests {
             assert!(
                 outcome.meta.answered_hosts.contains(&bob.did),
                 "{label}: the author is credited as an answering peer"
+            );
+        }
+    }
+
+    // ── RP-6 §2.6: settlement race closed ──────────────────────────────────
+
+    const OWNER_DID: &str = "did:key:owner";
+
+    fn row_change(table: &str, record_id: String, author: &str, data: serde_json::Value) -> crate::replicator::RowChange {
+        crate::replicator::RowChange {
+            table: table.to_string(),
+            record_id,
+            content_hash: [0; 32],
+            author_id: author.to_string(),
+            timestamp: 0,
+            is_tombstone: false,
+            data: serde_json::to_vec(&data).expect("row json"),
+        }
+    }
+
+    /// Converge the requester's role view the way replicated rows would:
+    /// pin the owner (first manifest), map `p1 -> f1`, grant each of
+    /// `editors` Editor at p1's scope, then feed each `(shard, did)` holder
+    /// declaration (self-authored) through the fabric's gate.
+    fn converge_role_view(fabric: &mut VerseFabric, editors: &[&str], holders: &[(&str, &str)]) {
+        fabric.note_entry(
+            "v-1",
+            &row_change(
+                "verse",
+                "v-1".into(),
+                OWNER_DID,
+                serde_json::json!({
+                    "verse_id": "v-1", "created_by": OWNER_DID, "default_access": "viewer",
+                    "ts_mode": "sharded", "ts_bucket_width_ms": 60_000,
+                }),
+            ),
+        );
+        fabric.note_entry(
+            "v-1",
+            &row_change(
+                "petal",
+                "p1".into(),
+                OWNER_DID,
+                serde_json::json!({ "petal_id": "p1", "fractal_id": "f1" }),
+            ),
+        );
+        let scope = fe_policy::build_scope("v-1", Some("f1"), Some("p1"));
+        for (i, editor) in editors.iter().enumerate() {
+            fabric.note_entry(
+                "v-1",
+                &row_change(
+                    "role",
+                    format!("{scope}/{editor}/{OWNER_DID}"),
+                    OWNER_DID,
+                    serde_json::json!({
+                        "scope": scope, "peer_did": editor, "grantor_did": OWNER_DID,
+                        "role": "editor", "revoked": false, "hlc": i as u64 + 1,
+                    }),
+                ),
+            );
+        }
+        for (shard, did) in holders {
+            fabric.note_entry(
+                "v-1",
+                &row_change(
+                    crate::sharding::HOLDERS_TABLE,
+                    format!("{shard}/{did}"),
+                    did,
+                    serde_json::json!({ "shard": shard, "holder_did": did }),
+                ),
+            );
+        }
+    }
+
+    /// Submit one query from `requester` and return the outcome receiver.
+    fn submit(
+        requester: &WirePeer,
+        fabrics: &HashMap<String, VerseFabric>,
+        id: &str,
+        spec: TsQueryKind,
+        timeout_ms: u64,
+    ) -> crossbeam::channel::Receiver<DistributedQueryOutcome> {
+        let (reply, outcome_rx) = crossbeam::channel::bounded(1);
+        submit_distributed_query(
+            &requester.transport,
+            fabrics,
+            &requester.senders,
+            DistributedQueryCall {
+                request: fe_runtime::distributed_query::DistributedQueryRequest {
+                    request_id: id.into(),
+                    verse_id: "v-1".into(),
+                    spec,
+                    timeout_ms,
+                    row_cap: 0,
+                },
+                reply,
+            },
+        );
+        outcome_rx
+    }
+
+    /// The previously-residual order: the formal host (carol) answers EMPTY
+    /// first, the declared holder (bob, an Editor whose creator copy is the
+    /// only copy) second. Settlement now waits for the holder, so bob's rows
+    /// reach the outcome on both the aggregate and the raw leg.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn settlement_waits_for_a_declared_holder_even_when_the_host_answers_empty_first() {
+        let shard = "p1/b/0";
+        let reading = reading_row("r-b1", "b", 12.5, 1_000);
+        let cases = [
+            (
+                "WindowAggregate",
+                agg_spec(0, 60_000),
+                TsPartialRows {
+                    per_shard: vec![shard_rows(shard, vec![agg_row("b", 30.0, 2, 10.0, 20.0)])],
+                    ..TsPartialRows::empty()
+                },
+                TsPartialRows {
+                    per_shard: vec![shard_rows(shard, Vec::new())],
+                    ..TsPartialRows::empty()
+                },
+            ),
+            (
+                "AllReadings",
+                TsQueryKind::AllReadings {
+                    petal_id: "p1".into(),
+                },
+                TsPartialRows {
+                    rows: vec![reading.clone()],
+                    ..TsPartialRows::empty()
+                },
+                TsPartialRows::empty(),
+            ),
+        ];
+        for (label, spec, holder_copy, host_copy) in cases {
+            let alice = wire_peer(7, None);
+            let bob = wire_peer(8, Some(holder_copy));
+            let carol = wire_peer(9, Some(host_copy));
+            let mut fabric = fabric_with_shards(
+                VerseTimeseriesSettings {
+                    mode: TimeseriesMode::Sharded,
+                    replication_factor: 1,
+                    bucket_width_ms: 60_000,
+                },
+                &[(shard, 0, 60_000, &[carol.did.as_str()])],
+            );
+            converge_role_view(&mut fabric, &[bob.did.as_str()], &[(shard, bob.did.as_str())]);
+            for peer in [&alice, &bob, &carol] {
+                fabric.note_peer_declaration(&peer.did, PeerDeclaration::default());
+            }
+            let fabrics = HashMap::from([("v-1".to_string(), fabric)]);
+
+            let outcome_rx = submit(&alice, &fabrics, &format!("q-{label}"), spec, 3_000);
+            let request = alice
+                .wire
+                .recv_timeout(Duration::from_secs(5))
+                .expect("alice broadcasts the request");
+            deliver(&bob, &fabrics, &alice, request.clone());
+            deliver(&carol, &fabrics, &alice, request);
+            // The HOST first — the order the pre-RP-6 settlement lost.
+            let host_frame = carol
+                .wire
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the formal host answers");
+            deliver(&alice, &fabrics, &carol, host_frame);
+            let holder_frame = bob
+                .wire
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the holder answers");
+            deliver(&alice, &fabrics, &bob, holder_frame);
+
+            let outcome = outcome_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("alice merges an outcome");
+            assert!(outcome.error.is_none(), "{label}: {:?}", outcome.error);
+            assert_eq!(outcome.rows.len(), 1, "{label}: the holder's rows must be merged");
+            assert_eq!(outcome.rows[0]["node_id"], "b", "{label}");
+            assert_eq!(outcome.meta.covered_shards, vec![shard.to_string()], "{label}");
+            assert!(outcome.meta.answered_hosts.contains(&bob.did), "{label}");
+            assert!(outcome.meta.missing_holders.is_empty(), "{label}");
+            assert!(outcome.meta.rejected_answerers.is_empty(), "{label}");
+            assert!(
+                outcome.meta.unverified_answerers.is_empty(),
+                "{label}: an admitted holder is an expected answerer, never judged"
+            );
+        }
+    }
+
+    /// A declared holder that never answers is waited for HOLDER_WAIT_MS
+    /// (not the full deadline) and reported in `meta.missing_holders`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_silent_holder_is_reported_missing_after_the_holder_wait_not_the_full_deadline() {
+        let shard = "p1/b/0";
+        let alice = wire_peer(7, None);
+        let bob = wire_peer(8, None); // silent: never delivered anything
+        let carol = wire_peer(9, Some(TsPartialRows::empty()));
+        let mut fabric = fabric_with_shards(
+            VerseTimeseriesSettings {
+                mode: TimeseriesMode::Sharded,
+                replication_factor: 1,
+                bucket_width_ms: 60_000,
+            },
+            &[(shard, 0, 60_000, &[carol.did.as_str()])],
+        );
+        converge_role_view(&mut fabric, &[bob.did.as_str()], &[(shard, bob.did.as_str())]);
+        for peer in [&alice, &bob, &carol] {
+            fabric.note_peer_declaration(&peer.did, PeerDeclaration::default());
+        }
+        let fabrics = HashMap::from([("v-1".to_string(), fabric)]);
+        let timeout_ms = 5_000;
+
+        let started = std::time::Instant::now();
+        let outcome_rx = submit(
+            &alice,
+            &fabrics,
+            "q-silent",
+            TsQueryKind::AllReadings {
+                petal_id: "p1".into(),
+            },
+            timeout_ms,
+        );
+        let request = alice
+            .wire
+            .recv_timeout(Duration::from_secs(5))
+            .expect("alice broadcasts the request");
+        deliver(&carol, &fabrics, &alice, request);
+        let host_frame = carol
+            .wire
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the formal host answers");
+        deliver(&alice, &fabrics, &carol, host_frame);
+
+        let outcome = outcome_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("alice merges an outcome");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(HOLDER_WAIT_MS),
+            "the holder is awaited for the holder wait ({elapsed:?})"
+        );
+        assert!(
+            elapsed < Duration::from_millis(timeout_ms / 2),
+            "a silent holder must not hold the query to the full deadline ({elapsed:?})"
+        );
+        assert_eq!(outcome.meta.missing_holders, vec![bob.did.clone()]);
+        assert!(outcome.meta.missing_hosts.is_empty(), "the host answered");
+    }
+
+    /// RP-6 host honesty: a formal host's covered-empty answer for a shard it
+    /// still holds DEFERRED readings for never settles the shard — it is
+    /// reported incomplete, never covered (both merge families).
+    #[test]
+    fn a_host_with_deferred_rows_does_not_settle_the_shard_on_a_covered_empty() {
+        let shard = "p1/a/0";
+        let fabric = fabric_with_shards(
+            VerseTimeseriesSettings {
+                mode: TimeseriesMode::Sharded,
+                replication_factor: 1,
+                bucket_width_ms: 60_000,
+            },
+            &[(shard, 0, 60_000, &["did:carol"])],
+        );
+        let specs = [
+            agg_spec(0, 60_000),
+            TsQueryKind::AllReadings {
+                petal_id: "p1".into(),
+            },
+        ];
+        for spec in specs {
+            let plan = plan_distributed_query("v-1", &spec, &fabric, "did:alice").unwrap();
+            let is_aggregate = matches!(spec, TsQueryKind::WindowAggregate { .. });
+            let partial = |deferred: Vec<String>| TsPartialRows {
+                per_shard: if is_aggregate {
+                    vec![shard_rows(shard, Vec::new())]
+                } else {
+                    Vec::new()
+                },
+                deferred_shards: deferred,
+                ..TsPartialRows::empty()
+            };
+            let deferred = merge_partials(
+                &spec,
+                &plan,
+                &[PartialResponse {
+                    host: "did:carol".into(),
+                    partial: partial(vec![shard.to_string()]),
+                }],
+            );
+            assert!(!deferred.meta.covered_shards.contains(&shard.to_string()), "{spec:?}");
+            assert_eq!(deferred.meta.incomplete_shards, vec![shard.to_string()], "{spec:?}");
+            assert!(deferred.meta.missing_shards.is_empty(), "{spec:?}: the host answered");
+
+            // The same empty answer WITHOUT deferred rows is authoritative.
+            let settled = merge_partials(
+                &spec,
+                &plan,
+                &[PartialResponse {
+                    host: "did:carol".into(),
+                    partial: partial(Vec::new()),
+                }],
+            );
+            assert_eq!(settled.meta.covered_shards, vec![shard.to_string()], "{spec:?}");
+            assert!(settled.meta.incomplete_shards.is_empty(), "{spec:?}");
+        }
+    }
+
+    /// RP-6 merge filter: rows from an answerer that is neither host nor
+    /// admitted holder are discarded and reported when the requester's
+    /// converged role view puts it below Editor at the petal scope; kept
+    /// when it is an Editor; kept but reported unverified when the view has
+    /// not converged.
+    #[test]
+    fn rows_from_a_sub_editor_unexpected_answerer_are_discarded_and_reported() {
+        let shard = "p1/a/0";
+        let stranger_row = reading_row("r-x", "a", 99.0, 1_000);
+        struct Case {
+            label: &'static str,
+            converged: bool,
+            answerer: &'static str,
+            expect_kept: bool,
+            expect_rejected: bool,
+            expect_unverified: bool,
+        }
+        let cases = [
+            Case {
+                label: "a Viewer (default access) is discarded",
+                converged: true,
+                answerer: "did:key:dave",
+                expect_kept: false,
+                expect_rejected: true,
+                expect_unverified: false,
+            },
+            Case {
+                label: "a petal Editor is kept",
+                converged: true,
+                answerer: "did:key:erin",
+                expect_kept: true,
+                expect_rejected: false,
+                expect_unverified: false,
+            },
+            Case {
+                label: "an unconverged view keeps and flags",
+                converged: false,
+                answerer: "did:key:dave",
+                expect_kept: true,
+                expect_rejected: false,
+                expect_unverified: true,
+            },
+        ];
+        for case in cases {
+            let mut fabric = fabric_with_shards(
+                VerseTimeseriesSettings {
+                    mode: TimeseriesMode::Sharded,
+                    replication_factor: 1,
+                    bucket_width_ms: 60_000,
+                },
+                &[(shard, 0, 60_000, &["did:carol"])],
+            );
+            if case.converged {
+                converge_role_view(&mut fabric, &["did:key:erin"], &[]);
+            }
+            let spec = TsQueryKind::AllReadings {
+                petal_id: "p1".into(),
+            };
+            let plan = plan_distributed_query("v-1", &spec, &fabric, "did:alice").unwrap();
+            let outcome = merge_partials(
+                &spec,
+                &plan,
+                &[
+                    PartialResponse {
+                        host: "did:carol".into(),
+                        partial: TsPartialRows::empty(),
+                    },
+                    PartialResponse {
+                        host: case.answerer.into(),
+                        partial: TsPartialRows {
+                            rows: vec![stranger_row.clone()],
+                            ..TsPartialRows::empty()
+                        },
+                    },
+                ],
+            );
+            let answerer = case.answerer.to_string();
+            assert_eq!(outcome.rows.len(), usize::from(case.expect_kept), "{}", case.label);
+            assert_eq!(
+                outcome.meta.rejected_answerers.contains(&answerer),
+                case.expect_rejected,
+                "{}",
+                case.label
+            );
+            assert_eq!(
+                outcome.meta.unverified_answerers.contains(&answerer),
+                case.expect_unverified,
+                "{}",
+                case.label
+            );
+            assert_eq!(
+                outcome.meta.answered_hosts.contains(&answerer),
+                !case.expect_rejected,
+                "{}: a rejected answerer is never credited",
+                case.label
             );
         }
     }

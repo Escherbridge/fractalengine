@@ -40,7 +40,9 @@ use crate::replicator::{
     IrohDocsEngineHolder, IrohDocsReplicator, IrohPetalReplicator, PetalReplicator,
     ReplicatorFuture, RowChange, VerseReplicator,
 };
-use crate::sharding::{PeerDeclaration, ShardId, VerseFabric, PEER_DECL_TABLE, SHARD_TABLE};
+use crate::sharding::{
+    PeerDeclaration, ShardId, VerseFabric, HOLDERS_TABLE, PEER_DECL_TABLE, SHARD_TABLE,
+};
 use crate::tileset_transfer::{
     is_safe_tileset_id, CatalogEntry, MetaResolved, TilesetTransfer, TransferEvent,
 };
@@ -1285,6 +1287,19 @@ fn handle_inbound_row_change(
     // `role` and `petal` are ordinary DB-plane tables and must still be
     // forwarded below; only `__shards`/`__peers` are sync-plane-only.
     fabric.note_entry(verse_id, change);
+    if change.table == HOLDERS_TABLE {
+        // RP-6: our OWN holder declaration replayed from the snapshot is how
+        // the fabric re-learns, after a restart, that it was already
+        // published — so `local_holding_row` never publishes it twice.
+        if change.author_id == local_did && !change.data.is_empty() {
+            if let Some((shard_key, did)) = crate::sharding::parse_holder_key(&change.record_id) {
+                if did == local_did {
+                    fabric.note_local_holding(shard_key);
+                }
+            }
+        }
+        return;
+    }
     if change.table == SHARD_TABLE || change.table == PEER_DECL_TABLE {
         return;
     }
@@ -1873,6 +1888,7 @@ async fn handle_write_row_entry(
     // manifest, and on the first sight of a timeseries row plan the shard's
     // host set and publish its ledger row.
     let mut ledger_publish: Option<(String, Vec<u8>)> = None;
+    let mut holder_publish: Option<(String, Vec<u8>)> = None;
     if table == "role" {
         // RP-5: feed our OWN outbound role statements (local grant/revoke)
         // into the fabric too, so a local gate (e.g. the compute requester
@@ -1895,6 +1911,10 @@ async fn handle_write_row_entry(
                     {
                         ledger_publish = Some((shard.key(), ledger_bytes));
                     }
+                    // RP-6 §2.6: a local reading in a shard we do not host
+                    // makes us a holder of its creator copy — declared once
+                    // per shard, so requesters expect (and wait for) us.
+                    holder_publish = fabric.local_holding_row(&shard, author_did);
                 }
             }
             _ => {}
@@ -1913,6 +1933,22 @@ async fn handle_write_row_entry(
                 shard = %shard_key,
                 "Shard ledger publish failed: {e}"
             );
+        }
+    }
+
+    // RP-6 §2.6: the holder declaration lands after the ledger row (it
+    // names a shard the ledger defines) and before the reading (a requester
+    // that sees the reading already expects our answer).
+    if let Some((holder_key, holder_bytes)) = holder_publish {
+        if let Err(e) = repl.write_row(HOLDERS_TABLE, &holder_key, &holder_bytes).await {
+            tracing::warn!(
+                verse_id,
+                holder = %holder_key,
+                "Holder declaration publish failed — will re-declare on the next reading: {e}"
+            );
+            if let Some((shard_key, _)) = crate::sharding::parse_holder_key(&holder_key) {
+                fabric.forget_local_holding(shard_key);
+            }
         }
     }
 
@@ -5212,6 +5248,113 @@ mod tests {
             db_rx.try_recv().is_err(),
             "sync-plane rows never reach the DB thread"
         );
+    }
+
+    /// RP-6 §2.6: a local reading in a shard the local peer does NOT host
+    /// publishes `__holders/{shard}/{local_did}` once (after the ledger,
+    /// before the reading), never again for the same shard — and after a
+    /// restart the fabric re-learns the declaration from our own snapshot
+    /// row, so the next reading still publishes nothing new. Holder rows are
+    /// sync-plane only (never forwarded to the DB thread).
+    #[tokio::test]
+    async fn holder_declaration_is_published_once_per_shard_and_relearned_after_restart() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store: BlobStoreHandle =
+            Arc::new(crate::FsBlobStore::new(tmp.path().join("blobs")).expect("fs blob store"));
+        let local = "did:key:local";
+        let mock = MockVerseReplicator::new(local);
+        let mut writes = mock.subscribe().await.expect("observe every write");
+        let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
+        replicas.insert("v-hold".to_string(), Box::new(mock));
+        let mut pending = PendingWrites::default();
+
+        // The ledger (converged from peer-b, the shard's only host) and the
+        // verse settings the reading's bucket depends on.
+        let seed_fabric = |fabric: &mut VerseFabric| {
+            fabric.note_verse_row(
+                "v-hold",
+                &serde_json::json!({
+                    "created_by": local, "ts_mode": "sharded", "ts_bucket_width_ms": 86_400_000
+                }),
+                local,
+            );
+            fabric.note_shard_row(&serde_json::json!({
+                "shard": "p1/a1/20284", "hosts": ["did:key:peer-b"],
+                "mode": "sharded", "replication_factor": 1, "bucket_width_ms": 86_400_000,
+                "range_start_ms": 0, "range_end_ms": 0, "row_count": 1, "size_bytes": 1
+            }));
+        };
+        let mut fabric = VerseFabric::default();
+        seed_fabric(&mut fabric);
+
+        let write_reading = |reading_id: &'static str| {
+            let row = format!(
+                r#"{{"reading_id":"{reading_id}","node_id":"a1","petal_id":"p1","recorded_at_ms":1752580800000}}"#
+            );
+            blob_store.add_blob(row.as_bytes()).expect("reading blob")
+        };
+        let first = write_reading("r-1");
+        let second = write_reading("r-2");
+        let third = write_reading("r-3");
+        for (reading_id, hash) in [("r-1", &first), ("r-2", &second)] {
+            handle_write_row_entry(
+                &replicas, &mut pending, &mut fabric, &blob_store, local, "v-hold", "iot_reading",
+                reading_id, hash,
+            )
+            .await;
+        }
+
+        let mut published: Vec<RowChange> = Vec::new();
+        while let Ok(change) = writes.try_recv() {
+            published.push(change);
+        }
+        let holder_writes: Vec<&RowChange> =
+            published.iter().filter(|c| c.table == HOLDERS_TABLE).collect();
+        assert_eq!(holder_writes.len(), 1, "declared once per shard, not once per reading");
+        assert_eq!(holder_writes[0].record_id, "p1/a1/20284/did:key:local");
+        let holder_pos = published.iter().position(|c| c.table == HOLDERS_TABLE).unwrap();
+        let reading_pos = published
+            .iter()
+            .position(|c| c.table == "iot_reading")
+            .expect("the reading was published");
+        assert!(holder_pos < reading_pos, "the declaration lands before the reading");
+
+        // Restart: a fresh fabric replays our own snapshot rows.
+        let (evt_tx, _evt_rx) = crossbeam::channel::bounded(64);
+        let (db_tx, db_rx) = crossbeam::channel::bounded::<DbCommand>(64);
+        let mut restarted = VerseFabric::default();
+        seed_reconciliation(
+            replicas.get("v-hold").unwrap().as_ref(),
+            "v-hold",
+            local,
+            &evt_tx,
+            &Some(db_tx),
+            &mut restarted,
+        )
+        .await;
+        assert!(
+            restarted.declared_holdings().contains("p1/a1/20284"),
+            "the declaration is re-learned from our own snapshot row"
+        );
+        assert!(
+            db_rx.try_iter().all(|cmd| !matches!(
+                cmd,
+                DbCommand::ApplyReplicatedRow { ref table, .. } if table == HOLDERS_TABLE
+            )),
+            "holder rows never reach the DB thread"
+        );
+        seed_fabric(&mut restarted);
+        handle_write_row_entry(
+            &replicas, &mut pending, &mut restarted, &blob_store, local, "v-hold", "iot_reading",
+            "r-3", &third,
+        )
+        .await;
+        let after_restart: Vec<RowChange> = std::iter::from_fn(|| writes.try_recv().ok()).collect();
+        assert!(
+            after_restart.iter().all(|c| c.table != HOLDERS_TABLE),
+            "no re-declaration after a restart"
+        );
+        assert!(after_restart.iter().any(|c| c.table == "iot_reading"));
     }
 
     // -------------------------------------------------------------------------

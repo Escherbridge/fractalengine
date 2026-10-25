@@ -27,7 +27,7 @@
 //! use (`fe_policy::role_grants::EffectiveRoles::role_at`), with
 //! `default_access` folded in as the ⊥ fallback.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use fe_policy::RoleLevel;
 use fe_runtime::timeseries::{TimeseriesMode, VerseTimeseriesSettings};
@@ -40,6 +40,96 @@ use crate::placement::{
 pub const SHARD_TABLE: &str = "__shards";
 /// Doc-entry table prefix for peer capacity declarations (`__peers/{did}`).
 pub const PEER_DECL_TABLE: &str = "__peers";
+/// Doc-entry table prefix for holder declarations
+/// (`__holders/{petal}/{anchor}/{bucket}/{did}`, RP-6 §2.6): an author whose
+/// local reading lands in a shard it does not host declares it holds a
+/// creator copy, so a requester expects (and briefly waits for) its answer.
+pub const HOLDERS_TABLE: &str = "__holders";
+
+/// Resolve a peer's role at `scope` with the §2.2 ⊥ fallback folded in —
+/// the one function behind [`VerseFabric::role_at`] and
+/// [`AnswererView::verdict`], so the gate and the merge filter can never
+/// resolve a role two different ways (`fe_policy::role_grants` underneath).
+fn resolve_role(
+    effective: &fe_policy::EffectiveRoles,
+    default_access: RoleLevel,
+    peer_did: &str,
+    scope: &str,
+) -> RoleLevel {
+    let explicit = effective.role_at(peer_did, scope);
+    if explicit == RoleLevel::None {
+        default_access
+    } else {
+        explicit
+    }
+}
+
+/// Split a `__holders` record id (`{petal}/{anchor}/{bucket}/{did}`) into
+/// `(shard_key, holder_did)`. `None` when the key is not exactly a shard
+/// key plus one trailing DID segment.
+pub fn parse_holder_key(record_id: &str) -> Option<(&str, &str)> {
+    let (shard_key, did) = record_id.rsplit_once('/')?;
+    if did.is_empty() || shard_key.split('/').count() != 3 || shard_key.split('/').any(str::is_empty) {
+        return None;
+    }
+    Some((shard_key, did))
+}
+
+/// How the requester's role view judges an unexpected answerer (one that is
+/// neither a ledger host nor an admitted holder of any targeted shard) —
+/// the RP-6 §2.6 merge filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnswererVerdict {
+    /// Editor+ at the shard's petal scope — its rows are kept.
+    Admitted,
+    /// Converged view, below Editor — its rows are discarded and the
+    /// answerer is reported in `meta.rejected_answerers`.
+    Rejected,
+    /// The view has not converged (no owner pinned, or the petal's scope is
+    /// unknown locally) — its rows are kept and the answerer is reported in
+    /// `meta.unverified_answerers`.
+    Unverified,
+}
+
+/// An owned snapshot of the requester's role view at one petal's scope,
+/// taken at plan time so the (pure) merge can judge answerers without
+/// borrowing the sync thread's fabric across the collector's awaits.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnswererView {
+    petal_scope: Option<String>,
+    owner_pinned: bool,
+    effective: fe_policy::EffectiveRoles,
+    default_access: RoleLevel,
+}
+
+impl Default for AnswererView {
+    /// A view that has converged on nothing — every answerer is unverified.
+    fn default() -> Self {
+        Self {
+            petal_scope: None,
+            owner_pinned: false,
+            effective: fe_policy::EffectiveRoles::default(),
+            default_access: RoleLevel::None,
+        }
+    }
+}
+
+impl AnswererView {
+    /// Judge one unexpected answerer: Editor+ at the petal scope (`role_at`,
+    /// the same resolution every fabric gate uses) or not, or not judgeable.
+    pub fn verdict(&self, answerer_did: &str) -> AnswererVerdict {
+        let Some(scope) = self.petal_scope.as_deref().filter(|_| self.owner_pinned) else {
+            return AnswererVerdict::Unverified;
+        };
+        if resolve_role(&self.effective, self.default_access, answerer_did, scope)
+            .is_at_least(RoleLevel::Editor)
+        {
+            AnswererVerdict::Admitted
+        } else {
+            AnswererVerdict::Rejected
+        }
+    }
+}
 
 /// Quarantine cap per verse (§2.5) — an accelerator, not the safety net. An
 /// evicted row is still in the replica; it comes back through the §2.5
@@ -205,6 +295,7 @@ fn parse_default_access(row: &serde_json::Value) -> RoleLevel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QuarantineKind {
     Shard,
+    Holder,
 }
 
 #[derive(Debug, Clone)]
@@ -253,6 +344,13 @@ pub struct VerseFabric {
     /// Rows gated on a role/petal view that has not converged yet.
     quarantine: VecDeque<QuarantinedRow>,
     quarantine_evicted: u64,
+    /// Admitted holder declarations by shard key (RP-6 §2.6): DIDs whose
+    /// `__holders/{shard}/{did}` row passed the Editor+ petal-scope gate.
+    holders: BTreeMap<String, BTreeSet<String>>,
+    /// Shard keys the LOCAL peer has declared it holds — set when the
+    /// declaration is published and re-learned from our own snapshot rows
+    /// after a restart, so a declaration is published once per shard.
+    local_holdings: BTreeSet<String>,
 }
 
 impl Default for VerseFabric {
@@ -269,6 +367,8 @@ impl Default for VerseFabric {
             reread_queue: VecDeque::new(),
             quarantine: VecDeque::new(),
             quarantine_evicted: 0,
+            holders: BTreeMap::new(),
+            local_holdings: BTreeSet::new(),
         }
     }
 }
@@ -389,12 +489,107 @@ impl VerseFabric {
     /// `{viewer, none}` (§2.2), so it can never satisfy a Manager+ floor —
     /// callers needing that floor use this unconditionally too.
     pub fn role_at(&self, peer_did: &str, scope: &str) -> RoleLevel {
-        let explicit = self.effective.role_at(peer_did, scope);
-        if explicit == RoleLevel::None {
-            self.default_access
-        } else {
-            explicit
+        resolve_role(&self.effective, self.default_access, peer_did, scope)
+    }
+
+    /// Snapshot the role view at `petal_id`'s scope for the RP-6 merge
+    /// filter (taken at plan time; see [`AnswererView`]).
+    pub fn answerer_view(&self, verse_id: &str, petal_id: &str) -> AnswererView {
+        AnswererView {
+            petal_scope: self.petal_scope(verse_id, petal_id),
+            owner_pinned: self.owner_did.is_some(),
+            effective: self.effective.clone(),
+            default_access: self.default_access,
         }
+    }
+
+    /// Admit one `__holders/{petal}/{anchor}/{bucket}/{did}` declaration
+    /// (RP-6 §2.6). The trailing DID must be the entry's signed author (a
+    /// row declaring ANOTHER peer a holder is dropped, as with `__peers`);
+    /// the author needs Editor+ at the shard's petal scope (§2.5 — the same
+    /// `role_at` gate as `__shards`). A row that cannot be judged yet is
+    /// quarantined, never dropped: the replica holds it, and the §2.5
+    /// re-read on empowerment recovers it.
+    pub fn note_holder_row(&mut self, verse_id: &str, record_id: &str, author_id: &str, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        let Some((_, holder_did)) = parse_holder_key(record_id) else {
+            tracing::debug!(verse_id, record_id, "malformed holder declaration key — dropped");
+            return;
+        };
+        if holder_did != author_id {
+            tracing::warn!(
+                verse_id,
+                record_id,
+                author = author_id,
+                "Forged holder declaration dropped — __holders rows must name their own author"
+            );
+            return;
+        }
+        self.admit_holder_entry(verse_id, record_id, author_id, data);
+    }
+
+    fn admit_holder_entry(&mut self, verse_id: &str, record_id: &str, author_id: &str, data: &[u8]) {
+        let Some((shard_key, holder_did)) = parse_holder_key(record_id) else {
+            return;
+        };
+        let admitted = match self.petal_scope(verse_id, ShardId::petal_of_key(shard_key)) {
+            Some(scope) => self.role_at(author_id, &scope).is_at_least(RoleLevel::Editor),
+            None => false,
+        };
+        if admitted {
+            self.holders
+                .entry(shard_key.to_string())
+                .or_default()
+                .insert(holder_did.to_string());
+            return;
+        }
+        self.quarantine_row(QuarantineKind::Holder, record_id, author_id, data);
+    }
+
+    /// The admitted holders of one shard (RP-6 §2.6 — expected answerers
+    /// beside the ledger hosts).
+    pub fn shard_holders(&self, shard_key: &str) -> Option<&BTreeSet<String>> {
+        self.holders.get(shard_key)
+    }
+
+    /// The shard keys the local peer has declared it holds (published or
+    /// re-learned from our own snapshot rows after a restart).
+    pub fn declared_holdings(&self) -> &BTreeSet<String> {
+        &self.local_holdings
+    }
+
+    /// Record that the local peer's `__holders` declaration for this shard
+    /// already exists in the replica (our own snapshot row replayed after a
+    /// restart), so it is never published twice.
+    pub fn note_local_holding(&mut self, shard_key: &str) {
+        self.local_holdings.insert(shard_key.to_string());
+    }
+
+    /// Undo a local declaration whose publish failed, so the next reading
+    /// into that shard declares it again.
+    pub fn forget_local_holding(&mut self, shard_key: &str) {
+        self.local_holdings.remove(shard_key);
+    }
+
+    /// The `__holders` row to publish for a local reading in `shard`, once:
+    /// `Some((record_id, payload))` the first time the local peer writes a
+    /// reading into a shard it does NOT host, `None` when it hosts the shard
+    /// (or the shard is not in the ledger yet) or has already declared it.
+    pub fn local_holding_row(&mut self, shard: &ShardId, local_did: &str) -> Option<(String, Vec<u8>)> {
+        let key = shard.key();
+        let hosts = self.shard_hosts(&key)?;
+        if hosts.iter().any(|h| h == local_did) || self.local_holdings.contains(&key) {
+            return None;
+        }
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "shard": key,
+            "holder_did": local_did,
+        }))
+        .ok()?;
+        self.local_holdings.insert(key.clone());
+        Some((format!("{key}/{local_did}"), payload))
     }
 
     /// Admit one `role` statement (§2.1 key `role/{scope}/{peer}/{grantor}`
@@ -561,6 +756,9 @@ impl VerseFabric {
                 QuarantineKind::Shard => {
                     self.admit_shard_entry(verse_id, &row.record_id, &row.author_id, &row.data);
                 }
+                QuarantineKind::Holder => {
+                    self.admit_holder_entry(verse_id, &row.record_id, &row.author_id, &row.data);
+                }
             }
         }
     }
@@ -726,6 +924,9 @@ impl VerseFabric {
     /// - `__shards` ledger rows go through `admit_shard_entry` (RP-5): a
     ///   row whose author is not Editor+ at the shard's petal scope is
     ///   quarantined, not dropped.
+    /// - `__holders` declarations go through `note_holder_row` (RP-6): the
+    ///   key's DID must be the author, and the author Editor+ at the
+    ///   shard's petal scope (quarantined otherwise).
     pub fn note_entry(&mut self, verse_id: &str, change: &crate::replicator::RowChange) {
         match change.table.as_str() {
             "verse" => {
@@ -767,6 +968,9 @@ impl VerseFabric {
             SHARD_TABLE if !change.data.is_empty() => {
                 self.admit_shard_entry(verse_id, &change.record_id, &change.author_id, &change.data);
             }
+            HOLDERS_TABLE => {
+                self.note_holder_row(verse_id, &change.record_id, &change.author_id, &change.data);
+            }
             _ => {}
         }
     }
@@ -778,6 +982,7 @@ impl VerseFabric {
             "settings": self.settings,
             "peers": self.peers,
             "shards": self.shards,
+            "holders": self.holders,
             "owner_did": self.owner_did,
             "default_access": self.default_access.to_string(),
             "quarantine_len": self.quarantine.len(),
@@ -1428,5 +1633,86 @@ mod tests {
             "a Manager's lower statement must not demote an owner-granted Editor"
         );
         assert_eq!(fabric.effective, direct);
+    }
+
+    // ── RP-6: holder declarations ───────────────────────────────────────
+
+    fn holder_change(shard_key: &str, holder: &str, author: &str) -> crate::replicator::RowChange {
+        crate::replicator::RowChange {
+            table: HOLDERS_TABLE.into(),
+            record_id: format!("{shard_key}/{holder}"),
+            content_hash: [0; 32],
+            author_id: author.to_string(),
+            timestamp: 0,
+            is_tombstone: false,
+            data: serde_json::to_vec(&serde_json::json!({
+                "shard": shard_key, "holder_did": holder,
+            }))
+            .unwrap(),
+        }
+    }
+
+    #[test]
+    fn a_viewer_cannot_declare_itself_a_holder() {
+        let mut fabric = fabric_with_owner("v1");
+        fabric.note_entry("v1", &petal_change("p1", "f1"));
+        let petal_scope = fe_policy::build_scope("v1", Some("f1"), Some("p1"));
+        let viewer = "did:key:viewer";
+        let editor = "did:key:editor";
+        fabric.note_entry("v1", &role_change(&petal_scope, viewer, OWNER, "viewer", false, 1));
+        fabric.note_entry("v1", &role_change(&petal_scope, editor, OWNER, "editor", false, 2));
+
+        fabric.note_entry("v1", &holder_change("p1/a1/1", viewer, viewer));
+        assert!(
+            fabric.shard_holders("p1/a1/1").is_none_or(|h| !h.contains(viewer)),
+            "a Viewer's self-declaration must never make it an expected answerer"
+        );
+        assert_eq!(fabric.quarantine_len(), 1, "held, not discarded");
+
+        fabric.note_entry("v1", &holder_change("p1/a1/1", editor, editor));
+        assert!(fabric.shard_holders("p1/a1/1").is_some_and(|h| h.contains(editor)));
+
+        // Declaring SOMEONE ELSE a holder is a forgery, dropped outright.
+        fabric.note_entry("v1", &holder_change("p1/a2/1", editor, viewer));
+        assert!(fabric.shard_holders("p1/a2/1").is_none());
+        assert_eq!(fabric.quarantine_len(), 1, "a forged row is not even quarantined");
+
+        // Once the owner raises the Viewer to Editor, the held row matures.
+        fabric.note_entry("v1", &role_change(&petal_scope, viewer, OWNER, "editor", false, 3));
+        assert!(fabric.shard_holders("p1/a1/1").is_some_and(|h| h.contains(viewer)));
+    }
+
+    #[test]
+    fn local_holding_row_is_issued_once_and_only_for_an_unhosted_known_shard() {
+        let mut fabric = fabric_with_owner("v1");
+        let shard = ShardId { petal_id: "p1".into(), anchor_node_id: "a1".into(), bucket: 1 };
+        assert!(fabric.local_holding_row(&shard, "did:key:local").is_none(), "unknown shard");
+        fabric.note_shard_row(&serde_json::json!({
+            "shard": "p1/a1/1", "hosts": ["did:key:host"], "row_count": 1, "size_bytes": 1
+        }));
+        let (record_id, _payload) = fabric
+            .local_holding_row(&shard, "did:key:local")
+            .expect("first reading into an unhosted shard declares a holding");
+        assert_eq!(record_id, "p1/a1/1/did:key:local");
+        assert_eq!(parse_holder_key(&record_id), Some(("p1/a1/1", "did:key:local")));
+        assert!(fabric.local_holding_row(&shard, "did:key:local").is_none(), "once per shard");
+        assert!(fabric.local_holding_row(&shard, "did:key:host").is_none(), "a host never declares");
+    }
+
+    #[test]
+    fn answerer_view_rejects_only_when_converged() {
+        let mut fabric = fabric_with_owner("v1");
+        let petal_scope = fe_policy::build_scope("v1", Some("f1"), Some("p1"));
+        fabric.note_entry("v1", &role_change(&petal_scope, "did:key:editor", OWNER, "editor", false, 1));
+        // Petal unknown: nothing to judge against.
+        assert_eq!(
+            fabric.answerer_view("v1", "p1").verdict("did:key:viewer"),
+            AnswererVerdict::Unverified
+        );
+        fabric.note_entry("v1", &petal_change("p1", "f1"));
+        let view = fabric.answerer_view("v1", "p1");
+        assert_eq!(view.verdict("did:key:viewer"), AnswererVerdict::Rejected);
+        assert_eq!(view.verdict("did:key:editor"), AnswererVerdict::Admitted);
+        assert_eq!(view.verdict(OWNER), AnswererVerdict::Admitted);
     }
 }
