@@ -877,8 +877,16 @@ function, `fe_policy::role_grants`'s `materialize`/`validate_statement`/
 style parity holds by construction, not by coincidence.
 
 - **Owner, pinned once.** `VerseFabric::learn_owner` takes a verse
-  manifest's `created_by` the first time one is seen (inbound OR our own
-  outbound write) and never relearns it — the same immutability rule the
+  manifest's `created_by` the first time a TRUSTED one is seen and never
+  relearns it. Trusted (OF-6d, W5s 2026-10-25) = an inbound manifest whose
+  signed author IS its `created_by` (self-signed), or our own outbound,
+  locally-admitted write (`note_local_verse_row` — the creator, or an
+  invite-pinned owner, fe-database T10). A manifest claiming someone else as
+  creator pins nothing and adopts no settings; its claimed creator is queued
+  on `reread_queue`, so the §2.5 re-read replays THAT DID's own `verse/`
+  entry (a later Manager edit shadowing the owner's entry in the snapshot
+  cannot stall the pin). Residual (D-23 class): the first SELF-signed
+  manifest still wins a race on a relay that opened without an invite — the same immutability rule the
   DB plane's `created_by` field keeps (T9). Everything downstream
   (`role_at`, `admissible`) is `EffectiveRoles::default()` (nobody has any
   role) until the owner is known, which is the correct pre-manifest answer
@@ -910,10 +918,10 @@ style parity holds by construction, not by coincidence.
   anything else is treated as `none`, never silently mapped through
   `RoleLevel::from`) when nothing explicit applies.
 - **Gated `note_verse_row`.** A verse manifest's `ts_*`/`default_access`
-  settings are adopted from the FIRST manifest unconditionally (trust on
-  first use — nobody has authority yet to gate against) and from every
-  LATER manifest only when its author is the owner or Manager+ AT THE
-  VERSE SCOPE. A petal/fractal Manager's or an Editor's manifest edit is
+  settings are adopted only once an owner is pinned (OF-6d — an unpinned
+  fabric adopts nothing inbound; only our own locally-admitted first
+  manifest is adopted outright), and then only when its author is the
+  owner or Manager+ AT THE VERSE SCOPE. A petal/fractal Manager's or an Editor's manifest edit is
   ignored: verse settings sit above their subtree (R7).
 - **Petal -> fractal map.** `note_petal_row` learns it from `petal` rows.
   A `__shards`/`__holders` doc key carries only the petal id, but
@@ -1074,6 +1082,19 @@ diagnostics echo.
   `the_responder_answers_an_unknown_ledger_shard` (the safe direction: a
   shard this responder's own ledger has no entry for is answered, not
   skipped).
+- **Merge filter fails closed (W5s, OF-7a/b/c, 2026-10-25).** An
+  unexpected answerer the requester's view cannot judge (`Unverified` — no
+  owner pinned, petal unknown) contributes NO rows and is reported in
+  `meta.unverified_answerers` (pre-fix its rows were merged). A formal
+  host's NON-EMPTY aggregate rows win the shard even when it reports the
+  shard deferred — the deferred flag only withholds the covered marker
+  (`merge_aggregates`), and fe-database scopes that flag to the query's
+  verse by the queue's verified delivery key (`ExecuteTsPartial.verse_id`,
+  `InboundAdmissions::deferred_rows_in`; the payload `reading_id` must equal
+  the doc key). Admitted holders are re-verdicted on every `rematerialize`
+  (a revoked holder stops being an expected answerer; re-promotion
+  restores it via the §2.5 re-read) and a holder's own `__holders`
+  tombstone withdraws it.
 - **Diagnostics echo is non-blocking.** The collector runs as a task on the
   sync thread's current-thread runtime (§sync-thread-blocking-io), so its
   `ComputeResultReady` echo is a `try_send` (drop-and-warn when the event
@@ -1577,14 +1598,34 @@ and what stops it. Each guard has a named regression test.
 AC-21(e)), partially.** The revisit trigger ("when RP replicates roles...")
 has fired: `docs_engine.rs::spawn_blob_access_filter` now builds
 `BlobsProtocol::new(&store, Some(event_sender))` with `get:
-RequestMode::Intercept` (the rest of the mask stays at the `None`/
-`Disabled` defaults, so `get_many`/`push`/`observe` are untouched). The
+RequestMode::Intercept` — and since W5s (OF-6c) `get_many: Intercept`
+(every requested hash must be admitted), `observe: Intercept` (a bitfield
+is an existence oracle) and `push: Disabled` pinned explicitly. The
 filter keys on the REQUESTED HASH, not the connection: `BlobAccessGate`
-holds a `root hash -> verse_id` reverse map (populated from
-`TilesetProviderMap`'s authoritative root for a tileset id, re-affirmed
-after every inbound ad) and a per-verse access snapshot
-(`VerseFabric::access_snapshot` — owner, `default_access`, and every DID
-an admitted role statement currently resolves to Viewer+). A `GetRequest`
+tracks every tileset HashSeq this node publishes or fetches — root AND
+children — as a `RootBinding`, plus a per-verse access snapshot
+(`VerseFabric::access_snapshot(verse_id)` — owner, `default_access`, and
+every DID an admitted role statement resolves to Viewer+ AT THE VERSE
+SCOPE; a petal-scoped grant never opens verse-bound tilesets, OF-6e).
+**W5s hardening (OF-6a/b, 2026-10-25):** a `RootBinding` is `published`
+(this node's `fe/tileset/` content — a Viewer+ of ANY open verse, the
+publish path advertising to every joined verse) and/or `learned` (verses
+the root was fetched or advertised on — a Viewer+ of EVERY one; a closed
+verse denies). Only this node's own fetch decisions start tracking
+(`bind_fetched_root` binds a root to every verse an ad named it on, BEFORE
+the fetch); an accepted inbound ad (`note_advertised_root`) can only ADD
+its arrival verse to an already-tracked root, so a re-advertisement under
+an attacker's verse narrows access, never remaps it (the pre-fix map
+`insert` let any peer self-grant Viewer on a victim root). Children are
+reported by `TilesetTransfer`'s `ContentObserver` at publish, at meta
+resolution (before any child is fetched), at catalog rebuild, and by the
+start-up `report_downloaded_content` tag scan; the whole map persists to
+`<p2p_dir>/blob-access-gate.json` and is loaded before the router accepts
+a request; a closed verse only drops its snapshot — its roots stay
+tracked and DENY rather than fall back to "untracked → admit". Residual:
+a learned root re-advertised under a second verse also stops being
+re-served to the first verse's viewers (fail-closed griefing of
+secondary seeders only; the publisher still serves). A `GetRequest`
 for a hash NOT in that reverse map carries **no tileset context** and is
 let through unconditionally — this is how `FetchBlob`/
 `two_peer_blob_exchange` and CDL-SPEC10 A6's device-payload fetch, and

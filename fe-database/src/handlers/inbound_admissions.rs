@@ -111,13 +111,22 @@ impl InboundAdmissions {
         self.by_verse.get(verse_id).map_or(0, BTreeSet::len)
     }
 
-    /// The bytes of every queued row of `table`, across verses (read-only — RP-6's
-    /// `deferred_shards` honesty report reads which shards still have deferred readings).
-    pub fn deferred_rows_of_table<'a>(&'a self, table: &'a str) -> impl Iterator<Item = &'a [u8]> + 'a {
-        self.rows
-            .values()
+    /// Every queued row of `table` held for `verse_id` — the verse the row was
+    /// DELIVERED on (its verified replica key, never a self-reported field), as
+    /// `(record_id, bytes)`. Read-only: RP-6's `deferred_shards` honesty report
+    /// (OF-7b scopes it to the query's verse).
+    pub fn deferred_rows_in<'a>(
+        &'a self,
+        verse_id: &str,
+        table: &'a str,
+    ) -> impl Iterator<Item = (&'a str, &'a [u8])> + 'a {
+        self.by_verse
+            .get(verse_id)
+            .into_iter()
+            .flatten()
+            .filter_map(move |seq| self.rows.get(seq))
             .filter(move |row| row.key.table == table)
-            .map(|row| row.bytes.as_slice())
+            .map(|row| (row.key.record_id.as_str(), row.bytes.as_slice()))
     }
 
     /// What a queued row is waiting for, or `None` if it is not queued.

@@ -305,7 +305,8 @@ pub fn merge_partials(
     // RP-6 §2.6 merge filter, then the F23 failed-partial filter: an
     // unexpected answerer (neither host nor admitted holder) the requester's
     // role view resolves below Editor at the petal scope contributes nothing
-    // and is reported; one the view cannot judge yet is kept and reported.
+    // and is reported; one the view cannot judge yet ALSO contributes nothing
+    // (OF-7c — fail closed) and is reported separately as unverified.
     let mut rejected_answerers: BTreeSet<String> = BTreeSet::new();
     let mut unverified_answerers: BTreeSet<String> = BTreeSet::new();
     let mut usable: Vec<PartialResponse> = Vec::with_capacity(responses.len());
@@ -325,7 +326,13 @@ pub fn merge_partials(
                     continue;
                 }
                 AnswererVerdict::Unverified => {
+                    tracing::warn!(
+                        answerer = %response.host,
+                        "distributed query rows from an unverifiable unexpected answerer excluded \
+                         (role view not converged)"
+                    );
                     unverified_answerers.insert(response.host.clone());
+                    continue;
                 }
             }
         }
@@ -464,8 +471,11 @@ fn merge_aggregates(
         // can never mark a shard covered, while its over-retained rows still
         // contribute data (and coverage, because the data IS in the result).
         // RP-6 host honesty: a formal host reporting deferred readings for
-        // this shard is not authoritative for it (its rows still count as
-        // data, below the authoritative winner).
+        // this shard is not authoritative for it (no covered marker from it).
+        // OF-7b: its NON-EMPTY rows still win over any non-formal answer — a
+        // deferred flag (self-reported, and forgeable by whoever can queue a
+        // deferred row on the host) may only withhold the covered marker,
+        // never hand the shard to a non-host's subset.
         let mut authoritative = false;
         let mut formal_rows: Option<&fe_runtime::distributed_query::ShardRows> = None;
         let mut any_rows: Option<&fe_runtime::distributed_query::ShardRows> = None;
@@ -480,9 +490,12 @@ fn merge_aggregates(
             };
             if plan.settles_shard(resp, &shard.shard) {
                 authoritative = true;
-                if !sr.rows.is_empty() && formal_rows.is_none() {
-                    formal_rows = Some(sr);
-                }
+            }
+            if plan.is_formal_host(&resp.host, &shard.shard)
+                && !sr.rows.is_empty()
+                && formal_rows.is_none()
+            {
+                formal_rows = Some(sr);
             }
             if !sr.rows.is_empty() && any_rows.is_none() {
                 any_rows = Some(sr);
@@ -980,6 +993,7 @@ async fn collect_distributed_query(transport: DistributedTransport, task: Collec
             // per shard, and every shape reports `deferred_shards` against
             // them (RP-6 host honesty).
             let cmd = DbCommand::ExecuteTsPartial {
+                verse_id: request.verse_id.clone(),
                 spec: request.spec.clone(),
                 shards: plan.target_shards.clone(),
                 row_cap,
@@ -1431,6 +1445,7 @@ pub fn handle_gossip_incoming(
             tokio::spawn(respond_to_compute_request(
                 transport.clone(),
                 sender.clone(),
+                incoming.verse_id.clone(),
                 request_id,
                 spec,
                 shards,
@@ -1448,6 +1463,7 @@ pub fn handle_gossip_incoming(
 async fn respond_to_compute_request(
     transport: DistributedTransport,
     sender: TopicSender,
+    verse_id: String,
     request_id: String,
     spec: TsQueryKind,
     shards: Vec<PartialShard>,
@@ -1459,6 +1475,7 @@ async fn respond_to_compute_request(
     };
     let (tx, rx) = crossbeam::channel::bounded::<TsPartialRows>(1);
     let cmd = DbCommand::ExecuteTsPartial {
+        verse_id,
         spec,
         shards,
         row_cap,
@@ -3493,11 +3510,62 @@ mod tests {
         }
     }
 
+    /// OF-7b: a formal host's NON-EMPTY rows win the shard even when it
+    /// reports deferred readings for it — the (forgeable) deferred flag may
+    /// only withhold the covered marker, never hand the shard to a non-host
+    /// answerer's subset that happens to sort first.
+    #[test]
+    fn a_deferred_flag_never_hands_the_shard_to_a_non_host_answer() {
+        let shard = "p1/a/0";
+        let host = "did:key:zz-host";
+        let holder = "did:key:aa-holder";
+        let mut fabric = fabric_with_shards(
+            VerseTimeseriesSettings {
+                mode: TimeseriesMode::Sharded,
+                replication_factor: 1,
+                bucket_width_ms: 60_000,
+            },
+            &[(shard, 0, 60_000, &[host])],
+        );
+        converge_role_view(&mut fabric, &[holder], &[(shard, holder)]);
+        let spec = agg_spec(0, 60_000);
+        let plan = plan_distributed_query("v-1", &spec, &fabric, "did:alice").unwrap();
+        let outcome = merge_partials(
+            &spec,
+            &plan,
+            &[
+                PartialResponse {
+                    host: holder.into(),
+                    partial: TsPartialRows {
+                        per_shard: vec![shard_rows(shard, vec![agg_row("a", 1.0, 1, 1.0, 1.0)])],
+                        ..TsPartialRows::empty()
+                    },
+                },
+                PartialResponse {
+                    host: host.into(),
+                    partial: TsPartialRows {
+                        per_shard: vec![shard_rows(shard, vec![agg_row("a", 30.0, 3, 5.0, 15.0)])],
+                        deferred_shards: vec![shard.to_string()],
+                        ..TsPartialRows::empty()
+                    },
+                },
+            ],
+        );
+        assert_eq!(outcome.rows.len(), 1);
+        assert_eq!(
+            outcome.rows[0]["sample_count"].as_u64(),
+            Some(3),
+            "the formal host's rows must win over a non-host answer"
+        );
+        assert_eq!(outcome.meta.incomplete_shards, vec![shard.to_string()]);
+    }
+
     /// RP-6 merge filter: rows from an answerer that is neither host nor
     /// admitted holder are discarded and reported when the requester's
     /// converged role view puts it below Editor at the petal scope; kept
-    /// when it is an Editor; kept but reported unverified when the view has
-    /// not converged.
+    /// when it is an Editor; discarded and reported unverified when the view
+    /// has not converged (OF-7c: fail closed — goes red if Unverified rows
+    /// reach the result again).
     #[test]
     fn rows_from_a_sub_editor_unexpected_answerer_are_discarded_and_reported() {
         let shard = "p1/a/0";
@@ -3528,10 +3596,10 @@ mod tests {
                 expect_unverified: false,
             },
             Case {
-                label: "an unconverged view keeps and flags",
+                label: "an unconverged view excludes and flags",
                 converged: false,
                 answerer: "did:key:dave",
-                expect_kept: true,
+                expect_kept: false,
                 expect_rejected: false,
                 expect_unverified: true,
             },
@@ -3585,8 +3653,8 @@ mod tests {
             );
             assert_eq!(
                 outcome.meta.answered_hosts.contains(&answerer),
-                !case.expect_rejected,
-                "{}: a rejected answerer is never credited",
+                case.expect_kept,
+                "{}: an excluded answerer is never credited",
                 case.label
             );
         }

@@ -27,7 +27,7 @@ use anyhow::{Context as _, Result};
 
 use iroh::protocol::Router;
 use iroh_blobs::provider::events::{
-    AbortReason, ConnectMode, EventMask, EventSender, ProviderMessage, RequestMode,
+    AbortReason, ConnectMode, EventMask, EventSender, ObserveMode, ProviderMessage, RequestMode,
 };
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::BlobsProtocol;
@@ -36,9 +36,10 @@ use iroh_gossip::Gossip;
 
 /// One verse's admission snapshot for the blob-ALPN request filter: the
 /// owner, whether the verse is open to anyone (`default_access` at or
-/// above Viewer), and every DID an admitted role statement currently
-/// resolves to Viewer+ (`VerseFabric::access_snapshot`, `src/AGENTS.md`
-/// §role-view).
+/// above Viewer), and every DID an admitted role statement resolves to
+/// Viewer+ AT THE VERSE SCOPE (`VerseFabric::access_snapshot`, OF-6e — a
+/// petal-scoped grant never opens verse-bound tileset content;
+/// `src/AGENTS.md` §role-view).
 #[derive(Clone, Default)]
 pub struct VerseAccessSnapshot {
     pub owner_did: Option<String>,
@@ -52,33 +53,154 @@ impl VerseAccessSnapshot {
     }
 }
 
+/// File (under the P2P data dir) persisting the gate's tracked tileset
+/// content across restarts (OF-6b).
+pub const BLOB_GATE_FILE: &str = "blob-access-gate.json";
+
+/// Most verses one learned root may be bound to; past it the learned path
+/// denies outright (fail-closed — an ad flood can never reopen a root).
+const MAX_LEARNED_VERSES: usize = 64;
+
+/// What this node learned about one tileset HashSeq it serves, published,
+/// or fetched — and therefore how a request for it is admitted.
+#[derive(Clone, Default, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct RootBinding {
+    /// This node publishes it (`fe/tileset/` tag): a Viewer+ of ANY open
+    /// verse is admitted — the publish path advertises to every joined verse.
+    published: bool,
+    /// Verses the root was fetched or advertised on. A Viewer+ of EVERY one
+    /// of them is admitted (a closed verse has no snapshot and denies), so
+    /// a re-advertisement under another verse can only narrow access, never
+    /// widen it (OF-6a).
+    learned: std::collections::BTreeSet<String>,
+    /// Set once `learned` hit [`MAX_LEARNED_VERSES`]: the learned path denies.
+    learned_overflow: bool,
+    /// The HashSeq's children (index + bundles), once known (OF-6b).
+    children: Vec<String>,
+}
+
+impl RootBinding {
+    fn admits(&self, did: &str, access: &HashMap<String, VerseAccessSnapshot>) -> bool {
+        let via_publish = self.published && access.values().any(|s| s.admits(did));
+        let via_learned = !self.learned_overflow
+            && !self.learned.is_empty()
+            && self
+                .learned
+                .iter()
+                .all(|v| access.get(v).is_some_and(|s| s.admits(did)));
+        via_publish || via_learned
+    }
+}
+
+/// Every tracked tileset root (hex) and the reverse child -> roots index.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct TrackedContent {
+    roots: HashMap<String, RootBinding>,
+    #[serde(skip)]
+    child_roots: HashMap<[u8; 32], HashSet<[u8; 32]>>,
+}
+
+impl TrackedContent {
+    fn binding_mut(&mut self, root: &[u8; 32]) -> &mut RootBinding {
+        self.roots.entry(hex::encode(root)).or_default()
+    }
+
+    /// Attach `children` to `root` (idempotent); `true` when anything changed.
+    fn set_children(&mut self, root: &[u8; 32], children: &[[u8; 32]]) -> bool {
+        let hexed: Vec<String> = children.iter().map(hex::encode).collect();
+        let binding = self.binding_mut(root);
+        if binding.children == hexed {
+            return false;
+        }
+        binding.children = hexed;
+        for child in children {
+            self.child_roots.entry(*child).or_default().insert(*root);
+        }
+        true
+    }
+
+    /// Rebuild the child index after a load (it is never persisted itself).
+    fn reindex(&mut self) {
+        self.child_roots.clear();
+        for (root_hex, binding) in &self.roots {
+            let Ok(root) = fe_runtime::blob_store::hash_from_hex(root_hex) else {
+                continue;
+            };
+            for child_hex in &binding.children {
+                if let Ok(child) = fe_runtime::blob_store::hash_from_hex(child_hex) {
+                    self.child_roots.entry(child).or_default().insert(root);
+                }
+            }
+        }
+    }
+}
+
+/// What a [`crate::tileset_transfer::TilesetTransfer`] learned about a
+/// tileset HashSeq — fed into [`BlobAccessGate::track_content`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TilesetContent {
+    /// This node published `root` (`fe/tileset/` tag, at publish or rebuilt
+    /// from tags at start-up).
+    Published { root: [u8; 32], children: Vec<[u8; 32]> },
+    /// This node stopped publishing `root` (it stays tracked).
+    Unpublished { root: [u8; 32] },
+    /// This node resolved `root`'s children for a download or streamed cache
+    /// (BEFORE any child is fetched into the store).
+    Resolved { root: [u8; 32], children: Vec<[u8; 32]> },
+}
+
 /// RP-5 §transport-admission-control item 5 / `AGENTS.md` §tileset-security
-/// "Risk 2" (critic tick 4, AC-21(e)): shared state for the blobs-ALPN
-/// `GetRequest` filter. Keyed by verse, because a tileset root is learned
-/// per verse (`TilesetProviderMap`) and a verse's role view is per-verse
-/// too. A hash this gate has never recorded as a tileset root carries "no
-/// tileset context" and is let through unconditionally — row-entry content
-/// and `two_peer_blob_exchange` fetches are exactly that case (the risk
-/// note's requirement). The sync thread updates this after every event that
-/// can move a verse's role view or tileset-root bookkeeping; it starts
-/// empty, which correctly refuses every gated hash until at least one verse
-/// is open ("a requester with no role in any open verse is refused" is also
-/// the zero-verse case).
+/// "Risk 2" (critic tick 4, AC-21(e)), hardened by W5s (OF-6a/b): shared
+/// state for the blobs-ALPN request filter. Tracks every tileset HashSeq
+/// this node publishes or fetches — root AND children — with how each is
+/// admitted ([`RootBinding`]). A tracked hash is never forgotten (a closed
+/// verse's roots deny, they do not fall back to "unknown"), and the whole
+/// map is persisted to [`BLOB_GATE_FILE`] so a restart never re-opens it.
+/// A hash this gate does not track carries no tileset context and is let
+/// through unconditionally — row-entry content and `two_peer_blob_exchange`
+/// fetches are exactly that case. See `src/AGENTS.md` §tileset-security.
 #[derive(Clone, Default)]
 pub struct BlobAccessGate(Arc<GateState>);
 
 #[derive(Default)]
 struct GateState {
     verse_access: RwLock<HashMap<String, VerseAccessSnapshot>>,
-    /// tileset root hash -> the verse it was learned on.
-    tileset_roots: RwLock<HashMap<[u8; 32], String>>,
+    tracked: RwLock<TrackedContent>,
     /// `connection_id -> did:key`, recorded at `ClientConnected` and
-    /// dropped at `ConnectionClosed` — a `GetRequest` event carries no
-    /// identity of its own, only the `connection_id` it arrived on.
+    /// dropped at `ConnectionClosed` — a request event carries no identity
+    /// of its own, only the `connection_id` it arrived on.
     connections: Mutex<HashMap<u64, String>>,
+    /// Where [`TrackedContent`] is persisted (`None`: in-memory only).
+    persist_path: Option<PathBuf>,
+    /// Serializes persistence writes (each writes the then-current state).
+    persist_lock: Mutex<()>,
 }
 
 impl BlobAccessGate {
+    /// A gate persisted at `path`, seeded from it when it exists. Blocking
+    /// (one small file read) — call from the blocking pool.
+    pub fn load(path: PathBuf) -> Self {
+        let mut tracked = match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice::<TrackedContent>(&bytes).unwrap_or_else(|e| {
+                tracing::warn!(
+                    path = %path.display(),
+                    "blob access gate state unreadable — starting empty (the start-up tag scan \
+                     re-tracks published and downloaded tilesets): {e}"
+                );
+                TrackedContent::default()
+            }),
+            Err(_) => TrackedContent::default(),
+        };
+        tracked.reindex();
+        Self(Arc::new(GateState {
+            tracked: RwLock::new(tracked),
+            persist_path: Some(path),
+            ..GateState::default()
+        }))
+    }
+
     /// Replace one verse's access snapshot (called after the fabric's role
     /// view settles).
     pub fn set_verse_access(&self, verse_id: &str, snapshot: VerseAccessSnapshot) {
@@ -89,50 +211,153 @@ impl BlobAccessGate {
             .insert(verse_id.to_string(), snapshot);
     }
 
-    /// Record (or re-affirm) that `root` is a tileset root learned on
-    /// `verse_id` — the reverse lookup the `GetRequest` filter needs.
+    /// Bind `root` — a tileset this node fetches in `verse_id`'s context —
+    /// to that verse (tracking it if new). Only this node's own fetch
+    /// decisions call this; an inbound ad goes through
+    /// [`Self::note_advertised_root`], which can never START tracking.
     pub fn record_tileset_root(&self, verse_id: &str, root: [u8; 32]) {
-        self.0
-            .tileset_roots
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(root, verse_id.to_string());
+        self.bind_learned(root, std::iter::once(verse_id), true);
     }
 
-    /// Forget everything learned about a verse that has closed.
+    /// [`Self::record_tileset_root`] for every verse a fetched root was
+    /// advertised on (the "all mapped verses" rule — OF-6a).
+    pub fn bind_fetched_root<'a>(&self, root: [u8; 32], verses: impl IntoIterator<Item = &'a str>) {
+        self.bind_learned(root, verses, true);
+    }
+
+    /// An accepted inbound ad re-advertised `root` on `verse_id`: add that
+    /// verse to an ALREADY-tracked root's learned set (narrowing access —
+    /// every learned verse must admit). An untracked root is ignored: this
+    /// node does not hold it, and gossip must never decide what is gated.
+    pub fn note_advertised_root(&self, verse_id: &str, root: [u8; 32]) {
+        self.bind_learned(root, std::iter::once(verse_id), false);
+    }
+
+    fn bind_learned<'a>(
+        &self,
+        root: [u8; 32],
+        verses: impl IntoIterator<Item = &'a str>,
+        may_track: bool,
+    ) {
+        let changed = {
+            let mut tracked = self.0.tracked.write().unwrap_or_else(|e| e.into_inner());
+            let key = hex::encode(root);
+            if !may_track && !tracked.roots.contains_key(&key) {
+                return;
+            }
+            let binding = tracked.roots.entry(key).or_default();
+            let mut changed = false;
+            for verse in verses {
+                if binding.learned.contains(verse) {
+                    continue;
+                }
+                if binding.learned.len() >= MAX_LEARNED_VERSES {
+                    changed |= !binding.learned_overflow;
+                    binding.learned_overflow = true;
+                    break;
+                }
+                binding.learned.insert(verse.to_string());
+                changed = true;
+            }
+            changed
+        };
+        if changed {
+            self.persist();
+        }
+    }
+
+    /// Record what the tileset transfer service learned (publish, unpublish,
+    /// child resolution) — the child index that closes direct child fetches.
+    pub fn track_content(&self, content: TilesetContent) {
+        let changed = {
+            let mut tracked = self.0.tracked.write().unwrap_or_else(|e| e.into_inner());
+            match &content {
+                TilesetContent::Published { root, children } => {
+                    let binding = tracked.binding_mut(root);
+                    let flipped = !binding.published;
+                    binding.published = true;
+                    tracked.set_children(root, children) | flipped
+                }
+                TilesetContent::Unpublished { root } => {
+                    let binding = tracked.binding_mut(root);
+                    std::mem::replace(&mut binding.published, false)
+                }
+                TilesetContent::Resolved { root, children } => tracked.set_children(root, children),
+            }
+        };
+        if changed {
+            self.persist();
+        }
+    }
+
+    /// A verse closed: drop its access snapshot. Its roots stay tracked, so
+    /// a root learned on it now DENIES (no snapshot) instead of falling
+    /// back to the "untracked → admit" path (OF-6b).
     pub fn forget_verse(&self, verse_id: &str) {
         self.0
             .verse_access
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .remove(verse_id);
-        self.0
-            .tileset_roots
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .retain(|_, v| v != verse_id);
     }
 
-    /// Admission decision for one requested hash: `true` when the hash
-    /// carries no tracked tileset context (unaffected), or when it does and
-    /// `did` holds Viewer+ in the verse that root was learned on.
+    /// Admission decision for one requested hash: `true` when the hash is
+    /// neither a tracked tileset root nor a child of one (unaffected), or
+    /// when ANY tracked root it belongs to admits `did` ([`RootBinding`]).
     fn admits_hash(&self, did: &str, hash: &[u8; 32]) -> bool {
-        let Some(verse_id) = self
-            .0
-            .tileset_roots
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(hash)
-            .cloned()
-        else {
+        let tracked = self.0.tracked.read().unwrap_or_else(|e| e.into_inner());
+        let own = tracked.roots.get(&hex::encode(hash));
+        let parents = tracked.child_roots.get(hash);
+        if own.is_none() && parents.is_none() {
             return true;
+        }
+        let access = self.0.verse_access.read().unwrap_or_else(|e| e.into_inner());
+        own.into_iter()
+            .chain(
+                parents
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|p| tracked.roots.get(&hex::encode(p))),
+            )
+            .any(|binding| binding.admits(did, &access))
+    }
+
+    /// Write the current tracked state to [`BLOB_GATE_FILE`] — on the
+    /// blocking pool when inside a runtime (§sync-thread-blocking-io). Each
+    /// write takes the lock and serializes the THEN-current state, so the
+    /// last write always holds the newest state regardless of task order.
+    fn persist(&self) {
+        if self.0.persist_path.is_none() {
+            return;
+        }
+        let state = Arc::clone(&self.0);
+        let write = move || {
+            let _guard = state.persist_lock.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(path) = state.persist_path.as_ref() else {
+                return;
+            };
+            let bytes = {
+                let tracked = state.tracked.read().unwrap_or_else(|e| e.into_inner());
+                match serde_json::to_vec(&*tracked) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        tracing::warn!("serializing blob access gate state failed: {e}");
+                        return;
+                    }
+                }
+            };
+            let tmp = path.with_extension("json.tmp");
+            let result = std::fs::write(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, path));
+            if let Err(e) = result {
+                tracing::warn!(path = %path.display(), "persisting blob access gate state failed: {e}");
+            }
         };
-        self.0
-            .verse_access
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&verse_id)
-            .is_some_and(|snapshot| snapshot.admits(did))
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn_blocking(write);
+            }
+            Err(_) => write(),
+        }
     }
 
     fn note_connected(&self, connection_id: u64, did: Option<String>) {
@@ -161,20 +386,52 @@ impl BlobAccessGate {
             .get(&connection_id)
             .cloned()
     }
+
+    /// Whether the requester on `connection_id` may read every hash in `hashes`.
+    fn admits_connection<'a>(&self, connection_id: u64, mut hashes: impl Iterator<Item = &'a [u8; 32]>) -> bool {
+        let Some(did) = self.did_for_connection(connection_id) else {
+            return false;
+        };
+        hashes.all(|hash| self.admits_hash(&did, hash))
+    }
+}
+
+/// Answer one intercepted request and drain its update channel so the
+/// responder's progress sends never block on a reader we never consult.
+macro_rules! answer_intercepted {
+    ($msg:expr, $admitted:expr, $connection_id:expr, $kind:literal) => {{
+        let msg = $msg;
+        let decision = if $admitted {
+            Ok(())
+        } else {
+            tracing::warn!(
+                connection_id = $connection_id,
+                kind = $kind,
+                "blob-ALPN request refused — requester holds no role in the tileset's verse                  (AC-21(e))"
+            );
+            Err(AbortReason::Permission)
+        };
+        let _ = msg.tx.send(decision).await;
+        let mut updates = msg.rx;
+        tokio::spawn(async move { while let Ok(Some(_)) = updates.recv().await {} });
+    }};
 }
 
 /// Build the blobs-ALPN `EventSender` implementing the request filter:
-/// intercepts `GetRequest` (the whole-blob/HashSeq-root fetch shape
-/// tileset downloads use — `AGENTS.md` §tileset-transfer) and consults
-/// [`BlobAccessGate`]; anything without tracked tileset context passes
-/// through untouched. `ClientConnected`/`ConnectionClosed` are
-/// notify-only — just enough to map a `GetRequest`'s `connection_id` to the
-/// dialing `EndpointId`'s did:key, since the request event itself carries
-/// no identity.
+/// intercepts `GetRequest`, `GetManyRequest` (every requested hash must be
+/// admitted) and `ObserveRequest` (a bitfield is an existence oracle) and
+/// consults [`BlobAccessGate`]; `push` stays `Disabled` (the
+/// `EventMask::DEFAULT` value, pinned explicitly here — OF-6c). Anything
+/// without tracked tileset context passes through untouched.
+/// `ClientConnected`/`ConnectionClosed` are notify-only — just enough to map
+/// a request's `connection_id` to the dialing `EndpointId`'s did:key.
 fn spawn_blob_access_filter(gate: BlobAccessGate) -> EventSender {
     let mask = EventMask {
         connected: ConnectMode::Notify,
         get: RequestMode::Intercept,
+        get_many: RequestMode::Intercept,
+        push: RequestMode::Disabled,
+        observe: ObserveMode::Intercept,
         ..EventMask::DEFAULT
     };
     let (events, mut rx) = EventSender::channel(64, mask);
@@ -193,24 +450,21 @@ fn spawn_blob_access_filter(gate: BlobAccessGate) -> EventSender {
                 ProviderMessage::GetRequestReceived(msg) => {
                     let hash: [u8; 32] = msg.inner.request.hash.into();
                     let connection_id = msg.inner.connection_id;
-                    let did = gate.did_for_connection(connection_id);
-                    let admitted = did.as_deref().is_some_and(|d| gate.admits_hash(d, &hash));
-                    let decision = if admitted {
-                        Ok(())
-                    } else {
-                        tracing::warn!(
-                            connection_id,
-                            "blob-ALPN GetRequest refused — requester holds no role in the \
-                             tileset's verse (AC-21(e))"
-                        );
-                        Err(AbortReason::Permission)
-                    };
-                    let _ = msg.tx.send(decision).await;
-                    // Drain the per-request update channel so the
-                    // responder's progress sends never block on a reader we
-                    // otherwise never consult.
-                    let mut updates = msg.rx;
-                    tokio::spawn(async move { while let Ok(Some(_)) = updates.recv().await {} });
+                    let admitted = gate.admits_connection(connection_id, std::iter::once(&hash));
+                    answer_intercepted!(msg, admitted, connection_id, "get");
+                }
+                ProviderMessage::GetManyRequestReceived(msg) => {
+                    let hashes: Vec<[u8; 32]> =
+                        msg.inner.request.hashes.iter().map(|h| (*h).into()).collect();
+                    let connection_id = msg.inner.connection_id;
+                    let admitted = gate.admits_connection(connection_id, hashes.iter());
+                    answer_intercepted!(msg, admitted, connection_id, "get_many");
+                }
+                ProviderMessage::ObserveRequestReceived(msg) => {
+                    let hash: [u8; 32] = msg.inner.request.hash.into();
+                    let connection_id = msg.inner.connection_id;
+                    let admitted = gate.admits_connection(connection_id, std::iter::once(&hash));
+                    answer_intercepted!(msg, admitted, connection_id, "observe");
                 }
                 _ => {}
             }
@@ -314,8 +568,12 @@ impl DocsStack {
         // RP-5 step 6 / AC-21(e): the blob-ALPN request filter (closes
         // `AGENTS.md` §tileset-security "Risk 2"). Built fresh per stack —
         // the sync thread populates it as verses open and their role views
-        // settle (`DocsStack::blob_access_gate`).
-        let blob_access_gate = BlobAccessGate::default();
+        // settle (`DocsStack::blob_access_gate`). Seeded from its persisted
+        // state BEFORE the router accepts a single request (OF-6b).
+        let gate_path = data_dir.join(BLOB_GATE_FILE);
+        let blob_access_gate = tokio::task::spawn_blocking(move || BlobAccessGate::load(gate_path))
+            .await
+            .context("joining blob access gate load task")?;
         let blob_events = spawn_blob_access_filter(blob_access_gate.clone());
         let blobs = BlobsProtocol::new(&blob_store, Some(blob_events));
         let gossip = Gossip::builder()
@@ -704,6 +962,149 @@ mod tests {
             result.is_ok(),
             "a hash with no tracked tileset context must pass through: {:?}",
             result.err()
+        );
+
+        provider_stack.shutdown().await;
+        requester_stack.shutdown().await;
+    }
+
+    fn viewers(dids: &[&str]) -> VerseAccessSnapshot {
+        VerseAccessSnapshot {
+            owner_did: None,
+            open_to_all: false,
+            viewer_dids: dids.iter().map(|d| d.to_string()).collect(),
+        }
+    }
+
+    /// OF-6a: an attacker who re-advertises a victim verse's tileset root
+    /// on their OWN verse (where they self-grant Viewer) never gains access —
+    /// the ad can only narrow the learned set, never remap it — and an ad
+    /// can never start tracking a root this node does not fetch.
+    #[test]
+    fn a_root_re_advertised_under_an_attacker_verse_never_grants_the_attacker_access() {
+        let gate = BlobAccessGate::default();
+        let root = [7u8; 32];
+        gate.record_tileset_root("victim-verse", root);
+        gate.set_verse_access("victim-verse", viewers(&["did:key:victim-viewer"]));
+        gate.set_verse_access("attacker-verse", viewers(&["did:key:attacker"]));
+        assert!(gate.admits_hash("did:key:victim-viewer", &root));
+        assert!(!gate.admits_hash("did:key:attacker", &root));
+
+        gate.note_advertised_root("attacker-verse", root);
+        assert!(
+            !gate.admits_hash("did:key:attacker", &root),
+            "a re-advertisement under the attacker's verse must not remap access"
+        );
+
+        // Gossip about a root this node never fetched does not gate (or
+        // un-gate) anything: it stays untracked.
+        let foreign = [9u8; 32];
+        gate.note_advertised_root("attacker-verse", foreign);
+        let tracked = gate.0.tracked.read().unwrap();
+        assert!(!tracked.roots.contains_key(&hex::encode(foreign)));
+    }
+
+    /// OF-6b: a HashSeq CHILD is gated like its root, a closed verse's root
+    /// denies instead of falling back to "untracked → admit", and the
+    /// tracked state survives a restart (reload from the persisted file).
+    #[test]
+    fn a_tileset_child_stays_gated_across_verse_close_and_restart() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(BLOB_GATE_FILE);
+        let (root, index, bundle) = ([1u8; 32], [2u8; 32], [3u8; 32]);
+        let gate = BlobAccessGate::load(path.clone());
+        gate.record_tileset_root("v", root);
+        gate.track_content(TilesetContent::Resolved {
+            root,
+            children: vec![index, bundle],
+        });
+        gate.set_verse_access("v", viewers(&["did:key:viewer"]));
+        assert!(gate.admits_hash("did:key:viewer", &bundle));
+        assert!(!gate.admits_hash("did:key:stranger", &bundle), "direct child fetch bypassed the gate");
+        assert!(!gate.admits_hash("did:key:stranger", &index));
+
+        gate.forget_verse("v");
+        assert!(!gate.admits_hash("did:key:viewer", &bundle), "a closed verse's content must deny");
+
+        // Outside a runtime `persist` writes synchronously, so the file is current.
+        let restarted = BlobAccessGate::load(path);
+        assert!(!restarted.admits_hash("did:key:stranger", &bundle), "restart re-opened the child");
+        assert!(!restarted.admits_hash("did:key:stranger", &root), "restart re-opened the root");
+        restarted.set_verse_access("v", viewers(&["did:key:viewer"]));
+        assert!(restarted.admits_hash("did:key:viewer", &bundle));
+    }
+
+    /// A tileset this node PUBLISHES is served to a Viewer+ of any open
+    /// verse (the publish path advertises to every joined verse), and stops
+    /// being served once unpublished — it stays tracked, so it denies.
+    #[test]
+    fn a_published_tileset_serves_any_open_verse_viewer_until_unpublished() {
+        let gate = BlobAccessGate::default();
+        let (root, bundle) = ([4u8; 32], [5u8; 32]);
+        gate.track_content(TilesetContent::Published {
+            root,
+            children: vec![bundle],
+        });
+        gate.set_verse_access("a", viewers(&["did:key:a"]));
+        gate.set_verse_access("b", viewers(&["did:key:b"]));
+        assert!(gate.admits_hash("did:key:a", &bundle));
+        assert!(gate.admits_hash("did:key:b", &bundle));
+        assert!(!gate.admits_hash("did:key:stranger", &bundle));
+        gate.track_content(TilesetContent::Unpublished { root });
+        assert!(!gate.admits_hash("did:key:a", &bundle));
+    }
+
+    /// OF-6c: a `GetManyRequest` naming a tracked tileset child is refused
+    /// over the real blob ALPN (pre-fix the mask only intercepted `get`, so
+    /// `get_many` streamed protected blobs to anyone who knew the hash).
+    #[tokio::test]
+    async fn a_get_many_request_for_a_tracked_child_is_refused_to_a_stranger() {
+        use fe_runtime::blob_transport::BlobTransport;
+
+        let (Some(provider_ep), Some(requester_ep)) =
+            (bind_test_endpoint(65).await, bind_test_endpoint(66).await)
+        else {
+            return;
+        };
+        let provider_dir = tempfile::TempDir::new().unwrap();
+        let requester_dir = tempfile::TempDir::new().unwrap();
+        let provider_stack = Arc::new(
+            DocsStack::spawn(provider_ep.clone(), provider_dir.path())
+                .await
+                .expect("provider stack spawns"),
+        );
+        let requester_stack = DocsStack::spawn(requester_ep.clone(), requester_dir.path())
+            .await
+            .expect("requester stack spawns");
+        let provider_transport = crate::blob_transport::IrohBlobTransport::from_stack(&provider_stack);
+        let child = provider_transport
+            .add(bytes::Bytes::from_static(b"protected bundle"))
+            .await
+            .expect("provider stores the bundle");
+        let root = provider_transport.add_hash_seq(&[child]).await.expect("hash seq");
+        provider_stack.blob_access_gate().record_tileset_root("verse-1", root);
+        provider_stack.blob_access_gate().track_content(TilesetContent::Resolved {
+            root,
+            children: vec![child],
+        });
+
+        let conn = requester_ep
+            .connect(provider_ep.addr(), iroh_blobs::ALPN)
+            .await
+            .expect("blob ALPN connects");
+        let refused = requester_stack
+            .blob_store()
+            .remote()
+            .execute_get_many(conn, iroh_blobs::protocol::GetManyRequest::from_iter([child]))
+            .complete()
+            .await;
+        assert!(refused.is_err(), "get_many must be gated like get");
+        let requester_stack = Arc::new(requester_stack);
+        let requester_transport =
+            crate::blob_transport::IrohBlobTransport::from_stack(&requester_stack);
+        assert!(
+            requester_transport.read_local(child).await.expect("local read").is_none(),
+            "no protected blob may land on the stranger"
         );
 
         provider_stack.shutdown().await;

@@ -521,13 +521,14 @@ impl TestPeer {
                         // reply rides the embedded crossbeam sender (never
                         // the DbResult channel — it has no reply family).
                         Ok(DbCommand::ExecuteTsPartial {
+                            verse_id,
                             spec,
                             shards,
                             row_cap,
                             reply,
                         }) => {
                             let partial = fe_database::handlers::ts_partial::execute_ts_partial(
-                                &db, &spec, &shards, row_cap, &admissions,
+                                &db, &verse_id, &spec, &shards, row_cap, &admissions,
                             )
                             .await
                             .unwrap_or_else(|reason| {

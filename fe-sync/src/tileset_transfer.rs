@@ -500,9 +500,15 @@ fn derive_received(ledger: &Ledger, max_chunk_bytes: usize) -> Vec<Option<u64>> 
         .collect()
 }
 
+/// Observer told what this service learns about a tileset HashSeq (the
+/// blob-ALPN gate's child index — `src/AGENTS.md` §tileset-security).
+pub type ContentObserver = Arc<dyn Fn(crate::docs_engine::TilesetContent) + Send + Sync>;
+
 /// Publishes, fetches, verifies and resumes tilesets over a [`BlobTransport`].
 pub struct TilesetTransfer {
     transport: Arc<dyn BlobTransport>,
+    /// See [`ContentObserver`]; `None` outside a real P2P stack.
+    content_observer: Option<ContentObserver>,
     download_root: PathBuf,
     limits: TransferLimits,
     catalog: Mutex<BTreeMap<String, CatalogEntry>>,
@@ -621,6 +627,7 @@ impl TilesetTransfer {
     pub fn new(transport: Arc<dyn BlobTransport>, download_root: impl Into<PathBuf>) -> Self {
         Self {
             transport,
+            content_observer: None,
             download_root: download_root.into(),
             limits: TransferLimits::default(),
             catalog: Mutex::new(BTreeMap::new()),
@@ -671,6 +678,18 @@ impl TilesetTransfer {
             write_atomic(&dir.join(LAST_USED_FILE), now_ms().to_string().as_bytes())
         })
         .await
+    }
+
+    /// The same service reporting HashSeq contents to `observer`.
+    pub fn with_content_observer(mut self, observer: ContentObserver) -> Self {
+        self.content_observer = Some(observer);
+        self
+    }
+
+    fn observe(&self, content: crate::docs_engine::TilesetContent) {
+        if let Some(observer) = &self.content_observer {
+            observer(content);
+        }
     }
 
     /// The same service under explicit size caps (tests use small ones).
@@ -743,6 +762,10 @@ impl TilesetTransfer {
             .add_hash_seq(&children)
             .await
             .map_err(transport_err)?;
+        self.observe(crate::docs_engine::TilesetContent::Published {
+            root,
+            children: children.clone(),
+        });
         self.transport
             .set_tag(&tileset_tag(tileset_id), root)
             .await
@@ -789,7 +812,11 @@ impl TilesetTransfer {
             .delete_tag(&tileset_tag(tileset_id))
             .await
             .map_err(|e| TransferError::Transport(format!("{e:#}")))?;
-        Ok(lock(&self.catalog).remove(tileset_id).is_some())
+        let removed = lock(&self.catalog).remove(tileset_id);
+        if let Some(entry) = &removed {
+            self.observe(crate::docs_engine::TilesetContent::Unpublished { root: entry.root });
+        }
+        Ok(removed.is_some())
     }
 
     /// Snapshot of the published catalog.
@@ -852,6 +879,10 @@ impl TilesetTransfer {
                 Ok(Some(index_bytes)) => publisher_did_hint(&index_bytes),
                 _ => String::new(),
             };
+            self.observe(crate::docs_engine::TilesetContent::Published {
+                root,
+                children: children.clone(),
+            });
             rebuilt.insert(
                 id.to_string(),
                 CatalogEntry {
@@ -871,6 +902,30 @@ impl TilesetTransfer {
             catalog.entry(id).or_insert(entry);
         }
         Ok(entries)
+    }
+
+    /// Report every persisted download's HashSeq (`fe/download/` tags) to the
+    /// content observer — the start-up reconciliation of the gate's child
+    /// index (OF-6b). Returns how many were reported.
+    pub async fn report_downloaded_content(&self) -> Result<usize, TransferError> {
+        let transport_err = |e: anyhow::Error| TransferError::Transport(format!("{e:#}"));
+        let tags = self
+            .transport
+            .list_tags(DOWNLOAD_TAG_PREFIX)
+            .await
+            .map_err(transport_err)?;
+        let mut reported = 0;
+        for (_, root) in tags {
+            let Some(seq) = self.transport.read_local(root).await.map_err(transport_err)? else {
+                continue;
+            };
+            let Some(children) = decode_hash_seq(&seq) else {
+                continue;
+            };
+            self.observe(crate::docs_engine::TilesetContent::Resolved { root, children });
+            reported += 1;
+        }
+        Ok(reported)
     }
 
     // ── download side ───────────────────────────────────────────────────
@@ -930,6 +985,12 @@ impl TilesetTransfer {
                 }
             }
         };
+        // Track the children BEFORE any of them is fetched into the store, so
+        // a direct child request is gated from the first byte (OF-6b).
+        let mut children = Vec::with_capacity(ledger.chunk_hashes.len() + 1);
+        children.push(ledger.index_hash);
+        children.extend(ledger.chunk_hashes.iter().copied());
+        self.observe(crate::docs_engine::TilesetContent::Resolved { root, children });
         self.transport
             .set_tag(&download_tag(tileset_id), root)
             .await

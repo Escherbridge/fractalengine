@@ -798,6 +798,10 @@ pub enum DbCommand {
     /// an API waiter's oneshot; see fe-runtime `AGENTS.md`
     /// §api-reply-correlation).
     ExecuteTsPartial {
+        /// The query's verse: the request's verse on the requester, the
+        /// AUTHENTICATED arrival topic's verse on a responder — scopes the
+        /// `deferred_shards` honesty report (OF-7b).
+        verse_id: String,
         spec: crate::distributed_query::TsQueryKind,
         shards: Vec<crate::distributed_query::PartialShard>,
         /// Per-partial row cap (clamped by the executor into

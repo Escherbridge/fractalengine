@@ -30,7 +30,7 @@ use crate::distributed_query::{
     TopicSender,
 };
 
-use crate::docs_engine::{p2p_data_dir, DocsStack};
+use crate::docs_engine::{p2p_data_dir, BlobAccessGate, DocsStack};
 use crate::endpoint::SyncEndpoint;
 use crate::event_outbox::{EventOutbox, EventSink, SHUTDOWN_FLUSH_TIMEOUT};
 use crate::messages::{SyncCommand, SyncCommandReceiver, SyncEvent, SyncEventSender};
@@ -643,7 +643,13 @@ pub fn spawn_sync_thread_with_transport(
                 let transport: Arc<dyn BlobTransport> = Arc::new(
                     IrohBlobTransport::from_stack(stack).with_allowed_relays(allowed_relays),
                 );
-                Arc::new(TilesetTransfer::for_p2p_dir(transport, &p2p_dir))
+                // OF-6b: every HashSeq the service publishes or resolves is
+                // reported to the blob-ALPN gate (root AND children).
+                let gate = stack.blob_access_gate().clone();
+                Arc::new(
+                    TilesetTransfer::for_p2p_dir(transport, &p2p_dir)
+                        .with_content_observer(Arc::new(move |content| gate.track_content(content))),
+                )
             });
             if let Some(transfer) = tileset_transfer.clone() {
                 tokio::spawn(report_and_resume_tileset_downloads(
@@ -831,26 +837,21 @@ pub fn spawn_sync_thread_with_transport(
                             // through to `handle_gossip_incoming` unchanged.
                             match decode_tileset_ad(&incoming.content) {
                                 Some(ad) => {
-                                    // RP-5 step 6 / AC-21(e): mirror the
-                                    // (possibly just-updated) authoritative
-                                    // root for this tileset id into the
-                                    // blob-ALPN filter's reverse lookup —
-                                    // idempotent, so running it after every
-                                    // ad (accepted or refused) is harmless.
-                                    let tileset_id = ad.tileset_id.clone();
-                                    handle_inbound_tileset_ad(
+                                    // RP-5 step 6 / OF-6a: an ACCEPTED ad
+                                    // can only add its arrival verse to a
+                                    // root this node already tracks (every
+                                    // learned verse must then admit) — it
+                                    // never starts tracking, never remaps.
+                                    let accepted = handle_inbound_tileset_ad(
                                         &mut tileset_providers,
                                         &evt_tx,
                                         &incoming,
                                         ad,
                                     );
-                                    if let (Some(stack), Some(choice)) = (
-                                        docs_stack.as_ref(),
-                                        tileset_providers.root_for(&tileset_id),
-                                    ) {
+                                    if let (Some(stack), Some(root)) = (docs_stack.as_ref(), accepted) {
                                         stack
                                             .blob_access_gate()
-                                            .record_tileset_root(&incoming.verse_id, choice.root);
+                                            .note_advertised_root(&incoming.verse_id, root);
                                     }
                                 }
                                 None => {
@@ -959,10 +960,12 @@ pub fn spawn_sync_thread_with_transport(
                                     &mut gossip_pumps,
                                     &verse_id,
                                 );
-                                // RP-5 step 6: the blob-ALPN filter forgets
-                                // this verse's access snapshot and tileset
-                                // roots too — a closed verse's role view is
-                                // no longer authoritative.
+                                // RP-5 step 6 / OF-6b: the blob-ALPN filter
+                                // drops this verse's access snapshot — a
+                                // closed verse's role view is no longer
+                                // authoritative — but KEEPS its tileset
+                                // roots tracked, so they deny rather than
+                                // fall back to the untracked "admit" path.
                                 if let Some(stack) = &docs_stack {
                                     stack.blob_access_gate().forget_verse(&verse_id);
                                 }
@@ -1060,6 +1063,7 @@ pub fn spawn_sync_thread_with_transport(
                                 handle_download_tileset(
                                     &tileset_transfer,
                                     &tileset_providers,
+                                    docs_stack.as_ref().map(|s| s.blob_access_gate()),
                                     tileset_id,
                                     provider,
                                     &evt_tx,
@@ -1069,6 +1073,7 @@ pub fn spawn_sync_thread_with_transport(
                                 handle_request_tileset_meta(
                                     &tileset_transfer,
                                     &tileset_providers,
+                                    docs_stack.as_ref().map(|s| s.blob_access_gate()),
                                     &peer_id,
                                     &tileset_id,
                                     &evt_tx,
@@ -1436,7 +1441,7 @@ fn sync_blob_access_gate(docs_stack: &Option<Arc<DocsStack>>, verse_id: &str, fa
     if let Some(stack) = docs_stack {
         stack
             .blob_access_gate()
-            .set_verse_access(verse_id, fabric.access_snapshot());
+            .set_verse_access(verse_id, fabric.access_snapshot(verse_id));
     }
 }
 
@@ -1899,7 +1904,8 @@ async fn handle_write_row_entry(
     if let Ok(row) = serde_json::from_slice::<serde_json::Value>(&data) {
         match table {
             "verse" => {
-                fabric.note_verse_row(verse_id, &row, author_did);
+                // OF-6d: our own outbound write — locally admitted.
+                fabric.note_local_verse_row(verse_id, &row, author_did);
             }
             "petal" => {
                 fabric.note_petal_row(verse_id, &row);
@@ -2488,6 +2494,18 @@ impl TilesetProviderMap {
             })
     }
 
+    /// Every verse an entry advertised `root` for `tileset_id` on (OF-6a:
+    /// a fetched root is bound to ALL of them).
+    fn verses_for(&self, tileset_id: &str, root: Hash32) -> std::collections::BTreeSet<String> {
+        self.by_id
+            .get(tileset_id)
+            .into_iter()
+            .flatten()
+            .filter(|e| e.root == root)
+            .map(|e| e.verse_id.clone())
+            .collect()
+    }
+
     /// Providers that advertised `root` for `tileset_id`, authenticated first, deduplicated.
     fn candidates(&self, tileset_id: &str, root: Hash32) -> Vec<ProviderRef> {
         let mut out: Vec<ProviderRef> = Vec::new();
@@ -2577,25 +2595,26 @@ fn tileset_ad_is_authenticated(
 
 /// Handle one inbound tileset ad: record its provider (admission above) and
 /// echo it to the UI/terrain layer as [`SyncEvent::PeerTilesetAdvertisement`].
+/// Returns the ad's root when the ad was ACCEPTED (`None` when refused).
 fn handle_inbound_tileset_ad(
     providers: &mut TilesetProviderMap,
     evt_tx: &dyn EventSink,
     incoming: &GossipIncoming,
     ad: TilesetAd,
-) {
+) -> Option<Hash32> {
     let Ok(root) = hash_from_hex(&ad.root_hash) else {
         tracing::debug!(tileset_id = %ad.tileset_id, "Malformed tileset ad root hash — ignored");
-        return;
+        return None;
     };
     // S8b: an id that could never become a download dir, or a provider that
     // could never be dialed, is dropped before it costs map space or a UI event.
     if !is_safe_tileset_id(&ad.tileset_id) {
         tracing::debug!("Tileset ad with an unsafe tileset_id — ignored");
-        return;
+        return None;
     }
     if IrohBlobTransport::parse_provider(&ProviderRef::new(ad.provider_addr.clone())).is_err() {
         tracing::debug!(tileset_id = %ad.tileset_id, "Tileset ad with an undialable provider — ignored");
-        return;
+        return None;
     }
     let authenticated =
         tileset_ad_is_authenticated(incoming.direct, &ad.provider_addr, incoming.from);
@@ -2613,7 +2632,7 @@ fn handle_inbound_tileset_ad(
             authenticated,
             "Tileset advertisement refused (superseded or map full)"
         );
-        return;
+        return None;
     }
     tracing::debug!(
         tileset_id = %ad.tileset_id,
@@ -2638,6 +2657,7 @@ fn handle_inbound_tileset_ad(
             advertisements_json,
         },
     );
+    Some(root)
 }
 
 /// One [`TilesetAd`] built from a published catalog entry.
@@ -2750,6 +2770,11 @@ async fn pump_transfer_progress(
 async fn report_and_resume_tileset_downloads(transfer: Arc<TilesetTransfer>, evt_tx: EventOutbox) {
     if let Err(e) = transfer.catalog_from_tags().await {
         tracing::warn!("Rebuilding tileset catalog from tags failed: {e}");
+    }
+    // OF-6b: re-derive the blob gate's child index for every persisted
+    // download (published ones were reported by the catalog rebuild above).
+    if let Err(e) = transfer.report_downloaded_content().await {
+        tracing::warn!("Reporting persisted tileset downloads to the blob gate failed: {e}");
     }
     // AC-21(a): streamed caches persist across restarts; re-apply the budget.
     if let Err(e) = transfer.trim_streamed_caches().await {
@@ -2873,6 +2898,21 @@ fn offline_meta_event(peer_id: String, tileset_id: String) -> SyncEvent {
     )
 }
 
+/// OF-6a: bind a root this node is about to fetch to EVERY verse it was
+/// advertised on, BEFORE the fetch puts any of it in the store (the gate
+/// then re-serves it only to a Viewer+ of all of them).
+fn bind_fetched_root(
+    gate: Option<&BlobAccessGate>,
+    providers_map: &TilesetProviderMap,
+    tileset_id: &str,
+    root: Hash32,
+) {
+    if let Some(gate) = gate {
+        let verses = providers_map.verses_for(tileset_id, root);
+        gate.bind_fetched_root(root, verses.iter().map(String::as_str));
+    }
+}
+
 /// Handle [`SyncCommand::RequestTilesetMeta`]: resolve the tileset's root
 /// from a prior advertisement (or `peer_id` as an explicit provider
 /// override) and fetch + verify its index. Spawned so the command loop
@@ -2880,6 +2920,7 @@ fn offline_meta_event(peer_id: String, tileset_id: String) -> SyncEvent {
 fn handle_request_tileset_meta(
     transfer: &Option<Arc<TilesetTransfer>>,
     providers_map: &TilesetProviderMap,
+    gate: Option<&BlobAccessGate>,
     peer_id: &str,
     tileset_id: &str,
     evt_tx: &EventOutbox,
@@ -2903,6 +2944,7 @@ fn handle_request_tileset_meta(
                 return;
             }
         };
+    bind_fetched_root(gate, providers_map, tileset_id, root);
     let approx_size_bytes = providers_map.bytes_for(tileset_id);
     let peer_id = peer_id.to_string();
     let tileset_id = tileset_id.to_string();
@@ -2931,6 +2973,7 @@ fn handle_request_tileset_meta(
 fn handle_download_tileset(
     transfer: &Option<Arc<TilesetTransfer>>,
     providers_map: &TilesetProviderMap,
+    gate: Option<&BlobAccessGate>,
     tileset_id: String,
     provider: Option<String>,
     evt_tx: &EventOutbox,
@@ -2947,6 +2990,7 @@ fn handle_download_tileset(
                 return;
             }
         };
+    bind_fetched_root(gate, providers_map, &tileset_id, root);
     let approx_size_bytes = providers_map.bytes_for(&tileset_id);
     let evt_tx = evt_tx.clone();
     tokio::spawn(async move {

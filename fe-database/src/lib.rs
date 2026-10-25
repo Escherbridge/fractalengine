@@ -1546,11 +1546,12 @@ pub fn spawn_db_thread_shared(
                     // through PendingApiRequests (see fe-runtime AGENTS.md
                     // §api-reply-correlation). The row cap is enforced in
                     // the handler against the caller's cap.
-                    Ok(DbCommand::ExecuteTsPartial { spec, shards, row_cap, reply }) => {
+                    Ok(DbCommand::ExecuteTsPartial { verse_id, spec, shards, row_cap, reply }) => {
                         // RP-6 §2.6: the deferred-admission queue reports which
-                        // requested shards still hold deferred readings here.
+                        // requested shards still hold deferred readings here
+                        // (OF-7b: scoped to the query's verse).
                         match handlers::ts_partial::execute_ts_partial(
-                            &db, &spec, &shards,
+                            &db, &verse_id, &spec, &shards,
                             row_cap,
                             &admissions,
                         ).await {

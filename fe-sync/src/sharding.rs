@@ -392,24 +392,67 @@ impl VerseFabric {
         }
     }
 
-    /// Parse the `ts_*`/`default_access` settings off a verse manifest row.
+    /// Parse the `ts_*`/`default_access` settings off an INBOUND (replicated
+    /// or snapshot) verse manifest row.
     ///
-    /// The FIRST manifest pins the owner (`created_by` — §2.5, never
-    /// relearned) and is trusted outright, since nobody has authority yet
-    /// to gate against (mirrors the DB plane's "trust on first use").
-    /// Every LATER manifest's settings are adopted only from the owner or a
-    /// verse Manager+ (RP-5 step 2, `role_at` at the verse scope) — a
-    /// petal/fractal Manager's or an Editor's edit is ignored, because verse
-    /// settings lie above their subtree. Returns whether the fabric's
-    /// settings actually changed.
+    /// The owner is pinned (§2.5, never relearned) only from a SELF-SIGNED
+    /// manifest — the entry's signed author IS its `created_by` (OF-6d). A
+    /// manifest claiming someone else as creator pins nothing and adopts no
+    /// settings; instead the claimed creator is queued for the §2.5 re-read,
+    /// which replays THEIR own `verse/` entry from the replica (so a later
+    /// Manager edit shadowing the owner's entry in the snapshot cannot stall
+    /// the pin). Until an owner is pinned no settings are adopted at all.
+    /// After that, settings are adopted only from the owner or a verse
+    /// Manager+ (RP-5 step 2, `role_at` at the verse scope) — a petal/fractal
+    /// Manager's or an Editor's edit is ignored, because verse settings lie
+    /// above their subtree. Returns whether the fabric's settings changed.
     pub fn note_verse_row(&mut self, verse_id: &str, row: &serde_json::Value, author_id: &str) -> bool {
+        self.note_verse_row_from(verse_id, row, author_id, false)
+    }
+
+    /// [`Self::note_verse_row`] for this node's OWN outbound manifest write:
+    /// the local DB plane already admitted it (the creator's manifest, or an
+    /// invite-pinned owner — fe-database T10), so its `created_by` pins the
+    /// owner and, as the first manifest, its settings are adopted outright.
+    pub fn note_local_verse_row(&mut self, verse_id: &str, row: &serde_json::Value, local_did: &str) -> bool {
+        self.note_verse_row_from(verse_id, row, local_did, true)
+    }
+
+    fn note_verse_row_from(
+        &mut self,
+        verse_id: &str,
+        row: &serde_json::Value,
+        author_id: &str,
+        locally_admitted: bool,
+    ) -> bool {
         let first_manifest = self.owner_did.is_none();
         if let Some(created_by) = row.get("created_by").and_then(|v| v.as_str()) {
-            self.learn_owner(verse_id, created_by);
+            if locally_admitted || created_by == author_id {
+                self.learn_owner(verse_id, created_by);
+            } else if first_manifest
+                && !created_by.is_empty()
+                && !self.reread_queue.iter().any(|d| d == created_by)
+            {
+                tracing::debug!(
+                    verse_id,
+                    author = author_id,
+                    created_by,
+                    "verse manifest not signed by its claimed creator — owner not pinned; \
+                     re-reading the claimed creator's own manifest entry"
+                );
+                self.reread_queue.push_back(created_by.to_string());
+            }
         }
-        if !first_manifest {
+        // The local DB plane already admitted our own outbound manifest, so
+        // with no owner pinned yet it is adopted outright (as before OF-6d).
+        let adopt_outright = locally_admitted && first_manifest;
+        if !adopt_outright {
+            let Some(owner) = self.owner_did.clone() else {
+                tracing::debug!(verse_id, author = author_id, "verse manifest settings ignored — no owner pinned yet");
+                return false;
+            };
             let verse_scope = fe_policy::build_scope(verse_id, None, None);
-            let is_owner = self.owner_did.as_deref() == Some(author_id);
+            let is_owner = owner == author_id;
             if !is_owner && !self.role_at(author_id, &verse_scope).is_at_least(RoleLevel::Manager) {
                 tracing::debug!(
                     verse_id,
@@ -512,6 +555,7 @@ impl VerseFabric {
     /// re-read on empowerment recovers it.
     pub fn note_holder_row(&mut self, verse_id: &str, record_id: &str, author_id: &str, data: &[u8]) {
         if data.is_empty() {
+            self.withdraw_holder(verse_id, record_id, author_id);
             return;
         }
         let Some((_, holder_did)) = parse_holder_key(record_id) else {
@@ -546,6 +590,62 @@ impl VerseFabric {
             return;
         }
         self.quarantine_row(QuarantineKind::Holder, record_id, author_id, data);
+    }
+
+    /// A `__holders` tombstone (OF-7a): the holder withdrew its own
+    /// declaration — drop it from the admitted set AND from the quarantine
+    /// (a held copy must not be re-admitted after the withdrawal). Only the
+    /// holder itself may withdraw (the key's DID must be the signed author).
+    fn withdraw_holder(&mut self, verse_id: &str, record_id: &str, author_id: &str) {
+        let Some((shard_key, holder_did)) = parse_holder_key(record_id) else {
+            return;
+        };
+        if holder_did != author_id {
+            tracing::warn!(
+                verse_id,
+                record_id,
+                author = author_id,
+                "Forged holder withdrawal dropped — only the holder may tombstone its declaration"
+            );
+            return;
+        }
+        if let Some(dids) = self.holders.get_mut(shard_key) {
+            dids.remove(holder_did);
+            if dids.is_empty() {
+                self.holders.remove(shard_key);
+            }
+        }
+        self.quarantine
+            .retain(|q| !(q.kind == QuarantineKind::Holder && q.record_id == record_id && q.author_id == author_id));
+    }
+
+    /// OF-7a: re-verdict every admitted holder against the current role
+    /// view — a holder now below Editor at its shard's petal scope (a
+    /// revocation, or the demote cascade) stops being an expected answerer.
+    /// A later re-promotion restores it through the §2.5 re-read on
+    /// empowerment, which replays the DID's `__holders/` entries.
+    fn reverdict_holders(&mut self, verse_id: &str) {
+        let mut demoted: Vec<(String, String)> = Vec::new();
+        for (shard_key, dids) in &self.holders {
+            let scope = self.petal_scope(verse_id, ShardId::petal_of_key(shard_key));
+            for did in dids {
+                let still_editor = scope
+                    .as_deref()
+                    .is_some_and(|scope| self.role_at(did, scope).is_at_least(RoleLevel::Editor));
+                if !still_editor {
+                    demoted.push((shard_key.clone(), did.clone()));
+                }
+            }
+        }
+        for (shard_key, did) in demoted {
+            tracing::info!(verse_id, shard = %shard_key, holder = %did, "holder demoted below Editor — no longer an expected answerer");
+            if let Some(dids) = self.holders.get_mut(&shard_key) {
+                dids.remove(&did);
+                if dids.is_empty() {
+                    self.holders.remove(&shard_key);
+                }
+            }
+        }
     }
 
     /// The admitted holders of one shard (RP-6 §2.6 — expected answerers
@@ -676,6 +776,7 @@ impl VerseFabric {
     fn rematerialize(&mut self, verse_id: &str) {
         let Some(owner) = self.owner_did.clone() else {
             self.effective = fe_policy::EffectiveRoles::default();
+            self.reverdict_holders(verse_id);
             self.reevaluate_quarantine(verse_id);
             return;
         };
@@ -701,6 +802,7 @@ impl VerseFabric {
                 self.role_statements.remove(&key);
             }
         }
+        self.reverdict_holders(verse_id);
         self.reevaluate_quarantine(verse_id);
     }
 
@@ -775,15 +877,19 @@ impl VerseFabric {
         self.quarantine_evicted
     }
 
-    /// A snapshot of who currently holds Viewer+ here, for the blob-ALPN
-    /// request filter (`docs_engine::BlobAccessGate`, RP-5 step 6 /
-    /// AC-21(e)) — which runs on a background task outside the sync
-    /// thread's own state and so cannot borrow the fabric directly.
-    pub fn access_snapshot(&self) -> crate::docs_engine::VerseAccessSnapshot {
+    /// A snapshot of who currently holds Viewer+ AT THE VERSE SCOPE, for
+    /// the blob-ALPN request filter (`docs_engine::BlobAccessGate`, RP-5
+    /// step 6 / AC-21(e)) — which runs on a background task outside the
+    /// sync thread's own state and so cannot borrow the fabric directly.
+    /// Tileset roots are bound to a verse, not a petal, so a petal- or
+    /// fractal-scoped grant never opens them (OF-6e): `role_at` is resolved
+    /// at the verse scope for every statement's peer.
+    pub fn access_snapshot(&self, verse_id: &str) -> crate::docs_engine::VerseAccessSnapshot {
+        let verse_scope = fe_policy::build_scope(verse_id, None, None);
         let mut viewer_dids = HashSet::new();
         for stmt in self.role_statements.values() {
             if self
-                .role_at(&stmt.peer_did, &stmt.scope)
+                .role_at(&stmt.peer_did, &verse_scope)
                 .is_at_least(RoleLevel::Viewer)
             {
                 viewer_dids.insert(stmt.peer_did.clone());
@@ -1714,5 +1820,92 @@ mod tests {
         assert_eq!(view.verdict("did:key:viewer"), AnswererVerdict::Rejected);
         assert_eq!(view.verdict("did:key:editor"), AnswererVerdict::Admitted);
         assert_eq!(view.verdict(OWNER), AnswererVerdict::Admitted);
+    }
+
+    /// OF-6d: a manifest whose signed author is NOT its `created_by` pins no
+    /// owner and adopts no settings (pre-fix, a stranger's first manifest
+    /// naming themselves creator-by-proxy took the verse's settings); the
+    /// claimed creator is queued for the re-read, and the creator's own
+    /// self-signed manifest then pins them.
+    #[test]
+    fn a_manifest_not_signed_by_its_creator_pins_no_owner_and_adopts_no_settings() {
+        let mut fabric = VerseFabric::default();
+        let changed = fabric.note_verse_row(
+            "v1",
+            &serde_json::json!({
+                "verse_id": "v1", "created_by": "did:key:attacker",
+                "ts_mode": "sharded", "default_access": "viewer",
+            }),
+            "did:key:relay",
+        );
+        assert!(!changed, "an unsigned-by-creator manifest must adopt nothing");
+        assert_eq!(fabric.owner_did(), None);
+        assert_eq!(fabric.default_access(), RoleLevel::None);
+        assert_ne!(fabric.settings.mode, TimeseriesMode::Sharded);
+        assert_eq!(fabric.drain_reread_queue(), vec!["did:key:attacker".to_string()]);
+
+        fabric.note_entry("v1", &verse_change("v1", OWNER, OWNER, serde_json::json!({"ts_mode": "sharded"})));
+        assert_eq!(fabric.owner_did(), Some(OWNER));
+        assert_eq!(fabric.settings.mode, TimeseriesMode::Sharded);
+
+        // Our own locally-admitted outbound manifest (an invite-pinned owner
+        // written under the joiner's identity) still pins and adopts.
+        let mut joiner = VerseFabric::default();
+        assert!(joiner.note_local_verse_row(
+            "v1",
+            &serde_json::json!({"created_by": OWNER, "ts_mode": "sharded"}),
+            "did:key:joiner",
+        ));
+        assert_eq!(joiner.owner_did(), Some(OWNER));
+    }
+
+    /// OF-6e: a PETAL-scoped Viewer never lands in the verse-wide blob
+    /// access snapshot (pre-fix, `role_at` at the statement's own scope put
+    /// them there, opening every verse-bound tileset); a verse Viewer does.
+    #[test]
+    fn a_petal_scoped_viewer_is_not_a_verse_wide_blob_viewer() {
+        let mut fabric = fabric_with_owner("v1");
+        fabric.note_entry("v1", &petal_change("p1", "f1"));
+        let petal_scope = fe_policy::build_scope("v1", Some("f1"), Some("p1"));
+        let verse_scope = fe_policy::build_scope("v1", None, None);
+        fabric.note_entry("v1", &role_change(&petal_scope, "did:key:petal-viewer", OWNER, "viewer", false, 1));
+        fabric.note_entry("v1", &role_change(&verse_scope, "did:key:verse-viewer", OWNER, "viewer", false, 2));
+        let snapshot = fabric.access_snapshot("v1");
+        assert!(!snapshot.viewer_dids.contains("did:key:petal-viewer"));
+        assert!(snapshot.viewer_dids.contains("did:key:verse-viewer"));
+    }
+
+    /// OF-7a: an admitted holder whose Editor role is REVOKED stops being an
+    /// expected answerer, and a holder's own `__holders` tombstone withdraws
+    /// it (a forged tombstone from someone else does not).
+    #[test]
+    fn a_revoked_or_withdrawn_holder_is_no_longer_an_expected_answerer() {
+        let mut fabric = fabric_with_owner("v1");
+        fabric.note_entry("v1", &petal_change("p1", "f1"));
+        let petal_scope = fe_policy::build_scope("v1", Some("f1"), Some("p1"));
+        let (erin, frank) = ("did:key:erin", "did:key:frank");
+        fabric.note_entry("v1", &role_change(&petal_scope, erin, OWNER, "editor", false, 1));
+        fabric.note_entry("v1", &role_change(&petal_scope, frank, OWNER, "editor", false, 2));
+        fabric.note_entry("v1", &holder_change("p1/a1/1", erin, erin));
+        fabric.note_entry("v1", &holder_change("p1/a1/1", frank, frank));
+        assert!(fabric.shard_holders("p1/a1/1").is_some_and(|h| h.contains(erin) && h.contains(frank)));
+
+        fabric.note_entry("v1", &role_change(&petal_scope, erin, OWNER, "editor", true, 3));
+        assert!(
+            fabric.shard_holders("p1/a1/1").is_some_and(|h| !h.contains(erin)),
+            "a revoked holder must not stay an expected answerer"
+        );
+
+        let mut forged = holder_change("p1/a1/1", frank, erin);
+        forged.data.clear();
+        forged.is_tombstone = true;
+        fabric.note_entry("v1", &forged);
+        assert!(fabric.shard_holders("p1/a1/1").is_some_and(|h| h.contains(frank)), "forged withdrawal");
+
+        let mut withdrawal = holder_change("p1/a1/1", frank, frank);
+        withdrawal.data.clear();
+        withdrawal.is_tombstone = true;
+        fabric.note_entry("v1", &withdrawal);
+        assert!(fabric.shard_holders("p1/a1/1").is_none(), "a withdrawn holder must be dropped");
     }
 }
