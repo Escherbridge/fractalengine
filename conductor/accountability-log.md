@@ -537,3 +537,20 @@ gates `cargo check -p fe-sync -p fe-database -p fractalengine --tests`, before W
   rows the DB plane reported Applied (one admission point — matches the InboundAdmissions tripwire).
 - Refine-phase security worklist now: OF-8a (any-parent admission), OF-8b hardening (authority-gated narrowing),
   OF-9 (petal-row scope mapping), OF-4 verification, + the full RP-4s/RP-9/RP-9b/W6-9/W6-10 merged scope.
+
+### OF-8 AMENDED (second review pass on 9fbf7b9, 2026-10-25)
+- OF-8a ESCALATED MED→HIGH: the injection vector is concrete — `set_children(root, children)` indexes every child
+  of a FETCHED HashSeq, so a fetched attacker tileset plants parent links onto victim child hashes, and
+  `admits_hash`'s `.any(...)` ORs across bindings. Fix options recorded: decided-by-original-binding (a hash already
+  tracked as a root, or as a child of an owned/published root, is decided by THAT binding alone); or AND across all
+  listing parents; or only add a child mapping when not already tracked under another root.
+- OF-8b ESCALATED (new sub-finding, DoS state poisoning): `learned_overflow` at MAX_LEARNED_VERSES becomes a
+  PERSISTED refuse-everyone state (`via_learned` requires !learned_overflow) that attacker ads can trigger — durable
+  DoS, strictly worse than the documented fail-closed griefing. Fix: bind fetched roots to the verse the fetch was
+  STARTED for (fetch-context binding), accept extra verses only from publisher-authenticated ads, never persist
+  overflow as permanent refusal (clear on re-fetch from the original verse).
+- **Refine-phase directive:** the blob access gate (RootBinding/admits_hash/note_advertised_root) now carries
+  2 HIGHs + 2 escalations against a design that already absorbed OF-6a/6b patches. The refine slice must treat it
+  as a DESIGN review — candidate model: a root's binding is fixed at first authoritative learn (own publish, own
+  fetch context, or DB-admitted petal terrain), gossip never mutates an existing binding — rather than patching
+  admit logic a third time. Worklist: OF-8a HIGH, OF-8b, OF-9 HIGH, OF-4 verify, merged RP-4s/RP-9/RP-9b/W6-9/W6-10.
