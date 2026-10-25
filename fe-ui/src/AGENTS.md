@@ -166,6 +166,55 @@ The fix follows the same `UiAction` pure-decision-function shape as §portal:
    with a warning log rather than partially applying — see
    `actions/transform.rs::apply`.
 
+## §inspector — clipping, full-height Query tab, scoped templates (2026-10-25 in-app findings F1-F3)
+
+- **F1 root cause.** egui 0.33's default text-wrap mode for a plain
+  `ui.horizontal(...)` row (and for an `egui::Grid` cell) is `Extend`, which
+  sets `wrap.max_width = f32::INFINITY` — any `ui.label`/`Label` without an
+  explicit `.wrap()`/`.truncate()` renders at its full natural width and can
+  blow the panel out (this is distinct from `.wrap()`, which multi-line wraps
+  and was already used correctly for the API-Access curl/scope boxes before
+  this fix, just not with ellipsis truncation). `panels/widgets.rs::
+  clipped_value`/`clipped_value_copyable` force `.truncate()` (single line +
+  ellipsis) plus a hover tooltip with the full value, and the copyable variant
+  adds click-to-copy with a toast. Swept onto every unclipped long-value
+  `Label` across Properties/API-Access/Query (Node ID, API-Access Scope +
+  Node ID, generated-token Client DID + curl command, Active-Tokens label +
+  client DID, Query tab's scope hint). `inspector_entity_section`'s Node ID
+  moved out of its `Grid` to match the existing `copy_value_box` convention
+  (§widgets) — a Grid cell ignores `set_max_width` too.
+- **F2 full-height Query tab.** `ui_shell::right_sidebar::section_chrome`
+  wraps every right-sidebar section (Inspector included) in one
+  `egui::ScrollArea::vertical().auto_shrink([false, false])`. In egui 0.33
+  that ScrollArea's content `Ui` is bounded to the visible viewport, not
+  grown to "infinite" for the scroll axis (`content_max_size` only goes
+  infinite on a dead code path — see `egui::containers::scroll_area`), so
+  `ui.available_height()` called inside `query_tab.rs` after laying out the
+  editor/templates/buttons top-down *is* the real remaining panel height.
+  The Result `ScrollArea` now sizes to that (floored at `RESULT_MIN_HEIGHT`)
+  instead of a fixed `max_height(300.0)`, and renders unconditionally (an
+  empty-state message before any query runs) so the tab fills the panel from
+  the first frame rather than only after a result exists.
+- **F3 scoped templates.** Real table/key shapes are in
+  `fe-database/src/schema.rs`: `node` is keyed by `node_id` and carries a
+  `petal_id` column (no scope field), `iot_reading` is keyed by `node_id`.
+  `query_tab::query_templates` offers "This node" / "This node's device
+  data" (when a node is selected) and always offers a petal-scoped "All
+  nodes in this petal" (or an unscoped fallback with no active petal) —
+  one click fills the SQL buffer, Run is still a separate step. Values are
+  interpolated as SQL string literals (`sql_literal` escapes `'`/`\`)
+  because `actions::query::submit` (`fe-ui/src/actions/query.rs`) always
+  sends `RawQuery` with an **empty `vars` map** — the GUI tab has no
+  bind-variable plumbing, so `$id`-style binds silently never resolve. The
+  "Templates scoped to: <petal>" row is deliberately NOT phrased as an
+  enforced filter: `UiAction::SubmitQuery`'s `scope` field is dropped
+  (`scope: _`) at the `actions/mod.rs` dispatch arm, so a hand-edited query
+  is never scope-checked server-side (that gap is a logged follow-up, not
+  fixed here). The hint text was also corrected: `fe-database/src/handlers/
+  raw_query.rs`'s `BLOCKED_KEYWORDS` blocks `RETURN` too, so "Only SELECT and
+  RETURN statements are allowed" was actively wrong — it now reads "Only a
+  single SELECT statement is allowed," matching the handler's own error.
+
 ## §asset-download — integration contract for the main binary
 
 The inspector's "Asset" card (`panels::asset_card`) is UI-only: it reads

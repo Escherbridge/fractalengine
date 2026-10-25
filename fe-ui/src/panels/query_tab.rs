@@ -1,20 +1,73 @@
-//! Inspector "Query" tab: ad-hoc SurrealQL SELECT/RETURN queries scoped to
-//! the current navigation context.
+//! Inspector "Query" tab: ad-hoc SurrealQL SELECT queries. Offers one-click
+//! templates built from the real schema (F3) and lays the editor/results out
+//! top-down so Results fills whatever height remains (F2). See
+//! `fe-ui/src/AGENTS.md` §inspector.
 
 use bevy_egui::egui;
 
 use crate::actions::{UiAction, UiManager};
 use crate::navigation_manager::NavigationManager;
+use crate::node_manager::NodeManager;
+use crate::panels::widgets::clipped_value;
 use crate::plugin::InspectorFormState;
 use crate::theme;
 
-/// Inspector Query tab: a text area for submitting SurrealQL SELECT queries.
-/// Results are displayed below as formatted JSON. The query is scoped to the
-/// current navigation context (the petal/fractal/verse the user has navigated to).
+/// Reasonable minimum rows for the SQL editor regardless of panel height.
+const QUERY_EDITOR_MIN_ROWS: usize = 4;
+/// Floor for the Result scroll area so a short panel still shows something
+/// rather than collapsing to near-zero (F2).
+const RESULT_MIN_HEIGHT: f32 = 100.0;
+
+/// Escapes a value for literal interpolation into a template SQL string.
+/// `actions::query::submit` always sends an empty `vars` map (the GUI tab has
+/// no bind-variable plumbing — fe-ui/src/actions/query.rs), so templates
+/// cannot use `$id`-style binds; this is the cheap defence against a quote in
+/// an id/DID making it onto the wire. See `fe-ui/src/AGENTS.md` §inspector.
+fn sql_literal(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+/// One-click SELECT templates (F3), built from the real tables/keys in
+/// `fe-database/src/schema.rs`: `node` is keyed by `node_id` and carries a
+/// `petal_id` column (no scope field), `iot_reading` is keyed by `node_id`.
+/// Always offers a petal-scoped "all nodes" template; adds node-specific
+/// templates only when something is selected.
+fn query_templates(nav: &NavigationManager, node_mgr: &NodeManager) -> Vec<(&'static str, String)> {
+    let mut templates = Vec::new();
+    if let Some(sel) = node_mgr.selected.as_ref() {
+        let id = sql_literal(&sel.node_id);
+        templates.push((
+            "This node",
+            format!("SELECT * FROM node WHERE node_id = '{id}'"),
+        ));
+        templates.push((
+            "This node's device data",
+            format!("SELECT * FROM iot_reading WHERE node_id = '{id}'"),
+        ));
+    }
+    match nav.active_petal_id.as_deref() {
+        Some(petal_id) => templates.push((
+            "All nodes in this petal",
+            format!(
+                "SELECT * FROM node WHERE petal_id = '{}'",
+                sql_literal(petal_id)
+            ),
+        )),
+        None => templates.push((
+            "All nodes (no petal scope)",
+            "SELECT * FROM node LIMIT 50".to_string(),
+        )),
+    }
+    templates
+}
+
+/// Inspector Query tab: templates + a text area for submitting SurrealQL
+/// SELECT queries, with results below.
 pub(crate) fn inspector_query_section(
     ui: &mut egui::Ui,
     inspector: &mut InspectorFormState,
     nav: &NavigationManager,
+    node_mgr: &NodeManager,
     ui_mgr: &mut UiManager,
 ) {
     egui::Frame::NONE
@@ -29,35 +82,65 @@ pub(crate) fn inspector_query_section(
             );
             ui.add_space(4.0);
 
-            // Show current scope context
+            // Nav scope string (verse/fractal/petal) threaded into the action
+            // payload for forward compatibility; `RawQuery` ignores it today
+            // (see the hint row below).
             let scope = super::inspector::build_nav_scope(nav);
-            if !scope.is_empty() {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Scope:").small().color(theme::TEXT_DIM));
-                    ui.label(
-                        egui::RichText::new(&scope)
-                            .small()
-                            .monospace()
-                            .color(theme::TEXT_SECTION),
-                    );
-                });
-                ui.add_space(4.0);
-            }
+
+            // F3 addendum: `actions::query::submit` sends the query UNSCOPED
+            // (`scope` is dropped at `actions/query.rs` call site) — this row
+            // only says which templates below are offered, it is not an
+            // enforced filter. Say that plainly rather than implying a guardrail.
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Templates scoped to:")
+                        .small()
+                        .color(theme::TEXT_DIM),
+                );
+                clipped_value(
+                    ui,
+                    nav.active_petal_id
+                        .as_deref()
+                        .unwrap_or("none \u{2014} navigate to a petal"),
+                    theme::TEXT_SECTION,
+                );
+            });
+            ui.add_space(4.0);
+
+            // One-click templates (F3): fills the buffer, Run still required.
+            ui.horizontal_wrapped(|ui| {
+                for (label, sql) in query_templates(nav, node_mgr) {
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new(label).small())
+                                .fill(theme::BG_BUTTON),
+                        )
+                        .clicked()
+                    {
+                        inspector.query_sql_buf = sql;
+                    }
+                }
+            });
+            ui.add_space(4.0);
 
             ui.label(
-                egui::RichText::new("Only SELECT and RETURN statements are allowed.")
+                egui::RichText::new("Only a single SELECT statement is allowed.")
                     .small()
                     .color(theme::TEXT_MUTED),
             );
             ui.add_space(4.0);
 
-            // SQL text area
+            // SQL text area — reasonable min height; the hint lists the real
+            // tables instead of a single wrong-table example (F3).
             let response = ui.add(
                 egui::TextEdit::multiline(&mut inspector.query_sql_buf)
                     .font(egui::TextStyle::Monospace)
-                    .desired_rows(6)
+                    .desired_rows(QUERY_EDITOR_MIN_ROWS)
                     .desired_width(ui.available_width())
-                    .hint_text("SELECT * FROM node LIMIT 10"),
+                    .hint_text(
+                        "Tables: node, petal, fractal, verse, asset, iot_reading\n\
+                         e.g. SELECT * FROM node WHERE petal_id = '...'",
+                    ),
             );
 
             ui.add_space(6.0);
@@ -84,7 +167,7 @@ pub(crate) fn inspector_query_section(
                     inspector.query_result = Some("Submitting...".to_string());
                     ui_mgr.push_action(UiAction::SubmitQuery {
                         sql: inspector.query_sql_buf.clone(),
-                        scope,
+                        scope: scope.clone(),
                     });
                 }
 
@@ -104,29 +187,100 @@ pub(crate) fn inspector_query_section(
                     .color(theme::TEXT_DIM),
             );
 
-            // Results display
-            if let Some(ref result) = inspector.query_result {
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new("Result")
-                        .small()
-                        .strong()
-                        .color(theme::TEXT_SECTION),
-                );
-                ui.add_space(2.0);
+            // Results — always rendered (top-down, no fixed offset) so the
+            // tab fills the panel's remaining height instead of hugging the
+            // bottom once content runs out (F2). `available_height()` here is
+            // real: `section_chrome`'s outer ScrollArea bounds its content Ui
+            // to the visible viewport in this egui version (it does not grow
+            // to "infinite" for the scroll direction), so this reflects what
+            // is actually left below the editor/buttons above.
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("Result")
+                    .small()
+                    .strong()
+                    .color(theme::TEXT_SECTION),
+            );
+            ui.add_space(2.0);
 
-                egui::ScrollArea::vertical()
-                    .max_height(300.0)
-                    .show(ui, |ui| {
+            let result_height = ui.available_height().max(RESULT_MIN_HEIGHT);
+            egui::ScrollArea::vertical()
+                .max_height(result_height)
+                .auto_shrink([false, false])
+                .show(ui, |ui| match &inspector.query_result {
+                    Some(result) => {
                         ui.add(
                             egui::TextEdit::multiline(&mut result.as_str())
                                 .font(egui::TextStyle::Monospace)
                                 .desired_width(ui.available_width())
                                 .interactive(false),
                         );
-                    });
-            }
+                    }
+                    None => {
+                        ui.label(
+                            egui::RichText::new("Run a query to see results here.")
+                                .small()
+                                .color(theme::TEXT_MUTED)
+                                .italics(),
+                        );
+                    }
+                });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sql_literal_escapes_quotes_and_backslashes() {
+        assert_eq!(sql_literal("abc"), "abc");
+        assert_eq!(sql_literal("o'brien"), "o\\'brien");
+        assert_eq!(sql_literal("a\\b"), "a\\\\b");
+    }
+
+    #[test]
+    fn templates_always_offer_a_scope_option_even_with_nothing_selected() {
+        let nav = NavigationManager::default();
+        let node_mgr = NodeManager::default();
+        let templates = query_templates(&nav, &node_mgr);
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].0, "All nodes (no petal scope)");
+        assert_eq!(templates[0].1, "SELECT * FROM node LIMIT 50");
+    }
+
+    #[test]
+    fn templates_scope_to_active_petal_when_present() {
+        let mut nav = NavigationManager::default();
+        nav.active_petal_id = Some("petal-123".to_string());
+        let node_mgr = NodeManager::default();
+        let templates = query_templates(&nav, &node_mgr);
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].0, "All nodes in this petal");
+        assert_eq!(
+            templates[0].1,
+            "SELECT * FROM node WHERE petal_id = 'petal-123'"
+        );
+    }
+
+    #[test]
+    fn templates_add_node_scoped_queries_when_a_node_is_selected() {
+        let nav = NavigationManager::default();
+        let mut node_mgr = NodeManager::default();
+        node_mgr.select(bevy::prelude::Entity::from_bits(1), "node-42");
+        let templates = query_templates(&nav, &node_mgr);
+        assert_eq!(templates.len(), 3);
+        assert_eq!(templates[0].0, "This node");
+        assert_eq!(
+            templates[0].1,
+            "SELECT * FROM node WHERE node_id = 'node-42'"
+        );
+        assert_eq!(templates[1].0, "This node's device data");
+        assert_eq!(
+            templates[1].1,
+            "SELECT * FROM iot_reading WHERE node_id = 'node-42'"
+        );
+    }
 }

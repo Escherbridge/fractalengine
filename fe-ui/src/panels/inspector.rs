@@ -117,7 +117,7 @@ pub(crate) fn right_inspector(
     match inspector.active_tab {
         InspectorTab::Properties => {
             ui.add_space(4.0);
-            inspector_entity_section(ui, node_mgr);
+            inspector_entity_section(ui, node_mgr, ui_mgr);
             ui.add_space(2.0);
             crate::panels::asset_card::asset_card_section(
                 ui,
@@ -145,7 +145,7 @@ pub(crate) fn right_inspector(
         }
         InspectorTab::Query => {
             ui.add_space(4.0);
-            crate::panels::query_tab::inspector_query_section(ui, inspector, nav, ui_mgr);
+            crate::panels::query_tab::inspector_query_section(ui, inspector, nav, node_mgr, ui_mgr);
         }
     }
 }
@@ -164,7 +164,11 @@ pub(crate) fn build_nav_scope(nav: &NavigationManager) -> String {
     }
 }
 
-fn inspector_entity_section(ui: &mut egui::Ui, node_mgr: &crate::node_manager::NodeManager) {
+fn inspector_entity_section(
+    ui: &mut egui::Ui,
+    node_mgr: &crate::node_manager::NodeManager,
+    ui_mgr: &mut UiManager,
+) {
     egui::CollapsingHeader::new(
         egui::RichText::new("Entity")
             .strong()
@@ -173,26 +177,23 @@ fn inspector_entity_section(ui: &mut egui::Ui, node_mgr: &crate::node_manager::N
     .default_open(true)
     .show(ui, |ui| {
         ui.add_space(4.0);
+        // Rendered OUTSIDE a Grid (F1): a Grid cell ignores `set_max_width`,
+        // which is the width-blowout bug `clipped_value*` exists to avoid.
         if let Some(sel) = &node_mgr.selected {
-            egui::Grid::new("entity_info")
-                .num_columns(2)
-                .spacing([8.0, 4.0])
-                .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new("Node ID")
-                            .small()
-                            .color(theme::TEXT_DIM),
-                    );
-                    let id_label = ui.add(
-                        egui::Label::new(egui::RichText::new(&sel.node_id).monospace().small())
-                            .sense(egui::Sense::click()),
-                    );
-                    if id_label.clicked() {
-                        ui.ctx().copy_text(sel.node_id.clone());
-                    }
-                    id_label.on_hover_text("Click to copy");
-                    ui.end_row();
-                });
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Node ID")
+                        .small()
+                        .color(theme::TEXT_DIM),
+                );
+                crate::panels::widgets::clipped_value_copyable(
+                    ui,
+                    ui_mgr,
+                    &sel.node_id,
+                    theme::TEXT_BRIGHT,
+                    "Copied Node ID",
+                );
+            });
         }
         ui.add_space(4.0);
     });
@@ -615,7 +616,7 @@ fn inspector_api_access_section(
             .show(ui, |ui| {
                 ui.add_space(4.0);
 
-                // Scope + Node ID — read-only, wrapped to panel width
+                // Scope + Node ID — read-only, clipped to panel width (F1).
                 ui.label(egui::RichText::new("Scope").small().color(theme::TEXT_DIM));
                 egui::Frame::NONE
                     .fill(theme::BG_BUTTON)
@@ -623,35 +624,25 @@ fn inspector_api_access_section(
                     .corner_radius(3.0)
                     .show(ui, |ui| {
                         ui.set_max_width(ui.available_width());
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(&inspector.api_token_scope_buf)
-                                    .small()
-                                    .monospace()
-                                    .color(theme::TEXT_SECTION),
-                            )
-                            .wrap(),
+                        crate::panels::widgets::clipped_value_copyable(
+                            ui,
+                            ui_mgr,
+                            &inspector.api_token_scope_buf,
+                            theme::TEXT_SECTION,
+                            "Copied scope",
                         );
                     });
 
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Node ID").small().color(theme::TEXT_DIM));
-                    let id_resp = ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(node_id)
-                                .small()
-                                .monospace()
-                                .color(theme::TEXT_SECTION),
-                        )
-                        .sense(egui::Sense::click()),
+                    crate::panels::widgets::clipped_value_copyable(
+                        ui,
+                        ui_mgr,
+                        node_id,
+                        theme::TEXT_SECTION,
+                        "Copied Node ID",
                     );
-                    if id_resp.clicked() {
-                        ui.ctx().copy_text(node_id.to_string());
-                        let now = ui.ctx().input(|i| i.time);
-                        ui_mgr.show_toast("Copied Node ID", now);
-                    }
-                    id_resp.on_hover_text("Click to copy");
                 });
 
                 if inspector.api_token_scope_buf.is_empty() {
@@ -794,11 +785,10 @@ fn inspector_api_access_section(
                                             .small()
                                             .color(theme::TEXT_DIM),
                                     );
-                                    ui.label(
-                                        egui::RichText::new(client)
-                                            .small()
-                                            .monospace()
-                                            .color(theme::TEXT_SECTION),
+                                    crate::panels::widgets::clipped_value(
+                                        ui,
+                                        client,
+                                        theme::TEXT_SECTION,
                                     );
                                     if ui
                                         .add(egui::Button::new("\u{1F4CB}").fill(egui::Color32::TRANSPARENT).small())
@@ -849,14 +839,10 @@ fn inspector_api_access_section(
                                             }
                                         });
                                     });
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(&curl_cmd)
-                                                .small()
-                                                .monospace()
-                                                .color(theme::TEXT_DIM),
-                                        )
-                                        .wrap(),
+                                    crate::panels::widgets::clipped_value(
+                                        ui,
+                                        &curl_cmd,
+                                        theme::TEXT_DIM,
                                     );
                                 });
                         });
@@ -925,10 +911,10 @@ fn inspector_api_access_section(
                                             .color(theme::TEXT_SECTION),
                                     );
                                     if let Some(ref lbl) = tok.label {
-                                        ui.label(
-                                            egui::RichText::new(lbl)
-                                                .small()
-                                                .color(theme::TEXT_MUTED),
+                                        crate::panels::widgets::clipped_value(
+                                            ui,
+                                            lbl,
+                                            theme::TEXT_MUTED,
                                         );
                                     }
                                     ui.with_layout(
@@ -991,12 +977,18 @@ fn inspector_api_access_section(
                                         .color(theme::TEXT_MUTED),
                                 );
                                 if let Some(ref client) = tok.client {
-                                    ui.label(
-                                        egui::RichText::new(format!("client: {}", client))
-                                            .small()
-                                            .monospace()
-                                            .color(theme::TEXT_DIM),
-                                    );
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("client:")
+                                                .small()
+                                                .color(theme::TEXT_DIM),
+                                        );
+                                        crate::panels::widgets::clipped_value(
+                                            ui,
+                                            client,
+                                            theme::TEXT_DIM,
+                                        );
+                                    });
                                 }
                             });
                         ui.add_space(1.0);

@@ -107,6 +107,49 @@ pub(crate) fn meters_to_world(meters: f32, world_scale: f64) -> f32 {
     (meters as f64 * sane_scale(world_scale)) as f32
 }
 
+/// Single-line value, ellipsis-clipped to the available width instead of
+/// wrapping or extending it (egui's default `Extend` wrap mode for a plain
+/// `horizontal`/Grid cell sets `wrap.max_width = INFINITY`, which is exactly
+/// what let a long Scope/URL/DID string blow the inspector out — 2026-10-25
+/// in-app finding F1). The full value is always on the hover tooltip. Unlike
+/// [`copy_value_box`] (a boxed, multi-row, always-copyable value for
+/// arbitrary-length blobs), this is for a compact field embedded in an
+/// existing row that must not grow past one line. See
+/// `fe-ui/src/AGENTS.md` §inspector.
+pub(crate) fn clipped_value(
+    ui: &mut egui::Ui,
+    value: &str,
+    color: egui::Color32,
+) -> egui::Response {
+    ui.add(egui::Label::new(egui::RichText::new(value).small().monospace().color(color)).truncate())
+        .on_hover_text(value)
+}
+
+/// [`clipped_value`] plus click-to-copy with a toast, for fields where a
+/// separate copy button would be redundant (F1 "where useful a
+/// click-to-copy").
+pub(crate) fn clipped_value_copyable(
+    ui: &mut egui::Ui,
+    ui_mgr: &mut UiManager,
+    value: &str,
+    color: egui::Color32,
+    toast: &str,
+) -> egui::Response {
+    let resp = ui
+        .add(
+            egui::Label::new(egui::RichText::new(value).small().monospace().color(color))
+                .truncate()
+                .sense(egui::Sense::click()),
+        )
+        .on_hover_text(format!("{value}\n\n(click to copy)"));
+    if resp.clicked() {
+        ui.ctx().copy_text(value.to_string());
+        let now = ui.ctx().input(|i| i.time);
+        ui_mgr.show_toast(toast.to_string(), now);
+    }
+    resp
+}
+
 /// Truncate `s` to at most `max_chars` characters, appending an ellipsis when
 /// clipped. Char-boundary safe (multibyte-aware). Keeps a huge property value
 /// (e.g. a `gpx_points` JSON blob) from walling the inspector vertically; the
