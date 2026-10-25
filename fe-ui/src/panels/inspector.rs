@@ -88,6 +88,7 @@ pub(crate) fn right_inspector(
                 // Clear sensitive state when leaving the API tab
                 if prev_tab == InspectorTab::ApiAccess && tab != InspectorTab::ApiAccess {
                     inspector.generated_api_token = None;
+                    inspector.generated_api_token_client = None;
                 }
 
                 // Auto-populate scope + fetch tokens when entering API tab
@@ -700,22 +701,58 @@ fn inspector_api_access_section(
                         ui.end_row();
                     });
 
+                // Client DID (W6-7b): blank mints a fresh client; the DB
+                // door is the authority on `client_did` — this field only
+                // gates the Generate button so a malformed DID never leaves
+                // the GUI.
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("Client DID (blank = new client)")
+                        .small()
+                        .color(theme::TEXT_DIM),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut inspector.api_token_client_buf)
+                        .desired_width(ui.available_width())
+                        .hint_text("did:key:z... (optional)")
+                        .font(egui::TextStyle::Monospace),
+                );
+                let client_trimmed = inspector.api_token_client_buf.trim();
+                let client_valid =
+                    client_trimmed.is_empty() || fe_identity::validate_client_did(client_trimmed).is_ok();
+                if !client_valid {
+                    ui.label(
+                        egui::RichText::new("Not a valid ed25519 did:key")
+                            .small()
+                            .color(theme::STATUS_OFFLINE),
+                    );
+                }
+
                 ui.add_space(6.0);
                 if ui
-                    .add(
+                    .add_enabled(
+                        client_valid,
                         egui::Button::new("Generate API Token")
                             .fill(theme::BG_SAVE)
                             .min_size(egui::vec2(ui.available_width(), 28.0)),
                     )
                     .clicked()
                 {
+                    // Mirrors `verse_manager::db_results::tokens::mint_command`
+                    // exactly (blank client -> None, else trimmed) — keep in
+                    // sync if that shape ever changes.
+                    let client_did = if client_trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(client_trimmed.to_string())
+                    };
                     db_tx
                         .send(DbCommand::MintApiToken {
                             scope: inspector.api_token_scope_buf.clone(),
                             max_role: inspector.api_token_role_buf.clone(),
                             ttl_hours: inspector.api_token_expiry_buf,
                             label: Some(format!("node:{}", node_id)),
-                            client_did: None,
+                            client_did,
                         })
                         .ok();
                 }
@@ -752,6 +789,33 @@ fn inspector_api_access_section(
                                     .desired_rows(3)
                                     .font(egui::TextStyle::Monospace),
                             );
+
+                            // Minted `client` claim (W6-7b): shown so the
+                            // operator can hand it to the next mint for the
+                            // same client, or record it for revocation.
+                            if let Some(ref client) = inspector.generated_api_token_client {
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("Client:")
+                                            .small()
+                                            .color(theme::TEXT_DIM),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(client)
+                                            .small()
+                                            .monospace()
+                                            .color(theme::TEXT_SECTION),
+                                    );
+                                    if ui
+                                        .add(egui::Button::new("\u{1F4CB}").fill(egui::Color32::TRANSPARENT).small())
+                                        .on_hover_text("Copy client DID")
+                                        .clicked()
+                                    {
+                                        ui.ctx().copy_text(client.clone());
+                                    }
+                                });
+                            }
 
                             ui.add_space(4.0);
                             let now = ui.ctx().input(|i| i.time);
@@ -806,6 +870,7 @@ fn inspector_api_access_section(
                 }
                 if dismiss_token {
                     inspector.generated_api_token = None;
+                    inspector.generated_api_token_client = None;
                 }
 
                 ui.add_space(4.0);
@@ -932,6 +997,14 @@ fn inspector_api_access_section(
                                         .small()
                                         .color(theme::TEXT_MUTED),
                                 );
+                                if let Some(ref client) = tok.client {
+                                    ui.label(
+                                        egui::RichText::new(format!("client: {}", client))
+                                            .small()
+                                            .monospace()
+                                            .color(theme::TEXT_DIM),
+                                    );
+                                }
                             });
                         ui.add_space(1.0);
                     }

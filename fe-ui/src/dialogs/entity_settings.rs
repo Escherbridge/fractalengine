@@ -54,7 +54,9 @@ pub fn render_entity_settings_dialog(
         ref mut api_token_scope_buf,
         ref mut api_token_role_buf,
         ref mut api_token_expiry_buf,
+        ref mut api_token_client_buf,
         ref mut generated_api_token,
+        ref mut generated_api_token_client,
         ref mut scoped_api_tokens,
         ref mut scoped_tokens_loading,
     } = ui_mgr.active_dialog
@@ -566,15 +568,53 @@ pub fn render_entity_settings_dialog(
                             });
                     });
 
+                    // Client DID (W6-7b): blank mints a fresh client; the DB
+                    // door is the authority on `client_did` — this field only
+                    // gates the Generate button so a malformed DID never
+                    // leaves the GUI.
+                    ui.horizontal(|ui| {
+                        ui.label("Client DID:");
+                        ui.add(
+                            egui::TextEdit::singleline(api_token_client_buf)
+                                .desired_width(220.0)
+                                .hint_text("blank = new client")
+                                .font(egui::TextStyle::Monospace),
+                        );
+                    });
+                    let client_trimmed = api_token_client_buf.trim();
+                    let client_valid = client_trimmed.is_empty()
+                        || fe_identity::validate_client_did(client_trimmed).is_ok();
+                    if !client_valid {
+                        ui.label(
+                            egui::RichText::new("Not a valid ed25519 did:key")
+                                .small()
+                                .color(theme::STATUS_OFFLINE),
+                        );
+                    }
+
                     ui.add_space(4.0);
-                    if ui.add(egui::Button::new("Generate API Token").fill(theme::BG_SAVE)).clicked() {
+                    if ui
+                        .add_enabled(
+                            client_valid,
+                            egui::Button::new("Generate API Token").fill(theme::BG_SAVE),
+                        )
+                        .clicked()
+                    {
+                        // Mirrors `verse_manager::db_results::tokens::mint_command`
+                        // exactly (blank client -> None, else trimmed) — keep
+                        // in sync if that shape ever changes.
+                        let client_did = if client_trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(client_trimmed.to_string())
+                        };
                         db_tx
                             .send(DbCommand::MintApiToken {
                                 scope: api_token_scope_buf.clone(),
                                 max_role: api_token_role_buf.clone(),
                                 ttl_hours: *api_token_expiry_buf,
                                 label: None,
-                                client_did: None,
+                                client_did,
                             })
                             .ok();
                     }
@@ -612,6 +652,26 @@ pub fn render_entity_settings_dialog(
                                         ui.ctx().copy_text(curl_cmd);
                                     }
                                 });
+                                // Minted `client` claim (W6-7b).
+                                if let Some(ref client) = generated_api_token_client {
+                                    ui.add_space(4.0);
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("Client:")
+                                                .small()
+                                                .color(theme::TEXT_DIM),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(client)
+                                                .small()
+                                                .monospace()
+                                                .color(theme::TEXT_SECTION),
+                                        );
+                                        if ui.small_button("Copy").clicked() {
+                                            ui.ctx().copy_text(client.clone());
+                                        }
+                                    });
+                                }
                             });
 
                         // curl example
@@ -689,6 +749,14 @@ pub fn render_entity_settings_dialog(
                                                 .small()
                                                 .color(theme::TEXT_MUTED),
                                             );
+                                            if let Some(ref client) = tok.client {
+                                                ui.label(
+                                                    egui::RichText::new(format!("client: {}", client))
+                                                        .small()
+                                                        .monospace()
+                                                        .color(theme::TEXT_DIM),
+                                                );
+                                            }
                                         });
                                     });
                                 },
@@ -779,6 +847,14 @@ pub fn render_entity_settings_dialog(
                                             );
                                             if let Some(ref lbl) = tok.label {
                                                 ui.label(egui::RichText::new(lbl).small().color(theme::TEXT_BRIGHT));
+                                            }
+                                            if let Some(ref client) = tok.client {
+                                                ui.label(
+                                                    egui::RichText::new(format!("client: {}", client))
+                                                        .small()
+                                                        .monospace()
+                                                        .color(theme::TEXT_DIM),
+                                                );
                                             }
                                         });
                                     });

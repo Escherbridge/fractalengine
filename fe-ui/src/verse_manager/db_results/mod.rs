@@ -272,12 +272,14 @@ pub(super) fn apply_db_results(
                 jti,
                 scope,
                 max_role,
+                client,
                 ..
             } => tokens::handle_api_token_minted(
                 token,
                 jti,
                 scope,
                 max_role,
+                client,
                 &mut ui_mgr,
                 &mut inspector,
                 &db_sender,

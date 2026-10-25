@@ -311,7 +311,9 @@ pub fn viewport_verse_browser(
                 api_token_scope_buf: String::new(),
                 api_token_role_buf: "viewer".to_string(),
                 api_token_expiry_buf: 24,
+                api_token_client_buf: String::new(),
                 generated_api_token: None,
+                generated_api_token_client: None,
                 scoped_api_tokens: vec![],
                 scoped_tokens_loading: false,
             });
@@ -558,7 +560,9 @@ pub fn viewport_fractal_browser(
                     api_token_scope_buf: String::new(),
                     api_token_role_buf: "viewer".to_string(),
                     api_token_expiry_buf: 24,
+                    api_token_client_buf: String::new(),
                     generated_api_token: None,
+                    generated_api_token_client: None,
                     scoped_api_tokens: vec![],
                     scoped_tokens_loading: false,
                 });
@@ -774,7 +778,9 @@ pub fn viewport_petal_browser(
                     api_token_scope_buf: String::new(),
                     api_token_role_buf: "viewer".to_string(),
                     api_token_expiry_buf: 24,
+                    api_token_client_buf: String::new(),
                     generated_api_token: None,
+                    generated_api_token_client: None,
                     scoped_api_tokens: vec![],
                     scoped_tokens_loading: false,
                 });

@@ -73,6 +73,8 @@ pub struct ApiTokenEntry {
     pub revoked: bool,
     /// DID of the node that minted this token.
     pub sub: String,
+    /// The token's `client` claim; `None` for a legacy (node-level) token.
+    pub client: Option<String>,
 }
 
 /// The classified object a right-click context menu acts on (T4 FR-1): the
@@ -183,7 +185,11 @@ pub enum ActiveDialog {
         api_token_scope_buf: String,
         api_token_role_buf: String,
         api_token_expiry_buf: u32,
+        /// Ed25519 `did:key` to mint for; blank mints a fresh client (W6-7b).
+        api_token_client_buf: String,
         generated_api_token: Option<String>,
+        /// The just-minted token's `client` claim (W6-7b).
+        generated_api_token_client: Option<String>,
         /// Tokens scoped to this entity's scope tree (admin view).
         scoped_api_tokens: Vec<ApiTokenEntry>,
         scoped_tokens_loading: bool,

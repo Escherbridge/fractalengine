@@ -252,7 +252,13 @@ pub struct InspectorFormState {
     pub api_token_scope_buf: String,
     pub api_token_role_buf: String,
     pub api_token_expiry_buf: u32,
+    /// Ed25519 `did:key` to mint the token for; blank mints a fresh client
+    /// (W6-7b GUI mint surface; the DB door is the authority, this only
+    /// gates the Generate button — see `fe_identity::validate_client_did`).
+    pub api_token_client_buf: String,
     pub generated_api_token: Option<String>,
+    /// The just-minted token's `client` claim (requested or freshly generated).
+    pub generated_api_token_client: Option<String>,
     pub api_tokens: Vec<crate::dialogs::ApiTokenEntry>,
     pub api_tokens_loading: bool,
     pub api_tokens_page: u32,
@@ -298,7 +304,9 @@ impl Default for InspectorFormState {
             api_token_scope_buf: String::new(),
             api_token_role_buf: "viewer".into(),
             api_token_expiry_buf: 720,
+            api_token_client_buf: String::new(),
             generated_api_token: None,
+            generated_api_token_client: None,
             api_tokens: Vec::new(),
             api_tokens_loading: false,
             api_tokens_page: 0,
