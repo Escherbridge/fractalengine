@@ -125,6 +125,18 @@ REST summary (e96fa75, 195f5cc, 118e666). Open: determinism test (un-ticked
 2026-10-10); retro/in-app. Gap: `SculptDeleteRegion` has a handler but **no UI
 producer**, so a region cannot be deleted from the app (SB-EARTHWORK-DELETE).
 
+### [ ] terrain_proposal_delta_viz — visible cut/fill delta + selected-volume report
+
+_Link: [./tracks/terrain_proposal_delta_viz_20261025/](./tracks/terrain_proposal_delta_viz_20261025/) · pending · 0 done / 14 open · created 2026-10-25 from in-app F5_
+
+Proposals persist but show no visible delta. Root causes: the ghost is a perimeter-only flat
+lid (`terrain_proposal.rs:258`), there is no pre-commit preview path (rebuild-on-revision only),
+baked regions have no before/after comparison, and the report uses area×delta. P1: lattice
+ghost + civil red/blue cut/fill heatmap vs the pristine height field, live before commit.
+P2: selected-volume report (true cut/fill/net, per-item, contained nodes, TSV copy).
+P3: cross-sections (deferable). P4: utility takeoff (future). 12 open decisions (OD-1..12)
+default to recommendations. Partitions `planned` @951adb2.
+
 ### [~] contextual_controls — object-aware right-click menu with real Delete
 
 _Link: [./tracks/contextual_controls_20260725/](./tracks/contextual_controls_20260725/) · implemented_pending_inapp_verify · 8 done / 1 open_
