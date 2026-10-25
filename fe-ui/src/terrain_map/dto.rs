@@ -22,6 +22,9 @@ pub struct InstalledTilesetDto {
     pub size_bytes: u64,
     pub seeding_enabled: bool,
     pub installed_at: String,
+    /// The sealed archive's publisher `did:key` (`None` = unsealed); "Set
+    /// petal map" authors it as the petal's RP-4b publisher pin.
+    pub publisher_did: Option<String>,
 }
 
 /// A tileset advertised by a peer but not yet installed locally.

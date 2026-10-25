@@ -113,6 +113,16 @@ encoding reachable, `TilesetInfo` gained an additive, serde-defaulted
 `elevation_encoding: Option<ElevationEncoding>` field populated from the
 registry's in-memory sources cache.
 
+**Publisher pin (RP-4b).** `TerrainConfig::tileset_publisher_dids` maps a
+bound tileset id to the Ed25519 `did:key` its streamed header must be signed
+by — the petal-authored link of the host's pin chain (installed >
+petal-authored > TOFU; `fractalengine/src/AGENTS.md` §tileset-p2p "Publisher
+pin chain"). `validate_publisher_pins` refuses a pin for an unbound tileset
+or one without the `did:key:z6Mk…` grammar, and
+`terrain_config_from_petal_json` returns `None` for such a config (strictest
+reader — never a silent drop). fe-terrain has no fe-identity dependency, so
+this is grammar only; the DB and API writers also decode the key.
+
 ## §terrain_plugin
 
 Bevy plugin for terrain chunks, GPX tracks, waypoints, GeoJSON overlays, and

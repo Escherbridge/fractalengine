@@ -895,3 +895,33 @@ that closes the loop, because it is the one place that both receives those
   `chunk_not_in_the_signed_index_never_reaches_install`,
   `a_header_signed_by_a_publisher_other_than_the_pinned_one_is_refused`,
   `first_contact_tofu_pins_the_publisher_then_refuses_an_impostor`.
+
+### Publisher pin chain (role propagation RP-4b, 2026-10-24)
+
+Both meta-verification arms of `drive_streamed_tilesets` (install flow and
+streamed path) resolve the pin a sealed header must be signed by through
+`resolve_publisher_pin`: **installed > petal-authored > TOFU** (AC-47; the
+install flow then falls back to the ad hint). The petal-authored pin is
+`TerrainConfig::tileset_publisher_dids[tileset_id]`, read from
+`ActivePetalTerrain` — trustworthy only because `SetPetalTerrain` is
+Editor+-gated (RP-4) and every writer validates its `did:key` grammar
+(fe-database `is_valid_inbound_petal_terrain`, fe-api
+`validate_publisher_pins`, fe-terrain `terrain_config_from_petal_json`).
+
+- **Recording** (`record_publisher_pin`): a header verified under a
+  petal-authored pin REPLACES a recorded TOFU pin; every other source only
+  fills an empty `KnownTilesetPublishers` slot, so TOFU never overrides.
+- **First contact on the streamed path** (AC-31 default): with no pin at
+  all, the verified header's publisher becomes the TOFU pin
+  (`verify_streamed_meta` verifies the header first so a container's
+  publisher is known). Reversal: delete the write in the verdict drain.
+- **Apply-time recheck** (`streamed_verdict_still_trusted`, T25): a verdict
+  computed off-thread before a competing first-contact pin or a newly
+  authored petal pin landed is refused at apply time, never added.
+- **GUI authoring**: "Set petal map" on a sealed installed tileset writes its
+  publisher (`InstalledTilesetDto::publisher_did`, read in
+  `refresh_installed_dialog`) into the terrain JSON.
+- **Tests**: `a_streamed_tileset_signed_by_a_publisher_other_than_the_petal_maps_pin_is_refused`,
+  `a_second_streamed_publisher_for_the_same_id_is_refused_in_session`,
+  `a_petal_authored_pin_overrides_an_earlier_first_contact_tofu_pin`,
+  `the_publisher_pin_chain_prefers_installed_then_petal_then_tofu`.

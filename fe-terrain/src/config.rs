@@ -1,6 +1,7 @@
 use crate::projection::Projection;
 use crate::terrain_proposal::TerrainProposal;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Elevation data source kind.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -78,6 +79,25 @@ pub struct TerrainConfig {
     /// omits the key. See `src/AGENTS.md` §terrain-proposals.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub proposals: Vec<TerrainProposal>,
+    /// RP-4b petal-authored publisher pin: tileset id → the `did:key` its
+    /// streamed header must be signed by (installed > petal-authored > TOFU).
+    /// See `src/AGENTS.md` §petal_binding "Publisher pin".
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tileset_publisher_dids: BTreeMap<String, String>,
+}
+
+/// Length of an Ed25519 `did:key` (`did:key:z6Mk` + 44 more base58btc chars).
+const ED25519_DID_KEY_LEN: usize = 56;
+
+/// Whether `did` has the Ed25519 `did:key` grammar (`did:key:z6Mk…`,
+/// base58btc, 56 chars). Grammar only — the DB writer also decodes the key.
+pub fn is_ed25519_did_key_grammar(did: &str) -> bool {
+    const BASE58_ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    did.len() == ED25519_DID_KEY_LEN
+        && did.starts_with("did:key:z6Mk")
+        && did["did:key:z".len()..]
+            .bytes()
+            .all(|b| BASE58_ALPHABET.contains(&b))
 }
 
 impl TerrainConfig {
@@ -85,6 +105,31 @@ impl TerrainConfig {
     /// `1.0` on bad JSON, clamps into `scale_bounds` when present.
     pub fn effective_world_scale(&self) -> f64 {
         crate::scale::clamp_world_scale_to_bounds(self.world_scale, self.scale_bounds)
+    }
+
+    /// RP-4b strictest reader: every publisher pin names a tileset this
+    /// config binds and is an Ed25519 `did:key`; `Err` names the first bad pin.
+    pub fn validate_publisher_pins(&self) -> Result<(), String> {
+        for (tileset_id, did) in &self.tileset_publisher_dids {
+            if !self.tileset_hexon_uris.iter().any(|uri| uri == tileset_id) {
+                return Err(format!(
+                    "publisher pin for {tileset_id:?} names a tileset the petal does not bind"
+                ));
+            }
+            if !is_ed25519_did_key_grammar(did) {
+                return Err(format!(
+                    "publisher pin for {tileset_id:?} is not an Ed25519 did:key"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The petal-authored publisher pin for `tileset_id`, when one is set.
+    pub fn publisher_pin(&self, tileset_id: &str) -> Option<&str> {
+        self.tileset_publisher_dids
+            .get(tileset_id)
+            .map(String::as_str)
     }
 }
 
@@ -121,6 +166,7 @@ impl Default for TerrainConfig {
             world_scale: default_world_scale(),
             scale_bounds: None,
             proposals: vec![],
+            tileset_publisher_dids: BTreeMap::new(),
         }
     }
 }
@@ -200,6 +246,50 @@ mod tests {
         assert_eq!(value["proposals"][0]["op"], serde_json::json!("flatten"));
         let parsed: TerrainConfig = serde_json::from_value(value).unwrap();
         assert_eq!(parsed.proposals, cfg.proposals);
+    }
+
+    /// RP-4b: a publisher pin must bind a tileset the config names and carry
+    /// the Ed25519 did:key grammar; anything else is refused, never ignored.
+    #[test]
+    fn publisher_pins_are_validated_against_bound_tilesets_and_did_key_grammar() {
+        let real_did = fe_format::verifying_key_to_did(
+            &ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]).verifying_key(),
+        );
+        let config = |pins: &[(&str, &str)]| TerrainConfig {
+            tileset_hexon_uris: vec!["ts-a".into()],
+            tileset_publisher_dids: pins
+                .iter()
+                .map(|(id, did)| (id.to_string(), did.to_string()))
+                .collect(),
+            ..TerrainConfig::default()
+        };
+        let truncated = &real_did[..real_did.len() - 1];
+        let non_base58 = format!("{}0", &real_did[..real_did.len() - 1]);
+        for (pins, ok) in [
+            (vec![], true),
+            (vec![("ts-a", real_did.as_str())], true),
+            (vec![("ts-b", real_did.as_str())], false),
+            (vec![("ts-a", "did:key:not-a-key")], false),
+            (vec![("ts-a", truncated)], false),
+            (vec![("ts-a", non_base58.as_str())], false),
+            (vec![("ts-a", "did:web:example.com")], false),
+        ] {
+            assert_eq!(
+                config(&pins).validate_publisher_pins().is_ok(),
+                ok,
+                "{pins:?}"
+            );
+        }
+
+        // The pin round-trips through the petal JSON and is omitted when empty.
+        let pinned = config(&[("ts-a", real_did.as_str())]);
+        let value = serde_json::to_value(&pinned).unwrap();
+        let parsed: TerrainConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.publisher_pin("ts-a"), Some(real_did.as_str()));
+        assert!(serde_json::to_value(TerrainConfig::default())
+            .unwrap()
+            .get("tileset_publisher_dids")
+            .is_none());
     }
 
     #[test]

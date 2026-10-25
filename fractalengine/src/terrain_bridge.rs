@@ -232,6 +232,9 @@ fn refresh_installed_dialog(reg: &TilesetRegistry, ui_mgr: &mut UiManager) {
             .list_installed()
             .into_iter()
             .map(|t| InstalledTilesetDto {
+                // RP-4b: the sealed publisher "Set petal map" authors as the pin
+                // (a header-only read, on the same dialog-op path as list_installed).
+                publisher_did: store.installed_publisher(&t.hexon_id),
                 hexon_id: t.hexon_id,
                 region_name: t.region_name,
                 bounds: t.bounds,
@@ -910,7 +913,8 @@ pub struct StreamedTilesetState {
 }
 
 /// PAS-P5 S7a: this node's TOFU-known publisher DID per `tileset_id`, learned
-/// the first time an install-flow header verifies. In-memory only (does not
+/// the first time an install-flow OR streamed header verifies (RP-4b), and
+/// replaced by a petal-authored pin once one verifies. In-memory only (does not
 /// survive a process restart — the campaign's own flow test only requires
 /// that an UNCONFIRMED download never fetches a chunk across a restart, not
 /// that a pin itself persists; a later slice could persist it if a real gap
@@ -921,6 +925,117 @@ pub struct KnownTilesetPublishers(HashMap<String, String>);
 /// Most tileset ids this node ever pins a publisher for (ad-storm bound,
 /// mirrors [`MAX_ADVERTISED_TILESETS`]).
 pub const MAX_KNOWN_PUBLISHERS: usize = 4096;
+
+/// Which link of the RP-4b pin chain (installed > petal-authored > TOFU)
+/// supplied the pin a header was verified against. See `src/AGENTS.md`
+/// §tileset-p2p "Publisher pin chain".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PinSource {
+    /// The locally installed sealed archive's publisher.
+    Installed,
+    /// The Editor-authored `TerrainConfig::tileset_publisher_dids` entry.
+    PetalAuthored,
+    /// This node's recorded first-contact pin ([`KnownTilesetPublishers`]).
+    Tofu,
+    /// No pin at all: the header that verifies becomes the TOFU pin.
+    FirstContact,
+}
+
+/// RP-4b pin chain: installed > petal-authored > TOFU (AC-47 precedence).
+fn resolve_publisher_pin(
+    installed: Option<String>,
+    petal_authored: Option<String>,
+    tofu: Option<String>,
+) -> (Option<String>, PinSource) {
+    if let Some(pin) = installed {
+        return (Some(pin), PinSource::Installed);
+    }
+    if let Some(pin) = petal_authored {
+        return (Some(pin), PinSource::PetalAuthored);
+    }
+    match tofu {
+        Some(pin) => (Some(pin), PinSource::Tofu),
+        None => (None, PinSource::FirstContact),
+    }
+}
+
+/// Record a verified publisher: a petal-authored pin REPLACES a recorded
+/// TOFU pin; every other source only fills an empty slot (TOFU never
+/// overrides — AC-47). Bounded by [`MAX_KNOWN_PUBLISHERS`].
+fn record_publisher_pin(
+    known: &mut KnownTilesetPublishers,
+    tileset_id: &str,
+    publisher_did: String,
+    source: PinSource,
+) {
+    if known.0.len() >= MAX_KNOWN_PUBLISHERS && !known.0.contains_key(tileset_id) {
+        return;
+    }
+    match source {
+        PinSource::PetalAuthored => {
+            known.0.insert(tileset_id.to_string(), publisher_did);
+        }
+        PinSource::Installed | PinSource::Tofu | PinSource::FirstContact => {
+            known
+                .0
+                .entry(tileset_id.to_string())
+                .or_insert(publisher_did);
+        }
+    }
+}
+
+/// Apply-time re-check of an off-thread streamed verdict (T25): the pin
+/// chain may have moved while it verified — a first-contact race lost to
+/// another publisher, or a petal pin authored meanwhile. `publisher` is
+/// `None` for a legacy unsealed index, which no pin ever admits.
+fn streamed_verdict_still_trusted(
+    source: PinSource,
+    publisher: Option<&str>,
+    petal_pin: Option<&str>,
+    known_pin: Option<&str>,
+) -> bool {
+    if source == PinSource::Installed {
+        return true;
+    }
+    match petal_pin.or(known_pin) {
+        Some(pin) => publisher == Some(pin),
+        None => true,
+    }
+}
+
+/// One streamed meta reply verified under `pin` (worker thread): the source
+/// plus the verified sealed publisher (`None` for a legacy unsealed index),
+/// which the main thread records as the pin. The header is verified first
+/// so the publisher is known even for a container (whose source keeps none).
+fn verify_streamed_meta(
+    tileset_id: &str,
+    meta_json: &str,
+    pin: Option<&str>,
+) -> Result<(StreamedTileSource, Option<String>), String> {
+    if let Ok(doc) = serde_json::from_str::<fe_format::HeaderDoc>(meta_json) {
+        let header = fe_hexon::partial::verify_fetched_header(tileset_id, doc.clone(), pin)
+            .map_err(|e| format!("the streamed tileset's signed header does not verify: {e}"))?;
+        let publisher_did = header.publisher_did().to_string();
+        let source =
+            StreamedTileSource::from_header_doc(tileset_id.to_string(), &doc, Some(&publisher_did))
+                .map_err(|e| e.to_string())?;
+        return Ok((source, (!publisher_did.is_empty()).then_some(publisher_did)));
+    }
+    StreamedTileSource::from_meta_json(tileset_id.to_string(), meta_json, pin)
+        .map(|source| (source, None))
+        .map_err(|e| e.to_string())
+}
+
+/// The active petal's authored publisher pin for `tileset_id`, if any.
+fn petal_publisher_pin(
+    active: Option<&fe_terrain::petal_binding::ActivePetalTerrain>,
+    tileset_id: &str,
+) -> Option<String> {
+    active
+        .and_then(|a| a.config.as_ref())
+        .and_then(|c| c.publisher_pin(tileset_id))
+        .map(str::to_string)
+}
 
 /// PAS-P5 S7a two-phase download gate, pure core: decide whether an
 /// install-flow `TilesetMetaReceived` reply may proceed to a chunk fetch.
@@ -993,6 +1108,8 @@ fn verify_install_meta(
 struct InstallMetaVerdict {
     tileset_id: String,
     outcome: Result<String, String>,
+    /// Which pin-chain link the header was verified against.
+    pin_source: PinSource,
 }
 
 /// Install-flow header verdicts from worker threads, applied by
@@ -1018,7 +1135,10 @@ impl Default for InstallMetaVerdicts {
 /// send — it just resolves or backs off). See `src/AGENTS.md` §tileset-p2p.
 struct StreamedMetaVerdict {
     tileset_id: String,
-    outcome: Result<StreamedTileSource, String>,
+    /// The built source and its verified sealed publisher (RP-4b TOFU input).
+    outcome: Result<(StreamedTileSource, Option<String>), String>,
+    /// Which pin-chain link the header was verified against.
+    pin_source: PinSource,
 }
 
 /// Streamed-path meta verdicts from worker threads, applied by
@@ -1083,22 +1203,19 @@ fn send_cancel(sender: &fe_sync::SyncCommandSender, tileset_id: &str) {
     }
 }
 
-/// Main-thread half: a verified publisher becomes this node's TOFU pin (never
-/// overwriting one); a refusal is shown on the download's tracker.
+/// Main-thread half: a verified publisher becomes this node's pin (a TOFU
+/// pin never overwrites one; a petal-authored pin replaces a TOFU pin —
+/// [`record_publisher_pin`]); a refusal is shown on the download's tracker.
 fn record_install_verdict(
     known: &mut KnownTilesetPublishers,
     downloads: Option<&mut TilesetDownloads>,
     tileset_id: &str,
     outcome: Result<String, String>,
+    pin_source: PinSource,
 ) {
     match outcome {
         Ok(publisher_did) => {
-            if known.0.len() < MAX_KNOWN_PUBLISHERS {
-                known
-                    .0
-                    .entry(tileset_id.to_string())
-                    .or_insert(publisher_did);
-            }
+            record_publisher_pin(known, tileset_id, publisher_did, pin_source);
         }
         Err(reason) => {
             if let Some(dl) = downloads.and_then(|d| d.0.get_mut(tileset_id)) {
@@ -1119,7 +1236,8 @@ fn verify_install_meta_and_confirm(
     ad_publisher_did: &str,
     resolved_chunk_hashes: Vec<[u8; 32]>,
 ) {
-    let pin = installed_pin.or_else(|| known.0.get(&tileset_id).cloned());
+    let (pin, pin_source) =
+        resolve_publisher_pin(installed_pin, None, known.0.get(&tileset_id).cloned());
     let outcome = verify_install_meta_and_send(
         &sender.0,
         &tileset_id,
@@ -1128,7 +1246,7 @@ fn verify_install_meta_and_confirm(
         pin.as_deref(),
         resolved_chunk_hashes,
     );
-    record_install_verdict(known, None, &tileset_id, outcome);
+    record_install_verdict(known, None, &tileset_id, outcome, pin_source);
 }
 
 /// Shortest wait before a failed streamed bundle is requested again.
@@ -1272,6 +1390,7 @@ pub fn drive_streamed_tilesets(
     mut downloads: Option<ResMut<TilesetDownloads>>,
     verdicts: Option<Res<InstallMetaVerdicts>>,
     streamed_verdicts: Option<Res<StreamedMetaVerdicts>>,
+    active_terrain: Option<Res<fe_terrain::petal_binding::ActivePetalTerrain>>,
 ) {
     if let Some(verdicts) = verdicts.as_ref() {
         while let Ok(verdict) = verdicts.rx.try_recv() {
@@ -1280,6 +1399,7 @@ pub fn drive_streamed_tilesets(
                 downloads.as_deref_mut(),
                 &verdict.tileset_id,
                 verdict.outcome,
+                verdict.pin_source,
             );
         }
     }
@@ -1289,8 +1409,39 @@ pub fn drive_streamed_tilesets(
     if let Some(streamed_verdicts) = streamed_verdicts.as_ref() {
         while let Ok(verdict) = streamed_verdicts.rx.try_recv() {
             state.meta_verifying.remove(&verdict.tileset_id);
-            match verdict.outcome {
-                Ok(source) => {
+            // RP-4b T25: re-check the pin chain at apply time — a verdict
+            // computed before a competing first-contact pin (or a newly
+            // authored petal pin) landed is refused, never applied.
+            let outcome = verdict.outcome.and_then(|(source, publisher)| {
+                let petal_pin = petal_publisher_pin(active_terrain.as_deref(), &verdict.tileset_id);
+                let known_pin = known_publishers.0.get(&verdict.tileset_id).cloned();
+                if streamed_verdict_still_trusted(
+                    verdict.pin_source,
+                    publisher.as_deref(),
+                    petal_pin.as_deref(),
+                    known_pin.as_deref(),
+                ) {
+                    Ok((source, publisher))
+                } else {
+                    Err(format!(
+                        "header publisher {publisher:?} is not the pinned publisher \
+                         (petal pin {petal_pin:?}, recorded pin {known_pin:?})"
+                    ))
+                }
+            });
+            match outcome {
+                Ok((source, publisher)) => {
+                    // RP-4b step 3: the streamed path records its first-contact
+                    // pin too (symmetric with the install flow); a petal-authored
+                    // pin replaces a recorded TOFU pin.
+                    if let Some(publisher_did) = publisher {
+                        record_publisher_pin(
+                            &mut known_publishers,
+                            &verdict.tileset_id,
+                            publisher_did,
+                            verdict.pin_source,
+                        );
+                    }
                     state.meta_backoff.remove(&verdict.tileset_id);
                     // Re-check "still wanted" at apply time: the petal may
                     // have changed while verification ran off-thread.
@@ -1372,20 +1523,25 @@ pub fn drive_streamed_tilesets(
                         let verdict_tx = verdicts.tx.clone();
                         let registry = tileset_registry.as_ref().map(|r| Arc::clone(&r.0));
                         let known_pin = known_publishers.0.get(&tileset_id).cloned();
+                        let petal_pin =
+                            petal_publisher_pin(active_terrain.as_deref(), &tileset_id);
                         // Off the main thread: the installed pin opens the
                         // store's archive and the header check hashes every
                         // header member.
                         std::thread::spawn(move || {
+                            // Pin precedence (S8 + RP-4b): installed, then
+                            // petal-authored, then TOFU, then the ad hint.
+                            let (pin, pin_source) = resolve_publisher_pin(
+                                registry.and_then(|r| r.store().installed_publisher(&tileset_id)),
+                                petal_pin,
+                                known_pin,
+                            );
                             let outcome = match chunk_hashes
                                 .iter()
                                 .map(|h| fe_runtime::blob_store::hash_from_hex(h))
                                 .collect::<anyhow::Result<Vec<_>>>()
                             {
                                 Ok(resolved_chunk_hashes) => {
-                                    // Pin precedence (S8): installed, then TOFU, then the ad hint.
-                                    let pin = registry
-                                        .and_then(|r| r.store().installed_publisher(&tileset_id))
-                                        .or(known_pin);
                                     verify_install_meta_and_send(
                                         &sender,
                                         &tileset_id,
@@ -1404,6 +1560,7 @@ pub fn drive_streamed_tilesets(
                                 .send(InstallMetaVerdict {
                                     tileset_id,
                                     outcome,
+                                    pin_source,
                                 })
                                 .is_err()
                             {
@@ -1443,32 +1600,33 @@ pub fn drive_streamed_tilesets(
                         );
                         continue;
                     };
-                    // Pin precedence (S8, mirrors the install-flow arm
-                    // above): installed, then TOFU. A streamed source is
-                    // never itself the TOFU source of truth for this
-                    // tileset_id — only an install-flow verdict records one.
+                    // Pin precedence (S8 + RP-4b, mirrors the install-flow
+                    // arm above): installed, then petal-authored, then TOFU.
+                    // With no pin at all, the verified header becomes this
+                    // node's first-contact TOFU pin when its verdict applies.
                     // The installed pin opens (and hashes) the store's
                     // archive, so it is resolved on the worker thread too.
                     let registry = tileset_registry.as_ref().map(|r| Arc::clone(&r.0));
                     let known_pin = known_publishers.0.get(&tileset_id).cloned();
+                    let petal_pin = petal_publisher_pin(active_terrain.as_deref(), &tileset_id);
                     state
                         .meta_verifying
                         .insert(tileset_id.clone(), std::time::Instant::now());
                     let tileset_id_for_thread = tileset_id.clone();
                     std::thread::spawn(move || {
-                        let pin = registry
-                            .and_then(|r| r.store().installed_publisher(&tileset_id_for_thread))
-                            .or(known_pin);
-                        let outcome = StreamedTileSource::from_meta_json(
-                            tileset_id_for_thread.clone(),
-                            &meta_json,
-                            pin.as_deref(),
-                        )
-                        .map_err(|e| e.to_string());
+                        let (pin, pin_source) = resolve_publisher_pin(
+                            registry
+                                .and_then(|r| r.store().installed_publisher(&tileset_id_for_thread)),
+                            petal_pin,
+                            known_pin,
+                        );
+                        let outcome =
+                            verify_streamed_meta(&tileset_id_for_thread, &meta_json, pin.as_deref());
                         if verdict_tx
                             .send(StreamedMetaVerdict {
                                 tileset_id: tileset_id_for_thread,
                                 outcome,
+                                pin_source,
                             })
                             .is_err()
                         {
@@ -3554,6 +3712,219 @@ mod tests {
             "an unsealed reply must never resolve into a streamed source once a \
              sealed publisher pin is known"
         );
+    }
+
+    /// RP-4b: the active petal's authored pin for `tileset_id`.
+    fn petal_pinning(
+        tileset_id: &str,
+        publisher_did: &str,
+    ) -> fe_terrain::petal_binding::ActivePetalTerrain {
+        fe_terrain::petal_binding::ActivePetalTerrain {
+            petal_id: Some("petal-pinned".into()),
+            config: Some(fe_terrain::config::TerrainConfig {
+                enabled: true,
+                tileset_hexon_uris: vec![tileset_id.to_string()],
+                tileset_publisher_dids: [(tileset_id.to_string(), publisher_did.to_string())]
+                    .into(),
+                ..Default::default()
+            }),
+            revision: 1,
+        }
+    }
+
+    /// Re-mark `tileset_id` pending, as a petal re-assignment does.
+    fn re_pend(app: &mut App, tileset_id: &str) {
+        let mut composite = fe_terrain::tiles::CompositeTileSource::new();
+        composite.mark_streamed_pending(tileset_id);
+        app.world_mut().resource_mut::<ActiveTileSource>().composite = Some(composite);
+    }
+
+    /// RP-4b (critic tick 5 acceptance test, T24): a never-installed tileset
+    /// streamed for a petal whose Editor-authored terrain pins publisher A
+    /// refuses a validly-signed header from publisher B — with nothing
+    /// installed and no TOFU entry — and resolves A's own header.
+    #[test]
+    fn a_streamed_tileset_signed_by_a_publisher_other_than_the_petal_maps_pin_is_refused() {
+        let owner = ed25519_dalek::SigningKey::from_bytes(&[91u8; 32]);
+        let impostor = ed25519_dalek::SigningKey::from_bytes(&[92u8; 32]);
+        let owner_did = fe_format::verifying_key_to_did(&owner.verifying_key());
+        let tileset_id = "rp4b-petal-pinned";
+
+        let run = |key: &ed25519_dalek::SigningKey| {
+            let mut composite = fe_terrain::tiles::CompositeTileSource::new();
+            composite.mark_streamed_pending(tileset_id);
+            let (mut app, cmd_rx) = streamed_app(Some(composite));
+            app.insert_resource(petal_pinning(tileset_id, &owner_did));
+            let still_pending = drive_one_streamed_meta_reply(
+                &mut app,
+                &cmd_rx,
+                tileset_id,
+                sealed_monolithic_header_json(key, tileset_id),
+            );
+            let recorded = app
+                .world()
+                .resource::<KnownTilesetPublishers>()
+                .0
+                .get(tileset_id)
+                .cloned();
+            (still_pending, recorded)
+        };
+        let (impostor_pending, impostor_recorded) = run(&impostor);
+        assert!(
+            impostor_pending,
+            "a header from a publisher other than the petal's pin must never resolve"
+        );
+        assert_eq!(impostor_recorded, None, "a refused header pins nothing");
+        let (owner_pending, owner_recorded) = run(&owner);
+        assert!(!owner_pending, "the petal-pinned publisher's header resolves");
+        assert_eq!(owner_recorded, Some(owner_did.clone()));
+    }
+
+    /// RP-4b step 3 (T25): with nothing installed or authored, the first
+    /// streamed header that verifies becomes this node's first-contact TOFU
+    /// pin, so a later header for the same id from a different publisher in
+    /// the same session is refused.
+    #[test]
+    fn a_second_streamed_publisher_for_the_same_id_is_refused_in_session() {
+        let first = ed25519_dalek::SigningKey::from_bytes(&[93u8; 32]);
+        let second = ed25519_dalek::SigningKey::from_bytes(&[94u8; 32]);
+        let first_did = fe_format::verifying_key_to_did(&first.verifying_key());
+        let tileset_id = "rp4b-first-contact";
+
+        let mut composite = fe_terrain::tiles::CompositeTileSource::new();
+        composite.mark_streamed_pending(tileset_id);
+        let (mut app, cmd_rx) = streamed_app(Some(composite));
+        assert!(
+            !drive_one_streamed_meta_reply(
+                &mut app,
+                &cmd_rx,
+                tileset_id,
+                sealed_monolithic_header_json(&first, tileset_id),
+            ),
+            "first contact resolves"
+        );
+        assert_eq!(
+            app.world()
+                .resource::<KnownTilesetPublishers>()
+                .0
+                .get(tileset_id),
+            Some(&first_did),
+            "the streamed path records its first-contact pin"
+        );
+
+        re_pend(&mut app, tileset_id);
+        assert!(
+            drive_one_streamed_meta_reply(
+                &mut app,
+                &cmd_rx,
+                tileset_id,
+                sealed_monolithic_header_json(&second, tileset_id),
+            ),
+            "a second publisher's header for the same id must be refused"
+        );
+        assert_eq!(
+            app.world()
+                .resource::<KnownTilesetPublishers>()
+                .0
+                .get(tileset_id),
+            Some(&first_did),
+            "a refused header never moves the pin"
+        );
+    }
+
+    /// RP-4b (AC-47 precedence): a petal-authored pin REPLACES an earlier
+    /// first-contact TOFU pin — the petal's publisher resolves even though
+    /// TOFU recorded someone else — and the old TOFU publisher can no longer
+    /// override it.
+    #[test]
+    fn a_petal_authored_pin_overrides_an_earlier_first_contact_tofu_pin() {
+        let tofu = ed25519_dalek::SigningKey::from_bytes(&[95u8; 32]);
+        let authored = ed25519_dalek::SigningKey::from_bytes(&[96u8; 32]);
+        let authored_did = fe_format::verifying_key_to_did(&authored.verifying_key());
+        let tileset_id = "rp4b-precedence";
+
+        let mut composite = fe_terrain::tiles::CompositeTileSource::new();
+        composite.mark_streamed_pending(tileset_id);
+        let (mut app, cmd_rx) = streamed_app(Some(composite));
+        assert!(
+            !drive_one_streamed_meta_reply(
+                &mut app,
+                &cmd_rx,
+                tileset_id,
+                sealed_monolithic_header_json(&tofu, tileset_id),
+            ),
+            "first contact resolves and records a TOFU pin"
+        );
+
+        // An Editor now authors the petal's pin for a different publisher.
+        app.insert_resource(petal_pinning(tileset_id, &authored_did));
+        re_pend(&mut app, tileset_id);
+        assert!(
+            !drive_one_streamed_meta_reply(
+                &mut app,
+                &cmd_rx,
+                tileset_id,
+                sealed_monolithic_header_json(&authored, tileset_id),
+            ),
+            "the petal-authored publisher resolves over the earlier TOFU pin"
+        );
+        assert_eq!(
+            app.world()
+                .resource::<KnownTilesetPublishers>()
+                .0
+                .get(tileset_id),
+            Some(&authored_did),
+            "the petal-authored pin replaced the recorded TOFU pin"
+        );
+
+        re_pend(&mut app, tileset_id);
+        assert!(
+            drive_one_streamed_meta_reply(
+                &mut app,
+                &cmd_rx,
+                tileset_id,
+                sealed_monolithic_header_json(&tofu, tileset_id),
+            ),
+            "the old TOFU publisher never overrides the petal-authored pin"
+        );
+    }
+
+    /// RP-4b pin chain + apply-time recheck, pure (real branching): the
+    /// precedence table and the T25 race guard.
+    #[test]
+    fn the_publisher_pin_chain_prefers_installed_then_petal_then_tofu() {
+        let s = |v: &str| Some(v.to_string());
+        assert_eq!(
+            resolve_publisher_pin(s("i"), s("p"), s("t")),
+            (s("i"), PinSource::Installed)
+        );
+        assert_eq!(
+            resolve_publisher_pin(None, s("p"), s("t")),
+            (s("p"), PinSource::PetalAuthored)
+        );
+        assert_eq!(
+            resolve_publisher_pin(None, None, s("t")),
+            (s("t"), PinSource::Tofu)
+        );
+        assert_eq!(
+            resolve_publisher_pin(None, None, None),
+            (None, PinSource::FirstContact)
+        );
+
+        for (source, publisher, petal, known, trusted) in [
+            (PinSource::Installed, Some("i"), Some("p"), Some("t"), true),
+            (PinSource::FirstContact, Some("b"), None, Some("a"), false),
+            (PinSource::FirstContact, Some("a"), None, None, true),
+            (PinSource::Tofu, Some("t"), Some("p"), Some("t"), false),
+            (PinSource::PetalAuthored, Some("p"), Some("p"), Some("t"), true),
+            (PinSource::FirstContact, None, None, Some("a"), false),
+        ] {
+            assert_eq!(
+                streamed_verdict_still_trusted(source, publisher, petal, known),
+                trusted,
+                "{source:?} {publisher:?} petal={petal:?} known={known:?}"
+            );
+        }
     }
 
     /// Final review: an assembled + installed download settles its tracker to

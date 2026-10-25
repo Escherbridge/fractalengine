@@ -203,6 +203,7 @@ fn config_serde_roundtrip() {
         tile_source_mode: fe_terrain::config::TileSourceMode::Hybrid,
         world_scale: 0.01,
         scale_bounds: None,
+        tileset_publisher_dids: Default::default(),
     };
 
     let json = serde_json::to_string(&config).unwrap();

@@ -11,13 +11,20 @@ pub struct PetalTerrainAssignment {
     pub config: Option<TerrainConfig>,
 }
 
-/// Parse a petal record's `terrain` JSON field; returns `None` for null/missing/invalid.
+/// Parse a petal record's `terrain` JSON field; returns `None` for null/missing/invalid
+/// (including a malformed RP-4b publisher pin — strictest reader, never a silent drop).
 pub fn terrain_config_from_petal_json(value: &serde_json::Value) -> Option<TerrainConfig> {
     if value.is_null() {
         return None;
     }
     match serde_json::from_value::<TerrainConfig>(value.clone()) {
-        Ok(cfg) => Some(cfg),
+        Ok(cfg) => match cfg.validate_publisher_pins() {
+            Ok(()) => Some(cfg),
+            Err(err) => {
+                tracing::warn!(error = %err, "petal terrain carries a malformed publisher pin; ignoring");
+                None
+            }
+        },
         Err(err) => {
             tracing::warn!(error = %err, "invalid petal terrain JSON; ignoring");
             None
@@ -393,6 +400,20 @@ mod tests {
         assert!(parsed.enabled);
         assert_eq!(parsed.min_zoom, 8);
         assert_eq!(parsed.max_zoom, cfg.max_zoom);
+    }
+
+    /// RP-4b: the runtime reader refuses a malformed publisher pin outright
+    /// (the second line of defence behind the DB's inbound check).
+    #[test]
+    fn terrain_config_with_a_malformed_publisher_pin_is_none() {
+        let mut value = serde_json::to_value(TerrainConfig {
+            enabled: true,
+            tileset_hexon_uris: vec!["ts-1".into()],
+            ..TerrainConfig::default()
+        })
+        .unwrap();
+        value["tileset_publisher_dids"] = serde_json::json!({ "ts-1": "did:key:zNotAKey" });
+        assert!(terrain_config_from_petal_json(&value).is_none());
     }
 
     #[test]

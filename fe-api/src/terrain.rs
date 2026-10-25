@@ -197,6 +197,18 @@ impl IntoResponse for TerrainWriteError {
     }
 }
 
+/// RP-4b publisher pins (DEC-C22 strictest reader): fe-terrain's grammar +
+/// bound-tileset check, then a real did:key decode — the DB writer's rule.
+fn validate_publisher_pins(config: &TerrainConfig) -> Result<(), String> {
+    config.validate_publisher_pins()?;
+    for (tileset_id, did) in &config.tileset_publisher_dids {
+        fe_identity::did_key::public_key_from_did_key(did).map_err(|e| {
+            format!("publisher pin for {tileset_id:?} is not a valid did:key: {e}")
+        })?;
+    }
+    Ok(())
+}
+
 /// REST envelope for a terrain mutation: the stored terrain (GET's shape) or the error status.
 fn terrain_write_response(
     petal_id: &str,
@@ -234,8 +246,9 @@ pub(crate) async fn set_petal_terrain_core(
                 "terrain config must be a JSON object".to_string(),
             ));
         }
-        serde_json::from_value::<TerrainConfig>(terrain.clone())
+        let config = serde_json::from_value::<TerrainConfig>(terrain.clone())
             .map_err(|e| TerrainWriteError::InvalidConfig(e.to_string()))?;
+        validate_publisher_pins(&config).map_err(TerrainWriteError::InvalidConfig)?;
         Some(terrain.clone())
     };
 
@@ -951,8 +964,26 @@ pub async fn get_storage_info(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_assigned_tileset, tile_access_status, verify_exclusive_petal_tileset_binding};
+    use super::{
+        is_assigned_tileset, tile_access_status, validate_publisher_pins,
+        verify_exclusive_petal_tileset_binding,
+    };
     use axum::http::StatusCode;
+
+    /// RP-4b: the API door applies the same publisher-pin rule as the DB
+    /// writer — a pin must bind a listed tileset and decode as a did:key.
+    #[test]
+    fn publisher_pins_must_bind_a_listed_tileset_and_decode() {
+        let real_pin = fe_identity::NodeKeypair::generate().to_did_key();
+        let config = |tileset_id: &str, did: &str| fe_terrain::config::TerrainConfig {
+            tileset_hexon_uris: vec!["ts-a".to_string()],
+            tileset_publisher_dids: [(tileset_id.to_string(), did.to_string())].into(),
+            ..Default::default()
+        };
+        assert!(validate_publisher_pins(&config("ts-a", &real_pin)).is_ok());
+        assert!(validate_publisher_pins(&config("ts-b", &real_pin)).is_err());
+        assert!(validate_publisher_pins(&config("ts-a", "did:key:zNotAKey")).is_err());
+    }
 
     #[test]
     fn tileset_binding_is_exact() {

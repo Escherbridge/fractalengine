@@ -1557,7 +1557,37 @@ pub(crate) fn is_valid_inbound_petal_terrain(terrain: &serde_json::Value) -> boo
     let api_key_env_ok = obj
         .get("elevation_api_key_env")
         .is_none_or(serde_json::Value::is_null);
-    uris_ok && cache_dir_ok && api_key_env_ok
+    uris_ok
+        && cache_dir_ok
+        && api_key_env_ok
+        && is_valid_inbound_publisher_pins(obj.get("tileset_publisher_dids"), obj)
+}
+
+/// RP-4b: the petal-authored streamed-tileset publisher pin map
+/// (`tileset_id → did:key`). Absent is fine; present, every key must be a
+/// tileset this terrain binds and every value a decodable Ed25519 `did:key`
+/// — a malformed pin Denies the row, never silently ignored.
+fn is_valid_inbound_publisher_pins(
+    pins: Option<&serde_json::Value>,
+    terrain: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    let Some(pins) = pins else {
+        return true;
+    };
+    let Some(pins) = pins.as_object() else {
+        return false;
+    };
+    let bound: Vec<&str> = terrain
+        .get("tileset_hexon_uris")
+        .and_then(serde_json::Value::as_array)
+        .map(|uris| uris.iter().filter_map(serde_json::Value::as_str).collect())
+        .unwrap_or_default();
+    pins.iter().all(|(tileset_id, did)| {
+        bound.contains(&tileset_id.as_str())
+            && did
+                .as_str()
+                .is_some_and(|did| fe_identity::did_key::public_key_from_did_key(did).is_ok())
+    })
 }
 
 /// Render a GeoJSON `coordinates` value as an inline SurrealQL numeric
@@ -2904,6 +2934,86 @@ mod tests {
             outcome,
             ReplicatedRowOutcome::Denied,
             "no fractal_id is structural"
+        );
+    }
+
+    /// RP-4b (AC-47, T24): an inbound petal row whose terrain carries a
+    /// publisher pin that is not a decodable Ed25519 `did:key` — or that pins
+    /// a tileset the terrain does not bind — is Denied and never lands; the
+    /// same row with a real did:key pin for a bound tileset applies.
+    #[tokio::test]
+    async fn an_inbound_petal_terrain_with_a_malformed_publisher_pin_is_denied() {
+        const OWNER: &str = "did:key:owner-a";
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[]).await;
+        let real_pin = fe_identity::NodeKeypair::generate().to_did_key();
+        let petal_row = |petal_id: &str, pins: serde_json::Value| {
+            serde_json::to_vec(&serde_json::json!({
+                "petal_id": petal_id, "fractal_id": "fractal-1", "name": "Pinned",
+                "node_id": OWNER, "created_at": "2026-10-07T00:00:00Z",
+                "terrain": {
+                    "enabled": true,
+                    "origin": { "origin_lat": 0.0, "origin_lon": 0.0, "origin_ele": 0.0 },
+                    "tile_source_url": "", "elevation_source": "none",
+                    "tileset_hexon_uris": ["ts-a"],
+                    "tileset_publisher_dids": pins,
+                },
+            }))
+            .unwrap()
+        };
+        let petal_count = |petal_id: &'static str| {
+            let db = db.clone();
+            async move {
+                select_json(
+                    &db,
+                    &format!("SELECT petal_id FROM petal WHERE petal_id = '{petal_id}'"),
+                )
+                .await
+                .len()
+            }
+        };
+
+        for (petal_id, pins) in [
+            ("petal-bad-grammar", serde_json::json!({ "ts-a": "did:key:zNotAKey" })),
+            ("petal-bad-type", serde_json::json!({ "ts-a": 42 })),
+            ("petal-unbound", serde_json::json!({ "ts-other": real_pin })),
+            ("petal-not-a-map", serde_json::json!([real_pin])),
+        ] {
+            let outcome = apply_replicated_row_handler(
+                &db,
+                "v1",
+                "petal",
+                petal_id,
+                &petal_row(petal_id, pins),
+                OWNER,
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(outcome, ReplicatedRowOutcome::Denied, "{petal_id}");
+            assert_eq!(petal_count(petal_id).await, 0, "{petal_id} never lands");
+        }
+
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "petal",
+            "petal-good-pin",
+            &petal_row("petal-good-pin", serde_json::json!({ "ts-a": real_pin })),
+            OWNER,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+        let rows = select_json(
+            &db,
+            "SELECT terrain FROM petal WHERE petal_id = 'petal-good-pin'",
+        )
+        .await;
+        assert_eq!(
+            rows[0]["terrain"]["tileset_publisher_dids"]["ts-a"],
+            serde_json::json!(real_pin)
         );
     }
 

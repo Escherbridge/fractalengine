@@ -189,6 +189,14 @@ pub(crate) fn tileset_to_terrain_json(
     if let Some(bounds) = scale_bounds {
         json["scale_bounds"] = serde_json::json!(bounds);
     }
+    // RP-4b: a sealed tileset's publisher becomes the petal-authored pin
+    // (`TerrainConfig::tileset_publisher_dids`), so peers that only STREAM
+    // this map refuse a header signed by anyone else.
+    if let Some(publisher_did) = ts.publisher_did.as_deref() {
+        let mut pins = serde_json::Map::new();
+        pins.insert(ts.hexon_id.clone(), serde_json::json!(publisher_did));
+        json["tileset_publisher_dids"] = serde_json::Value::Object(pins);
+    }
     json
 }
 
@@ -207,7 +215,26 @@ mod tests {
             size_bytes: 0,
             seeding_enabled: false,
             installed_at: String::new(),
+            publisher_did: None,
         }
+    }
+
+    /// RP-4b: "Set petal map" on a sealed tileset authors its publisher as
+    /// the petal's pin; an unsealed tileset authors none.
+    #[test]
+    fn terrain_json_pins_a_sealed_tilesets_publisher() {
+        let did = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        let sealed = InstalledTilesetDto {
+            publisher_did: Some(did.to_string()),
+            ..dto()
+        };
+        assert_eq!(
+            tileset_to_terrain_json(&sealed, 1.0, None)["tileset_publisher_dids"],
+            serde_json::json!({ "ts-1": did })
+        );
+        assert!(tileset_to_terrain_json(&dto(), 1.0, None)
+            .get("tileset_publisher_dids")
+            .is_none());
     }
 
     #[test]
