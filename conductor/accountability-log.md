@@ -410,3 +410,63 @@ is prompt context only, no bypass). All three directives ACCEPTED:
 - Relaunch safety: prior run `wf_4f099aec-bc1` belonged to the dead 2026-10-15 session (cross-session TaskStop
   impossible); verified ZERO cargo/rustc processes before launch (632 total procs, no build lock). New run
   `w5-ff-remainder`: RP-4b → W5b(OF-3) → RP-5 → RP-6 → RP-7 → RP-8 → RP-10, base `4d3a1a6`, strictly sequential.
+
+### OF-5 (background security review, 2026-10-24) — RP-4b pin poisoning · FIXED in working tree
+- Automated commit review flagged `record_publisher_pin` (RP-4b): a petal-authored verification
+  wrote (and REPLACED) the node-global `KnownTilesetPublishers` TOFU entry. Keyed by tileset id
+  alone, so an Editor on petal X could poison the TOFU fallback petal Y trusts. Verified real.
+- Fix applied as WORKING-TREE edits only (no cargo, no git while `wf_ea4b9a67-685` runs — gate/lock
+  non-interference): `PinSource::PetalAuthored => {}` in the record match (petal pins are re-read
+  from `ActivePetalTerrain` per check, never recorded); doc comment + `AGENTS.md` §tileset-p2p
+  recording bullet corrected; regression test `a_petal_authored_pin_never_poisons_the_global_tofu_map`
+  added (petal write → empty map; first-contact fills; neither source overrides).
+- COMMIT GATE OWED: `cargo check -p fractalengine --tests` + commit at the workflow-completion
+  boundary (the fractalengine binary crate is not compiled by any remaining slice gate, and no
+  remaining slice owns the touched files). Refine-phase review re-verifies.
+
+### OF-6 (background security review, 2026-10-24) — RP-5 sync-plane findings · QUEUED for boundary fix slice W5s
+Five findings on RP-5's commit; both HIGHs triaged REAL by the orchestrator (read-only). NOT fixed in-tree:
+RP-6 owns and is editing sync_thread.rs/sharding.rs/distributed_query.rs right now, and every remaining slice
+gates on `cargo check -p fe-sync` — mid-run edits risk lost writes and spurious gate failures.
+- OF-6a HIGH (sync_thread.rs:845-852 + docs_engine.rs:94-100): `record_tileset_root(&incoming.verse_id, ...)`
+  is driven by incoming gossip ads and `insert` OVERWRITES the root→verse mapping. `admits_hash` gates on the
+  requester's role in the mapped verse → any peer re-advertises a victim root under their own verse, self-grants
+  Viewer, fetches protected blobs. Fix shape: record only on accepted ads; never remap an existing root to a
+  different verse (root → SET of verses, require Viewer+ in the first/authoritative verse or all).
+- OF-6b HIGH (docs_engine.rs:119-127): unknown hash → admit (fail-open), map is in-memory and root-only →
+  restart empties it, and HashSeq CHILD hashes are never tracked (direct child fetch bypasses the gate). Fix
+  shape: record roots AND children at publish/import, persist or re-derive on verse open, keep closed verses'
+  roots as DENIED instead of removing; unknown stays open ONLY for genuinely untracked (non-tileset) traffic.
+- OF-6c MED (docs_engine.rs EventMask): only `get` intercepted — intercept `get_many` too (apply admits_hash
+  per requested hash); disable or intercept push/observe.
+- OF-6d MED (sharding.rs manifest owner TOFU): owner pinned from first manifest's `created_by` without checking
+  the row's signed author == created_by → settings takeover window. Fix: pin only when self-signed; adopt no
+  settings until pinned.
+- OF-6e MED (sharding.rs viewer snapshot): verse-wide viewer_dids includes ANY scope's Viewer+ (petal-scoped
+  viewer gets verse-wide blob access). Fix: bind roots to their scope and role_at that scope, or verse-scope
+  grants only.
+**Boundary plan (at wf_ea4b9a67-685 completion, BEFORE W6):** one opus fix slice W5s fixes OF-6a..e (verifying
+each against RP-6/RP-7's final state of the files), + commits the OF-5 terrain fix already in the working tree;
+gates: `cargo check -p fe-sync -p fractalengine --tests`; separate commits (OF-5, W5s). Refine phase re-verifies.
+
+### OF-7 (background security review, 2026-10-24) — RP-6 settlement findings · QUEUED into W5s (plausible, unverified)
+Three MEDIUMs on RP-6's commit. Not triaged in depth by the orchestrator (requires reading RP-6's full
+settlement logic; W5s verifies against the files' FINAL post-RP-7 state). Same no-mid-run-edit constraint.
+- OF-7a MED (sharding.rs note_holder_row): an admitted holder is inserted and never re-checked — a later role
+  REVOCATION leaves the stale holder admitted (stale privilege), and tombstoned __holders rows may not remove
+  the DID. Fix shape: on any role-view change, re-verdict every admitted holder (demote below Editor →
+  remove + quarantine row); handle tombstones; or run the role verdict on holders in merge_partials too.
+  Cross-ref: plan threat T4 (revocation race) / T13 — RP-9's matrix claims these are covered; W5s must check
+  whether holder re-partition on authority change exists elsewhere (RP-3's promote/demote partition) before
+  concluding it is missing here.
+- OF-7b MED (ts_partial.rs deferred_rows_of_table): the deferred-shards honesty decision parses SELF-REPORTED
+  row JSON (petal_id) from the untrusted deferred queue, not the row's verified key — and is not scoped to the
+  query's verse → cross-verse confusion; a crafted deferred row could flip the honesty marker. Fix shape: pass
+  verse_id into ExecuteTsPartial, filter on the verified key, count only potentially-admissible deferrals; a
+  deferred flag must never beat the formal host's rows (drop only the covered marker).
+- OF-7c MED (distributed_query.rs merge): Unverified answerers' responses are still pushed into `usable`
+  (fail-open; they are only tallied). Fix shape: exclude Unverified rows from the aggregate/winner selection,
+  report them separately. NOTE: RP-7 is rewriting responder filtering in this file right now — W5s verifies
+  against RP-7's final state; this may already be superseded.
+**W5s scope is now OF-6a..e + OF-7a..c + the OF-5 commit.** Still one opus slice at wf_ea4b9a67-685 completion,
+gates `cargo check -p fe-sync -p fe-database -p fractalengine --tests`, before W6 launch.

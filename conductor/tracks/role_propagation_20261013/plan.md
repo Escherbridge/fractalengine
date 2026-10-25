@@ -1569,3 +1569,33 @@ Logged against `.omc/accountability/tick-20261014-0722.md` AC-24 residual (3) an
 | C21 | Bookkeeping: `metadata.json` partitions were stale at `877e801` (missing C3/C5/C8/C9/C10 files, `progress.open: 10`); spec scope/acceptance lacked C8/C9/C10 and the Deferred Parent/Manifest rules; the review ledger lacked W3b/tick 7/tick 8 rows; RUNBOOK §2 `:116` and the ledger's role_propagation row (`:83`) were stale; `accountability-log.md:268-269` mis-diagnosed the B2b DLL failure as concurrent cargo invocations (it was sequential; the real cause was resource pressure); the `seal_observations` cutover precondition was unrecorded; RP-1's tie-break uses canonical-payload-byte order (no hash dependency), and property tests stay seeded/hand-rolled unless a slice adds `fe-policy/Cargo.toml` + `Cargo.lock` for `proptest`. Docs pass (this commit). New ledger row **OBS-SEAL-FIXTURE-SEAMS**. | bookkeeping + dependency note (AC-51) |
 
 Logged against `.omc/accountability/tick-20261015-0908.md`.
+
+---
+
+## W5 fast-forward completion (2026-10-25)
+
+**Status: CODE COMPLETE** (tests deferred to refine phase per 2026-10-24 FF directive)
+
+Per-slice commit SHAs (base 4d3a1a6, strictly sequential):
+- **RP-0:** `15ae606` — oversized-window split test + typed schema rejection
+- **RP-1:** `a373ae5` — fe-policy pure role-grant model (least fixpoint, Kleene iteration)
+- **RP-2:** `6bef9e5` — local role statements, materialized cache, durable re-emit, migration
+- **RP-3:** `2a44583` — inbound role statements and deferred admission
+- **RP-4:** `4d3a1a6` — owner integrity, P2P-REF-CONFINE, three-valued confinement, scope-precise admission, API role cap
+- **RP-4b:** `1fbb4f4` — streamed-terrain publisher pin (installed > petal-authored > TOFU), first-contact TOFU, did:key pin grammar
+- **W5b (OF-3):** `80ee19e` — unify scope-chain parser (pure into fe-policy, re-exported from fe-database)
+- **RP-5:** `a240a8f` — sync-plane role view and gates
+- **RP-6:** `e8335c3` — settlement race closed: __holders, expected answerers + holder wait, deferred_shards honesty, sub-Editor answerer rejection
+- **RP-7:** `f6d0fc1` — responder filtering re-enabled, pinning test flipped
+- **RP-8:** `a3e249b` — harness end-to-end role propagation
+
+**Merged per FF directive (2026-10-24):**
+- **RP-4s, RP-9, RP-9b** merged into single fresh-context security+correctness review-and-fix over W5+W6 diff, scheduled for refine phase after code complete
+- Both reviews run AFTER all W5+W6 code is complete; test execution and all review passes deferred to final sweep
+
+**Documentation (RP-10):** AGENTS.md consolidated across root, fe-policy, fe-database, fe-sync, fe-runtime; role propagation sections document:
+- Fe-policy: §role-grants (statement model, fixpoint, subtree authority, admission, no LWW)
+- Fe-database: §rbac-policy (materialized cache), §role-propagation (statements, pending store, partition, migration)
+- Fe-sync: §role-view (authority function, re-read on empowerment), §transport-admission-control item 5 (CLOSED), holders
+- Fe-runtime: §deferred-admission (DeferralReason: Manifest, Parent, AuthorRole; durable retry for role statements)
+- Root AGENTS.md: 4-Level Hierarchy pointer to role replication per-grantor

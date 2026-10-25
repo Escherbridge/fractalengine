@@ -96,6 +96,12 @@ Only one Petal is "active" at a time (tracked by `NavigationManager::active_peta
 When the active petal changes, all entities from the old petal are despawned and entities
 belonging to the new petal are spawned — directly from the in-memory tree, no DB round-trip.
 
+**Role propagation (W5):** Access to verses, fractals, and petals is gated by RBAC. Roles
+replicate as per-grantor statements keyed on `role/{scope}/{peer_did}/{grantor_did}`,
+converging to a fixpoint independent of message order. See `fe-policy/src/AGENTS.md`
+§role-grants, `fe-database/src/AGENTS.md` §role-propagation, and `fe-sync/src/AGENTS.md`
+§role-view.
+
 ---
 
 ## The 3 Manager Pattern

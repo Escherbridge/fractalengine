@@ -9,6 +9,44 @@ Producers must not emit a node-scoped scene change when they cannot determine
 that petal. This makes deleted-node events safe to filter without a post-delete
 database lookup.
 
+## §deferred-admission (role_propagation_20261013 RP-2/RP-3, 2026-10-24)
+
+`ReplicatedRowOutcome::Deferred(reason: DeferralReason)` signals a row that
+failed only because a prerequisite has not yet converged (plan §2.4). Three
+wait reasons exist:
+
+- **`Manifest`**: The verse manifest row has not landed locally yet. All role
+  statements pre-manifest are deferred on Manifest; once the manifest lands
+  with an owner, deferred statements are re-validated fully (the owner-dependent
+  checks run for the first time). Content rows with no owner known also defer.
+- **`Parent { table, id }`**: A referenced parent row (fractal, petal, or node)
+  is unknown locally. Deferral placement is per-table: a `device_format` without
+  its parent `device_payload` defers, a `device_payload` without its parent
+  petal defers. Enrolments defer on missing petal; content rows defer on
+  missing content parents. A scope that names a fractal/petal where the
+  hierarchy does not put it is denied permanently (it can never resolve).
+- **`AuthorRole(did)`**: The author (or the grantor of a role statement) has
+  not yet reached the authority threshold the row requires. Content rows wait
+  until the author's role rises; role statements wait in a durable store
+  (`role_statement_pending`) and are re-evaluated every time any author's
+  authority changes (RP-3 partition logic).
+
+**Content row retry:** A deferred content row is held in the DB thread's
+in-memory `InboundAdmissions` queue (4096 per verse, 512 per author, drop-oldest
+on overflow). Retries run as a worklist after each apply: manifest apply retries
+`Manifest` waiters; a parent apply retries its `Parent` waiters; an authority
+change retries all `AuthorRole` waiters for that DID. A restart or overflow
+loses entries; the next open's snapshot replay re-feeds them.
+
+**Role statement retry (durable):** Role statements are never deferred in the
+in-memory queue. An inadmissible statement lands in `role_statement_pending`,
+which survives restarts and has a per-grantor budget (1024 keys per verse,
+refuse-new on overflow). Every partition (after a write, manifest, or authority
+change) promotes held statements that are now admissible and demotes admitted
+statements that are no longer admissible. This durable retry mechanism ensures
+the converged role set is a function of the set of statements received, not
+their order (plan §2.2, §2.4).
+
 ## §property-bridge (`bim_primitives_on_paths_20260712`, C5)
 
 `shared_node.rs::PropertyValue` is the Tauri↔Bevy bridge's authoritative
