@@ -554,3 +554,17 @@ gates `cargo check -p fe-sync -p fe-database -p fractalengine --tests`, before W
   as a DESIGN review — candidate model: a root's binding is fixed at first authoritative learn (own publish, own
   fetch context, or DB-admitted petal terrain), gossip never mutates an existing binding — rather than patching
   admit logic a third time. Worklist: OF-8a HIGH, OF-8b, OF-9 HIGH, OF-4 verify, merged RP-4s/RP-9/RP-9b/W6-9/W6-10.
+
+### Tick 10 (W6 close, FF rhythm) — 2026-10-25 · VERDICT: ON_TRACK
+- W6 complete: 11/11 slices GREEN, zero errors, no halts (~2.2 h, run wf_fd21e550-d85). Commits: W6-0 ebf52f2
+  (composition check PASS — caller_auth/api_token_context keep claims.sub; CreateAsset flagged NOT AC-46-capped →
+  refine), W6-1 d2a40c5 (EPSG:4326 stamped), W6-2 e1153b7 (32-statement cap, both planes), W6-3 46ff528 (f64
+  egress), W6-4 9a7be49 (ENU WKB), W6-5 b89b9fe (GPX hide cascade), W6-6 8beb624 (dimension callouts), W6-7a
+  dc0ec7e + W6-7b 87c182c (TOKEN-CLIENT-CLAIM core + GUI), W6-8 f4f4627 (relay-assisted acceptance test, runs at
+  sweep), W6-11 fd531d4 (ledger/manifest close-out, statuses "unreviewed until refine").
+- Campaign code-complete end to end. Entering REFINE phase (one workflow): R1 sync security incl. the blob-gate
+  binding-model REDESIGN (OF-8a HIGH, OF-8b, OF-9 HIGH) → R2 DB security (RP-4s scope, OF-4 verify, CreateAsset
+  cap, TC-1..9) → R3 correctness (/code-review high, whole diff, no-W5-hunk-reverted) → R4 mechanical (workspace
+  clippy 1.99 + fmt + feature matrix, fix-and-commit) → R5 THE sweep (full tests + harness 18 + e2e + relay
+  container per conductor/final-sweep-manifest.md; fixes failures; LM Studio capacity-freeing kill authorized).
+  AC-52 holds: unfixed CRITICAL/HIGH or BLOCKED halts. Push stays HELD until the user confirms on a green sweep.
