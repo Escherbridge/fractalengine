@@ -6,6 +6,9 @@
 // the Wave-1 interaction-state stubs they home (StampInteractionState /
 // SculptToolState). See the Wave-1 registration scaffold below.
 pub(crate) mod asset;
+/// HS-P6-CALLOUT: promote a completed Measure reading into an addressable
+/// `dimension_callout` node. See AGENTS.md §dimension-callout.
+pub(crate) mod dimension_callout;
 pub(crate) mod gis;
 mod gpx;
 pub(crate) mod hexon;
@@ -360,6 +363,23 @@ pub enum UiAction {
     SculptDeleteRegion {
         region_id: String,
     },
+    /// Promote a completed Measure reading (Tape or closed Area) into a
+    /// persistent, addressable `dimension_callout` node (HS-P6-CALLOUT). The
+    /// Options panel's "Save as callout" button computes every field from
+    /// the SAME same-frame measurement it is already displaying, so a later
+    /// edit to the live `MeasureState` can't retroactively change what gets
+    /// persisted. Carries plain data rather than
+    /// `dimension_callout::CalloutGeometry` — that type is `pub(crate)`
+    /// (owned by a `pub(crate)` submodule), and this enum is `pub`. `mode` is
+    /// `"tape"`/`"area"` (`dimension_callout::mode_str`); `anchors`/`closed`
+    /// are the same shape `dimension_callout::callout_properties` persists.
+    SaveMeasureAsCallout {
+        petal_id: String,
+        name: String,
+        mode: String,
+        anchors: Vec<[f64; 3]>,
+        closed: bool,
+    },
 
     // --- T4 contextual_controls: object-aware verbs ---
     /// Delete an object via T1's sync-safe tombstone; `cascade` routes parent
@@ -571,6 +591,9 @@ pub(crate) struct ToolStateParams<'w> {
     sculpt_state: ResMut<'w, terrain_proposal::SculptToolState>,
     /// T3: region_id↔node_id bookkeeping for earthwork endpoint rows (D-A8).
     earthwork_map: ResMut<'w, terrain_proposal::EarthworkNodeMap>,
+    /// HS-P6-CALLOUT: pending-stash + node bookkeeping for dimension callout
+    /// endpoint rows, mirroring `earthwork_map`.
+    callout_map: ResMut<'w, dimension_callout::DimensionCalloutMap>,
     /// D11: the right-sidebar surface `UiAction::RevealSection` addresses.
     /// Bundled here (rather than as a 16th top-level param) so this system
     /// keeps headroom under Bevy's `SystemParam` tuple ceiling; the egui pass
@@ -621,6 +644,7 @@ pub(crate) fn process_ui_actions(
         mut stamp_state,
         mut sculpt_state,
         mut earthwork_map,
+        mut callout_map,
         mut right_sidebar,
         mut visibility,
         mut app_settings,
@@ -1138,6 +1162,24 @@ pub(crate) fn process_ui_actions(
                     &mut earthwork_map,
                     nav.active_petal_id.clone(),
                     region_id,
+                );
+            }
+            // HS-P6-CALLOUT (dimension_callout.rs):
+            UiAction::SaveMeasureAsCallout {
+                petal_id,
+                name,
+                mode,
+                anchors,
+                closed,
+            } => {
+                dimension_callout::save_measure_as_callout(
+                    &db_sender,
+                    &mut callout_map,
+                    petal_id,
+                    name,
+                    &mode,
+                    anchors,
+                    closed,
                 );
             }
             // T4 contextual_controls (node.rs / node_props.rs):

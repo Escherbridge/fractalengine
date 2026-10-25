@@ -36,6 +36,11 @@ pub(super) struct DescriptorCaches<'w, 's> {
     /// correlations + writes the endpoint property bag; `NodePropertiesLoaded`
     /// re-hydrates region→node on reload (§sculpt in actions/AGENTS.md).
     earthwork_map: ResMut<'w, crate::actions::terrain_proposal::EarthworkNodeMap>,
+    /// HS-P6-CALLOUT bookkeeping: `NodeCreated` binds `callout:{id}`
+    /// correlations + writes the endpoint property bag; `NodeDeleted` drops
+    /// it; `NodePropertiesLoaded` re-hydrates node→geometry on reload
+    /// (§dimension-callout in actions/AGENTS.md).
+    callout_map: ResMut<'w, crate::actions::dimension_callout::DimensionCalloutMap>,
     /// Proposal-mirror rehydration target for `PetalTerrainLoaded` (data-loss
     /// fix: the mirror must be seeded from the doc before any embed persists).
     proposal_state: ResMut<'w, crate::terrain_proposal_state::ProposalEditState>,
@@ -185,6 +190,7 @@ pub(super) fn apply_db_results(
                 &mut path_state,
                 &db_sender,
                 &mut caches.earthwork_map,
+                &mut caches.callout_map,
             ),
             DbResult::NodeDeleted { node_id, petal_id } => nodes::handle_node_deleted(
                 node_id,
@@ -195,6 +201,7 @@ pub(super) fn apply_db_results(
                 &db_sender,
                 &mut caches.path_asset,
                 &mut caches.applied,
+                &mut caches.callout_map,
             ),
             // T4: node display-name update (mirrors EntityRenamed for the tree).
             DbResult::NodeRenamed { node_id, new_name } => {
@@ -343,6 +350,7 @@ pub(super) fn apply_db_results(
                     &mut caches.stamp_state,
                     &mut caches.earthwork_map,
                     &mut caches.visibility,
+                    &mut caches.callout_map,
                 ) {
                     continue;
                 }
@@ -747,6 +755,7 @@ mod tests {
             &mut path_state,
             &tx,
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
+            &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
         );
         assert!(mgr.all_nodes().any(|n| n.id == "n2"));
         assert!(mgr.node_index.contains_key("n2"));
@@ -777,6 +786,7 @@ mod tests {
             &mut path_state,
             &tx,
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
+            &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
         );
         assert!(
             rx.try_recv().is_ok(),
@@ -808,6 +818,7 @@ mod tests {
             &mut path_state,
             &tx,
             &mut map,
+            &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
         );
         assert_eq!(map.node_for("r2"), Some("node-7"));
         let mut keys = Vec::new();
@@ -877,6 +888,7 @@ mod tests {
             &mut path_state,
             &tx,
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
+            &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
         );
         assert_eq!(path_state.editing_track_id.as_deref(), Some("n2"));
         assert!(
@@ -932,6 +944,7 @@ mod tests {
             &mut path_state,
             &tx,
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
+            &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
         );
         let actions = ui.drain_actions();
         assert_eq!(actions.len(), 1);
@@ -973,6 +986,7 @@ mod tests {
             &mut path_state,
             &tx,
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
+            &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
         );
         assert_eq!(path_state.editing_track_id.as_deref(), Some("n2"));
         assert!(!path_state.has_pending_pen_create());
@@ -1014,6 +1028,7 @@ mod tests {
             &mut path_state,
             &tx,
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
+            &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
         );
         assert!(
             ui.drain_actions().is_empty(),
@@ -1047,6 +1062,7 @@ mod tests {
             &mut path_state,
             &tx,
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
+            &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
         );
         assert!(ui.drain_actions().is_empty(), "id-less echo must not flush");
         assert!(path_state.has_pending_pen_create());
@@ -1071,6 +1087,7 @@ mod tests {
             &tx,
             &mut path_asset_cache,
             &mut path_asset_applied,
+            &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
         );
         assert!(mgr.all_nodes().all(|n| n.id != "n1"));
         assert!(!mgr.node_index.contains_key("n1"));
@@ -1297,6 +1314,7 @@ mod tests {
             &mut crate::actions::asset::StampInteractionState::default(),
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
             &mut crate::visibility::VisibilityState::default(),
+            &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
         );
         assert!(
             !delivered,
@@ -1323,6 +1341,7 @@ mod tests {
             &mut crate::actions::asset::StampInteractionState::default(),
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
             &mut crate::visibility::VisibilityState::default(),
+            &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
         );
         assert!(!delivered, "selection gate unchanged");
         assert!(
@@ -1346,6 +1365,7 @@ mod tests {
             &mut crate::actions::asset::StampInteractionState::default(),
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
             &mut visibility,
+            &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
         );
         assert_eq!(
             visibility.node_override("n1"),
@@ -1381,6 +1401,7 @@ mod tests {
             &mut crate::actions::asset::StampInteractionState::default(),
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
             &mut crate::visibility::VisibilityState::default(),
+            &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
         );
         assert!(!delivered, "selection gate unchanged");
         assert!(
@@ -1417,6 +1438,7 @@ mod tests {
             &mut stamps,
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
             &mut crate::visibility::VisibilityState::default(),
+            &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
         );
         let stamp = StampRef {
             track_node_id: "path-1".into(),
@@ -1505,6 +1527,7 @@ mod tests {
             &mut crate::actions::asset::StampInteractionState::default(),
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
             &mut crate::visibility::VisibilityState::default(),
+            &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
         );
         assert!(delivered);
         assert_eq!(ins.node_properties, props);

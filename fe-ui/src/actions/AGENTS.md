@@ -182,3 +182,53 @@ EarthworkRegion` by contract (fe-ui must NOT depend on fe-terrain).
   linestrip of `fe_renderer::terrain_overlay::brush_overlay_positions` at the
   viewport cursor, gated by the right sidebar's own `active_section ==
   TerrainTools`; missing height field → cursor-plane fallback, no warn spam.
+
+## §dimension-callout — promote a Measure reading to an addressable node (HS-P6-CALLOUT, decision D-11 ratified)
+
+All in `dimension_callout.rs`; the template is §sculpt's earthwork endpoint
+row above — a committed measurement becomes an addressable node the same way
+a committed brush stroke becomes an earthwork region node.
+
+- **Promote (pure).** `callout_from_measure(&MeasureState) -> Option<
+  CalloutGeometry>` accepts only a COMPLETE measurement: Tape with exactly 2
+  anchors, or an Area that has been `Close`d with ≥3. Anything else (an
+  in-progress Tape, an open Area) is `None` — the Options panel's "Save as
+  callout" button is enabled exactly when this is `Some`. `callout_properties`
+  turns the result into the property bag (`node_kind`, `dimension.mode`
+  `"tape"`/`"area"`, `dimension.anchors` as `[f64;3]` petal-local meters,
+  `dimension.closed`).
+- **Commit line.** The Options panel computes `geometry`/`name` from the
+  SAME same-frame `MeasureState` it is already displaying and queues
+  `UiAction::SaveMeasureAsCallout` — nothing is re-derived from live state in
+  `process_ui_actions`, so a later viewport click can't retroactively change
+  what gets persisted. The handler (`save_measure_as_callout`) mints a
+  session-local callout id (`c{n}`, no `uuid`/`rand` dep — mirrors
+  `SculptToolState::next_region_id`), stashes the geometry, and sends
+  `CreateNode` at the vertex-mean of the anchors (the tape midpoint = the
+  area centroid formula, both are just "mean of the anchors") correlated
+  `callout:{id}`.
+- **Endpoint row.** `db_results/nodes.rs`'s `handle_node_created` calls
+  `bind_created_callout` beside the earthwork bind (pen-tool consume idiom:
+  echoed-id match only). It consumes the stashed geometry, records
+  node_id→(petal_id, geometry) in `DimensionCalloutMap`, and writes the bag.
+- **Delete.** `handle_node_deleted` calls `DimensionCalloutMap::forget` —
+  no tombstone wiring yet (A12: non-atomic create is accepted, the plain node
+  the crash leaves behind is deletable from the sidebar like any other node).
+- **Hydration.** `hydrate_dimension_callout` runs in the
+  `NodePropertiesLoaded` handler (mirrors `hydrate_earthwork_region`): a
+  strictest-reader parse — `node_kind=="dimension_callout"`, a known mode, an
+  anchor count that fits the mode, ≤256 anchors, all-finite `[f64;3]`
+  numbers. Anything else is ignored (CO-1: a malformed peer-authored bag
+  renders nothing rather than crashing the draw loop).
+- **Visibility + drawing.** `visible_callouts(&DimensionCalloutMap, &nav,
+  &vis) -> Vec<&CalloutGeometry>` filters to the active petal AND
+  `crate::visibility::effective_visibility` (the one picker rule, never
+  re-derived). `node_manager::draw_dimension_callouts` (registered
+  unconditionally, outside the selection chain) draws the surviving set as
+  gizmo line segments every frame. The in-world readout LABEL (A12: would be
+  `readout(&MeasureState::from(geometry), measure_world_scale(..))`,
+  recomputed per frame, never stored) is deferred — painting world-space text
+  needs `bevy_egui`'s `EguiPrimaryContextPass` wiring
+  (`viewport_labels.rs`'s pattern), which lives in `plugin.rs` and is outside
+  this slice's file ownership; `callout_display_name` already computes the
+  equivalent string for the node's display `name` at save time.

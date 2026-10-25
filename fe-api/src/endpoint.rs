@@ -147,7 +147,8 @@ pub struct EndpointNodeDto {
     pub node_id: String,
     pub address: String,
     pub scope: String,
-    /// `properties.node_kind` tag (`stamp` / `earthwork_region`), or `null`.
+    /// `properties.node_kind` tag (`stamp` / `earthwork_region` /
+    /// `dimension_callout`), or `null`.
     pub kind: Option<String>,
     /// Full node row (common + type-specific fields — the generic abstraction).
     pub data: serde_json::Value,

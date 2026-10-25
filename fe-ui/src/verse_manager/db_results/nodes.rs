@@ -47,7 +47,8 @@ pub(super) fn handle_gltf_imported(
 }
 
 /// `NodeCreated`: add the node to the tree, flush a pending pen auto-create,
-/// bind an earthwork-region correlation (T3), and re-sync the Paths tab.
+/// bind an earthwork-region correlation (T3) or a dimension-callout
+/// correlation (HS-P6-CALLOUT), and re-sync the Paths tab.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_node_created(
     id: &str,
@@ -62,6 +63,7 @@ pub(super) fn handle_node_created(
     path_state: &mut PathEditorState,
     db_sender: &DbCommandSender,
     earthwork_map: &mut crate::actions::terrain_proposal::EarthworkNodeMap,
+    callout_map: &mut crate::actions::dimension_callout::DimensionCalloutMap,
 ) {
     verse_mgr.add_node(
         petal_id,
@@ -108,6 +110,16 @@ pub(super) fn handle_node_created(
             }
         }
     }
+    // HS-P6-CALLOUT: a `callout:{id}` correlation moves the pending
+    // measurement geometry into the map and writes its property bag — same
+    // echoed-id idiom as the earthwork bind above.
+    crate::actions::dimension_callout::bind_created_callout(
+        db_sender,
+        callout_map,
+        id,
+        petal_id,
+        correlation_id,
+    );
     // Pen auto-create flush (`pen_autocreate_track_20260713`, FR-2 +
     // HIGH-1 correlation-id fix): a no-track Pen click stashed
     // `pending_pen_create` (its fe-ui-generated `correlation_id` +
@@ -195,8 +207,12 @@ pub(super) fn handle_node_deleted(
     db_sender: &DbCommandSender,
     path_asset_cache: &mut PathAssetCache,
     path_asset_applied: &mut PathAssetApplied,
+    callout_map: &mut crate::actions::dimension_callout::DimensionCalloutMap,
 ) {
     verse_mgr.remove_node(petal_id, node_id);
+    // HS-P6-CALLOUT: drop a deleted callout node's bookkeeping; a no-op for
+    // any other node (NFR-5 parity with the path-asset cache invalidations).
+    callout_map.forget(node_id);
     // FR-4: evict the track's stamp cache + applied gate so the materializer's
     // orphan pass despawns its glTF and it can't resurrect on petal re-entry.
     // No-op for a track that never stamped (NFR-5).

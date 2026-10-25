@@ -269,6 +269,9 @@ impl Plugin for NodeManagerPlugin {
         app.init_resource::<router::ClickArbiter>();
         app.init_resource::<brush_interaction::BrushGesture>();
         app.init_resource::<measure::MeasureState>();
+        // HS-P6-CALLOUT: pending-stash + node bookkeeping for persisted
+        // dimension callouts (see `actions::dimension_callout`).
+        app.init_resource::<crate::actions::dimension_callout::DimensionCalloutMap>();
         app.init_resource::<path_point_interaction::PathPointDrag>();
         app.init_resource::<path_point_interaction::PenHandleDrag>();
         app.init_resource::<path_handle_interaction::PathHandleDrag>();
@@ -329,6 +332,13 @@ impl Plugin for NodeManagerPlugin {
         // selection chain above, so it runs as a standalone per-frame system
         // (data_icons_20260713).
         app.add_systems(Update, billboard::billboard_face_camera);
+        // HS-P6-CALLOUT: dimension callouts draw unconditionally (not
+        // mode-gated, outside the chain) — a saved callout stays visible
+        // while any tool is active, not just while Measure is.
+        app.add_systems(
+            Update,
+            crate::actions::dimension_callout::draw_dimension_callouts,
+        );
     }
 }
 

@@ -125,8 +125,18 @@ fe-ui `geometry.rs` mirror carries (`world_to_real_distance`, `bearing_deg`,
   system, outside the chain) draws anchor rings, segments, and the closing edge
   in the always-on-top gimbal gizmo group, only while Measure is active (ui_ux
   §7 mode-gated overlay).
-- **Not here.** Dimension callouts persisted as annotations (HS-P6-CALLOUT)
-  stay blocked on decision D-11.
+- **Promote to a callout (HS-P6-CALLOUT, decision D-11 ratified).** The
+  Options panel's "Save as callout" button is enabled only once
+  `dimension_callout::callout_from_measure` sees a COMPLETE measurement (Tape
+  with exactly 2 anchors, or a closed Area with ≥3) — the earthwork-pattern
+  endpoint-node flow (`actions/AGENTS.md` §dimension-callout): one
+  `CreateNode` correlated `callout:{id}`, whose echo writes the
+  `node_kind`/`dimension.mode`/`dimension.anchors`/`dimension.closed`
+  property bag. `draw_dimension_callouts` (registered here, outside the
+  chain, unconditionally — a saved callout stays visible under every tool)
+  draws every effectively-visible, active-petal callout as gizmo lines each
+  frame from `DimensionCalloutMap`, never from the live `MeasureState` the
+  user has since moved past.
 
 ## §visibility-pickers — the one picker rule (hierarchy_visibility_groups D-7/D-12)
 

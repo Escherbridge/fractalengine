@@ -15,6 +15,7 @@
 
 use bevy_egui::egui;
 
+use crate::actions::dimension_callout;
 use crate::actions::terrain_proposal::{SculptOpKind, SculptShapeMode, SculptToolState};
 use crate::actions::{UiAction, UiManager};
 use crate::gis::PathEditorState;
@@ -100,7 +101,13 @@ pub(crate) fn render(
             render_pen_options(ui, tool_panel_state, path_state, ui_mgr, verse_mgr)
         }
         ToolOptionsArm::Brush => render_brush_options(ui, sculpt_state, ui_mgr, active_petal_id),
-        ToolOptionsArm::Measure => render_measure_options(ui, measure, measure_world_scale, ui_mgr),
+        ToolOptionsArm::Measure => render_measure_options(
+            ui,
+            measure,
+            measure_world_scale,
+            ui_mgr,
+            active_petal_id,
+        ),
     }
     // Never-blank (`ui_ux.md §7`): an arm without live controls falls back to
     // the descriptor's calm "(soon)" lines — one table, no duplicated copy.
@@ -421,11 +428,19 @@ fn render_brush_cross_links(ui: &mut egui::Ui, ui_mgr: &mut UiManager) {
 /// Measure arm (hexon_scale FR-9): mode picker, live readout rows (each a
 /// copyable value box), and the Undo / Clear / Close polygon buttons. Every
 /// button goes through the same `measure::reduce` as viewport clicks.
+///
+/// HS-P6-CALLOUT: a "Save as callout" button queues
+/// `UiAction::SaveMeasureAsCallout`, enabled only once
+/// `dimension_callout::callout_from_measure` sees a COMPLETE measurement
+/// (Tape with 2 anchors, or a closed Area) and an active petal exists —
+/// nothing is re-derived once the action is queued, so a later click in the
+/// viewport can't retroactively change what gets persisted.
 fn render_measure_options(
     ui: &mut egui::Ui,
     measure: &mut MeasureState,
     world_scale: f64,
     ui_mgr: &mut UiManager,
+    active_petal_id: Option<&str>,
 ) {
     ui.label(egui::RichText::new("Mode").small().color(theme::TEXT_DIM));
     ui.horizontal(|ui| {
@@ -490,6 +505,25 @@ fn render_measure_options(
             }
         }
     });
+
+    let callout = dimension_callout::callout_from_measure(measure);
+    let can_save = callout.is_some() && active_petal_id.is_some();
+    if ui
+        .add_enabled(can_save, egui::Button::new("Save as callout"))
+        .on_hover_text("Persist this measurement as an addressable Dimension Callout node")
+        .clicked()
+    {
+        if let (Some(geometry), Some(petal_id)) = (callout, active_petal_id) {
+            let name = dimension_callout::callout_display_name(measure, world_scale);
+            ui_mgr.push_action(UiAction::SaveMeasureAsCallout {
+                petal_id: petal_id.to_string(),
+                name,
+                mode: dimension_callout::mode_str(geometry.mode).to_string(),
+                anchors: geometry.anchors,
+                closed: geometry.closed,
+            });
+        }
+    }
 }
 
 /// Build a `RevealSection` action from a section, so call sites cannot mistype

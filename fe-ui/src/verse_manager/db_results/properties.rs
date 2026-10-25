@@ -44,6 +44,7 @@ pub(super) fn handle_node_properties_loaded(
     stamp_state: &mut crate::actions::asset::StampInteractionState,
     earthwork_map: &mut crate::actions::terrain_proposal::EarthworkNodeMap,
     visibility: &mut crate::visibility::VisibilityState,
+    callout_map: &mut crate::actions::dimension_callout::DimensionCalloutMap,
 ) -> bool {
     // Phase 3 visibility: a persisted `view.state`/`view.groups` in the bag
     // re-hydrates the session lattice (third instance of this cache idiom).
@@ -75,6 +76,15 @@ pub(super) fn handle_node_properties_loaded(
     // T3 hydration: an earthwork region node (`node_kind == "earthwork_region"`)
     // re-binds region_id→node_id + seeds the volume gate (§sculpt).
     crate::actions::terrain_proposal::hydrate_earthwork_region(node_id, properties, earthwork_map);
+    // HS-P6-CALLOUT hydration: a dimension callout node
+    // (`node_kind == "dimension_callout"`) re-binds node_id→geometry so a
+    // saved callout survives reload (§dimension-callout).
+    crate::actions::dimension_callout::hydrate_dimension_callout(
+        node_id,
+        petal_id,
+        properties,
+        callout_map,
+    );
     // Path editor's `gpx_points` read-back (PathSelectTrack): a
     // DIFFERENT claimant from the inspector's `is_for_selected_node`
     // guard below — `NodePropertiesLoaded` has no correlation id
