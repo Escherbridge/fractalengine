@@ -131,6 +131,31 @@ fe-renderer under `render`. The proposal *geometry* + records stay in fe-terrain
   earthwork bake, consumed by fe-ui's volume persistence. Both sides
   `add_message` it (idempotent); neither may dep the other.
 
+### P1+P2 seam types (terrain_proposal_delta_viz_20261025, S1b)
+
+New cross-crate types for cut/fill heatmap visualization (P1) and volume reporting
+(P2); all live here to avoid fe-ui→fe-terrain dependency (NFR-5, OD-10).
+
+- `cut_fill_rgba(dh_m, ramp_max_m, neutral_m) -> [f32;4]`: Diverging color ramp
+  (OD-1, OD-2). Red family for cut (dh < 0), blue for fill (dh > 0), transparent
+  inside ±neutral_m band, saturated beyond ±ramp_max_m. Intensity graded by
+  |dh| in real meters. Pure function; fully tested via table-driven flow test.
+- `heatmap_material() -> StandardMaterial`: Unlit, blended, double-sided (like
+  `ghost_material`) but white base for per-vertex color tinting (FR-2).
+- `ProposalPreview` (Resource, S1b): Armed tool draft state for live preview
+  (palette op / shape / brush stroke). Holds petal_id, op, footprint, target,
+  delta, strength, and a `PreviewSource` discriminator. The render system in
+  fe-terrain reads this and draws the lattice ghost + heatmap without DB or
+  field writes (FR-3).
+- `ProposalPreviewReport` (Message, S1b→S2→S3): Live cut/fill/net from the armed
+  tool, sent by fe-terrain's preview system, consumed by fe-ui's readout panel.
+- `VolumeReportRequest` (Message, S6→S5): User selection request (footprint,
+  petal, correlation ID). Reserves an optional elevation band for P4 3D volumes.
+- `VolumeReportResult` (Message, S5→S6): Complete volume report (area, cut/fill,
+  net, lattice step, per-item breakdown, overlap flag, scaled indicator). Each
+  item includes its standalone volumes clipped to the selection footprint.
+  Consumed by the Volume report panel to render P2 FR-7/8.
+
 ## §instancing
 
 `instancing.rs` (stamped_asset_nodes_20260725 T2 FR-4 / D-A6 / N-9) is the

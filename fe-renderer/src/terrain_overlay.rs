@@ -111,6 +111,153 @@ pub struct EarthworkVolumeReport {
     pub fill_m3: f64,
 }
 
+// ---------------------------------------------------------------------------
+// P1+P2 seam types: cut/fill heatmap + preview + volume reporting.
+// Shared between fe-terrain and fe-ui via fe-renderer to avoid fe-ui→fe-terrain
+// dependency (OD-10, NFR-5).
+// ---------------------------------------------------------------------------
+
+/// Cut/fill heatmap color (red=cut, blue=fill) graded by depth within a neutral
+/// transparent band (OD-1, OD-2). Takes delta height in real meters, ramp max
+/// depth (full saturation point), and neutral band half-width. Returns RGBA
+/// with red dominant for cut (dh < 0), blue for fill (dh > 0), transparent
+/// inside ±neutral_m, and saturated beyond ±ramp_max_m.
+pub fn cut_fill_rgba(dh_m: f32, ramp_max_m: f32, neutral_m: f32) -> [f32; 4] {
+    // Clamp to valid range (zero neutral band or negative ramp are degenerate).
+    let ramp_max = ramp_max_m.max(0.001);
+    let neutral = neutral_m.max(0.0);
+
+    // Transparent inside the neutral band.
+    if dh_m.abs() <= neutral {
+        return [0.0, 0.0, 0.0, 0.0];
+    }
+
+    // Grade from neutral band edge to ramp max.
+    // Compute intensity as (|dh| - neutral) / (ramp_max - neutral), clamped to [0, 1].
+    let intensity = ((dh_m.abs() - neutral) / (ramp_max - neutral)).min(1.0);
+
+    // Red family for cut (dh < 0): pure red [1.0, 0.0, 0.0] graded by intensity.
+    // Blue family for fill (dh > 0): pure blue [0.0, 0.0, 1.0] graded by intensity.
+    if dh_m < 0.0 {
+        // Cut: red dominates, green and blue drop with intensity.
+        [1.0, 1.0 - intensity, 1.0 - intensity, 0.8]
+    } else {
+        // Fill: blue dominates, red and green drop with intensity.
+        [1.0 - intensity, 1.0 - intensity, 1.0, 0.8]
+    }
+}
+
+/// Unlit, blended heatmap material for cut/fill overlay drape. Vertex colors
+/// (set by the lattice builder) control the per-vertex heatmap tone.
+pub fn heatmap_material() -> StandardMaterial {
+    StandardMaterial {
+        base_color: Color::WHITE,
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        cull_mode: None,
+        ..default()
+    }
+}
+
+/// Preview state for the armed terrain tool before commit (P1 live preview).
+/// The preview system reads this Resource and renders the cut/fill heatmap +
+/// ghost surface without writing the DB or terrain field (NFR-5, FR-3).
+#[derive(Resource, Debug, Clone)]
+pub struct ProposalPreview {
+    /// Petal scope (authoritative for visibility; wrong-petal previews are dropped).
+    pub petal_id: String,
+    /// Palette operation name (e.g., "raise", "cut", "smooth").
+    pub op: String,
+    /// Footprint of the tool draft (XZ boundary).
+    pub footprint: Vec<[f32; 2]>,
+    /// Target height (for palette ops) or region mean (for sculpt smooth).
+    pub target_m: f32,
+    /// Delta height magnitude (depth of cut/fill).
+    pub delta_m: f32,
+    /// Tool strength / blend factor (0.0..=1.0).
+    pub strength: f32,
+    /// Identifies the source: palette op vs shape vs brush stroke (for coherence checks).
+    pub source: PreviewSource,
+}
+
+/// Discriminator for preview source (palette op, sculpt shape, brush stroke).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewSource {
+    /// Armed palette op at a location (radius, delta from toolbars).
+    PaletteOp,
+    /// Sculpt shape draft (circle, rect, polygon, elevation).
+    SculptShape,
+    /// In-progress brush stroke (corridor footprint from samples).
+    BrushStroke,
+}
+
+/// Live preview report: cut/fill/net volumes from the armed tool before commit.
+/// Sent by the render preview system (fe-terrain/src/terrain_plugin.rs) after
+/// computing the heatmap lattice, consumed by fe-ui to show the live readout.
+#[derive(Message, Debug, Clone, PartialEq)]
+pub struct ProposalPreviewReport {
+    pub petal_id: String,
+    pub cut_m3: f64,
+    pub fill_m3: f64,
+    pub net_m3: f64,
+}
+
+/// Request for a volume report on a selected footprint (P2 user selection).
+/// Sent by fe-ui panels (selection, region, drawn footprint), answered by
+/// fe-terrain's report system with a [`VolumeReportResult`].
+#[derive(Message, Debug, Clone)]
+pub struct VolumeReportRequest {
+    /// Correlation ID to match async request/reply (UUID/ULID).
+    pub correlation_id: String,
+    /// Petal scope for the report.
+    pub petal_id: String,
+    /// Footprint of the selection (XZ boundary).
+    pub footprint: Vec<[f32; 2]>,
+    /// Reserved for P4: optional vertical extent (min, max elevation in meters).
+    /// Ignored today (2.5D footprint prism used).
+    pub elevation_band: Option<[f32; 2]>,
+}
+
+/// Selection volume report result: totals, per-item breakdown, and scaled units.
+/// Sent by fe-terrain's answer system, consumed by fe-ui panels to render the
+/// Volume report sidebar section (P2, FR-7/8).
+#[derive(Message, Debug, Clone)]
+pub struct VolumeReportResult {
+    /// Correlation ID matching the originating [`VolumeReportRequest`].
+    pub correlation_id: String,
+    /// Total area of the footprint in m² (or world units if unscaled, NFR-4).
+    pub area_m2: f64,
+    /// Composite cut volume in m³ (or world units cubed if unscaled).
+    pub cut_m3: f64,
+    /// Composite fill volume in m³ (or world units cubed if unscaled).
+    pub fill_m3: f64,
+    /// Net volume (fill - cut) in m³.
+    pub net_m3: f64,
+    /// Lattice step used in the integration (reported for tolerance/honesty, NFR-4).
+    pub step_m: f32,
+    /// Per-item breakdown: each proposal/region overlapping the selection.
+    pub items: Vec<VolumeItem>,
+    /// True if items' standalone figures do not sum to totals (overlap detected).
+    pub has_overlap: bool,
+    /// Scaled indicator: true if world_scale is finite and > 0.
+    pub scaled: bool,
+}
+
+/// One proposal or region in a volume report breakdown.
+#[derive(Debug, Clone)]
+pub struct VolumeItem {
+    /// Identifier (proposal or region node ID).
+    pub id: String,
+    /// Operator/type name (e.g., "raise", "earthwork_region").
+    pub kind: String,
+    /// Standalone cut m³ clipped to the selection footprint.
+    pub cut_m3: f64,
+    /// Standalone fill m³ clipped to the selection footprint.
+    pub fill_m3: f64,
+    /// Overlap area with other items in m² (nonzero if composite ≠ sum).
+    pub overlap_area_m2: f64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +360,111 @@ mod tests {
             field.len(),
             len_before,
             "sampling must not mutate the field"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // P1 heatmap tests: cut/fill ramp (OD-1) and material properties (FR-2).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cut_fill_ramp_table() {
+        // Test the full color ramp: transparent neutral band, red cut grading,
+        // blue fill grading, and saturation at depth bounds (OD-1, OD-2).
+        // Mutation check: inverting the sign check would make this test go red.
+        let ramp_max = 5.0;
+        let neutral = 0.5;
+
+        // Inside the neutral band: fully transparent.
+        let [r, g, b, a] = cut_fill_rgba(0.0, ramp_max, neutral);
+        assert_eq!(a, 0.0, "dh=0 must be transparent");
+        assert_eq!([r, g, b], [0.0, 0.0, 0.0], "neutral band is black");
+
+        let [r, g, b, a] = cut_fill_rgba(0.3, ramp_max, neutral);
+        assert_eq!(a, 0.0, "dh<neutral must be transparent");
+
+        let [r, g, b, a] = cut_fill_rgba(-0.4, ramp_max, neutral);
+        assert_eq!(a, 0.0, "dh<neutral must be transparent");
+
+        // Just outside neutral: faint color.
+        let [r_out, g_out, b_out, a_out] = cut_fill_rgba(0.6, ramp_max, neutral);
+        assert!(a_out > 0.0, "dh>neutral must be opaque");
+        assert!(
+            b_out > r_out && b_out > g_out,
+            "fill (dh>0) must have blue dominant"
+        );
+        assert!(
+            b_out >= 0.9,
+            "fill blue channel must be high; got {b_out}"
+        );
+
+        let [r_out, g_out, b_out, a_out] = cut_fill_rgba(-0.6, ramp_max, neutral);
+        assert!(a_out > 0.0, "dh<neutral must be opaque");
+        assert!(
+            r_out > b_out && r_out > g_out,
+            "cut (dh<0) must have red dominant"
+        );
+        assert!(r_out >= 0.9, "cut red channel must be high; got {r_out}");
+
+        // Half the ramp depth: medium intensity.
+        let half_depth = (ramp_max + neutral) / 2.0;
+        let [r_half, g_half, b_half, a_half] = cut_fill_rgba(half_depth, ramp_max, neutral);
+        assert!(a_half > 0.0, "halfway fill must be opaque");
+        assert!(b_half > r_half, "fill blue > red");
+        let [r_cut, g_cut, b_cut, a_cut] = cut_fill_rgba(-half_depth, ramp_max, neutral);
+        assert!(a_cut > 0.0, "halfway cut must be opaque");
+        assert!(r_cut > b_cut, "cut red > blue");
+
+        // At the ramp max: full intensity (saturated).
+        let [r_max, g_max, b_max, a_max] = cut_fill_rgba(ramp_max, ramp_max, neutral);
+        assert!(a_max > 0.0, "ramp max must be opaque");
+        assert_eq!(b_max, 1.0, "fill saturation: blue = 1.0");
+        assert!(r_max < 1.0, "fill: red < 1.0");
+
+        let [r_min, g_min, b_min, a_min] = cut_fill_rgba(-ramp_max, ramp_max, neutral);
+        assert!(a_min > 0.0, "ramp max must be opaque");
+        assert_eq!(r_min, 1.0, "cut saturation: red = 1.0");
+        assert!(b_min < 1.0, "cut: blue < 1.0");
+
+        // Beyond the ramp max: clamped to saturation (not brighter).
+        let [r_beyond, g_beyond, b_beyond, a_beyond] =
+            cut_fill_rgba(2.0 * ramp_max, ramp_max, neutral);
+        assert!(a_beyond > 0.0, "beyond ramp must be opaque");
+        assert_eq!(b_beyond, 1.0, "beyond saturates at blue = 1.0");
+        assert_eq!(
+            a_beyond, a_max,
+            "alpha does not change beyond saturation"
+        );
+
+        // Negative neutral band (clamped to 0) should not panic.
+        let [_, _, _, a_neg] = cut_fill_rgba(1.0, 5.0, -0.5);
+        assert!(a_neg > 0.0, "negative neutral band is clamped; 1.0 must be opaque");
+
+        // Negative ramp max (clamped to 0.001) should not panic.
+        let [_, _, _, a_tiny] = cut_fill_rgba(0.1, -5.0, 0.05);
+        assert!(a_tiny > 0.0, "negative ramp is clamped; 0.1 must be opaque");
+    }
+
+    #[test]
+    fn heatmap_material_is_blended_unlit_vertex_colored() {
+        // Test that the heatmap material is configured for vertex colors:
+        // blended (translucent) and unlit (tint reads as intent, not lighting).
+        // Mutation check: removing `alpha_mode: AlphaMode::Blend` would fail;
+        // removing `unlit: true` would fail; removing `cull_mode: None` would fail.
+        let mat = heatmap_material();
+        assert!(
+            matches!(mat.alpha_mode, AlphaMode::Blend),
+            "heatmap must be blended"
+        );
+        assert!(mat.unlit, "heatmap must be unlit");
+        assert!(
+            mat.cull_mode.is_none(),
+            "heatmap must not cull (double-sided for thin overlays)"
+        );
+        assert_eq!(
+            mat.base_color,
+            Color::WHITE,
+            "heatmap starts white; vertex colors will tint per-vertex"
         );
     }
 }

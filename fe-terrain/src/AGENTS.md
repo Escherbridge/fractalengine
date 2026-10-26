@@ -591,6 +591,20 @@ the region is the source of truth; the surface was never destructively edited).
   bridges an existing proposal to separated cut/fill by reusing the proposal's
   own `apply_proposal_over_base` as the target surface — the FR-4/FR-6 evolution
   of the report for every op, no op-semantics duplication.
+- `CompositeRegion` + `prepare_composite(regions, base, grid_step)` +
+  `composite_proposed_height(regions, base_y, x, z) -> f32` (delta_viz_20261025
+  S1, FR-5): the ONE multi-region composite-surface walk, lifted out of what
+  was `terrain_plugin`'s private `PreparedRegion`/`earthwork_surface_delta`
+  pair (that pair still exists there for its OWN bake-only bookkeeping —
+  chunk-bounds intersection — until S2 switches the bake call site over).
+  Applies every containing region in RECORD ORDER, each seeing the prior
+  regions' result as its own base, and returns the ABSOLUTE proposed height
+  (not a delta — `earthwork_surface_delta` returned `h - base_y`;
+  `composite_proposed_height` returns `h`, matching every other
+  `*_height`/`*_proposed_height` fn in this module). `for_each_cell` is
+  `pub(crate)` (was private) so other pure modules share the one lattice walk
+  instead of re-deriving it. See `delta_viz.rs` §delta-viz below for the
+  consumer.
 
 The brush cursor overlay is `fe_renderer::terrain_overlay::{brush_ring,
 brush_overlay_positions, BRUSH_OVERLAY_RGBA}` (folded into the existing overlay
@@ -637,6 +651,59 @@ seam Level == Flatten and Smooth is identity (real math lives in `sculpt`).
   `fe_renderer::terrain_overlay::EarthworkVolumeReport` once per revision and
   again as late chunks extend coverage — fe-ui's changed-value gate absorbs
   the re-fires before any DB write.
+
+## §delta-viz — relief-following delta lattice (terrain_proposal_delta_viz_20261025 S1, FR-1/FR-2/FR-5)
+
+`delta_viz.rs` is the pure geometry/volume layer behind the in-app finding F5
+("there is no visible transformation"). It is Bevy-free + always compiled
+(same discipline as `terrain_proposal.rs`/`sculpt`), generic over any
+base/proposed sampler pair — it does not know about proposals, regions or the
+palette; `S2` (render integration) is the one that wires a `TerrainProposal`'s
+`apply_proposal_over_base` or a region set's `sculpt::composite_proposed_height`
+in as its `proposed` closure.
+
+**Why a lattice, not a lid (R-1).** The old `proposal_overlay_mesh_data`
+earcut-triangulated only the footprint PERIMETER, so the ghost was a flat
+polygon that sliced through relief — a Raise over a hill looked identical to
+a flat tinted decal. `DeltaLattice::build` instead samples a regular
+`grid_step` lattice of INTERIOR points (not just the footprint's own
+vertices) and triangulates only the quads whose all 4 corners are inside the
+footprint and covered by both samplers. A non-rectangular footprint's
+boundary quads are simply left untriangulated (a hole at the true edge),
+never papered over with a flat lid — the mesh is honest about where it does
+and doesn't have relief-following coverage.
+
+- `DeltaLattice { ghost_positions, drape_positions, dh, indices, cut_fill }`:
+  `ghost_positions[i] = [x, proposed(x,z), z]` (the FR-1 ghost — Y follows
+  the PROPOSED surface, not a flat plane); `drape_positions[i] =
+  [x, max(base,proposed)+lift, z]` (the FR-2 heatmap drape, lifted a fixed
+  `DRAPE_LIFT` world units clear of both surfaces so nothing z-fights);
+  `dh[i] = proposed(x,z) - base(x,z)` in SCENE units (fill > 0, cut < 0 — the
+  same sign convention `cut_fill_volume` uses). `indices` is ONE triangle
+  buffer shared by both position arrays (same topology, different Y — so
+  ghost and drape are always built from identical quads). `cut_fill` is a
+  literal `sculpt::cut_fill_volume` call on the same footprint/step/
+  world_scale — never a second volume implementation (FR-5: a dedicated test,
+  `lattice_integrated_volume_equals_cut_fill_volume`, asserts the two are
+  bit-identical for the same inputs).
+- **Vertex cap (NFR-2).** `DELTA_LATTICE_VERTEX_CAP` (16,384 grid corners)
+  bounds one footprint's lattice. `effective_step` coarsens `grid_step` just
+  enough to fit (geometric sqrt-area-ratio estimate, re-checked for up to 8
+  passes to absorb ceiling-rounding — bounded, never an unbounded loop) and
+  `tracing::warn!`s when it does, so a huge/degenerate footprint still
+  renders a (coarser) ghost instead of nothing or a frame-budget violation.
+  Both the mesh AND the paired `cut_fill` use the SAME effective step, so the
+  volume's stated tolerance always matches what actually got sampled.
+- **NFR-1.** `base`/`proposed` are `&impl Fn(f32,f32)->Option<f32>` —
+  structurally read-only; `nfr1_base_untouched_by_delta_lattice` is the
+  byte-identity proof (same pattern as `sculpt`/`terrain_proposal`).
+- **Consumers (S2, render-gated, not yet wired as of S1):**
+  `render_terrain_proposals` replaces the perimeter-lid ghost with
+  `DeltaLattice::build`'s `ghost_positions`/`indices` for the FR-1 fix;
+  `render_baked_region_heatmaps` (new) uses `drape_positions`/`dh` against the
+  pristine `TerrainHeightField` for FR-4's baked-region heatmap;
+  `render_proposal_preview` (new) is the FR-3 live pre-commit path, same
+  builder, debounced (OD-3).
 
 ## §bundles — deterministic spatial bundler (`tiles/bundle.rs`, p2p_asset_streaming S1)
 

@@ -1,5 +1,6 @@
 pub mod api_ext;
 pub mod config;
+pub mod delta_viz;
 pub mod extension;
 pub mod format;
 pub mod gpx;

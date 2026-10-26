@@ -223,6 +223,62 @@ pub fn apply_sculpt(
         .collect()
 }
 
+/// One region resolved against the read-only base, ready for
+/// [`composite_proposed_height`]. See `src/AGENTS.md` §sculpt.
+#[derive(Debug, Clone)]
+pub struct CompositeRegion {
+    pub footprint: Footprint,
+    pub op: SculptOp,
+    pub target: f32,
+    pub delta: f32,
+    pub mean: Option<f32>,
+    pub strength: f32,
+}
+
+/// Resolve every region's footprint/params/(Smooth)mean against `base`, in
+/// record order, for [`composite_proposed_height`].
+pub fn prepare_composite(
+    regions: &[EarthworkRegion],
+    base: &impl Fn(f32, f32) -> Option<f32>,
+    grid_step: f32,
+) -> Vec<CompositeRegion> {
+    regions
+        .iter()
+        .map(|r| {
+            let footprint = r.footprint_shape();
+            let mean = if r.op == SculptOp::Smooth {
+                region_mean_height(base, &footprint, grid_step)
+            } else {
+                None
+            };
+            CompositeRegion {
+                footprint,
+                op: r.op,
+                target: r.target_height.unwrap_or(0.0),
+                delta: r.effective_delta(),
+                mean,
+                strength: r.effective_strength(),
+            }
+        })
+        .collect()
+}
+
+/// Net PROPOSED height at `(x, z)`: every containing region in `regions`
+/// applied in record order over `base_y` (each sees the prior result as its
+/// base). The ONE composite-surface walk (FR-5) — see `src/AGENTS.md` §sculpt.
+pub fn composite_proposed_height(regions: &[CompositeRegion], base_y: f32, x: f32, z: f32) -> f32 {
+    let mut h = base_y;
+    for r in regions {
+        if r.footprint.contains(x, z) {
+            if let Some(p) = proposed_height(r.op, Some(h), r.target, r.delta, r.mean, r.strength)
+            {
+                h = p;
+            }
+        }
+    }
+    h
+}
+
 /// Cut vs fill volume of a modification region, in real units. Separated by
 /// sign: `cut_m3` is net removed (proposed below base), `fill_m3` net added
 /// (proposed above base). `scaled == false` when `world_scale` is unusable →
@@ -303,7 +359,9 @@ pub fn sculpt_cut_fill(
 /// Visit every `grid_step` cell centre inside `footprint`'s bounds (degenerate
 /// bounds / non-positive step → no visits). Shared by mean + volume so both
 /// sample the SAME lattice (a region's mean and its cut/fill stay consistent).
-fn for_each_cell(footprint: &Footprint, grid_step: f32, mut f: impl FnMut(f32, f32)) {
+/// `pub(crate)` so other pure crate modules (e.g. the volume report) can reuse
+/// this one walk instead of re-deriving it.
+pub(crate) fn for_each_cell(footprint: &Footprint, grid_step: f32, mut f: impl FnMut(f32, f32)) {
     let Some((min_x, min_z, max_x, max_z)) = footprint.bounds() else {
         return;
     };
@@ -745,6 +803,39 @@ mod tests {
         )[0]
         .unwrap();
         assert_eq!(adjusted, 4.0);
+    }
+
+    /// Migrated from `terrain_plugin`'s `earthwork_surface_delta_applies_regions_in_order`
+    /// now that the composite walk lives here as `composite_proposed_height`
+    /// (FR-5). Unlike the old `earthwork_surface_delta` (which returned a
+    /// delta), this asserts the ABSOLUTE composite height.
+    #[test]
+    fn composite_applies_regions_in_record_order() {
+        let base = |_x: f32, _z: f32| Some(1.0);
+        let square = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        let regions = vec![
+            EarthworkRegion {
+                id: "r1".into(),
+                op: SculptOp::Raise,
+                footprint: square.clone(),
+                material: "earth".into(),
+                target_height: None,
+                delta: Some(2.0),
+            },
+            EarthworkRegion {
+                id: "r2".into(),
+                op: SculptOp::Level,
+                footprint: square,
+                material: "earth".into(),
+                target_height: Some(0.5),
+                delta: None,
+            },
+        ];
+        let prepared = prepare_composite(&regions, &base, 1.0);
+        // Inside: raise 1->3, then level (full strength) to 0.5 -> absolute 0.5.
+        assert!((composite_proposed_height(&prepared, 1.0, 5.0, 5.0) - 0.5).abs() < 1e-5);
+        // Outside every footprint: base passes through unchanged.
+        assert_eq!(composite_proposed_height(&prepared, 1.0, 50.0, 50.0), 1.0);
     }
 
     /// Plan Phase 2 determinism gate: every op × footprint × scale yields
