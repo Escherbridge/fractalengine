@@ -591,12 +591,19 @@ the region is the source of truth; the surface was never destructively edited).
   bridges an existing proposal to separated cut/fill by reusing the proposal's
   own `apply_proposal_over_base` as the target surface — the FR-4/FR-6 evolution
   of the report for every op, no op-semantics duplication.
-- `CompositeRegion` + `prepare_composite(regions, base, grid_step)` +
+- `CompositeRegion` + `prepare_composite(regions, base)` +
   `composite_proposed_height(regions, base_y, x, z) -> f32` (delta_viz_20261025
   S1, FR-5): the ONE multi-region composite-surface walk, lifted out of what
   was `terrain_plugin`'s private `PreparedRegion`/`earthwork_surface_delta`
-  pair (that pair still exists there for its OWN bake-only bookkeeping —
-  chunk-bounds intersection — until S2 switches the bake call site over).
+  pair (deleted; the bake, the baked-region heatmap AND `volume_report` all
+  call this). Each region's Smooth mean is sampled at that region's OWN
+  `region_grid_step` (`EARTHWORK_LATTICE` = 128, `lattice_grid_step` — both
+  live here now, re-used by `terrain_plugin`), exactly what
+  `EarthworkRegion::cut_fill` (the volume persisted on the region node) uses.
+  S7 review fix: a set-wide union-bounds step made a Smooth region's baked
+  relief shift whenever an unrelated far-away region was added, and drifted
+  from its persisted volume (`composite_smooth_mean_matches_standalone_and_
+  ignores_unrelated_regions`).
   Applies every containing region in RECORD ORDER, each seeing the prior
   regions' result as its own base, and returns the ABSOLUTE proposed height
   (not a delta — `earthwork_surface_delta` returned `h - base_y`;
@@ -697,7 +704,20 @@ and doesn't have relief-following coverage.
 - **NFR-1.** `base`/`proposed` are `&impl Fn(f32,f32)->Option<f32>` —
   structurally read-only; `nfr1_base_untouched_by_delta_lattice` is the
   byte-identity proof (same pattern as `sculpt`/`terrain_proposal`).
-- **Consumers (S2, render-gated, not yet wired as of S1):**
+- **S7 review invariants (render side).** Every overlay spawn site inserts
+  its initial `Visibility` from the `ProposalOverlay` layer
+  (`layer_initial_visibility`): `sync_layer_visibility` only runs on a
+  LayerStack change, so a preview/ghost spawned under a hidden layer used to
+  show. Baked-region drapes count against `ProposalOverlayBudget` (they used
+  to bypass it) and re-ground when covering chunks arrive after the revision
+  (startup order left them missing forever). Committed + baked drapes share
+  `MAX_HEATMAP_VERTICES_PER_PETAL` via `HeatmapVertexUsage`; hitting it skips
+  the drape with one warning and never sets the budget `truncated` flag (that
+  flag re-arms a rebuild on any headroom → per-frame rebuild loop). The
+  preview snapshots its draft only when the resource/petal changed (idle
+  frames allocate nothing) and a `PreviewSource::SelectedProposal` draft is
+  readout-only (no duplicate lattice over the committed one).
+- **Consumers (S2):**
   `render_terrain_proposals` replaces the perimeter-lid ghost with
   `DeltaLattice::build`'s `ghost_positions`/`indices` for the FR-1 fix;
   `render_baked_region_heatmaps` (new) uses `drape_positions`/`dh` against the
@@ -716,9 +736,13 @@ Two halves, split the same way as §delta-viz's math/render split.
   every individual `proposals`/`regions` entry to `selection`, integrating
   everything through the ONE tested `sculpt::cut_fill_volume` (FR-5 extended to
   the report — never a second volume formula). The composite walk folds
-  proposals then regions in array order over a running height, mirroring
-  `sculpt::composite_proposed_height`'s shape but spanning both vocabularies
-  (the first seam to do so). Per-item figures are clipped via a reuse trick,
+  proposals (array order) over a running height, then hands that height to
+  the SAME `prepare_composite`/`composite_proposed_height` the bake uses for
+  the regions (S7: it used to re-implement the region walk with Smooth means
+  at the selection's step — a third, drifting copy;
+  `selection_total_and_items_share_the_bake_composite`). Known gap: palette
+  proposals and regions are not interleaved in true record order (proposals
+  first); only overlapping non-additive palette+region pairs can differ. Per-item figures are clipped via a reuse trick,
   not a new `Footprint` variant: handing `cut_fill_volume` a `proposed` sampler
   that no-ops outside one item's own footprint makes "item ∩ selection" fall
   out of "selection's own lattice walk" for free. A separate geometric pass (no

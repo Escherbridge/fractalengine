@@ -261,7 +261,7 @@ fn render_brush_options(
 /// in-progress `region_draft` as-is. Brush has no shape-region affordance — it
 /// commits through the viewport drag gesture instead — so it returns empty.
 /// Pure.
-fn shape_apply_footprint(sculpt: &SculptToolState) -> Vec<[f32; 2]> {
+pub(crate) fn shape_apply_footprint(sculpt: &SculptToolState) -> Vec<[f32; 2]> {
     match sculpt.shape_mode {
         SculptShapeMode::Brush => Vec::new(),
         SculptShapeMode::Circle => terrain_tools_panel::circle_footprint(sculpt.sanitized_radius()),
@@ -283,7 +283,7 @@ fn can_apply_shape_region(footprint_len: usize, active_petal_id: Option<&str>) -
 /// `strength` (this action carries none) and minus any meters→world
 /// conversion: `SculptShapeRegion`'s footprint/heights stay petal-local
 /// meters (N-1), unlike the Brush stroke's world-unit snapshot. Pure.
-fn shape_region_op_fields(sculpt: &SculptToolState) -> (Option<f32>, Option<f32>) {
+pub(crate) fn shape_region_op_fields(sculpt: &SculptToolState) -> (Option<f32>, Option<f32>) {
     match sculpt.op {
         SculptOpKind::Level => (Some(sculpt.target_height), None),
         SculptOpKind::Raise | SculptOpKind::Lower => (None, Some(sculpt.delta)),

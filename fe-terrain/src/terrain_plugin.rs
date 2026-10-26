@@ -30,6 +30,7 @@ use crate::petal_binding::{
 };
 use crate::projection::Projection;
 use crate::scale::{scale_elevations, scale_local, scaled_tile_size, world_to_real_height};
+use crate::sculpt::{lattice_grid_step, region_grid_step, EARTHWORK_LATTICE};
 use crate::tiles::{
     decode_png_pixels, ElevationDecoder, LoadedTile, Residency, TerrainRgbDecoder,
     TerrariumDecoder, TileBundleDemand, TileCoord, TileResidency,
@@ -57,6 +58,11 @@ const MAX_HEIGHT_GRID_AXIS: usize = 65;
 /// Hard per-petal cap on proposal ghost meshes (NFR-2); the live allowance
 /// arrives via [`ProposalOverlayBudget`]. See `src/AGENTS.md` §terrain-proposals.
 pub const MAX_PROPOSAL_OVERLAYS: usize = 4_096;
+
+/// Per-petal cap on TOTAL cut/fill heatmap drape vertices (NFR-2): committed
+/// proposal drapes + baked-region drapes share it via [`HeatmapVertexUsage`].
+/// A drape that would cross it is skipped with a warning (the ghost stays).
+pub const MAX_HEATMAP_VERTICES_PER_PETAL: usize = 1_048_576;
 
 /// Live-preview debounce (OD-3, FR-3): the preview upgrades to its full
 /// lattice once the armed tool's draft has been unchanged for this long.
@@ -243,10 +249,27 @@ pub struct BakedRegionHeatmapEntity {
     pub region_id: String,
 }
 
-/// Rebuild bookkeeping for [`render_baked_region_heatmaps`] (mirrors `EarthworkBakeState`).
+/// Rebuild bookkeeping for [`render_baked_region_heatmaps`] (mirrors
+/// [`ProposalRenderState`]'s revision / re-ground / budget-growth gates).
 #[derive(Resource, Default)]
 pub struct BakedHeatmapRenderState {
     last_revision: Option<u64>,
+    /// Drapes currently resident (counts against [`ProposalOverlayBudget`]).
+    built: usize,
+    /// Region footprint vertices with a pristine base sample at build time.
+    grounded_vertices: usize,
+    /// Some region footprint lacked base cover (awaits terrain chunks).
+    ungrounded: bool,
+    /// The build stopped early at the overlay allowance or vertex cap.
+    truncated: bool,
+}
+
+/// Resident heatmap drape vertices per system, so committed-proposal and
+/// baked-region drapes together stay under [`MAX_HEATMAP_VERTICES_PER_PETAL`].
+#[derive(Resource, Default, Debug, Clone, Copy)]
+pub struct HeatmapVertexUsage {
+    pub committed: usize,
+    pub baked: usize,
 }
 
 /// Marker for a live FR-3 preview entity (ghost or heatmap drape). Sole
@@ -362,6 +385,7 @@ impl Plugin for TerrainPlugin {
             .init_resource::<HeatmapOverlayToggle>()
             .init_resource::<EarthworkBakeState>()
             .init_resource::<BakedHeatmapRenderState>()
+            .init_resource::<HeatmapVertexUsage>()
             .insert_resource(LayerStack::new())
             .add_message::<TerrainAssignmentMsg>()
             // Idempotent: fe-ui's plugin also registers these shared-seam messages.
@@ -1237,6 +1261,7 @@ fn render_terrain_proposals(
     existing: Query<Entity, With<ProposalOverlayEntity>>,
     existing_heatmaps: Query<Entity, With<ProposalHeatmapEntity>>,
     mut state: ResMut<ProposalRenderState>,
+    mut heatmap_usage: ResMut<HeatmapVertexUsage>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -1282,6 +1307,7 @@ fn render_terrain_proposals(
     for entity in existing_heatmaps.iter() {
         commands.entity(entity).despawn();
     }
+    heatmap_usage.committed = 0;
 
     let Some(config) = config else {
         return;
@@ -1291,7 +1317,9 @@ fn render_terrain_proposals(
     }
 
     let layer_id = find_layer(&layer_stack, |t| matches!(t, LayerType::ProposalOverlay));
+    let initial_visibility = layer_initial_visibility(&layer_stack, layer_id);
     let world_scale = config.effective_world_scale();
+    let mut heatmap_cap_warned = false;
 
     for (index, proposal) in config.proposals.iter().enumerate() {
         // T3: earthwork regions bake into the chunk meshes (`bake_earthwork_regions`)
@@ -1351,18 +1379,32 @@ fn render_terrain_proposals(
             },
         ));
         if let Some(layer_id) = layer_id {
-            ghost_entity.insert(LayerEntity { layer_id });
+            ghost_entity.insert((LayerEntity { layer_id }, initial_visibility));
         }
 
         if heatmap_toggle.enabled && !lattice.drape_positions.is_empty() {
+            let vertices = lattice.drape_positions.len();
+            // Never sets `state.truncated`: that flag re-arms a rebuild on any
+            // budget headroom, which would loop every frame on a vertex cap.
+            if !heatmap_vertices_fit(heatmap_usage.committed, heatmap_usage.baked, vertices) {
+                if !heatmap_cap_warned {
+                    heatmap_cap_warned = true;
+                    tracing::warn!(
+                        cap = MAX_HEATMAP_VERTICES_PER_PETAL,
+                        "proposal heatmap drapes reached the per-petal vertex cap; skipping drapes"
+                    );
+                }
+                continue;
+            }
+            heatmap_usage.committed += vertices;
             let colors = heatmap_vertex_colors(&lattice.dh, world_scale);
             let mut drape_mesh = Mesh::new(
                 PrimitiveTopology::TriangleList,
                 RenderAssetUsages::default(),
             );
-            drape_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, lattice.drape_positions.clone());
+            drape_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, lattice.drape_positions);
             drape_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-            drape_mesh.insert_indices(Indices::U32(lattice.indices.clone()));
+            drape_mesh.insert_indices(Indices::U32(lattice.indices));
             let drape_material = materials.add(fe_renderer::terrain_overlay::heatmap_material());
             let mut drape_entity = commands.spawn((
                 Mesh3d(meshes.add(drape_mesh)),
@@ -1372,7 +1414,7 @@ fn render_terrain_proposals(
                 },
             ));
             if let Some(layer_id) = layer_id {
-                drape_entity.insert(LayerEntity { layer_id });
+                drape_entity.insert((LayerEntity { layer_id }, initial_visibility));
             }
         }
     }
@@ -1386,13 +1428,6 @@ fn render_terrain_proposals(
 // `src/AGENTS.md` §sculpt (Earthwork bake).
 // ---------------------------------------------------------------------------
 
-/// Volume-lattice resolution: each region's grid step = longest bound extent
-/// divided by this (≈16k samples/region; O(step) tolerance, Q-4 planning-grade).
-/// Shared with the committed-proposal ghost (`render_terrain_proposals`) and
-/// the FR-3 live preview's settled fidelity (`PreviewAction::Build{full:true}`)
-/// — one "full" resolution policy everywhere (see `src/AGENTS.md` §delta-viz).
-const EARTHWORK_LATTICE: f32 = 128.0;
-
 /// Valid earthwork regions in the config's proposal block — the bake predicate
 /// filter, parsed through the designated `sculpt::parse_regions`.
 fn config_earthwork_regions(config: &TerrainConfig) -> Vec<crate::sculpt::EarthworkRegion> {
@@ -1405,39 +1440,24 @@ fn config_earthwork_regions(config: &TerrainConfig) -> Vec<crate::sculpt::Earthw
     crate::sculpt::parse_regions(&serde_json::Value::Array(raw))
 }
 
-/// Grid step for `bounds` at [`EARTHWORK_LATTICE`] (the settled "full"
-/// resolution); see [`lattice_grid_step`] for other resolutions.
-fn region_grid_step(bounds: Option<(f32, f32, f32, f32)>) -> f32 {
-    lattice_grid_step(bounds, EARTHWORK_LATTICE)
+/// Initial `Visibility` for an overlay spawned onto `layer_id`: hidden when
+/// that layer is hidden. `sync_layer_visibility` only reacts to LayerStack
+/// CHANGES, so a mesh spawned under an already-hidden layer would otherwise
+/// show (NFR-6; same rule as the GeoJSON overlay spawner).
+fn layer_initial_visibility(layer_stack: &LayerStack, layer_id: Option<LayerId>) -> Visibility {
+    match layer_id.and_then(|id| layer_stack.get_layer(id)) {
+        Some(layer) if !layer.visible => Visibility::Hidden,
+        _ => Visibility::Inherited,
+    }
 }
 
-/// Grid step for `bounds` at a chosen `resolution` (grid divisions along the
-/// longer axis); floored so a degenerate footprint can't stall. Shared by the
-/// committed ghost/bake (full) and the FR-3 preview (coarse while changing,
-/// full once settled — OD-3).
-fn lattice_grid_step(bounds: Option<(f32, f32, f32, f32)>, resolution: f32) -> f32 {
-    let Some((min_x, min_z, max_x, max_z)) = bounds else {
-        return 1.0;
-    };
-    ((max_x - min_x).max(max_z - min_z) / resolution).max(1e-4)
-}
-
-/// One shared grid step for a WHOLE region set's composite walk (FR-5): the
-/// bake and the FR-4 heatmap (`render_baked_region_heatmaps`) must resolve
-/// `Smooth`'s region-mean identically, which only holds if both build the
-/// SAME `CompositeRegion` list from the SAME step — the union of every
-/// region's bounds, at [`EARTHWORK_LATTICE`] resolution.
-fn composite_grid_step(regions: &[crate::sculpt::EarthworkRegion]) -> f32 {
-    let union = regions
-        .iter()
-        .filter_map(|r| r.footprint_shape().bounds())
-        .fold(None, |acc: Option<(f32, f32, f32, f32)>, b| {
-            Some(match acc {
-                None => b,
-                Some(a) => (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)),
-            })
-        });
-    region_grid_step(union)
+/// Whether a drape of `mesh_vertices` fits under [`MAX_HEATMAP_VERTICES_PER_PETAL`]
+/// given this system's resident drapes plus the other heatmap system's usage.
+fn heatmap_vertices_fit(resident: usize, other_system: usize, mesh_vertices: usize) -> bool {
+    resident
+        .saturating_add(other_system)
+        .saturating_add(mesh_vertices)
+        <= MAX_HEATMAP_VERTICES_PER_PETAL
 }
 
 /// Auto-scaled heatmap ramp max (OD-2): the deepest `|dh|` in the shown set,
@@ -1575,12 +1595,10 @@ fn bake_earthwork_regions(
 
     // READ-ONLY pristine base sampler (the field stays pre-bake — NFR-1).
     let base = |x: f32, z: f32| height_field.as_ref().and_then(|f| f.height_at(x, z));
-    // FR-5 one truth: the bake and the FR-4 heatmap (`render_baked_region_heatmaps`)
-    // both resolve this SAME composite list from the SAME shared grid step, so
-    // every op (especially `Smooth`'s region-mean) agrees bit-for-bit between
-    // the two systems — see `composite_grid_step`.
-    let composite_regions =
-        crate::sculpt::prepare_composite(&regions, &base, composite_grid_step(&regions));
+    // FR-5 one truth: bake, FR-4 heatmap (`render_baked_region_heatmaps`) and
+    // the volume report all resolve this SAME composite (`prepare_composite`:
+    // each Smooth mean at its region's own lattice), so they agree bit-for-bit.
+    let composite_regions = crate::sculpt::prepare_composite(&regions, &base);
 
     if !regions.is_empty() && height_field.is_none() && state.warned_revision != Some(revision) {
         state.warned_revision = Some(revision);
@@ -1687,35 +1705,70 @@ fn bake_earthwork_regions(
 /// PRISTINE (pre-bake) [`TerrainHeightField`] — R-3's fix: baking erased the
 /// before/after comparison; this standalone overlay restores it without
 /// un-baking anything. Shares the ONE composite surface `bake_earthwork_regions`
-/// bakes with (FR-5). Sole owner/despawner of [`BakedRegionHeatmapEntity`].
-/// See `src/AGENTS.md` §sculpt, §delta-viz.
+/// bakes with (FR-5). Rebuilds on a revision change, a heatmap-toggle flip,
+/// late-arriving covering chunks, or budget growth under truncation; bounded
+/// by [`ProposalOverlayBudget`] + [`MAX_HEATMAP_VERTICES_PER_PETAL`] (NFR-2).
+/// Sole owner/despawner of [`BakedRegionHeatmapEntity`]. See `src/AGENTS.md`
+/// §sculpt, §delta-viz.
 #[allow(clippy::too_many_arguments)]
 fn render_baked_region_heatmaps(
     active: Res<ActivePetalTerrain>,
     layer_stack: Res<LayerStack>,
     heatmap_toggle: Res<HeatmapOverlayToggle>,
     height_field: Option<Res<TerrainHeightField>>,
+    budget: Res<ProposalOverlayBudget>,
     existing: Query<Entity, With<BakedRegionHeatmapEntity>>,
     mut state: ResMut<BakedHeatmapRenderState>,
+    mut heatmap_usage: ResMut<HeatmapVertexUsage>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let revision = active.revision;
-    if state.last_revision == Some(revision) && !heatmap_toggle.is_changed() {
+    let config = active.config.as_ref().filter(|c| c.enabled);
+    // READ-ONLY pristine base sampler — never the baked chunk mesh (R-3/NFR-1).
+    let base = |x: f32, z: f32| height_field.as_ref().and_then(|f| f.height_at(x, z));
+    let grounded_vertices = |regions: &[crate::sculpt::EarthworkRegion]| -> usize {
+        regions
+            .iter()
+            .flat_map(|r| r.footprint.iter())
+            .filter(|&&[x, z]| base(x, z).is_some())
+            .count()
+    };
+
+    let capacity = proposal_overlay_capacity(budget.allowance, state.built);
+    // Re-ground check runs only while a drape awaits terrain and chunks moved.
+    let coverage_grew = state.ungrounded
+        && height_field.as_ref().is_some_and(|f| f.is_changed())
+        && config.is_some_and(|c| {
+            grounded_vertices(&config_earthwork_regions(c)) > state.grounded_vertices
+        });
+    let rebuild_needed = proposals_need_rebuild(
+        state.last_revision,
+        active.revision,
+        coverage_grew,
+        state.truncated,
+        capacity > state.built,
+    ) || heatmap_toggle.is_changed();
+    if !rebuild_needed {
         return;
     }
-    state.last_revision = Some(revision);
+    let state = &mut *state;
+    state.last_revision = Some(active.revision);
+    state.built = 0;
+    state.grounded_vertices = 0;
+    state.ungrounded = false;
+    state.truncated = false;
 
     // Sole despawner of this marker: clear the previous build.
     for entity in existing.iter() {
         commands.entity(entity).despawn();
     }
+    heatmap_usage.baked = 0;
 
     if !heatmap_toggle.enabled {
         return;
     }
-    let Some(config) = active.config.as_ref().filter(|c| c.enabled) else {
+    let Some(config) = config else {
         return;
     };
     let regions = config_earthwork_regions(config);
@@ -1723,15 +1776,28 @@ fn render_baked_region_heatmaps(
         return;
     }
 
-    // READ-ONLY pristine base sampler — never the baked chunk mesh (R-3/NFR-1).
-    let base = |x: f32, z: f32| height_field.as_ref().and_then(|f| f.height_at(x, z));
-    let grid_step = composite_grid_step(&regions);
-    let composite_regions = crate::sculpt::prepare_composite(&regions, &base, grid_step);
+    let composite_regions = crate::sculpt::prepare_composite(&regions, &base);
     let world_scale = config.effective_world_scale();
     let layer_id = find_layer(&layer_stack, |t| matches!(t, LayerType::ProposalOverlay));
+    let initial_visibility = layer_initial_visibility(&layer_stack, layer_id);
+    let mut heatmap_cap_warned = false;
 
     for region in &regions {
+        if state.built >= capacity {
+            state.truncated = true;
+            tracing::warn!(
+                cap = capacity,
+                "baked-region heatmaps reached the residency budget; truncating"
+            );
+            break;
+        }
+        let grounded = grounded_vertices(std::slice::from_ref(region));
+        state.grounded_vertices += grounded;
+        state.ungrounded |= grounded < region.footprint.len();
+
         let footprint = region.footprint_shape();
+        // The region's OWN lattice — the same step its persisted volume uses.
+        let grid_step = region_grid_step(footprint.bounds());
         let proposed = |x: f32, z: f32| {
             base(x, z)
                 .map(|b| crate::sculpt::composite_proposed_height(&composite_regions, b, x, z))
@@ -1744,14 +1810,29 @@ fn render_baked_region_heatmaps(
         if lattice.drape_positions.is_empty() {
             continue;
         }
+        let vertices = lattice.drape_positions.len();
+        // Never sets `state.truncated` (see `render_terrain_proposals`).
+        if !heatmap_vertices_fit(heatmap_usage.baked, heatmap_usage.committed, vertices) {
+            if !heatmap_cap_warned {
+                heatmap_cap_warned = true;
+                tracing::warn!(
+                    cap = MAX_HEATMAP_VERTICES_PER_PETAL,
+                    "baked-region heatmap drapes reached the per-petal vertex cap; skipping"
+                );
+            }
+            continue;
+        }
+        heatmap_usage.baked += vertices;
+        state.built += 1;
+
         let colors = heatmap_vertex_colors(&lattice.dh, world_scale);
         let mut mesh = Mesh::new(
             PrimitiveTopology::TriangleList,
             RenderAssetUsages::default(),
         );
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, lattice.drape_positions.clone());
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, lattice.drape_positions);
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-        mesh.insert_indices(Indices::U32(lattice.indices.clone()));
+        mesh.insert_indices(Indices::U32(lattice.indices));
         let material = materials.add(fe_renderer::terrain_overlay::heatmap_material());
         let mut entity = commands.spawn((
             Mesh3d(meshes.add(mesh)),
@@ -1761,7 +1842,7 @@ fn render_baked_region_heatmaps(
             },
         ));
         if let Some(layer_id) = layer_id {
-            entity.insert(LayerEntity { layer_id });
+            entity.insert((LayerEntity { layer_id }, initial_visibility));
         }
     }
 }
@@ -1784,6 +1865,7 @@ struct PreviewSnapshot {
     target_m: f32,
     delta_m: f32,
     strength: f32,
+    source: fe_renderer::terrain_overlay::PreviewSource,
 }
 
 impl From<&fe_renderer::terrain_overlay::ProposalPreview> for PreviewSnapshot {
@@ -1795,6 +1877,7 @@ impl From<&fe_renderer::terrain_overlay::ProposalPreview> for PreviewSnapshot {
             target_m: p.target_m,
             delta_m: p.delta_m,
             strength: p.strength,
+            source: p.source,
         }
     }
 }
@@ -1826,20 +1909,27 @@ impl PreviewDebounce {
     fn poll(&mut self, current: Option<&PreviewSnapshot>, now_secs: f64) -> Option<PreviewAction> {
         match current {
             None => self.seen.take().map(|_| PreviewAction::Clear),
-            Some(snap) => {
-                if self.seen.as_ref() != Some(snap) {
-                    self.seen = Some(snap.clone());
-                    self.last_change_secs = now_secs;
-                    self.settled = false;
-                    Some(PreviewAction::Build { full: false })
-                } else if !self.settled && now_secs - self.last_change_secs >= PREVIEW_DEBOUNCE_SECS
-                {
-                    self.settled = true;
-                    Some(PreviewAction::Build { full: true })
-                } else {
-                    None
-                }
+            Some(snap) if self.seen.as_ref() != Some(snap) => {
+                self.seen = Some(snap.clone());
+                self.last_change_secs = now_secs;
+                self.settled = false;
+                Some(PreviewAction::Build { full: false })
             }
+            Some(_) => self.poll_unchanged(now_secs),
+        }
+    }
+
+    /// [`poll`](Self::poll) for a frame whose draft is known unchanged — no
+    /// snapshot (and no allocation) needed: only the settle timer can fire.
+    fn poll_unchanged(&mut self, now_secs: f64) -> Option<PreviewAction> {
+        if self.seen.is_some()
+            && !self.settled
+            && now_secs - self.last_change_secs >= PREVIEW_DEBOUNCE_SECS
+        {
+            self.settled = true;
+            Some(PreviewAction::Build { full: true })
+        } else {
+            None
         }
     }
 }
@@ -1852,11 +1942,11 @@ impl PreviewDebounce {
 /// region-mean relax instead of the proposal-seam's identity shortcut
 /// (`terrain_proposal.rs`'s `Smooth` is identity there — delta-viz tripwire).
 ///
-/// `ProposalPreview.target_m`/`delta_m` are REAL METERS for every source
-/// (fe-ui's `publish_proposal_preview` converts at its own emit boundary —
-/// `fe-ui/src/terrain_preview.rs`), while `TerrainProposal`/`sculpt::proposed_height`
-/// take WORLD/scene units (N-1). Converted back here via `* world_scale`
-/// (the inverse of fe-ui's `world_to_meters`) — the one seam-unit crossing.
+/// `ProposalPreview.footprint` is WORLD units; `target_m`/`delta_m` are REAL
+/// METERS for every source (fe-ui's `publish_proposal_preview` converts at its
+/// emit boundary), while `TerrainProposal`/`sculpt::proposed_height` take
+/// WORLD/scene units (N-1). Converted back here via `* world_scale` (the
+/// inverse of fe-ui's `world_to_meters`) — the one seam-unit crossing.
 fn build_preview_lattice(
     preview: &fe_renderer::terrain_overlay::ProposalPreview,
     base: &impl Fn(f32, f32) -> Option<f32>,
@@ -1872,7 +1962,7 @@ fn build_preview_lattice(
     let target_world = (preview.target_m as f64 * scale) as f32;
     let delta_world = (preview.delta_m as f64 * scale) as f32;
     match preview.source {
-        PreviewSource::PaletteOp => {
+        PreviewSource::PaletteOp | PreviewSource::SelectedProposal => {
             let op = crate::terrain_proposal::TerrainOp::from_snake(&preview.op)?;
             let draft = crate::terrain_proposal::TerrainProposal {
                 id: "__preview__".into(),
@@ -1914,8 +2004,9 @@ fn build_preview_lattice(
 /// drape, debounced (OD-3). NEVER writes the DB (fe-terrain has no such
 /// channel) or the height field — this system takes it as `Option<Res<_>>`,
 /// so mutation is structurally impossible (NFR-1). Never bumps
-/// `ActivePetalTerrain.revision`. Sole owner/despawner of
-/// [`ProposalPreviewEntity`].
+/// `ActivePetalTerrain.revision`. A `SelectedProposal` draft is readout-only:
+/// its committed ghost/drape already render, so no duplicate mesh spawns.
+/// Sole owner/despawner of [`ProposalPreviewEntity`].
 #[allow(clippy::too_many_arguments)]
 fn render_proposal_preview(
     preview: Option<Res<fe_renderer::terrain_overlay::ProposalPreview>>,
@@ -1935,9 +2026,26 @@ fn render_proposal_preview(
     let scoped = preview
         .as_deref()
         .filter(|p| active.petal_id.as_deref() == Some(p.petal_id.as_str()));
-    let snapshot = scoped.map(PreviewSnapshot::from);
+    let now = time.elapsed_secs_f64();
 
-    let Some(action) = debounce.poll(snapshot.as_ref(), time.elapsed_secs_f64()) else {
+    // NFR-3: snapshot (clones) only when the draft or its petal scope may have
+    // moved; an idle frame just ticks the settle timer, allocation-free.
+    let draft_moved = preview.as_ref().is_some_and(|p| p.is_changed())
+        || active.is_changed()
+        || scoped.is_some() != debounce.seen.is_some();
+    let mut action = if draft_moved {
+        let snapshot = scoped.map(PreviewSnapshot::from);
+        debounce.poll(snapshot.as_ref(), now)
+    } else {
+        debounce.poll_unchanged(now)
+    };
+    if action.is_none() && heatmap_toggle.is_changed() && debounce.seen.is_some() {
+        // The drape sub-toggle flipped under a live preview: rebuild as-is.
+        action = Some(PreviewAction::Build {
+            full: debounce.settled,
+        });
+    }
+    let Some(action) = action else {
         return;
     };
 
@@ -1973,19 +2081,24 @@ fn render_proposal_preview(
         cut_m3: lattice.cut_fill.cut_m3,
         fill_m3: lattice.cut_fill.fill_m3,
         net_m3: lattice.cut_fill.net_m3(),
+        scaled: lattice.cut_fill.scaled,
     });
 
+    if preview.source == fe_renderer::terrain_overlay::PreviewSource::SelectedProposal {
+        return; // readout-only: the committed overlay already shows this delta
+    }
     if lattice.ghost_positions.is_empty() {
         return; // Nothing groundable yet — an honest hole, same as the committed ghost.
     }
 
     let layer_id = find_layer(&layer_stack, |t| matches!(t, LayerType::ProposalOverlay));
+    let initial_visibility = layer_initial_visibility(&layer_stack, layer_id);
 
     let mut ghost_mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::default(),
     );
-    ghost_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, lattice.ghost_positions.clone());
+    ghost_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, lattice.ghost_positions);
     ghost_mesh.insert_indices(Indices::U32(lattice.indices.clone()));
     let tint = fe_renderer::terrain_overlay::op_tint(&preview.op);
     let ghost_material_handle = materials.add(fe_renderer::terrain_overlay::ghost_material(tint));
@@ -1996,7 +2109,7 @@ fn render_proposal_preview(
         ProposalPreviewEntity,
     ));
     if let Some(layer_id) = layer_id {
-        ghost_entity.insert(LayerEntity { layer_id });
+        ghost_entity.insert((LayerEntity { layer_id }, initial_visibility));
     }
 
     if heatmap_toggle.enabled && !lattice.drape_positions.is_empty() {
@@ -2005,9 +2118,9 @@ fn render_proposal_preview(
             PrimitiveTopology::TriangleList,
             RenderAssetUsages::default(),
         );
-        drape_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, lattice.drape_positions.clone());
+        drape_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, lattice.drape_positions);
         drape_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-        drape_mesh.insert_indices(Indices::U32(lattice.indices.clone()));
+        drape_mesh.insert_indices(Indices::U32(lattice.indices));
         let drape_material = materials.add(fe_renderer::terrain_overlay::heatmap_material());
         let mut drape_entity = commands.spawn((
             Mesh3d(meshes.add(drape_mesh)),
@@ -2015,7 +2128,7 @@ fn render_proposal_preview(
             ProposalPreviewEntity,
         ));
         if let Some(layer_id) = layer_id {
-            drape_entity.insert(LayerEntity { layer_id });
+            drape_entity.insert((LayerEntity { layer_id }, initial_visibility));
         }
     }
 }
@@ -2186,34 +2299,6 @@ mod tests {
         let b = positions_world_xz_bounds(&pos, Vec3::new(100.0, 0.0, -50.0)).unwrap();
         assert_eq!(b, (98.0, -50.0, 110.0, -30.0));
         assert!(positions_world_xz_bounds(&[], Vec3::ZERO).is_none());
-    }
-
-    #[test]
-    fn composite_grid_step_unions_every_region_bounds() {
-        use crate::sculpt::{EarthworkRegion, SculptOp};
-        let regions = vec![
-            EarthworkRegion {
-                id: "r1".into(),
-                op: SculptOp::Raise,
-                footprint: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-                material: "earth".into(),
-                target_height: None,
-                delta: Some(1.0),
-            },
-            EarthworkRegion {
-                id: "r2".into(),
-                op: SculptOp::Raise,
-                footprint: vec![[100.0, 100.0], [118.0, 100.0], [118.0, 118.0], [100.0, 118.0]],
-                material: "earth".into(),
-                target_height: None,
-                delta: Some(1.0),
-            },
-        ];
-        // Union bounds span 0..118 -> same step as region_grid_step(0,0,118,118),
-        // not either region's OWN (smaller) extent.
-        let expected = region_grid_step(Some((0.0, 0.0, 118.0, 118.0)));
-        assert!((composite_grid_step(&regions) - expected).abs() < 1e-6);
-        assert_eq!(composite_grid_step(&[]), 1.0, "no regions -> degenerate floor");
     }
 
     #[test]
@@ -2476,6 +2561,7 @@ mod tests {
             .init_asset::<StandardMaterial>()
             .init_resource::<ProposalRenderState>()
             .init_resource::<HeatmapOverlayToggle>()
+            .init_resource::<HeatmapVertexUsage>()
             .insert_resource(ProposalOverlayBudget { allowance })
             .insert_resource(LayerStack::new())
             .insert_resource(TerrainHeightField::default())
@@ -2808,16 +2894,22 @@ mod tests {
             .add_layer(crate::layers::MapLayer::new(LayerType::ProposalOverlay, 0));
         app.update();
 
-        {
+        /// Visibility of every committed ghost + heatmap drape.
+        fn overlay_visibilities(app: &mut App) -> Vec<Visibility> {
             let world = app.world_mut();
-            let mut q = world.query_filtered::<&Visibility, With<ProposalOverlayEntity>>();
-            let before: Vec<_> = q.iter(world).copied().collect();
-            assert!(!before.is_empty(), "ghost spawned");
-            assert!(
-                before.iter().all(|v| *v != Visibility::Hidden),
-                "visible by default (OD-8)"
-            );
+            let mut q = world.query_filtered::<&Visibility, Or<(
+                With<ProposalOverlayEntity>,
+                With<ProposalHeatmapEntity>,
+            )>>();
+            q.iter(world).copied().collect()
         }
+
+        let before = overlay_visibilities(&mut app);
+        assert_eq!(before.len(), 2, "ghost + heatmap drape spawned, both layer-bound");
+        assert!(
+            before.iter().all(|v| *v != Visibility::Hidden),
+            "visible by default (OD-8)"
+        );
 
         app.world_mut()
             .resource_mut::<LayerStack>()
@@ -2825,12 +2917,22 @@ mod tests {
             .unwrap()
             .visible = false;
         app.update();
-
-        let world = app.world_mut();
-        let mut q = world.query_filtered::<&Visibility, With<ProposalOverlayEntity>>();
         assert!(
-            q.iter(world).all(|v| *v == Visibility::Hidden),
+            overlay_visibilities(&mut app)
+                .iter()
+                .all(|v| *v == Visibility::Hidden),
             "hiding the ProposalOverlay layer hides every overlay entity"
+        );
+
+        // A rebuild WHILE the layer stays hidden (LayerStack untouched, so
+        // `sync_layer_visibility` does not run) must spawn hidden, not pop back.
+        app.world_mut().resource_mut::<ActivePetalTerrain>().revision += 1;
+        app.update();
+        let rebuilt = overlay_visibilities(&mut app);
+        assert_eq!(rebuilt.len(), 2, "rebuild respawned ghost + drape");
+        assert!(
+            rebuilt.iter().all(|v| *v == Visibility::Hidden),
+            "overlays spawned under a hidden layer must start hidden: {rebuilt:?}"
         );
     }
 
@@ -2854,12 +2956,23 @@ mod tests {
 
     /// Headless app running only `render_baked_region_heatmaps`.
     fn baked_heatmap_app(proposals: Vec<TerrainProposal>, tile: HeightTile) -> App {
+        let mut app = baked_heatmap_app_without_terrain(proposals, MAX_PROPOSAL_OVERLAYS);
+        app.world_mut()
+            .resource_mut::<TerrainHeightField>()
+            .insert((10, 0, 0), tile);
+        app
+    }
+
+    /// `baked_heatmap_app` with an empty height field and a chosen allowance.
+    fn baked_heatmap_app_without_terrain(proposals: Vec<TerrainProposal>, allowance: usize) -> App {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<Mesh>()
             .init_asset::<StandardMaterial>()
             .init_resource::<BakedHeatmapRenderState>()
             .init_resource::<HeatmapOverlayToggle>()
+            .init_resource::<HeatmapVertexUsage>()
+            .insert_resource(ProposalOverlayBudget { allowance })
             .insert_resource(LayerStack::new())
             .insert_resource(TerrainHeightField::default())
             .insert_resource(ActivePetalTerrain {
@@ -2872,10 +2985,49 @@ mod tests {
                 revision: 1,
             })
             .add_systems(Update, render_baked_region_heatmaps);
+        app
+    }
+
+    #[test]
+    fn baked_heatmap_appears_once_covering_terrain_arrives() {
+        // Startup order: the petal's config (revision) lands BEFORE its chunks.
+        // The FR-4 drape must still appear when the covering tile arrives —
+        // a revision-only gate left the baked region heatmap-less forever.
+        let region = region_proposal("r1", TerrainOp::Level, 0.0, 5.0);
+        let mut app = baked_heatmap_app_without_terrain(vec![region], MAX_PROPOSAL_OVERLAYS);
+        app.update();
+        assert!(baked_heatmap_entities(&mut app).is_empty(), "no terrain yet");
+
         app.world_mut()
             .resource_mut::<TerrainHeightField>()
-            .insert((10, 0, 0), tile);
-        app
+            .insert((10, 0, 0), flat_tile(Vec3::ZERO, 100.0));
+        app.update();
+        let built = baked_heatmap_entities(&mut app);
+        assert_eq!(built.len(), 1, "covering chunk arrived -> drape built");
+
+        // Steady state: further chunk churn does not rebuild a grounded drape.
+        app.world_mut()
+            .resource_mut::<TerrainHeightField>()
+            .insert((10, 5, 5), flat_tile(Vec3::new(500.0, 0.0, 500.0), 100.0));
+        app.update();
+        assert_eq!(baked_heatmap_entities(&mut app), built, "grounded drape never churns");
+    }
+
+    #[test]
+    fn baked_heatmaps_stop_at_residency_budget() {
+        // NFR-2: baked-region drapes are meshes too — they honor the SAME
+        // `ProposalOverlayBudget` as the committed ghosts (no bypass).
+        let regions: Vec<_> = (0..5)
+            .map(|i| region_proposal(&format!("r{i}"), TerrainOp::Level, i as f32 * 20.0, 5.0))
+            .collect();
+        let mut app = baked_heatmap_app_without_terrain(regions, 2);
+        app.world_mut()
+            .resource_mut::<TerrainHeightField>()
+            .insert((10, 0, 0), flat_tile(Vec3::ZERO, 300.0));
+        app.update();
+        assert_eq!(baked_heatmap_entities(&mut app).len(), 2, "allowance 2 -> 2 drapes");
+        let usage = *app.world().resource::<HeatmapVertexUsage>();
+        assert!(usage.baked > 0 && usage.committed == 0, "baked usage tracked: {usage:?}");
     }
 
     fn baked_heatmap_entities(app: &mut App) -> Vec<Entity> {
@@ -3208,6 +3360,7 @@ mod tests {
             target_m: 0.0,
             delta_m,
             strength: 1.0,
+            source: PreviewSource::PaletteOp,
         }
     }
 
@@ -3264,6 +3417,46 @@ mod tests {
             d.poll(None, 2.0),
             None,
             "already cleared — no repeat despawn churn"
+        );
+    }
+
+    #[test]
+    fn selected_proposal_preview_reports_without_duplicate_meshes() {
+        // Source (d) is readout-only: its committed ghost + drape already
+        // render, so the preview must report cut/fill but spawn nothing (a
+        // second identical translucent lattice z-fights / double-tints).
+        let footprint = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        let mut draft = preview_draft(footprint, 2.0);
+        draft.source = PreviewSource::SelectedProposal;
+        let mut app = preview_app(Some(draft), Some(flat_tile(Vec3::ZERO, 20.0)));
+        app.update();
+
+        let reports = &app.world().resource::<CapturedPreviewReports>().0;
+        let report = reports.last().expect("readout report written");
+        assert!(report.fill_m3 > 0.0 && report.scaled);
+        assert!(preview_ghost_entity(&mut app).is_none(), "no duplicate ghost");
+        assert!(preview_heatmap_entities(&mut app).is_empty(), "no duplicate drape");
+    }
+
+    #[test]
+    fn preview_spawned_under_hidden_layer_starts_hidden() {
+        let footprint = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        let mut app = preview_app(
+            Some(preview_draft(footprint, 2.0)),
+            Some(flat_tile(Vec3::ZERO, 20.0)),
+        );
+        let mut layer = crate::layers::MapLayer::new(LayerType::ProposalOverlay, 0);
+        layer.visible = false;
+        app.world_mut().resource_mut::<LayerStack>().add_layer(layer);
+        app.update();
+
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&Visibility, With<ProposalPreviewEntity>>();
+        let visibilities: Vec<_> = q.iter(world).copied().collect();
+        assert_eq!(visibilities.len(), 2, "ghost + drape spawned");
+        assert!(
+            visibilities.iter().all(|v| *v == Visibility::Hidden),
+            "a live preview must not punch through a hidden overlay layer"
         );
     }
 

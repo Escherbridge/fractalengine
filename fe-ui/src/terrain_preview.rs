@@ -9,11 +9,12 @@ use bevy::prelude::*;
 
 use fe_renderer::terrain_overlay::{PreviewSource, ProposalPreview, ProposalPreviewReport};
 
-use crate::actions::terrain_proposal::{SculptOpKind, SculptShapeMode, SculptToolState};
-use crate::geometry::world_to_meters;
+use crate::actions::terrain_proposal::{brush_region_fields, SculptShapeMode, SculptToolState};
+use crate::geometry::{meters_to_world, world_to_meters};
 use crate::navigation_manager::NavigationManager;
 use crate::node_manager::brush_interaction::BrushGesture;
-use crate::panels::terrain_tools_panel::{circle_footprint, rect_footprint};
+use crate::panels::terrain_tools_panel::circle_footprint;
+use crate::panels::tool_options::{shape_apply_footprint, shape_region_op_fields};
 use crate::panels::tool_panel::ToolPanelState;
 use crate::panels::toolbar::Tool;
 use crate::plugin::ToolState;
@@ -63,47 +64,85 @@ fn proposal_op_snake(op: ProposalOp) -> &'static str {
     }
 }
 
+/// Preview `(target, delta, strength)` from a persisted region record's
+/// `(target_height, delta)` slots — mirrors fe-terrain's `EarthworkRegion::
+/// effective_delta`/`effective_strength` (Level/Smooth keep blend strength in
+/// the `delta` slot), so the preview integrates exactly what the commit bakes.
+fn region_record_preview_params(op: &str, target: Option<f32>, delta_slot: Option<f32>) -> (f32, f32, f32) {
+    let target = target.unwrap_or(0.0);
+    if matches!(op, "level" | "smooth") {
+        (target, 0.0, delta_slot.unwrap_or(1.0).clamp(0.0, 1.0))
+    } else {
+        (target, delta_slot.unwrap_or(0.0), 1.0)
+    }
+}
+
+/// The WORLD-unit footprint a shape-mode Apply would commit: the same
+/// `shape_apply_footprint` the Apply button submits (petal-local meters),
+/// converted exactly as `handle_shape_region` converts it (`meters_to_world`).
+pub(crate) fn shape_commit_footprint_world(sculpt: &SculptToolState, world_scale: f64) -> Vec<[f32; 2]> {
+    shape_apply_footprint(sculpt)
+        .into_iter()
+        .map(|[x, z]| [meters_to_world(x, world_scale), meters_to_world(z, world_scale)])
+        .collect()
+}
+
 /// Source (b): a DEFINED sculpt footprint (Circle/Rect/Polygon) armed while
 /// Brush is the active viewport tool. The freeform `Brush` shape mode is NOT
 /// this source — an in-progress stroke is source (c) below, and an idle
-/// Brush mode with no stroke has nothing to preview yet.
+/// Brush mode with no stroke has nothing to preview yet. Footprint and params
+/// mirror what `SculptShapeRegion` commits: world-unit footprint, meters
+/// target/delta (the seam's units), and NO strength (the committed shape
+/// region carries none, so it bakes at full strength).
 fn sculpt_shape_draft(
     sculpt: &SculptToolState,
     tool: &ToolState,
     petal_id: &str,
+    world_scale: f64,
 ) -> Option<ProposalPreview> {
-    if tool.active_tool != Tool::Brush {
+    if tool.active_tool != Tool::Brush || matches!(sculpt.shape_mode, SculptShapeMode::Brush) {
         return None;
     }
-    let footprint = match sculpt.shape_mode {
-        SculptShapeMode::Brush => return None,
-        SculptShapeMode::Circle => circle_footprint(sculpt.radius),
-        SculptShapeMode::Rect => rect_footprint(sculpt.radius),
-        SculptShapeMode::Polygon => {
-            if sculpt.region_draft.len() < 3 {
-                return None;
-            }
-            sculpt.region_draft.clone()
-        }
-    };
-    // `SculptToolState`'s fields are already petal-local METERS (N-1) — no
-    // `world_to_meters` conversion here, unlike the palette/brush sources
-    // below. Smooth has no target/delta of its own (it relaxes toward the
-    // region mean, which only S2's real height-field read can compute); its
-    // `strength` alone carries the pull weight.
-    let (target_m, delta_m) = match sculpt.op {
-        SculptOpKind::Level => (sculpt.target_height, 0.0),
-        SculptOpKind::Raise | SculptOpKind::Lower => (0.0, sculpt.delta),
-        SculptOpKind::Smooth => (0.0, 0.0),
-    };
+    let footprint = shape_commit_footprint_world(sculpt, world_scale);
+    if footprint.len() < 3 {
+        return None;
+    }
+    let op = sculpt.op.to_snake();
+    let (target, delta_slot) = shape_region_op_fields(sculpt);
+    let (target_m, delta_m, strength) = region_record_preview_params(op, target, delta_slot);
     Some(ProposalPreview {
         petal_id: petal_id.to_string(),
-        op: sculpt.op.to_snake().to_string(),
+        op: op.to_string(),
         footprint,
         target_m,
         delta_m,
-        strength: sculpt.strength,
+        strength,
         source: PreviewSource::SculptShape,
+    })
+}
+
+/// Source (c): the in-progress brush corridor, with the region-record params
+/// the release commit would persist (`brush_region_fields`); `None` when the
+/// commit would reject the stroke. World target/delta convert to meters here.
+fn brush_stroke_draft(
+    brush: &BrushGesture,
+    petal_id: &str,
+    world_scale: f64,
+) -> Option<ProposalPreview> {
+    let snap = brush.preview_snapshot()?;
+    let (target, delta_slot) =
+        brush_region_fields(&snap.op, snap.target_height_world, snap.delta_world, snap.strength)
+            .ok()?;
+    let (target_world, delta_world, strength) =
+        region_record_preview_params(&snap.op, target, delta_slot);
+    Some(ProposalPreview {
+        petal_id: petal_id.to_string(),
+        op: snap.op,
+        footprint: snap.footprint,
+        target_m: world_to_meters(target_world, world_scale),
+        delta_m: world_to_meters(delta_world, world_scale),
+        strength,
+        source: PreviewSource::BrushStroke,
     })
 }
 
@@ -147,7 +186,7 @@ fn selected_proposal_draft(
         target_m: world_to_meters(record.target_height.unwrap_or(0.0), world_scale),
         delta_m: world_to_meters(record.delta.unwrap_or(0.0), world_scale),
         strength: 1.0,
-        source: PreviewSource::PaletteOp,
+        source: PreviewSource::SelectedProposal,
     })
 }
 
@@ -157,13 +196,16 @@ fn selected_proposal_draft(
 /// committed proposal, readout-only (d). With none of those, the resource is
 /// REMOVED — "no preview" is the resource's absence, never a zeroed value, so
 /// a reader (S2's render system) can't mistake a stale draft for a live one.
+/// An unchanged draft is never re-inserted, so the resource only reads as
+/// changed when the draft really moved (fe-terrain's NFR-3 idle path).
 ///
 /// Registered in `PostUpdate` (plugin.rs) so it always observes THIS frame's
 /// `handle_brush_interaction`/`process_ui_actions` writes (both run earlier,
 /// in `Update`) rather than lagging a frame behind them.
 #[allow(clippy::too_many_arguments)]
-pub fn publish_proposal_preview(
+pub(crate) fn publish_proposal_preview(
     mut commands: Commands,
+    current: Option<Res<ProposalPreview>>,
     nav: Res<NavigationManager>,
     right_sidebar: Res<RightSidebarState>,
     tool_state: Res<ToolState>,
@@ -206,18 +248,8 @@ pub fn publish_proposal_preview(
     };
     let world_scale = petal_map.world_scale;
 
-    let draft = brush
-        .preview_snapshot()
-        .map(|snap| ProposalPreview {
-            petal_id: petal_id.clone(),
-            op: snap.op,
-            footprint: snap.footprint,
-            target_m: world_to_meters(snap.target_height_world.unwrap_or(0.0), world_scale),
-            delta_m: world_to_meters(snap.delta_world.unwrap_or(0.0), world_scale),
-            strength: snap.strength,
-            source: PreviewSource::BrushStroke,
-        })
-        .or_else(|| sculpt_shape_draft(&sculpt, &tool_state, &petal_id))
+    let draft = brush_stroke_draft(&brush, &petal_id, world_scale)
+        .or_else(|| sculpt_shape_draft(&sculpt, &tool_state, &petal_id, world_scale))
         .or_else(|| {
             (!just_committed && right_sidebar.is_active(RightSidebarSection::TerrainTools))
                 .then(|| palette_draft(&tool_panel, &petal_id, world_scale))
@@ -226,10 +258,14 @@ pub fn publish_proposal_preview(
 
     match draft {
         Some(preview) => {
-            commands.insert_resource(preview);
+            if current.as_deref() != Some(&preview) {
+                commands.insert_resource(preview);
+            }
         }
         None => {
-            commands.remove_resource::<ProposalPreview>();
+            if current.is_some() {
+                commands.remove_resource::<ProposalPreview>();
+            }
             readout.0 = None;
         }
     }
@@ -333,6 +369,49 @@ mod tests {
             preview.footprint, expected,
             "preview footprint must equal what release would commit"
         );
+        // Params too: release persists Raise as `|delta| × strength` (1.0 ×
+        // 0.5) at full strength — previewing raw delta 1.0 would double it.
+        let (target, delta_slot) = brush_region_fields("raise", None, Some(1.0), 0.5).unwrap();
+        assert_eq!((target, delta_slot), (None, Some(0.5)));
+        assert_eq!(preview.delta_m, 0.5, "preview delta = the committed delta slot");
+        assert_eq!(preview.strength, 1.0, "Raise records bake at full strength");
+    }
+
+    #[test]
+    fn sculpt_shape_preview_matches_what_apply_commits_on_a_scaled_petal() {
+        // `SculptToolState` is petal-local METERS; `SculptShapeRegion` commits
+        // a WORLD footprint (`handle_shape_region`'s meters_to_world) and no
+        // strength. The preview must draw/integrate that same region, not a
+        // meters-sized circle at full-vs-partial strength.
+        let mut app = test_app();
+        arm_petal(&mut app, "p1");
+        app.world_mut().resource_mut::<PetalMapState>().world_scale = 2.0;
+        app.world_mut().resource_mut::<ToolState>().active_tool = Tool::Brush;
+        {
+            let mut sculpt = app.world_mut().resource_mut::<SculptToolState>();
+            sculpt.shape_mode = SculptShapeMode::Circle;
+            sculpt.radius = 3.0;
+            sculpt.op = crate::actions::terrain_proposal::SculptOpKind::Level;
+            sculpt.target_height = 4.0;
+            sculpt.strength = 0.5;
+        }
+        app.update();
+        app.update();
+
+        let preview = app
+            .world()
+            .get_resource::<ProposalPreview>()
+            .expect("an armed shape publishes a preview")
+            .clone();
+        assert_eq!(preview.source, PreviewSource::SculptShape);
+        let sculpt = app.world().resource::<SculptToolState>();
+        let committed_world: Vec<[f32; 2]> = shape_apply_footprint(sculpt)
+            .into_iter()
+            .map(|[x, z]| [x * 2.0, z * 2.0])
+            .collect();
+        assert_eq!(preview.footprint, committed_world, "world-unit footprint, as committed");
+        assert_eq!(preview.target_m, 4.0, "seam target stays meters");
+        assert_eq!(preview.strength, 1.0, "a committed shape region bakes at full strength");
     }
 
     #[test]

@@ -16,12 +16,12 @@ use bevy::prelude::*;
 use bevy_egui::egui;
 
 use fe_renderer::terrain_overlay::{VolumeReportRequest, VolumeReportResult};
+use fe_runtime::messages::DbResult;
 
 use crate::actions::terrain_proposal::{SculptShapeMode, SculptToolState};
 use crate::actions::UiManager;
 use crate::navigation_manager::NavigationManager;
 use crate::panels::proposal_report_panel::earthwork_regions_from_terrain;
-use crate::panels::terrain_tools_panel::{circle_footprint, rect_footprint};
 use crate::panels::toolbar::Tool;
 use crate::plugin::ToolState;
 use crate::terrain_map::PetalMapState;
@@ -75,16 +75,17 @@ impl ResolvedVolumeSelection {
 }
 
 /// Resolve the current volume-report selection. Pure — takes every input as
-/// a plain reference so it is testable without a Bevy `App`. Mirrors
-/// `terrain_preview::sculpt_shape_draft`'s shape-footprint sourcing exactly
-/// (same cap: Polygon needs >=3 drafted points), but this is a SEPARATE
-/// concept from the FR-3 preview — selecting a volume to report is not the
-/// same action as arming an edit, even though both can read the same draft.
+/// a plain reference so it is testable without a Bevy `App`. A drawn shape
+/// uses `terrain_preview::shape_commit_footprint_world` — the WORLD-unit
+/// footprint Apply would commit (fe-terrain and node positions are world
+/// units; `SculptToolState` is meters). Selecting a volume to report is a
+/// SEPARATE concept from the FR-3 preview, even though both read the draft.
 pub(crate) fn resolve_volume_selection(
     proposal_state: &ProposalEditState,
     terrain_json: Option<&serde_json::Value>,
     sculpt: &SculptToolState,
     brush_tool_active: bool,
+    world_scale: f64,
 ) -> Option<ResolvedVolumeSelection> {
     if let Some(selected) = proposal_state.selected.as_deref() {
         if let Some(record) = proposal_state.proposals.iter().find(|r| r.id == selected) {
@@ -101,16 +102,9 @@ pub(crate) fn resolve_volume_selection(
             });
         }
     }
-    if brush_tool_active {
-        let footprint = match sculpt.shape_mode {
-            SculptShapeMode::Brush => None,
-            SculptShapeMode::Circle => Some(circle_footprint(sculpt.radius)),
-            SculptShapeMode::Rect => Some(rect_footprint(sculpt.radius)),
-            SculptShapeMode::Polygon => {
-                (sculpt.region_draft.len() >= 3).then(|| sculpt.region_draft.clone())
-            }
-        };
-        if let Some(footprint) = footprint.filter(|f| f.len() >= 3) {
+    if brush_tool_active && !matches!(sculpt.shape_mode, SculptShapeMode::Brush) {
+        let footprint = crate::terrain_preview::shape_commit_footprint_world(sculpt, world_scale);
+        if footprint.len() >= 3 {
             return Some(ResolvedVolumeSelection::Drawn { footprint });
         }
     }
@@ -148,12 +142,16 @@ impl VolumeReportState {
 }
 
 /// FR-6: resolve the current selection and, when it (or the active petal)
-/// changed since last frame, mint a fresh correlation id and request the true
-/// figures from fe-terrain. Registered in `PostUpdate` (plugin.rs) so it
-/// observes this frame's `process_ui_actions`/selection writes (both run in
-/// `Update`), mirroring `terrain_preview::publish_proposal_preview`.
+/// changed since last frame — or the active petal's terrain doc was
+/// (re)loaded, so the composite under an unchanged selection moved — mint a
+/// fresh correlation id and request the true figures from fe-terrain.
+/// Registered in `PostUpdate` (plugin.rs) so it observes this frame's
+/// `process_ui_actions`/selection writes (both run in `Update`), mirroring
+/// `terrain_preview::publish_proposal_preview`.
+#[allow(clippy::too_many_arguments)]
 pub fn sync_volume_report_request(
     nav: Res<NavigationManager>,
+    mut db_results: MessageReader<DbResult>,
     proposal_state: Res<ProposalEditState>,
     petal_map: Res<PetalMapState>,
     sculpt: Res<SculptToolState>,
@@ -163,6 +161,12 @@ pub fn sync_volume_report_request(
     mut last_petal: Local<Option<String>>,
 ) {
     let active_petal = nav.active_petal_id.clone();
+    // A confirmed terrain load for the active petal (any commit/delete/API
+    // write) changes what an UNCHANGED selection contains: re-request.
+    let terrain_reloaded = db_results.read().any(|result| {
+        matches!(result, DbResult::PetalTerrainLoaded { petal_id, .. }
+            if active_petal.as_deref() == Some(petal_id.as_str()))
+    });
     // Petal switch: the outgoing petal's selection/result must never bleed
     // into the next one (mirrors `terrain_preview`'s own rule).
     if *last_petal != active_petal {
@@ -180,6 +184,7 @@ pub fn sync_volume_report_request(
         petal_map.terrain_json.as_ref(),
         &sculpt,
         tool.active_tool == Tool::Brush,
+        petal_map.world_scale,
     );
     let Some(resolved) = resolved else {
         state.clear();
@@ -188,7 +193,8 @@ pub fn sync_volume_report_request(
 
     let key = resolved.key();
     let footprint = resolved.footprint().to_vec();
-    let unchanged = state.selection_key.as_deref() == Some(key.as_str())
+    let unchanged = !terrain_reloaded
+        && state.selection_key.as_deref() == Some(key.as_str())
         && state.footprint == footprint
         && state.petal_id.as_deref() == Some(petal_id.as_str());
     if unchanged {
@@ -503,37 +509,102 @@ mod tests {
         }
     }
 
-    // --- S6 flow test 1: the R-4 regression ---
+    // --- S6 flow test 1: the R-4 regression, driven through the real seam ---
 
-    #[test]
-    fn selected_region_report_shows_true_cut_fill_not_area_times_delta() {
-        let mut state = VolumeReportState::default();
-        state.display_label = Some("Selected region r1".into());
-        state.correlation_id = Some("c1".into());
-        // The true composite cut/fill over sloped terrain (12.5/0.0) differs
-        // from what the old area×|delta| approximation would have shown for
-        // this footprint+delta (area 100 × |delta| 2.0 = 200.0) — the
-        // regression this guards is a silent revert to that approximation.
-        state.result = Some(sample_result("c1"));
+    #[derive(Resource, Default)]
+    struct CapturedRequests(Vec<VolumeReportRequest>);
 
-        match resolve_volume_display(&state) {
-            VolumeDisplay::Ready { result, .. } => {
-                assert_eq!(result.cut_m3, 12.5);
-                assert_eq!(result.fill_m3, 0.0);
-                assert_ne!(
-                    result.cut_m3, 200.0,
-                    "must show the true figure, never the area×|delta| approximation"
-                );
-            }
-            other => panic!("expected Ready, got {other:?}"),
+    fn capture_requests(
+        mut reader: MessageReader<VolumeReportRequest>,
+        mut sink: ResMut<CapturedRequests>,
+    ) {
+        sink.0.extend(reader.read().cloned());
+    }
+
+    /// The fe-ui half of the Volume report round trip: selection → request,
+    /// result → state (fe-terrain's answerer is replaced by the test).
+    fn volume_app() -> App {
+        let mut app = App::new();
+        app.init_resource::<NavigationManager>()
+            .init_resource::<ProposalEditState>()
+            .init_resource::<PetalMapState>()
+            .init_resource::<SculptToolState>()
+            .init_resource::<ToolState>()
+            .init_resource::<VolumeReportState>()
+            .init_resource::<CapturedRequests>()
+            .add_message::<DbResult>()
+            .add_message::<VolumeReportRequest>()
+            .add_message::<VolumeReportResult>()
+            .add_systems(
+                Update,
+                (
+                    sync_volume_report_request,
+                    capture_requests,
+                    drain_volume_report_result,
+                )
+                    .chain(),
+            );
+        app
+    }
+
+    fn shown_cut(app: &App) -> Option<f64> {
+        match resolve_volume_display(app.world().resource::<VolumeReportState>()) {
+            VolumeDisplay::Ready { result, .. } => Some(result.cut_m3),
+            _ => None,
         }
     }
 
     #[test]
+    fn selected_region_report_shows_true_cut_fill_not_area_times_delta() {
+        let terrain = serde_json::json!({"proposals": [{
+            "id": "r1", "op": "raise", "material": "earth", "delta": 2.0,
+            "footprint": [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+        }]});
+        let mut app = volume_app();
+        app.world_mut().resource_mut::<NavigationManager>().active_petal_id = Some("p1".into());
+        app.update(); // petal-entry baseline frame
+        app.world_mut().resource_mut::<PetalMapState>().terrain_json = Some(terrain.clone());
+        app.world_mut().resource_mut::<ProposalEditState>().selected = Some("r1".into());
+        app.update();
+
+        let request = app.world().resource::<CapturedRequests>().0[0].clone();
+        assert_eq!(request.petal_id, "p1");
+        assert_eq!(request.footprint.len(), 4, "the selected region's own footprint");
+        assert_eq!(shown_cut(&app), None, "pending until the true figure arrives — no estimate");
+
+        // The integrator's answer is shown verbatim (12.5), never area×|delta|
+        // (100 × 2 = 200); a reply for any other correlation is ignored.
+        let mut answer = sample_result(&request.correlation_id);
+        app.world_mut().write_message(answer.clone());
+        app.update();
+        assert_eq!(shown_cut(&app), Some(12.5));
+        answer.correlation_id = "stale".into();
+        answer.cut_m3 = 999.0;
+        app.world_mut().write_message(answer);
+        app.update();
+        assert_eq!(shown_cut(&app), Some(12.5), "stale reply must not surface");
+
+        // A confirmed terrain reload (a commit elsewhere) re-asks for the
+        // SAME selection: the old figure is withdrawn, never left stale.
+        app.world_mut().write_message(DbResult::PetalTerrainLoaded {
+            petal_id: "p1".into(),
+            terrain: Some(terrain),
+            correlation_id: None,
+        });
+        app.update();
+        let requests = &app.world().resource::<CapturedRequests>().0;
+        assert_eq!(requests.len(), 2, "terrain reload re-requests the unchanged selection");
+        assert_ne!(requests[1].correlation_id, request.correlation_id);
+        assert_eq!(shown_cut(&app), None, "previous figure withdrawn until re-answered");
+    }
+
+    #[test]
     fn no_result_yet_is_pending_not_a_silent_approximation() {
-        let mut state = VolumeReportState::default();
-        state.display_label = Some("Selected proposal p1".into());
-        state.correlation_id = Some("c1".into());
+        let state = VolumeReportState {
+            display_label: Some("Selected proposal p1".into()),
+            correlation_id: Some("c1".into()),
+            ..Default::default()
+        };
         // No result has arrived for c1 yet.
         match resolve_volume_display(&state) {
             VolumeDisplay::Pending { label } => assert_eq!(label, "Selected proposal p1"),
@@ -606,8 +677,36 @@ mod tests {
 
     #[test]
     fn unscaled_petal_report_shows_world_units_chip() {
-        assert_eq!(volume_unit_suffix(true), "m");
-        assert_eq!(volume_unit_suffix(false), "wu");
+        // The copied table is what leaves the app (BI egress): an unscaled
+        // result must say world units on every row, never meters.
+        let mut result = sample_result("c1");
+        result.scaled = false;
+        let tsv = volume_report_to_tsv(&result, &[]);
+        assert!(tsv.contains("Cut\t12.500\twu\u{b3}"), "{tsv}");
+        assert!(tsv.contains("Area\t100.000\twu\u{b2}"), "{tsv}");
+        assert!(!tsv.contains("\tm"), "unscaled rows must not claim meters:\n{tsv}");
+        let scaled = volume_report_to_tsv(&sample_result("c1"), &[]);
+        assert!(scaled.contains("Cut\t12.500\tm\u{b3}"), "{scaled}");
+    }
+
+    #[test]
+    fn drawn_shape_selection_is_the_world_footprint_apply_commits() {
+        // `SculptToolState` is meters; fe-terrain integrates (and nodes sit)
+        // in world units. On a 2 wu/m petal the selection must be 2× larger.
+        let sculpt = SculptToolState {
+            shape_mode: SculptShapeMode::Rect,
+            radius: 3.0,
+            ..Default::default()
+        };
+        let resolved =
+            resolve_volume_selection(&ProposalEditState::default(), None, &sculpt, true, 2.0)
+                .expect("a Rect draft resolves");
+        let expected: Vec<[f32; 2]> =
+            crate::panels::tool_options::shape_apply_footprint(&sculpt)
+                .into_iter()
+                .map(|[x, z]| [x * 2.0, z * 2.0])
+                .collect();
+        assert_eq!(resolved.footprint(), expected.as_slice());
     }
 
     // --- S6 flow test 4: Copy as TSV ---
@@ -665,11 +764,13 @@ mod tests {
         );
         proposal_state.selected = Some(id.clone());
 
-        let mut sculpt = SculptToolState::default();
-        sculpt.shape_mode = SculptShapeMode::Circle;
-        sculpt.radius = 5.0;
+        let sculpt = SculptToolState {
+            shape_mode: SculptShapeMode::Circle,
+            radius: 5.0,
+            ..Default::default()
+        };
 
-        let resolved = resolve_volume_selection(&proposal_state, None, &sculpt, true)
+        let resolved = resolve_volume_selection(&proposal_state, None, &sculpt, true, 1.0)
             .expect("a selected proposal resolves");
         match resolved {
             ResolvedVolumeSelection::Proposal { id: got, .. } => assert_eq!(got, id),
@@ -680,15 +781,17 @@ mod tests {
     #[test]
     fn sculpt_draft_is_the_fallback_when_nothing_is_selected() {
         let proposal_state = ProposalEditState::default();
-        let mut sculpt = SculptToolState::default();
-        sculpt.shape_mode = SculptShapeMode::Circle;
-        sculpt.radius = 5.0;
+        let sculpt = SculptToolState {
+            shape_mode: SculptShapeMode::Circle,
+            radius: 5.0,
+            ..Default::default()
+        };
 
-        let resolved = resolve_volume_selection(&proposal_state, None, &sculpt, true)
+        let resolved = resolve_volume_selection(&proposal_state, None, &sculpt, true, 1.0)
             .expect("a Circle draft resolves when Brush is active");
         assert!(matches!(resolved, ResolvedVolumeSelection::Drawn { .. }));
 
         // Brush tool not active -> no drawn fallback either.
-        assert!(resolve_volume_selection(&proposal_state, None, &sculpt, false).is_none());
+        assert!(resolve_volume_selection(&proposal_state, None, &sculpt, false, 1.0).is_none());
     }
 }

@@ -37,9 +37,7 @@ use crate::theme;
 /// `volume_report_panel` reuses this to resolve a selected region's footprint.
 pub(crate) struct EarthworkRegionSummary {
     pub(crate) id: String,
-    pub(crate) op: String,
     pub(crate) footprint: Vec<[f32; 2]>,
-    pub(crate) delta: Option<f32>,
 }
 
 /// Parse Brush/shape earthwork regions out of a petal's terrain doc (finding
@@ -64,19 +62,15 @@ pub(crate) fn earthwork_regions_from_terrain(
         .filter(|item| item.get("material").is_some())
         .filter_map(|item| {
             let id = item.get("id")?.as_str()?.to_string();
-            let op = item.get("op")?.as_str()?.to_string();
             let footprint: Vec<[f32; 2]> = item
                 .get("footprint")?
                 .as_array()?
                 .iter()
                 .filter_map(|p| serde_json::from_value::<[f32; 2]>(p.clone()).ok())
                 .collect();
-            let delta = item.get("delta").and_then(serde_json::Value::as_f64);
             Some(EarthworkRegionSummary {
                 id,
-                op,
                 footprint,
-                delta: delta.map(|d| d as f32),
             })
         })
         .collect()
@@ -180,8 +174,6 @@ struct ProposalReport {
     length_unit: &'static str,
     area: f64,
     area_unit: &'static str,
-    volume: f64,
-    volume_unit: &'static str,
     slope_pct: f64,
     bearing_deg: f64,
 }
@@ -223,7 +215,6 @@ fn compute_report(footprint: &[[f64; 3]], delta: f64, world_scale: f64) -> Optio
     let extent_x = world_to_real_distance(origin, corner_x, scale);
     let extent_z = world_to_real_distance(origin, corner_z, scale);
     let area = polygon_area_m2(footprint, scale);
-    let volume = area * (delta / scale);
     // Slope is rise/run in the SAME (raw world) unit system, so `scale`
     // cancels out algebraically — computed from the raw footprint extent,
     // not `extent_x` (which already has `scale` divided in), so it stays
@@ -236,10 +227,10 @@ fn compute_report(footprint: &[[f64; 3]], delta: f64, world_scale: f64) -> Optio
     };
     let bearing = bearing_deg(origin, [max[0], min[1], max[2]]);
 
-    let (length_unit, area_unit, volume_unit) = if has_scale {
-        ("m", "m\u{b2}", "m\u{b3}")
+    let (length_unit, area_unit) = if has_scale {
+        ("m", "m\u{b2}")
     } else {
-        ("wu", "wu\u{b2}", "wu\u{b3}")
+        ("wu", "wu\u{b2}")
     };
 
     Some(ProposalReport {
@@ -249,8 +240,6 @@ fn compute_report(footprint: &[[f64; 3]], delta: f64, world_scale: f64) -> Optio
         length_unit,
         area,
         area_unit,
-        volume,
-        volume_unit,
         slope_pct,
         bearing_deg: bearing,
     })
@@ -293,11 +282,9 @@ mod tests {
         let report = compute_report(&SQUARE, 2.0, 0.1).unwrap();
         assert!(report.has_scale);
         assert_eq!(report.length_unit, "m");
-        assert_eq!(report.volume_unit, "m\u{b3}");
+        assert_eq!(report.area_unit, "m\u{b2}");
         assert!((report.extent_x - 100.0).abs() < 1e-6);
         assert!((report.area - 10_000.0).abs() < 1e-3);
-        // volume = area * (delta / scale) = 10000 * (2.0/0.1) = 200000
-        assert!((report.volume - 200_000.0).abs() < 1.0);
     }
 
     #[test]
@@ -306,11 +293,10 @@ mod tests {
             let report = compute_report(&SQUARE, 5.0, bad_scale).unwrap();
             assert!(!report.has_scale);
             assert_eq!(report.length_unit, "wu");
-            assert_eq!(report.volume_unit, "wu\u{b3}");
+            assert_eq!(report.area_unit, "wu\u{b2}");
             // scale=1.0 fallback: raw world-unit numbers, not silently scaled.
             assert!((report.extent_x - 10.0).abs() < 1e-9);
             assert!((report.area - 100.0).abs() < 1e-9);
-            assert!((report.volume - 500.0).abs() < 1e-9);
         }
     }
 
@@ -349,8 +335,6 @@ mod tests {
         let regions = earthwork_regions_from_terrain(Some(&terrain));
         assert_eq!(regions.len(), 1, "only the material-tagged region entry");
         assert_eq!(regions[0].id, "r1");
-        assert_eq!(regions[0].op, "raise");
-        assert_eq!(regions[0].delta, Some(3.0));
         assert_eq!(regions[0].footprint.len(), 4);
     }
 

@@ -235,19 +235,41 @@ pub struct CompositeRegion {
     pub strength: f32,
 }
 
+/// Volume/mean lattice resolution: grid divisions along a region's longer
+/// bound axis (≈16k samples/region; O(step) tolerance, Q-4 planning-grade).
+/// The ONE "full" resolution policy shared by bake, heatmap, preview and
+/// report. See `src/AGENTS.md` §delta-viz.
+pub const EARTHWORK_LATTICE: f32 = 128.0;
+
+/// Grid step for `bounds` at `resolution` divisions along the longer axis;
+/// floored so a degenerate footprint can't stall (no bounds → `1.0`).
+pub fn lattice_grid_step(bounds: Option<(f32, f32, f32, f32)>, resolution: f32) -> f32 {
+    let Some((min_x, min_z, max_x, max_z)) = bounds else {
+        return 1.0;
+    };
+    ((max_x - min_x).max(max_z - min_z) / resolution).max(1e-4)
+}
+
+/// Grid step for `bounds` at [`EARTHWORK_LATTICE`] (the settled "full" resolution).
+pub fn region_grid_step(bounds: Option<(f32, f32, f32, f32)>) -> f32 {
+    lattice_grid_step(bounds, EARTHWORK_LATTICE)
+}
+
 /// Resolve every region's footprint/params/(Smooth)mean against `base`, in
-/// record order, for [`composite_proposed_height`].
+/// record order, for [`composite_proposed_height`]. Each region's Smooth mean
+/// is sampled at its OWN [`region_grid_step`] — never a set-wide step — so it
+/// matches [`EarthworkRegion::cut_fill`] and never shifts when an unrelated
+/// region is added (see `src/AGENTS.md` §sculpt).
 pub fn prepare_composite(
     regions: &[EarthworkRegion],
     base: &impl Fn(f32, f32) -> Option<f32>,
-    grid_step: f32,
 ) -> Vec<CompositeRegion> {
     regions
         .iter()
         .map(|r| {
             let footprint = r.footprint_shape();
             let mean = if r.op == SculptOp::Smooth {
-                region_mean_height(base, &footprint, grid_step)
+                region_mean_height(base, &footprint, region_grid_step(footprint.bounds()))
             } else {
                 None
             };
@@ -831,11 +853,55 @@ mod tests {
                 delta: None,
             },
         ];
-        let prepared = prepare_composite(&regions, &base, 1.0);
+        let prepared = prepare_composite(&regions, &base);
         // Inside: raise 1->3, then level (full strength) to 0.5 -> absolute 0.5.
         assert!((composite_proposed_height(&prepared, 1.0, 5.0, 5.0) - 0.5).abs() < 1e-5);
         // Outside every footprint: base passes through unchanged.
         assert_eq!(composite_proposed_height(&prepared, 1.0, 50.0, 50.0), 1.0);
+    }
+
+    /// FR-5 one truth (S7 fix): a Smooth region's composite surface must equal
+    /// its standalone `EarthworkRegion::cut_fill` (the figure persisted on the
+    /// region node) and must NOT move when an unrelated far-away region is
+    /// added. A set-wide (union-bounds) mean step broke both.
+    #[test]
+    fn composite_smooth_mean_matches_standalone_and_ignores_unrelated_regions() {
+        let base = |x: f32, z: f32| Some((x * 0.37).sin() * 4.0 + z * 0.3);
+        let smooth = EarthworkRegion {
+            id: "s".into(),
+            op: SculptOp::Smooth,
+            footprint: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            material: "earth".into(),
+            target_height: None,
+            delta: Some(0.8),
+        };
+        let far = EarthworkRegion {
+            id: "far".into(),
+            op: SculptOp::Raise,
+            footprint: vec![[500.0, 500.0], [520.0, 500.0], [520.0, 520.0], [500.0, 520.0]],
+            material: "earth".into(),
+            target_height: None,
+            delta: Some(1.0),
+        };
+        let alone = prepare_composite(std::slice::from_ref(&smooth), &base);
+        let with_far = prepare_composite(&[smooth.clone(), far], &base);
+        for &(x, z) in &[(1.0, 1.0), (5.0, 5.0), (9.5, 2.0)] {
+            let b = base(x, z).unwrap();
+            assert_eq!(
+                composite_proposed_height(&alone, b, x, z),
+                composite_proposed_height(&with_far, b, x, z),
+                "an unrelated region changed the Smooth surface at ({x},{z})"
+            );
+        }
+
+        let fp = smooth.footprint_shape();
+        let step = region_grid_step(fp.bounds());
+        let composite = |x: f32, z: f32| base(x, z).map(|b| composite_proposed_height(&with_far, b, x, z));
+        assert_eq!(
+            cut_fill_volume(&base, &composite, &fp, step, 1.0),
+            smooth.cut_fill(&base, step, 1.0),
+            "composite (bake/heatmap/report) drifted from the persisted standalone volume"
+        );
     }
 
     /// Plan Phase 2 determinism gate: every op × footprint × scale yields

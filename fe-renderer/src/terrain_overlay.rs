@@ -123,26 +123,27 @@ pub struct EarthworkVolumeReport {
 /// with red dominant for cut (dh < 0), blue for fill (dh > 0), transparent
 /// inside ±neutral_m, and saturated beyond ±ramp_max_m.
 pub fn cut_fill_rgba(dh_m: f32, ramp_max_m: f32, neutral_m: f32) -> [f32; 4] {
-    // Clamp to valid range (zero neutral band or negative ramp are degenerate).
-    let ramp_max = ramp_max_m.max(0.001);
-    let neutral = neutral_m.max(0.0);
-
-    // Transparent inside the neutral band.
-    if dh_m.abs() <= neutral {
+    // Degenerate inputs never yield out-of-range channels: a non-finite dh is
+    // undrawable (transparent); a neutral band at/above the ramp saturates.
+    let ramp_max = if ramp_max_m.is_finite() { ramp_max_m.max(0.001) } else { 0.001 };
+    let neutral = if neutral_m.is_finite() { neutral_m.max(0.0) } else { 0.0 };
+    if !dh_m.is_finite() || dh_m.abs() <= neutral {
         return [0.0, 0.0, 0.0, 0.0];
     }
 
-    // Grade from neutral band edge to ramp max.
-    // Compute intensity as (|dh| - neutral) / (ramp_max - neutral), clamped to [0, 1].
-    let intensity = ((dh_m.abs() - neutral) / (ramp_max - neutral)).min(1.0);
+    // Grade from the neutral band edge to the ramp max, clamped to [0, 1].
+    let span = ramp_max - neutral;
+    let intensity = if span > 0.0 {
+        ((dh_m.abs() - neutral) / span).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
 
-    // Red family for cut (dh < 0): pure red [1.0, 0.0, 0.0] graded by intensity.
-    // Blue family for fill (dh > 0): pure blue [0.0, 0.0, 1.0] graded by intensity.
     if dh_m < 0.0 {
-        // Cut: red dominates, green and blue drop with intensity.
+        // Cut: red family — green and blue drop with intensity.
         [1.0, 1.0 - intensity, 1.0 - intensity, 0.8]
     } else {
-        // Fill: blue dominates, red and green drop with intensity.
+        // Fill: blue family — red and green drop with intensity.
         [1.0 - intensity, 1.0 - intensity, 1.0, 0.8]
     }
 }
@@ -162,7 +163,8 @@ pub fn heatmap_material() -> StandardMaterial {
 /// Preview state for the armed terrain tool before commit (P1 live preview).
 /// The preview system reads this Resource and renders the cut/fill heatmap +
 /// ghost surface without writing the DB or terrain field (NFR-5, FR-3).
-#[derive(Resource, Debug, Clone)]
+/// Units: `footprint` is WORLD units; `target_m`/`delta_m` are real meters.
+#[derive(Resource, Debug, Clone, PartialEq)]
 pub struct ProposalPreview {
     /// Petal scope (authoritative for visibility; wrong-petal previews are dropped).
     pub petal_id: String,
@@ -189,6 +191,9 @@ pub enum PreviewSource {
     SculptShape,
     /// In-progress brush stroke (corridor footprint from samples).
     BrushStroke,
+    /// The selected COMMITTED palette proposal: readout only — its committed
+    /// ghost/drape already render, so the preview spawns no duplicate mesh.
+    SelectedProposal,
 }
 
 /// Live preview report: cut/fill/net volumes from the armed tool before commit.
@@ -200,6 +205,8 @@ pub struct ProposalPreviewReport {
     pub cut_m3: f64,
     pub fill_m3: f64,
     pub net_m3: f64,
+    /// `false` = no usable map scale: the figures are world units³ (NFR-4).
+    pub scaled: bool,
 }
 
 /// Request for a volume report on a selected footprint (P2 user selection).
@@ -380,10 +387,10 @@ mod tests {
         assert_eq!(a, 0.0, "dh=0 must be transparent");
         assert_eq!([r, g, b], [0.0, 0.0, 0.0], "neutral band is black");
 
-        let [r, g, b, a] = cut_fill_rgba(0.3, ramp_max, neutral);
+        let [_, _, _, a] = cut_fill_rgba(0.3, ramp_max, neutral);
         assert_eq!(a, 0.0, "dh<neutral must be transparent");
 
-        let [r, g, b, a] = cut_fill_rgba(-0.4, ramp_max, neutral);
+        let [_, _, _, a] = cut_fill_rgba(-0.4, ramp_max, neutral);
         assert_eq!(a, 0.0, "dh<neutral must be transparent");
 
         // Just outside neutral: faint color.
@@ -408,26 +415,26 @@ mod tests {
 
         // Half the ramp depth: medium intensity.
         let half_depth = (ramp_max + neutral) / 2.0;
-        let [r_half, g_half, b_half, a_half] = cut_fill_rgba(half_depth, ramp_max, neutral);
+        let [r_half, _, b_half, a_half] = cut_fill_rgba(half_depth, ramp_max, neutral);
         assert!(a_half > 0.0, "halfway fill must be opaque");
         assert!(b_half > r_half, "fill blue > red");
-        let [r_cut, g_cut, b_cut, a_cut] = cut_fill_rgba(-half_depth, ramp_max, neutral);
+        let [r_cut, _, b_cut, a_cut] = cut_fill_rgba(-half_depth, ramp_max, neutral);
         assert!(a_cut > 0.0, "halfway cut must be opaque");
         assert!(r_cut > b_cut, "cut red > blue");
 
         // At the ramp max: full intensity (saturated).
-        let [r_max, g_max, b_max, a_max] = cut_fill_rgba(ramp_max, ramp_max, neutral);
+        let [r_max, _, b_max, a_max] = cut_fill_rgba(ramp_max, ramp_max, neutral);
         assert!(a_max > 0.0, "ramp max must be opaque");
         assert_eq!(b_max, 1.0, "fill saturation: blue = 1.0");
         assert!(r_max < 1.0, "fill: red < 1.0");
 
-        let [r_min, g_min, b_min, a_min] = cut_fill_rgba(-ramp_max, ramp_max, neutral);
+        let [r_min, _, b_min, a_min] = cut_fill_rgba(-ramp_max, ramp_max, neutral);
         assert!(a_min > 0.0, "ramp max must be opaque");
         assert_eq!(r_min, 1.0, "cut saturation: red = 1.0");
         assert!(b_min < 1.0, "cut: blue < 1.0");
 
         // Beyond the ramp max: clamped to saturation (not brighter).
-        let [r_beyond, g_beyond, b_beyond, a_beyond] =
+        let [_, _, b_beyond, a_beyond] =
             cut_fill_rgba(2.0 * ramp_max, ramp_max, neutral);
         assert!(a_beyond > 0.0, "beyond ramp must be opaque");
         assert_eq!(b_beyond, 1.0, "beyond saturates at blue = 1.0");
@@ -443,6 +450,18 @@ mod tests {
         // Negative ramp max (clamped to 0.001) should not panic.
         let [_, _, _, a_tiny] = cut_fill_rgba(0.1, -5.0, 0.05);
         assert!(a_tiny > 0.0, "negative ramp is clamped; 0.1 must be opaque");
+
+        // Degenerate inputs never produce out-of-range channels (neutral band
+        // wider than the ramp used to give 1 - (negative) > 1), and a
+        // non-finite dh is undrawable rather than NaN-coloured.
+        for (dh, ramp, band) in [(0.1, -5.0, 0.05), (3.0, 1.0, 2.0), (-3.0, 1.0, 2.0), (1.0, f32::NAN, 0.1)] {
+            let rgba = cut_fill_rgba(dh, ramp, band);
+            assert!(
+                rgba.iter().all(|c| (0.0..=1.0).contains(c)),
+                "cut_fill_rgba({dh}, {ramp}, {band}) = {rgba:?} left [0, 1]"
+            );
+        }
+        assert_eq!(cut_fill_rgba(f32::NAN, 5.0, 0.5)[3], 0.0, "NaN dh is transparent");
     }
 
     #[test]

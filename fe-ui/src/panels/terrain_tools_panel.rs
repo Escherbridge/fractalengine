@@ -456,12 +456,27 @@ pub(crate) fn render_brush_controls(ui: &mut egui::Ui, sculpt: &mut SculptToolSt
     });
 }
 
+/// Live-readout line for a preview report: m³ only when fe-terrain had a
+/// usable map scale, else world units³ + the "no map scale" chip (NFR-4). Pure.
+pub(crate) fn preview_readout_text(
+    report: &fe_renderer::terrain_overlay::ProposalPreviewReport,
+) -> String {
+    let unit = if report.scaled { "m³" } else { "wu³" };
+    let line = format!(
+        "Cut {:.2} {unit} · Fill {:.2} {unit} · Net {:.2} {unit}",
+        report.cut_m3, report.fill_m3, report.net_m3
+    );
+    if report.scaled {
+        line
+    } else {
+        format!("{line} (no map scale — world units)")
+    }
+}
+
 /// S3 (terrain_proposal_delta_viz FR-3) live readout content: the latest
 /// cut/fill/net from the armed tool's preview, before any commit. Calm empty
-/// state when nothing is armed (ui_ux NFR-7: never-blank). Pure egui
-/// rendering — no `world_scale` conversion here, since `ProposalPreviewReport`'s
-/// m³ fields already carry real-or-world-unit honesty from fe-terrain's own
-/// NFR-4 gate (S2/S5 own that, not this widget).
+/// state when nothing is armed (ui_ux NFR-7: never-blank). Units come from
+/// the report's own `scaled` flag via [`preview_readout_text`] (NFR-4).
 pub(crate) fn render_preview_readout(ui: &mut egui::Ui, readout: &PreviewReadout) {
     ui.label(
         egui::RichText::new("Live preview")
@@ -470,13 +485,7 @@ pub(crate) fn render_preview_readout(ui: &mut egui::Ui, readout: &PreviewReadout
     );
     match &readout.0 {
         Some(report) => {
-            ui.label(
-                egui::RichText::new(format!(
-                    "Cut {:.2} m³ · Fill {:.2} m³ · Net {:.2} m³",
-                    report.cut_m3, report.fill_m3, report.net_m3
-                ))
-                .small(),
-            );
+            ui.label(egui::RichText::new(preview_readout_text(report)).small());
         }
         None => {
             ui.label(
@@ -515,6 +524,24 @@ pub(crate) fn render_preview_readout_overlay(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_readout_never_labels_world_units_as_meters() {
+        let report = |scaled| fe_renderer::terrain_overlay::ProposalPreviewReport {
+            petal_id: "p".into(),
+            cut_m3: 1.0,
+            fill_m3: 2.0,
+            net_m3: 1.0,
+            scaled,
+        };
+        let scaled = preview_readout_text(&report(true));
+        assert!(scaled.contains("m³") && !scaled.contains("wu"), "{scaled}");
+        let unscaled = preview_readout_text(&report(false));
+        assert!(
+            !unscaled.contains("m³") && unscaled.contains("wu³") && unscaled.contains("no map scale"),
+            "{unscaled}"
+        );
+    }
 
     #[test]
     fn has_real_scale_rejects_non_positive_and_non_finite() {

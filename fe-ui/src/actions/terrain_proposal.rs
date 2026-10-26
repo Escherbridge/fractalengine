@@ -1076,6 +1076,35 @@ pub(crate) fn stroke_corridor_footprint(
     Some(footprint)
 }
 
+/// The persisted region record's `(target_height, delta)` slots for a brush
+/// stroke — Level/Smooth store blend strength in `delta`; Raise/Lower store
+/// `|delta| × strength`. The ONE mapping the commit and the live preview
+/// share (preview ≠ commit otherwise). `Err` = the commit would reject it.
+pub(crate) fn brush_region_fields(
+    op: &str,
+    target_height: Option<f32>,
+    delta: Option<f32>,
+    strength: f32,
+) -> Result<(Option<f32>, Option<f32>), &'static str> {
+    let strength = if strength.is_finite() {
+        strength.clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    match op {
+        "level" => target_height
+            .filter(|value| value.is_finite())
+            .map(|target| (Some(target), Some(strength)))
+            .ok_or("Level requires a finite target height"),
+        "raise" | "lower" => delta
+            .filter(|value| value.is_finite())
+            .map(|magnitude| (None, Some(magnitude.abs() * strength)))
+            .ok_or("Raise/Lower requires a finite delta"),
+        "smooth" => Ok((None, Some(strength))),
+        _ => Err("unsupported operation"),
+    }
+}
+
 /// Persist a distance-sampled brush stroke as one terrain document update,
 /// then create one addressable endpoint node for its swept corridor.
 #[allow(clippy::too_many_arguments)]
@@ -1101,33 +1130,10 @@ pub(crate) fn handle_brush_stroke(
         bevy::log::warn!("SculptBrushStroke ignored: empty or degenerate stroke");
         return;
     }
-    let strength = if strength.is_finite() {
-        strength.clamp(0.0, 1.0)
-    } else {
-        0.5
-    };
-    let target_height = target_height.filter(|value| value.is_finite());
-    let delta = delta.filter(|value| value.is_finite());
-    let (target_height, delta) = match op.as_str() {
-        "level" => {
-            let Some(target) = target_height else {
-                bevy::log::warn!(
-                    "SculptBrushStroke ignored: Level requires a finite target height"
-                );
-                return;
-            };
-            (Some(target), Some(strength))
-        }
-        "raise" | "lower" => {
-            let Some(magnitude) = delta else {
-                bevy::log::warn!("SculptBrushStroke ignored: Raise/Lower requires a finite delta");
-                return;
-            };
-            (None, Some(magnitude.abs() * strength))
-        }
-        "smooth" => (None, Some(strength)),
-        _ => {
-            bevy::log::warn!("SculptBrushStroke ignored: unsupported operation {op}");
+    let (target_height, delta) = match brush_region_fields(&op, target_height, delta, strength) {
+        Ok(fields) => fields,
+        Err(reason) => {
+            bevy::log::warn!("SculptBrushStroke ignored ({op}): {reason}");
             return;
         }
     };

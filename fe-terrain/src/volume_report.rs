@@ -1,16 +1,12 @@
-//! Pure selected-volume report math (spec FR-6/7/8, P2): true cut/fill for an
-//! arbitrary selection footprint against the composite proposed surface, plus
-//! a per-item standalone breakdown with overlap detection (D-DV-6). Bevy-free
-//! + always compiled (same NFR-1 contract as `terrain_proposal.rs`/`sculpt`/
-//! `delta_viz.rs`): every sampler is a read-only `&impl Fn(f32,f32)->
-//! Option<f32>`, and every volume figure is computed by the ONE tested
-//! integrator (`sculpt::cut_fill_volume`) — never re-derived (FR-5 extended
-//! to the report). See `src/AGENTS.md` §volume-report (added by S5, which
-//! wires this module into `lib.rs` and answers `VolumeReportRequest`).
+//! Pure selected-volume report math (spec FR-6/7/8, P2): true cut/fill for a
+//! selection footprint against the shared composite surface, plus a per-item
+//! standalone breakdown with overlap detection. Bevy-free, always compiled,
+//! read-only samplers (NFR-1); every volume comes from `sculpt::cut_fill_volume`
+//! (FR-5). See `src/AGENTS.md` §volume-report.
 
 use crate::sculpt::{
-    cut_fill_volume, for_each_cell, proposed_height, region_mean_height, EarthworkRegion,
-    Footprint, SculptOp,
+    composite_proposed_height, cut_fill_volume, for_each_cell, prepare_composite,
+    proposed_height, EarthworkRegion, Footprint,
 };
 use crate::terrain_proposal::{apply_proposal_over_base, point_in_polygon, TerrainProposal};
 
@@ -97,16 +93,9 @@ pub fn selection_volume_report(
     step: f32,
     world_scale: f64,
 ) -> SelectionReport {
-    let region_footprints: Vec<Footprint> = regions.iter().map(|r| r.footprint_shape()).collect();
-    let region_means: Vec<Option<f32>> = regions
-        .iter()
-        .zip(&region_footprints)
-        .map(|(r, fp)| {
-            (r.op == SculptOp::Smooth)
-                .then(|| region_mean_height(base, fp, step))
-                .flatten()
-        })
-        .collect();
+    // The SAME prepared composite the bake + baked heatmap use (FR-5): each
+    // Smooth mean at its region's own lattice, never this selection's step.
+    let composite = prepare_composite(regions, base);
 
     let area_m2 = {
         let poly: Vec<[f64; 3]> = selection
@@ -132,21 +121,7 @@ pub fn selection_volume_report(
                 }
             }
         }
-        for (j, r) in regions.iter().enumerate() {
-            if region_footprints[j].contains(x, z) {
-                if let Some(next) = proposed_height(
-                    r.op,
-                    Some(h),
-                    r.target_height.unwrap_or(0.0),
-                    region_effective_delta(r),
-                    region_means[j],
-                    r.effective_strength(),
-                ) {
-                    h = next;
-                }
-            }
-        }
-        Some(h)
+        Some(composite_proposed_height(&composite, h, x, z))
     };
     let total = cut_fill_volume(base, &composite_proposed, selection, step, world_scale);
 
@@ -168,8 +143,8 @@ pub fn selection_volume_report(
                     touching.push(i);
                 }
             }
-            for (j, fp) in region_footprints.iter().enumerate() {
-                if fp.contains(x, z) {
+            for (j, c) in composite.iter().enumerate() {
+                if c.footprint.contains(x, z) {
                     touching.push(proposals.len() + j);
                 }
             }
@@ -198,22 +173,12 @@ pub fn selection_volume_report(
             overlap_area_m2: overlap_area_m2[i],
         });
     }
-    for (j, r) in regions.iter().enumerate() {
-        let fp = &region_footprints[j];
-        let mean = region_means[j];
+    for (j, (r, c)) in regions.iter().zip(&composite).enumerate() {
         let proposed = |x: f32, z: f32| {
-            if !fp.contains(x, z) {
+            if !c.footprint.contains(x, z) {
                 return None;
             }
-            let b = base(x, z)?;
-            proposed_height(
-                r.op,
-                Some(b),
-                r.target_height.unwrap_or(0.0),
-                region_effective_delta(r),
-                mean,
-                r.effective_strength(),
-            )
+            proposed_height(c.op, Some(base(x, z)?), c.target, c.delta, c.mean, c.strength)
         };
         let cf = cut_fill_volume(base, &proposed, selection, step, world_scale);
         items.push(VolumeItem {
@@ -239,23 +204,55 @@ pub fn selection_volume_report(
     }
 }
 
-/// Mirrors `EarthworkRegion`'s private `effective_delta` (Level/Smooth store
-/// blend STRENGTH in the `delta` slot, not a height delta, so it reads as 0
-/// here); duplicated as a 3-line field read because the real method is
-/// private to `sculpt` — see `EarthworkRegion::effective_strength` (pub) for
-/// the strength half of the same mapping.
-fn region_effective_delta(region: &EarthworkRegion) -> f32 {
-    if matches!(region.op, SculptOp::Level | SculptOp::Smooth) {
-        0.0
-    } else {
-        region.delta.unwrap_or(0.0)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sculpt::{region_grid_step, SculptOp};
     use crate::terrain_proposal::TerrainOp;
+
+    #[test]
+    fn selection_total_and_items_share_the_bake_composite() {
+        // FR-5 extended to the report (S7 fix): the total must be exactly
+        // `cut_fill_volume` over the SAME `prepare_composite` surface the bake
+        // uses, and a region's per-item figure (selection == its footprint, at
+        // its own lattice step — what S5 sends) must equal the standalone
+        // volume persisted on its node. Smooth over relief is the op whose
+        // mean made the old per-selection-step copy drift.
+        let base = |x: f32, z: f32| Some((x * 0.37).sin() * 4.0 + z * 0.3);
+        let smooth = EarthworkRegion {
+            id: "s".into(),
+            op: SculptOp::Smooth,
+            footprint: rect_verts([0.0, 0.0], [10.0, 10.0]),
+            material: "earth".into(),
+            target_height: None,
+            delta: Some(0.8),
+        };
+        let raise = EarthworkRegion {
+            id: "r".into(),
+            op: SculptOp::Raise,
+            footprint: rect_verts([4.0, 4.0], [30.0, 30.0]),
+            material: "earth".into(),
+            target_height: None,
+            delta: Some(1.0),
+        };
+        let regions = vec![smooth.clone(), raise];
+        let selection = Footprint::Polygon {
+            verts: smooth.footprint.clone(),
+        };
+        let step = region_grid_step(selection.bounds());
+        let report = selection_volume_report(&base, &[], &regions, &selection, step, 1.0);
+
+        let prepared = prepare_composite(&regions, &base);
+        let surface =
+            |x: f32, z: f32| base(x, z).map(|b| composite_proposed_height(&prepared, b, x, z));
+        let expected = cut_fill_volume(&base, &surface, &selection, step, 1.0);
+        assert_eq!((report.cut_m3, report.fill_m3), (expected.cut_m3, expected.fill_m3));
+
+        let item = report.items.iter().find(|i| i.id == "s").expect("smooth item");
+        let persisted = smooth.cut_fill(&base, step, 1.0);
+        assert_eq!((item.cut_m3, item.fill_m3), (persisted.cut_m3, persisted.fill_m3));
+        assert!(report.overlap, "the raise overlaps the smooth region");
+    }
 
     fn square(min: [f32; 2], max: [f32; 2]) -> Footprint {
         Footprint::Rect { min, max }

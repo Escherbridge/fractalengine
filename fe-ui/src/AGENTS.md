@@ -1071,21 +1071,40 @@ most-live wins:
    commit by construction (plan.md §5 tripwire).
 2. **Sculpt shape draft** — a defined Circle/Rect/Polygon footprint while
    Brush is the active viewport tool (freeform Brush shape mode has nothing
-   to preview until a stroke starts; that's source 1).
+   to preview until a stroke starts; that's source 1). Footprint =
+   `shape_commit_footprint_world` (the Apply button's `shape_apply_footprint`
+   → `meters_to_world`, exactly as `handle_shape_region` commits it), and NO
+   strength (the committed shape record carries none → full strength).
 3. **Armed palette op** — a circle at the origin (the same "append at
    origin" convention `terrain_tools_panel::render_controls_and_emit` uses),
    shown only while the TerrainTools section is the active right-sidebar
    section AND no proposal just committed this frame.
-4. **Selected committed proposal**, readout-only fallback, so the Proposals
-   list selection still drives a live cut/fill line when nothing is armed.
+4. **Selected committed proposal**, readout-only fallback
+   (`PreviewSource::SelectedProposal`: fe-terrain reports but spawns no
+   duplicate mesh), so the Proposals list selection still drives a live
+   cut/fill line when nothing is armed.
+
+**Params mirror the committed record (S7).** Brush and shape previews send
+the region RECORD's semantics, not the raw tool fields:
+`actions::terrain_proposal::brush_region_fields` (shared with
+`handle_brush_stroke`) folds strength into Raise/Lower `|delta|×strength`
+and stores it as the Level/Smooth blend, then `region_record_preview_params`
+maps the record back to `(target, delta, strength)` like fe-terrain's
+`EarthworkRegion::effective_*`. Previewing raw `delta` at partial strength
+showed twice the committed volume. The readout labels `wu³` + "no map
+scale" when `ProposalPreviewReport.scaled` is false (NFR-4). An identical
+draft is never re-inserted (compare-before-insert), so fe-terrain's idle
+path sees an unchanged resource and allocates nothing.
 
 **Units:** `ProposalPreview::target_m`/`delta_m` are REAL METERS (fe-terrain's
 cut/fill math wants real units, NFR-4). `ToolPanelState`/`ProposalRecord`
 values are WORLD units (unconverted, per `render_controls_and_emit`'s own
 convention) and get `geometry::world_to_meters`'d at the merge boundary;
 `SculptToolState` values are already petal-local meters (N-1) and pass
-through unconverted. The footprint itself stays WORLD units in all four
-sources — it's sampled against the (world-unit) height field, and
+through unconverted — except the shape FOOTPRINT, which is converted to
+world (S7 fix: it used to be sent in meters, mis-sizing/mis-placing the
+preview and the Volume report's drawn selection on any scaled petal). The
+footprint is WORLD units in all four sources — it's sampled against the (world-unit) height field, and
 `cut_fill_volume`-family math applies its own `/scale`/`/scale²`.
 
 **No preview is the resource's ABSENCE**, not a zeroed value — `commands.

@@ -131,6 +131,11 @@ fn effective_step(min_x: f32, min_z: f32, max_x: f32, max_z: f32, grid_step: f32
             .max(1.001) as f32;
         step *= scale;
     }
+    if corners_for(step) > DELTA_LATTICE_VERTEX_CAP as i64 {
+        // Hard guarantee: ≤ (√cap − 2) cells on the longer axis ⇒ ≤ cap corners.
+        let per_axis = (DELTA_LATTICE_VERTEX_CAP as f32).sqrt().floor() - 2.0;
+        step = step.max((max_x - min_x).max(max_z - min_z) / per_axis);
+    }
     tracing::warn!(
         requested_step = grid_step as f64,
         coarsened_step = step as f64,
@@ -199,20 +204,48 @@ mod tests {
 
     #[test]
     fn lattice_integrated_volume_equals_cut_fill_volume() {
-        // FR-5 one-truth invariant: the lattice's own `cut_fill` must be
-        // exactly what an independent `cut_fill_volume` call on the SAME
-        // inputs produces — not a second, drifting implementation.
-        let base = |x: f32, z: f32| Some((x * 0.2).sin() * 3.0 + z * 0.1);
-        let proposed = |x: f32, z: f32| base(x, z).map(|b| b + 1.5);
-        let fp = rect([-4.0, -4.0], [6.0, 7.0]);
+        // FR-5 one-truth invariant, as the spec states it: integrating the
+        // HEATMAP's own per-vertex dh over its own triangles equals
+        // `cut_fill_volume` for the same lattice. Level-to-(-5) over a linear
+        // ramp is pure cut with a linear dh, so the piecewise-linear triangle
+        // integral is exact and must match the cell-centre integrator.
+        let base = |x: f32, z: f32| Some(0.3 * x + 0.1 * z + 1.0);
+        let proposed = |_x: f32, _z: f32| Some(-5.0);
+        let fp = rect([0.0, 0.0], [10.0, 10.0]);
         let step = 0.5;
         let world_scale = 0.5;
 
         let lattice =
             DeltaLattice::build(&base, &proposed, &fp, step, world_scale).expect("lattice built");
-        let direct = cut_fill_volume(&base, &proposed, &fp, step, world_scale);
+        assert_eq!(
+            lattice.cut_fill,
+            cut_fill_volume(&base, &proposed, &fp, step, world_scale),
+            "the lattice must report the one integrator's figure, not its own"
+        );
 
-        assert_eq!(lattice.cut_fill, direct);
+        let s = world_scale;
+        let mut integrated_dh_m3 = 0.0f64;
+        for &[a, b, c] in lattice.indices.as_chunks::<3>().0 {
+            let [a, b, c] = [a as usize, b as usize, c as usize];
+            let (pa, pb, pc) = (
+                lattice.drape_positions[a],
+                lattice.drape_positions[b],
+                lattice.drape_positions[c],
+            );
+            let area_world = 0.5
+                * (((pb[0] - pa[0]) * (pc[2] - pa[2]) - (pc[0] - pa[0]) * (pb[2] - pa[2])) as f64)
+                    .abs();
+            let mean_dh_world = (lattice.dh[a] + lattice.dh[b] + lattice.dh[c]) as f64 / 3.0;
+            integrated_dh_m3 += (mean_dh_world / s) * (area_world / (s * s));
+        }
+        assert!(integrated_dh_m3 < 0.0, "pure cut must integrate negative");
+        let cut = lattice.cut_fill.cut_m3;
+        assert!(
+            ((-integrated_dh_m3) - cut).abs() / cut < 1e-4,
+            "heatmap dh integrates to {} m3 but cut_fill_volume says {cut} m3",
+            -integrated_dh_m3
+        );
+        assert_eq!(lattice.cut_fill.fill_m3, 0.0);
     }
 
     #[test]
@@ -245,7 +278,7 @@ mod tests {
                 delta: None,
             },
         ];
-        let prepared = prepare_composite(&regions, &base, 1.0);
+        let prepared = prepare_composite(&regions, &base);
         let proposed = |x: f32, z: f32| {
             base(x, z).map(|b| crate::sculpt::composite_proposed_height(&prepared, b, x, z))
         };
