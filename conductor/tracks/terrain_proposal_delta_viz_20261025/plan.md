@@ -4,30 +4,30 @@ track: terrain_proposal_delta_viz_20261025
 title: "Implementation Plan: terrain proposal delta viz + selected-volume report"
 created: 2026-10-25
 resource: ./spec.md
-computed_at_commit: 951adb2
-partitions_confidence: planned
+computed_at_commit: 9165f75
+partitions_confidence: verified
 ---
 
 # Implementation plan: terrain_proposal_delta_viz_20261025
 
-> Citations computed @`951adb2`. Re-grep every cited symbol before a slice starts if HEAD has moved. The partitions in `metadata.json` are a **planned** hypothesis: `/slice` must run the collision proof before any launch.
+> Citations computed @`9165f75` (S7 review-and-fix). Partitions verified and collision-proofed; all slices launched and complete. This document captures the final plan state after W1–W4 execution.
 
-## 0. Assumptions (unratified decisions proceed on these defaults)
+## 0. Assumptions — D-DV-1..12 ratified (2026-10-26 S8 close-out)
 
-Each line is spec §6's recommendation, with the cost of reversing it.
+Each decision proceeding on spec §6's recommendation. Reversals costs recorded for future reference.
 
-- OD-1 civil red/blue diverging ramp. *Reversal cost: low* (one pure fn in `terrain_overlay.rs`).
-- OD-2 auto ramp max + override. *Low.*
-- OD-3 100 ms debounce, coarse 64 / full 128 lattice. *Low* (constants).
-- OD-4 extend the Proposal-report section, renamed "Volume report". *Medium* (moving panels later touches `right_sidebar.rs`).
-- OD-5 2.5D prism. *Medium for P4* (3D needs an elevation band in the request type, which is reserved now).
-- OD-6 composite totals + standalone per-item. *Low.*
-- OD-7 no endpoint, CSV copy only. *Low.*
-- OD-8 both overlays on. *Trivial.*
-- OD-9 preview the armed tool's draft. *Medium* (a later Commit/Discard model adds state, but the seam type is unchanged).
-- OD-10 reuse the `ProposalOverlay` layer. *Medium* (a new MapLayer touches config names).
-- OD-11 palette proposals stay non-nodes. *Low.*
-- OD-12 P3 conditional. *n/a.*
+- **D-DV-1** civil red/blue diverging ramp. *Reversal cost: low* (one pure fn in `terrain_overlay.rs`).
+- **D-DV-2** auto ramp max + override. *Low.*
+- **D-DV-3** 100 ms debounce, coarse 64 / full 128 lattice. *Low* (constants).
+- **D-DV-4** extend the Proposal-report section, renamed "Volume report". *Medium* (moving panels later touches `right_sidebar.rs`).
+- **D-DV-5** 2.5D prism. *Medium for P4* (3D needs an elevation band in the request type, which is reserved now).
+- **D-DV-6** composite totals + standalone per-item. *Low.*
+- **D-DV-7** no endpoint, CSV copy only. *Low.*
+- **D-DV-8** both overlays on. *Trivial.*
+- **D-DV-9** preview the armed tool's draft. *Medium* (a later Commit/Discard model adds state, but the seam type is unchanged).
+- **D-DV-10** reuse the `ProposalOverlay` layer. *Medium* (a new MapLayer touches config names).
+- **D-DV-11** palette proposals stay non-nodes. *Low.*
+- **D-DV-12** P3 conditional. *n/a.*
 
 ## 1. Doctrine for every slice
 
@@ -111,21 +111,21 @@ Each name is the test to write. Each asserts an observable outcome.
 ## 4. Task checklist
 
 ### Phase 1: Visible delta
-- [ ] S1: delta lattice + composite lift (+ §delta-viz doc)
-- [ ] S1b: ramp, heatmap material, seam types for P1+P2 (+ §terrain-overlay doc)
-- [ ] S2: lattice ghost, heatmap drape, baked-region heatmap, live preview system, bake on shared composite
-- [ ] S3: preview producer + live readout
-- [ ] Gate W2 (orchestrator)
+- [x] S1: delta lattice + composite lift (+ §delta-viz doc) — W1 95ac555
+- [x] S1b: ramp, heatmap material, seam types for P1+P2 (+ §terrain-overlay doc) — W1 95ac555
+- [x] S2: lattice ghost, heatmap drape, baked-region heatmap, live preview system, bake on shared composite — W2 585784b
+- [x] S3: preview producer + live readout — W2 585784b
+- [x] Gate W2 (orchestrator) — tests passed
 
 ### Phase 2: Volume report
-- [ ] S4: selection report math
-- [ ] S5: request/answer system
-- [ ] S6: Volume report panel + true totals
-- [ ] Gate W3 (orchestrator)
+- [x] S4: selection report math — W2 585784b
+- [x] S5: request/answer system — W3 5bf9883
+- [x] S6: Volume report panel + true totals — W3 5bf9883
+- [x] Gate W3 (orchestrator) — tests passed
 
 ### Close
-- [ ] S7: review-and-fix (opus) with recorded verdict
-- [ ] S8: docs consolidation
+- [x] S7: review-and-fix (opus) with recorded verdict — W4 9165f75
+- [x] S8: docs consolidation — W4 (in progress)
 - [ ] Full sweep (orchestrator, once)
 - [ ] In-app verify F5 (user-gated): see the cut/fill delta live before commit; select a region and read the true volumes
 - [ ] Retro + archive

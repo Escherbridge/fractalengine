@@ -3,10 +3,10 @@
   "type": "feature",
   "title": "Terrain proposal delta visualization + selected-volume reporting",
   "description": "Make terrain proposals visibly show the delta they propose: lattice-sampled translucent proposed surface (replacing the perimeter-only flat-lid ghost) + civil-style cut/fill heatmap drape (red=cut, blue=fill, graded by real-meter depth) vs the pristine read-only TerrainHeightField, live from the armed tool before commit, and on baked earthwork regions after commit (P1). Selected-volume report: area + true cut/fill/net m3 (one shared composite integrator, map-scale-authority units) + per-item breakdown + contained nodes + copy-as-TSV (P2). Cross-sections deferable (P3); assets-in-volume utility takeoff future/spec-only (P4).",
-  "status": "pending",
+  "status": "done-pending-sweep",
   "priority": "P0",
   "created_at": "2026-10-25T00:00:00Z",
-  "updated_at": "2026-10-25T00:00:00Z",
+  "updated_at": "2026-10-26T00:00:00Z",
   "origin": "in-app finding F5 (2026-10-25): proposals post/save but show no visible transformation of the delta",
   "alignment": "P0 BIM/BUILDER + analytics-first (Spatial Builder Program follow-on to sculpt_earthwork_regions D-A8; strategic roadmap spatial-analytics thesis). Industry anchor: Civil 3D/InfraWorks/Trimble existing-vs-proposed surface pair, cut/fill heatmap, volume report, cross-sections; game-builder live ghost.",
   "depends_on": ["sculpt_earthwork_regions_20260725", "terrain_editor_overhaul_20260718"],
@@ -14,7 +14,7 @@
   "related": ["map_scale_authority_20260716", "hierarchy_visibility_groups_20260808", "ui_semantics_unification_20260808", "endpoint_api_surface_20260725"],
   "spec": "./spec.md",
   "plan": "./plan.md",
-  "progress": { "done": 0, "open": 14, "plan": "./plan.md" },
+  "progress": { "done": 14, "open": 0, "plan": "./plan.md" },
   "root_causes": [
     "R-1 ghost = earcut of footprint perimeter only (fe-terrain/src/terrain_proposal.rs:258) -> flat lid, interior cannot show delta",
     "R-2 ghosts rebuild only on ActivePetalTerrain.revision (fe-terrain/src/terrain_plugin.rs:1195) -> no pre-commit preview path exists",
@@ -26,9 +26,9 @@
     "2026-10-25: track drafted (docs only) from in-app F5. Inventory found the cut/fill math complete and tested (sculpt::cut_fill_volume, proposal_cut_fill, EarthworkRegion::cut_fill, bake EarthworkVolumeReport); the gap is ghost geometry (R-1), no preview path (R-2), baked regions without comparison (R-3), and an approximate report (R-4). Open decisions OD-1..OD-12 proceed on recommended defaults unless ratified (plan section 0)."
   ],
   "partitions": {
-    "computed_at": "2026-10-25T00:00:00Z",
-    "computed_at_commit": "951adb2",
-    "confidence": "planned",
+    "computed_at": "2026-10-26T00:00:00Z",
+    "computed_at_commit": "9165f75",
+    "confidence": "verified",
     "slices": [
       { "id": "S1", "task": "pure delta lattice (ghost + drape + dh + cut/fill, vertex cap) + lift earthwork_surface_delta into sculpt::composite_proposed_height + for_each_cell pub(crate)", "model": "sonnet", "depends_on": [],
         "owns": [{"path": "fe-terrain/src/delta_viz.rs", "status": "future"}, "fe-terrain/src/sculpt/mod.rs", "fe-terrain/src/lib.rs", "fe-terrain/src/AGENTS.md"] },

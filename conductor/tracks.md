@@ -125,17 +125,15 @@ REST summary (e96fa75, 195f5cc, 118e666). Open: determinism test (un-ticked
 2026-10-10); retro/in-app. Gap: `SculptDeleteRegion` has a handler but **no UI
 producer**, so a region cannot be deleted from the app (SB-EARTHWORK-DELETE).
 
-### [ ] terrain_proposal_delta_viz — visible cut/fill delta + selected-volume report
+### [~] terrain_proposal_delta_viz — visible cut/fill delta + selected-volume report
 
-_Link: [./tracks/terrain_proposal_delta_viz_20261025/](./tracks/terrain_proposal_delta_viz_20261025/) · pending · 0 done / 14 open · created 2026-10-25 from in-app F5_
+_Link: [./tracks/terrain_proposal_delta_viz_20261025/](./tracks/terrain_proposal_delta_viz_20261025/) · done-pending-sweep · 14 done / 0 open · created 2026-10-25 from in-app F5_
 
-Proposals persist but show no visible delta. Root causes: the ghost is a perimeter-only flat
-lid (`terrain_proposal.rs:258`), there is no pre-commit preview path (rebuild-on-revision only),
-baked regions have no before/after comparison, and the report uses area×delta. P1: lattice
-ghost + civil red/blue cut/fill heatmap vs the pristine height field, live before commit.
-P2: selected-volume report (true cut/fill/net, per-item, contained nodes, TSV copy).
-P3: cross-sections (deferable). P4: utility takeoff (future). 12 open decisions (OD-1..12)
-default to recommendations. Partitions `planned` @951adb2.
+**COMPLETE:** W1–W4 (all slices S1–S7 + S8 docs). P1 lattice ghost + civil red/blue cut/fill
+heatmap (live before commit) + P2 selected-volume report (true cut/fill/net, per-item,
+contained nodes, TSV copy). Partitions verified @9165f75 (S7). Decisions D-DV-1..12
+ratified 2026-10-26. Open: full workspace sweep (orchestrator once) + in-app F5 verify
+(user-gated) + retro/archive.
 
 ### [~] contextual_controls — object-aware right-click menu with real Delete
 
