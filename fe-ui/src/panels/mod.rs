@@ -16,6 +16,10 @@ pub(crate) mod query_tab;
 pub(crate) mod sidebar;
 pub(crate) mod status_bar;
 pub(crate) mod terrain_tools_panel;
+/// terrain_proposal_delta_viz_20261025 S6: true-figures "Volume report" block
+/// hosted below `proposal_report_panel` in the same renamed section. See
+/// `panels/AGENTS.md` §volume-report.
+pub(crate) mod volume_report_panel;
 /// Pure per-tool helpers (descriptor/selection/anchor), consumed by the
 /// toolbar tooltip and the right-sidebar Tool section. No left panel anymore
 /// (ui_shell_architecture_20260724 Phase 5) — see `panels/AGENTS.md` §tool-inspector.
@@ -133,6 +137,11 @@ pub fn gardener_console(
     // F6: startup identity-degradation banner (persistent, click-to-dismiss
     // segment in the status bar) — see `panels/AGENTS.md` §identity-banner.
     identity_banner: &mut crate::plugin::IdentityBanner,
+    // terrain_proposal_delta_viz_20261025 S6: the Volume report's live
+    // query + latest true-figures answer. Read-only here — `sync_volume_
+    // report_request`/`drain_volume_report_result` (plugin.rs, PostUpdate)
+    // are its sole writers.
+    volume_report: &crate::panels::volume_report_panel::VolumeReportState,
 ) -> egui::Rect {
     // Repair conditional editor state; see `panels/AGENTS.md` §numeric-boundary.
     path_editor_card::sanitize_path_editor_numeric_state(path_state);
@@ -213,6 +222,7 @@ pub fn gardener_console(
             vis_state,
             downloads,
             render_override,
+            volume_report,
         )
     });
 
@@ -478,6 +488,7 @@ mod tests {
         let downloads = crate::terrain_map::TilesetDownloads::default();
         let mut render_override = crate::settings::PetalRenderOverride::default();
         let mut identity_banner = crate::plugin::IdentityBanner::default();
+        let volume_report = crate::panels::volume_report_panel::VolumeReportState::default();
 
         {
             let mut render = |section: Option<RightSidebarSection>, active_tool: Tool| {
@@ -527,6 +538,7 @@ mod tests {
                         &downloads,
                         &mut render_override,
                         &mut identity_banner,
+                        &volume_report,
                     );
                 });
             };

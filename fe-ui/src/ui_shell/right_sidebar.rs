@@ -28,8 +28,10 @@ use crate::panels::tool_inspector::{
     anchor_readout, fresh_path_selection, gimbal_affordance_label, selection_summary,
 };
 use crate::panels::tool_panel::ToolPanelState;
+use crate::panels::volume_report_panel::VolumeReportState;
 use crate::panels::{
     inspector, portal_toolbar, proposal_report_panel, terrain_tools_panel, tool_options,
+    volume_report_panel,
 };
 use crate::plugin::{InspectorFormState, LocalUserRole, ToolState};
 use crate::settings::AppSettings;
@@ -189,12 +191,16 @@ impl RightSidebarState {
 }
 
 /// Human label for a section (rail tooltip / placeholder header). Pure.
+/// D-DV-4/OD-4 (terrain_proposal_delta_viz_20261025): `ProposalReport`'s
+/// label is renamed to "Volume report" — the section now hosts the true
+/// cut/fill figures too (R-4), not just the geometry report. The `slug`
+/// stays `"report"` (D11: stable across renames).
 pub fn section_label(section: RightSidebarSection) -> &'static str {
     match section {
         RightSidebarSection::Inspector => "Inspector",
         RightSidebarSection::Options => "Options",
         RightSidebarSection::TerrainTools => "Terrain Tools",
-        RightSidebarSection::ProposalReport => "Proposal Report",
+        RightSidebarSection::ProposalReport => "Volume report",
         RightSidebarSection::Settings => "Settings",
         RightSidebarSection::Maps => "Maps",
         RightSidebarSection::Groups => "Groups",
@@ -273,6 +279,11 @@ pub fn render_right_sidebar(
     // section's "Session override" field (bundled by the caller, same
     // param-ceiling reason as `downloads`).
     render_override: &mut crate::settings::PetalRenderOverride,
+    // terrain_proposal_delta_viz_20261025 S6: the Volume report's live query
+    // + latest true-figures answer. Read-only here — `plugin.rs`'s
+    // `sync_volume_report_request`/`drain_volume_report_result` (PostUpdate)
+    // are its sole writers.
+    volume_report: &VolumeReportState,
 ) {
     let portal_open = ui_mgr.portal_is_open();
     if portal_open {
@@ -332,7 +343,10 @@ pub fn render_right_sidebar(
             state,
             proposal_state,
             petal_map.world_scale,
-            petal_map.terrain_json.as_ref(),
+            ui_mgr,
+            hierarchy,
+            nav.active_petal_id.as_deref(),
+            volume_report,
         ),
         Some(RightSidebarSection::Settings) => render_settings_section(
             ctx,
@@ -534,23 +548,35 @@ fn render_terrain_tools_section(
     });
 }
 
-/// Proposal-report section — real-unit extent/area/volume/slope/bearing for
-/// the selected terrain proposal, moved verbatim (Phase 4/FR-9) from the
-/// retired `proposal_report_panel::proposal_report_panel` floating window.
-/// `render_report_body` supplies its own calm empty-state hints in place of
-/// the old window's "just don't render" early returns (never-blank).
-/// `terrain_json` additionally lets it see Brush-created earthwork regions
-/// (finding #5, `ui_semantics_unification_20260808`) — Brush never touches
-/// `ProposalEditState`, only the terrain doc.
+/// Proposal/Volume-report section — real-unit extent/area/slope/bearing for
+/// the selected terrain proposal (moved verbatim, Phase 4/FR-9, from the
+/// retired `proposal_report_panel::proposal_report_panel` floating window),
+/// PLUS the true cut/fill "Volume report" block (D-DV-4/OD-4,
+/// terrain_proposal_delta_viz_20261025 S6, R-4). `render_report_body` no
+/// longer computes or shows any volume figure — that now lives exclusively
+/// in `volume_report_panel::render_volume_report_body`, which this section
+/// hosts right below it. Both bodies supply their own calm empty-state hints
+/// in place of the old window's "just don't render" early returns
+/// (never-blank).
 fn render_proposal_report_section(
     ctx: &egui::Context,
     state: &mut RightSidebarState,
     proposal_state: &ProposalEditState,
     world_scale: f64,
-    terrain_json: Option<&serde_json::Value>,
+    ui_mgr: &mut UiManager,
+    hierarchy: &VerseManager,
+    active_petal: Option<&str>,
+    volume_report: &VolumeReportState,
 ) {
     section_chrome(ctx, state, RightSidebarSection::ProposalReport, |ui| {
-        proposal_report_panel::render_report_body(ui, proposal_state, world_scale, terrain_json);
+        proposal_report_panel::render_report_body(ui, proposal_state, world_scale);
+        volume_report_panel::render_volume_report_body(
+            ui,
+            ui_mgr,
+            volume_report,
+            hierarchy,
+            active_petal,
+        );
     });
 }
 

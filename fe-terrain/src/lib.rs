@@ -16,6 +16,7 @@ pub mod simplify;
 pub mod splat;
 pub mod terrain_proposal;
 pub mod tiles;
+pub mod volume_report;
 
 #[cfg(feature = "render")]
 pub mod layers;

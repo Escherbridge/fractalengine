@@ -367,6 +367,9 @@ impl Plugin for TerrainPlugin {
             // Idempotent: fe-ui's plugin also registers these shared-seam messages.
             .add_message::<fe_renderer::terrain_overlay::EarthworkVolumeReport>()
             .add_message::<fe_renderer::terrain_overlay::ProposalPreviewReport>()
+            // P2 S5 volume-report request/reply seam (idempotent with fe-ui's registration).
+            .add_message::<fe_renderer::terrain_overlay::VolumeReportRequest>()
+            .add_message::<fe_renderer::terrain_overlay::VolumeReportResult>()
             .add_systems(
                 Update,
                 (
@@ -380,6 +383,7 @@ impl Plugin for TerrainPlugin {
                     bake_earthwork_regions,
                     render_baked_region_heatmaps,
                     render_proposal_preview,
+                    answer_volume_report_requests,
                     sync_layer_visibility,
                 )
                     .chain(),
@@ -2057,6 +2061,99 @@ fn sync_layer_visibility(
     }
 }
 
+// ---------------------------------------------------------------------------
+// P2 selected-volume report (terrain_proposal_delta_viz_20261025 S5). Answers
+// the fe-renderer-seam `VolumeReportRequest` with a true `VolumeReportResult`
+// computed by `volume_report::selection_volume_report` — the SAME composite
+// truth the bake/preview use (FR-5 extended to the report). See
+// `src/AGENTS.md` §volume-report.
+// ---------------------------------------------------------------------------
+
+/// Answers every pending [`VolumeReportRequest`](fe_renderer::terrain_overlay::VolumeReportRequest)
+/// against the active petal: splits `config.proposals` into non-region
+/// proposals and `config_earthwork_regions` the SAME way the bake does (never
+/// double-counting a record that is both), then delegates to
+/// [`crate::volume_report::selection_volume_report`] at the shared
+/// [`EARTHWORK_LATTICE`] "full" resolution (one-shot reports are never
+/// subject to the FR-3 preview's coarse/full debounce). A request scoped to
+/// any OTHER petal is DROPPED, never answered — the request's own `petal_id`
+/// doubles as the staleness guard, since a petal switch moves
+/// `ActivePetalTerrain` out from under any request still in flight for the
+/// old one (S5 tripwire: never silently answer a stale selection with the
+/// WRONG petal's terrain). NEVER writes the DB or the height field
+/// (`Option<Res<_>>` — structurally read-only, NFR-1).
+fn answer_volume_report_requests(
+    mut requests: MessageReader<fe_renderer::terrain_overlay::VolumeReportRequest>,
+    active: Res<ActivePetalTerrain>,
+    height_field: Option<Res<TerrainHeightField>>,
+    mut results: MessageWriter<fe_renderer::terrain_overlay::VolumeReportResult>,
+) {
+    for request in requests.read() {
+        if active.petal_id.as_deref() != Some(request.petal_id.as_str()) {
+            continue; // wrong/stale petal scope — drop (see doc above)
+        }
+        let Some(config) = active.config.as_ref().filter(|c| c.enabled) else {
+            continue; // no terrain assigned/enabled for this petal — nothing to report
+        };
+
+        let selection = crate::sculpt::Footprint::Polygon {
+            verts: request.footprint.clone(),
+        };
+        let step = region_grid_step(selection.bounds());
+        let world_scale = config.effective_world_scale();
+        let base = |x: f32, z: f32| height_field.as_ref().and_then(|f| f.height_at(x, z));
+
+        let proposals: Vec<crate::terrain_proposal::TerrainProposal> = config
+            .proposals
+            .iter()
+            .filter(|p| !p.is_earthwork_region())
+            .cloned()
+            .collect();
+        let regions = config_earthwork_regions(config);
+
+        let report = crate::volume_report::selection_volume_report(
+            &base,
+            &proposals,
+            &regions,
+            &selection,
+            step,
+            world_scale,
+        );
+
+        // Seam mapping (fe-renderer's `VolumeItem.kind` has no separate
+        // record-kind + op slot, unlike `volume_report::VolumeItem`): a plain
+        // proposal reports its op tag (e.g. "raise"); a baked region reports
+        // the record kind "earthwork_region" (its op is a bake detail, not
+        // identity). See `src/AGENTS.md` §volume-report.
+        let items = report
+            .items
+            .into_iter()
+            .map(|item| fe_renderer::terrain_overlay::VolumeItem {
+                id: item.id,
+                kind: match item.kind {
+                    crate::volume_report::VolumeItemKind::Proposal => item.op_snake.to_string(),
+                    crate::volume_report::VolumeItemKind::Region => "earthwork_region".to_string(),
+                },
+                cut_m3: item.cut_m3,
+                fill_m3: item.fill_m3,
+                overlap_area_m2: item.overlap_area_m2,
+            })
+            .collect();
+
+        results.write(fe_renderer::terrain_overlay::VolumeReportResult {
+            correlation_id: request.correlation_id.clone(),
+            area_m2: report.area_m2,
+            cut_m3: report.cut_m3,
+            fill_m3: report.fill_m3,
+            net_m3: report.net_m3,
+            step_m: report.step_m as f32,
+            items,
+            has_overlap: report.overlap,
+            scaled: report.scaled,
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3167,6 +3264,117 @@ mod tests {
             d.poll(None, 2.0),
             None,
             "already cleared — no repeat despawn churn"
+        );
+    }
+
+    // --- P2 S5 volume-report request/reply round trip (VOLUME-REPORT-SEAM) ---
+
+    use fe_renderer::terrain_overlay::{VolumeReportRequest, VolumeReportResult};
+
+    #[derive(Resource, Default)]
+    struct CapturedVolumeResults(Vec<VolumeReportResult>);
+
+    fn capture_volume_results(
+        mut reader: MessageReader<VolumeReportResult>,
+        mut sink: ResMut<CapturedVolumeResults>,
+    ) {
+        for msg in reader.read() {
+            sink.0.push(msg.clone());
+        }
+    }
+
+    /// Headless app running `answer_volume_report_requests` for `petal_id`,
+    /// with `proposals` on its `TerrainConfig` and an optional covering tile.
+    fn volume_report_app(
+        proposals: Vec<TerrainProposal>,
+        petal_id: &str,
+        tile: Option<HeightTile>,
+    ) -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<CapturedVolumeResults>()
+            .insert_resource(TerrainHeightField::default())
+            .insert_resource(ActivePetalTerrain {
+                petal_id: Some(petal_id.into()),
+                config: Some(TerrainConfig {
+                    enabled: true,
+                    proposals,
+                    ..TerrainConfig::default()
+                }),
+                revision: 1,
+            })
+            .add_message::<VolumeReportRequest>()
+            .add_message::<VolumeReportResult>()
+            .add_systems(
+                Update,
+                (answer_volume_report_requests, capture_volume_results).chain(),
+            );
+        if let Some(tile) = tile {
+            app.world_mut()
+                .resource_mut::<TerrainHeightField>()
+                .insert((10, 0, 0), tile);
+        }
+        app
+    }
+
+    #[test]
+    fn volume_request_round_trip_answers_matching_correlation() {
+        // Same 10x10 footprint, flat ground, Raise delta=2.0 as `square_proposal`
+        // — ground truth fill = area(100) * delta(2) = 200 m3 at world_scale=1.0.
+        let tile = flat_tile(Vec3::ZERO, 20.0);
+        let proposal = square_proposal("p1", TerrainOp::Raise, 0.0);
+        let mut app = volume_report_app(vec![proposal], "petal", Some(tile));
+
+        app.world_mut().write_message(VolumeReportRequest {
+            correlation_id: "corr-1".into(),
+            petal_id: "petal".into(),
+            footprint: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            elevation_band: None,
+        });
+        app.update();
+
+        let results = &app.world().resource::<CapturedVolumeResults>().0;
+        assert_eq!(results.len(), 1, "exactly one reply for the matching request");
+        let result = &results[0];
+        assert_eq!(
+            result.correlation_id, "corr-1",
+            "reply must echo the request's own correlation id"
+        );
+        assert!(result.scaled, "world_scale=1.0 is a valid scale");
+        assert!(
+            (result.fill_m3 - 200.0).abs() / 200.0 < 0.05,
+            "raise 2 over a flat 10x10 should fill ~200 m3, got {}",
+            result.fill_m3
+        );
+        assert!(result.cut_m3.abs() < 1.0, "a pure raise has no cut");
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(
+            result.items[0].kind, "raise",
+            "a plain palette proposal reports its op tag as kind"
+        );
+        assert!(!result.has_overlap, "a single item cannot overlap itself");
+    }
+
+    #[test]
+    fn request_for_inactive_petal_is_dropped() {
+        let tile = flat_tile(Vec3::ZERO, 20.0);
+        let proposal = square_proposal("p1", TerrainOp::Raise, 0.0);
+        let mut app = volume_report_app(vec![proposal], "petal", Some(tile));
+
+        // Mutation check: removing the petal-scope guard would make this
+        // request fall through to the SAME report `volume_request_round_trip_
+        // answers_matching_correlation` expects — turning this assertion red.
+        app.world_mut().write_message(VolumeReportRequest {
+            correlation_id: "corr-2".into(),
+            petal_id: "some-other-petal".into(),
+            footprint: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            elevation_band: None,
+        });
+        app.update();
+
+        assert!(
+            app.world().resource::<CapturedVolumeResults>().0.is_empty(),
+            "a request scoped to a different petal must be dropped, not answered"
         );
     }
 }

@@ -705,6 +705,53 @@ and doesn't have relief-following coverage.
   `render_proposal_preview` (new) is the FR-3 live pre-commit path, same
   builder, debounced (OD-3).
 
+## §volume-report — selected-volume report request/reply (terrain_proposal_delta_viz_20261025 S4+S5, FR-6/7/8)
+
+Two halves, split the same way as §delta-viz's math/render split.
+
+- **Pure math (`volume_report.rs`, S4).** `selection_volume_report(base,
+  proposals, regions, selection, step, world_scale) -> SelectionReport` is
+  Bevy-free and always compiled (same NFR-1 discipline as `terrain_proposal.rs`/
+  `sculpt`/`delta_viz.rs`). It clips BOTH the combined composite surface and
+  every individual `proposals`/`regions` entry to `selection`, integrating
+  everything through the ONE tested `sculpt::cut_fill_volume` (FR-5 extended to
+  the report — never a second volume formula). The composite walk folds
+  proposals then regions in array order over a running height, mirroring
+  `sculpt::composite_proposed_height`'s shape but spanning both vocabularies
+  (the first seam to do so). Per-item figures are clipped via a reuse trick,
+  not a new `Footprint` variant: handing `cut_fill_volume` a `proposed` sampler
+  that no-ops outside one item's own footprint makes "item ∩ selection" fall
+  out of "selection's own lattice walk" for free. A separate geometric pass (no
+  heights) flags `overlap` and each item's `overlap_area_m2` — the practical
+  reason a per-item sum can diverge from the composite total.
+- **Wiring (`terrain_plugin.rs::answer_volume_report_requests`, S5).** Reads
+  `VolumeReportRequest` (fe-renderer seam: correlation id, petal scope,
+  footprint), answers with `VolumeReportResult`. Three rules, each load-bearing:
+  1. **Petal-scope drop, not queue.** A request whose `petal_id` is not the
+     ACTIVE petal is dropped silently (`continue`, no reply). This doubles as
+     the staleness guard (`request_for_inactive_petal_is_dropped`): a petal
+     switch moves `ActivePetalTerrain` out from under any request still in
+     flight for the old one, so "wrong petal" and "stale" are the same check.
+     fe-ui must not block forever on a reply that can legitimately never
+     arrive (e.g. the user switched petals mid-request) — this is a conscious
+     scope cut, not an oversight; a future retry/timeout is fe-ui's job.
+  2. **Never double-count a region-shaped proposal.** `config.proposals` is
+     split into `proposals` (`!is_earthwork_region()`) and
+     `config_earthwork_regions(config)` — the SAME split `bake_earthwork_regions`
+     uses — before either is handed to `selection_volume_report`'s two separate
+     slices.
+  3. **One resolution, not the preview's two.** Uses `region_grid_step`
+     (shared [`EARTHWORK_LATTICE`] = 128 "full" policy) unconditionally — a
+     one-shot request/reply has no OD-3 debounce to be coarse during.
+  - **Seam kind mapping (undocumented at the type itself — read this before
+    touching `fe-ui`'s S6 panel).** `fe_renderer::terrain_overlay::VolumeItem`
+    has one `kind: String` slot, not `volume_report::VolumeItem`'s separate
+    `kind: VolumeItemKind` + `op_snake` + `material`. S5's convention: a plain
+    `Proposal` item's `kind` is its op tag (`"raise"`, `"cut"`, …); a baked
+    `Region` item's `kind` is the literal `"earthwork_region"` (its op is a
+    bake detail, not its reported identity — a region's material isn't
+    carried across this seam at all). S6 must match strings, not op enums.
+
 ## §bundles — deterministic spatial bundler (`tiles/bundle.rs`, p2p_asset_streaming S1)
 
 `bundle_tileset(source: &HexonArchiveData, max_bundle_bytes)` splits a

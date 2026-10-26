@@ -1,5 +1,5 @@
 //! FR-6 (terrain_editor_overhaul_20260718): report for the currently selected
-//! terrain proposal — real-unit extent/area/volume/slope/bearing.
+//! terrain proposal — real-unit extent/area/slope/bearing.
 //! ui_shell_architecture Phase 4 folded the former floating window into
 //! `ui_shell::right_sidebar::render_proposal_report_section`;
 //! `render_report_body` is the pure-egui body it calls, with calm empty-state
@@ -8,35 +8,22 @@
 //! or `<= 0`), reports WORLD UNITS with an explicit "no map scale" chip;
 //! never fabricates meters. Mirrors the `RulerPlugin`/
 //! `fe_terrain::ruler_plugin::draw_unscaled_chip` precedent.
-//! Totals also read Brush-created earthwork regions straight off the passed
-//! terrain doc (`ui_semantics_unification_20260808` finding #5 fix) — see
-//! `earthwork_regions_from_terrain`. See `panels/AGENTS.md` §terrain-tools.
+//! R-4 fix (terrain_proposal_delta_viz_20261025 S6): this body no longer
+//! shows ANY cut/fill volume figure (the old `area × |delta|` approximation
+//! and its multi-region "Earthwork totals" rollup are REMOVED, not
+//! relabeled) — true cut/fill now lives exclusively in
+//! `volume_report_panel::render_volume_report_body`, hosted in the same
+//! renamed "Volume report" section (`ui_shell::right_sidebar`). What stays
+//! here is unit-geometry only: extent/area/slope/bearing. `earthwork_regions_
+//! from_terrain` is `pub(crate)` because `volume_report_panel` reuses it to
+//! resolve a selected region's footprint by id. See `panels/AGENTS.md`
+//! §terrain-tools / §volume-report.
 
 use bevy_egui::egui;
 
 use crate::geometry::{bearing_deg, polygon_area_m2, world_to_real_distance};
-use crate::terrain_proposal_state::{ProposalEditState, ProposalOp};
+use crate::terrain_proposal_state::ProposalEditState;
 use crate::theme;
-
-/// How an op's representative volume classifies as earthwork (T3 FR-5): added
-/// material (fill), removed material (cut), or a reshaping op whose net cut/fill
-/// needs the base surface to split (reported as "net" here — the true separated
-/// figure comes from `fe_terrain::sculpt::cut_fill_volume` at bake).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Earthwork {
-    Fill,
-    Cut,
-    Net,
-}
-
-/// Classify a proposal op as fill/cut/net for the earthwork report.
-fn earthwork_kind(op: ProposalOp) -> Earthwork {
-    match op {
-        ProposalOp::Raise | ProposalOp::Fill | ProposalOp::Pad => Earthwork::Fill,
-        ProposalOp::Lower | ProposalOp::Cut => Earthwork::Cut,
-        ProposalOp::Flatten | ProposalOp::Ramp | ProposalOp::Slope => Earthwork::Net,
-    }
-}
 
 /// One Brush/shape earthwork region read straight out of the terrain doc's
 /// `proposals` array (`actions::terrain_proposal::region_json`'s shape) —
@@ -46,32 +33,22 @@ fn earthwork_kind(op: ProposalOp) -> Earthwork {
 /// "palette proposal" within the same array. NOT sourced via
 /// `terrain_proposal_state::from_json` — `"level"`/`"smooth"` region ops
 /// are not valid `ProposalOp` variants, so that parse would silently drop
-/// them (finding #5, `ui_semantics_unification_20260808`).
-struct EarthworkRegionSummary {
-    op: String,
-    footprint: Vec<[f32; 2]>,
-    delta: Option<f32>,
-}
-
-/// Classify a Brush-region sculpt op tag (`actions::terrain_proposal::
-/// SculptOpKind::to_snake`) as fill/cut/net, mirroring [`earthwork_kind`] for
-/// palette ops. Caveat: for `"level"`/`"smooth"`, the persisted `delta` is a
-/// brush strength fraction (0-1), not a height — bucketed `Net` like the
-/// palette's own reshaping ops carries the same "approximate, not the true
-/// baked figure" caveat already documented on [`cut_fill_totals`].
-fn earthwork_kind_from_sculpt_op(op: &str) -> Earthwork {
-    match op {
-        "raise" => Earthwork::Fill,
-        "lower" => Earthwork::Cut,
-        _ => Earthwork::Net,
-    }
+/// them (finding #5, `ui_semantics_unification_20260808`). `pub(crate)`:
+/// `volume_report_panel` reuses this to resolve a selected region's footprint.
+pub(crate) struct EarthworkRegionSummary {
+    pub(crate) id: String,
+    pub(crate) op: String,
+    pub(crate) footprint: Vec<[f32; 2]>,
+    pub(crate) delta: Option<f32>,
 }
 
 /// Parse Brush/shape earthwork regions out of a petal's terrain doc (finding
 /// #5: the report was structurally blind to them — Brush never touches
 /// `ProposalEditState`). Best-effort skips malformed entries, mirrors
-/// `terrain_proposal_state::from_json`'s lenient decode. Pure.
-fn earthwork_regions_from_terrain(
+/// `terrain_proposal_state::from_json`'s lenient decode. Pure. `pub(crate)`:
+/// `volume_report_panel::resolve_volume_selection` reuses this to look a
+/// selected region id up by footprint (S6, R-4/FR-6).
+pub(crate) fn earthwork_regions_from_terrain(
     terrain_json: Option<&serde_json::Value>,
 ) -> Vec<EarthworkRegionSummary> {
     let Some(items) = terrain_json
@@ -86,6 +63,7 @@ fn earthwork_regions_from_terrain(
         // see `EarthworkRegionSummary`'s doc comment.
         .filter(|item| item.get("material").is_some())
         .filter_map(|item| {
+            let id = item.get("id")?.as_str()?.to_string();
             let op = item.get("op")?.as_str()?.to_string();
             let footprint: Vec<[f32; 2]> = item
                 .get("footprint")?
@@ -95,6 +73,7 @@ fn earthwork_regions_from_terrain(
                 .collect();
             let delta = item.get("delta").and_then(serde_json::Value::as_f64);
             Some(EarthworkRegionSummary {
+                id,
                 op,
                 footprint,
                 delta: delta.map(|d| d as f32),
@@ -103,104 +82,17 @@ fn earthwork_regions_from_terrain(
         .collect()
 }
 
-/// Running cut/fill totals over a region set (real units when scaled).
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
-struct CutFillTotals {
-    cut: f64,
-    fill: f64,
-    net: f64,
-}
-
-/// Sum representative cut/fill across every proposal record AND Brush-created
-/// region (FR-5 "per-region and total"; finding #5 fix — regions used to be
-/// invisible here). Each entry's magnitude is `area × |delta|` in real units
-/// via the shared `compute_report`; the op decides the cut/fill/net bucket.
-/// This is a footprint-area approximation, not the true baked volume — the
-/// real figure for a Brush region lives on its node's `cut_volume_m3`/
-/// `fill_volume_m3` properties (`actions::terrain_proposal::
-/// persist_earthwork_volumes`), which this terrain-doc-only panel does not
-/// read. Pure.
-fn cut_fill_totals(
-    state: &ProposalEditState,
-    world_scale: f64,
-    regions: &[EarthworkRegionSummary],
-) -> CutFillTotals {
-    let mut totals = CutFillTotals::default();
-    for record in &state.proposals {
-        let footprint: Vec<[f64; 3]> = record
-            .footprint
-            .iter()
-            .map(|p| [f64::from(p[0]), 0.0, f64::from(p[1])])
-            .collect();
-        let delta = f64::from(record.delta.unwrap_or(0.0));
-        let Some(report) = compute_report(&footprint, delta, world_scale) else {
-            continue;
-        };
-        let v = report.volume.abs();
-        match earthwork_kind(record.op) {
-            Earthwork::Fill => totals.fill += v,
-            Earthwork::Cut => totals.cut += v,
-            Earthwork::Net => totals.net += v,
-        }
-    }
-    for region in regions {
-        let footprint: Vec<[f64; 3]> = region
-            .footprint
-            .iter()
-            .map(|p| [f64::from(p[0]), 0.0, f64::from(p[1])])
-            .collect();
-        let delta = f64::from(region.delta.unwrap_or(0.0));
-        let Some(report) = compute_report(&footprint, delta, world_scale) else {
-            continue;
-        };
-        let v = report.volume.abs();
-        match earthwork_kind_from_sculpt_op(&region.op) {
-            Earthwork::Fill => totals.fill += v,
-            Earthwork::Cut => totals.cut += v,
-            Earthwork::Net => totals.net += v,
-        }
-    }
-    totals
-}
-
 /// Section body (no window/chrome — the caller, `right_sidebar::section_chrome`
 /// via `render_proposal_report_section`, supplies that). Calm empty-state
 /// hints replace the old floating window's "just don't render" early returns
 /// (never-blank — `ui_ux.md §7`); the <3-point guard's message is preserved
-/// verbatim.
+/// verbatim. R-4: no volume figure is computed or shown here any more — see
+/// the module doc comment.
 pub(crate) fn render_report_body(
     ui: &mut egui::Ui,
     proposal_state: &ProposalEditState,
     world_scale: f64,
-    terrain_json: Option<&serde_json::Value>,
 ) {
-    // Finding #5 fix: totals now cover BOTH the palette mirror AND
-    // Brush-created regions parsed straight out of the terrain doc — the
-    // report used to be structurally blind to everything Brush ever made.
-    let regions = earthwork_regions_from_terrain(terrain_json);
-    let region_count = proposal_state.proposals.len() + regions.len();
-
-    // FR-5: earthwork totals across ALL regions (per-region detail follows for
-    // the selection). Shown whenever any region exists, selected or not.
-    if region_count > 0 {
-        let totals = cut_fill_totals(proposal_state, world_scale, &regions);
-        let has_scale = world_scale.is_finite() && world_scale > 0.0;
-        let vu = if has_scale { "m\u{b3}" } else { "wu\u{b3}" };
-        ui.label(
-            egui::RichText::new(format!("Earthwork totals ({region_count} region(s))"))
-                .strong()
-                .color(theme::TEXT_SECTION),
-        );
-        ui.label(format!("Fill: {:.2} {vu}", totals.fill));
-        ui.label(format!("Cut: {:.2} {vu}", totals.cut));
-        if totals.net > 0.0 {
-            ui.label(format!("Reshaped (net): {:.2} {vu}", totals.net));
-        }
-        ui.add_space(6.0);
-        ui.separator();
-        ui.add_space(6.0);
-    }
-
     let Some(selected) = proposal_state.selected.as_deref() else {
         ui.label(
             egui::RichText::new("Select a proposal to see its metrics here.")
@@ -255,18 +147,6 @@ pub(crate) fn render_report_body(
         u = report.length_unit
     ));
     ui.label(format!("Area: {:.2} {}", report.area, report.area_unit));
-    // FR-5: label the volume as cut/fill/net earthwork by op (the true separated
-    // cut+fill over relief is `fe_terrain::sculpt::cut_fill_volume` at bake).
-    let vol_label = match earthwork_kind(record.op) {
-        Earthwork::Fill => "Fill volume",
-        Earthwork::Cut => "Cut volume",
-        Earthwork::Net => "Reshaped volume (net)",
-    };
-    ui.label(format!(
-        "{vol_label}: {:.2} {}",
-        report.volume.abs(),
-        report.volume_unit
-    ));
     ui.label(
         egui::RichText::new("Material: earth")
             .small()
@@ -278,6 +158,17 @@ pub(crate) fn render_report_body(
         ui.add_space(4.0);
         ui.colored_label(theme::TEXT_MUTED, "no map scale — showing world units");
     }
+    // R-4: the true cut/fill/net volume lives in the Volume report block
+    // below (`volume_report_panel::render_volume_report_body`), sourced from
+    // fe-terrain's real composite integrator — never the area×|delta|
+    // approximation this body used to show.
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new("See Volume report below for true cut/fill.")
+            .small()
+            .color(theme::TEXT_DIM)
+            .italics(),
+    );
 }
 
 /// Pure geometry report for one proposal footprint. Kept free of egui/ECS so
@@ -402,6 +293,7 @@ mod tests {
         let report = compute_report(&SQUARE, 2.0, 0.1).unwrap();
         assert!(report.has_scale);
         assert_eq!(report.length_unit, "m");
+        assert_eq!(report.volume_unit, "m\u{b3}");
         assert!((report.extent_x - 100.0).abs() < 1e-6);
         assert!((report.area - 10_000.0).abs() < 1e-3);
         // volume = area * (delta / scale) = 10000 * (2.0/0.1) = 200000
@@ -414,43 +306,12 @@ mod tests {
             let report = compute_report(&SQUARE, 5.0, bad_scale).unwrap();
             assert!(!report.has_scale);
             assert_eq!(report.length_unit, "wu");
+            assert_eq!(report.volume_unit, "wu\u{b3}");
             // scale=1.0 fallback: raw world-unit numbers, not silently scaled.
             assert!((report.extent_x - 10.0).abs() < 1e-9);
             assert!((report.area - 100.0).abs() < 1e-9);
             assert!((report.volume - 500.0).abs() < 1e-9);
         }
-    }
-
-    #[test]
-    fn earthwork_kind_classifies_ops() {
-        assert_eq!(earthwork_kind(ProposalOp::Raise), Earthwork::Fill);
-        assert_eq!(earthwork_kind(ProposalOp::Fill), Earthwork::Fill);
-        assert_eq!(earthwork_kind(ProposalOp::Pad), Earthwork::Fill);
-        assert_eq!(earthwork_kind(ProposalOp::Lower), Earthwork::Cut);
-        assert_eq!(earthwork_kind(ProposalOp::Cut), Earthwork::Cut);
-        assert_eq!(earthwork_kind(ProposalOp::Flatten), Earthwork::Net);
-        assert_eq!(earthwork_kind(ProposalOp::Ramp), Earthwork::Net);
-    }
-
-    #[test]
-    fn cut_fill_totals_bucket_by_op() {
-        let square = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
-        let mut state = ProposalEditState::default();
-        // Raise delta 2 → fill; Lower delta 3 → cut (world_scale 1 → wu³).
-        state.push_new(ProposalOp::Raise, square.clone(), None, Some(2.0));
-        state.push_new(ProposalOp::Lower, square.clone(), None, Some(3.0));
-        state.push_new(ProposalOp::Flatten, square, Some(5.0), Some(1.0));
-        let t = cut_fill_totals(&state, 1.0, &[]);
-        // area 100 × |delta|: fill = 100×2 = 200, cut = 100×3 = 300, net = 100×1.
-        assert!((t.fill - 200.0).abs() < 1e-6);
-        assert!((t.cut - 300.0).abs() < 1e-6);
-        assert!((t.net - 100.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn cut_fill_totals_empty_is_zero() {
-        let t = cut_fill_totals(&ProposalEditState::default(), 1.0, &[]);
-        assert_eq!(t, CutFillTotals::default());
     }
 
     #[test]
@@ -487,6 +348,7 @@ mod tests {
         });
         let regions = earthwork_regions_from_terrain(Some(&terrain));
         assert_eq!(regions.len(), 1, "only the material-tagged region entry");
+        assert_eq!(regions[0].id, "r1");
         assert_eq!(regions[0].op, "raise");
         assert_eq!(regions[0].delta, Some(3.0));
         assert_eq!(regions[0].footprint.len(), 4);
@@ -500,106 +362,5 @@ mod tests {
         let terrain =
             json!({ "proposals": [ { "id": "r1", "op": "raise", "material": "earth" } ] });
         assert!(earthwork_regions_from_terrain(Some(&terrain)).is_empty());
-    }
-
-    #[test]
-    fn cut_fill_totals_includes_brush_regions_from_terrain_doc() {
-        // Finding #5: totals must see Brush regions even though
-        // `ProposalEditState` never carries them.
-        let square = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
-        let regions = earthwork_regions_from_terrain(Some(&json!({
-            "proposals": [
-                region_json("r1", "raise", square.clone(), 2.0),
-                region_json("r2", "lower", square, 3.0),
-            ],
-        })));
-        assert_eq!(regions.len(), 2);
-        let t = cut_fill_totals(&ProposalEditState::default(), 1.0, &regions);
-        // area 100 × |delta|: fill = 100×2 = 200 (raise), cut = 100×3 = 300 (lower).
-        assert!(
-            (t.fill - 200.0).abs() < 1e-6,
-            "raise region counted as fill"
-        );
-        assert!((t.cut - 300.0).abs() < 1e-6, "lower region counted as cut");
-    }
-
-    #[test]
-    fn cut_fill_totals_combines_palette_proposals_and_brush_regions() {
-        let square = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
-        let mut state = ProposalEditState::default();
-        state.push_new(ProposalOp::Raise, square.clone(), None, Some(1.0)); // palette: fill 100
-        let regions = earthwork_regions_from_terrain(Some(&json!({
-            "proposals": [region_json("r1", "raise", square, 1.0)],
-        }))); // brush: fill 100
-        let t = cut_fill_totals(&state, 1.0, &regions);
-        assert!(
-            (t.fill - 200.0).abs() < 1e-6,
-            "both sources contribute to one total"
-        );
-    }
-
-    #[test]
-    fn earthwork_kind_from_sculpt_op_classifies_ops() {
-        assert_eq!(earthwork_kind_from_sculpt_op("raise"), Earthwork::Fill);
-        assert_eq!(earthwork_kind_from_sculpt_op("lower"), Earthwork::Cut);
-        assert_eq!(earthwork_kind_from_sculpt_op("level"), Earthwork::Net);
-        assert_eq!(earthwork_kind_from_sculpt_op("smooth"), Earthwork::Net);
-    }
-
-    // --- Finding #2 fix: no double count once F1 stops hydration from
-    // absorbing region entries into the palette mirror ---
-
-    /// Mirrors `db_results::terrain::handle_petal_terrain_loaded`'s
-    /// finding-#1 hydration filter (that fn is `pub(super)` to
-    /// `verse_manager`, unreachable from `panels`) — palette-only entries
-    /// (no `material` key) enter the mirror, exactly as production hydration
-    /// now does post-fix.
-    fn hydrate_like_production(terrain: &serde_json::Value) -> ProposalEditState {
-        let mut state = ProposalEditState::default();
-        let proposals = terrain
-            .get("proposals")
-            .and_then(|v| v.as_array())
-            .map(|items| {
-                let palette_only: Vec<serde_json::Value> = items
-                    .iter()
-                    .filter(|item| item.get("material").is_none())
-                    .cloned()
-                    .collect();
-                crate::terrain_proposal_state::from_json(&serde_json::Value::Array(palette_only))
-            })
-            .unwrap_or_default();
-        state.replace_all(proposals);
-        state
-    }
-
-    #[test]
-    fn cut_fill_totals_counts_a_hydrated_raise_region_exactly_once() {
-        // Finding #2 regression: a raise region present in `terrain_json`
-        // PLUS a hydrated mirror must count exactly once, not twice. Before
-        // finding #1's hydration filter, the mirror would have absorbed the
-        // region (stripping `material`) and BOTH loops in `cut_fill_totals`
-        // would have summed it.
-        let square = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
-        let terrain = json!({
-            "enabled": true,
-            "proposals": [region_json("r1", "raise", square, 2.0)],
-        });
-
-        let state = hydrate_like_production(&terrain);
-        assert!(
-            state.proposals.is_empty(),
-            "the region entry must never enter the palette mirror"
-        );
-
-        let regions = earthwork_regions_from_terrain(Some(&terrain));
-        assert_eq!(regions.len(), 1);
-
-        let totals = cut_fill_totals(&state, 1.0, &regions);
-        // area 100 x delta 2 = 200, counted exactly once (not 400).
-        assert!(
-            (totals.fill - 200.0).abs() < 1e-6,
-            "expected exactly one count of 200, got {}",
-            totals.fill
-        );
     }
 }

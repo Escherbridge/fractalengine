@@ -727,6 +727,9 @@ impl Plugin for GardenerConsolePlugin {
         // (ProposalPreview itself is insert/remove-only, not init'd: its
         // ABSENCE is "no preview", see `terrain_preview.rs`).
         app.init_resource::<crate::terrain_preview::PreviewReadout>();
+        // S6: the Volume report's live selection/query + latest true-figures
+        // answer. See `panels/volume_report_panel.rs`.
+        app.init_resource::<crate::panels::volume_report_panel::VolumeReportState>();
         // ui_shell_architecture_20260724 (FR-4/5/6): area-manager state resources.
         app.init_resource::<crate::ui_shell::topbar::TopbarState>();
         app.init_resource::<crate::ui_shell::left_sidebar::LeftSidebarState>();
@@ -798,6 +801,19 @@ impl Plugin for GardenerConsolePlugin {
                 crate::terrain_preview::publish_proposal_preview,
                 crate::terrain_preview::drain_preview_reports
                     .after(crate::terrain_preview::publish_proposal_preview),
+            ),
+        );
+        // S6 (FR-6/7): request/answer seam for the Volume report. S5
+        // (fe-terrain) also registers these messages — add_message twice is
+        // idempotent (same pattern as `EarthworkVolumeReport` above).
+        app.add_message::<fe_renderer::terrain_overlay::VolumeReportRequest>();
+        app.add_message::<fe_renderer::terrain_overlay::VolumeReportResult>();
+        app.add_systems(
+            PostUpdate,
+            (
+                crate::panels::volume_report_panel::sync_volume_report_request,
+                crate::panels::volume_report_panel::drain_volume_report_result
+                    .after(crate::panels::volume_report_panel::sync_volume_report_request),
             ),
         );
         app.add_systems(EguiPrimaryContextPass, gardener_ui_system);
@@ -932,6 +948,11 @@ struct MiscUiParams<'w> {
     // written by `terrain_preview::drain_preview_reports`, read by the
     // Terrain tools overlay below.
     preview_readout: Res<'w, crate::terrain_preview::PreviewReadout>,
+    // terrain_proposal_delta_viz S6: the Volume report's live query + latest
+    // true-figures answer, written by `panels::volume_report_panel::sync_
+    // volume_report_request`/`drain_volume_report_result` (PostUpdate above),
+    // read by the Volume report section.
+    volume_report: Res<'w, crate::panels::volume_report_panel::VolumeReportState>,
 }
 
 /// ui_shell_architecture_20260724 (FR-4/5/6): the area-manager state resources,
@@ -1005,6 +1026,7 @@ fn gardener_ui_system(
         &misc.downloads,
         &mut misc.render_override,
         &mut misc.identity_banner,
+        &misc.volume_report,
     );
     viewport_rect.0 = rect;
 
