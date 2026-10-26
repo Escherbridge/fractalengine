@@ -691,3 +691,16 @@ fail-closed).
   ClaimOrphanedVerse sharing reconcile's verse_never_shared predicate, OF-4-shaped negative test; Verse Settings
   "Claim Ownership" two-step confirm). JOIN GATE: check+clippy clean, 0 failures / 28 test binaries (fe-ui 1012,
   fe-database 275). F7 (server-side RawQuery scope enforcement) remains queued. Push decision now live.
+- Identity hardening follow-up `d37dc0c`→amended: %LOCALAPPDATA%\fractalengine\identity (dirs crate, already a
+  dep) + one-shot legacy migration; Windows owner-only DACL "D:P(A;;FA;;;OW)" set via raw advapi32 FFI at
+  creation, FAIL-CLOSED to loud-ephemeral (file deleted on DACL failure). DPAPI deliberately NOT used: its
+  decrypt-time SID/profile failure mode is the same silent-identity-loss class this fix kills; rationale in
+  fe-identity AGENTS.md §identity-tiers. Commit title amended (said DPAPI, implements DACL). 63/0 fe-identity
+  tests incl. Windows-gated, icacls used as independent ACL oracle. The subsequent main.rs CWD-dir review
+  finding is MOOT (fixed by this commit).
+- USER DECISIONS (AskUserQuestion, 2026-10-26): (1) PUSH IMMEDIATELY — batch pushed with hardening included.
+  (2) LAUNCH delta-viz P1+P2 with best-guess ODs: all 12 recommended options ADOPTED as D-DV-1..12 (civil
+  red-cut/blue-fill + neutral zero band; auto depth scaling w/ override; ~100ms debounce, coarse-while-drag;
+  report extends existing Proposal sidebar section; vertical prism volume; combined-surface totals w/ overlap
+  flags; in-app + CSV copy; ghost+heatmap both on; preview-what-armed-tool-does; reuse ProposalOverlay layer
+  + heatmap sub-toggle; Add-proposals-as-nodes out of scope; P3 only if budget). Reversal costs in plan §0.
