@@ -704,3 +704,15 @@ fail-closed).
   report extends existing Proposal sidebar section; vertical prism volume; combined-surface totals w/ overlap
   flags; in-app + CSV copy; ghost+heatmap both on; preview-what-armed-tool-does; reuse ProposalOverlay layer
   + heatmap sub-toggle; Add-proposals-as-nodes out of scope; P3 only if budget). Reversal costs in plan §0.
+
+### Delta-viz P1+P2 close (2026-10-26) — wf_40bdb613-ef0 · 12/12 GREEN · local, push user-gated
+- Waves: W1 95ac555 (lattice ghost math + heatmap ramp), W2 585784b (plugin wiring + UI preview + volume math),
+  W3 5bf9883 (report round-trip + Volume report panel), S7 review 9165f75 (verdict PASS after fixes),
+  S8 docs bad803f (D-DV-1..12 ratified in plan §0; track done-pending-sweep). All three wave gates passed on
+  their FIRST check — the parallel-sketch/serial-ink shape held.
+- S7 CAUGHT A GATE BLIND SPOT (record for every future fe-terrain sweep): `cargo test -p fe-terrain` does NOT
+  enable the `render` feature, so the S2/S5 Bevy-app tests in terrain_plugin.rs silently never ran in waves 1-3;
+  `--features render` surfaced and S7 fixed real failures. RULE: fe-terrain test runs must include
+  `--features render` (and the sweep manifest's feature matrix applies to TESTS, not only check/clippy).
+- CI on pushed tip 820a9d4: SUCCESS (in-app fix batch + identity hardening public and green).
+- Remaining: user in-app verify of the delta viz (ghost/heatmap/volume report), then push of the 5 track commits.
