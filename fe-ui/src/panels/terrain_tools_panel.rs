@@ -25,6 +25,7 @@ use crate::actions::{UiAction, UiManager};
 use crate::geometry::{meters_to_world, world_to_meters};
 use crate::node_manager::curve;
 use crate::panels::tool_panel::{TerrainToolMode, ToolPanelState};
+use crate::terrain_preview::PreviewReadout;
 use crate::terrain_proposal_state::ProposalEditState;
 use crate::theme;
 
@@ -453,6 +454,62 @@ pub(crate) fn render_brush_controls(ui: &mut egui::Ui, sculpt: &mut SculptToolSt
         );
         ui.add(egui::TextEdit::singleline(&mut sculpt.material).desired_width(120.0));
     });
+}
+
+/// S3 (terrain_proposal_delta_viz FR-3) live readout content: the latest
+/// cut/fill/net from the armed tool's preview, before any commit. Calm empty
+/// state when nothing is armed (ui_ux NFR-7: never-blank). Pure egui
+/// rendering — no `world_scale` conversion here, since `ProposalPreviewReport`'s
+/// m³ fields already carry real-or-world-unit honesty from fe-terrain's own
+/// NFR-4 gate (S2/S5 own that, not this widget).
+pub(crate) fn render_preview_readout(ui: &mut egui::Ui, readout: &PreviewReadout) {
+    ui.label(
+        egui::RichText::new("Live preview")
+            .strong()
+            .color(theme::TEXT_SECTION),
+    );
+    match &readout.0 {
+        Some(report) => {
+            ui.label(
+                egui::RichText::new(format!(
+                    "Cut {:.2} m³ · Fill {:.2} m³ · Net {:.2} m³",
+                    report.cut_m3, report.fill_m3, report.net_m3
+                ))
+                .small(),
+            );
+        }
+        None => {
+            ui.label(
+                egui::RichText::new("No live preview — arm a terrain tool to see cut/fill.")
+                    .small()
+                    .color(theme::TEXT_MUTED)
+                    .italics(),
+            );
+        }
+    }
+}
+
+/// Floating overlay hosting [`render_preview_readout`], shown only while the
+/// Terrain tools section is the active right-sidebar section. A standalone
+/// `egui::Area` (same idiom as `role_chip::role_chip_hud`) rather than a
+/// widget spliced into `render_terrain_tools_section`'s own call chain —
+/// that function lives in `ui_shell/right_sidebar.rs`, owned by a later
+/// slice (S6) in this track, so its call signature stays untouched here.
+/// Called from `plugin.rs`'s `gardener_ui_system` where the active-section
+/// state and the egui context are already in scope.
+pub(crate) fn render_preview_readout_overlay(
+    ctx: &egui::Context,
+    terrain_tools_active: bool,
+    readout: &PreviewReadout,
+) {
+    if !terrain_tools_active {
+        return;
+    }
+    egui::Area::new(egui::Id::new("terrain_preview_readout"))
+        .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-320.0, -48.0))
+        .show(ctx, |ui| {
+            render_preview_readout(ui, readout);
+        });
 }
 
 #[cfg(test)]

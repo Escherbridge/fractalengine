@@ -10,6 +10,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, PrimitiveTopology, TextureDimension, TextureFormat};
 
 use crate::config::{ElevationSourceKind, TerrainConfig};
+use crate::delta_viz::DeltaLattice;
 use crate::iot::{TrackRouteMap, TrackStyleMap};
 use crate::layers::{LayerId, LayerStack, LayerType};
 use crate::lod_ring::{
@@ -56,6 +57,15 @@ const MAX_HEIGHT_GRID_AXIS: usize = 65;
 /// Hard per-petal cap on proposal ghost meshes (NFR-2); the live allowance
 /// arrives via [`ProposalOverlayBudget`]. See `src/AGENTS.md` §terrain-proposals.
 pub const MAX_PROPOSAL_OVERLAYS: usize = 4_096;
+
+/// Live-preview debounce (OD-3, FR-3): the preview upgrades to its full
+/// lattice once the armed tool's draft has been unchanged for this long.
+pub const PREVIEW_DEBOUNCE_SECS: f64 = 0.1;
+
+/// Coarse lattice resolution (OD-3, NFR-3) sampled WHILE the preview draft is
+/// still changing; [`EARTHWORK_LATTICE`] is the settled "full" resolution —
+/// committed proposals, baked regions and the preview all share that policy.
+const PREVIEW_LATTICE_COARSE: f32 = 64.0;
 
 /// Take up to `requested` features from an overlay's shared budget.
 fn take_feature_budget(remaining: &mut usize, requested: usize) -> usize {
@@ -203,6 +213,49 @@ impl Default for ProposalOverlayBudget {
     }
 }
 
+/// Sub-toggle for the FR-2 cut/fill heatmap drape within the `ProposalOverlay`
+/// layer (OD-10): the layer itself still gates everything via
+/// `sync_layer_visibility`; this only hides the heatmap drape while the ghost
+/// (and baked terrain) stay visible. Defaults on (OD-8).
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeatmapOverlayToggle {
+    pub enabled: bool,
+}
+
+impl Default for HeatmapOverlayToggle {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+/// Marker for a committed proposal's FR-2 heatmap drape; own marker/owner
+/// (delta-viz tripwire) — `render_terrain_proposals` despawns it alongside
+/// the matching ghost, never mixed into `apply_terrain_assignments`'s query.
+#[derive(Component, Clone)]
+pub struct ProposalHeatmapEntity {
+    pub proposal_id: String,
+}
+
+/// Marker for the FR-4 baked-region heatmap drape. Sole owner/despawner:
+/// [`render_baked_region_heatmaps`].
+#[derive(Component, Clone)]
+pub struct BakedRegionHeatmapEntity {
+    pub region_id: String,
+}
+
+/// Rebuild bookkeeping for [`render_baked_region_heatmaps`] (mirrors `EarthworkBakeState`).
+#[derive(Resource, Default)]
+pub struct BakedHeatmapRenderState {
+    last_revision: Option<u64>,
+}
+
+/// Marker for a live FR-3 preview entity (ghost or heatmap drape). Sole
+/// owner/despawner: [`render_proposal_preview`] — never mixed into
+/// `render_terrain_proposals`'s or `apply_terrain_assignments`'s despawn
+/// queries (delta-viz tripwire).
+#[derive(Component)]
+pub struct ProposalPreviewEntity;
+
 /// Chunk marker: earthwork regions were last baked into this chunk's mesh at
 /// `revision` (T3; see `src/AGENTS.md` §sculpt (Earthwork bake)).
 #[derive(Component)]
@@ -306,11 +359,14 @@ impl Plugin for TerrainPlugin {
             .init_resource::<TileBundleDemand>()
             .init_resource::<ProposalRenderState>()
             .init_resource::<ProposalOverlayBudget>()
+            .init_resource::<HeatmapOverlayToggle>()
             .init_resource::<EarthworkBakeState>()
+            .init_resource::<BakedHeatmapRenderState>()
             .insert_resource(LayerStack::new())
             .add_message::<TerrainAssignmentMsg>()
-            // Idempotent: fe-ui's plugin also registers this shared-seam message.
+            // Idempotent: fe-ui's plugin also registers these shared-seam messages.
             .add_message::<fe_renderer::terrain_overlay::EarthworkVolumeReport>()
+            .add_message::<fe_renderer::terrain_overlay::ProposalPreviewReport>()
             .add_systems(
                 Update,
                 (
@@ -322,6 +378,8 @@ impl Plugin for TerrainPlugin {
                     render_geojson_overlays,
                     render_terrain_proposals,
                     bake_earthwork_regions,
+                    render_baked_region_heatmaps,
+                    render_proposal_preview,
                     sync_layer_visibility,
                 )
                     .chain(),
@@ -1157,19 +1215,23 @@ fn proposal_overlay_capacity(allowance: usize, resident: usize) -> usize {
         .min(MAX_PROPOSAL_OVERLAYS)
 }
 
-/// Render non-destructive terrain proposals as ghosted/tinted meshes over the
-/// READ-ONLY [`TerrainHeightField`] (FR-5, NFR-1). Rebuilds on an assignment
-/// revision change, when terrain chunks ground a ghost built on the no-base
-/// fallback, or when the residency budget grows under a truncated set. Tagged
-/// to the `ProposalOverlay` layer for visibility; bounded by
-/// [`ProposalOverlayBudget`] (NFR-2). See `src/AGENTS.md` §terrain-proposals.
+/// Render non-destructive terrain proposals as a relief-following LATTICE
+/// ghost (FR-1, fixes R-1's flat-lid) plus an optional cut/fill heatmap drape
+/// (FR-2) over the READ-ONLY [`TerrainHeightField`] (NFR-1). Rebuilds on an
+/// assignment revision change, when terrain chunks ground a proposal that had
+/// nothing to show yet, when the residency budget grows under a truncated
+/// set, or when [`HeatmapOverlayToggle`] flips. Tagged to the `ProposalOverlay`
+/// layer; bounded by [`ProposalOverlayBudget`] (NFR-2). See `src/AGENTS.md`
+/// §terrain-proposals, §delta-viz.
 #[allow(clippy::too_many_arguments)]
 fn render_terrain_proposals(
     active: Res<ActivePetalTerrain>,
     layer_stack: Res<LayerStack>,
+    heatmap_toggle: Res<HeatmapOverlayToggle>,
     height_field: Option<Res<TerrainHeightField>>,
     budget: Res<ProposalOverlayBudget>,
     existing: Query<Entity, With<ProposalOverlayEntity>>,
+    existing_heatmaps: Query<Entity, With<ProposalHeatmapEntity>>,
     mut state: ResMut<ProposalRenderState>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -1192,13 +1254,14 @@ fn render_terrain_proposals(
                 .sum();
             grounded > state.grounded_vertices
         });
-    if !proposals_need_rebuild(
+    let rebuild_needed = proposals_need_rebuild(
         state.last_revision,
         active.revision,
         coverage_grew,
         state.truncated,
         capacity > state.built.len(),
-    ) {
+    ) || heatmap_toggle.is_changed();
+    if !rebuild_needed {
         return;
     }
     let state = &mut *state;
@@ -1208,8 +1271,11 @@ fn render_terrain_proposals(
     state.grounded_vertices = 0;
     state.truncated = false;
 
-    // Sole despawner of proposal ghosts: clear the previous build.
+    // Sole despawner of proposal ghosts + their heatmap drapes: clear the previous build.
     for entity in existing.iter() {
+        commands.entity(entity).despawn();
+    }
+    for entity in existing_heatmaps.iter() {
         commands.entity(entity).despawn();
     }
 
@@ -1221,6 +1287,7 @@ fn render_terrain_proposals(
     }
 
     let layer_id = find_layer(&layer_stack, |t| matches!(t, LayerType::ProposalOverlay));
+    let world_scale = config.effective_world_scale();
 
     for (index, proposal) in config.proposals.iter().enumerate() {
         // T3: earthwork regions bake into the chunk meshes (`bake_earthwork_regions`)
@@ -1236,36 +1303,73 @@ fn render_terrain_proposals(
             );
             break;
         }
-        let Some((positions, indices)) =
-            crate::terrain_proposal::proposal_overlay_mesh_data(&base, proposal)
-        else {
-            continue;
-        };
+
+        // Grounding bookkeeping happens for every claimed slot, whether or not
+        // the lattice below currently has anything to show (re-ground gate).
         let grounded = proposal_grounded_vertices(&base, proposal);
         state.grounded_vertices += grounded;
         state.ungrounded |= grounded < proposal.footprint.len();
         state.built.push(index);
 
-        let mut mesh = Mesh::new(
+        let footprint = crate::sculpt::Footprint::Polygon {
+            verts: proposal.footprint.clone(),
+        };
+        let grid_step = region_grid_step(footprint.bounds());
+        let proposed = |x: f32, z: f32| {
+            crate::terrain_proposal::apply_proposal_over_base(&base, proposal, &[[x, z]])
+                .into_iter()
+                .next()
+                .flatten()
+        };
+        let Some(lattice) = DeltaLattice::build(&base, &proposed, &footprint, grid_step, world_scale)
+        else {
+            continue;
+        };
+        if lattice.ghost_positions.is_empty() {
+            // Nothing groundable yet — an honest hole, never a fallback decal (R-1).
+            continue;
+        }
+
+        let mut ghost_mesh = Mesh::new(
             PrimitiveTopology::TriangleList,
             RenderAssetUsages::default(),
         );
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-        mesh.insert_indices(Indices::U32(indices));
-
+        ghost_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, lattice.ghost_positions.clone());
+        ghost_mesh.insert_indices(Indices::U32(lattice.indices.clone()));
         let tint = fe_renderer::terrain_overlay::op_tint(proposal.op_snake());
-        let material = materials.add(fe_renderer::terrain_overlay::ghost_material(tint));
-
-        let mut entity = commands.spawn((
-            Mesh3d(meshes.add(mesh)),
-            MeshMaterial3d(material),
+        let ghost_material_handle = materials.add(fe_renderer::terrain_overlay::ghost_material(tint));
+        let mut ghost_entity = commands.spawn((
+            Mesh3d(meshes.add(ghost_mesh)),
+            MeshMaterial3d(ghost_material_handle),
             fe_renderer::terrain_overlay::ProposalGhost,
             ProposalOverlayEntity {
                 proposal_id: proposal.id.clone(),
             },
         ));
         if let Some(layer_id) = layer_id {
-            entity.insert(LayerEntity { layer_id });
+            ghost_entity.insert(LayerEntity { layer_id });
+        }
+
+        if heatmap_toggle.enabled && !lattice.drape_positions.is_empty() {
+            let colors = heatmap_vertex_colors(&lattice.dh, world_scale);
+            let mut drape_mesh = Mesh::new(
+                PrimitiveTopology::TriangleList,
+                RenderAssetUsages::default(),
+            );
+            drape_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, lattice.drape_positions.clone());
+            drape_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+            drape_mesh.insert_indices(Indices::U32(lattice.indices.clone()));
+            let drape_material = materials.add(fe_renderer::terrain_overlay::heatmap_material());
+            let mut drape_entity = commands.spawn((
+                Mesh3d(meshes.add(drape_mesh)),
+                MeshMaterial3d(drape_material),
+                ProposalHeatmapEntity {
+                    proposal_id: proposal.id.clone(),
+                },
+            ));
+            if let Some(layer_id) = layer_id {
+                drape_entity.insert(LayerEntity { layer_id });
+            }
         }
     }
 }
@@ -1280,19 +1384,10 @@ fn render_terrain_proposals(
 
 /// Volume-lattice resolution: each region's grid step = longest bound extent
 /// divided by this (≈16k samples/region; O(step) tolerance, Q-4 planning-grade).
+/// Shared with the committed-proposal ghost (`render_terrain_proposals`) and
+/// the FR-3 live preview's settled fidelity (`PreviewAction::Build{full:true}`)
+/// — one "full" resolution policy everywhere (see `src/AGENTS.md` §delta-viz).
 const EARTHWORK_LATTICE: f32 = 128.0;
-
-/// One region pre-resolved for the per-vertex bake loop.
-struct PreparedRegion {
-    footprint: crate::sculpt::Footprint,
-    bounds: Option<(f32, f32, f32, f32)>,
-    op: crate::sculpt::SculptOp,
-    target: f32,
-    delta: f32,
-    mean: Option<f32>,
-    strength: f32,
-    grid_step: f32,
-}
 
 /// Valid earthwork regions in the config's proposal block — the bake predicate
 /// filter, parsed through the designated `sculpt::parse_regions`.
@@ -1306,46 +1401,82 @@ fn config_earthwork_regions(config: &TerrainConfig) -> Vec<crate::sculpt::Earthw
     crate::sculpt::parse_regions(&serde_json::Value::Array(raw))
 }
 
-/// Grid step for a region's volume/mean lattice from its bounds (see
-/// [`EARTHWORK_LATTICE`]); floored so a degenerate footprint can't stall.
+/// Grid step for `bounds` at [`EARTHWORK_LATTICE`] (the settled "full"
+/// resolution); see [`lattice_grid_step`] for other resolutions.
 fn region_grid_step(bounds: Option<(f32, f32, f32, f32)>) -> f32 {
+    lattice_grid_step(bounds, EARTHWORK_LATTICE)
+}
+
+/// Grid step for `bounds` at a chosen `resolution` (grid divisions along the
+/// longer axis); floored so a degenerate footprint can't stall. Shared by the
+/// committed ghost/bake (full) and the FR-3 preview (coarse while changing,
+/// full once settled — OD-3).
+fn lattice_grid_step(bounds: Option<(f32, f32, f32, f32)>, resolution: f32) -> f32 {
     let Some((min_x, min_z, max_x, max_z)) = bounds else {
         return 1.0;
     };
-    ((max_x - min_x).max(max_z - min_z) / EARTHWORK_LATTICE).max(1e-4)
+    ((max_x - min_x).max(max_z - min_z) / resolution).max(1e-4)
 }
 
-/// Resolve footprint/params/mean once per region for the bake loop.
-fn prepare_regions(
-    regions: &[crate::sculpt::EarthworkRegion],
-    base: &impl Fn(f32, f32) -> Option<f32>,
-) -> Vec<PreparedRegion> {
-    regions
+/// One shared grid step for a WHOLE region set's composite walk (FR-5): the
+/// bake and the FR-4 heatmap (`render_baked_region_heatmaps`) must resolve
+/// `Smooth`'s region-mean identically, which only holds if both build the
+/// SAME `CompositeRegion` list from the SAME step — the union of every
+/// region's bounds, at [`EARTHWORK_LATTICE`] resolution.
+fn composite_grid_step(regions: &[crate::sculpt::EarthworkRegion]) -> f32 {
+    let union = regions
         .iter()
-        .map(|r| {
-            let footprint = r.footprint_shape();
-            let bounds = footprint.bounds();
-            let grid_step = region_grid_step(bounds);
-            let mean = if r.op == crate::sculpt::SculptOp::Smooth {
-                crate::sculpt::region_mean_height(base, &footprint, grid_step)
-            } else {
-                None
-            };
-            PreparedRegion {
-                footprint,
-                bounds,
-                op: r.op,
-                target: r.target_height.unwrap_or(0.0),
-                delta: if r.op == crate::sculpt::SculptOp::Smooth {
-                    0.0
-                } else {
-                    r.delta.unwrap_or(0.0)
-                },
-                mean,
-                strength: r.effective_strength(),
-                grid_step,
-            }
-        })
+        .filter_map(|r| r.footprint_shape().bounds())
+        .fold(None, |acc: Option<(f32, f32, f32, f32)>, b| {
+            Some(match acc {
+                None => b,
+                Some(a) => (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)),
+            })
+        });
+    region_grid_step(union)
+}
+
+/// Auto-scaled heatmap ramp max (OD-2): the deepest `|dh|` in the shown set,
+/// rounded UP to a nice meter value (1/2/5 × 10ⁿ, Civil 3D-style bands) so the
+/// ramp always covers what it draws; floored so a near-zero edit still shows
+/// a usable ramp.
+fn auto_ramp_max_m(max_abs_dh_m: f32) -> f32 {
+    const RAMP_FLOOR_M: f32 = 0.1;
+    let v = (max_abs_dh_m as f64).max(0.0);
+    if v <= 0.0 {
+        return RAMP_FLOOR_M;
+    }
+    let exponent = v.log10().floor();
+    let magnitude = 10f64.powf(exponent);
+    let fraction = v / magnitude;
+    let nice = if fraction <= 1.0 {
+        1.0
+    } else if fraction <= 2.0 {
+        2.0
+    } else if fraction <= 5.0 {
+        5.0
+    } else {
+        10.0
+    };
+    ((nice * magnitude) as f32).max(RAMP_FLOOR_M)
+}
+
+/// Fraction of the auto ramp max left transparent around `dh=0` (OD-1's
+/// "neutral band"); scales with the ramp so it reads sensibly at any depth.
+const HEATMAP_NEUTRAL_FRACTION: f32 = 0.05;
+
+/// Per-vertex cut/fill heatmap RGBA for a lattice's `dh` (scene units), using
+/// [`auto_ramp_max_m`] over THIS mesh's own set — OD-2's "shown set" is scoped
+/// per overlay here, not synchronized globally across every proposal/region
+/// (a deliberate, documented scope cut; see `src/AGENTS.md` §delta-viz).
+/// `world_scale` converts scene units to real meters for the ramp (NFR-4).
+fn heatmap_vertex_colors(dh: &[f32], world_scale: f64) -> Vec<[f32; 4]> {
+    let scale = crate::scale::sanitize_world_scale(world_scale) as f32;
+    let max_abs_m = dh.iter().fold(0.0f32, |m, d| m.max((d / scale).abs()));
+    let ramp_max = auto_ramp_max_m(max_abs_m);
+    let neutral = ramp_max * HEATMAP_NEUTRAL_FRACTION;
+    dh.iter()
+        .map(|d| fe_renderer::terrain_overlay::cut_fill_rgba(d / scale, ramp_max, neutral))
         .collect()
 }
 
@@ -1374,22 +1505,6 @@ fn positions_world_xz_bounds(
         max_x + translation.x,
         max_z + translation.z,
     ))
-}
-
-/// Net surface delta at `(x, z)` from applying every containing region in
-/// record order over `base_y`.
-fn earthwork_surface_delta(prepared: &[PreparedRegion], base_y: f32, x: f32, z: f32) -> f32 {
-    let mut h = base_y;
-    for r in prepared {
-        if r.footprint.contains(x, z) {
-            if let Some(p) =
-                crate::sculpt::proposed_height(r.op, Some(h), r.target, r.delta, r.mean, r.strength)
-            {
-                h = p;
-            }
-        }
-    }
-    h - base_y
 }
 
 /// Smooth vertex normals for `positions` under `indices` (the `terrain_mesh`
@@ -1456,7 +1571,12 @@ fn bake_earthwork_regions(
 
     // READ-ONLY pristine base sampler (the field stays pre-bake — NFR-1).
     let base = |x: f32, z: f32| height_field.as_ref().and_then(|f| f.height_at(x, z));
-    let prepared = prepare_regions(&regions, &base);
+    // FR-5 one truth: the bake and the FR-4 heatmap (`render_baked_region_heatmaps`)
+    // both resolve this SAME composite list from the SAME shared grid step, so
+    // every op (especially `Smooth`'s region-mean) agrees bit-for-bit between
+    // the two systems — see `composite_grid_step`.
+    let composite_regions =
+        crate::sculpt::prepare_composite(&regions, &base, composite_grid_step(&regions));
 
     if !regions.is_empty() && height_field.is_none() && state.warned_revision != Some(revision) {
         state.warned_revision = Some(revision);
@@ -1492,9 +1612,9 @@ fn bake_earthwork_regions(
         }
         let chunk_bounds = positions_world_xz_bounds(&positions, tx.translation);
         let touches = chunk_bounds.is_some_and(|cb| {
-            prepared
+            composite_regions
                 .iter()
-                .any(|r| r.bounds.is_some_and(|rb| bounds_intersect(cb, rb)))
+                .any(|r| r.footprint.bounds().is_some_and(|rb| bounds_intersect(cb, rb)))
         });
 
         if touches {
@@ -1506,7 +1626,9 @@ fn bake_earthwork_regions(
                 let Some(b) = base(wx, wz) else {
                     continue; // no pristine cover here — leave the vertex alone
                 };
-                let dh = earthwork_surface_delta(&prepared, b, wx, wz);
+                let proposed =
+                    crate::sculpt::composite_proposed_height(&composite_regions, b, wx, wz);
+                let dh = proposed - b;
                 if dh != 0.0 {
                     v[1] += dh;
                     changed = true;
@@ -1542,14 +1664,354 @@ fn bake_earthwork_regions(
     if (revision_changed || baked_any) && !regions.is_empty() {
         let petal_id = active.petal_id.clone().unwrap_or_default();
         let world_scale = config.map(|c| c.effective_world_scale()).unwrap_or(1.0);
-        for (region, prep) in regions.iter().zip(&prepared) {
-            let cf = region.cut_fill(&base, prep.grid_step, world_scale);
+        for region in &regions {
+            // Standalone per-region figure (unrelated to the composite one-truth
+            // concern above): each region's own grid step from its own bounds.
+            let grid_step = region_grid_step(region.footprint_shape().bounds());
+            let cf = region.cut_fill(&base, grid_step, world_scale);
             reports.write(fe_renderer::terrain_overlay::EarthworkVolumeReport {
                 petal_id: petal_id.clone(),
                 region_id: region.id.clone(),
                 cut_m3: cf.cut_m3,
                 fill_m3: cf.fill_m3,
             });
+        }
+    }
+}
+
+/// FR-4 cut/fill heatmap for every committed earthwork region against the
+/// PRISTINE (pre-bake) [`TerrainHeightField`] — R-3's fix: baking erased the
+/// before/after comparison; this standalone overlay restores it without
+/// un-baking anything. Shares the ONE composite surface `bake_earthwork_regions`
+/// bakes with (FR-5). Sole owner/despawner of [`BakedRegionHeatmapEntity`].
+/// See `src/AGENTS.md` §sculpt, §delta-viz.
+#[allow(clippy::too_many_arguments)]
+fn render_baked_region_heatmaps(
+    active: Res<ActivePetalTerrain>,
+    layer_stack: Res<LayerStack>,
+    heatmap_toggle: Res<HeatmapOverlayToggle>,
+    height_field: Option<Res<TerrainHeightField>>,
+    existing: Query<Entity, With<BakedRegionHeatmapEntity>>,
+    mut state: ResMut<BakedHeatmapRenderState>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let revision = active.revision;
+    if state.last_revision == Some(revision) && !heatmap_toggle.is_changed() {
+        return;
+    }
+    state.last_revision = Some(revision);
+
+    // Sole despawner of this marker: clear the previous build.
+    for entity in existing.iter() {
+        commands.entity(entity).despawn();
+    }
+
+    if !heatmap_toggle.enabled {
+        return;
+    }
+    let Some(config) = active.config.as_ref().filter(|c| c.enabled) else {
+        return;
+    };
+    let regions = config_earthwork_regions(config);
+    if regions.is_empty() {
+        return;
+    }
+
+    // READ-ONLY pristine base sampler — never the baked chunk mesh (R-3/NFR-1).
+    let base = |x: f32, z: f32| height_field.as_ref().and_then(|f| f.height_at(x, z));
+    let grid_step = composite_grid_step(&regions);
+    let composite_regions = crate::sculpt::prepare_composite(&regions, &base, grid_step);
+    let world_scale = config.effective_world_scale();
+    let layer_id = find_layer(&layer_stack, |t| matches!(t, LayerType::ProposalOverlay));
+
+    for region in &regions {
+        let footprint = region.footprint_shape();
+        let proposed = |x: f32, z: f32| {
+            base(x, z)
+                .map(|b| crate::sculpt::composite_proposed_height(&composite_regions, b, x, z))
+        };
+        let Some(lattice) =
+            DeltaLattice::build(&base, &proposed, &footprint, grid_step, world_scale)
+        else {
+            continue;
+        };
+        if lattice.drape_positions.is_empty() {
+            continue;
+        }
+        let colors = heatmap_vertex_colors(&lattice.dh, world_scale);
+        let mut mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, lattice.drape_positions.clone());
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+        mesh.insert_indices(Indices::U32(lattice.indices.clone()));
+        let material = materials.add(fe_renderer::terrain_overlay::heatmap_material());
+        let mut entity = commands.spawn((
+            Mesh3d(meshes.add(mesh)),
+            MeshMaterial3d(material),
+            BakedRegionHeatmapEntity {
+                region_id: region.id.clone(),
+            },
+        ));
+        if let Some(layer_id) = layer_id {
+            entity.insert(LayerEntity { layer_id });
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FR-3 live pre-commit preview (terrain_proposal_delta_viz_20261025 S2).
+// Reads the fe-renderer-seam `ProposalPreview` Resource that the armed tool
+// (fe-ui, S3) inserts/removes; renders FR-1 ghost + FR-2 heatmap debounced
+// (OD-3) and writes a `ProposalPreviewReport`. NEVER writes the DB or the
+// height field — see `src/AGENTS.md` §delta-viz.
+// ---------------------------------------------------------------------------
+
+/// Comparable snapshot of a [`ProposalPreview`](fe_renderer::terrain_overlay::ProposalPreview)
+/// draft for the debounce's change detection (OD-3).
+#[derive(Debug, Clone, PartialEq)]
+struct PreviewSnapshot {
+    petal_id: String,
+    op: String,
+    footprint: Vec<[f32; 2]>,
+    target_m: f32,
+    delta_m: f32,
+    strength: f32,
+}
+
+impl From<&fe_renderer::terrain_overlay::ProposalPreview> for PreviewSnapshot {
+    fn from(p: &fe_renderer::terrain_overlay::ProposalPreview) -> Self {
+        Self {
+            petal_id: p.petal_id.clone(),
+            op: p.op.clone(),
+            footprint: p.footprint.clone(),
+            target_m: p.target_m,
+            delta_m: p.delta_m,
+            strength: p.strength,
+        }
+    }
+}
+
+/// What [`PreviewDebounce::poll`] decided this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreviewAction {
+    /// Draft cleared (or petal-scope mismatch) — despawn, nothing to build.
+    Clear,
+    /// (Re)build now: coarse while still changing, full once settled (OD-3).
+    Build { full: bool },
+}
+
+/// Trailing-edge debounce for the FR-3 live preview (OD-3): a NEW draft value
+/// rebuilds immediately at the coarse lattice (so the user always sees
+/// something every tick — NFR-3); once the draft has been stable for
+/// [`PREVIEW_DEBOUNCE_SECS`], one more rebuild upgrades to the full lattice.
+/// Mirrors `fe_ui::settings::SettingsSaveDebounce`'s trailing-edge shape.
+#[derive(Debug, Default)]
+struct PreviewDebounce {
+    seen: Option<PreviewSnapshot>,
+    last_change_secs: f64,
+    settled: bool,
+}
+
+impl PreviewDebounce {
+    /// Returns the action to take now, or `None` for "already built at the
+    /// current fidelity — nothing changed".
+    fn poll(&mut self, current: Option<&PreviewSnapshot>, now_secs: f64) -> Option<PreviewAction> {
+        match current {
+            None => self.seen.take().map(|_| PreviewAction::Clear),
+            Some(snap) => {
+                if self.seen.as_ref() != Some(snap) {
+                    self.seen = Some(snap.clone());
+                    self.last_change_secs = now_secs;
+                    self.settled = false;
+                    Some(PreviewAction::Build { full: false })
+                } else if !self.settled && now_secs - self.last_change_secs >= PREVIEW_DEBOUNCE_SECS
+                {
+                    self.settled = true;
+                    Some(PreviewAction::Build { full: true })
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
+/// Build the FR-3 live-preview lattice for the armed tool's draft at a chosen
+/// `resolution` (coarse while changing, full once settled — OD-3). Palette-op
+/// drafts reuse `apply_proposal_over_base` (the full `TerrainOp` vocabulary,
+/// matching what the committed ghost will look like after commit); shape/brush
+/// drafts go through `sculpt::proposed_height` so `Smooth` gets its real
+/// region-mean relax instead of the proposal-seam's identity shortcut
+/// (`terrain_proposal.rs`'s `Smooth` is identity there — delta-viz tripwire).
+///
+/// `ProposalPreview.target_m`/`delta_m` are REAL METERS for every source
+/// (fe-ui's `publish_proposal_preview` converts at its own emit boundary —
+/// `fe-ui/src/terrain_preview.rs`), while `TerrainProposal`/`sculpt::proposed_height`
+/// take WORLD/scene units (N-1). Converted back here via `* world_scale`
+/// (the inverse of fe-ui's `world_to_meters`) — the one seam-unit crossing.
+fn build_preview_lattice(
+    preview: &fe_renderer::terrain_overlay::ProposalPreview,
+    base: &impl Fn(f32, f32) -> Option<f32>,
+    resolution: f32,
+    world_scale: f64,
+) -> Option<DeltaLattice> {
+    use fe_renderer::terrain_overlay::PreviewSource;
+    let footprint = crate::sculpt::Footprint::Polygon {
+        verts: preview.footprint.clone(),
+    };
+    let grid_step = lattice_grid_step(footprint.bounds(), resolution);
+    let scale = crate::scale::sanitize_world_scale(world_scale);
+    let target_world = (preview.target_m as f64 * scale) as f32;
+    let delta_world = (preview.delta_m as f64 * scale) as f32;
+    match preview.source {
+        PreviewSource::PaletteOp => {
+            let op = crate::terrain_proposal::TerrainOp::from_snake(&preview.op)?;
+            let draft = crate::terrain_proposal::TerrainProposal {
+                id: "__preview__".into(),
+                op,
+                footprint: preview.footprint.clone(),
+                target_height: Some(target_world),
+                delta: Some(delta_world),
+                material: None,
+            };
+            let proposed = |x: f32, z: f32| {
+                crate::terrain_proposal::apply_proposal_over_base(base, &draft, &[[x, z]])
+                    .into_iter()
+                    .next()
+                    .flatten()
+            };
+            DeltaLattice::build(base, &proposed, &footprint, grid_step, world_scale)
+        }
+        PreviewSource::SculptShape | PreviewSource::BrushStroke => {
+            let op = crate::sculpt::SculptOp::from_snake(&preview.op)?;
+            let mean = (op == crate::sculpt::SculptOp::Smooth)
+                .then(|| crate::sculpt::region_mean_height(base, &footprint, grid_step))
+                .flatten();
+            let proposed = |x: f32, z: f32| {
+                crate::sculpt::proposed_height(
+                    op,
+                    base(x, z),
+                    target_world,
+                    delta_world,
+                    mean,
+                    preview.strength,
+                )
+            };
+            DeltaLattice::build(base, &proposed, &footprint, grid_step, world_scale)
+        }
+    }
+}
+
+/// Live FR-3 preview: the armed tool's draft rendered as a ghost + heatmap
+/// drape, debounced (OD-3). NEVER writes the DB (fe-terrain has no such
+/// channel) or the height field — this system takes it as `Option<Res<_>>`,
+/// so mutation is structurally impossible (NFR-1). Never bumps
+/// `ActivePetalTerrain.revision`. Sole owner/despawner of
+/// [`ProposalPreviewEntity`].
+#[allow(clippy::too_many_arguments)]
+fn render_proposal_preview(
+    preview: Option<Res<fe_renderer::terrain_overlay::ProposalPreview>>,
+    active: Res<ActivePetalTerrain>,
+    layer_stack: Res<LayerStack>,
+    heatmap_toggle: Res<HeatmapOverlayToggle>,
+    height_field: Option<Res<TerrainHeightField>>,
+    existing: Query<Entity, With<ProposalPreviewEntity>>,
+    time: Res<Time>,
+    mut debounce: Local<PreviewDebounce>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut reports: MessageWriter<fe_renderer::terrain_overlay::ProposalPreviewReport>,
+) {
+    // Petal-scope gate: a draft for a different/absent petal is treated as cleared.
+    let scoped = preview
+        .as_deref()
+        .filter(|p| active.petal_id.as_deref() == Some(p.petal_id.as_str()));
+    let snapshot = scoped.map(PreviewSnapshot::from);
+
+    let Some(action) = debounce.poll(snapshot.as_ref(), time.elapsed_secs_f64()) else {
+        return;
+    };
+
+    // Sole despawner of this marker: clear the previous build (and every Clear).
+    for entity in existing.iter() {
+        commands.entity(entity).despawn();
+    }
+
+    let PreviewAction::Build { full } = action else {
+        return; // Clear: despawned above, nothing to (re)build.
+    };
+    let Some(preview) = scoped else {
+        return;
+    };
+
+    let base = |x: f32, z: f32| height_field.as_ref().and_then(|f| f.height_at(x, z));
+    let world_scale = active
+        .config
+        .as_ref()
+        .map(|c| c.effective_world_scale())
+        .unwrap_or(1.0);
+    let resolution = if full {
+        EARTHWORK_LATTICE
+    } else {
+        PREVIEW_LATTICE_COARSE
+    };
+    let Some(lattice) = build_preview_lattice(preview, &base, resolution, world_scale) else {
+        return;
+    };
+
+    reports.write(fe_renderer::terrain_overlay::ProposalPreviewReport {
+        petal_id: preview.petal_id.clone(),
+        cut_m3: lattice.cut_fill.cut_m3,
+        fill_m3: lattice.cut_fill.fill_m3,
+        net_m3: lattice.cut_fill.net_m3(),
+    });
+
+    if lattice.ghost_positions.is_empty() {
+        return; // Nothing groundable yet — an honest hole, same as the committed ghost.
+    }
+
+    let layer_id = find_layer(&layer_stack, |t| matches!(t, LayerType::ProposalOverlay));
+
+    let mut ghost_mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
+    ghost_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, lattice.ghost_positions.clone());
+    ghost_mesh.insert_indices(Indices::U32(lattice.indices.clone()));
+    let tint = fe_renderer::terrain_overlay::op_tint(&preview.op);
+    let ghost_material_handle = materials.add(fe_renderer::terrain_overlay::ghost_material(tint));
+    let mut ghost_entity = commands.spawn((
+        Mesh3d(meshes.add(ghost_mesh)),
+        MeshMaterial3d(ghost_material_handle),
+        fe_renderer::terrain_overlay::ProposalGhost,
+        ProposalPreviewEntity,
+    ));
+    if let Some(layer_id) = layer_id {
+        ghost_entity.insert(LayerEntity { layer_id });
+    }
+
+    if heatmap_toggle.enabled && !lattice.drape_positions.is_empty() {
+        let colors = heatmap_vertex_colors(&lattice.dh, world_scale);
+        let mut drape_mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
+        drape_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, lattice.drape_positions.clone());
+        drape_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+        drape_mesh.insert_indices(Indices::U32(lattice.indices.clone()));
+        let drape_material = materials.add(fe_renderer::terrain_overlay::heatmap_material());
+        let mut drape_entity = commands.spawn((
+            Mesh3d(meshes.add(drape_mesh)),
+            MeshMaterial3d(drape_material),
+            ProposalPreviewEntity,
+        ));
+        if let Some(layer_id) = layer_id {
+            drape_entity.insert(LayerEntity { layer_id });
         }
     }
 }
@@ -1630,33 +2092,61 @@ mod tests {
     }
 
     #[test]
-    fn earthwork_surface_delta_applies_regions_in_order() {
+    fn composite_grid_step_unions_every_region_bounds() {
         use crate::sculpt::{EarthworkRegion, SculptOp};
-        let base = |_x: f32, _z: f32| Some(1.0);
-        let square = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
         let regions = vec![
             EarthworkRegion {
                 id: "r1".into(),
                 op: SculptOp::Raise,
-                footprint: square.clone(),
+                footprint: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
                 material: "earth".into(),
                 target_height: None,
-                delta: Some(2.0),
+                delta: Some(1.0),
             },
             EarthworkRegion {
                 id: "r2".into(),
-                op: SculptOp::Level,
-                footprint: square,
+                op: SculptOp::Raise,
+                footprint: vec![[100.0, 100.0], [118.0, 100.0], [118.0, 118.0], [100.0, 118.0]],
                 material: "earth".into(),
-                target_height: Some(0.5),
-                delta: None,
+                target_height: None,
+                delta: Some(1.0),
             },
         ];
-        let prepared = prepare_regions(&regions, &base);
-        // Inside: raise 1→3, then level to 0.5 → net delta -0.5 off base 1.0.
-        assert!((earthwork_surface_delta(&prepared, 1.0, 5.0, 5.0) + 0.5).abs() < 1e-5);
-        // Outside every footprint: no delta.
-        assert_eq!(earthwork_surface_delta(&prepared, 1.0, 50.0, 50.0), 0.0);
+        // Union bounds span 0..118 -> same step as region_grid_step(0,0,118,118),
+        // not either region's OWN (smaller) extent.
+        let expected = region_grid_step(Some((0.0, 0.0, 118.0, 118.0)));
+        assert!((composite_grid_step(&regions) - expected).abs() < 1e-6);
+        assert_eq!(composite_grid_step(&[]), 1.0, "no regions -> degenerate floor");
+    }
+
+    #[test]
+    fn auto_ramp_max_rounds_up_to_a_nice_value_and_floors_near_zero() {
+        // Table-driven: every case's ramp must be >= the input depth (never
+        // clips what it draws) and snap to a 1/2/5 x 10^n value.
+        let cases: &[(f32, f32)] = &[(0.0, 0.1), (0.05, 0.1), (0.9, 1.0), (1.4, 2.0), (3.0, 5.0), (7.0, 10.0), (12.0, 20.0)];
+        for &(input, expected) in cases {
+            let got = auto_ramp_max_m(input);
+            assert!(
+                (got - expected).abs() < 1e-4,
+                "auto_ramp_max_m({input}) = {got}, expected {expected}"
+            );
+            assert!(got >= input, "ramp must never clip its own input: {got} < {input}");
+        }
+    }
+
+    #[test]
+    fn heatmap_vertex_colors_sign_matches_cut_and_fill() {
+        // dh in SCENE units at world_scale 2 -> dh_m = dh/2. Mutation check: a
+        // flipped sign comparison here would misclassify fill as cut.
+        let dh = [-4.0, 0.0, 4.0];
+        let colors = heatmap_vertex_colors(&dh, 2.0);
+        assert_eq!(colors.len(), 3);
+        let [r_cut, _, b_cut, a_cut] = colors[0];
+        assert!(a_cut > 0.0 && r_cut > b_cut, "cut (dh<0) must read red-dominant");
+        let [_, _, _, a_zero] = colors[1];
+        assert_eq!(a_zero, 0.0, "dh=0 is inside the neutral band");
+        let [r_fill, _, b_fill, a_fill] = colors[2];
+        assert!(a_fill > 0.0 && b_fill > r_fill, "fill (dh>0) must read blue-dominant");
     }
 
     #[test]
@@ -1888,6 +2378,7 @@ mod tests {
             .init_asset::<Mesh>()
             .init_asset::<StandardMaterial>()
             .init_resource::<ProposalRenderState>()
+            .init_resource::<HeatmapOverlayToggle>()
             .insert_resource(ProposalOverlayBudget { allowance })
             .insert_resource(LayerStack::new())
             .insert_resource(TerrainHeightField::default())
@@ -1901,6 +2392,18 @@ mod tests {
                 revision: 1,
             })
             .add_systems(Update, render_terrain_proposals);
+        app
+    }
+
+    /// Like `proposal_app` but with one covering height tile already resident,
+    /// so lattice-based ghosts/heatmaps have something to render from frame
+    /// one (the re-ground SEQUENCING itself is `relative_ghost_regrounds_once_
+    /// covering_chunks_arrive`'s job; most other tests just need grounding).
+    fn proposal_app_grounded(proposals: Vec<TerrainProposal>, allowance: usize, tile: HeightTile) -> App {
+        let mut app = proposal_app(proposals, allowance);
+        app.world_mut()
+            .resource_mut::<TerrainHeightField>()
+            .insert((10, 0, 0), tile);
         app
     }
 
@@ -1929,16 +2432,73 @@ mod tests {
         out
     }
 
+    /// Full XYZ ghost positions for one proposal (sorted for determinism).
+    fn ghost_positions(app: &mut App, proposal_id: &str) -> Vec<[f32; 3]> {
+        let world = app.world_mut();
+        let mut query = world.query::<(&Mesh3d, &ProposalOverlayEntity)>();
+        let handle = query
+            .iter(world)
+            .find(|(_, p)| p.proposal_id == proposal_id)
+            .map(|(m, _)| m.0.clone());
+        let Some(handle) = handle else {
+            return Vec::new();
+        };
+        let meshes = world.resource::<Assets<Mesh>>();
+        let mut positions: Vec<[f32; 3]> = meshes
+            .get(&handle)
+            .and_then(|m| m.attribute(Mesh::ATTRIBUTE_POSITION))
+            .and_then(|a| a.as_float3())
+            .map(|p| p.to_vec())
+            .unwrap_or_default();
+        positions.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap().then(a[2].partial_cmp(&b[2]).unwrap()));
+        positions
+    }
+
+    /// Resident committed-proposal heatmap drape entities.
+    fn heatmaps(app: &mut App) -> Vec<Entity> {
+        let world = app.world_mut();
+        let mut query = world.query_filtered::<Entity, With<ProposalHeatmapEntity>>();
+        query.iter(world).collect()
+    }
+
+    #[test]
+    fn committed_raise_renders_lattice_ghost_not_flat_lid() {
+        // Sloped base (NOT flat): a flat-lid ghost (R-1) would have exactly 4
+        // perimeter vertices and slice through this relief. The lattice ghost
+        // must carry interior samples that each sit at base(x,z)+2.
+        let tile = HeightTile {
+            anchor: Vec3::ZERO,
+            tile_size: 100.0,
+            grid: vec![0.0, 20.0, 0.0, 20.0], // east edge 20 higher than west
+            width: 2,
+            height: 2,
+        };
+        let mut app =
+            proposal_app_grounded(vec![square_proposal("p", TerrainOp::Raise, 0.0)], 64, tile);
+        app.update();
+
+        let positions = ghost_positions(&mut app, "p");
+        assert!(
+            positions.len() > 4,
+            "expected an interior lattice beyond the 4 footprint corners, got {}",
+            positions.len()
+        );
+        for &[x, y, z] in &positions {
+            let expected = x * 0.2 + 2.0; // slope 20/100 * x, raised by 2
+            assert!(
+                (y - expected).abs() < 0.05,
+                "ghost at ({x},{z}) y={y}, expected ~{expected} (relief-following, not a flat lid)"
+            );
+        }
+    }
+
     #[test]
     fn relative_ghost_regrounds_once_covering_chunks_arrive() {
         let mut app = proposal_app(vec![square_proposal("p", TerrainOp::Raise, 10.0)], 64);
         app.update();
-        let before = ghosts(&mut app);
-        assert_eq!(before.len(), 1);
         assert!(
-            before[0].2.iter().all(|y| *y == 0.0),
-            "no terrain yet -> 0.0 fallback: {:?}",
-            before[0].2
+            ghosts(&mut app).is_empty(),
+            "no terrain yet -> the lattice has nothing honest to show (R-1: no fallback decal)"
         );
 
         // A chunk that misses the footprint changes the field but grounds nothing.
@@ -1946,20 +2506,15 @@ mod tests {
             .resource_mut::<TerrainHeightField>()
             .insert((10, 9, 9), flat_tile(Vec3::new(1000.0, 5.0, 1000.0), 100.0));
         app.update();
-        assert_eq!(
-            ghosts(&mut app)[0].0,
-            before[0].0,
-            "no rebuild without coverage"
-        );
+        assert!(ghosts(&mut app).is_empty(), "no rebuild without coverage");
 
-        // The covering chunk arrives -> the ghost rebuilds onto base + delta.
+        // The covering chunk arrives -> the ghost appears at base + delta.
         app.world_mut()
             .resource_mut::<TerrainHeightField>()
             .insert((10, 0, 0), flat_tile(Vec3::new(0.0, 5.0, 0.0), 100.0));
         app.update();
         let grounded = ghosts(&mut app);
         assert_eq!(grounded.len(), 1);
-        assert_ne!(grounded[0].0, before[0].0, "ghost replaced");
         assert!(
             grounded[0].2.iter().all(|y| (*y - 7.0).abs() < 1e-5),
             "ghost sits at base 5 + delta 2: {:?}",
@@ -1967,6 +2522,7 @@ mod tests {
         );
 
         // Steady state: idle frames and further chunk churn keep the same entity.
+        let stable_id = grounded[0].0;
         app.update();
         app.world_mut()
             .resource_mut::<TerrainHeightField>()
@@ -1974,7 +2530,7 @@ mod tests {
         app.update();
         assert_eq!(
             ghosts(&mut app)[0].0,
-            grounded[0].0,
+            stable_id,
             "grounded ghost never churns"
         );
     }
@@ -1984,7 +2540,14 @@ mod tests {
         let proposals: Vec<_> = (0..5)
             .map(|i| square_proposal(&format!("p{i}"), TerrainOp::Raise, i as f32 * 20.0))
             .collect();
-        let mut app = proposal_app(proposals, 2);
+        let tile = HeightTile {
+            anchor: Vec3::ZERO,
+            tile_size: 300.0, // covers every square AND the p5 edit below
+            grid: vec![0.0; 4],
+            width: 2,
+            height: 2,
+        };
+        let mut app = proposal_app_grounded(proposals, 2, tile);
         app.update();
         let first = ghosts(&mut app);
         assert_eq!(first.len(), 2, "allowance 2 -> exactly 2 ghosts");
@@ -2019,6 +2582,65 @@ mod tests {
         }
         app.update();
         assert_eq!(ghosts(&mut app).len(), 5, "edit at the ceiling holds at 5");
+    }
+
+    #[test]
+    fn heatmap_build_stops_at_residency_budget() {
+        // Extends `proposal_ghosts_stop_at_the_residency_budget_and_grow_with_it`:
+        // each resident ghost also gets its heatmap drape, and both scale
+        // together under the SAME per-proposal budget (not a separate pool).
+        let proposals: Vec<_> = (0..5)
+            .map(|i| square_proposal(&format!("p{i}"), TerrainOp::Raise, i as f32 * 20.0))
+            .collect();
+        let tile = HeightTile {
+            anchor: Vec3::ZERO,
+            tile_size: 300.0,
+            grid: vec![0.0; 4],
+            width: 2,
+            height: 2,
+        };
+        let mut app = proposal_app_grounded(proposals, 2, tile);
+        app.update();
+        assert_eq!(ghosts(&mut app).len(), 2);
+        assert_eq!(
+            heatmaps(&mut app).len(),
+            2,
+            "each resident ghost also gets a heatmap drape"
+        );
+
+        app.world_mut()
+            .resource_mut::<ProposalOverlayBudget>()
+            .allowance = 10;
+        app.update();
+        assert_eq!(ghosts(&mut app).len(), 5);
+        assert_eq!(
+            heatmaps(&mut app).len(),
+            5,
+            "heatmap drapes grow in lockstep with ghosts"
+        );
+    }
+
+    #[test]
+    fn heatmap_toggle_off_hides_drapes_without_touching_ghosts() {
+        let tile = HeightTile {
+            anchor: Vec3::ZERO,
+            tile_size: 100.0,
+            grid: vec![0.0; 4],
+            width: 2,
+            height: 2,
+        };
+        let mut app =
+            proposal_app_grounded(vec![square_proposal("p", TerrainOp::Raise, 0.0)], 64, tile);
+        app.update();
+        assert_eq!(ghosts(&mut app).len(), 1);
+        assert_eq!(heatmaps(&mut app).len(), 1);
+
+        app.world_mut()
+            .resource_mut::<HeatmapOverlayToggle>()
+            .enabled = false;
+        app.update();
+        assert_eq!(ghosts(&mut app).len(), 1, "ghost stays visible");
+        assert!(heatmaps(&mut app).is_empty(), "heatmap drape is gone");
     }
 
     #[test]
@@ -2065,6 +2687,486 @@ mod tests {
         assert_eq!(
             proposal_overlay_capacity(usize::MAX, 7),
             MAX_PROPOSAL_OVERLAYS
+        );
+    }
+
+    // --- layer visibility over the delta-viz overlays ---
+
+    #[test]
+    fn overlays_hidden_when_proposal_layer_hidden() {
+        let tile = HeightTile {
+            anchor: Vec3::ZERO,
+            tile_size: 100.0,
+            grid: vec![0.0; 4],
+            width: 2,
+            height: 2,
+        };
+        let mut app =
+            proposal_app_grounded(vec![square_proposal("p", TerrainOp::Raise, 0.0)], 64, tile);
+        app.add_systems(Update, sync_layer_visibility);
+
+        let layer_id = app
+            .world_mut()
+            .resource_mut::<LayerStack>()
+            .add_layer(crate::layers::MapLayer::new(LayerType::ProposalOverlay, 0));
+        app.update();
+
+        {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&Visibility, With<ProposalOverlayEntity>>();
+            let before: Vec<_> = q.iter(world).copied().collect();
+            assert!(!before.is_empty(), "ghost spawned");
+            assert!(
+                before.iter().all(|v| *v != Visibility::Hidden),
+                "visible by default (OD-8)"
+            );
+        }
+
+        app.world_mut()
+            .resource_mut::<LayerStack>()
+            .get_layer_mut(layer_id)
+            .unwrap()
+            .visible = false;
+        app.update();
+
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&Visibility, With<ProposalOverlayEntity>>();
+        assert!(
+            q.iter(world).all(|v| *v == Visibility::Hidden),
+            "hiding the ProposalOverlay layer hides every overlay entity"
+        );
+    }
+
+    // --- FR-4 baked-region heatmap (BAKED-REGION-HEATMAP) ---
+
+    fn region_proposal(id: &str, op: TerrainOp, origin: f32, target: f32) -> TerrainProposal {
+        TerrainProposal {
+            id: id.into(),
+            op,
+            footprint: vec![
+                [origin, origin],
+                [origin + 10.0, origin],
+                [origin + 10.0, origin + 10.0],
+                [origin, origin + 10.0],
+            ],
+            target_height: Some(target),
+            delta: None,
+            material: Some("earth".into()),
+        }
+    }
+
+    /// Headless app running only `render_baked_region_heatmaps`.
+    fn baked_heatmap_app(proposals: Vec<TerrainProposal>, tile: HeightTile) -> App {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .init_resource::<BakedHeatmapRenderState>()
+            .init_resource::<HeatmapOverlayToggle>()
+            .insert_resource(LayerStack::new())
+            .insert_resource(TerrainHeightField::default())
+            .insert_resource(ActivePetalTerrain {
+                petal_id: Some("petal".into()),
+                config: Some(TerrainConfig {
+                    enabled: true,
+                    proposals,
+                    ..TerrainConfig::default()
+                }),
+                revision: 1,
+            })
+            .add_systems(Update, render_baked_region_heatmaps);
+        app.world_mut()
+            .resource_mut::<TerrainHeightField>()
+            .insert((10, 0, 0), tile);
+        app
+    }
+
+    fn baked_heatmap_entities(app: &mut App) -> Vec<Entity> {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<Entity, With<BakedRegionHeatmapEntity>>();
+        q.iter(world).collect()
+    }
+
+    #[test]
+    fn baked_region_shows_heatmap_against_pristine_field() {
+        // Flat pristine base at 0; a Level region to target 5 is pure fill —
+        // every drape vertex must read fill-dominant (blue > red) and opaque
+        // (outside the neutral band), against the PRISTINE field (R-3's fix:
+        // baking must not erase this before/after comparison).
+        let tile = HeightTile {
+            anchor: Vec3::ZERO,
+            tile_size: 100.0,
+            grid: vec![0.0; 4],
+            width: 2,
+            height: 2,
+        };
+        let region = region_proposal("r1", TerrainOp::Level, 0.0, 5.0);
+        let mut app = baked_heatmap_app(vec![region], tile);
+        app.update();
+
+        let entities = baked_heatmap_entities(&mut app);
+        assert_eq!(entities.len(), 1, "one heatmap drape per committed region");
+
+        let world = app.world_mut();
+        let handle = world.get::<Mesh3d>(entities[0]).unwrap().0.clone();
+        let meshes = world.resource::<Assets<Mesh>>();
+        let mesh = meshes.get(&handle).unwrap();
+        let Some(bevy::mesh::VertexAttributeValues::Float32x4(colors)) =
+            mesh.attribute(Mesh::ATTRIBUTE_COLOR)
+        else {
+            panic!("heatmap drape must carry vertex colors");
+        };
+        assert!(!colors.is_empty());
+        for &[r, _g, b, a] in colors {
+            assert!(a > 0.0, "a pure fill region must be fully outside the neutral band");
+            assert!(b > r, "fill (dh>0) must read blue-dominant: r={r} b={b}");
+        }
+
+        // Toggling the heatmap sub-toggle off removes the drape without un-baking.
+        app.world_mut()
+            .resource_mut::<HeatmapOverlayToggle>()
+            .enabled = false;
+        app.update();
+        assert!(baked_heatmap_entities(&mut app).is_empty());
+    }
+
+    // --- FR-3 live preview (PREVIEW-DEBOUNCE/PREVIEW-NFR1) ---
+
+    use bevy::time::TimeUpdateStrategy;
+    use fe_renderer::terrain_overlay::{ProposalPreview, ProposalPreviewReport, PreviewSource};
+    use std::time::Duration;
+
+    #[derive(Resource, Default)]
+    struct CapturedPreviewReports(Vec<ProposalPreviewReport>);
+
+    fn capture_preview_reports(
+        mut reader: MessageReader<ProposalPreviewReport>,
+        mut sink: ResMut<CapturedPreviewReports>,
+    ) {
+        for msg in reader.read() {
+            sink.0.push(msg.clone());
+        }
+    }
+
+    fn preview_draft(footprint: Vec<[f32; 2]>, delta_m: f32) -> ProposalPreview {
+        ProposalPreview {
+            petal_id: "petal".into(),
+            op: "raise".into(),
+            footprint,
+            target_m: 0.0,
+            delta_m,
+            strength: 1.0,
+            source: PreviewSource::PaletteOp,
+        }
+    }
+
+    /// Headless app running `render_proposal_preview`, with a deterministic
+    /// per-`update()` time tick (via `TimeUpdateStrategy::ManualDuration`) so
+    /// the OD-3 debounce never depends on real wall-clock timing.
+    fn preview_app(preview: Option<ProposalPreview>, tile: Option<HeightTile>) -> App {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .init_resource::<HeatmapOverlayToggle>()
+            .init_resource::<CapturedPreviewReports>()
+            .insert_resource(LayerStack::new())
+            .insert_resource(TerrainHeightField::default())
+            .insert_resource(ActivePetalTerrain {
+                petal_id: Some("petal".into()),
+                config: Some(TerrainConfig {
+                    enabled: true,
+                    ..TerrainConfig::default()
+                }),
+                revision: 1,
+            })
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+                20,
+            )))
+            .add_message::<ProposalPreviewReport>()
+            .add_systems(
+                Update,
+                (render_proposal_preview, capture_preview_reports).chain(),
+            );
+        if let Some(tile) = tile {
+            app.world_mut()
+                .resource_mut::<TerrainHeightField>()
+                .insert((10, 0, 0), tile);
+        }
+        if let Some(preview) = preview {
+            app.insert_resource(preview);
+        }
+        app
+    }
+
+    fn preview_ghost_entity(app: &mut App) -> Option<Entity> {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<Entity, (
+            With<ProposalPreviewEntity>,
+            With<fe_renderer::terrain_overlay::ProposalGhost>,
+        )>();
+        q.iter(world).next()
+    }
+
+    fn preview_ghost_vertex_count(app: &mut App) -> usize {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&Mesh3d, (
+            With<ProposalPreviewEntity>,
+            With<fe_renderer::terrain_overlay::ProposalGhost>,
+        )>();
+        let Some(handle) = q.iter(world).next().cloned() else {
+            return 0;
+        };
+        let meshes = world.resource::<Assets<Mesh>>();
+        meshes
+            .get(&handle.0)
+            .and_then(|m| m.attribute(Mesh::ATTRIBUTE_POSITION))
+            .and_then(|a| a.as_float3())
+            .map(|p| p.len())
+            .unwrap_or(0)
+    }
+
+    fn preview_heatmap_entities(app: &mut App) -> Vec<Entity> {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<Entity, (
+            With<ProposalPreviewEntity>,
+            Without<fe_renderer::terrain_overlay::ProposalGhost>,
+        )>();
+        q.iter(world).collect()
+    }
+
+    #[test]
+    fn armed_preview_spawns_ghost_and_heatmap_without_db_or_heightfield_write() {
+        let tile = HeightTile {
+            anchor: Vec3::ZERO,
+            tile_size: 20.0,
+            grid: vec![0.0; 4],
+            width: 2,
+            height: 2,
+        };
+        let footprint = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        let mut app = preview_app(Some(preview_draft(footprint, 2.0)), Some(tile));
+        let field_len_before = app.world().resource::<TerrainHeightField>().len();
+        let revision_before = app.world().resource::<ActivePetalTerrain>().revision;
+
+        app.update(); // first sight -> coarse build immediately (NFR-3)
+
+        assert!(
+            preview_ghost_entity(&mut app).is_some(),
+            "ghost spawned without waiting for the debounce"
+        );
+        assert_eq!(
+            preview_heatmap_entities(&mut app).len(),
+            1,
+            "heatmap drape spawned alongside the ghost"
+        );
+        assert_eq!(
+            app.world().resource::<TerrainHeightField>().len(),
+            field_len_before,
+            "preview never touches the height field (also structurally true: Option<Res<_>>)"
+        );
+        assert_eq!(
+            app.world().resource::<ActivePetalTerrain>().revision,
+            revision_before,
+            "preview never bumps the revision — fe-terrain has no DbCommand channel to begin with"
+        );
+    }
+
+    #[test]
+    fn clearing_preview_despawns_preview_entities() {
+        let tile = HeightTile {
+            anchor: Vec3::ZERO,
+            tile_size: 20.0,
+            grid: vec![0.0; 4],
+            width: 2,
+            height: 2,
+        };
+        let footprint = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        let mut app = preview_app(Some(preview_draft(footprint, 2.0)), Some(tile));
+        app.update();
+        assert!(preview_ghost_entity(&mut app).is_some(), "preview spawned");
+
+        app.world_mut().remove_resource::<ProposalPreview>();
+        app.update();
+        assert!(
+            preview_ghost_entity(&mut app).is_none(),
+            "cleared draft despawns the ghost"
+        );
+        assert!(
+            preview_heatmap_entities(&mut app).is_empty(),
+            "and its heatmap drape"
+        );
+    }
+
+    #[test]
+    fn preview_report_matches_committed_volume_for_same_inputs() {
+        let tile_grid = vec![0.0, 4.0, 2.0, 6.0];
+        let footprint = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        let tile = HeightTile {
+            anchor: Vec3::ZERO,
+            tile_size: 20.0,
+            grid: tile_grid.clone(),
+            width: 2,
+            height: 2,
+        };
+        let mut app = preview_app(Some(preview_draft(footprint.clone(), 2.0)), Some(tile));
+        app.update(); // coarse build
+        app.update(); // 20ms later (< debounce) -> no second report yet... settle below
+
+        // Hold steady past the 100 ms debounce (6 x 20ms ticks) to force the
+        // settled, FULL-resolution rebuild whose figures this test compares.
+        for _ in 0..6 {
+            app.update();
+        }
+
+        let report = app
+            .world()
+            .resource::<CapturedPreviewReports>()
+            .0
+            .last()
+            .cloned()
+            .expect("a preview report was written");
+
+        // Ground truth: the EXACT SAME machinery the preview itself calls
+        // (not an approximation), so this is a bit-identical FR-5 check.
+        let base_tile = HeightTile {
+            anchor: Vec3::ZERO,
+            tile_size: 20.0,
+            grid: tile_grid,
+            width: 2,
+            height: 2,
+        };
+        let base = |x: f32, z: f32| base_tile.sample(x, z);
+        let draft = crate::terrain_proposal::TerrainProposal {
+            id: "p".into(),
+            op: TerrainOp::Raise,
+            footprint: footprint.clone(),
+            target_height: Some(0.0),
+            delta: Some(2.0),
+            material: None,
+        };
+        let proposed = |x: f32, z: f32| {
+            crate::terrain_proposal::apply_proposal_over_base(&base, &draft, &[[x, z]])
+                .into_iter()
+                .next()
+                .flatten()
+        };
+        let footprint_shape = crate::sculpt::Footprint::Polygon { verts: footprint };
+        let grid_step = region_grid_step(footprint_shape.bounds());
+        let expected = DeltaLattice::build(&base, &proposed, &footprint_shape, grid_step, 1.0)
+            .expect("lattice built");
+
+        assert_eq!(report.cut_m3, expected.cut_fill.cut_m3);
+        assert_eq!(report.fill_m3, expected.cut_fill.fill_m3);
+    }
+
+    #[test]
+    fn rapid_preview_edits_coalesce_within_debounce() {
+        let tile = HeightTile {
+            anchor: Vec3::ZERO,
+            tile_size: 20.0,
+            grid: vec![0.0; 4],
+            width: 2,
+            height: 2,
+        };
+        let footprint = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        let mut app = preview_app(None, Some(tile));
+
+        // Several rapid edits, each well inside the 100 ms window (20 ms ticks).
+        for delta in [2.0, 2.1, 2.2, 2.3] {
+            app.insert_resource(preview_draft(footprint.clone(), delta));
+            app.update();
+        }
+        let coarse_count = preview_ghost_vertex_count(&mut app);
+        assert!(coarse_count > 0, "a coarse preview is visible on every edit");
+
+        // Hold the LAST value steady past the debounce window -> exactly one
+        // upgrade to the full (finer) lattice.
+        for _ in 0..6 {
+            app.update();
+        }
+        let full_count = preview_ghost_vertex_count(&mut app);
+        assert!(
+            full_count > coarse_count,
+            "settled preview upgrades to the full lattice: coarse={coarse_count} full={full_count}"
+        );
+
+        // Further idle frames do not rebuild again (steady state - no churn).
+        let stable = preview_ghost_entity(&mut app);
+        app.update();
+        assert_eq!(
+            preview_ghost_entity(&mut app),
+            stable,
+            "steady state: no further rebuild once settled"
+        );
+    }
+
+    // --- Pure PreviewDebounce logic (no App/Time needed) ---
+
+    fn snap(delta_m: f32) -> PreviewSnapshot {
+        PreviewSnapshot {
+            petal_id: "p".into(),
+            op: "raise".into(),
+            footprint: vec![[0.0, 0.0], [1.0, 1.0]],
+            target_m: 0.0,
+            delta_m,
+            strength: 1.0,
+        }
+    }
+
+    #[test]
+    fn preview_debounce_builds_coarse_on_change_then_full_once_settled() {
+        let mut d = PreviewDebounce::default();
+        let a = snap(1.0);
+        assert_eq!(
+            d.poll(Some(&a), 0.0),
+            Some(PreviewAction::Build { full: false }),
+            "first sight -> coarse immediately"
+        );
+        assert_eq!(
+            d.poll(Some(&a), 0.05),
+            None,
+            "unchanged, still inside the debounce window"
+        );
+        assert_eq!(
+            d.poll(Some(&a), 0.1),
+            Some(PreviewAction::Build { full: true }),
+            "settled -> one full rebuild"
+        );
+        assert_eq!(d.poll(Some(&a), 0.2), None, "steady state: no further rebuilds");
+    }
+
+    #[test]
+    fn preview_debounce_coalesces_rapid_edits_until_settled() {
+        let mut d = PreviewDebounce::default();
+        for (t, delta) in [(0.0, 1.0), (0.02, 1.1), (0.04, 1.2), (0.06, 1.3)] {
+            assert_eq!(
+                d.poll(Some(&snap(delta)), t),
+                Some(PreviewAction::Build { full: false }),
+                "each change -> coarse, never full while still changing"
+            );
+        }
+        assert_eq!(
+            d.poll(Some(&snap(1.3)), 0.10),
+            None,
+            "only 0.04s since the last change (0.06 -> 0.10)"
+        );
+        assert_eq!(
+            d.poll(Some(&snap(1.3)), 0.17),
+            Some(PreviewAction::Build { full: true }),
+            "0.11s stable -> settle to full"
+        );
+    }
+
+    #[test]
+    fn preview_debounce_clear_despawns_once() {
+        let mut d = PreviewDebounce::default();
+        d.poll(Some(&snap(1.0)), 0.0);
+        assert_eq!(d.poll(None, 1.0), Some(PreviewAction::Clear));
+        assert_eq!(
+            d.poll(None, 2.0),
+            None,
+            "already cleared — no repeat despawn churn"
         );
     }
 }

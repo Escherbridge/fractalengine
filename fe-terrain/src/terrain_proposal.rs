@@ -44,6 +44,25 @@ impl TerrainOp {
             TerrainOp::Smooth => "smooth",
         }
     }
+
+    /// Inverse of [`as_snake`](Self::as_snake); `None` for an unknown tag.
+    /// Used by the delta-viz live preview (`terrain_plugin.rs`) to rebuild a
+    /// palette-op draft from the cross-crate `ProposalPreview.op` string.
+    pub fn from_snake(s: &str) -> Option<Self> {
+        match s {
+            "raise" => Some(TerrainOp::Raise),
+            "lower" => Some(TerrainOp::Lower),
+            "flatten" => Some(TerrainOp::Flatten),
+            "ramp" => Some(TerrainOp::Ramp),
+            "slope" => Some(TerrainOp::Slope),
+            "pad" => Some(TerrainOp::Pad),
+            "cut" => Some(TerrainOp::Cut),
+            "fill" => Some(TerrainOp::Fill),
+            "level" => Some(TerrainOp::Level),
+            "smooth" => Some(TerrainOp::Smooth),
+            _ => None,
+        }
+    }
 }
 
 /// A single proposed terrain edit over a closed footprint polygon (XZ world
@@ -248,47 +267,6 @@ pub fn apply_proposal_over_base(
             )
         })
         .collect()
-}
-
-/// Triangulated ghost-overlay geometry (`positions`, `indices`) for a proposal's
-/// footprint lifted to PROPOSED heights over the READ-ONLY `base`. `None` for a
-/// degenerate footprint (<3 verts) or a triangulation failure. A relative op with
-/// no base sample falls back to `target_height` then `0.0` so the ghost still
-/// renders (it is intent, not ground truth).
-pub fn proposal_overlay_mesh_data(
-    base: &impl Fn(f32, f32) -> Option<f32>,
-    proposal: &TerrainProposal,
-) -> Option<(Vec<[f32; 3]>, Vec<u32>)> {
-    let fp = &proposal.footprint;
-    if fp.len() < 3 {
-        return None;
-    }
-    let flat: Vec<f64> = fp.iter().flat_map(|&[x, z]| [x as f64, z as f64]).collect();
-    let tris = earcutr::earcut(&flat, &[], 2).ok()?;
-    if tris.is_empty() {
-        return None;
-    }
-    let bounds = footprint_bounds(fp)?;
-    let delta = proposal.delta.unwrap_or(0.0);
-    let positions: Vec<[f32; 3]> = fp
-        .iter()
-        .map(|&[x, z]| {
-            let (frac, run) = ramp_params(x, bounds);
-            let y = proposed_height_at(
-                proposal.op,
-                base(x, z),
-                proposal.target_height,
-                delta,
-                frac,
-                run,
-            )
-            .or(proposal.target_height)
-            .unwrap_or(0.0);
-            [x, y, z]
-        })
-        .collect();
-    let indices: Vec<u32> = tris.iter().map(|&i| i as u32).collect();
-    Some((positions, indices))
 }
 
 /// Parse the persisted `terrain.proposals` array; invalid records are dropped
@@ -598,25 +576,24 @@ mod tests {
     }
 
     #[test]
-    fn overlay_mesh_lifts_footprint_to_proposed_height() {
-        let base = |_x: f32, _z: f32| Some(2.0);
-        let (positions, indices) =
-            proposal_overlay_mesh_data(&base, &raise(3.0)).expect("mesh built");
-        assert_eq!(positions.len(), 4); // one vertex per footprint corner
-        assert!(indices.len() >= 6); // at least two triangles for a quad
-        for p in &positions {
-            assert!((p[1] - 5.0).abs() < 1e-4, "vertex y should be base+delta");
+    fn terrain_op_snake_round_trips_through_from_snake() {
+        // Every variant's `as_snake` tag must parse back to itself
+        // (`delta_viz`'s preview rebuilds a palette draft from this string).
+        for op in [
+            TerrainOp::Raise,
+            TerrainOp::Lower,
+            TerrainOp::Flatten,
+            TerrainOp::Ramp,
+            TerrainOp::Slope,
+            TerrainOp::Pad,
+            TerrainOp::Cut,
+            TerrainOp::Fill,
+            TerrainOp::Level,
+            TerrainOp::Smooth,
+        ] {
+            assert_eq!(TerrainOp::from_snake(op.as_snake()), Some(op));
         }
-    }
-
-    #[test]
-    fn overlay_mesh_none_for_degenerate_footprint() {
-        let base = |_x: f32, _z: f32| Some(0.0);
-        let p = TerrainProposal {
-            footprint: vec![[0.0, 0.0], [1.0, 1.0]],
-            ..raise(1.0)
-        };
-        assert!(proposal_overlay_mesh_data(&base, &p).is_none());
+        assert_eq!(TerrainOp::from_snake("not_an_op"), None);
     }
 
     #[test]

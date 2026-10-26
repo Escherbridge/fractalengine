@@ -5,7 +5,8 @@ use bevy::prelude::*;
 
 use super::router::{ClickArbiter, ClickPriority, PointerPhase};
 use crate::actions::terrain_proposal::{
-    petal_map_enabled, SculptOpKind, SculptToolState, MAX_BRUSH_DABS_PER_STROKE,
+    petal_map_enabled, stroke_corridor_footprint, SculptOpKind, SculptToolState,
+    MAX_BRUSH_DABS_PER_STROKE,
 };
 use crate::actions::{UiAction, UiManager};
 use crate::geometry::meters_to_world;
@@ -60,8 +61,12 @@ struct ActiveStroke {
     settings: BrushSnapshot,
 }
 
+// `pub(crate)`, not `pub(super)`: terrain_proposal_delta_viz S3's live-preview
+// producer (`terrain_preview::publish_proposal_preview`) reads this resource
+// through the `preview_snapshot` accessor below. `active` itself stays
+// private — the accessor is the only crate-visible window onto it.
 #[derive(Resource, Default)]
-pub(super) struct BrushGesture {
+pub(crate) struct BrushGesture {
     active: Option<ActiveStroke>,
 }
 
@@ -74,6 +79,28 @@ impl BrushGesture {
     /// Drop the in-flight stroke without emitting its dabs (staged-Escape rung 0).
     pub(super) fn cancel(&mut self) {
         self.active = None;
+    }
+
+    /// Read-only snapshot of the in-progress stroke for the live preview
+    /// producer (terrain_proposal_delta_viz S3): the corridor footprint comes
+    /// from the SAME `stroke_corridor_footprint` fn the release commit uses
+    /// (`stroke_action` above), so a shown preview always matches what
+    /// release would commit (plan.md §5 tripwire). Values are WORLD units —
+    /// `terrain_preview::publish_proposal_preview` converts to real meters at
+    /// the merge boundary. `None` while no stroke is active, or while the
+    /// in-progress centerline can't yet form a valid corridor (e.g. a single
+    /// degenerate sample) — same "nothing to preview yet" gate `stroke_action`
+    /// uses via `stroke_corridor_footprint`'s own `None` case.
+    pub(crate) fn preview_snapshot(&self) -> Option<crate::terrain_preview::BrushPreviewSnapshot> {
+        let stroke = self.active.as_ref()?;
+        let footprint = stroke_corridor_footprint(&stroke.samples, stroke.settings.radius)?;
+        Some(crate::terrain_preview::BrushPreviewSnapshot {
+            footprint,
+            op: stroke.settings.op.clone(),
+            target_height_world: stroke.settings.target_height,
+            delta_world: stroke.settings.delta,
+            strength: stroke.settings.strength,
+        })
     }
 }
 
@@ -235,6 +262,35 @@ pub(super) fn handle_brush_interaction(
 }
 
 #[cfg(test)]
+impl BrushGesture {
+    /// Test-only constructor: an active stroke with the given petal/samples/
+    /// radius. Lets `terrain_preview`'s cross-module flow tests exercise
+    /// [`BrushGesture::preview_snapshot`] without reaching into the real
+    /// pointer/arbiter pipeline — `active` has no production setter by
+    /// design (encapsulated; only the accessor crosses the module boundary).
+    pub(crate) fn test_with_active_stroke(
+        petal_id: &str,
+        samples: Vec<[f32; 2]>,
+        radius: f32,
+    ) -> Self {
+        Self {
+            active: Some(ActiveStroke {
+                petal_id: petal_id.to_string(),
+                samples,
+                settings: BrushSnapshot {
+                    radius,
+                    strength: 0.5,
+                    op: "raise".to_string(),
+                    target_height: None,
+                    delta: Some(1.0),
+                    material: "earth".to_string(),
+                },
+            }),
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -346,6 +402,38 @@ mod tests {
         gesture.cancel();
         gesture.cancel();
         assert!(!gesture.is_active());
+    }
+
+    #[test]
+    fn preview_snapshot_is_none_without_an_active_stroke() {
+        assert!(BrushGesture::default().preview_snapshot().is_none());
+    }
+
+    #[test]
+    fn preview_snapshot_footprint_matches_what_release_would_commit() {
+        // The plan.md §5 tripwire: brush preview footprint must come from the
+        // SAME `stroke_corridor_footprint` the release commit uses. Mutation
+        // check: swapping the accessor to build its own polygon (instead of
+        // delegating) would desync this from `stroke_action`'s footprint and
+        // this assertion would go red.
+        let samples = vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0]];
+        let gesture = BrushGesture {
+            active: Some(ActiveStroke {
+                petal_id: "p1".to_string(),
+                samples: samples.clone(),
+                settings: snapshot("raise"),
+            }),
+        };
+        let snap = gesture.preview_snapshot().expect("active stroke previews");
+        let expected = stroke_corridor_footprint(&samples, snap_radius());
+        assert_eq!(snap.op, "raise");
+        assert_eq!(Some(snap.footprint), expected);
+    }
+
+    /// `snapshot("raise")`'s radius, kept in one place so the two call sites
+    /// above can't drift.
+    fn snap_radius() -> f32 {
+        snapshot("raise").radius
     }
 
     #[test]

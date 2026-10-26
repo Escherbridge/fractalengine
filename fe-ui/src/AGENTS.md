@@ -1053,6 +1053,60 @@ also become addressable node rows (`EarthworkNodeMap`, `earthwork:{region_id}`
 correlation, tombstone-on-delete) and receive bake-reported cut/fill volumes —
 see `actions/AGENTS.md` §sculpt.
 
+### Live pre-commit preview (terrain_proposal_delta_viz_20261025 S3, FR-3)
+
+`terrain_preview::publish_proposal_preview` publishes the armed tool's draft
+as `fe_renderer::terrain_overlay::ProposalPreview` (the S1b cross-crate seam
+— fe-ui gains no fe-terrain dependency, NFR-5) BEFORE any
+`TerrainProposalAdd`/`SculptShapeRegion`/`SculptBrushStroke` commits, so S2's
+renderer can show the lattice ghost + cut/fill heatmap live. Four sources,
+most-live wins:
+
+1. **Brush stroke** — `node_manager::brush_interaction::BrushGesture::preview_snapshot`,
+   a read-only accessor (the ONLY crate-visible window onto that module's
+   otherwise-private gesture state; `brush_interaction` was widened from
+   private to `pub(crate)` in `node_manager/mod.rs` for exactly this — the
+   one supporting edit outside this slice's own file list). Its footprint is
+   the SAME `stroke_corridor_footprint` the release commit uses — preview ==
+   commit by construction (plan.md §5 tripwire).
+2. **Sculpt shape draft** — a defined Circle/Rect/Polygon footprint while
+   Brush is the active viewport tool (freeform Brush shape mode has nothing
+   to preview until a stroke starts; that's source 1).
+3. **Armed palette op** — a circle at the origin (the same "append at
+   origin" convention `terrain_tools_panel::render_controls_and_emit` uses),
+   shown only while the TerrainTools section is the active right-sidebar
+   section AND no proposal just committed this frame.
+4. **Selected committed proposal**, readout-only fallback, so the Proposals
+   list selection still drives a live cut/fill line when nothing is armed.
+
+**Units:** `ProposalPreview::target_m`/`delta_m` are REAL METERS (fe-terrain's
+cut/fill math wants real units, NFR-4). `ToolPanelState`/`ProposalRecord`
+values are WORLD units (unconverted, per `render_controls_and_emit`'s own
+convention) and get `geometry::world_to_meters`'d at the merge boundary;
+`SculptToolState` values are already petal-local meters (N-1) and pass
+through unconverted. The footprint itself stays WORLD units in all four
+sources — it's sampled against the (world-unit) height field, and
+`cut_fill_volume`-family math applies its own `/scale`/`/scale²`.
+
+**No preview is the resource's ABSENCE**, not a zeroed value — `commands.
+remove_resource::<ProposalPreview>()`, never a default/empty struct — so S2
+can't mistake a stale draft for a live one. Clears on petal switch (a
+`Local<Option<String>>` baseline, same idiom as `respawn_on_petal_change`),
+on disarm (TerrainTools section closed), and on commit (detected as
+`ProposalEditState.proposals.len()` growing — the palette's own fields are
+deliberately left armed post-Add, so that growth is the only "something just
+committed" signal available here). Registered in `PostUpdate` (plugin.rs),
+not `Update`, so it always observes the SAME frame's
+`handle_brush_interaction`/`process_ui_actions` writes rather than lagging a
+frame behind.
+
+The live readout line (`PreviewReadout`, mirrored from
+`ProposalPreviewReport` by `drain_preview_reports`) renders as a standalone
+`egui::Area` overlay (`terrain_tools_panel::render_preview_readout_overlay`,
+called from `plugin.rs`'s `gardener_ui_system`) rather than a widget spliced
+into `render_terrain_tools_section`'s own call chain — that function lives in
+`ui_shell/right_sidebar.rs`, owned by a later slice (S6) in this track.
+
 ## §geometry-mirror — fe-ui-local ruler math
 
 `geometry` is a verbatim copy of fe-terrain's pure ruler formulas

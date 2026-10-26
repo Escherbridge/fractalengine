@@ -20,6 +20,7 @@ pub mod role_chip;
 pub mod sculpt_cursor;
 pub mod settings;
 pub mod terrain_map;
+pub mod terrain_preview;
 pub mod terrain_proposal_state;
 pub mod theme;
 pub mod timeseries_settings;

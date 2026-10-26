@@ -722,6 +722,11 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<crate::actions::terrain_proposal::SculptToolState>();
         // T3: earthwork region↔node bookkeeping + volume changed-value gate.
         app.init_resource::<crate::actions::terrain_proposal::EarthworkNodeMap>();
+        // terrain_proposal_delta_viz_20261025 S3: live preview readout —
+        // `None` until `drain_preview_reports` sees a `ProposalPreviewReport`
+        // (ProposalPreview itself is insert/remove-only, not init'd: its
+        // ABSENCE is "no preview", see `terrain_preview.rs`).
+        app.init_resource::<crate::terrain_preview::PreviewReadout>();
         // ui_shell_architecture_20260724 (FR-4/5/6): area-manager state resources.
         app.init_resource::<crate::ui_shell::topbar::TopbarState>();
         app.init_resource::<crate::ui_shell::left_sidebar::LeftSidebarState>();
@@ -778,6 +783,22 @@ impl Plugin for GardenerConsolePlugin {
         app.add_systems(
             Update,
             crate::actions::terrain_proposal::persist_earthwork_volumes,
+        );
+        // terrain_proposal_delta_viz_20261025 S3 (FR-3): publish the armed
+        // tool's live preview + mirror its report. S2 (fe-terrain) is this
+        // seam's other end — it isn't registered here, so `drain_preview_reports`
+        // simply sees no messages until that slice lands (no error either way).
+        app.add_message::<fe_renderer::terrain_overlay::ProposalPreviewReport>();
+        app.add_systems(
+            PostUpdate,
+            (
+                // PostUpdate, not Update: guarantees this frame's
+                // `handle_brush_interaction`/`process_ui_actions` writes
+                // (both in `Update`) are visible here, not lagged a frame.
+                crate::terrain_preview::publish_proposal_preview,
+                crate::terrain_preview::drain_preview_reports
+                    .after(crate::terrain_preview::publish_proposal_preview),
+            ),
         );
         app.add_systems(EguiPrimaryContextPass, gardener_ui_system);
         // FR-3 (data_icons_20260713): floating point labels over the viewport.
@@ -907,6 +928,10 @@ struct MiscUiParams<'w> {
     // F6: startup identity-degradation banner, read + dismissed by the
     // status bar's persistent warning segment.
     identity_banner: ResMut<'w, IdentityBanner>,
+    // terrain_proposal_delta_viz S3: the live preview's cut/fill/net readout,
+    // written by `terrain_preview::drain_preview_reports`, read by the
+    // Terrain tools overlay below.
+    preview_readout: Res<'w, crate::terrain_preview::PreviewReadout>,
 }
 
 /// ui_shell_architecture_20260724 (FR-4/5/6): the area-manager state resources,
@@ -998,6 +1023,19 @@ fn gardener_ui_system(
         None => "viewer".to_string(),
     };
     role_chip::role_chip_hud(ectx, &role_label);
+
+    // terrain_proposal_delta_viz S3 (FR-3): the live preview readout. A
+    // standalone overlay rather than a widget spliced into
+    // `render_terrain_tools_section` (owned by a later slice, S6) — see
+    // `panels::terrain_tools_panel::render_preview_readout_overlay`'s doc
+    // comment.
+    panels::terrain_tools_panel::render_preview_readout_overlay(
+        ectx,
+        ui_shell
+            .right_sidebar
+            .is_active(crate::ui_shell::right_sidebar::RightSidebarSection::TerrainTools),
+        &misc.preview_readout,
+    );
 }
 
 /// Bevy's GLTF loader can produce embedded `Camera3d`/`Camera` entities when a

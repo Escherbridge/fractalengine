@@ -12,7 +12,13 @@
 //! See `fe-ui/src/node_manager/AGENTS.md` for the submodule map.
 
 mod billboard;
-mod brush_interaction;
+/// `pub(crate)`, not private: terrain_proposal_delta_viz S3's
+/// `terrain_preview::publish_proposal_preview` reads `BrushGesture`'s
+/// `preview_snapshot()` accessor to preview the live brush corridor before
+/// commit (plan.md owns `brush_interaction.rs` "accessor only" — this
+/// one-line visibility bump is the minimal supporting change that accessor
+/// requires; no other behavior here changes). See AGENTS.md §terrain-proposal-editor.
+pub(crate) mod brush_interaction;
 /// T4 right-click → `ContextTarget` classification. See AGENTS.md §context-pick.
 mod context_pick;
 /// Pure curve + shape math for the pen tool (phase 2). See AGENTS.md §pen-tool.
