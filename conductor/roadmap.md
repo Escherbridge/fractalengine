@@ -25,6 +25,28 @@ replace it.
 > board; the reality-check and slate sections below are the 2026-07-14
 > snapshot and are kept as the alignment record.
 
+> **Status 2026-10-31 (open-core alignment, user grill):** initiative 2's
+> open/closed line (D-12) is now realised. **This repo is the Apache-2.0 open
+> core.** Hosted relay/registry operations, the foundry pipeline and the
+> marketplaces are built outside it on public seams. The line and its seams
+> (S-RELAY, S-RELAY-ADVERTISE, S-REGISTRY, S-ENTITLEMENT, S-PLUGIN,
+> S-AGENT-GUI) are in [open-core.md](./open-core.md). Open-side slate, in order:
+> 1. [release_ci_20260429](./tracks/release_ci_20260429/): code signing + first
+>    `v0.1.0`. The repo has never cut a release, and this gates any external use.
+> 2. [agent_input_surface_20261031](./tracks/agent_input_surface_20261031/):
+>    agents drive the GUI for QA (the screenshot surface already exists). This
+>    addresses the project's weakest link, which is hands-on checking in the app.
+> 3. [relay_operability_20261031](./tracks/relay_operability_20261031/) and
+>    [hexon_entitlements_20261031](./tracks/hexon_entitlements_20261031/):
+>    operator-grade relay (metrics, usage events, TLS/backup docs,
+>    verse-advertised relays), registry protocol v1 + default-deny, and
+>    entitlement verification that gives effect to the inert licensed-package fields.
+> 4. [plugin_host_revival_20261031](./tracks/plugin_host_revival_20261031/):
+>    wires the dormant plugin system in, with publisher-signed packages.
+>
+> Initiative 1 (BI egress) is landed and live-verified. Its last mile now is
+> distribution and hands-on QA, not features.
+
 FractalEngine's **primary** identity is evolving from "P2P 3D digital-twin
 editor" into a **spatial analytics / reporting engine** — a BIM-style reporting
 solution. The 3D world-building stays, but the headline value becomes:
@@ -82,8 +104,8 @@ greenfield):**
 > `analytics_egress_20260714` Phase 4). IoT → queryable spatial rows landed
 > via `iot_spatial_reporting_20260714` (schema + ingest + timeseries query
 > builders) plus the reading-shaped export (F11). Full record:
-> [analytics_egress_20260714](./tracks/analytics_egress_20260714/),
-> [bi_verification_20261009](./tracks/bi_verification_20261009/),
+> [analytics_egress_20260714](./tracks/_archive/analytics_egress_20260714/),
+> [bi_verification_20261009](./tracks/_archive/bi_verification_20261009/),
 > `docs/bi-egress.md`.
 
 **Candidate track shape (for later planning):** `analytics_egress_*` —
@@ -113,6 +135,13 @@ official registry are CLOSED-source** to enable a **marketplace**.
   (track iroh_1_0_upgrade_20260711), which retires the 0.35 relay-EOL (2026-12-31) clock
   once every deployed peer has upgraded (flag day).
 
+> **RESOLVED 2026-10-31:** see [open-core.md](./open-core.md). The open side
+> here is the format, the reference single-tenant registry, registry protocol v1,
+> entitlement *verification*, the plugin host and signing format. The closed
+> side, outside this repo, is the foundry pipeline, hosted multi-tenant registry,
+> entitlement issuance and marketplace curation. The paragraph below is the
+> historical framing.
+
 **Strategic call to make:** where does the line fall between the **open-core**
 FractalEngine (engine + format + a reference foundry?) and the **closed**
 commercial foundry/registry? This governs what lives in THIS repo vs. a new
@@ -135,8 +164,8 @@ closed foundry + official registry + marketplace as a separate product.
   > shutdown, and the sharded timeseries fabric + distributed query fan-out
   > (F5–F7) ride the same real transport. The other two gaps (fe-hexon RBAC,
   > `fe-plugin`→`fe-sdk`) are untouched by this mission and remain open as
-  > stated. Record: [p2p_mycelium_completion_20260701](./tracks/p2p_mycelium_completion_20260701/)
-  > (now `done`), [timeseries_fabric_20261009](./tracks/timeseries_fabric_20261009/).
+  > stated. Record: [p2p_mycelium_completion_20260701](./tracks/_archive/p2p_mycelium_completion_20260701/)
+  > (now `done`), [timeseries_fabric_20261009](./tracks/_archive/timeseries_fabric_20261009/).
 - **UX:** refined editing + sleeker features. **The user will spec a dedicated
   UX track themselves after a thorough QA review** — do not pre-empt it; capture
   QA findings for that track when they surface.

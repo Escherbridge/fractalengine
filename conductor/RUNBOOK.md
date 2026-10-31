@@ -171,6 +171,13 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 3. Decisions
 
+**From the 2026-10-31 grill (user): open-core alignment.** The full rule is in [open-core.md](./open-core.md).
+- Hosted operations, the foundry pipeline and the marketplaces are built outside this repo, on its public seams. This repo stays the complete Apache-2.0 open core.
+- **D-12 is realised.** The open side is the format, the reference registry, registry protocol v1, entitlement *verification*, the plugin host and signing format, and the agent input surface. The closed side is multi-tenant hosting, entitlement issuance, curation and the foundry pipeline.
+- **New public tracks (pending):** `relay_operability_20261031`, `hexon_entitlements_20261031`, `plugin_host_revival_20261031`, `agent_input_surface_20261031`. `release_ci_20260429` gains a code-signing + `v0.1.0` phase.
+- **Conductor aligned "as needed"** (not a full re-tier). `product.md` status was re-audited and its non-goals reworded. Nine done tracks were archived with retros.
+- **Hands-on agent QA** of the GUI goes through the screenshot surface plus the new input surface. Defects it finds are filed into the doneness ledger.
+
 **From the 2026-10-13 grill (user, rolling):**
 - R1 · Delta: nothing new on the user's side (no in-app checks, pushes or constraints).
 - R1 · Git identity: this clone's `.git/config` had `user.name = hermes-agent`, which made every
@@ -301,7 +308,7 @@ point; network access granted; **report at the end** (not mid-run).
 teaching depth inside (file:line links, quoted load-bearing lines, why/what-to-watch, Sharpen),
 diagrams where they help.
 
-**Carried from earlier:** DEC-C1…C22 (`conductor/tracks/mission_prodready_continuation_20261008/spec.md`);
+**Carried from earlier:** DEC-C1…C22 (`conductor/tracks/_archive/mission_prodready_continuation_20261008/spec.md`);
 canonical-data-log network rollout / relay seeding / inbound P2P / `/ws/canonical` mount stay
 NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never pushed.
 

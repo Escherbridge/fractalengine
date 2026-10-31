@@ -15,7 +15,7 @@ resource: ./metadata.json
 (loader/ingester/viewport + new `instancing.rs`), `fe-ui` (path-tools section content only)
 
 Anchor: [`../../decisions/spatial-builder-program-20260725.md`](../../decisions/spatial-builder-program-20260725.md).
-Foundation: [`../node_lifecycle_addressing_20260725/spec.md`](../node_lifecycle_addressing_20260725/spec.md)
+Foundation: [`../_archive/node_lifecycle_addressing_20260725/spec.md`](../_archive/node_lifecycle_addressing_20260725/spec.md)
 (FR-4 address, FR-5 promotion, FR-2 reflow event), [`../pen_curve_tool_20260722/spec.md`](../pen_curve_tool_20260722/spec.md)
 (the bezier/curve model stamps must sample).
 

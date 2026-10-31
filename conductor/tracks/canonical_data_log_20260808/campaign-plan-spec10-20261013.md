@@ -762,7 +762,7 @@ All four use the same core functions as A4, so there is no second validation pat
 - the harness scenario registry/list it already uses
 - `fe-test-harness/src/AGENTS.md` §scenarios
 - `README.md` (Status line: device payloads)
-- `conductor/tracks/iot_spatial_reporting_20260714/` (a dated note only)
+- `conductor/tracks/_archive/iot_spatial_reporting_20260714/` (a dated note only)
 - `conductor/final-sweep-manifest.md` (**critic tick 7, AC-37/C24:** when this scenario lands, bump
   the harness-scenario expectation from 16 to 17 and the signoff-checklist line naming that count)
 

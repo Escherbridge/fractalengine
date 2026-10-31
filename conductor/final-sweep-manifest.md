@@ -21,7 +21,7 @@ All of these must pass green before pushing the campaign to origin.
 | **Feature-matrix gate (AC-19)** | `cargo test -p fe-terrain --features fetch,render`; `cargo test -p fe-hexon --all-features`; `cargo test -p fe-format --no-default-features` | Each command's own test summary pasted in; the A7 conformance tests `http_source_passes_conformance` and `in_memory_p2p_source_passes_conformance` must appear **by name** in the `--all-features` output (a vacuous "0 tests matched" is a FAIL, not a skip — ties to W0 review's "zero-match test filter passed vacuously" precedent) |
 | **fe-sync store migration** | `FE_REQUIRE_STORE_FIXTURE=1 cargo test -p fe-sync --lib p2p_store_migration` | Test pass; `0.35 → 1.x store upgrade` confirmed |
 | **fe-database ignored tests** | `cargo test -p fe-database -- --ignored` (15 deferred tests; judge each) | Judgment table: PASS / SKIP reason / FIX needed for each test |
-| **BI egress e2e** | `scripts/bi-egress-verify.ps1` | Output pasted into `conductor/tracks/analytics_egress_20260714/evidence.md` §X with DuckDB rowcount + schema |
+| **BI egress e2e** | `scripts/bi-egress-verify.ps1` | Output pasted into `conductor/tracks/_archive/analytics_egress_20260714/evidence.md` §X with DuckDB rowcount + schema |
 | **Hexon install e2e** | `scripts/hexon-install-verify.ps1` | Output pasted into `conductor/tracks/oss_release_20260717/evidence.md` §X |
 | **Hexon serve e2e** | `scripts/hexon-serve-verify.ps1` | Output pasted into `conductor/tracks/oss_release_20260717/evidence.md` §X |
 | **Relay health** | `scripts/relay-health-verify.ps1` (headless fe-relay 1.x) | Output pasted into `conductor/tracks/p2p_asset_streaming_20260718/evidence.md` §6 |

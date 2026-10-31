@@ -14,7 +14,7 @@ resource: ./metadata.json
 **Crates:** `fe-ui` (`ui_shell/modal.rs`, `dialogs/context_menu.rs`, `dialogs/node_options.rs`)
 
 Anchor: [`../../decisions/spatial-builder-program-20260725.md`](../../decisions/spatial-builder-program-20260725.md).
-Foundation: [`../node_lifecycle_addressing_20260725/spec.md`](../node_lifecycle_addressing_20260725/spec.md)
+Foundation: [`../_archive/node_lifecycle_addressing_20260725/spec.md`](../_archive/node_lifecycle_addressing_20260725/spec.md)
 (delete/cascade FR-1/FR-2), the `HitTarget`/`Operation` dispatch
 (`node_manager/dispatch.rs`), and the modal manager (ui_shell FR-7).
 

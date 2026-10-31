@@ -14,7 +14,7 @@ resource: ./metadata.json
 **Crates:** `fe-api/*`, `fe-query/*`, `fe-renderer/src/addressing.rs`
 
 Anchor: [`../../decisions/spatial-builder-program-20260725.md`](../../decisions/spatial-builder-program-20260725.md).
-Foundation: [`../node_lifecycle_addressing_20260725/spec.md`](../node_lifecycle_addressing_20260725/spec.md)
+Foundation: [`../_archive/node_lifecycle_addressing_20260725/spec.md`](../_archive/node_lifecycle_addressing_20260725/spec.md)
 (address FR-4, ops, lifecycle events FR-6), the existing egress backbone
 (`fe-api`, `fe-query`, `fe-ui gis/egress_strings.rs`), and the existing 6 MCP
 tools (`fe-api/src/mcp.rs`).

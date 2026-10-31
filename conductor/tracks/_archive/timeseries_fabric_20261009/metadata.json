@@ -14,5 +14,6 @@
     "conductor/tracks/mission_prodready_continuation_20261008/spec.md"
   ],
   "audited": "2026-10-10",
-  "doneness_note": "AUDIT 2026-10-10: done confirmed (closed record; A11-A17 evidenced by 7ca1213, 5430fc3, d5e2ce7, cfce22a, 92128e1, 098f029, 9ffd1c4). Carried residuals (ledgered): iot_reading retention/GC deliberately not wired (fe-database/src/AGENTS.md §replication-mode); `__shards` Editor+ gate evaluated and not forced (no seam-side role check — spec.md Admission control); replication-bridge Full-drop best-effort loss (outstanding_decisions D-63)."
+  "doneness_note": "AUDIT 2026-10-10: done confirmed (closed record; A11-A17 evidenced by 7ca1213, 5430fc3, d5e2ce7, cfce22a, 92128e1, 098f029, 9ffd1c4). Carried residuals (ledgered): iot_reading retention/GC deliberately not wired (fe-database/src/AGENTS.md \u00a7replication-mode); `__shards` Editor+ gate evaluated and not forced (no seam-side role check \u2014 spec.md Admission control); replication-bridge Full-drop best-effort loss (outstanding_decisions D-63).",
+  "archived_at": "2026-10-31T00:00:00Z"
 }

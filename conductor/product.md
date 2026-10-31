@@ -2,7 +2,7 @@
 type: Product Definition
 title: FractalEngine — Spatial Analytics Engine on a P2P 3D Twin Substrate
 tags: [product, analytics, bi-egress, gis, p2p, digital-twin]
-timestamp: 2026-07-17T00:00:00Z
+timestamp: 2026-10-31T00:00:00Z
 resource: ./roadmap.md
 ---
 
@@ -20,8 +20,13 @@ backend; your BI tool stays the reporting frontend.
 The P2P 3D world-building layer described under
 [Foundational concept](#foundational-concept-2026-03-historical) is the
 substrate this runs on — the foundation, not the headline. Strategic
-direction: see [roadmap.md](./roadmap.md) (2026-07-14 repositioning). Current
-stack details: see [tech-stack.md](./tech-stack.md).
+direction: see [roadmap.md](./roadmap.md) (2026-07-14 repositioning;
+2026-10-31 open-core alignment). Current stack details: see
+[tech-stack.md](./tech-stack.md).
+
+**Open core (2026-10-31):** this repository is the Apache-2.0 open core.
+Everything a self-hoster needs lives here, and hosted services are built on its
+public seams elsewhere. The line and the seams are in [open-core.md](./open-core.md).
 
 ## Target Users
 
@@ -80,34 +85,51 @@ Room/Model tiers; those were never built — see below.)
 
 ---
 
-## Status: what works today (2026-07)
+## Status: what works today (re-audited 2026-10-31)
 
-**Shipped**
+Three read-only audits re-checked this list against the code on 2026-10-31.
+"Wired" means the capability is reachable from a shipped binary. The test
+sweep is 4008 passed / 0 failed, but hands-on checking in the app is still
+rare (see "Not yet" below).
+
+**Shipped and wired**
 - Native Bevy desktop app (`fractalengine`) + headless relay (`fe-relay`)
 - Petal terrain from map tiles / imported maps, with map-authoritative
-  real-world scale and a scale-bar ruler
+  real-world scale and a scale-bar ruler; terrain proposals with a cut/fill
+  delta view and a volume report
 - GPX import, path/pen editing, road tools, path asset stamping
-- Entity store with HLC-stamped immutable op-log
-- `/api/v1/query` single-SELECT SQL endpoint with cost/row/timeout guards;
-  GeoJSON GIS endpoints; parquet/CSV export (real GeoParquet writer);
-  ed25519-signed share URLs; Copy-for-BI panel
-- MCP server (6 tools, growing toward 20 — `mcp_scene_primitives` track)
-- Rhai + WASM plugin system (fe-plugin / fe-sdk / fe-plugin-test)
-- Content-addressed (BLAKE3) asset distribution over iroh; map packages
-  (hexon format v1.0.0) publish/import
-- IoT reading ingestion into the entity store
+- Entity store with an HLC-stamped op-log, and the canonical signed append log
+  (`fe-canonical-log`) on the production write path
+- BI egress: `/api/v1/query` single-SELECT SQL with cost/row/timeout guards,
+  GeoJSON GIS endpoints, GeoParquet/CSV export, ed25519-signed share URLs and a
+  Copy-for-BI panel. Live-verified against DuckDB (`scripts/bi-egress-verify.ps1`).
+- IoT ingestion: `POST /api/v1/petals/{id}/iot/readings` into queryable spatial rows
+- MCP server: 31 tools always advertised; `screenshot` on GUI hosts; `sim_*`
+  only on sim-lab hosts
+- Real iroh-docs replication (iroh 1.3); content-addressed asset and tileset
+  streaming; hexon map packages publish/import with fe-policy checks on
+  publish/install
+- Deny-by-default RBAC (`fe-policy`) with per-grantor role propagation
 
-**In progress**
-- BI egress GA (analytics_egress Phase 6: e2e + docs)
-- Measurement tools + graticule (hexon_scale_orchestration Ph. 5–6)
-- Policy-engine completion (RBAC on query results; fe-hexon enforcement gap)
+**Built but not wired**
+- Rhai + WASM plugin system (`fe-plugin` / `fe-sdk`). No binary loads it.
+  → [plugin_host_revival_20261031](./tracks/plugin_host_revival_20261031/)
+- `fe-network` libp2p thread: spawned, but it carries no traffic (all real
+  P2P runs through `fe-sync`)
+- `LicenseType::Paid` / `encrypted_key` / `free_entries` in the hexon manifest:
+  the fields are defined, but nothing reads them
+  → [hexon_entitlements_20261031](./tracks/hexon_entitlements_20261031/)
+- GraphQL (`fe-query/src/graphql`) is a placeholder
 
-**Planned / currently mocked**
-- Real iroh-docs replication — today mock-backed behind the VerseReplicator
-  seam (p2p_mycelium_completion track)
-- Offline Petal cache / persistence tiers
-- Map foundry + registry marketplace — scoped to a **separate project** (see
-  Non-Goals)
+**Not yet**
+- No `v*` release has ever been cut. Binaries are unsigned and have no
+  installer. → [release_ci_20260429](./tracks/release_ci_20260429/)
+- SSO (spec only); legacy op-log entries carry placeholder signatures
+  (`SECURITY.md`)
+- Hands-on checking in the app is thin. The one session on 2026-10-25 found 6
+  bugs, all since fixed.
+- Map foundry + hosted registry/marketplace live outside this repository (see
+  [open-core.md](./open-core.md))
 
 ---
 
@@ -149,17 +171,20 @@ analytics identity today.
   DuckDB; FractalEngine does not grow charting or report layouts
 - **Not a general-purpose OLAP warehouse** — the query surface is guarded
   single-SELECT spatial egress, not arbitrary analytical workloads
-- **Not a hosted SaaS** — self-hosted single binary; operators run their own
-  peers and relays
-- **No in-engine asset marketplace in this repo** — a map-package marketplace
-  is scoped to the separate closed foundry/registry project (roadmap
-  initiative 2); the open-format vs. closed-foundry line is **pending
-  ratification** (decision register D-12 — not settled)
+- **Not a hosted SaaS** — the engine is a self-hosted single binary, and
+  operators run their own peers and relays. Hosted/managed offerings are built
+  on this repo's public seams, outside it ([open-core.md](./open-core.md))
+- **No marketplace or service operations in this repo** — this repo owns the
+  open format, the reference single-tenant registry, registry protocol v1 and
+  client-side entitlement *verification*. Multi-tenant hosting, curation and
+  entitlement issuance live outside it (D-12, realised 2026-10-31 in
+  [open-core.md](./open-core.md))
 - No mobile or WASM browser client (deferred)
 - No full W3C DID resolver or VC wallet integration (deferred)
 - No built-in voice/video between peers
 - No FBX/OBJ format support — GLTF/GLB only (convert via Blender)
-- No payment or token system
+- No payment processing or token system — the engine only *verifies* signed
+  entitlement tokens (S-ENTITLEMENT); it never handles payment
 
 ---
 

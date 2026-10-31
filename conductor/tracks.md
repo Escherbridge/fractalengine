@@ -53,37 +53,43 @@ Open = 7 `implemented_pending_inapp_verify` · 11 `in_progress` · 6 `pending` �
 
 ---
 
-## Done — awaiting archival
+## Archived 2026-10-31 (open-core alignment)
 
-Closed with evidence; move to `_archive/` with a retro when convenient.
+The nine tracks that were done and awaiting archival were moved to `_archive/`, each with a `retro.md`.
+Residuals still live in the [doneness ledger](./doneness-ledger.md) (T1-TXN, T1-GC, API-INV-1, MYC-SECRETS, D-6):
+[mission_prodready_continuation](./tracks/_archive/mission_prodready_continuation_20261008/) ·
+[node_lifecycle_addressing](./tracks/_archive/node_lifecycle_addressing_20260725/) ·
+[analytics_egress](./tracks/_archive/analytics_egress_20260714/) ·
+[iot_spatial_reporting](./tracks/_archive/iot_spatial_reporting_20260714/) ·
+[api_mcp_integration_tests](./tracks/_archive/api_mcp_integration_tests_20260717/) ·
+[p2p_mycelium_completion](./tracks/_archive/p2p_mycelium_completion_20260701/) ·
+[timeseries_fabric](./tracks/_archive/timeseries_fabric_20261009/) ·
+[simulation_lab](./tracks/_archive/simulation_lab_20261009/) ·
+[bi_verification](./tracks/_archive/bi_verification_20261009/)
 
-- [x] **mission_prodready_continuation** — factory mission F9–F19, A20–A33 validated;
-  pushed at `d198bd2`; deferred register ledgered —
-  [./tracks/mission_prodready_continuation_20261008/](./tracks/mission_prodready_continuation_20261008/)
-- [x] **node_lifecycle_addressing** — Spatial Builder SPINE: tombstone/cascade/reflow,
-  `fe://` addresses, lazy promotion, `CallerAuth::Local` (c99dcf2, 2377089; live P2P
-  tombstone merge via `two_peer_tombstone_sync`). Residuals: cascade not one txn
-  (T1-TXN), tombstone GC (T1-GC) —
-  [./tracks/node_lifecycle_addressing_20260725/](./tracks/node_lifecycle_addressing_20260725/)
-- [x] **analytics_egress** — BI egress: GeoParquet/CSV export, signed share URLs, CRS
-  stamping, "Copy for BI" card; live DuckDB e2e 49/49 (`scripts/bi-egress-verify.ps1`),
-  [docs/bi-egress.md](../docs/bi-egress.md) —
-  [./tracks/analytics_egress_20260714/](./tracks/analytics_egress_20260714/)
-- [x] **iot_spatial_reporting** — `iot_reading` rows, ingest endpoint, timeseries builder,
-  readings export (F11 73f4777). Poll-connector catalog stays future work (D-6) —
-  [./tracks/iot_spatial_reporting_20260714/](./tracks/iot_spatial_reporting_20260714/)
-- [x] **api_mcp_integration_tests** — ApiHarness + api/mcp suites, strict `wart_*`
-  denials (f65aaa2). One non-blocking item: endpoint inventory artifact (API-INV-1) —
-  [./tracks/api_mcp_integration_tests_20260717/](./tracks/api_mcp_integration_tests_20260717/)
-- [x] **p2p_mycelium_completion** — real iroh-docs 0.35 replication (F1–F4, F20–F23);
-  phases 2/3/5 superseded, per-petal topics superseded by SPEC-3. Residual: relay
-  REST-created verse secrets are process-lifetime (MYC-SECRETS) —
-  [./tracks/p2p_mycelium_completion_20260701/](./tracks/p2p_mycelium_completion_20260701/)
-- [x] **timeseries_fabric**, **simulation_lab**, **bi_verification** — record-only
-  tracks for mission M2/M3/M4 —
-  [timeseries_fabric_20261009](./tracks/timeseries_fabric_20261009/) ·
-  [simulation_lab_20261009](./tracks/simulation_lab_20261009/) ·
-  [bi_verification_20261009](./tracks/bi_verification_20261009/)
+---
+
+## P0/P1 — Open-core enablers (user grill 2026-10-31)
+
+The open side of the open-core line ([open-core.md](./open-core.md)). Each track owns one public seam
+that external services build against. All the specs are written and no code exists yet.
+Order: signing and release first, then agent QA, then the operator seams.
+
+- [ ] **release_ci** code-signing + `v0.1.0` phase (P0). The repo has never cut a release, and that gates
+  any external use. See the entry under P1 — Platform below.
+- [ ] **agent_input_surface** (P1) — **S-AGENT-GUI**: deny-by-default synthetic pointer/key input beside the
+  screenshot surface, so agents can run hands-on GUI QA. Waits for Lane B's operator gate (`polish_lane`) —
+  [./tracks/agent_input_surface_20261031/](./tracks/agent_input_surface_20261031/)
+- [ ] **relay_operability** (P1) — **S-RELAY** + **S-RELAY-ADVERTISE**: opt-in `/metrics`, a `UsageEvent` sink,
+  TLS/backup/self-hosted iroh-relay docs, and verse-advertised relays via `Endpoint::insert_relay` —
+  [./tracks/relay_operability_20261031/](./tracks/relay_operability_20261031/)
+- [ ] **hexon_entitlements** (P1) — **S-REGISTRY** + **S-ENTITLEMENT**: registry protocol v1, a `PackageStore`
+  trait, default-deny registry auth, and an `EntitlementVerifier` that gives effect to the inert
+  `LicenseType::Paid` / `encrypted_key` / `free_entries` fields —
+  [./tracks/hexon_entitlements_20261031/](./tracks/hexon_entitlements_20261031/)
+- [ ] **plugin_host_revival** (P2) — **S-PLUGIN**: wires the dormant `fe-plugin` host in behind an opt-in flag,
+  adds publisher-signed packages and a signed revocation list, upgrades wasmtime, and enforces or removes the
+  unenforced `network_scope` — [./tracks/plugin_host_revival_20261031/](./tracks/plugin_host_revival_20261031/)
 
 ---
 
@@ -343,7 +349,7 @@ preflight; user-gated: vulnerability reporting toggle, publishing gate, visibili
 
 ### [~] release_ci — cross-compilation pipeline + Docker image
 
-_Link: [./tracks/release_ci_20260429/](./tracks/release_ci_20260429/) · in_progress · 9 done / 1 open_
+_Link: [./tracks/release_ci_20260429/](./tracks/release_ci_20260429/) · in_progress · 9 done / 1 open + code-signing & `v0.1.0` phase added 2026-10-31_
 
 Only task 2.7 remains: the first `v*` tag run (user-gated). Its artifact checklist must
 be re-derived after macOS removal (c272246): Linux x64, Windows x64, Windows ARM64,
@@ -360,6 +366,12 @@ owner (c272246). Open: Windows ARM64 (same tag run as release_ci 2.7), Linux
 ---
 
 ## Foundry-candidate specs (separate hexon-foundry project)
+
+> **2026-10-31:** D-12 is realised in [open-core.md](./open-core.md). These three specs stay here as
+> reference. Placement under the new line:
+> - **hexon_delta_format** is a *format*, so it is open. It would be implemented here if ever scheduled.
+> - **hexon_p2p_bucket**: the blob transport is open (already partly in core); any hosted pinning service is not.
+> - **verse_services** are accelerator-only services: the protocol is open, and hosted instances are not.
 
 2026-07-14 FOUNDRY-CANDIDATE verdict: reference only, do **not** implement in the
 analytics core; gated on **[D-12 (open/closed line)](./tracks/outstanding_decisions_20260715/spec.md)**.

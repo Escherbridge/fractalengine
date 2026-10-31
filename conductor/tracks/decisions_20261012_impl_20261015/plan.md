@@ -295,7 +295,7 @@ W6 adds **no** harness scenario, so the harness count stays at W5's 18.
 - **e2e.** `scripts/bi-egress-verify.ps1:377-380` only counts non-null geometry. There is no
   `ST_X/ST_Y/ST_Z` check, although the ledger row assumes one.
 - **Doc.** The precision note is at `fe-api/AGENTS.md:920-921`. The known limitation is at
-  `conductor/tracks/bi_verification_20261009/spec.md:62-69`.
+  `conductor/tracks/_archive/bi_verification_20261009/spec.md:62-69`.
 - **Ingress stays f32** (assumption A8): `CreateNode.position: [f32;3]`
   (`fe-runtime/src/messages.rs:431`) and `UpdateNodeTransform` (`:495`).
 
@@ -1073,8 +1073,8 @@ follows the AC-54 deviation precedent for RP-10.
 - `conductor/tracks/oss_release_20260717/plan.md`;
 - `conductor/tracks/hexon_scale_orchestration_20260712/plan.md`;
 - `conductor/tracks/iroh_1_0_upgrade_20260711/plan.md`;
-- `conductor/tracks/bi_verification_20261009/spec.md` (Known limitations `:62-69`);
-- `conductor/tracks/analytics_egress_20260714/plan.md` (only if it restates the f32 or axis limit);
+- `conductor/tracks/_archive/bi_verification_20261009/spec.md` (Known limitations `:62-69`);
+- `conductor/tracks/_archive/analytics_egress_20260714/plan.md` (only if it restates the f32 or axis limit);
 - this track's `plan.md` and `metadata.json` (status and progress).
 
 **Depends:** W6-10.

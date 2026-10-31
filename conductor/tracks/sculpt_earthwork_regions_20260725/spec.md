@@ -15,7 +15,7 @@ resource: ./metadata.json
 `fe-renderer` (terrain_overlay/terrain_height + new brush overlay), `fe-ui` (terrain-tools section content + new sculpt panel)
 
 Anchor: [`../../decisions/spatial-builder-program-20260725.md`](../../decisions/spatial-builder-program-20260725.md).
-Foundation: [`../node_lifecycle_addressing_20260725/spec.md`](../node_lifecycle_addressing_20260725/spec.md)
+Foundation: [`../_archive/node_lifecycle_addressing_20260725/spec.md`](../_archive/node_lifecycle_addressing_20260725/spec.md)
 (region = ordinary node), the terrain scale authority (`fe-terrain/src/scale.rs`),
 and the existing non-destructive proposal direction (terrain_editor_overhaul).
 
