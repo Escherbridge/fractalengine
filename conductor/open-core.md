@@ -18,7 +18,7 @@ It realises decision D-12, which keeps the format and engine open: the
 ## The rule
 
 > Anything a self-hoster needs to **run, verify, or extend** FractalEngine is open and lives here.
-> Operating services for other people (multi-tenant hosting, billing, marketplace curation) is outside this repository.
+> Operating services for other people (multi-tenant hosting, account management, catalogue curation) is outside this repository.
 
 Consequences:
 - **No crippleware.** Nothing a single operator needs is held back. You can run your own relay, your own registry, and your own plugins, with no license keys.
@@ -31,9 +31,10 @@ Consequences:
 |---|---|---|
 | Engine, GUI, headless relay, DB, sync, HTTP/MCP API | Everything | (existing) |
 | Hexon map-package format | Spec + `fe-format` / `fe-hexon` | (existing) |
-| Registry | Reference single-tenant registry + **registry protocol v1** + `PackageStore` trait + default-deny auth | [hexon_entitlements_20261031](./tracks/hexon_entitlements_20261031/) |
+| Registry | Reference self-hosted registry + **registry protocol v1** + `PackageStore` trait + default-deny auth | [hexon_entitlements_20261031](./tracks/hexon_entitlements_20261031/) |
 | Licensed packages | `EntitlementVerifier`: verify a signed entitlement token, decrypt licensed entries, load `free_entries` as a preview | [hexon_entitlements_20261031](./tracks/hexon_entitlements_20261031/) |
 | Relay operations | OpenMetrics `/metrics`, `UsageEvent` sink trait, TLS/backup/self-hosted-iroh-relay docs, verse-advertised relays | [relay_operability_20261031](./tracks/relay_operability_20261031/) |
+| Peer networking | Embedded members-only relay in `fe-relay`, relay-capable desktop mode, signed relay advertisements and gossip, network diagnostics | [peer_networking_support_20261031](./tracks/peer_networking_support_20261031/) |
 | Plugins | Plugin host, publisher-signed package format, install from any protocol-v1 registry, signed revocation lists | [plugin_host_revival_20261031](./tracks/plugin_host_revival_20261031/) |
 | Agent automation | Deny-by-default synthetic input surface beside the screenshot surface, for QA and accessibility automation | [agent_input_surface_20261031](./tracks/agent_input_surface_20261031/) |
 | Distribution trust | Signed release artifacts, first `v*` release | [release_ci_20260429](./tracks/release_ci_20260429/) |
@@ -45,10 +46,12 @@ These names are canonical. External services build against them, so a change her
 | Seam | Contract |
 |---|---|
 | **S-RELAY** | Opt-in `/metrics`. A `UsageEvent` + `UsageSink` trait (caller DID, scope, route class, bytes in/out, duration, status) with a no-op default. Also `/api/v1/health`, `/ready`. |
-| **S-RELAY-ADVERTISE** | A verse can advertise relay URLs, which peers add or remove at runtime (iroh `Endpoint::insert_relay`/`remove_relay`). Policy-gated, and peers may pin or deny. |
-| **S-REGISTRY** | Registry protocol v1, versioned; a `PackageStore` storage trait; default-deny authentication. |
-| **S-ENTITLEMENT** | An ed25519 entitlement token (package id + content hash, licensee DID, expiry, issuer key id) verified against pinned issuer keys. It gives effect to the `LicenseType::Paid`, `encrypted_key` and `free_entries` fields already defined in `fe-format/src/license.rs`. Any operator can run an issuer. |
-| **S-PLUGIN** | Publisher-signed plugin packages (ed25519 over manifest + payload hash), configurable trust roots, a signed revocation list. |
+| **S-RELAY-ADVERTISE** | A verse advertises relay URLs in its own doc (`__relays`, versioned rows, Owner/Manager only, role-checked at read time on every replica, author-signed; the next phase adds an inner signature, expiry, bounds and health checks). Each peer keeps a local policy: `DialOnly` by default (the URL is listed and dialable, never inserted into the relay map), `Pinned`, or `Deny`. A relay becomes home-eligible only by a local pin or under the coverage rule (every verse the peer is in advertises it). Rows never carry credentials, advertised relays never receive the configured relay token, and a configured relay is never removed by advertisement processing. |
+| **S-RELAY-SERVE** | An embedded iroh-relay server in `fe-relay` (opt-in at build time and run time, TLS only, refuses to start when misconfigured) with a members-only `AccessControl`: a client is admitted only if the endpoint id it proves in the relay handshake maps to a DID holding an explicit Viewer+ role in a served verse; `default_access`/`open_to_all` are never consulted; revocation evicts live sessions; per-endpoint and global connection caps plus per-client bandwidth limits; rate-limited abuse log without IPs. Any verse operator can run one for exactly their members, with no shared token. |
+| **S-GOSSIP-SIGN** | Every gossip frame (`FEG1`) is signed by its author's identity key under a dedicated domain, bound to the verse and an HLC, replay-guarded per author; a frame that fails verification is dropped and never parsed as legacy; a `compat` → `require` rollout with a per-author latch. |
+| **S-REGISTRY** | Registry protocol v1, versioned by an `X-Hexon-Registry-Protocol: 1` response header plus a `protocol_version` field on `/health` (no route prefix); a `PackageStore` storage trait; default-deny authentication. |
+| **S-ENTITLEMENT** | An ed25519 entitlement token (package id + content hash, licensee DID, expiry, issuer key id) verified against pinned issuer keys. It gives effect to the `LicenseType::Paid`, `encrypted_key` and `free_entries` fields already defined in `fe-format/src/license.rs`. Any operator can run an issuer. Licence revocation is short token expiry plus refused reissuance; there is no per-token revocation list. Licensed plugins use this seam unchanged. |
+| **S-PLUGIN** | Publisher-signed plugin packages (ed25519 over manifest + payload hash), configurable trust roots, a signed revocation list. The list is a package-level kill switch keyed by `(package_id, content_hash)` for withdrawn or malicious packages, accepted only from trust roots marked for revocation; it never revokes a licence. |
 | **S-AGENT-GUI** | Synthetic input and screenshot surfaces. Both are off by default, Owner-only and rate-limited. |
 
 ## Contributing

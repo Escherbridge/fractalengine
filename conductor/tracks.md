@@ -1,7 +1,7 @@
 ---
 type: Track Index
 title: FractalEngine Project Tracks
-timestamp: 2026-10-13T00:00:00Z
+timestamp: 2026-10-31T00:00:00Z
 ---
 
 # Project Tracks
@@ -22,9 +22,10 @@ stands*, the ledger says *what to do next*.
 > under [`./tracks/_archive/`](./tracks/_archive/); a `depends_on`/`blocks` entry naming
 > an archived track is a **satisfied dependency**.
 
-**Tracks: 41 non-archive folders — 9 done (awaiting archival), 32 open.**
-Open = 7 `implemented_pending_inapp_verify` · 11 `in_progress` · 6 `pending` ·
-4 `spec_only` · 2 `blocked_on_ratification` · 1 `off_strategy` · 1 meta (`ux_qa_review`).
+**Tracks: 39 non-archive folders (recounted from `metadata.json` 2026-10-31, after the 9-track archive pass).**
+12 `in_progress` · 9 `pending` · 8 `implemented_pending_inapp_verify` · 4 `spec_only` ·
+2 `blocked_on_ratification` · 1 `off_strategy` · 3 closing (`done-pending-push`, `done-pending-sweep`,
+`implemented_pending_sweep`). The 9 `pending` include the 4 open-core enablers from 2026-10-31 and the polish lane.
 
 > **2026-10-13 bookkeeping:** `light_box` archived (D-40, user-accepted); `outstanding_decisions`
 > 64/68 open entries resolved in this pass (14 superseded, 28 ratified-as-written, 22 R4-R6
@@ -87,6 +88,15 @@ Order: signing and release first, then agent QA, then the operator seams.
   trait, default-deny registry auth, and an `EntitlementVerifier` that gives effect to the inert
   `LicenseType::Paid` / `encrypted_key` / `free_entries` fields —
   [./tracks/hexon_entitlements_20261031/](./tracks/hexon_entitlements_20261031/)
+- [ ] **peer_networking_support** (P1) — secure relay-capable peers, built on S-RELAY-ADVERTISE. Scope:
+  - an embedded iroh-relay server in fe-relay (opt-in, members-only `AccessControl`, live eviction on revoke);
+  - desktop relay mode after a UDP self-test plus an HTTPS dial-back;
+  - signed and bounded advertisements, adopted as **DialOnly** by default (the home relay is per endpoint, not per verse);
+  - per-message gossip signing, closing residual S-1;
+  - truthful direct-vs-relayed diagnostics.
+
+  **Fable review gates F0–F3 are embedded.** F0 is the design and threat-model review, before any code. Sequenced after
+  relay_operability — [./tracks/peer_networking_support_20261031/](./tracks/peer_networking_support_20261031/)
 - [ ] **plugin_host_revival** (P2) — **S-PLUGIN**: wires the dormant `fe-plugin` host in behind an opt-in flag,
   adds publisher-signed packages and a signed revocation list, upgrades wasmtime, and enforces or removes the
   unenforced `network_scope` — [./tracks/plugin_host_revival_20261031/](./tracks/plugin_host_revival_20261031/)

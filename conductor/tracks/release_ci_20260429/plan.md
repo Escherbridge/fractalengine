@@ -230,6 +230,148 @@ Delete test tag/release after verification.
 
 ---
 
+## Phase 3: Code signing + first `v*` release
+
+**Goal:** Tag-triggered artifacts carry a verifiable signature chain (Windows
+Authenticode + a detached signature over the Linux artifacts / `SHA256SUMS`),
+so a downloaded binary can be checked against SmartScreen/tampering before
+the first real `v*` tag is cut. Distribution-trust scope only.
+
+---
+
+### Task 3.1 — Windows Authenticode signing [ ]
+
+Sign `fractalengine.exe` and `fe-relay.exe` in every Windows job
+(`windows-x86_64`, `windows-arm64`) in `release.yml` before packaging.
+
+**Open decision:** certificate path.
+- **OV cert**: cheapest, but SmartScreen reputation starts at zero and
+  accumulates slowly per-cert; a hardware-token-bound OV cert is awkward to
+  drive from a GitHub Actions runner on every release.
+- **EV cert**: immediate SmartScreen reputation, but requires a hardware
+  token (USB HSM or cloud HSM) — the heaviest CI operational cost.
+- **Azure Trusted Signing**: Microsoft's CI-native signing service, no
+  physical token, REST/CLI-driven (fits GitHub Actions directly), builds
+  SmartScreen reputation faster than OV. Eligibility requires a verified
+  Azure account + a minimum business-registration age (or an open-source
+  attestation path) — confirm eligibility before committing.
+- **Recommended default: Azure Trusted Signing, if eligibility is confirmed.**
+  *Reversal cost: Medium* — switching signing providers later needs a new
+  cert/identity; it does not invalidate already-signed historical releases,
+  but any doc that tells users how to verify a binary needs updating.
+
+**Files:** `.github/workflows/release.yml` (Windows jobs).
+
+---
+
+### Task 3.2 — Linux artifact signing [ ]
+
+Produce a detached signature over the Linux artifacts (or over
+`SHA256SUMS`, see Task 3.3) so `.tar.gz` downloads get the same trust chain
+as the signed Windows archives.
+
+**Open decision:** tool.
+- **minisign**: single static binary, tiny, one-key model — simple to script
+  in CI and simple for a user to verify with one command.
+- **cosign / sigstore**: keyless signing via GitHub Actions' own OIDC
+  identity, transparency-log-backed (Rekor) — stronger provenance (ties the
+  signature to "this exact CI run"), heavier verification UX for an end user.
+- **Recommended default: minisign** — matches a project whose current
+  audience downloads a desktop app rather than consumes a supply-chain-
+  attested build; cosign/sigstore is the natural upgrade once there's
+  demand for SLSA-style provenance. *Reversal cost: Low* — both can coexist
+  (sign with both), so adding cosign later doesn't require removing minisign.
+
+**Files:** `.github/workflows/release.yml` (`publish` job, new signing step).
+
+---
+
+### Task 3.3 — Sign `SHA256SUMS` [ ]
+
+`SHA256SUMS` is already generated (`publish` job, `sha256sum * >
+SHA256SUMS`) but is itself unsigned — anyone who can replace a release
+asset can also replace the checksum file. Add a detached signature over
+`SHA256SUMS` using whichever tool Task 3.2 selects and publish it alongside
+(`SHA256SUMS.minisig` or `SHA256SUMS.sig`).
+
+**Verification:** a downloaded `SHA256SUMS` plus its signature file verifies
+against a published public key before the checksums it contains are trusted.
+
+**Files:** `.github/workflows/release.yml` (`publish` job).
+
+---
+
+### Task 3.4 — Release notes template [ ]
+
+Replace the inline `body:` block in the `publish` job (currently a
+hand-written downloads table) with a template file (e.g.
+`.github/release-notes-template.md`), so release notes stay consistent
+across tags and can include signing-verification instructions (Tasks
+3.1-3.3) without editing workflow YAML per release.
+
+**Files:** new `.github/release-notes-template.md`; `.github/workflows/release.yml`.
+
+---
+
+### Task 3.5 — SmartScreen reputation note (docs) [ ]
+
+Document, in `BUILDING.md` and/or the release notes template, that early
+Windows releases may still show a SmartScreen warning even when signed —
+reputation accumulates per certificate/publisher and isn't instant, Azure
+Trusted Signing or not. State plainly that "More info -> Run anyway" (the
+unsigned-case text already in `scripts/package_release.py`'s `RUN_GUI`
+QUICKSTART fragment) remains expected for the first several releases, so
+users and support don't mistake it for tampering.
+
+**Files:** `BUILDING.md`; `.github/release-notes-template.md`.
+
+---
+
+### Task 3.6 — Reconcile `BUILDING.md`'s macOS section (doc fix) [ ]
+
+`BUILDING.md`'s `## macOS` section still fully documents macOS as a
+supported build target, but the macOS GUI matrix and the `lipo`
+universal-binary job were removed from `release.yml` and
+`build-artifacts.yml` on 2026-08-19 (owner direction, commit `c272246` —
+`release.yml` carries its own comment recording the removal). `BUILDING.md`
+was never updated to match, so it currently promises CI coverage that does
+not exist. Reconcile by marking macOS as "buildable locally, not
+CI-verified" rather than removing the section outright, unless macOS
+support is meant to be dropped entirely.
+
+**Files:** `BUILDING.md` (`## macOS` section).
+
+---
+
+### Task 3.7 — Cut `v0.1.0` [ ] (USER-GATED — do not push the tag unilaterally)
+
+Push the first real `v*` tag once Tasks 3.1-3.6 are green on a
+`workflow_dispatch` dry run (builds without publishing, per `release.yml`'s
+own `on:` block) — this finally closes Task 2.7's long-open "requires a
+live GitHub tag run" blocker, with a real version instead of the
+`v0.0.0-ci-test` placeholder Task 2.7 originally proposed.
+
+**Verification:** all jobs green; release published as non-prerelease (tag
+has no `-` suffix); every artifact's signature verifies; `SHA256SUMS`'
+signature verifies; the Docker image pulls from GHCR at both `v0.1.0` and
+`latest`.
+
+**Files:** none (tag push + manual verification). Requires explicit user
+authorization before pushing the tag.
+
+---
+
+### Phase 3 Checkpoint
+
+- Every Windows artifact is Authenticode-signed per the ratified cert choice.
+- Every Linux artifact (or its `SHA256SUMS`) carries a verifiable detached signature.
+- `SHA256SUMS` itself is signed.
+- Release notes are template-driven and document the verification steps.
+- `BUILDING.md`'s macOS section matches CI reality.
+- `v0.1.0` is cut only on explicit user go-ahead.
+
+---
+
 ## Status Notes
 
 - **2026-07-15 — CI run 29390918844 (build-artifacts.yml, push on main):**

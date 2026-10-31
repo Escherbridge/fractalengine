@@ -1,0 +1,69 @@
+{
+  "id": "agent_input_surface_20261031",
+  "type": "feature",
+  "title": "Deny-by-default synthetic input surface for agent-assisted QA",
+  "description": "A new operator-gated surface that lets an agent driving the API inject synthetic pointer (move/click/drag) and keyboard (press/text entry) and scroll input into the live GUI, exactly mirroring the existing screenshot surface's posture: FE_API_INPUT_ALLOW=1 opt-in, Owner-only, rate-limited, via the shared OperatorGate chain. Commands cross a new bounded fe-runtime channel into Bevy and are translated into real input early in the frame so bevy_egui's own input collection sees them; a deterministic wait-for-N-frames settle plus an optional post-action screenshot let an agent inject a click and immediately see the result in one correlated round trip. Never wired on the headless relay (no window). Framed publicly as agent-assisted QA / accessibility automation.",
+  "status": "pending",
+  "priority": "P1",
+  "created_at": "2026-10-31T00:00:00Z",
+  "updated_at": "2026-10-31T00:00:00Z",
+  "origin": "user grill 2026-10-31 (open-core alignment): public seam S-AGENT-GUI",
+  "alignment": "Open-core rule: an agent-automation capability any self-hoster can use, no business logic. Extends the already-landed §screenshot/§operator-gate pattern (fe-api/AGENTS.md) rather than inventing a new one.",
+  "depends_on": [],
+  "external_preconditions": [
+    "SATISFIED 2026-10-31: polish_lane_20261031 Lane B's operator_gate.rs / screenshot.rs work is committed (operator_gate.rs added in 5405f4e; Lane B closed in 8ee4a96). Line numbers moved since f55ca21 (e.g. drain_screenshot_requests is now screenshot_bridge.rs:83) — re-grep symbols before S2/S4"
+  ],
+  "blocks": [],
+  "related": ["polish_lane_20261031", "relay_operability_20261031", "hexon_entitlements_20261031", "plugin_host_revival_20261031", "release_ci_20260429"],
+  "spec": "./spec.md",
+  "plan": "./plan.md",
+  "progress": { "done": 0, "open": 12, "plan": "./plan.md" },
+  "open_decisions": [
+    "OD-1 MCP tool name + REST route path (rec: inject_input / POST /api/v1/debug/input)",
+    "OD-2 rate-limit shape: per-request batch vs per-command (rec: per-request, 5/s per DID)",
+    "OD-3 wait_frames cap + timeout behavior (rec: documented const, e.g. 120 frames, surfaces as a TimedOut-style error past it)",
+    "OD-4 coordinate space: primary-window pixel coordinates (rec) vs normalized 0-1",
+    "OD-5 post-action screenshot mechanism: reuse capture_primary_window_png via a pub(crate) extraction from screenshot_bridge.rs (rec) vs a second explicit screenshot call",
+    "OD-6 v1 command vocabulary: pointer move/click/drag + key press/text entry + scroll (rec, matches the brief) vs pointer-only v1",
+    "OD-7 test strategy for the Bevy-side translation: fake-responder API-layer tests only this track (rec, mirrors screenshot_test.rs) vs a renderer-backed in-app test"
+  ],
+  "notes": [
+    "2026-10-31: track drafted (docs only) from the 2026-10-31 open-core grill. Modeled file-for-file on the landed screenshot surface (fe-api/src/screenshot.rs, fe-api/src/operator_gate.rs, fe-runtime/src/screenshot.rs, fractalengine/src/screenshot_bridge.rs) so the review burden is 'does this new surface deviate from the proven pattern', not 'is this pattern sound'. Citations computed at f55ca21; another session's in-flight uncommitted work touches the exact files this track extends (operator_gate.rs untracked, screenshot.rs modified) — re-grep line numbers before editing, cite symbols in the meantime.",
+    "2026-10-31: CROSS-TRACK SEQUENCING. fe-runtime/src/{lib.rs,AGENTS.md}, fe-api/src/{server.rs,lib.rs}, fe-api/AGENTS.md, fractalengine/src/{main.rs,AGENTS.md} are also owned by relay_operability_20261031 and/or plugin_host_revival_20261031. Fixed order for those files: this track first, then relay_operability_20261031, then plugin_host_revival_20261031; never concurrent. This track is the only one of the four that edits fe-api/src/mcp/mod.rs: TOOLS.len() goes 37 -> 38 here; any later tool addition bumps from 38. polish_lane_20261031 (in flight) also owns fe-api/AGENTS.md and fe-runtime/src/AGENTS.md: S1/S3 wait for its owning waves to close. Root AGENTS.md and conductor/tracks.md are append-only for every track (last writer rebases).",
+    "2026-10-31: fresh-context spec review — PASS-WITH-FIXES; fixes applied in place."
+  ],
+  "partitions": {
+    "computed_at": "2026-10-31T00:00:00Z",
+    "computed_at_commit": "f55ca21",
+    "confidence": "hypothesis",
+    "slices": [
+      { "id": "S1", "task": "fe-runtime input message types: InputCommand (PointerMove/PointerClick/PointerDrag/KeyPress/TextEntry/Scroll), InputRequest{correlation_id, commands, wait_frames, capture_after, reply_tx}, InputReply{correlation_id, result: Result<(), String>, png: Option<Vec<u8>>}, bounded input_bridge() sender/receiver, capacity const — mirrors fe-runtime/src/screenshot.rs exactly", "model": "sonnet", "depends_on": [],
+        "owns": [{"path": "fe-runtime/src/input.rs", "status": "future"}, "fe-runtime/src/lib.rs", "fe-runtime/src/AGENTS.md"] },
+      { "id": "S2", "task": "fe-api gate + surface + REST handler: INPUT_ALLOW_ENV, INPUT_GATE: OperatorGate const (reuses operator_gate::OperatorGate unchanged, per its own extension contract), InputSurface{allowed, bridge, reply_timeout, wait_frames_cap}, input_allowed_from_env(), InputError, request_inject()/gated_inject(), REST handler for OD-1's route", "model": "sonnet", "depends_on": ["S1"],
+        "owns": [{"path": "fe-api/src/input.rs", "status": "future"}] },
+      { "id": "S3", "task": "fe-api wiring: ApiState.input field + route registration (next to the screenshot route), pub mod input, MCP ToolSeam::Input variant + tool_available/operator_opt_in_refusal arms + new TOOLS row (inject_input) + TOOLS.len() assert 37->38 and its message, AGENTS.md §agent-input-surface section", "model": "sonnet", "depends_on": ["S2"],
+        "owns": ["fe-api/src/server.rs", "fe-api/src/lib.rs", "fe-api/src/mcp/mod.rs", "fe-api/AGENTS.md"] },
+      { "id": "S4", "task": "fractalengine binary: new input_bridge.rs (InputBridge resource, drain_input_requests system in PreUpdate before egui input collection, command-to-Bevy-input translation, wait_frames countdown, optional capture_after reusing a pub(crate)-extracted capture_primary_window_png); screenshot_bridge.rs gets that one pub(crate) visibility change (sole owner stays screenshot_bridge.rs); main.rs wires the channel + ApiState.input + resource/system registration next to the screenshot wiring; AGENTS.md §agent-input-surface mirroring §screenshot", "model": "sonnet", "depends_on": ["S1", "S3"],
+        "owns": [{"path": "fractalengine/src/input_bridge.rs", "status": "future"}, "fractalengine/src/screenshot_bridge.rs", "fractalengine/src/main.rs", "fractalengine/src/AGENTS.md"] },
+      { "id": "S5", "task": "fe-api tests: new input_test.rs mirroring screenshot_test.rs's shape exactly (fake Bevy-side responder thread standing in for the bridge, renderer-free) — disabled/below-Owner/rate-limited refusals, an admitted inject round-trips with capture_after bytes returned verbatim, headless-host unavailability, MCP tools/list omits the row when the seam is unwired", "model": "sonnet", "depends_on": ["S3"],
+        "owns": [{"path": "fe-api/tests/input_test.rs", "status": "future"}] },
+      { "id": "S6", "task": "review-and-fix (opus, fresh context, /code-review high): deny-by-default posture parity with §screenshot (this surface can MUTATE state, not just read it — the review's primary lens), gate-order correctness, frame-budget allocation in the no-op path, wait_frames cap enforcement, fe-ui/fe-terrain dependency direction unchanged. Fixes its own findings", "model": "opus", "depends_on": ["S4", "S5"],
+        "owns": [{"path": "conductor/tracks/agent_input_surface_20261031/review.md", "status": "future", "note": "plus fix-only edits to any S1-S5 file"}] },
+      { "id": "S7", "task": "docs consolidation: root AGENTS.md pointer, conductor/tracks.md row, plan ticks", "model": "haiku", "depends_on": ["S6"],
+        "owns": ["AGENTS.md", "conductor/tracks.md", "conductor/tracks/agent_input_surface_20261031/plan.md"] }
+    ],
+    "waves": [["S1"], ["S2"], ["S3"], ["S4", "S5"], ["S6"], ["S7"]],
+    "shared_writes": [
+      { "path": "fe-api/src/server.rs", "owner": "CROSS-TRACK: this track's S3 first, then relay_operability_20261031 S2/S6b, then plugin_host_revival_20261031 S1", "reason": "three tracks register routes in build_router" },
+      { "path": "fractalengine/src/main.rs", "owner": "CROSS-TRACK: this track's S4 first, then relay_operability_20261031 S5/S4, then plugin_host_revival_20261031 S1", "reason": "bridge wiring, ApiConfig fields, log format and plugin-host spawn all land in main()" }
+    ],
+    "tripwires": [
+      "InputSurface::disabled() is the default on every host without a window (relay, harness default) — never flip that default",
+      "the input gate reuses operator_gate::OperatorGate as DATA (a new const), never forks the chain (AGENTS.md §operator-gate's own extension contract)",
+      "this surface can mutate scene state through the UI, not just observe it like screenshot — the deny-by-default triad (opt-in, Owner, rate limit) is the ONLY protection; no coordinate/key validation exists beyond it, so the review slice (S6) treats posture parity as its primary finding category",
+      "capture_primary_window_png stays sole-owned by screenshot_bridge.rs; input_bridge.rs calls it, never duplicates it",
+      "agents never run cargo; orchestrator gates once per wave"
+    ],
+    "integration_slice": "S4"
+  }
+}

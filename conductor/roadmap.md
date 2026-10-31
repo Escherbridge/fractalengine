@@ -166,6 +166,12 @@ closed foundry + official registry + marketplace as a separate product.
   > `fe-plugin`→`fe-sdk`) are untouched by this mission and remain open as
   > stated. Record: [p2p_mycelium_completion_20260701](./tracks/_archive/p2p_mycelium_completion_20260701/)
   > (now `done`), [timeseries_fabric_20261009](./tracks/_archive/timeseries_fabric_20261009/).
+  >
+  > **CORRECTION 2026-10-31 (re-audit):** both remaining gaps are now closed or
+  > reframed. fe-hexon RBAC is **enforced**: `fe_hexon::authz::authorize` is called
+  > from `fe-api/src/hexon.rs`. `fe-plugin` **already depends on** `fe-sdk`
+  > (`fe-plugin/Cargo.toml`). The real plugin gap is that no binary loads the
+  > host at all, which [plugin_host_revival_20261031](./tracks/plugin_host_revival_20261031/) owns.
 - **UX:** refined editing + sleeker features. **The user will spec a dedicated
   UX track themselves after a thorough QA review** — do not pre-empt it; capture
   QA findings for that track when they surface.

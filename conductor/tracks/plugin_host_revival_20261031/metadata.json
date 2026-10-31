@@ -1,0 +1,86 @@
+{
+  "id": "plugin_host_revival_20261031",
+  "type": "feature",
+  "title": "Revive the dormant plugin host: opt-in wiring, publisher-signed packages, consent UX, install-from-registry",
+  "description": "fe-plugin (Rhai + Wasmtime host, lifecycle, capability tokens) and fe-sdk (stable extension API, UiExtensionRegistry, ApiExtensionHandle) are complete but wired to nothing: no crate depends on fe-plugin, no host thread is spawned by fractalengine or fractalengine-relay, and even the first-party fe-terrain extension's own registration functions are never called. This track makes the plugin system real: an opt-in host thread, a publisher-signed package format (ed25519) replacing the optional BLAKE3 self-check, a capability-manifest consent UX, install-from-registry over registry protocol v1 (reusing hexon_entitlements_20261031's registry protocol and fe_format::entitlement::EntitlementVerifier for licensed plugins), and version-aligned rhai so extensions/iot-bridge can join the workspace. No business logic — this repo only describes open capability.",
+  "status": "pending",
+  "priority": "P2",
+  "created_at": "2026-10-31T00:00:00Z",
+  "updated_at": "2026-10-31T00:00:00Z",
+  "origin": "user grill 2026-10-31 (open-core alignment)",
+  "alignment": "Realises conductor/open-core.md's S-PLUGIN seam and decision D-12 (format and engine stay open); matches conductor/roadmap.md's open-core framing. Any party (a self-hoster, an organisation, an external catalogue) may run review, counter-signing or revocation-list publishing on top of this seam; this repo never names or depends on such consumers.",
+  "depends_on": ["hexon_entitlements_20261031 (Phase 4 / S4 only; Phases 0-3 and 5 do not wait)"],
+  "blocks": [],
+  "related": [
+    "hexon_entitlements_20261031",
+    "relay_operability_20261031",
+    "agent_input_surface_20261031",
+    "oss_release_20260717",
+    "auth_policy_pattern_20260710"
+  ],
+  "spec": "./spec.md",
+  "plan": "./plan.md",
+  "progress": { "done": 0, "open": 8, "plan": "./plan.md" },
+  "open_decisions": [
+    "OD-1 network_scope/external_http: enforce or remove",
+    "OD-2 WIT vs wired-ABI reconciliation",
+    "OD-3 trust-root config shape for package signatures",
+    "OD-4 opt-in mechanism (feature + runtime flag)",
+    "OD-5 wasmtime bump timing (Phase 0 first)",
+    "OD-6 capability-consent UX surface",
+    "OD-7 iot-bridge workspace join + rhai alignment direction",
+    "OD-8 revocation-list transport (rec: pull from a URL configured beside each revocation-capable trust root, cache last-good list)",
+    "OD-9 plugin package shape on the registry wire (rec: a sealed .hexon with a new HexonType::Plugin, so registry protocol v1, PackageStore and fe_format::license::License apply unchanged)"
+  ],
+  "notes": [
+    "2026-10-31: track drafted (docs only) from the 2026-10-31 open-core grill. Inventory confirms the system is architecturally complete but entirely unwired: `fe-plugin` has zero dependents in the workspace; `fe_ui`/the two binaries never construct `PluginRegistry` or `UiExtensionRegistry` as Bevy resources; `fe-terrain/src/extension.rs::register_terrain_ui` and `fe-terrain/src/api_ext.rs::terrain_api_routes` have zero call sites outside their own unit tests (verified via `git grep -n register_terrain_ui` / `terrain_api_routes` — only the defining files match).",
+      "2026-10-31: folded in verified findings from a sibling research session on 'can a plugin act as a P2P/NAT relay?' (1) NO by design: `network_scope`/`external_http` are parsed into `CapabilityManifest`/`CapabilityToken` (fe-plugin/src/capability.rs:34-39,73-76) but nothing in the workspace enforces them except one dead-end match arm (capability.rs:173-181, `CapabilityOperation::HttpRequest`) that is itself never constructed by any caller — recorded as OD-1 with recommended default 'enforce deny-by-default, no grant path in v1'. (2) The WIT world (`fe-plugin/wit/hexon-plugin.wit:124-128`) imports `node-api`/`plugin-log`/`query-api`, but `fe-plugin/src/AGENTS.md:131` calls it an 'aspirational contract, not the wired ABI' (the real host registers core-ABI `func_wrap` imports in `wasm/host_imports.rs`, no bindgen) — recorded as OD-2, must be reconciled before any third-party publishing claim. (3) The iroh `Endpoint` lives entirely inside the sync thread (fe-sync); P2P/relay behavior is explicitly a non-goal for plugins in this track — that question is answered and closed, not left open; relay advertising is the public relay_operability_20261031 track's S-RELAY-ADVERTISE seam.",
+    "2026-10-31: fresh-context review fixes — (1) S1 also owns fe-api/src/server.rs: fe-api/src/rest.rs only holds handlers, routes are registered in build_router; (2) one revocation model with hexon_entitlements_20261031: the signed revocation list is a package-level kill switch keyed by (package_id, content_hash), accepted only from trust roots marked for revocation; licence revocation for licensed plugins is token expiry + refused reissuance (S-ENTITLEMENT), never this list; (3) install-from-registry checks the registry's X-Hexon-Registry-Protocol header / /health protocol_version before fetching; (4) fe-plugin/Cargo.toml line cites corrected in spec.md (fe-sdk :12, rhai :14, wasmtime :15).",
+    "2026-10-31: CROSS-TRACK SEQUENCING. fractalengine/src/main.rs, fractalengine/src/AGENTS.md, fractalengine-relay/src/main.rs and fe-api/src/server.rs are also owned by agent_input_surface_20261031 and/or relay_operability_20261031; fixed order agent_input_surface -> relay_operability -> this track (S1 last), never concurrent, re-grep after each predecessor commit. fe-ui/src/{plugin.rs,AGENTS.md} and fe-ui/src/panels/mod.rs are owned by polish_lane_20261031 (in flight, W3 and W6): S1/S3 start after those waves close. If OD-9 adds HexonType::Plugin, the fe-format/src/manifest.rs + docs/hexon-format-spec.md edit lands after hexon_entitlements_20261031 S5's 1.1.0 bump. deny.toml/SECURITY.md (S0) are owned by no other 2026-10-31 track.",
+    "2026-10-31: fresh-context spec review — PASS-WITH-FIXES; fixes applied in place."
+  ],
+  "partitions": {
+    "computed_at": "2026-10-31T00:00:00Z",
+    "computed_at_commit": "f55ca21",
+    "confidence": "hypothesis",
+    "slices": [
+      { "id": "S0", "task": "Phase 0: wasmtime upgrade past 29 + deny.toml advisory cleanup (re-run `cargo deny check advisories`, shrink the ~19 wasmtime RUSTSEC ignores, update SECURITY.md's 'dormant' wording once live)", "model": "sonnet", "depends_on": [],
+        "owns": ["fe-plugin/Cargo.toml", "deny.toml", "SECURITY.md", "fe-plugin/src/wasm/mod.rs", "fe-plugin/src/wasm/host_imports.rs", "fe-plugin/src/wasm/aot.rs", "fe-plugin/src/wasm/fuel.rs"] },
+      { "id": "S1", "task": "Phase 1: host thread wired behind opt-in feature+runtime flag (mirrors FE_API_SCREENSHOT_ALLOW idiom); close OD-1 (enforce or strip network_scope/external_http) in the SAME phase; wire fe-ui to actually construct UiExtensionRegistry and call fe_terrain::extension::register_terrain_ui; mount fe-terrain's ApiExtensionHandle routes in fe-api", "model": "sonnet", "depends_on": ["S0"],
+        "owns": ["fractalengine/Cargo.toml", "fractalengine/src/main.rs", "fractalengine-relay/Cargo.toml", "fractalengine-relay/src/main.rs", "fe-plugin/src/lib.rs", "fe-plugin/src/capability.rs", "fe-ui/src/plugin.rs", "fe-terrain/src/extension.rs", "fe-terrain/src/api_ext.rs", "fe-api/Cargo.toml", "fe-api/src/rest.rs", "fe-api/src/server.rs", "fractalengine/src/AGENTS.md", "fe-ui/src/AGENTS.md"] },
+      { "id": "S2", "task": "Phase 2: publisher-signed package format — ed25519 signature over (manifest bytes || payload hash) replacing lifecycle.rs's optional BLAKE3 self-check; configurable trust roots (OD-3); unsigned refused unless an explicit dev flag; new trust-root/revocation-list consumer module", "model": "sonnet", "depends_on": ["S1"],
+        "owns": ["fe-plugin/src/lifecycle.rs", {"path": "fe-plugin/src/package.rs", "status": "future"}, {"path": "fe-plugin/src/trust_roots.rs", "status": "future"}, "fe-plugin/src/AGENTS.md"] },
+      { "id": "S3", "task": "Phase 3: capability-manifest consent UX in fe-ui — modal listing requested verse/petal/property scope, named capabilities, and network_scope before Install is enabled", "model": "sonnet", "depends_on": ["S1"],
+        "owns": [{"path": "fe-ui/src/panels/plugin_install_panel.rs", "status": "future"}, "fe-ui/src/plugin.rs", "fe-ui/src/panels/mod.rs", "fe-ui/src/AGENTS.md"] },
+      { "id": "S4", "task": "Phase 4: install-from-registry over registry protocol v1 — check the registry's protocol version (X-Hexon-Registry-Protocol header / /health protocol_version), fetch, verify signature (S2), refuse anything on a trusted revocation list, verify entitlement via fe_format::entitlement::EntitlementVerifier for LicenseType::Paid packages (enables fe-format's entitlement feature), activate", "model": "sonnet", "depends_on": ["S2"],
+        "owns": [{"path": "fe-plugin/src/registry_client.rs", "status": "future"}, "fe-plugin/src/lifecycle.rs", "fe-plugin/Cargo.toml"] },
+      { "id": "S5", "task": "Phase 5: extensions/iot-bridge joins the root workspace; align rhai version (fe-plugin pins 1.19, iot-bridge pins 1.24) to one version across host + example", "model": "haiku", "depends_on": ["S0"],
+        "owns": ["Cargo.toml", "extensions/iot-bridge/Cargo.toml", "fe-plugin/Cargo.toml", "extensions/iot-bridge/AGENTS.md"] },
+      { "id": "S6", "task": "Review-and-fix (opus, fresh context): /code-review high AND mandatory /security-review (sandbox, signatures, untrusted-code execution, capability enforcement) — fixes its own findings", "model": "opus", "depends_on": ["S2", "S3", "S4"],
+        "owns": [{"path": "conductor/tracks/plugin_host_revival_20261031/review.md", "status": "future", "note": "plus fix-only edits to any S0-S5 file"}] },
+      { "id": "S7", "task": "Docs consolidation + tracks.md + plan ticks", "model": "haiku", "depends_on": ["S6", "S5"],
+        "owns": ["fe-plugin/src/AGENTS.md", "fe-sdk/src/AGENTS.md", "fractalengine/src/AGENTS.md", "fe-ui/src/AGENTS.md", "SECURITY.md", "conductor/tracks.md", "conductor/tracks/plugin_host_revival_20261031/plan.md"] }
+    ],
+    "waves": [["S0"], ["S1", "S5"], ["S2", "S3"], ["S4"], ["S6"], ["S7"]],
+    "shared_writes": [
+      { "path": "fe-plugin/Cargo.toml", "owner": "S0 (W1) then S5 (W2) then S4 (W4), sequential", "reason": "wasmtime bump, then rhai alignment, then registry-client deps" },
+      { "path": "fe-plugin/src/capability.rs", "owner": "S1 (W2) only", "reason": "OD-1 closes in the same phase that makes the host live" },
+      { "path": "fe-plugin/src/lifecycle.rs", "owner": "S2 (W3) then S4 (W4), sequential", "reason": "signature verification lands before registry install reuses it" },
+      { "path": "fe-plugin/src/AGENTS.md", "owner": "S2 (W3), folded by S7 (W6)", "reason": "avoid W2/W3 collision; S7 consolidates" },
+      { "path": "fe-ui/src/plugin.rs", "owner": "S1 (W2) then S3 (W3), sequential", "reason": "registry construction before the consent dialog reads it" },
+      { "path": "fe-api/src/server.rs", "owner": "CROSS-TRACK: agent_input_surface_20261031 S3, then relay_operability_20261031 S2/S6b, then this track's S1", "reason": "three tracks register routes in build_router" },
+      { "path": "fractalengine/src/main.rs", "owner": "CROSS-TRACK: agent_input_surface_20261031 S4, then relay_operability_20261031 S5/S4, then this track's S1", "reason": "bridge wiring, ApiConfig fields, log format and plugin-host spawn all land in main()" },
+      { "path": "fractalengine-relay/src/main.rs", "owner": "CROSS-TRACK: relay_operability_20261031 S5/S4, then this track's S1", "reason": "log format + ApiConfig wiring before the opt-in host spawn" }
+    ],
+    "tripwires": [
+      "the opt-in flag is the security boundary while wasmtime advisories are triaged-not-fixed — default OFF in every build config, including CI",
+      "OD-1 (network_scope/external_http enforcement) must close in S1, never deferred — a live host with a parsed-but-unchecked network capability is a silent gap, not a TODO",
+      "unsigned packages refused by default; the dev-flag escape hatch must never be reachable from a release build",
+      "no pricing, revenue, payment, or marketplace business logic in ANY file this track touches — PUBLIC repo, open capability only",
+      "a revocation list is accepted only when signed by a trust-root entry marked for revocation; a key trusted only to sign packages can never revoke someone else's package",
+      "WIT (fe-plugin/wit/hexon-plugin.wit) and wasm/host_imports.rs must not diverge silently — every WIT edit gets a matching host_imports.rs change or an explicit UNSTABLE marker (OD-2)",
+      "agents never run cargo; orchestrator gates once per wave"
+    ],
+    "integration_slice": "S1"
+  }
+}
