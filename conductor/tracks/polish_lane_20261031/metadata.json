@@ -1,0 +1,1397 @@
+{
+  "id": "polish_lane_20261031",
+  "type": "chore",
+  "title": "Polish lane — finish stubs, complete features, close seams, usability of every feature",
+  "description": "Recon-driven polish program (Lane A of the 2026-10-31 directive). Six waves of disjoint leaf slices, each followed by a serial gate, an ADVOCATE review-and-fix (design patterns) and a CRITIC review-and-fix (defects / anti-patterns / tests that cannot fail), then a re-gate. W1 builds the feedback spine (notice severity queue, humanized DB/role-denial errors, petal-map rollback via correlated SetPetalTerrain, typed JoinVerseFailed, shared role_gated/confirm_button widgets) plus OF-13a/b/c; W2 role gating + destructive safety; W3 Lane-B integration surfaces (needs Lane B landed); W4 tool/report/context/data-window completion; W5 F7 ScopedQuery + undo/redo + stale cleanup; W6 library seams, dead code, copy sweep.",
+  "status": "pending",
+  "priority": "P0",
+  "created_at": "2026-10-31T00:00:00Z",
+  "updated_at": "2026-10-31T00:00:00Z",
+  "origin": "user directive 2026-10-31 (polish program; conductor/accountability-log.md 'Polish program launch'); inputs .omc/research/polish-stubs-20261031.md (R1) + .omc/research/polish-ux-20261031.md (R2)",
+  "alignment": "Roadmap §3 cross-cutting hardening + sleeker UX; product success metric 'operator completes upload → place → set role → invite without reading documentation'.",
+  "depends_on": [],
+  "external_preconditions": [
+    "Lane B commit landed before W3 (frameless window/title bar/icon/screenshot surface)"
+  ],
+  "blocks": [],
+  "related": [
+    "role_propagation_20261013",
+    "p2p_asset_streaming_20260718",
+    "terrain_proposal_delta_viz_20261025",
+    "ui_semantics_unification_20260808",
+    "ui_shell_architecture_20260724"
+  ],
+  "spec": "./spec.md",
+  "plan": "./plan.md",
+  "progress": {
+    "done": 0,
+    "open": 6,
+    "unit": "waves",
+    "plan": "./plan.md"
+  },
+  "open_decisions": [
+    "OD-1 notice durations/queue (default Info 2.5s / Advisory 4s / Error 7s, hover-hold, cap 4, history 20)",
+    "OD-2 correlation ids only where typed failure exists/added (petal-map, Join); humanized stop-gap for the rest",
+    "OD-3 role gating = disable + hover reason, never hide",
+    "OD-4 Reset Database → Settings Danger zone, debug/FE_DEV_TOOLS=1 only, typed RESET",
+    "OD-5 gear always visible; tabs gated inside Entity Settings; Claim visible to non-owners",
+    "OD-6 undo = transforms + path points, stack 50, cleared on petal switch, replicated inverse",
+    "OD-7 F7 = new ScopedQuery variant + guard moved to fe-query::sql_guard (fe-api re-exports)",
+    "OD-8 delete the 6 unreachable Tauri stub commands (D-42 NO-GO)",
+    "OD-9 fe-plugin via injected NodeReader/TransactionSink traits",
+    "OD-10 fe-sync peer blob fetch (Phase F) OUT → p2p_asset_streaming_20260718",
+    "OD-11 snap defaults: grid off/1 m, angle 15°, no modifier key",
+    "OD-12 render-distance single home = Settings per-petal column (manifest UI field removed)",
+    "OD-13 relay 'Restart now' = spawn current_exe + AppExit",
+    "OD-14 remove 'Pivot/Selection filters/Highlight style (soon)' rather than build",
+    "OD-15 polygon gesture: click append, Enter/double-click/Close finishes, Backspace/Esc",
+    "OD-16 remove ActiveDialog::InviteDialog (no renderer)",
+    "OD-17 optional agent screenshots at W3/W6 via Lane B surface, never blocking, never the user's look"
+  ],
+  "out_of_scope": [
+    "Lane B deliverables (reviewed for T-01 only)",
+    "user in-app look (user-gated)",
+    "CANON-WS mount + CDL-NET (NO_GO)",
+    "D-23 relay host (user action)",
+    "T28/BLOB-HASH-CAPABILITY (design decision)",
+    "S-1 relay signing (recon first)",
+    "fe-sync peer blob fetch Phase F (OD-10)",
+    "DB confine_petal parity / P2P-REF-CONFINE (role_propagation)",
+    "EGR-MINT in-app mint (D-64 = no)",
+    "full 62-emitter correlation migration (OD-2)",
+    "R1 INTENT items (Servo, splat ingestion, graphql, placeholder.glb, fe-network gossip)",
+    "large ratified tracks (hexon_unification, map_scale_authority, road_builder_ux, role_propagation, crate_consolidation_r2)",
+    "push to origin"
+  ],
+  "recon_corrections": [
+    "fe-webview Tauri commands are unreachable (no generate_handler/tauri::Builder; D-42 NO-GO) — SEAM not UVG",
+    "fe-plugin host is library-only (consumers: extensions/iot-bridge, fe-plugin-test)",
+    "DB-TODO-QUERIES / DB-TODO-SCOPEMEMBERS are stale (seed-only / uncalled), not missing authz",
+    "fe-ui already depends on fe-identity (plugin.rs:904 TODO stale)",
+    "PetalTerrainSetFailed already exists — M-03 is a GUI-only correlation fix",
+    "RawQuery has ~33 constructors in 20 files — F7 uses a new ScopedQuery variant instead of reshaping RawQuery",
+    "OF-13 code is fe-sync/src/sharding.rs, not fe-ui"
+  ],
+  "lane_b_frozen_until_landed": [
+    "fractalengine/src/main.rs",
+    "fractalengine/build.rs",
+    "fractalengine/Cargo.toml",
+    "fractalengine/assets/branding/**",
+    "fractalengine/src/window_chrome.rs",
+    "fractalengine/src/screenshot_bridge.rs",
+    "fe-ui/src/ui_shell/topbar.rs",
+    "fe-ui/src/panels/mod.rs",
+    "fe-ui/src/plugin.rs",
+    "fe-ui/src/theme.rs",
+    "fe-runtime/src/app.rs",
+    "fe-runtime/src/lib.rs",
+    "fe-runtime/src/screenshot.rs",
+    "fe-api/src/assets.rs",
+    "fe-api/src/lib.rs",
+    "fe-api/src/rest.rs",
+    "fe-api/src/server.rs",
+    "fe-api/src/screenshot.rs",
+    "fe-api/src/mcp/mod.rs",
+    "fe-api/src/mcp/tools.rs",
+    "fe-api/src/canonical_ws/router.rs",
+    "fe-api/tests/**",
+    "fe-test-harness/src/api.rs",
+    "fe-test-harness/src/scenarios/api_db_sync_cross_thread.rs"
+  ],
+  "notes": [
+    "2026-10-31: track planned (docs only) by the Lane A opus planner from R1 + R2; partitions computed and disjointness/existence/Lane-B-avoidance machine-checked at 6531d19 (scratch script build_polish_metadata.py). Waves are a derived view of depends_on."
+  ],
+  "partitions": {
+    "computed_at": "2026-10-31T00:00:00Z",
+    "computed_at_commit": "6531d19",
+    "confidence": "planned",
+    "verified_waves": [],
+    "slices": [
+      {
+        "id": "W1-S1",
+        "task": "Notice model (severity queue, error history, conditions) + send_or_toast + P-01 + D-12 handler",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          {
+            "path": "fe-ui/src/notice.rs",
+            "status": "future"
+          },
+          "fe-ui/src/actions/mod.rs",
+          "fe-ui/src/lib.rs",
+          "fe-ui/src/actions/AGENTS.md"
+        ],
+        "closes": [
+          "X-04",
+          "X-01",
+          "X-05",
+          "X-17",
+          "P-01",
+          "D-12",
+          "R1:actions/mod.rs:296"
+        ],
+        "depends_on": []
+      },
+      {
+        "id": "W1-S2",
+        "task": "DB-result routing to notices, typed JoinVerseFailed, status-bar error history + condition chips",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          "fe-ui/src/verse_manager/db_results/mod.rs",
+          "fe-ui/src/verse_manager/db_results/query.rs",
+          "fe-ui/src/verse_manager/db_results/hierarchy.rs",
+          "fe-ui/src/panels/status_bar.rs",
+          "fe-ui/src/verse_manager/AGENTS.md",
+          "fe-runtime/src/messages.rs",
+          "fe-database/src/lib.rs",
+          "fe-runtime/src/AGENTS.md"
+        ],
+        "closes": [
+          "X-01",
+          "D-05",
+          "M-03"
+        ],
+        "depends_on": []
+      },
+      {
+        "id": "W1-S3",
+        "task": "Petal-map truth: correlated SetPetalTerrain, Applying/rollback, Maps cards, role-gated set/remove",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          "fe-ui/src/actions/hexon.rs",
+          "fe-ui/src/terrain_map/mod.rs",
+          "fe-ui/src/verse_manager/db_results/terrain.rs",
+          "fe-ui/src/dialogs/hexon_manager.rs",
+          "fe-ui/src/terrain_map/AGENTS.md"
+        ],
+        "closes": [
+          "M-03",
+          "M-01",
+          "M-04",
+          "X-02",
+          "X-16"
+        ],
+        "depends_on": []
+      },
+      {
+        "id": "W1-S4",
+        "task": "Shared widgets (role_gated, confirm_button) + Join/Import/Create dialog honesty",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          "fe-ui/src/panels/widgets.rs",
+          "fe-ui/src/dialogs/join.rs",
+          "fe-ui/src/dialogs/gltf_import.rs",
+          "fe-ui/src/dialogs/create_entity.rs",
+          "fe-ui/src/dialogs/AGENTS.md",
+          "fe-ui/src/panels/AGENTS.md"
+        ],
+        "closes": [
+          "X-02",
+          "X-06",
+          "D-05",
+          "D-06",
+          "D-07",
+          "X-17",
+          "L-06"
+        ],
+        "depends_on": []
+      },
+      {
+        "id": "W1-S5",
+        "task": "OF-13a/b/c petal-map hardening (from_fractal on PetalMapping; bounded (author,fractal) contested set)",
+        "model": "opus",
+        "kind": "leaf",
+        "owns": [
+          "fe-sync/src/sharding.rs",
+          "fe-sync/src/AGENTS.md"
+        ],
+        "closes": [
+          "OF-13a",
+          "OF-13b",
+          "OF-13c",
+          "OF-12b (carried, if in-file)"
+        ],
+        "depends_on": []
+      },
+      {
+        "id": "W1-GATE",
+        "task": "Serial gate: check + clippy -D warnings + tests (fe-ui fe-runtime fe-database fe-sync fe-test-harness); reconcile CONTRACT-DRIFT minimally; commit 'feat(polish): wave 1 — ...'",
+        "model": "sonnet",
+        "kind": "gate",
+        "owns": [
+          {
+            "path": "(wave files)",
+            "status": "existing",
+            "note": "minimal integration fixes only"
+          }
+        ],
+        "depends_on": [
+          "W1-S1",
+          "W1-S2",
+          "W1-S3",
+          "W1-S4",
+          "W1-S5"
+        ]
+      },
+      {
+        "id": "W1-ADVOCATE",
+        "task": "Review-and-fix for design patterns, reuse of the W1 spine, ergonomics, ui_ux.md conformance; fold DOC NOTEs into directory AGENTS.md",
+        "model": "opus",
+        "kind": "review",
+        "owns": [
+          {
+            "path": "conductor/tracks/polish_lane_20261031/reviews/w1-advocate.md",
+            "status": "future",
+            "note": "fix-only edits to any W1 leaf file"
+          }
+        ],
+        "depends_on": [
+          "W1-GATE"
+        ]
+      },
+      {
+        "id": "W1-CRITIC",
+        "task": "Review-and-fix for defects, anti-patterns, over-engineering, tests that cannot fail (mutation check)",
+        "model": "opus",
+        "kind": "review",
+        "owns": [
+          {
+            "path": "conductor/tracks/polish_lane_20261031/reviews/w1-critic.md",
+            "status": "future",
+            "note": "fix-only edits to any W1 leaf file"
+          }
+        ],
+        "depends_on": [
+          "W1-ADVOCATE"
+        ]
+      },
+      {
+        "id": "W1-REGATE",
+        "task": "Serial re-gate of review fixes; commit 'fix(polish): wave 1 review — advocate + critic'",
+        "model": "sonnet",
+        "kind": "gate",
+        "owns": [
+          {
+            "path": "(wave files)",
+            "status": "existing",
+            "note": "minimal fixes only"
+          }
+        ],
+        "depends_on": [
+          "W1-CRITIC"
+        ]
+      },
+      {
+        "id": "W2-S1",
+        "task": "Left sidebar: chevron-vs-name, row menus, gating, hit targets, clipping",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          "fe-ui/src/panels/sidebar.rs",
+          "fe-ui/src/ui_shell/left_sidebar.rs"
+        ],
+        "closes": [
+          "L-01",
+          "L-02",
+          "L-03",
+          "L-04",
+          "L-05",
+          "L-07",
+          "X-02",
+          "X-11",
+          "X-16",
+          "X-17"
+        ],
+        "depends_on": [
+          "W1-REGATE"
+        ]
+      },
+      {
+        "id": "W2-S2",
+        "task": "Inspector: empty state, in-place typed property edit, gating, two-step deletes, dead code",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          "fe-ui/src/panels/inspector.rs"
+        ],
+        "closes": [
+          "I-01",
+          "I-02",
+          "I-03",
+          "I-04",
+          "X-06",
+          "X-02",
+          "X-11",
+          "X-13",
+          "X-17",
+          "P-01",
+          "R1:inspector.rs:221,226"
+        ],
+        "depends_on": [
+          "W1-REGATE"
+        ]
+      },
+      {
+        "id": "W2-S3",
+        "task": "Right sidebar sections: Groups, Settings units/drag-commit/saved cue, Danger zone, rail, collapse, Maps chrome",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          "fe-ui/src/ui_shell/right_sidebar.rs",
+          "fe-ui/src/ui_shell/mod.rs",
+          "fe-ui/src/dialogs/hexon_manager.rs",
+          "fe-ui/src/verse_manager/db_results/hierarchy.rs",
+          "fe-ui/src/ui_shell/AGENTS.md"
+        ],
+        "closes": [
+          "G-01",
+          "X-06",
+          "X-02",
+          "S-01",
+          "S-02",
+          "S-03",
+          "L-02",
+          "T-02",
+          "T-03",
+          "X-14",
+          "X-11",
+          "M-02",
+          "R1:right_sidebar.rs:436"
+        ],
+        "depends_on": [
+          "W1-REGATE"
+        ]
+      },
+      {
+        "id": "W2-S4",
+        "task": "Dialog safety: manifest discard confirm, node options, peer debug, modal copy + clear_quarantine",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          "fe-ui/src/dialogs/petal_manifest.rs",
+          "fe-ui/src/dialogs/node_options.rs",
+          "fe-ui/src/dialogs/peer_debug.rs",
+          "fe-ui/src/ui_shell/modal.rs",
+          "fe-ui/src/verse_manager/db_results/nodes.rs"
+        ],
+        "closes": [
+          "D-08",
+          "S-01",
+          "X-15",
+          "X-14",
+          "D-09",
+          "X-06",
+          "D-11",
+          "B-02",
+          "D-10",
+          "V-04",
+          "R1:modal.rs:188"
+        ],
+        "depends_on": [
+          "W1-REGATE"
+        ]
+      },
+      {
+        "id": "W2-S5",
+        "task": "Shortcuts (Delete, F, modifier-safe tool keys, Esc closes menu, Ctrl+Shift+B) + Terrain Tools panel",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          "fe-ui/src/node_manager/shortcuts.rs",
+          "fe-ui/src/panels/terrain_tools_panel.rs",
+          "fe-ui/src/panels/proposal_report_panel.rs",
+          "fe-ui/src/node_manager/AGENTS.md"
+        ],
+        "closes": [
+          "X-07",
+          "X-08",
+          "V-06",
+          "T-03",
+          "O-04",
+          "R-02",
+          "R-03",
+          "X-06",
+          "X-02",
+          "X-13"
+        ],
+        "depends_on": [
+          "W1-REGATE"
+        ]
+      },
+      {
+        "id": "W2-GATE",
+        "task": "Serial gate: check + clippy -D warnings + tests (fe-ui); reconcile CONTRACT-DRIFT minimally; commit 'feat(polish): wave 2 — ...'",
+        "model": "sonnet",
+        "kind": "gate",
+        "owns": [
+          {
+            "path": "(wave files)",
+            "status": "existing",
+            "note": "minimal integration fixes only"
+          }
+        ],
+        "depends_on": [
+          "W2-S1",
+          "W2-S2",
+          "W2-S3",
+          "W2-S4",
+          "W2-S5"
+        ]
+      },
+      {
+        "id": "W2-ADVOCATE",
+        "task": "Review-and-fix for design patterns, reuse of the W1 spine, ergonomics, ui_ux.md conformance; fold DOC NOTEs into directory AGENTS.md",
+        "model": "opus",
+        "kind": "review",
+        "owns": [
+          {
+            "path": "conductor/tracks/polish_lane_20261031/reviews/w2-advocate.md",
+            "status": "future",
+            "note": "fix-only edits to any W2 leaf file"
+          }
+        ],
+        "depends_on": [
+          "W2-GATE"
+        ]
+      },
+      {
+        "id": "W2-CRITIC",
+        "task": "Review-and-fix for defects, anti-patterns, over-engineering, tests that cannot fail (mutation check)",
+        "model": "opus",
+        "kind": "review",
+        "owns": [
+          {
+            "path": "conductor/tracks/polish_lane_20261031/reviews/w2-critic.md",
+            "status": "future",
+            "note": "fix-only edits to any W2 leaf file"
+          }
+        ],
+        "depends_on": [
+          "W2-ADVOCATE"
+        ]
+      },
+      {
+        "id": "W2-REGATE",
+        "task": "Serial re-gate of review fixes; commit 'fix(polish): wave 2 review — advocate + critic'",
+        "model": "sonnet",
+        "kind": "gate",
+        "owns": [
+          {
+            "path": "(wave files)",
+            "status": "existing",
+            "note": "minimal fixes only"
+          }
+        ],
+        "depends_on": [
+          "W2-CRITIC"
+        ]
+      },
+      {
+        "id": "W3-S1",
+        "task": "Notice renderer (severity, hover-hold, dismiss), per-section panel guard + Retry, NEEDS-WIRING receiver",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          "fe-ui/src/panels/mod.rs",
+          "fe-ui/src/dialogs/create_entity.rs",
+          "fe-ui/src/dialogs/gltf_import.rs",
+          "fe-ui/src/dialogs/join.rs",
+          "fe-ui/src/dialogs/hexon_manager.rs",
+          "fe-ui/src/panels/sidebar.rs",
+          "fe-ui/src/ui_shell/left_sidebar.rs"
+        ],
+        "closes": [
+          "X-04",
+          "X-01",
+          "B-02",
+          "L-06"
+        ],
+        "depends_on": [
+          "W2-REGATE",
+          "EXTERNAL:LANE-B-LANDED"
+        ]
+      },
+      {
+        "id": "W3-S2",
+        "task": "App-level role state (X-03), mesh-budget condition, role chip into status bar, node_identity",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          "fe-ui/src/plugin.rs",
+          "fe-ui/src/role_chip.rs",
+          "fe-ui/src/panels/status_bar.rs"
+        ],
+        "closes": [
+          "X-03",
+          "X-05",
+          "B-01",
+          "B-03",
+          "X-17",
+          "R1:plugin.rs:904"
+        ],
+        "depends_on": [
+          "W2-REGATE",
+          "EXTERNAL:LANE-B-LANDED"
+        ]
+      },
+      {
+        "id": "W3-S3",
+        "task": "Viewport overlay: gears always, real entity-settings open, crumbs, wrapped hints, scrolling card grids",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          "fe-ui/src/viewport.rs",
+          "fe-ui/src/actions/mod.rs"
+        ],
+        "closes": [
+          "D-01",
+          "D-02",
+          "V-01",
+          "V-02",
+          "V-03",
+          "V-04",
+          "V-05",
+          "X-10",
+          "X-13",
+          "X-14",
+          "X-16"
+        ],
+        "depends_on": [
+          "W2-REGATE",
+          "EXTERNAL:LANE-B-LANDED"
+        ]
+      },
+      {
+        "id": "W3-S4",
+        "task": "Entity Settings: GetEntitySettings, Access tab roles (Assign/Revoke), tokens, InviteDialog removal",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          "fe-ui/src/dialogs/entity_settings.rs",
+          "fe-ui/src/dialogs/mod.rs",
+          "fe-ui/src/verse_manager/db_results/mod.rs",
+          "fe-ui/src/verse_manager/db_results/roles.rs",
+          "fe-ui/src/verse_manager/db_results/tokens.rs",
+          "fe-runtime/src/messages.rs",
+          "fe-database/src/lib.rs",
+          {
+            "path": "fe-database/src/handlers/entity_settings.rs",
+            "status": "future"
+          },
+          "fe-database/src/handlers/mod.rs",
+          {
+            "path": "fe-database/tests/entity_settings_test.rs",
+            "status": "future"
+          }
+        ],
+        "closes": [
+          "D-01",
+          "D-02",
+          "D-03",
+          "D-04",
+          "X-06",
+          "X-13",
+          "X-16",
+          "X-17",
+          "M-02"
+        ],
+        "depends_on": [
+          "W2-REGATE",
+          "EXTERNAL:LANE-B-LANDED"
+        ]
+      },
+      {
+        "id": "W3-S5",
+        "task": "Topbar gating, theme tokens + WCAG contrast, toolbar shortcut overlay, T-01 conformance of Lane B",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          "fe-ui/src/ui_shell/topbar.rs",
+          "fe-ui/src/theme.rs",
+          "fe-ui/src/panels/toolbar.rs"
+        ],
+        "closes": [
+          "T-01",
+          "T-04",
+          "X-02",
+          "X-09",
+          "X-10",
+          "X-12"
+        ],
+        "depends_on": [
+          "W2-REGATE",
+          "EXTERNAL:LANE-B-LANDED"
+        ]
+      },
+      {
+        "id": "W3-GATE",
+        "task": "Serial gate: check + clippy -D warnings + tests (fe-ui fe-runtime fe-database (+fe-test-harness/fe-api if exhaustive matches change)); reconcile CONTRACT-DRIFT minimally; commit 'feat(polish): wave 3 — ...'",
+        "model": "sonnet",
+        "kind": "gate",
+        "owns": [
+          {
+            "path": "(wave files)",
+            "status": "existing",
+            "note": "minimal integration fixes only"
+          }
+        ],
+        "depends_on": [
+          "W3-S1",
+          "W3-S2",
+          "W3-S3",
+          "W3-S4",
+          "W3-S5"
+        ]
+      },
+      {
+        "id": "W3-ADVOCATE",
+        "task": "Review-and-fix for design patterns, reuse of the W1 spine, ergonomics, ui_ux.md conformance; fold DOC NOTEs into directory AGENTS.md",
+        "model": "opus",
+        "kind": "review",
+        "owns": [
+          {
+            "path": "conductor/tracks/polish_lane_20261031/reviews/w3-advocate.md",
+            "status": "future",
+            "note": "fix-only edits to any W3 leaf file"
+          }
+        ],
+        "depends_on": [
+          "W3-GATE"
+        ]
+      },
+      {
+        "id": "W3-CRITIC",
+        "task": "Review-and-fix for defects, anti-patterns, over-engineering, tests that cannot fail (mutation check); runs /security-review",
+        "model": "opus",
+        "kind": "review",
+        "owns": [
+          {
+            "path": "conductor/tracks/polish_lane_20261031/reviews/w3-critic.md",
+            "status": "future",
+            "note": "fix-only edits to any W3 leaf file"
+          }
+        ],
+        "depends_on": [
+          "W3-ADVOCATE"
+        ]
+      },
+      {
+        "id": "W3-REGATE",
+        "task": "Serial re-gate of review fixes; commit 'fix(polish): wave 3 review — advocate + critic'; optional VISUAL capture (OD-17)",
+        "model": "sonnet",
+        "kind": "gate",
+        "owns": [
+          {
+            "path": "(wave files)",
+            "status": "existing",
+            "note": "minimal fixes only"
+          }
+        ],
+        "depends_on": [
+          "W3-CRITIC"
+        ]
+      },
+      {
+        "id": "W4-S1",
+        "task": "Terrain tool completion: polygon draft gesture, arm-then-place, Pen single home, tool_options arms",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          "fe-ui/src/node_manager/brush_interaction.rs",
+          "fe-ui/src/panels/tool_options.rs",
+          "fe-ui/src/actions/terrain_proposal.rs",
+          "fe-ui/src/panels/terrain_tools_panel.rs"
+        ],
+        "closes": [
+          "O-01",
+          "O-02",
+          "O-03",
+          "O-06",
+          "X-02",
+          "R1:tool_options.rs:(soon)"
+        ],
+        "depends_on": [
+          "W3-REGATE"
+        ]
+      },
+      {
+        "id": "W4-S2",
+        "task": "Transform snapping (grid/angle/scale step/uniform/axis lock) replacing '(soon)' hints",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          {
+            "path": "fe-ui/src/panels/transform_options.rs",
+            "status": "future"
+          },
+          "fe-ui/src/panels/tool_inspector.rs",
+          "fe-ui/src/node_manager/gimbal_interaction.rs",
+          "fe-ui/src/node_manager/mod.rs",
+          "fe-ui/src/ui_shell/right_sidebar.rs",
+          "fe-ui/src/node_manager/AGENTS.md"
+        ],
+        "closes": [
+          "O-05",
+          "R1:tool_inspector.rs:19"
+        ],
+        "depends_on": [
+          "W3-REGATE"
+        ]
+      },
+      {
+        "id": "W4-S3",
+        "task": "Volume report never hangs (unavailable reason) + copyable figures",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          "fe-terrain/src/terrain_plugin.rs",
+          "fe-renderer/src/terrain_overlay.rs",
+          "fe-ui/src/panels/volume_report_panel.rs",
+          "fe-terrain/src/AGENTS.md",
+          "fe-renderer/src/AGENTS.md"
+        ],
+        "closes": [
+          "R-01",
+          "R-04",
+          "X-13",
+          "X-14"
+        ],
+        "depends_on": [
+          "W3-REGATE"
+        ]
+      },
+      {
+        "id": "W4-S4",
+        "task": "Context menu copy/gating/edges, portal toolbar, NodeUrlUpdated ack",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          "fe-ui/src/dialogs/context_menu.rs",
+          "fe-ui/src/panels/portal_toolbar.rs",
+          "fe-ui/src/actions/portal.rs",
+          "fe-ui/src/portal/**",
+          "fe-ui/src/actions/mod.rs",
+          "fe-ui/src/verse_manager/db_results/mod.rs",
+          "fe-ui/src/verse_manager/db_results/nodes.rs",
+          "fe-runtime/src/messages.rs",
+          "fe-database/src/lib.rs"
+        ],
+        "closes": [
+          "D-12",
+          "D-11",
+          "X-02",
+          "X-13",
+          "X-14",
+          "X-15",
+          "V-06",
+          "P-02",
+          "P-03"
+        ],
+        "depends_on": [
+          "W3-REGATE"
+        ]
+      },
+      {
+        "id": "W4-S5",
+        "task": "Paths + Data window + stamps: drag-commit, 1-based meters, annotations buffer, TTL validation",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          "fe-ui/src/panels/path_editor_card.rs",
+          "fe-ui/src/panels/gis_panel.rs",
+          "fe-ui/src/panels/query_tab.rs",
+          "fe-ui/src/panels/annotation_card.rs",
+          "fe-ui/src/panels/asset_card.rs",
+          "fe-ui/src/panels/egress_card.rs",
+          "fe-ui/src/panels/tool_panel.rs",
+          "fe-ui/src/panels/layer_manager_card.rs",
+          "fe-ui/src/panels/AGENTS.md"
+        ],
+        "closes": [
+          "DW-01",
+          "DW-02",
+          "DW-03",
+          "DW-04",
+          "X-06",
+          "S-02",
+          "O-07",
+          "I-05",
+          "I-06",
+          "I-07",
+          "X-02",
+          "X-12",
+          "X-15",
+          "X-16",
+          "FEUI-TERRAIN-MODE-TODO"
+        ],
+        "depends_on": [
+          "W3-REGATE"
+        ]
+      },
+      {
+        "id": "W4-GATE",
+        "task": "Serial gate: check + clippy -D warnings + tests (fe-ui fe-terrain(--features render) fe-renderer fe-runtime fe-database); reconcile CONTRACT-DRIFT minimally; commit 'feat(polish): wave 4 — ...'",
+        "model": "sonnet",
+        "kind": "gate",
+        "owns": [
+          {
+            "path": "(wave files)",
+            "status": "existing",
+            "note": "minimal integration fixes only"
+          }
+        ],
+        "depends_on": [
+          "W4-S1",
+          "W4-S2",
+          "W4-S3",
+          "W4-S4",
+          "W4-S5"
+        ]
+      },
+      {
+        "id": "W4-ADVOCATE",
+        "task": "Review-and-fix for design patterns, reuse of the W1 spine, ergonomics, ui_ux.md conformance; fold DOC NOTEs into directory AGENTS.md",
+        "model": "opus",
+        "kind": "review",
+        "owns": [
+          {
+            "path": "conductor/tracks/polish_lane_20261031/reviews/w4-advocate.md",
+            "status": "future",
+            "note": "fix-only edits to any W4 leaf file"
+          }
+        ],
+        "depends_on": [
+          "W4-GATE"
+        ]
+      },
+      {
+        "id": "W4-CRITIC",
+        "task": "Review-and-fix for defects, anti-patterns, over-engineering, tests that cannot fail (mutation check)",
+        "model": "opus",
+        "kind": "review",
+        "owns": [
+          {
+            "path": "conductor/tracks/polish_lane_20261031/reviews/w4-critic.md",
+            "status": "future",
+            "note": "fix-only edits to any W4 leaf file"
+          }
+        ],
+        "depends_on": [
+          "W4-ADVOCATE"
+        ]
+      },
+      {
+        "id": "W4-REGATE",
+        "task": "Serial re-gate of review fixes; commit 'fix(polish): wave 4 review — advocate + critic'",
+        "model": "sonnet",
+        "kind": "gate",
+        "owns": [
+          {
+            "path": "(wave files)",
+            "status": "existing",
+            "note": "minimal fixes only"
+          }
+        ],
+        "depends_on": [
+          "W4-CRITIC"
+        ]
+      },
+      {
+        "id": "W5-S1",
+        "task": "F7: ScopedQuery for user-authored SQL; scoped-FROM guard moved to fe-query::sql_guard (fe-api re-exports)",
+        "model": "opus",
+        "kind": "leaf",
+        "owns": [
+          {
+            "path": "fe-query/src/sql_guard.rs",
+            "status": "future"
+          },
+          "fe-query/src/lib.rs",
+          "fe-api/src/query_guard.rs",
+          "fe-runtime/src/messages.rs",
+          "fe-database/src/lib.rs",
+          {
+            "path": "fe-database/src/handlers/scoped_query.rs",
+            "status": "future"
+          },
+          "fe-database/src/handlers/mod.rs",
+          "fe-database/src/handlers/raw_query.rs",
+          "fe-ui/src/actions/query.rs",
+          "fe-ui/src/panels/query_tab.rs",
+          "fe-ui/src/verse_manager/db_results/query.rs",
+          {
+            "path": "fe-database/tests/scoped_query_test.rs",
+            "status": "future"
+          },
+          "fe-database/src/AGENTS.md",
+          "fe-api/AGENTS.md",
+          "fe-runtime/src/AGENTS.md"
+        ],
+        "closes": [
+          "F7",
+          "R1#4"
+        ],
+        "depends_on": [
+          "W4-REGATE"
+        ]
+      },
+      {
+        "id": "W5-S2",
+        "task": "Undo/redo (command pattern) for transform commits + path-point moves",
+        "model": "opus",
+        "kind": "leaf",
+        "owns": [
+          {
+            "path": "fe-ui/src/undo.rs",
+            "status": "future"
+          },
+          "fe-ui/src/lib.rs",
+          "fe-ui/src/node_manager/shortcuts.rs",
+          "fe-ui/src/node_manager/transform_broadcast.rs",
+          "fe-ui/src/node_manager/path_point_interaction.rs",
+          "fe-ui/src/node_manager/mod.rs",
+          "fe-ui/src/node_manager/AGENTS.md"
+        ],
+        "closes": [
+          "X-07"
+        ],
+        "depends_on": [
+          "W4-REGATE"
+        ]
+      },
+      {
+        "id": "W5-S3",
+        "task": "Stale TODO + dead-function cleanup (ledgered DB-TODO-*, SYNC-STALE-TODOS, field_def, api_token_store)",
+        "model": "haiku",
+        "kind": "leaf",
+        "owns": [
+          "fe-database/src/queries.rs",
+          "fe-database/src/role_manager.rs",
+          "fe-database/src/handlers/field_def.rs",
+          "fe-database/src/api_token_store.rs",
+          "fe-sync/src/status.rs",
+          "fe-sync/src/blob_store.rs"
+        ],
+        "closes": [
+          "DB-TODO-QUERIES",
+          "DB-TODO-SCOPEMEMBERS",
+          "SYNC-STALE-TODOS",
+          "R1:field_def.rs:79",
+          "R1:api_token_store.rs:232"
+        ],
+        "depends_on": [
+          "W4-REGATE"
+        ]
+      },
+      {
+        "id": "W5-GATE",
+        "task": "Serial gate: check + clippy -D warnings + tests (fe-query fe-api fe-database fe-runtime fe-ui fe-sync); reconcile CONTRACT-DRIFT minimally; commit 'feat(polish): wave 5 — ...'",
+        "model": "sonnet",
+        "kind": "gate",
+        "owns": [
+          {
+            "path": "(wave files)",
+            "status": "existing",
+            "note": "minimal integration fixes only"
+          }
+        ],
+        "depends_on": [
+          "W5-S1",
+          "W5-S2",
+          "W5-S3"
+        ]
+      },
+      {
+        "id": "W5-ADVOCATE",
+        "task": "Review-and-fix for design patterns, reuse of the W1 spine, ergonomics, ui_ux.md conformance; fold DOC NOTEs into directory AGENTS.md",
+        "model": "opus",
+        "kind": "review",
+        "owns": [
+          {
+            "path": "conductor/tracks/polish_lane_20261031/reviews/w5-advocate.md",
+            "status": "future",
+            "note": "fix-only edits to any W5 leaf file"
+          }
+        ],
+        "depends_on": [
+          "W5-GATE"
+        ]
+      },
+      {
+        "id": "W5-CRITIC",
+        "task": "Review-and-fix for defects, anti-patterns, over-engineering, tests that cannot fail (mutation check); runs /security-review",
+        "model": "opus",
+        "kind": "review",
+        "owns": [
+          {
+            "path": "conductor/tracks/polish_lane_20261031/reviews/w5-critic.md",
+            "status": "future",
+            "note": "fix-only edits to any W5 leaf file"
+          }
+        ],
+        "depends_on": [
+          "W5-ADVOCATE"
+        ]
+      },
+      {
+        "id": "W5-REGATE",
+        "task": "Serial re-gate of review fixes; commit 'fix(polish): wave 5 review — advocate + critic'",
+        "model": "sonnet",
+        "kind": "gate",
+        "owns": [
+          {
+            "path": "(wave files)",
+            "status": "existing",
+            "note": "minimal fixes only"
+          }
+        ],
+        "depends_on": [
+          "W5-CRITIC"
+        ]
+      },
+      {
+        "id": "W6-S1",
+        "task": "fe-plugin read path (NodeReader request-reply) + TransactionSink forwarding + dead code",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          "fe-plugin/src/**",
+          "fe-plugin-test/src/**",
+          "extensions/iot-bridge/**"
+        ],
+        "closes": [
+          "R1#1",
+          "R1:transaction.rs:42",
+          "R1:lifecycle.rs:153"
+        ],
+        "depends_on": [
+          "W5-REGATE"
+        ]
+      },
+      {
+        "id": "W6-S2",
+        "task": "fe-webview scaffolding honesty: delete unreachable Tauri stubs (D-42), loud StubBackend",
+        "model": "haiku",
+        "kind": "leaf",
+        "owns": [
+          "fe-webview/src/tauri_commands.rs",
+          "fe-webview/src/backends/mod.rs",
+          "fe-webview/src/backends/stub.rs",
+          "fe-webview/src/lib.rs",
+          "fe-webview/src/AGENTS.md"
+        ],
+        "closes": [
+          "R1#2 (reclassified)",
+          "R1:backends/mod.rs:13-20"
+        ],
+        "depends_on": [
+          "W5-REGATE"
+        ]
+      },
+      {
+        "id": "W6-S3",
+        "task": "Dead-code census: fe-ui leftovers, fe-sim, fe-hexon crate-wide allow narrowed",
+        "model": "haiku",
+        "kind": "leaf",
+        "owns": [
+          "fe-ui/src/actions/node_props.rs",
+          "fe-ui/src/verse_manager/residency_ledger.rs",
+          "fe-ui/src/node_manager/router.rs",
+          "fe-sim/src/net.rs",
+          "fe-hexon/src/**"
+        ],
+        "closes": [
+          "R1:dead_code census"
+        ],
+        "depends_on": [
+          "W5-REGATE"
+        ]
+      },
+      {
+        "id": "W6-S4",
+        "task": "Copy/terminology/clipping residual sweep + R2 coverage audit",
+        "model": "sonnet",
+        "kind": "leaf",
+        "owns": [
+          "fe-ui/src/panels/inspector.rs",
+          "fe-ui/src/panels/sidebar.rs",
+          "fe-ui/src/ui_shell/right_sidebar.rs",
+          "fe-ui/src/dialogs/hexon_manager.rs",
+          "fe-ui/src/dialogs/gltf_import.rs",
+          "fe-ui/src/panels/status_bar.rs",
+          "fe-ui/src/viewport.rs",
+          "fe-ui/src/dialogs/petal_manifest.rs",
+          "fe-ui/src/dialogs/peer_debug.rs",
+          "fe-ui/src/panels/tool_options.rs",
+          "fe-ui/src/panels/path_editor_card.rs",
+          "fe-ui/src/AGENTS.md"
+        ],
+        "closes": [
+          "X-11",
+          "X-12",
+          "X-13",
+          "X-14",
+          "X-15",
+          "X-16",
+          "B-03",
+          "L-07"
+        ],
+        "depends_on": [
+          "W5-REGATE"
+        ]
+      },
+      {
+        "id": "W6-GATE",
+        "task": "Serial gate: check + clippy -D warnings + tests (full workspace (track close)); reconcile CONTRACT-DRIFT minimally; commit 'feat(polish): wave 6 — ...'",
+        "model": "sonnet",
+        "kind": "gate",
+        "owns": [
+          {
+            "path": "(wave files)",
+            "status": "existing",
+            "note": "minimal integration fixes only"
+          }
+        ],
+        "depends_on": [
+          "W6-S1",
+          "W6-S2",
+          "W6-S3",
+          "W6-S4"
+        ]
+      },
+      {
+        "id": "W6-ADVOCATE",
+        "task": "Review-and-fix for design patterns, reuse of the W1 spine, ergonomics, ui_ux.md conformance; fold DOC NOTEs into directory AGENTS.md",
+        "model": "opus",
+        "kind": "review",
+        "owns": [
+          {
+            "path": "conductor/tracks/polish_lane_20261031/reviews/w6-advocate.md",
+            "status": "future",
+            "note": "fix-only edits to any W6 leaf file"
+          }
+        ],
+        "depends_on": [
+          "W6-GATE"
+        ]
+      },
+      {
+        "id": "W6-CRITIC",
+        "task": "Review-and-fix for defects, anti-patterns, over-engineering, tests that cannot fail (mutation check)",
+        "model": "opus",
+        "kind": "review",
+        "owns": [
+          {
+            "path": "conductor/tracks/polish_lane_20261031/reviews/w6-critic.md",
+            "status": "future",
+            "note": "fix-only edits to any W6 leaf file"
+          }
+        ],
+        "depends_on": [
+          "W6-ADVOCATE"
+        ]
+      },
+      {
+        "id": "W6-REGATE",
+        "task": "Serial re-gate of review fixes; commit 'fix(polish): wave 6 review — advocate + critic'; optional VISUAL capture (OD-17)",
+        "model": "sonnet",
+        "kind": "gate",
+        "owns": [
+          {
+            "path": "(wave files)",
+            "status": "existing",
+            "note": "minimal fixes only"
+          }
+        ],
+        "depends_on": [
+          "W6-CRITIC"
+        ]
+      },
+      {
+        "id": "CLOSE",
+        "task": "Ledger rows, board row, metadata status/progress, accountability-log retro line, tick plan §5",
+        "model": "haiku",
+        "kind": "docs",
+        "owns": [
+          "conductor/doneness-ledger.md",
+          "conductor/tracks.md",
+          "conductor/accountability-log.md",
+          "conductor/tracks/polish_lane_20261031/plan.md",
+          "conductor/tracks/polish_lane_20261031/metadata.json"
+        ],
+        "depends_on": [
+          "W6-REGATE"
+        ]
+      }
+    ],
+    "waves": [
+      [
+        "W1-S1",
+        "W1-S2",
+        "W1-S3",
+        "W1-S4",
+        "W1-S5",
+        "W1-GATE",
+        "W1-ADVOCATE",
+        "W1-CRITIC",
+        "W1-REGATE"
+      ],
+      [
+        "W2-S1",
+        "W2-S2",
+        "W2-S3",
+        "W2-S4",
+        "W2-S5",
+        "W2-GATE",
+        "W2-ADVOCATE",
+        "W2-CRITIC",
+        "W2-REGATE"
+      ],
+      [
+        "W3-S1",
+        "W3-S2",
+        "W3-S3",
+        "W3-S4",
+        "W3-S5",
+        "W3-GATE",
+        "W3-ADVOCATE",
+        "W3-CRITIC",
+        "W3-REGATE"
+      ],
+      [
+        "W4-S1",
+        "W4-S2",
+        "W4-S3",
+        "W4-S4",
+        "W4-S5",
+        "W4-GATE",
+        "W4-ADVOCATE",
+        "W4-CRITIC",
+        "W4-REGATE"
+      ],
+      [
+        "W5-S1",
+        "W5-S2",
+        "W5-S3",
+        "W5-GATE",
+        "W5-ADVOCATE",
+        "W5-CRITIC",
+        "W5-REGATE"
+      ],
+      [
+        "W6-S1",
+        "W6-S2",
+        "W6-S3",
+        "W6-S4",
+        "W6-GATE",
+        "W6-ADVOCATE",
+        "W6-CRITIC",
+        "W6-REGATE"
+      ],
+      [
+        "CLOSE"
+      ]
+    ],
+    "waves_note": "Derived view of depends_on for the workflow script; if they disagree, depends_on wins. Fallback when Lane B is late: W5 runs before W3 (plan §1 PREFLIGHT 3) and depends_on is re-pointed.",
+    "shared_writes": [
+      {
+        "path": "fe-runtime/src/messages.rs",
+        "owner": "W1-S2, W3-S4, W4-S4, W5-S1 (one per wave, serial)",
+        "reason": "new DbCommand/DbResult variants appended at enum end"
+      },
+      {
+        "path": "fe-database/src/lib.rs",
+        "owner": "W1-S2, W3-S4, W4-S4, W5-S1",
+        "reason": "DB-thread dispatch arms"
+      },
+      {
+        "path": "fe-ui/src/verse_manager/db_results/mod.rs",
+        "owner": "W1-S2, W3-S4, W4-S4",
+        "reason": "apply_db_results dispatch arms"
+      },
+      {
+        "path": "fe-ui/src/actions/mod.rs",
+        "owner": "W1-S1, W3-S3, W4-S4",
+        "reason": "UiManager + action handlers"
+      },
+      {
+        "path": "fe-ui/src/lib.rs",
+        "owner": "W1-S1, W5-S2",
+        "reason": "pub mod lines"
+      },
+      {
+        "path": "fe-ui/src/dialogs/hexon_manager.rs",
+        "owner": "W1-S3, W2-S3, W3-S1, W6-S4",
+        "reason": "Maps content, chrome, param wiring, copy"
+      },
+      {
+        "path": "fe-ui/src/panels/status_bar.rs",
+        "owner": "W1-S2, W3-S2, W6-S4",
+        "reason": "error segment, role chip, copy"
+      },
+      {
+        "path": "fe-ui/src/ui_shell/right_sidebar.rs",
+        "owner": "W2-S3, W4-S2, W6-S4",
+        "reason": "sections, snap param threading, copy"
+      },
+      {
+        "path": "fe-ui/src/node_manager/mod.rs",
+        "owner": "W4-S2, W5-S2",
+        "reason": "resource/system registration"
+      },
+      {
+        "path": "fe-ui/src/node_manager/shortcuts.rs",
+        "owner": "W2-S5, W5-S2",
+        "reason": "keys, then Ctrl+Z"
+      },
+      {
+        "path": "fe-ui/src/panels/query_tab.rs",
+        "owner": "W4-S5, W5-S1",
+        "reason": "copy-for-BI, then ScopedQuery scope chip"
+      },
+      {
+        "path": "fe-ui/src/panels/terrain_tools_panel.rs",
+        "owner": "W2-S5, W4-S1",
+        "reason": "panel polish, then placement"
+      },
+      {
+        "path": "fe-ui/src/panels/inspector.rs",
+        "owner": "W2-S2, W6-S4",
+        "reason": "behaviour, then residual copy"
+      },
+      {
+        "path": "fe-ui/src/panels/sidebar.rs",
+        "owner": "W2-S1, W3-S1, W6-S4",
+        "reason": "behaviour, param wiring, copy"
+      },
+      {
+        "path": "fe-ui/src/viewport.rs",
+        "owner": "W3-S3, W6-S4",
+        "reason": "behaviour, then residual copy"
+      },
+      {
+        "path": "fe-ui/src/panels/AGENTS.md",
+        "owner": "W1-S4, W4-S5 (others DOC NOTE → advocate)",
+        "reason": "directory doc"
+      }
+    ],
+    "tripwires": [
+      "Leaves never run cargo or git; the GATE is the sole cargo user and the only committer per wave",
+      "W1/W2/W4/W5 must not touch Lane B's frozen set; W3 requires Lane B's commit in git log",
+      "Authorization stays server-side (fe-policy on the DB thread); UI gating is advisory only",
+      "UiManager::show_toast / active_toast signatures stay stable until W3-S1 replaces render_toast",
+      "fe-ui must not gain an fe-terrain dependency (NFR-5 of delta-viz)",
+      "fe-terrain tests always run with --features render",
+      "Terrain previews never send a DbCommand nor bump ActivePetalTerrain.revision (delta-viz tripwire)",
+      "New DbResult variants are appended at enum end; grep exhaustive matches (fe-api reply routing, fe-test-harness) at the gate",
+      "GUI correlation ids use next_ui_query_id ('ui-<kind>-N') so they can never claim an API ULID waiter",
+      "No .send(..).ok() on a DbCommand channel in fe-ui (AGENTS.md anti-pattern 6)",
+      "TaskStop any prior workflow before relaunching into this tree; wait 10 s on .git/index.lock",
+      "Never push"
+    ],
+    "integration_slice": "W3-S1 (standing NEEDS-WIRING receiver for panels/mod.rs and dialog call sites); each wave's GATE reconciles CONTRACT-DRIFT"
+  }
+}

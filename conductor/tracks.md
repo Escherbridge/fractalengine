@@ -22,8 +22,8 @@ stands*, the ledger says *what to do next*.
 > under [`./tracks/_archive/`](./tracks/_archive/); a `depends_on`/`blocks` entry naming
 > an archived track is a **satisfied dependency**.
 
-**Tracks: 40 non-archive folders — 9 done (awaiting archival), 31 open.**
-Open = 7 `implemented_pending_inapp_verify` · 11 `in_progress` · 5 `pending` ·
+**Tracks: 41 non-archive folders — 9 done (awaiting archival), 32 open.**
+Open = 7 `implemented_pending_inapp_verify` · 11 `in_progress` · 6 `pending` ·
 4 `spec_only` · 2 `blocked_on_ratification` · 1 `off_strategy` · 1 meta (`ux_qa_review`).
 
 > **2026-10-13 bookkeeping:** `light_box` archived (D-40, user-accepted); `outstanding_decisions`
@@ -84,6 +84,24 @@ Closed with evidence; move to `_archive/` with a retro when convenient.
   [timeseries_fabric_20261009](./tracks/timeseries_fabric_20261009/) ·
   [simulation_lab_20261009](./tracks/simulation_lab_20261009/) ·
   [bi_verification_20261009](./tracks/bi_verification_20261009/)
+
+---
+
+## P0 — Polish lane (user directive 2026-10-31)
+
+### [ ] polish_lane_20261031 — finish stubs, complete features, close seams, usability of every feature
+
+_Link: [./tracks/polish_lane_20261031/](./tracks/polish_lane_20261031/) · pending · 0 / 6 waves · created 2026-10-31 from Lane A recon (R1 stubs + R2 UX QA, 82 findings)_
+
+Six waves of disjoint leaf slices (27 total), each followed by a serial gate, an **advocate** review-and-fix
+(design patterns, reuse, ergonomics) and a **critic** review-and-fix (defects, anti-patterns, tests that
+cannot fail), then a re-gate. W1 builds the feedback spine: every DB failure and role denial becomes a
+visible, plain-language notice, "Set petal map" rolls back when denied, and Join confirms. It also lands
+OF-13a/b/c. W2 covers role gating and destructive safety. W3 integrates Lane B's surfaces and **waits for
+Lane B to land**. W4 completes the tools, reports, context menu and data window. W5 delivers F7
+(`ScopedQuery`), undo/redo and stale cleanup. W6 closes the library seams and dead code and does the
+copy sweep. 17 open decisions proceed on defaults (plan §0). Partitions are `planned` @6531d19 and
+machine-checked for disjointness and Lane B avoidance.
 
 ---
 
