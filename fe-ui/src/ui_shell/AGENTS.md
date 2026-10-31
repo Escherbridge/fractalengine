@@ -18,7 +18,7 @@ own Bevy systems (NFR-4: exactly ONE `EguiPrimaryContextPass` entry,
 
 | Manager | File | State resource | Pure helpers | Render fn |
 | :-- | :-- | :-- | :-- | :-- |
-| Topbar (FR-4) | `topbar.rs` | `TopbarState` (minimal/reserved) | — (delegates to `panels::toolbar`) | `render_topbar` |
+| Topbar (FR-4) | `topbar.rs` | `TopbarState { chrome_request, maximized, brand_icon }` | `title_bar_gesture`, `TitleBarLayout::is_free_space`, `resize_direction_at` | `render_topbar`, `render_window_resize_grips` (+ Bevy system `apply_window_chrome`, §window-chrome) |
 | Left (FR-5) | `left_sidebar.rs` | `LeftSidebarState { policy, user_intent }` | `left_visibility` | `render_left_sidebar` |
 | Right (FR-6) | `right_sidebar.rs` | `RightSidebarState { requested }` | `active_section`, `section_label`, `slug`/`from_slug`, `toggle`/`is_active`/`reveal`/`reveal_slug` | `render_right_sidebar` |
 | Modal (FR-7) | `modal.rs` | `ModalManagerState { disabled_panels, last_error }` | `guarded`, `transient_order`, `resolve_exclusive` | transient layer, rendered last |
@@ -196,3 +196,48 @@ Design decisions:
   bundle (see `fe-ui/src/verse_manager/AGENTS.md`).
 - `MAX_REPLICATION_FACTOR = 16` is a UI bound (a slider needs a finite range);
   the fabric itself only clamps R to the reachable peers.
+
+## §window-chrome (frameless window, 2026-10-31)
+
+The GUI's primary window has no OS decorations (`fractalengine/src/window_chrome.rs`,
+fractalengine/src/AGENTS.md §window-chrome), so the topbar IS the title bar.
+There is still exactly one top strip — `render_topbar` grew the chrome; nothing
+adds a second `TopBottomPanel::top`.
+
+- **Layout.** Left: brand mark (the app icon, uploaded once as an egui texture
+  from `TopbarState.brand_icon`, which the binary inserts via
+  `TopbarState::with_brand_icon`) + "FractalEngine" (non-selectable label), then
+  the existing tool cluster. Right (right-to-left): close X, maximize/restore,
+  minimize, then the existing Data/Options/Settings/Maps buttons. Caption
+  buttons are painted vector glyphs (46x28, independent of font coverage); the
+  close X hovers `theme::BG_WINDOW_CLOSE_HOVER` red (ui_ux.md §1 destructive
+  chrome).
+- **Drag decision.** A full-bar `click_and_drag` surface is registered BEFORE
+  the widgets, so widgets win clicks. But egui hands a DRAG to a lower
+  drag-sensing widget when the top one senses only clicks — egui's hit test
+  alone would let a drag that began on a button move the window. The bar
+  therefore records its two widget clusters' x-spans (`TitleBarLayout`), and
+  `title_bar_gesture` admits only a press whose ORIGIN is on free space and
+  outside the resize band: drag → `StartMove`, double-click → `ToggleMaximize`.
+  The brand counts as free space (it drags, like a native caption).
+- **Resize grips.** `render_window_resize_grips` runs after every panel (end of
+  `gardener_ui_system`) so its cursor wins: a 5 px band at each edge/corner
+  (`resize_direction_at`, corners first) sets the egui resize cursor — which
+  bevy_egui forwards to the OS, so nothing fights over `CursorIcon` — and a
+  primary press there requests `StartResize(CompassOctant)`. Inert while
+  maximized.
+- **Applying requests.** `apply_window_chrome` (a Bevy system in
+  `EguiPrimaryContextPass` after `gardener_ui_system` — a window side effect,
+  not a second render pass) takes `TopbarState.chrome_request` and calls
+  `Window::{set_minimized, set_maximized, start_drag_move, start_drag_resize}`.
+  It is main-thread only (`NonSendMarker`) because it reads `WINIT_WINDOWS` to
+  mirror `is_maximized()` into `TopbarState.maximized` (restore glyph, grips off).
+- **Close.** The X writes `WindowCloseRequested { window }` — the same message
+  winit raises for Alt+F4 / the OS close. Bevy's `close_when_requested` then
+  despawns the window and `exit_on_all_closed` raises `AppExit`, so shutdown is
+  exactly the OS-close path (no `process::exit`). Alt+F4 keeps working natively:
+  winit keeps `WS_SYSMENU` on undecorated Windows windows.
+- **Tests** (`topbar.rs`): real egui frames with synthetic pointer events —
+  drag from free space moves; a drag that starts on the close X neither moves
+  nor closes; click on X closes; double-click toggles maximize; a top-band press
+  resizes (not while maximized); a table test covers every edge/corner.

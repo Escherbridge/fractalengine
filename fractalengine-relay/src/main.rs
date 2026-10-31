@@ -477,6 +477,8 @@ fn main() -> anyhow::Result<()> {
         elevated_query_allowed: fe_api::elevated_query_allowed_from_env(),
         // Per-owner asset upload quota (default 2 GiB) — fe-api/AGENTS.md §asset-ingest.
         upload_quota_bytes: fe_api::upload_quota_bytes_from_env(),
+        // Headless: no window to capture — the screenshot surface stays off.
+        screenshot: fe_api::screenshot::ScreenshotSurface::disabled(),
     });
 
     app.insert_resource(RevocationBroadcastSender(revocation_tx));

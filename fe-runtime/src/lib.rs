@@ -10,6 +10,7 @@ pub mod ktx2_guard;
 pub mod messages;
 pub mod peer_registry;
 pub mod safe_id;
+pub mod screenshot;
 pub mod shared_node;
 pub mod sim_control;
 pub mod timeseries;

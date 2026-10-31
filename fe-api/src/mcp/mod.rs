@@ -113,6 +113,9 @@ pub struct ToolSpec {
     pub scope_rule: ScopeRule,
     /// Host seam the tool needs; without it the tool is hidden and unknown.
     pub requires: Option<ToolSeam>,
+    /// `true`: the handler's payload IS the MCP `content` array (image blocks),
+    /// not a JSON value to wrap as one text block.
+    pub content_reply: bool,
     pub(crate) handler: ToolHandler,
 }
 
@@ -121,6 +124,8 @@ pub struct ToolSpec {
 pub enum ToolSeam {
     /// The sim-lab bridge (`ApiState.sim_control_tx`).
     SimControl,
+    /// The window-capture bridge (`ApiState.screenshot.bridge`, GUI hosts only).
+    Screenshot,
 }
 
 /// Whether this host wires the seam `spec` needs.
@@ -128,6 +133,18 @@ pub fn tool_available(spec: &ToolSpec, state: &ApiState) -> bool {
     match spec.requires {
         None => true,
         Some(ToolSeam::SimControl) => state.sim_control_tx.is_some(),
+        Some(ToolSeam::Screenshot) => state.screenshot.bridge.is_some(),
+    }
+}
+
+/// An operator opt-in the seam needs, refused BEFORE authz (mirrors the REST
+/// gate order — AGENTS.md §screenshot); `None` = no opt-in needed, or given.
+fn operator_opt_in_refusal(spec: &ToolSpec, state: &ApiState) -> Option<&'static str> {
+    match spec.requires {
+        Some(ToolSeam::Screenshot) if !state.screenshot.allowed => {
+            Some(crate::screenshot::SCREENSHOT_DISABLED)
+        }
+        _ => None,
     }
 }
 
@@ -137,13 +154,16 @@ pub fn tool_specs() -> &'static [ToolSpec] {
 }
 
 macro_rules! tool {
+    ($name:ident, $role:ident, $rule:expr, requires $seam:ident, content, $desc:expr) => {
+        tool!(@spec $name, $role, $rule, Some(ToolSeam::$seam), true, $desc)
+    };
     ($name:ident, $role:ident, $rule:expr, requires $seam:ident, $desc:expr) => {
-        tool!(@spec $name, $role, $rule, Some(ToolSeam::$seam), $desc)
+        tool!(@spec $name, $role, $rule, Some(ToolSeam::$seam), false, $desc)
     };
     ($name:ident, $role:ident, $rule:expr, $desc:expr) => {
-        tool!(@spec $name, $role, $rule, None, $desc)
+        tool!(@spec $name, $role, $rule, None, false, $desc)
     };
-    (@spec $name:ident, $role:ident, $rule:expr, $requires:expr, $desc:expr) => {
+    (@spec $name:ident, $role:ident, $rule:expr, $requires:expr, $content:expr, $desc:expr) => {
         ToolSpec {
             name: stringify!($name),
             description: $desc,
@@ -151,6 +171,7 @@ macro_rules! tool {
             min_role: RoleLevel::$role,
             scope_rule: $rule,
             requires: $requires,
+            content_reply: $content,
             handler: tools::$name,
         }
     };
@@ -235,6 +256,9 @@ static TOOLS: &[ToolSpec] = &[
         "Ingest one device payload: base64 files (order preserved into asset_ids; total decoded size <= 11 MiB over MCP, use REST multipart POST /api/v1/petals/{petal_id}/iot/payloads for larger payloads), stored as generic assets under a declared format's mime, then recorded as one device_payload row. Requires editor role + petal scope."),
     tool!(list_device_payloads, Viewer, PetalArg("petal_id"),
         "List device_payload rows for a petal, optionally filtered by node_id, format_id and a recorded-time window (from_ms/to_ms). Requires viewer role + petal scope."),
+    // --- Agent visual verification (AGENTS.md §screenshot) ---
+    tool!(screenshot, Owner, Global, requires Screenshot, content,
+        "Capture the live application window (3D viewport + all UI) as a PNG image, for visually verifying what the editor renders. Off unless the node operator set FE_API_SCREENSHOT_ALLOW=1; not scope-confined (shows whatever verse is open); 1 capture/sec. Requires owner role."),
 ];
 
 // ---------------------------------------------------------------------------
@@ -345,6 +369,9 @@ async fn handle_tool_call(
     else {
         return tool_error(id, &format!("unknown tool: {tool_name}"));
     };
+    if let Some(refusal) = operator_opt_in_refusal(spec, state) {
+        return tool_error(id, refusal);
+    }
     // Non-object arguments degrade to `{}` (then fail the required-args check).
     let args = if args.is_object() {
         args
@@ -369,6 +396,7 @@ async fn handle_tool_call(
         scope: scope.as_deref(),
     };
     match (spec.handler)(call).await {
+        Ok(content) if spec.content_reply => tool_content_result(id, content),
         Ok(payload) => tool_result(id, payload),
         Err(msg) => tool_error(id, &msg),
     }
@@ -537,6 +565,19 @@ fn tool_result(id: Option<serde_json::Value>, content: serde_json::Value) -> Jso
     }
 }
 
+/// A handler-built MCP `content` array (e.g. an `image` block) passed through as-is.
+fn tool_content_result(
+    id: Option<serde_json::Value>,
+    content: serde_json::Value,
+) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: "2.0".into(),
+        id,
+        result: Some(serde_json::json!({ "content": content })),
+        error: None,
+    }
+}
+
 fn tool_error(id: Option<serde_json::Value>, msg: &str) -> JsonRpcResponse {
     JsonRpcResponse {
         jsonrpc: "2.0".into(),
@@ -620,10 +661,10 @@ mod tests {
         }
         assert_eq!(
             TOOLS.len(),
-            36,
+            37,
             "DEC-C14: 27 non-sim + 5 sim (p2p_asset_streaming S6 added set_petal_render_distance); \
              CDL-SPEC10 A5 added 4 R5 device tools (register/list_device_formats, \
-             ingest/list_device_payloads)"
+             ingest/list_device_payloads); §screenshot added `screenshot`"
         );
     }
 

@@ -507,3 +507,17 @@ bridge parses `ScenarioScript`/`ScriptedEvent` on its side. Reply is a
 crossbeam sender (the bridge thread has no async runtime). Surface rules:
 `fe-api/AGENTS.md` §sim-control; driver/bridge: `fe-sim/src/AGENTS.md`
 §session.
+
+## §screenshot-bridge (agent screenshot surface, 2026-10-31)
+
+`screenshot.rs` holds only the API→Bevy capture seam's types (no render
+dependency): `ScreenshotRequest { correlation_id, reply_tx }`, the reply
+`ScreenshotReply { correlation_id, result: Result<png bytes, String> }`, and
+`screenshot_bridge()` — a bounded(4) crossbeam channel. It follows
+§api-reply-correlation in miniature: every request carries a ULID the reply
+echoes (the API rejects a foreign echo), each request owns its oneshot (a reply
+can never land on another waiter), the API `try_send`s (a full bridge is a busy
+refusal, never a blocked async worker), and `ScreenshotRequest::reply` drops a
+late reply for a timed-out caller. The gate (opt-in → Owner → rate) is fe-api's
+(fe-api/AGENTS.md §screenshot); the capture is the binary's
+(fractalengine/src/AGENTS.md §screenshot).

@@ -3,9 +3,14 @@
 //! (`TOOL_DEFS`), the `InputContext` temp-data stash, and `mode_button_fill`
 //! stay single-source in `panels::toolbar`; this manager calls them. Tool
 //! activation routes through `ToolState::activate` — the single writer. See
-//! `fe-ui/src/ui_shell/AGENTS.md` §topbar.
+//! `fe-ui/src/ui_shell/AGENTS.md` §topbar. The bar is also the frameless
+//! window's title bar (brand, drag-to-move, min/max/close, edge resize grips) —
+//! §window-chrome in the same file.
 
-use bevy::prelude::Resource;
+use bevy::ecs::system::NonSendMarker;
+use bevy::math::CompassOctant;
+use bevy::prelude::{Entity, Messages, Query, ResMut, Resource, With};
+use bevy::window::{PrimaryWindow, Window, WindowCloseRequested};
 use bevy_egui::egui;
 
 use crate::panels::toolbar::{
@@ -16,11 +21,339 @@ use crate::theme;
 use crate::ui_shell::left_sidebar::LeftSidebarState;
 use crate::ui_shell::right_sidebar::{RightSidebarSection, RightSidebarState};
 
-/// Topbar-owned UI state. Minimal this phase (the toolbar reads shared manager
-/// state); reserved as the seam for future topbar-local state (e.g. overflow /
-/// compact mode) so downstream slices need not re-touch `plugin.rs`.
-#[derive(Resource, Default, Debug, Clone, Copy)]
-pub struct TopbarState;
+/// Topbar height in logical points (also the title-bar drag strip).
+pub const TOPBAR_HEIGHT: f32 = 40.0;
+/// Width of the edge band that resizes the frameless window.
+pub const RESIZE_BAND: f32 = 5.0;
+/// Caption-button size (minimize / maximize / close), platform-sized.
+const CAPTION_BUTTON_SIZE: egui::Vec2 = egui::vec2(46.0, 28.0);
+const BRAND_ICON_SIZE: f32 = 22.0;
+
+/// A window action the title bar asks for; `apply_window_chrome` performs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowChromeRequest {
+    Minimize,
+    ToggleMaximize,
+    /// Routed through `WindowCloseRequested` — the OS close path, never a hard exit.
+    Close,
+    StartMove,
+    StartResize(CompassOctant),
+}
+
+/// The host binary's app-icon pixels (straight RGBA8), shown at the bar's left.
+#[derive(Debug, Clone)]
+pub struct BrandIcon {
+    pub width: usize,
+    pub height: usize,
+    pub rgba: Vec<u8>,
+}
+
+/// Topbar-owned state: the pending window-chrome request, the OS maximized
+/// mirror, and the brand mark (pixels + lazily uploaded egui texture).
+#[derive(Resource, Default)]
+pub struct TopbarState {
+    /// Set by the bar this frame, consumed by `apply_window_chrome`.
+    pub chrome_request: Option<WindowChromeRequest>,
+    /// Mirror of the OS window's maximized state (restore glyph, grips off).
+    pub maximized: bool,
+    /// Supplied by the binary (`TopbarState::with_brand_icon`); `None` = name only.
+    pub brand_icon: Option<BrandIcon>,
+    brand_texture: Option<egui::TextureHandle>,
+}
+
+impl TopbarState {
+    /// State carrying the app icon the bar shows beside the app name.
+    pub fn with_brand_icon(icon: BrandIcon) -> Self {
+        Self {
+            brand_icon: Some(icon),
+            ..Self::default()
+        }
+    }
+
+    /// The brand texture, uploaded to egui once on first use.
+    fn brand_texture_id(&mut self, ctx: &egui::Context) -> Option<egui::TextureId> {
+        if self.brand_texture.is_none() {
+            let icon = self.brand_icon.as_ref()?;
+            let image =
+                egui::ColorImage::from_rgba_unmultiplied([icon.width, icon.height], &icon.rgba);
+            self.brand_texture =
+                Some(ctx.load_texture("fe-brand-icon", image, egui::TextureOptions::LINEAR));
+        }
+        self.brand_texture.as_ref().map(egui::TextureHandle::id)
+    }
+}
+
+/// Where the bar's widget clusters sit this frame — everything else on the
+/// bar is free title-bar space that drags the window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TitleBarLayout {
+    pub bar: egui::Rect,
+    /// Left cluster (brand excluded — it drags like a native caption) spans
+    /// `[left_widgets_start_x, left_widgets_end_x)`.
+    pub left_widgets_start_x: f32,
+    pub left_widgets_end_x: f32,
+    /// The right cluster (sections + caption buttons) starts here.
+    pub right_widgets_start_x: f32,
+}
+
+impl TitleBarLayout {
+    /// True when `pos` is on the bar but over none of its widgets.
+    pub fn is_free_space(&self, pos: egui::Pos2) -> bool {
+        let over_left = pos.x >= self.left_widgets_start_x && pos.x < self.left_widgets_end_x;
+        let over_right = pos.x >= self.right_widgets_start_x;
+        self.bar.contains(pos) && !over_left && !over_right
+    }
+}
+
+/// The title-bar gesture for this frame: a double-click on free space toggles
+/// maximize, a primary drag that STARTED on free space (outside the resize
+/// band) moves the window. A press that began on any widget never moves it.
+pub fn title_bar_gesture(
+    layout: &TitleBarLayout,
+    gesture_origin: Option<egui::Pos2>,
+    in_resize_band: bool,
+    double_clicked: bool,
+    drag_started: bool,
+) -> Option<WindowChromeRequest> {
+    let origin = gesture_origin?;
+    if !layout.is_free_space(origin) || in_resize_band {
+        return None;
+    }
+    if double_clicked {
+        Some(WindowChromeRequest::ToggleMaximize)
+    } else if drag_started {
+        Some(WindowChromeRequest::StartMove)
+    } else {
+        None
+    }
+}
+
+/// The resize direction for a pointer at `pos` on a window `screen`, or `None`
+/// outside the `band`-wide edge strips (corners win over edges).
+pub fn resize_direction_at(
+    pos: egui::Pos2,
+    screen: egui::Rect,
+    band: f32,
+) -> Option<CompassOctant> {
+    if !screen.contains(pos) {
+        return None;
+    }
+    let west = pos.x < screen.min.x + band;
+    let east = pos.x >= screen.max.x - band;
+    let north = pos.y < screen.min.y + band;
+    let south = pos.y >= screen.max.y - band;
+    match (north, south, west, east) {
+        (true, _, true, _) => Some(CompassOctant::NorthWest),
+        (true, _, _, true) => Some(CompassOctant::NorthEast),
+        (_, true, true, _) => Some(CompassOctant::SouthWest),
+        (_, true, _, true) => Some(CompassOctant::SouthEast),
+        (true, _, _, _) => Some(CompassOctant::North),
+        (_, true, _, _) => Some(CompassOctant::South),
+        (_, _, true, _) => Some(CompassOctant::West),
+        (_, _, _, true) => Some(CompassOctant::East),
+        _ => None,
+    }
+}
+
+/// The OS resize cursor for a drag direction.
+fn resize_cursor(direction: CompassOctant) -> egui::CursorIcon {
+    match direction {
+        CompassOctant::North => egui::CursorIcon::ResizeNorth,
+        CompassOctant::South => egui::CursorIcon::ResizeSouth,
+        CompassOctant::East => egui::CursorIcon::ResizeEast,
+        CompassOctant::West => egui::CursorIcon::ResizeWest,
+        CompassOctant::NorthEast => egui::CursorIcon::ResizeNorthEast,
+        CompassOctant::NorthWest => egui::CursorIcon::ResizeNorthWest,
+        CompassOctant::SouthEast => egui::CursorIcon::ResizeSouthEast,
+        CompassOctant::SouthWest => egui::CursorIcon::ResizeSouthWest,
+    }
+}
+
+/// Edge/corner resize grips for the frameless window: a resize cursor in the
+/// edge band and a `StartResize` request on a primary press there. Runs after
+/// every panel so its cursor wins; inert while maximized.
+pub fn render_window_resize_grips(ctx: &egui::Context, topbar: &mut TopbarState) {
+    if topbar.maximized {
+        return;
+    }
+    let screen = ctx.viewport_rect();
+    let (hover, pressed, origin) = ctx.input(|i| {
+        (
+            i.pointer.hover_pos(),
+            i.pointer.primary_pressed(),
+            i.pointer.press_origin(),
+        )
+    });
+    if let Some(direction) = hover.and_then(|pos| resize_direction_at(pos, screen, RESIZE_BAND)) {
+        ctx.set_cursor_icon(resize_cursor(direction));
+    }
+    if pressed {
+        if let Some(direction) =
+            origin.and_then(|pos| resize_direction_at(pos, screen, RESIZE_BAND))
+        {
+            topbar.chrome_request = Some(WindowChromeRequest::StartResize(direction));
+        }
+    }
+}
+
+/// Which caption button to draw.
+#[derive(Clone, Copy)]
+enum CaptionGlyph {
+    Minimize,
+    Maximize,
+    Restore,
+    Close,
+}
+
+/// One painted caption button (vector glyph — independent of font coverage).
+fn caption_button(ui: &mut egui::Ui, glyph: CaptionGlyph, tooltip: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(CAPTION_BUTTON_SIZE, egui::Sense::click());
+    let response = response.on_hover_text(tooltip);
+    let painter = ui.painter_at(rect);
+    let hovered = response.hovered();
+    let close = matches!(glyph, CaptionGlyph::Close);
+    if hovered {
+        let fill = if close {
+            theme::BG_WINDOW_CLOSE_HOVER
+        } else {
+            theme::BG_BUTTON
+        };
+        painter.rect_filled(rect, 2.0, fill);
+    }
+    let color = if hovered && close {
+        egui::Color32::WHITE
+    } else {
+        theme::TEXT_BRIGHT
+    };
+    let stroke = egui::Stroke::new(1.2_f32, color);
+    let center = rect.center();
+    let half = 5.0_f32;
+    match glyph {
+        CaptionGlyph::Minimize => {
+            painter.line_segment(
+                [
+                    center + egui::vec2(-half, 0.0),
+                    center + egui::vec2(half, 0.0),
+                ],
+                stroke,
+            );
+        }
+        CaptionGlyph::Maximize => {
+            painter.rect_stroke(
+                egui::Rect::from_center_size(center, egui::vec2(2.0 * half, 2.0 * half)),
+                0.0,
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+        }
+        CaptionGlyph::Restore => {
+            let size = egui::vec2(8.0, 8.0);
+            let back = egui::Rect::from_min_size(center + egui::vec2(-half + 2.0, -half), size);
+            let front = egui::Rect::from_min_size(center + egui::vec2(-half, -half + 2.0), size);
+            painter.rect_stroke(back, 0.0, stroke, egui::StrokeKind::Middle);
+            painter.rect_filled(front, 0.0, theme::BG_TOOLBAR);
+            painter.rect_stroke(front, 0.0, stroke, egui::StrokeKind::Middle);
+        }
+        CaptionGlyph::Close => {
+            painter.line_segment(
+                [
+                    center + egui::vec2(-half, -half),
+                    center + egui::vec2(half, half),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    center + egui::vec2(-half, half),
+                    center + egui::vec2(half, -half),
+                ],
+                stroke,
+            );
+        }
+    }
+    response
+}
+
+/// Minimize / maximize-restore / close, laid right-to-left (close outermost).
+fn caption_buttons(ui: &mut egui::Ui, topbar: &mut TopbarState) {
+    if caption_button(ui, CaptionGlyph::Close, "Close FractalEngine").clicked() {
+        topbar.chrome_request = Some(WindowChromeRequest::Close);
+    }
+    let (glyph, tooltip) = if topbar.maximized {
+        (CaptionGlyph::Restore, "Restore down")
+    } else {
+        (CaptionGlyph::Maximize, "Maximize")
+    };
+    if caption_button(ui, glyph, tooltip).clicked() {
+        topbar.chrome_request = Some(WindowChromeRequest::ToggleMaximize);
+    }
+    if caption_button(ui, CaptionGlyph::Minimize, "Minimize").clicked() {
+        topbar.chrome_request = Some(WindowChromeRequest::Minimize);
+    }
+}
+
+/// App icon + name at the bar's left edge (non-interactive: it drags the window).
+fn brand(ui: &mut egui::Ui, topbar: &mut TopbarState) {
+    if let Some(texture) = topbar.brand_texture_id(ui.ctx()) {
+        ui.add(egui::Image::new((
+            texture,
+            egui::vec2(BRAND_ICON_SIZE, BRAND_ICON_SIZE),
+        )));
+    }
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new("FractalEngine")
+                .color(theme::TEXT_STRONG)
+                .strong(),
+        )
+        .selectable(false),
+    );
+}
+
+/// Bevy system: perform the bar's pending window request on the primary
+/// window and mirror its maximized state. Main-thread only (`NonSendMarker`):
+/// winit window queries must not run off the event-loop thread.
+pub fn apply_window_chrome(
+    mut topbar: ResMut<TopbarState>,
+    mut windows: Query<(Entity, &mut Window), With<PrimaryWindow>>,
+    close_requests: Option<ResMut<Messages<WindowCloseRequested>>>,
+    _main_thread: NonSendMarker,
+) {
+    let Ok((entity, mut window)) = windows.single_mut() else {
+        return;
+    };
+    let os_maximized = bevy::winit::WINIT_WINDOWS
+        .with_borrow(|winit| winit.get_window(entity).map(|w| w.is_maximized()));
+    if let Some(maximized) = os_maximized {
+        if topbar.maximized != maximized {
+            topbar.maximized = maximized;
+        }
+    }
+    if topbar.chrome_request.is_none() {
+        return;
+    }
+    let Some(request) = topbar.chrome_request.take() else {
+        return;
+    };
+    match request {
+        WindowChromeRequest::Minimize => window.set_minimized(true),
+        WindowChromeRequest::ToggleMaximize => {
+            let maximize = !topbar.maximized;
+            window.set_maximized(maximize);
+            topbar.maximized = maximize;
+        }
+        WindowChromeRequest::StartMove => window.start_drag_move(),
+        WindowChromeRequest::StartResize(direction) => window.start_drag_resize(direction),
+        // The OS close button's own path: `close_when_requested` → window
+        // despawn → `exit_on_all_closed` → AppExit (§window-chrome).
+        WindowChromeRequest::Close => match close_requests {
+            Some(mut messages) => {
+                messages.write(WindowCloseRequested { window: entity });
+            }
+            None => bevy::log::warn!("close requested but WindowCloseRequested is not registered"),
+        },
+    }
+}
 
 /// Renders the top toolbar. Migrated verbatim from `panels::toolbar::top_toolbar`
 /// (FR-4). The former "Tools" button is the **Options** toggle since D7 — the
@@ -30,7 +363,7 @@ pub struct TopbarState;
 /// closes), and the addressable reveal action is deliberately idempotent.
 pub fn render_topbar(
     ctx: &egui::Context,
-    _topbar: &mut TopbarState,
+    topbar: &mut TopbarState,
     tool: &mut ToolState,
     node_mgr: &mut crate::node_manager::NodeManager,
     gis_panel: &mut crate::gis::GisPanelState,
@@ -44,14 +377,33 @@ pub fn render_topbar(
     }
 
     egui::TopBottomPanel::top("toolbar")
-        .exact_height(40.0)
+        .exact_height(TOPBAR_HEIGHT)
         .frame(
             egui::Frame::NONE
                 .fill(theme::BG_TOOLBAR)
                 .inner_margin(egui::Margin::symmetric(8, 6)),
         )
         .show(ctx, |ui| {
+            // Title-bar surface: registered BEFORE the widgets so each widget
+            // wins egui's click hit test; `title_bar_gesture` then admits only
+            // presses that began on free space (§window-chrome).
+            let bar_rect = ui.max_rect().expand2(egui::vec2(8.0, 6.0));
+            let bar = ui.interact(
+                bar_rect,
+                ui.id().with("title_bar"),
+                egui::Sense::click_and_drag(),
+            );
+            let mut layout = TitleBarLayout {
+                bar: bar_rect,
+                left_widgets_start_x: bar_rect.max.x,
+                left_widgets_end_x: bar_rect.max.x,
+                right_widgets_start_x: bar_rect.max.x,
+            };
             ui.horizontal_centered(|ui| {
+                brand(ui, topbar);
+                ui.separator();
+                layout.left_widgets_start_x = ui.cursor().min.x;
+
                 // FR-3: explicit left-sidebar toggle (the only reveal/hide path
                 // now that auto-collapse is gone). Active fill = currently open.
                 if ui
@@ -94,78 +446,102 @@ pub fn render_topbar(
                 {
                     node_mgr.deselect();
                 }
+                layout.left_widgets_end_x = ui.cursor().min.x;
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new("FractalEngine")
-                            .color(theme::TEXT_DIM)
-                            .small(),
-                    );
+                let right_cluster =
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        caption_buttons(ui, topbar);
+                        ui.separator();
 
-                    if ui
-                        .add(egui::Button::new("\u{1F5FA} Data").fill(if gis_panel.open {
-                            theme::BG_BUTTON_ACTIVE
-                        } else {
-                            theme::BG_BUTTON
-                        }))
-                        .on_hover_text("Query nodes and layers, export for BI")
-                        .clicked()
-                    {
-                        gis_panel.open = !gis_panel.open;
-                    }
-
-                    // D7: "Tools" was the PathTools reveal; that section is
-                    // retired, so the button is the Options surface's toggle —
-                    // one label for "the active tool's settings", whatever the
-                    // active tool is.
-                    if ui
-                        .add(egui::Button::new("\u{1F527} Options").fill(
-                            if right.is_active(RightSidebarSection::Options) {
+                        if ui
+                            .add(egui::Button::new("\u{1F5FA} Data").fill(if gis_panel.open {
                                 theme::BG_BUTTON_ACTIVE
                             } else {
                                 theme::BG_BUTTON
-                            },
-                        ))
-                        .on_hover_text("Settings for the active tool (pen curves, brush, stamping)")
-                        .clicked()
-                    {
-                        right.toggle(RightSidebarSection::Options);
-                    }
+                            }))
+                            .on_hover_text("Query nodes and layers, export for BI")
+                            .clicked()
+                        {
+                            gis_panel.open = !gis_panel.open;
+                        }
 
-                    // FR-1 (D-A10): Settings is a one-at-a-time right-sidebar
-                    // section now, not a floating modal — toggle it like the
-                    // other tool surfaces.
-                    if ui
-                        .add(egui::Button::new("\u{2699} Settings").fill(
-                            if right.is_active(RightSidebarSection::Settings) {
-                                theme::BG_BUTTON_ACTIVE
-                            } else {
-                                theme::BG_BUTTON
-                            },
-                        ))
-                        .on_hover_text("Application settings (render distance, mesh budget, ...)")
-                        .clicked()
-                    {
-                        right.toggle(RightSidebarSection::Settings);
-                    }
+                        // D7: "Tools" was the PathTools reveal; that section is
+                        // retired, so the button is the Options surface's toggle —
+                        // one label for "the active tool's settings", whatever the
+                        // active tool is.
+                        if ui
+                            .add(egui::Button::new("\u{1F527} Options").fill(
+                                if right.is_active(RightSidebarSection::Options) {
+                                    theme::BG_BUTTON_ACTIVE
+                                } else {
+                                    theme::BG_BUTTON
+                                },
+                            ))
+                            .on_hover_text(
+                                "Settings for the active tool (pen curves, brush, stamping)",
+                            )
+                            .clicked()
+                        {
+                            right.toggle(RightSidebarSection::Options);
+                        }
 
-                    // FR-2 (D-A10): Maps (map manager) is a right-sidebar section
-                    // too; the section self-seeds its data + refresh on open.
-                    if ui
-                        .add(egui::Button::new("\u{1F4E6} Maps").fill(
-                            if right.is_active(RightSidebarSection::Maps) {
-                                theme::BG_BUTTON_ACTIVE
-                            } else {
-                                theme::BG_BUTTON
-                            },
-                        ))
-                        .on_hover_text("Manage petal maps")
-                        .clicked()
-                    {
-                        right.toggle(RightSidebarSection::Maps);
-                    }
-                });
+                        // FR-1 (D-A10): Settings is a one-at-a-time right-sidebar
+                        // section now, not a floating modal — toggle it like the
+                        // other tool surfaces.
+                        if ui
+                            .add(egui::Button::new("\u{2699} Settings").fill(
+                                if right.is_active(RightSidebarSection::Settings) {
+                                    theme::BG_BUTTON_ACTIVE
+                                } else {
+                                    theme::BG_BUTTON
+                                },
+                            ))
+                            .on_hover_text(
+                                "Application settings (render distance, mesh budget, ...)",
+                            )
+                            .clicked()
+                        {
+                            right.toggle(RightSidebarSection::Settings);
+                        }
+
+                        // FR-2 (D-A10): Maps (map manager) is a right-sidebar section
+                        // too; the section self-seeds its data + refresh on open.
+                        if ui
+                            .add(egui::Button::new("\u{1F4E6} Maps").fill(
+                                if right.is_active(RightSidebarSection::Maps) {
+                                    theme::BG_BUTTON_ACTIVE
+                                } else {
+                                    theme::BG_BUTTON
+                                },
+                            ))
+                            .on_hover_text("Manage petal maps")
+                            .clicked()
+                        {
+                            right.toggle(RightSidebarSection::Maps);
+                        }
+                        ui.min_rect().min.x
+                    });
+                layout.right_widgets_start_x = right_cluster.inner;
             });
+
+            // egui clears `press_origin` on release, the frame a (double-)click
+            // reports — a click never moved, so the latest pointer pos is its origin.
+            let gesture_origin =
+                ui.input(|i| i.pointer.press_origin().or(i.pointer.interact_pos()));
+            let screen = ui.ctx().viewport_rect();
+            let in_resize_band = !topbar.maximized
+                && gesture_origin
+                    .and_then(|pos| resize_direction_at(pos, screen, RESIZE_BAND))
+                    .is_some();
+            if let Some(request) = title_bar_gesture(
+                &layout,
+                gesture_origin,
+                in_resize_band,
+                bar.double_clicked(),
+                bar.drag_started_by(egui::PointerButton::Primary),
+            ) {
+                topbar.chrome_request = Some(request);
+            }
         });
 }
 
@@ -222,5 +598,183 @@ mod tests {
         let read = input_context(&ctx).expect("topbar stashed it");
         assert_eq!(read.active_tool, Tool::Pen);
         assert!(read.gesture_active);
+    }
+
+    // -- §window-chrome: the bar driven through real egui input ---------------
+
+    const SCREEN: egui::Vec2 = egui::vec2(2400.0, 900.0);
+    /// Mid-bar, far from both widget clusters on a 2400-wide window.
+    const FREE_SPACE: egui::Pos2 = egui::pos2(1200.0, 20.0);
+    /// Inside the close-X: the right cluster's outermost 46-px caption button.
+    const CLOSE_BUTTON: egui::Pos2 = egui::pos2(2369.0, 20.0);
+
+    /// The topbar rendered frame by frame from synthetic pointer events.
+    struct TitleBarHarness {
+        ctx: egui::Context,
+        time: f64,
+        topbar: TopbarState,
+        tool: ToolState,
+        node_mgr: crate::node_manager::NodeManager,
+        gis_panel: crate::gis::GisPanelState,
+        left: LeftSidebarState,
+        right: RightSidebarState,
+    }
+
+    impl TitleBarHarness {
+        fn new() -> Self {
+            let mut harness = Self {
+                ctx: egui::Context::default(),
+                time: 0.0,
+                topbar: TopbarState::default(),
+                tool: ToolState::default(),
+                node_mgr: crate::node_manager::NodeManager::default(),
+                gis_panel: crate::gis::GisPanelState::default(),
+                left: LeftSidebarState::default(),
+                right: RightSidebarState::default(),
+            };
+            harness.frame(Vec::new()); // lay out once: hit tests use last frame's rects
+            harness
+        }
+
+        /// Run one frame; returns the chrome request the bar raised in it.
+        fn frame(&mut self, events: Vec<egui::Event>) -> Option<WindowChromeRequest> {
+            self.time += 0.05;
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, SCREEN)),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let Self {
+                ctx,
+                topbar,
+                tool,
+                node_mgr,
+                gis_panel,
+                left,
+                right,
+                ..
+            } = self;
+            let _ = ctx.run(raw, |ctx| {
+                render_topbar(ctx, topbar, tool, node_mgr, gis_panel, left, right);
+                render_window_resize_grips(ctx, topbar);
+            });
+            self.topbar.chrome_request.take()
+        }
+
+        fn button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            }
+        }
+
+        /// Hover, press at `from`, drag 60 px right, release; every request raised.
+        fn press_drag_release(&mut self, from: egui::Pos2) -> Vec<WindowChromeRequest> {
+            let to = from + egui::vec2(60.0, 0.0);
+            [
+                vec![egui::Event::PointerMoved(from)],
+                vec![Self::button(from, true)],
+                vec![egui::Event::PointerMoved(from + egui::vec2(20.0, 0.0))],
+                vec![egui::Event::PointerMoved(to)],
+                vec![Self::button(to, false)],
+            ]
+            .into_iter()
+            .filter_map(|events| self.frame(events))
+            .collect()
+        }
+
+        /// Hover then click (press + release, no movement) at `at`.
+        fn click(&mut self, at: egui::Pos2) -> Vec<WindowChromeRequest> {
+            [
+                vec![egui::Event::PointerMoved(at)],
+                vec![Self::button(at, true)],
+                vec![Self::button(at, false)],
+            ]
+            .into_iter()
+            .filter_map(|events| self.frame(events))
+            .collect()
+        }
+    }
+
+    #[test]
+    fn dragging_free_title_bar_space_moves_the_window() {
+        let mut bar = TitleBarHarness::new();
+        assert_eq!(
+            bar.press_drag_release(FREE_SPACE),
+            vec![WindowChromeRequest::StartMove]
+        );
+    }
+
+    #[test]
+    fn a_drag_that_starts_on_a_widget_never_moves_the_window() {
+        let mut bar = TitleBarHarness::new();
+        let requests = bar.press_drag_release(CLOSE_BUTTON);
+        assert!(
+            !requests.contains(&WindowChromeRequest::StartMove),
+            "drag decision must be false over a widget: {requests:?}"
+        );
+        assert!(
+            !requests.contains(&WindowChromeRequest::Close),
+            "a drag off the close-X is not a click: {requests:?}"
+        );
+    }
+
+    #[test]
+    fn close_x_click_requests_the_graceful_close_path() {
+        let mut bar = TitleBarHarness::new();
+        assert_eq!(bar.click(CLOSE_BUTTON), vec![WindowChromeRequest::Close]);
+    }
+
+    #[test]
+    fn double_clicking_free_title_bar_space_toggles_maximize() {
+        let mut bar = TitleBarHarness::new();
+        let mut requests = bar.click(FREE_SPACE);
+        requests.extend(bar.click(FREE_SPACE));
+        assert_eq!(requests, vec![WindowChromeRequest::ToggleMaximize]);
+    }
+
+    #[test]
+    fn a_press_in_the_top_edge_band_resizes_instead_of_moving() {
+        let mut bar = TitleBarHarness::new();
+        let requests = bar.press_drag_release(egui::pos2(FREE_SPACE.x, 2.0));
+        assert_eq!(
+            requests,
+            vec![WindowChromeRequest::StartResize(CompassOctant::North)]
+        );
+        bar.topbar.maximized = true;
+        assert!(
+            bar.press_drag_release(egui::pos2(FREE_SPACE.x, 2.0))
+                .iter()
+                .all(|r| !matches!(r, WindowChromeRequest::StartResize(_))),
+            "a maximized window has no resize grips"
+        );
+    }
+
+    #[test]
+    fn resize_direction_covers_every_edge_and_corner() {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let cases = [
+            (egui::pos2(1.0, 1.0), Some(CompassOctant::NorthWest)),
+            (egui::pos2(798.0, 1.0), Some(CompassOctant::NorthEast)),
+            (egui::pos2(1.0, 598.0), Some(CompassOctant::SouthWest)),
+            (egui::pos2(798.0, 598.0), Some(CompassOctant::SouthEast)),
+            (egui::pos2(400.0, 1.0), Some(CompassOctant::North)),
+            (egui::pos2(400.0, 598.0), Some(CompassOctant::South)),
+            (egui::pos2(1.0, 300.0), Some(CompassOctant::West)),
+            (egui::pos2(798.0, 300.0), Some(CompassOctant::East)),
+            (egui::pos2(400.0, 300.0), None),
+            (egui::pos2(400.0, 5.0), None),
+            (egui::pos2(-1.0, 300.0), None),
+        ];
+        for (pos, expected) in cases {
+            assert_eq!(
+                resize_direction_at(pos, screen, RESIZE_BAND),
+                expected,
+                "{pos:?}"
+            );
+        }
     }
 }

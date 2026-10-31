@@ -1004,3 +1004,48 @@ Editor+-gated (RP-4) and every writer validates its `did:key` grammar
   `a_second_streamed_publisher_for_the_same_id_is_refused_in_session`,
   `a_petal_authored_pin_overrides_an_earlier_first_contact_tofu_pin`,
   `the_publisher_pin_chain_prefers_installed_then_petal_then_tofu`.
+
+## §window-chrome (frameless window + app icon, 2026-10-31)
+
+- **Window.** `window_chrome::primary_window()` is handed to
+  `fe_runtime::app::build_app_with_window` (which sets
+  `WindowPlugin.primary_window`; plain `build_app` keeps Bevy's default window):
+  title "FractalEngine", `name` "fractalengine" (X11 class / Wayland app id),
+  `decorations: false`, min 960x600. Title bar, drag, resize grips and the close
+  X live in fe-ui — fe-ui/src/ui_shell/AGENTS.md §window-chrome. The close X
+  routes through `WindowCloseRequested`, the OS-close path; the GUI has no other
+  exit handler, so the DB/sync threads see the same shutdown either way.
+- **Icon art.** `assets/branding/icon.png` (256x256) + `icon.ico`
+  (16/24/32/48/64/128/256): a six-petal flower in the theme's accent colours
+  (`theme::BG_TOOLBAR` field, `ICON_TRACK` petals, `ICON_POINT` core).
+  Regenerate with `python tools/branding/make_icon.py` (Pillow).
+- **Runtime icon.** The PNG is `include_bytes!`-embedded and decoded with the
+  `image` crate (0.25 — the line `bevy_image` uses). `set_window_icon` (Update,
+  `NonSendMarker`) calls winit's `set_window_icon` through
+  `bevy::winit::WINIT_WINDOWS`, retrying each frame until the winit window
+  exists (winit creates windows after startup), then goes inert. The same
+  pixels become the title bar's brand mark (`TopbarState::with_brand_icon`).
+- **Exe icon.** `build.rs` embeds `icon.ico` with `embed-resource` (MIT; already
+  in the graph via tauri-winres, so deny.toml is unaffected) as a `cfg(windows)`
+  build-dependency, only when `CARGO_CFG_TARGET_OS == windows`. It writes a
+  one-line `.rc` into `OUT_DIR` naming the icon by absolute path. A host without
+  a resource compiler only gets a `cargo:warning` (the icon is cosmetic);
+  non-Windows builds skip it entirely.
+
+## §screenshot (window captures, 2026-10-31)
+
+`screenshot_bridge.rs` is the Bevy end of fe-api §screenshot:
+
+- `drain_screenshot_requests` drains every queued
+  `fe_runtime::screenshot::ScreenshotRequest` (the API thread's bounded bridge,
+  created in `main.rs` and handed to `ApiConfig.screenshot`) and serves them all
+  with ONE `Screenshot::primary_window()` capture — the swap-chain frame, so
+  egui is included. Its `ScreenshotCaptured` observer clones the image and
+  encodes PNG (`encode_png`: `try_into_dynamic` → RGB, alpha dropped as Bevy's
+  `save_to_disk` does) on the `AsyncComputeTaskPool`, never on the frame loop,
+  then replies to each request echoing its correlation id. The API side owns the
+  5 s timeout; a late reply to a timed-out caller is dropped.
+- `capture_screenshot_on_f12` is the human path: F12 saves
+  `data/screenshots/fractalengine-YYYYMMDD-HHMMSS-mmm.png` (UTC; `data/` is the
+  app data dir beside the DB) off-thread, and `surface_saved_screenshots` toasts
+  the absolute path or the failure. No API gate — it is the local keyboard.

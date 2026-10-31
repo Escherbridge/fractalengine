@@ -59,6 +59,7 @@ struct HarnessOptions {
     with_db_reader: bool,
     with_blob_store: bool,
     upload_quota_bytes: u64,
+    screenshot: fe_api::screenshot::ScreenshotSurface,
 }
 
 impl Default for HarnessOptions {
@@ -72,6 +73,7 @@ impl Default for HarnessOptions {
             with_db_reader: true,
             with_blob_store: true,
             upload_quota_bytes: fe_api::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
+            screenshot: fe_api::screenshot::ScreenshotSurface::disabled(),
         }
     }
 }
@@ -165,6 +167,19 @@ impl ApiHarness {
         .await
     }
 
+    /// Like [`Self::spawn`], with an explicit agent screenshot surface (opt-in
+    /// flag + capture bridge + timeout) — every other constructor leaves it
+    /// disabled and unwired, the production default for headless hosts.
+    pub async fn spawn_with_screenshot(
+        screenshot: fe_api::screenshot::ScreenshotSurface,
+    ) -> Result<Self> {
+        Self::spawn_with_options(HarnessOptions {
+            screenshot,
+            ..HarnessOptions::default()
+        })
+        .await
+    }
+
     /// Like [`Self::spawn`], with `blob_store: None` — a host that cannot
     /// store asset bytes, so uploads fail closed (503).
     pub async fn spawn_without_blob_store() -> Result<Self> {
@@ -197,6 +212,7 @@ impl ApiHarness {
             with_db_reader,
             with_blob_store,
             upload_quota_bytes,
+            screenshot,
         } = options;
         // Production DB startup initialises the HLC before any op-log write; the
         // harness bypasses that startup, so do it once per process here.
@@ -250,6 +266,7 @@ impl ApiHarness {
             share_signer: share_signer.unwrap_or_else(|| Arc::new(NodeKeypair::generate())),
             elevated_query_allowed,
             upload_quota_bytes,
+            screenshot,
         });
 
         let router = build_router(state.clone());

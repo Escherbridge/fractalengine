@@ -7,9 +7,16 @@ repository.workspace = true
 rust-version.workspace = true
 description = "FractalEngine GUI application — Bevy-based 3D spatial analytics client"
 
+build = "build.rs"
+
 [[bin]]
 name = "fractalengine"
 path = "src/main.rs"
+
+# Windows .exe icon (assets/branding/icon.ico) — src/AGENTS.md §window-chrome.
+# embed-resource is MIT and already in the graph via tauri-winres.
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -59,3 +66,8 @@ rfd = { workspace = true }
 anyhow    = { workspace = true }
 surrealdb = { workspace = true }
 serde_json = { workspace = true }
+# PNG decode (app icon) + encode (window screenshots); same 0.25 line bevy_image
+# uses, so `Image::try_into_dynamic` output is this crate's `DynamicImage`.
+image = { version = "0.25", default-features = false, features = ["png"] }
+# `Icon::from_rgba` for the window/taskbar icon — same 0.30 line bevy_winit pins.
+winit = { version = "0.30", default-features = false }

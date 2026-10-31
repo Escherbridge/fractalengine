@@ -1160,6 +1160,24 @@ impl TestPeer {
                         // fe-database/tests/device_enrolment_test.rs, not this
                         // mock peer — surface, don't drop. (Inbound enrolment
                         // rows still take the REAL apply path below.)
+                        // F6 explicit orphaned-verse claim: the production
+                        // handler against this peer's DB + DID (was unmatched
+                        // since 65af7fc — the harness lib did not compile).
+                        Ok(DbCommand::ClaimOrphanedVerse {
+                            verse_id,
+                            correlation_id,
+                        }) => {
+                            let reply = fe_database::handlers::claim_orphaned_verse::claim_orphaned_verse_reply(
+                                &db,
+                                &db_local_did,
+                                verse_id,
+                                correlation_id,
+                            )
+                            .await;
+                            if let Err(e) = db_result_tx.send(reply) {
+                                tracing::warn!("ClaimOrphanedVerse reply send failed: {e:?}");
+                            }
+                        }
                         Ok(DbCommand::EnrolLocalDevice { .. })
                         | Ok(DbCommand::RevokeLocalDevice { .. }) => {
                             db_result_tx

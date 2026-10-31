@@ -5795,6 +5795,7 @@ dependencies = [
  "crossbeam",
  "dirs 5.0.1",
  "ed25519-dalek 2.2.0",
+ "embed-resource",
  "fe-api",
  "fe-database",
  "fe-entity-store",
@@ -5810,6 +5811,7 @@ dependencies = [
  "fe-ui",
  "fe-webview",
  "hex",
+ "image",
  "iroh",
  "rand 0.8.6",
  "rfd",
@@ -5819,6 +5821,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "winit",
 ]
 
 [[package]]

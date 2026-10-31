@@ -25,6 +25,7 @@ pub mod mcp;
 pub mod query_guard;
 pub mod render_distance;
 pub mod rest;
+pub mod screenshot;
 pub mod server;
 pub mod share;
 pub mod sim;
@@ -88,6 +89,10 @@ pub struct ApiConfig {
     /// Per-owner upload quota — binaries pass [`upload_quota_bytes_from_env`]
     /// (AGENTS.md §asset-ingest).
     pub upload_quota_bytes: u64,
+    /// Agent screenshot surface — the GUI passes the env opt-in
+    /// ([`screenshot::screenshot_allowed_from_env`]) plus its capture bridge;
+    /// headless hosts pass `ScreenshotSurface::disabled()` (AGENTS.md §screenshot).
+    pub screenshot: screenshot::ScreenshotSurface,
 }
 
 /// Read `FE_API_UPLOAD_QUOTA_BYTES` once at startup; unset or unparseable
@@ -179,6 +184,7 @@ async fn run_server(config: ApiConfig) {
         share_signer: config.share_signer,
         elevated_query_allowed: config.elevated_query_allowed,
         upload_quota_bytes: config.upload_quota_bytes,
+        screenshot: config.screenshot,
     });
 
     // Background task: listen for revocation notifications from Bevy thread

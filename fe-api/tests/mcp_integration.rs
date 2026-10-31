@@ -42,7 +42,7 @@ use fractalengine_test_harness::api::ApiHarness;
 /// this golden list until CDL-SPEC10 A5 — a pre-existing drift this slice
 /// fixes incidentally while adding its own 4 R5 device tools) = 32 non-sim,
 /// + 5 sim = 36.
-const EXPECTED_TOOLS: [&str; 36] = [
+const EXPECTED_TOOLS: [&str; 37] = [
     "get_hierarchy",
     "create_verse",
     "create_fractal",
@@ -85,6 +85,8 @@ const EXPECTED_TOOLS: [&str; 36] = [
     "list_device_formats",
     "ingest_device_payload",
     "list_device_payloads",
+    // Agent visual verification: GUI hosts only (window-capture seam, §screenshot)
+    "screenshot",
 ];
 
 // ---------------------------------------------------------------------------
@@ -668,6 +670,12 @@ fn emu(with_store: bool) -> Emu {
         sim_control_tx: Some(fe_runtime::sim_control::sim_control_channel().0),
         elevated_query_allowed: false,
         upload_quota_bytes: fe_api::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
+        // Same shape for the window-capture seam: opted in, bridge gone — the
+        // row is advertised and an admitted capture fails closed at once.
+        screenshot: fe_api::screenshot::ScreenshotSurface::new(
+            true,
+            Some(fe_runtime::screenshot::screenshot_bridge().0),
+        ),
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     });
     let model = Arc::new(Mutex::new(Model::default()));
@@ -862,7 +870,7 @@ async fn tools_list_inventory() {
     let non_lab: Vec<&str> = EXPECTED_TOOLS
         .iter()
         .copied()
-        .filter(|n| !n.starts_with("sim_"))
+        .filter(|n| !n.starts_with("sim_") && *n != "screenshot")
         .collect();
     assert_eq!(names, non_lab, "31 tools off a sim lab host");
     // tools/list and the dispatch table are one source of truth.
@@ -897,7 +905,26 @@ async fn tools_list_inventory() {
         .await
         .expect("spawn lab harness");
     let lab_token = lab.mint_token("VERSE#v1", "viewer");
-    assert_eq!(listed_tools(&lab, &lab_token).await, EXPECTED_TOOLS);
+    let lab_tools: Vec<&str> = EXPECTED_TOOLS
+        .iter()
+        .copied()
+        .filter(|n| *n != "screenshot")
+        .collect();
+    assert_eq!(listed_tools(&lab, &lab_token).await, lab_tools);
+
+    // A GUI host (window-capture bridge wired) advertises `screenshot` even
+    // before the operator opts in — the call then explains it is disabled.
+    let (screenshot_tx, _screenshot_rx) = fe_runtime::screenshot::screenshot_bridge();
+    let gui = ApiHarness::spawn_with_screenshot(fe_api::screenshot::ScreenshotSurface::new(
+        false,
+        Some(screenshot_tx),
+    ))
+    .await
+    .expect("spawn gui harness");
+    let gui_token = gui.mint_token("VERSE#v1", "viewer");
+    let mut gui_tools = non_lab.clone();
+    gui_tools.push("screenshot");
+    assert_eq!(listed_tools(&gui, &gui_token).await, gui_tools);
     let full_table: Vec<&str> = tool_specs().iter().map(|t| t.name).collect();
     assert_eq!(full_table, EXPECTED_TOOLS);
     assert!(tool_specs()

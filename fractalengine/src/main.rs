@@ -14,7 +14,9 @@ use tracing_subscriber::EnvFilter;
 mod asset_bridge;
 mod gpx_bridge;
 mod panic_log;
+mod screenshot_bridge;
 mod terrain_bridge;
+mod window_chrome;
 
 /// SurrealKV database path, opened exactly once per process by the DB thread.
 const DB_PATH: &str = "data/fractalengine.db";
@@ -361,15 +363,20 @@ fn main() {
     // builds) needs its own handle taken before that move.
     let sync_cmd_tx_for_seeding = sync_cmd_tx.clone();
 
-    let mut app = fe_runtime::app::build_app(BevyHandles {
-        net_cmd_tx: ch.net_cmd_tx,
-        net_evt_rx: ch.net_evt_rx,
-        db_cmd_tx: ch.db_cmd_tx,
-        db_res_rx: ch.db_res_rx,
-        blob_store: Some(blob_store),
-        on_blob_miss: Some(on_miss),
-        lifecycle_rx: Some(lifecycle_rx),
-    });
+    // Frameless primary window: fe-ui's topbar is the title bar (src/AGENTS.md
+    // §window-chrome).
+    let mut app = fe_runtime::app::build_app_with_window(
+        BevyHandles {
+            net_cmd_tx: ch.net_cmd_tx,
+            net_evt_rx: ch.net_evt_rx,
+            db_cmd_tx: ch.db_cmd_tx,
+            db_res_rx: ch.db_res_rx,
+            blob_store: Some(blob_store),
+            on_blob_miss: Some(on_miss),
+            lifecycle_rx: Some(lifecycle_rx),
+        },
+        window_chrome::primary_window(),
+    );
 
     // GUI-only plugins (removed from fe-runtime so the headless relay can skip them)
     app.add_plugins(bevy_egui::EguiPlugin::default());
@@ -403,6 +410,9 @@ fn main() {
     // ---- API Gateway thread ----
     // Channel: API thread sends ApiCommand -> tx, Bevy drains from rx.
     let (api_cmd_tx, api_cmd_rx) = crossbeam::channel::bounded(256);
+    // Agent screenshot bridge: API thread -> Bevy capture (fe-api/AGENTS.md
+    // §screenshot; the endpoint stays off unless FE_API_SCREENSHOT_ALLOW=1).
+    let (screenshot_tx, screenshot_rx) = fe_runtime::screenshot::screenshot_bridge();
     let (transform_broadcast_tx, _) =
         tokio::sync::broadcast::channel::<fe_runtime::messages::TransformUpdate>(1024);
     // Revocation broadcast: Bevy sends revoked JTIs, API thread updates its cache.
@@ -531,7 +541,31 @@ fn main() {
         elevated_query_allowed: fe_api::elevated_query_allowed_from_env(),
         // Per-owner asset upload quota (default 2 GiB) — fe-api/AGENTS.md §asset-ingest.
         upload_quota_bytes: fe_api::upload_quota_bytes_from_env(),
+        // Agent screenshot surface: off unless FE_API_SCREENSHOT_ALLOW=1 (read
+        // once here; loud WARN when on) — fe-api/AGENTS.md §screenshot.
+        screenshot: fe_api::screenshot::ScreenshotSurface::new(
+            fe_api::screenshot::screenshot_allowed_from_env(),
+            Some(screenshot_tx),
+        ),
     });
+
+    // Window chrome: taskbar/window icon + the title bar's brand mark.
+    if let Some(icon) = window_chrome::brand_icon() {
+        app.insert_resource(fe_ui::ui_shell::topbar::TopbarState::with_brand_icon(icon));
+    }
+    app.add_systems(bevy::prelude::Update, window_chrome::set_window_icon);
+
+    // Window captures: API bridge (agents) + F12 save-to-file (humans).
+    app.insert_resource(screenshot_bridge::ScreenshotBridge(screenshot_rx));
+    app.init_resource::<screenshot_bridge::ScreenshotSaveResults>();
+    app.add_systems(
+        bevy::prelude::Update,
+        (
+            screenshot_bridge::drain_screenshot_requests,
+            screenshot_bridge::capture_screenshot_on_f12,
+            screenshot_bridge::surface_saved_screenshots,
+        ),
+    );
 
     // ---- Entity Store (in-memory hot cache) ----
     app.insert_resource(SharedEntityStore(entity_store));

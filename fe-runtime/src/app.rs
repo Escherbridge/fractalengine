@@ -100,6 +100,12 @@ pub fn file_asset_root() -> std::path::PathBuf {
 /// plugins such as `EguiPlugin` and `FrameTimeDiagnosticsPlugin` after this
 /// returns.
 pub fn build_app(handles: BevyHandles) -> App {
+    build_app_with_window(handles, Window::default())
+}
+
+/// [`build_app`] with an explicit primary-window description (the GUI binary's
+/// frameless chrome — fractalengine/src/AGENTS.md §window-chrome).
+pub fn build_app_with_window(handles: BevyHandles, primary_window: Window) -> App {
     let mut app = App::new();
 
     // Phase B: register the "blob" asset source BEFORE DefaultPlugins so Bevy
@@ -126,10 +132,17 @@ pub fn build_app(handles: BevyHandles) -> App {
     // (src/AGENTS.md §packaged-layout).
     let asset_root = file_asset_root();
     tracing::info!("Bevy AssetPlugin file_path = {}", asset_root.display());
-    app.add_plugins(DefaultPlugins.set(bevy::asset::AssetPlugin {
-        file_path: asset_root.to_string_lossy().into_owned(),
-        ..Default::default()
-    }));
+    app.add_plugins(
+        DefaultPlugins
+            .set(bevy::asset::AssetPlugin {
+                file_path: asset_root.to_string_lossy().into_owned(),
+                ..Default::default()
+            })
+            .set(bevy::window::WindowPlugin {
+                primary_window: Some(primary_window),
+                ..Default::default()
+            }),
+    );
 
     app.add_plugins(crate::diag15m::Diag15MPlugin); // DIAG-15M
 

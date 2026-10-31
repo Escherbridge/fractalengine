@@ -70,6 +70,9 @@ pub struct ApiState {
     /// Per-owner cap on registered asset bytes (env `FE_API_UPLOAD_QUOTA_BYTES`,
     /// read once at startup) — AGENTS.md §asset-ingest.
     pub upload_quota_bytes: u64,
+    /// Agent screenshot surface: operator opt-in + API→Bevy capture bridge
+    /// (AGENTS.md §screenshot). `ScreenshotSurface::disabled()` on headless hosts.
+    pub screenshot: crate::screenshot::ScreenshotSurface,
 }
 
 /// Build the complete axum [`Router`] (route inventory: fe-api/AGENTS.md §routes).
@@ -301,6 +304,11 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         )
         // Legacy flat create endpoints (for MCP and existing integrations)
         .route("/api/v1/nodes", post(crate::rest::create_node_legacy))
+        // Agent visual verification: PNG of the live window (opt-in + Owner — §screenshot)
+        .route(
+            "/api/v1/debug/screenshot",
+            get(crate::screenshot::get_screenshot),
+        )
         // Query endpoints (scope-guarded SurrealQL)
         .route("/api/v1/query", post(crate::rest::execute_query))
         .route(

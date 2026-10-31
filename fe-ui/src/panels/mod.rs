@@ -476,7 +476,7 @@ mod tests {
         };
         let mut ts_settings = crate::timeseries_settings::TimeseriesSettingsState::default();
         let stamp_state = crate::actions::asset::StampInteractionState::default();
-        let mut topbar = crate::ui_shell::topbar::TopbarState;
+        let mut topbar = crate::ui_shell::topbar::TopbarState::default();
         let mut left = crate::ui_shell::left_sidebar::LeftSidebarState::default();
         let mut right = RightSidebarState {
             requested: Some(RightSidebarSection::Options),

@@ -66,7 +66,8 @@ when a route lands.
 | Hexon tilesets | `POST /api/v1/hexons/tilesets/install?petal_id=…`, `DELETE /api/v1/hexons/tilesets/{id}?petal_id=…`, `PATCH …/{id}/seeding?petal_id=…`, `GET /api/v1/hexons/tilesets?petal_id=…`, `GET /api/v1/hexons/storage?petal_id=…` |
 | Hexon crate registry | `POST /api/v1/crates/publish`, `POST /api/v1/crates/{uri}/install?petal_id=…`, `DELETE …/{uri}/uninstall?petal_id=…`, `GET /api/v1/crates/search?petal_id=…`, `GET /api/v1/crates/installed?petal_id=…`, `GET /api/v1/crates/{uri}?petal_id=…`, `GET …/{uri}/entries?petal_id=…`, `GET …/{uri}/entries/{entry_id}/asset?petal_id=…`, `GET /api/v1/crates/available?petal_id=…` |
 | Sim control (§sim-control) | `POST /api/v1/sim/start`, `POST /api/v1/sim/stop`, `GET /api/v1/sim/status`, `POST /api/v1/sim/step`, `POST /api/v1/sim/inject-fault` |
-| MCP | `POST /mcp` (`mcp::mcp_handler`) — 36-row `ToolSpec` table, 31 advertised off a sim lab host (§mcp-dispatch); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
+| Agent screenshot (§screenshot) | `GET /api/v1/debug/screenshot` → `image/png` — OFF unless `FE_API_SCREENSHOT_ALLOW=1`; Owner; 1/s per DID; NOT scope-confined |
+| MCP | `POST /mcp` (`mcp::mcp_handler`) — 37-row `ToolSpec` table: 31 always advertised, `screenshot` only on a GUI host (capture bridge wired), the 5 `sim_*` only on a sim lab host (§mcp-dispatch); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
 
 ## §existence-oracle (REST/WS denial unification, 2026-10-10)
 
@@ -1711,3 +1712,54 @@ channel.
   the full 5 s `db_round_trip` timeout.
 - Re-uploading identical bytes is idempotent at the blob layer but creates a
   new asset row (dedupe-by-hash is out of scope).
+
+## §screenshot (`screenshot.rs`, agent visual verification, 2026-10-31)
+
+`GET /api/v1/debug/screenshot` returns `image/png` of the GUI's primary window
+— the 3D viewport **and** every egui panel, exactly what the user sees. The MCP
+`screenshot` tool returns the same capture as an MCP image content block
+(`{"type":"image","mimeType":"image/png","data":<base64>}` plus a short text
+block). It exists so an agent driving the API can SEE the result of its edits.
+
+It is an **exfiltration surface**: a frame shows whatever verse is open,
+regardless of the token's scope. So the posture mirrors §elevated-query exactly
+(deny-by-default):
+
+- **Operator opt-in.** `ApiState.screenshot.allowed` is `false` unless the GUI
+  read `FE_API_SCREENSHOT_ALLOW=1` at startup
+  (`screenshot::screenshot_allowed_from_env`, loud WARN when enabled, a warning
+  for any other non-empty value). A field, not a per-request env read, so tests
+  set it (`ApiHarness::spawn_with_screenshot`). Off → every call gets
+  `screenshot endpoint is disabled on this node` (REST 403) before role, rate
+  limit or bridge. On MCP the dispatcher refuses BEFORE `authorize`
+  (`mcp/mod.rs::operator_opt_in_refusal`), so the order is identical there.
+- **Gate order: opt-in → Owner (`require_role_level(Owner)`, typed) → 1/s per
+  DID (`check_rate_limit`, key `screenshot:<sub>`, REST 429) → bridge.** Owner of
+  ANY scope passes — single-tenant nodes only.
+- **The bridge.** `ApiState.screenshot.bridge` is a bounded (4) crossbeam
+  `fe_runtime::screenshot::ScreenshotRequest` channel carrying a ULID
+  correlation id + a oneshot reply slot (fe-runtime src/AGENTS.md
+  §screenshot-bridge). The API `try_send`s (full → 503 "busy", disconnected →
+  503 "render host stopped") and awaits the reply for
+  `ScreenshotSurface.reply_timeout` (5 s; 504 "screenshot timed out" — never a
+  hang); a reply echoing a foreign correlation id is rejected. The Bevy side
+  (`fractalengine/src/screenshot_bridge.rs`) serves every queued request with
+  ONE `Screenshot::primary_window()` capture and PNG-encodes it on the compute
+  pool. Headless hosts (relay, harness default) pass
+  `ScreenshotSurface::disabled()` — no bridge, so the MCP row is not even
+  advertised (`ToolSeam::Screenshot`).
+
+How an agent calls it (GUI started with `FE_API_SCREENSHOT_ALLOW=1`, an Owner
+API token minted in the app's token settings):
+
+```bash
+curl -fsS -H "Authorization: Bearer $FE_TOKEN"   http://127.0.0.1:8765/api/v1/debug/screenshot -o frame.png
+```
+
+MCP: `tools/call` with `{"name":"screenshot","arguments":{}}` on `POST /mcp`.
+Humans do not need any of this: `F12` in the app saves a timestamped PNG to
+`data/screenshots/` and toasts the path (local keyboard — no API gate).
+
+Tests: `tests/screenshot_test.rs` (refused when not opted in, refused below
+Owner, admitted capture returns the host's bytes verbatim then rate-limits,
+silent host times out) over a fake capture responder — renderer-free.

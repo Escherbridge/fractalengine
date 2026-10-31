@@ -887,6 +887,33 @@ pub(super) fn list_device_payloads(call: ToolCall<'_>) -> ToolFuture<'_> {
 }
 
 // ---------------------------------------------------------------------------
+// Agent visual verification (AGENTS.md §screenshot) — the dispatcher already
+// refused a node without the operator opt-in and enforced the Owner floor.
+// ---------------------------------------------------------------------------
+
+pub(super) fn screenshot(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let capture = async {
+            crate::screenshot::ensure_enabled(call.state)?;
+            crate::screenshot::ensure_rate(call.state, call.claims).await?;
+            crate::screenshot::request_capture(call.state).await
+        };
+        let png = capture.await.map_err(|error| error.message())?;
+        let size_bytes = png.len();
+        let data = tokio::task::spawn_blocking(move || {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(png)
+        })
+        .await
+        .map_err(|_| "encode failed".to_string())?;
+        Ok(json!([
+            { "type": "image", "data": data, "mimeType": "image/png" },
+            { "type": "text", "text": format!("Captured the application window ({size_bytes} PNG bytes).") }
+        ]))
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Input schemas (one fn per tool, named like the tool)
 // ---------------------------------------------------------------------------
 
@@ -1272,5 +1299,9 @@ pub(super) mod schema {
             },
             "required": ["petal_id"]
         })
+    }
+
+    pub fn screenshot() -> Value {
+        json!({ "type": "object", "properties": {} })
     }
 }

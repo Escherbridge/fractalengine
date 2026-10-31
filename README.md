@@ -145,6 +145,7 @@ cargo run -p fractalengine-test-harness
 | `FE_API_UPLOAD_QUOTA_BYTES` | No | `2147483648` | Cap on registered API-uploaded asset bytes per owner (413 past it) |
 | `FE_ASSET_GC_INTERVAL_SECS` | No | `3600` | Seconds between unreferenced-asset GC passes (`0` disables) |
 | `FE_ASSET_GC_GRACE_SECS` | No | `86400` | Minimum age of an unreferenced asset before GC deletes it |
+| `FE_API_SCREENSHOT_ALLOW` | No | unset (off) | `1` enables the Owner-only agent screenshot surface (`GET /api/v1/debug/screenshot`, MCP `screenshot`) on the desktop app |
 
 Desktop settings (render distance, caps, offline tiles, camera, relay, scale
 bar, metric grid) persist as RON at `<config dir>/fractalengine/settings.ron`
@@ -333,6 +334,8 @@ The `fe-api` crate provides an axum-based HTTP/WebSocket API on port 8765.
 | GET | `/api/v1/assets/:content_hash` | Bearer JWT | Content-addressed asset delivery (immutable caching) |
 | GET / PUT | `/api/v1/petals/:pid/visibility-groups` | Bearer JWT | Read (Viewer+) / replace (Editor+) a petal's visibility Group registry |
 | PATCH / DELETE | `/api/v1/petals/:pid/visibility-groups/:gid` | Bearer JWT | Upsert / remove one Group (Editor+) |
+
+**Agent visual verification.** With `FE_API_SCREENSHOT_ALLOW=1`, an Owner token can fetch a PNG of the live window (viewport + all UI) via `GET /api/v1/debug/screenshot` or the MCP `screenshot` tool (1/s; off by default — a capture shows whatever verse is open). `F12` saves one locally to `data/screenshots/`. See `fe-api/AGENTS.md` §screenshot.
 
 ### WebSocket Protocol (`/ws`)
 

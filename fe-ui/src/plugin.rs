@@ -817,6 +817,12 @@ impl Plugin for GardenerConsolePlugin {
             ),
         );
         app.add_systems(EguiPrimaryContextPass, gardener_ui_system);
+        // The title bar's window request (move/resize/min/max/close) applies
+        // the same frame it was raised — ui_shell/AGENTS.md §window-chrome.
+        app.add_systems(
+            EguiPrimaryContextPass,
+            crate::ui_shell::topbar::apply_window_chrome.after(gardener_ui_system),
+        );
         // FR-3 (data_icons_20260713): floating point labels over the viewport.
         // After `gardener_ui_system` so it reads the same-frame `ViewportRect`
         // that system writes (no one-frame lag in the panel-edge gating).
@@ -1029,6 +1035,9 @@ fn gardener_ui_system(
         &misc.volume_report,
     );
     viewport_rect.0 = rect;
+    // Frameless-window edge grips: after every panel so the resize cursor wins
+    // (ui_shell/AGENTS.md §window-chrome).
+    crate::ui_shell::topbar::render_window_resize_grips(ectx, &mut ui_shell.topbar);
 
     // Tell the webview plugin where the right panel is so the popup tracks it.
     // Inset for the portal toolbar header and status bar; see

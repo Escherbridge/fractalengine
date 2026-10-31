@@ -12,6 +12,8 @@ pub const BG_BUTTON_ACTIVE: Color32 = Color32::from_rgb(60, 100, 160);
 /// `BG_BUTTON_ACTIVE`. Same hue family as `BG_BUTTON`, higher luminance.
 pub const BG_MODE_ACTIVE: Color32 = Color32::from_rgb(88, 88, 104);
 pub const BG_DANGER: Color32 = Color32::from_rgb(80, 40, 40);
+/// Window close-X hover (ui_ux.md §1 destructive chrome; the platform's red close cue).
+pub const BG_WINDOW_CLOSE_HOVER: Color32 = Color32::from_rgb(196, 43, 28);
 pub const BG_SAVE: Color32 = Color32::from_rgb(40, 80, 40);
 pub const BG_ROLE_CHIP: Color32 = Color32::from_rgb(30, 30, 50);
 
