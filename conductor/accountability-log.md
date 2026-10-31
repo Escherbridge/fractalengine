@@ -729,3 +729,15 @@ fail-closed).
 - Lane B (code): window chrome + icon + screenshot surface → implement → advocate → critic, serial, sole cargo user.
   Screenshot API is an exfiltration surface → deny-by-default (operator opt-in env + Owner), mirroring elevated query.
 - Delta-viz P1+P2 commits still local (awaiting user in-app look); polish lane builds on top.
+
+### Lane B close (2026-10-31) — chrome + icon + screenshot · GREEN · local
+- f55ca21 implement · 5405f4e advocate · effb644 critic. Advocate extracted ONE shared OperatorGate guard
+  (fe-api/src/operator_gate.rs: opt-in → typed Owner → rate) now used by elevated query, REST screenshot AND the
+  MCP tool — the deny-by-default chain can no longer drift between endpoints. Critic fixed 2 real defects:
+  resize-band presses leaking into the 3D viewport click router (pick/deselect/pen anchor on every edge resize),
+  and screenshots of a minimized 0x0 window leaking a stuck Capturing entity + 5 s agent hang (now immediate
+  typed refusal). Gates: check + clippy 1.99 clean, fe-ui 1029 / fractalengine 96 passed.
+- Accepted LOWs (documented with revisit triggers): same-frame API capture + F12 race; 5 px resize band over an
+  edge widget. Window chrome deliberately bypasses UiAction (drag/resize must reach winit the same frame) —
+  rationale in ui_shell AGENTS.md §window-chrome.
+- Lane A plan cd72a4e (52 slices / 6 waves). Polish wave 1 launching now via .omc/plans/polish-wave.js.
