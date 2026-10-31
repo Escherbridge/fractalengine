@@ -177,6 +177,7 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 - **New public tracks (pending):** `relay_operability_20261031`, `hexon_entitlements_20261031`, `plugin_host_revival_20261031`, `agent_input_surface_20261031`. `release_ci_20260429` gains a code-signing + `v0.1.0` phase.
 - **Conductor aligned "as needed"** (not a full re-tier). `product.md` status was re-audited and its non-goals reworded. Nine done tracks were archived with retros.
 - **Hands-on agent QA** of the GUI goes through the screenshot surface plus the new input surface. Defects it finds are filed into the doneness ledger.
+- **2026-10-31 · user directive · screenshots ON by default.** An unset `FE_API_SCREENSHOT_ALLOW` now means enabled; `=0` disables it. Owner + rate limit stay; headless/relay hosts stay disabled (no window). Elevated query and the input surface stay OFF by default (`OperatorGate` gains a per-gate default). Screenshots become dynamic: a posed POST (camera / orbit / geo / tile / focus, window or off-screen scene mode) plus `GET /api/v1/debug/camera`. `agent_input_surface_20261031` is folded into `agent_vision_20261031`. Overrides open-core.md S-AGENT-GUI "both off by default" (row updated). *Reversal: cheap* — flip `SCREENSHOT_GATE.default_on`.
 
 **From the 2026-10-13 grill (user, rolling):**
 - R1 · Delta: nothing new on the user's side (no in-app checks, pushes or constraints).

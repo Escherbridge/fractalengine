@@ -3,7 +3,7 @@
   "type": "feature",
   "title": "Deny-by-default synthetic input surface for agent-assisted QA",
   "description": "A new operator-gated surface that lets an agent driving the API inject synthetic pointer (move/click/drag) and keyboard (press/text entry) and scroll input into the live GUI, exactly mirroring the existing screenshot surface's posture: FE_API_INPUT_ALLOW=1 opt-in, Owner-only, rate-limited, via the shared OperatorGate chain. Commands cross a new bounded fe-runtime channel into Bevy and are translated into real input early in the frame so bevy_egui's own input collection sees them; a deterministic wait-for-N-frames settle plus an optional post-action screenshot let an agent inject a click and immediately see the result in one correlated round trip. Never wired on the headless relay (no window). Framed publicly as agent-assisted QA / accessibility automation.",
-  "status": "pending",
+  "status": "merged into agent_vision_20261031",
   "priority": "P1",
   "created_at": "2026-10-31T00:00:00Z",
   "updated_at": "2026-10-31T00:00:00Z",
@@ -30,7 +30,8 @@
   "notes": [
     "2026-10-31: track drafted (docs only) from the 2026-10-31 open-core grill. Modeled file-for-file on the landed screenshot surface (fe-api/src/screenshot.rs, fe-api/src/operator_gate.rs, fe-runtime/src/screenshot.rs, fractalengine/src/screenshot_bridge.rs) so the review burden is 'does this new surface deviate from the proven pattern', not 'is this pattern sound'. Citations computed at f55ca21; another session's in-flight uncommitted work touches the exact files this track extends (operator_gate.rs untracked, screenshot.rs modified) — re-grep line numbers before editing, cite symbols in the meantime.",
     "2026-10-31: CROSS-TRACK SEQUENCING. fe-runtime/src/{lib.rs,AGENTS.md}, fe-api/src/{server.rs,lib.rs}, fe-api/AGENTS.md, fractalengine/src/{main.rs,AGENTS.md} are also owned by relay_operability_20261031 and/or plugin_host_revival_20261031. Fixed order for those files: this track first, then relay_operability_20261031, then plugin_host_revival_20261031; never concurrent. This track is the only one of the four that edits fe-api/src/mcp/mod.rs: TOOLS.len() goes 37 -> 38 here; any later tool addition bumps from 38. polish_lane_20261031 (in flight) also owns fe-api/AGENTS.md and fe-runtime/src/AGENTS.md: S1/S3 wait for its owning waves to close. Root AGENTS.md and conductor/tracks.md are append-only for every track (last writer rebases).",
-    "2026-10-31: fresh-context spec review — PASS-WITH-FIXES; fixes applied in place."
+    "2026-10-31: fresh-context spec review — PASS-WITH-FIXES; fixes applied in place.",
+    "2026-10-31: MERGED into agent_vision_20261031 (user directive: fold into one workflow). S1-S5 execute there as I1-I5 with amendments (INPUT_GATE default_on=false on the new OperatorGate field; TOOLS 38->39; input refused while a posed capture holds the camera; capture_after via capture_png); S6/S7 absorbed into its ADVOCATE/CRITIC/CLOSE. This plan stays authoritative for I1-I5 steps and tests — see ../agent_vision_20261031/plan.md §2."
   ],
   "partitions": {
     "computed_at": "2026-10-31T00:00:00Z",

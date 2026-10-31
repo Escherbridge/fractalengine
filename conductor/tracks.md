@@ -79,8 +79,13 @@ Order: signing and release first, then agent QA, then the operator seams.
 - [ ] **release_ci** code-signing + `v0.1.0` phase (P0). The repo has never cut a release, and that gates
   any external use. See the entry under P1 — Platform below.
 - [ ] **agent_input_surface** (P1) — **S-AGENT-GUI**: deny-by-default synthetic pointer/key input beside the
-  screenshot surface, so agents can run hands-on GUI QA. Waits for Lane B's operator gate (`polish_lane`) —
+  screenshot surface, so agents can run hands-on GUI QA. **Merged into agent_vision_20261031** (runs there as I1-I5) —
   [./tracks/agent_input_surface_20261031/](./tracks/agent_input_surface_20261031/)
+- [ ] **agent_vision** (P1) — **S-AGENT-GUI**: screenshots **on by default** (`FE_API_SCREENSHOT_ALLOW=0` disables), posed
+  `POST /api/v1/debug/screenshot` (camera / orbit / geo / slippy tile / node focus; window or off-screen scene mode;
+  resolved pose returned), `GET /api/v1/debug/camera`, multi-focus terrain streaming, and the folded-in input surface.
+  Runs after polish wave 1, before polish wave 2. 5 vision slices + I1-I5 + advocate + critic (security depth) —
+  [./tracks/agent_vision_20261031/](./tracks/agent_vision_20261031/)
 - [ ] **relay_operability** (P1) — **S-RELAY** + **S-RELAY-ADVERTISE**: opt-in `/metrics`, a `UsageEvent` sink,
   TLS/backup/self-hosted iroh-relay docs, and verse-advertised relays via `Endpoint::insert_relay` —
   [./tracks/relay_operability_20261031/](./tracks/relay_operability_20261031/)
