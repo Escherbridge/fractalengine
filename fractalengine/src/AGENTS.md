@@ -1036,6 +1036,11 @@ Editor+-gated (RP-4) and every writer validates its `did:key` grammar
 
 `screenshot_bridge.rs` is the Bevy end of fe-api §screenshot:
 
+- Both paths go through ONE helper, `capture_primary_window_png(commands,
+  on_encoded)`: spawn `Screenshot::primary_window()`, and on
+  `ScreenshotCaptured` run the one-shot `on_encoded` continuation with the PNG
+  on the `AsyncComputeTaskPool` (observers are `Fn`, so the `FnOnce`
+  continuation sits in an `Arc<Mutex<Option<_>>>` slot taken on first fire).
 - `drain_screenshot_requests` drains every queued
   `fe_runtime::screenshot::ScreenshotRequest` (the API thread's bounded bridge,
   created in `main.rs` and handed to `ApiConfig.screenshot`) and serves them all

@@ -893,9 +893,12 @@ pub(super) fn list_device_payloads(call: ToolCall<'_>) -> ToolFuture<'_> {
 
 pub(super) fn screenshot(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
+        // The shared operator gate minus its role step (the dispatcher owns
+        // authz — FR-5): opt-in (defense in depth), then the per-DID budget.
+        let gate = crate::screenshot::SCREENSHOT_GATE;
         let capture = async {
-            crate::screenshot::ensure_enabled(call.state)?;
-            crate::screenshot::ensure_rate(call.state, call.claims).await?;
+            gate.check_opted_in(call.state.screenshot.allowed)?;
+            gate.check_rate(call.state, call.claims).await?;
             crate::screenshot::request_capture(call.state).await
         };
         let png = capture.await.map_err(|error| error.message())?;

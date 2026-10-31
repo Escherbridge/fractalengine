@@ -22,6 +22,7 @@ pub mod hexon;
 pub mod iot;
 pub mod limits;
 pub mod mcp;
+pub mod operator_gate;
 pub mod query_guard;
 pub mod render_distance;
 pub mod rest;
@@ -113,28 +114,25 @@ pub fn upload_quota_bytes_from_env() -> u64 {
 /// Env var that opts a node into the raw-SQL `/api/v1/query/elevated` endpoint.
 pub const ELEVATED_ALLOW_ENV: &str = "FE_API_ELEVATED_ALLOW";
 
+/// The elevated-query gate: opt-in → Owner → 5/s per DID (AGENTS.md
+/// §elevated-query, §operator-gate).
+pub const ELEVATED_QUERY_GATE: operator_gate::OperatorGate = operator_gate::OperatorGate {
+    opt_in_env: ELEVATED_ALLOW_ENV,
+    endpoint: "elevated query endpoint",
+    enabled_warning: "POST /api/v1/query/elevated is ENABLED — raw SurrealQL writes for Owner \
+                      tokens. It is NOT scope-confined (an Owner of ANY verse reaches EVERY verse \
+                      on this node); its writes are op-logged, replicated and broadcast like typed \
+                      edits. Enable only on a single-tenant node",
+    disabled_message: "elevated query endpoint is disabled on this node",
+    rate_key_prefix: "elevated",
+    rate_per_sec: 5,
+    rate_label: "5 elevated queries/sec",
+};
+
 /// Read the `FE_API_ELEVATED_ALLOW` opt-in once at startup (only `1` enables);
 /// warns loudly when enabled — see AGENTS.md §elevated-query.
 pub fn elevated_query_allowed_from_env() -> bool {
-    match std::env::var(ELEVATED_ALLOW_ENV) {
-        Ok(v) if v == "1" => {
-            tracing::warn!(
-                "{ELEVATED_ALLOW_ENV}=1: POST /api/v1/query/elevated is ENABLED — raw SurrealQL \
-                 writes for Owner tokens. It is NOT scope-confined (an Owner of ANY verse reaches \
-                 EVERY verse on this node); its writes are op-logged, replicated and broadcast \
-                 like typed edits. Enable only on a single-tenant node"
-            );
-            true
-        }
-        Ok(v) if !v.is_empty() => {
-            tracing::warn!(
-                "{ELEVATED_ALLOW_ENV}={v:?} ignored (only `1` enables) — elevated query endpoint \
-                 stays disabled"
-            );
-            false
-        }
-        _ => false,
-    }
+    ELEVATED_QUERY_GATE.opted_in_from_env()
 }
 
 /// Spawn a dedicated OS thread that owns a multi-threaded Tokio runtime and

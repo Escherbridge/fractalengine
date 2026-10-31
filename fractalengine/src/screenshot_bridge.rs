@@ -42,31 +42,40 @@ pub fn encode_png(image: Image) -> Result<Vec<u8>, String> {
     Ok(png)
 }
 
+/// Capture the primary window once (egui included) and hand the PNG-encoded
+/// frame to `on_encoded` on the compute pool — the frame loop never encodes.
+/// The one capture path both the API bridge and F12 share.
+fn capture_primary_window_png(
+    commands: &mut Commands,
+    on_encoded: impl FnOnce(Result<Vec<u8>, String>) + Send + 'static,
+) {
+    // Observers are `Fn`; the slot runs the one-shot continuation exactly once.
+    let continuation = Arc::new(Mutex::new(Some(on_encoded)));
+    commands.spawn(Screenshot::primary_window()).observe(
+        move |captured: On<ScreenshotCaptured>| {
+            let Some(on_encoded) = continuation.lock().ok().and_then(|mut slot| slot.take()) else {
+                return;
+            };
+            let image = captured.image.clone();
+            AsyncComputeTaskPool::get()
+                .spawn(async move { on_encoded(encode_png(image)) })
+                .detach();
+        },
+    );
+}
+
 /// Bevy system: serve every pending API capture request with ONE capture of
-/// the primary window (egui included); encoding runs on the compute pool so
-/// the frame loop never stalls on a PNG encode.
+/// the primary window, replying to each with its own correlation id.
 pub fn drain_screenshot_requests(bridge: Res<ScreenshotBridge>, mut commands: Commands) {
     let requests: Vec<ScreenshotRequest> = bridge.0.try_iter().collect();
     if requests.is_empty() {
         return;
     }
-    let waiters = Arc::new(Mutex::new(Some(requests)));
-    commands.spawn(Screenshot::primary_window()).observe(
-        move |captured: On<ScreenshotCaptured>| {
-            let Some(requests) = waiters.lock().ok().and_then(|mut slot| slot.take()) else {
-                return;
-            };
-            let image = captured.image.clone();
-            AsyncComputeTaskPool::get()
-                .spawn(async move {
-                    let png = encode_png(image);
-                    for request in requests {
-                        request.reply(png.clone());
-                    }
-                })
-                .detach();
-        },
-    );
+    capture_primary_window_png(&mut commands, move |png| {
+        for request in requests {
+            request.reply(png.clone());
+        }
+    });
 }
 
 /// `data/screenshots` beside the database (the app data dir), absolute.
@@ -127,26 +136,18 @@ pub fn capture_screenshot_on_f12(
         .as_millis() as u64;
     let path = screenshots_dir().join(screenshot_file_name(unix_millis));
     let tx = results.tx.clone();
-    commands.spawn(Screenshot::primary_window()).observe(
-        move |captured: On<ScreenshotCaptured>| {
-            let image = captured.image.clone();
-            let (path, tx) = (path.clone(), tx.clone());
-            AsyncComputeTaskPool::get()
-                .spawn(async move {
-                    let outcome = encode_png(image).and_then(|png| {
-                        let dir = path.parent().map(PathBuf::from).unwrap_or_default();
-                        std::fs::create_dir_all(&dir)
-                            .and_then(|()| std::fs::write(&path, png))
-                            .map(|()| path.clone())
-                            .map_err(|error| format!("could not write {}: {error}", path.display()))
-                    });
-                    if tx.try_send(outcome).is_err() {
-                        tracing::warn!("screenshot result dropped — toast queue full");
-                    }
-                })
-                .detach();
-        },
-    );
+    capture_primary_window_png(&mut commands, move |png| {
+        let outcome = png.and_then(|png| {
+            let dir = path.parent().map(PathBuf::from).unwrap_or_default();
+            std::fs::create_dir_all(&dir)
+                .and_then(|()| std::fs::write(&path, png))
+                .map(|()| path.clone())
+                .map_err(|error| format!("could not write {}: {error}", path.display()))
+        });
+        if tx.try_send(outcome).is_err() {
+            tracing::warn!("screenshot result dropped — toast queue full");
+        }
+    });
 }
 
 /// Bevy system: toast each finished F12 save (path on success, reason on failure).

@@ -11,6 +11,7 @@ use axum::{Extension, Json};
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::screenshot::{ScreenshotRequest, ScreenshotRequestSender};
 
+use crate::operator_gate::{GateRefusal, OperatorGate};
 use crate::server::ApiState;
 use crate::types::ApiResponse;
 
@@ -20,11 +21,20 @@ pub const SCREENSHOT_ALLOW_ENV: &str = "FE_API_SCREENSHOT_ALLOW";
 /// How long the API waits for the Bevy host to capture and encode a frame.
 pub const DEFAULT_SCREENSHOT_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Per-DID capture budget (a screenshot can show any verse's data).
-pub const SCREENSHOT_RATE_PER_SEC: u32 = 1;
-
-/// The refusal every call gets while the operator has not opted in.
-pub const SCREENSHOT_DISABLED: &str = "screenshot endpoint is disabled on this node";
+/// The screenshot gate: opt-in → Owner → 1/s per DID (a capture can show any
+/// verse's data) — AGENTS.md §screenshot, §operator-gate.
+pub const SCREENSHOT_GATE: OperatorGate = OperatorGate {
+    opt_in_env: SCREENSHOT_ALLOW_ENV,
+    endpoint: "screenshot endpoint",
+    enabled_warning: "GET /api/v1/debug/screenshot and the MCP `screenshot` tool are ENABLED for \
+                      Owner tokens. A capture shows the whole window — whatever verse is open, \
+                      regardless of the token's scope. Enable only on a single-tenant node you \
+                      are actively driving with an agent",
+    disabled_message: "screenshot endpoint is disabled on this node",
+    rate_key_prefix: "screenshot",
+    rate_per_sec: 1,
+    rate_label: "1 screenshot/sec",
+};
 
 /// The screenshot surface as wired on this host (`ApiState.screenshot`).
 #[derive(Clone, Debug)]
@@ -62,44 +72,33 @@ impl ScreenshotSurface {
 /// Read the `FE_API_SCREENSHOT_ALLOW` opt-in once at startup (only `1` enables);
 /// warns loudly when enabled — see AGENTS.md §screenshot.
 pub fn screenshot_allowed_from_env() -> bool {
-    match std::env::var(SCREENSHOT_ALLOW_ENV) {
-        Ok(v) if v == "1" => {
-            tracing::warn!(
-                "{SCREENSHOT_ALLOW_ENV}=1: GET /api/v1/debug/screenshot and the MCP `screenshot` \
-                 tool are ENABLED for Owner tokens. A capture shows the whole window — whatever \
-                 verse is open, regardless of the token's scope. Enable only on a single-tenant \
-                 node you are actively driving with an agent"
-            );
-            true
-        }
-        Ok(v) if !v.is_empty() => {
-            tracing::warn!(
-                "{SCREENSHOT_ALLOW_ENV}={v:?} ignored (only `1` enables) — screenshot endpoint \
-                 stays disabled"
-            );
-            false
-        }
-        _ => false,
-    }
+    SCREENSHOT_GATE.opted_in_from_env()
 }
 
 /// Why a capture was refused or failed; each maps to one HTTP status.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScreenshotError {
-    Disabled,
-    InsufficientRole,
-    RateLimited(String),
+    /// The shared operator gate refused (opt-in, Owner or rate).
+    Refused(GateRefusal),
     Unavailable(&'static str),
     TimedOut(Duration),
     CaptureFailed(String),
+}
+
+impl From<GateRefusal> for ScreenshotError {
+    fn from(refusal: GateRefusal) -> Self {
+        Self::Refused(refusal)
+    }
 }
 
 impl ScreenshotError {
     /// HTTP status for the REST surface.
     pub fn status(&self) -> StatusCode {
         match self {
-            Self::Disabled | Self::InsufficientRole => StatusCode::FORBIDDEN,
-            Self::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
+            Self::Refused(GateRefusal::Disabled(_) | GateRefusal::InsufficientRole) => {
+                StatusCode::FORBIDDEN
+            }
+            Self::Refused(GateRefusal::RateLimited(_)) => StatusCode::TOO_MANY_REQUESTS,
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::TimedOut(_) => StatusCode::GATEWAY_TIMEOUT,
             Self::CaptureFailed(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -109,9 +108,7 @@ impl ScreenshotError {
     /// Client-facing text (REST error body and MCP tool error).
     pub fn message(&self) -> String {
         match self {
-            Self::Disabled => SCREENSHOT_DISABLED.to_string(),
-            Self::InsufficientRole => "insufficient permissions (owner required)".to_string(),
-            Self::RateLimited(reason) => reason.clone(),
+            Self::Refused(refusal) => refusal.message(),
             Self::Unavailable(reason) => (*reason).to_string(),
             Self::TimedOut(waited) => format!(
                 "screenshot timed out — the window did not answer within {:.1}s",
@@ -120,27 +117,6 @@ impl ScreenshotError {
             Self::CaptureFailed(reason) => format!("screenshot failed: {reason}"),
         }
     }
-}
-
-/// Gate 1: the operator opt-in, checked before role, rate limit or bridge.
-pub fn ensure_enabled(state: &ApiState) -> Result<(), ScreenshotError> {
-    if state.screenshot.allowed {
-        Ok(())
-    } else {
-        Err(ScreenshotError::Disabled)
-    }
-}
-
-/// Gate 3: one capture per second per DID (shares the query limiter map).
-pub async fn ensure_rate(state: &ApiState, claims: &ApiClaims) -> Result<(), ScreenshotError> {
-    crate::query_guard::check_rate_limit(
-        state,
-        &format!("screenshot:{}", claims.sub),
-        SCREENSHOT_RATE_PER_SEC,
-        "1 screenshot/sec",
-    )
-    .await
-    .map_err(ScreenshotError::RateLimited)
 }
 
 /// Ask the Bevy host for one PNG of the primary window (egui included). Never
@@ -161,9 +137,10 @@ pub async fn request_capture(state: &ApiState) -> Result<Vec<u8>, ScreenshotErro
     match bridge.try_send(request) {
         Ok(()) => {}
         Err(crossbeam::channel::TrySendError::Full(_)) => {
+            tracing::warn!("screenshot bridge saturated — refusing");
             return Err(ScreenshotError::Unavailable(
                 "screenshot bridge busy — retry shortly",
-            ))
+            ));
         }
         Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
             tracing::warn!("screenshot bridge closed (Bevy host gone)");
@@ -211,12 +188,10 @@ pub async fn get_screenshot(
     }
 }
 
-/// The REST gate chain end to end.
+/// The REST gate chain end to end: the shared operator gate, then the bridge.
 async fn gated_capture(state: &ApiState, claims: &ApiClaims) -> Result<Vec<u8>, ScreenshotError> {
-    ensure_enabled(state)?;
-    if crate::auth::require_role_level(claims, fe_database::RoleLevel::Owner).is_err() {
-        return Err(ScreenshotError::InsufficientRole);
-    }
-    ensure_rate(state, claims).await?;
+    SCREENSHOT_GATE
+        .admit(state.screenshot.allowed, state, claims)
+        .await?;
     request_capture(state).await
 }

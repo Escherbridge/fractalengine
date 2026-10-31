@@ -329,12 +329,11 @@ pub fn apply_window_chrome(
             topbar.maximized = maximized;
         }
     }
-    if topbar.chrome_request.is_none() {
-        return;
-    }
-    let Some(request) = topbar.chrome_request.take() else {
+    // Read through `Deref` first so an idle frame never flags `TopbarState` changed.
+    let Some(request) = topbar.chrome_request else {
         return;
     };
+    topbar.chrome_request = None;
     match request {
         WindowChromeRequest::Minimize => window.set_minimized(true),
         WindowChromeRequest::ToggleMaximize => {

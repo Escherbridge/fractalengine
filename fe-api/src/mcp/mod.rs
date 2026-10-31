@@ -142,7 +142,7 @@ pub fn tool_available(spec: &ToolSpec, state: &ApiState) -> bool {
 fn operator_opt_in_refusal(spec: &ToolSpec, state: &ApiState) -> Option<&'static str> {
     match spec.requires {
         Some(ToolSeam::Screenshot) if !state.screenshot.allowed => {
-            Some(crate::screenshot::SCREENSHOT_DISABLED)
+            Some(crate::screenshot::SCREENSHOT_GATE.disabled_message)
         }
         _ => None,
     }

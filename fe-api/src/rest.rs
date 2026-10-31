@@ -1233,28 +1233,13 @@ pub async fn execute_elevated_query(
 ) -> impl IntoResponse {
     use crate::types::QueryResultDto;
 
-    // Deny-by-default: nothing below runs unless the node operator opted in.
-    if !state.elevated_query_allowed {
-        return Json(ApiResponse::<QueryResultDto>::error(
-            "elevated query endpoint is disabled on this node",
-        ));
-    }
-
-    if crate::auth::require_role_level(&claims, fe_database::RoleLevel::Owner).is_err() {
-        return Json(ApiResponse::<QueryResultDto>::error(
-            "insufficient permissions (owner required)",
-        ));
-    }
-
-    if let Err(e) = crate::query_guard::check_rate_limit(
-        &state,
-        &format!("elevated:{}", claims.sub),
-        5,
-        "5 elevated queries/sec",
-    )
-    .await
+    // Deny-by-default guard chain (opt-in → Owner → 5/s): nothing below runs
+    // unless the node operator opted in (AGENTS.md §operator-gate).
+    if let Err(refusal) = crate::ELEVATED_QUERY_GATE
+        .admit(state.elevated_query_allowed, &state, &claims)
+        .await
     {
-        return Json(ApiResponse::<QueryResultDto>::error(e));
+        return Json(ApiResponse::<QueryResultDto>::error(refusal.message()));
     }
 
     let plan = match crate::query_guard::validate_elevated_sql(

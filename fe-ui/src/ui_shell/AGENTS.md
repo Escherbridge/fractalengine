@@ -232,6 +232,17 @@ adds a second `TopBottomPanel::top`.
   `Window::{set_minimized, set_maximized, start_drag_move, start_drag_resize}`.
   It is main-thread only (`NonSendMarker`) because it reads `WINIT_WINDOWS` to
   mirror `is_maximized()` into `TopbarState.maximized` (restore glyph, grips off).
+- **Why a request slot, not a `UiAction`.** Widgets never touch `Window`: they
+  write ONE typed `WindowChromeRequest` into the manager's own state
+  (`TopbarState.chrome_request`), and `apply_window_chrome` is the single
+  writer of `Window` for chrome (a command + single-executor pattern; the
+  render fn stays a humble object, tested through real egui frames). It is not
+  routed through `UiAction`/`UiManager` because `start_drag_move` /
+  `start_drag_resize` must reach winit while the press that started them is
+  still live — the request applies the SAME frame, right after
+  `gardener_ui_system` — and window chrome is shell state, not a domain action
+  an API/MCP caller should address. `apply_window_chrome` reads the slot via
+  `Deref` first so idle frames never flag `TopbarState` changed.
 - **Close.** The X writes `WindowCloseRequested { window }` — the same message
   winit raises for Alt+F4 / the OS close. Bevy's `close_when_requested` then
   despawns the window and `exit_on_all_closed` raises `AppExit`, so shutdown is

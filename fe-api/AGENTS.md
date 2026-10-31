@@ -721,9 +721,10 @@ deny-by-default (fe-policy's ratified stance), mirroring `FE_SIM_ALLOW`
   disabled on this node` before role, rate limit, parsing or DB. A field,
   not a per-request env read, so tests set it
   (`ApiHarness::spawn_with_elevated_query_allowed`).
-- **Guard order: opt-in → Owner (`require_role_level(Owner)`, typed — a
-  role-string typo would parse to `RoleLevel::None` = admit-all) → 5/s per
-  DID → `validate_elevated_sql` → DB thread.** Owner of ANY scope passes, which is
+- **Guard order: opt-in → Owner (typed `RoleLevel` — a role-string typo
+  would parse to `RoleLevel::None` = admit-all) → 5/s per DID →
+  `validate_elevated_sql` → DB thread.** The first three steps are the shared
+  `ELEVATED_QUERY_GATE` (§operator-gate). Owner of ANY scope passes, which is
   exactly why the endpoint is only for single-tenant nodes.
 - **Table whitelist `query_guard::ELEVATED_TABLES`** = scene content only:
   `NODE`, `FRACTAL`, `PETAL`, `FIELD_DEF`, `MODEL`, `ROOM`. Removed:
@@ -1713,6 +1714,34 @@ channel.
 - Re-uploading identical bytes is idempotent at the blob layer but creates a
   new asset row (dedupe-by-hash is out of scope).
 
+## §operator-gate (`operator_gate.rs`, 2026-10-31)
+
+Every deny-by-default operator surface (§elevated-query, §screenshot) runs ONE
+guard chain — a **guard chain** pattern, declared as data:
+`OperatorGate { opt_in_env, endpoint, enabled_warning, disabled_message,
+rate_key_prefix, rate_per_sec, rate_label }` (`fe_api::ELEVATED_QUERY_GATE`,
+`screenshot::SCREENSHOT_GATE`). A new gated endpoint adds a `const` and calls
+the gate — it does not copy the chain.
+
+- `opted_in_from_env()` — read once at startup; only the exact value `1` opts in
+  (`opt_in_value_enables`, table-tested: `true`/`yes`/` 1` stay off); loud WARN
+  when on, a warning for any other non-empty value. The result is stored on
+  `ApiState` (a field, never a per-request env read) so tests flip it.
+- `admit(allowed, state, claims)` — the REST chain: `check_opted_in` → typed
+  `require_role_level(Owner)` → `check_rate` (the shared
+  `query_guard::check_rate_limit` map, key `<prefix>:<did>`). Refusals are a
+  `GateRefusal { Disabled, InsufficientRole, RateLimited }` whose `message()`
+  text is identical on every surface; each surface keeps its own response
+  shape (elevated: legacy 200 + error body; screenshot: 403/429).
+- **MCP.** The dispatcher owns authz (FR-5: `tools.rs` may not call a
+  `require_*` guard), so an MCP handler calls `check_opted_in` +
+  `check_rate` only; the dispatcher refuses the opt-in BEFORE `authorize`
+  (`operator_opt_in_refusal`) and enforces the Owner floor from the tool row —
+  so the order matches REST.
+- `FE_SIM_ALLOW` is NOT on this gate on purpose: the sim seam's opt-in decides
+  whether the bridge is spawned at all (fail-closed `NotConfigured`), and it
+  has no rate budget (§sim-control).
+
 ## §screenshot (`screenshot.rs`, agent visual verification, 2026-10-31)
 
 `GET /api/v1/debug/screenshot` returns `image/png` of the GUI's primary window
@@ -1733,9 +1762,10 @@ regardless of the token's scope. So the posture mirrors §elevated-query exactly
   `screenshot endpoint is disabled on this node` (REST 403) before role, rate
   limit or bridge. On MCP the dispatcher refuses BEFORE `authorize`
   (`mcp/mod.rs::operator_opt_in_refusal`), so the order is identical there.
-- **Gate order: opt-in → Owner (`require_role_level(Owner)`, typed) → 1/s per
-  DID (`check_rate_limit`, key `screenshot:<sub>`, REST 429) → bridge.** Owner of
-  ANY scope passes — single-tenant nodes only.
+- **Gate order: opt-in → Owner (typed) → 1/s per DID (key `screenshot:<sub>`,
+  REST 429) → bridge** — the shared `operator_gate::OperatorGate` chain
+  (`screenshot::SCREENSHOT_GATE`, §operator-gate). Owner of ANY scope passes —
+  single-tenant nodes only.
 - **The bridge.** `ApiState.screenshot.bridge` is a bounded (4) crossbeam
   `fe_runtime::screenshot::ScreenshotRequest` channel carrying a ULID
   correlation id + a oneshot reply slot (fe-runtime src/AGENTS.md
