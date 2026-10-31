@@ -716,3 +716,16 @@ fail-closed).
   `--features render` (and the sweep manifest's feature matrix applies to TESTS, not only check/clippy).
 - CI on pushed tip 820a9d4: SUCCESS (in-app fix batch + identity hardening public and green).
 - Remaining: user in-app verify of the delta viz (ghost/heatmap/volume report), then push of the 5 track commits.
+
+### Polish program launch (user directive 2026-10-31) — two lanes
+- User ask: generic QA research pass; agent-visible screenshot surface; packaged app icon; frameless window with
+  custom top bar + close X; then a DEDICATED polish lane fanning out over agentic workflows to finish stubs,
+  complete features, close seams, improve usability of every feature — each wave with DUAL reviewers: an ADVOCATE
+  (argues for + applies design patterns / ergonomics) and a CRITIC (defects, anti-patterns, over-engineering).
+  Standing rules carried: reviewers FIX their own findings (no read-only reviews); no deferrals; FF rhythm (leaf
+  slices never build/commit, one gate agent per wave inks); fe-terrain tests always `--features render`.
+- Lane A (read-only recon → plan): stubs/seams inventory ∥ UX QA pass → opus planner writes track
+  polish_lane_20261031 (waves, disjoint partitions, advocate+critic per wave, defaulted open decisions).
+- Lane B (code): window chrome + icon + screenshot surface → implement → advocate → critic, serial, sole cargo user.
+  Screenshot API is an exfiltration surface → deny-by-default (operator opt-in env + Owner), mirroring elevated query.
+- Delta-viz P1+P2 commits still local (awaiting user in-app look); polish lane builds on top.
