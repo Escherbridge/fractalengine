@@ -13,6 +13,8 @@ use bevy_egui::egui;
 
 use super::ActiveDialog;
 use crate::actions::{UiAction, UiManager};
+use crate::panels::widgets::{clipped_value, confirm_button, role_denial_reason, role_gated};
+use crate::plugin::LocalUserRole;
 use crate::terrain_map::dto::{
     AvailableTilesetDto, DownloadStatus, HexonManagerTab, InstalledTilesetDto,
 };
@@ -32,6 +34,11 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
+/// `local_role` (NEEDS-WIRING: `ui_shell::right_sidebar::render_maps_section`
+/// → this fn) is the live `LocalUserRole` resource — Set/Clear/Remove gate on
+/// it (X-02); the server-side `fe-policy` check on `SetPetalTerrain` stays
+/// authoritative regardless of what this control shows (ui_ux §3 "gating is
+/// advisory only").
 pub fn render_hexon_manager(
     ctx: &egui::Context,
     ui_mgr: &mut UiManager,
@@ -39,6 +46,7 @@ pub fn render_hexon_manager(
     active_petal_id: Option<&str>,
     downloads: &crate::terrain_map::dto::DownloadProgressMap,
     registry_url: Option<&str>,
+    local_role: &LocalUserRole,
 ) -> bool {
     let ActiveDialog::HexonManager {
         ref mut installed_tilesets,
@@ -47,7 +55,12 @@ pub fn render_hexon_manager(
         ref mut active_tab,
         ref storage_info,
         ref loading,
-        ref mut pending_remove,
+        // M-04: Remove now uses `widgets::confirm_button`, which owns its own
+        // arm/disarm state in egui temp memory — this dialog no longer needs
+        // a resource-level pending id. The `ActiveDialog::HexonManager` field
+        // itself is owned by `dialogs/mod.rs` (outside this slice), so it
+        // stays in the struct unused rather than being removed here.
+        pending_remove: ref mut _pending_remove,
         ref mut registry_uri_buf,
     } = ui_mgr.active_dialog
     else {
@@ -196,9 +209,9 @@ pub fn render_hexon_manager(
                             installed_tilesets,
                             &filter_lower,
                             &mut actions,
-                            pending_remove,
                             petal_map,
                             active_petal_id,
+                            local_role,
                         );
                     }
                     HexonManagerTab::Available => {
@@ -225,11 +238,9 @@ pub fn render_hexon_manager(
                     .color(theme::TEXT_MUTED),
                 );
                 ui.separator();
-                ui.label(
-                    egui::RichText::new(&storage_info.base_dir)
-                        .small()
-                        .color(theme::TEXT_DIM),
-                );
+                // X-16: the storage dir is an unbounded user-filesystem path —
+                // clip it instead of letting it push "Open folder" off the panel.
+                clipped_value(ui, &storage_info.base_dir, theme::TEXT_DIM);
                 if ui
                     .add(
                         egui::Button::new(egui::RichText::new("Open folder").small())
@@ -252,16 +263,20 @@ pub fn render_hexon_manager(
     close
 }
 
+/// M-01: a 440 px side panel can't fit a 7-column `Grid` (Map/Actions clip at
+/// default width — the two columns the user actually clicks). One card per
+/// map, with a wrapping header line plus an action row, has no column widths
+/// to clip.
 fn render_installed_tab(
     ui: &mut egui::Ui,
     tilesets: &mut [InstalledTilesetDto],
     filter: &str,
     actions: &mut Vec<UiAction>,
-    pending_remove: &mut Option<String>,
     petal_map: &mut PetalMapState,
     active_petal_id: Option<&str>,
+    local_role: &LocalUserRole,
 ) {
-    // Scale controls for the petal's active map (above the tileset grid).
+    // Scale controls for the petal's active map (above the tileset cards).
     if let Some(pid) = active_petal_id {
         if let Some(active_ts) = tilesets
             .iter()
@@ -288,161 +303,139 @@ fn render_installed_tab(
     egui::ScrollArea::vertical()
         .auto_shrink(false)
         .show(ui, |ui| {
-            // Header row
-            egui::Grid::new("installed_header")
-                .num_columns(7)
-                .striped(false)
-                .spacing([12.0, 4.0])
-                .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new("Region")
-                            .color(theme::TEXT_SECTION)
-                            .strong(),
-                    );
-                    ui.label(
-                        egui::RichText::new("Zoom")
-                            .color(theme::TEXT_SECTION)
-                            .strong(),
-                    );
-                    ui.label(
-                        egui::RichText::new("Tiles")
-                            .color(theme::TEXT_SECTION)
-                            .strong(),
-                    );
-                    ui.label(
-                        egui::RichText::new("Size")
-                            .color(theme::TEXT_SECTION)
-                            .strong(),
-                    );
-                    ui.label(
-                        egui::RichText::new("Seeding")
-                            .color(theme::TEXT_SECTION)
-                            .strong(),
-                    );
-                    ui.label(
-                        egui::RichText::new("Map")
-                            .color(theme::TEXT_SECTION)
-                            .strong(),
-                    );
-                    ui.label(
-                        egui::RichText::new("Actions")
-                            .color(theme::TEXT_SECTION)
-                            .strong(),
-                    );
-                    ui.end_row();
-                });
+            for ts in tilesets.iter_mut() {
+                if !filter.is_empty() && !ts.region_name.to_lowercase().contains(filter) {
+                    continue;
+                }
+                render_installed_map_card(ui, ts, actions, petal_map, active_petal_id, local_role);
+                ui.add_space(6.0);
+            }
+        });
+}
 
-            ui.separator();
-
-            egui::Grid::new("installed_grid")
-                .num_columns(7)
-                .striped(true)
-                .spacing([12.0, 6.0])
-                .show(ui, |ui| {
-                    for ts in tilesets.iter_mut() {
-                        if !filter.is_empty() && !ts.region_name.to_lowercase().contains(filter) {
-                            continue;
-                        }
-
-                        ui.label(&ts.region_name);
-                        ui.label(format!("{}-{}", ts.zoom_range.0, ts.zoom_range.1));
-                        ui.label(ts.tile_count.to_string());
-                        ui.label(format_size(ts.size_bytes));
-
-                        // Seeding toggle
-                        let mut seeding = ts.seeding_enabled;
-                        if ui
-                            .checkbox(&mut seeding, "")
-                            .on_hover_text("Allow other peers to download tiles from your copy")
-                            .changed()
-                        {
-                            ts.seeding_enabled = seeding;
-                            actions
-                                .push(UiAction::HexonToggleSeeding(ts.hexon_id.clone(), seeding));
-                        }
-
-                        // Map column: set/clear this tileset as the active petal's map.
-                        let is_active_map =
-                            petal_map.tileset_ids.iter().any(|id| id == &ts.hexon_id);
-                        if is_active_map {
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        egui::RichText::new("Active map \u{2713}")
-                                            .color(theme::TEXT_BRIGHT),
-                                    )
-                                    .fill(theme::BG_BUTTON_ACTIVE),
-                                )
-                                .on_hover_text("Click to clear this petal's map")
-                                .clicked()
-                            {
-                                if let Some(pid) = active_petal_id {
-                                    actions.push(UiAction::PetalSetMap {
-                                        petal_id: pid.to_string(),
-                                        tileset: None,
-                                    });
-                                }
-                            }
-                        } else {
-                            let response = ui
-                                .add_enabled(
-                                    active_petal_id.is_some(),
-                                    egui::Button::new("Set petal map").fill(theme::BG_BUTTON),
-                                )
-                                .on_disabled_hover_text("Navigate to a petal first");
-                            if response.clicked() {
-                                if let Some(pid) = active_petal_id {
-                                    actions.push(UiAction::PetalSetMap {
-                                        petal_id: pid.to_string(),
-                                        tileset: Some(ts.clone()),
-                                    });
-                                }
-                            }
-                        }
-
-                        // Remove button with confirmation
-                        let is_pending = pending_remove.as_ref() == Some(&ts.hexon_id);
-                        if is_pending {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "Remove {}? ({} freed)",
-                                        ts.region_name,
-                                        format_size(ts.size_bytes),
-                                    ))
-                                    .small()
-                                    .color(theme::TEXT_MUTED),
-                                );
-                                if ui
-                                    .add(egui::Button::new("Yes").fill(theme::BG_DANGER))
-                                    .clicked()
-                                {
-                                    actions.push(UiAction::HexonRemoveTileset(ts.hexon_id.clone()));
-                                    *pending_remove = None;
-                                }
-                                if ui
-                                    .add(egui::Button::new("No").fill(theme::BG_BUTTON))
-                                    .clicked()
-                                {
-                                    *pending_remove = None;
-                                }
-                            });
-                        } else if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new("Remove").color(egui::Color32::WHITE),
-                                )
-                                .fill(theme::BG_DANGER),
-                            )
-                            .clicked()
-                        {
-                            *pending_remove = Some(ts.hexon_id.clone());
-                        }
-
-                        ui.end_row();
+/// One installed-map card: a clipped/copyable region name + seeding toggle
+/// on the header line, a plain stats line, then the Map and Remove actions —
+/// see `render_installed_tab`'s doc comment (M-01).
+fn render_installed_map_card(
+    ui: &mut egui::Ui,
+    ts: &mut InstalledTilesetDto,
+    actions: &mut Vec<UiAction>,
+    petal_map: &mut PetalMapState,
+    active_petal_id: Option<&str>,
+    local_role: &LocalUserRole,
+) {
+    egui::Frame::NONE
+        .fill(theme::BG_BUTTON)
+        .inner_margin(egui::Margin::same(8))
+        .corner_radius(4.0)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                clipped_value(ui, &ts.region_name, theme::TEXT_BRIGHT);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut seeding = ts.seeding_enabled;
+                    if ui
+                        .checkbox(&mut seeding, "Seed")
+                        .on_hover_text("Allow other peers to download tiles from your copy")
+                        .changed()
+                    {
+                        ts.seeding_enabled = seeding;
+                        actions.push(UiAction::HexonToggleSeeding(ts.hexon_id.clone(), seeding));
                     }
                 });
+            });
+            ui.label(
+                egui::RichText::new(format!(
+                    "Zoom {}-{} \u{00b7} {} tiles \u{00b7} {}",
+                    ts.zoom_range.0,
+                    ts.zoom_range.1,
+                    ts.tile_count,
+                    format_size(ts.size_bytes),
+                ))
+                .small()
+                .color(theme::TEXT_MUTED),
+            );
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                // M-03: while THIS petal has a correlated set in flight, show
+                // "Applying…" in place of the optimistic "Active map ✓" so a
+                // denial (handled by `handle_petal_terrain_set_failed`) never
+                // looks like it already landed (ui_ux §6).
+                let is_active_map = petal_map.tileset_ids.iter().any(|id| id == &ts.hexon_id);
+                if is_active_map && petal_map.pending_set.is_some() {
+                    ui.add_enabled(
+                        false,
+                        egui::Button::new("Applying\u{2026}").fill(theme::BG_BUTTON),
+                    );
+                } else if is_active_map {
+                    let reason = map_action_denial_reason(local_role, active_petal_id);
+                    let resp = role_gated(
+                        ui,
+                        local_role.can_edit(),
+                        &reason,
+                        egui::Button::new(
+                            egui::RichText::new("Active map \u{2713}").color(theme::TEXT_BRIGHT),
+                        )
+                        .fill(theme::BG_BUTTON_ACTIVE),
+                    )
+                    .on_hover_text("Click to clear this petal's map");
+                    if resp.clicked() {
+                        if let Some(pid) = active_petal_id {
+                            actions.push(UiAction::PetalSetMap {
+                                petal_id: pid.to_string(),
+                                tileset: None,
+                            });
+                        }
+                    }
+                } else {
+                    let reason = map_action_denial_reason(local_role, active_petal_id);
+                    let resp = role_gated(
+                        ui,
+                        local_role.can_edit() && active_petal_id.is_some(),
+                        &reason,
+                        egui::Button::new("Set petal map").fill(theme::BG_BUTTON),
+                    );
+                    if resp.clicked() {
+                        if let Some(pid) = active_petal_id {
+                            actions.push(UiAction::PetalSetMap {
+                                petal_id: pid.to_string(),
+                                tileset: Some(ts.clone()),
+                            });
+                        }
+                    }
+                }
+
+                // M-04: "Remove" → "Confirm remove" (two-step), gated the same
+                // way as Set/Clear above (X-02).
+                if local_role.can_edit() {
+                    if confirm_button(ui, ("hexon-remove", ts.hexon_id.as_str()), "Remove", "Confirm remove")
+                    {
+                        actions.push(UiAction::HexonRemoveTileset(ts.hexon_id.clone()));
+                    }
+                } else {
+                    let reason = role_denial_reason(local_role, "Editor", None);
+                    role_gated(
+                        ui,
+                        false,
+                        &reason,
+                        egui::Button::new(egui::RichText::new("Remove").color(egui::Color32::WHITE))
+                            .fill(theme::BG_DANGER),
+                    );
+                }
+            });
         });
+}
+
+/// The Map action's disabled-hover reason: "navigate to a petal first" when
+/// there is no active petal (not a role issue), otherwise the role denial.
+fn map_action_denial_reason(local_role: &LocalUserRole, active_petal_id: Option<&str>) -> String {
+    if active_petal_id.is_none() {
+        "Navigate to a petal first".to_string()
+    } else if !local_role.can_edit() {
+        role_denial_reason(local_role, "Editor", None)
+    } else {
+        String::new()
+    }
 }
 
 /// World-scale presets: (label, world units per real meter). `1:N` → scale `1/N`.

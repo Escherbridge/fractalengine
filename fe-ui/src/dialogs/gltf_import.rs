@@ -1,19 +1,52 @@
 //! GLTF model import dialog.
+//!
+//! D-06: Import used to close unconditionally even on empty input, and a
+//! failed import was log-only — "succeeding" visibly while doing nothing.
+//! Import is now disabled until [`import_enabled`] holds, and a click keeps
+//! the dialog open with a spinner ("Importing…") rather than closing it —
+//! see the NEEDS-WIRING note at the bottom of this file for the one piece
+//! this slice cannot finish itself (closing on the DB reply).
 
 use bevy_egui::egui;
 
 use super::ActiveDialog;
-use crate::actions::UiManager;
+use crate::actions::{send_or_toast, UiManager};
 use crate::navigation_manager::NavigationManager;
+use crate::panels::widgets;
 use crate::theme;
 use fe_runtime::messages::DbCommand;
+
+/// D-06: Import may fire only with a non-blank path AND an active petal —
+/// importing into nothing silently did nothing before this.
+pub(crate) fn import_enabled(file_path: &str, petal_id: &str) -> bool {
+    !file_path.trim().is_empty() && !petal_id.trim().is_empty()
+}
+
+/// How long an "Importing…" lock is honored before this dialog gives up
+/// waiting and re-enables itself — a safety net for the case where no
+/// `GltfImported` reply ever arrives (channel closed, DB thread crashed), so
+/// the dialog can never get stuck locked forever. A real reply ordinarily
+/// closes the dialog long before this (NEEDS-WIRING below).
+const IMPORT_LOCK_TIMEOUT_SECONDS: f64 = 30.0;
 
 pub fn render_gltf_import_dialog(
     ctx: &egui::Context,
     ui_mgr: &mut UiManager,
     nav: &NavigationManager,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
+    world_scale: f64,
 ) {
+    let petal_id = nav.active_petal_id.clone().unwrap_or_default();
+
+    // Read before the `active_dialog` sub-borrow below, same reasoning as
+    // `join.rs::render_join_dialog` (the borrow of `ui_mgr.active_dialog`
+    // through `file_path_buf`/`name_buf`/`position` must end before `ui_mgr`
+    // as a whole can be passed to `send_or_toast`/`close_dialog` again).
+    let importing_id = egui::Id::new("gltf_import_in_flight_since");
+    let now = ctx.input(|i| i.time);
+    let importing_since: Option<f64> = ctx.data(|d| d.get_temp(importing_id));
+    let importing = importing_since.is_some_and(|t| now - t < IMPORT_LOCK_TIMEOUT_SECONDS);
+
     let ActiveDialog::GltfImport {
         ref mut file_path_buf,
         ref mut name_buf,
@@ -23,11 +56,12 @@ pub fn render_gltf_import_dialog(
         return;
     };
 
+    let can_import = import_enabled(file_path_buf, &petal_id);
     let mut close = false;
+    let mut import_request: Option<DbCommand> = None;
 
     let mut still_open = true;
-    egui::Window::new("Import GLTF Model")
-        .open(&mut still_open)
+    let mut window = egui::Window::new("Import GLTF Model")
         .collapsible(false)
         .resizable(false)
         .default_width(340.0)
@@ -39,8 +73,12 @@ pub fn render_gltf_import_dialog(
                 .inner_margin(egui::Margin::same(12))
                 .corner_radius(6.0)
                 .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM)),
-        )
-        .show(ctx, |ui| {
+        );
+    if !importing {
+        window = window.open(&mut still_open);
+    }
+    window.show(ctx, |ui| {
+        ui.add_enabled_ui(!importing, |ui| {
             ui.label(
                 egui::RichText::new("File Path:")
                     .small()
@@ -93,48 +131,97 @@ pub fn render_gltf_import_dialog(
                 for (axis, val) in ["X", "Y", "Z"].iter().zip(position.iter()) {
                     ui.label(egui::RichText::new(*axis).small().color(theme::TEXT_AXIS));
                     ui.label(
-                        egui::RichText::new(format!("{:.2}", val))
-                            .monospace()
-                            .small(),
+                        egui::RichText::new(format!(
+                            "{:.2} m",
+                            widgets::world_to_meters(*val, world_scale)
+                        ))
+                        .monospace()
+                        .small(),
                     );
-                }
-            });
-
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .add(egui::Button::new("Import").fill(theme::BG_SAVE))
-                    .clicked()
-                {
-                    let file_path = file_path_buf.trim().to_string();
-                    let name = name_buf.trim().to_string();
-                    let petal_id = nav.active_petal_id.clone().unwrap_or_default();
-                    if !file_path.is_empty() && !petal_id.is_empty() {
-                        db_tx
-                            .send(DbCommand::ImportGltf {
-                                petal_id,
-                                name: if name.is_empty() {
-                                    "Imported Model".to_string()
-                                } else {
-                                    name
-                                },
-                                file_path,
-                                position: *position,
-                            })
-                            .ok();
-                    }
-                    close = true;
-                }
-                if ui
-                    .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON))
-                    .clicked()
-                {
-                    close = true;
                 }
             });
         });
 
+        if importing {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(14.0));
+                ui.label("Importing\u{2026}");
+            });
+        }
+
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    !importing && can_import,
+                    egui::Button::new("Import").fill(theme::BG_SAVE),
+                )
+                .clicked()
+            {
+                import_request = Some(DbCommand::ImportGltf {
+                    petal_id: petal_id.clone(),
+                    name: if name_buf.trim().is_empty() {
+                        "Imported Model".to_string()
+                    } else {
+                        name_buf.trim().to_string()
+                    },
+                    file_path: file_path_buf.trim().to_string(),
+                    position: *position,
+                });
+            }
+            if ui
+                .add_enabled(!importing, egui::Button::new("Cancel").fill(theme::BG_BUTTON))
+                .clicked()
+            {
+                close = true;
+            }
+        });
+    });
+
+    // The sub-borrow into `ui_mgr.active_dialog` ended above, so `ui_mgr` as
+    // a whole can be mutated again from here down.
+    if let Some(cmd) = import_request {
+        if send_or_toast(db_tx, cmd, ui_mgr, now, "import the model") {
+            ctx.data_mut(|d| d.insert_temp(importing_id, now));
+        }
+    }
+
     if !still_open || close {
+        ctx.data_mut(|d| d.remove::<f64>(importing_id));
         ui_mgr.close_dialog();
+    }
+}
+
+// NEEDS-WIRING: `fe-ui/src/panels/mod.rs` (gardener_console's call site)
+// needs to pass the active petal's real `world_scale` (the same
+// `PetalMapState.world_scale` other dialogs already thread) instead of a
+// literal here, and `fe-ui/src/verse_manager/db_results/mod.rs`'s
+// `GltfImported` arm should call `ui_mgr.close_dialog()` while
+// `ActiveDialog::GltfImport` is still the active dialog, so the dialog
+// closes on the real reply instead of riding out the
+// `IMPORT_LOCK_TIMEOUT_SECONDS` safety net above.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gltf_import_disabled_without_petal_or_path() {
+        let cases = [
+            ("", "", false, "neither set"),
+            ("model.glb", "", false, "no active petal"),
+            ("", "petal-1", false, "no path"),
+            ("model.glb", "petal-1", true, "both set"),
+            ("   ", "petal-1", false, "whitespace-only path is still blank"),
+            ("model.glb", "   ", false, "whitespace-only petal id is still blank"),
+        ];
+        for (file_path, petal_id, expected, why) in cases {
+            assert_eq!(
+                import_enabled(file_path, petal_id),
+                expected,
+                "{why}: import_enabled({file_path:?}, {petal_id:?})"
+            );
+        }
     }
 }

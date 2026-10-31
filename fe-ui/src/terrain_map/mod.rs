@@ -43,6 +43,23 @@ pub struct PetalMapState {
     /// layer's `visible`/`opacity`) and round-trip via `SetPetalTerrain`
     /// without clobbering unrelated fields. `None` when no map is assigned.
     pub terrain_json: Option<serde_json::Value>,
+    /// An in-flight, GUI-correlated `SetPetalTerrain` this petal is waiting
+    /// to hear back on (M-03: petal-map truth). `Some` while the Hexon
+    /// Manager should show "Applying…" instead of the optimistic result;
+    /// cleared by a matching `PetalTerrainLoaded` (confirmed) or rolled back
+    /// by a matching `PetalTerrainSetFailed` (denied). See AGENTS.md
+    /// §terrain-map "Petal-map truth".
+    pub pending_set: Option<PendingMapSet>,
+}
+
+/// The pre-send snapshot a correlated `SetPetalTerrain` rolls back to on
+/// `PetalTerrainSetFailed` — captured by `actions::hexon::set_petal_map`/
+/// `set_petal_map_scale` before their optimistic update.
+#[derive(Debug, Clone)]
+pub struct PendingMapSet {
+    pub correlation_id: String,
+    pub previous_tileset_ids: Vec<String>,
+    pub previous_world_scale: f64,
 }
 
 impl Default for PetalMapState {
@@ -54,6 +71,7 @@ impl Default for PetalMapState {
             world_scale: 1.0,
             scale_bounds: None,
             terrain_json: None,
+            pending_set: None,
         }
     }
 }

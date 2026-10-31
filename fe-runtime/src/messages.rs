@@ -1464,6 +1464,12 @@ pub enum DbResult {
         record_id: String,
         outcome: ReplicatedRowOutcome,
     },
+    /// Typed failure of `JoinVerseByInvite` (polish_lane_20261031 OD-2/M-03):
+    /// GUI-only today (no correlation id — `JoinVerseByInvite` carries none),
+    /// so this always reaches fe-ui's dispatcher, never an API waiter. Lets
+    /// the Join dialog show the failure inline instead of a generic status-bar
+    /// `Error` (see fe-ui `verse_manager/AGENTS.md` §db-results).
+    JoinVerseFailed { error: String },
 }
 
 /// Field definition info for UI display.

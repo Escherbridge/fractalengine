@@ -1061,15 +1061,74 @@ style parity holds by construction, not by coincidence.
     no longer auto-settle a contest through the unconditional
     locally-authoritative path; a contested own replay instead enters the
     normal claim path under the local DID (test:
-    `a_stale_own_replay_cannot_settle_a_contested_petal`). Both capped lists
-    this seam owns now refuse growth at the cap instead of evicting — a
-    refused claim's fractal is remembered in `contested_claimed_fractals`
-    until the contest settles, and the 4-deep mapping-history rollback
-    stack never evicts its locally-authoritative layer or the sole record
-    of a distinct fractal — so neither cap can let a flood settle (or roll
-    back) past proof it hasn't earned (tests:
-    `a_claim_flood_cannot_evict_a_contested_fractal_from_the_settlement_proof`,
-    `a_full_mapping_history_cannot_rotate_out_the_locally_authoritative_layer`).
+    `a_stale_own_replay_cannot_settle_a_contested_petal`). The contest's
+    claim cap refuses the incoming claim instead of evicting an existing one,
+    and the refusal is remembered in `refused_contest_claims` so a flood can
+    never settle past proof it hasn't earned (test:
+    `a_claim_flood_cannot_evict_a_contested_fractal_from_the_settlement_proof`).
+    R6b's mapping-history cap also refused moves outright; OF-13 below
+    replaced that.
+  - *OF-13 hardening (polish lane W1-S5, 2026-10-31).* Three fail-closed
+    fidelity defects in the R6b machinery, fixed with the review's preferred
+    shapes:
+    - *Position-independent lapse check (OF-13a/c).* Each `PetalMapping`
+      stores `from_fractal`, the scope a MOVE left (`None` for a first
+      mapping, a different-author refresh, a settled contest winner, or a
+      local write; a same-author refresh inherits it).
+      `top_mapping_lapsed` requires the author's Editor+ at `fractal_id` and
+      at `from_fractal`. Before this it read the fractal of whatever layer
+      sat below on the stack. Cap eviction could change that layer, so a
+      fully authorized move could be judged against an older scope and
+      rolled back on the next role change. Because the check no longer
+      depends on the stack, `push_mapping_layer` no longer protects layers
+      and has no refusal path. It always applies the move, then evicts the
+      oldest INBOUND layer below the incumbent. It never evicts the
+      locally-authoritative base (only index 0 can have `author: None`),
+      the new top, or the incumbent the top replaced. Before this, the
+      evict scan could remove that incumbent, so a lapse rollback restored
+      an older mapping. Rollback still pops one layer at a time and
+      re-verdicts each exposed layer against its own `from_fractal`. The
+      depth is bounded: if the layer a move replaced was evicted under the
+      cap, rollback falls through to the next surviving layer (ultimately
+      the local base) or unmaps the petal. Every layer it lands on still
+      passes its own authority check. Tests:
+      `lapse_rollback_restores_replaced_mapping_not_older_layer`,
+      `authorized_move_applies_when_all_history_layers_protected`.
+    - *Refused claims are pruned when their author lapses (OF-13b).*
+      `refused_contest_claims` maps each contested petal to `author ->
+      fractal`. It keeps one entry per author: iroh-docs keeps one entry per
+      `(key, author)`, so an author's earlier refused row is already
+      superseded. That bounds the set by the number of distinct authorized
+      authors. Before this it was a plain set of fractal ids, which grew with
+      every distinct id. `settle_contested_petal` drops entries whose author
+      no longer holds Editor+ at the claimed fractal, the same lapse
+      judgment its partition applies to admitted claims, so a since-revoked
+      refused author stops blocking settlement. The map is cleared wherever
+      `contested_petals` is removed, including the locally-authoritative
+      branch of `admit_petal_entry`, which before this left it stale. Only
+      the author can replace their own entry, so the OF-11b guarantee (a
+      victim's refused fractal stays owed) holds. Test:
+      `revoked_author_refused_fractal_stops_blocking_settlement`.
+    - *Re-verdict is author-indexed (R6 efficiency note).* `rematerialize`
+      collects every DID that fell in any cascade pass (`ChangedDids::fallen`
+      — a superset of the net fall). `reverdict_petal_mappings` then
+      re-checks only petals whose current top's author is in that set. This
+      is sound: `role_at` reads only `effective`, plus `default_access`
+      (capped at Viewer, so it can never satisfy Editor). A top that was
+      valid can therefore only lapse when its author's role falls. Every
+      top is valid when it becomes top (admitted, settled, local, or
+      exposed by a pop and checked by the same loop). The no-owner branch
+      passes `None` and re-checks every petal. Contested petals are always
+      re-judged, because a RISE can settle them.
+    - *OF-12b not applied (accepted residual stands).* The carried idea
+      was to require verse-level authority to un-map a petal that has
+      admitted holders. It re-opens the OF-10a squat: a squatter who maps a
+      petal under its own fractal can admit its own `__holders` rows there
+      (it is Editor+ at that scope), and the genuine row then cannot contest
+      it. Restricting the check to verse-scoped holders only moves the
+      problem, because the owner's holders freeze a squat until the owner
+      re-asserts the row. This needs a design decision, not a leaf fix. The
+      availability residual above (fail-closed, no bypass) is unchanged.
 - **Quarantine (the `__shards` gate's retry seam).** A gated row that
   cannot be judged yet — the author's role hasn't converged, or the row's
   petal is unknown — is held in a capped, drop-oldest FIFO (1024/verse,

@@ -1434,10 +1434,10 @@ fn inbound_asset_shape_violation(row: &serde_json::Value, record_id: &str) -> Op
     if !hash_ok {
         return Some("content_hash is absent or not a 32-byte hex digest");
     }
-    if !row
+    if row
         .get("size_bytes")
         .and_then(|v| v.as_i64())
-        .is_some_and(|size| size >= 0)
+        .is_none_or(|size| size < 0)
     {
         return Some("size_bytes is absent or negative");
     }

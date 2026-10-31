@@ -211,6 +211,32 @@ is set.
   *display* only — the copy button always carries the full value.
 - **Must be rendered OUTSIDE an `egui::Grid` cell.** A Grid cell ignores
   `set_max_width`, which is exactly what let a giant value blow the panel out.
+- **Role gating (X-02, OD-3).** `role_gated(ui, allowed, reason, widget) ->
+  Response` wraps `ui.add_enabled` + `on_disabled_hover_text`: a disallowed
+  control renders disabled with a hover explanation rather than hidden, so it
+  stays discoverable. `role_denial_reason(role, needed, verse_name) -> String`
+  builds that explanation ("`<needed>` role needed — you are `<role>`[ in
+  `<verse>`]"; an unresolved role, X-03, reads "—"). This is advisory UI only
+  — the real guard is the DB thread's `fe-policy` gate; never trust a
+  client-side role to authorize anything.
+- **Two-step destructive confirm (X-06).** `confirm_button(ui, id_salt, label,
+  confirm_label) -> bool` extracts the inspector token-revoke pattern
+  (`inspector.rs`'s Revoke/Confirm Revoke) into one reusable widget: first
+  click arms (shows `label`), a second click within 4s on `confirm_label`
+  fires; the arm disarms on timeout or on any click elsewhere this frame.
+  State lives in egui temp memory keyed by `id_salt` — no extra struct field
+  needed per call site. Every new single-click-destroys site should call
+  this instead of hand-rolling the pending-flag dance (see
+  `fe-ui/src/dialogs/AGENTS.md` §destructive-confirm, which this widget is
+  now the canonical implementation of).
+- **Cross-module reach (CONTRACT-DRIFT, see track notes).** `widgets` is
+  declared `mod widgets;` (private to `panels`) in `panels/mod.rs`, but
+  `dialogs/hexon_manager.rs`, `dialogs/gltf_import.rs` and others need
+  `crate::panels::widgets::{role_gated, confirm_button, role_denial_reason,
+  clipped_value, world_to_meters, ...}` from outside `panels`. `panels/mod.rs`
+  is unowned in Wave 1 (first owned by W3-S1), so this file alone can't flip
+  the declaration to `pub(crate) mod widgets;` — the wave's GATE must apply
+  that one-line fix as a compile-error reconciliation.
 
 ## §inspector-units
 

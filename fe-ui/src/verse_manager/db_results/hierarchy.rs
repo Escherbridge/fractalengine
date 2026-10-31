@@ -15,12 +15,55 @@ pub(super) fn handle_seeded(db_sender: &DbCommandSender) {
     }
 }
 
-/// `VerseJoined`: reload the hierarchy to pick up the joined verse.
-pub(super) fn handle_verse_joined(db_sender: &DbCommandSender) {
+/// `VerseJoined`: if a Join dialog is awaiting this result (OD-2/M-03), close
+/// it, navigate into the joined verse and toast success; always reload the
+/// hierarchy so the joined verse's full tree materializes regardless of who
+/// triggered the join (GUI dialog, or an external path with no pending flag).
+pub(super) fn handle_verse_joined(
+    verse_id: &str,
+    verse_name: &str,
+    db_sender: &DbCommandSender,
+    nav: &mut NavigationManager,
+    ui_mgr: &mut crate::actions::UiManager,
+    now: f64,
+) {
+    if ui_mgr.join_request.pending {
+        ui_mgr.join_request.pending = false;
+        ui_mgr.close_dialog();
+        nav.navigate_to_verse(verse_id, verse_name);
+        ui_mgr.show_toast(format!("Joined {verse_name}"), now);
+    }
     if db_sender.0.send(DbCommand::LoadHierarchy).is_err() {
         bevy::log::error!(
             "db_sender channel closed after VerseJoined — DB thread may have crashed"
         );
+    }
+}
+
+/// `JoinVerseFailed` (OD-2/M-03): a failed Join dialog reports inline while
+/// it is still open and pending; a stale/foreign failure (the dialog was
+/// already closed, or Join was triggered some other way) surfaces as a
+/// general error notice instead of being silently dropped.
+pub(super) fn handle_join_verse_failed(
+    error: &str,
+    ui_mgr: &mut crate::actions::UiManager,
+    now: f64,
+) {
+    // Join has no active verse/role yet, so the denial context is nominal —
+    // `humanize_db_error` only uses it for the "permission denied" branch,
+    // which a join failure (invalid/expired/already-a-member invite) never hits.
+    let humanized = crate::notice::humanize_db_error(
+        error,
+        &crate::notice::DenialContext {
+            role_label: "Visitor",
+            verse_name: None,
+        },
+    );
+    if ui_mgr.join_request.pending {
+        ui_mgr.join_request.pending = false;
+        ui_mgr.join_request.error = Some(humanized);
+    } else {
+        ui_mgr.show_error(humanized, now);
     }
 }
 

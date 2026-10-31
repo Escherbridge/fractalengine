@@ -18,6 +18,37 @@
   `DbResult::PetalTerrainLoaded`, reset to `None` on petal switch in
   `load_petal_terrain_on_nav_change`.
 
+### Petal-map truth (M-03)
+
+`PetalMapState.pending_set: Option<PendingMapSet>` tracks one in-flight,
+GUI-correlated `SetPetalTerrain` for the active petal. `actions::hexon::
+set_petal_map`/`set_petal_map_scale` mint a fresh id via
+`actions::query::next_ui_query_id("petalmap")`, snapshot the pre-send
+`tileset_ids`/`world_scale` into `pending_set` right alongside their
+existing optimistic update, and send `correlation_id: Some(id)` instead of
+`None` — a GUI-originated denial now comes back as the typed
+`DbResult::PetalTerrainSetFailed` (the DB handler already branches on
+`Some`/`None`; this just opts the GUI into the `Some` arm) rather than the
+generic, un-routable `DbResult::Error`.
+
+`verse_manager/db_results/terrain.rs::handle_petal_terrain_set_failed`
+(called on that result) checks the echoed id against `pending_set`: a match
+rolls `tileset_ids`/`world_scale` back to the captured snapshot, clears
+`pending_set`, and raises `UiManager::show_error` with
+`notice::humanize_db_error`; a non-matching id (a different in-flight set,
+or a stale echo) is ignored outright — it must never roll back a change it
+didn't cause. `handle_petal_terrain_loaded`'s new `correlation_id: Option<&str>`
+parameter clears a *matching* `pending_set` on the confirming echo, checked
+before the active-petal gate so the row can't get stuck "Applying…" forever
+just because the user navigated away mid-write.
+
+`dialogs/hexon_manager.rs`'s Installed tab renders one card per map (M-01;
+a 7-column `Grid` doesn't fit a 440 px side panel) and shows "Applying…" in
+place of "Active map ✓" while `pending_set.is_some()` for that petal. Set/
+Clear/Remove are `role_gated` (X-02) and Remove is a `confirm_button`
+two-step (M-04) — both from `panels::widgets` (owned by the sibling W1-S4
+slice; see that slice's AGENTS.md entry).
+
 ### Terrain scale controls
 
 The Hexon Manager's Installed tab (`dialogs/hexon_manager.rs::render_scale_controls`)

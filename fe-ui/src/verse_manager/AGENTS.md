@@ -79,10 +79,16 @@ now a thin dispatcher (`db_results/mod.rs`) over one `handle_*` function per
 `DbResult` variant, grouped by domain:
 
 - `hierarchy.rs` — tree structure: `Seeded`, `HierarchyLoaded`,
-  `DatabaseReset`, `VerseJoined`, `Verse/Fractal/PetalCreated`,
+  `DatabaseReset`, `VerseJoined`, `JoinVerseFailed`, `Verse/Fractal/PetalCreated`,
   `EntityRenamed`, `EntityDeleted`, and `ElevatedQueryResult` (an API
   `/query/elevated` write with `changed_rows > 0` has no typed result the
   tree could apply, so it reloads; the result still reaches `try_deliver`).
+  `VerseJoined`/`JoinVerseFailed` (polish_lane_20261031 OD-2/M-03) negotiate
+  with `UiManager.join_request` (W1-S1's contract): while `pending`, success
+  closes the dialog + navigates + toasts, and a failure writes
+  `join_request.error` for the dialog to render inline instead of a toast;
+  without a pending dialog a failure still reaches the user as a general
+  error notice (`ui_mgr.show_error`) rather than being dropped.
 - `nodes.rs` — single-node lifecycle: `GltfImported`, `NodeCreated` (pen
   auto-create flush + Paths-tab re-query), `NodeDeleted`.
 - `roles.rs` — invites, peer roles, local role, log-only acks, and (M2/F6)
@@ -100,7 +106,12 @@ now a thin dispatcher (`db_results/mod.rs`) over one `handle_*` function per
 - `query.rs` — GUI `QueryResult`/`QueryFailed` routed by request id
   (`route_query_reply`; claimed → `continue`, unclaimed → `try_deliver`),
   the legacy uncorrelated flag-priority claim, and `Error`'s pen-create
-  cleanup (fe-ui/src/AGENTS.md §gis-query-ui).
+  cleanup (fe-ui/src/AGENTS.md §gis-query-ui). X-01 (polish_lane_20261031):
+  `handle_error` ALSO turns every bare `DbResult::Error` into
+  `ui_mgr.show_error(humanize_db_error(msg, &ctx))` (`ctx` built from
+  `LocalUserRole` + the active verse name) — previously these only reached
+  the log, so a denied command (e.g. a GUI `SetPetalTerrain`) silently
+  failed with no UI trace beyond a vanishing toast at the old call site.
 - `fields.rs` / `terrain.rs` — field-def lists, petal terrain docs. `terrain.rs`
   also rehydrates `ProposalEditState` (5th param via DescriptorCaches.proposal_state)
   and, since p2p_asset_streaming S6, handles `PetalRenderDistanceLoaded`
@@ -108,7 +119,12 @@ now a thin dispatcher (`db_results/mod.rs`) over one `handle_*` function per
   spawner through `ResidencyBudget::render_distance_for`). `mod.rs`'s own
   `ReplicatedRowApplied { table: "petal", outcome: Applied, .. }` arm
   re-requests `GetPetalRenderDistance` so a peer's change lands without a
-  full hierarchy reload.
+  full hierarchy reload. M-03 (polish_lane_20261031): `mod.rs` now threads
+  `correlation_id.as_deref()` into `handle_petal_terrain_loaded` (6th param)
+  and dispatches the new `PetalTerrainSetFailed` to
+  `handle_petal_terrain_set_failed` — both calls into W1-S3's contract
+  shape; the rollback/`PetalMapState.pending_set` logic lives in
+  `terrain_map/AGENTS.md`, not here.
 
 **`DescriptorCaches` is also the SystemParam-overflow valve (M2/F6).**
 `apply_db_results` sits at Bevy's 16-`SystemParam` ceiling, so any new

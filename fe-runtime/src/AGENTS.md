@@ -308,6 +308,17 @@ order:
   `ReplyKind::PetalTerrainSet` is mapped ONLY for a `Some` echo (PlacedAsset
   precedent): an uncorrelated `PetalTerrainLoaded` (GUI set echo, any Get)
   stays in the `PetalTerrain` Get family and can never satisfy an API set.
+  **Join failures (polish_lane_20261031 OD-2/M-03).** `JoinVerseByInvite`
+  carries no `correlation_id` at all (GUI-only command, no API door calls
+  it), so its failure reply, `DbResult::JoinVerseFailed { error }`, is not a
+  "correlated family" entry above — it is simply never mapped by
+  `reply_kind_of_result`/`correlation_of_result` (falls to their `_ => None`
+  arms) and so never reaches `try_deliver`'s API waiters. It exists purely
+  so fe-ui's Join dialog can distinguish "the join failed" from an unrelated
+  bare `Error` and show the failure inline instead of a vanishing toast
+  (fe-ui `verse_manager/AGENTS.md` §db-results). Do not add a
+  `correlation_id` to it without also giving `JoinVerseByInvite` one — an
+  id-bearing result with no way to mint/thread an id would be unreachable.
   **Bevy fan-out decision:** a `DbResult` is never "taken" by the API path —
   the relay's `deliver_pending_api_results` and fe-ui's `apply_db_results`
   both read the Bevy `Messages<DbResult>` stream and only *clone* into

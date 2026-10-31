@@ -108,7 +108,22 @@ pub(super) fn apply_db_results(
                     &mut caches.ts_settings,
                 )
             }
-            DbResult::VerseJoined { .. } => hierarchy::handle_verse_joined(&db_sender),
+            DbResult::VerseJoined {
+                verse_id,
+                verse_name,
+            } => hierarchy::handle_verse_joined(
+                verse_id,
+                verse_name,
+                &db_sender,
+                &mut nav,
+                &mut ui_mgr,
+                caches.time.elapsed_secs_f64(),
+            ),
+            // OD-2/M-03: typed Join failure — inline in the dialog while
+            // pending, else a general error notice (see hierarchy.rs).
+            DbResult::JoinVerseFailed { error } => {
+                hierarchy::handle_join_verse_failed(error, &mut ui_mgr, caches.time.elapsed_secs_f64())
+            }
             // Still falls through to `try_deliver`: the API caller awaits it.
             DbResult::ElevatedQueryResult { changed_rows, .. } => {
                 hierarchy::handle_elevated_query_result(*changed_rows, &db_sender)
@@ -353,7 +368,14 @@ pub(super) fn apply_db_results(
                 data,
                 correlation_id: None,
             } => query::handle_query_result(data, &mut gis_panel, &mut path_state, &mut inspector),
-            DbResult::Error(msg) => query::handle_error(msg, &mut path_state),
+            DbResult::Error(msg) => query::handle_error(
+                msg,
+                &mut path_state,
+                &mut ui_mgr,
+                &local_role,
+                &nav,
+                caches.time.elapsed_secs_f64(),
+            ),
             // Property handlers return `false` to skip `try_deliver` for stale/unselected results.
             DbResult::NodePropertiesLoaded {
                 node_id,
@@ -456,14 +478,39 @@ pub(super) fn apply_db_results(
             | DbResult::FieldDefDeleted { .. } => {}
             // Both GUI and API-initiated (correlated) sets apply here, so the
             // host's live terrain tracks every write (fe-runtime §api-reply-correlation).
+            // M-03: the correlation id is threaded through so a GUI-correlated
+            // echo (minted by `set_petal_map`) can clear `PetalMapState::pending_set`
+            // (W1-S3's rollback contract) — a foreign/API correlation is W1-S3's own
+            // concern inside the handler, not filtered here.
             DbResult::PetalTerrainLoaded {
-                petal_id, terrain, ..
+                petal_id,
+                terrain,
+                correlation_id,
             } => terrain::handle_petal_terrain_loaded(
                 petal_id,
                 terrain,
                 &nav,
                 &mut petal_map,
                 &mut caches.proposal_state,
+                correlation_id.as_deref(),
+            ),
+            // M-03: a correlated (GUI-minted) `SetPetalTerrain` failure — roll
+            // back the optimistic Maps-card update and explain the denial.
+            DbResult::PetalTerrainSetFailed {
+                petal_id,
+                error,
+                correlation_id,
+            } => terrain::handle_petal_terrain_set_failed(
+                petal_id,
+                error,
+                correlation_id,
+                &mut petal_map,
+                &mut ui_mgr,
+                &local_role,
+                nav.active_verse_id
+                    .as_deref()
+                    .map(|_| nav.active_verse_name.as_str()),
+                caches.time.elapsed_secs_f64(),
             ),
             // p2p_asset_streaming S6: both the GUI's own echo and a
             // ReplicatedRowApplied-triggered re-fetch (below) land here.
@@ -603,8 +650,78 @@ mod tests {
         let (tx, rx) = sender();
         hierarchy::handle_seeded(&tx);
         assert!(matches!(rx.try_recv(), Ok(DbCommand::LoadHierarchy)));
-        hierarchy::handle_verse_joined(&tx);
+        let mut nav = NavigationManager::default();
+        let mut ui = UiManager::default();
+        hierarchy::handle_verse_joined("v1", "V1", &tx, &mut nav, &mut ui, 0.0);
         assert!(matches!(rx.try_recv(), Ok(DbCommand::LoadHierarchy)));
+    }
+
+    /// OD-2/M-03: a pending Join dialog closes, navigates and toasts on a
+    /// successful `VerseJoined` — the hierarchy reload still always fires.
+    #[test]
+    fn join_success_navigates_and_toasts() {
+        let (tx, rx) = sender();
+        let mut nav = NavigationManager::default();
+        let mut ui = UiManager::default();
+        ui.join_request.pending = true;
+        ui.open_dialog(ActiveDialog::JoinDialog {
+            invite_buf: "fractalengine://invite/abc".into(),
+        });
+        hierarchy::handle_verse_joined("v2", "Joined Verse", &tx, &mut nav, &mut ui, 10.0);
+        assert_eq!(nav.active_verse_id.as_deref(), Some("v2"));
+        assert_eq!(nav.active_verse_name, "Joined Verse");
+        assert!(
+            matches!(ui.active_dialog, ActiveDialog::None),
+            "the Join dialog closes on success"
+        );
+        assert!(!ui.join_request.pending);
+        assert!(matches!(rx.try_recv(), Ok(DbCommand::LoadHierarchy)));
+        assert!(
+            ui.active_toast(10.0)
+                .is_some_and(|(msg, _)| msg.contains("Joined Verse")),
+            "a success toast names the joined verse"
+        );
+    }
+
+    /// OD-2/M-03: a `JoinVerseFailed` while the dialog is pending reports
+    /// inline (the dialog stays open) rather than vanishing into a toast.
+    #[test]
+    fn join_failure_keeps_dialog_open_with_inline_error() {
+        let mut ui = UiManager::default();
+        ui.join_request.pending = true;
+        ui.open_dialog(ActiveDialog::JoinDialog {
+            invite_buf: "garbage".into(),
+        });
+        hierarchy::handle_join_verse_failed(
+            "invalid invite link: must start with 'fractalengine://invite/'",
+            &mut ui,
+            5.0,
+        );
+        assert!(
+            !ui.join_request.pending,
+            "pending clears so the next Join click starts fresh"
+        );
+        assert!(
+            ui.join_request.error.is_some(),
+            "the humanized error lands inline for the dialog to render"
+        );
+        assert!(
+            matches!(ui.active_dialog, ActiveDialog::JoinDialog { .. }),
+            "the dialog stays open so the user sees the inline error"
+        );
+    }
+
+    /// A foreign `JoinVerseFailed` (no dialog open, or already closed) must
+    /// not be dropped silently — it surfaces as a general error notice.
+    #[test]
+    fn join_failure_without_pending_dialog_shows_error_notice() {
+        let mut ui = UiManager::default();
+        hierarchy::handle_join_verse_failed("some DB-thread failure", &mut ui, 3.0);
+        assert!(ui.join_request.error.is_none());
+        assert!(
+            ui.active_notice(3.0).is_some(),
+            "a stale/foreign join failure still reaches the user"
+        );
     }
 
     #[test]
@@ -1312,10 +1429,53 @@ mod tests {
     #[test]
     fn bare_error_leaves_pending_query_buffers_alone() {
         let (gis, mut path, ins) = buffers_with_ids("ui-gis-1", "ui-tracks-2", "ui-query-3");
-        query::handle_error("unrelated failure", &mut path);
+        let mut ui = UiManager::default();
+        let local_role = crate::plugin::LocalUserRole::default();
+        let nav = NavigationManager::default();
+        query::handle_error(
+            "unrelated failure",
+            &mut path,
+            &mut ui,
+            &local_role,
+            &nav,
+            0.0,
+        );
         assert!(gis.query_pending && gis.last_error.is_none());
         assert!(path.tracks_pending && path.last_error.is_none());
         assert!(ins.query_loading && ins.query_result.is_none());
+    }
+
+    /// X-01: every bare `DbResult::Error` now also surfaces as an error
+    /// notice and lands in the status-bar history ring, not just the log.
+    /// Exercises `query::handle_error` directly (the exact function
+    /// `apply_db_results`'s `DbResult::Error` arm calls) rather than
+    /// spinning up a full headless `App` with `VerseManagerPlugin` — the
+    /// dispatcher's arm is a one-line forward, so this covers the same
+    /// behavior without constructing all 16 of `apply_db_results`'s
+    /// `SystemParam`s. (CONTRACT-DRIFT note in the W1-S2 report.)
+    #[test]
+    fn db_error_reaches_error_notice_and_history() {
+        let mut path_state = PathEditorState::default();
+        let mut ui = UiManager::default();
+        let local_role = crate::plugin::LocalUserRole::default();
+        let nav = NavigationManager::default();
+        query::handle_error(
+            "Set petal terrain failed: permission denied: Editor role required",
+            &mut path_state,
+            &mut ui,
+            &local_role,
+            &nav,
+            1.0,
+        );
+        assert!(
+            ui.active_notice(1.0).is_some(),
+            "the error must become the active (highest-priority) notice"
+        );
+        assert_eq!(
+            ui.error_history().count(),
+            1,
+            "the error must land in the status-bar history ring"
+        );
     }
 
     // --- property handlers (continue semantics) ---
@@ -1657,11 +1817,11 @@ mod tests {
         let mut props = crate::terrain_proposal_state::ProposalEditState::default();
         let terrain = Some(json!({"world_scale": 2.5, "tileset_hexon_uris": ["hexon://a"]}));
         // Inactive petal → untouched.
-        terrain::handle_petal_terrain_loaded("p1", &terrain, &nav, &mut map, &mut props);
+        terrain::handle_petal_terrain_loaded("p1", &terrain, &nav, &mut map, &mut props, None);
         assert!(!map.loaded);
         // Active petal → parsed.
         nav.active_petal_id = Some("p1".into());
-        terrain::handle_petal_terrain_loaded("p1", &terrain, &nav, &mut map, &mut props);
+        terrain::handle_petal_terrain_loaded("p1", &terrain, &nav, &mut map, &mut props, None);
         assert!(map.loaded);
         assert_eq!(map.world_scale, 2.5);
         assert_eq!(map.tileset_ids, vec!["hexon://a".to_string()]);

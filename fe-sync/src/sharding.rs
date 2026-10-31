@@ -324,19 +324,15 @@ fn is_scope_safe_id(id: &str) -> bool {
     !id.is_empty() && !id.contains('#')
 }
 
-/// How many past mappings a petal keeps for move rollback (OF-10b). Growth
-/// past the cap never evicts the locally-authoritative layer (`author:
-/// None`) or the only layer recording a distinct fractal (OF-11 addendum,
-/// 2026-10-25) — [`push_mapping_layer`] refuses the growth (history
-/// unchanged) when every existing layer is protected, rather than losing
-/// proof the rollback path needs.
+/// How many past mappings a petal keeps for move rollback (OF-10b). Past
+/// the cap the oldest INBOUND layer is evicted — never the
+/// locally-authoritative base, the layer just pushed, or the incumbent it
+/// replaced; a move is always applied (OF-13a/c) — `src/AGENTS.md`
+/// §role-view "OF-13".
 const PETAL_MAPPING_HISTORY_CAP: usize = 4;
 /// How many competing claims a contested petal keeps (OF-10a). Past the
-/// cap the INCOMING claim is refused — never an existing one evicted
-/// (OF-11b, 2026-10-25): eviction let claim-flooding settle a contest
-/// without proving authority over the evicted fractal. A refused claim's
-/// fractal is still remembered in `contested_claimed_fractals`, so a
-/// refusal can never shrink what settlement must prove.
+/// cap the INCOMING claim is refused, never an existing one evicted
+/// (OF-11b); the refusal is remembered in `refused_contest_claims`.
 const PETAL_CLAIMS_CAP: usize = 8;
 
 /// One admitted `petal -> fractal` mapping and who authorized it (R6,
@@ -344,6 +340,11 @@ const PETAL_CLAIMS_CAP: usize = 8;
 #[derive(Debug, Clone)]
 struct PetalMapping {
     fractal_id: String,
+    /// The fractal this layer MOVED the petal from (OF-13): its author must
+    /// keep Editor+ there too. `None` = not a move (first mapping, refresh,
+    /// settled contest, local write). Stored, never read off the stack
+    /// below, so the lapse check is position-independent.
+    from_fractal: Option<String>,
     /// The signed author whose Editor+ admitted it; `None` = this node's own
     /// write or own replay of an unmapped petal (locally authoritative, never
     /// re-verdicted or contested).
@@ -352,44 +353,19 @@ struct PetalMapping {
     row: Vec<u8>,
 }
 
-/// Push a new layer onto a petal's mapping-history rollback stack, capped
-/// at [`PETAL_MAPPING_HISTORY_CAP`]. OF-11 addendum (2026-10-25): eviction
-/// must never remove the locally-authoritative layer (`author: None`) or
-/// the only remaining layer recording a distinct fractal — a capped
-/// rollback stack must never let rollback/settlement lose the one proof
-/// it has of a fractal the petal was mapped to, or of this node's own
-/// authority. The oldest layer that is neither of those is evicted
-/// instead; when every layer below the one just pushed is protected, the
-/// cap wins outright — the push itself is refused (history left
-/// unchanged) rather than evicting proof the system still needs.
-fn push_mapping_layer(history: &mut Vec<PetalMapping>, claim: PetalMapping) {
-    history.push(claim);
+/// Push a new layer onto a petal's rollback stack, capped at
+/// [`PETAL_MAPPING_HISTORY_CAP`] by evicting the oldest inbound layer below
+/// the incumbent (OF-13a/c — never refuses) — `src/AGENTS.md` §role-view
+/// "OF-13".
+fn push_mapping_layer(history: &mut Vec<PetalMapping>, layer: PetalMapping) {
+    history.push(layer);
     if history.len() <= PETAL_MAPPING_HISTORY_CAP {
         return;
     }
-    let pushed_at = history.len() - 1;
-    let evict_at = (0..pushed_at).find(|&i| {
-        history[i].author.is_some()
-            && history
-                .iter()
-                .filter(|m| m.fractal_id == history[i].fractal_id)
-                .count()
-                > 1
-    });
-    match evict_at {
-        Some(i) => {
-            history.remove(i);
-        }
-        None => {
-            tracing::warn!(
-                fractal_id = %history[pushed_at].fractal_id,
-                cap = PETAL_MAPPING_HISTORY_CAP,
-                "petal mapping history at its cap with no evictable layer (every layer is the \
-                 local authority or the sole record of its fractal) — the move is refused, \
-                 history left unchanged"
-            );
-            history.pop();
-        }
+    // `len - 2` excludes the layer just pushed AND the incumbent it replaced.
+    let below_incumbent = history.len() - 2;
+    if let Some(evict_at) = (0..below_incumbent).find(|&i| history[i].author.is_some()) {
+        history.remove(evict_at);
     }
 }
 
@@ -439,14 +415,12 @@ pub struct VerseFabric {
     /// at every claimed scope (OF-10a): unmapped — fail closed — until such
     /// an author's row, a local write, or a lapsed claimant settles them.
     contested_petals: HashMap<String, Vec<PetalMapping>>,
-    /// Per contested petal, the fractal ids whose claim was REFUSED at
-    /// `PETAL_CLAIMS_CAP` (OF-11b) — never the fractals of claims still in
-    /// `contested_petals` that later lapse through an ordinary role-view
-    /// change (that is a legitimate judgment, re-run every settle). A
-    /// refused claim never entered the list at all, so it would otherwise
-    /// vanish from `settle_contested_petal`'s proof entirely; this set
-    /// keeps it required. Cleared only when the contest settles.
-    contested_claimed_fractals: HashMap<String, BTreeSet<String>>,
+    /// Per contested petal, `author -> fractal` of each claim REFUSED at
+    /// `PETAL_CLAIMS_CAP` (OF-11b), still owed by settlement's proof. One
+    /// entry per author (bounded), lapse-pruned at every settle, cleared
+    /// wherever the contest ends (OF-13b) — `src/AGENTS.md` §role-view
+    /// "OF-13".
+    refused_contest_claims: HashMap<String, BTreeMap<String, String>>,
     /// How many contested-petal claims have been refused at the cap
     /// (diagnostics/tests, OF-11b) — the flood-counter idiom mirroring
     /// `quarantine_evicted`.
@@ -478,7 +452,7 @@ impl Default for VerseFabric {
             effective: fe_policy::EffectiveRoles::default(),
             petal_fractals: HashMap::new(),
             contested_petals: HashMap::new(),
-            contested_claimed_fractals: HashMap::new(),
+            refused_contest_claims: HashMap::new(),
             petal_claim_refusals: 0,
             reread_queue: VecDeque::new(),
             quarantine: VecDeque::new(),
@@ -771,10 +745,12 @@ impl VerseFabric {
                 .is_some_and(|cur| cur.fractal_id != fractal_id);
             let was_unmapped = current.is_none();
             self.contested_petals.remove(petal_id);
+            self.refused_contest_claims.remove(petal_id);
             self.petal_fractals.insert(
                 petal_id.to_string(),
                 vec![PetalMapping {
                     fractal_id: fractal_id.to_string(),
+                    from_fractal: None,
                     author: None,
                     row: data,
                 }],
@@ -785,8 +761,9 @@ impl VerseFabric {
             }
             return;
         }
-        let claim = PetalMapping {
+        let mut claim = PetalMapping {
             fractal_id: fractal_id.to_string(),
+            from_fractal: None,
             author: Some(author_id.to_string()),
             row: data,
         };
@@ -803,7 +780,9 @@ impl VerseFabric {
             if authorized && inbound_incumbent {
                 if let Some(history) = self.petal_fractals.get_mut(petal_id) {
                     if history.last().is_some_and(|top| top.author == claim.author) {
-                        history.pop();
+                        // The author re-asserting its own move still owes
+                        // authority at the scope that move replaced.
+                        claim.from_fractal = history.pop().and_then(|top| top.from_fractal);
                     }
                     push_mapping_layer(history, claim);
                 }
@@ -836,7 +815,9 @@ impl VerseFabric {
             return;
         };
         if self.editor_at(verse_id, author_id, &current.fractal_id, petal_id) {
-            // A move by an author with authority over BOTH scopes.
+            // A move by an author with authority over BOTH scopes — always
+            // applied (OF-13c); the scope it left is recorded on the layer.
+            claim.from_fractal = Some(current.fractal_id.clone());
             let history = self.petal_fractals.entry(petal_id.to_string()).or_default();
             push_mapping_layer(history, claim);
             self.reverdict_holders(verse_id);
@@ -889,18 +870,12 @@ impl VerseFabric {
 
     /// Add (or refresh, per `(author, fractal)`) one claim on a contested
     /// petal. Past the cap the incoming claim is REFUSED rather than
-    /// evicting an existing one (eviction let claim-flooding settle a
-    /// contest without proving authority over the evicted fractal). OF-11b:
-    /// a refused claim's fractal is remembered in
-    /// `contested_claimed_fractals` — refused ONLY, never an admitted
-    /// claim's fractal — because an admitted claim is still physically in
-    /// `contested_petals` and gets its fair, current-authority judgment
-    /// from `settle_contested_petal`'s own partition every time; a refused
-    /// claim never enters that list at all, so without this it would
-    /// vanish from the proof forever, not just until it legitimately
-    /// lapses. The refused claim itself is quarantined, never dropped —
-    /// the replica still holds the row, and a later shrink of the claim set
-    /// (a lapsed claimant re-verdicted out) frees room for a retry.
+    /// evicting an existing one (OF-11b): its `author -> fractal` is
+    /// remembered in `refused_contest_claims` (latest per author — iroh-docs
+    /// keeps one entry per `(key, author)`, so an author's earlier refused
+    /// row is already superseded) and the row is quarantined, never dropped,
+    /// so a later shrink of the claim set frees room for a retry —
+    /// `src/AGENTS.md` §role-view "OF-11"/"OF-13".
     fn add_petal_claim(&mut self, petal_id: &str, claim: PetalMapping) {
         let Some(claims) = self.contested_petals.get_mut(petal_id) else {
             return;
@@ -910,10 +885,13 @@ impl VerseFabric {
             claims.push(claim);
             return;
         }
-        self.contested_claimed_fractals
+        self.refused_contest_claims
             .entry(petal_id.to_string())
             .or_default()
-            .insert(claim.fractal_id.clone());
+            .insert(
+                claim.author.clone().unwrap_or_default(),
+                claim.fractal_id.clone(),
+            );
         self.petal_claim_refusals += 1;
         tracing::warn!(
             petal_id,
@@ -957,13 +935,18 @@ impl VerseFabric {
         }
         // OF-11b: a claim refused at the cap never entered `claims`, so the
         // partition above never judged it — fold its fractal back in so a
-        // flood cannot settle the contest simply by keeping a refused
-        // fractal out of the proof.
-        let refused = self.contested_claimed_fractals.get(petal_id);
+        // flood cannot settle the contest by keeping a refused fractal out
+        // of the proof. OF-13b: the same lapse judgment the partition
+        // applies, so a since-revoked refused author stops blocking.
+        let mut refused = self
+            .refused_contest_claims
+            .remove(petal_id)
+            .unwrap_or_default();
+        refused.retain(|author, fractal| self.editor_at(verse_id, author, fractal, petal_id));
         let fractals: BTreeSet<&str> = valid
             .iter()
             .map(|c| c.fractal_id.as_str())
-            .chain(refused.into_iter().flatten().map(String::as_str))
+            .chain(refused.values().map(String::as_str))
             .collect();
         let winner = if fractals.len() <= 1 {
             valid.last()
@@ -978,49 +961,67 @@ impl VerseFabric {
         match winner.cloned() {
             Some(winner) => {
                 tracing::info!(verse_id, petal_id, fractal_id = %winner.fractal_id, "contested petal settled");
-                self.petal_fractals
-                    .insert(petal_id.to_string(), vec![winner]);
-                self.contested_claimed_fractals.remove(petal_id);
+                // A settled claim is a fresh single-layer mapping, not a move.
+                self.petal_fractals.insert(
+                    petal_id.to_string(),
+                    vec![PetalMapping {
+                        from_fractal: None,
+                        ..winner
+                    }],
+                );
                 true
             }
-            None if valid.is_empty() => {
-                self.contested_claimed_fractals.remove(petal_id);
-                true
-            }
+            None if valid.is_empty() => true,
             None => {
                 self.contested_petals.insert(petal_id.to_string(), valid);
+                if !refused.is_empty() {
+                    self.refused_contest_claims
+                        .insert(petal_id.to_string(), refused);
+                }
                 false
             }
         }
     }
 
     /// The petal's current mapping is inbound-authored and its author no
-    /// longer holds Editor+ at its scope (or, for a move, at the scope it
-    /// replaced).
+    /// longer holds Editor+ at its scope or, for a move, at the scope it
+    /// left (`from_fractal`, OF-13 — never read off the layer below).
     fn top_mapping_lapsed(&self, verse_id: &str, petal_id: &str) -> bool {
-        let Some(history) = self.petal_fractals.get(petal_id) else {
-            return false;
-        };
-        let Some(top) = history.last() else {
+        let Some(top) = self.petal_fractals.get(petal_id).and_then(|h| h.last()) else {
             return false;
         };
         let Some(author) = top.author.as_deref() else {
             return false;
         };
-        let previous = history.len().checked_sub(2).map(|i| &history[i]);
         !(self.editor_at(verse_id, author, &top.fractal_id, petal_id)
-            && previous
-                .is_none_or(|prev| self.editor_at(verse_id, author, &prev.fractal_id, petal_id)))
+            && top
+                .from_fractal
+                .as_deref()
+                .is_none_or(|from| self.editor_at(verse_id, author, from, petal_id)))
     }
 
-    /// OF-10b: re-verdict every inbound-authored mapping against the current
+    /// OF-10b: re-verdict inbound-authored mappings against the current
     /// role view (an owner re-pin, a revocation, the demote cascade) — see
     /// [`Self::top_mapping_lapsed`]. A lapsed mapping is quarantined and the
-    /// one it replaced restored (itself re-verdicted), or the petal is
-    /// unmapped. Mirrors `reverdict_holders`; contested petals are re-judged
-    /// too.
-    fn reverdict_petal_mappings(&mut self, verse_id: &str) {
-        let petal_ids: Vec<String> = self.petal_fractals.keys().cloned().collect();
+    /// layer below restored (itself re-verdicted), or the petal is unmapped.
+    /// `fallen` = `Some(dids)` re-checks only petals whose current mapping's
+    /// author is in it (author-indexing; `None` = every petal) — sound
+    /// because a lapse needs the author's role to fall. Contested petals are
+    /// always re-judged (a rise can settle them).
+    fn reverdict_petal_mappings(&mut self, verse_id: &str, fallen: Option<&HashSet<String>>) {
+        let petal_ids: Vec<String> = self
+            .petal_fractals
+            .iter()
+            .filter(|(_, history)| {
+                fallen.is_none_or(|fallen| {
+                    history
+                        .last()
+                        .and_then(|top| top.author.as_ref())
+                        .is_some_and(|author| fallen.contains(author))
+                })
+            })
+            .map(|(petal_id, _)| petal_id.clone())
+            .collect();
         for petal_id in petal_ids {
             while self.top_mapping_lapsed(verse_id, &petal_id) {
                 let Some(history) = self.petal_fractals.get_mut(&petal_id) else {
@@ -1350,15 +1351,19 @@ impl VerseFabric {
     fn rematerialize(&mut self, verse_id: &str) {
         let Some(owner) = self.owner_did.clone() else {
             self.effective = fe_policy::EffectiveRoles::default();
-            self.reverdict_petal_mappings(verse_id);
+            self.reverdict_petal_mappings(verse_id, None);
             self.reverdict_holders(verse_id);
             self.reevaluate_quarantine(verse_id);
             return;
         };
+        // Every DID that fell in ANY pass — a superset of the net fall,
+        // which is all a mapping lapse can follow from.
+        let mut fallen: HashSet<String> = HashSet::new();
         loop {
             let previous = std::mem::take(&mut self.effective);
             self.effective = fe_policy::materialize(&owner, self.role_statements.values());
             let changed = self.effective.diff(&previous);
+            fallen.extend(changed.fallen);
             for did in changed.risen {
                 if !self.reread_queue.contains(&did) {
                     self.reread_queue.push_back(did);
@@ -1378,7 +1383,7 @@ impl VerseFabric {
             }
         }
         // Mappings before holders: a holder's scope comes from the map.
-        self.reverdict_petal_mappings(verse_id);
+        self.reverdict_petal_mappings(verse_id, Some(&fallen));
         self.reverdict_holders(verse_id);
         self.reevaluate_quarantine(verse_id);
     }
@@ -1715,6 +1720,13 @@ impl VerseFabric {
     #[cfg(test)]
     fn role_statement_count(&self) -> usize {
         self.role_statements.len()
+    }
+
+    #[cfg(test)]
+    fn refused_contest_claim_count(&self, petal_id: &str) -> usize {
+        self.refused_contest_claims
+            .get(petal_id)
+            .map_or(0, BTreeMap::len)
     }
 
     /// Test helper (crate-wide — other modules' pre-RP-5 fixtures build a
@@ -3034,10 +3046,7 @@ mod tests {
             "alice's late genuine claim on p2 must also be refused at the cap"
         );
 
-        fabric.note_entry(
-            "v1",
-            &role_change(&fb, shill_x, OWNER, "manager", true, 21),
-        );
+        fabric.note_entry("v1", &role_change(&fb, shill_x, OWNER, "manager", true, 21));
         assert_eq!(
             fabric.petal_scope("v1", "p2"),
             None,
@@ -3046,83 +3055,222 @@ mod tests {
         );
     }
 
-    /// OF-11 addendum: a petal mapping-history rollback stack at its cap
-    /// (`PETAL_MAPPING_HISTORY_CAP`) must never rotate out the
-    /// locally-authoritative base layer (`author: None`) — nor the sole
-    /// layer recording a distinct fractal — to make room for a move;
-    /// growth is refused instead. Demoting every mover in the chain then
-    /// rolls the mapping all the way back to that base layer, proving it
-    /// survived the cap pressure rather than leaving the petal unmapped.
+    /// Grant `did` the given role at each fractal scope of `v1`, one
+    /// statement per fractal (OWNER-signed, fresh HLCs from `hlc`).
+    fn grant_at_fractals(
+        fabric: &mut VerseFabric,
+        did: &str,
+        role: &str,
+        fractals: &[&str],
+        hlc: &mut u64,
+    ) {
+        for fractal in fractals {
+            *hlc += 1;
+            let scope = fe_policy::build_scope("v1", Some(fractal), None);
+            fabric.note_entry("v1", &role_change(&scope, did, OWNER, role, false, *hlc));
+        }
+    }
+
+    /// Revoke `did`'s grant at one fractal scope of `v1`.
+    fn revoke_at_fractal(
+        fabric: &mut VerseFabric,
+        did: &str,
+        role: &str,
+        fractal: &str,
+        hlc: &mut u64,
+    ) {
+        *hlc += 1;
+        let scope = fe_policy::build_scope("v1", Some(fractal), None);
+        fabric.note_entry("v1", &role_change(&scope, did, OWNER, role, true, *hlc));
+    }
+
+    fn p1_under(fractal: &str) -> Option<String> {
+        Some(fe_policy::build_scope("v1", Some(fractal), Some("p1")))
+    }
+
+    /// OF-13a: the cap must never evict the incumbent a move just replaced,
+    /// and a layer's lapse check reads the scope it left from the layer
+    /// itself, never from whatever sits below it on the stack. History
+    /// `[fX local, fY a, fZ b, fX c]` + d's move to fW: the pre-fix scan
+    /// evicted c (its fX duplicated by the local base), so d's layer sat on
+    /// b's fZ — d (no authority at fZ) was rolled back on the next role
+    /// change, and d's demotion restored fZ instead of the fX it replaced.
     #[test]
-    fn a_full_mapping_history_cannot_rotate_out_the_locally_authoritative_layer() {
+    fn lapse_rollback_restores_replaced_mapping_not_older_layer() {
         let mut fabric = fabric_with_owner("v1");
+        let (a, b, c, d) = ("did:key:a", "did:key:b", "did:key:c", "did:key:d");
+        let mut hlc = 0;
+        grant_at_fractals(&mut fabric, a, "editor", &["fX", "fY"], &mut hlc);
+        grant_at_fractals(&mut fabric, b, "editor", &["fY", "fZ"], &mut hlc);
+        grant_at_fractals(&mut fabric, c, "editor", &["fZ", "fX"], &mut hlc);
+        grant_at_fractals(&mut fabric, d, "editor", &["fX", "fW", "fQ"], &mut hlc);
+        fabric.note_local_petal_row(
+            "v1",
+            &serde_json::json!({ "petal_id": "p1", "fractal_id": "fX" }),
+        );
+        for (mover, target) in [(a, "fY"), (b, "fZ"), (c, "fX"), (d, "fW")] {
+            fabric.note_entry("v1", &petal_change_by("p1", target, mover));
+        }
+        assert_eq!(fabric.petal_scope("v1", "p1"), p1_under("fW"));
+
+        // d falls at an unrelated scope: its move (fX -> fW) is still fully
+        // authorized and must stand.
+        revoke_at_fractal(&mut fabric, d, "editor", "fQ", &mut hlc);
+        assert_eq!(
+            fabric.petal_scope("v1", "p1"),
+            p1_under("fW"),
+            "an authorized move was judged against an older layer's scope, not the one it left"
+        );
+
+        // d's demotion restores the incumbent it replaced (c's fX).
+        revoke_at_fractal(&mut fabric, d, "editor", "fW", &mut hlc);
+        assert_eq!(
+            fabric.petal_scope("v1", "p1"),
+            p1_under("fX"),
+            "rollback restored an older layer instead of the mapping the move replaced"
+        );
+
+        // c's demotion exposes b's layer, which now sits directly on the
+        // local base (a's layer was the one evicted): b moved fY -> fZ and
+        // holds both, so it stands — its check never reads the base's fX.
+        revoke_at_fractal(&mut fabric, c, "editor", "fX", &mut hlc);
+        assert_eq!(
+            fabric.petal_scope("v1", "p1"),
+            p1_under("fZ"),
+            "a layer's lapse check read the scope below it instead of the scope it left"
+        );
+
+        // b's demotion falls through to the locally-authoritative base.
+        revoke_at_fractal(&mut fabric, b, "editor", "fZ", &mut hlc);
+        assert_eq!(fabric.petal_scope("v1", "p1"), p1_under("fX"));
+    }
+
+    /// OF-13b: a claim refused at the contest cap stops blocking settlement
+    /// once its author is revoked (lapse-pruned at settle, like an admitted
+    /// claim), the refused set holds one entry per author, and a local
+    /// write that ends a contest clears it. Pre-fix the refused fractals
+    /// were never pruned, so p1 stayed unmapped until a local write.
+    #[test]
+    fn revoked_author_refused_fractal_stops_blocking_settlement() {
+        let mut fabric = fabric_with_owner("v1");
+        let (alice, mallory, late) = ("did:key:alice", "did:key:mallory", "did:key:late");
+        let shills: Vec<String> = (1..=6).map(|i| format!("did:key:shill{i}")).collect();
+        let mut hlc = 0;
+        grant_at_fractals(&mut fabric, alice, "editor", &["fv"], &mut hlc);
+        grant_at_fractals(&mut fabric, mallory, "manager", &["fa"], &mut hlc);
+        for shill in &shills {
+            grant_at_fractals(&mut fabric, shill, "manager", &["fa"], &mut hlc);
+        }
+        grant_at_fractals(&mut fabric, late, "manager", &["fb", "fc"], &mut hlc);
+
+        // alice (fv) vs mallory + 6 shills (fa) = PETAL_CLAIMS_CAP claims;
+        // `late` arrives past the cap and is refused.
+        let fill_contest_to_cap = |fabric: &mut VerseFabric, petal: &str| {
+            fabric.note_entry("v1", &petal_change_by(petal, "fv", alice));
+            fabric.note_entry("v1", &petal_change_by(petal, "fa", mallory));
+            for shill in &shills {
+                fabric.note_entry("v1", &petal_change_by(petal, "fa", shill));
+            }
+            assert_eq!(
+                fabric.petal_scope("v1", petal),
+                None,
+                "setup: {petal} contested"
+            );
+        };
+
+        // p2: a local write ends the contest and clears its refused claims.
+        fill_contest_to_cap(&mut fabric, "p2");
+        fabric.note_entry("v1", &petal_change_by("p2", "fb", late));
+        assert_eq!(fabric.refused_contest_claim_count("p2"), 1);
+        fabric.note_local_petal_row(
+            "v1",
+            &serde_json::json!({ "petal_id": "p2", "fractal_id": "fv" }),
+        );
+        assert_eq!(
+            fabric.petal_scope("v1", "p2"),
+            Some(fe_policy::build_scope("v1", Some("fv"), Some("p2")))
+        );
+        assert_eq!(
+            fabric.refused_contest_claim_count("p2"),
+            0,
+            "the locally-authoritative branch ended the contest but kept its refused claims"
+        );
+
+        // p1: `late` is refused twice (fb, then fc) — one entry per author.
+        fill_contest_to_cap(&mut fabric, "p1");
+        fabric.note_entry("v1", &petal_change_by("p1", "fb", late));
+        fabric.note_entry("v1", &petal_change_by("p1", "fc", late));
+        assert_eq!(
+            fabric.refused_contest_claim_count("p1"),
+            1,
+            "an author's superseded refused claim must not grow the set"
+        );
+
+        // `late` is revoked everywhere, then every fa claimant: alice's fv
+        // claim is the only authorized claim left and must settle.
+        revoke_at_fractal(&mut fabric, late, "manager", "fb", &mut hlc);
+        revoke_at_fractal(&mut fabric, late, "manager", "fc", &mut hlc);
+        revoke_at_fractal(&mut fabric, mallory, "manager", "fa", &mut hlc);
+        for shill in &shills {
+            revoke_at_fractal(&mut fabric, shill, "manager", "fa", &mut hlc);
+        }
+        assert_eq!(
+            fabric.petal_scope("v1", "p1"),
+            p1_under("fv"),
+            "a revoked author's refused claim kept blocking settlement"
+        );
+        assert_eq!(fabric.refused_contest_claim_count("p1"), 0);
+    }
+
+    /// OF-13c: a move by an author with authority over both scopes is
+    /// ALWAYS applied, even when every history layer was protected under
+    /// the R6b rule (the local base, each other layer the sole record of
+    /// its fractal) — pre-fix it was refused with only a warn. The cap
+    /// evicts the oldest inbound layer instead; rollback still walks back
+    /// layer by layer, and the locally-authoritative base survives.
+    #[test]
+    fn authorized_move_applies_when_all_history_layers_protected() {
+        let mut fabric = fabric_with_owner("v1");
+        let movers = ["did:key:m1", "did:key:m2", "did:key:m3", "did:key:m4"];
+        let fractals = ["f0", "f1", "f2", "f3", "f4"];
+        let mut hlc = 0;
+        for (i, mover) in movers.iter().enumerate() {
+            grant_at_fractals(
+                &mut fabric,
+                mover,
+                "manager",
+                &fractals[i..=i + 1],
+                &mut hlc,
+            );
+        }
         fabric.note_local_petal_row(
             "v1",
             &serde_json::json!({ "petal_id": "p1", "fractal_id": "f0" }),
         );
+        // Three moves fill the 4-deep stack: [f0 local, f1 m1, f2 m2, f3 m3].
+        for (i, mover) in movers[..3].iter().enumerate() {
+            fabric.note_entry("v1", &petal_change_by("p1", fractals[i + 1], mover));
+        }
+        assert_eq!(fabric.petal_scope("v1", "p1"), p1_under("f3"));
+
+        fabric.note_entry("v1", &petal_change_by("p1", "f4", movers[3]));
         assert_eq!(
             fabric.petal_scope("v1", "p1"),
-            Some(fe_policy::build_scope("v1", Some("f0"), Some("p1")))
+            p1_under("f4"),
+            "an authorized move was refused because every history layer was protected"
         );
 
-        // Three authorized moves (f0->f1->f2->f3) fill the 4-deep history
-        // stack exactly to its cap: [f0(local), f1(m1), f2(m2), f3(m3)].
-        let (m1, m2, m3) = ("did:key:m1", "did:key:m2", "did:key:m3");
-        let f0 = fe_policy::build_scope("v1", Some("f0"), None);
-        let f1 = fe_policy::build_scope("v1", Some("f1"), None);
-        let f2 = fe_policy::build_scope("v1", Some("f2"), None);
-        let f3 = fe_policy::build_scope("v1", Some("f3"), None);
-        fabric.note_entry("v1", &role_change(&f0, m1, OWNER, "manager", false, 1));
-        fabric.note_entry("v1", &role_change(&f1, m1, OWNER, "manager", false, 2));
-        fabric.note_entry("v1", &petal_change_by("p1", "f1", m1));
-
-        fabric.note_entry("v1", &role_change(&f1, m2, OWNER, "manager", false, 3));
-        fabric.note_entry("v1", &role_change(&f2, m2, OWNER, "manager", false, 4));
-        fabric.note_entry("v1", &petal_change_by("p1", "f2", m2));
-
-        fabric.note_entry("v1", &role_change(&f2, m3, OWNER, "manager", false, 5));
-        fabric.note_entry("v1", &role_change(&f3, m3, OWNER, "manager", false, 6));
-        fabric.note_entry("v1", &petal_change_by("p1", "f3", m3));
+        // Rollback walks back through the surviving layers: m1's f1 layer
+        // was the one evicted, so m2's demotion lands on the local base.
+        revoke_at_fractal(&mut fabric, movers[3], "manager", "f4", &mut hlc);
+        assert_eq!(fabric.petal_scope("v1", "p1"), p1_under("f3"));
+        revoke_at_fractal(&mut fabric, movers[2], "manager", "f3", &mut hlc);
+        assert_eq!(fabric.petal_scope("v1", "p1"), p1_under("f2"));
+        revoke_at_fractal(&mut fabric, movers[1], "manager", "f2", &mut hlc);
         assert_eq!(
             fabric.petal_scope("v1", "p1"),
-            Some(fe_policy::build_scope("v1", Some("f3"), Some("p1")))
-        );
-
-        // A fourth move (f3 -> f4) would overflow the cap: every existing
-        // layer is protected (f0 is local; f1/f2/f3 are each the SOLE
-        // record of their fractal), so growth is refused — the move does
-        // not take effect, and none of the protected layers are lost.
-        let m4 = "did:key:m4";
-        let f4 = fe_policy::build_scope("v1", Some("f4"), None);
-        fabric.note_entry("v1", &role_change(&f3, m4, OWNER, "manager", false, 7));
-        fabric.note_entry("v1", &role_change(&f4, m4, OWNER, "manager", false, 8));
-        fabric.note_entry("v1", &petal_change_by("p1", "f4", m4));
-        assert_eq!(
-            fabric.petal_scope("v1", "p1"),
-            Some(fe_policy::build_scope("v1", Some("f3"), Some("p1"))),
-            "a history stack at its cap must refuse growth rather than evict a protected layer"
-        );
-
-        // Demoting every mover in turn rolls the mapping back through the
-        // whole chain, proving none of the protected layers — least of
-        // all the base, locally-authoritative one — were ever lost to cap
-        // pressure.
-        fabric.note_entry("v1", &role_change(&f3, m3, OWNER, "manager", true, 9));
-        assert_eq!(
-            fabric.petal_scope("v1", "p1"),
-            Some(fe_policy::build_scope("v1", Some("f2"), Some("p1")))
-        );
-        fabric.note_entry("v1", &role_change(&f2, m2, OWNER, "manager", true, 10));
-        assert_eq!(
-            fabric.petal_scope("v1", "p1"),
-            Some(fe_policy::build_scope("v1", Some("f1"), Some("p1")))
-        );
-        fabric.note_entry("v1", &role_change(&f1, m1, OWNER, "manager", true, 11));
-        assert_eq!(
-            fabric.petal_scope("v1", "p1"),
-            Some(fe_policy::build_scope("v1", Some("f0"), Some("p1"))),
-            "the locally-authoritative base layer must survive a full history stack and settle \
-             back into place once every mover above it is demoted"
+            p1_under("f0"),
+            "the locally-authoritative base layer must survive the cap"
         );
     }
 }

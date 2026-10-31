@@ -120,6 +120,68 @@ pub(crate) fn status_bar(
                     ui.label(egui::RichText::new(label).small().color(theme::TEXT_MUTED));
                 }
 
+                // X-05: every persistent condition (e.g. "mesh budget
+                // exceeded", written by W3-S2's watchdog) as a dim chip —
+                // same abnormal-condition tier as the hidden-count chip above.
+                for (_key, text) in ui_mgr.conditions() {
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new(format!("\u{26A0} {text}"))
+                            .small()
+                            .color(theme::TEXT_MUTED),
+                    );
+                }
+
+                // X-01: the most recent undismissed error notice, right-aligned,
+                // with a click-to-open popover listing the full history ring
+                // (cap 20) with per-entry copy. Shown until dismissed rather
+                // than on a fixed timer — `status_bar()`'s caller carries no
+                // `now`/`Time` this wave (NEEDS-WIRING: fe-ui/src/panels/mod.rs
+                // -> status_bar(.., now: f64), for W3-S1 — the standing
+                // NEEDS-WIRING receiver for panels/mod.rs — to thread once Lane
+                // B lands and that file unfreezes), so this matches the
+                // existing persistent segments below (`modal.last_error`,
+                // `identity_banner`) instead of the plan's literal 60s decay.
+                let history: Vec<(u64, String)> = ui_mgr
+                    .error_history()
+                    .map(|n| (n.id, n.text.clone()))
+                    .collect();
+                if let Some((latest_id, latest_text)) = history.first().cloned() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let resp = ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(format!("\u{26A0} {latest_text}"))
+                                    .small()
+                                    .color(theme::STATUS_OFFLINE),
+                            )
+                            .sense(egui::Sense::click()),
+                        );
+                        let mut dismiss_id: Option<u64> = None;
+                        egui::Popup::from_toggle_button_response(&resp)
+                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                            .show(|ui| {
+                                ui.set_min_width(280.0);
+                                ui.label(egui::RichText::new("Error history").strong());
+                                ui.separator();
+                                for (id, text) in &history {
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new(text).small());
+                                        if ui.small_button("Copy").clicked() {
+                                            ui.ctx().copy_text(text.clone());
+                                        }
+                                        if *id == latest_id && ui.small_button("Dismiss").clicked()
+                                        {
+                                            dismiss_id = Some(latest_id);
+                                        }
+                                    });
+                                }
+                            });
+                        if let Some(id) = dismiss_id {
+                            ui_mgr.dismiss_notice(id);
+                        }
+                    });
+                }
+
                 // Persistent guard-error segment (Q-5, FR-7): a disabled
                 // panel's error stays visible for the session — no
                 // auto-clear on petal switch, unlike the general §6

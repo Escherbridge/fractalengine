@@ -20,6 +20,7 @@ mod query;
 pub(crate) mod terrain_proposal;
 mod transform;
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 
 use bevy::prelude::*;
@@ -27,6 +28,7 @@ use fe_webview::ipc::BrowserCommand;
 
 use crate::asset_ops::PendingAssetOps;
 use crate::dialogs::ActiveDialog;
+use crate::notice::{Notice, Severity};
 use crate::plugin::InspectorFormState;
 use crate::portal::PortalState;
 use crate::terrain_map::{InstalledTilesetDto, PendingHexonOps, PetalManifest, PetalMapState};
@@ -471,6 +473,25 @@ pub enum UiAction {
     },
 }
 
+/// Join dialog's pending/denied round-trip (OD-2: `join.rs` sets `pending`
+/// on send and reads `error` back; `db_results/hierarchy.rs`'s
+/// `JoinVerseFailed`/`VerseJoined` arms are the only writers of either
+/// field once a join is in flight). See `fe-ui/src/AGENTS.md` §notices.
+#[derive(Debug, Clone, Default)]
+pub struct JoinRequestState {
+    pub pending: bool,
+    pub error: Option<String>,
+}
+
+/// Max notices simultaneously queued (OD-1). A push past this cap evicts
+/// the oldest `Info`, then the oldest `Advisory`; an `Error` is evicted only
+/// if every queued notice is already an `Error` (a pathological burst, not
+/// the steady state this cap is sized for).
+const NOTICE_QUEUE_CAP: usize = 4;
+
+/// Max retained entries in the `Error` history ring (OD-1).
+const ERROR_HISTORY_CAP: usize = 20;
+
 /// Centralized UI state resource.
 #[derive(Resource)]
 pub struct UiManager {
@@ -482,12 +503,25 @@ pub struct UiManager {
     pub sidebar_open: bool,
     /// Which floating dialog is currently open (at most one).
     pub active_dialog: ActiveDialog,
-    /// Toast message with spawn time (seconds since startup).
-    toast: Option<(String, f64)>,
+    /// Live notice queue (OD-1), capped at `NOTICE_QUEUE_CAP`.
+    notices: VecDeque<Notice>,
+    /// Ring of the most recently shown `Error` notices, newest-pushed
+    /// first, capped at `ERROR_HISTORY_CAP` (OD-1; the status-bar error
+    /// popover W1-S2 adds reads this).
+    error_history: VecDeque<Notice>,
+    /// The id of the notice currently pinned open by hover (OD-1: an Error
+    /// "holds while hovered"). Exempt from expiry until dismissed.
+    held_notice: Option<u64>,
+    /// Persistent status chips (X-05): a condition clears when set to
+    /// `None`. A `Vec` rather than a `HashMap` because the chip row renders
+    /// in insertion order and there are at most a handful at once.
+    conditions: Vec<(&'static str, String)>,
+    next_notice_id: u64,
+    /// Join dialog's in-flight/denied state (OD-2); owned here so `join.rs`
+    /// (W1-S4) and `db_results/hierarchy.rs` (W1-S2) share one source of
+    /// truth instead of each guessing the other's state from `ActiveDialog`.
+    pub join_request: JoinRequestState,
 }
-
-/// Duration in seconds for toast visibility.
-const TOAST_DURATION: f64 = 2.0;
 
 impl Default for UiManager {
     fn default() -> Self {
@@ -496,7 +530,12 @@ impl Default for UiManager {
             portal: PortalState::Closed,
             sidebar_open: true,
             active_dialog: ActiveDialog::None,
-            toast: None,
+            notices: VecDeque::new(),
+            error_history: VecDeque::new(),
+            held_notice: None,
+            conditions: Vec::new(),
+            next_notice_id: 0,
+            join_request: JoinRequestState::default(),
         }
     }
 }
@@ -542,27 +581,176 @@ impl UiManager {
         self.active_dialog = ActiveDialog::None;
     }
 
-    /// Show a brief toast message (fades after TOAST_DURATION seconds).
-    pub fn show_toast(&mut self, msg: impl Into<String>, now_secs: f64) {
-        self.toast = Some((msg.into(), now_secs));
+    /// Queues a severity-tagged notice and returns its id. Evicts per
+    /// `NOTICE_QUEUE_CAP`'s rule (see its doc comment) when already at cap,
+    /// and additionally mirrors an `Error` into `error_history`.
+    fn push_notice(&mut self, severity: Severity, text: String, now_secs: f64) -> u64 {
+        let id = self.next_notice_id;
+        self.next_notice_id += 1;
+        if self.notices.len() >= NOTICE_QUEUE_CAP {
+            self.evict_for_new_notice();
+        }
+        let notice = Notice {
+            id,
+            severity,
+            text,
+            spawned_at: now_secs,
+        };
+        if severity == Severity::Error {
+            self.error_history.push_front(notice.clone());
+            self.error_history.truncate(ERROR_HISTORY_CAP);
+        }
+        self.notices.push_back(notice);
+        id
     }
 
-    /// Returns (message, alpha 0.0..1.0) if a toast is currently visible.
-    pub fn active_toast(&self, now_secs: f64) -> Option<(&str, f32)> {
-        let (ref msg, spawn_t) = self.toast.as_ref()?;
-        let elapsed = now_secs - spawn_t;
-        if elapsed > TOAST_DURATION {
-            return None;
+    /// OD-1 eviction order: the oldest `Info`, else the oldest `Advisory`,
+    /// else (only when every queued notice is already an `Error`) the
+    /// oldest `Error` — the cap must always make room for the new notice.
+    fn evict_for_new_notice(&mut self) {
+        for target in [Severity::Info, Severity::Advisory, Severity::Error] {
+            if let Some(pos) = self.notices.iter().position(|n| n.severity == target) {
+                let _ = self.notices.remove(pos);
+                return;
+            }
         }
-        // Fade in over first 0.2s, fade out over last 0.5s
+    }
+
+    /// True while `notice` is still visible: unexpired for its severity, or
+    /// held open by hover regardless of elapsed time.
+    fn is_live(&self, notice: &Notice, now_secs: f64) -> bool {
+        self.held_notice == Some(notice.id)
+            || now_secs - notice.spawned_at <= notice.severity.duration_secs()
+    }
+
+    /// Fade alpha for a live notice: 0..1 ramp over the first 0.2s, full
+    /// opacity while held or mid-lifetime, ramp down over the last 0.5s.
+    fn alpha_for(&self, notice: &Notice, now_secs: f64) -> f32 {
+        if self.held_notice == Some(notice.id) {
+            return 1.0;
+        }
+        let duration = notice.severity.duration_secs();
+        let elapsed = now_secs - notice.spawned_at;
         let alpha = if elapsed < 0.2 {
             (elapsed / 0.2) as f32
-        } else if elapsed > TOAST_DURATION - 0.5 {
-            ((TOAST_DURATION - elapsed) / 0.5) as f32
+        } else if elapsed > duration - 0.5 {
+            ((duration - elapsed) / 0.5) as f32
         } else {
             1.0
         };
-        Some((msg, alpha.clamp(0.0, 1.0)))
+        alpha.clamp(0.0, 1.0)
+    }
+
+    /// Show a brief Info notice (unchanged signature — frozen contract: the
+    /// W1 `panels/mod.rs::render_toast` call site still compiles against
+    /// `show_toast`/`active_toast` unmodified; W3-S1 replaces the renderer).
+    pub fn show_toast(&mut self, msg: impl Into<String>, now_secs: f64) {
+        self.push_notice(Severity::Info, msg.into(), now_secs);
+    }
+
+    /// Show an Advisory notice (OD-1: 4s, non-blocking guidance — e.g. "no
+    /// selection", not a failure).
+    pub fn show_advisory(&mut self, msg: impl Into<String>, now_secs: f64) {
+        self.push_notice(Severity::Advisory, msg.into(), now_secs);
+    }
+
+    /// Show an Error notice (OD-1: 7s, holds while hovered, mirrored into
+    /// `error_history`).
+    pub fn show_error(&mut self, msg: impl Into<String>, now_secs: f64) {
+        self.push_notice(Severity::Error, msg.into(), now_secs);
+    }
+
+    /// Returns the highest-priority live notice and its fade alpha. `Error`
+    /// outranks `Advisory` outranks `Info` (ties break on the most recent
+    /// `spawned_at`), so a later `Info` can never visually bump an
+    /// unexpired `Error` off the single on-screen slot.
+    pub fn active_notice(&self, now_secs: f64) -> Option<(&Notice, f32)> {
+        let best = self
+            .notices
+            .iter()
+            .filter(|n| self.is_live(n, now_secs))
+            .max_by(|a, b| {
+                a.severity.cmp(&b.severity).then_with(|| {
+                    a.spawned_at
+                        .partial_cmp(&b.spawned_at)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+            })?;
+        let alpha = self.alpha_for(best, now_secs);
+        Some((best, alpha))
+    }
+
+    /// Returns (message, alpha 0.0..1.0) for the active notice (unchanged
+    /// signature — see `show_toast`'s doc comment).
+    pub fn active_toast(&self, now_secs: f64) -> Option<(&str, f32)> {
+        let (notice, alpha) = self.active_notice(now_secs)?;
+        Some((notice.text.as_str(), alpha))
+    }
+
+    /// Pins a notice open past its normal expiry while the pointer hovers
+    /// it (OD-1). A no-op for an id that is no longer queued.
+    pub fn hold_notice(&mut self, id: u64, _now_secs: f64) {
+        if self.notices.iter().any(|n| n.id == id) {
+            self.held_notice = Some(id);
+        }
+    }
+
+    /// Dismisses a notice immediately (the renderer's ✕) and releases any
+    /// hold on it.
+    pub fn dismiss_notice(&mut self, id: u64) {
+        self.notices.retain(|n| n.id != id);
+        if self.held_notice == Some(id) {
+            self.held_notice = None;
+        }
+    }
+
+    /// The `Error` history ring, newest-pushed first, capped at
+    /// `ERROR_HISTORY_CAP` (OD-1).
+    pub fn error_history(&self) -> impl Iterator<Item = &Notice> {
+        self.error_history.iter()
+    }
+
+    /// Sets (or clears, on `None`) a persistent status chip (X-05's
+    /// mesh-budget indicator and similar ongoing conditions). Updating an
+    /// existing key in place preserves its row position.
+    pub fn set_condition(&mut self, key: &'static str, text: Option<String>) {
+        match text {
+            Some(text) => {
+                if let Some(entry) = self.conditions.iter_mut().find(|(k, _)| *k == key) {
+                    entry.1 = text;
+                } else {
+                    self.conditions.push((key, text));
+                }
+            }
+            None => self.conditions.retain(|(k, _)| *k != key),
+        }
+    }
+
+    /// Iterates the active persistent condition chips, in the order they
+    /// were first set.
+    pub fn conditions(&self) -> impl Iterator<Item = (&'static str, &str)> {
+        self.conditions.iter().map(|(k, v)| (*k, v.as_str()))
+    }
+}
+
+/// Sends a `DbCommand`, toasting an Error and warning instead of silently
+/// dropping it on a closed channel (AGENTS.md anti-pattern 6: no bare
+/// `.send(..).ok()`). `what` names the attempted action in the failure
+/// notice ("save the URL") and the log line. Returns whether the send
+/// succeeded, for a caller that has more to do only on success.
+pub(crate) fn send_or_toast(
+    tx: &crossbeam::channel::Sender<fe_runtime::messages::DbCommand>,
+    cmd: fe_runtime::messages::DbCommand,
+    ui_mgr: &mut UiManager,
+    now_secs: f64,
+    what: &str,
+) -> bool {
+    if tx.send(cmd).is_err() {
+        bevy::log::warn!("send_or_toast: channel closed — {what} not sent");
+        ui_mgr.show_error(format!("Couldn't {what} — not connected"), now_secs);
+        false
+    } else {
+        true
     }
 }
 
@@ -611,6 +799,11 @@ pub(crate) struct ToolStateParams<'w> {
     /// moved out of `ActiveDialog::HexonManager` — bundled here for the same
     /// param-ceiling reason as `right_sidebar`).
     downloads: ResMut<'w, crate::terrain_map::TilesetDownloads>,
+    /// D-12: `UiAction::PathSelectTrack`'s Pen activation. `ToolState` is the
+    /// SINGLE writer of the active tool (plugin.rs's `activate` doc comment)
+    /// — bundled here for the same param-ceiling reason as `right_sidebar`,
+    /// which `activate` also needs for its one-shot Options reveal.
+    active_tool_state: ResMut<'w, crate::plugin::ToolState>,
 }
 
 /// Drains all UiActions queued during the egui pass and processes them.
@@ -650,6 +843,7 @@ pub(crate) fn process_ui_actions(
         mut app_settings,
         mut render_override,
         mut downloads,
+        mut active_tool_state,
     } = tool_state;
     // Fold pen-tool actions queued by `render_tool_panel` into the main queue
     // (the Tools panel has no `ui_mgr` handle — see panels/tool_panel.rs).
@@ -675,9 +869,16 @@ pub(crate) fn process_ui_actions(
                     ui_mgr.portal = new_state;
                     browser_commands.write(BrowserCommand::Navigate { url: parsed });
                 }
-                portal::OpenPortalOutcome::NoSelection => {}
+                portal::OpenPortalOutcome::NoSelection => {
+                    // P-01: was a silent no-op (see `portal.rs`'s now-stale
+                    // "matches original behavior" doc comment — DOC NOTE
+                    // below for its owner to update).
+                    ui_mgr.show_advisory("No node selected", now_secs);
+                }
                 portal::OpenPortalOutcome::InvalidUrl(e) => {
                     bevy::log::warn!("UiAction::OpenPortal invalid URL: {e}");
+                    // P-01: was a silent warn-only no-op.
+                    ui_mgr.show_error("Not a valid URL — include https://", now_secs);
                 }
             },
             UiAction::ClosePortal => {
@@ -851,7 +1052,14 @@ pub(crate) fn process_ui_actions(
                 path::query_tracks(&db_sender, &mut path_state, petal_id);
             }
             UiAction::PathSelectTrack { track_node_id } => {
+                // D-12: activates Pen + reveals Options (ToolState's own
+                // one-shot reveal) and names where the path actually landed
+                // — the old "Tools panel" toast at the context-menu call
+                // site (`context_menu.rs:786`) pointed at a surface that no
+                // longer exists; that stale string is W4-S4's to remove.
+                active_tool_state.activate(crate::panels::toolbar::Tool::Pen, &mut right_sidebar);
                 path::select_track(&db_sender, &mut path_state, track_node_id);
+                ui_mgr.show_toast("Path open in Options", now_secs);
             }
             UiAction::PathCreateTrack {
                 petal_id,
@@ -1269,6 +1477,190 @@ pub(crate) fn process_ui_actions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- W1-S1: notice queue (OD-1) ---------------------------------------
+
+    #[test]
+    fn notice_queue_error_survives_later_info() {
+        // (severity, spawn time, text) pushed in order, then queried at
+        // `query_at` — asserts which text is on-screen at that instant.
+        struct Case {
+            pushes: Vec<(Severity, f64, &'static str)>,
+            query_at: f64,
+            expected: &'static str,
+        }
+        let cases: Vec<Case> = vec![
+            // Both live (Error spawned first): severity alone decides.
+            Case {
+                pushes: vec![(Severity::Error, 0.0, "boom"), (Severity::Info, 1.0, "saved")],
+                query_at: 1.5,
+                expected: "boom",
+            },
+            // The newer Info (2.5s lifetime) has already faded by t=5, but
+            // the Error (7s lifetime) hasn't — the acceptance case this test
+            // exists for: an Info arriving after an Error never hides it
+            // early just by being more recent.
+            Case {
+                pushes: vec![(Severity::Error, 0.0, "boom"), (Severity::Info, 1.0, "saved")],
+                query_at: 5.0,
+                expected: "boom",
+            },
+            // Once the Error itself expires (t=7.5 > 7s), the still-live
+            // Info takes over — expiry is still respected per severity.
+            Case {
+                pushes: vec![(Severity::Error, 0.0, "boom"), (Severity::Info, 6.0, "saved")],
+                query_at: 7.5,
+                expected: "saved",
+            },
+        ];
+        for case in &cases {
+            let mut mgr = UiManager::default();
+            for (severity, spawn_at, text) in &case.pushes {
+                match severity {
+                    Severity::Info => mgr.show_toast(*text, *spawn_at),
+                    Severity::Advisory => mgr.show_advisory(*text, *spawn_at),
+                    Severity::Error => mgr.show_error(*text, *spawn_at),
+                }
+            }
+            let (msg, _alpha) = mgr
+                .active_toast(case.query_at)
+                .unwrap_or_else(|| panic!("expected a live notice at t={}", case.query_at));
+            assert_eq!(msg, case.expected, "query_at={}", case.query_at);
+        }
+    }
+
+    #[test]
+    fn notice_queue_caps_at_four_evicting_oldest_info_first() {
+        let mut mgr = UiManager::default();
+        mgr.show_advisory("adv-old", 0.0);
+        mgr.show_toast("info-old", 0.0);
+        mgr.show_toast("info-new", 0.0);
+        mgr.show_advisory("adv-new", 0.0);
+        // Queue is now at NOTICE_QUEUE_CAP (4). This 5th push must evict the
+        // oldest Info ("info-old"), NOT the oldest overall ("adv-old") —
+        // OD-1's eviction order.
+        mgr.show_error("err", 0.0);
+
+        let mut seen = Vec::new();
+        while let Some((notice, _)) = mgr.active_notice(0.0) {
+            seen.push(notice.text.clone());
+            let id = notice.id;
+            mgr.dismiss_notice(id);
+        }
+        assert!(
+            !seen.contains(&"info-old".to_string()),
+            "oldest Info must be evicted first, not retained: {seen:?}"
+        );
+        assert!(
+            seen.contains(&"adv-old".to_string()),
+            "adv-old predates info-old but is Advisory, so it must survive: {seen:?}"
+        );
+        assert!(seen.contains(&"err".to_string()));
+    }
+
+    #[test]
+    fn held_error_notice_outlives_its_duration_until_dismissed() {
+        let mut mgr = UiManager::default();
+        mgr.show_error("boom", 0.0);
+        let id = mgr.active_notice(0.0).expect("just shown").0.id;
+        mgr.hold_notice(id, 0.0);
+        // Past the normal 7s Error duration, the held notice is still live.
+        assert!(
+            mgr.active_notice(10.0).is_some(),
+            "a held Error must survive past its normal duration"
+        );
+        mgr.dismiss_notice(id);
+        assert!(
+            mgr.active_notice(10.0).is_none(),
+            "dismiss must release the hold, not just re-arm the timer"
+        );
+    }
+
+    // ---- W1-S1: process_ui_actions handler arms ---------------------------
+    //
+    // These mirror the real match arm verbatim (the established pattern in
+    // this file — see `apply_reveal` below) rather than driving the whole
+    // `process_ui_actions` system through a headless `App`: that system
+    // takes ~15 `SystemParam`s, several of them (`InspectorFormState`,
+    // `GisPanelState`, `PetalMapState`) with no `Default` impl, so building
+    // one just for these two arms would be disproportionate ceremony for a
+    // single-arm assertion. Every collaborator used below (`UiManager`,
+    // `NodeManager`, `ToolState`, `RightSidebarState`, `PathEditorState`,
+    // `portal::compute_open_portal`, `path::select_track`) is the real
+    // production type/function, not a mock.
+
+    /// The `OpenPortal` arm of `process_ui_actions`, verbatim.
+    fn apply_open_portal(
+        node_mgr: &crate::node_manager::NodeManager,
+        ui_mgr: &mut UiManager,
+        url: &str,
+        now_secs: f64,
+    ) {
+        match portal::compute_open_portal(node_mgr, url) {
+            portal::OpenPortalOutcome::Navigate(new_state, _parsed) => {
+                ui_mgr.portal = new_state;
+            }
+            portal::OpenPortalOutcome::NoSelection => {
+                ui_mgr.show_advisory("No node selected", now_secs);
+            }
+            portal::OpenPortalOutcome::InvalidUrl(_) => {
+                ui_mgr.show_error("Not a valid URL — include https://", now_secs);
+            }
+        }
+    }
+
+    #[test]
+    fn open_portal_invalid_url_shows_error_notice() {
+        let mgr = crate::node_manager::NodeManager::default();
+        let mut ui_mgr = UiManager::default();
+        apply_open_portal(&mgr, &mut ui_mgr, "not a url", 0.0);
+        let (msg, _alpha) = ui_mgr.active_toast(0.0).expect("error notice shown");
+        assert_eq!(msg, "Not a valid URL — include https://");
+    }
+
+    /// The `PathSelectTrack` arm of `process_ui_actions`, verbatim.
+    fn apply_path_select_track(
+        tool: &mut crate::plugin::ToolState,
+        right: &mut crate::ui_shell::right_sidebar::RightSidebarState,
+        ui_mgr: &mut UiManager,
+        db_sender: &fe_runtime::app::DbCommandSender,
+        path_state: &mut crate::gis::PathEditorState,
+        now_secs: f64,
+        track_node_id: String,
+    ) {
+        tool.activate(crate::panels::toolbar::Tool::Pen, right);
+        path::select_track(db_sender, path_state, track_node_id);
+        ui_mgr.show_toast("Path open in Options", now_secs);
+    }
+
+    #[test]
+    fn edit_path_action_activates_pen_and_reveals_options() {
+        use crate::plugin::ToolState;
+        use crate::ui_shell::right_sidebar::{RightSidebarSection, RightSidebarState};
+
+        let (tx, _rx) = crossbeam::channel::bounded(8);
+        let db_sender = fe_runtime::app::DbCommandSender(tx);
+        let mut tool = ToolState::default();
+        let mut right = RightSidebarState::default();
+        let mut ui_mgr = UiManager::default();
+        let mut path_state = crate::gis::PathEditorState::default();
+
+        apply_path_select_track(
+            &mut tool,
+            &mut right,
+            &mut ui_mgr,
+            &db_sender,
+            &mut path_state,
+            0.0,
+            "track-1".to_string(),
+        );
+
+        assert_eq!(tool.active_tool, crate::panels::toolbar::Tool::Pen);
+        assert_eq!(right.requested, Some(RightSidebarSection::Options));
+        assert_eq!(path_state.editing_track_id.as_deref(), Some("track-1"));
+        let (msg, _alpha) = ui_mgr.active_toast(0.0).expect("toast shown");
+        assert_eq!(msg, "Path open in Options");
+    }
 
     #[test]
     fn active_dialog_context_menu_captures_world_pos() {

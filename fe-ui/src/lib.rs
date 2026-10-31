@@ -12,6 +12,7 @@ pub mod gis;
 pub mod gpx_ops;
 pub mod navigation_manager;
 pub mod node_manager;
+pub mod notice;
 pub mod panels;
 pub mod path_ops;
 pub mod plugin;

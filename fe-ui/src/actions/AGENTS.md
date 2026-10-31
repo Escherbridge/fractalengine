@@ -3,6 +3,68 @@
 New UiAction variants: `RevealSection { slug }` (idempotent reveal, handler routes
 through RightSidebarState via the ToolStateParams bundle) and `TerrainProposalSelect { id }`.
 
+## §notices — severity queue + humanized DB-error copy (polish_lane_20261031 W1-S1)
+
+`UiManager`'s single toast slot became a severity-tagged queue (OD-1):
+`notice.rs` (crate root, NOT under `actions/`) owns the `Severity`/`Notice`
+types plus the pure `humanize_db_error` transform; `UiManager` (this file)
+owns the queue, the error-history ring, hold/dismiss and the persistent
+condition chips.
+
+- **Priority over recency.** `active_notice`/`active_toast` pick the
+  highest-`Severity` live notice, tie-breaking on the most recent
+  `spawned_at` — NOT simply the most recent push. This is why a `show_toast`
+  (Info, 2.5s) fired after a `show_error` (Error, 7s) never bumps the error
+  off the single on-screen slot before its 7s are up. `show_toast`'s and
+  `active_toast`'s signatures are unchanged on purpose: `panels/mod.rs`
+  (Lane B frozen through W1/W2) calls both directly, and W3-S1 is the one
+  that replaces the renderer to use `active_notice`/severity colors/hold/✕.
+- **Queue cap 4, evict `Info` first.** `evict_for_new_notice` never drops an
+  `Error` unless the queue is somehow all-`Error`. `error_history` (ring of
+  20, newest-pushed first) only ever receives `Error`-severity notices —
+  it's the status bar's "recent errors" popover source, not a general log.
+- **Hold-while-hovered.** `held_notice: Option<u64>` is a single id, not a
+  per-notice flag on `Notice` itself, because only one notice renders at a
+  time (the renderer calls `hold_notice`/`dismiss_notice` with the id
+  `active_notice` just handed it). `hold_notice` on an id no longer queued
+  is a no-op rather than resurrecting it.
+- **`humanize_db_error` keeps the raw string in the log, not the notice.**
+  For a recognized `"<prefix>: permission denied: <reason>"` shape it
+  returns a role-denial sentence; for anything else it returns a short
+  `"Something went wrong: {snippet}"` and the FULL raw string stays only in
+  the `bevy::log::error!`/`warn!` line the caller (`db_results/query.rs`'s
+  `handle_error`, W1-S2) keeps alongside the `show_error` call — the notice
+  itself is never the only place the real error text survives.
+- **`send_or_toast`** replaces a bare `tx.send(cmd).is_err()` + `warn!` pair
+  with one call that also tells the user ("Couldn't {what} — not connected")
+  instead of failing silently on a closed channel (AGENTS.md anti-pattern
+  6). `actions/mod.rs` itself has no remaining bare `.send(..).ok()` sites
+  as of this wave (re-grepped at edit time — the AGENTS anti-pattern-6 audit
+  (X-17) target list names other files: `sidebar.rs`, `create_entity.rs`,
+  `gltf_import.rs`, `join.rs`, `entity_settings.rs`, `inspector.rs` — those
+  slices call `send_or_toast` directly).
+- **`JoinRequestState`** (`pending`/`error`) is the single source of truth
+  the Join dialog (W1-S4) and the `JoinVerseFailed`/`VerseJoined` result
+  arms (W1-S2, `db_results/hierarchy.rs`) share, instead of each inferring
+  the other's state from `ActiveDialog::JoinDialog`'s own fields.
+- **D-12 (Edit Path).** `UiAction::PathSelectTrack`'s handler now also
+  activates the Pen tool (`ToolState::activate`, which does the one-shot
+  Options reveal itself) and toasts "Path open in Options" — previously it
+  only loaded the track's points, so right-clicking a path and choosing
+  "Edit Path" silently did nothing visible. The misleading "Tools panel"
+  toast strings at the `context_menu.rs` call site are a separate fix
+  (W4-S4) — see the DOC NOTE below.
+- **P-01 (Open Portal).** `OpenPortalOutcome::NoSelection` now shows an
+  Advisory ("No node selected") and `InvalidUrl` now shows an Error ("Not a
+  valid URL — include https://") instead of each being a silent/log-only
+  no-op.
+
+**DOC NOTE** for `actions/portal.rs`'s owner (W4-S4, which owns that file):
+`OpenPortalOutcome::NoSelection`'s doc comment ("Matches original behavior:
+a silent no-op... flagged as a fragility rather than fixed here") is now
+stale — W1-S1 fixed it at the `process_ui_actions` call site (P-01); the
+comment should say the arm shows an Advisory now, or be removed.
+
 ## First-class Brush producer
 
 The sculpt pending-action bridge is removed. The viewport queues fully-threaded
@@ -11,7 +73,8 @@ strength-weighted magnitude; Level and Smooth store strength compatibly in `delt
 `handle_brush` refuses disabled terrain docs so invisible edits cannot persist.
 
 - `mod.rs` — `UiAction` enum, `UiManager` resource (queue + portal + active
-  dialog + toast), `process_ui_actions` dispatcher.
+  dialog + severity-tagged notice queue, §notices), `process_ui_actions`
+  dispatcher, `send_or_toast`.
 - `portal.rs` — portal open/close/go-back + `SaveUrl`. Pure decision
   functions (`compute_open_portal`, `should_auto_close`, `compute_save_url`)
   are unit-tested directly; see `fe-ui/src/AGENTS.md` §portal for the full

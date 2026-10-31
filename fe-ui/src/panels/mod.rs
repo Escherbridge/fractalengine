@@ -43,7 +43,10 @@ pub(crate) mod path_editor_card;
 // when the portal owns the right region (FR-6).
 pub(crate) mod portal_toolbar;
 /// Shared reusable panel widgets (copy boxes, elision). See AGENTS.md §widgets.
-mod widgets;
+// W1-GATE compile-fix: `dialogs::{gltf_import, hexon_manager}` reuse these
+// helpers cross-module per the Wave-1 contract; widgets stays crate-visible,
+// not fully `pub`.
+pub(crate) mod widgets;
 
 use bevy_egui::egui;
 
@@ -288,10 +291,28 @@ pub fn gardener_console(
                 // variant (early return otherwise, unchanged from today); the
                 // guard just quarantines that one dialog if it panics.
                 let _ = guarded(modal, "dialog_create_entity", || {
-                    crate::dialogs::render_create_dialog(ctx, ui_mgr, hierarchy, nav, db_tx)
+                    // W1-GATE NEEDS-WIRING (L-06, W1-S4): spawn at the camera
+                    // focus target when one exists, same source `viewport.rs`
+                    // uses to frame a selection.
+                    crate::dialogs::render_create_dialog(
+                        ctx,
+                        ui_mgr,
+                        hierarchy,
+                        nav,
+                        db_tx,
+                        camera_focus.target.as_ref().map(|(_, pos)| *pos),
+                    )
                 });
                 let _ = guarded(modal, "dialog_gltf_import", || {
-                    crate::dialogs::render_gltf_import_dialog(ctx, ui_mgr, nav, db_tx)
+                    // W1-GATE NEEDS-WIRING (W1-S4): meters readout needs the
+                    // active petal's real-world scale.
+                    crate::dialogs::render_gltf_import_dialog(
+                        ctx,
+                        ui_mgr,
+                        nav,
+                        db_tx,
+                        petal_map.world_scale,
+                    )
                 });
                 let _ = guarded(modal, "dialog_join", || {
                     crate::dialogs::render_join_dialog(ctx, ui_mgr, db_tx)

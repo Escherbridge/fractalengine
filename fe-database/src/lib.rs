@@ -802,7 +802,9 @@ pub fn spawn_db_thread_shared(
                     Ok(DbCommand::JoinVerseByInvite { invite_string }) => {
                         match handlers::invite::join_verse_by_invite_handler(&db, &invite_string, &local_did, secret_store.as_ref()).await {
                             Ok((verse_id, verse_name)) => send_result(&tx, DbResult::VerseJoined { verse_id, verse_name }),
-                            Err(e) => send_result(&tx, DbResult::Error(format!("Join verse failed: {e}"))),
+                            // polish_lane_20261031 M-03: typed failure so the Join
+                            // dialog can show it inline instead of a bare status-bar Error.
+                            Err(e) => send_result(&tx, DbResult::JoinVerseFailed { error: format!("Join verse failed: {e}") }),
                         }
                     }
                     Ok(DbCommand::ResetDatabase) => {
@@ -1879,6 +1881,64 @@ mod namespace_id_tests {
     fn derive_namespace_id_is_public_not_secret() {
         let secret = [9u8; 32];
         assert_ne!(derive_namespace_id(&secret), secret);
+    }
+}
+
+#[cfg(test)]
+mod join_verse_dispatch_tests {
+    use super::*;
+    use fe_runtime::blob_store::mock::MockBlobStore;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// polish_lane_20261031 W1-S2 (M-03/OD-2): a garbage invite string must
+    /// reply the typed `JoinVerseFailed`, not a bare `Error` — pins the
+    /// contract end to end through the real DB-thread dispatch loop (an
+    /// isolated temp-dir DB, so no cross-test file-lock contention with
+    /// `fe-database/tests/db_test.rs`'s shared scene DB).
+    #[test]
+    fn join_with_invalid_invite_replies_join_verse_failed() {
+        let tmp_dir = tempfile::tempdir().expect("temp dir for test DB");
+        let db_path = tmp_dir
+            .path()
+            .join("join_fail.db")
+            .to_string_lossy()
+            .to_string();
+        let (cmd_tx, cmd_rx) = crossbeam::channel::bounded::<DbCommand>(8);
+        let (res_tx, res_rx) = crossbeam::channel::bounded::<DbResult>(8);
+
+        let _handle = spawn_db_thread_with_sync(
+            cmd_rx,
+            res_tx,
+            Arc::new(MockBlobStore::new()),
+            None,
+            None,
+            None,
+            None,
+            Some(db_path),
+        )
+        .expect("DB thread init");
+
+        let started = res_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("DbResult::Started");
+        assert!(matches!(started, DbResult::Started));
+
+        cmd_tx
+            .send(DbCommand::JoinVerseByInvite {
+                invite_string: "not-a-real-invite".to_string(),
+            })
+            .expect("send JoinVerseByInvite");
+
+        let result = res_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("JoinVerseFailed reply");
+        match result {
+            DbResult::JoinVerseFailed { error } => {
+                assert!(!error.is_empty(), "error text must be non-empty");
+            }
+            other => panic!("expected JoinVerseFailed, got {other:?}"),
+        }
     }
 }
 

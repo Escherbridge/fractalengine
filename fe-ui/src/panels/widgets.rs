@@ -5,6 +5,7 @@
 use bevy_egui::egui;
 
 use crate::actions::UiManager;
+use crate::plugin::LocalUserRole;
 use crate::theme;
 
 /// Read-only, width-capped, copyable value box.
@@ -150,6 +151,115 @@ pub(crate) fn clipped_value_copyable(
     resp
 }
 
+/// Wrap `widget` with role-based access control (X-02, OD-3): a disallowed
+/// control renders disabled (`add_enabled`) rather than hidden, with a hover
+/// tooltip naming why, so the control stays discoverable. Authorization never
+/// lives only here — the DB thread's `fe-policy` gate is the real guard; this
+/// is advisory UI only. Owner of the three widgets below: `panels/widgets.rs`.
+pub(crate) fn role_gated(
+    ui: &mut egui::Ui,
+    allowed: bool,
+    reason: &str,
+    widget: impl egui::Widget,
+) -> egui::Response {
+    let resp = ui.add_enabled(allowed, widget);
+    if allowed {
+        resp
+    } else {
+        resp.on_disabled_hover_text(reason)
+    }
+}
+
+/// Plain-language denial copy for [`role_gated`]'s hover text (OD-3):
+/// "`<needed>` role needed — you are `<role>`[ in `<verse>`]". An unresolved
+/// role (`LocalUserRole.role == None`, X-03) reads as "—" rather than a
+/// guess.
+pub(crate) fn role_denial_reason(
+    role: &LocalUserRole,
+    needed: &str,
+    verse_name: Option<&str>,
+) -> String {
+    let role_label = role
+        .role
+        .map(|r| capitalize_first(&r.to_string()))
+        .unwrap_or_else(|| "\u{2014}".to_string());
+    match verse_name {
+        Some(name) if !name.is_empty() => {
+            format!("{needed} role needed — you are {role_label} in {name}")
+        }
+        _ => format!("{needed} role needed — you are {role_label}"),
+    }
+}
+
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+    }
+}
+
+/// Two-step inline confirm for a destructive action (X-06; extracted from the
+/// inspector token-revoke pattern at `inspector.rs:924-970`, read-only during
+/// extraction). The first click arms (shows `label`); a second click within
+/// 4 s on the now-shown `confirm_label` button fires (`true`). The armed
+/// state disarms — reverting to the single `label` button — after 4 s, or
+/// immediately on any click elsewhere this frame (clicking Cancel counts as
+/// "elsewhere" and disarms too, without firing). State lives in egui temp
+/// memory keyed by `id_salt`, so callers need no extra struct field (the
+/// motivating case: single-click destruction with no undo, X-06/X-07).
+pub(crate) fn confirm_button(
+    ui: &mut egui::Ui,
+    id_salt: impl std::hash::Hash,
+    label: &str,
+    confirm_label: &str,
+) -> bool {
+    const ARM_SECONDS: f64 = 4.0;
+    let id = egui::Id::new("confirm_button_armed_at").with(id_salt);
+    let now = ui.ctx().input(|i| i.time);
+    let armed_at: Option<f64> = ui.ctx().data(|d| d.get_temp(id));
+    let is_armed = armed_at.is_some_and(|t| now - t < ARM_SECONDS);
+
+    if is_armed {
+        let mut confirmed = false;
+        let mut own_click = false;
+        ui.horizontal(|ui| {
+            if ui
+                .add(
+                    egui::Button::new(egui::RichText::new(confirm_label).small())
+                        .fill(theme::BG_DANGER),
+                )
+                .clicked()
+            {
+                confirmed = true;
+                own_click = true;
+            }
+            if ui
+                .add(egui::Button::new(egui::RichText::new("Cancel").small()).fill(theme::BG_BUTTON))
+                .clicked()
+            {
+                own_click = true;
+            }
+        });
+        // A click this frame that landed on neither Confirm nor Cancel is
+        // "elsewhere" — disarm without firing (same convention as dismissing
+        // an open popover by clicking outside it).
+        let clicked_elsewhere = !own_click && ui.ctx().input(|i| i.pointer.any_click());
+        if confirmed || own_click || clicked_elsewhere {
+            ui.ctx().data_mut(|d| d.remove::<f64>(id));
+        }
+        confirmed
+    } else {
+        if ui
+            .add(egui::Button::new(egui::RichText::new(label).small()).fill(theme::BG_DANGER))
+            .clicked()
+        {
+            ui.ctx().data_mut(|d| d.insert_temp(id, now));
+        }
+        false
+    }
+}
+
 /// Truncate `s` to at most `max_chars` characters, appending an ellipsis when
 /// clipped. Char-boundary safe (multibyte-aware). Keeps a huge property value
 /// (e.g. a `gpx_points` JSON blob) from walling the inspector vertically; the
@@ -203,5 +313,190 @@ mod tests {
             elide("\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}", 3),
             "\u{e9}\u{e9}\u{e9}\u{2026}"
         );
+    }
+
+    // --- role_gated / confirm_button (X-02, X-06) -------------------------
+    //
+    // Headless `egui::Context::run` harness, same pattern as
+    // `ui_shell::topbar::tests::TitleBarHarness` (synthetic `RawInput` events
+    // driving real widget interaction — no mocked response objects).
+
+    fn run_frame(
+        ctx: &egui::Context,
+        time: &mut f64,
+        events: Vec<egui::Event>,
+        mut body: impl FnMut(&mut egui::Ui),
+    ) {
+        *time += 0.05;
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 200.0),
+            )),
+            time: Some(*time),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run(raw, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                // W1-GATE fix: `CentralPanel`'s own `ui` always fills the
+                // whole panel, so `ui.min_rect()` on it is the full screen
+                // rect regardless of what `body` draws — the geometry tests
+                // below need a child `ui` whose `min_rect()` tightly wraps
+                // just the widgets `body` adds.
+                ui.scope(|ui| body(ui));
+            });
+        });
+    }
+
+    fn pointer_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// Hover, press, release at `at` — three separate frames, each one real
+    /// input event, mirroring `TitleBarHarness::click`.
+    fn click_sequence(
+        ctx: &egui::Context,
+        time: &mut f64,
+        at: egui::Pos2,
+        mut body: impl FnMut(&mut egui::Ui),
+    ) {
+        run_frame(ctx, time, vec![egui::Event::PointerMoved(at)], &mut body);
+        run_frame(ctx, time, vec![pointer_button(at, true)], &mut body);
+        run_frame(ctx, time, vec![pointer_button(at, false)], &mut body);
+    }
+
+    #[test]
+    fn role_gated_disables_and_explains() {
+        let ctx = egui::Context::default();
+        let mut time = 0.0;
+
+        // Disallowed: renders disabled, and a click on it never registers.
+        let mut rect = egui::Rect::NOTHING;
+        run_frame(&ctx, &mut time, Vec::new(), |ui| {
+            let resp = role_gated(ui, false, "Editor role needed", egui::Button::new("Edit"));
+            assert!(!resp.enabled(), "a disallowed control must render disabled");
+            rect = resp.rect;
+        });
+        let mut viewer_clicked = 0u32;
+        click_sequence(&ctx, &mut time, rect.center(), |ui| {
+            let resp = role_gated(ui, false, "Editor role needed", egui::Button::new("Edit"));
+            if resp.clicked() {
+                viewer_clicked += 1;
+            }
+        });
+        assert_eq!(
+            viewer_clicked, 0,
+            "a disabled widget must never register a click"
+        );
+
+        // Allowed: renders enabled, and the same click now registers.
+        let mut rect2 = egui::Rect::NOTHING;
+        run_frame(&ctx, &mut time, Vec::new(), |ui| {
+            let resp = role_gated(ui, true, "Editor role needed", egui::Button::new("Edit"));
+            assert!(resp.enabled(), "an allowed control must render enabled");
+            rect2 = resp.rect;
+        });
+        let mut editor_clicked = 0u32;
+        click_sequence(&ctx, &mut time, rect2.center(), |ui| {
+            let resp = role_gated(ui, true, "Editor role needed", egui::Button::new("Edit"));
+            if resp.clicked() {
+                editor_clicked += 1;
+            }
+        });
+        assert_eq!(
+            editor_clicked, 1,
+            "an allowed widget must register its click"
+        );
+
+        // `role_denial_reason` is the text role_gated attaches as the hover
+        // explanation — verify it names both the needed and the held role,
+        // and falls back to "—" for an unresolved role (X-03).
+        let mut role = LocalUserRole {
+            role: Some(fe_database::RoleLevel::Viewer),
+        };
+        assert_eq!(
+            role_denial_reason(&role, "Editor", Some("Acme Verse")),
+            "Editor role needed — you are Viewer in Acme Verse"
+        );
+        role.role = None;
+        assert_eq!(
+            role_denial_reason(&role, "Editor", None),
+            "Editor role needed — you are \u{2014}"
+        );
+    }
+
+    #[test]
+    fn confirm_button_requires_second_click_and_disarms() {
+        let ctx = egui::Context::default();
+        let mut time = 0.0;
+
+        // Lay out the unarmed "Delete" button and capture its rect.
+        let mut unarmed_rect = egui::Rect::NOTHING;
+        run_frame(&ctx, &mut time, Vec::new(), |ui| {
+            let fired = confirm_button(ui, "row-1", "Delete", "Confirm delete");
+            assert!(!fired, "the very first render must not fire");
+            unarmed_rect = ui.min_rect();
+        });
+
+        // First click arms it — must not fire yet.
+        let mut fired_on_arm = false;
+        click_sequence(&ctx, &mut time, unarmed_rect.center(), |ui| {
+            fired_on_arm = confirm_button(ui, "row-1", "Delete", "Confirm delete");
+        });
+        assert!(!fired_on_arm, "arming must not itself confirm");
+
+        // Now armed: Confirm is the left-most of the Confirm/Cancel pair.
+        let mut armed_rect = egui::Rect::NOTHING;
+        run_frame(&ctx, &mut time, Vec::new(), |ui| {
+            let fired = confirm_button(ui, "row-1", "Delete", "Confirm delete");
+            assert!(!fired, "a bare re-render while armed must not fire");
+            armed_rect = ui.min_rect();
+        });
+        let confirm_point = egui::pos2(armed_rect.left() + 3.0, armed_rect.center().y);
+
+        // Second click, on Confirm, fires.
+        let mut fired_on_confirm = false;
+        click_sequence(&ctx, &mut time, confirm_point, |ui| {
+            fired_on_confirm = confirm_button(ui, "row-1", "Delete", "Confirm delete");
+        });
+        assert!(fired_on_confirm, "the second click on Confirm must fire");
+
+        // It disarmed after firing: the very next render is the single
+        // button again, at the original unarmed position.
+        run_frame(&ctx, &mut time, Vec::new(), |ui| {
+            let fired = confirm_button(ui, "row-1", "Delete", "Confirm delete");
+            assert!(!fired, "a render right after firing must not re-fire");
+            assert_eq!(
+                ui.min_rect(),
+                unarmed_rect,
+                "a fired confirm must disarm back to the single-button layout"
+            );
+        });
+
+        // Arm again, then let the 4s window elapse with no interaction: the
+        // very next render (no click at all) must time out back to the
+        // single button — proving the disarm is time-driven, not just a
+        // missed click.
+        let mut fired_on_rearm = false;
+        click_sequence(&ctx, &mut time, unarmed_rect.center(), |ui| {
+            fired_on_rearm = confirm_button(ui, "row-1", "Delete", "Confirm delete");
+        });
+        assert!(!fired_on_rearm);
+        time += 5.0; // > the 4s arm window
+        run_frame(&ctx, &mut time, Vec::new(), |ui| {
+            let fired = confirm_button(ui, "row-1", "Delete", "Confirm delete");
+            assert!(!fired);
+            assert_eq!(
+                ui.min_rect(),
+                unarmed_rect,
+                "after 4s with no click, the arm must time out back to the single button"
+            );
+        });
     }
 }

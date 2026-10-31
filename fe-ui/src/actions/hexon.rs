@@ -10,7 +10,8 @@ use crate::dialogs::ActiveDialog;
 use crate::terrain_map::dto::{DownloadProgress, DownloadStatus, InstalledTilesetDto};
 use crate::terrain_map::manifest::PetalManifest;
 use crate::terrain_map::{
-    tileset_to_terrain_json, HexonOp, PendingHexonOps, PetalMapState, TilesetDownloads,
+    tileset_to_terrain_json, HexonOp, PendingHexonOps, PendingMapSet, PetalMapState,
+    TilesetDownloads,
 };
 
 use super::UiManager;
@@ -149,6 +150,14 @@ pub(crate) fn open_storage_dir(ui_mgr: &UiManager) {
     }
 }
 
+/// M-03 (petal-map truth): mints its own correlation id so a denial always
+/// comes back as `DbResult::PetalTerrainSetFailed` (never the generic,
+/// un-routable `Error`), and snapshots the pre-send state into
+/// `petal_map.pending_set` so `db_results::terrain::handle_petal_terrain_set_failed`
+/// can roll back exactly what this call optimistically changed. The
+/// optimistic update and the snapshot are taken from the SAME pre-send
+/// values, so a denial restores precisely the row this click changed, not
+/// whatever `petal_map` holds by the time the reply arrives.
 pub(crate) fn set_petal_map(
     db_sender: &DbCommandSender,
     petal_map: &mut PetalMapState,
@@ -165,16 +174,24 @@ pub(crate) fn set_petal_map(
         .as_ref()
         .map(|ts| vec![ts.hexon_id.clone()])
         .unwrap_or_default();
+    let correlation_id = crate::actions::query::next_ui_query_id("petalmap");
+    let previous_tileset_ids = petal_map.tileset_ids.clone();
+    let previous_world_scale = petal_map.world_scale;
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
         terrain,
         auth: fe_runtime::messages::CallerAuth::Local,
-        correlation_id: None,
+        correlation_id: Some(correlation_id.clone()),
     }) {
         Ok(()) => {
             // Optimistic local update only after the command is queued; DbResult::PetalTerrainLoaded confirms.
             petal_map.petal_id = Some(petal_id);
             petal_map.tileset_ids = tileset_ids;
+            petal_map.pending_set = Some(PendingMapSet {
+                correlation_id,
+                previous_tileset_ids,
+                previous_world_scale,
+            });
         }
         Err(_) => {
             bevy::log::warn!(
@@ -201,16 +218,24 @@ pub(crate) fn set_petal_map_scale(
 ) {
     let clamped_scale = clamp_to_bounds(world_scale, petal_map.scale_bounds);
     let terrain = tileset_to_terrain_json(&tileset, clamped_scale, petal_map.scale_bounds);
+    let correlation_id = crate::actions::query::next_ui_query_id("petalmap");
+    let previous_tileset_ids = petal_map.tileset_ids.clone();
+    let previous_world_scale = petal_map.world_scale;
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
         terrain: Some(terrain),
         auth: fe_runtime::messages::CallerAuth::Local,
-        correlation_id: None,
+        correlation_id: Some(correlation_id.clone()),
     }) {
         Ok(()) => {
             petal_map.petal_id = Some(petal_id);
             petal_map.tileset_ids = vec![tileset.hexon_id];
             petal_map.world_scale = clamped_scale;
+            petal_map.pending_set = Some(PendingMapSet {
+                correlation_id,
+                previous_tileset_ids,
+                previous_world_scale,
+            });
         }
         Err(_) => {
             bevy::log::warn!(

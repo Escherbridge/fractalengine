@@ -2,7 +2,10 @@
 //! terrain-proposal mirror (data-loss guard), and for the durable per-petal
 //! `render_distance` echo (p2p_asset_streaming S6). See ../AGENTS.md §db-results.
 
+use crate::actions::UiManager;
 use crate::navigation_manager::NavigationManager;
+use crate::notice::{humanize_db_error, DenialContext};
+use crate::plugin::LocalUserRole;
 use crate::terrain_map::PetalMapState;
 use crate::terrain_proposal_state::ProposalEditState;
 
@@ -33,7 +36,19 @@ pub(super) fn handle_petal_terrain_loaded(
     nav: &NavigationManager,
     petal_map: &mut PetalMapState,
     proposal_state: &mut ProposalEditState,
+    correlation_id: Option<&str>,
 ) {
+    // M-03: a confirmed echo of THIS petal's own in-flight set clears
+    // "Applying…" regardless of the active-petal gate below — the user may
+    // have navigated away while the write was in flight, and the row must
+    // not be stuck "Applying…" forever just because this load is now a
+    // no-op for the viewport. A `None`/foreign id (a plain Get, a peer's
+    // echo, or someone else's correlation) leaves pending_set untouched.
+    if let (Some(id), Some(pending)) = (correlation_id, petal_map.pending_set.as_ref()) {
+        if pending.correlation_id == id {
+            petal_map.pending_set = None;
+        }
+    }
     if nav.active_petal_id.as_deref() != Some(petal_id) {
         return;
     }
@@ -97,6 +112,50 @@ pub(super) fn handle_petal_terrain_loaded(
     proposal_state.replace_all(proposals);
 }
 
+/// `PetalTerrainSetFailed`: a denied/erroring CORRELATED `SetPetalTerrain`
+/// (M-03). Rolls back to the exact snapshot `actions::hexon::set_petal_map`/
+/// `set_petal_map_scale` captured before their optimistic update, and shows
+/// a role-aware error notice. A correlation that doesn't match this petal's
+/// `pending_set` is a foreign/stale echo (another in-flight set, or a race
+/// with a newer one) and is ignored — it must never roll back a DIFFERENT
+/// in-flight change.
+pub(super) fn handle_petal_terrain_set_failed(
+    petal_id: &str,
+    error: &str,
+    correlation_id: &str,
+    petal_map: &mut PetalMapState,
+    ui_mgr: &mut UiManager,
+    local_role: &LocalUserRole,
+    verse_name: Option<&str>,
+    now: f64,
+) {
+    let Some(pending) = petal_map.pending_set.as_ref() else {
+        return;
+    };
+    if pending.correlation_id != correlation_id {
+        return;
+    }
+    // Safe to take now: the id just matched, so this IS the set this petal
+    // is waiting on.
+    let pending = petal_map
+        .pending_set
+        .take()
+        .expect("pending_set checked Some immediately above");
+    if petal_map.petal_id.as_deref() == Some(petal_id) {
+        petal_map.tileset_ids = pending.previous_tileset_ids;
+        petal_map.world_scale = pending.previous_world_scale;
+    }
+    let role_label = local_role
+        .role
+        .map(|r| r.to_string())
+        .unwrap_or_else(|| "viewer".to_string());
+    let ctx = DenialContext {
+        role_label: &role_label,
+        verse_name,
+    };
+    ui_mgr.show_error(humanize_db_error(error, &ctx), now);
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::field_reassign_with_default)] // default-then-set is clearer in test fixtures
@@ -117,7 +176,7 @@ mod tests {
             ],
         }));
 
-        handle_petal_terrain_loaded("p1", &terrain, &nav, &mut petal_map, &mut proposals);
+        handle_petal_terrain_loaded("p1", &terrain, &nav, &mut petal_map, &mut proposals, None);
 
         assert!(proposals.hydrated, "load marks the mirror trustworthy");
         assert_eq!(proposals.proposals.len(), 1);
@@ -140,12 +199,13 @@ mod tests {
             &nav,
             &mut petal_map,
             &mut proposals,
+            None,
         );
         assert!(proposals.hydrated);
         assert!(proposals.proposals.is_empty());
 
         let mut proposals2 = ProposalEditState::default();
-        handle_petal_terrain_loaded("p1", &None, &nav, &mut petal_map, &mut proposals2);
+        handle_petal_terrain_loaded("p1", &None, &nav, &mut petal_map, &mut proposals2, None);
         assert!(proposals2.hydrated, "even a None doc marks hydrated-empty");
         assert!(proposals2.proposals.is_empty());
     }
@@ -172,7 +232,7 @@ mod tests {
             ],
         }));
 
-        handle_petal_terrain_loaded("p1", &terrain, &nav, &mut petal_map, &mut proposals);
+        handle_petal_terrain_loaded("p1", &terrain, &nav, &mut petal_map, &mut proposals, None);
 
         assert!(proposals.hydrated);
         assert_eq!(
@@ -199,6 +259,7 @@ mod tests {
             &nav,
             &mut petal_map,
             &mut proposals,
+            None,
         );
 
         assert!(
@@ -209,6 +270,157 @@ mod tests {
             proposals.proposals.len(),
             1,
             "current petal's local proposals survive an unrelated petal's load"
+        );
+    }
+
+    // --- M-03: petal-map truth (correlated set, rollback, foreign echoes) ---
+
+    fn installed_ts(id: &str) -> crate::terrain_map::dto::InstalledTilesetDto {
+        crate::terrain_map::dto::InstalledTilesetDto {
+            hexon_id: id.to_string(),
+            region_name: "Region".into(),
+            bounds: [0.0, 0.0, 1.0, 1.0],
+            zoom_range: (8, 12),
+            tile_count: 1,
+            size_bytes: 0,
+            seeding_enabled: false,
+            installed_at: String::new(),
+            publisher_did: None,
+        }
+    }
+
+    fn db_sender() -> fe_runtime::app::DbCommandSender {
+        let (tx, rx) = crossbeam::channel::unbounded();
+        // W1-GATE fix: binding-and-dropping the receiver as `_rx` closed the
+        // channel before `set_petal_map` ever sent on it, so every send hit
+        // the `Err` arm and silently skipped the optimistic update + pending
+        // correlation (the real bug every test here exists to catch). Leak
+        // it instead — these tests only assert on `petal_map`'s side effects.
+        std::mem::forget(rx);
+        fe_runtime::app::DbCommandSender(tx)
+    }
+
+    #[test]
+    fn denied_petal_map_set_rolls_back_and_explains() {
+        let mut petal_map = PetalMapState {
+            petal_id: Some("p1".into()),
+            tileset_ids: vec!["old-ts".into()],
+            world_scale: 1.0,
+            ..Default::default()
+        };
+        crate::actions::hexon::set_petal_map(
+            &db_sender(),
+            &mut petal_map,
+            "p1".into(),
+            Some(installed_ts("new-ts")),
+        );
+        assert_eq!(
+            petal_map.tileset_ids,
+            vec!["new-ts".to_string()],
+            "optimistic update applies immediately"
+        );
+        let correlation_id = petal_map
+            .pending_set
+            .as_ref()
+            .expect("set_petal_map records a pending correlation")
+            .correlation_id
+            .clone();
+
+        let mut ui_mgr = UiManager::default();
+        let local_role = LocalUserRole {
+            role: Some(fe_database::RoleLevel::Viewer),
+        };
+        handle_petal_terrain_set_failed(
+            "p1",
+            "permission denied: viewer cannot set petal terrain",
+            &correlation_id,
+            &mut petal_map,
+            &mut ui_mgr,
+            &local_role,
+            Some("Acme Verse"),
+            0.0,
+        );
+
+        assert_eq!(
+            petal_map.tileset_ids,
+            vec!["old-ts".to_string()],
+            "a denial restores the pre-send tileset"
+        );
+        assert_eq!(petal_map.world_scale, 1.0);
+        assert!(
+            petal_map.pending_set.is_none(),
+            "the row must leave \"Applying…\" once the denial is handled"
+        );
+        assert!(
+            ui_mgr.error_history().next().is_some(),
+            "a denial surfaces an error notice, never a silently-swallowed failure"
+        );
+    }
+
+    #[test]
+    fn confirmed_petal_map_set_clears_applying() {
+        let mut nav = NavigationManager::default();
+        nav.active_petal_id = Some("p1".into());
+        let mut petal_map = PetalMapState {
+            petal_id: Some("p1".into()),
+            ..Default::default()
+        };
+        crate::actions::hexon::set_petal_map(
+            &db_sender(),
+            &mut petal_map,
+            "p1".into(),
+            Some(installed_ts("ts-1")),
+        );
+        assert!(petal_map.pending_set.is_some());
+        let correlation_id = petal_map.pending_set.as_ref().unwrap().correlation_id.clone();
+
+        let mut proposals = ProposalEditState::default();
+        let terrain = Some(json!({ "tileset_hexon_uris": ["ts-1"], "world_scale": 1.0 }));
+        handle_petal_terrain_loaded(
+            "p1",
+            &terrain,
+            &nav,
+            &mut petal_map,
+            &mut proposals,
+            Some(correlation_id.as_str()),
+        );
+
+        assert!(
+            petal_map.pending_set.is_none(),
+            "a confirmed echo for OUR correlation clears \"Applying…\""
+        );
+    }
+
+    #[test]
+    fn foreign_correlation_does_not_clear_pending() {
+        let mut nav = NavigationManager::default();
+        nav.active_petal_id = Some("p1".into());
+        let mut petal_map = PetalMapState {
+            petal_id: Some("p1".into()),
+            ..Default::default()
+        };
+        crate::actions::hexon::set_petal_map(
+            &db_sender(),
+            &mut petal_map,
+            "p1".into(),
+            Some(installed_ts("ts-1")),
+        );
+        assert!(petal_map.pending_set.is_some());
+
+        let mut proposals = ProposalEditState::default();
+        let terrain = Some(json!({ "tileset_hexon_uris": ["ts-1"] }));
+        handle_petal_terrain_loaded(
+            "p1",
+            &terrain,
+            &nav,
+            &mut petal_map,
+            &mut proposals,
+            Some("ui-petalmap-999999"),
+        );
+
+        assert!(
+            petal_map.pending_set.is_some(),
+            "a foreign/stale correlation must not clear THIS petal's in-flight set"
         );
     }
 }

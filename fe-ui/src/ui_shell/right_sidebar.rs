@@ -367,6 +367,7 @@ pub fn render_right_sidebar(
             nav.active_petal_id.as_deref(),
             downloads,
             app_settings,
+            local_role,
         ),
         Some(RightSidebarSection::Groups) => render_groups_section(
             ctx,
@@ -1068,6 +1069,9 @@ fn render_maps_section(
     active_petal: Option<&str>,
     downloads: &crate::terrain_map::TilesetDownloads,
     app_settings: &AppSettings,
+    // W1-GATE NEEDS-WIRING (W1-S3): role-gates Set/Clear/Remove in
+    // `dialogs::render_hexon_manager` (X-02).
+    local_role: &LocalUserRole,
 ) {
     if !matches!(ui_mgr.active_dialog, ActiveDialog::HexonManager { .. }) {
         if matches!(ui_mgr.active_dialog, ActiveDialog::None) {
@@ -1104,6 +1108,7 @@ fn render_maps_section(
         active_petal,
         &downloads.0,
         registry_url.as_deref(),
+        local_role,
     );
     if close {
         clear_maps_carrier(ui_mgr);

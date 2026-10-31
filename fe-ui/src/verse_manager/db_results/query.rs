@@ -1,8 +1,10 @@
 //! Handlers for GUI `RawQuery` replies (routed by correlation id) and DB
 //! errors; see ../AGENTS.md §db-results and fe-ui/src/AGENTS.md §gis-query-ui.
 
+use crate::actions::UiManager;
 use crate::gis::{GisPanelState, PathEditorState};
-use crate::plugin::InspectorFormState;
+use crate::navigation_manager::NavigationManager;
+use crate::plugin::{InspectorFormState, LocalUserRole};
 
 /// Correlated `QueryResult`/`QueryFailed`: land the reply ONLY in the buffer
 /// whose stored request id equals `id`, then clear that id + its pending flag.
@@ -69,9 +71,18 @@ pub(super) fn handle_query_result(
     }
 }
 
-/// `Error`: log and clear a stranded pen create. Query buffers never take a
-/// bare `Error` — their failures arrive correlated as `QueryFailed`.
-pub(super) fn handle_error(msg: &str, path_state: &mut PathEditorState) {
+/// `Error`: log, clear a stranded pen create, and surface a humanized error
+/// notice + status-bar history entry (X-01) — every bare `DbResult::Error`
+/// reaches the user now instead of only the log, since it carries no
+/// correlation id to route anywhere more specific.
+pub(super) fn handle_error(
+    msg: &str,
+    path_state: &mut PathEditorState,
+    ui_mgr: &mut UiManager,
+    local_role: &LocalUserRole,
+    nav: &NavigationManager,
+    now: f64,
+) {
     bevy::log::error!("DB error: {msg}");
     // HIGH-2: `DbResult::Error` carries only a message — no node id
     // or correlation id — so a failed `PathCreateTrack` (the DB
@@ -87,5 +98,27 @@ pub(super) fn handle_error(msg: &str, path_state: &mut PathEditorState) {
             "Pen auto-create likely failed (DB error while a pen create was pending) — \
              cleared pending pen state; click again to retry: {msg}"
         );
+    }
+    let ctx = crate::notice::DenialContext {
+        role_label: role_label(local_role),
+        verse_name: nav
+            .active_verse_id
+            .as_deref()
+            .map(|_| nav.active_verse_name.as_str()),
+    };
+    ui_mgr.show_error(crate::notice::humanize_db_error(msg, &ctx), now);
+}
+
+/// Human role label for [`crate::notice::DenialContext`] — `LocalUserRole`
+/// has no `Display` of its own (it wraps `fe_database::RoleLevel`, which
+/// prints lowercase); this is the one place that needs the capitalized form
+/// humanized copy reads naturally with ("Editor role needed...").
+fn role_label(local_role: &LocalUserRole) -> &'static str {
+    match local_role.role {
+        Some(fe_database::RoleLevel::Owner) => "Owner",
+        Some(fe_database::RoleLevel::Manager) => "Manager",
+        Some(fe_database::RoleLevel::Editor) => "Editor",
+        Some(fe_database::RoleLevel::Viewer) => "Viewer",
+        Some(fe_database::RoleLevel::None) | None => "Visitor",
     }
 }

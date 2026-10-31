@@ -18,12 +18,71 @@ for mutual exclusion; don't replace it with a separate `open: bool` flag.
 
 Destructive buttons use a two-step inline confirm: first click flips a
 pending flag, second click ("Confirm …") executes; "Cancel" clears the flag.
-Canonical implementation: `entity_settings.rs` Delete (`pending_delete`
-variant field). Node Options' Delete Node and the sidebar's Reset Database
-follow it; the sidebar and the inspector's token Revoke keep the pending flag
-in egui temp data because their state lives outside `ActiveDialog`. New
-destructive actions must adopt this convention — never a single-click
-irreversible send (ux hardening batch 2026-07-17).
+**Canonical implementation (W1-S4): `panels::widgets::confirm_button(ui,
+id_salt, label, confirm_label) -> bool`** — extracted from this exact
+`entity_settings.rs`/inspector-Revoke shape, now also timing out after 4s and
+disarming on a click elsewhere. New destructive actions call this instead of
+re-deriving the pending-flag dance; existing per-dialog variant-field flags
+(`entity_settings.rs`'s `pending_delete`, Node Options', the sidebar's) are
+pre-existing and not retrofitted by this slice, but any NEW site should use
+`confirm_button`. Never a single-click irreversible send (ux hardening batch
+2026-07-17).
+
+## §borrow-split-on-active_dialog (W1-S4)
+
+Every render fn pattern-matches `ActiveDialog::Variant { ref mut field, .. }
+= ui_mgr.active_dialog else { return };`, which borrows `ui_mgr.active_dialog`
+— a single field — for as long as `field` is used. If the body also needs
+`&mut ui_mgr` for something else (`send_or_toast`, `close_dialog`,
+`ui_mgr.join_request`, a notice), that call must happen **after** the last
+use of `field`, not inside the same `.show(ctx, |ui| { .. })` closure that
+reads it — otherwise the borrow checker sees two live `&mut` paths through
+`ui_mgr` at once and refuses to compile. The fix used in `join.rs`,
+`gltf_import.rs` and `create_entity.rs`: read any other `ui_mgr` state needed
+(e.g. `join_request.pending`) *before* the match; inside the closure, only
+set local flags/owned values (`Option<DbCommand>`, `bool`); then act on
+`ui_mgr` again only after `.show()` returns, once the field-borrow's last use
+has passed.
+
+## §join-flow (D-05, W1-S4/W1-S2)
+
+`join.rs` no longer closes the moment Join is clicked. It sets
+`ui_mgr.join_request.pending` (via `send_or_toast`) and keeps the window open
+with a spinner; `join_request.error` (cleared by this file, set only by
+`verse_manager/db_results/hierarchy.rs`'s `JoinVerseFailed` arm) renders
+inline. The window's native close-X is withheld while pending, same as
+Cancel/Join/the invite text field, so an in-flight join cannot be
+accidentally abandoned mid-air — only a `VerseJoined`/`JoinVerseFailed` reply
+or an explicit Cancel while *not* pending ends it.
+
+## §gltf-import-flow (D-06, W1-S4)
+
+`gltf_import.rs::import_enabled(file_path, petal_id)` is the pure gate for
+Import (both must be non-blank). A click no longer closes the dialog; it
+locks the fields and shows "Importing…" via a timestamped egui-temp flag
+that self-expires after `IMPORT_LOCK_TIMEOUT_SECONDS` (30s) as a safety net.
+**NEEDS-WIRING** (not finishable inside this file's owns list): the
+`GltfImported` reply (`verse_manager/db_results/mod.rs`) should call
+`ui_mgr.close_dialog()` directly instead of relying on the timeout, and
+`panels/mod.rs`'s call site should thread the real petal `world_scale`
+(currently a literal) into the new `world_scale: f64` parameter that drives
+the Position row's meters display.
+
+## §create-entity-flow (D-07, L-06, W1-S4)
+
+`create_entity.rs::build_create_command` is now the single pure builder for
+all four `DbCommand::Create*` variants (unit-tested table), used by both
+`render_create_dialog` (via `send_or_toast`, toasting only a dead-channel
+failure) and the legacy bare-send `apply_create` wrapper kept for other
+callers. Create is disabled on a blank name; the Name field autofocuses on
+open (nothing else in this small dialog competes for focus); Enter submits
+exactly like clicking Create. **NEEDS-WIRING:** `render_create_dialog` grew a
+`spawn_position: Option<[f32; 3]>` parameter (L-06 — a node made via the tree
+"+" was spawning at the origin, often off-screen) that `panels/mod.rs`'s call
+site must fill from the camera focus target; a successful create's toast
+(D-07) also needs the `VerseCreated`/`FractalCreated`/`PetalCreated`/
+`NodeCreated` arms in `verse_manager/db_results/mod.rs` to call
+`ui_mgr.show_toast(..)`, which is outside this file's owns list.
 
 ## §claim-ownership (F6)
 

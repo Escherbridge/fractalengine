@@ -1733,10 +1733,10 @@ pub fn drive_streamed_tilesets(
             state.advertised.contains(*id)
                 && !state.meta_requested.contains_key(*id)
                 && !state.meta_verifying.contains_key(*id)
-                && !state
+                && state
                     .meta_backoff
                     .get(*id)
-                    .is_some_and(|(_, retry_at)| *retry_at > now)
+                    .is_none_or(|(_, retry_at)| *retry_at <= now)
         })
         .map(str::to_string)
         .collect();
