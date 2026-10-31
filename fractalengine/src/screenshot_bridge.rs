@@ -6,9 +6,10 @@ use std::sync::{Arc, Mutex};
 
 use bevy::image::Image;
 use bevy::input::ButtonInput;
-use bevy::prelude::{Commands, KeyCode, On, Res, ResMut, Resource, Time};
+use bevy::prelude::{Commands, KeyCode, On, Query, Res, ResMut, Resource, Time, With};
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
 use bevy::tasks::AsyncComputeTaskPool;
+use bevy::window::{PrimaryWindow, Window};
 use fe_runtime::screenshot::{ScreenshotRequest, ScreenshotRequestReceiver};
 
 /// Bevy side of the API→Bevy capture bridge.
@@ -64,11 +65,34 @@ fn capture_primary_window_png(
     );
 }
 
+/// Why the primary window cannot be captured right now, if it cannot. A
+/// minimized window is 0x0: Bevy would mark its `Screenshot` `Capturing` and
+/// never fire it (src/AGENTS.md §screenshot), so refuse up front.
+pub fn capture_refusal(primary_window: Option<&Window>) -> Option<&'static str> {
+    match primary_window {
+        None => Some("no application window (closing?)"),
+        Some(window) if window.physical_width() == 0 || window.physical_height() == 0 => {
+            Some("the application window is minimized — restore it to capture")
+        }
+        Some(_) => None,
+    }
+}
+
 /// Bevy system: serve every pending API capture request with ONE capture of
 /// the primary window, replying to each with its own correlation id.
-pub fn drain_screenshot_requests(bridge: Res<ScreenshotBridge>, mut commands: Commands) {
+pub fn drain_screenshot_requests(
+    bridge: Res<ScreenshotBridge>,
+    primary_window: Query<&Window, With<PrimaryWindow>>,
+    mut commands: Commands,
+) {
     let requests: Vec<ScreenshotRequest> = bridge.0.try_iter().collect();
     if requests.is_empty() {
+        return;
+    }
+    if let Some(reason) = capture_refusal(primary_window.single().ok()) {
+        for request in requests {
+            request.reply(Err(reason.to_string()));
+        }
         return;
     }
     capture_primary_window_png(&mut commands, move |png| {
@@ -198,6 +222,59 @@ mod tests {
             .to_rgb8();
         assert_eq!(decoded.dimensions(), (3, 2));
         assert!(decoded.pixels().all(|p| p.0 == [red, green, blue]));
+    }
+
+    /// Run `drain_screenshot_requests` once against a primary window of the
+    /// given physical size; returns the request's reply (if any) and how many
+    /// `Screenshot` captures the system queued.
+    fn drain_once_with_window(
+        width: u32,
+        height: u32,
+    ) -> (Option<fe_runtime::screenshot::ScreenshotReply>, usize) {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = bevy::ecs::world::World::new();
+        let (tx, rx) = fe_runtime::screenshot::screenshot_bridge();
+        world.insert_resource(ScreenshotBridge(rx));
+        let mut window = Window::default();
+        window.resolution.set_physical_resolution(width, height);
+        world.spawn((window, PrimaryWindow));
+        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+        tx.try_send(ScreenshotRequest {
+            correlation_id: "c1".to_string(),
+            reply_tx,
+        })
+        .expect("bridge has room");
+        world
+            .run_system_once(drain_screenshot_requests)
+            .expect("system runs");
+        let captures = world.query::<&Screenshot>().iter(&world).count();
+        (reply_rx.try_recv().ok(), captures)
+    }
+
+    /// A minimized (0x0) window is refused at once, with the request's own
+    /// correlation id — never a `Screenshot` Bevy would leave `Capturing`
+    /// forever while the agent waits out the 5 s timeout.
+    #[test]
+    fn a_minimized_window_refuses_captures_immediately() {
+        let (reply, captures) = drain_once_with_window(0, 0);
+        assert_eq!(captures, 0, "no capture queued for a 0x0 window");
+        let reply = reply.expect("answered in the same frame");
+        assert_eq!(reply.correlation_id, "c1");
+        assert!(
+            reply
+                .result
+                .as_ref()
+                .is_err_and(|e| e.contains("minimized")),
+            "{:?}",
+            reply.result
+        );
+    }
+
+    #[test]
+    fn a_visible_window_queues_one_capture_and_answers_later() {
+        let (reply, captures) = drain_once_with_window(1280, 720);
+        assert_eq!(captures, 1);
+        assert!(reply.is_none(), "the reply waits for the captured frame");
     }
 
     #[test]

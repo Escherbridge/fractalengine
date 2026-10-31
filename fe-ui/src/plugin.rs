@@ -1034,7 +1034,13 @@ fn gardener_ui_system(
         &mut misc.identity_banner,
         &misc.volume_report,
     );
-    viewport_rect.0 = rect;
+    // Pointer routing excludes the resize bands: a press that starts a window
+    // resize must not also pick / place in the viewport (§window-chrome).
+    viewport_rect.0 = crate::ui_shell::topbar::viewport_outside_resize_bands(
+        rect,
+        ectx.viewport_rect(),
+        ui_shell.topbar.maximized,
+    );
     // Frameless-window edge grips: after every panel so the resize cursor wins
     // (ui_shell/AGENTS.md §window-chrome).
     crate::ui_shell::topbar::render_window_resize_grips(ectx, &mut ui_shell.topbar);

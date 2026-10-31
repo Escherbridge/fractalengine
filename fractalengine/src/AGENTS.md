@@ -1050,6 +1050,17 @@ Editor+-gated (RP-4) and every writer validates its `did:key` grammar
   `save_to_disk` does) on the `AsyncComputeTaskPool`, never on the frame loop,
   then replies to each request echoing its correlation id. The API side owns the
   5 s timeout; a late reply to a timed-out caller is dropped.
+- `capture_refusal` answers a batch at once, without spawning a `Screenshot`,
+  when there is no primary window or it is minimized (0x0 physical). Bevy's
+  `extract_screenshots` marks a `Screenshot` `Capturing` on first sight and only
+  ever re-extracts `Without<Capturing>`; if the render pass then skips it (no
+  swap-chain view for the minimized surface) the entity, its observer and the
+  held reply senders leak forever — and the agent waited out the full timeout
+  for a refusal it can now read immediately.
+- Known edge (not fixed): an API capture and an F12 press in the SAME frame
+  spawn two `Screenshot`s of one window; Bevy despawns the duplicate, so one
+  side gets "capture request dropped" (API) or no toast (F12). Merge the two
+  into one per-frame capture if it is ever seen in practice.
 - `capture_screenshot_on_f12` is the human path: F12 saves
   `data/screenshots/fractalengine-YYYYMMDD-HHMMSS-mmm.png` (UTC; `data/` is the
   app data dir beside the DB) off-thread, and `surface_saved_screenshots` toasts

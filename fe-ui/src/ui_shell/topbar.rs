@@ -155,6 +155,21 @@ pub fn resize_direction_at(
     }
 }
 
+/// The viewport's pointer-routing rect: `viewport` minus the edge resize bands
+/// (whole `viewport` while maximized — no grips), so the Bevy-side click
+/// router never treats a resize press as a pick / pen anchor / gimbal grab.
+pub fn viewport_outside_resize_bands(
+    viewport: egui::Rect,
+    screen: egui::Rect,
+    maximized: bool,
+) -> egui::Rect {
+    if maximized {
+        viewport
+    } else {
+        viewport.intersect(screen.shrink(RESIZE_BAND))
+    }
+}
+
 /// The OS resize cursor for a drag direction.
 fn resize_cursor(direction: CompassOctant) -> egui::CursorIcon {
     match direction {
@@ -749,6 +764,38 @@ mod tests {
                 .iter()
                 .all(|r| !matches!(r, WindowChromeRequest::StartResize(_))),
             "a maximized window has no resize grips"
+        );
+    }
+
+    /// A press in a resize band starts a window resize, so the viewport's click
+    /// router must not see it too (it would pick, deselect or drop a pen anchor);
+    /// maximized windows have no grips and keep the whole viewport.
+    #[test]
+    fn resize_band_presses_never_reach_the_viewport_router() {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        // Viewport reaching the right, bottom and left window edges (sidebars closed).
+        let viewport = egui::Rect::from_min_max(egui::pos2(0.0, 40.0), egui::pos2(800.0, 600.0));
+        let routed = viewport_outside_resize_bands(viewport, screen, false);
+        let cases = [
+            (egui::pos2(798.0, 300.0), false), // east band
+            (egui::pos2(2.0, 300.0), false),   // west band
+            (egui::pos2(400.0, 598.0), false), // south band
+            (egui::pos2(798.5, 598.5), false), // south-east corner
+            (egui::pos2(400.0, 300.0), true),  // interior
+            (egui::pos2(6.0, 300.0), true),    // just inside the west band
+        ];
+        for (pos, reaches_viewport) in cases {
+            assert_eq!(routed.contains(pos), reaches_viewport, "{pos:?}");
+            assert_eq!(
+                resize_direction_at(pos, screen, RESIZE_BAND).is_some(),
+                !reaches_viewport,
+                "{pos:?}: exactly one of resize / viewport owns the press"
+            );
+        }
+        assert_eq!(
+            viewport_outside_resize_bands(viewport, screen, true),
+            viewport,
+            "maximized: no grips, the whole viewport routes"
         );
     }
 

@@ -225,7 +225,13 @@ adds a second `TopBottomPanel::top`.
   (`resize_direction_at`, corners first) sets the egui resize cursor — which
   bevy_egui forwards to the OS, so nothing fights over `CursorIcon` — and a
   primary press there requests `StartResize(CompassOctant)`. Inert while
-  maximized.
+  maximized. The grips read raw input (they claim nothing in egui), and the
+  Bevy click router (`node_manager::router::resolve_pointer_frame`) runs in
+  `Update` BEFORE the egui pass sees the press — so `gardener_ui_system` writes
+  `ViewportRect` through `viewport_outside_resize_bands` (viewport ∩
+  screen.shrink(band), unless maximized). Without it, a resize from an edge the
+  viewport touches also picked / deselected / dropped a pen anchor (critic
+  pass, 2026-10-31).
 - **Applying requests.** `apply_window_chrome` (a Bevy system in
   `EguiPrimaryContextPass` after `gardener_ui_system` — a window side effect,
   not a second render pass) takes `TopbarState.chrome_request` and calls
