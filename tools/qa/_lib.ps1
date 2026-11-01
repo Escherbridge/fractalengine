@@ -252,6 +252,7 @@ function Stop-QaOwnedProcessTree {
     $tree = @($known.Values | Sort-Object { [long]$_.start_ticks } -Descending)
     $pinned = New-Object System.Collections.Generic.List[object]
     $failures = New-Object System.Collections.Generic.List[string]
+    if ($enumerationError) { $failures.Add("Descendant cleanup could not be verified: $enumerationError") }
     try {
         foreach ($entry in $tree) {
             try {
@@ -271,7 +272,6 @@ function Stop-QaOwnedProcessTree {
     } finally { foreach ($item in $pinned) { $item.process.Dispose() } }
     if ($failures.Count -gt 0) { throw ($failures -join '; ') }
 
-    if ($enumerationError) { throw "Root stopped, but descendant cleanup could not be verified: $enumerationError" }
 }
 
 function Get-QaStageManifest {
