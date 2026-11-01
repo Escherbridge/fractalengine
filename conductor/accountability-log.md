@@ -762,3 +762,9 @@ fail-closed).
   batches touched (conductor/test-batches.md, being built); full suite once at campaign end. Applied to polish-wave.js,
   agent-vision-exec.js, qa-harness.js. The running vision critic predates it (prompt fixed; not steered mid-run per
   the double-instance lesson) — its added tests, if any, get folded by the next advocate.
+- 2026-11-01 User directive: use agent vision to test and adjust ALL tools (add objects, run queries, terrain calculations),
+  take notes, and derive recommendations (SIMPLIFY / HIERARCHY / RELOCATE / MISSING / POLISH) compared against Blender, ZBrush,
+  Civil 3D, QGIS, Unreal and SketchUp. Staged as .omc/plans/ux-audit.js: five serial live-driven region audits that make no source
+  edits, plus independent verification of the calculations. A synthesis step then writes the ux_audit_20261101 track and appends
+  polish Wave 7+ (polish-wave.js now takes args.leaves). Sequence: run 2 (input) green, then qa-harness, then ux-audit, then
+  polish W7+. DATA-MODEL recommendations go to the user; they are never auto-applied.
