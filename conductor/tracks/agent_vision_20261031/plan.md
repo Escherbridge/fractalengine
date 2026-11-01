@@ -400,3 +400,9 @@ screenshot.rs / screenshot_bridge.rs", read: reuse the envelope and round_trip.
    inject_input returns PNG pixels, so it MUST pass the SCREENSHOT gate too: SCREENSHOT_GATE opt-in check (honour
    FE_API_SCREENSHOT_ALLOW=0) + the screenshot per-DID rate key + the same view-scope check as a capture; otherwise
    refuse capture_after with the screenshot gate's refusal. One helper, both doors. Verified at run close (orchestrator).
+7. (INPUT-ADDENDUM, security review of I4) CRASH: input_bridge.rs `Phase::Injecting` indexes `active.frames[active.next_frame]`
+   with no empty check — a request that plans to zero frames (e.g. empty TextEntry) panics the Bevy main thread, and the
+   app is built panic=abort ⇒ any input-enabled API caller can kill FractalEngine. Required: `validate` rejects empty
+   TextEntry text / zero-effect batches (typed refusal `no_effective_input`), plan_batch refuses an empty frame list, and
+   the Injecting branch uses `frames.get_mut(next_frame)` (finish the job if None) — no unchecked index in any per-frame
+   input system. Extend the input journey test with an empty-text request → typed refusal, app alive.
