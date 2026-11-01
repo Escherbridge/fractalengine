@@ -23,7 +23,8 @@ CURRENT_POINTER = os.path.join(REPO_ROOT, ".qa", "current")
 
 # Transient refusals worth one short retry loop before reporting (rate budgets,
 # the single-flight slots, a posed capture holding the camera).
-RETRYABLE_STATUS = {429, 409}
+TRANSIENT_REFUSALS = {"http_409", "window_request_busy", "ui_frame_changing", "ui_tree_not_ready",
+                      "input_in_progress", "capture_in_progress", "camera_locked_by_capture"}
 RETRY_ATTEMPTS = 6
 RETRY_SLEEP_SECONDS = 1.1
 
@@ -193,7 +194,7 @@ def call(run, method, path, token, body=None, timeout=40.0):
         if 200 <= status < 300:
             return status, headers, raw
         refusal = refusal_from(status, raw)
-        if status in RETRYABLE_STATUS and attempt + 1 < RETRY_ATTEMPTS:
+        if (status == 429 or (status == 409 and refusal.code in TRANSIENT_REFUSALS)) and attempt + 1 < RETRY_ATTEMPTS:
             time.sleep(RETRY_SLEEP_SECONDS)
             continue
         if status >= 500 and not api_alive(run):

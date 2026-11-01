@@ -40,7 +40,7 @@ $stageManifest = Get-QaStageManifest -StageDir $stageDir
 $stageMatchesSource = $stageManifest.source_fingerprint -eq (Get-QaSourceFingerprint)
 if (-not $stageMatchesSource -and -not $AllowStaleStage) { throw 'Stage build inputs differ from current source; rebuild or explicitly use -AllowStaleStage and report limited provenance' }
 if (-not $stageMatchesSource) { Write-Warning 'Using a stale QA stage; results do not verify current source' }
-$portProbe = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 8765)
+$portProbe = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, $ApiPort)
 try { $portProbe.Start() } finally { $portProbe.Stop() }
 
 # --- Isolated run dir --------------------------------------------------------

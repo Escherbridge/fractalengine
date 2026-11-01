@@ -617,12 +617,16 @@ impl UiManager {
     }
 
     pub fn open_dialog(&mut self, dialog: ActiveDialog) {
-        self.active_dialog = dialog;
+        self.replace_dialog(dialog);
     }
 
     pub fn close_dialog(&mut self) {
+        self.replace_dialog(ActiveDialog::None);
+    }
+
+    fn replace_dialog(&mut self, dialog: ActiveDialog) {
         self.gltf_file_lease = None;
-        self.active_dialog = ActiveDialog::None;
+        self.active_dialog = dialog;
     }
 
     /// Queues a severity-tagged notice and returns its id. Makes room per
@@ -1873,7 +1877,40 @@ mod tests {
     #[test]
     fn active_dialog_mutual_exclusion() {
         let mut mgr = UiManager::default();
+        let root = std::env::temp_dir().join(format!(
+            "fe-dialog-replace-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let source = root.join("model.glb");
+        std::fs::write(&source, b"fixture").unwrap();
+        let provider =
+            std::sync::Arc::new(crate::file_dialogs::QaFileDialogs::new(root.clone()).unwrap());
+        provider.set_listener("127.0.0.1:8765".parse().unwrap());
+        mgr.file_dialogs = crate::file_dialogs::FileDialogs(provider);
+        let selected = mgr
+            .file_dialogs
+            .lease_path(&source, fe_runtime::qa_debug::DialogKind::Open, Some("v"))
+            .unwrap();
+        let in_flight_read = selected.read_lease().unwrap();
+        mgr.gltf_file_lease = Some(selected);
         mgr.open_dialog(ActiveDialog::PeerDebug);
+        assert!(
+            mgr.gltf_file_lease.is_none(),
+            "dialog replacement releases its abandoned selection"
+        );
+        assert_eq!(
+            std::sync::Arc::strong_count(&in_flight_read),
+            1,
+            "only the actual DB read retains its own complete lease"
+        );
+        drop(in_flight_read);
+        std::fs::rename(&source, root.join("released.glb")).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
         assert!(matches!(mgr.active_dialog, ActiveDialog::PeerDebug));
         // Opening a different dialog replaces the previous one.
         mgr.open_dialog(ActiveDialog::JoinDialog {
