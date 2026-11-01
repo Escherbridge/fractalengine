@@ -370,7 +370,10 @@ impl CameraPointerRegion {
             physical.x / self.pixels_per_point,
             physical.y / self.pixels_per_point,
         );
-        self.rect.contains(point)
+        point.x > self.rect.min.x
+            && point.x < self.rect.max.x
+            && point.y > self.rect.min.y
+            && point.y < self.rect.max.y
             && ctx
                 .layer_id_at(point)
                 .is_none_or(|layer| layer.order == bevy_egui::egui::Order::Background)

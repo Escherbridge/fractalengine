@@ -999,6 +999,17 @@ mod tests {
         ] {
             assert_eq!(region.accepts_pointer(point * 2.0, &context), accepted);
         }
+        for point in [
+            egui::vec2(input.min.x, 200.0),
+            egui::vec2(input.max.x, 200.0),
+            egui::vec2(400.0, input.min.y),
+            egui::vec2(400.0, input.max.y),
+        ] {
+            assert!(
+                !region.accepts_pointer(point * 2.0, &context),
+                "exact grab-band endpoints stay outside scene input"
+            );
+        }
         assert_eq!(
             visual.width(),
             480.0,
