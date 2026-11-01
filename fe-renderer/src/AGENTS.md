@@ -243,3 +243,14 @@ concrete draw wiring stays in the app.
   `bench_10k_build_and_pick` test is the scale/correctness guard (a timed
   criterion harness is a follow-up). Degenerate inputs (zero/NaN cell size,
   empty index, zero radius) are guarded, never panic.
+
+
+## ?pointer-region (QA-0019)
+
+The UI supplies `CameraPointerRegion` in egui points and the captured pixels-per-point factor. Orbit
+controls read the current physical window pointer and convert once; wheel/motion outside this region
+are consumed without changing the camera. Foreground egui areas also block pointer controls. This is
+independent of `is_using_pointer`, which only describes active widget interaction and misses hovering
+scroll areas. The renderer owns the region type, preserving fe-ui ? fe-renderer dependency direction.
+A standalone renderer without this optional resource keeps its existing behavior; UI initializes it to
+NOTHING until its first layout. Last completed layout is used by Update, before the next egui pass.

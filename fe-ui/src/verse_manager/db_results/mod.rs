@@ -88,6 +88,7 @@ pub(super) fn apply_db_results(
     // one batch can't double-spawn either (deferred spawns are query-invisible).
     let mut already_spawned: std::collections::HashSet<String> =
         caches.spawned.iter().map(|m| m.node_id.clone()).collect();
+    inspector.query_results.invalidate(nav.active_verse_id.as_deref());
     let mesh_budget_exceeded = caches.mesh_budget.exceeded;
     for result in reader.read() {
         match result {
@@ -1486,8 +1487,7 @@ mod tests {
         gis.query_request_id = Some(gis_id.to_string());
         path.tracks_pending = true;
         path.tracks_request_id = Some(tracks_id.to_string());
-        ins.query_loading = true;
-        ins.query_request_id = Some(query_id.to_string());
+        ins.query_results.begin(query_id.to_string(), "VERSE#v".to_string());
         (gis, path, ins)
     }
 
@@ -1520,11 +1520,10 @@ mod tests {
                 "{id} must be claimed"
             );
         }
-        assert!(ins
-            .query_result
-            .as_deref()
-            .is_some_and(|s| s.contains("\"tab\": \"query\"")));
-        assert!(!ins.query_loading && ins.query_request_id.is_none());
+        assert_eq!(ins.query_results.rows, query_rows);
+        assert!(!ins.query_results.pending());
+        ins.query_results.invalidate(Some("other"));
+        assert!(ins.query_results.rows.is_empty());
         assert_eq!(path.tracks.len(), 1);
         assert_eq!(path.tracks[0].node_id, "track-1");
         assert!(!path.tracks_pending && path.tracks_request_id.is_none());
@@ -1550,7 +1549,7 @@ mod tests {
             );
             assert!(gis.query_pending && gis.results.is_empty());
             assert!(path.tracks_pending && path.tracks.is_empty());
-            assert!(ins.query_loading && ins.query_result.is_none());
+            assert!(ins.query_results.pending() && ins.query_results.rows.is_empty());
         }
     }
 
@@ -1572,7 +1571,7 @@ mod tests {
         );
         assert!(gis.query_pending && gis.last_error.is_none());
         assert!(path.tracks_pending && path.last_error.is_none());
-        assert!(ins.query_loading && ins.query_result.is_none());
+        assert!(ins.query_results.pending() && ins.query_results.rows.is_empty());
     }
 
     /// X-01: every bare `DbResult::Error` now also surfaces as an error

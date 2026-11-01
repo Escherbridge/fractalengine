@@ -45,7 +45,7 @@ pub fn render_join_dialog(
     // not be abandon-able by accident any more than Cancel/Join/the text
     // edit are (all three are `add_enabled(!pending, ..)` below).
     let mut still_open = true;
-    let mut window = egui::Window::new("Join Verse")
+    let mut window = crate::ui_shell::layout_policy::bounded_window(ctx, "Join Verse")
         .collapsible(false)
         .resizable(true)
         .default_width(400.0)

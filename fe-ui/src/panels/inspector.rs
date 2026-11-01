@@ -41,12 +41,12 @@ pub(crate) fn right_inspector(
     asset_status: &crate::asset_ops::AssetDownloadStatus,
 ) {
     if node_mgr.selected_entity().is_some() {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        crate::ui_shell::layout_policy::trailing_row(ui, |ui| {
             if ui
                 .add(
                     egui::Button::new("\u{2715}")
                         .fill(egui::Color32::TRANSPARENT)
-                        .small(),
+                        .min_size(egui::vec2(24.0, 24.0)),
                 )
                 .on_hover_text("Deselect")
                 .clicked()

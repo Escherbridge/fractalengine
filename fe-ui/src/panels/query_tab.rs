@@ -16,7 +16,7 @@ use crate::theme;
 const QUERY_EDITOR_MIN_ROWS: usize = 4;
 /// Floor for the Result scroll area so a short panel still shows something
 /// rather than collapsing to near-zero (F2).
-const RESULT_MIN_HEIGHT: f32 = 100.0;
+
 
 /// Escapes a value for literal interpolation into a template SQL string.
 /// `actions::query::submit` always sends an empty `vars` map (the GUI tab has
@@ -132,7 +132,8 @@ pub(crate) fn inspector_query_section(
 
             // SQL text area — reasonable min height; the hint lists the real
             // tables instead of a single wrong-table example (F3).
-            let response = ui.add(
+            let editor_height = crate::ui_shell::layout_policy::editor_height(ui.ctx());
+            let response = crate::ui_shell::layout_policy::scroll(ui, "SQL editor", egui::ScrollArea::vertical().id_salt("sql_editor").max_height(editor_height), |ui| ui.add_sized([ui.available_width(), editor_height],
                 egui::TextEdit::multiline(&mut inspector.query_sql_buf)
                     .font(egui::TextStyle::Monospace)
                     .desired_rows(QUERY_EDITOR_MIN_ROWS)
@@ -141,14 +142,14 @@ pub(crate) fn inspector_query_section(
                         "Tables: node, petal, fractal, verse, asset, iot_reading\n\
                          e.g. SELECT * FROM node WHERE petal_id = '...'",
                     ),
-            );
+            )).inner;
 
             ui.add_space(6.0);
 
             // Submit button
-            let can_submit = !inspector.query_sql_buf.trim().is_empty() && !inspector.query_loading;
+            let can_submit = !inspector.query_sql_buf.trim().is_empty() && !inspector.query_results.pending();
             ui.horizontal(|ui| {
-                let btn = egui::Button::new(if inspector.query_loading {
+                let btn = egui::Button::new(if inspector.query_results.pending() {
                     "Running..."
                 } else {
                     "Run Query"
@@ -163,21 +164,14 @@ pub(crate) fn inspector_query_section(
                     && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.ctrl);
 
                 if (submit_clicked || ctrl_enter) && can_submit {
-                    inspector.query_loading = true;
-                    inspector.query_result = Some("Submitting...".to_string());
+
                     ui_mgr.push_action(UiAction::SubmitQuery {
                         sql: inspector.query_sql_buf.clone(),
                         scope: scope.clone(),
                     });
                 }
 
-                if inspector.query_result.is_some()
-                    && ui
-                        .add(egui::Button::new("Clear").fill(theme::BG_BUTTON))
-                        .clicked()
-                {
-                    inspector.query_result = None;
-                }
+
             });
 
             ui.add_space(2.0);
@@ -187,46 +181,8 @@ pub(crate) fn inspector_query_section(
                     .color(theme::TEXT_DIM),
             );
 
-            // Results — always rendered (top-down, no fixed offset) so the
-            // tab fills the panel's remaining height instead of hugging the
-            // bottom once content runs out (F2). `available_height()` here is
-            // real: `section_chrome`'s outer ScrollArea bounds its content Ui
-            // to the visible viewport in this egui version (it does not grow
-            // to "infinite" for the scroll direction), so this reflects what
-            // is actually left below the editor/buttons above.
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new("Result")
-                    .small()
-                    .strong()
-                    .color(theme::TEXT_SECTION),
-            );
-            ui.add_space(2.0);
+            ui.label("Results open in the dock below the viewport.");
 
-            let result_height = ui.available_height().max(RESULT_MIN_HEIGHT);
-            egui::ScrollArea::vertical()
-                .max_height(result_height)
-                .auto_shrink([false, false])
-                .show(ui, |ui| match &inspector.query_result {
-                    Some(result) => {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut result.as_str())
-                                .font(egui::TextStyle::Monospace)
-                                .desired_width(ui.available_width())
-                                .interactive(false),
-                        );
-                    }
-                    None => {
-                        ui.label(
-                            egui::RichText::new("Run a query to see results here.")
-                                .small()
-                                .color(theme::TEXT_MUTED)
-                                .italics(),
-                        );
-                    }
-                });
         });
 }
 

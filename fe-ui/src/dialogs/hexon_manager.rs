@@ -41,6 +41,7 @@ fn format_size(bytes: u64) -> String {
 /// advisory only").
 pub fn render_hexon_manager(
     ctx: &egui::Context,
+    section_state: &mut crate::ui_shell::right_sidebar::RightSidebarState,
     ui_mgr: &mut UiManager,
     petal_map: &mut PetalMapState,
     active_petal_id: Option<&str>,
@@ -75,35 +76,17 @@ pub fn render_hexon_manager(
     let mut close = false;
     let mut actions: Vec<UiAction> = Vec::new();
 
-    let max_w = ctx.viewport_rect().width() * 0.8;
-    egui::SidePanel::right("right_section")
-        .resizable(true)
-        .default_width(440.0)
-        .width_range(320.0..=max_w)
-        .frame(
-            egui::Frame::NONE
-                .fill(theme::BG_PANEL)
-                .inner_margin(egui::Margin::same(8))
-                .stroke(egui::Stroke::new(2.0_f32, theme::BG_BUTTON)),
-        )
-        .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("Maps")
-                        .strong()
-                        .color(theme::TEXT_HEADING),
-                );
-            });
-            ui.separator();
+    crate::ui_shell::right_sidebar::section_chrome(ctx, section_state,
+        crate::ui_shell::right_sidebar::RightSidebarSection::Maps, |ui| {
             // Top bar: search + install from file
-            ui.horizontal(|ui| {
+            ui.vertical(|ui| {
                 ui.add(
                     egui::TextEdit::singleline(filter_text)
                         .hint_text("Search maps...")
-                        .desired_width(300.0),
+                        .desired_width(ui.available_width()),
                 );
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui
                         .add(egui::Button::new("Close").fill(theme::BG_BUTTON))
                         .clicked()
@@ -141,12 +124,12 @@ pub fn render_hexon_manager(
             // control (ui_ux §6) — `AppSettings.hexon_registry_url` is the
             // only source of `registry_url`, so this control is the field's
             // real, live consumer.
-            ui.horizontal(|ui| {
+            ui.vertical(|ui| {
                 ui.add_enabled_ui(registry_url.is_some(), |ui| {
                     ui.add(
                         egui::TextEdit::singleline(registry_uri_buf)
                             .hint_text("hexon_id or hexon_id@version")
-                            .desired_width(240.0),
+                            .desired_width((ui.available_width() - 120.0).max(64.0)),
                     );
                     let can_install = registry_url.is_some() && !registry_uri_buf.trim().is_empty();
                     if ui
@@ -234,30 +217,10 @@ pub fn render_hexon_manager(
             ui.add_space(8.0);
             ui.separator();
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} maps, {} total",
-                        storage_info.count,
-                        format_size(storage_info.total_bytes),
-                    ))
-                    .small()
-                    .color(theme::TEXT_MUTED),
-                );
-                ui.separator();
-                // X-16: the storage dir is an unbounded user-filesystem path —
-                // clip it instead of letting it push "Open folder" off the panel.
-                clipped_value(ui, &storage_info.base_dir, theme::TEXT_DIM);
-                if ui
-                    .add(
-                        egui::Button::new(egui::RichText::new("Open folder").small())
-                            .fill(theme::BG_BUTTON),
-                    )
-                    .clicked()
-                {
-                    actions.push(UiAction::HexonOpenStorageDir);
-                }
-            });
+            ui.label(egui::RichText::new(format!("{} maps, {} total", storage_info.count, format_size(storage_info.total_bytes))).small().color(theme::TEXT_MUTED));
+            clipped_value(ui, &storage_info.base_dir, theme::TEXT_DIM);
+            if ui.button("Open folder").clicked() { actions.push(UiAction::HexonOpenStorageDir); }
+
         });
 
     // Drain collected actions

@@ -38,7 +38,7 @@ pub(crate) fn left_sidebar(
     egui::SidePanel::left("sidebar")
         .resizable(true)
         .default_width(220.0)
-        .width_range(180.0..=400.0)
+        .width_range(120.0..=crate::ui_shell::layout_policy::left_width(ctx))
         .frame(
             egui::Frame::NONE
                 .fill(theme::BG_PANEL)
@@ -48,8 +48,9 @@ pub(crate) fn left_sidebar(
             sidebar_verse_header(ui, nav, db_tx, ui_mgr);
             ui.separator();
 
+            let tree_height = (ui.available_height() - 86.0).max(40.0);
             crate::ui_shell::layout_policy::scroll(ui, "Hierarchy", egui::ScrollArea::vertical()
-                .auto_shrink([false; 2]), |ui| {
+                .max_height(tree_height).auto_shrink([false; 2]), |ui| {
                     ui.add_space(4.0);
                     render_verse_tree(
                         ui,
@@ -67,7 +68,7 @@ pub(crate) fn left_sidebar(
                 });
 
             // Bottom-pinned reset button (two-step destructive confirm)
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+            ui.vertical_centered(|ui| {
                 ui.add_space(6.0);
                 let pending_id = egui::Id::new("sidebar_reset_db_pending");
                 let pending: bool = ui.ctx().data(|d| d.get_temp(pending_id)).unwrap_or(false);
@@ -77,7 +78,7 @@ pub(crate) fn left_sidebar(
                             .small()
                             .color(theme::TEXT_DIM),
                     )
-                    .fill(theme::BG_BUTTON_ALT);
+                    .fill(theme::BG_BUTTON_ALT).min_size(egui::vec2(0.0, 24.0));
                     if ui
                         .add(reset_btn)
                         .on_hover_text("Wipe all data and re-seed defaults")

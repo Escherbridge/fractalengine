@@ -47,7 +47,7 @@ pub fn render_node_options_dialog(
     let mut pending_actions: Vec<UiAction> = Vec::new();
 
     let mut still_open = true;
-    egui::Window::new("Node Options")
+    crate::ui_shell::layout_policy::bounded_window(ctx, "Node Options")
         .open(&mut still_open)
         .collapsible(false)
         .resizable(false)

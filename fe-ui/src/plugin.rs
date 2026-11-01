@@ -282,10 +282,7 @@ pub struct InspectorFormState {
     pub api_tokens_total: u64,
     // Query tab state
     pub query_sql_buf: String,
-    pub query_result: Option<String>,
-    pub query_loading: bool,
-    /// Correlation id of the in-flight Query-tab query (its reply's claim key).
-    pub query_request_id: Option<String>,
+    pub query_results: crate::ui_shell::results_dock::ResultsDockState,
     // Property value editing state
     pub node_properties: serde_json::Value,
     pub node_properties_loading: bool,
@@ -329,9 +326,7 @@ impl Default for InspectorFormState {
             api_tokens_page: 0,
             api_tokens_total: 0,
             query_sql_buf: String::new(),
-            query_result: None,
-            query_loading: false,
-            query_request_id: None,
+            query_results: Default::default(),
             node_properties: serde_json::Value::Object(Default::default()),
             node_properties_loading: false,
             prop_add_key_buf: String::new(),
@@ -738,6 +733,8 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<CameraFocusTarget>();
         app.init_resource::<ViewportCursorWorld>();
         app.init_resource::<ViewportRect>();
+        app.init_resource::<fe_renderer::camera::CameraPointerRegion>();
+        app.add_systems(Update, crate::ui_shell::results_dock::draw_matches);
         app.init_resource::<UiManager>();
         app.init_resource::<PetalMapState>();
         // M2/F6: per-verse timeseries fabric settings surface (mirrors the
@@ -1014,6 +1011,7 @@ struct UiShellParams<'w> {
     // `gardener_console` and `status_bar::status_bar` (persistent error
     // segment). See `ui_shell/modal.rs`.
     modal: ResMut<'w, crate::ui_shell::modal::ModalManagerState>,
+    camera_region: ResMut<'w, fe_renderer::camera::CameraPointerRegion>,
 }
 
 fn gardener_ui_system(
@@ -1081,6 +1079,8 @@ fn gardener_ui_system(
         ectx.viewport_rect(),
         ui_shell.topbar.maximized,
     );
+    ui_shell.camera_region.rect = viewport_rect.0;
+    ui_shell.camera_region.pixels_per_point = ectx.pixels_per_point();
     // Frameless-window edge grips: after every panel so the resize cursor wins
     // (ui_shell/AGENTS.md §window-chrome).
     crate::ui_shell::topbar::render_window_resize_grips(ectx, &mut ui_shell.topbar);

@@ -348,6 +348,18 @@ pub fn frame_world_box(min: Vec3, max: Vec3, view_dir: Vec3, fov: f32) -> LookAt
 // Plugin + systems
 // ---------------------------------------------------------------------------
 
+
+/// UI-owned egui-point region for current-pointer camera routing.
+#[derive(Resource)]
+pub struct CameraPointerRegion {
+    pub rect: bevy_egui::egui::Rect,
+    pub pixels_per_point: f32,
+}
+
+impl Default for CameraPointerRegion {
+    fn default() -> Self { Self { rect: bevy_egui::egui::Rect::NOTHING, pixels_per_point: 1.0 } }
+}
+
 /// Marker inserted while an agent-requested posed capture holds the main
 /// camera; see AGENTS.md §camera-capture. Its mere presence (not a bool
 /// field) is the lock, so `camera_unlocked` is a plain `Option<Res<_>>` read.
@@ -482,6 +494,8 @@ fn orbit_camera_system(
     time: Res<Time>,
     height_field: Option<Res<TerrainHeightField>>,
     scale_settings: Option<Res<CameraScaleSettings>>,
+    region: Option<Res<CameraPointerRegion>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
     // Check egui input state.
     let (egui_wants_pointer, egui_wants_keyboard) = if let Ok(ctx) = egui_ctx.ctx_mut() {
@@ -489,7 +503,13 @@ fn orbit_camera_system(
         // (3-D viewport) claims pointer ownership even when transparent, so
         // wants_pointer_input() is always true and blocks orbit/zoom/pan.
         // is_using_pointer() is only true when a UI widget is actively held.
-        (ctx.is_using_pointer(), ctx.wants_keyboard_input())
+        let pointer_outside = region.as_ref().is_some_and(|region| {
+            windows.single().ok().and_then(Window::physical_cursor_position)
+                .map(|position| bevy_egui::egui::pos2(position.x / region.pixels_per_point, position.y / region.pixels_per_point))
+                .is_none_or(|position| !region.rect.contains(position)
+                    || ctx.layer_id_at(position).is_some_and(|layer| layer.order != bevy_egui::egui::Order::Background))
+        });
+        (pointer_outside || ctx.is_using_pointer(), ctx.wants_keyboard_input())
     } else {
         (false, false)
     };

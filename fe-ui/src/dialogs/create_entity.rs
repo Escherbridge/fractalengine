@@ -43,7 +43,7 @@ pub fn render_create_dialog(
     let mut create_request: Option<DbCommand> = None;
 
     let mut still_open = true;
-    egui::Window::new(title)
+    crate::ui_shell::layout_policy::bounded_window(ctx, title)
         .open(&mut still_open)
         .collapsible(false)
         .resizable(false)

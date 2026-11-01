@@ -27,7 +27,7 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
     let mut still_open = true;
     let mut actions: Vec<UiAction> = Vec::new();
 
-    egui::Window::new(format!("Petal Manifest — {}", petal_name))
+    crate::ui_shell::layout_policy::bounded_window(ctx, format!("Petal Manifest — {}", petal_name))
         .open(&mut still_open)
         .collapsible(false)
         .resizable(true)

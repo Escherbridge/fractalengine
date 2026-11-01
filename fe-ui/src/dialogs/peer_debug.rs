@@ -17,7 +17,7 @@ pub fn render_peer_debug_panel(
 
     let mut close = false;
 
-    egui::Window::new("Peer Debug")
+    crate::ui_shell::layout_policy::bounded_window(ctx, "Peer Debug")
         .collapsible(true)
         .resizable(true)
         .default_width(300.0)

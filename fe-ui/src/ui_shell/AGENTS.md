@@ -257,3 +257,37 @@ adds a second `TopBottomPanel::top`.
   drag from free space moves; a drag that starts on the close X neither moves
   nor closes; click on X requests confirmation; double-click toggles maximize; a top-band press
   resizes (not while maximized); a table test covers every edge/corner.
+
+
+## ?layout-policy (S6)
+
+`layout_policy.rs` is the native-egui shell geometry boundary. The left and right panel limits reserve
+45% of the window width (with a 360 point viewport floor when feasible); right width uses remaining
+space after the left panel. Width ranges handle narrow min/max ordering. Each right section, including
+Maps, uses `section_chrome`; its bounded scroll region prevents wide body content from inflating the
+persisted panel. Scroll content receives a finite width and wrapping style. Overflow remains reachable
+through scroll rather than consuming the viewport. The hierarchy reserves 86 points for its two-step
+Reset footer. `trailing_row` bounds action rows; bare `with_layout` in a vertical body consumes its
+remaining height. Native dialog windows share screen bounds and scrolling. Breadcrumbs reserve Back
+before an ellipsis label; full names remain available on hover. `clipped_value` delegates path shortening
+to Unicode-safe middle ellipsis. SQL uses a finite 38% shell-height budget with its own scroll region.
+
+QA observations are opt-in context temp data reset before each primary pass. Scroll content IDs,
+clip rectangles, offsets, content dimensions and layers are recorded while drawing and exported in
+physical pixels by the existing guarded ui-tree bridge. Unknown hit/layer/text facts remain explicit;
+AccessKit parent rectangles are not assumed to be clipping boundaries.
+
+## ?query-results (S6)
+
+`InspectorFormState.query_results` composes ONE `ResultsDockState` UI view/run model. SQL input remains
+separate. `begin/complete/fail/invalidate` own pending correlation, provenance, timing and structured
+rows. Existing GIS and Paths claims remain independent. A verse switch invalidates rows and pending
+claims before rendering or routing DB replies. A stale/foreign correlation never claims the dock.
+Captured submitted scope is provenance only: `RawQuery` still lacks W5 server-side scoped authorization.
+
+The dock renders after sidebars and before the CentralPanel. Native `show_rows` virtualizes rows;
+sorting reorders indices, preserving source row identity. Formatting and scene node IDs are cached per
+reply. Column handles resize bounded widths; cells and rows copy through egui's clipboard path (the QA
+sink suppression still applies). Current-petal node rows queue `NodeManager::request_select_and_frame`,
+which reuses the sidebar resolver and live-transform camera focus; projected non-node rows remain
+copyable. Query-match scene markers are a separate visualization, never a second selection authority.

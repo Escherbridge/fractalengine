@@ -1104,6 +1104,7 @@ fn render_maps_section(
     );
     let close = crate::dialogs::render_hexon_manager(
         ctx,
+        state,
         ui_mgr,
         petal_map,
         active_petal,
@@ -1316,17 +1317,17 @@ fn render_groups_section(
 /// (D10). That "every" is load-bearing: the rail lives in here, so a section
 /// that opts out (as the Inspector used to) makes the whole rail invisible in
 /// the resting state.
-fn section_chrome(
+pub(crate) fn section_chrome(
     ctx: &egui::Context,
     state: &mut RightSidebarState,
     section: RightSidebarSection,
     body: impl FnOnce(&mut egui::Ui),
 ) {
-    let max_w = ctx.viewport_rect().width() * 0.8;
+    let max_w = super::layout_policy::right_width(ctx);
     egui::SidePanel::right("right_section")
         .resizable(true)
         .default_width(320.0)
-        .width_range(260.0..=max_w)
+        .width_range(max_w.min(260.0)..=max_w)
         .frame(
             egui::Frame::NONE
                 .fill(theme::BG_PANEL)
@@ -1346,7 +1347,7 @@ fn section_chrome(
             ui.add_space(2.0);
             section_rail(ui, state);
             ui.separator();
-            crate::ui_shell::layout_policy::scroll(ui, section_label(section), egui::ScrollArea::vertical()
+            crate::ui_shell::layout_policy::scroll(ui, section_label(section), egui::ScrollArea::both()
                 .id_salt(format!("right_section_scroll_{section:?}"))
                 .auto_shrink([false, false]), |ui| {
                     egui::Frame::NONE

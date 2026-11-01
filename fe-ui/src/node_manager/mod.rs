@@ -208,6 +208,12 @@ impl GestureParams<'_, '_> {
 }
 
 impl NodeManager {
+    /// Queue selection through the normal entity resolver and frame its live transform.
+    pub fn request_select_and_frame(&mut self, node_id: &str, fallback: [f32; 3], focus: &mut crate::plugin::CameraFocusTarget) {
+        self.pending_sidebar_select = Some(node_id.to_owned());
+        focus.target = Some((node_id.to_owned(), fallback));
+    }
+
     pub fn is_selected(&self) -> bool {
         self.selected.is_some()
     }

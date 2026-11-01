@@ -36,15 +36,11 @@ pub(super) fn route_query_reply(
                 path_state.last_error = Some(error.to_string());
             }
         }
-    } else if inspector.query_request_id.as_deref() == Some(id) {
-        inspector.query_request_id = None;
-        inspector.query_loading = false;
-        inspector.query_result = Some(match reply {
-            Ok(data) => {
-                serde_json::to_string_pretty(data).unwrap_or_else(|e| format!("Format error: {e}"))
-            }
-            Err(error) => format!("Error: {error}"),
-        });
+    } else if inspector.query_results.request_id.as_deref() == Some(id) {
+        match reply {
+            Ok(data) => inspector.query_results.complete(data),
+            Err(error) => inspector.query_results.fail(error),
+        }
     } else {
         return false;
     }
@@ -65,10 +61,8 @@ pub(super) fn handle_query_result(
     } else if path_state.tracks_pending {
         crate::actions::path::apply_track_rows(path_state, crate::gis::parse_gis_rows(data));
     } else {
-        let formatted =
-            serde_json::to_string_pretty(data).unwrap_or_else(|e| format!("Format error: {e}"));
-        inspector.query_result = Some(formatted);
-        inspector.query_loading = false;
+        // Uncorrelated replies never claim a correlated dock run.
+        if !inspector.query_results.pending() { inspector.query_results.complete(data); }
     }
 }
 

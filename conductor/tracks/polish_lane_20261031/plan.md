@@ -577,7 +577,7 @@ Disjointness: verified. `node_manager/mod.rs` is owned only by S2 (which registe
   with labels, 1-based indices, "Path N" default name), DW-04 (TTL inline validation only; the mint
   stays OUT per D-64), X-06 (point Remove), S-02 (`path_editor_card.rs:481-490` commits on
   `drag_stopped`), O-07 (pick the stamp in the viewport, one Apply, "Make editable node"), I-05
-  (copy-for-BI rows on the Query tab), I-06, I-07, X-02 (layer toggles), X-12 (these panels via
+  (Results dock now owns query row/cell copy after QA S6; retain BI-specific egress identifiers and remaining Paths/Data copy work), I-06, I-07, X-02 (layer toggles), X-12 (these panels via
   `theme::tab_fill`), X-15 (`path_editor_card.rs:399`), X-16, and `FEUI-TERRAIN-MODE-TODO`
   (`tool_panel.rs:134,1016`: remove the stale TODOs).
 - **Flow tests:** `path_point_drag_sends_one_move_on_release`; `annotations_tab_never_shows_query_rows`;

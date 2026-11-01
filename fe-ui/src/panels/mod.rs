@@ -146,6 +146,7 @@ pub fn gardener_console(
     // are its sole writers.
     volume_report: &crate::panels::volume_report_panel::VolumeReportState,
 ) -> egui::Rect {
+    crate::ui_shell::layout_policy::apply_style(ctx);
     // Repair conditional editor state; see `panels/AGENTS.md` §numeric-boundary.
     path_editor_card::sanitize_path_editor_numeric_state(path_state);
 
@@ -228,6 +229,8 @@ pub fn gardener_console(
             volume_report,
         )
     });
+
+    crate::ui_shell::results_dock::render(ctx, &mut inspector.query_results, nav, hierarchy, node_mgr, camera_focus, ui_mgr);
 
     let viewport_response =
         egui::CentralPanel::default()

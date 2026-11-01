@@ -80,7 +80,7 @@ pub fn render_entity_settings_dialog(
     let mut close = false;
     let mut still_open = true;
 
-    egui::Window::new(title)
+    crate::ui_shell::layout_policy::bounded_window(ctx, title)
         .open(&mut still_open)
         .collapsible(false)
         .resizable(true)

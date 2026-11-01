@@ -122,7 +122,11 @@ pub(crate) fn clipped_value(
     value: &str,
     color: egui::Color32,
 ) -> egui::Response {
-    ui.add(egui::Label::new(egui::RichText::new(value).small().monospace().color(color)).truncate())
+    let display = if value.contains('\\') || value.contains('/') {
+        let chars = (ui.available_width() / 7.0).floor().max(5.0) as usize;
+        crate::ui_shell::layout_policy::middle_ellipsis(value, chars)
+    } else { value.to_owned() };
+    ui.add(egui::Label::new(egui::RichText::new(display).small().monospace().color(color)).truncate())
         .on_hover_text(value)
 }
 

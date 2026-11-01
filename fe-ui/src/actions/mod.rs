@@ -1040,8 +1040,8 @@ pub(crate) fn process_ui_actions(
                     ui_mgr.show_advisory("Navigate to a petal first", now_secs);
                 }
             },
-            UiAction::SubmitQuery { sql, scope: _ } => {
-                query::submit(&db_sender, &mut inspector, sql);
+            UiAction::SubmitQuery { sql, scope } => {
+                query::submit(&db_sender, &mut inspector, sql, scope);
             }
             UiAction::LoadNodeProperties { node_id } => {
                 node_props::load(&db_sender, node_id);

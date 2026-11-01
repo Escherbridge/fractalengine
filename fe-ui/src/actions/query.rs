@@ -20,9 +20,9 @@ pub(crate) fn next_ui_query_id(kind: &str) -> String {
 }
 
 /// Send the Query tab's SQL; its reply is claimed by `query_request_id`.
-pub(crate) fn submit(db_sender: &DbCommandSender, inspector: &mut InspectorFormState, sql: String) {
+pub(crate) fn submit(db_sender: &DbCommandSender, inspector: &mut InspectorFormState, sql: String, scope: String) {
     let request_id = next_ui_query_id("query");
-    inspector.query_request_id = Some(request_id.clone());
+    inspector.query_results.begin(request_id.clone(), scope);
     if db_sender
         .0
         .send(DbCommand::RawQuery {
@@ -33,9 +33,7 @@ pub(crate) fn submit(db_sender: &DbCommandSender, inspector: &mut InspectorFormS
         .is_err()
     {
         // No reply will ever claim this tab: end the spinner here.
-        inspector.query_request_id = None;
-        inspector.query_loading = false;
-        inspector.query_result = Some("Error: DB channel closed".to_string());
+        inspector.query_results.fail("DB channel closed");
         bevy::log::warn!("db_sender channel closed — RawQuery not dispatched");
     }
 }
@@ -62,27 +60,24 @@ mod tests {
 
         let (tx, rx) = crossbeam::channel::bounded(4);
         let sender = DbCommandSender(tx);
-        let mut inspector = InspectorFormState {
-            query_loading: true,
-            ..Default::default()
-        };
-        super::submit(&sender, &mut inspector, "SELECT * FROM node".to_string());
+        let mut inspector = InspectorFormState::default();
+        super::submit(&sender, &mut inspector, "SELECT * FROM node".to_string(), "VERSE#v".to_string());
         match rx.try_recv() {
             Ok(DbCommand::RawQuery { correlation_id, .. }) => {
                 assert!(correlation_id.is_some());
-                assert_eq!(correlation_id, inspector.query_request_id);
+                assert_eq!(correlation_id, inspector.query_results.request_id);
             }
             other => panic!("expected a correlated RawQuery, got {other:?}"),
         }
-        assert!(inspector.query_loading, "still awaiting its reply");
+        assert!(inspector.query_results.pending(), "still awaiting its reply");
 
         drop(rx);
-        super::submit(&sender, &mut inspector, "SELECT * FROM node".to_string());
-        assert!(!inspector.query_loading);
-        assert!(inspector.query_request_id.is_none());
+        super::submit(&sender, &mut inspector, "SELECT * FROM node".to_string(), "VERSE#v".to_string());
+        assert!(!inspector.query_results.pending());
+        assert!(inspector.query_results.request_id.is_none());
         assert_eq!(
-            inspector.query_result.as_deref(),
-            Some("Error: DB channel closed")
+            inspector.query_results.error.as_deref(),
+            Some("DB channel closed")
         );
     }
 }

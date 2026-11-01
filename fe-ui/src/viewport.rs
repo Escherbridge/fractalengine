@@ -78,34 +78,15 @@ pub fn viewport_petal_space(
         "{} / {} / {}",
         nav.active_verse_name, nav.active_fractal_name, petal_name
     );
-    ui.painter().text(
-        egui::pos2(center.x, rect.min.y + 16.0),
-        egui::Align2::CENTER_CENTER,
-        breadcrumb,
-        egui::FontId::proportional(11.0),
-        theme::TEXT_DIM,
-    );
-
-    // Breadcrumb: verse / fractal / petal with IDs (top-left)
-    if let (Some(ref vid), Some(ref fid), Some(ref pid)) = (
-        &nav.active_verse_id,
-        &nav.active_fractal_id,
-        &nav.active_petal_id,
-    ) {
-        let crumb = format!(
-            "v:{} / f:{} / p:{}",
-            truncate_id(vid),
-            truncate_id(fid),
-            truncate_id(pid),
-        );
-        ui.painter().text(
-            egui::pos2(rect.min.x + 10.0, rect.min.y + 10.0),
-            egui::Align2::LEFT_CENTER,
-            crumb,
-            egui::FontId::proportional(9.0),
-            theme::TEXT_DIM,
-        );
-    }
+    let mut back_clicked = false;
+    ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+        rect.min + egui::vec2(8.0,4.0), egui::vec2((rect.width()-16.0).max(0.0),28.0))), |ui| {
+        ui.horizontal(|ui| {
+            back_clicked = ui.add_sized([52.0,24.0],egui::Button::new("? Back")).clicked();
+            ui.add(egui::Label::new(&breadcrumb).truncate()).on_hover_text(&breadcrumb);
+        });
+    });
+    if back_clicked { nav.back_from_petal(); }
 
     // Tool hints at bottom — keys/labels come from `panels::toolbar::TOOL_DEFS`.
     // The topbar stashed this frame's `InputContext` before we rendered.
@@ -151,29 +132,6 @@ pub fn viewport_petal_space(
             egui::FontId::proportional(12.0),
             theme::TEXT_VIEWPORT_HINT,
         );
-    }
-
-    // Use a child ui for the back button so it has proper layout
-    let mut back_clicked = false;
-    ui.scope_builder(
-        egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-            egui::pos2(rect.min.x + 8.0, rect.min.y + 4.0),
-            egui::vec2(80.0, 24.0),
-        )),
-        |ui| {
-            if ui
-                .add(
-                    egui::Button::new(egui::RichText::new("\u{25C0} Back").small())
-                        .fill(theme::BG_BUTTON),
-                )
-                .clicked()
-            {
-                back_clicked = true;
-            }
-        },
-    );
-    if back_clicked {
-        nav.back_from_petal();
     }
 
     // Right-click for context menu — use input directly to avoid stealing clicks.

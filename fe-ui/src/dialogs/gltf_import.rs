@@ -64,7 +64,7 @@ pub fn render_gltf_import_dialog(
     let mut import_request: Option<DbCommand> = None;
 
     let mut still_open = true;
-    let mut window = egui::Window::new("Import GLTF Model")
+    let mut window = crate::ui_shell::layout_policy::bounded_window(ctx, "Import GLTF Model")
         .collapsible(false)
         .resizable(false)
         .default_width(340.0)
