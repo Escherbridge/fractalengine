@@ -629,3 +629,77 @@ chooses its HTTP status family (`Unresolvable` → 422, `Busy` → 409,
 `NoWindow` → 503/422, `Failed` → 500/504), mirroring
 `ScreenshotError::status()`'s precedent so fe-api's mapping stays a single
 `match` with no cross-bridge special-casing.
+
+## §input-bridge (agent_input_surface, folded into agent_vision_20261031 I1, 2026-11-01)
+
+`input.rs` is a **third, separate** API→Bevy channel on the same
+§correlated-bridge envelope the INPUT-ADDENDUM mandated: `InputOutcome =
+Result<InputOutput, InputFailure>`, `InputRequest = BridgeRequest<InputOp,
+InputOutcome>`, bounded(4) via `input_bridge()`, `try_send` only, a late
+reply dropped at debug level — exactly `vision.rs`'s shape, never a fourth
+bridge primitive. `caller_scope` on the shared envelope is what carries the
+scope-confinement check (INPUT-ADDENDUM item 2: covered at drain time AND at
+injection time, check-at-use, never cached) — this module only supplies the
+vocabulary and the two typed failure constructors fe-api/the Bevy
+orchestrator need; the scope check itself lives on those sides.
+
+**Why `InputKey` is a `String`, not `bevy::input::keyboard::KeyCode`.**
+`bevy::input::keyboard::KeyCode` and `bevy::input::mouse::MouseButton` only
+derive `Serialize`/`Deserialize` behind `bevy_input`'s own `serialize`
+feature, which this workspace's root `Cargo.toml` does not enable (verified
+against `bevy-0.18.1`/`bevy_input-0.18.1`'s `Cargo.toml`: `default_app` does
+not pull in `serialize`, and no other enabled feature does either). Rather
+than widen the workspace's bevy feature surface for one wire type, `InputKey`
+wraps the exact string spelling of the `KeyCode` variant name (`"Enter"`,
+`"KeyA"`, `"ArrowLeft"`); the Bevy-side translator (plan I4,
+`fractalengine/src/input_bridge.rs`) is the one place that matches the
+string back to the real enum. `PointerButton` is this module's own
+`{Left, Right, Middle}` for the identical reason, kept deliberately smaller
+than bevy's `MouseButton` (which also has `Back`/`Forward`/`Other(u16)`) —
+the v1 vocabulary (AIS spec §4.2) only asks for the three primary buttons.
+
+**Validate-once newtype, same doctrine as `vision::ValidCaptureSpec`.**
+`InputSpec::validate()` is the ONLY constructor of `ValidInputSpec` (private
+fields, accessors only); nothing downstream re-checks finiteness, the batch
+cap, the key-name shape or the `wait_frames` cap. Checks run in table order
+— `no_commands` → `too_many_commands` → each command's own structural check
+in **batch order** → `wait_frames_out_of_range` — so a given malformed body
+always refuses the same way (same rationale as vision's documented check
+order).
+
+**`InputRefusal.field` is an owned `String`, not `&'static str`.** Unlike
+`vision::VisionRefusal` (whose dotted paths are a fixed, small set known at
+compile time), an input batch's bad field is index-scoped —
+`commands[2].text`, `commands[0].to.x` — so the path has to be built at
+validation time. `code` stays `&'static str`: the stable machine string a
+client matches on never depends on where in the batch the error occurred.
+
+**Two typed failure constructors, not just the uniform denial.**
+`denied()` mirrors `vision::denied()` exactly (code `not_found_or_denied`,
+`InputFailureClass::Denied` → 404) for the scope/existence case. A second,
+input-specific one, `camera_locked_by_capture()` (code
+`camera_locked_by_capture`, `InputFailureClass::Busy` → 409), is the
+INPUT-ADDENDUM item 4 contract: the Bevy orchestrator returns it while
+`CameraCaptureLock` (from `fe-renderer::camera`) exists, so synthetic input
+can never fight a held capture pose. `InputFailureClass` otherwise mirrors
+`VisionFailureClass` field-for-field (`Unresolvable`/`NoWindow`/`Failed` kept
+for status-mapping parity even though only `Busy`/`Denied` are reachable
+from this slice's own checks).
+
+**`InputCommand` is a serde-tagged enum**, unlike `vision::PoseSpec` (a
+permissive struct of `Option`s). Vision needed the permissive shape because
+"exactly one of five pose keys" is a *cardinality* rule `validate()` must
+enforce as a typed refusal. Input has no such ambiguity — each command
+already names its own `kind` — so a malformed `kind` or a field/type
+mismatch is a plain `serde` parse failure, which fe-api's JSON extractor
+already turns into the generic `malformed_body` 400 (the same place vision's
+own `deny_unknown_fields`/oversized-body row is handled); `input.rs` does
+not need a second code path for that case.
+
+**One journey test, not a scatter of point tests** (CLAUDE.md "Tests model
+real flows" + the 2026-11-01 test-policy directive: swap/extend, or — for a
+brand-new region with nothing to extend — one long journey). The single
+`#[test]` in this module walks every row of `validate()`'s table in order,
+the defaults a valid batch resolves to, a full mixed-vocabulary batch
+round-tripped through JSON, both failure constructors, and the bridge's own
+bounded capacity — one function, each assertion red if its branch inverts.

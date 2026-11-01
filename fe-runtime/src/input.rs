@@ -1,0 +1,534 @@
+//! Input wire contract — synthetic-input injection request/reply types
+//! shared by the API and Bevy threads. See src/AGENTS.md §input-bridge.
+
+use serde::{Deserialize, Serialize};
+
+use crate::bridge::{bounded_bridge, BridgeReceiver, BridgeReply, BridgeRequest, BridgeSender};
+
+// ---------------------------------------------------------------------------
+// Bridge capacity + channel
+// ---------------------------------------------------------------------------
+
+/// Bounded depth of the input request channel; a full channel is a busy
+/// refusal, never a blocked async worker (mirrors `vision_bridge`).
+pub const INPUT_BRIDGE_CAPACITY: usize = 4;
+
+pub type InputRequestSender = BridgeSender<InputOp, InputOutcome>;
+pub type InputRequestReceiver = BridgeReceiver<InputOp, InputOutcome>;
+
+/// A fresh bounded request channel (API holds the sender, the Bevy host the receiver).
+pub fn input_bridge() -> (InputRequestSender, InputRequestReceiver) {
+    bounded_bridge(INPUT_BRIDGE_CAPACITY)
+}
+
+// ---------------------------------------------------------------------------
+// Static validation constants (agent_input_surface_20261031 §4.2, §6 OD-3)
+// ---------------------------------------------------------------------------
+
+/// A documented cap on one request's batch size — bounds Bevy-side
+/// per-request work (there is no spec-given limit; this is the input
+/// surface's own structural guard, same spirit as vision's 4 KiB body cap).
+pub const MAX_COMMANDS_PER_REQUEST: usize = 64;
+/// `KeyCode` variant names (`"Enter"`, `"KeyA"`, `"ArrowLeft"`) never exceed this.
+pub const MAX_KEY_LEN: usize = 32;
+/// A generous single-paste bound; bigger than this is almost certainly a mistake.
+pub const MAX_TEXT_LEN: usize = 4096;
+/// OD-3: past this the reply is a `wait_frames_out_of_range` refusal, never a
+/// held correlation slot — ~2s at 60 fps.
+pub const WAIT_FRAMES_MAX: u32 = 120;
+pub const DEFAULT_WAIT_FRAMES: u32 = 0;
+pub const DEFAULT_CAPTURE_AFTER: bool = false;
+
+// ---------------------------------------------------------------------------
+// Wire types (the POST body / MCP `inject_input` arguments; AIS spec §4.2)
+// ---------------------------------------------------------------------------
+
+/// Primary-window pixel coordinates (AIS OD-4) — the same space a prior
+/// screenshot's own PNG dimensions already give an agent.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PointerPoint {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PointerButton {
+    Left,
+    Right,
+    Middle,
+}
+
+/// One synthetic key, spelled exactly as the matching
+/// `bevy::input::keyboard::KeyCode` variant name (e.g. `"Enter"`, `"KeyA"`,
+/// `"ArrowLeft"`, `"ShiftLeft"`). A `String`, not `bevy::input::keyboard::KeyCode`
+/// itself — this workspace does not enable bevy_input's `serialize` feature
+/// (see src/AGENTS.md §input-bridge); the name is mapped to the real enum
+/// Bevy-side, where that feature-gated `impl` is unnecessary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct InputKey(pub String);
+
+/// The v1 command vocabulary (AIS spec §4.2), each variant translated
+/// Bevy-side into the same resources real OS input populates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum InputCommand {
+    PointerMove { x: f32, y: f32 },
+    PointerClick { x: f32, y: f32, button: PointerButton },
+    PointerDrag { from: PointerPoint, to: PointerPoint, button: PointerButton },
+    KeyPress { key: InputKey },
+    TextEntry { text: String },
+    Scroll { dx: f32, dy: f32 },
+}
+
+/// `POST /api/v1/debug/input` request body (and the MCP `inject_input`
+/// tool's arguments). `validate()` is the ONLY constructor of
+/// `ValidInputSpec` — Bevy-side code never re-checks finiteness or bounds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct InputSpec {
+    pub commands: Vec<InputCommand>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_frames: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_after: Option<bool>,
+}
+
+/// Stable code of the uniform scope denial: an out-of-scope target and a
+/// nonexistent one answer identically (fe-api AGENTS.md §existence-oracle).
+pub const DENIED_CODE: &str = "not_found_or_denied";
+/// Message of the uniform scope denial — byte-identical to fe-api's
+/// `rest::NOT_FOUND_OR_DENIED` (asserted there) and to `vision::DENIED_MESSAGE`.
+pub const DENIED_MESSAGE: &str = "not found or not permitted";
+
+/// Stable code of "a posed capture currently holds the camera"
+/// (INPUT-ADDENDUM item 4) — mapped to 409 by fe-api, exactly like vision's
+/// own `capture_in_progress`.
+pub const CAMERA_LOCKED_BY_CAPTURE_CODE: &str = "camera_locked_by_capture";
+
+/// A typed 400: `code` is the stable machine string, `field` is the
+/// batch-index-scoped wire path (`commands[2].text`) when the check is
+/// field-scoped. Unlike `vision::VisionRefusal`, `field` is an owned
+/// `String`: a bad command's path depends on its position in the batch, so
+/// it cannot be a fixed `&'static str` known at compile time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InputRefusal {
+    pub code: &'static str,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    pub message: String,
+}
+
+impl InputRefusal {
+    fn new(code: &'static str, field: Option<String>, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            field,
+            message: message.into(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Validated spec (the newtype `validate()` alone constructs)
+// ---------------------------------------------------------------------------
+
+/// An `InputSpec` that has passed every structural check below. No public
+/// constructor besides [`InputSpec::validate`] — the "validate once" newtype
+/// (mirrors `vision::ValidCaptureSpec`): a NaN, an unmapped key or an
+/// unbounded batch can never cross the bridge because nothing else can build
+/// one of these.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValidInputSpec {
+    commands: Vec<InputCommand>,
+    wait_frames: u32,
+    capture_after: bool,
+}
+
+impl ValidInputSpec {
+    pub fn commands(&self) -> &[InputCommand] {
+        &self.commands
+    }
+    pub fn wait_frames(&self) -> u32 {
+        self.wait_frames
+    }
+    pub fn capture_after(&self) -> bool {
+        self.capture_after
+    }
+}
+
+impl InputSpec {
+    /// The ONLY constructor of [`ValidInputSpec`]. Runs every check **in
+    /// table order** — the first failure wins, and that order is part of
+    /// the documented contract (mirrors `vision::CaptureSpec::validate`'s
+    /// doctrine): `no_commands`/`too_many_commands` beat the per-command
+    /// checks (in batch order) beat `wait_frames_out_of_range`.
+    pub fn validate(self) -> Result<ValidInputSpec, InputRefusal> {
+        if self.commands.is_empty() {
+            return Err(InputRefusal::new(
+                "no_commands",
+                Some("commands".to_string()),
+                "`commands` must contain at least one command",
+            ));
+        }
+        if self.commands.len() > MAX_COMMANDS_PER_REQUEST {
+            return Err(InputRefusal::new(
+                "too_many_commands",
+                Some("commands".to_string()),
+                format!(
+                    "`commands` must have at most {MAX_COMMANDS_PER_REQUEST} entries, got {}",
+                    self.commands.len()
+                ),
+            ));
+        }
+
+        for (index, command) in self.commands.iter().enumerate() {
+            check_command(index, command)?;
+        }
+
+        let wait_frames = match self.wait_frames {
+            Some(w) if w > WAIT_FRAMES_MAX => {
+                return Err(InputRefusal::new(
+                    "wait_frames_out_of_range",
+                    Some("wait_frames".to_string()),
+                    format!("`wait_frames` must be <= {WAIT_FRAMES_MAX}, got {w}"),
+                ))
+            }
+            Some(w) => w,
+            None => DEFAULT_WAIT_FRAMES,
+        };
+        let capture_after = self.capture_after.unwrap_or(DEFAULT_CAPTURE_AFTER);
+
+        Ok(ValidInputSpec {
+            commands: self.commands,
+            wait_frames,
+            capture_after,
+        })
+    }
+}
+
+fn field_path(index: usize, suffix: &str) -> String {
+    format!("commands[{index}].{suffix}")
+}
+
+fn finite(v: f32, field: String) -> Result<(), InputRefusal> {
+    if v.is_finite() {
+        Ok(())
+    } else {
+        Err(InputRefusal::new(
+            "non_finite",
+            Some(field.clone()),
+            format!("`{field}` must be a finite number, got {v}"),
+        ))
+    }
+}
+
+fn check_key(key: &InputKey, field: String) -> Result<(), InputRefusal> {
+    let name = &key.0;
+    let well_formed = !name.is_empty()
+        && name.len() <= MAX_KEY_LEN
+        && name.chars().all(|c| c.is_ascii_alphanumeric());
+    if well_formed {
+        Ok(())
+    } else {
+        Err(InputRefusal::new(
+            "invalid_key",
+            Some(field.clone()),
+            format!(
+                "`{field}` must be a non-empty ASCII alphanumeric KeyCode name of at most \
+                 {MAX_KEY_LEN} characters, got {name:?}"
+            ),
+        ))
+    }
+}
+
+/// Rows 3a-3f of `validate()`'s table: the per-command structural checks,
+/// scoped to the command's index in the batch (plan I1 doctrine, AIS §4.2).
+fn check_command(index: usize, command: &InputCommand) -> Result<(), InputRefusal> {
+    match command {
+        InputCommand::PointerMove { x, y } => {
+            finite(*x, field_path(index, "x"))?;
+            finite(*y, field_path(index, "y"))?;
+        }
+        InputCommand::PointerClick { x, y, .. } => {
+            finite(*x, field_path(index, "x"))?;
+            finite(*y, field_path(index, "y"))?;
+        }
+        InputCommand::PointerDrag { from, to, .. } => {
+            finite(from.x, field_path(index, "from.x"))?;
+            finite(from.y, field_path(index, "from.y"))?;
+            finite(to.x, field_path(index, "to.x"))?;
+            finite(to.y, field_path(index, "to.y"))?;
+        }
+        InputCommand::KeyPress { key } => {
+            check_key(key, field_path(index, "key"))?;
+        }
+        InputCommand::TextEntry { text } => {
+            let len = text.chars().count();
+            if len > MAX_TEXT_LEN {
+                return Err(InputRefusal::new(
+                    "text_too_long",
+                    Some(field_path(index, "text")),
+                    format!("`text` must be at most {MAX_TEXT_LEN} characters, got {len}"),
+                ));
+            }
+        }
+        InputCommand::Scroll { dx, dy } => {
+            finite(*dx, field_path(index, "dx"))?;
+            finite(*dy, field_path(index, "dy"))?;
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Bridge request/reply (the shared §correlated-bridge envelope; AGENTS.md
+// §input-bridge says why it is a separate CHANNEL from vision/screenshot)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum InputOp {
+    Inject(ValidInputSpec),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputFailureClass {
+    /// A typed dynamic refusal (none expected past `ValidInputSpec` today,
+    /// kept for parity with `vision::VisionFailureClass`) — maps to 422.
+    Unresolvable,
+    /// A posed capture already holds the camera (`CameraCaptureLock`) — maps to 409.
+    Busy,
+    /// No window to inject into (headless/relay) — maps to 503.
+    NoWindow,
+    /// Any other Bevy-side failure — maps to 500/504.
+    Failed,
+    /// The caller's scope does not cover the active verse at drain or
+    /// injection time (check-at-use, INPUT-ADDENDUM item 2) — one uniform
+    /// 404 ([`denied`]), identical to a nonexistent target.
+    Denied,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InputFailure {
+    pub status_class: InputFailureClass,
+    pub code: &'static str,
+    pub message: String,
+}
+
+/// The uniform scope/existence denial (no existence oracle) — mirrors
+/// `vision::denied()`.
+pub fn denied() -> InputFailure {
+    InputFailure {
+        status_class: InputFailureClass::Denied,
+        code: DENIED_CODE,
+        message: DENIED_MESSAGE.to_string(),
+    }
+}
+
+/// "A posed capture currently holds the camera" (INPUT-ADDENDUM item 4) —
+/// the Bevy side returns this while `CameraCaptureLock` exists; fe-api maps
+/// it to 409, exactly like vision's own `capture_in_progress`.
+pub fn camera_locked_by_capture() -> InputFailure {
+    InputFailure {
+        status_class: InputFailureClass::Busy,
+        code: CAMERA_LOCKED_BY_CAPTURE_CODE,
+        message: "a posed capture currently holds the camera — the input surface is refused \
+                   until it completes"
+            .to_string(),
+    }
+}
+
+/// What a successful injection produced: how many commands were applied,
+/// how many frames were actually waited, and the optional post-action PNG
+/// (`capture_after`) — captured through the same `capture_png` helper the
+/// vision/screenshot bridges own (plan I4).
+#[derive(Debug, Clone, PartialEq)]
+pub struct InputOutput {
+    pub commands_applied: u32,
+    pub wait_frames_used: u32,
+    pub png: Option<Vec<u8>>,
+}
+
+/// What an input op produced, or the host's typed refusal/failure.
+pub type InputOutcome = Result<InputOutput, InputFailure>;
+
+/// One input request on the shared correlated-bridge envelope
+/// (§correlated-bridge): correlation id, caller scope (the host refuses
+/// unless it covers the active verse at drain time AND at injection time —
+/// INPUT-ADDENDUM item 2), the operation, and its private reply slot.
+pub type InputRequest = BridgeRequest<InputOp, InputOutcome>;
+
+/// The input outcome, echoing the request's correlation id.
+pub type InputReply = BridgeReply<InputOutcome>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn click(x: f32, y: f32) -> InputCommand {
+        InputCommand::PointerClick {
+            x,
+            y,
+            button: PointerButton::Left,
+        }
+    }
+
+    /// One long journey over the whole input wire contract (TEST POLICY
+    /// 2026-11-01: a brand-new region gets exactly one journey test, not a
+    /// scatter of point tests): every structural refusal in `validate()`'s
+    /// table, in table order, then the defaults a valid batch resolves to,
+    /// then the two typed failure helpers, then the bridge's own bounded
+    /// capacity. Each assertion would go red if its branch inverted.
+    #[test]
+    fn input_spec_validation_defaults_and_bridge_journey() {
+        // Row 1: no_commands.
+        let empty = InputSpec::default().validate().expect_err("empty batch is refused");
+        assert_eq!(empty.code, "no_commands");
+        assert_eq!(empty.field, Some("commands".to_string()));
+
+        // Row 2: too_many_commands.
+        let oversized = InputSpec {
+            commands: (0..MAX_COMMANDS_PER_REQUEST + 1).map(|i| click(i as f32, 0.0)).collect(),
+            ..Default::default()
+        }
+        .validate()
+        .expect_err("a batch past the cap is refused");
+        assert_eq!(oversized.code, "too_many_commands");
+        assert_eq!(oversized.field, Some("commands".to_string()));
+
+        // Row 3a: non_finite on PointerMove, index-scoped.
+        let bad_move = InputSpec {
+            commands: vec![click(1.0, 1.0), InputCommand::PointerMove { x: f32::NAN, y: 0.0 }],
+            ..Default::default()
+        }
+        .validate()
+        .expect_err("a NaN pointer coordinate is refused");
+        assert_eq!(bad_move.code, "non_finite");
+        assert_eq!(bad_move.field, Some("commands[1].x".to_string()));
+
+        // Row 3a: non_finite on PointerClick.
+        let bad_click = InputSpec {
+            commands: vec![InputCommand::PointerClick {
+                x: 0.0,
+                y: f32::INFINITY,
+                button: PointerButton::Right,
+            }],
+            ..Default::default()
+        }
+        .validate()
+        .expect_err("an infinite pointer coordinate is refused");
+        assert_eq!(bad_click.code, "non_finite");
+        assert_eq!(bad_click.field, Some("commands[0].y".to_string()));
+
+        // Row 3b: non_finite on PointerDrag, including the `to` point.
+        let bad_drag = InputSpec {
+            commands: vec![InputCommand::PointerDrag {
+                from: PointerPoint { x: 0.0, y: 0.0 },
+                to: PointerPoint { x: f32::NEG_INFINITY, y: 0.0 },
+                button: PointerButton::Left,
+            }],
+            ..Default::default()
+        }
+        .validate()
+        .expect_err("a non-finite drag endpoint is refused");
+        assert_eq!(bad_drag.code, "non_finite");
+        assert_eq!(bad_drag.field, Some("commands[0].to.x".to_string()));
+
+        // Row 3c: invalid_key — empty, too long, and non-alphanumeric all refuse.
+        for bad_name in ["", &"A".repeat(MAX_KEY_LEN + 1), "Key A"] {
+            let refusal = InputSpec {
+                commands: vec![InputCommand::KeyPress { key: InputKey(bad_name.to_string()) }],
+                ..Default::default()
+            }
+            .validate()
+            .expect_err("a malformed key name is refused");
+            assert_eq!(refusal.code, "invalid_key", "key {bad_name:?}");
+            assert_eq!(refusal.field, Some("commands[0].key".to_string()));
+        }
+
+        // Row 3d: text_too_long.
+        let bad_text = InputSpec {
+            commands: vec![InputCommand::TextEntry { text: "x".repeat(MAX_TEXT_LEN + 1) }],
+            ..Default::default()
+        }
+        .validate()
+        .expect_err("oversized text entry is refused");
+        assert_eq!(bad_text.code, "text_too_long");
+        assert_eq!(bad_text.field, Some("commands[0].text".to_string()));
+
+        // Row 3e: non_finite on Scroll.
+        let bad_scroll = InputSpec {
+            commands: vec![InputCommand::Scroll { dx: f32::NAN, dy: 0.0 }],
+            ..Default::default()
+        }
+        .validate()
+        .expect_err("a non-finite scroll delta is refused");
+        assert_eq!(bad_scroll.code, "non_finite");
+        assert_eq!(bad_scroll.field, Some("commands[0].dx".to_string()));
+
+        // Row 4: wait_frames_out_of_range.
+        let bad_wait = InputSpec {
+            commands: vec![click(1.0, 1.0)],
+            wait_frames: Some(WAIT_FRAMES_MAX + 1),
+            ..Default::default()
+        }
+        .validate()
+        .expect_err("an over-cap wait_frames is refused");
+        assert_eq!(bad_wait.code, "wait_frames_out_of_range");
+        assert_eq!(bad_wait.field, Some("wait_frames".to_string()));
+
+        // Defaults: a bare valid batch resolves wait_frames=0, capture_after=false.
+        let bare = InputSpec { commands: vec![click(5.0, 5.0)], ..Default::default() }
+            .validate()
+            .expect("a well-formed single click is valid");
+        assert_eq!(bare.wait_frames(), DEFAULT_WAIT_FRAMES);
+        assert_eq!(bare.capture_after(), DEFAULT_CAPTURE_AFTER);
+        assert_eq!(bare.commands().len(), 1);
+
+        // A full, mixed-vocabulary batch with explicit wait_frames/capture_after
+        // round-trips through JSON and resolves every field.
+        let full: InputSpec = serde_json::from_value(serde_json::json!({
+            "commands": [
+                { "kind": "pointer_move", "x": 10.0, "y": 20.0 },
+                { "kind": "pointer_click", "x": 10.0, "y": 20.0, "button": "left" },
+                { "kind": "pointer_drag", "from": {"x": 0.0, "y": 0.0}, "to": {"x": 5.0, "y": 5.0}, "button": "right" },
+                { "kind": "key_press", "key": "Enter" },
+                { "kind": "text_entry", "text": "hello" },
+                { "kind": "scroll", "dx": 0.0, "dy": -3.0 },
+            ],
+            "wait_frames": 10,
+            "capture_after": true,
+        }))
+        .expect("parses structurally");
+        let valid = full.validate().expect("a well-formed mixed batch is valid");
+        assert_eq!(valid.wait_frames(), 10);
+        assert!(valid.capture_after());
+        assert_eq!(valid.commands().len(), 6);
+
+        // The two typed failure helpers carry their documented codes/classes.
+        let scope_denied = denied();
+        assert_eq!(scope_denied.code, DENIED_CODE);
+        assert_eq!(scope_denied.status_class, InputFailureClass::Denied);
+        let locked = camera_locked_by_capture();
+        assert_eq!(locked.code, CAMERA_LOCKED_BY_CAPTURE_CODE);
+        assert_eq!(locked.status_class, InputFailureClass::Busy);
+
+        // The bridge itself is bounded at its capacity, never blocking.
+        let (tx, _rx) = input_bridge();
+        let mut parked = Vec::new();
+        for i in 0..INPUT_BRIDGE_CAPACITY {
+            let (request, reply_rx) =
+                InputRequest::new(format!("c{i}"), "VERSE#v", InputOp::Inject(valid.clone()));
+            tx.try_send(request).expect("within capacity");
+            parked.push(reply_rx);
+        }
+        let (overflow, _overflow_rx) =
+            InputRequest::new("overflow", "VERSE#v", InputOp::Inject(valid));
+        assert!(
+            tx.try_send(overflow).is_err(),
+            "the bridge must refuse past its bounded capacity, never block"
+        );
+    }
+}
