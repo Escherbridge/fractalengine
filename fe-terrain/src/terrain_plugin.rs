@@ -14,9 +14,10 @@ use crate::delta_viz::DeltaLattice;
 use crate::iot::{TrackRouteMap, TrackStyleMap};
 use crate::layers::{LayerId, LayerStack, LayerType};
 use crate::lod_ring::{
-    max_ring_radius_for_budget, ring_offsets, ring_radius_tiles, spawn_despawn_radii,
-    upsample_factor_for_height, view_radius_world, wrong_zoom_replacement_present,
-    DESPAWN_HYSTERESIS, MAX_UPSAMPLE, VIEW_RADIUS_FACTOR, ZOOM_BASE_HEIGHT_M,
+    capture_chunk_allowance, chunk_retained_by_any_focus, max_ring_radius_for_budget, ring_offsets,
+    ring_radius_tiles, spawn_despawn_radii, stale_for_nearest_focus, upsample_factor_for_height,
+    view_radius_world, FocusReach, DESPAWN_HYSTERESIS, MAX_STREAMING_FOCI, MAX_UPSAMPLE,
+    VIEW_RADIUS_FACTOR, ZOOM_BASE_HEIGHT_M,
 };
 use crate::mesh::interp::upsample_bilinear;
 use crate::mesh::terrain::terrain_mesh;
@@ -35,6 +36,7 @@ use crate::tiles::{
     decode_png_pixels, ElevationDecoder, LoadedTile, Residency, TerrainRgbDecoder,
     TerrariumDecoder, TileBundleDemand, TileCoord, TileResidency,
 };
+use fe_renderer::camera::{CaptureCamera, StreamingFocus};
 use fe_renderer::terrain_height::{HeightTile, TerrainHeightField};
 
 /// Max chunks spawned per frame so a large adaptive ring fills without hitching.
@@ -362,6 +364,147 @@ impl FailedTiles {
     }
 }
 
+/// Ring residency of the active capture camera, published every frame by
+/// [`fetch_and_spawn_terrain_chunks`] for the agent-vision settle; see
+/// `src/AGENTS.md` §terrain_plugin "Multi-focus streaming".
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureFocusResidency {
+    /// The capture camera this count describes (`None`: no capture focus this frame).
+    pub capture_focus: Option<Entity>,
+    /// Its ring tiles still outstanding: loading, awaiting a streamed bundle,
+    /// awaiting origin grounding, or deferred by the chunk/spawn budget.
+    pub pending: usize,
+}
+
+/// Streaming-focus cameras (plus plain cameras, for the lone-camera fallback),
+/// read by the LOD and fetch passes.
+type StreamingFocusQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static GlobalTransform,
+        &'static CameraProjection,
+        Has<CaptureCamera>,
+        Has<StreamingFocus>,
+    ),
+    Or<(With<StreamingFocus>, With<Camera>)>,
+>;
+
+/// One streaming focus sampled for this frame.
+#[derive(Clone, Copy)]
+struct FocusSample {
+    entity: Entity,
+    position: Vec3,
+    far_world: Option<f64>,
+    capture: bool,
+}
+
+/// At most [`MAX_STREAMING_FOCI`] foci in a fixed array (no per-frame
+/// allocation): slot 0 = the capture focus, slot 1 = the main focus.
+struct StreamingFoci {
+    slots: [Option<FocusSample>; MAX_STREAMING_FOCI],
+}
+
+impl StreamingFoci {
+    /// First capture focus and first non-capture focus; extra foci are ignored.
+    /// With no `StreamingFocus` anywhere, a lone camera is the main focus (a
+    /// host without fe-renderer's orbit camera keeps its pre-V4 streaming).
+    fn collect(query: &StreamingFocusQuery) -> Self {
+        let mut slots = [None; MAX_STREAMING_FOCI];
+        let mut lone_camera = None;
+        let mut plain_cameras = 0usize;
+        for (entity, transform, projection, capture, focus) in query.iter() {
+            let sample = FocusSample {
+                entity,
+                position: transform.translation(),
+                far_world: perspective_far_world(projection),
+                capture,
+            };
+            if !focus {
+                plain_cameras += 1;
+                lone_camera = Some(FocusSample {
+                    capture: false,
+                    ..sample
+                });
+                continue;
+            }
+            let slot = &mut slots[usize::from(!capture)];
+            if slot.is_none() {
+                *slot = Some(sample);
+            }
+        }
+        if slots.iter().all(Option::is_none) && plain_cameras == 1 {
+            slots[1] = lone_camera;
+        }
+        Self { slots }
+    }
+
+    /// Foci in streaming order: the capture focus first while one exists.
+    fn iter(&self) -> impl Iterator<Item = &FocusSample> {
+        self.slots.iter().flatten()
+    }
+
+    fn capture(&self) -> Option<&FocusSample> {
+        self.slots[0].as_ref()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.slots.iter().all(Option::is_none)
+    }
+
+    /// Per-focus LOD reach in streaming order, plus how many slots are filled.
+    fn reaches(
+        &self,
+        lod_config: &TerrainLodConfig,
+        config: Option<&TerrainConfig>,
+        scale: f64,
+    ) -> ([FocusReach; MAX_STREAMING_FOCI], usize) {
+        let mut reaches = [FocusReach::default(); MAX_STREAMING_FOCI];
+        let mut len = 0;
+        for sample in self.iter() {
+            reaches[len] = focus_reach(sample, lod_config, config, scale);
+            len += 1;
+        }
+        (reaches, len)
+    }
+}
+
+/// A focus's desired zoom and hysteresis despawn radius (world units).
+fn focus_reach(
+    sample: &FocusSample,
+    lod_config: &TerrainLodConfig,
+    config: Option<&TerrainConfig>,
+    scale: f64,
+) -> FocusReach {
+    let cam_pos = sample.position;
+    // Scale-aware: reason about zoom in real meters and despawn distances in
+    // world units (chunk transforms are scaled); see AGENTS.md §scale.
+    let desired = config.map(|c| {
+        desired_zoom(
+            world_to_real_height(cam_pos.y as f64, scale) as f32,
+            c.min_zoom,
+            c.max_zoom,
+        )
+    });
+    // Despawn radius follows the visible frustum with hysteresis so tiles never
+    // flicker or leave holes while still in view; floored to ~2 tiles + the LOD
+    // base so big low-zoom tiles don't churn.
+    let far_world = sample
+        .far_world
+        .unwrap_or_else(|| (cam_pos.y as f64).abs() * VIEW_RADIUS_FACTOR);
+    let view_r = view_radius_world(cam_pos.y as f64, far_world, VIEW_RADIUS_FACTOR);
+    let base_max = lod_config.lod_distances.last().copied().unwrap_or(1000.0) as f64 * 2.0;
+    let tile_world_equator = scaled_tile_size(tile_world_size_m(0.0, desired.unwrap_or(0)), scale);
+    let (_spawn_r, despawn_r) =
+        spawn_despawn_radii(view_r.max(base_max), tile_world_equator, DESPAWN_HYSTERESIS);
+    FocusReach {
+        position: cam_pos.to_array(),
+        despawn_radius: despawn_r,
+        desired_zoom: desired,
+    }
+}
+
 /// The main terrain rendering plugin; see `src/AGENTS.md` §terrain_plugin.
 pub struct TerrainPlugin;
 
@@ -376,6 +519,7 @@ impl Plugin for TerrainPlugin {
             .init_resource::<ActiveTileSource>()
             .init_resource::<FailedTiles>()
             .init_resource::<TileResidency>()
+            .init_resource::<CaptureFocusResidency>()
             // S7 (streamed tilesets): the tile half of the D-74 pointer-set —
             // see `fetch_and_spawn_terrain_chunks` and
             // `src/AGENTS.md` §streamed-tilesets.
@@ -444,11 +588,12 @@ pub(crate) fn tile_world_size_m(lat: f64, zoom: u8) -> f64 {
     40_075_016.686 * lat.to_radians().cos() / 2f64.powi(zoom as i32)
 }
 
-/// Despawn chunks beyond the hysteresis view radius, or at a stale zoom once the
-/// desired-zoom replacement fully covers them (hole-free), releasing their tile
-/// bytes (exit-ring eviction); see AGENTS.md §terrain_plugin, §tile-residency.
+/// Despawn chunks beyond EVERY streaming focus's hysteresis radius, or at a
+/// stale zoom for their nearest focus once its replacement fully covers them
+/// (hole-free), releasing their tile bytes (exit-ring eviction); see AGENTS.md
+/// §terrain_plugin "Multi-focus streaming", §tile-residency.
 pub fn update_terrain_lod(
-    camera_query: Query<(&GlobalTransform, &CameraProjection), With<Camera>>,
+    foci_query: StreamingFocusQuery,
     chunk_query: Query<(Entity, &TerrainChunk, &GlobalTransform)>,
     lod_config: Res<TerrainLodConfig>,
     active: Res<ActivePetalTerrain>,
@@ -456,53 +601,27 @@ pub fn update_terrain_lod(
     mut commands: Commands,
     mut height_field: Option<ResMut<TerrainHeightField>>,
 ) {
-    let Ok((cam_transform, cam_proj)) = camera_query.single() else {
+    let foci = StreamingFoci::collect(&foci_query);
+    if foci.is_empty() {
         return;
-    };
-    let cam_pos = cam_transform.translation();
-
-    // Scale-aware: reason about zoom in real meters and despawn distances in
-    // world units (chunk transforms are scaled); see AGENTS.md §scale.
-    let scale = active
-        .config
-        .as_ref()
-        .filter(|c| c.enabled)
-        .map(|c| c.effective_world_scale())
-        .unwrap_or(1.0);
-    let desired = active.config.as_ref().filter(|c| c.enabled).map(|c| {
-        desired_zoom(
-            world_to_real_height(cam_pos.y as f64, scale) as f32,
-            c.min_zoom,
-            c.max_zoom,
-        )
-    });
-
-    // Despawn radius follows the visible frustum with hysteresis so tiles never
-    // flicker or leave holes while still in view; floored to ~2 tiles + the LOD
-    // base so big low-zoom tiles don't churn.
-    let far_world = perspective_far_world(cam_proj)
-        .unwrap_or_else(|| (cam_pos.y as f64).abs() * VIEW_RADIUS_FACTOR);
-    let view_r = view_radius_world(cam_pos.y as f64, far_world, VIEW_RADIUS_FACTOR);
-    let base_max = lod_config.lod_distances.last().copied().unwrap_or(1000.0) as f64 * 2.0;
-    let tile_world_equator = match desired {
-        Some(z) => scaled_tile_size(tile_world_size_m(0.0, z), scale),
-        None => scaled_tile_size(tile_world_size_m(0.0, 0), scale),
-    };
-    let (_spawn_r, despawn_r) =
-        spawn_despawn_radii(view_r.max(base_max), tile_world_equator, DESPAWN_HYSTERESIS);
+    }
+    let config = active.config.as_ref().filter(|c| c.enabled);
+    let scale = config.map(|c| c.effective_world_scale()).unwrap_or(1.0);
+    let (reaches, focus_count) = foci.reaches(&lod_config, config, scale);
+    let reaches = &reaches[..focus_count];
 
     let existing: HashSet<(u8, u32, u32)> =
         chunk_query.iter().map(|(_, c, _)| c.tile_coords).collect();
 
     for (entity, chunk, chunk_transform) in chunk_query.iter() {
-        let too_far = (cam_pos.distance(chunk_transform.translation()) as f64) > despawn_r;
+        let chunk_pos = chunk_transform.translation().to_array();
         let coord = TileCoord::new(
             chunk.tile_coords.1,
             chunk.tile_coords.2,
             chunk.tile_coords.0,
         );
-        let stale_zoom =
-            desired.is_some_and(|z| wrong_zoom_replacement_present(coord, z, &existing));
+        let too_far = !chunk_retained_by_any_focus(chunk_pos, reaches);
+        let stale_zoom = stale_for_nearest_focus(coord, chunk_pos, reaches, &existing);
         if too_far || stale_zoom {
             commands.entity(entity).despawn();
             if let Some(field) = height_field.as_mut() {
@@ -515,12 +634,13 @@ pub fn update_terrain_lod(
     }
 }
 
-/// Offline-first chunk spawning: an adaptive tile ring (frustum-sized, nearest-first)
-/// around the camera at the desired zoom, fed by async tile residency (pending tiles
-/// are skipped, never failed); see AGENTS.md §terrain_plugin, §tile-residency.
+/// Offline-first chunk spawning: per streaming focus (capture focus first), an
+/// adaptive tile ring (frustum-sized, nearest-first) at that focus's desired zoom,
+/// fed by async tile residency (pending tiles are skipped, never failed); see
+/// AGENTS.md §terrain_plugin ("Multi-focus streaming"), §tile-residency.
 #[allow(clippy::too_many_arguments)]
 pub fn fetch_and_spawn_terrain_chunks(
-    camera_query: Query<(&GlobalTransform, &CameraProjection), With<Camera>>,
+    foci_query: StreamingFocusQuery,
     chunk_query: Query<&TerrainChunk>,
     lod_config: Res<TerrainLodConfig>,
     mut active: ResMut<ActivePetalTerrain>,
@@ -529,6 +649,7 @@ pub fn fetch_and_spawn_terrain_chunks(
     mut bundle_demand: ResMut<TileBundleDemand>,
     layer_stack: Res<LayerStack>,
     mut failed: ResMut<FailedTiles>,
+    mut capture_residency: Option<ResMut<CaptureFocusResidency>>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -540,6 +661,17 @@ pub fn fetch_and_spawn_terrain_chunks(
     // (`record_bundle_demand`) — never stale demand from a position the
     // camera has since left.
     bundle_demand.clear();
+    let foci = StreamingFoci::collect(&foci_query);
+    // No terrain to stream means nothing for a capture to wait on: 0 pending.
+    let fresh_residency = CaptureFocusResidency {
+        capture_focus: foci.capture().map(|focus| focus.entity),
+        pending: 0,
+    };
+    if let Some(published) = capture_residency.as_mut() {
+        if **published != fresh_residency {
+            **published = fresh_residency;
+        }
+    }
     let Some(elevation_source) = active
         .config
         .as_ref()
@@ -551,9 +683,9 @@ pub fn fetch_and_spawn_terrain_chunks(
     if tile_source.composite.is_none() || tile_source.projection.is_none() {
         return;
     }
-    let Ok((cam_transform, cam_proj)) = camera_query.single() else {
+    if foci.is_empty() {
         return;
-    };
+    }
 
     if failed.revision != active.revision {
         failed.tiles.clear();
@@ -571,7 +703,15 @@ pub fn fetch_and_spawn_terrain_chunks(
             return;
         };
         let elevation = match residency.ensure_resident(center, composite) {
-            Residency::Pending => return,
+            Residency::Pending => {
+                if foci.capture().is_some() {
+                    // The grounding tile gates every chunk, the capture's included.
+                    if let Some(published) = capture_residency.as_mut() {
+                        published.pending = 1;
+                    }
+                }
+                return;
+            }
             Residency::Absent => None,
             Residency::Ready(tile) => {
                 let elevation = tile
@@ -606,100 +746,161 @@ pub fn fetch_and_spawn_terrain_chunks(
     };
 
     let mut active_count = chunk_query.iter().count();
-    if active_count >= lod_config.max_chunks {
+    let capture_allowance = if foci.capture().is_some() {
+        capture_chunk_allowance(lod_config.max_chunks)
+    } else {
+        0
+    };
+    // One focus at budget: nothing to do (the pre-multi-focus early-out).
+    if capture_allowance == 0 && active_count >= lod_config.max_chunks {
         return;
     }
 
-    // Invert world scale so the camera is reasoned about in real meters (zoom
+    // Invert world scale so each camera is reasoned about in real meters (zoom
     // selection + projection expect real-world coordinates); see AGENTS.md §scale.
     let scale = config.effective_world_scale();
-    let cam_pos = cam_transform.translation();
-    let (lat, lon, _) = projection.local_to_wgs84(
-        cam_pos.x as f64 / scale,
-        cam_pos.y as f64 / scale,
-        cam_pos.z as f64 / scale,
-    );
-    let lat = lat.clamp(-85.0, 85.0);
-    let lon = lon.clamp(-180.0, 180.0);
-    let cam_real_height = world_to_real_height(cam_pos.y as f64, scale) as f32;
-    let zoom = desired_zoom(cam_real_height, config.min_zoom, config.max_zoom);
-
-    // Adaptive ring: cover the visible frustum (camera height × factor, capped by
-    // the scale-aware far plane) instead of a fixed 3×3, bounded by the chunk budget.
-    let far_world = perspective_far_world(cam_proj)
-        .unwrap_or_else(|| (cam_pos.y as f64).abs() * VIEW_RADIUS_FACTOR);
-    let view_r = view_radius_world(cam_pos.y as f64, far_world, VIEW_RADIUS_FACTOR);
-    let scaled_tile = scaled_tile_size(tile_world_size_m(lat, zoom), scale);
-    let max_radius = max_ring_radius_for_budget(lod_config.max_chunks);
-    let radius = ring_radius_tiles(view_r, scaled_tile, max_radius);
-
-    // Close-range upsampling: once the camera descends below the served max zoom's
-    // natural height, densify decoded elevations so geometry stays smooth up close.
-    let upsample = if zoom >= config.max_zoom {
-        upsample_factor_for_height(cam_real_height as f64, ZOOM_BASE_HEIGHT_M, MAX_UPSAMPLE)
-    } else {
-        1
-    };
-
+    let (reaches, focus_count) = foci.reaches(&lod_config, Some(config), scale);
+    let reaches = &reaches[..focus_count];
+    let contested = focus_count > 1;
     let existing: HashSet<(u8, u32, u32)> = chunk_query.iter().map(|c| c.tile_coords).collect();
-    let center = TileCoord::from_lat_lon(lat, lon, zoom);
-    let tiles_per_axis = TileCoord::tiles_at_zoom(zoom) as i64;
-
     let mut spawned_this_frame = 0usize;
-    // Nearest-first so the camera's immediate surroundings fill before the edges.
-    for (dx, dy) in ring_offsets(radius) {
-        if active_count >= lod_config.max_chunks || spawned_this_frame >= MAX_SPAWNS_PER_FRAME {
-            return;
-        }
-        let x = center.x as i64 + dx;
-        let y = center.y as i64 + dy;
-        if x < 0 || y < 0 || x >= tiles_per_axis || y >= tiles_per_axis {
-            continue;
-        }
-        let coord = TileCoord::new(x as u32, y as u32, zoom);
-        let key = (zoom, coord.x, coord.y);
-        if existing.contains(&key) || failed.tiles.contains(&key) {
-            continue;
-        }
-        if composite.streamed_pending(coord) {
-            // S7 (streamed tilesets): an index resolution or a bundle fetch
-            // is still in flight for whatever would cover this coordinate —
-            // demand it, but skip WITHOUT touching `residency`/`failed`, so
-            // it is retried fresh every frame and never recorded as a
-            // failure (src/AGENTS.md §streamed-tilesets).
-            composite.record_bundle_demand(coord, &mut bundle_demand);
-            continue;
-        }
 
-        let tile = match residency.ensure_resident(coord, composite) {
-            Residency::Pending => continue,
-            Residency::Absent => {
-                failed.tiles.insert(key);
+    for focus in foci.iter() {
+        // A capture may grow past `max_chunks` by its allowance (its ring is sized
+        // to fit it); the user's view keeps the plain budget. See §terrain_plugin.
+        let (chunk_cap, ring_budget) = if focus.capture {
+            (lod_config.max_chunks + capture_allowance, capture_allowance)
+        } else {
+            (lod_config.max_chunks, lod_config.max_chunks)
+        };
+        let cam_pos = focus.position;
+        let (lat, lon, _) = projection.local_to_wgs84(
+            cam_pos.x as f64 / scale,
+            cam_pos.y as f64 / scale,
+            cam_pos.z as f64 / scale,
+        );
+        let lat = lat.clamp(-85.0, 85.0);
+        let lon = lon.clamp(-180.0, 180.0);
+        let cam_real_height = world_to_real_height(cam_pos.y as f64, scale) as f32;
+        let zoom = desired_zoom(cam_real_height, config.min_zoom, config.max_zoom);
+
+        // Adaptive ring: cover the visible frustum (camera height × factor, capped by
+        // the scale-aware far plane) instead of a fixed 3×3, bounded by the chunk budget.
+        let far_world = focus
+            .far_world
+            .unwrap_or_else(|| (cam_pos.y as f64).abs() * VIEW_RADIUS_FACTOR);
+        let view_r = view_radius_world(cam_pos.y as f64, far_world, VIEW_RADIUS_FACTOR);
+        let scaled_tile = scaled_tile_size(tile_world_size_m(lat, zoom), scale);
+        let max_radius = max_ring_radius_for_budget(ring_budget);
+        let radius = ring_radius_tiles(view_r, scaled_tile, max_radius);
+
+        // Close-range upsampling: once the camera descends below the served max zoom's
+        // natural height, densify decoded elevations so geometry stays smooth up close.
+        let upsample = if zoom >= config.max_zoom {
+            upsample_factor_for_height(cam_real_height as f64, ZOOM_BASE_HEIGHT_M, MAX_UPSAMPLE)
+        } else {
+            1
+        };
+
+        let center = TileCoord::from_lat_lon(lat, lon, zoom);
+        let tiles_per_axis = TileCoord::tiles_at_zoom(zoom) as i64;
+        let mut pending = 0usize;
+
+        // Nearest-first so the camera's immediate surroundings fill before the edges.
+        for (dx, dy) in ring_offsets(radius) {
+            let budget_spent =
+                active_count >= chunk_cap || spawned_this_frame >= MAX_SPAWNS_PER_FRAME;
+            // The main focus just stops; a capture keeps walking to count what it still awaits.
+            if budget_spent && !focus.capture {
+                break;
+            }
+            let x = center.x as i64 + dx;
+            let y = center.y as i64 + dy;
+            if x < 0 || y < 0 || x >= tiles_per_axis || y >= tiles_per_axis {
                 continue;
             }
-            Residency::Ready(tile) => tile,
-        };
-        if spawn_chunk(
-            coord,
-            &tile,
-            config,
-            projection,
-            &layer_stack,
-            upsample,
-            &mut commands,
-            &mut meshes,
-            &mut materials,
-            &mut images,
-            height_field.as_deref_mut(),
-        ) {
-            // Live chunk: its bytes stay resident until the exit ring releases them.
-            composite.pin_tile(coord, &tile);
-            active_count += 1;
-            spawned_this_frame += 1;
-        } else {
-            failed.tiles.insert(key);
+            let coord = TileCoord::new(x as u32, y as u32, zoom);
+            let key = (zoom, coord.x, coord.y);
+            if existing.contains(&key) || failed.tiles.contains(&key) {
+                continue;
+            }
+            // Never spawn what the LOD pass would evict next frame: a tile nearer
+            // another focus that already covers it at that focus's zoom (no churn).
+            if contested
+                && chunk_anchor_world(coord, projection, scale).is_ok_and(|anchor| {
+                    stale_for_nearest_focus(coord, anchor.to_array(), reaches, &existing)
+                })
+            {
+                continue;
+            }
+            if composite.streamed_pending(coord) {
+                // S7 (streamed tilesets): an index resolution or a bundle fetch
+                // is still in flight for whatever would cover this coordinate —
+                // demand it, but skip WITHOUT touching `residency`/`failed`, so
+                // it is retried fresh every frame and never recorded as a
+                // failure (src/AGENTS.md §streamed-tilesets).
+                composite.record_bundle_demand(coord, &mut bundle_demand);
+                pending += 1;
+                continue;
+            }
+            if budget_spent {
+                pending += 1;
+                continue;
+            }
+
+            let tile = match residency.ensure_resident(coord, composite) {
+                Residency::Pending => {
+                    pending += 1;
+                    continue;
+                }
+                Residency::Absent => {
+                    failed.tiles.insert(key);
+                    continue;
+                }
+                Residency::Ready(tile) => tile,
+            };
+            if spawn_chunk(
+                coord,
+                &tile,
+                config,
+                projection,
+                &layer_stack,
+                upsample,
+                &mut commands,
+                &mut meshes,
+                &mut materials,
+                &mut images,
+                height_field.as_deref_mut(),
+            ) {
+                // Live chunk: its bytes stay resident until the exit ring releases them.
+                composite.pin_tile(coord, &tile);
+                active_count += 1;
+                spawned_this_frame += 1;
+            } else {
+                failed.tiles.insert(key);
+            }
+        }
+        if let Some(published) = capture_residency.as_mut().filter(|_| focus.capture) {
+            published.pending = pending;
         }
     }
+}
+
+/// World-space SW-corner anchor of `coord`'s chunk — exactly the `Transform`
+/// [`spawn_chunk`] gives it, so spawn- and LOD-side focus distances agree.
+fn chunk_anchor_world(
+    coord: TileCoord,
+    projection: &Projection,
+    scale: f64,
+) -> Result<Vec3, crate::projection::ProjectionError> {
+    let (_, nw_lon) = coord.to_lat_lon();
+    let (s_lat, _) = TileCoord::new(coord.x, coord.y.saturating_add(1), coord.zoom).to_lat_lon();
+    let anchor = scale_local(projection.wgs84_to_local(s_lat, nw_lon, 0.0)?, scale);
+    Ok(Vec3::new(
+        anchor[0] as f32,
+        anchor[1] as f32,
+        anchor[2] as f32,
+    ))
 }
 
 /// Build + spawn one terrain chunk entity; returns false when no data was usable.
@@ -730,7 +931,7 @@ fn spawn_chunk(
     // World scale shrinks/grows the whole tile (size, heights, anchor) so several
     // scales of space are viewable; see `src/AGENTS.md` §scale.
     let scale = config.effective_world_scale();
-    let (nw_lat, nw_lon) = coord.to_lat_lon();
+    let (nw_lat, _) = coord.to_lat_lon();
     let (s_lat, _) = TileCoord::new(coord.x, coord.y.saturating_add(1), coord.zoom).to_lat_lon();
     let tile_size = scaled_tile_size(tile_world_size_m((nw_lat + s_lat) / 2.0, coord.zoom), scale);
 
@@ -807,8 +1008,8 @@ fn spawn_chunk(
     };
 
     // Anchor at SW corner with ele=0 so mesh y (scaled meters) lands at (ele - origin_ele) * scale.
-    let anchor = match projection.wgs84_to_local(s_lat, nw_lon, 0.0) {
-        Ok(a) => scale_local(a, scale),
+    let anchor = match chunk_anchor_world(coord, projection, scale) {
+        Ok(a) => a,
         Err(err) => {
             tracing::warn!(tile = %coord.cache_key(), error = %err, "tile corner outside projection bounds");
             return false;
@@ -825,7 +1026,7 @@ fn spawn_chunk(
     let mut entity = commands.spawn((
         Mesh3d(meshes.add(mesh)),
         MeshMaterial3d(material),
-        Transform::from_xyz(anchor[0] as f32, anchor[1] as f32, anchor[2] as f32),
+        Transform::from_translation(anchor),
         TerrainChunk {
             tile_coords: (coord.zoom, coord.x, coord.y),
             lod: coord.zoom,
@@ -839,7 +1040,7 @@ fn spawn_chunk(
         field.insert(
             (coord.zoom, coord.x, coord.y),
             HeightTile {
-                anchor: Vec3::new(anchor[0] as f32, anchor[1] as f32, anchor[2] as f32),
+                anchor,
                 tile_size: tile_size as f32,
                 grid,
                 width: hw as u32,
@@ -3569,5 +3770,540 @@ mod tests {
             app.world().resource::<CapturedVolumeResults>().0.is_empty(),
             "a request scoped to a different petal must be dropped, not answered"
         );
+    }
+
+    // --- multi-focus streaming flows (agent_vision_20261031 V4) ---
+    //
+    // Real seam: the chained `update_terrain_lod` → `fetch_and_spawn_terrain_chunks`
+    // pass over a real `CompositeTileSource` — an installed in-memory hexon under the
+    // main camera and a P2P-streamed tileset under the remote capture target.
+
+    mod multi_focus {
+        use std::collections::BTreeSet;
+
+        use super::*;
+        use crate::tiles::{CompositeTileSource, HexonTileSource, StreamedTileSource};
+        use fe_format::manifest::{
+            BundleEntry, ElevationEncoding, HexonManifest, HexonType, TilesetBundleIndex,
+            TilesetMeta,
+        };
+        use fe_renderer::camera::OrbitCameraController;
+
+        /// Fixed zoom so each focus's ring is exactly its 3×3 at this zoom.
+        const ZOOM: u8 = 12;
+        const ORIGIN_LAT: f64 = 10.0;
+        const ORIGIN_LON: f64 = 10.0;
+        /// ~110 km east of the origin: far beyond either focus's despawn radius.
+        const CAPTURE_LON: f64 = 11.0;
+        const CAMERA_HEIGHT: f32 = 100.0;
+        const CAPTURE_TILESET: &str = "capture-ts";
+
+        type Key = (u8, u32, u32);
+
+        fn projection() -> Projection {
+            Projection::new(ORIGIN_LAT, ORIGIN_LON, 0.0)
+        }
+
+        /// World position of a camera hovering over `lon` (lat = origin).
+        fn camera_world(lon: f64) -> Vec3 {
+            let local = projection()
+                .wgs84_to_local(ORIGIN_LAT, lon, 0.0)
+                .expect("in range");
+            Vec3::new(local[0] as f32, CAMERA_HEIGHT, local[2] as f32)
+        }
+
+        /// The ring tile the fetch pass centres on for a camera at `world`.
+        fn ring_center(world: Vec3, zoom: u8) -> TileCoord {
+            let (lat, lon, _) =
+                projection().local_to_wgs84(world.x as f64, world.y as f64, world.z as f64);
+            TileCoord::from_lat_lon(lat, lon, zoom)
+        }
+
+        /// The 3×3 ring keys around `center` (at its zoom).
+        fn ring(center: TileCoord) -> BTreeSet<Key> {
+            let mut keys = BTreeSet::new();
+            for dy in -1i64..=1 {
+                for dx in -1i64..=1 {
+                    keys.insert((
+                        center.zoom,
+                        (center.x as i64 + dx) as u32,
+                        (center.y as i64 + dy) as u32,
+                    ));
+                }
+            }
+            keys
+        }
+
+        /// Geographic bounds `[min_lat, min_lon, max_lat, max_lon]` of a key set.
+        fn bounds_of(keys: &BTreeSet<Key>) -> [f64; 4] {
+            let mut bounds = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+            for &(z, x, y) in keys {
+                let (nw_lat, nw_lon) = TileCoord::new(x, y, z).to_lat_lon();
+                let (se_lat, se_lon) = TileCoord::new(x + 1, y + 1, z).to_lat_lon();
+                bounds[0] = bounds[0].min(se_lat);
+                bounds[1] = bounds[1].min(nw_lon);
+                bounds[2] = bounds[2].max(nw_lat);
+                bounds[3] = bounds[3].max(se_lon);
+            }
+            bounds
+        }
+
+        /// A decodable 4×4 Terrain-RGB tile at 0 m.
+        fn elevation_png() -> Vec<u8> {
+            let image = image::RgbImage::from_pixel(4, 4, image::Rgb([1, 134, 160]));
+            let mut bytes = Vec::new();
+            image
+                .write_to(
+                    &mut std::io::Cursor::new(&mut bytes),
+                    image::ImageFormat::Png,
+                )
+                .expect("encode png");
+            bytes
+        }
+
+        fn meta(keys: &BTreeSet<Key>, name: &str) -> TilesetMeta {
+            TilesetMeta {
+                bounds: bounds_of(keys),
+                min_zoom: keys.iter().map(|k| k.0).min().unwrap_or(ZOOM),
+                max_zoom: keys.iter().map(|k| k.0).max().unwrap_or(ZOOM),
+                tile_size: 4,
+                elevation_encoding: ElevationEncoding::TerrainRgb,
+                tile_count: keys.len() as u32,
+                region_name: name.into(),
+                ..Default::default()
+            }
+        }
+
+        fn manifest(id: &str) -> HexonManifest {
+            HexonManifest {
+                schema_version: "1.0.0".into(),
+                hexon_id: id.into(),
+                hexon_type: HexonType::TerrainTileset,
+                publisher_did: "did:key:ztest".into(),
+                publisher_name: None,
+                version: "0.1.0".into(),
+                build_id: None,
+                name: id.into(),
+                description: None,
+                tags: vec![],
+                created_at: "2026-01-01T00:00:00Z".into(),
+                updated_at: "2026-01-01T00:00:00Z".into(),
+                source_peer_did: None,
+                approx_size_bytes: None,
+                min_engine_version: None,
+                homepage_url: None,
+                dependencies: vec![],
+                platforms: vec![],
+                address: None,
+                integrity: None,
+                signature: None,
+            }
+        }
+
+        /// An in-memory tileset holding a real elevation tile for every key.
+        fn tileset(keys: &BTreeSet<Key>, name: &str) -> HexonTileSource {
+            let png = elevation_png();
+            let tiles: Vec<(String, Vec<u8>)> = keys
+                .iter()
+                .map(|&(z, x, y)| (format!("{z}/{x}/{y}"), png.clone()))
+                .collect();
+            let archive = fe_format::HexonArchive::export_tileset(
+                manifest(name),
+                &meta(keys, name),
+                &tiles,
+                &[],
+                None,
+            )
+            .expect("export tileset");
+            HexonTileSource::from_archive(&archive).expect("import tileset")
+        }
+
+        /// The capture area as a not-installed tileset: one bundle over its ring.
+        fn streamed_capture_source(keys: &BTreeSet<Key>) -> StreamedTileSource {
+            let xs = keys.iter().map(|k| k.1);
+            let ys = keys.iter().map(|k| k.2);
+            let x_range = [xs.clone().min().unwrap(), xs.max().unwrap()];
+            let y_range = [ys.clone().min().unwrap(), ys.max().unwrap()];
+            StreamedTileSource::new(
+                CAPTURE_TILESET.into(),
+                TilesetBundleIndex {
+                    schema: 1,
+                    tileset_id: CAPTURE_TILESET.into(),
+                    tileset_meta: meta(keys, CAPTURE_TILESET),
+                    bundles: vec![BundleEntry {
+                        seq: 0,
+                        blake3_hex: "unused-in-this-flow".into(),
+                        byte_len: 0,
+                        tile_count: keys.len() as u32,
+                        zoom: ZOOM,
+                        x_range,
+                        y_range,
+                        hilbert_range: [0, keys.len() as u64 - 1],
+                    }],
+                },
+            )
+        }
+
+        struct Fixture {
+            app: App,
+            main_ring: BTreeSet<Key>,
+            capture_ring: BTreeSet<Key>,
+        }
+
+        /// Headless app running the LOD → fetch chain on the two-area composite.
+        fn fixture(capture_bundle_resident: bool) -> Fixture {
+            let main_ring = ring(ring_center(camera_world(ORIGIN_LON), ZOOM));
+            let capture_ring = ring(ring_center(camera_world(CAPTURE_LON), ZOOM));
+            assert!(main_ring.is_disjoint(&capture_ring));
+
+            let mut composite = CompositeTileSource::new();
+            composite.add_hexon_source(tileset(&main_ring, "main"));
+            composite.add_streamed_source(streamed_capture_source(&capture_ring));
+            if capture_bundle_resident {
+                composite.insert_streamed_bundle(
+                    CAPTURE_TILESET,
+                    0,
+                    tileset(&capture_ring, CAPTURE_TILESET),
+                );
+            }
+            Fixture {
+                app: streaming_app(composite, ZOOM),
+                main_ring,
+                capture_ring,
+            }
+        }
+
+        /// The LOD → fetch chain over `composite`, zooms `min_zoom..=ZOOM`.
+        fn streaming_app(composite: CompositeTileSource, min_zoom: u8) -> App {
+            let mut app = App::new();
+            app.add_plugins((
+                MinimalPlugins,
+                AssetPlugin::default(),
+                bevy::transform::TransformPlugin,
+            ))
+            .init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .init_asset::<Image>()
+            .init_resource::<TerrainLodConfig>()
+            .init_resource::<TileResidency>()
+            .init_resource::<TileBundleDemand>()
+            .init_resource::<FailedTiles>()
+            .init_resource::<CaptureFocusResidency>()
+            .insert_resource(LayerStack::new())
+            .insert_resource(TerrainHeightField::default())
+            .insert_resource(ActivePetalTerrain {
+                petal_id: Some("petal".into()),
+                config: Some(TerrainConfig {
+                    enabled: true,
+                    origin: projection(),
+                    elevation_source: ElevationSourceKind::TerrainRgb,
+                    min_zoom,
+                    max_zoom: ZOOM,
+                    world_scale: 1.0,
+                    ..TerrainConfig::default()
+                }),
+                revision: 1,
+            })
+            .insert_resource(ActiveTileSource {
+                composite: Some(composite),
+                projection: Some(projection()),
+            })
+            .add_systems(
+                Update,
+                (update_terrain_lod, fetch_and_spawn_terrain_chunks).chain(),
+            );
+            app
+        }
+
+        /// A camera with an explicit `GlobalTransform` so frame one already sees its pose.
+        fn camera_at(world: Vec3) -> impl Bundle {
+            let transform = Transform::from_translation(world).looking_to(Vec3::NEG_Y, Vec3::Z);
+            (
+                Camera::default(),
+                CameraProjection::Perspective(PerspectiveProjection::default()),
+                transform,
+                GlobalTransform::from(transform),
+            )
+        }
+
+        fn spawn_main(app: &mut App) -> Entity {
+            app.world_mut()
+                .spawn((
+                    camera_at(camera_world(ORIGIN_LON)),
+                    OrbitCameraController::default(),
+                    StreamingFocus,
+                ))
+                .id()
+        }
+
+        fn spawn_capture(app: &mut App) -> Entity {
+            app.world_mut()
+                .spawn((
+                    camera_at(camera_world(CAPTURE_LON)),
+                    CaptureCamera,
+                    StreamingFocus,
+                ))
+                .id()
+        }
+
+        fn run(app: &mut App, frames: usize) {
+            for _ in 0..frames {
+                app.update();
+            }
+        }
+
+        fn chunk_keys(app: &mut App) -> BTreeSet<Key> {
+            let world = app.world_mut();
+            let mut query = world.query::<&TerrainChunk>();
+            query.iter(world).map(|chunk| chunk.tile_coords).collect()
+        }
+
+        fn chunk_entities(app: &mut App) -> BTreeSet<Entity> {
+            let world = app.world_mut();
+            let mut query = world.query_filtered::<Entity, With<TerrainChunk>>();
+            query.iter(world).collect()
+        }
+
+        fn union(a: &BTreeSet<Key>, b: &BTreeSet<Key>) -> BTreeSet<Key> {
+            a.union(b).copied().collect()
+        }
+
+        /// Regression: a second `Camera` (e.g. a glb scene camera) used to make the
+        /// single-camera `.single()` fail and stop ALL streaming silently.
+        #[test]
+        fn two_camera_entities_do_not_stall_streaming() {
+            let mut fx = fixture(true);
+            spawn_main(&mut fx.app);
+            fx.app
+                .world_mut()
+                .spawn(camera_at(camera_world(CAPTURE_LON)));
+
+            run(&mut fx.app, 3);
+
+            assert_eq!(
+                chunk_keys(&mut fx.app),
+                fx.main_ring,
+                "the orbit focus streams its ring; a camera without StreamingFocus streams nothing"
+            );
+        }
+
+        /// A host without fe-renderer's orbit camera (no `StreamingFocus` anywhere)
+        /// keeps streaming around its one camera; two such cameras are ambiguous.
+        #[test]
+        fn a_lone_plain_camera_still_streams_but_two_are_ambiguous() {
+            let mut fx = fixture(true);
+            let lone = fx
+                .app
+                .world_mut()
+                .spawn(camera_at(camera_world(ORIGIN_LON)))
+                .id();
+            run(&mut fx.app, 3);
+            assert_eq!(chunk_keys(&mut fx.app), fx.main_ring);
+
+            // Either camera, if picked, would stream the remote ring and evict this one.
+            fx.app.world_mut().despawn(lone);
+            for _ in 0..2 {
+                fx.app
+                    .world_mut()
+                    .spawn(camera_at(camera_world(CAPTURE_LON)));
+            }
+            run(&mut fx.app, 3);
+            assert_eq!(
+                chunk_keys(&mut fx.app),
+                fx.main_ring,
+                "no focus is chosen between two plain cameras: nothing new streams"
+            );
+        }
+
+        #[test]
+        fn capture_focus_spawns_chunks_at_its_remote_target() {
+            let mut fx = fixture(true);
+            spawn_main(&mut fx.app);
+            let capture = spawn_capture(&mut fx.app);
+
+            run(&mut fx.app, 3);
+
+            assert_eq!(
+                chunk_keys(&mut fx.app),
+                union(&fx.main_ring, &fx.capture_ring),
+                "both foci stream their own ring"
+            );
+            assert_eq!(
+                *fx.app.world().resource::<CaptureFocusResidency>(),
+                CaptureFocusResidency {
+                    capture_focus: Some(capture),
+                    pending: 0,
+                }
+            );
+        }
+
+        #[test]
+        fn main_view_chunks_survive_while_a_capture_focus_streams_elsewhere() {
+            let mut fx = fixture(true);
+            spawn_main(&mut fx.app);
+            run(&mut fx.app, 3);
+            let main_chunks = chunk_entities(&mut fx.app);
+            assert_eq!(main_chunks.len(), fx.main_ring.len());
+
+            spawn_capture(&mut fx.app);
+            run(&mut fx.app, 5);
+
+            let now = chunk_entities(&mut fx.app);
+            assert!(
+                main_chunks.is_subset(&now),
+                "no chunk of the user's view may be evicted (or respawned) by a capture"
+            );
+            assert_eq!(
+                chunk_keys(&mut fx.app),
+                union(&fx.main_ring, &fx.capture_ring)
+            );
+        }
+
+        #[test]
+        fn removing_the_capture_focus_releases_its_chunks_on_the_next_lod_pass() {
+            let mut fx = fixture(true);
+            spawn_main(&mut fx.app);
+            let capture = spawn_capture(&mut fx.app);
+            run(&mut fx.app, 3);
+            assert_eq!(
+                chunk_keys(&mut fx.app),
+                union(&fx.main_ring, &fx.capture_ring)
+            );
+            let streamed_resident = |app: &App| {
+                app.world()
+                    .resource::<ActiveTileSource>()
+                    .composite
+                    .as_ref()
+                    .expect("composite")
+                    .streamed_resident_bundles()
+            };
+            assert_eq!(
+                streamed_resident(&fx.app),
+                1,
+                "capture chunks pin their bundle"
+            );
+
+            fx.app.world_mut().despawn(capture);
+            run(&mut fx.app, 1);
+
+            assert_eq!(chunk_keys(&mut fx.app), fx.main_ring);
+            assert_eq!(
+                fx.app.world().resource::<TerrainHeightField>().len(),
+                fx.main_ring.len(),
+                "the capture chunks' height entries left with them"
+            );
+            assert_eq!(
+                streamed_resident(&fx.app),
+                0,
+                "the bundle's bytes leave RAM with the last capture chunk (exit ring)"
+            );
+            assert_eq!(
+                fx.app
+                    .world()
+                    .resource::<CaptureFocusResidency>()
+                    .capture_focus,
+                None
+            );
+        }
+
+        #[test]
+        fn capture_pending_count_reaches_zero_when_its_ring_is_resident() {
+            let mut fx = fixture(false);
+            spawn_main(&mut fx.app);
+            let capture = spawn_capture(&mut fx.app);
+            run(&mut fx.app, 2);
+
+            assert_eq!(
+                *fx.app.world().resource::<CaptureFocusResidency>(),
+                CaptureFocusResidency {
+                    capture_focus: Some(capture),
+                    pending: fx.capture_ring.len(),
+                },
+                "every capture ring tile awaits the not-yet-arrived bundle"
+            );
+            let wanted: Vec<(String, u32)> = fx
+                .app
+                .world()
+                .resource::<TileBundleDemand>()
+                .wanted()
+                .cloned()
+                .collect();
+            assert_eq!(wanted, vec![(CAPTURE_TILESET.to_string(), 0)]);
+            assert_eq!(chunk_keys(&mut fx.app), fx.main_ring);
+
+            let bundle = tileset(&fx.capture_ring, CAPTURE_TILESET);
+            fx.app
+                .world_mut()
+                .resource_mut::<ActiveTileSource>()
+                .composite
+                .as_mut()
+                .expect("composite")
+                .insert_streamed_bundle(CAPTURE_TILESET, 0, bundle);
+            run(&mut fx.app, 2);
+
+            assert_eq!(
+                fx.app.world().resource::<CaptureFocusResidency>().pending,
+                0
+            );
+            assert_eq!(
+                chunk_keys(&mut fx.app),
+                union(&fx.main_ring, &fx.capture_ring)
+            );
+        }
+
+        /// Overlapping foci at different zooms: the capture hovers higher over the
+        /// user's view (wants zoom 11; main wants 12). A zoom-11 tile whose four
+        /// zoom-12 children the main ring already holds is stale for its nearest
+        /// focus (main), so the capture must not spawn it — else the LOD pass would
+        /// evict it and the fetch respawn it, every frame.
+        #[test]
+        fn overlapping_foci_at_different_zooms_settle_without_churn() {
+            let main_world = camera_world(ORIGIN_LON);
+            let capture_world = main_world + Vec3::Y * 400.0;
+            let main_ring = ring(ring_center(main_world, ZOOM));
+            let capture_ring = ring(ring_center(capture_world, ZOOM - 1));
+            let mut composite = CompositeTileSource::new();
+            composite.add_hexon_source(tileset(&union(&main_ring, &capture_ring), "both"));
+            let mut app = streaming_app(composite, ZOOM - 1);
+            app.world_mut().spawn((
+                camera_at(main_world),
+                OrbitCameraController::default(),
+                StreamingFocus,
+            ));
+            app.world_mut()
+                .spawn((camera_at(capture_world), CaptureCamera, StreamingFocus));
+
+            run(&mut app, 4);
+            let settled = chunk_entities(&mut app);
+            run(&mut app, 3);
+
+            assert_eq!(
+                chunk_entities(&mut app),
+                settled,
+                "no chunk is despawned and respawned once both rings are in"
+            );
+            let covered_by_main: Vec<Key> = capture_ring
+                .iter()
+                .copied()
+                .filter(|&(z, x, y)| {
+                    crate::lod_ring::covering_tiles(TileCoord::new(x, y, z), ZOOM)
+                        .iter()
+                        .all(|child| main_ring.contains(child))
+                })
+                .collect();
+            assert_eq!(
+                covered_by_main.len(),
+                1,
+                "a 3×3 ring always holds one aligned 2×2"
+            );
+            let keys = chunk_keys(&mut app);
+            assert!(main_ring.is_subset(&keys), "the user's view is intact");
+            assert!(
+                !keys.contains(&covered_by_main[0]),
+                "the ceded tile is never spawned"
+            );
+            assert_eq!(keys.len(), main_ring.len() + capture_ring.len() - 1);
+            assert_eq!(app.world().resource::<CaptureFocusResidency>().pending, 0);
+        }
     }
 }

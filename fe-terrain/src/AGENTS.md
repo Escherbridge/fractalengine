@@ -194,8 +194,9 @@ Offline-mode override between `apply_terrain_assignments` and the first fetch
 (fractalengine `src/AGENTS.md` §tile-mode).
 
 **Offline-first chunk pipeline** (`fetch_and_spawn_terrain_chunks`):
-- Early-outs: no enabled config, no composite/projection, no camera, or at
-  `max_chunks`.
+- Early-outs: no enabled config, no composite/projection, no streaming focus
+  (a `StreamingFocus` camera, or the lone-camera fallback), or (with no capture focus) at `max_chunks`. Every step below runs
+  once per streaming focus — see "Multi-focus streaming" below.
 - Camera local position → `local_to_wgs84` → desired zoom via
   `desired_zoom(cam_height, min_zoom, max_zoom)` (one zoom step out per
   doubling of height above a 200 m base; monotonic + clamped).
@@ -390,6 +391,81 @@ to the ribbon:
 
 `ZOOM_BASE_HEIGHT_M` (200 m) is the single source for `desired_zoom`'s base and
 the close-range trigger, keeping the two in lock-step.
+
+### Multi-focus streaming (agent_vision_20261031 V4, spec §5.4 / DD-7)
+
+**Why.** Terrain used to load around `camera_query.single()` over every
+`Camera`. An agent-vision scene capture spawns a second camera, so `.single()`
+failed and BOTH `fetch_and_spawn_terrain_chunks` and `update_terrain_lod`
+returned early — all streaming and eviction stopped silently. Even with that
+fixed, nothing would ring a remote capture pose and the main camera's exit
+ring would evict anything that did load there.
+
+**Rule.** Streaming follows cameras carrying fe-renderer's `StreamingFocus`
+marker (`StreamingFocusQuery`), not "the" camera. The orbit camera always
+carries one; a `CaptureCamera` carries one for its job's lifetime. A camera
+without the marker (a glb scene camera, a capture without one) streams nothing.
+**Lone-camera fallback:** when NO entity carries `StreamingFocus` and exactly
+one `Camera` exists, that camera is the main focus — a host that never added
+fe-renderer's orbit camera (headless flows such as
+`tests/lazy_tiles_test.rs`, a third-party host) keeps its pre-V4 streaming
+instead of silently losing it. Two plain cameras are ambiguous and stream
+nothing (the old `.single()` outcome). In the GUI the orbit camera always
+carries the marker, so the fallback never engages there.
+`CaptureFocusResidency` is an `Option<ResMut>` system param for the same
+reason (`TerrainPlugin` always inits it).
+- **Foci set.** `StreamingFoci::collect` keeps at most `MAX_STREAMING_FOCI`
+  (2) in a fixed array, so there is no per-frame `Vec`: slot 0 = the first
+  capture focus, slot 1 = the first non-capture (main) focus. Extra foci are
+  ignored; capture jobs are single-flight (fractalengine §vision).
+- **Fetch.** Foci stream in slot order — the capture first while one exists —
+  each with its own lat/lon, height-derived zoom, adaptive ring and upsample.
+  Grounding still happens once (the centre-tile grounding is camera-free). The
+  per-frame spawn cap (`MAX_SPAWNS_PER_FRAME`) is shared.
+- **Budget.** The main focus keeps `max_chunks`. While a capture focus exists
+  it may grow the total to `max_chunks + capture_chunk_allowance(max_chunks)`
+  (`CAPTURE_CHUNK_ALLOWANCE`, half the budget) and its ring radius is sized to
+  that allowance (`max_ring_radius_for_budget(allowance)`). Eviction is
+  distance-only, so a capture can never evict the user's view; at worst the
+  main ring's fill pauses while a capture holds chunks past `max_chunks`.
+- **LOD.** `update_terrain_lod` despawns a chunk iff it is beyond EVERY
+  focus's own hysteresis despawn radius (`chunk_retained_by_any_focus`), or it
+  is at a stale zoom for its NEAREST focus and that focus's replacement fully
+  covers it (`stale_for_nearest_focus`, the hole-free rule generalised).
+  Removing the capture camera removes its focus, so the next LOD pass releases
+  its chunks through the existing exit-ring eviction (no new eviction path).
+- **No churn.** With two foci the fetch ring skips any tile that
+  `stale_for_nearest_focus` would evict next frame, measured from the same
+  SW-corner anchor `spawn_chunk` gives the chunk (`chunk_anchor_world`, cast
+  to `f32` exactly like the `Transform`). Spawn and despawn therefore apply
+  one predicate to identical inputs and cannot fight. With one focus the check
+  is skipped and the pass is the pre-V4 pipeline: same ring, same order, same
+  early-outs, same allocations.
+- **`CaptureFocusResidency { capture_focus, pending }`** is rewritten every
+  frame. `capture_focus` names the capture camera the count describes, so the
+  V5 settle can ignore a count from before its camera existed. `pending`
+  counts that capture's ring tiles that are still outstanding: an async load
+  in flight, a streamed bundle not yet arrived (the bundle is still demanded),
+  the origin-grounding tile (reported as 1), or a tile deferred by the
+  chunk/spawn budget. Tiles already spawned, failed, outside the world, or
+  ceded to the other focus are not pending. No enabled config or no tile
+  source → 0: there is nothing to wait for.
+
+**Narrowed single-camera sites.** Systems that mean "the user's camera" now
+query `With<OrbitCameraController>`: `ruler_plugin.rs::draw_scale_bar` (and
+`draw_world_grid`, which already read the controller),
+`splat/render.rs::apply_view_mode_visibility` (Hybrid measures from the user's
+camera), and fe-renderer's `grid.rs::draw_grid` and
+`axis_gizmo.rs::draw_axis_gizmo`. Known benign site:
+`fe-webview/src/petal_portal.rs::position_overlay_system` still calls
+`.single()` over every `Camera`, but its body is a TODO no-op, so a second
+camera only skips nothing.
+
+**Tests.** `lod_ring` tables (`chunk_retained_by_any_focus_table`,
+`nearest_focus_decides_stale_zoom_table`) plus flow tests in
+`terrain_plugin.rs` `tests::multi_focus` that drive the real LOD → fetch chain
+over an installed in-memory hexon (main area) and a P2P-streamed tileset
+(capture area).
 
 ### Height-field feed (ux_interaction_hardening_20260718 FR-5)
 
@@ -1084,7 +1160,9 @@ dispatch" decision: the main thread never reads a tile.
 - **Exit-ring byte eviction.** `fetch_and_spawn_terrain_chunks` pins a
   spawned chunk's hexon-origin layers in the source that supplied them
   (`pin_tile`, insert-if-evicted). `update_terrain_lod` despawns chunks
-  beyond `DESPAWN_HYSTERESIS` × the spawn radius (or at a stale zoom) and
+  beyond `DESPAWN_HYSTERESIS` × the spawn radius of EVERY streaming focus (or
+  at a stale zoom for their nearest focus; §terrain_plugin "Multi-focus
+  streaming") and
   calls `composite.release_tile(coord)`: the last pin drops the bytes
   immediately — they leave RAM with the chunk, not at some later LRU
   pressure point. Re-entry reloads them (identical bytes, identical heights).
@@ -1099,6 +1177,9 @@ dispatch" decision: the main thread never reads a tile.
 
   The host mirrors the first two groups into fe-runtime `ResidencyStats`
   (fractalengine `src/AGENTS.md` §residency-stats).
+- Agent-vision settle: `CaptureFocusResidency.pending` counts a capture
+  focus's outstanding ring tiles (pending ≠ failed applies there too); see
+  §terrain_plugin "Multi-focus streaming".
 - Cost: a chunk now appears a frame or more after it enters the ring (Risk 4,
   accepted; in-app check is USER_GATED). D-38 snap-to-terrain reads
   `TerrainHeightField`, which only covers resident chunks — unchanged by S5.

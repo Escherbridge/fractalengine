@@ -1,5 +1,7 @@
 use bevy::prelude::*;
 
+use crate::camera::OrbitCameraController;
+
 /// Plugin that sets up the 3D environment (clear color, lighting) and
 /// draws an XYZ axis orientation indicator.
 pub struct AxisGizmoPlugin;
@@ -44,7 +46,7 @@ const AXIS_Z_COLOR: Color = Color::srgb(0.3, 0.4, 0.9); // Blue
 /// camera orientation relative to world axes.
 fn draw_axis_gizmo(
     mut gizmos: Gizmos,
-    camera_query: Query<(&Transform, &Projection), With<Camera3d>>,
+    camera_query: Query<(&Transform, &Projection), With<OrbitCameraController>>,
 ) {
     let (camera_transform, _projection) = match camera_query.single() {
         Ok(result) => result,

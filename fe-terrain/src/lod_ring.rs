@@ -117,6 +117,68 @@ pub fn wrong_zoom_replacement_present(
         .all(|t| existing.contains(&t))
 }
 
+/// Most streaming foci one pass serves: the orbit camera plus one single-flight
+/// capture camera (agent vision); see `src/AGENTS.md` §terrain_plugin "Multi-focus".
+pub const MAX_STREAMING_FOCI: usize = 2;
+
+/// Extra chunks a capture focus may hold beyond `max_chunks` (`CAPTURE_CHUNK_ALLOWANCE`),
+/// half the budget, so a capture never crowds the user's view out.
+pub fn capture_chunk_allowance(max_chunks: usize) -> usize {
+    max_chunks / 2
+}
+
+/// One streaming focus as the LOD rules see it (world units).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FocusReach {
+    /// Camera world position.
+    pub position: [f32; 3],
+    /// Distance beyond which this focus no longer retains a chunk.
+    pub despawn_radius: f64,
+    /// Tile zoom this focus wants (`None`: no enabled terrain config).
+    pub desired_zoom: Option<u8>,
+}
+
+/// Euclidean distance computed in `f32`, matching `Vec3::distance` on the same inputs.
+fn focus_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let (dx, dy, dz) = (a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    (dx * dx + dy * dy + dz * dz).sqrt()
+}
+
+/// Index of the focus nearest `chunk_pos` (first wins ties and NaN); `None` when `foci` is empty.
+pub fn nearest_focus_index(chunk_pos: [f32; 3], foci: &[FocusReach]) -> Option<usize> {
+    let mut best: Option<(usize, f32)> = None;
+    for (index, focus) in foci.iter().enumerate() {
+        let distance = focus_distance(chunk_pos, focus.position);
+        let closer = best.is_none_or(|(_, best_distance)| distance < best_distance);
+        if closer {
+            best = Some((index, distance));
+        }
+    }
+    best.map(|(index, _)| index)
+}
+
+/// True when at least one focus still holds `chunk_pos` within its own despawn radius.
+#[allow(clippy::neg_cmp_op_on_partial_ord)] // a NaN distance must retain, as the 1-focus rule did
+pub fn chunk_retained_by_any_focus(chunk_pos: [f32; 3], foci: &[FocusReach]) -> bool {
+    foci.iter()
+        .any(|focus| !(f64::from(focus_distance(chunk_pos, focus.position)) > focus.despawn_radius))
+}
+
+/// True when `coord`'s chunk is at the wrong zoom for its NEAREST focus and that
+/// focus's replacement coverage already exists (the hole-free stale-zoom rule,
+/// generalised to many foci). Spawning skips exactly these tiles, so the ring
+/// never spawns what the LOD pass would evict next frame (no churn).
+pub fn stale_for_nearest_focus(
+    coord: TileCoord,
+    chunk_pos: [f32; 3],
+    foci: &[FocusReach],
+    existing: &HashSet<(u8, u32, u32)>,
+) -> bool {
+    nearest_focus_index(chunk_pos, foci)
+        .and_then(|index| foci[index].desired_zoom)
+        .is_some_and(|zoom| wrong_zoom_replacement_present(coord, zoom, existing))
+}
+
 /// Elevation upsample factor for how far below the max-zoom "natural height" the
 /// camera has descended (each halving below `base_height_m` doubles density).
 /// Returns a power of two ≤ `cap`; `1` when no upsampling is needed.
@@ -250,6 +312,92 @@ mod tests {
         assert_eq!(upsample_factor_for_height(10.0, 200.0, 4), 4); // cap holds
                                                                    // Cap of 1 disables upsampling.
         assert_eq!(upsample_factor_for_height(10.0, 200.0, 1), 1);
+    }
+
+    fn reach(position: [f32; 3], despawn_radius: f64, desired_zoom: Option<u8>) -> FocusReach {
+        FocusReach {
+            position,
+            despawn_radius,
+            desired_zoom,
+        }
+    }
+
+    #[test]
+    fn chunk_retained_by_any_focus_table() {
+        let main = reach([0.0, 100.0, 0.0], 1_000.0, Some(12));
+        let capture = reach([50_000.0, 100.0, 0.0], 1_000.0, Some(12));
+        let both = [main, capture];
+        // (chunk position, foci, retained?)
+        type Row<'a> = ([f32; 3], &'a [FocusReach], bool);
+        let rows: [Row; 7] = [
+            ([0.0, 0.0, 0.0], &both, true),         // inside main only
+            ([50_000.0, 0.0, 0.0], &both, true),    // inside capture only
+            ([25_000.0, 0.0, 0.0], &both, false),   // between: too far from every focus
+            ([50_000.0, 0.0, 0.0], &[main], false), // capture removed: its chunk is released
+            ([0.0, 0.0, 0.0], &[capture], false),   // main-only chunk is not held by a capture
+            ([0.0, 0.0, 0.0], &[], false),          // no foci retain nothing
+            ([f32::NAN, 0.0, 0.0], &[main], true),  // NaN keeps the 1-focus rule's "not too far"
+        ];
+        for (index, (position, foci, retained)) in rows.iter().enumerate() {
+            assert_eq!(
+                chunk_retained_by_any_focus(*position, foci),
+                *retained,
+                "row {index}: {position:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nearest_focus_decides_stale_zoom_table() {
+        // Main wants zoom 12, the capture wants zoom 10; the chunk is a zoom-12 tile.
+        let main = reach([0.0, 0.0, 0.0], 1e9, Some(12));
+        let capture = reach([100.0, 0.0, 0.0], 1e9, Some(10));
+        let chunk = TileCoord::new(8, 12, 12);
+        let mut parent_present = HashSet::new();
+        parent_present.insert((10, 2, 3)); // the zoom-10 tile covering (12, 8, 12)
+        let nothing = HashSet::new();
+        // (chunk position, existing, stale?)
+        type Row<'a> = ([f32; 3], &'a HashSet<(u8, u32, u32)>, bool);
+        let rows: [Row; 4] = [
+            // Nearest is main (zoom 12 = chunk zoom): never stale, even with the parent present.
+            ([10.0, 0.0, 0.0], &parent_present, false),
+            // Nearest is the capture (wants 10) and its replacement exists: stale.
+            ([90.0, 0.0, 0.0], &parent_present, true),
+            // Nearest is the capture but no replacement yet: keep it (hole-free).
+            ([90.0, 0.0, 0.0], &nothing, false),
+            // Equidistant: the first focus (main) wins the tie.
+            ([50.0, 0.0, 0.0], &parent_present, false),
+        ];
+        for (index, (position, existing, stale)) in rows.iter().enumerate() {
+            assert_eq!(
+                stale_for_nearest_focus(chunk, *position, &[main, capture], existing),
+                *stale,
+                "row {index}: {position:?}"
+            );
+        }
+        assert_eq!(
+            nearest_focus_index([90.0, 0.0, 0.0], &[main, capture]),
+            Some(1)
+        );
+        assert_eq!(nearest_focus_index([0.0, 0.0, 0.0], &[]), None);
+        // A focus with no enabled config never marks anything stale.
+        let unconfigured = reach([0.0, 0.0, 0.0], 1e9, None);
+        assert!(!stale_for_nearest_focus(
+            chunk,
+            [0.0; 3],
+            &[unconfigured],
+            &parent_present
+        ));
+    }
+
+    #[test]
+    fn capture_allowance_is_half_the_budget() {
+        assert_eq!(capture_chunk_allowance(256), 128);
+        assert_eq!(capture_chunk_allowance(9), 4);
+        assert!(
+            max_ring_radius_for_budget(capture_chunk_allowance(256))
+                < max_ring_radius_for_budget(256)
+        );
     }
 
     #[test]

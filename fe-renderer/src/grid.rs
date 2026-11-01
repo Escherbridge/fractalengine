@@ -1,6 +1,8 @@
 use bevy::gizmos::config::{DefaultGizmoConfigGroup, GizmoConfigStore};
 use bevy::prelude::*;
 
+use crate::camera::OrbitCameraController;
+
 /// Plugin that renders an infinite-style ground grid at Y=0.
 ///
 /// Uses Bevy's gizmo system to draw minor lines (1-unit spacing) and
@@ -83,7 +85,7 @@ fn fade_factor(distance: f32, fade_distance: f32) -> f32 {
 fn draw_grid(
     mut gizmos: Gizmos,
     config: Res<GridConfig>,
-    camera_query: Query<&Transform, With<Camera3d>>,
+    camera_query: Query<&Transform, With<OrbitCameraController>>,
 ) {
     let camera_transform = match camera_query.single() {
         Ok(t) => t,

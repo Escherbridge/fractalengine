@@ -6,6 +6,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use fe_renderer::camera::OrbitCameraController;
 
 use crate::config::{ElevationSourceKind, TerrainConfig};
 use crate::layers::LayerStack;
@@ -190,7 +191,7 @@ fn apply_view_mode_visibility(
     active: Res<ActivePetalTerrain>,
     splat_cfg: Res<SplatConfig>,
     layer_stack: Res<LayerStack>,
-    camera: Query<&GlobalTransform, With<Camera>>,
+    camera: Query<&GlobalTransform, With<OrbitCameraController>>,
     mut mesh_chunks: Query<
         (&GlobalTransform, Option<&LayerEntity>, &mut Visibility),
         (With<TerrainChunk>, Without<SplatChunk>),
@@ -464,6 +465,58 @@ mod tests {
     fn empty_buffer_bakes_empty_mesh() {
         let mesh = bake_splat_mesh(&SplatBuffer::default());
         assert_eq!(mesh.count_vertices(), 0);
+    }
+
+    /// V4 narrowing: Hybrid measures from the user's orbit camera even while an
+    /// agent-vision capture camera exists (it used to see two cameras, fail
+    /// `.single()` and show every mesh chunk).
+    #[test]
+    fn hybrid_switches_by_the_orbit_camera_even_with_a_capture_camera_present() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        let mut world = World::new();
+        world.insert_resource(TerrainViewMode::Hybrid);
+        world.insert_resource(ActivePetalTerrain::default());
+        world.insert_resource(SplatConfig {
+            stride: 2,
+            hybrid_mesh_distance_m: 100.0,
+        });
+        world.insert_resource(LayerStack::new());
+        world.spawn((
+            Camera::default(),
+            OrbitCameraController::default(),
+            GlobalTransform::default(),
+        ));
+        world.spawn((
+            Camera::default(),
+            fe_renderer::camera::CaptureCamera,
+            GlobalTransform::from_xyz(1_000.0, 0.0, 0.0),
+        ));
+        let chunk = |x: f32, visibility: Visibility| {
+            (
+                TerrainChunk {
+                    tile_coords: (1, 0, 0),
+                    lod: 1,
+                },
+                GlobalTransform::from_xyz(x, 0.0, 0.0),
+                visibility,
+            )
+        };
+        let near_main = world.spawn(chunk(10.0, Visibility::Hidden)).id();
+        let near_capture = world.spawn(chunk(1_000.0, Visibility::Inherited)).id();
+
+        world
+            .run_system_once(apply_view_mode_visibility)
+            .expect("system runs");
+
+        assert_eq!(
+            world.get::<Visibility>(near_main),
+            Some(&Visibility::Inherited)
+        );
+        assert_eq!(
+            world.get::<Visibility>(near_capture),
+            Some(&Visibility::Hidden)
+        );
     }
 
     #[test]

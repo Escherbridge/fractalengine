@@ -4,6 +4,7 @@
 use bevy::prelude::Projection as CameraProjection;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
+use fe_renderer::camera::OrbitCameraController;
 
 use crate::petal_binding::ActivePetalTerrain;
 use crate::ruler::{
@@ -65,7 +66,7 @@ fn draw_scale_bar(
     mut ctx: EguiContexts,
     settings: Res<RulerSettings>,
     active: Res<ActivePetalTerrain>,
-    cameras: Query<(&GlobalTransform, &CameraProjection), With<Camera>>,
+    cameras: Query<(&GlobalTransform, &CameraProjection), With<OrbitCameraController>>,
 ) {
     if !settings.show_scale_bar {
         return;
@@ -147,10 +148,7 @@ fn draw_unscaled_chip(ectx: &egui::Context) {
 fn draw_world_grid(
     settings: Res<RulerSettings>,
     active: Res<ActivePetalTerrain>,
-    cameras: Query<(
-        &GlobalTransform,
-        &fe_renderer::camera::OrbitCameraController,
-    )>,
+    cameras: Query<(&GlobalTransform, &OrbitCameraController)>,
     mut gizmos: Gizmos,
 ) {
     if !settings.show_grid {
