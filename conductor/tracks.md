@@ -110,6 +110,14 @@ Order: signing and release first, then agent QA, then the operator seams.
 
 ## P0 — Polish lane (user directive 2026-10-31)
 
+### [~] qa_chain_20261101 — finish agent QA surfaces, full-coverage loop, UX audit and queued polish
+
+_Link: [./tracks/qa_chain_20261101/](./tracks/qa_chain_20261101/) · in progress · user goal 2026-11-01_
+
+H3 live evidence and harness/navigation/clipboard repairs are local; the shared AccessKit/state/log bridge is in
+implementation and combined smoke. Current ownership, evidence and remaining queue:
+[qa-chain-progress-20261101.md](./qa-chain-progress-20261101.md). No push is authorized.
+
 ### [ ] polish_lane_20261031 — finish stubs, complete features, close seams, usability of every feature
 
 _Link: [./tracks/polish_lane_20261031/](./tracks/polish_lane_20261031/) · pending · 0 / 6 waves · created 2026-10-31 from Lane A recon (R1 stubs + R2 UX QA, 82 findings)_

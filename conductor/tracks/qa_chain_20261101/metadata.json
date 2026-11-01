@@ -1,0 +1,22 @@
+{
+  "id": "qa_chain_20261101",
+  "type": "campaign",
+  "title": "Complete agent-driven QA and polish queue",
+  "status": "in_progress",
+  "created_at": "2026-11-01",
+  "updated_at": "2026-11-01",
+  "origin": "User /goal to finish qa-chain-handoff-20261101, reinforced authorization for agent interaction surfaces and fixes",
+  "alignment": "S-AGENT-GUI; user-facing correctness, accessibility and reproducible end-to-end verification",
+  "depends_on": [],
+  "related": ["agent_vision_20261031", "polish_lane_20261031", "ux_audit_20261101"],
+  "spec": "./spec.md",
+  "plan": "./plan.md",
+  "progress_ledger": "../../qa-chain-progress-20261101.md",
+  "pushed": false,
+  "verification": {
+    "h3_live_pass": "qa/passes/01/verdict.md: gold 1/2, new S1/S2 2, coverage 2/2",
+    "integrated_sweep": "pending",
+    "convergence": "pending",
+    "independent_reviews": "../agent_vision_20261031/reviews/independent-*-20261101.md"
+  }
+}
