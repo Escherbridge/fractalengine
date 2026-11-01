@@ -90,6 +90,7 @@ pub(crate) fn annotation_card_section(
                     .fill(theme::BG_SAVE)
                     .min_size(egui::vec2(ui.available_width(), 26.0)),
             )
+            .named(ui, "Save annotation")
             .clicked()
         {
             for action in annotation_save_actions(

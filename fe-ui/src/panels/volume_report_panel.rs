@@ -15,6 +15,8 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use fe_renderer::terrain_overlay::{VolumeReportRequest, VolumeReportResult};
 use fe_runtime::messages::DbResult;
 
@@ -483,7 +485,11 @@ pub(crate) fn render_volume_report_body(
     }
 
     ui.add_space(6.0);
-    if ui.button("Copy as TSV").clicked() {
+    if ui
+        .button("Copy as TSV")
+        .named(ui, "Copy volume report as TSV")
+        .clicked()
+    {
         let tsv = volume_report_to_tsv(result, &nodes);
         ui.ctx().copy_text(tsv);
         let now = ui.ctx().input(|i| i.time);

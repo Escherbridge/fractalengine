@@ -4,6 +4,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use crate::actions::UiManager;
 use crate::atlas::DashboardState;
 use crate::dialogs::ActiveDialog;
@@ -69,6 +71,7 @@ pub(crate) fn status_bar(
                     .color(theme::TEXT_DIM);
                 if ui
                     .add(egui::Label::new(peer_label).sense(egui::Sense::click()))
+                    .button_named(ui, "Open peer debug panel")
                     .on_hover_text("Click for peer debug panel")
                     .clicked()
                 {
@@ -157,8 +160,7 @@ pub(crate) fn status_bar(
                                 .small()
                                 .color(theme::STATUS_OFFLINE),
                         )
-                        .sense(egui::Sense::click()),
-                    );
+                        .button_named(ui, "Dismiss identity warning");
                     if resp.clicked() {
                         identity_banner.dismiss();
                     }
@@ -181,8 +183,7 @@ pub(crate) fn status_bar(
                                     .small()
                                     .color(theme::STATUS_OFFLINE),
                             )
-                            .sense(egui::Sense::click()),
-                        );
+                            .button_named(ui, "Open error history");
                         let mut dismiss_latest = false;
                         egui::Popup::from_toggle_button_response(&resp)
                             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
@@ -203,12 +204,29 @@ pub(crate) fn status_bar(
                                                 );
                                             }
                                         });
-                                        if ui.small_button("Copy").clicked() {
-                                            let raw = notice.detail.as_ref().unwrap_or(&notice.text);
+                                        if ui
+                                            .small_button("Copy")
+                                            .named(
+                                                ui,
+                                                format_args!("Copy error notice {}", notice.id),
+                                            )
+                                            .clicked()
+                                        {
+                                            let raw =
+                                                notice.detail.as_ref().unwrap_or(&notice.text);
                                             ui.ctx().copy_text(raw.clone());
                                         }
                                         if notice.id == latest_id
-                                            && ui.small_button("Dismiss").clicked()
+                                            && ui
+                                                .small_button("Dismiss")
+                                                .named(
+                                                    ui,
+                                                    format_args!(
+                                                        "Dismiss error notice {}",
+                                                        notice.id
+                                                    ),
+                                                )
+                                                .clicked()
                                         {
                                             dismiss_latest = true;
                                         }

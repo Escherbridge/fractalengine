@@ -15,6 +15,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use crate::actions::dimension_callout;
 use crate::actions::terrain_proposal::{SculptOpKind, SculptShapeMode, SculptToolState};
 use crate::actions::{UiAction, UiManager};
@@ -318,7 +320,8 @@ fn render_sculpt_shape_picker(
     ui.label(egui::RichText::new("Shape").small().color(theme::TEXT_DIM));
     ui.horizontal_wrapped(|ui| {
         for mode in SculptShapeMode::ALL {
-            ui.selectable_value(&mut sculpt.shape_mode, mode, mode.label());
+            ui.selectable_value(&mut sculpt.shape_mode, mode, mode.label())
+                .named(ui, format_args!("Earthwork shape: {}", mode.label()));
         }
     });
 
@@ -345,7 +348,11 @@ fn render_sculpt_shape_picker(
                 .small()
                 .color(theme::TEXT_DIM),
             );
-            if ui.small_button("Clear").clicked() {
+            if ui
+                .small_button("Clear")
+                .named(ui, "Clear earthwork polygon draft")
+                .clicked()
+            {
                 sculpt.region_draft.clear();
             }
         });
@@ -481,12 +488,14 @@ fn render_measure_options(
     ui.horizontal_wrapped(|ui| {
         if ui
             .add_enabled(!measure.is_empty(), egui::Button::new("Undo"))
+            .named(ui, "Undo last measurement point")
             .clicked()
         {
             measure.apply(MeasureEvent::Undo);
         }
         if ui
             .add_enabled(!measure.is_empty(), egui::Button::new("Clear"))
+            .named(ui, "Clear measurement")
             .clicked()
         {
             measure.apply(MeasureEvent::Clear);

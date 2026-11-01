@@ -5,6 +5,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use crate::actions::{UiAction, UiManager};
 use crate::gpx_ops::GpxImportStatus;
 use crate::theme;
@@ -28,6 +30,7 @@ pub(crate) fn gpx_import_section(
     ui.add_space(4.0);
     if ui
         .add(egui::Button::new("\u{1F4C1} Import GPX...").fill(theme::BG_BUTTON))
+        .named(ui, "Import GPX file")
         .clicked()
     {
         match ui_mgr

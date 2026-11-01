@@ -11,6 +11,8 @@
 use bevy::prelude::Resource;
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use crate::actions::{UiAction, UiManager};
 use crate::gis::{CornerKind, PathEditorState};
 use crate::node_manager::curve::{self, PenMode};
@@ -328,13 +330,15 @@ pub(crate) fn render_path_asset_section(
                         .range(0.01..=MAX_DISTANCE_INPUT)
                         .suffix(" m"),
                 )
+                .named(ui, "Stamp spacing in meters")
                 .on_hover_text("Distance between stamped instances, in real-world meters");
             });
         }
         SpacingMode::FixedCount => {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Count").small().color(theme::TEXT_DIM));
-                ui.add(egui::DragValue::new(&mut state.count_value).range(0..=u32::MAX));
+                ui.add(egui::DragValue::new(&mut state.count_value).range(0..=u32::MAX))
+                    .named(ui, "Stamp count");
             });
         }
     }
@@ -425,9 +429,11 @@ fn render_stamp_editor(
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Index").small().color(theme::TEXT_DIM));
         ui.add(egui::DragValue::new(&mut state.stamp_edit_index).range(0..=u32::MAX))
+            .named(ui, "Stamp index (zero based)")
             .on_hover_text("Which stamp along the path to edit (0-based)");
         if ui
             .button("Select")
+            .named(ui, format_args!("Select stamp {}", state.stamp_edit_index))
             .on_hover_text("Select this stamp as an individual node (promotes on first select)")
             .clicked()
         {
@@ -438,6 +444,10 @@ fn render_stamp_editor(
         }
         if ui
             .button("Promote")
+            .named(
+                ui,
+                format_args!("Promote stamp {} to node", state.stamp_edit_index),
+            )
             .on_hover_text("Materialize this stamp as an addressable node (T1 promotion)")
             .clicked()
         {
@@ -456,8 +466,9 @@ fn render_stamp_editor(
             egui::DragValue::new(&mut state.stamp_scale)
                 .speed(0.05)
                 .range(0.01..=MAX_SCALE_INPUT),
-        );
-        if ui.button("Apply").clicked() {
+        )
+        .named(ui, "Selected stamp scale multiplier");
+        if ui.button("Apply").named(ui, "Apply stamp scale").clicked() {
             let s = state.stamp_scale;
             ui_mgr.push_action(UiAction::SetStampScale {
                 track_node_id: track_id.clone(),
@@ -478,8 +489,13 @@ fn render_stamp_editor(
             egui::DragValue::new(&mut state.stamp_yaw_deg)
                 .speed(1.0)
                 .range(-MAX_ANGLE_INPUT_DEG..=MAX_ANGLE_INPUT_DEG),
-        );
-        if ui.button("Apply").clicked() {
+        )
+        .named(ui, "Selected stamp rotation in degrees");
+        if ui
+            .button("Apply")
+            .named(ui, "Apply stamp rotation")
+            .clicked()
+        {
             let quat = yaw_to_quat(state.stamp_yaw_deg.to_radians());
             ui_mgr.push_action(UiAction::SetStampRotation {
                 track_node_id: track_id.clone(),
@@ -502,10 +518,15 @@ fn render_stamp_editor(
                 .range(0.0..=MAX_DISTANCE_INPUT)
                 .suffix(" m"),
         )
+        .named(ui, "Selected stamp distance along path in meters")
         .on_hover_text(
             "Reposition the stamp along its curve by arc length (free translate stays off)",
         );
-        if ui.button("Apply").clicked() {
+        if ui
+            .button("Apply")
+            .named(ui, "Apply stamp distance along path")
+            .clicked()
+        {
             ui_mgr.push_action(UiAction::SlideStampAlongPath {
                 track_node_id: track_id.clone(),
                 stamp_index: state.stamp_edit_index as usize,
@@ -556,6 +577,7 @@ fn render_asset_picker(ui: &mut egui::Ui, state: &mut ToolPanelState, verse_mgr:
                 );
                 if ui
                     .small_button("\u{2715}")
+                    .named(ui, "Clear selected stamp asset")
                     .on_hover_text("Clear selection")
                     .clicked()
                 {
@@ -593,7 +615,8 @@ fn render_asset_picker(ui: &mut egui::Ui, state: &mut ToolPanelState, verse_mgr:
                 egui::TextEdit::singleline(&mut state.asset_filter)
                     .desired_width(180.0)
                     .hint_text("name or path"),
-            );
+            )
+            .named(ui, "Filter stamp assets by name or path");
         });
         ui.add_space(2.0);
 
@@ -614,6 +637,7 @@ fn render_asset_picker(ui: &mut egui::Ui, state: &mut ToolPanelState, verse_mgr:
                         state.selected_hexon_ref.as_deref() == Some(row.asset_path.as_str());
                     let resp = ui
                         .selectable_label(selected, egui::RichText::new(&row.name).small())
+                        .named(ui, format_args!("Select stamp asset {}", row.name))
                         .on_hover_text(&row.asset_path);
                     if resp.clicked() {
                         state.selected_hexon_ref = Some(row.asset_path.clone());
@@ -635,6 +659,7 @@ fn render_asset_picker(ui: &mut egui::Ui, state: &mut ToolPanelState, verse_mgr:
         let mut asset_buf = state.selected_hexon_ref.clone().unwrap_or_default();
         if ui
             .add(egui::TextEdit::singleline(&mut asset_buf).hint_text("blob://<hash>.glb"))
+            .named(ui, "Stamp asset blob path")
             .changed()
         {
             state.selected_hexon_ref = if asset_buf.trim().is_empty() {
@@ -694,16 +719,28 @@ pub(crate) fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) 
             &mut state.pen_mode,
             PenMode::Polyline,
             PenMode::Polyline.label(),
+        )
+        .named(
+            ui,
+            format_args!("Pen curve mode: {}", PenMode::Polyline.label()),
         );
         ui.selectable_value(
             &mut state.pen_mode,
             PenMode::CatmullRom,
             PenMode::CatmullRom.label(),
+        )
+        .named(
+            ui,
+            format_args!("Pen curve mode: {}", PenMode::CatmullRom.label()),
         );
         ui.selectable_value(
             &mut state.pen_mode,
             PenMode::Bezier,
             PenMode::Bezier.label(),
+        )
+        .named(
+            ui,
+            format_args!("Pen curve mode: {}", PenMode::Bezier.label()),
         );
     });
     ui.add_space(4.0);
@@ -720,16 +757,28 @@ pub(crate) fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) 
             &mut state.pen_new_anchor_kind,
             CornerKind::Corner,
             CornerKind::Corner.label(),
+        )
+        .named(
+            ui,
+            format_args!("New pen anchor kind: {}", CornerKind::Corner.label()),
         );
         ui.selectable_value(
             &mut state.pen_new_anchor_kind,
             CornerKind::Smooth,
             CornerKind::Smooth.label(),
+        )
+        .named(
+            ui,
+            format_args!("New pen anchor kind: {}", CornerKind::Smooth.label()),
         );
         ui.selectable_value(
             &mut state.pen_new_anchor_kind,
             CornerKind::Symmetric,
             CornerKind::Symmetric.label(),
+        )
+        .named(
+            ui,
+            format_args!("New pen anchor kind: {}", CornerKind::Symmetric.label()),
         );
     })
     .response
@@ -741,7 +790,8 @@ pub(crate) fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) 
             .small()
             .color(theme::TEXT_DIM),
     );
-    ui.add(egui::Slider::new(&mut state.pen_tension, 0.0..=1.0).show_value(false));
+    ui.add(egui::Slider::new(&mut state.pen_tension, 0.0..=1.0).show_value(false))
+        .named(ui, "Pen curve tension");
     ui.add_space(4.0);
 
     ui.horizontal(|ui| {
@@ -753,6 +803,7 @@ pub(crate) fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) 
         let mut samples = state.pen_samples_per_segment as u32;
         if ui
             .add(egui::DragValue::new(&mut samples).range(1..=128))
+            .named(ui, "Pen samples per segment")
             .changed()
         {
             state.pen_samples_per_segment = samples as usize;
@@ -787,7 +838,8 @@ pub(crate) fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) 
             egui::DragValue::new(&mut state.shape_radius)
                 .speed(0.1)
                 .range(0.01..=MAX_DISTANCE_INPUT),
-        );
+        )
+        .named(ui, "Shape X radius in meters");
         ui.label(
             egui::RichText::new("Radius Z")
                 .small()
@@ -797,7 +849,8 @@ pub(crate) fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) 
             egui::DragValue::new(&mut state.shape_radius_z)
                 .speed(0.1)
                 .range(0.01..=MAX_DISTANCE_INPUT),
-        );
+        )
+        .named(ui, "Shape Z radius in meters");
     });
     ui.horizontal(|ui| {
         ui.label(
@@ -808,6 +861,7 @@ pub(crate) fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) 
         let mut segs = state.shape_segments.max(3) as u32;
         if ui
             .add(egui::DragValue::new(&mut segs).range(3..=256))
+            .named(ui, "Shape segment count")
             .changed()
         {
             state.shape_segments = segs as usize;

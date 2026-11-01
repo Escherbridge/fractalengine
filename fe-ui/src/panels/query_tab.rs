@@ -5,6 +5,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use crate::actions::{UiAction, UiManager};
 use crate::navigation_manager::NavigationManager;
 use crate::node_manager::NodeManager;
@@ -151,13 +153,11 @@ pub(crate) fn inspector_query_section(
                          e.g. SELECT * FROM node WHERE petal_id = '...'",
                             ),
                     )
+                    .named(ui, "SQL query")
                 },
             )
             .inner;
 
-            ui.ctx()
-                .accesskit_node_builder(response.id, |node| node.set_label("SQL query"));
-            crate::ui_shell::layout_policy::record_response(ui, &response);
             ui.add_space(6.0);
 
             // Submit button
@@ -174,8 +174,7 @@ pub(crate) fn inspector_query_section(
                 } else {
                     theme::BG_BUTTON
                 });
-                let submit = ui.add_enabled(can_submit, btn);
-                crate::ui_shell::layout_policy::record_response(ui, &submit);
+                let submit = ui.add_enabled(can_submit, btn).named(ui, "Run Query");
                 let submit_clicked = submit.clicked();
                 let ctrl_enter = response.has_focus()
                     && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.ctrl);

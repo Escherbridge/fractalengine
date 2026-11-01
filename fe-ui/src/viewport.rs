@@ -1,5 +1,7 @@
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use crate::actions::UiManager;
 use crate::atlas::DashboardState;
 use crate::dialogs::{ActiveDialog, CreateKind, EntitySettingsType, SettingsTab};
@@ -88,6 +90,7 @@ pub fn viewport_petal_space(
             ui.horizontal(|ui| {
                 back_clicked = ui
                     .add_sized([52.0, 24.0], egui::Button::new("\u{25C0} Back"))
+                    .named(ui, "Back to petal list")
                     .clicked();
                 ui.add(egui::Label::new(&breadcrumb).truncate())
                     .on_hover_text(&breadcrumb);
@@ -225,10 +228,7 @@ pub fn viewport_verse_browser(
                         .size(13.0)
                         .color(theme::TEXT_BRIGHT),
                 )
-                .fill(theme::BG_PANEL)
-                .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM))
-                .corner_radius(6.0),
-            );
+                .named(ui, format_args!("Open verse {}", verse.name));
             if resp.clicked() {
                 card_clicked = true;
             }
@@ -248,9 +248,7 @@ pub fn viewport_verse_browser(
                             .size(14.0)
                             .color(theme::ICON_GEAR),
                     )
-                    .fill(theme::BG_BUTTON)
-                    .corner_radius(4.0),
-                );
+                    .named(ui, format_args!("Settings for verse {}", verse.name));
                 if gear_resp.clicked() {
                     gear_clicked = true;
                 }
@@ -416,6 +414,7 @@ pub fn viewport_fractal_browser(
                     egui::Button::new(egui::RichText::new("\u{25C0} Verses").small())
                         .fill(theme::BG_BUTTON),
                 )
+                .named(ui, "Back to verses")
                 .clicked()
             {
                 back_clicked = true;
@@ -475,10 +474,7 @@ pub fn viewport_fractal_browser(
                             .size(13.0)
                             .color(theme::TEXT_BRIGHT),
                     )
-                    .fill(theme::BG_PANEL)
-                    .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM))
-                    .corner_radius(6.0),
-                );
+                    .named(ui, format_args!("Open fractal {}", fractal.name));
                 if resp.clicked() {
                     card_clicked = true;
                 }
@@ -498,9 +494,7 @@ pub fn viewport_fractal_browser(
                                 .size(14.0)
                                 .color(theme::ICON_GEAR),
                         )
-                        .fill(theme::BG_BUTTON)
-                        .corner_radius(4.0),
-                    );
+                        .named(ui, format_args!("Settings for fractal {}", fractal.name));
                     if gear_resp.clicked() {
                         gear_clicked = true;
                     }
@@ -619,6 +613,7 @@ pub fn viewport_petal_browser(
                     egui::Button::new(egui::RichText::new("\u{25C0} Fractals").small())
                         .fill(theme::BG_BUTTON),
                 )
+                .named(ui, "Back to fractals")
                 .clicked()
             {
                 back_clicked = true;
@@ -700,10 +695,7 @@ pub fn viewport_petal_browser(
                             .size(13.0)
                             .color(theme::TEXT_BRIGHT),
                     )
-                    .fill(theme::BG_PANEL)
-                    .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM))
-                    .corner_radius(6.0),
-                );
+                    .named(ui, format_args!("Open petal {}", petal.name));
                 if resp.clicked() {
                     card_clicked = true;
                 }
@@ -723,9 +715,7 @@ pub fn viewport_petal_browser(
                                 .size(14.0)
                                 .color(theme::ICON_GEAR),
                         )
-                        .fill(theme::BG_BUTTON)
-                        .corner_radius(4.0),
-                    );
+                        .named(ui, format_args!("Settings for petal {}", petal.name));
                     if gear_resp.clicked() {
                         gear_clicked = true;
                     }

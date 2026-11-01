@@ -15,6 +15,8 @@ use bevy::prelude::{
 use bevy::window::{PrimaryWindow, Window, WindowCloseRequested};
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use crate::panels::toolbar::{
     mode_button_fill, stash_input_context, tool_tooltip_text, InputContext, TOOL_DEFS,
 };
@@ -280,7 +282,7 @@ fn caption_button(ui: &mut egui::Ui, glyph: CaptionGlyph, tooltip: &str) -> egui
         CAPTION_BUTTON_SIZE
     };
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    let response = response.on_hover_text(tooltip);
+    let response = response.button_named(ui, tooltip).on_hover_text(tooltip);
     let painter = ui.painter_at(rect);
     let hovered = response.hovered();
     let close = matches!(glyph, CaptionGlyph::Close);
@@ -529,6 +531,7 @@ fn section_buttons(
         } else {
             theme::BG_BUTTON
         }))
+        .named(ui, "Toggle Data panel")
         .on_hover_text("Query nodes and layers, export for BI")
         .clicked()
     {
@@ -547,6 +550,7 @@ fn section_buttons(
                 theme::BG_BUTTON
             },
         ))
+        .named(ui, "Toggle tool Options section")
         .on_hover_text("Settings for the active tool (pen curves, brush, stamping)")
         .clicked()
     {
@@ -564,6 +568,7 @@ fn section_buttons(
                 theme::BG_BUTTON
             },
         ))
+        .named(ui, "Toggle Settings section")
         .on_hover_text("Application settings (render distance, mesh budget, ...)")
         .clicked()
     {
@@ -580,6 +585,7 @@ fn section_buttons(
                 theme::BG_BUTTON
             },
         ))
+        .named(ui, "Toggle Maps section")
         .on_hover_text("Manage petal maps")
         .clicked()
     {
@@ -625,6 +631,10 @@ pub fn render_topbar(
                 ui.id().with("title_bar"),
                 egui::Sense::click_and_drag(),
             );
+            ui.ctx().accesskit_node_builder(bar.id, |node| {
+                node.set_role(egui::accesskit::Role::TitleBar)
+            });
+            let bar = bar.named(ui, "FractalEngine title bar");
             let mut layout = TitleBarLayout {
                 bar: bar_rect,
                 left_widgets_start_x: bar_rect.max.x,
@@ -640,6 +650,7 @@ pub fn render_topbar(
                 // now that auto-collapse is gone). Active fill = currently open.
                 if ui
                     .add(egui::Button::new("\u{2630}").fill(mode_button_fill(left.user_intent)))
+                    .named(ui, "Toggle hierarchy sidebar")
                     .on_hover_text("Toggle left sidebar (Ctrl+B)")
                     .clicked()
                 {
@@ -674,6 +685,7 @@ pub fn render_topbar(
                     && node_mgr.selected_entity().is_some()
                     && ui
                         .add(egui::Button::new("\u{2715} Deselect").fill(theme::BG_DANGER))
+                        .named(ui, "Deselect object")
                         .clicked()
                 {
                     node_mgr.deselect();

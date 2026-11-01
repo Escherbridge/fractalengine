@@ -147,9 +147,8 @@ pub(crate) fn clipped_value_copyable(
                 .truncate()
                 .sense(egui::Sense::click()),
         )
+        .button_named(ui, format_args!("Copy {label}"))
         .on_hover_text(format!("{value}\n\n(click to copy)"));
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label));
-    let resp = resp.named(ui, format_args!("Copy {label}"));
     if resp.clicked() {
         ui.ctx().copy_text(value.to_string());
         let now = ui.ctx().input(|i| i.time);

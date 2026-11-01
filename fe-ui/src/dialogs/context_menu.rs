@@ -9,6 +9,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use super::{ActiveDialog, ContextTarget};
 use crate::actions::asset::{StampInteractionState, StampRef};
 use crate::actions::{UiAction, UiManager};
@@ -335,7 +337,7 @@ fn render_labeled_verb_button(
     };
     let button =
         egui::Button::new(egui::RichText::new(label).color(color)).fill(egui::Color32::TRANSPARENT);
-    let resp = ui.add_enabled(enabled, button);
+    let resp = ui.add_enabled(enabled, button).named(ui, label);
     if enabled {
         resp.on_hover_text(tooltip).clicked()
     } else {

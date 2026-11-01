@@ -504,6 +504,10 @@ fn render_results(
                             let label = egui::RichText::new(&row.name).color(theme::TEXT_BRIGHT);
                             if ui
                                 .add(egui::Label::new(label).sense(egui::Sense::click()))
+                                .button_named(
+                                    ui,
+                                    format_args!("Select and frame data node {}", row.name),
+                                )
                                 .clicked()
                             {
                                 clicked_row = Some((row.node_id.clone(), row.position));

@@ -14,6 +14,8 @@
 
 use bevy::prelude::Resource;
 use bevy_egui::egui;
+
+use crate::accessibility::ResponseExt;
 use fe_database::handlers::node_view::MAX_VIEW_GROUPS;
 use fe_database::handlers::visibility_groups::{MAX_GROUP_NAME_CHARS, MAX_VISIBILITY_GROUPS};
 
@@ -610,13 +612,13 @@ fn render_settings_section(
     let residency_line = state.residency.line();
     section_chrome(ctx, state, RightSidebarSection::Settings, |ui| {
         settings_heading(ui, "Rendering");
-        settings_row(ui, "Render distance", |ui| {
+        settings_row(ui, "Render distance", |ui, label| {
             ui.add(
                 egui::DragValue::new(&mut app_settings.render_distance)
                     .speed(1.0)
                     .range(0.0..=crate::settings::RENDER_DISTANCE_MAX)
                     .suffix(" wu"),
-            )
+            ).labelled(ui, label)
             .on_hover_text(
                 "Global residency horizon (0 stops spawning); a petal manifest's render distance overrides it for that petal",
             );
@@ -637,30 +639,32 @@ fn render_settings_section(
             render_override,
             db_tx,
         );
-        settings_row(ui, "Mesh budget ceiling", |ui| {
+        settings_row(ui, "Mesh budget ceiling", |ui, label| {
             usize_drag(
                 ui,
                 &mut app_settings.mesh_budget_ceiling,
                 crate::plugin::MAX_MESH_INSTANCES,
             )
+            .labelled(ui, label)
             .on_hover_text("MeshInstanceBudget.ceiling — the mesh-instance watchdog gate");
         });
-        settings_row(ui, "Entity cap", |ui| {
+        settings_row(ui, "Entity cap", |ui, label| {
             usize_drag(
                 ui,
                 &mut app_settings.entity_cap,
                 crate::verse_manager::MAX_PETAL_NODES,
-            )
+            ).labelled(ui, label)
             .on_hover_text(
                 "Soft cap on resident scene nodes per petal (nearest to the camera first); applies live",
             );
         });
-        settings_row(ui, "Stamp ceiling", |ui| {
+        settings_row(ui, "Stamp ceiling", |ui, label| {
             usize_drag(
                 ui,
                 &mut app_settings.stamp_ceiling,
                 crate::verse_manager::MAX_STAMPS_PER_PETAL,
             )
+            .labelled(ui, label)
             .on_hover_text("Soft cap on path-asset stamps per petal; applies on the next restamp");
         });
 
@@ -690,11 +694,11 @@ fn render_settings_section(
 
         ui.add_space(8.0);
         settings_heading(ui, "Camera");
-        settings_row(ui, "Orbit sensitivity", |ui| {
-            multiplier_drag(ui, &mut app_settings.camera_sensitivity);
+        settings_row(ui, "Orbit sensitivity", |ui, label| {
+            multiplier_drag(ui, &mut app_settings.camera_sensitivity).labelled(ui, label);
         });
-        settings_row(ui, "Zoom speed", |ui| {
-            multiplier_drag(ui, &mut app_settings.camera_zoom_speed);
+        settings_row(ui, "Zoom speed", |ui, label| {
+            multiplier_drag(ui, &mut app_settings.camera_zoom_speed).labelled(ui, label);
         });
 
         ui.add_space(8.0);
@@ -739,7 +743,7 @@ fn render_petal_render_distance_controls(
     };
 
     ui.add_space(4.0);
-    settings_row(ui, "This petal (shared)", |ui| {
+    settings_row(ui, "This petal (shared)", |ui, label| {
         let mut value = petal.render_distance.unwrap_or(0.0);
         let editable = local_role.can_edit();
         ui.add_enabled_ui(editable, |ui| {
@@ -750,6 +754,7 @@ fn render_petal_render_distance_controls(
                         .range(0.0..=crate::settings::RENDER_DISTANCE_MAX)
                         .suffix(" wu"),
                 )
+                .labelled(ui, label)
                 .on_hover_text(if editable {
                     "Durable per-petal override (replicates to peers); 0 clears it (inherit global)"
                 } else {
@@ -774,7 +779,7 @@ fn render_petal_render_distance_controls(
             }
         });
     });
-    settings_row(ui, "Session override", |ui| {
+    settings_row(ui, "Session override", |ui, label| {
         let mut value = render_override.for_petal(petal_id).unwrap_or(0.0);
         if ui
             .add(
@@ -782,7 +787,7 @@ fn render_petal_render_distance_controls(
                     .speed(1.0)
                     .range(0.0..=crate::settings::RENDER_DISTANCE_MAX)
                     .suffix(" wu"),
-            )
+            ).labelled(ui, label)
             .on_hover_text(
                 "Local-only, never shared; beats both this petal's value and the global one; cleared on petal change",
             )
@@ -809,10 +814,14 @@ fn settings_heading(ui: &mut egui::Ui, text: &str) {
 }
 
 /// One `label  widget` row in the Settings section.
-fn settings_row(ui: &mut egui::Ui, label: &str, widget: impl FnOnce(&mut egui::Ui)) {
+fn settings_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    widget: impl FnOnce(&mut egui::Ui, &egui::Response),
+) {
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(label).small().color(theme::TEXT_DIM));
-        widget(ui);
+        let label = ui.label(egui::RichText::new(label).small().color(theme::TEXT_DIM));
+        widget(ui, &label);
     });
 }
 
@@ -827,13 +836,13 @@ fn usize_drag(ui: &mut egui::Ui, value: &mut usize, max: usize) -> egui::Respons
 }
 
 /// Camera multiplier knob (× the controller's default).
-fn multiplier_drag(ui: &mut egui::Ui, value: &mut f32) {
+fn multiplier_drag(ui: &mut egui::Ui, value: &mut f32) -> egui::Response {
     ui.add(
         egui::DragValue::new(value)
             .speed(0.01)
             .range(crate::settings::CAMERA_MULTIPLIER_RANGE)
             .suffix(" ×"),
-    );
+    )
 }
 
 /// Relay-server spec editor: only a spec `RelayConfig::parse` accepts is stored;
@@ -843,8 +852,9 @@ fn render_relay_setting(ui: &mut egui::Ui, app_settings: &mut AppSettings) {
     let mut buffer = ui
         .data_mut(|data| data.get_temp::<String>(buffer_id))
         .unwrap_or_else(|| app_settings.relay.clone());
-    settings_row(ui, "Relay", |ui| {
+    settings_row(ui, "Relay", |ui, label| {
         ui.add(egui::TextEdit::singleline(&mut buffer).desired_width(160.0))
+            .labelled(ui, label)
             .on_hover_text(
                 "default | disabled | comma-separated relay URLs (FE_SYNC_RELAY overrides)",
             );
@@ -882,8 +892,9 @@ fn render_registry_setting(ui: &mut egui::Ui, app_settings: &mut AppSettings) {
     let mut buffer = ui
         .data_mut(|data| data.get_temp::<String>(buffer_id))
         .unwrap_or_else(|| app_settings.hexon_registry_url.clone().unwrap_or_default());
-    settings_row(ui, "Hexon registry", |ui| {
+    settings_row(ui, "Hexon registry", |ui, label| {
         ui.add(egui::TextEdit::singleline(&mut buffer).desired_width(220.0))
+            .labelled(ui, label)
             .on_hover_text(
                 "Hosted fe-hexon-registry base URL, e.g. https://hexons.example.com \
                  (FE_HEXON_REGISTRY_URL overrides); blank = no registry configured",
@@ -978,7 +989,7 @@ fn render_timeseries_fabric_controls(
             egui::Slider::new(&mut r, 1..=tss::MAX_REPLICATION_FACTOR)
                 .integer()
                 .suffix(" peers/shard"),
-        );
+        ).named(ui, "Timeseries durability replication factor");
         if enabled {
             if response
                 .on_hover_text(
@@ -1012,6 +1023,7 @@ fn render_timeseries_fabric_controls(
                     .range(1..=u64::MAX)
                     .suffix(" ms"),
             )
+            .named(ui, "Timeseries bucket width in milliseconds")
             .on_hover_text("Shard time-bucket width in milliseconds (epoch-aligned)")
             .changed()
         {
@@ -1184,12 +1196,14 @@ fn render_groups_section(
         let new_name_id = egui::Id::new("groups_section_new_name");
         let mut new_name: String = ui.data(|d| d.get_temp(new_name_id)).unwrap_or_default();
         ui.horizontal(|ui| {
-            let edit = ui.add(
-                egui::TextEdit::singleline(&mut new_name)
-                    .hint_text("New group name")
-                    .char_limit(MAX_GROUP_NAME_CHARS)
-                    .desired_width(160.0),
-            );
+            let edit = ui
+                .add(
+                    egui::TextEdit::singleline(&mut new_name)
+                        .hint_text("New group name")
+                        .char_limit(MAX_GROUP_NAME_CHARS)
+                        .desired_width(160.0),
+                )
+                .named(ui, "New visibility group name");
             let submitted = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             // The DB refuses an over-long name or a registry past its cap.
             let can_add = !new_name.trim().is_empty() && groups.len() < MAX_VISIBILITY_GROUPS;
@@ -1224,6 +1238,7 @@ fn render_groups_section(
                 let mut visible = group.visible;
                 if ui
                     .checkbox(&mut visible, "")
+                    .named(ui, format_args!("Show visibility group {}", group.name))
                     .on_hover_text("Show or hide every member of this Group")
                     .changed()
                 {
@@ -1237,11 +1252,13 @@ fn render_groups_section(
                 let mut name: String = ui
                     .data(|d| d.get_temp(buffer_id))
                     .unwrap_or_else(|| group.name.clone());
-                let edit = ui.add(
-                    egui::TextEdit::singleline(&mut name)
-                        .char_limit(MAX_GROUP_NAME_CHARS)
-                        .desired_width(120.0),
-                );
+                let edit = ui
+                    .add(
+                        egui::TextEdit::singleline(&mut name)
+                            .char_limit(MAX_GROUP_NAME_CHARS)
+                            .desired_width(120.0),
+                    )
+                    .named(ui, format_args!("Rename visibility group {}", group.name));
                 if edit.lost_focus() {
                     let trimmed = name.trim();
                     if !trimmed.is_empty() && trimmed != group.name {
@@ -1256,6 +1273,7 @@ fn render_groups_section(
                 }
                 if ui
                     .add_enabled(index > 0, egui::Button::new("\u{25B2}").small())
+                    .named(ui, format_args!("Move visibility group {} up", group.name))
                     .on_hover_text("Move up")
                     .clicked()
                 {
@@ -1266,6 +1284,10 @@ fn render_groups_section(
                         index + 1 < groups.len(),
                         egui::Button::new("\u{25BC}").small(),
                     )
+                    .named(
+                        ui,
+                        format_args!("Move visibility group {} down", group.name),
+                    )
                     .on_hover_text("Move down")
                     .clicked()
                 {
@@ -1273,6 +1295,7 @@ fn render_groups_section(
                 }
                 if ui
                     .add(egui::Button::new("Delete").small())
+                    .named(ui, format_args!("Delete visibility group {}", group.name))
                     .on_hover_text("Delete the Group (its members are not deleted)")
                     .clicked()
                 {
@@ -1301,6 +1324,7 @@ fn render_groups_section(
                 let can_join = member || current.len() < MAX_VIEW_GROUPS;
                 if ui
                     .add_enabled(can_join, egui::Button::new(label).small())
+                    .named(ui, format_args!("{label}: {}", group.name))
                     .clicked()
                 {
                     if let Some(next) = group_ops::membership_with(current, &group.id, !member) {
@@ -1394,6 +1418,10 @@ fn section_rail(ui: &mut egui::Ui, state: &mut RightSidebarState) {
             if ui
                 .add(
                     egui::Button::new(glyph).fill(crate::panels::toolbar::mode_button_fill(active)),
+                )
+                .named(
+                    ui,
+                    format_args!("Toggle {} section", section_label(section)),
                 )
                 .on_hover_text(section_label(section))
                 .clicked()

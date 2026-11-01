@@ -13,6 +13,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use crate::actions::{UiAction, UiManager};
 use crate::atlas::DashboardState;
 use crate::dialogs::{ActiveDialog, CreateKind};
@@ -156,6 +158,7 @@ fn sidebar_verse_header(
             ui.add_space(8.0);
             if ui
                 .add(egui::Button::new("+").fill(theme::BG_BUTTON_ALT).small())
+                .named(ui, "Create new verse")
                 .on_hover_text("Create new Verse")
                 .clicked()
             {
@@ -183,7 +186,13 @@ fn sidebar_verse_header(
 /// Right-aligned eye-toggle button (spec §4.1 gutter idiom). Returns `true`
 /// if clicked this frame. `enabled=false` disables it (RATIFICATION #4: the
 /// active petal's eye is disabled + tooltipped, never clickable).
-fn eye_button(ui: &mut egui::Ui, glyph: &str, enabled: bool, tooltip: &str) -> bool {
+fn eye_button(
+    ui: &mut egui::Ui,
+    glyph: &str,
+    enabled: bool,
+    tooltip: &str,
+    name: impl std::fmt::Display,
+) -> bool {
     let btn = egui::Button::new(
         egui::RichText::new(glyph)
             .small()
@@ -192,6 +201,7 @@ fn eye_button(ui: &mut egui::Ui, glyph: &str, enabled: bool, tooltip: &str) -> b
     .frame(false)
     .small();
     ui.add_enabled(enabled, btn)
+        .named(ui, name)
         .on_hover_text(tooltip)
         .clicked()
 }
@@ -247,18 +257,25 @@ fn render_verse_tree(
             egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true)
                 .show_header(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let label_resp =
-                            ui.add(egui::Label::new(header_text).sense(egui::Sense::click()));
+                        let label_resp = ui
+                            .add(egui::Label::new(header_text).sense(egui::Sense::click()))
+                            .button_named(ui, format_args!("Open verse {verse_name}"));
                         name_clicked = label_resp.clicked();
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            eye_clicked = eye_button(ui, glyph, true, eye_tooltip);
+                            eye_clicked = eye_button(
+                                ui,
+                                glyph,
+                                true,
+                                eye_tooltip,
+                                format_args!("{eye_tooltip}: verse {verse_name}"),
+                            );
                         });
                     });
                 });
         if name_clicked {
             header.toggle();
         }
-        let _ = header.body(|ui| {
+        let (toggle_response, _, _) = header.body(|ui| {
             render_fractals(
                 ui,
                 &mut hierarchy.verses[vi].fractals,
@@ -273,6 +290,7 @@ fn render_verse_tree(
             // [+] Add Fractal inside the verse collapse
             add_button_inline(ui, "Add Fractal", CreateKind::Fractal, &verse_id, ui_mgr);
         });
+        toggle_response.named(ui, format_args!("Expand or collapse verse {verse_name}"));
 
         if name_clicked {
             nav.navigate_to_verse(verse_id.clone(), verse_name.clone());
@@ -342,18 +360,25 @@ fn render_fractals(
             egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true)
                 .show_header(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let label_resp =
-                            ui.add(egui::Label::new(header_text).sense(egui::Sense::click()));
+                        let label_resp = ui
+                            .add(egui::Label::new(header_text).sense(egui::Sense::click()))
+                            .button_named(ui, format_args!("Open fractal {fractal_name}"));
                         name_clicked = label_resp.clicked();
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            eye_clicked = eye_button(ui, glyph, true, eye_tooltip);
+                            eye_clicked = eye_button(
+                                ui,
+                                glyph,
+                                true,
+                                eye_tooltip,
+                                format_args!("{eye_tooltip}: fractal {fractal_name}"),
+                            );
                         });
                     });
                 });
         if name_clicked {
             header.toggle();
         }
-        let _ = header.body(|ui| {
+        let (toggle_response, _, _) = header.body(|ui| {
             render_petals(
                 ui,
                 &mut fractals[fi].petals,
@@ -370,6 +395,10 @@ fn render_fractals(
             // [+] Add Petal inside the fractal collapse
             add_button_inline(ui, "Add Petal", CreateKind::Petal, &fractal_id, ui_mgr);
         });
+        toggle_response.named(
+            ui,
+            format_args!("Expand or collapse fractal {fractal_name}"),
+        );
 
         if name_clicked {
             nav.navigate_to_fractal_in_verse(verse_id, verse_name, &fractal_id, &fractal_name);
@@ -424,11 +453,18 @@ fn render_petals(
             egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true)
                 .show_header(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let label_resp =
-                            ui.add(egui::Label::new(header_text).sense(egui::Sense::click()));
+                        let label_resp = ui
+                            .add(egui::Label::new(header_text).sense(egui::Sense::click()))
+                            .button_named(ui, format_args!("Open petal {petal_name}"));
                         name_clicked = label_resp.clicked();
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            eye_clicked = eye_button(ui, glyph, eye_enabled, eye_tooltip);
+                            eye_clicked = eye_button(
+                                ui,
+                                glyph,
+                                eye_enabled,
+                                eye_tooltip,
+                                format_args!("{eye_tooltip}: petal {petal_name}"),
+                            );
                         });
                     });
                 });
@@ -440,7 +476,7 @@ fn render_petals(
             fractal_id,
             petal_id: &petal_id,
         };
-        let _ = header.body(|ui| {
+        let (toggle_response, _, _) = header.body(|ui| {
             render_nodes(
                 ui,
                 &petals[pi].nodes,
@@ -470,6 +506,7 @@ fn render_petals(
                 }
             });
         });
+        toggle_response.named(ui, format_args!("Expand or collapse petal {petal_name}"));
 
         if name_clicked {
             nav.navigate_to_petal_in_fractal(
@@ -618,8 +655,19 @@ fn render_nodes(
                                 egui::Sense::hover()
                             }),
                     );
+                    let label_resp = if is_active_petal {
+                        label_resp.button_named(ui, format_args!("Select node {node_name}"))
+                    } else {
+                        label_resp.named(ui, format_args!("Node {node_name} in inactive petal"))
+                    };
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        eye_clicked = eye_button(ui, glyph, true, &eye_tooltip);
+                        eye_clicked = eye_button(
+                            ui,
+                            glyph,
+                            true,
+                            &eye_tooltip,
+                            format_args!("{eye_tooltip}: node {node_name}"),
+                        );
                     });
                     label_resp
                 })
@@ -635,7 +683,11 @@ fn render_nodes(
                     ("Show all", NodeRowVerb::ShowAll),
                     ("Add selection to group…", NodeRowVerb::AddToGroup),
                 ] {
-                    if ui.button(label).clicked() {
+                    if ui
+                        .button(label)
+                        .named(ui, format_args!("{label}: node {node_name}"))
+                        .clicked()
+                    {
                         row_verb = Some((node_id.clone(), verb));
                         ui.close();
                     }
@@ -709,6 +761,7 @@ fn add_button_inline(
     ui.horizontal(|ui| {
         if ui
             .add(egui::Button::new("+").fill(theme::BG_BUTTON_ALT).small())
+            .named(ui, tooltip)
             .on_hover_text(tooltip)
             .clicked()
         {
@@ -768,7 +821,13 @@ fn sidebar_section_groups(
                     } else {
                         "Show this Group"
                     };
-                    if eye_button(ui, visibility::glyph_for_bool(group.visible), true, tooltip) {
+                    if eye_button(
+                        ui,
+                        visibility::glyph_for_bool(group.visible),
+                        true,
+                        tooltip,
+                        format_args!("{tooltip}: {}", group.name),
+                    ) {
                         ui_mgr.push_action(UiAction::SetGroupRegistry {
                             petal_id: petal_id.to_string(),
                             groups: visibility::groups::with_group_visible(

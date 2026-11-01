@@ -10,6 +10,8 @@ use bevy::prelude::{
 };
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use crate::actions::{UiAction, UiManager};
 use crate::navigation_manager::NavigationManager;
 use crate::node_manager::NodeManager;
@@ -48,6 +50,7 @@ pub(crate) fn right_inspector(
                         .fill(egui::Color32::TRANSPARENT)
                         .min_size(egui::vec2(24.0, 24.0)),
                 )
+                .named(ui, "Deselect object")
                 .on_hover_text("Deselect")
                 .clicked()
             {
@@ -82,7 +85,11 @@ pub(crate) fn right_inspector(
             } else {
                 theme::BG_BUTTON
             });
-            if ui.add(btn).clicked() {
+            if ui
+                .add(btn)
+                .named(ui, format_args!("Inspector tab: {label}"))
+                .clicked()
+            {
                 let prev_tab = inspector.active_tab;
                 inspector.active_tab = tab;
 
@@ -375,11 +382,13 @@ fn units_axis_row(
             .enumerate()
         {
             ui.label(egui::RichText::new(*axis).small().color(theme::TEXT_AXIS));
-            let resp = ui.add(
-                egui::TextEdit::singleline(src)
-                    .desired_width(input_w)
-                    .font(egui::TextStyle::Monospace),
-            );
+            let resp = ui
+                .add(
+                    egui::TextEdit::singleline(src)
+                        .desired_width(input_w)
+                        .font(egui::TextStyle::Monospace),
+                )
+                .named(ui, format_args!("{label} {axis}"));
             if resp.changed() {
                 if let Ok(entered) = src.trim().parse::<f32>() {
                     if let Some(v) = convert(i, entered) {
@@ -407,11 +416,13 @@ fn raw_axis_row(ui: &mut egui::Ui, label: &str, bufs: &mut [String; 3]) -> bool 
         );
         for (axis, buf) in ["X", "Y", "Z"].iter().zip(bufs.iter_mut()) {
             ui.label(egui::RichText::new(*axis).small().color(theme::TEXT_AXIS));
-            let resp = ui.add(
-                egui::TextEdit::singleline(buf)
-                    .desired_width(input_w)
-                    .font(egui::TextStyle::Monospace),
-            );
+            let resp = ui
+                .add(
+                    egui::TextEdit::singleline(buf)
+                        .desired_width(input_w)
+                        .font(egui::TextStyle::Monospace),
+                )
+                .named(ui, format_args!("{label} {axis}"));
             if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 commit = true;
             }
@@ -482,7 +493,11 @@ fn inspector_transform_section(
 
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            if ui.button("Apply").clicked() {
+            if ui
+                .button("Apply")
+                .named(ui, "Apply node transform")
+                .clicked()
+            {
                 commit = true;
             }
         });
@@ -521,7 +536,8 @@ fn inspector_url_meta_section(
             egui::TextEdit::singleline(&mut inspector.external_url)
                 .hint_text("https://\u{2026}")
                 .desired_width(f32::INFINITY),
-        );
+        )
+        .named(ui, "Portal URL");
 
         if local_role.can_manage() {
             ui.add_space(4.0);
@@ -534,7 +550,8 @@ fn inspector_url_meta_section(
                 egui::TextEdit::singleline(&mut inspector.config_url)
                     .hint_text("https://admin.\u{2026}")
                     .desired_width(f32::INFINITY),
-            );
+            )
+            .named(ui, "Config URL (admin)");
         }
 
         ui.add_space(6.0);
@@ -544,6 +561,7 @@ fn inspector_url_meta_section(
                     .fill(theme::BG_SAVE)
                     .min_size(egui::vec2(ui.available_width(), 28.0)),
             )
+            .named(ui, "Save portal URLs")
             .clicked()
         {
             ui_mgr.push_action(UiAction::SaveUrl);
@@ -674,7 +692,7 @@ fn inspector_api_access_section(
                                 ui.selectable_value(&mut inspector.api_token_role_buf, "viewer".to_string(), "Viewer");
                                 ui.selectable_value(&mut inspector.api_token_role_buf, "editor".to_string(), "Editor");
                                 ui.selectable_value(&mut inspector.api_token_role_buf, "manager".to_string(), "Manager");
-                            });
+                            }).response.named(ui, "API token maximum role");
                         ui.end_row();
 
                         ui.label(egui::RichText::new("Expires").small().color(theme::TEXT_DIM));
@@ -692,7 +710,7 @@ fn inspector_api_access_section(
                                 ui.selectable_value(&mut inspector.api_token_expiry_buf, 24, "24 hours");
                                 ui.selectable_value(&mut inspector.api_token_expiry_buf, 168, "7 days");
                                 ui.selectable_value(&mut inspector.api_token_expiry_buf, 720, "30 days");
-                            });
+                            }).response.named(ui, "API token expiration");
                         ui.end_row();
                     });
 
@@ -711,7 +729,7 @@ fn inspector_api_access_section(
                         .desired_width(ui.available_width())
                         .hint_text("did:key:z... (optional)")
                         .font(egui::TextStyle::Monospace),
-                );
+                ).named(ui, "API token client DID");
                 let client_trimmed = inspector.api_token_client_buf.trim();
                 let client_valid =
                     client_trimmed.is_empty() || fe_identity::validate_client_did(client_trimmed).is_ok();
@@ -762,7 +780,7 @@ fn inspector_api_access_section(
                                         .color(theme::TEXT_SECTION),
                                 );
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.add(egui::Button::new("\u{2715}").fill(egui::Color32::TRANSPARENT).small()).clicked() {
+                                    if ui.add(egui::Button::new("\u{2715}").fill(egui::Color32::TRANSPARENT).small()).named(ui, "Dismiss generated API token").clicked() {
                                         dismiss_token = true;
                                     }
                                 });
@@ -775,7 +793,7 @@ fn inspector_api_access_section(
                                     .desired_width(ui.available_width())
                                     .desired_rows(3)
                                     .font(egui::TextStyle::Monospace),
-                            );
+                            ).named(ui, "Generated API token");
 
                             // Minted `client` claim (W6-7b): shown so the
                             // operator can hand it to the next mint for the
@@ -795,7 +813,7 @@ fn inspector_api_access_section(
                                     );
                                     if ui
                                         .add(egui::Button::new("\u{1F4CB}").fill(egui::Color32::TRANSPARENT).small())
-                                        .on_hover_text("Copy client DID")
+                                        .named(ui, "Copy generated token client DID").on_hover_text("Copy client DID")
                                         .clicked()
                                     {
                                         ui.ctx().copy_text(client.clone());
@@ -808,7 +826,7 @@ fn inspector_api_access_section(
 
                             // Copy Token button
                             ui.horizontal(|ui| {
-                                if ui.add(egui::Button::new("\u{1F4CB} Copy Token").fill(theme::BG_BUTTON_ACTIVE).small()).clicked() {
+                                if ui.add(egui::Button::new("\u{1F4CB} Copy Token").fill(theme::BG_BUTTON_ACTIVE).small()).named(ui, "Copy generated API token").clicked() {
                                     ui.ctx().copy_text(token.clone());
                                     ui_mgr.show_toast("Copied token to clipboard", now);
                                 }
@@ -834,7 +852,7 @@ fn inspector_api_access_section(
                                         );
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                             if ui.add(egui::Button::new("\u{1F4CB}").fill(egui::Color32::TRANSPARENT).small())
-                                                .on_hover_text("Copy curl command")
+                                                .named(ui, "Copy API health check curl command").on_hover_text("Copy curl command")
                                                 .clicked()
                                             {
                                                 ui.ctx().copy_text(curl_cmd.clone());
@@ -935,7 +953,7 @@ fn inspector_api_access_section(
                                                             egui::RichText::new("Cancel").small(),
                                                         )
                                                         .fill(theme::BG_BUTTON),
-                                                    )
+                                                    ).named(ui, format_args!("Cancel API token revocation for scope {}", tok.scope))
                                                     .clicked()
                                                 {
                                                     ui.ctx().data_mut(|d| {
@@ -949,7 +967,7 @@ fn inspector_api_access_section(
                                                                 .small(),
                                                         )
                                                         .fill(theme::BG_DANGER),
-                                                    )
+                                                    ).named(ui, format_args!("Confirm API token revocation for scope {}", tok.scope))
                                                     .clicked()
                                                 {
                                                     revoke_jti =
@@ -964,7 +982,7 @@ fn inspector_api_access_section(
                                                         egui::RichText::new("Revoke").small(),
                                                     )
                                                     .fill(theme::BG_DANGER),
-                                                )
+                                                ).named(ui, format_args!("Revoke API token for scope {}", tok.scope))
                                                 .clicked()
                                             {
                                                 ui.ctx().data_mut(|d| {
@@ -1007,7 +1025,7 @@ fn inspector_api_access_section(
                 let current_page = inspector.api_tokens_page;
                 ui.horizontal(|ui| {
                     let can_prev = current_page > 0;
-                    if ui.add_enabled(can_prev, egui::Button::new("\u{25C0}").fill(theme::BG_BUTTON).small()).clicked() {
+                    if ui.add_enabled(can_prev, egui::Button::new("\u{25C0}").fill(theme::BG_BUTTON).small()).named(ui, "Previous API token page").clicked() {
                         inspector.api_tokens_page = current_page.saturating_sub(1);
                         send_scoped_token_list(db_tx, &inspector.api_token_scope_buf, inspector.api_tokens_page);
                     }
@@ -1017,7 +1035,7 @@ fn inspector_api_access_section(
                             .color(theme::TEXT_DIM),
                     );
                     let can_next = current_page + 1 < total_pages;
-                    if ui.add_enabled(can_next, egui::Button::new("\u{25B6}").fill(theme::BG_BUTTON).small()).clicked() {
+                    if ui.add_enabled(can_next, egui::Button::new("\u{25B6}").fill(theme::BG_BUTTON).small()).named(ui, "Next API token page").clicked() {
                         inspector.api_tokens_page = current_page + 1;
                         send_scoped_token_list(db_tx, &inspector.api_token_scope_buf, inspector.api_tokens_page);
                     }
@@ -1153,6 +1171,7 @@ fn inspector_properties_section(
                                         .fill(theme::BG_DANGER)
                                         .small(),
                                 )
+                                .named(ui, format_args!("Delete property {key}"))
                                 .on_hover_text("Delete property")
                                 .clicked()
                             {
@@ -1191,12 +1210,14 @@ fn inspector_properties_section(
                 egui::TextEdit::singleline(&mut inspector.prop_add_key_buf)
                     .hint_text("key")
                     .desired_width(60.0),
-            );
+            )
+            .named(ui, "New property key");
             ui.add(
                 egui::TextEdit::singleline(&mut inspector.prop_add_value_buf)
                     .hint_text("value")
                     .desired_width(60.0),
-            );
+            )
+            .named(ui, "New property value");
             egui::ComboBox::from_id_salt("prop_type_combo")
                 .selected_text(&inspector.prop_add_type_buf)
                 .width(70.0)
@@ -1204,7 +1225,9 @@ fn inspector_properties_section(
                     for &t in PROPERTY_TYPES {
                         ui.selectable_value(&mut inspector.prop_add_type_buf, t.to_string(), t);
                     }
-                });
+                })
+                .response
+                .named(ui, "New property value type");
         });
 
         ui.add_space(4.0);
@@ -1350,6 +1373,7 @@ fn inspector_schema_section(
                                     .fill(theme::BG_DANGER)
                                     .small(),
                             )
+                            .named(ui, format_args!("Delete field definition {}", fd.key))
                             .on_hover_text(format!("Delete field def '{}'", fd.key))
                             .clicked()
                         {
@@ -1388,7 +1412,8 @@ fn inspector_schema_section(
                 egui::TextEdit::singleline(&mut inspector.field_def_add_key_buf)
                     .hint_text("key")
                     .desired_width(60.0),
-            );
+            )
+            .named(ui, "New field definition key");
             egui::ComboBox::from_id_salt("field_def_type_combo")
                 .selected_text(&inspector.field_def_add_type_buf)
                 .width(80.0)
@@ -1400,7 +1425,9 @@ fn inspector_schema_section(
                             t,
                         );
                     }
-                });
+                })
+                .response
+                .named(ui, "New field definition type");
         });
 
         ui.add_space(4.0);

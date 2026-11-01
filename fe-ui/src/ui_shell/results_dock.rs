@@ -5,6 +5,8 @@ use crate::{
     plugin::CameraFocusTarget, verse_manager::VerseManager,
 };
 use bevy_egui::egui;
+
+use crate::accessibility::ResponseExt;
 use serde_json::Value;
 use std::{
     collections::{BTreeSet, HashSet},
@@ -219,7 +221,17 @@ pub fn render(
                     .selected_row
                     .and_then(|index| results.cells.get(index))
                 {
-                    if ui.button("Copy row").clicked() {
+                    if ui
+                        .button("Copy row")
+                        .named(
+                            ui,
+                            format_args!(
+                                "Copy selected result row {}",
+                                results.selected_row.unwrap_or(0) + 1
+                            ),
+                        )
+                        .clicked()
+                    {
                         ctx.copy_text(row.join("\t"));
                         ui_mgr.show_toast("Copied result row", ctx.input(|i| i.time));
                     }
@@ -273,19 +285,39 @@ pub fn render(
                                             egui::Layout::left_to_right(egui::Align::Center),
                                             |ui| {
                                                 ui.spacing_mut().item_spacing.x = 0.0;
-                                                let response = ui.add_sized(
-                                                    [results.widths[col] - 6.0, row_height],
-                                                    egui::Button::new(label).truncate(),
-                                                );
-                                                super::layout_policy::record_response(
-                                                    ui, &response,
-                                                );
+                                                let response = ui
+                                                    .add_sized(
+                                                        [results.widths[col] - 6.0, row_height],
+                                                        egui::Button::new(label).truncate(),
+                                                    )
+                                                    .named(
+                                                        ui,
+                                                        format_args!(
+                                                            "Sort results by {}",
+                                                            results.columns[col]
+                                                        ),
+                                                    );
                                                 if response.clicked() {
                                                     results.sort_by(col);
                                                 }
                                                 let (rect, response) = ui.allocate_exact_size(
                                                     egui::vec2(6.0, row_height),
                                                     egui::Sense::drag(),
+                                                );
+                                                ui.ctx().accesskit_node_builder(
+                                                    response.id,
+                                                    |node| {
+                                                        node.set_role(
+                                                            egui::accesskit::Role::Splitter,
+                                                        )
+                                                    },
+                                                );
+                                                let response = response.named(
+                                                    ui,
+                                                    format_args!(
+                                                        "Resize result column {}",
+                                                        results.columns[col]
+                                                    ),
                                                 );
                                                 ui.painter().vline(
                                                     rect.center().x,
@@ -318,8 +350,18 @@ pub fn render(
                                                 )
                                                 .truncate(),
                                             )
+                                            .named(
+                                                ui,
+                                                format_args!(
+                                                    "Result row {}, column {}",
+                                                    row + 1,
+                                                    results.columns[col]
+                                                ),
+                                            )
                                             .on_hover_text(text);
-                                        super::layout_policy::record_response(ui, &response);
+                                        ui.ctx().accesskit_node_builder(response.id, |node| {
+                                            node.set_value(text.as_str())
+                                        });
                                         if response.clicked() {
                                             results.selected_row = Some(row);
                                             if let Some(node) = node {
@@ -331,11 +373,29 @@ pub fn render(
                                             }
                                         }
                                         response.context_menu(|ui| {
-                                            if ui.button("Copy cell").clicked() {
+                                            if ui
+                                                .button("Copy cell")
+                                                .named(
+                                                    ui,
+                                                    format_args!(
+                                                        "Copy result row {}, column {}",
+                                                        row + 1,
+                                                        results.columns[col]
+                                                    ),
+                                                )
+                                                .clicked()
+                                            {
                                                 ctx.copy_text(text.clone());
                                                 ui.close();
                                             }
-                                            if ui.button("Copy row").clicked() {
+                                            if ui
+                                                .button("Copy row")
+                                                .named(
+                                                    ui,
+                                                    format_args!("Copy result row {}", row + 1),
+                                                )
+                                                .clicked()
+                                            {
                                                 ctx.copy_text(results.cells[row].join("\t"));
                                                 ui.close();
                                             }

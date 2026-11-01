@@ -1286,6 +1286,8 @@ would stay hidden behind a dead eye.
 
 ## Accessible control names and observations
 
+Every new or reworked interactive control must retain a meaningful purpose
+and contextual name and record its actual response for QA.
 `accessibility::ResponseExt` is the adapter for rendered control responses.
 Use `labelled` for a complete visible label, `named` for purpose-based names
 (including contextual repeated-row actions), and `observed` when the widget
@@ -1302,3 +1304,6 @@ control construction site so its layer, clip, and hit rectangle remain
 authoritative; do not reconstruct widget IDs or label container responses.
 Shared copy and confirmation widgets accept the caller's purpose/target
 context so their inner action responses can be named directly.
+
+Source inventory and static checks do not establish exhaustive UI coverage;
+make completion claims only after the integrated live accessibility audit.

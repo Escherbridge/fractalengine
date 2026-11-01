@@ -215,25 +215,16 @@ fn render_track_list(
                                 row.annotation_title.as_deref().unwrap_or(&row.name),
                             )
                             .color(theme::TEXT_BRIGHT);
-                            let response =
-                                ui.add(egui::Label::new(label).sense(egui::Sense::click()));
-                            response.widget_info(|| {
-                                egui::WidgetInfo::labeled(
-                                    egui::WidgetType::Button,
-                                    ui.is_enabled(),
-                                    "Open path",
-                                )
-                            });
-                            if response
-                                .named(
+                            let response = ui
+                                .add(egui::Label::new(label).sense(egui::Sense::click()))
+                                .button_named(
                                     ui,
                                     format_args!(
                                         "Open path {}",
                                         row.annotation_title.as_deref().unwrap_or(&row.name)
                                     ),
-                                )
-                                .clicked()
-                            {
+                                );
+                            if response.clicked() {
                                 selected = Some(row.node_id.clone());
                             }
                             let pending = path_state.pending_track_delete.as_deref()
@@ -932,7 +923,7 @@ pub(crate) fn render_corner_settings(
             ui.horizontal(|ui| {
                 for kind in [CornerKind::Corner, CornerKind::Smooth, CornerKind::Symmetric] {
                     if ui
-                        .selectable_label(row.corner == kind, kind.label())
+                        .selectable_label(row.corner == kind, kind.label()).named(ui, format_args!("Vertex {idx} corner kind: {}", kind.label()))
                         .clicked()
                     {
                         clicked_kind = Some(kind);

@@ -2,6 +2,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use crate::actions::{UiAction, UiManager};
 use crate::theme;
 
@@ -32,6 +34,7 @@ pub(crate) fn right_portal_toolbar(ctx: &egui::Context, ui_mgr: &mut UiManager) 
                         .fill(theme::BG_BUTTON)
                         .min_size(egui::vec2(28.0, 24.0)),
                     )
+                    .named(ui, "Go back in portal")
                     .on_hover_text("Go back")
                     .clicked()
                 {
@@ -62,6 +65,7 @@ pub(crate) fn right_portal_toolbar(ctx: &egui::Context, ui_mgr: &mut UiManager) 
                             .fill(egui::Color32::TRANSPARENT)
                             .small(),
                         )
+                        .named(ui, "Close portal")
                         .on_hover_text("Close portal")
                         .clicked()
                     {

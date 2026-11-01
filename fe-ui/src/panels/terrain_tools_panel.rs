@@ -19,6 +19,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use crate::actions::terrain_proposal::MAX_SCULPT_DISTANCE;
 use crate::actions::terrain_proposal::{SculptOpKind, SculptShapeMode, SculptToolState};
 use crate::actions::{UiAction, UiManager};
@@ -164,13 +166,15 @@ pub(crate) fn render_controls_and_emit(
         // corrupted value back through `meters_to_world` below merely from
         // OPENING this section, never from a drag. `false` keeps the drag
         // RANGE (dragging still clamps) without rewriting an existing value.
-        let resp = ui.add(
-            egui::DragValue::new(&mut radius_display)
-                .speed(0.1)
-                .range(0.1..=MAX_SCULPT_DISTANCE)
-                .clamp_existing_to_range(false)
-                .suffix(unit_suffix),
-        );
+        let resp = ui
+            .add(
+                egui::DragValue::new(&mut radius_display)
+                    .speed(0.1)
+                    .range(0.1..=MAX_SCULPT_DISTANCE)
+                    .clamp_existing_to_range(false)
+                    .suffix(unit_suffix),
+            )
+            .named(ui, format_args!("Proposal footprint radius {unit_suffix}"));
         if resp.changed() {
             tool_panel.terrain_footprint_radius = meters_to_world(radius_display, world_scale);
         }
@@ -183,13 +187,15 @@ pub(crate) fn render_controls_and_emit(
         );
         let mut height_display = world_to_meters(tool_panel.terrain_target_height, world_scale);
         // F8 fix — see the Footprint radius widget above for why.
-        let resp = ui.add(
-            egui::DragValue::new(&mut height_display)
-                .speed(0.1)
-                .range(-MAX_SCULPT_DISTANCE..=MAX_SCULPT_DISTANCE)
-                .clamp_existing_to_range(false)
-                .suffix(unit_suffix),
-        );
+        let resp = ui
+            .add(
+                egui::DragValue::new(&mut height_display)
+                    .speed(0.1)
+                    .range(-MAX_SCULPT_DISTANCE..=MAX_SCULPT_DISTANCE)
+                    .clamp_existing_to_range(false)
+                    .suffix(unit_suffix),
+            )
+            .named(ui, format_args!("Proposal target height {unit_suffix}"));
         if resp.changed() {
             tool_panel.terrain_target_height = meters_to_world(height_display, world_scale);
         }
@@ -198,13 +204,15 @@ pub(crate) fn render_controls_and_emit(
         ui.label(egui::RichText::new("Delta").small().color(theme::TEXT_DIM));
         let mut delta_display = world_to_meters(tool_panel.terrain_delta, world_scale);
         // F8 fix — see the Footprint radius widget above for why.
-        let resp = ui.add(
-            egui::DragValue::new(&mut delta_display)
-                .speed(0.1)
-                .range(-MAX_SCULPT_DISTANCE..=MAX_SCULPT_DISTANCE)
-                .clamp_existing_to_range(false)
-                .suffix(unit_suffix),
-        );
+        let resp = ui
+            .add(
+                egui::DragValue::new(&mut delta_display)
+                    .speed(0.1)
+                    .range(-MAX_SCULPT_DISTANCE..=MAX_SCULPT_DISTANCE)
+                    .clamp_existing_to_range(false)
+                    .suffix(unit_suffix),
+            )
+            .named(ui, format_args!("Proposal height delta {unit_suffix}"));
         if resp.changed() {
             tool_panel.terrain_delta = meters_to_world(delta_display, world_scale);
         }
@@ -295,11 +303,16 @@ pub(crate) fn render_proposal_list(
             for (id, label) in &rows {
                 ui.horizontal(|ui| {
                     let selected = proposal_state.selected.as_deref() == Some(id.as_str());
-                    if ui.selectable_label(selected, label.as_str()).clicked() {
+                    if ui
+                        .selectable_label(selected, label.as_str())
+                        .named(ui, format_args!("Select {label} proposal {id}"))
+                        .clicked()
+                    {
                         proposal_state.selected = Some(id.clone());
                     }
                     if ui
                         .small_button("\u{2715}")
+                        .named(ui, format_args!("Delete {label} proposal {id}"))
                         .on_hover_text("Delete proposal")
                         .clicked()
                     {
@@ -393,7 +406,8 @@ pub(crate) fn render_brush_controls(ui: &mut egui::Ui, sculpt: &mut SculptToolSt
                 .speed(0.1)
                 .range(0.1..=MAX_SCULPT_DISTANCE)
                 .suffix(" m"),
-        );
+        )
+        .named(ui, "Brush radius in meters");
     });
     ui.horizontal(|ui| {
         ui.label(
@@ -401,7 +415,8 @@ pub(crate) fn render_brush_controls(ui: &mut egui::Ui, sculpt: &mut SculptToolSt
                 .small()
                 .color(theme::TEXT_DIM),
         );
-        ui.add(egui::Slider::new(&mut sculpt.strength, 0.0..=1.0));
+        ui.add(egui::Slider::new(&mut sculpt.strength, 0.0..=1.0))
+            .named(ui, "Brush strength");
     });
     ui.label(
         egui::RichText::new("Operation")
@@ -410,7 +425,8 @@ pub(crate) fn render_brush_controls(ui: &mut egui::Ui, sculpt: &mut SculptToolSt
     );
     ui.horizontal_wrapped(|ui| {
         for op in SculptOpKind::ALL {
-            ui.selectable_value(&mut sculpt.op, op, op.label());
+            ui.selectable_value(&mut sculpt.op, op, op.label())
+                .named(ui, format_args!("Brush operation: {}", op.label()));
         }
     });
     match sculpt.op {
@@ -425,7 +441,8 @@ pub(crate) fn render_brush_controls(ui: &mut egui::Ui, sculpt: &mut SculptToolSt
                     egui::DragValue::new(&mut sculpt.target_height)
                         .speed(0.1)
                         .range(-MAX_SCULPT_DISTANCE..=MAX_SCULPT_DISTANCE),
-                );
+                )
+                .named(ui, "Brush target height in meters");
             });
         }
         SculptOpKind::Raise | SculptOpKind::Lower => {
@@ -435,7 +452,8 @@ pub(crate) fn render_brush_controls(ui: &mut egui::Ui, sculpt: &mut SculptToolSt
                     egui::DragValue::new(&mut sculpt.delta)
                         .speed(0.1)
                         .range(-MAX_SCULPT_DISTANCE..=MAX_SCULPT_DISTANCE),
-                );
+                )
+                .named(ui, "Brush height delta in meters");
             });
         }
         SculptOpKind::Smooth => {
@@ -452,7 +470,8 @@ pub(crate) fn render_brush_controls(ui: &mut egui::Ui, sculpt: &mut SculptToolSt
                 .small()
                 .color(theme::TEXT_DIM),
         );
-        ui.add(egui::TextEdit::singleline(&mut sculpt.material).desired_width(120.0));
+        ui.add(egui::TextEdit::singleline(&mut sculpt.material).desired_width(120.0))
+            .named(ui, "Brush material");
     });
 }
 
