@@ -406,3 +406,18 @@ screenshot.rs / screenshot_bridge.rs", read: reuse the envelope and round_trip.
    TextEntry text / zero-effect batches (typed refusal `no_effective_input`), plan_batch refuses an empty frame list, and
    the Injecting branch uses `frames.get_mut(next_frame)` (finish the job if None) — no unchecked index in any per-frame
    input system. Extend the input journey test with an empty-text request → typed refusal, app alive.
+
+### INPUT-ADDENDUM 8 (2026-11-01, post-close security review): enforce clipboard isolation at the sink
+The C1 guard (`plan_batch` refuses Control/Super + C/V/X) is a key-planner rule. A synthetic `PointerClick` on any egui control
+that calls `ctx.copy_text` (copy buttons, context-menu Copy, etc.) still makes bevy_egui write the host OS clipboard through
+`OutputCommand::CopyText`. Paste, the read/exfiltration path, stays blocked; this is a clipboard WRITE (integrity) gap, and the
+documented guarantee "synthetic input never reads or writes the host clipboard" is currently false for writes.
+Required:
+1. Sink-level invariant: while an `ActiveInjection` exists, and for its settle frames, drop copy commands from egui's
+   platform output before bevy_egui's output processing applies them. Use an ordered system on the egui output, a flag the
+   bridge owns, and a `warn!` audit line (no payload). Keep the C1 planner guard: it gives callers a fast typed 422.
+2. The journey test (extend the existing input_bridge Bevy journey; no new test fn) clicks a control that copies while an
+   injection is active and asserts that no copy command reaches the clipboard sink. Real user copies outside injection
+   still work.
+3. Correct the wording in fractalengine/src/AGENTS.md §agent-input-surface and in the MCP `inject_input` description.
+Owner: one dedicated fix agent after the qa-harness workflow closes, before the UX audit (the audit drives input).
