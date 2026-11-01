@@ -18,7 +18,34 @@
   "related": ["polish_lane_20261031", "agent_input_surface_20261031", "relay_operability_20261031", "plugin_host_revival_20261031", "hexon_entitlements_20261031", "peer_networking_support_20261031"],
   "spec": "./spec.md",
   "plan": "./plan.md",
-  "progress": { "done": 0, "open": 19, "plan": "./plan.md" },
+  "progress": {
+    "done": 10,
+    "open": 9,
+    "plan": "./plan.md",
+    "runs": {
+      "vision": {
+        "status": "reviewed",
+        "reviewed_at": "2026-11-01",
+        "slices_done": ["V1", "V2", "G1", "V3", "V4", "G2", "V5", "G3", "ADVOCATE", "CRITIC"],
+        "commits": {
+          "V1": "e2ac5e1",
+          "V2": "3bd343d",
+          "V3": "9f58912",
+          "V4": "33f50e9",
+          "V5": "6665ea1",
+          "addenda+advocate": "b5657c4",
+          "critic": "2769a77"
+        },
+        "reviews": {
+          "advocate": "reviews/advocate-vision.md (VERDICT: PASS)",
+          "critic": "reviews/critic-vision.md (VERDICT: PASS-WITH-FIXES (7))"
+        },
+        "gate": "check + clippy 1.99.0 -D warnings (6 crates) + test fe-runtime/fe-api/fe-renderer/fractalengine 676 passed 0 failed 1 ignored + fe-terrain --features render lib 339 passed",
+        "open_after": ["I1-I5 (agent_input_surface)", "G4", "CLOSE", "full sweep", "in-app AC-11 (user-gated)", "retro + archive"],
+        "pushed": false
+      }
+    }
+  },
   "decisions": [
     "DD-1 screenshots default-on (unset=on, =0 off, unrecognized=off+warn fail-closed); OperatorGate.default_on per gate; elevated + input stay default-off; headless disabled — user directive 2026-10-31, reversal cheap (flip SCREENSHOT_GATE.default_on)",
     "DD-2 POST /api/v1/debug/screenshot with JSON body; GET unchanged; MCP screenshot takes same args (empty = old behaviour); modes window|scene",
