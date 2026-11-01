@@ -247,7 +247,8 @@ pub fn record_response(ui: &egui::Ui, response: &egui::Response) {
 }
 
 pub fn action(ui: &mut egui::Ui, button: egui::Button<'_>, name: &str) -> egui::Response {
-    let response = ui.add(button);
+    let minimum = (20.0 / ui.ctx().pixels_per_point()).max(24.0);
+    let response = ui.add(button.min_size(egui::Vec2::splat(minimum)));
     ui.ctx()
         .accesskit_node_builder(response.id, |node| node.set_label(name));
     record_response(ui, &response);

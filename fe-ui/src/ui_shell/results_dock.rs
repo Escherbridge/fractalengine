@@ -355,7 +355,7 @@ pub(crate) fn draw_matches(
     transforms: bevy::prelude::Query<(
         &bevy::prelude::GlobalTransform,
         &crate::plugin::SpawnedNodeMarker,
-        &bevy::prelude::ViewVisibility,
+        &bevy::prelude::InheritedVisibility,
     )>,
     mut gizmos: bevy::prelude::Gizmos,
 ) {
@@ -374,11 +374,11 @@ pub(crate) fn draw_matches(
             && Some(marker.petal_id.as_str()) == nav.active_petal_id.as_deref()
             && results.contains_node(&marker.node_id)
         {
-            gizmos.sphere(
-                transform.translation(),
-                0.25,
-                bevy::prelude::Color::srgb(0.2, 0.8, 1.0),
-            );
+            let color = bevy::prelude::Color::srgb(0.2, 0.8, 1.0);
+            let origin = transform.translation();
+            let beacon = origin + bevy::prelude::Vec3::Y * 1.5;
+            gizmos.line(origin, beacon, color);
+            gizmos.sphere(beacon, 0.2, color);
         }
     }
 }

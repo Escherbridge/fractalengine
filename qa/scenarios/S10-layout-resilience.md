@@ -1,6 +1,6 @@
 ---
 type: Scenario
-id: S09
+id: S10
 gold: layout-resilience
 title: Layout and Results dock at three physical window sizes
 fixture: basic

@@ -54,3 +54,5 @@ Every pass runs the **gold set** (S01-S07, success path only) plus a rotating
 slice of exploratory checks: S08 items `((NN-1)*6 % 18)+1 …` six at a time,
 so items 1-6, 7-12, 13-18 come round every three passes. Bootstrap pass 01
 ran S02 + S03 only, to prove the loop.
+
+- S10: [Layout resilience and Results dock](S10-layout-resilience.md), basic fixture; three-size measured geometry and explicit remaining coverage.
