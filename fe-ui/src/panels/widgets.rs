@@ -4,6 +4,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use crate::actions::UiManager;
 use crate::plugin::LocalUserRole;
 use crate::theme;
@@ -23,6 +25,7 @@ use crate::theme;
 pub(crate) fn copy_value_box(
     ui: &mut egui::Ui,
     ui_mgr: &mut UiManager,
+    label: &str,
     display: &str,
     copy_value: &str,
     toast: &str,
@@ -44,6 +47,7 @@ pub(crate) fn copy_value_box(
                                 .fill(egui::Color32::TRANSPARENT)
                                 .small(),
                         )
+                        .named(ui, format_args!("Copy {label}"))
                         .on_hover_text("Copy to clipboard")
                         .clicked()
                     {
@@ -74,6 +78,7 @@ pub(crate) fn copy_row(ui: &mut egui::Ui, ui_mgr: &mut UiManager, label: &str, v
     copy_value_box(
         ui,
         ui_mgr,
+        label,
         value,
         value,
         &format!("Copied {label}"),
@@ -131,6 +136,7 @@ pub(crate) fn clipped_value(
 pub(crate) fn clipped_value_copyable(
     ui: &mut egui::Ui,
     ui_mgr: &mut UiManager,
+    label: &str,
     value: &str,
     color: egui::Color32,
     toast: &str,
@@ -142,6 +148,8 @@ pub(crate) fn clipped_value_copyable(
                 .sense(egui::Sense::click()),
         )
         .on_hover_text(format!("{value}\n\n(click to copy)"));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label));
+    let resp = resp.named(ui, format_args!("Copy {label}"));
     if resp.clicked() {
         ui.ctx().copy_text(value.to_string());
         let now = ui.ctx().input(|i| i.time);
@@ -161,7 +169,7 @@ pub(crate) fn role_gated(
     reason: &str,
     widget: impl egui::Widget,
 ) -> egui::Response {
-    let resp = ui.add_enabled(allowed, widget);
+    let resp = ui.add_enabled(allowed, widget).observed(ui);
     if allowed {
         resp
     } else {
@@ -196,11 +204,23 @@ pub(crate) fn role_denial_reason(
 /// "elsewhere" and disarms too, without firing). State lives in egui temp
 /// memory keyed by `id_salt`, so callers need no extra struct field (the
 /// motivating case: single-click destruction with no undo, X-06/X-07).
+#[cfg(test)]
 pub(crate) fn confirm_button(
     ui: &mut egui::Ui,
     id_salt: impl std::hash::Hash,
     label: &str,
     confirm_label: &str,
+) -> bool {
+    confirm_button_named(ui, id_salt, label, confirm_label, label)
+}
+
+/// Two-step confirmation with a contextual accessible action name.
+pub(crate) fn confirm_button_named(
+    ui: &mut egui::Ui,
+    id_salt: impl std::hash::Hash,
+    label: &str,
+    confirm_label: &str,
+    name: impl std::fmt::Display,
 ) -> bool {
     const ARM_SECONDS: f64 = 4.0;
     let id = egui::Id::new("confirm_button_armed_at").with(id_salt);
@@ -217,6 +237,7 @@ pub(crate) fn confirm_button(
                     egui::Button::new(egui::RichText::new(confirm_label).small())
                         .fill(theme::BG_DANGER),
                 )
+                .named(ui, format_args!("Confirm {name}"))
                 .clicked()
             {
                 confirmed = true;
@@ -226,6 +247,7 @@ pub(crate) fn confirm_button(
                 .add(
                     egui::Button::new(egui::RichText::new("Cancel").small()).fill(theme::BG_BUTTON),
                 )
+                .named(ui, format_args!("Cancel {name}"))
                 .clicked()
             {
                 own_click = true;
@@ -242,6 +264,7 @@ pub(crate) fn confirm_button(
     } else {
         if ui
             .add(egui::Button::new(egui::RichText::new(label).small()).fill(theme::BG_DANGER))
+            .named(ui, &name)
             .clicked()
         {
             ui.ctx().data_mut(|d| d.insert_temp(id, now));

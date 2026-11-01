@@ -189,6 +189,7 @@ fn inspector_entity_section(
                 crate::panels::widgets::clipped_value_copyable(
                     ui,
                     ui_mgr,
+                    "Node ID",
                     &sel.node_id,
                     theme::TEXT_BRIGHT,
                     "Copied Node ID",
@@ -627,6 +628,7 @@ fn inspector_api_access_section(
                         crate::panels::widgets::clipped_value_copyable(
                             ui,
                             ui_mgr,
+                            "API token scope",
                             &inspector.api_token_scope_buf,
                             theme::TEXT_SECTION,
                             "Copied scope",
@@ -639,6 +641,7 @@ fn inspector_api_access_section(
                     crate::panels::widgets::clipped_value_copyable(
                         ui,
                         ui_mgr,
+                        "Node ID",
                         node_id,
                         theme::TEXT_SECTION,
                         "Copied Node ID",
@@ -1131,6 +1134,7 @@ fn inspector_properties_section(
                     crate::panels::widgets::copy_value_box(
                         ui,
                         ui_mgr,
+                        key,
                         &display,
                         &val_str,
                         &format!("Copied {key}"),
