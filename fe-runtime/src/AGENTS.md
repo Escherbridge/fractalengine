@@ -663,7 +663,9 @@ the v1 vocabulary (AIS spec §4.2) only asks for the three primary buttons.
 fields, accessors only); nothing downstream re-checks finiteness, the batch
 cap, the key-name shape or the `wait_frames` cap. Checks run in table order
 — `no_commands` → `too_many_commands` → each command's own structural check
-in **batch order** → `wait_frames_out_of_range` — so a given malformed body
+in **batch order** (including `no_effective_input` for an empty `text_entry`:
+it would plan zero input frames, INPUT-ADDENDUM item 7) →
+`wait_frames_out_of_range` — so a given malformed body
 always refuses the same way (same rationale as vision's documented check
 order).
 
@@ -673,6 +675,10 @@ compile time), an input batch's bad field is index-scoped —
 `commands[2].text`, `commands[0].to.x` — so the path has to be built at
 validation time. `code` stays `&'static str`: the stable machine string a
 client matches on never depends on where in the batch the error occurred.
+
+**`InputFailure::new(class, code, message)` is the one builder** both the
+fe-api transport mapping and the Bevy orchestrator use; the named helpers
+below are the two failures with a cross-crate contract.
 
 **Two typed failure constructors, not just the uniform denial.**
 `denied()` mirrors `vision::denied()` exactly (code `not_found_or_denied`,

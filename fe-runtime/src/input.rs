@@ -108,6 +108,10 @@ pub const DENIED_MESSAGE: &str = "not found or not permitted";
 /// own `capture_in_progress`.
 pub const CAMERA_LOCKED_BY_CAPTURE_CODE: &str = "camera_locked_by_capture";
 
+/// Stable code of a command that would inject nothing (INPUT-ADDENDUM item 7):
+/// a typed 400 from `validate()`, and the Bevy planner's own backstop refusal.
+pub const NO_EFFECTIVE_INPUT_CODE: &str = "no_effective_input";
+
 /// A typed 400: `code` is the stable machine string, `field` is the
 /// batch-index-scoped wire path (`commands[2].text`) when the check is
 /// field-scoped. Unlike `vision::VisionRefusal`, `field` is an owned
@@ -266,6 +270,14 @@ fn check_command(index: usize, command: &InputCommand) -> Result<(), InputRefusa
             check_key(key, field_path(index, "key"))?;
         }
         InputCommand::TextEntry { text } => {
+            // INPUT-ADDENDUM item 7: empty text plans to zero input frames.
+            if text.is_empty() {
+                return Err(InputRefusal::new(
+                    NO_EFFECTIVE_INPUT_CODE,
+                    Some(field_path(index, "text")),
+                    "`text` must not be empty — an empty text_entry injects nothing",
+                ));
+            }
             let len = text.chars().count();
             if len > MAX_TEXT_LEN {
                 return Err(InputRefusal::new(
@@ -317,27 +329,38 @@ pub struct InputFailure {
     pub message: String,
 }
 
+impl InputFailure {
+    /// The one constructor every side (fe-api transport mapping, the Bevy
+    /// orchestrator) builds a typed failure through.
+    pub fn new(
+        status_class: InputFailureClass,
+        code: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            status_class,
+            code,
+            message: message.into(),
+        }
+    }
+}
+
 /// The uniform scope/existence denial (no existence oracle) — mirrors
 /// `vision::denied()`.
 pub fn denied() -> InputFailure {
-    InputFailure {
-        status_class: InputFailureClass::Denied,
-        code: DENIED_CODE,
-        message: DENIED_MESSAGE.to_string(),
-    }
+    InputFailure::new(InputFailureClass::Denied, DENIED_CODE, DENIED_MESSAGE)
 }
 
 /// "A posed capture currently holds the camera" (INPUT-ADDENDUM item 4) —
 /// the Bevy side returns this while `CameraCaptureLock` exists; fe-api maps
 /// it to 409, exactly like vision's own `capture_in_progress`.
 pub fn camera_locked_by_capture() -> InputFailure {
-    InputFailure {
-        status_class: InputFailureClass::Busy,
-        code: CAMERA_LOCKED_BY_CAPTURE_CODE,
-        message: "a posed capture currently holds the camera — the input surface is refused \
-                   until it completes"
-            .to_string(),
-    }
+    InputFailure::new(
+        InputFailureClass::Busy,
+        CAMERA_LOCKED_BY_CAPTURE_CODE,
+        "a posed capture currently holds the camera — the input surface is refused until it \
+         completes",
+    )
 }
 
 /// What a successful injection produced: how many commands were applied,
@@ -457,6 +480,17 @@ mod tests {
         .expect_err("oversized text entry is refused");
         assert_eq!(bad_text.code, "text_too_long");
         assert_eq!(bad_text.field, Some("commands[0].text".to_string()));
+
+        // Row 3d': no_effective_input — empty text would plan zero input
+        // frames (INPUT-ADDENDUM item 7, the panic=abort crash class).
+        let empty_text = InputSpec {
+            commands: vec![click(1.0, 1.0), InputCommand::TextEntry { text: String::new() }],
+            ..Default::default()
+        }
+        .validate()
+        .expect_err("an empty text entry is refused");
+        assert_eq!(empty_text.code, NO_EFFECTIVE_INPUT_CODE);
+        assert_eq!(empty_text.field, Some("commands[1].text".to_string()));
 
         // Row 3e: non_finite on Scroll.
         let bad_scroll = InputSpec {

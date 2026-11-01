@@ -68,7 +68,7 @@ when a route lands.
 | Sim control (§sim-control) | `POST /api/v1/sim/start`, `POST /api/v1/sim/stop`, `GET /api/v1/sim/status`, `POST /api/v1/sim/step`, `POST /api/v1/sim/inject-fault` |
 | Agent screenshot (§screenshot) | `GET /api/v1/debug/screenshot` → `image/png` (byte-identical, unchanged); `POST` same path → dynamic posed capture (window/scene, 5 pose kinds), PNG + `X-FE-Capture-Pose` header — ON unless `FE_API_SCREENSHOT_ALLOW=0`; Owner; 1/s per DID; scope-confined to the ACTIVE verse (uniform 404 otherwise) |
 | Agent camera read-back (§camera-state) | `GET /api/v1/debug/camera` — live pose/active hierarchy/projection; same opt-in as screenshot; Owner; 10/s per DID |
-| Agent input injection (§agent-input-surface) | `POST /api/v1/debug/input` — synthetic pointer/keyboard/scroll, optional `capture_after` PNG; OFF unless `FE_API_INPUT_ALLOW=1` (mutates state, unlike the two rows above); Owner; 5/s per DID; refused 409 while a posed capture holds the camera |
+| Agent input injection (§agent-input-surface) | `POST /api/v1/debug/input` — synthetic pointer/keyboard/scroll, optional `capture_after` PNG (which must also clear the screenshot gate); OFF unless `FE_API_INPUT_ALLOW=1` (mutates state, unlike the two rows above); Owner; 5/s per DID; scope-confined to the ACTIVE verse; refused 409 while a posed capture holds the camera |
 | MCP | `POST /mcp` (`mcp::mcp_handler`) — 39-row `ToolSpec` table: 32 always advertised, `screenshot`/`get_camera` only on a GUI host (either capture bridge wired), `inject_input` only when its own input bridge is wired, the 5 `sim_*` only on a sim lab host (§mcp-dispatch); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
 
 ## §existence-oracle (REST/WS denial unification, 2026-10-10)
@@ -1749,8 +1749,14 @@ that only adds a `const`.
   `require_role_level(Owner)` → `check_rate` (the shared
   `query_guard::check_rate_limit` map, key `<prefix>:<did>`). Refusals are a
   `GateRefusal { Disabled, InsufficientRole, RateLimited }` whose `message()`
-  text is identical on every surface; each surface keeps its own response
-  shape (elevated: legacy 200 + error body; screenshot/camera: 403/429).
+  text and `status()` (403 opt-in/role, 429 rate — the ONE mapping every
+  surface's error enum delegates to) are identical on every surface; each
+  surface keeps its own response shape (elevated: legacy 200 + error body;
+  screenshot/camera/input: 403/429).
+- **Composed gates.** A surface whose output crosses into another gate's
+  territory runs that gate too, rather than widening its own: input's
+  `capture_after` returns pixels, so `input::check_capture_after_gate` runs
+  `SCREENSHOT_GATE.check_opted_in` + `check_rate` (§agent-input-surface).
 - **MCP.** The dispatcher owns authz (FR-5: `tools.rs` may not call a
   `require_*` guard), so an MCP handler calls `check_opted_in` +
   `check_rate` only; the dispatcher refuses the opt-in BEFORE `authorize`
@@ -2004,6 +2010,15 @@ exactly one place:
   `rest::NOT_FOUND_OR_DENIED` and to `fe_runtime::vision::DENIED_MESSAGE`
   (asserted in `input.rs`'s own test), so a denied injection reads exactly
   like a denied capture.
+- **`capture_after` composes the screenshot gate (`§INPUT-ADDENDUM` item
+  6).** The attached PNG is a capture, so it must not dodge the capture
+  surface's own posture: `input::check_capture_after_gate` (inside
+  `run_inject`, so REST and MCP share it) refuses `capture_after: true` with
+  the screenshot gate's own refusal when `FE_API_SCREENSHOT_ALLOW=0`, and
+  spends the `screenshot:<sub>` 1/s budget; the Owner floor is already the
+  input gate's, and the host's per-frame view-scope check (fractalengine
+  §agent-input-surface) covers the capture frame. A batch without
+  `capture_after` never touches the screenshot gate.
 - **Interaction with a posed capture (`§INPUT-ADDENDUM` item 4).** While
   `CameraCaptureLock` holds the main camera for a vision job, an injection is
   refused `camera_locked_by_capture` (409) rather than fighting the held
@@ -2031,11 +2046,12 @@ curl -fsS -X POST -H "Authorization: Bearer $FE_TOKEN" -H "Content-Type: applica
 
 MCP: `tools/call` with `{"name":"inject_input","arguments":{"commands":[{"kind":"key_press","key":"Enter"}]}}`.
 
-Tests: the REST door's gate/validation/error-mapping table lives in
-`input.rs`'s own `#[cfg(test)]` module (I2); the wire contract's validation
-table and bridge-capacity bound live in `fe-runtime/src/input.rs` (I1); the
-full-router flow (`disabled_without_opt_in_env`, `refused_below_owner_role`,
-`admitted_inject_round_trips_...`, `rate_limited_past_the_per_did_budget`,
-`headless_host_reports_unavailable_and_hides_the_mcp_row`,
-`inject_input_refused_while_a_posed_capture_holds_the_camera`) and the Bevy
-translation (`input_bridge.rs`) land with I4/I5.
+Tests (one journey per region, 2026-11-01 test policy): the REST door's
+gate/validation/error-mapping table is `input.rs`'s own journey; the wire
+contract's validation table and bridge-capacity bound are
+`fe-runtime/src/input.rs`'s; the full-router flow is
+`tests/vision_test.rs::input_injection_disabled_role_round_trip_rate_limited_headless_and_camera_lock_journey`
+(disabled, role floor, empty-text `no_effective_input` 400, `capture_after`
+refused by the screenshot gate on both doors, admitted round trip with the
+PNG attachment, 5/s rate limit, headless, the 409 camera lock); the Bevy
+translation is `fractalengine/src/input_bridge.rs`'s journey.

@@ -194,6 +194,21 @@ impl ApiHarness {
         .await
     }
 
+    /// Both agent surfaces at once — a GUI host's shape, where `capture_after`
+    /// on an injection must also clear the screenshot gate (fe-api AGENTS.md
+    /// §agent-input-surface).
+    pub async fn spawn_with_screenshot_and_input(
+        screenshot: fe_api::screenshot::ScreenshotSurface,
+        input: fe_api::input::InputSurface,
+    ) -> Result<Self> {
+        Self::spawn_with_options(HarnessOptions {
+            screenshot,
+            input,
+            ..HarnessOptions::default()
+        })
+        .await
+    }
+
     /// Like [`Self::spawn`], with `blob_store: None` — a host that cannot
     /// store asset bytes, so uploads fail closed (503).
     pub async fn spawn_without_blob_store() -> Result<Self> {

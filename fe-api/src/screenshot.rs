@@ -126,10 +126,7 @@ impl ScreenshotError {
     /// HTTP status for the REST surface.
     pub fn status(&self) -> StatusCode {
         match self {
-            Self::Refused(GateRefusal::Disabled(_) | GateRefusal::InsufficientRole) => {
-                StatusCode::FORBIDDEN
-            }
-            Self::Refused(GateRefusal::RateLimited(_)) => StatusCode::TOO_MANY_REQUESTS,
+            Self::Refused(refusal) => refusal.status(),
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::TimedOut(_) => StatusCode::GATEWAY_TIMEOUT,
             Self::CaptureFailed(_) => StatusCode::INTERNAL_SERVER_ERROR,

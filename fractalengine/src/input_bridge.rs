@@ -18,6 +18,7 @@ use fe_renderer::camera::CameraCaptureLock;
 use fe_runtime::input::{
     camera_locked_by_capture, denied, InputCommand, InputFailure, InputFailureClass, InputOp,
     InputOutcome, InputOutput, InputRequest, InputRequestReceiver, PointerButton, ValidInputSpec,
+    NO_EFFECTIVE_INPUT_CODE,
 };
 use fe_ui::navigation_manager::NavigationManager;
 
@@ -121,22 +122,14 @@ pub fn install(app: &mut App, receiver: InputRequestReceiver) {
 // Failures
 // ---------------------------------------------------------------------------
 
-fn failure(status_class: InputFailureClass, code: &'static str, message: String) -> InputFailure {
-    InputFailure {
-        status_class,
-        code,
-        message,
-    }
-}
-
 fn unresolvable(code: &'static str, message: String) -> InputFailure {
-    failure(InputFailureClass::Unresolvable, code, message)
+    InputFailure::new(InputFailureClass::Unresolvable, code, message)
 }
 
 fn window_failure(window: Option<&Window>) -> Option<InputFailure> {
     let reason = capture_refusal(window)?;
     Some(match window {
-        None => failure(InputFailureClass::NoWindow, "no_window", reason.to_string()),
+        None => InputFailure::new(InputFailureClass::NoWindow, "no_window", reason),
         Some(_) => unresolvable("window_minimized", reason.to_string()),
     })
 }
@@ -435,6 +428,13 @@ fn plan_batch(spec: &ValidInputSpec, window_size: UVec2) -> Result<Vec<Frame>, I
                 .collect(),
         );
     }
+    // INPUT-ADDENDUM item 7 backstop: `validate()` already refuses empty text.
+    if frames.is_empty() {
+        return Err(unresolvable(
+            NO_EFFECTIVE_INPUT_CODE,
+            "the batch plans to zero input frames; nothing would be injected".to_string(),
+        ));
+    }
     Ok(frames)
 }
 
@@ -557,10 +557,10 @@ fn admit(
         return Err(denied());
     }
     if busy {
-        return Err(failure(
+        return Err(InputFailure::new(
             InputFailureClass::Busy,
             "input_in_progress",
-            "another input batch is still being applied; retry when it replies".to_string(),
+            "another input batch is still being applied; retry when it replies",
         ));
     }
     if let Some(refusal) = window_failure(window) {
@@ -646,7 +646,7 @@ pub fn drive_synthetic_input(
     let elapsed = time.elapsed().saturating_sub(active.started);
     // Check at use (INPUT-ADDENDUM item 2): every frame the job touches input.
     let abort = if active.request.reply_tx.is_closed() {
-        Some(failure(
+        Some(InputFailure::new(
             InputFailureClass::Failed,
             "caller_gone",
             format!(
@@ -661,7 +661,7 @@ pub fn drive_synthetic_input(
     } else if !view.covers(&active.request.caller_scope, nav.as_deref()) {
         Some(denied())
     } else if elapsed >= INPUT_WALL_CLOCK_CAP {
-        Some(failure(
+        Some(InputFailure::new(
             InputFailureClass::Failed,
             "input_timed_out",
             format!(
@@ -690,10 +690,13 @@ pub fn drive_synthetic_input(
     // `Some(png?)` once the job is done; `None` while it still runs.
     let done: Option<Result<Option<Vec<u8>>, InputFailure>> = match active.phase {
         Phase::Injecting => {
-            let frame = std::mem::take(&mut active.frames[active.next_frame]);
-            active.apply(&frame, window_entity, window.scale_factor(), &mut writers);
-            active.next_frame += 1;
-            if active.next_frame == active.frames.len() {
+            // Checked access (INPUT-ADDENDUM item 7): no per-frame input
+            // system indexes unchecked — the app is panic=abort.
+            if let Some(frame) = active.frames.get_mut(active.next_frame).map(std::mem::take) {
+                active.apply(&frame, window_entity, window.scale_factor(), &mut writers);
+                active.next_frame += 1;
+            }
+            if active.next_frame >= active.frames.len() {
                 active.phase = Phase::Settling;
             }
             None
@@ -722,16 +725,16 @@ pub fn drive_synthetic_input(
         Phase::Settling => Some(Ok(None)),
         Phase::Capturing { ref result, .. } => match result.try_recv() {
             Ok(Ok(png)) => Some(Ok(Some(png))),
-            Ok(Err(error)) => Some(Err(failure(
+            Ok(Err(error)) => Some(Err(InputFailure::new(
                 InputFailureClass::Failed,
                 "capture_failed",
                 format!("input applied; the capture_after frame failed: {error}"),
             ))),
             Err(crossbeam::channel::TryRecvError::Empty) => None,
-            Err(crossbeam::channel::TryRecvError::Disconnected) => Some(Err(failure(
+            Err(crossbeam::channel::TryRecvError::Disconnected) => Some(Err(InputFailure::new(
                 InputFailureClass::Failed,
                 "capture_dropped",
-                "input applied; the renderer dropped the capture_after request".to_string(),
+                "input applied; the renderer dropped the capture_after request",
             ))),
         },
     };
@@ -806,9 +809,6 @@ pub fn restore_real_cursor(
     mut saved: ResMut<RealCursor>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
 ) {
-    if saved.0.is_none() {
-        return;
-    }
     let Some(real) = saved.0.take() else {
         return;
     };

@@ -83,10 +83,7 @@ impl VisionError {
     /// HTTP status for the REST surface.
     pub fn status(&self) -> StatusCode {
         match self {
-            Self::Refused(GateRefusal::Disabled(_) | GateRefusal::InsufficientRole) => {
-                StatusCode::FORBIDDEN
-            }
-            Self::Refused(GateRefusal::RateLimited(_)) => StatusCode::TOO_MANY_REQUESTS,
+            Self::Refused(refusal) => refusal.status(),
             Self::Refusal(_) => StatusCode::BAD_REQUEST,
             Self::Busy => StatusCode::CONFLICT,
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
@@ -149,13 +146,6 @@ impl VisionError {
             ),
             Self::Failure(failure) => failure.message.clone(),
         }
-    }
-}
-
-fn gate_status(refusal: &GateRefusal) -> StatusCode {
-    match refusal {
-        GateRefusal::Disabled(_) | GateRefusal::InsufficientRole => StatusCode::FORBIDDEN,
-        GateRefusal::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
     }
 }
 
@@ -367,7 +357,7 @@ pub async fn post_screenshot(
         .admit(state.screenshot.allowed, &state, &claims)
         .await
     {
-        return (gate_status(&refusal), Json(VisionErrorBody::gate(&refusal))).into_response();
+        return (refusal.status(), Json(VisionErrorBody::gate(&refusal))).into_response();
     }
     let spec = match parse_and_validate(&body) {
         Ok(spec) => spec,
@@ -409,7 +399,7 @@ pub async fn get_camera(
         .admit(state.screenshot.allowed, &state, &claims)
         .await
     {
-        return (gate_status(&refusal), Json(VisionErrorBody::gate(&refusal))).into_response();
+        return (refusal.status(), Json(VisionErrorBody::gate(&refusal))).into_response();
     }
     match request_vision(&state, &claims.scope, VisionOp::ReadCamera).await {
         Ok(VisionOutput::Camera(camera_state)) => {

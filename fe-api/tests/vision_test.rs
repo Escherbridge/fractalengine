@@ -10,10 +10,10 @@ use axum::http::{HeaderMap, Request, StatusCode};
 use base64::Engine as _;
 use fe_api::input::InputSurface;
 use fe_api::operator_gate::OWNER_REQUIRED;
-use fe_api::screenshot::ScreenshotSurface;
+use fe_api::screenshot::{ScreenshotSurface, SCREENSHOT_GATE};
 use fe_runtime::input::{
     camera_locked_by_capture, input_bridge, InputOp, InputOutput, InputRequestReceiver,
-    CAMERA_LOCKED_BY_CAPTURE_CODE,
+    CAMERA_LOCKED_BY_CAPTURE_CODE, NO_EFFECTIVE_INPUT_CODE,
 };
 use fe_runtime::screenshot::screenshot_bridge;
 use fe_runtime::vision::{
@@ -665,13 +665,51 @@ async fn input_injection_disabled_role_round_trip_rate_limited_headless_and_came
         );
     }
 
+    // INPUT-ADDENDUM items 6 + 7, input on but the screenshot surface off
+    // (`FE_API_SCREENSHOT_ALLOW=0`): an empty text entry is a typed 400
+    // (it would plan zero frames — the panic=abort crash), and
+    // `capture_after` is refused by the SCREENSHOT gate on both doors, all
+    // before the bridge. The same host then still serves a plain batch.
+    {
+        let (tx, rx) = input_bridge();
+        let h = ApiHarness::spawn_with_input(InputSurface::new(true, Some(tx)))
+            .await
+            .expect("spawn harness");
+        let owner = owner_token(&h).await;
+
+        let empty_text = json!({ "commands": [{ "kind": "text_entry", "text": "" }] });
+        let rest = post_input(&h, &owner, &empty_text).await;
+        assert_eq!(rest.status, StatusCode::BAD_REQUEST, "{:?}", rest.json());
+        assert_eq!(rest.json()["code"], NO_EFFECTIVE_INPUT_CODE);
+        assert_eq!(rest.json()["field"], "commands[0].text");
+
+        let with_capture = json!({ "commands": [click(1.0, 1.0)], "capture_after": true });
+        let rest = post_input(&h, &owner, &with_capture).await;
+        assert_eq!(rest.status, StatusCode::FORBIDDEN, "{:?}", rest.json());
+        assert_eq!(rest.json()["error"], SCREENSHOT_GATE.disabled_message);
+        let mcp = mcp_call(&h, &owner, "inject_input", with_capture).await;
+        assert_eq!(mcp["isError"], true, "{mcp}");
+        assert_eq!(mcp["content"][0]["text"], SCREENSHOT_GATE.disabled_message);
+        assert!(
+            rx.try_recv().is_err(),
+            "a refused capture_after never reaches the render host"
+        );
+
+        serve_input(rx, false);
+        let plain = post_input(&h, &owner, &json!({ "commands": [click(1.0, 1.0)] })).await;
+        assert_eq!(plain.status, StatusCode::OK, "{:?}", plain.json());
+        assert!(plain.json().get("capture_after_png_base64").is_none());
+    }
+
     // AC-3: the admitted batch crosses the bridge intact (the fake host
     // echoes its own size/wait_frames back), and `capture_after` attaches
     // FAKE_PNG as base64 in the JSON success body (this door is JSON-only,
-    // unlike the posed-capture route's raw-PNG body).
+    // unlike the posed-capture route's raw-PNG body). A GUI host's shape:
+    // screenshots on (their default) beside the opted-in input surface.
     {
         let (tx, rx) = input_bridge();
-        let h = ApiHarness::spawn_with_input(
+        let h = ApiHarness::spawn_with_screenshot_and_input(
+            ScreenshotSurface::new(true, None),
             InputSurface::new(true, Some(tx)).with_reply_timeout(Duration::from_millis(400)),
         )
         .await

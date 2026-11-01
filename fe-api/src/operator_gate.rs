@@ -47,6 +47,14 @@ pub enum GateRefusal {
 }
 
 impl GateRefusal {
+    /// HTTP status on every gated REST surface: opt-in/role → 403, rate → 429.
+    pub fn status(&self) -> axum::http::StatusCode {
+        match self {
+            Self::Disabled(_) | Self::InsufficientRole => axum::http::StatusCode::FORBIDDEN,
+            Self::RateLimited(_) => axum::http::StatusCode::TOO_MANY_REQUESTS,
+        }
+    }
+
     /// Client-facing text (REST error body, MCP tool error).
     pub fn message(&self) -> String {
         match self {

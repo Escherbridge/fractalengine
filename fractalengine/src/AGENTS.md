@@ -1285,7 +1285,21 @@ is false, the §vision scope gate), `input_in_progress` (409 — single flight),
 Bevy-only checks (422): `pointer_out_of_window`, `invalid_key` (name not in
 `resolve_key`'s table), `unsupported_text` (control characters other than
 `\n`/`\r`/`\t`), `scroll_out_of_range` (|delta| > 1000 lines — a finite but
-absurd wheel value never reaches the camera's zoom math).
+absurd wheel value never reaches the camera's zoom math), and
+`no_effective_input` (the plan has zero frames — a backstop: fe-runtime's
+`validate()` already refuses the empty `text_entry` that is its only cause).
+
+**No unchecked index in a per-frame input system** (INPUT-ADDENDUM item 7):
+the app is built `panic = "abort"`, so a bad index is a remote kill switch.
+The `Injecting` phase takes its frame through `frames.get_mut(next_frame)`
+and moves to `Settling` once `next_frame >= frames.len()`, so an empty plan
+settles instead of panicking.
+
+**`capture_after` gating lives API-side.** fe-api's
+`input::check_capture_after_gate` runs the screenshot gate before the
+request ever reaches this bridge (fe-api §agent-input-surface); this side's
+contribution is the per-frame view-scope check, which also covers the frame
+the capture is queued in.
 
 **Check at use, every frame a job runs** (INPUT-ADDENDUM item 2): caller hung
 up → `caller_gone`; `CameraCaptureLock` appeared → `camera_locked_by_capture`;

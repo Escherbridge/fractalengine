@@ -5,8 +5,7 @@
 //! correlated-bridge posture as `vision.rs`'s capture door, with one
 //! deliberate difference: `INPUT_GATE.default_on == false` (this surface
 //! MUTATES state, so it never shares screenshot/camera's default-on
-//! posture). Route registration and `ApiState.input` wiring land in a later
-//! slice (I3) — see `fe-api/AGENTS.md` §agent-input-surface (added there).
+//! posture). See `fe-api/AGENTS.md` §agent-input-surface.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,6 +24,7 @@ use fe_runtime::input::{
 
 use crate::bridge_client::{round_trip, RoundTripError};
 use crate::operator_gate::{GateRefusal, OperatorGate};
+use crate::screenshot::SCREENSHOT_GATE;
 use crate::server::ApiState;
 
 // ---------------------------------------------------------------------------
@@ -140,10 +140,7 @@ impl InputError {
     /// [`fe_runtime::input::InputFailureClass`]'s own documented mapping.
     pub fn status(&self) -> StatusCode {
         match self {
-            Self::Refused(GateRefusal::Disabled(_) | GateRefusal::InsufficientRole) => {
-                StatusCode::FORBIDDEN
-            }
-            Self::Refused(GateRefusal::RateLimited(_)) => StatusCode::TOO_MANY_REQUESTS,
+            Self::Refused(refusal) => refusal.status(),
             Self::Refusal(_) => StatusCode::BAD_REQUEST,
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::TimedOut(_) => StatusCode::GATEWAY_TIMEOUT,
@@ -205,13 +202,6 @@ impl InputError {
             (Some(code), None) => format!("{code}: {}", self.message()),
             (None, _) => self.message(),
         }
-    }
-}
-
-fn gate_status(refusal: &GateRefusal) -> StatusCode {
-    match refusal {
-        GateRefusal::Disabled(_) | GateRefusal::InsufficientRole => StatusCode::FORBIDDEN,
-        GateRefusal::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
     }
 }
 
@@ -318,24 +308,23 @@ pub async fn request_inject(
             InputError::Unavailable("input unavailable: render host stopped")
         }
         RoundTripError::TimedOut(waited) => InputError::TimedOut(waited),
-        RoundTripError::Uncorrelated => InputError::Failure(InputFailure {
-            status_class: InputFailureClass::Failed,
-            code: "uncorrelated_reply",
-            message: "uncorrelated reply".to_string(),
-        }),
-        RoundTripError::Dropped => InputError::Failure(InputFailure {
-            status_class: InputFailureClass::Failed,
-            code: "request_dropped",
-            message: "input request dropped".to_string(),
-        }),
+        RoundTripError::Uncorrelated => InputError::Failure(InputFailure::new(
+            InputFailureClass::Failed,
+            "uncorrelated_reply",
+            "uncorrelated reply",
+        )),
+        RoundTripError::Dropped => InputError::Failure(InputFailure::new(
+            InputFailureClass::Failed,
+            "request_dropped",
+            "input request dropped",
+        )),
     })?;
     reply.map_err(InputError::Failure)
 }
 
 /// The INFO audit line every admitted injection writes: who acted, how many
 /// commands, how long it chose to settle — mirrors `vision::audit_capture`
-/// (AGENTS.md §screenshot "Audit"). Shared by the REST handler and the later
-/// MCP `inject_input` handler (I4).
+/// (AGENTS.md §screenshot "Audit"), via [`run_inject`] on both doors.
 pub(crate) fn audit_inject(claims: &ApiClaims, spec: &ValidInputSpec) {
     tracing::info!(
         did = %claims.sub,
@@ -347,13 +336,32 @@ pub(crate) fn audit_inject(claims: &ApiClaims, spec: &ValidInputSpec) {
     );
 }
 
-/// Run one injection: audit then cross the bridge. Shared by the REST
-/// handler and the MCP `inject_input` handler (I4).
+/// `capture_after` returns pixels, so it must also clear the screenshot
+/// gate's opt-in and per-DID capture budget (`§INPUT-ADDENDUM` item 6) —
+/// composed gates, see AGENTS.md §agent-input-surface. The Owner floor is
+/// already the input gate's, and the host's view-scope check covers the
+/// capture frame (it runs every frame the job lives).
+pub(crate) async fn check_capture_after_gate(
+    state: &ApiState,
+    claims: &ApiClaims,
+    spec: &ValidInputSpec,
+) -> Result<(), InputError> {
+    if !spec.capture_after() {
+        return Ok(());
+    }
+    SCREENSHOT_GATE.check_opted_in(state.screenshot.allowed)?;
+    SCREENSHOT_GATE.check_rate(state, claims).await?;
+    Ok(())
+}
+
+/// Run one injection: the `capture_after` screenshot gate, audit, then cross
+/// the bridge. THE one path both doors (REST handler, MCP `inject_input`) share.
 pub(crate) async fn run_inject(
     state: &ApiState,
     claims: &ApiClaims,
     spec: ValidInputSpec,
 ) -> Result<InputOutput, InputError> {
+    check_capture_after_gate(state, claims, &spec).await?;
     audit_inject(claims, &spec);
     request_inject(state, &claims.scope, spec).await
 }
@@ -407,11 +415,11 @@ fn parse_and_validate(body: &[u8]) -> Result<ValidInputSpec, InputRefusal> {
 // ---------------------------------------------------------------------------
 
 /// `POST /api/v1/debug/input` — synthesize pointer/keyboard/scroll input
-/// into the running GUI (AIS spec §4.2, §4.4). Route registration lands in
-/// I3 beside `/api/v1/debug/screenshot`.
+/// into the running GUI (AIS spec §4.2, §4.4).
 ///
 /// Gate order (mirrors `vision::post_screenshot`, AIS spec §4.5): opt-in →
-/// Owner (typed) → 5/s per DID → static validation (400) → bridge.
+/// Owner (typed) → 5/s per DID → static validation (400) → `capture_after`
+/// screenshot gate ([`check_capture_after_gate`]) → bridge.
 /// Validation runs AFTER the gate on purpose — an unauthenticated or
 /// un-opted caller never learns the command grammar, and a refused caller
 /// never costs a parse.
@@ -421,7 +429,7 @@ pub async fn post_input(
     body: Bytes,
 ) -> Response {
     if let Err(refusal) = INPUT_GATE.admit(state.input.allowed, &state, &claims).await {
-        return (gate_status(&refusal), Json(InputErrorBody::gate(&refusal))).into_response();
+        return (refusal.status(), Json(InputErrorBody::gate(&refusal))).into_response();
     }
     let spec = match parse_and_validate(&body) {
         Ok(spec) => spec,

@@ -1505,10 +1505,10 @@ pub(super) mod schema {
                             "x": { "type": "number", "description": "pointer_move/pointer_click" },
                             "y": { "type": "number", "description": "pointer_move/pointer_click" },
                             "button": { "type": "string", "enum": ["left", "right", "middle"], "description": "pointer_click/pointer_drag" },
-                            "from": vec3_xy("pointer_drag start"),
-                            "to": vec3_xy("pointer_drag end"),
+                            "from": pointer_point_schema("pointer_drag start"),
+                            "to": pointer_point_schema("pointer_drag end"),
                             "key": { "type": "string", "description": "key_press; a bevy KeyCode variant name, e.g. \"Enter\", \"KeyA\", \"ArrowLeft\" (<=32 ASCII alphanumeric chars)" },
-                            "text": { "type": "string", "description": "text_entry; <=4096 characters" },
+                            "text": { "type": "string", "description": "text_entry; 1..=4096 characters" },
                             "dx": { "type": "number", "description": "scroll" },
                             "dy": { "type": "number", "description": "scroll" }
                         },
@@ -1516,16 +1516,17 @@ pub(super) mod schema {
                     }
                 },
                 "wait_frames": { "type": "integer", "description": "frames to settle before replying; <=120, default 0" },
-                "capture_after": { "type": "boolean", "description": "attach a PNG of the window after the batch applies; default false" }
+                "capture_after": { "type": "boolean", "description": "attach a PNG of the window after the batch applies; also needs the screenshot surface (FE_API_SCREENSHOT_ALLOW) and its 1 capture/sec budget; default false" }
             },
             "required": ["commands"]
         })
     }
 
-    fn vec3_xy(desc: &str) -> Value {
+    /// A `PointerPoint` (`{x, y}`, primary-window physical pixels).
+    fn pointer_point_schema(description: &str) -> Value {
         json!({
             "type": "object",
-            "description": desc,
+            "description": description,
             "properties": { "x": { "type": "number" }, "y": { "type": "number" } },
             "required": ["x", "y"]
         })
