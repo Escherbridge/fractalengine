@@ -14,6 +14,65 @@ Level and Smooth store their `[0,1]` strength compatibly in the region `delta` s
 `EarthworkRegion::effective_strength`, bake preparation, and volume math all
 consume that value; other operations keep the existing delta meaning.
 
+## §camera-framing — agent vision pose math (`camera_framing.rs`, agent_vision_20261031 V3)
+
+Pure `f64`, bevy-free pose resolution for the `tile`/`geo` capture pose kinds
+(`fe-runtime::vision::PoseSpec`). Unconditional module (no `render` feature
+gate) — V5's Bevy orchestrator calls it, but it has no bevy dependency itself,
+so it unit-tests headless and compiles for every build of this crate.
+
+- **Axis convention**: x = east, z = north, y = up — the same convention
+  `terrain_plugin.rs` and `projection.rs` use. World = local × `world_scale`
+  (`scale::scale_local`), always. There is no separate convention for capture
+  poses; they go through the identical `Projection::wgs84_to_local ×
+  scale_local` pipeline `terrain_plugin::spawn_chunk` uses for its tile
+  anchor, which is *why* `frame_bounds_top_down`'s target lands in the same
+  world-space frame as the chunk it is framing (the invariant
+  `framed_tile_centre_is_the_chunk_anchor_space_point` checks).
+- **The live projection rule**: callers MUST pass the live, runtime-grounded
+  projection — `petal_binding::ActiveTileSource.projection` — never the
+  persisted petal config's projection. Center-tile grounding
+  (`fetch_and_spawn_terrain_chunks`) overwrites `origin_ele` at runtime, and a
+  capture framed against the stale persisted value would float above or sink
+  below the terrain that is actually resident. This module takes `&Projection`
+  as a plain parameter and never reaches into petal state itself — the caller
+  (V5, `fractalengine`) owns getting the live one.
+- **`tile_bounds(zoom, x, y) -> [min_lat, min_lon, max_lat, max_lon]`**: a
+  tile's full geographic extent (NW corner → NW corner of `(x+1, y+1)`), the
+  same rule `tiles::hexon_source::HexonTileSource::covers` and
+  `tiles::bundle::bounds_for_tile_range` use — not just the NW-corner point,
+  which can wrongly call a coarse tile "outside" a tightly-drawn bounds box.
+- **`coverage_check(tile_bounds, tileset_bounds: &[[f64; 4]]) -> Coverage`**
+  takes plain bounds arrays, not `fe_format::manifest::TilesetMeta`, so this
+  module never depends on `fe-format`. The caller passes
+  `CompositeTileSource::source_metas().iter().map(|m| m.bounds).collect()`.
+  Empty input is `Coverage::Unbounded` (online/demo mode with no installed
+  tilesets — the capture proceeds, per spec §5.3), not `Outside`.
+- **`frame_bounds_top_down`**: fits BOTH the lat and lon extents for the
+  output aspect ratio via `tan(h_fov/2) = tan(v_fov/2) * aspect` — no separate
+  horizontal-FOV input, just the standard aspect/vertical-FOV relationship.
+  The ×1.1 margin is spec-mandated headroom, not a magic fudge; a degenerate
+  (point-sized) bounds box is floored at `MIN_FRAME_DISTANCE_M * world_scale`
+  so the camera can never land exactly on its target.
+- **`geo_pose`**: `heading_deg` 0 = north (+z), clockwise toward +x (east);
+  the target is one unit along the view direction (`pose_transform` in
+  fe-renderer only needs a point ahead of `position`, not a framed distance —
+  unlike `frame_bounds_top_down`, which frames a whole region).
+  `ground_or_origin_m` is resolved by the caller (resident
+  `TerrainHeightField` sample for the "terrain" altitude reference, or
+  `origin_ele` for "origin") — this function only does the geometry once that
+  choice is made.
+- **`within_projection_range`**: the ~500 km accurate range `projection.rs`
+  itself documents for `flat_projection`; a `geo` pose beyond it is refused
+  (`geo_out_of_projection_range`, a V5/fe-api concern) rather than silently
+  producing a distorted pose.
+- Every entry point validates every float finite and every geometric
+  degeneracy (non-positive `world_scale`, zero/negative FOV, non-positive
+  aspect) before touching `Projection`, returning `None` rather than
+  propagating a `ProjectionError` panic path — the same validate-before-math
+  discipline `fe-renderer::camera::{orbit_from_look_at, pose_transform}`
+  apply on the bevy side.
+
 ## §petal_binding
 
 Runtime support for binding a terrain configuration to the active petal.

@@ -1,4 +1,5 @@
 pub mod api_ext;
+pub mod camera_framing;
 pub mod config;
 pub mod delta_viz;
 pub mod extension;

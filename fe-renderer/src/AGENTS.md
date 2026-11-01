@@ -156,6 +156,55 @@ New cross-crate types for cut/fill heatmap visualization (P1) and volume reporti
   item includes its standalone volumes clipped to the selection footprint.
   Consumed by the Volume report panel to render P2 FR-7/8.
 
+## §camera-capture
+
+`agent_vision_20261031` V3 gives the orbit camera a lock and two marker
+components so an agent-posed screenshot/`GET /camera` capture (V5, in
+`fractalengine`) can hold, move, and share the main camera without fighting
+`orbit_camera_system` or `deactivate_foreign_cameras`.
+
+- **`orbit_from_look_at(position, target) -> Option<(focus, distance, yaw,
+  pitch)>`** is the exact inverse of `compute_orbit_transform`: `pitch =
+  asin(offset.y / distance)`, `yaw = atan2(offset.x, offset.z)`. It returns
+  `None` on non-finite input or `position == target` (zero-length offset —
+  no direction to recover), never panics. A camera-kind pose read back
+  through `restore: false` and `GET /camera`'s orbit form both go through
+  this; roll from a non-`Y` `up` cannot be expressed in orbit form and is
+  dropped there (documented at the call site, not here).
+- **`pose_transform(position, target, up) -> Option<Transform>`** wraps
+  `Transform::looking_at` with the same non-finite/degenerate guards plus a
+  parallel-`up`-to-view-direction check (`forward.cross(up)` vanishing) —
+  `looking_at`'s own degenerate case, caught before it reaches bevy. This is
+  the `smart_aim` NaN crash class (RUNBOOK, `ui-semantics-audit-20260808`):
+  every float an agent supplies is validated finite *and* every geometric
+  degeneracy is rejected, so a capture request can never hand the render
+  world a NaN transform.
+- **`CameraCaptureLock`** (`Resource`, unit struct — its *presence* is the
+  lock, not a bool field) + **`camera_unlocked(Option<Res<CameraCaptureLock>>)
+  -> bool`**, registered as `orbit_camera_system.run_if(camera_unlocked)`.
+  This is a `run_if`, not an early `return` inside the system, because
+  `orbit_camera_system` recomputes `*transform` from controller state EVERY
+  frame (see module doc) — a raw `Transform` write made while the system is
+  unlocked would otherwise be overwritten on the very next frame it runs.
+  Gating entry is the only way a capture job can hold a pose across frames.
+  `orbit_camera_system` cannot run in a headless test `App` (it needs
+  `bevy_egui`'s render-feature `EguiUserTextures` resource as a
+  `SystemParam`, which a bare `MinimalPlugins` app doesn't provide — the
+  system would silently be skipped by Bevy's param validation, making any
+  assertion about it a tautology). `camera.rs`'s test instead proves the
+  identical `run_if(camera_unlocked)` wiring against a bare `Schedule` with a
+  stand-in system; the real wiring is covered by `fractalengine`'s V5
+  Bevy-routing tests and the user-gated in-app verify (AC-11).
+- **`CaptureCamera`** (marker) and **`StreamingFocus`** (marker):
+  `spawn_orbit_camera` always adds `StreamingFocus` (the main camera is
+  always a streaming focus for fe-terrain's LOD ring, V4 §tile-residency).
+  `deactivate_foreign_cameras` gained `Without<CaptureCamera>` on its query —
+  without it, a scene-mode capture camera (V5 spawns a second `Camera3d`)
+  would be deactivated the same frame it appears, since the query only
+  excludes `OrbitCameraController` today. `CaptureCamera` carries no data; a
+  capture job's lifetime is this component's lifetime (spawn on job start,
+  despawn on job end).
+
 ## §instancing
 
 `instancing.rs` (stamped_asset_nodes_20260725 T2 FR-4 / D-A6 / N-9) is the

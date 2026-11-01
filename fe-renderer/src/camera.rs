@@ -262,9 +262,85 @@ pub fn apply_pan(
     focus - right * delta_x * speed + up * delta_y * speed
 }
 
+/// Minimum offset length treated as non-degenerate for [`orbit_from_look_at`]
+/// and [`pose_transform`] (a position-equals-target camera has no direction).
+const MIN_LOOK_AT_DISTANCE: f32 = 1e-6;
+
+/// Exact inverse of [`compute_orbit_transform`]: recovers `(focus, distance,
+/// yaw, pitch)` from a camera position looking at `target`. `None` on
+/// non-finite input or a degenerate (zero-length) offset — see AGENTS.md
+/// §camera-capture for why this can never panic on an agent-supplied pose.
+pub fn orbit_from_look_at(position: Vec3, target: Vec3) -> Option<(Vec3, f32, f32, f32)> {
+    if !position.is_finite() || !target.is_finite() {
+        return None;
+    }
+    let offset = position - target;
+    let distance = offset.length();
+    if !distance.is_finite() || distance < MIN_LOOK_AT_DISTANCE {
+        return None;
+    }
+    let pitch = (offset.y / distance).clamp(-1.0, 1.0).asin();
+    let yaw = offset.x.atan2(offset.z);
+    Some((target, distance, yaw, pitch))
+}
+
+/// Builds a camera [`Transform`] that sits at `position` and looks at
+/// `target` with `up` as the vertical reference. `None` when any input is
+/// non-finite, `position == target`, or `up` is degenerate/parallel to the
+/// view direction (the smart_aim NaN crash class this guards against).
+pub fn pose_transform(position: Vec3, target: Vec3, up: Vec3) -> Option<Transform> {
+    if !position.is_finite() || !target.is_finite() || !up.is_finite() {
+        return None;
+    }
+    let forward = target - position;
+    if forward.length() < MIN_LOOK_AT_DISTANCE {
+        return None;
+    }
+    let forward = forward.normalize();
+    let up_len = up.length();
+    if up_len < MIN_LOOK_AT_DISTANCE {
+        return None;
+    }
+    // `looking_at` degenerates when `up` is parallel to the view direction
+    // (its internal cross product vanishes); reject that here instead of
+    // handing bevy a transform with an undefined right/up basis.
+    let right = forward.cross(up / up_len);
+    if right.length() < MIN_LOOK_AT_DISTANCE {
+        return None;
+    }
+    Some(Transform::from_translation(position).looking_at(target, up))
+}
+
 // ---------------------------------------------------------------------------
 // Plugin + systems
 // ---------------------------------------------------------------------------
+
+/// Marker inserted while an agent-requested posed capture holds the main
+/// camera; see AGENTS.md §camera-capture. Its mere presence (not a bool
+/// field) is the lock, so `camera_unlocked` is a plain `Option<Res<_>>` read.
+#[derive(Resource)]
+pub struct CameraCaptureLock;
+
+/// `run_if` condition: the orbit camera may process input only when no
+/// capture job holds the pose. A `run_if` (not an early `return` inside the
+/// system) because a raw `Transform` write made while unlocked must still be
+/// visible next frame — gating entry is the only way to "hold" a pose against
+/// a system that otherwise recomputes the transform every frame.
+pub fn camera_unlocked(lock: Option<Res<CameraCaptureLock>>) -> bool {
+    lock.is_none()
+}
+
+/// Marks the off-screen (or temporarily repurposed) camera an agent vision
+/// capture drives, so `deactivate_foreign_cameras` and picking/UI systems
+/// that scope to `With<OrbitCameraController>` elsewhere never fight it.
+#[derive(Component)]
+pub struct CaptureCamera;
+
+/// Marks a camera whose vicinity terrain streaming should keep resident; see
+/// fe-terrain AGENTS.md §tile-residency. The orbit camera always carries one;
+/// a capture camera carries one for its job's lifetime (V4).
+#[derive(Component)]
+pub struct StreamingFocus;
 
 /// Plugin that spawns an orbit camera and drives it from mouse input.
 pub struct CameraControllerPlugin;
@@ -274,15 +350,29 @@ impl Plugin for CameraControllerPlugin {
         app.init_resource::<CameraScaleSettings>();
         app.init_resource::<TerrainHeightField>();
         app.add_systems(Startup, spawn_orbit_camera);
-        app.add_systems(Update, (orbit_camera_system, apply_camera_scale));
+        app.add_systems(
+            Update,
+            (
+                orbit_camera_system.run_if(camera_unlocked),
+                apply_camera_scale,
+            ),
+        );
         app.add_systems(PostUpdate, deactivate_foreign_cameras);
     }
 }
 
+/// Query filter for `deactivate_foreign_cameras`: a just-added camera that is
+/// neither the orbit camera nor an agent-vision capture camera.
+type ForeignCameraFilter = (
+    Added<Camera>,
+    Without<OrbitCameraController>,
+    Without<CaptureCamera>,
+);
+
 /// Deactivates cameras embedded in spawned glb scenes before extraction; see AGENTS.md §camera-scale.
-fn deactivate_foreign_cameras(
-    mut cameras: Query<&mut Camera, (Added<Camera>, Without<OrbitCameraController>)>,
-) {
+/// Spares [`CaptureCamera`]s too — they are legitimate additional cameras an
+/// agent vision capture spawns, not foreign scene cameras to suppress.
+fn deactivate_foreign_cameras(mut cameras: Query<&mut Camera, ForeignCameraFilter>) {
     let mut disabled = 0usize;
     for mut camera in cameras.iter_mut() {
         if camera.is_active {
@@ -339,6 +429,7 @@ fn spawn_orbit_camera(mut commands: Commands) {
         }),
         transform,
         controller,
+        StreamingFocus,
     ));
 }
 
@@ -926,5 +1017,140 @@ mod tests {
         assert!(t.translation.y < 50.0, "precondition: camera below terrain");
         let clamped = clamp_above_ground(t.translation.y, Some(50.0), 2.0);
         assert!((clamped - 52.0).abs() < EPSILON);
+    }
+
+    // -----------------------------------------------------------------
+    // V3 (agent_vision_20261031): pose math + camera lock + markers
+    // -----------------------------------------------------------------
+
+    const POSE_EPSILON: f32 = 1e-3;
+
+    /// Shortest signed angular distance `a - b`, wrapped into `[-π, π]` — `π`
+    /// and `-π` are the same angle, but `atan2` can return either depending
+    /// on which side of the branch cut floating-point rounding lands on
+    /// (`sin(π)` is not exactly `0.0` in `f32`), so a plain subtraction
+    /// spuriously fails right at that boundary.
+    fn angle_diff(a: f32, b: f32) -> f32 {
+        let tau = std::f32::consts::TAU;
+        let mut d = (a - b) % tau;
+        if d > std::f32::consts::PI {
+            d -= tau;
+        } else if d < -std::f32::consts::PI {
+            d += tau;
+        }
+        d
+    }
+
+    #[test]
+    fn orbit_from_look_at_inverts_compute_orbit_transform() {
+        let focus = Vec3::new(1.0, 2.0, 3.0);
+        for yaw in [
+            0.0_f32,
+            std::f32::consts::FRAC_PI_4,
+            std::f32::consts::PI,
+            -3.0 * std::f32::consts::FRAC_PI_4,
+        ] {
+            for pitch in [-1.55_f32, 0.0, 0.46, 1.55] {
+                for distance in [0.05_f32, 8.66, 1e5] {
+                    let t = compute_orbit_transform(focus, distance, yaw, pitch);
+                    let (got_focus, got_distance, got_yaw, got_pitch) =
+                        orbit_from_look_at(t.translation, focus).unwrap_or_else(|| {
+                            panic!("expected Some for yaw={yaw} pitch={pitch} distance={distance}")
+                        });
+                    assert!((got_focus - focus).length() < POSE_EPSILON);
+                    assert!(
+                        (got_distance - distance).abs() < distance * 1e-3 + POSE_EPSILON,
+                        "distance round-trip: expected {distance}, got {got_distance}"
+                    );
+                    assert!(
+                        angle_diff(got_yaw, yaw).abs() < 1e-3,
+                        "yaw round-trip: expected {yaw}, got {got_yaw}"
+                    );
+                    assert!(
+                        (got_pitch - pitch).abs() < 1e-3,
+                        "pitch round-trip: expected {pitch}, got {got_pitch}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn degenerate_look_at_and_parallel_up_return_none() {
+        // Position == target: no direction to recover.
+        assert!(orbit_from_look_at(Vec3::ZERO, Vec3::ZERO).is_none());
+        assert!(pose_transform(Vec3::ZERO, Vec3::ZERO, Vec3::Y).is_none());
+
+        // NaN/inf anywhere in the input.
+        assert!(orbit_from_look_at(Vec3::new(f32::NAN, 0.0, 1.0), Vec3::ZERO).is_none());
+        assert!(orbit_from_look_at(Vec3::new(0.0, 0.0, 1.0), Vec3::splat(f32::INFINITY)).is_none());
+        assert!(pose_transform(Vec3::new(f32::NAN, 0.0, 0.0), Vec3::ZERO, Vec3::Y).is_none());
+        assert!(pose_transform(Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0), Vec3::new(f32::NAN, 0.0, 0.0))
+            .is_none());
+
+        // Zero `up`.
+        assert!(pose_transform(Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0), Vec3::ZERO).is_none());
+
+        // `up` parallel to the view direction (looking straight along +Y with up = +Y).
+        assert!(pose_transform(Vec3::ZERO, Vec3::new(0.0, 1.0, 0.0), Vec3::Y).is_none());
+
+        // A valid, non-degenerate case still succeeds (sanity check the guards
+        // above aren't rejecting everything).
+        assert!(pose_transform(Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0), Vec3::Y).is_some());
+        assert!(orbit_from_look_at(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO).is_some());
+    }
+
+    /// `orbit_camera_system` cannot run in a headless `App` without the
+    /// `bevy_egui` render-feature resources it requires as a `SystemParam`
+    /// (`EguiUserTextures`); per plan.md V3, this instead proves the generic
+    /// `run_if(camera_unlocked)` wiring pattern directly against a bare
+    /// `Schedule`, the same mechanism `CameraControllerPlugin` registers
+    /// `orbit_camera_system` with. See AGENTS.md §camera-capture.
+    #[test]
+    fn capture_lock_stops_a_run_if_gated_system_from_running() {
+        #[derive(Resource, Default)]
+        struct Ran(bool);
+
+        fn mark_ran(mut ran: ResMut<Ran>) {
+            ran.0 = true;
+        }
+
+        let mut world = World::new();
+        world.init_resource::<Ran>();
+        let mut schedule = Schedule::default();
+        schedule.add_systems(mark_ran.run_if(camera_unlocked));
+
+        schedule.run(&mut world);
+        assert!(world.resource::<Ran>().0, "unlocked: system must run");
+
+        world.resource_mut::<Ran>().0 = false;
+        world.insert_resource(CameraCaptureLock);
+        schedule.run(&mut world);
+        assert!(
+            !world.resource::<Ran>().0,
+            "locked: run_if must block the system"
+        );
+    }
+
+    #[test]
+    fn deactivate_foreign_cameras_spares_capture_cameras() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        let mut world = World::new();
+        let capture = world.spawn((Camera::default(), CaptureCamera)).id();
+        let foreign = world.spawn(Camera::default()).id();
+
+        world
+            .run_system_once(deactivate_foreign_cameras)
+            .expect("system runs");
+
+        assert!(
+            world.get::<Camera>(capture).unwrap().is_active,
+            "capture camera must be spared"
+        );
+        assert!(
+            !world.get::<Camera>(foreign).unwrap().is_active,
+            "a plain foreign camera must still be deactivated"
+        );
     }
 }
