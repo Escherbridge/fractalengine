@@ -207,6 +207,7 @@ pub(super) fn resolve_pointer_frame(
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform), With<fe_renderer::camera::OrbitCameraController>>,
     viewport_rect: Res<ViewportRect>,
+    region: Option<Res<fe_renderer::camera::CameraPointerRegion>>,
     mut egui_ctx: EguiContexts,
     mut arbiter: ResMut<ClickArbiter>,
 ) {
@@ -219,15 +220,24 @@ pub(super) fn resolve_pointer_frame(
         mouse_button.pressed(MouseButton::Left),
     );
 
-    let egui_using = egui_ctx
+    let window = windows.single().ok();
+    let cursor = window.and_then(Window::cursor_position);
+    let physical = window.and_then(Window::physical_cursor_position);
+    let (egui_using, in_viewport) = egui_ctx
         .ctx_mut()
-        .map(|ctx| ctx.is_using_pointer())
-        .unwrap_or(false);
-
-    let cursor = windows.single().ok().and_then(|w| w.cursor_position());
-    let in_viewport = cursor
-        .map(|c| viewport_rect.0.contains(bevy_egui::egui::pos2(c.x, c.y)))
-        .unwrap_or(false);
+        .map(|ctx| {
+            let inside = if let Some(region) = &region {
+                physical.is_some_and(|point| region.accepts_pointer(point, ctx))
+            } else {
+                cursor.is_some_and(|point| {
+                    viewport_rect
+                        .0
+                        .contains(bevy_egui::egui::pos2(point.x, point.y))
+                })
+            };
+            (ctx.is_using_pointer(), inside)
+        })
+        .unwrap_or((false, false));
 
     // Click is up for grabs only when egui isn't capturing and the cursor is
     // over the 3-D viewport.

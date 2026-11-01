@@ -12,7 +12,7 @@ use crate::gimbal::{
     RING_SEGMENTS,
 };
 use crate::panels::toolbar::Tool;
-use crate::plugin::{ToolState, ViewportRect};
+use crate::plugin::ToolState;
 
 const PICK_PX: f32 = 20.0;
 const RING_PICK_PX: f32 = 14.0;
@@ -29,7 +29,7 @@ pub(super) fn update_hovered_axis(
     g_transform_query: Query<&GlobalTransform>,
     aabb_query: Query<&bevy::camera::primitives::Aabb>,
     children_query: Query<&Children>,
-    viewport_rect: Res<ViewportRect>,
+    arbiter: Res<ClickArbiter>,
 ) {
     manager.hovered_axis = None;
 
@@ -55,10 +55,7 @@ pub(super) fn update_hovered_axis(
     let Some(cursor) = window.cursor_position() else {
         return;
     };
-    if !viewport_rect
-        .0
-        .contains(bevy_egui::egui::pos2(cursor.x, cursor.y))
-    {
+    if !arbiter.is_available() {
         return;
     }
     let Ok((camera, cam_tx)) = cameras.single() else {

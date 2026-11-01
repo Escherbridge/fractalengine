@@ -201,6 +201,27 @@ pub fn viewport_outside_resize_bands(
     }
 }
 
+/// Interaction geometry excludes panel grab bands without shrinking visual viewport metrics.
+pub fn viewport_interaction_rect(
+    viewport: egui::Rect,
+    screen: egui::Rect,
+    maximized: bool,
+    grab_radius: f32,
+    results_open: bool,
+) -> egui::Rect {
+    let mut input = viewport_outside_resize_bands(viewport, screen, maximized);
+    if viewport.min.x > screen.min.x {
+        input.min.x = input.min.x.max(viewport.min.x + grab_radius);
+    }
+    if viewport.max.x < screen.max.x {
+        input.max.x = input.max.x.min(viewport.max.x - grab_radius);
+    }
+    if results_open {
+        input.max.y = input.max.y.min(viewport.max.y - grab_radius);
+    }
+    input
+}
+
 /// The OS resize cursor for a drag direction.
 fn resize_cursor(direction: CompassOctant) -> egui::CursorIcon {
     match direction {
@@ -963,6 +984,26 @@ mod tests {
                 "{pos:?}: exactly one of resize / viewport owns the press"
             );
         }
+        let visual = egui::Rect::from_min_max(egui::pos2(220.0, 40.0), egui::pos2(700.0, 500.0));
+        let input = viewport_interaction_rect(visual, screen, false, 5.0, true);
+        let context = egui::Context::default();
+        let region = fe_renderer::camera::CameraPointerRegion {
+            rect: input,
+            pixels_per_point: 2.0,
+        };
+        for (point, accepted) in [
+            (egui::vec2(220.0, 200.0), false),
+            (egui::vec2(700.0, 200.0), false),
+            (egui::vec2(400.0, 500.0), false),
+            (egui::vec2(400.0, 200.0), true),
+        ] {
+            assert_eq!(region.accepts_pointer(point * 2.0, &context), accepted);
+        }
+        assert_eq!(
+            visual.width(),
+            480.0,
+            "input insets do not alter visual viewport geometry"
+        );
         assert_eq!(
             viewport_outside_resize_bands(viewport, screen, true),
             viewport,

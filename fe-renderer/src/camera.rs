@@ -348,7 +348,6 @@ pub fn frame_world_box(min: Vec3, max: Vec3, view_dir: Vec3, fov: f32) -> LookAt
 // Plugin + systems
 // ---------------------------------------------------------------------------
 
-
 /// UI-owned egui-point region for current-pointer camera routing.
 #[derive(Resource)]
 pub struct CameraPointerRegion {
@@ -357,7 +356,25 @@ pub struct CameraPointerRegion {
 }
 
 impl Default for CameraPointerRegion {
-    fn default() -> Self { Self { rect: bevy_egui::egui::Rect::NOTHING, pixels_per_point: 1.0 } }
+    fn default() -> Self {
+        Self {
+            rect: bevy_egui::egui::Rect::NOTHING,
+            pixels_per_point: 1.0,
+        }
+    }
+}
+
+impl CameraPointerRegion {
+    pub fn accepts_pointer(&self, physical: Vec2, ctx: &bevy_egui::egui::Context) -> bool {
+        let point = bevy_egui::egui::pos2(
+            physical.x / self.pixels_per_point,
+            physical.y / self.pixels_per_point,
+        );
+        self.rect.contains(point)
+            && ctx
+                .layer_id_at(point)
+                .is_none_or(|layer| layer.order == bevy_egui::egui::Order::Background)
+    }
 }
 
 /// Marker inserted while an agent-requested posed capture holds the main
@@ -504,12 +521,16 @@ fn orbit_camera_system(
         // wants_pointer_input() is always true and blocks orbit/zoom/pan.
         // is_using_pointer() is only true when a UI widget is actively held.
         let pointer_outside = region.as_ref().is_some_and(|region| {
-            windows.single().ok().and_then(Window::physical_cursor_position)
-                .map(|position| bevy_egui::egui::pos2(position.x / region.pixels_per_point, position.y / region.pixels_per_point))
-                .is_none_or(|position| !region.rect.contains(position)
-                    || ctx.layer_id_at(position).is_some_and(|layer| layer.order != bevy_egui::egui::Order::Background))
+            windows
+                .single()
+                .ok()
+                .and_then(Window::physical_cursor_position)
+                .is_none_or(|position| !region.accepts_pointer(position, ctx))
         });
-        (pointer_outside || ctx.is_using_pointer(), ctx.wants_keyboard_input())
+        (
+            pointer_outside || ctx.is_using_pointer(),
+            ctx.wants_keyboard_input(),
+        )
     } else {
         (false, false)
     };
@@ -1138,8 +1159,12 @@ mod tests {
         assert!(orbit_from_look_at(Vec3::new(f32::NAN, 0.0, 1.0), Vec3::ZERO).is_none());
         assert!(orbit_from_look_at(Vec3::new(0.0, 0.0, 1.0), Vec3::splat(f32::INFINITY)).is_none());
         assert!(pose_transform(Vec3::new(f32::NAN, 0.0, 0.0), Vec3::ZERO, Vec3::Y).is_none());
-        assert!(pose_transform(Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0), Vec3::new(f32::NAN, 0.0, 0.0))
-            .is_none());
+        assert!(pose_transform(
+            Vec3::ZERO,
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(f32::NAN, 0.0, 0.0)
+        )
+        .is_none());
 
         // Zero `up`.
         assert!(pose_transform(Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0), Vec3::ZERO).is_none());
@@ -1159,7 +1184,12 @@ mod tests {
     fn frame_world_box_fits_the_bounding_sphere_in_the_fov() {
         let cases = [
             (Vec3::splat(-1.0), Vec3::splat(1.0), Vec3::NEG_Z, 45f32),
-            (Vec3::ZERO, Vec3::new(10.0, 2.0, 4.0), Vec3::new(1.0, -1.0, 0.0), 60.0),
+            (
+                Vec3::ZERO,
+                Vec3::new(10.0, 2.0, 4.0),
+                Vec3::new(1.0, -1.0, 0.0),
+                60.0,
+            ),
             (Vec3::splat(5.0), Vec3::splat(5.0), Vec3::NEG_Y, 30.0),
         ];
         for (min, max, view_dir, fov_deg) in cases {
@@ -1171,7 +1201,9 @@ mod tests {
                 (distance * (fov * 0.5).sin() - radius * FRAMING_MARGIN).abs() < 1e-3,
                 "sphere of radius {radius} must fit fov {fov_deg}° with the margin"
             );
-            assert!(((pose.target - pose.position).normalize() - view_dir.normalize()).length() < 1e-4);
+            assert!(
+                ((pose.target - pose.position).normalize() - view_dir.normalize()).length() < 1e-4
+            );
             assert!(
                 pose_transform(pose.position, pose.target, pose.up).is_some(),
                 "framed pose must be orientable: {pose:?}"

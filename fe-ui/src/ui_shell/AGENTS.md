@@ -309,3 +309,11 @@ A still-infeasible right section also yields without changing its request. At na
 uses native Tools/Panels menus, smaller caption cells and icon-only branding; section rails wrap.
 Native dialog minimum and maximum widths use the same policy cap, so caller preferences cannot invert
 resize constraints at the supported 640-pixel window / 2x UI scale edge.
+
+
+The visual `ViewportRect` remains the actual CentralPanel rectangle. `CameraPointerRegion` separately
+excludes egui's `resize_grab_radius_side` on the actual left/right panel dividers and Results top divider,
+plus native window grips. Camera input and NodeManager's single pointer arbiter share its physical-to-
+egui conversion and foreground-area gate. Hovered gimbal picking reuses that arbiter. A fresh divider
+press therefore belongs to resizing before egui has an actively held pointer, while interior picking
+continues normally. This also avoids comparing logical window pixels directly with scaled egui points.
