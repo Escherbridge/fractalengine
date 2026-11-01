@@ -153,11 +153,13 @@ pub fn tool_available(spec: &ToolSpec, state: &ApiState) -> bool {
 /// even though both share `ApiState.screenshot.allowed` (one env var).
 fn operator_opt_in_refusal(spec: &ToolSpec, state: &ApiState) -> Option<&'static str> {
     match spec.requires {
-        Some(ToolSeam::Screenshot) if !state.screenshot.allowed => Some(if spec.name == "get_camera" {
-            crate::vision::CAMERA_STATE_GATE.disabled_message
-        } else {
-            crate::screenshot::SCREENSHOT_GATE.disabled_message
-        }),
+        Some(ToolSeam::Screenshot) if !state.screenshot.allowed => {
+            Some(if spec.name == "get_camera" {
+                crate::vision::CAMERA_STATE_GATE.disabled_message
+            } else {
+                crate::screenshot::SCREENSHOT_GATE.disabled_message
+            })
+        }
         Some(ToolSeam::Input) if !state.input.allowed => {
             Some(crate::input::INPUT_GATE.disabled_message)
         }
@@ -282,7 +284,7 @@ static TOOLS: &[ToolSpec] = &[
     // AGENTS.md §agent-input-surface): synthetic pointer/keyboard/scroll
     // injection, closing the loop with get_camera/screenshot. ---
     tool!(inject_input, Owner, Global, requires Input,
-        "Synthesize pointer/keyboard/scroll input into the running GUI: a batch of up to 64 commands (pointer_move, pointer_click, pointer_drag, key_press, text_entry, scroll), an optional wait_frames to settle (<=120) and an optional capture_after to attach a PNG of the result (capture_after also needs the screenshot surface on and spends its 1 capture/sec budget). Scope-confined: the token must cover the open verse. OFF by default (set FE_API_INPUT_ALLOW=1 to enable) — unlike the default-on screenshot/camera surfaces, this MUTATES state; combined with them an Owner token gets full remote control. Refused with 409 while a posed capture holds the camera; Control/Super+C/V/X clipboard chords are refused (the host's OS clipboard is never read or written). 5 requests/sec. Requires owner role."),
+        "Synthesize pointer/keyboard/scroll input into the running GUI: a batch of up to 64 commands (pointer_move, pointer_click, pointer_drag, key_press, text_entry, scroll), an optional wait_frames to settle (<=120) and an optional capture_after to attach a PNG of the result (capture_after also needs the screenshot surface on and spends its 1 capture/sec budget). Scope-confined: the token must cover the open verse. OFF by default (set FE_API_INPUT_ALLOW=1 to enable) — unlike the default-on screenshot/camera surfaces, this MUTATES state; combined with them an Owner token gets full remote control. Refused with 409 while a posed capture holds the camera. Control/Super+C/V/X clipboard chords are refused, and text/image clipboard writes from UI controls are suppressed throughout injection and settling, including its final frame; idle user copies remain enabled. Synthetic input never reads or writes the host OS clipboard. 5 requests/sec. Requires owner role."),
 ];
 
 // ---------------------------------------------------------------------------

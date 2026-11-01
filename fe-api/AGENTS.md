@@ -1956,6 +1956,11 @@ installed) plus the window's size/minimized state.
 ## §agent-input-surface (`input.rs`, folded-in `agent_input_surface_20261031`
 via `agent_vision_20261031`; wiring landed plan I3)
 
+Clipboard isolation also applies at the GUI sink: the input bridge removes egui
+`CopyText` and `CopyImage` output before platform processing throughout injection,
+settling/capture, and the final success or abort frame. The planner still refuses
+clipboard chords. Idle user copies remain enabled; audits contain counts, not payload.
+
 `POST /api/v1/debug/input` (+ MCP `inject_input`) synthesizes pointer,
 keyboard and scroll input into the running GUI, so an agent can close the
 loop `get_camera -> screenshot(pose) -> inject_input -> screenshot`. It is

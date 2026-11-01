@@ -1241,7 +1241,7 @@ becomes the same messages winit writes — `CursorMoved`, `MouseButtonInput`,
 messages into egui events. Synthetic input is indistinguishable from real
 input to every downstream system, and never becomes OS-level input.
 
-**Clipboard chords are refused** (critic-input C1). bevy_egui's default
+**Clipboard isolation** (critic-input C1 and INPUT-ADDENDUM 8). bevy_egui's default
 `manage_clipboard` feature turns a Control/Super chord on C/X/V into an
 arboard read (paste) or write (copy/cut) of the HOST's OS clipboard — so a
 synthetic `[ControlLeft, KeyV]` into a text field, followed by
@@ -1252,6 +1252,14 @@ before anything is injected) a `key_press` of `KeyC`/`KeyV`/`KeyX` and any
 key chord to bevy_egui, `egui::Key::from_name`). Residual: a real Control key
 the local user is physically holding still chords with a synthetic `KeyV`
 (bevy_egui's `ModifierKeysState` merges both); that is the user's own action.
+The input bridge also latches `SyntheticClipboardGuard` for every frame an
+injection touches, including settle/capture and the final success/abort frame.
+`suppress_synthetic_clipboard` runs after `EguiPostUpdateSet::EndPass` and before
+`ProcessOutput`, removing both `CopyText` and `CopyImage` commands from
+`EguiFullOutput` before bevy_egui can write to the OS clipboard. Suppression
+audits only the command count, never clipboard payload. Copies made by ordinary
+user interaction in idle frames retain their normal platform behavior.
+
 Other UI-level effects (a click on the title bar's close button exits the app;
 a click on a "Browse…" button opens a native `rfd` dialog that synthetic input
 cannot drive and that blocks the frame loop until the user closes it — the
@@ -1264,7 +1272,8 @@ posture `INPUT_GATE.enabled_warning` names, not an escape.
 `EguiPreUpdateSet::ProcessInput.after(InputSystems)` and reads Bevy messages
 in its `EguiInputSet::ReadBevyMessages` subset, so messages written before
 `InputSystems` reach both `bevy_input` and egui in the frame they are
-written. `restore_real_cursor` runs in `PostUpdate`.
+written. `restore_real_cursor` runs in `PostUpdate`; the clipboard sink guard
+runs between egui EndPass and ProcessOutput.
 
 **One frame per step** (planned up front by the pure `plan_batch`):
 

@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::Screenshot;
 use bevy::time::Real;
 use bevy::window::{CursorMoved, PrimaryWindow};
-use bevy_egui::EguiPreUpdateSet;
+use bevy_egui::{EguiFullOutput, EguiPostUpdateSet, EguiPreUpdateSet};
 use fe_renderer::camera::CameraCaptureLock;
 use fe_runtime::input::{
     camera_locked_by_capture, denied, InputCommand, InputFailure, InputFailureClass, InputOp,
@@ -40,6 +40,10 @@ pub struct InputBridge(pub InputRequestReceiver);
 /// The one injection in flight (single flight; a second is `input_in_progress`).
 #[derive(Resource, Default)]
 pub struct InputJob(Option<ActiveInjection>);
+
+/// Suppress clipboard writes for every frame touched by synthetic input.
+#[derive(Resource, Default)]
+pub struct SyntheticClipboardGuard(bool);
 
 /// The user's real cursor, saved in PreUpdate before a synthetic override and
 /// put back in PostUpdate — so bevy_winit never warps the OS cursor.
@@ -108,6 +112,7 @@ pub struct SyntheticWriters<'w> {
 pub fn install(app: &mut App, receiver: InputRequestReceiver) {
     app.insert_resource(InputBridge(receiver))
         .init_resource::<InputJob>()
+        .init_resource::<SyntheticClipboardGuard>()
         .init_resource::<RealCursor>()
         .add_systems(
             PreUpdate,
@@ -115,7 +120,43 @@ pub fn install(app: &mut App, receiver: InputRequestReceiver) {
                 .before(InputSystems)
                 .before(EguiPreUpdateSet::ProcessInput),
         )
-        .add_systems(PostUpdate, restore_real_cursor);
+        .add_systems(PostUpdate, restore_real_cursor)
+        .add_systems(
+            PostUpdate,
+            suppress_synthetic_clipboard
+                .after(EguiPostUpdateSet::EndPass)
+                .before(EguiPostUpdateSet::ProcessOutput),
+        );
+}
+
+/// Remove synthetic clipboard writes before bevy_egui's platform sink.
+fn suppress_synthetic_clipboard(
+    guard: Res<SyntheticClipboardGuard>,
+    mut outputs: Query<&mut EguiFullOutput>,
+) {
+    if !guard.0 {
+        return;
+    }
+    let mut dropped = 0;
+    for mut output in &mut outputs {
+        if let Some(output) = output.0.as_mut() {
+            let count = output.platform_output.commands.len();
+            output.platform_output.commands.retain(|command| {
+                !matches!(
+                    command,
+                    bevy_egui::egui::OutputCommand::CopyText(_)
+                        | bevy_egui::egui::OutputCommand::CopyImage(_)
+                )
+            });
+            dropped += count - output.platform_output.commands.len();
+        }
+    }
+    if dropped > 0 {
+        tracing::warn!(
+            commands_dropped = dropped,
+            "synthetic clipboard writes suppressed"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -607,6 +648,7 @@ fn admit(
 pub fn drive_synthetic_input(
     bridge: Res<InputBridge>,
     mut job: ResMut<InputJob>,
+    mut clipboard_guard: ResMut<SyntheticClipboardGuard>,
     mut real_cursor: ResMut<RealCursor>,
     time: Res<Time<Real>>,
     capture_lock: Option<Res<CameraCaptureLock>>,
@@ -616,6 +658,7 @@ pub fn drive_synthetic_input(
     mut writers: SyntheticWriters,
     mut commands: Commands,
 ) {
+    clipboard_guard.0 = job.0.is_some();
     let locked = capture_lock.is_some();
     while let Ok(request) = bridge.0.try_recv() {
         // The caller already timed out or hung up: never touch input for it.
@@ -665,6 +708,7 @@ pub fn drive_synthetic_input(
     let Some(active) = job.0.as_mut() else {
         return;
     };
+    clipboard_guard.0 = true;
     let Ok((window_entity, mut window)) = windows.single_mut() else {
         let active = job.0.take().expect("checked above");
         let failure = window_failure(None).expect("no window is always a refusal");
@@ -869,6 +913,94 @@ mod tests {
     #[derive(Resource, Default)]
     struct SeenInUpdate(Vec<Option<Vec2>>);
 
+    #[derive(Resource, Default)]
+    struct CopyControl {
+        context: bevy_egui::egui::Context,
+        requested: usize,
+        sink_text: usize,
+        sink_images: usize,
+        late_copy: bool,
+    }
+
+    fn render_copy_control(
+        mut control: ResMut<CopyControl>,
+        buttons: Res<ButtonInput<MouseButton>>,
+        windows: Query<&Window, With<PrimaryWindow>>,
+        mut outputs: Query<&mut EguiFullOutput>,
+    ) {
+        use bevy_egui::egui;
+        let cursor = windows.single().unwrap().cursor_position();
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        if let Some(cursor) = cursor {
+            let pos = egui::pos2(cursor.x, cursor.y);
+            input.events.push(egui::Event::PointerMoved(pos));
+            for (pressed, happened) in [
+                (true, buttons.just_pressed(MouseButton::Left)),
+                (false, buttons.just_released(MouseButton::Left)),
+            ] {
+                if happened {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::default(),
+                    });
+                }
+            }
+        } else {
+            input.events.push(egui::Event::PointerGone);
+        }
+        let late_copy = std::mem::take(&mut control.late_copy);
+        let output = control.context.run(input, |ctx| {
+            let clicked = egui::Area::new(egui::Id::new("copy-control"))
+                .fixed_pos(egui::pos2(80.0, 35.0))
+                .show(ctx, |ui| {
+                    ui.add_sized([150.0, 30.0], egui::Button::new("Copy value"))
+                        .clicked()
+                })
+                .inner;
+            if clicked || late_copy {
+                ctx.copy_text("clipboard sentinel".into());
+                ctx.copy_image(egui::ColorImage::new([1, 1], vec![egui::Color32::RED]));
+            }
+        });
+        control.requested += output
+            .platform_output
+            .commands
+            .iter()
+            .filter(|command| {
+                matches!(
+                    command,
+                    egui::OutputCommand::CopyText(_) | egui::OutputCommand::CopyImage(_)
+                )
+            })
+            .count();
+        outputs.single_mut().unwrap().0 = Some(output);
+    }
+
+    fn record_clipboard_sink(
+        mut control: ResMut<CopyControl>,
+        mut outputs: Query<&mut EguiFullOutput>,
+    ) {
+        for mut output in &mut outputs {
+            if let Some(output) = output.0.take() {
+                for command in output.platform_output.commands {
+                    match command {
+                        bevy_egui::egui::OutputCommand::CopyText(_) => control.sink_text += 1,
+                        bevy_egui::egui::OutputCommand::CopyImage(_) => control.sink_images += 1,
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
     fn record_update_cursor(
         windows: Query<&Window, With<PrimaryWindow>>,
         mut seen: ResMut<SeenInUpdate>,
@@ -884,6 +1016,7 @@ mod tests {
     struct Harness {
         app: App,
         tx: InputRequestSender,
+        window: Entity,
     }
 
     fn harness() -> Harness {
@@ -901,10 +1034,18 @@ mod tests {
         app.insert_resource(VerseManager::default());
         let mut window = Window::default();
         window.resolution.set_physical_resolution(800, 600);
-        app.world_mut().spawn((window, PrimaryWindow));
+        let window = app
+            .world_mut()
+            .spawn((window, PrimaryWindow, EguiFullOutput::default()))
+            .id();
         app.init_resource::<SeenInUpdate>()
-            .add_systems(Update, record_update_cursor);
-        Harness { app, tx }
+            .init_resource::<CopyControl>()
+            .add_systems(Update, (record_update_cursor, render_copy_control))
+            .add_systems(
+                PostUpdate,
+                record_clipboard_sink.in_set(EguiPostUpdateSet::ProcessOutput),
+            );
+        Harness { app, tx, window }
     }
 
     fn click(x: f32, y: f32) -> InputCommand {
@@ -1034,7 +1175,15 @@ mod tests {
         h.app.update();
         assert!(h.mouse().just_released(MouseButton::Left));
         assert!(!h.mouse().pressed(MouseButton::Left));
+        assert_eq!(
+            h.app.world().resource::<CopyControl>().requested,
+            2,
+            "the injected click reaches a real egui copying control"
+        );
+        assert_eq!(h.app.world().resource::<CopyControl>().sink_text, 0);
+        assert_eq!(h.app.world().resource::<CopyControl>().sink_images, 0);
         for _ in 0..2 {
+            h.app.world_mut().resource_mut::<CopyControl>().late_copy = true;
             h.app.update();
             assert!(reply.try_recv().is_err(), "held while settling");
             assert_eq!(
@@ -1043,6 +1192,7 @@ mod tests {
                 "the pointer is held through the settle"
             );
         }
+        h.app.world_mut().resource_mut::<CopyControl>().late_copy = true;
         h.app.update();
         let output = reply
             .try_recv()
@@ -1054,11 +1204,44 @@ mod tests {
             (1, 2, None)
         );
         assert!(h.idle());
+        assert_eq!(h.app.world().resource::<CopyControl>().requested, 8);
+        assert_eq!(
+            h.app.world().resource::<CopyControl>().sink_text,
+            0,
+            "settle and finish frames retain clipboard isolation"
+        );
+        assert_eq!(h.app.world().resource::<CopyControl>().sink_images, 0);
         assert_eq!(
             h.last_update_cursor(),
             None,
             "the finish frame hands the real pointer back"
         );
+
+        h.app
+            .world_mut()
+            .get_mut::<Window>(h.window)
+            .unwrap()
+            .set_physical_cursor_position(Some(DVec2::new(100.0, 50.0)));
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            h.app.world_mut().write_message(MouseButtonInput {
+                button: MouseButton::Left,
+                state,
+                window: h.window,
+            });
+            h.app.update();
+        }
+        assert_eq!(
+            h.app.world().resource::<CopyControl>().sink_text,
+            1,
+            "ordinary user copying remains enabled outside injection"
+        );
+        assert_eq!(h.app.world().resource::<CopyControl>().sink_images, 1);
+        h.app
+            .world_mut()
+            .get_mut::<Window>(h.window)
+            .unwrap()
+            .set_physical_cursor_position(None);
+        h.app.update();
 
         // Arrival refusals: typed, and nothing is injected.
         let mut unknown_key = h.send(batch(vec![key("Foo")], 0, false));
@@ -1208,11 +1391,22 @@ mod tests {
         assert_eq!(refusal_code(&mut second), "input_in_progress");
         assert!(h.mouse().pressed(MouseButton::Left));
         h.set_verse("w");
+        let copied_before_abort = h.app.world().resource::<CopyControl>().sink_text;
+        h.app.world_mut().resource_mut::<CopyControl>().late_copy = true;
         h.app.update();
         assert_eq!(refusal_code(&mut first), DENIED_CODE);
         assert!(h.mouse().just_released(MouseButton::Left));
         assert!(!h.mouse().pressed(MouseButton::Left));
         assert!(h.idle());
+        assert_eq!(
+            h.app.world().resource::<CopyControl>().sink_text,
+            copied_before_abort,
+            "the abort frame cannot leak a late clipboard write"
+        );
+        assert_eq!(
+            h.app.world().resource::<CopyControl>().sink_images,
+            copied_before_abort
+        );
         h.set_verse("v");
 
         // A posed capture takes the camera mid-batch: refused, button released.
