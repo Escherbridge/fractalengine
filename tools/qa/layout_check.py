@@ -41,11 +41,16 @@ def analyze(tree, state):
             continue
         reachable_scroll = False
         blocked_clip = False
+        effective = dict(bounds)
         for scroll in ancestors:
             for axis, size in [(0,"w"),(1,"h")]:
-                if outside(bounds,scroll["clip"],axis):
+                if outside(effective,scroll["clip"],axis):
                     if scroll.get("axes",[False,True])[axis] and scroll["content_size"][axis] > scroll["clip"][size] + 1:
                         reachable_scroll = True
+                        start = "x" if axis == 0 else "y"
+                        end = min(effective[start] + effective[size],scroll["clip"][start] + scroll["clip"][size])
+                        effective[start] = max(effective[start],scroll["clip"][start])
+                        effective[size] = max(0,end-effective[start])
                     else:
                         blocked_clip = True
         if blocked_clip:
@@ -64,7 +69,10 @@ def analyze(tree, state):
         visible.append(node)
         if facts and (facts["clickable"] or facts["draggable"]):
             if facts["hit"]["w"] < 20 or facts["hit"]["h"] < 20:
-                violations.append(dict(entry,reason="small_hit_target",hit=facts["hit"]))
+                if outside(facts["rect"],facts["clip"],0) or outside(facts["rect"],facts["clip"],1):
+                    unknown.append(dict(entry,reason="partial_clip_scroll_path_uninstrumented",hit=facts["hit"]))
+                else:
+                    violations.append(dict(entry,reason="small_hit_target",hit=facts["hit"]))
         else:
             unknown.append(dict(entry,reason="hit_rectangle_uninstrumented"))
     for index, left in enumerate(visible):

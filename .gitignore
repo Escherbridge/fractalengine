@@ -63,3 +63,6 @@ fe-sync/tests/fixtures/p2p_store_v035_gen/target/
 
 # scrt mind-palace working memory (agent-local)
 .mpg/
+
+# Python bytecode from the QA client modules
+/tools/qa/__pycache__/

@@ -250,14 +250,27 @@ function Stop-QaOwnedProcessTree {
         $known["$($entry.pid):$($entry.start_ticks)"] = $entry
     }
     $tree = @($known.Values | Sort-Object { [long]$_.start_ticks } -Descending)
-    foreach ($entry in $tree) {
-        $process = Get-QaOwnedProcess -Identity $entry
-        if (-not $process) { continue }
-        try {
-            $process.Kill()
-            if (-not $process.WaitForExit(10000)) { throw "Process $($entry.pid) did not exit" }
-        } finally { $process.Dispose() }
-    }
+    $pinned = New-Object System.Collections.Generic.List[object]
+    $failures = New-Object System.Collections.Generic.List[string]
+    try {
+        foreach ($entry in $tree) {
+            try {
+                $process = Get-QaOwnedProcess -Identity $entry
+                if (-not $process) { continue }
+                $pinned.Add(@{ process = $process; identity = $entry })
+                $process.Kill()
+            } catch { $failures.Add("PID $($entry.pid): $_") }
+        }
+        $deadline = [Diagnostics.Stopwatch]::StartNew()
+        foreach ($item in $pinned) {
+            $remaining = [math]::Max(0, 15000 - [int]$deadline.ElapsedMilliseconds)
+            try {
+                if (-not $item.process.WaitForExit($remaining)) { $failures.Add("PID $($item.identity.pid) did not exit within the cleanup deadline") }
+            } catch { $failures.Add("PID $($item.identity.pid): $_") }
+        }
+    } finally { foreach ($item in $pinned) { $item.process.Dispose() } }
+    if ($failures.Count -gt 0) { throw ($failures -join '; ') }
+
     if ($enumerationError) { throw "Root stopped, but descendant cleanup could not be verified: $enumerationError" }
 }
 

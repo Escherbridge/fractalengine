@@ -223,3 +223,9 @@ text truncation or overlay occlusion. Parent bounds alone are not clipping bound
 share uses authoritative ui-state geometry. Tree/state frame IDs are recorded separately because the
 HTTP reads may observe consecutive static frames. Capture the same fixture/size/scale/section/scroll
 position before and after layout work and inspect PNGs alongside the report.
+
+
+S6 cleanup regression: waiting for each WebView child before issuing root termination can skip the
+root when a child does not signal exit. Cleanup retains identity-verified process handles, issues all
+terminations children-first without intermediate waits, then waits under one 15-second total deadline.
+Failures are aggregated after every recorded identity receives its attempt; no unrelated PID is used.
