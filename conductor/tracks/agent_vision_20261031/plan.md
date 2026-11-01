@@ -363,3 +363,17 @@ Applies to V5, the ADVOCATE and the CRITIC. A HIGH finding is not "done" until a
    refused; covered scope succeeds — for REST and MCP.
 4. Default-on stays (user directive, RUNBOOK §3 2026-10-31); document in fe-api/AGENTS.md §screenshot that default-on is
    bounded by (1).
+
+## §UI-ADDENDUM (binding, user directive 2026-11-01: "make sure the camera can also capture the UI elements — the tool itself should expose the option")
+
+Applies to V5 (authorized to extend V1/V2's fe-runtime/src/vision.rs, fe-api/src/vision.rs and fe-api/src/mcp/tools.rs for
+this — those slices are done, no concurrent owner), the ADVOCATE and the CRITIC.
+1. Add an explicit `include_ui: bool` to CaptureSpec, REST POST body and the MCP `screenshot` tool. Default `true`.
+   `include_ui: true` ⇒ window capture (full egui UI; a pose moves the main camera, settles, captures, restores);
+   `include_ui: false` ⇒ scene capture (off-screen, 3D only). `mode` stays for compatibility; if both are given and
+   disagree → typed 400 `include_ui_conflicts_with_mode` (fail closed, no silent precedence). Table test the matrix.
+2. The MCP tool's JSON schema + description must SAY it in plain words: "include_ui (default true): include the app's
+   UI panels in the image; false renders only the 3D scene off-screen without moving the user's view". Same text in
+   fe-api/AGENTS.md §screenshot and the REST docs.
+3. Response metadata reports `include_ui` (and resolved mode) alongside the resolved pose.
+4. Width/height stay scene-only (the window capture is the window's size) — the validation message must say so.
