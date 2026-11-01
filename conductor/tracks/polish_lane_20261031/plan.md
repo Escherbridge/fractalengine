@@ -756,7 +756,7 @@ T28, S-1, D-23, CANON-WS, CDL-NET and the INTENT items are OUT (spec.md).
 
 ## §5 Progress
 
-- [ ] W1 leaves · [ ] W1 gate · [ ] W1 advocate · [ ] W1 critic · [ ] W1 re-gate
+- [x] W1 leaves · [x] W1 gate · [x] W1 advocate · [x] W1 critic · [x] W1 re-gate
 - [ ] W2 leaves · [ ] W2 gate · [ ] W2 advocate · [ ] W2 critic · [ ] W2 re-gate
 - [ ] W3 (Lane B landed?) leaves · [ ] gate · [ ] advocate · [ ] critic + security-review · [ ] re-gate · [ ] visual
 - [ ] W4 leaves · [ ] W4 gate · [ ] W4 advocate · [ ] W4 critic · [ ] W4 re-gate

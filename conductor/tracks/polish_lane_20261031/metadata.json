@@ -105,7 +105,16 @@
     "computed_at": "2026-10-31T00:00:00Z",
     "computed_at_commit": "6531d19",
     "confidence": "planned",
-    "verified_waves": [],
+    "verified_waves": [
+      {
+        "wave": 1,
+        "gate_commit": "7ea181b4d78636362a80f1c848a3d103209a4fd3",
+        "regate_commit": "03d0acce6888ca47b91cee053e0b1f6454c7dd9d",
+        "critic_verdict": "PASS-WITH-FIXES (8)",
+        "advocate_verdict": "APPROVE-WITH-FIXES (11)",
+        "verified_at": "2026-10-31T00:00:00Z"
+      }
+    ],
     "slices": [
       {
         "id": "W1-S1",
