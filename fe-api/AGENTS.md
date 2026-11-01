@@ -66,7 +66,7 @@ when a route lands.
 | Hexon tilesets | `POST /api/v1/hexons/tilesets/install?petal_id=…`, `DELETE /api/v1/hexons/tilesets/{id}?petal_id=…`, `PATCH …/{id}/seeding?petal_id=…`, `GET /api/v1/hexons/tilesets?petal_id=…`, `GET /api/v1/hexons/storage?petal_id=…` |
 | Hexon crate registry | `POST /api/v1/crates/publish`, `POST /api/v1/crates/{uri}/install?petal_id=…`, `DELETE …/{uri}/uninstall?petal_id=…`, `GET /api/v1/crates/search?petal_id=…`, `GET /api/v1/crates/installed?petal_id=…`, `GET /api/v1/crates/{uri}?petal_id=…`, `GET …/{uri}/entries?petal_id=…`, `GET …/{uri}/entries/{entry_id}/asset?petal_id=…`, `GET /api/v1/crates/available?petal_id=…` |
 | Sim control (§sim-control) | `POST /api/v1/sim/start`, `POST /api/v1/sim/stop`, `GET /api/v1/sim/status`, `POST /api/v1/sim/step`, `POST /api/v1/sim/inject-fault` |
-| Agent screenshot (§screenshot) | `GET /api/v1/debug/screenshot` → `image/png` (byte-identical, unchanged); `POST` same path → dynamic posed capture (window/scene, 5 pose kinds), PNG + `X-FE-Capture-Pose` header — ON unless `FE_API_SCREENSHOT_ALLOW=0`; Owner; 1/s per DID; NOT scope-confined |
+| Agent screenshot (§screenshot) | `GET /api/v1/debug/screenshot` → `image/png` (byte-identical, unchanged); `POST` same path → dynamic posed capture (window/scene, 5 pose kinds), PNG + `X-FE-Capture-Pose` header — ON unless `FE_API_SCREENSHOT_ALLOW=0`; Owner; 1/s per DID; scope-confined to the ACTIVE verse (uniform 404 otherwise) |
 | Agent camera read-back (§camera-state) | `GET /api/v1/debug/camera` — live pose/active hierarchy/projection; same opt-in as screenshot; Owner; 10/s per DID |
 | MCP | `POST /mcp` (`mcp::mcp_handler`) — 38-row `ToolSpec` table: 32 always advertised, `screenshot`/`get_camera` only on a GUI host (either capture bridge wired), the 5 `sim_*` only on a sim lab host (§mcp-dispatch); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
 
@@ -1772,12 +1772,13 @@ capture** instead — the agent can tell it WHERE to look (an exact camera, an
 orbit, a lat/lon, a slippy tile, or a node/petal's AABB) and whether to move
 the real window camera or render off-screen; see the wire contract and the
 static validation table in `fe-runtime/src/AGENTS.md` §vision-bridge. The
-`GET` path's bytes and behaviour are byte-for-byte unchanged by any of this —
-a hard tripwire, not an aspiration.
+`GET` path's bytes are byte-for-byte unchanged by any of this (a hard
+tripwire); its only behaviour change is the SEC-ADDENDUM scope check.
 
-It is an **exfiltration surface**: a frame shows whatever verse is open,
-regardless of the token's scope, and a posed scene capture can look anywhere
-in the active petal without the user noticing. So the posture mirrors
+It is an **exfiltration surface**: a frame shows whatever verse is open, so
+the host confines every capture and camera read to a token whose scope covers
+that verse ("Scope confinement" below), and a posed scene capture can still
+look anywhere in the active petal without the user noticing. So the posture mirrors
 §elevated-query (deny-by-default), with one change:
 
 - **Operator opt-in, ON BY DEFAULT (agent_vision_20261031 DD-1).**
@@ -1862,6 +1863,42 @@ path + `GET /camera`) covers the static validation table, the round trip
 the single-flight 409, a dynamic Bevy-side refusal mapping to 422, the
 camera-budget independence, the disabled/headless cases, and both MCP shapes
 — also renderer-free.
+
+### Scope confinement + `include_ui` (V5 addenda: SEC-ADDENDUM, UI-ADDENDUM)
+
+- **Default-on is bounded by scope.** Every capture (plain `GET`, posed
+  `POST`, MCP `screenshot` with or without arguments) and every camera read
+  (`GET /api/v1/debug/camera`, MCP `get_camera`) carries the caller's token
+  scope across the bridge (`ScreenshotRequest.caller_scope`,
+  `VisionRequest.caller_scope`). The Bevy host refuses unless that scope covers
+  the ACTIVE verse (fe-policy `scope_contains` against `VERSE#<active>`; with
+  nothing open, no one is covered), and checks it again at capture time, so a
+  verse-B Owner token never receives verse-A pixels. Both doors call the same
+  `request_capture`/`request_vision(state, &claims.scope, ..)`, so there is no
+  MCP-only gap. `focus` targets are resolved to their verse first, and an
+  out-of-scope target and a nonexistent one answer IDENTICALLY (§existence-oracle).
+  `navigate: true` never leaves the active verse (`cross_verse_navigate_refused`),
+  and a navigating job puts the user's navigation back on failure, timeout or
+  `restore: true`. The denial is the uniform 404
+  `{"ok":false,"error":"not found or not permitted","code":"not_found_or_denied"}`
+  (REST), and the same text as the MCP tool error.
+- **`include_ui`** (POST body + MCP `screenshot`): include_ui (default true):
+  include the app's UI panels in the image; false renders only the 3D scene
+  off-screen without moving the user's view. It is the same switch as `mode`
+  (`true` = `window`, `false` = `scene`). Giving both with different answers is
+  the typed 400 `include_ui_conflicts_with_mode` (fail closed, no precedence).
+  `width`/`height` need `include_ui: false`, because a UI capture is always the
+  window's own size. The `X-FE-Capture-Pose` header and the MCP pose text carry
+  `include_ui` beside `mode` (`vision::pose_metadata_json`).
+- **One model, one parse path, one round trip (advocate pass, 2026-11-01).**
+  REST and MCP parse into the same `CaptureSpec` through
+  `vision::validate_capture_request` (serde failure = `malformed_body`, then
+  `CaptureSpec::validate`'s typed table); MCP errors carry the same `code`
+  prefix REST puts in its JSON (`VisionError::coded_message`). Both bridges go
+  through `bridge_client::round_trip(bridge, caller_scope, op, timeout, name)`
+  — the API end of fe-runtime §correlated-bridge — so the caller's scope can
+  never be left off a request; each surface only maps `RoundTripError` to its
+  own typed error.
 
 ## §camera-state (`vision.rs::get_camera`, agent_vision_20261031)
 

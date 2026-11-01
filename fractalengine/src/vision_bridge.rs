@@ -16,20 +16,21 @@ use bevy::time::Real;
 use bevy::transform::TransformSystems;
 use bevy::window::PrimaryWindow;
 use fe_renderer::camera::{
-    compute_orbit_transform, orbit_from_look_at, pose_transform, CameraCaptureLock,
-    CameraScaleSettings, CaptureCamera, OrbitCameraController, StreamingFocus,
+    compute_orbit_transform, frame_world_box, orbit_from_look_at, pose_transform,
+    CameraCaptureLock, CameraScaleSettings, CaptureCamera, LookAtPose, OrbitCameraController,
+    StreamingFocus,
 };
 use fe_renderer::terrain_height::TerrainHeightField;
 use fe_runtime::vision::{
-    ActiveHierarchy, AltitudeReference, CameraState, CaptureMode, FocusTarget, PoseSource,
+    denied, ActiveHierarchy, AltitudeReference, CameraState, CaptureMode, FocusTarget, PoseSource,
     ProjectionState, ResolvedGeo, ResolvedOrbit, ResolvedPose, ValidCaptureSpec, ValidPoseSpec,
     VisionFailure, VisionFailureClass, VisionOp, VisionOutput, VisionRequest,
     VisionRequestReceiver, WindowState, DEFAULT_FOV_DEG, DEFAULT_HEIGHT, DEFAULT_WIDTH,
     SETTLE_MAX,
 };
 use fe_terrain::camera_framing::{
-    coverage_check, frame_bounds_top_down, geo_pose, tile_bounds, within_projection_range,
-    Coverage, FramedPose,
+    coverage_check, frame_bounds_top_down, geo_pose, tile_bounds, union_bounds,
+    within_projection_range, Coverage, FramedPose,
 };
 use fe_terrain::petal_binding::{ActivePetalTerrain, ActiveTileSource};
 use fe_terrain::projection::Projection as GeoProjection;
@@ -57,10 +58,6 @@ const NAVIGATE_FRAME_CAP: u32 = 300;
 /// Frames a freshly spawned target must exist before its transforms are read
 /// (one propagation pass + one bounds pass).
 const NAVIGATE_GRACE_FRAMES: u32 = 2;
-/// Framing margin around a focus sphere (spec §5.3).
-const FRAMING_MARGIN: f32 = 1.1;
-/// Smallest framed focus radius (world units) — a bare point still frames.
-const MIN_FOCUS_RADIUS: f32 = 0.5;
 /// The render layer every gizmo group draws on: the main camera sees it,
 /// a capture camera (default layer 0 only) does not.
 pub const GIZMO_RENDER_LAYER: usize = 1;
@@ -92,6 +89,16 @@ struct PoseTarget {
 impl PoseTarget {
     fn transform(&self) -> Option<Transform> {
         pose_transform(self.position, self.target, self.up)
+    }
+
+    /// A pure look-at pose (fe-renderer framing math) at this job's `fov`.
+    fn from_look_at(pose: LookAtPose, fov: f32) -> Self {
+        Self {
+            position: pose.position,
+            target: pose.target,
+            up: pose.up,
+            fov,
+        }
     }
 }
 
@@ -162,6 +169,12 @@ impl CameraSnapshot {
 
 struct ActiveJob {
     request: VisionRequest,
+    /// The caller's token scope, re-checked against the active verse at
+    /// capture time (SEC-ADDENDUM).
+    caller_scope: String,
+    /// The user's navigation before a `focus.navigate` moved it; put back on
+    /// failure, timeout, or `restore: true`.
+    nav_snapshot: Option<NavSnapshot>,
     mode: CaptureMode,
     source: PoseSource,
     settle_frames: u32,
@@ -317,6 +330,61 @@ pub fn isolate_gizmos_from_capture_cameras(
 }
 
 // ---------------------------------------------------------------------------
+// Scope confinement (SEC-ADDENDUM)
+// ---------------------------------------------------------------------------
+
+/// `caller_scope` covers verse `verse_id` — fe-policy's containment rule
+/// (the one `TokenScopePolicy` uses), so a verse-B token never sees verse A.
+pub(crate) fn scope_covers_verse(caller_scope: &str, verse_id: &str) -> bool {
+    !verse_id.is_empty() && fe_database::scope_contains(caller_scope, &format!("VERSE#{verse_id}"))
+}
+
+/// The one gate every capture and camera read passes: the caller must cover
+/// the ACTIVE verse (nothing open = denied). Shared with the plain GET path.
+pub(crate) fn scope_covers_active_verse(caller_scope: &str, nav: Option<&NavigationManager>) -> bool {
+    nav.and_then(|nav| nav.active_verse_id.as_deref())
+        .is_some_and(|verse_id| scope_covers_verse(caller_scope, verse_id))
+}
+
+/// The user's verse/fractal/petal cursor before a capture navigated it.
+struct NavSnapshot {
+    verse: Option<(String, String)>,
+    fractal: Option<(String, String)>,
+    petal: Option<String>,
+}
+
+impl NavSnapshot {
+    fn take(nav: &NavigationManager) -> Self {
+        Self {
+            verse: nav
+                .active_verse_id
+                .clone()
+                .map(|id| (id, nav.active_verse_name.clone())),
+            fractal: nav
+                .active_fractal_id
+                .clone()
+                .map(|id| (id, nav.active_fractal_name.clone())),
+            petal: nav.active_petal_id.clone(),
+        }
+    }
+
+    /// Put the cursor back through the manager's own methods (root AGENTS.md
+    /// anti-pattern 1: never write `NavigationManager` fields directly).
+    fn restore(&self, nav: &mut NavigationManager) {
+        match &self.verse {
+            Some((id, name)) => nav.navigate_to_verse(id.clone(), name.clone()),
+            None => nav.back_from_verse(),
+        }
+        if let Some((id, name)) = &self.fractal {
+            nav.navigate_to_fractal(id.clone(), name.clone());
+        }
+        if let Some(petal) = &self.petal {
+            nav.navigate_to_petal(petal.clone());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Failures
 // ---------------------------------------------------------------------------
 
@@ -450,24 +518,11 @@ fn pose_from_framed(framed: FramedPose, fov: f32) -> Result<PoseTarget, VisionFa
     })
 }
 
-/// Frame a world box: keep `view_dir`, back off until the bounding sphere
-/// fits the FOV — `distance = radius / sin(fov/2) × 1.1` (spec §5.3).
-fn frame_world_box(min: Vec3, max: Vec3, view_dir: Vec3, fov: f32) -> PoseTarget {
-    let center = (min + max) * 0.5;
-    let radius = ((max - min) * 0.5).length().max(MIN_FOCUS_RADIUS);
-    let direction = view_dir.try_normalize().unwrap_or(Vec3::NEG_Z);
-    let distance = radius / (fov * 0.5).sin() * FRAMING_MARGIN;
-    let up = if direction.cross(Vec3::Y).length() < 1e-4 {
-        Vec3::Z
-    } else {
-        Vec3::Y
-    };
-    PoseTarget {
-        position: center - direction * distance,
-        target: center,
-        up,
-        fov,
-    }
+/// Frame a world box with the view's direction and FOV (fe-renderer's pure
+/// `frame_world_box`, spec §5.3).
+fn frame_box(min: Vec3, max: Vec3, view: &ViewContext) -> PoseTarget {
+    let view_dir = Vec3::from(view.transform.forward());
+    PoseTarget::from_look_at(frame_world_box(min, max, view_dir, view.fov), view.fov)
 }
 
 fn source_of(pose: Option<&ValidPoseSpec>) -> PoseSource {
@@ -489,6 +544,7 @@ fn no_projection() -> VisionFailure {
 
 fn resolve_pose(
     pose: Option<&ValidPoseSpec>,
+    caller_scope: &str,
     view: &ViewContext,
     scene: &SceneLookup,
     terrain: &TerrainLookup,
@@ -554,7 +610,7 @@ fn resolve_pose(
         )?,
         Some(ValidPoseSpec::Tile { z, x, y }) => resolve_tile(terrain, (*z, *x, *y), view)?,
         Some(ValidPoseSpec::Focus { target, navigate }) => {
-            return resolve_focus(target, *navigate, view, scene, terrain)
+            return resolve_focus(target, *navigate, caller_scope, view, scene, terrain)
         }
     };
     Ok(Resolution::Ready(pose))
@@ -673,84 +729,118 @@ fn node_box(scene: &SceneLookup, entity: Entity) -> Option<(Vec3, Vec3)> {
         })
 }
 
-fn petal_of_node<'a>(verses: &'a VerseManager, node_id: &str) -> Option<&'a str> {
-    verses
-        .verses
-        .iter()
-        .flat_map(|v| &v.fractals)
-        .flat_map(|f| &f.petals)
-        .find(|p| p.nodes.iter().any(|n| n.id == node_id))
-        .map(|p| p.id.as_str())
+/// `(verse_id, petal_id)` of a node in the hierarchy tree.
+fn locate_node<'a>(verses: &'a VerseManager, node_id: &str) -> Option<(&'a str, &'a str)> {
+    verses.verses.iter().find_map(|verse| {
+        verse
+            .fractals
+            .iter()
+            .flat_map(|f| &f.petals)
+            .find(|p| p.nodes.iter().any(|n| n.id == node_id))
+            .map(|p| (verse.id.as_str(), p.id.as_str()))
+    })
+}
+
+/// `verse_id` of a petal in the hierarchy tree.
+fn locate_petal<'a>(verses: &'a VerseManager, petal_id: &str) -> Option<&'a str> {
+    verses.verses.iter().find_map(|verse| {
+        verse
+            .fractals
+            .iter()
+            .flat_map(|f| &f.petals)
+            .any(|p| p.id == petal_id)
+            .then_some(verse.id.as_str())
+    })
+}
+
+/// SEC-ADDENDUM item 2: a focus target's verse + petal, resolved BEFORE any
+/// capture; `None` when it is unknown OR out of the caller's scope — the two
+/// are deliberately indistinguishable (the uniform [`denied`]).
+fn authorized_target<'a>(
+    target: &FocusTarget,
+    caller_scope: &str,
+    scene: &'a SceneLookup,
+) -> Option<(&'a str, &'a str)> {
+    let nav = scene.nav.as_deref()?;
+    let active = nav.active_verse_id.as_deref().zip(nav.active_petal_id.as_deref());
+    let verses = scene.verses.as_deref();
+    let located = match target {
+        FocusTarget::Node(node_id) => verses.and_then(|v| locate_node(v, node_id)).or_else(|| {
+            // A spawned marker the tree lacks lives in the active petal.
+            let (verse, petal) = active?;
+            scene
+                .markers
+                .iter()
+                .any(|(_, m, _)| m.node_id == *node_id && m.petal_id == petal)
+                .then_some((verse, petal))
+        }),
+        FocusTarget::Petal(petal_id) => verses
+            .and_then(|v| locate_petal(v, petal_id))
+            .zip(verses.and_then(|v| v.find_petal(petal_id)).map(|p| p.id.as_str()))
+            .or_else(|| active.filter(|(_, petal)| petal == petal_id)),
+    };
+    located.filter(|(verse, _)| scope_covers_verse(caller_scope, verse))
 }
 
 fn resolve_focus(
     target: &FocusTarget,
     navigate: bool,
+    caller_scope: &str,
     view: &ViewContext,
     scene: &SceneLookup,
     terrain: &TerrainLookup,
 ) -> Result<Resolution, VisionFailure> {
-    let active_petal = scene
-        .nav
-        .as_deref()
-        .and_then(|nav| nav.active_petal_id.as_deref());
-    let view_dir = Vec3::from(view.transform.forward());
+    let (target_verse, target_petal) =
+        authorized_target(target, caller_scope, scene).ok_or_else(denied)?;
+    let nav = scene.nav.as_deref();
+    let active_verse = nav.and_then(|nav| nav.active_verse_id.as_deref());
+    let active_petal = nav.and_then(|nav| nav.active_petal_id.as_deref());
+    if Some(target_verse) != active_verse {
+        // Never switch the user's view to another verse (SEC-ADDENDUM 2/5).
+        return Err(if navigate {
+            unresolvable(
+                "cross_verse_navigate_refused",
+                "`navigate` never leaves the active verse — the target is in another verse",
+            )
+        } else {
+            unresolvable("not_active_petal", "the target is not in the active verse")
+        });
+    }
+    if Some(target_petal) != active_petal {
+        return if navigate {
+            Ok(Resolution::Navigate(target.clone()))
+        } else {
+            Err(unresolvable(
+                "not_active_petal",
+                format!(
+                    "the target is in petal {target_petal}, not the active petal — pass `navigate: true` (with include_ui) to go there"
+                ),
+            ))
+        };
+    }
     match target {
         FocusTarget::Node(node_id) => {
             let spawned = scene
                 .markers
                 .iter()
-                .find(|(_, marker, _)| marker.node_id == *node_id && Some(marker.petal_id.as_str()) == active_petal);
-            if let Some((entity, _, own_visibility)) = spawned {
-                if !node_visible(scene, node_id, own_visibility) {
-                    return Err(unresolvable(
-                        "node_hidden",
-                        format!("node {node_id} is hidden — show it before framing it"),
-                    ));
-                }
-                let (min, max) = node_box(scene, entity)
-                    .ok_or_else(|| unresolvable("node_not_found", "node has no transform"))?;
-                return Ok(Resolution::Ready(frame_world_box(min, max, view_dir, view.fov)));
-            }
-            match scene.verses.as_deref().and_then(|v| petal_of_node(v, node_id)) {
-                Some(petal) if Some(petal) != active_petal => {
-                    if navigate {
-                        Ok(Resolution::Navigate(target.clone()))
-                    } else {
-                        Err(unresolvable(
-                            "not_active_petal",
-                            format!(
-                                "node {node_id} is in petal {petal}, not the active petal — pass `navigate: true` (window mode) to go there"
-                            ),
-                        ))
-                    }
-                }
-                _ => Err(unresolvable(
+                .find(|(_, marker, _)| marker.node_id == *node_id && marker.petal_id == target_petal);
+            let Some((entity, _, own_visibility)) = spawned else {
+                return Err(unresolvable(
                     "node_not_found",
-                    format!("node {node_id} is not spawned in the active petal"),
-                )),
+                    format!("node {node_id} is not spawned in the active petal (yet)"),
+                ));
+            };
+            if !node_visible(scene, node_id, own_visibility) {
+                return Err(unresolvable(
+                    "node_hidden",
+                    format!("node {node_id} is hidden — show it before framing it"),
+                ));
             }
+            let (min, max) = node_box(scene, entity)
+                .ok_or_else(|| unresolvable("node_not_found", "node has no transform"))?;
+            Ok(Resolution::Ready(frame_box(min, max, view)))
         }
         FocusTarget::Petal(petal_id) => {
-            if Some(petal_id.as_str()) != active_petal {
-                let known = scene
-                    .verses
-                    .as_deref()
-                    .is_some_and(|v| v.find_petal(petal_id).is_some());
-                return match (known, navigate) {
-                    (true, true) => Ok(Resolution::Navigate(target.clone())),
-                    (true, false) => Err(unresolvable(
-                        "not_active_petal",
-                        format!(
-                            "petal {petal_id} is not the active petal — pass `navigate: true` (window mode) to go there"
-                        ),
-                    )),
-                    (false, _) => Err(unresolvable(
-                        "petal_not_found",
-                        format!("petal {petal_id} is not in the hierarchy"),
-                    )),
-                };
-            }
             let mut bounds: Option<(Vec3, Vec3)> = None;
             for (entity, marker, own_visibility) in &scene.markers {
                 if marker.petal_id != *petal_id || !node_visible(scene, &marker.node_id, own_visibility) {
@@ -764,7 +854,7 @@ fn resolve_focus(
                 }
             }
             if let Some((min, max)) = bounds {
-                return Ok(Resolution::Ready(frame_world_box(min, max, view_dir, view.fov)));
+                return Ok(Resolution::Ready(frame_box(min, max, view)));
             }
             let tilesets = terrain.tileset_bounds();
             match (terrain.projection(), union_bounds(&tilesets)) {
@@ -780,13 +870,8 @@ fn resolve_focus(
     }
 }
 
-fn union_bounds(bounds: &[[f64; 4]]) -> Option<[f64; 4]> {
-    bounds.iter().copied().reduce(|a, b| {
-        [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]
-    })
-}
-
-/// Navigate to `petal_id` (only the levels that differ); `false` if unknown.
+/// Navigate to `petal_id` within the ACTIVE verse (only the levels that
+/// differ); `false` if unknown or in another verse.
 fn navigate_to_petal(nav: &mut NavigationManager, verses: &VerseManager, petal_id: &str) -> bool {
     for verse in &verses.verses {
         for fractal in &verse.fractals {
@@ -794,7 +879,8 @@ fn navigate_to_petal(nav: &mut NavigationManager, verses: &VerseManager, petal_i
                 continue;
             }
             if nav.active_verse_id.as_deref() != Some(verse.id.as_str()) {
-                nav.navigate_to_verse(verse.id.clone(), verse.name.clone());
+                // Cross-verse navigation is refused outright (SEC-ADDENDUM).
+                return false;
             }
             if nav.active_fractal_id.as_deref() != Some(fractal.id.as_str()) {
                 nav.navigate_to_fractal(fractal.id.clone(), fractal.name.clone());
@@ -948,6 +1034,11 @@ pub fn drain_vision_requests(
     mut commands: Commands,
 ) {
     while let Ok(request) = bridge.0.try_recv() {
+        // SEC-ADDENDUM: every read and capture needs the active verse covered.
+        if !scope_covers_active_verse(&request.caller_scope, scene.nav.as_deref()) {
+            request.reply(Err(denied()));
+            continue;
+        }
         let spec = match &request.op {
             VisionOp::ReadCamera => {
                 let result = read_camera(
@@ -970,8 +1061,9 @@ pub fn drain_vision_requests(
             )));
             continue;
         }
-        match start_job(&spec, windows.single().ok(), &cameras, &mut scene, &terrain) {
-            Ok((phase, pose)) => {
+        let caller_scope = request.caller_scope.clone();
+        match start_job(&spec, &caller_scope, windows.single().ok(), &cameras, &mut scene, &terrain) {
+            Ok((phase, pose, nav_snapshot)) => {
                 let holds_camera = spec.mode() == CaptureMode::Window && spec.pose().is_some();
                 let source = source_of(spec.pose());
                 tracing::info!(
@@ -985,6 +1077,8 @@ pub fn drain_vision_requests(
                 }
                 job.0 = Some(ActiveJob {
                     request,
+                    caller_scope,
+                    nav_snapshot,
                     mode: spec.mode(),
                     source,
                     settle_frames: spec.settle_frames(),
@@ -1012,11 +1106,12 @@ pub fn drain_vision_requests(
 /// refusal is decided here, before anything moves.
 fn start_job(
     spec: &ValidCaptureSpec,
+    caller_scope: &str,
     window: Option<&Window>,
     cameras: &MainCamera,
     scene: &mut SceneLookup,
     terrain: &TerrainLookup,
-) -> Result<(JobPhase, Option<PoseTarget>), VisionFailure> {
+) -> Result<(JobPhase, Option<PoseTarget>, Option<NavSnapshot>), VisionFailure> {
     if spec.mode() == CaptureMode::Window {
         if let Some(refusal) = window_refusal(window) {
             return Err(refusal);
@@ -1024,28 +1119,26 @@ fn start_job(
     }
     let size = spec.width().zip(spec.height()).map(|(w, h)| UVec2::new(w, h));
     let view = view_context(cameras, window, size)?;
-    match resolve_pose(spec.pose(), &view, scene, terrain)? {
+    match resolve_pose(spec.pose(), caller_scope, &view, scene, terrain)? {
         Resolution::Ready(pose) => {
             pose.transform().ok_or_else(|| {
                 unresolvable("degenerate_camera", "the resolved pose has no valid orientation")
             })?;
-            Ok((JobPhase::Posing, Some(pose)))
+            Ok((JobPhase::Posing, Some(pose), None))
         }
         Resolution::Navigate(target) => {
-            let petal = match &target {
-                FocusTarget::Petal(petal_id) => Some(petal_id.clone()),
-                FocusTarget::Node(node_id) => scene
-                    .verses
-                    .as_deref()
-                    .and_then(|v| petal_of_node(v, node_id))
-                    .map(str::to_string),
+            // `resolve_focus` proved the target is covered and in the ACTIVE
+            // verse, so this only ever moves fractal/petal.
+            let petal = authorized_target(&target, caller_scope, scene)
+                .map(|(_, petal)| petal.to_string())
+                .ok_or_else(denied)?;
+            let (Some(nav), Some(verses)) = (scene.nav.as_deref_mut(), scene.verses.as_deref())
+            else {
+                return Err(denied());
             };
-            let navigated = match (petal, scene.nav.as_deref_mut(), scene.verses.as_deref()) {
-                (Some(petal), Some(nav), Some(verses)) => navigate_to_petal(nav, verses, &petal),
-                _ => false,
-            };
-            if !navigated {
-                return Err(unresolvable("not_active_petal", "could not navigate to the target"));
+            let snapshot = NavSnapshot::take(nav);
+            if !navigate_to_petal(nav, verses, &petal) {
+                return Err(denied());
             }
             Ok((
                 JobPhase::Navigating {
@@ -1054,6 +1147,7 @@ fn start_job(
                     seen_frames: 0,
                 },
                 None,
+                Some(snapshot),
             ))
         }
     }
@@ -1073,7 +1167,7 @@ pub fn apply_vision_pose(
     mut job: ResMut<VisionJob>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut cameras: MainCamera,
-    scene: SceneLookup,
+    mut scene: SceneLookup,
     terrain: TerrainLookup,
     mut images: ResMut<Assets<Image>>,
     mut commands: Commands,
@@ -1098,7 +1192,9 @@ pub fn apply_vision_pose(
             }
             let target = target.clone();
             let resolved = view_context(&cameras, window, active.size)
-                .and_then(|view| resolve_focus(&target, false, &view, &scene, &terrain));
+                .and_then(|view| {
+                    resolve_focus(&target, false, &active.caller_scope, &view, &scene, &terrain)
+                });
             match resolved {
                 Ok(Resolution::Ready(pose)) => {
                     active.pose = Some(pose);
@@ -1123,7 +1219,8 @@ pub fn apply_vision_pose(
     };
     if let Step::Finish(outcome) = step {
         if let Some(active) = job.0.take() {
-            finish_job(active, outcome, window, &mut cameras, &terrain, &mut images, &mut commands);
+            let nav = scene.nav.as_deref_mut();
+            finish_job(active, outcome, window, &mut cameras, nav, &terrain, &mut images, &mut commands);
         }
     }
 }
@@ -1227,6 +1324,7 @@ pub fn advance_vision_job(
     time: Res<Time<Real>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut cameras: MainCamera,
+    mut nav: Option<ResMut<NavigationManager>>,
     terrain: TerrainLookup,
     mut images: ResMut<Assets<Image>>,
     mut commands: Commands,
@@ -1263,6 +1361,11 @@ pub fn advance_vision_job(
                 if !((ready || capped) && target_prepared) {
                     active.frames_waited += 1;
                     break 'step Step::Continue;
+                }
+                // Re-check at capture time: the user may have navigated to a
+                // verse this caller does not cover while the job settled.
+                if !scope_covers_active_verse(&active.caller_scope, nav.as_deref()) {
+                    break 'step Step::Finish(Err(denied()));
                 }
                 active.settled = ready;
                 active.tiles_pending = pending;
@@ -1303,19 +1406,23 @@ pub fn advance_vision_job(
     };
     if let Step::Finish(outcome) = step {
         if let Some(active) = job.0.take() {
-            finish_job(active, outcome, window, &mut cameras, &terrain, &mut images, &mut commands);
+            let nav = nav.as_deref_mut();
+            finish_job(active, outcome, window, &mut cameras, nav, &terrain, &mut images, &mut commands);
         }
     }
 }
 
 /// THE single job exit (spec §5.5, plan tripwire): releases the lock,
 /// restores (or, on `restore: false` success, re-derives) the main camera,
-/// despawns the capture camera/image/stale screenshot, then replies.
+/// puts back any navigation the job made (same rule), despawns the capture
+/// camera/image/stale screenshot, then replies.
+#[allow(clippy::too_many_arguments)]
 fn finish_job(
     mut active: ActiveJob,
     outcome: Result<Vec<u8>, VisionFailure>,
     window: Option<&Window>,
     cameras: &mut MainCamera,
+    nav: Option<&mut NavigationManager>,
     terrain: &TerrainLookup,
     images: &mut Assets<Image>,
     commands: &mut Commands,
@@ -1324,10 +1431,16 @@ fn finish_job(
         commands.remove_resource::<CameraCaptureLock>();
     }
     let succeeded = outcome.is_ok();
+    let put_back = active.restore || !succeeded;
+    if let (Some(snapshot), Some(nav)) = (active.nav_snapshot.take(), nav) {
+        if put_back {
+            snapshot.restore(nav);
+        }
+    }
     let mut restored = false;
     if let Some(snapshot) = active.snapshot.take() {
         if let Ok((mut transform, mut controller, mut projection)) = cameras.single_mut() {
-            if active.restore || !succeeded {
+            if put_back {
                 snapshot.restore(&mut transform, &mut controller, &mut projection);
                 restored = true;
             } else if let Some(pose) = active.pose {
@@ -1430,7 +1543,9 @@ mod tests {
         time.update_with_duration(Duration::ZERO);
         app.insert_resource(time);
         app.init_resource::<Assets<Image>>();
-        app.init_resource::<NavigationManager>();
+        let mut nav = NavigationManager::default();
+        nav.navigate_to_verse("v", "Verse");
+        app.insert_resource(nav);
         app.init_resource::<VisibilityState>();
         app.insert_resource(VerseManager::default());
         let mut window = Window::default();
@@ -1462,19 +1577,29 @@ mod tests {
 
     impl Harness {
         fn send(&self, op: VisionOp) -> tokio::sync::oneshot::Receiver<VisionReply> {
-            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-            self.tx
-                .try_send(VisionRequest {
-                    correlation_id: "c1".to_string(),
-                    op,
-                    reply_tx,
-                })
-                .expect("bridge has room");
+            self.send_as("VERSE#v", op)
+        }
+
+        fn send_as(
+            &self,
+            scope: &str,
+            op: VisionOp,
+        ) -> tokio::sync::oneshot::Receiver<VisionReply> {
+            let (request, reply_rx) = VisionRequest::new("c1", scope, op);
+            self.tx.try_send(request).expect("bridge has room");
             reply_rx
         }
 
         fn capture(&self, spec: CaptureSpec) -> tokio::sync::oneshot::Receiver<VisionReply> {
             self.send(VisionOp::Capture(spec.validate().expect("valid spec")))
+        }
+
+        fn active_petal(&self) -> Option<String> {
+            self.app
+                .world()
+                .resource::<NavigationManager>()
+                .active_petal_id
+                .clone()
         }
 
         fn main_state(&self) -> (Transform, [f32; 6], f32) {
@@ -1620,7 +1745,8 @@ mod tests {
         }
     }
 
-    /// A verse v / fractal f with petals p (active, node n1) and q (node n2).
+    /// Verse v / fractal f with petals p (active, node n1) and q (node n2),
+    /// plus verse w / petal r (node n3).
     fn two_petal_tree(h: &mut Harness) {
         let node = |id: &str| NodeEntry {
             id: id.to_string(),
@@ -1633,17 +1759,31 @@ mod tests {
             nodes,
             ..Default::default()
         };
-        h.app.insert_resource(VerseManager::from_verses(vec![VerseEntry {
-            id: "v".into(),
-            name: "Verse".into(),
-            fractals: vec![FractalEntry {
-                id: "f".into(),
-                name: "Fractal".into(),
-                petals: vec![petal("p", vec![node("n1")]), petal("q", vec![node("n2")])],
+        h.app.insert_resource(VerseManager::from_verses(vec![
+            VerseEntry {
+                id: "v".into(),
+                name: "Verse".into(),
+                fractals: vec![FractalEntry {
+                    id: "f".into(),
+                    name: "Fractal".into(),
+                    petals: vec![petal("p", vec![node("n1")]), petal("q", vec![node("n2")])],
+                    ..Default::default()
+                }],
                 ..Default::default()
-            }],
-            ..Default::default()
-        }]));
+            },
+            // A second verse the verse-v token does not cover.
+            VerseEntry {
+                id: "w".into(),
+                name: "Other".into(),
+                fractals: vec![FractalEntry {
+                    id: "g".into(),
+                    name: "Other fractal".into(),
+                    petals: vec![petal("r", vec![node("n3")])],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ]));
         let mut nav = h.app.world_mut().resource_mut::<NavigationManager>();
         nav.navigate_to_verse("v", "Verse");
         nav.navigate_to_fractal("f", "Fractal");
@@ -1710,27 +1850,6 @@ mod tests {
             * n)
             .floor() as u32;
         (x, y)
-    }
-
-    #[test]
-    fn frame_world_box_fits_the_focus_sphere_in_the_fov() {
-        let cases = [
-            (Vec3::splat(-1.0), Vec3::splat(1.0), Vec3::NEG_Z, 45f32),
-            (Vec3::new(0.0, 0.0, 0.0), Vec3::new(10.0, 2.0, 4.0), Vec3::new(1.0, -1.0, 0.0), 60.0),
-            (Vec3::splat(5.0), Vec3::splat(5.0), Vec3::NEG_Y, 30.0),
-        ];
-        for (min, max, view_dir, fov_deg) in cases {
-            let fov = fov_deg.to_radians();
-            let pose = frame_world_box(min, max, view_dir, fov);
-            let radius = ((max - min) * 0.5).length().max(MIN_FOCUS_RADIUS);
-            let distance = (pose.target - pose.position).length();
-            assert!(
-                (distance * (fov * 0.5).sin() - radius * FRAMING_MARGIN).abs() < 1e-3,
-                "sphere of radius {radius} must fit fov {fov_deg}° with the margin"
-            );
-            assert!(((pose.target - pose.position).normalize() - view_dir.normalize()).length() < 1e-4);
-            assert!(pose.transform().is_some(), "framed pose must be orientable: {pose:?}");
-        }
     }
 
     /// AC-6: scene mode spawns exactly one capture camera (streaming focus,
@@ -2006,12 +2125,6 @@ mod tests {
         assert_eq!(refusal.code, "not_active_petal");
         let nav = h.app.world().resource::<NavigationManager>();
         assert_eq!(nav.active_petal_id.as_deref(), Some("p"), "no navigation happened");
-        let mut unknown = h.capture(focus_capture("ghost", false));
-        h.app.update();
-        assert_eq!(
-            expect_failure(unknown.try_recv().expect("answered")).code,
-            "node_not_found"
-        );
     }
 
     /// `navigate: true` (window mode) switches the active petal, waits for
@@ -2034,6 +2147,120 @@ mod tests {
         h.deliver_frame(shot);
         let (_, pose) = expect_capture(h.update_until_reply(&mut reply));
         assert!((pose.target[0] + 8.0).abs() < 1e-4 && (pose.target[1] - 1.0).abs() < 1e-4);
+        assert_eq!(
+            h.active_petal().as_deref(),
+            Some("p"),
+            "restore (default) puts the user's navigation back"
+        );
+    }
+
+    /// `restore: false` keeps both the posed camera AND the navigation.
+    #[test]
+    fn focus_with_navigate_and_restore_false_stays_in_the_target_petal() {
+        let mut h = harness((1280, 720));
+        two_petal_tree(&mut h);
+        let mut spec = focus_capture("n2", true);
+        spec.restore = Some(false);
+        let mut reply = h.capture(spec);
+        h.app.update();
+        spawn_node(&mut h, "n2", "q", Vec3::new(-8.0, 1.0, 2.0));
+        let shot = h.update_until_screenshot();
+        h.deliver_frame(shot);
+        expect_capture(h.update_until_reply(&mut reply));
+        assert_eq!(h.active_petal().as_deref(), Some("q"));
+    }
+
+    /// A navigating job that fails (here: the job cap, the node never
+    /// spawned) never leaves the user somewhere else.
+    #[test]
+    fn navigate_then_fail_returns_navigation_to_the_original_petal() {
+        let mut h = harness((1280, 720));
+        two_petal_tree(&mut h);
+        let before = h.main_state();
+        let mut spec = focus_capture("n2", true);
+        spec.restore = Some(false);
+        let mut reply = h.capture(spec);
+        h.app.update();
+        assert_eq!(h.active_petal().as_deref(), Some("q"), "navigated");
+        h.advance_clock(JOB_WALL_CLOCK_CAP);
+        h.app.update();
+        let failure = expect_failure(reply.try_recv().expect("torn down"));
+        assert_eq!(failure.code, "capture_timed_out");
+        assert_eq!(h.active_petal().as_deref(), Some("p"), "failure restores navigation");
+        h.app.update();
+        assert!(!h.locked());
+        assert_eq!(h.main_state(), before);
+    }
+
+    /// SEC-ADDENDUM 1: a token that does not cover the ACTIVE verse gets the
+    /// uniform denial for captures and camera reads alike — nothing moves.
+    #[test]
+    fn a_token_outside_the_active_verse_is_denied_capture_and_camera_read() {
+        let mut h = harness((1280, 720));
+        two_petal_tree(&mut h);
+        let before = h.main_state();
+        let spec = orbit_capture(CaptureMode::Scene, 0, None).validate().unwrap();
+        let mut capture = h.send_as("VERSE#w", VisionOp::Capture(spec));
+        let mut read = h.send_as("VERSE#w", VisionOp::ReadCamera);
+        h.app.update();
+        for reply in [&mut capture, &mut read] {
+            let refusal = expect_failure(reply.try_recv().expect("answered at once"));
+            assert_eq!(refusal, denied());
+        }
+        assert!(h.capture_cameras().is_empty() && !h.locked());
+        assert_eq!(h.main_state(), before);
+        // The covering token is served (the denial was the scope, not the op).
+        let mut read = h.send_as("VERSE#v", VisionOp::ReadCamera);
+        h.app.update();
+        assert!(read.try_recv().expect("answered").result.is_ok());
+    }
+
+    /// SEC-ADDENDUM 2/5: an existing target in an uncovered verse and a
+    /// target that does not exist get the SAME error (no existence oracle);
+    /// navigating toward another verse is refused and never moves the user.
+    #[test]
+    fn foreign_and_nonexistent_focus_targets_get_the_same_denial() {
+        let mut h = harness((1280, 720));
+        two_petal_tree(&mut h);
+        let mut foreign = h.capture(focus_capture("n3", false));
+        let mut ghost = h.capture(focus_capture("ghost", false));
+        h.app.update();
+        h.app.update();
+        let foreign = expect_failure(foreign.try_recv().expect("answered"));
+        let ghost = expect_failure(ghost.try_recv().expect("answered"));
+        assert_eq!(foreign, denied());
+        assert_eq!(foreign, ghost, "indistinguishable");
+
+        for target in ["n3", "ghost"] {
+            let mut reply = h.capture(focus_capture(target, true));
+            h.app.update();
+            assert_eq!(expect_failure(reply.try_recv().expect("answered")), denied());
+            assert_eq!(h.active_petal().as_deref(), Some("p"), "never navigated");
+            assert!(!h.locked());
+        }
+    }
+
+    /// The scope is re-checked at capture time: if the user opens a verse the
+    /// caller does not cover while the job settles, no frame is taken.
+    #[test]
+    fn leaving_the_covered_verse_mid_settle_denies_the_capture() {
+        let mut h = harness((1280, 720));
+        two_petal_tree(&mut h);
+        let before = h.main_state();
+        let mut reply = h.capture(orbit_capture(CaptureMode::Window, 5, None));
+        h.app.update();
+        assert!(h.locked());
+        h.app
+            .world_mut()
+            .resource_mut::<NavigationManager>()
+            .navigate_to_verse("w", "Other");
+        for _ in 0..10 {
+            h.app.update();
+        }
+        assert_eq!(expect_failure(reply.try_recv().expect("answered")), denied());
+        assert!(h.screenshots().is_empty(), "no frame of the uncovered verse");
+        assert!(!h.locked());
+        assert_eq!(h.main_state(), before);
     }
 
     /// AC-8: the read-back names the active hierarchy and the RUNTIME-grounded

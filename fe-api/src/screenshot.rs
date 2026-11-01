@@ -9,8 +9,9 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use fe_identity::api_token::ApiClaims;
-use fe_runtime::screenshot::{ScreenshotRequest, ScreenshotRequestSender};
+use fe_runtime::screenshot::{CapturePrimaryWindow, ScreenshotRequestSender};
 
+use crate::bridge_client::{round_trip, RoundTripError};
 use crate::operator_gate::{GateRefusal, OperatorGate};
 use crate::server::ApiState;
 use crate::types::ApiResponse;
@@ -22,15 +23,15 @@ pub const SCREENSHOT_ALLOW_ENV: &str = "FE_API_SCREENSHOT_ALLOW";
 pub const DEFAULT_SCREENSHOT_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The screenshot gate: opt-in (ON unless `=0` — agent_vision_20261031 DD-1)
-/// → Owner → 1/s per DID (a capture can show any verse's data) — AGENTS.md
+/// → Owner → 1/s per DID; the host then confines it to the caller's scope — AGENTS.md
 /// §screenshot, §operator-gate.
 pub const SCREENSHOT_GATE: OperatorGate = OperatorGate {
     opt_in_env: SCREENSHOT_ALLOW_ENV,
     endpoint: "screenshot endpoint",
     enabled_warning: "GET/POST /api/v1/debug/screenshot and the MCP `screenshot` tool admit Owner \
-                      tokens. A capture shows the whole window — whatever verse is open, \
-                      regardless of the token's scope; a posed scene capture can also look \
-                      anywhere in the active petal without the user noticing. Set \
+                      tokens whose scope covers the open verse. A capture shows the whole \
+                      window of that verse; a posed scene capture can also look anywhere in \
+                      the active petal without the user noticing. Set \
                       FE_API_SCREENSHOT_ALLOW=0 to disable, or run only on a single-tenant node \
                       you are actively driving with an agent",
     disabled_message: "screenshot endpoint is disabled on this node",
@@ -108,6 +109,9 @@ pub enum ScreenshotError {
     Unavailable(&'static str),
     TimedOut(Duration),
     CaptureFailed(String),
+    /// The token's scope does not cover the active verse (or nothing is
+    /// open) — the uniform 404 `NOT_FOUND_OR_DENIED` (§existence-oracle).
+    Denied,
 }
 
 impl From<GateRefusal> for ScreenshotError {
@@ -127,6 +131,7 @@ impl ScreenshotError {
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::TimedOut(_) => StatusCode::GATEWAY_TIMEOUT,
             Self::CaptureFailed(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Denied => StatusCode::NOT_FOUND,
         }
     }
 
@@ -140,58 +145,61 @@ impl ScreenshotError {
                 waited.as_secs_f32()
             ),
             Self::CaptureFailed(reason) => format!("screenshot failed: {reason}"),
+            Self::Denied => crate::rest::NOT_FOUND_OR_DENIED.to_string(),
         }
     }
 }
 
-/// Ask the Bevy host for one PNG of the primary window (egui included). Never
-/// blocks the async worker: a full bridge is a busy refusal, a silent host a
-/// timeout, and a reply echoing a foreign correlation id is rejected.
-pub async fn request_capture(state: &ApiState) -> Result<Vec<u8>, ScreenshotError> {
+/// Ask the Bevy host for one PNG of the primary window (egui included),
+/// carrying the caller's token scope: the host refuses unless it covers the
+/// active verse (SEC-ADDENDUM). Never blocks the async worker: a full bridge
+/// is a busy refusal, a silent host a timeout, and a reply echoing a foreign
+/// correlation id is rejected.
+pub async fn request_capture(
+    state: &ApiState,
+    caller_scope: &str,
+) -> Result<Vec<u8>, ScreenshotError> {
     let Some(bridge) = state.screenshot.bridge.as_ref() else {
         return Err(ScreenshotError::Unavailable(
             "screenshot unavailable: this host has no window",
         ));
     };
-    let correlation_id = ulid::Ulid::new().to_string();
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    let request = ScreenshotRequest {
-        correlation_id: correlation_id.clone(),
-        reply_tx,
-    };
-    match bridge.try_send(request) {
-        Ok(()) => {}
-        Err(crossbeam::channel::TrySendError::Full(_)) => {
-            tracing::warn!("screenshot bridge saturated — refusing");
-            return Err(ScreenshotError::Unavailable(
-                "screenshot bridge busy — retry shortly",
-            ));
+    let reply = round_trip(
+        bridge,
+        caller_scope,
+        CapturePrimaryWindow,
+        state.screenshot.reply_timeout,
+        "screenshot",
+    )
+    .await
+    .map_err(|error| match error {
+        RoundTripError::Saturated => {
+            ScreenshotError::Unavailable("screenshot bridge busy — retry shortly")
         }
-        Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
-            tracing::warn!("screenshot bridge closed (Bevy host gone)");
-            return Err(ScreenshotError::Unavailable(
-                "screenshot unavailable: render host stopped",
-            ));
+        RoundTripError::HostGone => {
+            ScreenshotError::Unavailable("screenshot unavailable: render host stopped")
         }
-    }
-    match tokio::time::timeout(state.screenshot.reply_timeout, reply_rx).await {
-        Ok(Ok(reply)) if reply.correlation_id == correlation_id => {
-            reply.result.map_err(ScreenshotError::CaptureFailed)
+        RoundTripError::TimedOut(waited) => ScreenshotError::TimedOut(waited),
+        RoundTripError::Uncorrelated => {
+            ScreenshotError::CaptureFailed("uncorrelated reply".to_string())
         }
-        Ok(Ok(_)) => Err(ScreenshotError::CaptureFailed(
-            "uncorrelated reply".to_string(),
-        )),
-        Ok(Err(_)) => Err(ScreenshotError::CaptureFailed(
-            "capture request dropped".to_string(),
-        )),
-        Err(_) => Err(ScreenshotError::TimedOut(state.screenshot.reply_timeout)),
-    }
+        RoundTripError::Dropped => {
+            ScreenshotError::CaptureFailed("capture request dropped".to_string())
+        }
+    })?;
+    reply.map_err(|reason| {
+        if reason == fe_runtime::screenshot::SCREENSHOT_SCOPE_DENIED {
+            ScreenshotError::Denied
+        } else {
+            ScreenshotError::CaptureFailed(reason)
+        }
+    })
 }
 
 /// GET /api/v1/debug/screenshot — `image/png` of the live window.
 ///
 /// Gate order (AGENTS.md §screenshot): opt-in → Owner (typed) → 1/s per DID →
-/// bridge. NOT scope-confined: the frame shows whatever verse is open.
+/// bridge → host scope check (the token must cover the active verse, else 404).
 pub async fn get_screenshot(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
@@ -218,5 +226,5 @@ async fn gated_capture(state: &ApiState, claims: &ApiClaims) -> Result<Vec<u8>, 
     SCREENSHOT_GATE
         .admit(state.screenshot.allowed, state, claims)
         .await?;
-    request_capture(state).await
+    request_capture(state, &claims.scope).await
 }

@@ -3,6 +3,7 @@ pub mod asset_gc;
 pub mod bevy_blob_reader;
 pub mod blob_store;
 pub mod blob_transport;
+pub mod bridge;
 pub mod channels;
 pub mod diag15m; // DIAG-15M: temporary render diagnostics
 pub mod distributed_query;

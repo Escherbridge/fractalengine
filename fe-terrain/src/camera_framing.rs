@@ -54,6 +54,14 @@ pub fn bounds_intersect(a: [f64; 4], b: [f64; 4]) -> bool {
         && a_max_lon >= b_min_lon
 }
 
+/// The smallest `[min_lat, min_lon, max_lat, max_lon]` box enclosing every
+/// input box; `None` for an empty slice (no tileset bound).
+pub fn union_bounds(bounds: &[[f64; 4]]) -> Option<[f64; 4]> {
+    bounds.iter().copied().reduce(|a, b| {
+        [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]
+    })
+}
+
 /// Checks a tile's bounds against every known tileset's bounds. Takes plain
 /// bounds arrays (not `fe_format::manifest::TilesetMeta`) so this module
 /// never depends on fe-format — the caller passes
@@ -346,6 +354,21 @@ mod tests {
 
         // One disjoint, one overlapping: Inside wins.
         assert_eq!(coverage_check(tile, &[disjoint, tile]), Coverage::Inside);
+    }
+
+    #[test]
+    fn union_bounds_table() {
+        let a = [10.0, 20.0, 11.0, 21.0];
+        let b = [9.5, 20.5, 10.5, 22.0];
+        type Bounds = [f64; 4];
+        let cases: [(Vec<Bounds>, Option<Bounds>); 3] = [
+            (vec![], None),
+            (vec![a], Some(a)),
+            (vec![a, b], Some([9.5, 20.0, 11.0, 22.0])),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(union_bounds(&input), expected, "{input:?}");
+        }
     }
 
     #[test]

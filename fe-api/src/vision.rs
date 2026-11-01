@@ -1,10 +1,9 @@
 //! `POST /api/v1/debug/screenshot` (dynamic pose capture) + `GET
 //! /api/v1/debug/camera` — see AGENTS.md §screenshot, §camera-state.
 //!
-//! This is deliberately a SEPARATE bridge/gate pair from the plain `GET`
-//! path in `screenshot.rs` (fe-runtime/src/AGENTS.md §vision-bridge): the
-//! GET route's bytes and behaviour stay byte-for-byte unchanged by anything
-//! here.
+//! A SEPARATE channel and gate from the plain `GET` path in `screenshot.rs`
+//! (fe-runtime/src/AGENTS.md §vision-bridge) on the SAME correlated-bridge
+//! envelope and round trip (§correlated-bridge, `bridge_client.rs`).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,9 +16,10 @@ use axum::{Extension, Json};
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::vision::{
     CaptureSpec, ResolvedPose, ValidCaptureSpec, VisionFailure, VisionFailureClass, VisionOp,
-    VisionOutput, VisionRefusal, VisionRequest,
+    VisionOutput, VisionRefusal,
 };
 
+use crate::bridge_client::{round_trip, RoundTripError};
 use crate::operator_gate::{GateRefusal, OperatorGate};
 use crate::screenshot::SCREENSHOT_GATE;
 use crate::server::ApiState;
@@ -97,6 +97,7 @@ impl VisionError {
                 }
                 VisionFailureClass::Busy => StatusCode::CONFLICT,
                 VisionFailureClass::Failed => StatusCode::INTERNAL_SERVER_ERROR,
+                VisionFailureClass::Denied => StatusCode::NOT_FOUND,
             },
         }
     }
@@ -116,6 +117,22 @@ impl VisionError {
         match self {
             Self::Refusal(refusal) => refusal.field,
             _ => None,
+        }
+    }
+
+    /// MCP tool-error text: the message prefixed with its stable `code` (and
+    /// `field`) so an agent gets the same machine-readable refusal REST puts
+    /// in the JSON body, e.g. `geo_out_of_range (pose.geo.lat): ...`. The
+    /// scope denial is the exception: it stays the bare §existence-oracle
+    /// text, byte-identical on every door (plain/posed, REST/MCP).
+    pub fn coded_message(&self) -> String {
+        if self.status() == StatusCode::NOT_FOUND {
+            return self.message();
+        }
+        match (self.code(), self.field()) {
+            (Some(code), Some(field)) => format!("{code} ({field}): {}", self.message()),
+            (Some(code), None) => format!("{code}: {}", self.message()),
+            (None, _) => self.message(),
         }
     }
 
@@ -183,62 +200,53 @@ impl VisionErrorBody {
 }
 
 // ---------------------------------------------------------------------------
-// Bridge round-trip (mirrors `screenshot::request_capture`)
+// Bridge round-trip (the shared `bridge_client::round_trip`)
 // ---------------------------------------------------------------------------
 
-/// Ask the Bevy host to run one vision op. Never blocks the async worker: a
-/// full bridge is a busy refusal, a silent host a timeout, and a reply
-/// echoing a foreign correlation id is rejected.
-pub async fn request_vision(state: &ApiState, op: VisionOp) -> Result<VisionOutput, VisionError> {
+/// Ask the Bevy host to run one vision op on behalf of `caller_scope` (the
+/// token's scope — THE one authorization input both doors pass; the host
+/// checks it against the active verse and any focus target at capture time,
+/// SEC-ADDENDUM). Never blocks the async worker: a full bridge is a busy
+/// refusal, a silent host a timeout, and a reply echoing a foreign
+/// correlation id is rejected.
+pub async fn request_vision(
+    state: &ApiState,
+    caller_scope: &str,
+    op: VisionOp,
+) -> Result<VisionOutput, VisionError> {
     let Some(bridge) = state.screenshot.vision.as_ref() else {
         return Err(VisionError::Unavailable(
             "vision unavailable: this host has no window",
         ));
     };
-    let is_capture = matches!(op, VisionOp::Capture(_));
-    let correlation_id = ulid::Ulid::new().to_string();
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    let request = VisionRequest {
-        correlation_id: correlation_id.clone(),
-        op,
-        reply_tx,
-    };
-    match bridge.try_send(request) {
-        Ok(()) => {}
-        Err(crossbeam::channel::TrySendError::Full(_)) => {
-            tracing::warn!("vision bridge saturated — refusing");
-            return Err(VisionError::Unavailable(
-                "vision bridge busy — retry shortly",
-            ));
-        }
-        Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
-            tracing::warn!("vision bridge closed (Bevy host gone)");
-            return Err(VisionError::Unavailable(
-                "vision unavailable: render host stopped",
-            ));
-        }
-    }
-    let timeout = if is_capture {
+    let timeout = if matches!(op, VisionOp::Capture(_)) {
         state.screenshot.reply_timeout + CAPTURE_SETTLE_WALL_CLOCK_CAP
     } else {
         state.screenshot.reply_timeout
     };
-    match tokio::time::timeout(timeout, reply_rx).await {
-        Ok(Ok(reply)) if reply.correlation_id == correlation_id => {
-            reply.result.map_err(VisionError::Failure)
-        }
-        Ok(Ok(_)) => Err(VisionError::Failure(VisionFailure {
+    let transport_failure = |code: &'static str, message: &str| {
+        VisionError::Failure(VisionFailure {
             status_class: VisionFailureClass::Failed,
-            code: "uncorrelated_reply",
-            message: "uncorrelated reply".to_string(),
-        })),
-        Ok(Err(_)) => Err(VisionError::Failure(VisionFailure {
-            status_class: VisionFailureClass::Failed,
-            code: "request_dropped",
-            message: "vision request dropped".to_string(),
-        })),
-        Err(_) => Err(VisionError::TimedOut(timeout)),
-    }
+            code,
+            message: message.to_string(),
+        })
+    };
+    let reply = round_trip(bridge, caller_scope, op, timeout, "vision")
+        .await
+        .map_err(|error| match error {
+            RoundTripError::Saturated => {
+                VisionError::Unavailable("vision bridge busy — retry shortly")
+            }
+            RoundTripError::HostGone => {
+                VisionError::Unavailable("vision unavailable: render host stopped")
+            }
+            RoundTripError::TimedOut(waited) => VisionError::TimedOut(waited),
+            RoundTripError::Uncorrelated => {
+                transport_failure("uncorrelated_reply", "uncorrelated reply")
+            }
+            RoundTripError::Dropped => transport_failure("request_dropped", "vision request dropped"),
+        })?;
+    reply.map_err(VisionError::Failure)
 }
 
 /// Run one posed capture: acquire the single-flight slot (409, bridge
@@ -246,6 +254,7 @@ pub async fn request_vision(state: &ApiState, op: VisionOp) -> Result<VisionOutp
 /// Shared by the REST handler and the MCP `screenshot` handler.
 pub(crate) async fn run_capture(
     state: &ApiState,
+    caller_scope: &str,
     spec: ValidCaptureSpec,
 ) -> Result<(Vec<u8>, ResolvedPose), VisionError> {
     let _permit = state
@@ -254,7 +263,7 @@ pub(crate) async fn run_capture(
         .clone()
         .try_acquire_owned()
         .map_err(|_| VisionError::Busy)?;
-    match request_vision(state, VisionOp::Capture(spec)).await? {
+    match request_vision(state, caller_scope, VisionOp::Capture(spec)).await? {
         VisionOutput::Capture { png, pose } => Ok((png, pose)),
         VisionOutput::Camera(_) => Err(VisionError::Failure(VisionFailure {
             status_class: VisionFailureClass::Failed,
@@ -264,10 +273,39 @@ pub(crate) async fn run_capture(
     }
 }
 
-/// Parse (or default) + validate the POST body in one step: a body over
-/// [`MAX_BODY_BYTES`] or that fails to parse as [`CaptureSpec`] (including
-/// unknown fields — `deny_unknown_fields`) is `malformed_body`; an empty body
-/// is a bare default (window, no pose) capture.
+/// The resolved pose as response metadata JSON (the `X-FE-Capture-Pose`
+/// header and the MCP text part): the pose plus `include_ui` (UI-ADDENDUM
+/// item 3 — derived from the resolved mode, so it can never disagree).
+pub(crate) fn pose_metadata_json(pose: &ResolvedPose) -> String {
+    let mut value = serde_json::to_value(pose).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "include_ui".to_string(),
+            serde_json::Value::Bool(pose.mode == fe_runtime::vision::CaptureMode::Window),
+        );
+    }
+    value.to_string()
+}
+
+/// The ONE parse-and-validate path for a capture request, shared by both
+/// doors (REST body bytes, MCP arguments): a structural serde failure
+/// (including unknown fields — `deny_unknown_fields`) is `malformed_body`,
+/// everything else is [`CaptureSpec::validate`]'s typed table.
+pub(crate) fn validate_capture_request(
+    parsed: Result<CaptureSpec, serde_json::Error>,
+) -> Result<ValidCaptureSpec, VisionRefusal> {
+    parsed
+        .map_err(|error| VisionRefusal {
+            code: "malformed_body",
+            field: None,
+            message: format!("malformed request body: {error}"),
+        })?
+        .validate()
+}
+
+/// REST door: a body over [`MAX_BODY_BYTES`] is `malformed_body`, an empty
+/// body is a bare default (window, no pose) capture, anything else goes
+/// through [`validate_capture_request`].
 fn parse_and_validate(body: &[u8]) -> Result<ValidCaptureSpec, VisionRefusal> {
     if body.len() > MAX_BODY_BYTES {
         return Err(VisionRefusal {
@@ -279,16 +317,10 @@ fn parse_and_validate(body: &[u8]) -> Result<ValidCaptureSpec, VisionRefusal> {
             ),
         });
     }
-    let spec: CaptureSpec = if body.is_empty() {
-        CaptureSpec::default()
-    } else {
-        serde_json::from_slice(body).map_err(|error| VisionRefusal {
-            code: "malformed_body",
-            field: None,
-            message: format!("malformed request body: {error}"),
-        })?
-    };
-    spec.validate()
+    if body.is_empty() {
+        return CaptureSpec::default().validate();
+    }
+    validate_capture_request(serde_json::from_slice(body))
 }
 
 // ---------------------------------------------------------------------------
@@ -322,9 +354,9 @@ pub async fn post_screenshot(
                 .into_response();
         }
     };
-    match run_capture(&state, spec).await {
+    match run_capture(&state, &claims.scope, spec).await {
         Ok((png, pose)) => {
-            let pose_json = serde_json::to_string(&pose).unwrap_or_else(|_| "{}".to_string());
+            let pose_json = pose_metadata_json(&pose);
             let mut builder = Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, "image/png")
@@ -354,7 +386,7 @@ pub async fn get_camera(
     {
         return (gate_status(&refusal), Json(VisionErrorBody::gate(&refusal))).into_response();
     }
-    match request_vision(&state, VisionOp::ReadCamera).await {
+    match request_vision(&state, &claims.scope, VisionOp::ReadCamera).await {
         Ok(VisionOutput::Camera(camera_state)) => {
             (StatusCode::OK, Json(ApiResponse::success(camera_state))).into_response()
         }
@@ -369,5 +401,52 @@ pub async fn get_camera(
         )
             .into_response(),
         Err(error) => (error.status(), Json(VisionErrorBody::error(&error))).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The host's uniform denial and REST's §existence-oracle text are one
+    /// string, so a vision 404 is indistinguishable from any other.
+    #[test]
+    fn host_denial_matches_the_rest_existence_oracle_text() {
+        assert_eq!(fe_runtime::vision::DENIED_MESSAGE, crate::rest::NOT_FOUND_OR_DENIED);
+        assert_eq!(
+            fe_runtime::screenshot::SCREENSHOT_SCOPE_DENIED,
+            crate::rest::NOT_FOUND_OR_DENIED
+        );
+        let error = VisionError::Failure(fe_runtime::vision::denied());
+        assert_eq!(error.status(), StatusCode::NOT_FOUND);
+        assert_eq!(error.message(), crate::rest::NOT_FOUND_OR_DENIED);
+    }
+
+    /// MCP error text: a typed refusal carries its `code` (and `field`) like
+    /// the REST body, but the scope denial stays the bare oracle text, so the
+    /// MCP posed door answers exactly like the MCP plain door.
+    #[test]
+    fn coded_message_prefixes_refusals_but_never_the_denial() {
+        let refusal = VisionError::Refusal(VisionRefusal {
+            code: "geo_out_of_range",
+            field: Some("pose.geo.lat"),
+            message: "lat out of range".to_string(),
+        });
+        let busy = VisionError::Failure(VisionFailure {
+            status_class: VisionFailureClass::Busy,
+            code: "capture_in_progress",
+            message: "busy".to_string(),
+        });
+        let cases = [
+            (refusal, "geo_out_of_range (pose.geo.lat): lat out of range".to_string()),
+            (busy, "capture_in_progress: busy".to_string()),
+            (
+                VisionError::Failure(fe_runtime::vision::denied()),
+                crate::rest::NOT_FOUND_OR_DENIED.to_string(),
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(error.coded_message(), expected);
+        }
     }
 }

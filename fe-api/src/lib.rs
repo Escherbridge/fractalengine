@@ -8,6 +8,7 @@
 
 pub mod assets;
 pub mod auth;
+pub mod bridge_client;
 pub mod canonical_ws;
 pub mod crs;
 pub mod db_reader;

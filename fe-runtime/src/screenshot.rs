@@ -1,40 +1,33 @@
 //! API→Bevy screenshot bridge types — see src/AGENTS.md §screenshot-bridge.
 
+use crate::bridge::{bounded_bridge, BridgeReceiver, BridgeReply, BridgeRequest, BridgeSender};
+
 /// Bounded depth of the request channel; a full channel is a busy refusal, never a block.
 pub const SCREENSHOT_BRIDGE_CAPACITY: usize = 4;
 
-/// One capture request: the API thread's correlation id plus its private reply slot.
-#[derive(Debug)]
-pub struct ScreenshotRequest {
-    pub correlation_id: String,
-    pub reply_tx: tokio::sync::oneshot::Sender<ScreenshotReply>,
-}
+/// The plain GET's only operation: capture the primary window (egui included).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CapturePrimaryWindow;
 
-/// The capture outcome, echoing the request's correlation id (PNG bytes or an error text).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScreenshotReply {
-    pub correlation_id: String,
-    pub result: Result<Vec<u8>, String>,
-}
+/// PNG bytes, or the host's error text.
+pub type ScreenshotResult = Result<Vec<u8>, String>;
 
-pub type ScreenshotRequestSender = crossbeam::channel::Sender<ScreenshotRequest>;
-pub type ScreenshotRequestReceiver = crossbeam::channel::Receiver<ScreenshotRequest>;
+/// One capture request on the shared correlated-bridge envelope
+/// (§correlated-bridge): correlation id, caller scope (refused unless it
+/// covers the active verse — agent_vision SEC-ADDENDUM), reply slot.
+pub type ScreenshotRequest = BridgeRequest<CapturePrimaryWindow, ScreenshotResult>;
+
+/// The capture outcome, echoing the request's correlation id.
+pub type ScreenshotReply = BridgeReply<ScreenshotResult>;
+
+/// The reply text of the uniform scope denial (mapped to 404 by fe-api;
+/// identical for "out of scope" and "nothing open" — §existence-oracle).
+pub const SCREENSHOT_SCOPE_DENIED: &str = "not found or not permitted";
+
+pub type ScreenshotRequestSender = BridgeSender<CapturePrimaryWindow, ScreenshotResult>;
+pub type ScreenshotRequestReceiver = BridgeReceiver<CapturePrimaryWindow, ScreenshotResult>;
 
 /// A fresh bounded request channel (API holds the sender, the Bevy host the receiver).
 pub fn screenshot_bridge() -> (ScreenshotRequestSender, ScreenshotRequestReceiver) {
-    crossbeam::channel::bounded(SCREENSHOT_BRIDGE_CAPACITY)
-}
-
-impl ScreenshotRequest {
-    /// Answer this request, echoing its correlation id. A dropped receiver (the
-    /// API caller timed out) silently discards the late reply.
-    pub fn reply(self, result: Result<Vec<u8>, String>) {
-        let reply = ScreenshotReply {
-            correlation_id: self.correlation_id,
-            result,
-        };
-        if self.reply_tx.send(reply).is_err() {
-            tracing::debug!("screenshot reply dropped — the API caller already timed out");
-        }
-    }
+    bounded_bridge(SCREENSHOT_BRIDGE_CAPACITY)
 }

@@ -311,6 +311,39 @@ pub fn pose_transform(position: Vec3, target: Vec3, up: Vec3) -> Option<Transfor
     Some(Transform::from_translation(position).looking_at(target, up))
 }
 
+/// Margin around a framed bounding sphere ([`frame_world_box`]).
+pub const FRAMING_MARGIN: f32 = 1.1;
+/// Smallest framed radius (world units) — a bare point still frames.
+pub const MIN_FRAMING_RADIUS: f32 = 0.5;
+
+/// A look-at camera pose in world units (no FOV — the caller owns that).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LookAtPose {
+    pub position: Vec3,
+    pub target: Vec3,
+    pub up: Vec3,
+}
+
+/// Frame a world box: keep `view_dir`, back off until the box's bounding
+/// sphere fits the vertical `fov` — `distance = radius / sin(fov/2) × margin`
+/// (agent_vision spec §5.3). `up` is +Y unless the view is vertical (+Z then).
+pub fn frame_world_box(min: Vec3, max: Vec3, view_dir: Vec3, fov: f32) -> LookAtPose {
+    let center = (min + max) * 0.5;
+    let radius = ((max - min) * 0.5).length().max(MIN_FRAMING_RADIUS);
+    let direction = view_dir.try_normalize().unwrap_or(Vec3::NEG_Z);
+    let distance = radius / (fov * 0.5).sin() * FRAMING_MARGIN;
+    let up = if direction.cross(Vec3::Y).length() < 1e-4 {
+        Vec3::Z
+    } else {
+        Vec3::Y
+    };
+    LookAtPose {
+        position: center - direction * distance,
+        target: center,
+        up,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Plugin + systems
 // ---------------------------------------------------------------------------
@@ -1098,6 +1131,32 @@ mod tests {
         // above aren't rejecting everything).
         assert!(pose_transform(Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0), Vec3::Y).is_some());
         assert!(orbit_from_look_at(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO).is_some());
+    }
+
+    /// The framed sphere fits the FOV with the margin, the view direction is
+    /// kept, and the pose is always orientable (a vertical view swaps `up`).
+    #[test]
+    fn frame_world_box_fits_the_bounding_sphere_in_the_fov() {
+        let cases = [
+            (Vec3::splat(-1.0), Vec3::splat(1.0), Vec3::NEG_Z, 45f32),
+            (Vec3::ZERO, Vec3::new(10.0, 2.0, 4.0), Vec3::new(1.0, -1.0, 0.0), 60.0),
+            (Vec3::splat(5.0), Vec3::splat(5.0), Vec3::NEG_Y, 30.0),
+        ];
+        for (min, max, view_dir, fov_deg) in cases {
+            let fov = fov_deg.to_radians();
+            let pose = frame_world_box(min, max, view_dir, fov);
+            let radius = ((max - min) * 0.5).length().max(MIN_FRAMING_RADIUS);
+            let distance = (pose.target - pose.position).length();
+            assert!(
+                (distance * (fov * 0.5).sin() - radius * FRAMING_MARGIN).abs() < 1e-3,
+                "sphere of radius {radius} must fit fov {fov_deg}° with the margin"
+            );
+            assert!(((pose.target - pose.position).normalize() - view_dir.normalize()).length() < 1e-4);
+            assert!(
+                pose_transform(pose.position, pose.target, pose.up).is_some(),
+                "framed pose must be orientable: {pose:?}"
+            );
+        }
     }
 
     /// `orbit_camera_system` cannot run in a headless `App` without the

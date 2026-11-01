@@ -204,6 +204,16 @@ components so an agent-posed screenshot/`GET /camera` capture (V5, in
   excludes `OrbitCameraController` today. `CaptureCamera` carries no data; a
   capture job's lifetime is this component's lifetime (spawn on job start,
   despawn on job end).
+- **`frame_world_box(min, max, view_dir, fov) -> LookAtPose`** (advocate
+  pass, 2026-11-01) is the `focus` pose's framing math: keep the current view
+  direction and back off to `radius / sin(fov/2) × FRAMING_MARGIN` so the
+  box's bounding sphere fits the vertical FOV (`MIN_FRAMING_RADIUS` keeps a
+  bare point frameable; a vertical view swaps `up` to +Z so `pose_transform`
+  never sees a parallel `up`). It moved here from `fractalengine`'s
+  `vision_bridge.rs` — **Humble Object**: every pose formula (orbit, look-at,
+  box framing here; geo/tile framing in fe-terrain `camera_framing.rs`) is a
+  pure, table-tested function, and the Bevy orchestrator only gathers ECS
+  inputs and applies the result.
 
 ## §instancing
 

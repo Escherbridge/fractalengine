@@ -6,12 +6,20 @@ use std::sync::{Arc, Mutex};
 
 use bevy::image::Image;
 use bevy::input::ButtonInput;
-use bevy::prelude::{Commands, Entity, KeyCode, On, Query, Res, ResMut, Resource, Time, With};
+use bevy::prelude::{
+    App, Commands, Entity, KeyCode, On, PostUpdate, Query, Res, ResMut, Resource, Time, Update,
+    With,
+};
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
 use bevy::tasks::AsyncComputeTaskPool;
 use bevy::window::{PrimaryWindow, Window};
 use fe_renderer::camera::CameraCaptureLock;
-use fe_runtime::screenshot::{ScreenshotRequest, ScreenshotRequestReceiver};
+use fe_runtime::screenshot::{
+    ScreenshotRequest, ScreenshotRequestReceiver, SCREENSHOT_SCOPE_DENIED,
+};
+use fe_ui::navigation_manager::NavigationManager;
+
+use crate::vision_bridge::scope_covers_active_verse;
 
 /// Bevy side of the API→Bevy capture bridge.
 #[derive(Resource)]
@@ -92,31 +100,79 @@ pub fn capture_refusal(primary_window: Option<&Window>) -> Option<&'static str> 
     }
 }
 
-/// Bevy system: serve every pending API capture request with ONE capture of
-/// the primary window, replying to each with its own correlation id. While a
-/// posed agent-vision capture holds the camera (`CameraCaptureLock`) the
-/// queue is left untouched, so a plain GET never returns a half-posed frame.
+/// Plain-GET requests that passed the arrival scope check, held for the
+/// frame-time re-check in [`capture_pending_screenshots`].
+#[derive(Resource, Default)]
+pub struct PendingScreenshots(Vec<ScreenshotRequest>);
+
+/// Register the plain-GET bridge: the arrival check in `Update`, the
+/// frame-time re-check + capture in `PostUpdate` (src/AGENTS.md §screenshot).
+pub fn install(app: &mut App, receiver: ScreenshotRequestReceiver) {
+    app.insert_resource(ScreenshotBridge(receiver))
+        .init_resource::<PendingScreenshots>()
+        .add_systems(Update, drain_screenshot_requests)
+        .add_systems(PostUpdate, capture_pending_screenshots);
+}
+
+/// Answer `request` with the uniform scope denial (agent_vision SEC-ADDENDUM).
+fn deny(request: ScreenshotRequest) {
+    request.reply(Err(SCREENSHOT_SCOPE_DENIED.to_string()));
+}
+
+/// Update (arrival check): drain the bridge, deny at once every caller whose
+/// token scope does not cover the active verse, and hold the rest for this
+/// frame's [`capture_pending_screenshots`]. While a posed agent-vision
+/// capture holds the camera (`CameraCaptureLock`) the queue is left
+/// untouched, so a plain GET never returns a half-posed frame.
 pub fn drain_screenshot_requests(
     bridge: Res<ScreenshotBridge>,
-    primary_window: Query<&Window, With<PrimaryWindow>>,
     capture_lock: Option<Res<CameraCaptureLock>>,
-    mut commands: Commands,
+    nav: Option<Res<NavigationManager>>,
+    mut pending: ResMut<PendingScreenshots>,
 ) {
     if capture_lock.is_some() {
         return;
     }
-    let requests: Vec<ScreenshotRequest> = bridge.0.try_iter().collect();
-    if requests.is_empty() {
+    for request in bridge.0.try_iter() {
+        if scope_covers_active_verse(&request.caller_scope, nav.as_deref()) {
+            pending.0.push(request);
+        } else {
+            deny(request);
+        }
+    }
+}
+
+/// PostUpdate (frame-time check, the vision path's rule): re-check every held
+/// request's scope against the verse open NOW — the user may have switched
+/// verse since the drain — then serve the covered ones with ONE capture of
+/// the primary window, each replied to with its own correlation id. A lock
+/// taken since the drain (a posed job started this frame) keeps them held.
+pub fn capture_pending_screenshots(
+    mut pending: ResMut<PendingScreenshots>,
+    primary_window: Query<&Window, With<PrimaryWindow>>,
+    capture_lock: Option<Res<CameraCaptureLock>>,
+    nav: Option<Res<NavigationManager>>,
+    mut commands: Commands,
+) {
+    if capture_lock.is_some() || pending.0.is_empty() {
+        return;
+    }
+    let (covered, uncovered): (Vec<ScreenshotRequest>, Vec<ScreenshotRequest>) =
+        std::mem::take(&mut pending.0)
+            .into_iter()
+            .partition(|request| scope_covers_active_verse(&request.caller_scope, nav.as_deref()));
+    uncovered.into_iter().for_each(deny);
+    if covered.is_empty() {
         return;
     }
     if let Some(reason) = capture_refusal(primary_window.single().ok()) {
-        for request in requests {
+        for request in covered {
             request.reply(Err(reason.to_string()));
         }
         return;
     }
     capture_primary_window_png(&mut commands, move |png| {
-        for request in requests {
+        for request in covered {
             request.reply(png.clone());
         }
     });
@@ -244,31 +300,112 @@ mod tests {
         assert!(decoded.pixels().all(|p| p.0 == [red, green, blue]));
     }
 
-    /// Run `drain_screenshot_requests` once against a primary window of the
-    /// given physical size; returns the request's reply (if any) and how many
-    /// `Screenshot` captures the system queued.
-    fn drain_once_with_window(
-        width: u32,
-        height: u32,
-    ) -> (Option<fe_runtime::screenshot::ScreenshotReply>, usize) {
-        use bevy::ecs::system::RunSystemOnce;
-        let mut world = bevy::ecs::world::World::new();
+    use bevy::ecs::system::RunSystemOnce;
+    use bevy::ecs::world::World;
+    use fe_runtime::screenshot::{CapturePrimaryWindow, ScreenshotReply, ScreenshotRequestSender};
+
+    /// A world with `verse` open (or nothing), a primary window of `size`,
+    /// and the plain-GET bridge installed; returns the API end of the bridge.
+    fn bridge_world(verse: Option<&str>, size: (u32, u32)) -> (World, ScreenshotRequestSender) {
+        let mut world = World::new();
+        let mut nav = NavigationManager::default();
+        if let Some(verse) = verse {
+            nav.navigate_to_verse(verse, "Verse");
+        }
+        world.insert_resource(nav);
         let (tx, rx) = fe_runtime::screenshot::screenshot_bridge();
         world.insert_resource(ScreenshotBridge(rx));
+        world.init_resource::<PendingScreenshots>();
         let mut window = Window::default();
-        window.resolution.set_physical_resolution(width, height);
+        window.resolution.set_physical_resolution(size.0, size.1);
         world.spawn((window, PrimaryWindow));
-        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
-        tx.try_send(ScreenshotRequest {
-            correlation_id: "c1".to_string(),
-            reply_tx,
-        })
-        .expect("bridge has room");
+        (world, tx)
+    }
+
+    /// Queue one plain-GET request on behalf of `scope`.
+    fn send(
+        tx: &ScreenshotRequestSender,
+        correlation_id: &str,
+        scope: &str,
+    ) -> tokio::sync::oneshot::Receiver<ScreenshotReply> {
+        let (request, reply_rx) =
+            ScreenshotRequest::new(correlation_id, scope, CapturePrimaryWindow);
+        tx.try_send(request).expect("bridge has room");
+        reply_rx
+    }
+
+    fn drain(world: &mut World) {
         world
             .run_system_once(drain_screenshot_requests)
-            .expect("system runs");
-        let captures = world.query::<&Screenshot>().iter(&world).count();
-        (reply_rx.try_recv().ok(), captures)
+            .expect("drain runs");
+    }
+
+    fn capture(world: &mut World) {
+        world
+            .run_system_once(capture_pending_screenshots)
+            .expect("capture runs");
+    }
+
+    /// One frame: the Update drain, then the PostUpdate capture.
+    fn frame(world: &mut World) {
+        drain(world);
+        capture(world);
+    }
+
+    fn captures(world: &mut World) -> usize {
+        world.query::<&Screenshot>().iter(world).count()
+    }
+
+    /// SEC-ADDENDUM on the plain GET path: in one batch, a verse-B token gets
+    /// the uniform denial at once while the verse-A token is still served by
+    /// the one shared capture; with nothing open, everyone is denied.
+    #[test]
+    fn plain_captures_are_refused_unless_the_token_covers_the_active_verse() {
+        for (open_verse, expect_capture) in [(Some("a"), true), (None, false)] {
+            let (mut world, tx) = bridge_world(open_verse, (1280, 720));
+            let mut foreign = send(&tx, "b", "VERSE#b");
+            let mut covered = send(&tx, "a", "VERSE#a");
+            frame(&mut world);
+            let denied = foreign.try_recv().expect("verse-B answered at once");
+            assert_eq!(denied.result, Err(SCREENSHOT_SCOPE_DENIED.to_string()));
+            if expect_capture {
+                assert_eq!(captures(&mut world), 1, "the covered caller is still served");
+                assert!(covered.try_recv().is_err(), "awaiting the frame");
+            } else {
+                assert_eq!(captures(&mut world), 0, "nothing open: no one is covered");
+                let reply = covered.try_recv().expect("answered at once");
+                assert_eq!(reply.result, Err(SCREENSHOT_SCOPE_DENIED.to_string()));
+            }
+        }
+    }
+
+    /// The frame-time re-check: a request admitted at drain (verse A open) is
+    /// refused, and no frame is taken, when the user switches to a verse the
+    /// token does not cover before the capture is queued; staying put serves it.
+    #[test]
+    fn switching_to_an_uncovered_verse_between_drain_and_capture_refuses() {
+        for (switch_to, expect_capture) in [(Some("b"), false), (None, true)] {
+            let (mut world, tx) = bridge_world(Some("a"), (1280, 720));
+            let mut reply = send(&tx, "c1", "VERSE#a");
+            drain(&mut world);
+            assert!(reply.try_recv().is_err(), "admitted at arrival, not yet answered");
+            if let Some(verse) = switch_to {
+                world
+                    .resource_mut::<NavigationManager>()
+                    .navigate_to_verse(verse, "B");
+            }
+            capture(&mut world);
+            if expect_capture {
+                assert_eq!(captures(&mut world), 1);
+                assert!(reply.try_recv().is_err(), "awaiting the frame");
+            } else {
+                assert_eq!(captures(&mut world), 0, "no verse-B pixels for a verse-A token");
+                let denied = reply.try_recv().expect("answered at once");
+                assert_eq!(denied.correlation_id, "c1");
+                assert_eq!(denied.result, Err(SCREENSHOT_SCOPE_DENIED.to_string()));
+            }
+            assert!(world.resource::<PendingScreenshots>().0.is_empty());
+        }
     }
 
     /// A minimized (0x0) window is refused at once, with the request's own
@@ -276,9 +413,11 @@ mod tests {
     /// forever while the agent waits out the 5 s timeout.
     #[test]
     fn a_minimized_window_refuses_captures_immediately() {
-        let (reply, captures) = drain_once_with_window(0, 0);
-        assert_eq!(captures, 0, "no capture queued for a 0x0 window");
-        let reply = reply.expect("answered in the same frame");
+        let (mut world, tx) = bridge_world(Some("v"), (0, 0));
+        let mut reply = send(&tx, "c1", "VERSE#v");
+        frame(&mut world);
+        assert_eq!(captures(&mut world), 0, "no capture queued for a 0x0 window");
+        let reply = reply.try_recv().expect("answered in the same frame");
         assert_eq!(reply.correlation_id, "c1");
         assert!(
             reply
@@ -292,44 +431,40 @@ mod tests {
 
     #[test]
     fn a_visible_window_queues_one_capture_and_answers_later() {
-        let (reply, captures) = drain_once_with_window(1280, 720);
-        assert_eq!(captures, 1);
-        assert!(reply.is_none(), "the reply waits for the captured frame");
+        let (mut world, tx) = bridge_world(Some("v"), (1280, 720));
+        let mut reply = send(&tx, "c1", "VERSE#v");
+        frame(&mut world);
+        assert_eq!(captures(&mut world), 1);
+        assert!(reply.try_recv().is_err(), "the reply waits for the captured frame");
     }
 
     /// While a posed agent-vision capture holds the camera, a plain GET stays
     /// QUEUED (not refused, not captured): it is served unchanged the first
-    /// frame after the lock lifts, so it never sees a half-posed frame.
+    /// frame after the lock lifts, so it never sees a half-posed frame,
+    /// including a request drained just before a job took the lock.
     #[test]
     fn plain_get_requests_stay_queued_while_a_posed_job_holds_the_camera() {
-        use bevy::ecs::system::RunSystemOnce;
-        let mut world = bevy::ecs::world::World::new();
-        let (tx, rx) = fe_runtime::screenshot::screenshot_bridge();
-        world.insert_resource(ScreenshotBridge(rx));
-        let mut window = Window::default();
-        window.resolution.set_physical_resolution(1280, 720);
-        world.spawn((window, PrimaryWindow));
+        let (mut world, tx) = bridge_world(Some("v"), (1280, 720));
         world.insert_resource(CameraCaptureLock);
-        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
-        tx.try_send(ScreenshotRequest {
-            correlation_id: "queued".to_string(),
-            reply_tx,
-        })
-        .expect("bridge has room");
-
-        world
-            .run_system_once(drain_screenshot_requests)
-            .expect("system runs");
-        assert_eq!(world.query::<&Screenshot>().iter(&world).count(), 0);
-        assert!(reply_rx.try_recv().is_err(), "no reply while locked");
+        let mut reply = send(&tx, "queued", "VERSE#v");
+        frame(&mut world);
+        assert_eq!(captures(&mut world), 0);
+        assert!(reply.try_recv().is_err(), "no reply while locked");
         assert_eq!(tx.len(), 1, "the request is still queued, not drained");
 
         world.remove_resource::<CameraCaptureLock>();
-        world
-            .run_system_once(drain_screenshot_requests)
-            .expect("system runs");
-        assert_eq!(world.query::<&Screenshot>().iter(&world).count(), 1);
+        drain(&mut world);
         assert_eq!(tx.len(), 0, "drained once the lock lifted");
+        // A posed job takes the lock between this drain and the capture.
+        world.insert_resource(CameraCaptureLock);
+        capture(&mut world);
+        assert_eq!(captures(&mut world), 0, "held, never captured mid-pose");
+        assert_eq!(world.resource::<PendingScreenshots>().0.len(), 1);
+
+        world.remove_resource::<CameraCaptureLock>();
+        frame(&mut world);
+        assert_eq!(captures(&mut world), 1);
+        assert!(reply.try_recv().is_err(), "awaiting the frame");
     }
 
     #[test]

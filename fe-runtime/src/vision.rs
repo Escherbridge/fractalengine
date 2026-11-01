@@ -3,6 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::bridge::{bounded_bridge, BridgeReceiver, BridgeReply, BridgeRequest, BridgeSender};
+
 // ---------------------------------------------------------------------------
 // Bridge capacity + channel
 // ---------------------------------------------------------------------------
@@ -11,12 +13,12 @@ use serde::{Deserialize, Serialize};
 /// refusal, never a blocked async worker (mirrors `screenshot_bridge`).
 pub const VISION_BRIDGE_CAPACITY: usize = 4;
 
-pub type VisionRequestSender = crossbeam::channel::Sender<VisionRequest>;
-pub type VisionRequestReceiver = crossbeam::channel::Receiver<VisionRequest>;
+pub type VisionRequestSender = BridgeSender<VisionOp, VisionResult>;
+pub type VisionRequestReceiver = BridgeReceiver<VisionOp, VisionResult>;
 
 /// A fresh bounded request channel (API holds the sender, the Bevy host the receiver).
 pub fn vision_bridge() -> (VisionRequestSender, VisionRequestReceiver) {
-    crossbeam::channel::bounded(VISION_BRIDGE_CAPACITY)
+    bounded_bridge(VISION_BRIDGE_CAPACITY)
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +154,24 @@ pub struct CaptureSpec {
     pub settle_frames: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restore: Option<bool>,
+    /// Include the app's UI panels in the image (default `true` = window
+    /// mode); `false` renders only the 3D scene off-screen without moving the
+    /// user's view (= scene mode). Contradicting an explicit `mode` is the
+    /// typed 400 `include_ui_conflicts_with_mode` (UI-ADDENDUM).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_ui: Option<bool>,
 }
+
+/// The one plain-words description of `include_ui` (MCP schema, REST docs).
+pub const INCLUDE_UI_DESCRIPTION: &str = "include_ui (default true): include the app's UI panels \
+     in the image; false renders only the 3D scene off-screen without moving the user's view";
+
+/// Stable code of the uniform scope denial: an out-of-scope target and a
+/// nonexistent one answer identically (fe-api AGENTS.md §existence-oracle).
+pub const DENIED_CODE: &str = "not_found_or_denied";
+/// Message of the uniform scope denial — byte-identical to fe-api's
+/// `rest::NOT_FOUND_OR_DENIED` (asserted there).
+pub const DENIED_MESSAGE: &str = "not found or not permitted";
 
 /// A typed 400: `code` is the stable machine string (spec §5.2's table),
 /// `field` is the dotted wire path when the check is field-scoped.
@@ -255,6 +274,28 @@ impl ValidCaptureSpec {
     pub fn restore(&self) -> Option<bool> {
         self.restore
     }
+    /// `true` iff the image includes the app UI (window mode).
+    pub fn include_ui(&self) -> bool {
+        self.mode == CaptureMode::Window
+    }
+}
+
+/// `mode` from the optional `mode`/`include_ui` pair (row 2b).
+fn resolve_mode(
+    mode: Option<CaptureMode>,
+    include_ui: Option<bool>,
+) -> Result<CaptureMode, VisionRefusal> {
+    let from_ui = include_ui.map(|ui| if ui { CaptureMode::Window } else { CaptureMode::Scene });
+    match (mode, from_ui) {
+        (Some(explicit), Some(implied)) if explicit != implied => Err(VisionRefusal::new(
+            "include_ui_conflicts_with_mode",
+            Some("include_ui"),
+            "`include_ui` contradicts `mode` (include_ui true = window, false = scene) — \
+             pass one of them, or matching values",
+        )),
+        (Some(mode), _) | (None, Some(mode)) => Ok(mode),
+        (None, None) => Ok(CaptureMode::default()),
+    }
 }
 
 impl CaptureSpec {
@@ -265,8 +306,6 @@ impl CaptureSpec {
     /// from which check fires, but a given malformed body always refuses
     /// the same way.
     pub fn validate(self) -> Result<ValidCaptureSpec, VisionRefusal> {
-        let mode = self.mode.unwrap_or_default();
-
         // Row 1: non_finite — every float present anywhere, regardless of
         // whether the pose is otherwise well-formed.
         check_all_finite(&self.pose)?;
@@ -274,6 +313,10 @@ impl CaptureSpec {
         // Row 2: pose_must_have_exactly_one_kind (incl. focus's own
         // exactly-one-of-two-ids rule).
         let pose = check_pose_cardinality(self.pose)?;
+
+        // Row 2b: include_ui_conflicts_with_mode — `include_ui` picks the
+        // mode; an explicit contradicting `mode` fails closed (no precedence).
+        let mode = resolve_mode(self.mode, self.include_ui)?;
 
         // Row 3: size_out_of_range.
         if let Some(w) = self.width {
@@ -288,7 +331,8 @@ impl CaptureSpec {
             return Err(VisionRefusal::new(
                 "size_requires_scene_mode",
                 None,
-                "`width`/`height` are only valid in scene mode",
+                "`width`/`height` are only valid in scene mode (`include_ui: false`) — a \
+                 window capture (`include_ui: true`) is always the window's own size",
             ));
         }
 
@@ -773,8 +817,8 @@ pub struct CameraState {
 }
 
 // ---------------------------------------------------------------------------
-// Bridge request/reply (mirrors screenshot.rs; see AGENTS.md §vision-bridge
-// for why this is a separate bridge from the screenshot one)
+// Bridge request/reply (the shared §correlated-bridge envelope; AGENTS.md
+// §vision-bridge says why it is a separate CHANNEL from the screenshot one)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
@@ -783,14 +827,11 @@ pub enum VisionOp {
     ReadCamera,
 }
 
-/// One vision request: the API thread's correlation id, the operation, and
-/// its private reply slot.
-#[derive(Debug)]
-pub struct VisionRequest {
-    pub correlation_id: String,
-    pub op: VisionOp,
-    pub reply_tx: tokio::sync::oneshot::Sender<VisionReply>,
-}
+/// One vision request on the shared correlated-bridge envelope
+/// (§correlated-bridge): correlation id, caller scope (the host refuses
+/// unless it covers the active verse and any focus target — SEC-ADDENDUM),
+/// the operation, and its private reply slot.
+pub type VisionRequest = BridgeRequest<VisionOp, VisionResult>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VisionFailureClass {
@@ -802,6 +843,18 @@ pub enum VisionFailureClass {
     NoWindow,
     /// Any other Bevy-side failure — maps to 500/504.
     Failed,
+    /// The caller's scope does not cover the active verse / the target, or
+    /// the target does not exist — one uniform 404 ([`denied`]).
+    Denied,
+}
+
+/// The uniform scope/existence denial (no existence oracle).
+pub fn denied() -> VisionFailure {
+    VisionFailure {
+        status_class: VisionFailureClass::Denied,
+        code: DENIED_CODE,
+        message: DENIED_MESSAGE.to_string(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -817,26 +870,11 @@ pub enum VisionOutput {
     Camera(CameraState),
 }
 
-/// The vision outcome, echoing the request's correlation id.
-#[derive(Debug, Clone, PartialEq)]
-pub struct VisionReply {
-    pub correlation_id: String,
-    pub result: Result<VisionOutput, VisionFailure>,
-}
+/// What a vision op produced, or the host's typed refusal/failure.
+pub type VisionResult = Result<VisionOutput, VisionFailure>;
 
-impl VisionRequest {
-    /// Answer this request, echoing its correlation id. A dropped receiver
-    /// (the API caller already timed out) silently discards the late reply.
-    pub fn reply(self, result: Result<VisionOutput, VisionFailure>) {
-        let reply = VisionReply {
-            correlation_id: self.correlation_id,
-            result,
-        };
-        if self.reply_tx.send(reply).is_err() {
-            tracing::debug!("vision reply dropped — the API caller already timed out");
-        }
-    }
-}
+/// The vision outcome, echoing the request's correlation id.
+pub type VisionReply = BridgeReply<VisionResult>;
 
 #[cfg(test)]
 mod tests {
@@ -1135,6 +1173,51 @@ mod tests {
         focus_spec(false).validate().expect("petal focus is valid");
     }
 
+    /// UI-ADDENDUM: `include_ui` x `mode` -> the resolved mode, or the typed
+    /// conflict refusal (fail closed, never silent precedence).
+    #[test]
+    fn include_ui_and_mode_matrix() {
+        use CaptureMode::{Scene, Window};
+        let cases: [(Option<CaptureMode>, Option<bool>, Option<CaptureMode>); 9] = [
+            (None, None, Some(Window)),
+            (None, Some(true), Some(Window)),
+            (None, Some(false), Some(Scene)),
+            (Some(Window), None, Some(Window)),
+            (Some(Scene), None, Some(Scene)),
+            (Some(Window), Some(true), Some(Window)),
+            (Some(Scene), Some(false), Some(Scene)),
+            (Some(Window), Some(false), None),
+            (Some(Scene), Some(true), None),
+        ];
+        for (mode, include_ui, expected) in cases {
+            let outcome = CaptureSpec {
+                mode,
+                include_ui,
+                ..Default::default()
+            }
+            .validate();
+            match (outcome, expected) {
+                (Ok(valid), Some(want)) => {
+                    assert_eq!(valid.mode(), want, "{mode:?}/{include_ui:?}");
+                    assert_eq!(valid.include_ui(), want == Window);
+                }
+                (Err(refusal), None) => {
+                    assert_eq!(refusal.code, "include_ui_conflicts_with_mode");
+                    assert_eq!(refusal.field, Some("include_ui"));
+                }
+                (outcome, expected) => {
+                    panic!("{mode:?}/{include_ui:?}: got {outcome:?}, want {expected:?}")
+                }
+            }
+        }
+        // include_ui:false alone unlocks the scene-only size knobs.
+        let scene: CaptureSpec = serde_json::from_value(
+            serde_json::json!({ "include_ui": false, "width": 640, "height": 480 }),
+        )
+        .expect("parses");
+        assert_eq!(scene.validate().expect("valid").width(), Some(640));
+    }
+
     #[test]
     fn vision_bridge_is_bounded_at_its_capacity() {
         let (tx, _rx) = vision_bridge();
@@ -1143,6 +1226,7 @@ mod tests {
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             tx.try_send(VisionRequest {
                 correlation_id: format!("c{i}"),
+                caller_scope: "VERSE#v".into(),
                 op: VisionOp::ReadCamera,
                 reply_tx,
             })
@@ -1152,6 +1236,7 @@ mod tests {
         let (reply_tx, _reply_rx) = tokio::sync::oneshot::channel();
         let overflow = tx.try_send(VisionRequest {
             correlation_id: "overflow".into(),
+            caller_scope: "VERSE#v".into(),
             op: VisionOp::ReadCamera,
             reply_tx,
         });

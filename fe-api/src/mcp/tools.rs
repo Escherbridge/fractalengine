@@ -902,9 +902,8 @@ async fn encode_base64(png: Vec<u8>) -> Result<String, String> {
     .map_err(|_| "encode failed".to_string())
 }
 
-/// Empty arguments capture the live window exactly like plain `GET` (the
-/// precedent kept byte-for-byte: `request_capture` is untouched by this
-/// track). Any argument at all switches to the dynamic pose/mode path over
+/// Empty arguments capture the live window exactly like plain `GET` (same
+/// bridge, same scope check). Any argument at all switches to the dynamic pose/mode path over
 /// the vision bridge, returning the resolved pose as a second content block.
 pub(super) fn screenshot(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
@@ -919,7 +918,7 @@ pub(super) fn screenshot(call: ToolCall<'_>) -> ToolFuture<'_> {
 
         let has_args = call.args.as_object().is_some_and(|o| !o.is_empty());
         if !has_args {
-            let png = crate::screenshot::request_capture(call.state)
+            let png = crate::screenshot::request_capture(call.state, &call.claims.scope)
                 .await
                 .map_err(|error| error.message())?;
             let size_bytes = png.len();
@@ -930,13 +929,13 @@ pub(super) fn screenshot(call: ToolCall<'_>) -> ToolFuture<'_> {
             ]));
         }
 
-        let spec: fe_runtime::vision::CaptureSpec = serde_json::from_value(call.args.clone())
-            .map_err(|error| format!("malformed arguments: {error}"))?;
-        let valid = spec.validate().map_err(|refusal| refusal.message)?;
-        let (png, pose) = crate::vision::run_capture(call.state, valid)
+        // The same typed model + validation REST uses (one parse path, two doors).
+        let valid = crate::vision::validate_capture_request(serde_json::from_value(call.args.clone()))
+            .map_err(|refusal| crate::vision::VisionError::Refusal(refusal).coded_message())?;
+        let (png, pose) = crate::vision::run_capture(call.state, &call.claims.scope, valid)
             .await
-            .map_err(|error| error.message())?;
-        let pose_json = serde_json::to_string(&pose).unwrap_or_default();
+            .map_err(|error| error.coded_message())?;
+        let pose_json = crate::vision::pose_metadata_json(&pose);
         let data = encode_base64(png).await?;
         Ok(json!([
             { "type": "image", "data": data, "mimeType": "image/png" },
@@ -955,9 +954,13 @@ pub(super) fn get_camera(call: ToolCall<'_>) -> ToolFuture<'_> {
         gate.check_rate(call.state, call.claims)
             .await
             .map_err(|refusal| refusal.message())?;
-        match crate::vision::request_vision(call.state, fe_runtime::vision::VisionOp::ReadCamera)
-            .await
-            .map_err(|error| error.message())?
+        match crate::vision::request_vision(
+            call.state,
+            &call.claims.scope,
+            fe_runtime::vision::VisionOp::ReadCamera,
+        )
+        .await
+        .map_err(|error| error.coded_message())?
         {
             fe_runtime::vision::VisionOutput::Camera(state) => {
                 Ok(serde_json::to_value(state).unwrap_or_default())
@@ -1363,12 +1366,16 @@ pub(super) mod schema {
         json!({
             "type": "object",
             "properties": {
+                "include_ui": {
+                    "type": "boolean",
+                    "description": fe_runtime::vision::INCLUDE_UI_DESCRIPTION
+                },
                 "mode": {
                     "type": "string",
                     "enum": ["window", "scene"],
-                    "description": "window (default): moves the main camera, settles, captures \
-                                     the full UI, restores by default. scene: off-screen render \
-                                     at width/height, no UI, the user's view is untouched."
+                    "description": "Same switch as include_ui (window = true, scene = false); \
+                                     kept for compatibility. Giving both with different \
+                                     answers is refused (include_ui_conflicts_with_mode)."
                 },
                 "pose": {
                     "type": "object",
@@ -1423,16 +1430,16 @@ pub(super) mod schema {
                                 "petal_id": { "type": "string" },
                                 "navigate": {
                                     "type": "boolean",
-                                    "description": "window mode only; navigate into the target's petal first (not restored)"
+                                    "description": "only with include_ui: true; navigate into the target's petal (same verse only) first; undone afterwards unless restore is false"
                                 }
                             }
                         }
                     }
                 },
-                "width": { "type": "integer", "description": "scene mode only; 64..=4096, default 1280" },
-                "height": { "type": "integer", "description": "scene mode only; 64..=4096, default 720" },
+                "width": { "type": "integer", "description": "only with include_ui: false (a UI capture is the window's own size); 64..=4096, default 1280" },
+                "height": { "type": "integer", "description": "only with include_ui: false (a UI capture is the window's own size); 64..=4096, default 720" },
                 "settle_frames": { "type": "integer", "description": "<=600; default 30 with a pose, 0 for a bare window capture" },
-                "restore": { "type": "boolean", "description": "window mode only; default true" }
+                "restore": { "type": "boolean", "description": "only with include_ui: true; default true — puts the camera (and any navigation) back afterwards" }
             }
         })
     }

@@ -561,12 +561,11 @@ fn main() {
     app.add_systems(bevy::prelude::Update, window_chrome::set_window_icon);
 
     // Window captures: API bridge (agents) + F12 save-to-file (humans).
-    app.insert_resource(screenshot_bridge::ScreenshotBridge(screenshot_rx));
+    screenshot_bridge::install(&mut app, screenshot_rx);
     app.init_resource::<screenshot_bridge::ScreenshotSaveResults>();
     app.add_systems(
         bevy::prelude::Update,
         (
-            screenshot_bridge::drain_screenshot_requests,
             screenshot_bridge::capture_screenshot_on_f12,
             screenshot_bridge::surface_saved_screenshots,
         ),

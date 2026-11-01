@@ -48,6 +48,11 @@ so it unit-tests headless and compiles for every build of this crate.
   `CompositeTileSource::source_metas().iter().map(|m| m.bounds).collect()`.
   Empty input is `Coverage::Unbounded` (online/demo mode with no installed
   tilesets — the capture proceeds, per spec §5.3), not `Outside`.
+- **`union_bounds(&[[f64; 4]]) -> Option<[f64; 4]>`** (advocate pass,
+  2026-11-01; moved out of `fractalengine`'s `vision_bridge.rs`): the box
+  enclosing every bound tileset — the `focus {petal_id}` fallback frame for a
+  petal with no visible nodes, and `GET /camera`'s `tileset_bounds`. `None`
+  for no tilesets.
 - **`frame_bounds_top_down`**: fits BOTH the lat and lon extents for the
   output aspect ratio via `tan(h_fov/2) = tan(v_fov/2) * aspect` — no separate
   horizontal-FOV input, just the standard aspect/vertical-FOV relationship.

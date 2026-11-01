@@ -1045,16 +1045,27 @@ Editor+-gated (RP-4) and every writer validates its `did:key` grammar
   It returns the `Screenshot` entity so a torn-down §vision job can despawn a
   capture that will never fire. `capture_primary_window_png` (F12 + GET) is a
   one-line wrapper over it.
+- **Two stages, two scope checks (agent_vision SEC-ADDENDUM).** `install`
+  registers `drain_screenshot_requests` in `Update` (arrival check: an
+  uncovered caller gets the uniform denial at once, the rest wait in
+  `PendingScreenshots`) and `capture_pending_screenshots` in `PostUpdate`
+  (frame-time check: `scope_covers_active_verse` runs AGAIN against the verse
+  open now, right before the frame is queued — the §vision rule). A user who
+  switches to an uncovered verse between the two gets the caller denied and no
+  frame taken. Before the advocate pass (2026-11-01) one system checked at
+  drain and captured, leaving that one-frame gap.
 - While `fe_renderer::camera::CameraCaptureLock` exists (a §vision window job
-  holds the camera at an agent's pose), `drain_screenshot_requests` returns
-  WITHOUT draining: a plain GET stays queued and is served unchanged the first
-  frame after the lock lifts, so it never returns a half-posed frame. The GET's
-  own 5 s timeout still applies (a posed job's settle can outlast it — the agent
-  then sees 504 and retries).
-- `drain_screenshot_requests` drains every queued
+  holds the camera at an agent's pose), the drain returns WITHOUT draining and
+  the capture stage keeps its held requests: a plain GET is served unchanged
+  the first frame after the lock lifts, so it never returns a half-posed
+  frame. The capture stage's own lock check also covers a job that started in
+  the same frame as the drain (its lock is a deferred insert, visible only in
+  `PostUpdate`). The GET's own 5 s timeout still applies (a posed job's settle
+  can outlast it — the agent then sees 504 and retries).
+- `capture_pending_screenshots` serves every covered
   `fe_runtime::screenshot::ScreenshotRequest` (the API thread's bounded bridge,
-  created in `main.rs` and handed to `ApiConfig.screenshot`) and serves them all
-  with ONE `Screenshot::primary_window()` capture — the swap-chain frame, so
+  created in `main.rs` and handed to `ApiConfig.screenshot`) with ONE
+  `Screenshot::primary_window()` capture — the swap-chain frame, so
   egui is included. Its `ScreenshotCaptured` observer clones the image and
   encodes PNG (`encode_png`: `try_into_dynamic` → RGB, alpha dropped as Bevy's
   `save_to_disk` does) on the `AsyncComputeTaskPool`, never on the frame loop,
@@ -1144,10 +1155,10 @@ any phase ─(24 s job cap)─► finish_job(capture_timed_out)
   and refuses an effectively-hidden node (the D-14 picker rule, plus the
   entity's own `Visibility::Hidden`); a petal focus unions its visible nodes
   and falls back to the tileset bounds.
-- **`navigate: true`** (window only) switches only the hierarchy levels that
-  differ via `NavigationManager`, then waits for the target's
-  `SpawnedNodeMarker`. Navigation is a user-visible side effect and is NOT
-  restored; `restore` covers the camera pose only.
+- **`navigate: true`** (window only, same verse only) switches fractal/petal
+  via `NavigationManager`, then waits for the target's `SpawnedNodeMarker`. It
+  is undone afterwards like the camera, unless `restore: false` succeeds (see
+  "Navigation restore" below).
 - **Gizmos**: one PostStartup pass (`isolate_gizmos_from_capture_cameras`) puts
   every `GizmoConfigStore` group on render layer 1 and gives the main camera
   layers 0+1, so scene captures (default layer 0) carry no grid/axis/gimbal
@@ -1158,8 +1169,27 @@ any phase ─(24 s job cap)─► finish_job(capture_timed_out)
   camera only, so a scene capture far from the user's view shows terrain but
   may lack nodes not resident there. The V1 `ResolvedPose` has no field for
   tile `coverage: "unbounded"` / out-of-served-zoom notes, so those are not
-  reported. Scope confinement (plan §SEC-ADDENDUM: the token must cover the
-  active verse / the focus target's verse) belongs to fe-api and is NOT wired
-  as of V5; this module supplies its input — the active verse/fractal/petal
-  ids via `ReadCamera` (the addendum's "pre-check query").
+  reported.
+- **Scope confinement (SEC-ADDENDUM, enforced HERE).** Every request carries
+  the caller's token scope. `scope_covers_active_verse` (fe-policy
+  `scope_contains` against `VERSE#<active_verse_id>`; nothing open = denied) is
+  checked when a `ReadCamera`/`Capture` arrives, and again right before the
+  frame is queued, so a user switching to an uncovered verse mid-settle yields
+  `denied()` and no frame. The plain GET path applies the same two checks
+  (arrival in `drain_screenshot_requests`, frame time in
+  `capture_pending_screenshots` — §screenshot). `authorized_target` resolves a `focus`
+  target to its verse (hierarchy tree, else a marker spawned in the active
+  petal) and returns `None` for unknown OR uncovered, which is one uniform
+  `denied()` with no existence oracle. Cross-verse `navigate` is refused, and
+  `navigate_to_petal` itself returns `false` rather than switch verses.
+- **Navigation restore.** A navigating job snapshots the
+  verse/fractal/petal cursor (`NavSnapshot`), and `finish_job` puts it back
+  through `NavigationManager`'s own methods on failure, timeout or
+  `restore: true`, by the same rule as the camera. Only a successful
+  `restore: false` capture leaves the user in the target petal.
+- **Humble Object.** Box framing (`fe_renderer::camera::frame_world_box`) and
+  the tileset-bounds union (`fe_terrain::camera_framing::union_bounds`) are
+  pure, table-tested helpers in their owning crates; this module only gathers
+  ECS inputs (`frame_box` passes the view's direction + FOV) and applies the
+  result. No framing formula is duplicated here.
 - Every started capture logs one INFO line (correlation id, mode, pose kind).
