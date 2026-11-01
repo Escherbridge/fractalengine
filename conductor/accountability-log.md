@@ -768,3 +768,11 @@ fail-closed).
   edits, plus independent verification of the calculations. A synthesis step then writes the ux_audit_20261101 track and appends
   polish Wave 7+ (polish-wave.js now takes args.leaves). Sequence: run 2 (input) green, then qa-harness, then ux-audit, then
   polish W7+. DATA-MODEL recommendations go to the user; they are never auto-applied.
+- 2026-11-01 User: "add any agentic surfaces you need to enable end-to-end testing of all features through the UI the way a user
+  would, and run a QA loop on all features." Two gaps found: (1) no locator tree: egui AccessKit is not enabled, so agents click
+  raw pixels; (2) five native rfd dialogs freeze the frame loop when clicked. Staged .omc/plans/qa-surfaces.js:
+  A8 clipboard sink, S1 AccessKit locator tree, S2 accessible names for every widget, S3 ui-state + log probe,
+  S4 FileDialogProvider seam + window controls, S5 feature catalog + full-coverage scenarios, advocate, critic, one
+  full-coverage pass. Then .omc/plans/qa-loop.js: pass, then fix S1/S2, then an independent review, repeated until convergence
+  (gold tasks pass, zero new S1/S2 twice, coverage 100%) or 6 iterations. Chain: qa-harness (running), qa-surfaces, ux-audit,
+  qa-loop, polish W7+. Every surface stays default-OFF behind INPUT_GATE.
