@@ -291,3 +291,12 @@ reply. Column handles resize bounded widths; cells and rows copy through egui's 
 sink suppression still applies). Current-petal node rows queue `NodeManager::request_select_and_frame`,
 which reuses the sidebar resolver and live-transform camera focus; projected non-node rows remain
 copyable. Query-match scene markers are a separate visualization, never a second selection authority.
+
+
+Shared `action`, `record_response` and `value_label` hooks retain actual drawing-time Response hit,
+clip, sense, layer and modal-allowance facts, plus galley elision/full-hover facts. They use native
+Response IDs and layer-to-global transforms; the binary applies physical scaling once. No hidden
+unsafe ID reconstruction or post-EndPass read_response fallback is used. Each shell invocation resets
+observations with its cumulative pass number so discarded/repeated egui passes do not mix geometry.
+S2 can use these small helpers while naming the remaining controls. Unvisited controls remain explicit
+coverage gaps. Narrow tool captions shorten to glyphs while accessible names retain full tool names.

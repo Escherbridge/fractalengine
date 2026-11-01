@@ -532,9 +532,16 @@ pub fn render_topbar(
                     let active = tool.active_tool == def.tool;
                     // tool_inspector_ux_20260719 (FR-1): active MODE reads via
                     // luminance, not a saturated-blue hue (ui_ux.md §1).
-                    let btn = egui::Button::new(format!("{} {}", def.glyph, def.name))
-                        .fill(mode_button_fill(active));
-                    if ui.add(btn).on_hover_text(tool_tooltip_text(def)).clicked() {
+                    let caption = if ctx.viewport_rect().width() < 1160.0 {
+                        def.glyph.to_owned()
+                    } else {
+                        format!("{} {}", def.glyph, def.name)
+                    };
+                    let btn = egui::Button::new(caption).fill(mode_button_fill(active));
+                    if super::layout_policy::action(ui, btn, def.name)
+                        .on_hover_text(tool_tooltip_text(def))
+                        .clicked()
+                    {
                         // D1/D9: one activation writer — re-press toggles to
                         // Select, and the options reveal is its job, not ours.
                         tool.activate(def.tool, right);

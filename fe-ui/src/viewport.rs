@@ -79,14 +79,24 @@ pub fn viewport_petal_space(
         nav.active_verse_name, nav.active_fractal_name, petal_name
     );
     let mut back_clicked = false;
-    ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-        rect.min + egui::vec2(8.0,4.0), egui::vec2((rect.width()-16.0).max(0.0),28.0))), |ui| {
-        ui.horizontal(|ui| {
-            back_clicked = ui.add_sized([52.0,24.0],egui::Button::new("? Back")).clicked();
-            ui.add(egui::Label::new(&breadcrumb).truncate()).on_hover_text(&breadcrumb);
-        });
-    });
-    if back_clicked { nav.back_from_petal(); }
+    ui.scope_builder(
+        egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+            rect.min + egui::vec2(8.0, 4.0),
+            egui::vec2((rect.width() - 16.0).max(0.0), 28.0),
+        )),
+        |ui| {
+            ui.horizontal(|ui| {
+                back_clicked = ui
+                    .add_sized([52.0, 24.0], egui::Button::new("\u{25C0} Back"))
+                    .clicked();
+                ui.add(egui::Label::new(&breadcrumb).truncate())
+                    .on_hover_text(&breadcrumb);
+            });
+        },
+    );
+    if back_clicked {
+        nav.back_from_petal();
+    }
 
     // Tool hints at bottom — keys/labels come from `panels::toolbar::TOOL_DEFS`.
     // The topbar stashed this frame's `InputContext` before we rendered.

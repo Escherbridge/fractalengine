@@ -16,10 +16,6 @@ pub(crate) mod query_tab;
 pub(crate) mod sidebar;
 pub(crate) mod status_bar;
 pub(crate) mod terrain_tools_panel;
-/// terrain_proposal_delta_viz_20261025 S6: true-figures "Volume report" block
-/// hosted below `proposal_report_panel` in the same renamed section. See
-/// `panels/AGENTS.md` §volume-report.
-pub(crate) mod volume_report_panel;
 /// Pure per-tool helpers (descriptor/selection/anchor), consumed by the
 /// toolbar tooltip and the right-sidebar Tool section. No left panel anymore
 /// (ui_shell_architecture_20260724 Phase 5) — see `panels/AGENTS.md` §tool-inspector.
@@ -30,6 +26,10 @@ pub(crate) mod tool_inspector;
 pub(crate) mod tool_options;
 pub(crate) mod tool_panel;
 pub(crate) mod toolbar;
+/// terrain_proposal_delta_viz_20261025 S6: true-figures "Volume report" block
+/// hosted below `proposal_report_panel` in the same renamed section. See
+/// `panels/AGENTS.md` §volume-report.
+pub(crate) mod volume_report_panel;
 
 mod annotation_card;
 mod asset_card;
@@ -146,6 +146,7 @@ pub fn gardener_console(
     // are its sole writers.
     volume_report: &crate::panels::volume_report_panel::VolumeReportState,
 ) -> egui::Rect {
+    crate::ui_shell::layout_policy::begin_ui_pass(ctx);
     crate::ui_shell::layout_policy::apply_style(ctx);
     // Repair conditional editor state; see `panels/AGENTS.md` §numeric-boundary.
     path_editor_card::sanitize_path_editor_numeric_state(path_state);
@@ -230,7 +231,15 @@ pub fn gardener_console(
         )
     });
 
-    crate::ui_shell::results_dock::render(ctx, &mut inspector.query_results, nav, hierarchy, node_mgr, camera_focus, ui_mgr);
+    crate::ui_shell::results_dock::render(
+        ctx,
+        &mut inspector.query_results,
+        nav,
+        hierarchy,
+        node_mgr,
+        camera_focus,
+        ui_mgr,
+    );
 
     let viewport_response =
         egui::CentralPanel::default()

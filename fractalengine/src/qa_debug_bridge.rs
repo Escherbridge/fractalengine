@@ -106,14 +106,18 @@ fn prepare_accessibility(
     }
 }
 
-
 fn layout_snapshot(ctx: &bevy_egui::egui::Context, ppp: f32) -> Value {
-    let observations = fe_ui::ui_shell::layout_policy::observations(ctx);
-    json!({"scrolls":observations.scrolls.iter().map(|s| json!({
-        "content_id":s.content_id.to_string(), "label":s.label,
-        "clip":{"x":s.clip.min.x*ppp,"y":s.clip.min.y*ppp,"w":s.clip.width()*ppp,"h":s.clip.height()*ppp},
-        "offset":[s.offset.x*ppp,s.offset.y*ppp],"content_size":[s.content_size.x*ppp,s.content_size.y*ppp],"layer":s.layer
-    })).collect::<Vec<_>>(),"coverage":"instrumented scroll regions; widget hit rectangles and uninstrumented clips unknown"})
+    let o = fe_ui::ui_shell::layout_policy::observations(ctx);
+    let physical = |r: bevy_egui::egui::Rect| json!({"x":r.min.x*ppp,"y":r.min.y*ppp,"w":r.width()*ppp,"h":r.height()*ppp});
+    json!({"pass":o.pass,"scrolls":o.scrolls.iter().map(|s| json!({
+        "content_id":s.content_id.to_string(), "label":s.label,"axes":s.axes,
+        "clip":physical(s.clip),"offset":[s.offset.x*ppp,s.offset.y*ppp],
+        "content_size":[s.content_size.x*ppp,s.content_size.y*ppp],"layer":s.layer
+    })).collect::<Vec<_>>(),"controls":o.controls.iter().map(|c| json!({
+        "id":c.id.to_string(),"rect":physical(c.rect),"hit":physical(c.hit),"clip":physical(c.clip),
+        "layer":format!("{:?}",c.layer),"allowed":c.allowed,"clickable":c.clickable,"draggable":c.draggable
+    })).collect::<Vec<_>>(),"texts":o.texts.iter().map(|t|json!({"id":t.id.to_string(),"truncated":t.truncated,"hover":t.hover})).collect::<Vec<_>>(),
+    "coverage":"same-pass shared helper observations; unvisited widget hits, text and floating-area occlusion remain unknown"})
 }
 
 fn rect(rect: ak::Rect) -> Value {
@@ -243,6 +247,7 @@ struct UiState<'w, 's> {
     tool: Res<'w, ToolState>,
     ui: Res<'w, UiManager>,
     right: Res<'w, RightSidebarState>,
+    inspector: Res<'w, fe_ui::plugin::InspectorFormState>,
     viewport: Res<'w, ViewportRect>,
     transforms: Query<'w, 's, (&'static Transform, &'static SpawnedNodeMarker)>,
     asset: Res<'w, fe_ui::asset_ops::PendingAssetOps>,
@@ -392,6 +397,7 @@ fn serve(
             },
             QaOp::UiState => {
                 let mut snapshot = state.snapshot(ppp, frame.0);
+                snapshot["query_results"] = state.inspector.query_results.summary();
                 snapshot["window"] = windows.single().ok().map(|window| json!({"width":window.physical_width(),"height":window.physical_height(),"maximized":state.topbar.maximized,"minimized":state.topbar.minimized,"ui_scale":context_settings.scale_factor})).unwrap_or(Value::Null);
                 if let Some(update) = output.platform_output.accesskit_update.as_ref() {
                     let nodes = flatten(update, &TreeFilter::default());

@@ -49,8 +49,14 @@ pub(crate) fn left_sidebar(
             ui.separator();
 
             let tree_height = (ui.available_height() - 86.0).max(40.0);
-            crate::ui_shell::layout_policy::scroll(ui, "Hierarchy", egui::ScrollArea::vertical()
-                .max_height(tree_height).auto_shrink([false; 2]), |ui| {
+            crate::ui_shell::layout_policy::scroll(
+                ui,
+                "Hierarchy",
+                [false, true],
+                egui::ScrollArea::vertical()
+                    .max_height(tree_height)
+                    .auto_shrink([false; 2]),
+                |ui| {
                     ui.add_space(4.0);
                     render_verse_tree(
                         ui,
@@ -65,7 +71,8 @@ pub(crate) fn left_sidebar(
                     sidebar_section_groups(ui, nav, ui_mgr, vis_state);
                     sidebar_section_space_overview(ui, dashboard);
                     ui.add_space(4.0);
-                });
+                },
+            );
 
             // Bottom-pinned reset button (two-step destructive confirm)
             ui.vertical_centered(|ui| {
@@ -78,7 +85,8 @@ pub(crate) fn left_sidebar(
                             .small()
                             .color(theme::TEXT_DIM),
                     )
-                    .fill(theme::BG_BUTTON_ALT).min_size(egui::vec2(0.0, 24.0));
+                    .fill(theme::BG_BUTTON_ALT)
+                    .min_size(egui::vec2(0.0, 24.0));
                     if ui
                         .add(reset_btn)
                         .on_hover_text("Wipe all data and re-seed defaults")

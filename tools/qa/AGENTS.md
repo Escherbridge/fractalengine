@@ -212,3 +212,14 @@ git history and compare `source_fingerprint` with Get-QaSourceFingerprint before
 reuse. The whole directory name is never a git ref. WebView2 data is run-local
 under `webview`; tokens retain owner-only ACLs and the client may need the same
 owner execution context as the GUI. Do not weaken those ACLs.
+
+
+## ?layout-check
+
+`fe.py --run <owned-run> layout-check` transports tree/state into the pure `layout_check.analyze` module.
+It emits measured violations, intentional scroll content and explicit unknown coverage. Exit2 means
+measured violations; zero violations never certifies unknown hit rectangles, uninstrumented scrolls,
+text truncation or overlay occlusion. Parent bounds alone are not clipping boundaries. Scene viewport
+share uses authoritative ui-state geometry. Tree/state frame IDs are recorded separately because the
+HTTP reads may observe consecutive static frames. Capture the same fixture/size/scale/section/scroll
+position before and after layout work and inspect PNGs alongside the report.

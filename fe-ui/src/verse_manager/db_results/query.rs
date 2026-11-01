@@ -60,10 +60,8 @@ pub(super) fn handle_query_result(
         gis_panel.query_pending = false;
     } else if path_state.tracks_pending {
         crate::actions::path::apply_track_rows(path_state, crate::gis::parse_gis_rows(data));
-    } else {
-        // Uncorrelated replies never claim a correlated dock run.
-        if !inspector.query_results.pending() { inspector.query_results.complete(data); }
     }
+    let _ = inspector; // Ad-hoc output requires a matching request id.
 }
 
 /// `Error`: log, clear a stranded pen create, and surface a humanized error
@@ -148,8 +146,15 @@ mod tests {
                 inline,
                 "{raw}"
             );
-            assert_eq!(ui_mgr.latest_unacknowledged_error().is_some(), !inline, "{raw}");
-            assert!(matches!(ui_mgr.active_dialog, ActiveDialog::GltfImport { .. }));
+            assert_eq!(
+                ui_mgr.latest_unacknowledged_error().is_some(),
+                !inline,
+                "{raw}"
+            );
+            assert!(matches!(
+                ui_mgr.active_dialog,
+                ActiveDialog::GltfImport { .. }
+            ));
         }
     }
 }

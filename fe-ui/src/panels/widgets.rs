@@ -122,12 +122,7 @@ pub(crate) fn clipped_value(
     value: &str,
     color: egui::Color32,
 ) -> egui::Response {
-    let display = if value.contains('\\') || value.contains('/') {
-        let chars = (ui.available_width() / 7.0).floor().max(5.0) as usize;
-        crate::ui_shell::layout_policy::middle_ellipsis(value, chars)
-    } else { value.to_owned() };
-    ui.add(egui::Label::new(egui::RichText::new(display).small().monospace().color(color)).truncate())
-        .on_hover_text(value)
+    crate::ui_shell::layout_policy::value_label(ui, value, color)
 }
 
 /// [`clipped_value`] plus click-to-copy with a toast, for fields where a
@@ -228,7 +223,9 @@ pub(crate) fn confirm_button(
                 own_click = true;
             }
             if ui
-                .add(egui::Button::new(egui::RichText::new("Cancel").small()).fill(theme::BG_BUTTON))
+                .add(
+                    egui::Button::new(egui::RichText::new("Cancel").small()).fill(theme::BG_BUTTON),
+                )
                 .clicked()
             {
                 own_click = true;

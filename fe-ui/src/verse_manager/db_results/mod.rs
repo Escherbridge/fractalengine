@@ -88,9 +88,11 @@ pub(super) fn apply_db_results(
     // one batch can't double-spawn either (deferred spawns are query-invisible).
     let mut already_spawned: std::collections::HashSet<String> =
         caches.spawned.iter().map(|m| m.node_id.clone()).collect();
-    inspector.query_results.invalidate(nav.active_verse_id.as_deref());
     let mesh_budget_exceeded = caches.mesh_budget.exceeded;
     for result in reader.read() {
+        inspector
+            .query_results
+            .invalidate(nav.active_verse_id.as_deref());
         match result {
             DbResult::Seeded { .. } => hierarchy::handle_seeded(&db_sender),
             DbResult::HierarchyLoaded { verses } => {
@@ -1487,7 +1489,8 @@ mod tests {
         gis.query_request_id = Some(gis_id.to_string());
         path.tracks_pending = true;
         path.tracks_request_id = Some(tracks_id.to_string());
-        ins.query_results.begin(query_id.to_string(), "VERSE#v".to_string());
+        ins.query_results
+            .begin(query_id.to_string(), "VERSE#v".to_string());
         (gis, path, ins)
     }
 
@@ -1524,6 +1527,26 @@ mod tests {
         assert!(!ins.query_results.pending());
         ins.query_results.invalidate(Some("other"));
         assert!(ins.query_results.rows.is_empty());
+        ins.query_results
+            .begin("ui-query-4".into(), "VERSE#v-FRACTAL#f".into());
+        ins.query_results
+            .complete(&[json!({"n":10}), json!({"n":2})]);
+        ins.query_results.sort_by(0);
+        assert_eq!(ins.query_results.display_order(), &[1, 0]);
+        ins.query_results.sort_by(0);
+        assert_eq!(ins.query_results.display_order(), &[0, 1]);
+        assert_eq!(
+            ins.query_results.rows[0]["n"], 10,
+            "sorting preserves source row identity"
+        );
+        ins.query_results
+            .begin("ui-query-5".into(), "VERSE#v".into());
+        ins.query_results.fail("bad query");
+        assert_eq!(ins.query_results.error.as_deref(), Some("bad query"));
+        ins.query_results
+            .begin("ui-query-6".into(), "VERSE#v".into());
+        ins.query_results.complete(&[]);
+        assert!(ins.query_results.rows.is_empty() && ins.query_results.error.is_none());
         assert_eq!(path.tracks.len(), 1);
         assert_eq!(path.tracks[0].node_id, "track-1");
         assert!(!path.tracks_pending && path.tracks_request_id.is_none());

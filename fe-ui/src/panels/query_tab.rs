@@ -17,7 +17,6 @@ const QUERY_EDITOR_MIN_ROWS: usize = 4;
 /// Floor for the Result scroll area so a short panel still shows something
 /// rather than collapsing to near-zero (F2).
 
-
 /// Escapes a value for literal interpolation into a template SQL string.
 /// `actions::query::submit` always sends an empty `vars` map (the GUI tab has
 /// no bind-variable plumbing — fe-ui/src/actions/query.rs), so templates
@@ -133,21 +132,37 @@ pub(crate) fn inspector_query_section(
             // SQL text area — reasonable min height; the hint lists the real
             // tables instead of a single wrong-table example (F3).
             let editor_height = crate::ui_shell::layout_policy::editor_height(ui.ctx());
-            let response = crate::ui_shell::layout_policy::scroll(ui, "SQL editor", egui::ScrollArea::vertical().id_salt("sql_editor").max_height(editor_height), |ui| ui.add_sized([ui.available_width(), editor_height],
-                egui::TextEdit::multiline(&mut inspector.query_sql_buf)
-                    .font(egui::TextStyle::Monospace)
-                    .desired_rows(QUERY_EDITOR_MIN_ROWS)
-                    .desired_width(ui.available_width())
-                    .hint_text(
-                        "Tables: node, petal, fractal, verse, asset, iot_reading\n\
+            let response = crate::ui_shell::layout_policy::scroll(
+                ui,
+                "SQL editor",
+                [false, true],
+                egui::ScrollArea::vertical()
+                    .id_salt("sql_editor")
+                    .max_height(editor_height),
+                |ui| {
+                    ui.add_sized(
+                        [ui.available_width(), editor_height],
+                        egui::TextEdit::multiline(&mut inspector.query_sql_buf)
+                            .font(egui::TextStyle::Monospace)
+                            .desired_rows(QUERY_EDITOR_MIN_ROWS)
+                            .desired_width(ui.available_width())
+                            .hint_text(
+                                "Tables: node, petal, fractal, verse, asset, iot_reading\n\
                          e.g. SELECT * FROM node WHERE petal_id = '...'",
-                    ),
-            )).inner;
+                            ),
+                    )
+                },
+            )
+            .inner;
 
+            ui.ctx()
+                .accesskit_node_builder(response.id, |node| node.set_label("SQL query"));
+            crate::ui_shell::layout_policy::record_response(ui, &response);
             ui.add_space(6.0);
 
             // Submit button
-            let can_submit = !inspector.query_sql_buf.trim().is_empty() && !inspector.query_results.pending();
+            let can_submit =
+                !inspector.query_sql_buf.trim().is_empty() && !inspector.query_results.pending();
             ui.horizontal(|ui| {
                 let btn = egui::Button::new(if inspector.query_results.pending() {
                     "Running..."
@@ -159,19 +174,18 @@ pub(crate) fn inspector_query_section(
                 } else {
                     theme::BG_BUTTON
                 });
-                let submit_clicked = ui.add_enabled(can_submit, btn).clicked();
+                let submit = ui.add_enabled(can_submit, btn);
+                crate::ui_shell::layout_policy::record_response(ui, &submit);
+                let submit_clicked = submit.clicked();
                 let ctrl_enter = response.has_focus()
                     && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.ctrl);
 
                 if (submit_clicked || ctrl_enter) && can_submit {
-
                     ui_mgr.push_action(UiAction::SubmitQuery {
                         sql: inspector.query_sql_buf.clone(),
                         scope: scope.clone(),
                     });
                 }
-
-
             });
 
             ui.add_space(2.0);
@@ -182,7 +196,6 @@ pub(crate) fn inspector_query_section(
             );
 
             ui.label("Results open in the dock below the viewport.");
-
         });
 }
 
@@ -193,6 +206,20 @@ mod tests {
     #[test]
     fn sql_literal_escapes_quotes_and_backslashes() {
         assert_eq!(sql_literal("abc"), "abc");
+        for (value, limit, expected) in [
+            ("abc", 8, "abc"),
+            (
+                "\u{03b1}\u{03b2}\u{03b3}\u{03b4}\u{03b5}\u{03b6}\u{03b7}\u{03b8}",
+                5,
+                "\u{03b1}\u{2026}\u{03b6}\u{03b7}\u{03b8}",
+            ),
+            ("abc", 0, "\u{2026}"),
+        ] {
+            assert_eq!(
+                crate::ui_shell::layout_policy::middle_ellipsis(value, limit),
+                expected
+            );
+        }
         assert_eq!(sql_literal("o'brien"), "o\\'brien");
         assert_eq!(sql_literal("a\\b"), "a\\\\b");
     }
