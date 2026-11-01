@@ -48,9 +48,8 @@ pub(crate) fn left_sidebar(
             sidebar_verse_header(ui, nav, db_tx, ui_mgr);
             ui.separator();
 
-            egui::ScrollArea::vertical()
-                .auto_shrink([false; 2])
-                .show(ui, |ui| {
+            crate::ui_shell::layout_policy::scroll(ui, "Hierarchy", egui::ScrollArea::vertical()
+                .auto_shrink([false; 2]), |ui| {
                     ui.add_space(4.0);
                     render_verse_tree(
                         ui,

@@ -9,3 +9,5 @@ pub mod left_sidebar;
 pub(crate) mod modal;
 pub mod right_sidebar;
 pub mod topbar;
+
+pub mod layout_policy;

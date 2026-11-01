@@ -1346,10 +1346,9 @@ fn section_chrome(
             ui.add_space(2.0);
             section_rail(ui, state);
             ui.separator();
-            egui::ScrollArea::vertical()
+            crate::ui_shell::layout_policy::scroll(ui, section_label(section), egui::ScrollArea::vertical()
                 .id_salt(format!("right_section_scroll_{section:?}"))
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
+                .auto_shrink([false, false]), |ui| {
                     egui::Frame::NONE
                         .inner_margin(egui::Margin::same(8))
                         .show(ui, |ui| body(ui));

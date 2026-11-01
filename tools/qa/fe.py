@@ -586,6 +586,62 @@ def command_ui(run, args):
     emit(tree)
 
 
+def command_layout_check(run, args):
+    tree = probe(run, "ui-tree", args.verse)
+    state = probe(run, "ui-state", args.verse)
+    nodes = tree_nodes(tree)
+    by_id = {n["id"]: n for n in nodes}
+    scrolls = {s["content_id"]: s for s in tree.get("layout", {}).get("scrolls", [])}
+    window = tree.get("window") or {}
+    width, height = window.get("width", 0), window.get("height", 0)
+    violations, unknown, intentional = [], [], []
+    visible = []
+    for node in nodes:
+        if not node.get("interactive") or node.get("hidden") or not node.get("enabled"):
+            continue
+        bounds = node.get("bounds")
+        if not bounds:
+            unknown.append({"id":node["id"], "reason":"missing_bounds"})
+            continue
+        ancestors, parent, seen = [], node.get("parent"), set()
+        while parent and parent not in seen:
+            seen.add(parent)
+            if parent in scrolls:
+                ancestors.append(scrolls[parent])
+            parent = by_id.get(parent, {}).get("parent")
+        clipped = bounds["x"] < -1 or bounds["y"] < -1 or bounds["x"] + bounds["w"] > width + 1 or bounds["y"] + bounds["h"] > height + 1
+        clipped_scroll = next((s for s in ancestors if bounds["y"] < s["clip"]["y"] - 1 or bounds["y"] + bounds["h"] > s["clip"]["y"] + s["clip"]["h"] + 1), None)
+        entry = {"id":node["id"],"name":node.get("name"),"bounds":bounds}
+        if clipped_scroll and clipped_scroll["content_size"][1] > clipped_scroll["clip"]["h"]:
+            intentional.append(dict(entry, reason="scroll_content", panel=clipped_scroll["label"]))
+            continue
+        if clipped:
+            violations.append(dict(entry, reason="outside_window_without_scroll_path"))
+        elif clipped_scroll:
+            violations.append(dict(entry, reason="clipped_without_scroll_range", panel=clipped_scroll["label"]))
+        else:
+            visible.append(node)
+        # AccessKit bounds are visual rectangles, not expanded interaction rectangles.
+        if bounds["w"] < 20 or bounds["h"] < 20:
+            unknown.append(dict(entry, reason="small_visual_bounds_hit_rect_unknown"))
+    for i, left in enumerate(visible):
+        a = left["bounds"]
+        for right in visible[i + 1:]:
+            if left.get("parent") != right.get("parent"):
+                continue
+            b = right["bounds"]
+            if min(a["x"]+a["w"], b["x"]+b["w"]) - max(a["x"], b["x"]) > 2 and min(a["y"]+a["h"], b["y"]+b["h"]) - max(a["y"], b["y"]) > 2:
+                unknown.append({"ids":[left["id"],right["id"]],"reason":"overlap_layer_or_composite_unknown"})
+    viewport = state.get("viewport") or {}
+    share = viewport.get("w", viewport.get("width", 0)) / width if width else 0
+    if share < 0.45:
+        violations.append({"reason":"protected_viewport_width","actual_share":share,"minimum_share":0.45})
+    result = {"frame":tree.get("frame"),"state_frame":state.get("frame"),"window":window,"viewport":viewport,"viewport_share":share,"violations":violations,"unknown":unknown,"intentional_scroll_content":intentional,"coverage":"scroll ancestry and window bounds measured; uninstrumented scrolls, expanded hits, text truncation and overlay occlusion remain unknown"}
+    emit(result)
+    if violations:
+        raise Refused(0, "layout_violations", str(len(violations)) + " measured layout violations")
+
+
 def dotted(value, path):
     for key in path.split("."):
         if not isinstance(value, dict) or key not in value:
@@ -731,6 +787,7 @@ def build_parser():
     for operation in ["maximize","restore","minimize","close"]:
         actions.add_parser(operation)
     window.set_defaults(func=command_window)
+    sub.add_parser("layout-check", help="measured layout violations and explicit geometry coverage gaps").set_defaults(func=command_layout_check)
     ui = sub.add_parser("ui", help="primary window accessibility tree in physical pixels")
     ui.add_argument("--find")
     ui.add_argument("--role")

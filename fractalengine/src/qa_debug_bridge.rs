@@ -93,6 +93,7 @@ fn prepare_accessibility(
         }
     }
     for mut context in &mut contexts {
+        fe_ui::ui_shell::layout_policy::begin_frame(context.get_mut(), enabled.0);
         if enabled.0 || requested.get() {
             context.get_mut().enable_accesskit();
         } else {
@@ -103,6 +104,16 @@ fn prepare_accessibility(
         frame_nav.0 = cursor(&nav);
         host.logs.set_verse(nav.active_verse_id.as_deref());
     }
+}
+
+
+fn layout_snapshot(ctx: &bevy_egui::egui::Context, ppp: f32) -> Value {
+    let observations = fe_ui::ui_shell::layout_policy::observations(ctx);
+    json!({"scrolls":observations.scrolls.iter().map(|s| json!({
+        "content_id":s.content_id.to_string(), "label":s.label,
+        "clip":{"x":s.clip.min.x*ppp,"y":s.clip.min.y*ppp,"w":s.clip.width()*ppp,"h":s.clip.height()*ppp},
+        "offset":[s.offset.x*ppp,s.offset.y*ppp],"content_size":[s.content_size.x*ppp,s.content_size.y*ppp],"layer":s.layer
+    })).collect::<Vec<_>>(),"coverage":"instrumented scroll regions; widget hit rectangles and uninstrumented clips unknown"})
 }
 
 fn rect(rect: ak::Rect) -> Value {
@@ -372,7 +383,7 @@ fn serve(
             QaOp::UiTree(filter) => match output.platform_output.accesskit_update.as_ref() {
                 Some(update) => Ok(
                     json!({"frame":frame.0,"active_verse_id":state.nav.active_verse_id,"coordinate_space":"physical_pixels","pixels_per_point":ppp,
-                    "window":windows.single().ok().map(|w| json!({"width":w.physical_width(),"height":w.physical_height()})),"nodes":flatten(update,filter)}),
+                    "window":windows.single().ok().map(|w| json!({"width":w.physical_width(),"height":w.physical_height()})),"layout":layout_snapshot(context.get_mut(), ppp),"nodes":flatten(update,filter)}),
                 ),
                 None => Err(QaFailure {
                     code: "ui_tree_not_ready",
