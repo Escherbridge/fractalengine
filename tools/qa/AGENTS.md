@@ -245,3 +245,29 @@ S6 cleanup regression: waiting for each WebView child before issuing root termin
 root when a child does not signal exit. Cleanup retains identity-verified process handles, issues all
 terminations children-first without intermediate waits, then waits under one 15-second total deadline.
 Failures are aggregated after every recorded identity receives its attempt; no unrelated PID is used.
+## Read-only normal OS accessibility probe
+
+`accessibility.ps1 -Run <owned-run>` is source preparation for the gate-off
+normal OS path. It confines the run path, verifies the recorded PID, executable
+and creation ticks, and keeps the process handle. Timing owner/ready/report
+markers must identify that same process lifetime: the owner timestamp is no
+earlier than process creation, no later than the current time, and the exact
+owner timestamp is repeated in ready/report files. A stale ready marker or
+reused PID cannot satisfy this contract.
+
+The probe runs in a separate hidden MTA PowerShell child. The parent retains
+that exact child's process handle and terminates only that child if the bounded
+timeout expires, including when a provider call blocks. The worker uses only
+`AutomationElement.FromHandle` for the verified FE HWND and reads descendants
+filtered to that process and a fixed whitelist of caption/tool Button names.
+It never reads the desktop root, arbitrary field values, invokes actions or
+changes focus. Output is a small JSON match report with static names, Button
+roles and finite nonempty bounds. No UI tree dump is emitted or persisted.
+
+A passing probe alone does not establish performance acceptance: the collector
+must finish its same-process pair, debug input/tree endpoints must remain
+denied, fixture/load conditions must match, and screenshots need independent
+review. `FRAME_TIME` is full-app wall time, not isolated accessibility CPU cost.
+NEEDS-WIRING: `launch.ps1` still forces the synthetic input gate on; its owner
+must add a recorded gate-off launch option and explicit timing opt-ins before
+this source-only proof can run.

@@ -16,6 +16,7 @@ mod asset_bridge;
 mod gpx_bridge;
 mod input_bridge;
 mod panic_log;
+mod qa_a11y_timing;
 mod qa_debug_bridge;
 mod qa_dev_token;
 mod qa_log;
@@ -728,6 +729,7 @@ fn main() {
         qa_dialogs.clone(),
         qa_listening_rx,
     );
+    qa_a11y_timing::install(&mut app, qa_enabled);
 
     // ---- Entity Store (in-memory hot cache) ----
     app.insert_resource(SharedEntityStore(entity_store));

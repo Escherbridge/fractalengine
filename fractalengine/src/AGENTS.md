@@ -1484,3 +1484,56 @@ patterns, truncation, bounds and verse generations. No token or mutable secret
 store is exposed by these surfaces. QA startup also sets
 WEBVIEW2_USER_DATA_FOLDER to the run's `webview` directory so stage reuse does not
 share a browser profile between fixtures.
+
+## ?qa-a11y-timing
+
+`qa_a11y_timing::install` adds no system unless `FE_QA_A11Y_TIMING=1` and
+`fe_identity::file_fallback::qa_storage_root` validates an explicit isolated
+root. It never changes `AccessibilityRequested`, egui accessibility settings,
+or the normal OS forwarding path. Synthetic-input-enabled runs produce an
+incomplete report and cannot serve as the normal-OS baseline.
+
+The collector uses the existing `FrameTimeDiagnosticsPlugin::FRAME_TIME` in
+`Last`, deduplicating by the diagnostic measurement's timestamp. Its bounded
+sequence is 10 seconds warmup, 20 seconds inactive baseline, baseline-ready,
+45 seconds awaiting OS activation, 5 seconds discarded transition, and
+20 seconds active. It requires at least 30 samples in each measured phase and
+stops at 10,000 total samples. Preactivated accessibility, early activation,
+changed observed conditions, absent diagnostics, or no OS activation never
+produce a successful paired-comparison claim. A process stopped mid-run leaves
+an explicitly incomplete last phase report.
+
+All output names are fixed children of the validated root. The owner marker
+and baseline-ready marker use `create_owner_only_file`; reports use
+`replace_owner_only_file`. An existing owner marker refuses another collector
+in that root, so use a fresh QA root for each paired attempt. The owner epoch
+is repeated in reports and the ready marker; the read-only UIA helper compares
+it to the recorded process creation time, not just its PID. Reports are
+written only at phase boundaries, and the following diagnostic frame is
+discarded to exclude output-write time. They contain frame wall time, counts,
+activation flags and numeric/enum workload conditions, never UI tree strings,
+tokens, invites or input field values. Update-node counts describe the current
+AccessKit update, not the complete retained accessibility tree.
+
+Recorded samples share one invariant condition snapshot: focus, physical
+window size, window/UI scale, pixels-per-point, present/update modes, camera
+transform/FOV, navigation hash and node count. These checks do not prove every
+CPU/GPU workload is unchanged; fixture stability remains a runtime obligation.
+`FE_QA_A11Y_CONTINUOUS=1` is an additional explicit controlled-workload option,
+accepted only inside this timing opt-in and validated root. It selects
+continuous winit updates before both phases and records that fact. Otherwise
+the application's update policy is preserved. Never compare different gate
+states or reset a user's latched accessibility request to manufacture a
+baseline.
+
+Timing summaries include count, mean, median, nearest-rank p95, range and
+standard deviation; complete pairs include absolute and percentage deltas.
+The metric is full application frame wall time including scheduling, vsync,
+GPU waits and scene work. A refresh-capped plateau does not establish zero
+accessibility CPU cost. This collector is source preparation until built and
+verified through the normal owned-window OS accessibility path.
+
+NEEDS-WIRING: the QA launcher currently enables synthetic input unconditionally.
+A later launcher owner must add a recorded gate-off option and explicit timing
+opt-ins while preserving stage provenance, root isolation and process identity.
+The timing collector adds no HTTP endpoint and does not alter `launch.ps1`.
