@@ -29,9 +29,7 @@ use tempfile::TempDir;
 /// Pinned `iroh-relay` 1.3 image (plan.md §2.7 "Image" / A13).
 const RELAY_IMAGE: &str = "n0computer/iroh-relay:v1.3.0@sha256:7a51e3826531dba5eee73d8b48a8f27284684d98c4d0da271d99127cc43b9d57";
 
-/// Skip the test, or fail it under `FE_REQUIRE_RELAY_CONTAINER=1` — the
-/// exact contract of `fe-sync/src/p2p_store_migration.rs`'s
-/// `skip_unless_required`.
+/// Skip optional infrastructure, or fail required acceptance; see tests/AGENTS.md.
 fn skip_unless_required(reason: &str) {
     if std::env::var("FE_REQUIRE_RELAY_CONTAINER").is_ok_and(|v| v == "1") {
         panic!("FE_REQUIRE_RELAY_CONTAINER=1 forbids skipping: {reason}");
@@ -275,7 +273,7 @@ async fn online_endpoint(seed: u8, relay_config: &RelayConfig) -> Option<SyncEnd
     match SyncEndpoint::new(iroh::SecretKey::from_bytes(&[seed; 32]), relay_config).await {
         Ok(ep) => Some(ep),
         Err(e) => {
-            eprintln!("endpoint bind failed (sandboxed env?) — skipping: {e}");
+            skip_unless_required(&format!("endpoint setup failed: {e}"));
             None
         }
     }
@@ -296,7 +294,7 @@ async fn token_endpoint(
     {
         Ok(ep) => Some(ep),
         Err(e) => {
-            eprintln!("endpoint bind failed (sandboxed env?) — skipping: {e}");
+            skip_unless_required(&format!("token endpoint setup failed: {e}"));
             None
         }
     }
@@ -470,7 +468,7 @@ async fn a_relay_only_dialer_reaches_its_peer_solely_through_the_relay() {
         .unwrap();
     let provider_addr = relay_only_addr(alice.node_addr().await);
     if provider_addr.addrs.is_empty() {
-        eprintln!("alice never reached the relay — skipping");
+        skip_unless_required("relay-only dialer provider never reached the relay");
         return;
     }
 
@@ -486,7 +484,7 @@ async fn a_relay_only_dialer_reaches_its_peer_solely_through_the_relay() {
     {
         Ok(ep) => ep,
         Err(e) => {
-            eprintln!("relay-only dialer failed to bind (sandboxed env?) — skipping: {e}");
+            skip_unless_required(&format!("relay-only dialer endpoint setup failed: {e}"));
             return;
         }
     };
@@ -529,7 +527,7 @@ async fn a_provider_naming_an_untrusted_relay_is_never_dialed() {
     };
     let provider_addr = relay_only_addr(alice.node_addr().await);
     if provider_addr.addrs.is_empty() {
-        eprintln!("alice never reached the relay — skipping");
+        skip_unless_required("untrusted-relay test provider never reached the relay");
         return;
     }
     let provider = IrohBlobTransport::provider_ref(&provider_addr).unwrap();
