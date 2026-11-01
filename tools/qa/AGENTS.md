@@ -276,3 +276,8 @@ synthetic QA launches. All three values are written to current.json's
 qa_options and explicitly override inherited timing/input environment flags.
 The collector still owns phase readiness, same-process conditions and honest
 incomplete outcomes; launch success does not establish OS/performance proof.
+
+App environment overrides are scoped to Start-Process with a complete prior-value
+snapshot restored in finally, including a failed start. The child inherits its
+isolated root/token/input/timing settings, while an invoking PowerShell session
+keeps every original process environment value for later commands.

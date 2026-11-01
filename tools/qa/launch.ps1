@@ -87,25 +87,34 @@ if ($Fixture -ne 'none') {
 }
 
 # --- Launch -------------------------------------------------------------
-$env:FE_API_DEV_TOKEN_OUT = $tokensPath
-$env:FE_QA_STORAGE_ROOT = $run
-$env:FE_QA_API_PORT = $ApiPort.ToString()
-$env:FE_API_INPUT_ALLOW = $(if ($DisableSyntheticInput) { '0' } else { '1' })
-$env:FE_QA_A11Y_TIMING = $(if ($A11yTiming) { '1' } else { '0' })
-$env:FE_QA_A11Y_CONTINUOUS = $(if ($A11yContinuous) { '1' } else { '0' })
-$env:FE_SYNC_RELAY = "disabled"
-$env:FE_HEXON_DIR = $hexonDir
-$env:RUST_LOG = "info"
+$appEnvironment = @{
+    FE_API_DEV_TOKEN_OUT = $tokensPath
+    FE_QA_STORAGE_ROOT = $run
+    FE_QA_API_PORT = $ApiPort.ToString()
+    FE_API_INPUT_ALLOW = $(if ($DisableSyntheticInput) { '0' } else { '1' })
+    FE_QA_A11Y_TIMING = $(if ($A11yTiming) { '1' } else { '0' })
+    FE_QA_A11Y_CONTINUOUS = $(if ($A11yContinuous) { '1' } else { '0' })
+    FE_SYNC_RELAY = 'disabled'
+    FE_HEXON_DIR = $hexonDir
+    RUST_LOG = 'info'
+}
 
 $swHealth = [System.Diagnostics.Stopwatch]::StartNew()
 $proc = $null
 $identity = $null
 $handedOff = $false
 try {
-$proc = Start-Process -FilePath $exe -WorkingDirectory $run -PassThru `
-    -RedirectStandardOutput (Join-Path $run "stdout.log") `
-    -RedirectStandardError (Join-Path $run "stderr.log") `
-    -WindowStyle Hidden
+$priorEnvironment = @{}
+foreach ($key in $appEnvironment.Keys) { $priorEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process') }
+try {
+    foreach ($key in $appEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $appEnvironment[$key], 'Process') }
+    $proc = Start-Process -FilePath $exe -WorkingDirectory $run -PassThru `
+        -RedirectStandardOutput (Join-Path $run "stdout.log") `
+        -RedirectStandardError (Join-Path $run "stderr.log") `
+        -WindowStyle Hidden
+} finally {
+    foreach ($key in $appEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $priorEnvironment[$key], 'Process') }
+}
 $null = $proc.Handle
 $identity = Get-QaProcessIdentity -ProcessId $proc.Id
 if (-not $identity) { throw 'QA process exited before its identity could be recorded' }
