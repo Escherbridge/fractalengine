@@ -377,3 +377,8 @@ this — those slices are done, no concurrent owner), the ADVOCATE and the CRITI
    fe-api/AGENTS.md §screenshot and the REST docs.
 3. Response metadata reports `include_ui` (and resolved mode) alongside the resolved pose.
 4. Width/height stay scene-only (the window capture is the window's size) — the validation message must say so.
+5. (SEC-ADDENDUM amendment, from the review of V5's commit — V5 landed WITHOUT §SEC-ADDENDUM; the ADVOCATE/CRITIC must
+   implement it, not just review it.) Carry the caller's scope from ApiClaims inside ValidCaptureSpec/VisionRequest to
+   the Bevy orchestrator; resolve_focus/start_job refuse an out-of-scope target, and the active-verse check runs in the
+   orchestrator against nav.active_verse_id. The refusal for an out-of-scope target and a nonexistent target MUST be
+   the SAME error (no existence oracle — fe-api/AGENTS.md §existence-oracle). Cross-verse `navigate` is refused outright.
