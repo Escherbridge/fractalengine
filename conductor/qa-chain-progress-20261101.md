@@ -4,7 +4,8 @@ date: 2026-11-01
 status: in_progress
 source: ./handoff-20261101-qa-chain.md
 current_writer: /root/nav_clipboard_executor
-current_slice: S4 native dialog and window seams
+current_slice: S7 offline terrain integration and live numeric validation; S6 endpoint recheck
+parallel_code_worktrees: S7 ready on qa/s7-fixture; remaining S2 names in qa/s2-complete (code-only)
 ---
 
 # QA chain continuation
@@ -16,14 +17,15 @@ Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.
 ## Execution queue
 
 - [x] H3 drive client, pass skill, scenarios and real two-scenario evidence (`e9a8b25`).
-- [~] Harness advocate, critic repairs (`80177b0`) and independent post-repair smoke (pending combined build).
-- [x] Navigation ancestry and stale-role repairs (`7ef208b`), pending combined live verification.
+- [x] Harness advocate/critic repairs (`80177b0`, `89be757`) and focused post-repair live smoke (pass02).
+- [x] Navigation ancestry/stale-role repairs (`7ef208b`), with QA-0001 live reverified and closed in pass02.
 - [x] A8 CopyText/CopyImage sink isolation (`a369668`), pending campaign-end journey execution.
-- [~] QA surfaces: A8 and S1/S3 (`7dcc0be`) landed; S4 in progress, then S6, S7, S2, S5.
+- [~] QA surfaces: A8, S1/S3 (`7dcc0be`), S4 and focused S6 landed; S7 integration, then S2/S5 validation.
 - [ ] Surfaces advocate, critic and first full-coverage live pass.
 - [ ] QA loop: up to six passes; all gold tasks, 100% coverage and two consecutive passes with zero new S1/S2.
 - [ ] Five UX audits, synthesis, and polish W7+ plan.
 - [ ] Polish W2, W3, W4, W5, W6, then synthesized W7+.
+- [ ] Reverify changed regions after polish and obtain two clean full-coverage passes on the final implementation.
 - [ ] One campaign-end integrated check, clippy, formatting and test sweep; independent verification.
 - [ ] Include the actual 18-scenario harness runner and separate iot-bridge workspace; resolve strict relay skips.
 - [ ] Reconcile track metadata, findings, reviews and final handoff.
@@ -31,7 +33,8 @@ Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.
 
 ## Binding execution constraints
 
-One source writer and cargo owner at a time. Independent read-only reviews may run concurrently.
+One writer per tree and one global cargo/live owner. Independent read-only reviews may run concurrently.
+Code-only parallel work is confined to its own checkout and integrated after the main writer releases ownership.
 Apply all fixes before the campaign-end test sweep. Required live proofs and a harness-specific smoke remain permitted.
 Extend or swap existing journey tests; do not add small test functions. Never stage `conductor/.conductor_session_log`.
 Only stop exact QA process identities; do not kill by process name. Never publish tokens in logs or reports.
@@ -127,9 +130,76 @@ Same-run restart and complete standalone/modal title aggregation remain pending;
 S4 preparation found no existing close confirmation: native/X requests currently auto-close. The writer will
 add one shared confirmation for OS, X and debug close requests, queued native-dialog answers, physical window
 controls and QA-only loopback port selection. It owns source/cargo. S6 root-cause/layout preparation is read-only.
-S4 source and client slices landed as `572da0b` and `c002e9f`; final staging/live proof and exact independent
-rechecks are in progress. The implementation includes operation-owned input leases, atomic QA save/copy,
+S4 source and client slices landed as `572da0b` and `c002e9f`. The implementation includes operation-owned
+input leases, atomic QA save/copy,
 fail-closed queued dialogs, one chrome mailbox/confirmation path, and monotonic client waits.
+S4 then landed cleanup fix `d1b6e57` and focused live evidence `eb0f263`. Its final stage was
+`d1b6e57-20261101150348464`; source fingerprint matched. Pass03 proved persisted UI GLTF import, a SHA256-matching
+asset export and overwrite of the released input, typed path/device/junction/queue refusals, all three exact
+window sizes, maximize/restore, minimized serviceability, app ppp1.25 named clicking and shared debug/caption
+close confirmation/cancel. Confirmed shutdown and cleanup left root56096 plus all seven refreshed captured
+descendants absent. Known post-snapshot descendant limitations remain explicit; tests/clippy remain unrun.
+QA-0019 is the new S2 Inspector wheel/camera-distance5-to15 defect. S6 owns it and QA-0015/18, with before/after
+geometry matrix and one query-result owner. Parent independently inspected empty-queue/import/close screenshots.
+GPX/folder live consumption, normal OS provider/a11y, actual monitor DPI, same-run restart and real FE timing
+remain in later coverage. S4 source/cargo/app/git ownership is released; harness_executor is now the sole writer.
+Independent S4 security/design review approved the scoped fixes and live evidence; its record is
+`reviews/independent-qa-dialog-window-20261101.md` in agent_vision_20261031. Pending broader cases are explicit.
+S7 code-only preparation now has an isolated worktree `.omc/worktrees/qa-s7`, branch `qa/s7-fixture`, based on
+eb0f263. nav_clipboard_executor owns only that checkout and may commit there; no cargo/apps or main-tree edits.
+Integrate its commits only after S6 releases, then perform real generator/fixture/terrain/query/volume validation.
+S7 is now code-ready through `af64656`, with independent bounded recheck clean; source/API position projection,
+numeric strictness and fixture/scenario compatibility were corrected. Separate relay acceptance hardening is
+`1b5646d` on the same branch, making all five required-mode setup/reachability bypasses fail instead of silently skip.
+The worktree is clean and released; compile/live acceptance is still pending after S6 integration.
+
+S2 continuation now owns `.omc/worktrees/qa-s2-complete`, branch `qa/s2-complete`, based on 214045a. It integrates
+the three reviewed form commits and completes shared widgets, shell, Inspector/Query/Results and remaining render
+controls through the same lazy ResponseExt adapter. It has no Cargo/app ownership; main remains the sole builder.
+S5 read-only inventory consolidates 128 stable capability families (F001–F128) across eleven regions; mandatory
+variants still expand the final denominator. The preliminary estimate of 137 was superseded. Scenario presence
+is not execution evidence. Planned/unreachable controls are explicit exclusions, and later polish must
+refresh the catalog and final coverage denominator when those features become reachable.
+
+S2 forms preparation has a separate code-only checkout `.omc/worktrees/qa-s2`, branch `qa/s2-accessibility`, based
+on 0abe3d2. a11y_forms_executor owns naming helper plus dialog/Data/Atlas control bodies, excluding main S6 shell,
+layout, Inspector/query/dock and managers. Main builder/property-width edits must be preserved at integration.
+No cargo/apps or main edits; exhaustive S2 live audit waits for layout and terrain. One response-naming adapter
+will reuse actual response telemetry, not unsafe reverse IDs or copied per-control validation.
+S2 forms code is ready and statically reviewed: `5fb7a89` helper/export, `7e05834` dialogs, `9b72e64` Data/Atlas.
+Its 77 adapters preserve role/value/disabled semantics and avoid secret-derived names. Both checkout owners are
+released. Integration must preserve S6 window builders/GIS selection edits and supply the public record_response hook.
+
+S6 core commits: `afa3994`, observation state `0abe3d2`, review corrections `367be14`, divider routing `214045a`.
+All eight reported core design defects were independently rechecked corrected in 367be14. Intermediate fifteen
+main captures measured zero violations, with remaining coverage gaps explicit; 1280 viewport improved81.5→735px
+and1024 improved45.5→479px. Final live run then proved query sorting/selection/camera focus/empty/error/navigation,
+and Inspector/viewport/floating-Data wheel separation. A small target-width and match-beacon correction plus divider
+selection preservation are being finalized/rebuilt; no final S6 acceptance claim yet. Last intermediate identities
+were stopped; ask main writer for any currently owned build/run before taking over.
+
+Final focused run `20261101-160706-189` on stage `214045a-20261101160632442` proved ordinary divider selection
+preservation, real viewport deselect/pick, blue above-node match beacons and 200-row virtualization. Independent
+review found exact inclusive grab-radius endpoints still shared by scene and resize; strict containment plus
+endpoint journey cases are being committed, with new-stage live proof assigned to the S7 build. Parent inspected
+the beacon, compact and virtualized PNGs. Vertical Owner-chip wrapping and extreme compact Inspector-tab clipping
+remain explicit visuals for W3/S2, not a zero-all-layout claim. Checker reports distinguish measured violations
+from 96–163 unknown control/scroll coverage gaps per state; the later audit must inspect those gaps.
+
+Cleanup exposed a bounded harness defect: one child WaitForExit timeout aborted before root termination. The
+source owner is changing cleanup to pin/kill every verified identity first, then wait under one total deadline
+and aggregate failures. Root45228 was independently absent on the parent's later read-only check; the owner must
+still report the full captured descendant outcome before source/Cargo/app handoff. Independent cleanup recheck
+and strict-boundary runtime proof remain pending.
+
+S6 source/Cargo/app ownership is released at `d8cc6c8`. Source fixes `25310f1` (strict resize-band endpoints) and
+`e3a67e1` (bounded cleanup/checker) are independently statically clean; the existing journey covers all exact
+edges at ppp2. The cleanup review notes one diagnostic-only limitation: simultaneous enumeration/process failures
+omit the enumeration reason from the aggregate. Root45228, deadline PIDs47964/25368 and all recorded launch
+identities are absent; recycled PID41436 has different start ticks and was not touched. Pass04 records eventual
+absence after an honest timeout failure, not immediate clean stop. Final live stage214 cannot prove25310f1;
+S7 owns its new-stage endpoint smoke. Parent has the short docs Git window, then nav_clipboard_executor takes
+main source/Cargo/apps for the five prepared S7 commits and actual terrain/query/volume validation.
 
 The user's later steering explicitly prioritizes readable/extensible design patterns and frequent coherent
 commits. The final publication gate is now authorized: complete the goal and local verification, wait for green

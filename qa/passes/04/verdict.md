@@ -1,4 +1,18 @@
+---
+type: QA Pass Verdict
+pass: "04"
+date: 2026-11-01
+stage: 214045a-20261101160632442
+run_dirs: [20261101-160706-189]
+scenarios: [S09, S10, S06]
+focused_smoke: true
+coverage_complete: false
+---
+
 # Pass 04: focused layout and Results validation
+
+Trend: focused S6 smoke; full-catalog gold-task and coverage denominators were not attempted. This pass cannot
+establish convergence.
 
 Verdict: the measured S6 layout, Results, and input-routing regressions are fixed in the exercised flows. This is a focused smoke verdict; the campaign's complete panel catalog, accessibility coverage, final integrated tests and final release checks remain pending.
 
