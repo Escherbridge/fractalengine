@@ -2,6 +2,7 @@
 // limit because each piece of UI state is a separate Bevy resource.
 #![allow(clippy::too_many_arguments)]
 
+pub mod accessibility;
 pub mod actions;
 pub mod asset_ops;
 pub mod atlas;
