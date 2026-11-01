@@ -532,3 +532,78 @@ refusal, never a blocked async worker), and `ScreenshotRequest::reply` drops a
 late reply for a timed-out caller. The gate (opt-in → Owner → rate) is fe-api's
 (fe-api/AGENTS.md §screenshot); the capture is the binary's
 (fractalengine/src/AGENTS.md §screenshot).
+
+## §vision-bridge (agent vision — dynamic capture + camera read-back, 2026-10-31)
+
+`vision.rs` is a **second, separate** API→Bevy bridge, deliberately not a
+rename or extension of `screenshot.rs`: `GET /api/v1/debug/screenshot`'s path
+(byte-identical bytes, byte-identical behaviour per the track's tripwires)
+must stay untouched by anything the dynamic POST/`/camera` surface needs to
+change later. The two bridges share nothing but the "bounded channel +
+oneshot reply + correlation id" shape from §api-reply-correlation in
+miniature — the same discipline the screenshot bridge already follows
+(bounded(4), `try_send` only, a late reply is dropped at debug level).
+
+**Validate-once newtype.** `CaptureSpec` (the wire body: `mode`, `pose`,
+`width`/`height`, `settle_frames`, `restore`) is deliberately permissive on
+`pose`'s shape — it is a plain struct of five `Option<...Pose>` fields, not a
+tagged enum, so a zero- or multi-key `pose` object parses fine at the serde
+level and only fails inside `CaptureSpec::validate()`. That keeps every
+malformed-pose case a **typed** `VisionRefusal { code, field, message }`
+instead of an opaque serde error with no stable `code` for fe-api to map to a
+400. `validate()` is the ONLY constructor of `ValidCaptureSpec` (private
+fields, accessors only) — once a spec is a `ValidCaptureSpec`, nothing
+downstream (fe-renderer's pose math, the Bevy capture orchestrator) ever
+re-checks finiteness. A NaN that reached `Transform`/`looking_at` is exactly
+the crash class (`ui-semantics-audit-20260808`'s `smart_aim` panic) this
+newtype exists to make structurally unreachable.
+
+**Check order is a documented contract**, not an implementation detail:
+`validate()` runs spec `agent_vision_20261031` §5.2's table top to bottom and
+returns on the first failure — `non_finite` beats `pose_must_have_exactly_one_kind`
+beats the size/mode/settle checks beats the per-pose-kind range checks
+(`fov_out_of_range` → `orbit_out_of_range` → `degenerate_camera` →
+`geo_out_of_range` → `tile_out_of_range`, though only the active pose kind's
+row can ever fire). A given malformed body therefore always refuses the same
+way; the fixed order matters for tests asserting an exact `(code, field)` and
+for an agent client learning the grammar from refusals.
+
+**Defaults are mode- and pose-dependent, not static.** A window capture with
+no `pose` needs no settle (`settle_frames` defaults to `0` — nothing moved);
+every other case (window-with-pose, scene) defaults to `DEFAULT_SETTLE = 30`.
+`width`/`height` only exist in scene mode (`None` in window mode — the
+window's own size is authoritative there); `restore` only exists in window
+mode (`None` in scene mode — there is nothing to restore). `ValidCaptureSpec`
+exposes these as `Option` accessors so a mode mismatch cannot be
+misread as "the caller asked for 0×0".
+
+**Degenerate-camera math is pure `[f64; 3]` arithmetic**, not `bevy::Vec3` —
+despite this crate already depending on `bevy` (for `SceneChange` etc.),
+`vision.rs` stays render-free on purpose: the canonical pose math
+(`compute_orbit_transform`, `orbit_from_look_at`, tile/geo framing) is V3's
+job in `fe-renderer`/`fe-terrain`, not V1's. V1 only needs to detect the
+*structural* degenerate cases (`position == target`, `up` zero or parallel to
+the view direction) before a float ever reaches a renderer, using the same
+dot/cross-product checks `Transform::looking_at` would otherwise panic on.
+
+**`ValidPoseSpec`/`FocusTarget` carry resolved defaults**, not raw wire
+optionals: `up` becomes `[0,1,0]` if absent, `fov_deg` becomes
+`DEFAULT_FOV_DEG` (45°, matching the main camera's `FRAC_PI_4`), a `geo`
+pose's `altitude_m`/`heading_deg`/`pitch_deg` get their spec-mandated
+defaults, and a `focus` pose's `node_id`/`petal_id` collapse into one
+`FocusTarget::{Node, Petal}` with `navigate` resolved to `false` if absent.
+Downstream resolvers (V5) read a fully-resolved pose and never re-derive a
+default.
+
+**`ResolvedPose`/`CameraState`** are the reply shapes (spec §5.2 bottom,
+§5.6) — the `X-FE-Capture-Pose` header's JSON, the MCP text part, and
+`GET /camera`'s body all serialize the same `ResolvedPose`. They live here
+(not in fe-api) because the Bevy-side `VisionOutput::Capture`/`::Camera`
+variants that the bridge reply carries must already speak this exact shape;
+fe-api only adds the HTTP/MCP envelope, never reshapes the payload.
+
+**`VisionFailure::status_class`** is the one place a Bevy-side failure
+chooses its HTTP status family (`Unresolvable` → 422, `Busy` → 409,
+`NoWindow` → 503/422, `Failed` → 500/504), mirroring
+`ScreenshotError::status()`'s precedent so fe-api's mapping stays a single
+`match` with no cross-bridge special-casing.
