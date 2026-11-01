@@ -1798,8 +1798,9 @@ look anywhere in the active petal without the user noticing. So the posture mirr
   spec §5.7): opt-in → Owner → 1/s per DID → static validation (400) →
   single-flight slot (409) → bridge.** Validation runs AFTER the gate on
   purpose: an unauthenticated or un-opted caller never learns the parameter
-  grammar, and a refused caller never costs a parse. Owner of ANY scope
-  passes — single-tenant nodes only.
+  grammar, and a refused caller never costs a parse. Owner of any scope
+  passes THIS gate; the host then confines the capture to the token's scope
+  ("Scope confinement" below).
 - **The plain-GET bridge.** `ApiState.screenshot.bridge` is a bounded (4)
   crossbeam `fe_runtime::screenshot::ScreenshotRequest` channel carrying a
   ULID correlation id + a oneshot reply slot (fe-runtime src/AGENTS.md
@@ -1872,16 +1873,34 @@ camera-budget independence, the disabled/headless cases, and both MCP shapes
   scope across the bridge (`ScreenshotRequest.caller_scope`,
   `VisionRequest.caller_scope`). The Bevy host refuses unless that scope covers
   the ACTIVE verse (fe-policy `scope_contains` against `VERSE#<active>`; with
-  nothing open, no one is covered), and checks it again at capture time, so a
-  verse-B Owner token never receives verse-A pixels. Both doors call the same
-  `request_capture`/`request_vision(state, &claims.scope, ..)`, so there is no
-  MCP-only gap. `focus` targets are resolved to their verse first, and an
+  nothing open, no one is covered) AND every petal still rendered (the terrain
+  binding, which outlives a verse switch, and not-yet-despawned nodes —
+  fractalengine src/AGENTS.md §vision "Scope confinement"), and checks it again
+  at capture time, so a verse-B Owner token never receives verse-A scene
+  pixels or projection. A token scoped below a verse (fractal/petal) never
+  covers one, so it cannot capture at all (fail closed). **Residual, by
+  design (UI-ADDENDUM):** a window capture (`include_ui: true`, and the plain
+  `GET`) is the whole window, so UI chrome that lists other verses (the
+  hierarchy sidebar's verse names, an open dialog) is in the frame. Scope
+  confinement covers the scene, not the chrome; on a node shared between
+  tenants use `include_ui: false` or set `FE_API_SCREENSHOT_ALLOW=0`. Both doors call the same
+  `request_capture(state, &claims)` / `run_capture(state, &claims, spec)` /
+  `request_vision(state, &claims.scope, ..)`, so there is no MCP-only gap. `focus` targets are resolved to their verse first, and an
   out-of-scope target and a nonexistent one answer IDENTICALLY (§existence-oracle).
   `navigate: true` never leaves the active verse (`cross_verse_navigate_refused`),
   and a navigating job puts the user's navigation back on failure, timeout or
   `restore: true`. The denial is the uniform 404
   `{"ok":false,"error":"not found or not permitted","code":"not_found_or_denied"}`
   (REST), and the same text as the MCP tool error.
+- **Audit (critic pass 2026-11-01).** Every capture that clears the gate (and,
+  for a posed one, the single-flight slot) writes one INFO line before it
+  crosses the bridge — `vision::audit_capture`: `did`, `scope`, `mode`
+  (`window`/`scene`) and `pose` kind (`none (plain)`, `none`, `camera`,
+  `orbit`, `geo`, `tile`, `focus`). It lives in the shared cores
+  (`request_capture`, `run_capture`), so neither door can skip it. Scene
+  captures stay invisible on screen by design: a per-capture toast was
+  considered and deferred, because it would land in the very window
+  captures an agent uses for UI QA (revisit if multi-tenant hosting lands).
 - **`include_ui`** (POST body + MCP `screenshot`): include_ui (default true):
   include the app's UI panels in the image; false renders only the 3D scene
   off-screen without moving the user's view. It is the same switch as `mode`

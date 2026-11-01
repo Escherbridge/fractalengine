@@ -19,7 +19,7 @@ use fe_runtime::screenshot::{
 };
 use fe_ui::navigation_manager::NavigationManager;
 
-use crate::vision_bridge::scope_covers_active_verse;
+use crate::vision_bridge::ViewScope;
 
 /// Bevy side of the API→Bevy capture bridge.
 #[derive(Resource)]
@@ -120,21 +120,26 @@ fn deny(request: ScreenshotRequest) {
 }
 
 /// Update (arrival check): drain the bridge, deny at once every caller whose
-/// token scope does not cover the active verse, and hold the rest for this
-/// frame's [`capture_pending_screenshots`]. While a posed agent-vision
-/// capture holds the camera (`CameraCaptureLock`) the queue is left
-/// untouched, so a plain GET never returns a half-posed frame.
+/// token scope does not cover the view (`ViewScope`: the active verse and
+/// every petal still rendered), and hold the rest for this frame's
+/// [`capture_pending_screenshots`]. While a posed agent-vision capture holds
+/// the camera (`CameraCaptureLock`) the queue is left untouched, so a plain
+/// GET never returns a half-posed frame. Abandoned requests are dropped.
 pub fn drain_screenshot_requests(
     bridge: Res<ScreenshotBridge>,
     capture_lock: Option<Res<CameraCaptureLock>>,
     nav: Option<Res<NavigationManager>>,
+    view: ViewScope,
     mut pending: ResMut<PendingScreenshots>,
 ) {
     if capture_lock.is_some() {
         return;
     }
     for request in bridge.0.try_iter() {
-        if scope_covers_active_verse(&request.caller_scope, nav.as_deref()) {
+        if request.reply_tx.is_closed() {
+            continue;
+        }
+        if view.covers(&request.caller_scope, nav.as_deref()) {
             pending.0.push(request);
         } else {
             deny(request);
@@ -152,15 +157,19 @@ pub fn capture_pending_screenshots(
     primary_window: Query<&Window, With<PrimaryWindow>>,
     capture_lock: Option<Res<CameraCaptureLock>>,
     nav: Option<Res<NavigationManager>>,
+    view: ViewScope,
     mut commands: Commands,
 ) {
     if capture_lock.is_some() || pending.0.is_empty() {
         return;
     }
+    // A request held across a lock may have been abandoned meanwhile (the
+    // caller's 5 s timeout): drop it rather than capture for nobody.
     let (covered, uncovered): (Vec<ScreenshotRequest>, Vec<ScreenshotRequest>) =
         std::mem::take(&mut pending.0)
             .into_iter()
-            .partition(|request| scope_covers_active_verse(&request.caller_scope, nav.as_deref()));
+            .filter(|request| !request.reply_tx.is_closed())
+            .partition(|request| view.covers(&request.caller_scope, nav.as_deref()));
     uncovered.into_iter().for_each(deny);
     if covered.is_empty() {
         return;
@@ -406,6 +415,75 @@ mod tests {
             }
             assert!(world.resource::<PendingScreenshots>().0.is_empty());
         }
+    }
+
+    fn verse(id: &str, petal: &str) -> fe_ui::verse_manager::VerseEntry {
+        use fe_ui::verse_manager::{FractalEntry, PetalEntry, VerseEntry};
+        VerseEntry {
+            id: id.into(),
+            name: id.into(),
+            fractals: vec![FractalEntry {
+                id: format!("f-{id}"),
+                name: id.into(),
+                petals: vec![PetalEntry {
+                    id: petal.into(),
+                    name: petal.into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// The plain GET path shares the view rule: just after the user opens
+    /// verse a, verse b's map is still bound (terrain re-binds only when a's
+    /// petal terrain loads), so a verse-a token is denied and no frame is
+    /// taken; once only a's content is bound it is served.
+    #[test]
+    fn a_map_still_bound_from_an_uncovered_verse_refuses_plain_captures() {
+        use fe_terrain::petal_binding::ActivePetalTerrain;
+        let (mut world, tx) = bridge_world(Some("a"), (1280, 720));
+        world.insert_resource(fe_ui::verse_manager::VerseManager::from_verses(vec![
+            verse("a", "pa"),
+            verse("b", "pb"),
+        ]));
+        world.insert_resource(ActivePetalTerrain {
+            petal_id: Some("pb".into()),
+            config: Some(fe_terrain::config::TerrainConfig::default()),
+            revision: 1,
+        });
+        let mut reply = send(&tx, "c1", "VERSE#a");
+        frame(&mut world);
+        assert_eq!(captures(&mut world), 0, "no frame showing verse b's map");
+        let denied = reply.try_recv().expect("answered at once");
+        assert_eq!(denied.result, Err(SCREENSHOT_SCOPE_DENIED.to_string()));
+
+        world.resource_mut::<ActivePetalTerrain>().petal_id = Some("pa".into());
+        let _served = send(&tx, "c2", "VERSE#a");
+        frame(&mut world);
+        assert_eq!(captures(&mut world), 1);
+    }
+
+    /// A request whose caller already hung up is dropped, never captured —
+    /// at the drain, and when it was admitted but then held across a posed
+    /// job's lock long enough for its caller to time out.
+    #[test]
+    fn an_abandoned_plain_request_takes_no_frame() {
+        let (mut world, tx) = bridge_world(Some("v"), (1280, 720));
+        drop(send(&tx, "gone", "VERSE#v"));
+        frame(&mut world);
+        assert_eq!(captures(&mut world), 0);
+
+        let held = send(&tx, "held", "VERSE#v");
+        drain(&mut world);
+        world.insert_resource(CameraCaptureLock);
+        capture(&mut world);
+        drop(held);
+        world.remove_resource::<CameraCaptureLock>();
+        capture(&mut world);
+        assert_eq!(captures(&mut world), 0, "no frame for a caller who left");
+        assert!(world.resource::<PendingScreenshots>().0.is_empty());
     }
 
     /// A minimized (0x0) window is refused at once, with the request's own

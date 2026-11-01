@@ -918,7 +918,7 @@ pub(super) fn screenshot(call: ToolCall<'_>) -> ToolFuture<'_> {
 
         let has_args = call.args.as_object().is_some_and(|o| !o.is_empty());
         if !has_args {
-            let png = crate::screenshot::request_capture(call.state, &call.claims.scope)
+            let png = crate::screenshot::request_capture(call.state, call.claims)
                 .await
                 .map_err(|error| error.message())?;
             let size_bytes = png.len();
@@ -932,7 +932,7 @@ pub(super) fn screenshot(call: ToolCall<'_>) -> ToolFuture<'_> {
         // The same typed model + validation REST uses (one parse path, two doors).
         let valid = crate::vision::validate_capture_request(serde_json::from_value(call.args.clone()))
             .map_err(|refusal| crate::vision::VisionError::Refusal(refusal).coded_message())?;
-        let (png, pose) = crate::vision::run_capture(call.state, &call.claims.scope, valid)
+        let (png, pose) = crate::vision::run_capture(call.state, call.claims, valid)
             .await
             .map_err(|error| error.coded_message())?;
         let pose_json = crate::vision::pose_metadata_json(&pose);

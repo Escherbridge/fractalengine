@@ -423,16 +423,25 @@ reason (`TerrainPlugin` always inits it).
   (2) in a fixed array, so there is no per-frame `Vec`: slot 0 = the first
   capture focus, slot 1 = the first non-capture (main) focus. Extra foci are
   ignored; capture jobs are single-flight (fractalengine §vision).
-- **Fetch.** Foci stream in slot order — the capture first while one exists —
-  each with its own lat/lon, height-derived zoom, adaptive ring and upsample.
-  Grounding still happens once (the centre-tile grounding is camera-free). The
-  per-frame spawn cap (`MAX_SPAWNS_PER_FRAME`) is shared.
-- **Budget.** The main focus keeps `max_chunks`. While a capture focus exists
-  it may grow the total to `max_chunks + capture_chunk_allowance(max_chunks)`
-  (`CAPTURE_CHUNK_ALLOWANCE`, half the budget) and its ring radius is sized to
-  that allowance (`max_ring_radius_for_budget(allowance)`). Eviction is
-  distance-only, so a capture can never evict the user's view; at worst the
-  main ring's fill pauses while a capture holds chunks past `max_chunks`.
+- **Fetch.** Foci stream in `fetch_order` — the user's view FIRST, then the
+  capture — each with its own lat/lon, height-derived zoom, adaptive ring and
+  upsample. Grounding still happens once (the centre-tile grounding is
+  camera-free). The per-frame spawn cap (`MAX_SPAWNS_PER_FRAME`) is shared, so
+  the view going first means a capture only ever gets the spawns the view did
+  not need that frame. (`reaches` keeps slot order, capture = index 0.)
+- **Budget (separate, critic pass 2026-11-01).** Each focus kind counts only
+  the chunks it holds: a chunk belongs to the capture iff its `spawn_chunk`
+  anchor (`chunk_anchor_world`) is nearest the capture focus
+  (`nearest_focus_index == 0`), the rest belong to the view. The view may hold
+  `max_chunks`; the capture may hold `capture_chunk_allowance(max_chunks)`
+  (half the budget) and its ring radius is sized to that allowance. The total
+  stays bounded by `max_chunks + allowance`, and a capture can never pause or
+  shrink the user's ring fill (`a_capture_never_spends_the_user_views_chunk_budget`).
+  Before the fix the capture streamed first against a shared total, so an agent
+  looping scene captures could stall the user's view while it moved. Eviction
+  is distance-only, so a capture can never evict the user's view either. The
+  attribution pass runs only while a capture exists (one projection per chunk);
+  with one focus the pass is the pre-V4 pipeline.
 - **LOD.** `update_terrain_lod` despawns a chunk iff it is beyond EVERY
   focus's own hysteresis despawn radius (`chunk_retained_by_any_focus`), or it
   is at a stale zoom for its NEAREST focus and that focus's replacement fully

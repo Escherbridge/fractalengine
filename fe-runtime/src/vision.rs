@@ -647,12 +647,14 @@ fn check_pose_ranges(pose: &Option<ValidPoseSpec>) -> Result<(), VisionRefusal> 
                 ));
             }
             let span = 1u64 << *z;
-            if u64::from(*x) >= span || u64::from(*y) >= span {
-                return Err(VisionRefusal::new(
-                    "tile_out_of_range",
-                    Some("pose.tile.x"),
-                    format!("`x`/`y` must be < 2^z ({span}) at z={z}"),
-                ));
+            for (value, field, name) in [(*x, "pose.tile.x", "x"), (*y, "pose.tile.y", "y")] {
+                if u64::from(value) >= span {
+                    return Err(VisionRefusal::new(
+                        "tile_out_of_range",
+                        Some(field),
+                        format!("`{name}` must be < 2^z ({span}) at z={z}, got {value}"),
+                    ));
+                }
             }
         }
         Some(ValidPoseSpec::Focus { .. }) | None => {}
@@ -1115,6 +1117,9 @@ mod tests {
         let mut s = tile_spec();
         s.pose.as_mut().unwrap().tile.as_mut().unwrap().x = 2000; // z=10 span is 1024
         assert_refused(s, "tile_out_of_range", Some("pose.tile.x"));
+        let mut s = tile_spec();
+        s.pose.as_mut().unwrap().tile.as_mut().unwrap().y = 1024; // first row past the edge
+        assert_refused(s, "tile_out_of_range", Some("pose.tile.y"));
     }
 
     #[test]

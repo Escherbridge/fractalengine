@@ -1049,8 +1049,8 @@ Editor+-gated (RP-4) and every writer validates its `did:key` grammar
   registers `drain_screenshot_requests` in `Update` (arrival check: an
   uncovered caller gets the uniform denial at once, the rest wait in
   `PendingScreenshots`) and `capture_pending_screenshots` in `PostUpdate`
-  (frame-time check: `scope_covers_active_verse` runs AGAIN against the verse
-  open now, right before the frame is queued — the §vision rule). A user who
+  (frame-time check: `ViewScope::covers` runs AGAIN against the view open
+  now, right before the frame is queued — the §vision "Scope" rule). A user who
   switches to an uncovered verse between the two gets the caller denied and no
   frame taken. Before the advocate pass (2026-11-01) one system checked at
   drain and captured, leaving that one-frame gap.
@@ -1120,6 +1120,7 @@ drain: resolve ──refusal──► reply 422/409 (nothing moved)
 Posing ─► Settling ─(frames ≥ settle [scene: ≥2 AND capture ring resident])─► Capturing ─► finish_job
               └─(600 frames or 20 s: capture anyway, settled:false)─┘          (PNG on compute pool)
 any phase ─(24 s job cap)─► finish_job(capture_timed_out)
+any phase ─(caller hung up)─► finish_job(caller_gone)
 ```
 
 - **Window mode** snapshots `Transform` + the orbit controller (focus,
@@ -1171,13 +1172,37 @@ any phase ─(24 s job cap)─► finish_job(capture_timed_out)
   tile `coverage: "unbounded"` / out-of-served-zoom notes, so those are not
   reported.
 - **Scope confinement (SEC-ADDENDUM, enforced HERE).** Every request carries
-  the caller's token scope. `scope_covers_active_verse` (fe-policy
-  `scope_contains` against `VERSE#<active_verse_id>`; nothing open = denied) is
-  checked when a `ReadCamera`/`Capture` arrives, and again right before the
-  frame is queued, so a user switching to an uncovered verse mid-settle yields
-  `denied()` and no frame. The plain GET path applies the same two checks
-  (arrival in `drain_screenshot_requests`, frame time in
-  `capture_pending_screenshots` — §screenshot). `authorized_target` resolves a `focus`
+  the caller's token scope. `ViewScope::covers` (a `SystemParam`; the pure rule
+  is `scope_covers_view`) is THE one gate: the scope must cover the ACTIVE
+  verse (fe-policy `scope_contains` against `VERSE#<active_verse_id>`; nothing
+  open = denied) **and every petal still rendered** — the terrain binding
+  (`ActivePetalTerrain.petal_id` while it has a config) and every
+  `SpawnedNodeMarker`'s petal. A rendered petal that is not the active one must
+  sit in a covered verse; an unknown one denies. Why (critic pass 2026-11-01):
+  terrain is re-bound only when the NEXT petal's `PetalTerrainLoaded` arrives
+  and nothing clears it on a verse switch (`navigate_to_verse` clears the petal,
+  so no load is ever sent), so after the user leaves verse C for verse A, C's
+  map, tracks and overlays stay on screen and in `ActiveTileSource` until an A
+  petal with its own terrain is opened. Checking only the cursor let an A token
+  capture C's map, pose a scene camera anywhere over it (streaming more of it)
+  and read C's projection through `GET /camera`. Nodes despawn a frame late
+  (deferred commands), which the marker half covers. It is checked when a
+  `ReadCamera`/`Capture` arrives, and again right before the frame is queued,
+  so a user switching to an uncovered verse mid-settle yields `denied()` and no
+  frame. The plain GET path applies the same two checks (arrival in
+  `drain_screenshot_requests`, frame time in `capture_pending_screenshots` —
+  §screenshot). Flow tests: `a_view_still_rendering_an_uncovered_verse_is_denied`,
+  screenshot_bridge `a_map_still_bound_from_an_uncovered_verse_refuses_plain_captures`.
+  The root cause (no terrain clear on leaving a petal) is left alone here
+  because a clear-then-load would flash the map on every same-verse petal
+  switch; revisit if a "clear terrain when no petal is active" rule lands.
+- **Abandoned callers.** A request whose API caller already hung up (client
+  disconnect drops the handler future, or the reply timeout fired) has a
+  closed `reply_tx`: the drain drops it without moving anything (both bridges),
+  and a running job whose caller leaves is torn down the next frame
+  (`caller_gone`), so the user's camera is never held for a reply nobody reads
+  — and fe-api's single-flight permit (released when the caller left) never
+  meets a still-running orphan job as `capture_in_progress`. `authorized_target` resolves a `focus`
   target to its verse (hierarchy tree, else a marker spawned in the active
   petal) and returns `None` for unknown OR uncovered, which is one uniform
   `denied()` with no existence oracle. Cross-verse `navigate` is refused, and
@@ -1186,7 +1211,10 @@ any phase ─(24 s job cap)─► finish_job(capture_timed_out)
   verse/fractal/petal cursor (`NavSnapshot`), and `finish_job` puts it back
   through `NavigationManager`'s own methods on failure, timeout or
   `restore: true`, by the same rule as the camera. Only a successful
-  `restore: false` capture leaves the user in the target petal.
+  `restore: false` capture leaves the user in the target petal. The snapshot
+  is put back only while the cursor is still on the petal the job navigated
+  to (`NavSnapshot.navigated_to`): navigation is not locked during a job, so a
+  user who moved on meanwhile (even to another verse) is never yanked back.
 - **Humble Object.** Box framing (`fe_renderer::camera::frame_world_box`) and
   the tileset-bounds union (`fe_terrain::camera_framing::union_bounds`) are
   pure, table-tested helpers in their owning crates; this module only gathers

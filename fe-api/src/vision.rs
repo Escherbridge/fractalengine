@@ -15,8 +15,8 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::vision::{
-    CaptureSpec, ResolvedPose, ValidCaptureSpec, VisionFailure, VisionFailureClass, VisionOp,
-    VisionOutput, VisionRefusal,
+    CaptureSpec, ResolvedPose, ValidCaptureSpec, ValidPoseSpec, VisionFailure, VisionFailureClass,
+    VisionOp, VisionOutput, VisionRefusal,
 };
 
 use crate::bridge_client::{round_trip, RoundTripError};
@@ -254,7 +254,7 @@ pub async fn request_vision(
 /// Shared by the REST handler and the MCP `screenshot` handler.
 pub(crate) async fn run_capture(
     state: &ApiState,
-    caller_scope: &str,
+    claims: &ApiClaims,
     spec: ValidCaptureSpec,
 ) -> Result<(Vec<u8>, ResolvedPose), VisionError> {
     let _permit = state
@@ -263,7 +263,8 @@ pub(crate) async fn run_capture(
         .clone()
         .try_acquire_owned()
         .map_err(|_| VisionError::Busy)?;
-    match request_vision(state, caller_scope, VisionOp::Capture(spec)).await? {
+    audit_capture(claims, Some(&spec));
+    match request_vision(state, &claims.scope, VisionOp::Capture(spec)).await? {
         VisionOutput::Capture { png, pose } => Ok((png, pose)),
         VisionOutput::Camera(_) => Err(VisionError::Failure(VisionFailure {
             status_class: VisionFailureClass::Failed,
@@ -271,6 +272,30 @@ pub(crate) async fn run_capture(
             message: "vision bridge returned a camera reply for a capture request".to_string(),
         })),
     }
+}
+
+/// The INFO audit line every capture admitted to the bridge writes, on both
+/// doors (plain `None` and posed): who looked, in what mode, at what pose
+/// kind — AGENTS.md §screenshot "Audit".
+pub(crate) fn audit_capture(claims: &ApiClaims, spec: Option<&ValidCaptureSpec>) {
+    let (mode, pose) = match spec {
+        None => ("window", "none (plain)"),
+        Some(spec) => (
+            match spec.mode() {
+                fe_runtime::vision::CaptureMode::Window => "window",
+                fe_runtime::vision::CaptureMode::Scene => "scene",
+            },
+            match spec.pose() {
+                None => "none",
+                Some(ValidPoseSpec::Camera { .. }) => "camera",
+                Some(ValidPoseSpec::Orbit { .. }) => "orbit",
+                Some(ValidPoseSpec::Geo { .. }) => "geo",
+                Some(ValidPoseSpec::Tile { .. }) => "tile",
+                Some(ValidPoseSpec::Focus { .. }) => "focus",
+            },
+        ),
+    };
+    tracing::info!(did = %claims.sub, scope = %claims.scope, mode, pose, "agent capture requested");
 }
 
 /// The resolved pose as response metadata JSON (the `X-FE-Capture-Pose`
@@ -354,7 +379,7 @@ pub async fn post_screenshot(
                 .into_response();
         }
     };
-    match run_capture(&state, &claims.scope, spec).await {
+    match run_capture(&state, &claims, spec).await {
         Ok((png, pose)) => {
             let pose_json = pose_metadata_json(&pose);
             let mut builder = Response::builder()

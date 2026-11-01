@@ -14,7 +14,8 @@ use crate::delta_viz::DeltaLattice;
 use crate::iot::{TrackRouteMap, TrackStyleMap};
 use crate::layers::{LayerId, LayerStack, LayerType};
 use crate::lod_ring::{
-    capture_chunk_allowance, chunk_retained_by_any_focus, max_ring_radius_for_budget, ring_offsets,
+    capture_chunk_allowance, chunk_retained_by_any_focus, max_ring_radius_for_budget,
+    nearest_focus_index, ring_offsets,
     ring_radius_tiles, spawn_despawn_radii, stale_for_nearest_focus, upsample_factor_for_height,
     view_radius_world, FocusReach, DESPAWN_HYSTERESIS, MAX_STREAMING_FOCI, MAX_UPSAMPLE,
     VIEW_RADIUS_FACTOR, ZOOM_BASE_HEIGHT_M,
@@ -440,9 +441,16 @@ impl StreamingFoci {
         Self { slots }
     }
 
-    /// Foci in streaming order: the capture focus first while one exists.
+    /// Foci in slot order: the capture focus first while one exists (the
+    /// order `reaches` indexes, so a capture's reach is index 0).
     fn iter(&self) -> impl Iterator<Item = &FocusSample> {
         self.slots.iter().flatten()
+    }
+
+    /// Foci in fetch order: the user's view first, so a capture never takes
+    /// the per-frame spawn cap from it.
+    fn fetch_order(&self) -> impl Iterator<Item = &FocusSample> {
+        self.slots.iter().rev().flatten()
     }
 
     fn capture(&self) -> Option<&FocusSample> {
@@ -745,7 +753,7 @@ pub fn fetch_and_spawn_terrain_chunks(
         return;
     };
 
-    let mut active_count = chunk_query.iter().count();
+    let active_count = chunk_query.iter().count();
     let capture_allowance = if foci.capture().is_some() {
         capture_chunk_allowance(lod_config.max_chunks)
     } else {
@@ -763,15 +771,32 @@ pub fn fetch_and_spawn_terrain_chunks(
     let reaches = &reaches[..focus_count];
     let contested = focus_count > 1;
     let existing: HashSet<(u8, u32, u32)> = chunk_query.iter().map(|c| c.tile_coords).collect();
+    // Separate budgets (§terrain_plugin "Budget"): a capture holds the chunks
+    // nearest it, up to its allowance; the user's view keeps `max_chunks` of
+    // the rest, so a capture can never pause the view's fill.
+    let capture_held = if foci.capture().is_some() {
+        chunk_query
+            .iter()
+            .filter(|chunk| {
+                let (z, x, y) = chunk.tile_coords;
+                chunk_anchor_world(TileCoord::new(x, y, z), projection, scale).is_ok_and(|anchor| {
+                    nearest_focus_index(anchor.to_array(), reaches) == Some(0)
+                })
+            })
+            .count()
+    } else {
+        0
+    };
+    // Chunks held per focus kind: [user view, capture].
+    let mut held = [active_count - capture_held, capture_held];
     let mut spawned_this_frame = 0usize;
 
-    for focus in foci.iter() {
-        // A capture may grow past `max_chunks` by its allowance (its ring is sized
-        // to fit it); the user's view keeps the plain budget. See §terrain_plugin.
-        let (chunk_cap, ring_budget) = if focus.capture {
-            (lod_config.max_chunks + capture_allowance, capture_allowance)
+    for focus in foci.fetch_order() {
+        let slot = usize::from(focus.capture);
+        let budget = if focus.capture {
+            capture_allowance
         } else {
-            (lod_config.max_chunks, lod_config.max_chunks)
+            lod_config.max_chunks
         };
         let cam_pos = focus.position;
         let (lat, lon, _) = projection.local_to_wgs84(
@@ -791,7 +816,7 @@ pub fn fetch_and_spawn_terrain_chunks(
             .unwrap_or_else(|| (cam_pos.y as f64).abs() * VIEW_RADIUS_FACTOR);
         let view_r = view_radius_world(cam_pos.y as f64, far_world, VIEW_RADIUS_FACTOR);
         let scaled_tile = scaled_tile_size(tile_world_size_m(lat, zoom), scale);
-        let max_radius = max_ring_radius_for_budget(ring_budget);
+        let max_radius = max_ring_radius_for_budget(budget);
         let radius = ring_radius_tiles(view_r, scaled_tile, max_radius);
 
         // Close-range upsampling: once the camera descends below the served max zoom's
@@ -809,7 +834,7 @@ pub fn fetch_and_spawn_terrain_chunks(
         // Nearest-first so the camera's immediate surroundings fill before the edges.
         for (dx, dy) in ring_offsets(radius) {
             let budget_spent =
-                active_count >= chunk_cap || spawned_this_frame >= MAX_SPAWNS_PER_FRAME;
+                held[slot] >= budget || spawned_this_frame >= MAX_SPAWNS_PER_FRAME;
             // The main focus just stops; a capture keeps walking to count what it still awaits.
             if budget_spent && !focus.capture {
                 break;
@@ -874,7 +899,7 @@ pub fn fetch_and_spawn_terrain_chunks(
             ) {
                 // Live chunk: its bytes stay resident until the exit ring releases them.
                 composite.pin_tile(coord, &tile);
-                active_count += 1;
+                held[slot] += 1;
                 spawned_this_frame += 1;
             } else {
                 failed.tiles.insert(key);
@@ -4157,6 +4182,33 @@ mod tests {
                 chunk_keys(&mut fx.app),
                 union(&fx.main_ring, &fx.capture_ring)
             );
+        }
+
+        /// The user's view keeps its own budget: a capture that already holds
+        /// chunks (its full allowance, with `max_chunks` = the view's ring)
+        /// never pauses the view's fill, and stays inside its allowance.
+        #[test]
+        fn a_capture_never_spends_the_user_views_chunk_budget() {
+            let mut fx = fixture(true);
+            let max_chunks = fx.main_ring.len();
+            fx.app.insert_resource(TerrainLodConfig {
+                max_chunks,
+                ..TerrainLodConfig::default()
+            });
+            spawn_capture(&mut fx.app);
+            run(&mut fx.app, 3);
+            let capture_chunks = chunk_keys(&mut fx.app);
+            assert!(!capture_chunks.is_empty());
+            assert!(capture_chunks.len() <= capture_chunk_allowance(max_chunks));
+
+            spawn_main(&mut fx.app);
+            run(&mut fx.app, 3);
+            let keys = chunk_keys(&mut fx.app);
+            assert!(
+                fx.main_ring.is_subset(&keys),
+                "the user's ring fills in full beside the capture's chunks"
+            );
+            assert!(capture_chunks.is_subset(&keys), "the capture keeps what it holds");
         }
 
         #[test]

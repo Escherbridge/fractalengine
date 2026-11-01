@@ -1,5 +1,6 @@
 //! `GET /api/v1/debug/screenshot` + the MCP `screenshot` tool's shared core:
-//! deny-by-default agent visual verification — see AGENTS.md §screenshot.
+//! default-on, Owner-gated, scope-confined agent visual verification — see
+//! AGENTS.md §screenshot.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,7 +17,8 @@ use crate::operator_gate::{GateRefusal, OperatorGate};
 use crate::server::ApiState;
 use crate::types::ApiResponse;
 
-/// Env var that opts a node into the screenshot surface (only `1` enables).
+/// Env var for the screenshot surface: unset/`1` = on, `0` = off, anything
+/// else = off (fail closed) — agent_vision_20261031 DD-1.
 pub const SCREENSHOT_ALLOW_ENV: &str = "FE_API_SCREENSHOT_ALLOW";
 
 /// How long the API waits for the Bevy host to capture and encode a frame.
@@ -95,8 +97,8 @@ impl ScreenshotSurface {
     }
 }
 
-/// Read the `FE_API_SCREENSHOT_ALLOW` opt-in once at startup (only `1` enables);
-/// warns loudly when enabled — see AGENTS.md §screenshot.
+/// Read `FE_API_SCREENSHOT_ALLOW` once at startup (on unless `=0`; garbage
+/// fails closed); warns loudly when enabled — see AGENTS.md §screenshot.
 pub fn screenshot_allowed_from_env() -> bool {
     SCREENSHOT_GATE.opted_in_from_env()
 }
@@ -152,21 +154,22 @@ impl ScreenshotError {
 
 /// Ask the Bevy host for one PNG of the primary window (egui included),
 /// carrying the caller's token scope: the host refuses unless it covers the
-/// active verse (SEC-ADDENDUM). Never blocks the async worker: a full bridge
-/// is a busy refusal, a silent host a timeout, and a reply echoing a foreign
-/// correlation id is rejected.
+/// view (SEC-ADDENDUM); the request is audited (DID, scope). Never blocks the
+/// async worker: a full bridge is a busy refusal, a silent host a timeout,
+/// and a reply echoing a foreign correlation id is rejected.
 pub async fn request_capture(
     state: &ApiState,
-    caller_scope: &str,
+    claims: &ApiClaims,
 ) -> Result<Vec<u8>, ScreenshotError> {
     let Some(bridge) = state.screenshot.bridge.as_ref() else {
         return Err(ScreenshotError::Unavailable(
             "screenshot unavailable: this host has no window",
         ));
     };
+    crate::vision::audit_capture(claims, None);
     let reply = round_trip(
         bridge,
-        caller_scope,
+        &claims.scope,
         CapturePrimaryWindow,
         state.screenshot.reply_timeout,
         "screenshot",
@@ -226,5 +229,5 @@ async fn gated_capture(state: &ApiState, claims: &ApiClaims) -> Result<Vec<u8>, 
     SCREENSHOT_GATE
         .admit(state.screenshot.allowed, state, claims)
         .await?;
-    request_capture(state, &claims.scope).await
+    request_capture(state, claims).await
 }

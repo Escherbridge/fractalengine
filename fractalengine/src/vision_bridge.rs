@@ -339,11 +339,60 @@ pub(crate) fn scope_covers_verse(caller_scope: &str, verse_id: &str) -> bool {
     !verse_id.is_empty() && fe_database::scope_contains(caller_scope, &format!("VERSE#{verse_id}"))
 }
 
-/// The one gate every capture and camera read passes: the caller must cover
-/// the ACTIVE verse (nothing open = denied). Shared with the plain GET path.
-pub(crate) fn scope_covers_active_verse(caller_scope: &str, nav: Option<&NavigationManager>) -> bool {
+/// The caller covers the ACTIVE verse (nothing open = denied).
+fn scope_covers_active_verse(caller_scope: &str, nav: Option<&NavigationManager>) -> bool {
     nav.and_then(|nav| nav.active_verse_id.as_deref())
         .is_some_and(|verse_id| scope_covers_verse(caller_scope, verse_id))
+}
+
+/// The caller covers the active verse AND every petal still rendered: a
+/// rendered petal that is not the active one must sit in a covered verse
+/// (unknown = denied) — src/AGENTS.md §vision "Scope".
+pub(crate) fn scope_covers_view<'a>(
+    caller_scope: &str,
+    nav: Option<&NavigationManager>,
+    verses: Option<&VerseManager>,
+    rendered_petals: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    if !scope_covers_active_verse(caller_scope, nav) {
+        return false;
+    }
+    let active_petal = nav.and_then(|nav| nav.active_petal_id.as_deref());
+    rendered_petals.into_iter().all(|petal| {
+        Some(petal) == active_petal
+            || verses
+                .and_then(|verses| locate_petal(verses, petal))
+                .is_some_and(|verse| scope_covers_verse(caller_scope, verse))
+    })
+}
+
+/// What a frame can show besides the cursor: the terrain binding (re-bound
+/// only when the next petal's terrain loads, so it outlives a verse switch)
+/// and every spawned node (despawned a frame late). THE one scope gate both
+/// capture paths and the camera read pass, at arrival and at frame time.
+#[derive(SystemParam)]
+pub struct ViewScope<'w, 's> {
+    verses: Option<Res<'w, VerseManager>>,
+    terrain: Option<Res<'w, ActivePetalTerrain>>,
+    markers: Query<'w, 's, &'static SpawnedNodeMarker>,
+}
+
+impl ViewScope<'_, '_> {
+    /// SEC-ADDENDUM: may `caller_scope` see the view `nav` has open right now?
+    pub(crate) fn covers(&self, caller_scope: &str, nav: Option<&NavigationManager>) -> bool {
+        let terrain_petal = self
+            .terrain
+            .as_deref()
+            .filter(|terrain| terrain.config.is_some())
+            .and_then(|terrain| terrain.petal_id.as_deref());
+        let node_petals = self.markers.iter().map(|marker| marker.petal_id.as_str());
+        scope_covers_view(
+            caller_scope,
+            nav,
+            self.verses.as_deref(),
+            terrain_petal.into_iter().chain(node_petals),
+        )
+    }
 }
 
 /// The user's verse/fractal/petal cursor before a capture navigated it.
@@ -351,11 +400,15 @@ struct NavSnapshot {
     verse: Option<(String, String)>,
     fractal: Option<(String, String)>,
     petal: Option<String>,
+    /// The petal the job navigated to: the snapshot is only put back while
+    /// the cursor is still there, so a user who moved on is never yanked back.
+    navigated_to: String,
 }
 
 impl NavSnapshot {
-    fn take(nav: &NavigationManager) -> Self {
+    fn take(nav: &NavigationManager, navigated_to: String) -> Self {
         Self {
+            navigated_to,
             verse: nav
                 .active_verse_id
                 .clone()
@@ -1031,11 +1084,16 @@ pub fn drain_vision_requests(
     cameras: MainCamera,
     mut scene: SceneLookup,
     terrain: TerrainLookup,
+    view: ViewScope,
     mut commands: Commands,
 ) {
     while let Ok(request) = bridge.0.try_recv() {
-        // SEC-ADDENDUM: every read and capture needs the active verse covered.
-        if !scope_covers_active_verse(&request.caller_scope, scene.nav.as_deref()) {
+        // The caller already timed out or hung up: never move the camera for it.
+        if request.reply_tx.is_closed() {
+            continue;
+        }
+        // SEC-ADDENDUM: every read and capture needs the whole view covered.
+        if !view.covers(&request.caller_scope, scene.nav.as_deref()) {
             request.reply(Err(denied()));
             continue;
         }
@@ -1136,7 +1194,7 @@ fn start_job(
             else {
                 return Err(denied());
             };
-            let snapshot = NavSnapshot::take(nav);
+            let snapshot = NavSnapshot::take(nav, petal.clone());
             if !navigate_to_petal(nav, verses, &petal) {
                 return Err(denied());
             }
@@ -1326,6 +1384,7 @@ pub fn advance_vision_job(
     mut cameras: MainCamera,
     mut nav: Option<ResMut<NavigationManager>>,
     terrain: TerrainLookup,
+    view: ViewScope,
     mut images: ResMut<Assets<Image>>,
     mut commands: Commands,
 ) {
@@ -1335,6 +1394,14 @@ pub fn advance_vision_job(
     let window = windows.single().ok();
     let elapsed = time.elapsed().saturating_sub(active.started);
     let step = 'step: {
+        if active.request.reply_tx.is_closed() {
+            // The caller hung up (client gone, API timeout): stop holding the
+            // user's camera for a reply nobody will read.
+            break 'step Step::Finish(Err(failed(
+                "caller_gone",
+                "the caller stopped waiting; the capture was abandoned",
+            )));
+        }
         if elapsed >= JOB_WALL_CLOCK_CAP {
             break 'step Step::Finish(Err(failed(
                 "capture_timed_out",
@@ -1364,7 +1431,7 @@ pub fn advance_vision_job(
                 }
                 // Re-check at capture time: the user may have navigated to a
                 // verse this caller does not cover while the job settled.
-                if !scope_covers_active_verse(&active.caller_scope, nav.as_deref()) {
+                if !view.covers(&active.caller_scope, nav.as_deref()) {
                     break 'step Step::Finish(Err(denied()));
                 }
                 active.settled = ready;
@@ -1433,7 +1500,8 @@ fn finish_job(
     let succeeded = outcome.is_ok();
     let put_back = active.restore || !succeeded;
     if let (Some(snapshot), Some(nav)) = (active.nav_snapshot.take(), nav) {
-        if put_back {
+        // Undo only the job's own move: a user who navigated since stays put.
+        if put_back && nav.active_petal_id.as_deref() == Some(snapshot.navigated_to.as_str()) {
             snapshot.restore(nav);
         }
     }
@@ -2061,6 +2129,7 @@ mod tests {
     #[test]
     fn tile_pose_outside_every_tileset_refuses() {
         let mut h = harness((1280, 720));
+        two_petal_tree(&mut h);
         let _tileset = bind_tileset(&mut h, 120.0);
         let (x, y) = tile_of(0.5, 0.5, 12);
         let mut outside = h.capture(tile_capture(12, x, y));
@@ -2261,6 +2330,110 @@ mod tests {
         assert!(h.screenshots().is_empty(), "no frame of the uncovered verse");
         assert!(!h.locked());
         assert_eq!(h.main_state(), before);
+    }
+
+    /// Verse w open (petal r), as after the user switched there from v.
+    fn open_verse_w(h: &mut Harness) {
+        let mut nav = h.app.world_mut().resource_mut::<NavigationManager>();
+        nav.navigate_to_verse("w", "Other");
+        nav.navigate_to_fractal("g", "Other fractal");
+        nav.navigate_to_petal("r");
+    }
+
+    /// A verse-w capture and camera read, both expected to get the denial.
+    fn assert_verse_w_denied(h: &mut Harness) {
+        let spec = orbit_capture(CaptureMode::Scene, 0, None).validate().unwrap();
+        let mut capture = h.send_as("VERSE#w", VisionOp::Capture(spec));
+        let mut read = h.send_as("VERSE#w", VisionOp::ReadCamera);
+        h.app.update();
+        for reply in [&mut capture, &mut read] {
+            assert_eq!(expect_failure(reply.try_recv().expect("answered at once")), denied());
+        }
+        assert!(h.capture_cameras().is_empty());
+    }
+
+    fn verse_w_read_is_served(h: &mut Harness) -> bool {
+        let mut read = h.send_as("VERSE#w", VisionOp::ReadCamera);
+        h.app.update();
+        read.try_recv().expect("answered").result.is_ok()
+    }
+
+    /// SEC-ADDENDUM, the lingering view: terrain is re-bound only when the
+    /// next petal's terrain loads and nodes despawn a frame late, so just
+    /// after the user opens verse w the screen can still show verse v's map
+    /// or nodes. A verse-w token is denied while anything of v is rendered —
+    /// at arrival and again at frame time — and served once only w is.
+    #[test]
+    fn a_view_still_rendering_an_uncovered_verse_is_denied() {
+        let mut h = harness((1280, 720));
+        two_petal_tree(&mut h);
+        let _tileset = bind_tileset(&mut h, 120.0); // verse v's petal p map
+        open_verse_w(&mut h);
+        assert_verse_w_denied(&mut h);
+
+        h.app.world_mut().resource_mut::<ActivePetalTerrain>().petal_id = Some("r".into());
+        assert!(verse_w_read_is_served(&mut h), "only verse w is on screen now");
+
+        let stale = spawn_node(&mut h, "n1", "p", Vec3::ZERO);
+        assert_verse_w_denied(&mut h);
+        h.app.world_mut().despawn(stale);
+        assert!(verse_w_read_is_served(&mut h));
+
+        // Frame-time re-check: v content reappearing mid-settle denies.
+        let spec = orbit_capture(CaptureMode::Window, 5, None).validate().unwrap();
+        let mut reply = h.send_as("VERSE#w", VisionOp::Capture(spec));
+        h.app.update();
+        assert!(h.locked(), "admitted at arrival");
+        spawn_node(&mut h, "n1", "p", Vec3::ZERO);
+        for _ in 0..10 {
+            h.app.update();
+        }
+        assert_eq!(expect_failure(reply.try_recv().expect("answered")), denied());
+        assert!(h.screenshots().is_empty(), "no frame showing verse v");
+        assert!(!h.locked());
+    }
+
+    /// A caller that hung up (client gone, API timeout) never holds the
+    /// user's camera: a request abandoned before the drain moves nothing, and
+    /// a job whose caller leaves mid-settle is torn down and restored at once.
+    #[test]
+    fn an_abandoned_capture_never_holds_the_users_camera() {
+        let mut h = harness((1280, 720));
+        let before = h.main_state();
+        drop(h.capture(orbit_capture(CaptureMode::Window, 100, None)));
+        h.app.update();
+        assert!(!h.locked(), "an abandoned request never starts");
+        assert_eq!(h.main_state(), before);
+
+        let reply = h.capture(orbit_capture(CaptureMode::Window, 100, None));
+        h.app.update();
+        assert!(h.locked());
+        assert_ne!(h.main_state(), before, "posed");
+        drop(reply);
+        h.app.update();
+        h.app.update();
+        assert!(!h.locked(), "torn down once the caller left");
+        assert_eq!(h.main_state(), before, "camera restored");
+        assert!(h.screenshots().is_empty());
+    }
+
+    /// A failing navigating job puts the user back only while they are still
+    /// where the job took them; a user who moved on meanwhile stays put.
+    #[test]
+    fn a_user_who_navigated_away_mid_job_is_not_yanked_back() {
+        let mut h = harness((1280, 720));
+        two_petal_tree(&mut h);
+        let mut reply = h.capture(focus_capture("n2", true));
+        h.app.update();
+        assert_eq!(h.active_petal().as_deref(), Some("q"), "navigated");
+        open_verse_w(&mut h);
+        h.advance_clock(JOB_WALL_CLOCK_CAP);
+        h.app.update();
+        let failure = expect_failure(reply.try_recv().expect("torn down"));
+        assert_eq!(failure.code, "capture_timed_out");
+        let nav = h.app.world().resource::<NavigationManager>();
+        assert_eq!(nav.active_verse_id.as_deref(), Some("w"));
+        assert_eq!(nav.active_petal_id.as_deref(), Some("r"), "the user's own move stands");
     }
 
     /// AC-8: the read-back names the active hierarchy and the RUNTIME-grounded
