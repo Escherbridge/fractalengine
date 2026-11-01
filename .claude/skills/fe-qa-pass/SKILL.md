@@ -102,8 +102,10 @@ Reactions:
 | exit 3 | the app died | S1: copy the panic lines from `<run>/stderr.log`, run stop.ps1, relaunch (b), continue with the NEXT scenario |
 | gold step fails 2 attempts | abandonment | mark the gold task FAIL, move on |
 
-Native dialogs ("Install from file…", "Browse…") block the frame loop and
-cannot be driven: never click them.
+Before native Browse/Install/Save controls, queue `F dialog-answer <run-local path>` with the matching
+`--kind open|save|folder`, or `--cancel`. The QA provider returns a typed visible error when no answer is queued;
+it never falls back to a blocking native dialog while synthetic input is enabled. Use `F window size W H`
+for layout checks and `F window close` to exercise real confirmation. Cancel keeps the app running.
 
 ### (d) Stop — always, even on failure
 

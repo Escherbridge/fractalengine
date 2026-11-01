@@ -8,7 +8,7 @@
 # SKIPS the build and reuses the newest already-staged build instead of
 # racing it for the lock.
 [CmdletBinding()]
-param()
+param([ValidateRange(1,16)][int]$Jobs = 2)
 
 . "$PSScriptRoot\_lib.ps1"
 $ErrorActionPreference = 'Stop'
@@ -39,9 +39,9 @@ try {
     # NativeCommandError records (cosmetic noise — cargo's own "Finished"/
     # "Compiling" lines go to stderr), which is harmless since $LASTEXITCODE
     # (not $?) is what gates success below, but is confusing to read.
-    & cargo build -p fractalengine --bin fractalengine -j4
+    & cargo build -p fractalengine --bin fractalengine -j $Jobs
     if ($LASTEXITCODE -ne 0) { throw "GUI build failed: $LASTEXITCODE" }
-    & cargo build -p fe-terrain --example install_sample_hexons -j4
+    & cargo build -p fe-terrain --example install_sample_hexons -j $Jobs
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
         Write-QaLog "cargo build failed with exit code $exitCode"

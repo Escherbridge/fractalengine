@@ -141,6 +141,14 @@ confirms this, no `hexon://` scheme prefix).
 
 ## §fe-py
 
+`launch.ps1 -ApiPort N` selects an isolated QA loopback listener and records its origin. `fe.py --run <run>`
+continues to address that run explicitly. `dialog-answer PATH --kind open|save|folder` or `--cancel` queues a
+typed answer before clicking Browse. `window size W H`, maximize/restore/minimize, close, and `window ui-scale F`
+use the shared QA bridge. Size is physical pixels; UI scale changes only app egui scale. Close opens confirmation.
+These controls require input opt-in, the actual loopback listener, and isolated QA storage.
+`stage.ps1 -Jobs N` applies the same explicit parallelism to both GUI and fixture-helper builds; default 2
+matches the repository configuration and avoids unnecessary memory pressure on this desktop.
+
 `fe.py` is a Python 3 standard-library client for camera read-back,
 screenshots and synthetic input. It discovers the run from `.qa/current`
 and `current.json`, reads owner tokens without printing them, and probes

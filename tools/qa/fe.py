@@ -603,9 +603,65 @@ def command_logs(run, args):
     emit(probe(run, "logs", args.verse, params))
 
 
-def command_wait_for(run, args):
-    if not math.isfinite(args.timeout) or args.timeout <= 0:
+def qa_mutation(run, verse, endpoint, body):
+    _verse, token, _camera = resolve_token(run, verse)
+    _status, _headers, raw = call(run, "POST", "/api/v1/debug/" + endpoint, token, body)
+    return decode_object(raw)
+
+
+def command_dialog_answer(run, args):
+    if args.cancel == bool(args.path):
+        raise Refused(0, "invalid_dialog_answer", "provide either a path or --cancel")
+    answer = {"kind":args.kind}
+    if args.cancel:
+        answer["cancel"] = True
+    else:
+        answer["path"] = args.path
+    emit(qa_mutation(run, args.verse, "dialog-answers", {"answers":[answer]}))
+
+
+def command_window(run, args):
+    prior = probe(run, "ui-state", args.verse) if args.operation == "ui-scale" else None
+    body = {"action":args.operation.replace("-", "_")}
+    if args.operation == "size":
+        body.update(width=args.width, height=args.height)
+    elif args.operation == "ui-scale":
+        if not math.isfinite(args.factor):
+            raise Refused(0, "invalid_ui_scale", "UI scale must be finite")
+        body["factor"] = args.factor
+    emit(qa_mutation(run, args.verse, "window", body))
+    def ready(state):
+        window = require_object(state.get("window"), "window state")
+        if args.operation == "size":
+            return window.get("width") == args.width and window.get("height") == args.height
+        if args.operation == "maximize":
+            return window.get("maximized") is True
+        if args.operation == "minimize":
+            return window.get("minimized") is True
+        if args.operation == "restore":
+            return window.get("maximized") is False and window.get("minimized") is False
+        if args.operation == "ui-scale":
+            old_scale = require_object(prior.get("window"), "previous window state").get("ui_scale", 1.0)
+            expected = prior.get("pixels_per_point", 1.0) * args.factor / old_scale
+            return abs(window.get("ui_scale", 0) - args.factor) < 0.001 and abs(state.get("pixels_per_point", 0) - expected) < 0.01
+        return "Close FractalEngine?" in state.get("open_windows", [])
+    state = wait_until(lambda: probe(run, "ui-state", args.verse), ready, 15.0, "window " + args.operation)
+    emit({"window_state":state.get("window"), "open_windows":state.get("open_windows")})
+
+
+def wait_until(read, ready, timeout, description):
+    if not math.isfinite(timeout) or timeout <= 0:
         raise Refused(0, "invalid_timeout", "timeout must be finite and positive")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        value = read()
+        if ready(value):
+            return value
+        time.sleep(min(0.25, max(0, deadline - time.monotonic())))
+    raise Refused(0, "wait_timeout", "%s did not match within %.1fs" % (description, timeout))
+
+
+def command_wait_for(run, args):
     if args.state and "=" not in args.state:
         raise Refused(0, "invalid_state_predicate", "--state requires PATH=JSON_VALUE")
     if args.state:
@@ -614,20 +670,14 @@ def command_wait_for(run, args):
             expected = json.loads(text)
         except ValueError:
             expected = text
-    deadline = time.monotonic() + args.timeout
-    while time.monotonic() < deadline:
+    def poll():
         if args.name:
             found = [n for n in tree_nodes(probe(run, "ui-tree", args.verse, {"name":args.name})) if not n.get("hidden")]
-            ready = not found if args.gone else bool(found)
-        else:
-            ready = dotted(probe(run, "ui-state", args.verse), path) == expected
-            if args.gone:
-                ready = not ready
-        if ready:
-            emit({"matched":True, "predicate":args.name or args.state, "gone":args.gone})
-            return
-        time.sleep(0.25)
-    raise Refused(0, "wait_timeout", "predicate did not match within %.1fs" % args.timeout)
+            return not found if args.gone else bool(found)
+        ready = dotted(probe(run, "ui-state", args.verse), path) == expected
+        return not ready if args.gone else ready
+    wait_until(poll, bool, args.timeout, args.name or args.state)
+    emit({"matched":True, "predicate":args.name or args.state, "gone":args.gone})
 
 
 def log_watermark(run, verse):
@@ -665,6 +715,21 @@ def build_parser():
 
     sub.add_parser("info", help="run dir, pid, fixture ids, token roles").set_defaults(func=command_info)
     sub.add_parser("camera", help="GET /api/v1/debug/camera").set_defaults(func=command_camera)
+    answer = sub.add_parser("dialog-answer", help="queue a run-confined native dialog answer")
+    answer.add_argument("path", nargs="?")
+    answer.add_argument("--cancel", action="store_true")
+    answer.add_argument("--kind", choices=["open","save","folder"], default="open")
+    answer.set_defaults(func=command_dialog_answer)
+    window = sub.add_parser("window", help="QA window controls; size uses physical pixels")
+    actions = window.add_subparsers(dest="operation", required=True)
+    size = actions.add_parser("size")
+    size.add_argument("width", type=int)
+    size.add_argument("height", type=int)
+    scale = actions.add_parser("ui-scale")
+    scale.add_argument("factor", type=float)
+    for operation in ["maximize","restore","minimize","close"]:
+        actions.add_parser(operation)
+    window.set_defaults(func=command_window)
     ui = sub.add_parser("ui", help="primary window accessibility tree in physical pixels")
     ui.add_argument("--find")
     ui.add_argument("--role")
@@ -762,7 +827,7 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
         run = load_run(args.run)
-        watermark = log_watermark(run, args.verse) if args.command in {"move","click","drag","key","type","scroll"} else None
+        watermark = log_watermark(run, args.verse) if args.command in {"move","click","drag","key","type","scroll","dialog-answer","window"} else None
         try:
             args.func(run, args)
         finally:

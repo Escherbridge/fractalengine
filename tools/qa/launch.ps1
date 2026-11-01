@@ -9,10 +9,12 @@ param(
     [string]$Stage,
     [ValidateSet("basic", "none")]
     [string]$Fixture = "basic",
+    [ValidateRange(1,65535)][int]$ApiPort = 8765,
     [switch]$AllowStaleStage
 )
 
 . "$PSScriptRoot\_lib.ps1"
+$QaApiBase = "http://127.0.0.1:$ApiPort"
 $ErrorActionPreference = 'Stop'
 
 $swTotal = [System.Diagnostics.Stopwatch]::StartNew()
@@ -84,6 +86,7 @@ if ((Test-Path $hexonInstaller) -and (Test-Path $sampleHexonsDir)) {
 # --- Launch -------------------------------------------------------------
 $env:FE_API_DEV_TOKEN_OUT = $tokensPath
 $env:FE_QA_STORAGE_ROOT = $run
+$env:FE_QA_API_PORT = $ApiPort.ToString()
 $env:FE_API_INPUT_ALLOW = "1"
 $env:FE_SYNC_RELAY = "disabled"
 $env:FE_HEXON_DIR = $hexonDir
