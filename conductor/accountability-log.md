@@ -749,3 +749,16 @@ fail-closed).
   capture + camera read now require token scope to cover the ACTIVE verse; focus/navigate require coverage of the
   target; one shared check for REST + MCP. Written as plan.md §SEC-ADDENDUM (binding for V5/advocate/critic of run
   wf_06282f3b-a5d). Verification at run close; if unaddressed → dedicated fix agent before run 2.
+
+### Directives 2026-11-01 — QA loop + agent driving; test policy change
+- User: "a loop actively testing our UI and app with the screenshot feature" + "pointer and keyboard events so an agent
+  can drive fractal engine". Plan: critic (vision, resumed after ENOTFOUND) → run 2 input surface (INPUT-ADDENDUM c5ed636:
+  reuse BridgeRequest envelope, scope-confined, off by default) → qa-harness workflow (H1 opt-in loopback dev-token
+  emission, H2 staged isolated launcher + fixture seed, H3 fe.py drive client + .claude/skills/fe-qa-pass + scenario
+  catalog + first live pass; advocate + critic) → self-paced QA loop invoking fe-qa-pass, S1/S2 findings routed into
+  polish plan §QA-intake. Staged exes so a running QA app never locks target/debug.
+- User TEST POLICY (binding, overrides plans that name new tests): no new test functions — extend existing journey tests
+  or swap obsolete ones; one long journey test only where a region has none; gates run only the usability-region
+  batches touched (conductor/test-batches.md, being built); full suite once at campaign end. Applied to polish-wave.js,
+  agent-vision-exec.js, qa-harness.js. The running vision critic predates it (prompt fixed; not steered mid-run per
+  the double-instance lesson) — its added tests, if any, get folded by the next advocate.
