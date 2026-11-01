@@ -92,8 +92,13 @@ pub(super) fn handle_scoped_invite_generated(invite_link: &str, ui_mgr: &mut UiM
 pub(super) fn handle_local_role_resolved(
     scope: &str,
     role: &str,
+    nav: &NavigationManager,
     local_role: &mut crate::plugin::LocalUserRole,
 ) {
+    if nav.active_scope().as_deref() != Some(scope) {
+        bevy::log::debug!("Discarded local role response for an inactive scope");
+        return;
+    }
     let level = fe_database::RoleLevel::from(role);
     bevy::log::info!("Local role resolved at {}: {} ({:?})", scope, role, level);
     local_role.role = Some(level);

@@ -121,9 +121,11 @@ pub(super) fn apply_db_results(
             ),
             // OD-2/M-03: typed Join failure — inline in the dialog while
             // pending, else a general error notice (see hierarchy.rs).
-            DbResult::JoinVerseFailed { error } => {
-                hierarchy::handle_join_verse_failed(error, &mut ui_mgr, caches.time.elapsed_secs_f64())
-            }
+            DbResult::JoinVerseFailed { error } => hierarchy::handle_join_verse_failed(
+                error,
+                &mut ui_mgr,
+                caches.time.elapsed_secs_f64(),
+            ),
             // Still falls through to `try_deliver`: the API caller awaits it.
             DbResult::ElevatedQueryResult { changed_rows, .. } => {
                 hierarchy::handle_elevated_query_result(*changed_rows, &db_sender)
@@ -261,7 +263,7 @@ pub(super) fn apply_db_results(
                 roles::handle_scoped_invite_generated(invite_link, &mut ui_mgr)
             }
             DbResult::LocalRoleResolved { scope, role } => {
-                roles::handle_local_role_resolved(scope, role, &mut local_role)
+                roles::handle_local_role_resolved(scope, role, &nav, &mut local_role)
             }
             DbResult::VerseDefaultAccessSet {
                 verse_id,
@@ -564,7 +566,10 @@ pub(super) fn apply_db_results(
 /// dialogs alone. Same shape as `hierarchy::handle_verse_joined`.
 fn finish_gltf_import_request(name: &str, ui_mgr: &mut crate::actions::UiManager, now: f64) {
     if ui_mgr.gltf_import_request.finish() {
-        if matches!(ui_mgr.active_dialog, crate::dialogs::ActiveDialog::GltfImport { .. }) {
+        if matches!(
+            ui_mgr.active_dialog,
+            crate::dialogs::ActiveDialog::GltfImport { .. }
+        ) {
             ui_mgr.close_dialog();
         }
         ui_mgr.show_toast(format!("Imported {name}"), now);
@@ -734,9 +739,11 @@ mod tests {
             position: [0.0; 3],
         };
         // (import dialog still the active one, request sent by it, closes)
-        for (import_dialog_active, dialog_requested, closes) in
-            [(true, true, true), (true, false, false), (false, true, false)]
-        {
+        for (import_dialog_active, dialog_requested, closes) in [
+            (true, true, true),
+            (true, false, false),
+            (false, true, false),
+        ] {
             let mut ui = UiManager::default();
             ui.open_dialog(if import_dialog_active {
                 gltf_dialog()
@@ -750,7 +757,11 @@ mod tests {
             }
             finish_gltf_import_request("Model", &mut ui, 2.0);
             let case = format!("active={import_dialog_active} requested={dialog_requested}");
-            assert_eq!(matches!(ui.active_dialog, ActiveDialog::None), closes, "{case}");
+            assert_eq!(
+                matches!(ui.active_dialog, ActiveDialog::None),
+                closes,
+                "{case}"
+            );
             assert!(!ui.gltf_import_request.pending, "{case}");
             assert_eq!(
                 ui.active_toast(2.0).map(|(msg, _)| msg.to_string()),
@@ -896,6 +907,50 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+
+        use fe_runtime::messages::{
+            FractalHierarchyData, NodeHierarchyData, PetalHierarchyData, VerseHierarchyData,
+        };
+        let empty = VerseHierarchyData {
+            id: "empty-verse".into(),
+            name: "Empty".into(),
+            namespace_id: None,
+            timeseries: Default::default(),
+            view_hidden: false,
+            fractals: vec![],
+        };
+        let mut populated = empty.clone();
+        populated.id = "populated-verse".into();
+        populated.name = "Populated".into();
+        populated.fractals = vec![FractalHierarchyData {
+            id: "f".into(),
+            name: "Fractal".into(),
+            view_hidden: false,
+            petals: vec![PetalHierarchyData {
+                id: "p".into(),
+                name: "Petal".into(),
+                view_hidden: false,
+                render_distance: None,
+                nodes: vec![NodeHierarchyData {
+                    id: "n".into(),
+                    name: "Node".into(),
+                    has_asset: true,
+                    position: [0.0; 3],
+                    asset_path: Some("fixture.glb".into()),
+                    petal_id: "p".into(),
+                    webpage_url: None,
+                }],
+            }],
+        }];
+        let mut nav = NavigationManager::default();
+        hierarchy::select_initial_navigation(&[empty.clone(), populated], &mut nav);
+        assert_eq!(nav.active_verse_name, "Populated");
+        assert_eq!(
+            nav.active_scope().as_deref(),
+            Some("VERSE#populated-verse-FRACTAL#f-PETAL#p")
+        );
+        hierarchy::select_initial_navigation(&[empty], &mut nav);
+        assert_eq!(nav.active_scope().as_deref(), Some("VERSE#empty-verse"));
     }
 
     #[test]
@@ -921,6 +976,13 @@ mod tests {
             "index must be rebuilt after structural delete"
         );
         assert!(matches!(ui.active_dialog, ActiveDialog::None));
+
+        let mut mgr = tree();
+        nav.navigate_to_petal_in_fractal("v1", "Verse", "f1", "Fractal", "p1");
+        hierarchy::handle_entity_deleted(&EntityType::Fractal, "f1", &mut mgr, &mut nav, &mut ui);
+        assert!(mgr.verses[0].fractals.is_empty());
+        assert!(nav.active_petal_id.is_none());
+        assert_eq!(nav.active_scope().as_deref(), Some("VERSE#v1"));
     }
 
     // --- node handlers ---
@@ -1390,8 +1452,27 @@ mod tests {
     #[test]
     fn local_role_resolved_caches_level() {
         let mut local_role = crate::plugin::LocalUserRole::default();
-        roles::handle_local_role_resolved("VERSE#v1", "editor", &mut local_role);
+        let mut nav = NavigationManager::default();
+        nav.navigate_to_verse("v1", "Verse 1");
+        roles::handle_local_role_resolved("VERSE#v1", "editor", &nav, &mut local_role);
         assert_eq!(local_role.role, Some(fe_database::RoleLevel::Editor));
+
+        nav.navigate_to_verse("v2", "Verse 2");
+        local_role.role = None;
+        roles::handle_local_role_resolved("VERSE#v1", "owner", &nav, &mut local_role);
+        assert!(
+            local_role.role.is_none(),
+            "in-flight old-scope grants must not repopulate the cache"
+        );
+        roles::handle_local_role_resolved("VERSE#v2", "viewer", &nav, &mut local_role);
+        assert_eq!(local_role.role, Some(fe_database::RoleLevel::Viewer));
+        nav.active_petal_id = Some("orphan".into());
+        local_role.role = None;
+        roles::handle_local_role_resolved("VERSE#v2", "owner", &nav, &mut local_role);
+        assert!(
+            local_role.role.is_none(),
+            "incomplete navigation never accepts a role reply"
+        );
     }
 
     // --- query / error routing ---

@@ -1,5 +1,8 @@
 # fe-ui/src/panels — the egui shell
 
+Sidebar descendant clicks restore their complete verse/fractal ancestry through NavigationManager;
+expanded rows can belong to a different parent than the current cursor. See `../AGENTS.md` §navigation-ancestry.
+
 ## 2026-07-26 Brush and numeric hardening
 
 Topbar **Options** routes to `RightSidebarSection::Options`, which owns all active-tool controls.

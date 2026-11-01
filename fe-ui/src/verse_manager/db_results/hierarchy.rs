@@ -116,27 +116,7 @@ pub(super) fn handle_hierarchy_loaded(
     // Auto-navigate before rebuilding the tree so spawn uses the
     // correct active_petal_id on this same event (single round-trip).
     if first_load {
-        if let Some(v) = verses.first() {
-            nav.active_verse_id = Some(v.id.clone());
-            nav.active_verse_name = v.name.clone();
-        }
-        'find_petal: for v in verses.iter() {
-            for f in &v.fractals {
-                for p in &f.petals {
-                    if p.nodes.iter().any(|n| n.asset_path.is_some()) {
-                        nav.active_fractal_id = Some(f.id.clone());
-                        nav.active_fractal_name = f.name.clone();
-                        nav.active_petal_id = Some(p.id.clone());
-                        bevy::log::info!(
-                            "Auto-navigated to first populated petal: {}/{}",
-                            f.name,
-                            p.name
-                        );
-                        break 'find_petal;
-                    }
-                }
-            }
-        }
+        select_initial_navigation(verses, nav);
     }
 
     let active_petal = nav.active_petal_id.clone();
@@ -239,13 +219,45 @@ pub(super) fn handle_hierarchy_loaded(
     // `VerseCreated` arm appends the new verse to the tree directly.
     if nav.active_verse_id.is_none() {
         if let Some(v) = verse_mgr.verses.first() {
-            nav.active_verse_id = Some(v.id.clone());
-            nav.active_verse_name = v.name.clone();
+            nav.navigate_to_verse(&v.id, &v.name);
         }
     }
 
     // Deliver to pending API requests (GET /api/v1/hierarchy).
     pending_api.deliver_hierarchy(verses.to_vec());
+}
+
+/// Choose one populated petal and its ancestors, or the first empty verse.
+pub(super) fn select_initial_navigation(
+    verses: &[VerseHierarchyData],
+    nav: &mut NavigationManager,
+) {
+    for verse in verses {
+        for fractal in &verse.fractals {
+            if let Some(petal) = fractal
+                .petals
+                .iter()
+                .find(|petal| petal.nodes.iter().any(|node| node.asset_path.is_some()))
+            {
+                nav.navigate_to_petal_in_fractal(
+                    &verse.id,
+                    &verse.name,
+                    &fractal.id,
+                    &fractal.name,
+                    &petal.id,
+                );
+                bevy::log::info!(
+                    "Auto-navigated to first populated petal: {}/{}",
+                    fractal.name,
+                    petal.name
+                );
+                return;
+            }
+        }
+    }
+    if let Some(verse) = verses.first() {
+        nav.navigate_to_verse(&verse.id, &verse.name);
+    }
 }
 
 /// `VerseCreated`: append the new verse to the tree, carrying its namespace

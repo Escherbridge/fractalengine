@@ -256,6 +256,7 @@ fn render_verse_tree(
                 &mut hierarchy.verses[vi].fractals,
                 nav,
                 &verse_id,
+                &verse_name,
                 camera_focus,
                 node_mgr,
                 ui_mgr,
@@ -289,6 +290,7 @@ fn render_fractals(
     fractals: &mut [FractalEntry],
     nav: &mut NavigationManager,
     verse_id: &str,
+    verse_name: &str,
     camera_focus: &mut CameraFocusTarget,
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
@@ -349,7 +351,9 @@ fn render_fractals(
                 &mut fractals[fi].petals,
                 nav,
                 &fractal_id,
+                &fractal_name,
                 verse_id,
+                verse_name,
                 camera_focus,
                 node_mgr,
                 ui_mgr,
@@ -360,7 +364,7 @@ fn render_fractals(
         });
 
         if name_clicked {
-            nav.navigate_to_fractal(fractal_id.clone(), fractal_name.clone());
+            nav.navigate_to_fractal_in_verse(verse_id, verse_name, &fractal_id, &fractal_name);
         }
         if eye_clicked {
             push_scope_eye(ui_mgr, vis_state, ScopeLevel::Fractal, &fractal_id);
@@ -374,7 +378,9 @@ fn render_petals(
     petals: &mut [PetalEntry],
     nav: &mut NavigationManager,
     fractal_id: &str,
+    fractal_name: &str,
     verse_id: &str,
+    verse_name: &str,
     camera_focus: &mut CameraFocusTarget,
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
@@ -458,7 +464,13 @@ fn render_petals(
         });
 
         if name_clicked {
-            nav.navigate_to_petal(petal_id.clone());
+            nav.navigate_to_petal_in_fractal(
+                verse_id,
+                verse_name,
+                fractal_id,
+                fractal_name,
+                &petal_id,
+            );
         }
         if eye_clicked {
             push_scope_eye(ui_mgr, vis_state, ScopeLevel::Petal, &petal_id);

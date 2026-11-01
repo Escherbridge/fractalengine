@@ -1,5 +1,9 @@
 # fe-ui/src/verse_manager — hierarchy tree + DB result draining
 
+Initial hierarchy navigation selects one populated petal with its actual ancestors, falling back to
+the first empty verse. Delayed role replies are discarded when their scope no longer matches the valid
+current cursor. See `../AGENTS.md` §navigation-ancestry.
+
 - `mod.rs` — `VerseEntry`/`FractalEntry`/`PetalEntry`/`NodeEntry` tree types,
   `VerseManager` resource + its query/mutate methods, `VerseManagerPlugin`,
   and the hierarchy unit tests.

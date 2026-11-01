@@ -411,11 +411,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn navigation_manager_default_has_no_active_verse() {
+    fn navigation_role_resolution_rejects_incomplete_ancestry_and_recovers() {
         let state = crate::navigation_manager::NavigationManager::default();
         assert!(state.active_verse_id.is_none());
         assert!(state.active_fractal_id.is_none());
         assert!(state.active_petal_id.is_none());
+
+        let (tx, rx) = crossbeam::channel::bounded(4);
+        let mut app = App::new();
+        app.insert_resource(state)
+            .insert_resource(fe_runtime::app::DbCommandSender(tx))
+            .init_resource::<LocalUserRole>()
+            .add_systems(Update, resolve_local_role_on_nav_change);
+        app.update();
+        assert!(rx.try_recv().is_err());
+        app.world_mut()
+            .resource_mut::<crate::navigation_manager::NavigationManager>()
+            .navigate_to_petal_in_fractal("v", "Verse", "f", "Fractal", "p");
+        app.update();
+        assert!(
+            matches!(rx.try_recv().unwrap(), fe_runtime::messages::DbCommand::ResolveLocalRole { scope } if scope == "VERSE#v-FRACTAL#f-PETAL#p")
+        );
+        app.world_mut().resource_mut::<LocalUserRole>().role = Some(RoleLevel::Owner);
+        app.world_mut()
+            .resource_mut::<crate::navigation_manager::NavigationManager>()
+            .active_fractal_id = None;
+        app.update();
+        assert!(
+            rx.try_recv().is_err(),
+            "invalid ancestry must never query a broader scope"
+        );
+        assert!(app.world().resource::<LocalUserRole>().role.is_none());
+        app.world_mut()
+            .resource_mut::<crate::navigation_manager::NavigationManager>()
+            .navigate_to_fractal_in_verse("v2", "Verse 2", "f2", "Fractal 2");
+        app.update();
+        assert!(
+            matches!(rx.try_recv().unwrap(), fe_runtime::messages::DbCommand::ResolveLocalRole { scope } if scope == "VERSE#v2-FRACTAL#f2")
+        );
     }
 
     #[test]
@@ -1196,25 +1229,38 @@ fn update_viewport_cursor_world(
 fn resolve_local_role_on_nav_change(
     nav: Res<crate::navigation_manager::NavigationManager>,
     db_sender: Res<fe_runtime::app::DbCommandSender>,
+    mut local_role: ResMut<LocalUserRole>,
     mut last_scope: Local<Option<String>>,
+    mut invalid_cursor: Local<bool>,
 ) {
-    let current_scope = nav.active_verse_id.as_ref().map(|vid| {
-        fe_database::build_scope(
-            vid,
-            nav.active_fractal_id.as_deref(),
-            nav.active_petal_id.as_deref(),
-        )
-    });
+    if !nav.has_valid_ancestry() {
+        if !*invalid_cursor {
+            bevy::log::warn!("Incomplete navigation ancestry; local role resolution refused");
+        }
+        *invalid_cursor = true;
+        *last_scope = None;
+        local_role.role = None;
+        return;
+    }
+    *invalid_cursor = false;
+    let current_scope = nav.active_scope();
 
     if *last_scope == current_scope {
+        if current_scope.is_none() {
+            local_role.role = None;
+        }
         return;
     }
     *last_scope = current_scope.clone();
+    local_role.role = None;
 
     if let Some(scope) = current_scope {
-        db_sender
+        if let Err(error) = db_sender
             .0
             .send(fe_runtime::messages::DbCommand::ResolveLocalRole { scope })
-            .ok();
+        {
+            bevy::log::warn!(%error, "db_sender channel closed while resolving local role");
+            *last_scope = None;
+        }
     }
 }

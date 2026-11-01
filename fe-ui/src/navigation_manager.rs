@@ -1,10 +1,4 @@
-//! NavigationManager — owns the active verse/fractal/petal cursor and the
-//! P2P verse-replica open/close lifecycle.
-//!
-//! Replaces the old `NavigationState` resource.  All panels that previously
-//! wrote directly to `NavigationState` fields now call the navigation methods
-//! on this manager, which keeps the mutation semantics identical while giving
-//! us a clear owner for the replica side-effects.
+//! Navigation cursor and replica lifecycle; see src/AGENTS.md §navigation-ancestry.
 
 use bevy::prelude::*;
 
@@ -45,6 +39,52 @@ impl NavigationManager {
         self.active_petal_id = Some(id.into());
     }
 
+    /// Enter a fractal with its containing verse.
+    pub fn navigate_to_fractal_in_verse(
+        &mut self,
+        verse_id: impl Into<String>,
+        verse_name: impl Into<String>,
+        fractal_id: impl Into<String>,
+        fractal_name: impl Into<String>,
+    ) {
+        self.navigate_to_verse(verse_id, verse_name);
+        self.navigate_to_fractal(fractal_id, fractal_name);
+    }
+
+    /// Enter a petal with its complete ancestry.
+    pub fn navigate_to_petal_in_fractal(
+        &mut self,
+        verse_id: impl Into<String>,
+        verse_name: impl Into<String>,
+        fractal_id: impl Into<String>,
+        fractal_name: impl Into<String>,
+        petal_id: impl Into<String>,
+    ) {
+        self.navigate_to_fractal_in_verse(verse_id, verse_name, fractal_id, fractal_name);
+        self.navigate_to_petal(petal_id);
+    }
+
+    /// Whether every selected descendant has its required parent.
+    pub fn has_valid_ancestry(&self) -> bool {
+        (self.active_fractal_id.is_none() || self.active_verse_id.is_some())
+            && (self.active_petal_id.is_none()
+                || (self.active_fractal_id.is_some() && self.active_verse_id.is_some()))
+    }
+
+    /// The current scope, absent for an empty or incomplete cursor.
+    pub fn active_scope(&self) -> Option<String> {
+        if !self.has_valid_ancestry() {
+            return None;
+        }
+        self.active_verse_id.as_deref().map(|verse_id| {
+            fe_database::build_scope(
+                verse_id,
+                self.active_fractal_id.as_deref(),
+                self.active_petal_id.as_deref(),
+            )
+        })
+    }
+
     pub fn back_from_petal(&mut self) {
         self.active_petal_id = None;
     }
@@ -52,6 +92,7 @@ impl NavigationManager {
     pub fn back_from_fractal(&mut self) {
         self.active_fractal_id = None;
         self.active_fractal_name.clear();
+        self.active_petal_id = None;
     }
 
     pub fn back_from_verse(&mut self) {
@@ -209,6 +250,28 @@ mod tests {
             "petal should be cleared on fractal change"
         );
         assert_eq!(nav.active_verse_id, Some("v1".to_string()));
+
+        nav.navigate_to_petal_in_fractal("v2", "Verse 2", "f3", "Fractal 3", "p3");
+        assert_eq!(nav.active_verse_id.as_deref(), Some("v2"));
+        assert_eq!(nav.active_verse_name, "Verse 2");
+        assert_eq!(nav.active_fractal_name, "Fractal 3");
+        assert_eq!(
+            nav.active_scope().as_deref(),
+            Some("VERSE#v2-FRACTAL#f3-PETAL#p3")
+        );
+        nav.navigate_to_verse("v1", "Verse 1");
+        nav.navigate_to_petal_in_fractal("v2", "Verse 2", "f3", "Fractal 3", "p3");
+        assert!(
+            nav.has_valid_ancestry(),
+            "expanded petal restores every ancestor"
+        );
+        assert_eq!(
+            nav.active_scope().as_deref(),
+            Some("VERSE#v2-FRACTAL#f3-PETAL#p3")
+        );
+        nav.navigate_to_fractal_in_verse("v3", "Verse 3", "f4", "Fractal 4");
+        assert_eq!(nav.active_scope().as_deref(), Some("VERSE#v3-FRACTAL#f4"));
+        assert!(nav.active_petal_id.is_none());
     }
 
     #[test]
@@ -226,14 +289,17 @@ mod tests {
     }
 
     #[test]
-    fn back_from_fractal_clears_only_fractal_and_name() {
+    fn back_from_fractal_clears_fractal_and_descendants() {
         let mut nav = NavigationManager::default();
         nav.navigate_to_verse("v1", "Verse 1");
         nav.navigate_to_fractal("f1", "Fractal 1");
+        nav.navigate_to_petal("p1");
         nav.back_from_fractal();
         assert_eq!(nav.active_verse_id, Some("v1".to_string()));
         assert!(nav.active_fractal_id.is_none());
         assert!(nav.active_fractal_name.is_empty());
+        assert!(nav.active_petal_id.is_none());
+        assert_eq!(nav.active_scope().as_deref(), Some("VERSE#v1"));
     }
 
     #[test]

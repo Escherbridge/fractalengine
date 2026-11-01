@@ -28,6 +28,21 @@ before egui widget construction. Non-finite values recover to defaults and
 finite values clamp to practical caps. Brush cursor and commit share the same
 sanitized radius. Missing petal/map is a warned, visible no-op.
 
+## §navigation-ancestry
+
+Global tree rows and viewport cards enter descendants through
+`NavigationManager::navigate_to_fractal_in_verse` or `navigate_to_petal_in_fractal`.
+These replace the full ancestor chain together, including names, even when a different verse
+or only a verse is active. Leaving a fractal clears its petal. Startup selects a populated
+`(verse, fractal, petal)` tuple before updating the cursor, so scenes and replicas use the same verse.
+The relative navigation methods remain for callers already operating within the active parent.
+
+`active_scope` returns no scope for an empty or incomplete cursor; callers must never downgrade
+an incomplete descendant selection into a broader verse query. The role resolver clears its cache
+when the scope changes or ancestry is invalid, warns once per invalid interval, and issues no request
+for invalid navigation. Role replies apply only when their returned scope still equals the active scope.
+These are fail-closed UI affordances; database/API authorization remains authoritative.
+
 ## Module map
 
 | Module | Owns |

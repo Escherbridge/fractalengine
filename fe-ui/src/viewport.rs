@@ -569,7 +569,12 @@ pub fn viewport_fractal_browser(
                     scoped_tokens_loading: false,
                 });
             } else if card_clicked {
-                nav.navigate_to_fractal(fractal.id.clone(), fractal.name.clone());
+                nav.navigate_to_fractal_in_verse(
+                    &verse.id,
+                    &verse.name,
+                    &fractal.id,
+                    &fractal.name,
+                );
             }
 
             ui.painter().text(
@@ -700,9 +705,10 @@ pub fn viewport_petal_browser(
             v.fractals
                 .iter()
                 .find(|f| nav.active_fractal_id.as_deref() == Some(&f.id))
+                .map(|f| (v, f))
         });
 
-    if let Some(fractal) = fractal_data {
+    if let Some((verse, fractal)) = fractal_data {
         let card_w = 180.0_f32;
         let card_h = 80.0_f32;
         let gap = 12.0_f32;
@@ -788,7 +794,13 @@ pub fn viewport_petal_browser(
                     scoped_tokens_loading: false,
                 });
             } else if card_clicked {
-                nav.navigate_to_petal(petal.id.clone());
+                nav.navigate_to_petal_in_fractal(
+                    &verse.id,
+                    &verse.name,
+                    &fractal.id,
+                    &fractal.name,
+                    &petal.id,
+                );
             }
 
             ui.painter().text(
