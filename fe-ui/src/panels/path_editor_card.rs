@@ -126,7 +126,7 @@ fn render_track_list(
         )
         .named(ui, "New path name");
         if ui
-            .add(egui::Button::new("New Path").fill(theme::BG_SAVE))
+            .add(egui::Button::new("New Path").fill(theme::BG_SAVE)).observed(ui)
             .clicked()
         {
             let name = std::mem::take(&mut path_state.new_track_name_buf);
@@ -160,7 +160,7 @@ fn render_track_list(
                 .add_enabled(
                     !path_state.tracks_pending,
                     egui::Button::new(label).fill(theme::BG_BUTTON),
-                )
+                ).observed(ui)
                 .clicked()
             {
                 ui_mgr.push_action(UiAction::PathQueryTracks {
@@ -313,7 +313,7 @@ fn render_edit_view(
     petal_id: &str,
 ) {
     ui.horizontal(|ui| {
-        if ui.small_button("\u{2190} Back").clicked() {
+        if ui.small_button("\u{2190} Back").observed(ui).clicked() {
             path_state.stop_editing();
             ui_mgr.push_action(UiAction::PathQueryTracks {
                 petal_id: petal_id.to_string(),
@@ -340,7 +340,7 @@ fn render_edit_view(
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         if ui
-            .add(egui::Button::new("Export GPX").fill(theme::BG_SAVE))
+            .add(egui::Button::new("Export GPX").fill(theme::BG_SAVE)).observed(ui)
             .clicked()
         {
             ui_mgr.push_action(UiAction::PathExportGpx {
@@ -682,7 +682,7 @@ fn render_style_controls(
     ui.horizontal(|ui| {
         let mut closed = style.closed;
         if ui
-            .add(egui::Checkbox::new(&mut closed, "Closed zone"))
+            .add(egui::Checkbox::new(&mut closed, "Closed zone")).observed(ui)
             .changed()
         {
             style.closed = closed;
@@ -1077,7 +1077,7 @@ fn render_annotate_form(
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 if ui
-                    .add(egui::Button::new("Save").fill(theme::BG_SAVE))
+                    .add(egui::Button::new("Save").fill(theme::BG_SAVE)).observed(ui)
                     .clicked()
                 {
                     ui_mgr.push_action(UiAction::PathAnnotatePoint {
@@ -1090,7 +1090,7 @@ fn render_annotate_form(
                     path_state.close_annotate_form();
                 }
                 if ui
-                    .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON))
+                    .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON)).observed(ui)
                     .clicked()
                 {
                     path_state.close_annotate_form();

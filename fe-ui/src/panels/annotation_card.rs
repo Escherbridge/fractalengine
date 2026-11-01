@@ -110,7 +110,7 @@ pub(crate) fn annotation_card_section(
         );
 
         ui.add_space(4.0);
-    });
+    }).header_response.observed(ui);
 }
 
 /// Parses a `#RGB`/`#RRGGBB` hex color string into `(r, g, b)` bytes; `None`

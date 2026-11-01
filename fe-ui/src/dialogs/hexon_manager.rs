@@ -91,19 +91,19 @@ pub fn render_hexon_manager(
 
                 ui.horizontal_wrapped(|ui| {
                     if ui
-                        .add(egui::Button::new("Close").fill(theme::BG_BUTTON))
+                        .add(egui::Button::new("Close").fill(theme::BG_BUTTON)).observed(ui)
                         .clicked()
                     {
                         close = true;
                     }
                     if ui
-                        .add(egui::Button::new("Refresh").fill(theme::BG_BUTTON))
+                        .add(egui::Button::new("Refresh").fill(theme::BG_BUTTON)).observed(ui)
                         .clicked()
                     {
                         actions.push(UiAction::HexonRefreshList);
                     }
                     if ui
-                        .add(egui::Button::new("Install from file...").fill(theme::BG_SAVE))
+                        .add(egui::Button::new("Install from file...").fill(theme::BG_SAVE)).observed(ui)
                         .clicked()
                     {
                         match file_dialogs.choose(crate::file_dialogs::FileDialogRequest {
@@ -140,7 +140,7 @@ pub fn render_hexon_manager(
                         .add_enabled(
                             can_install,
                             egui::Button::new("Install from registry").fill(theme::BG_SAVE),
-                        )
+                        ).observed(ui)
                         .clicked()
                     {
                         actions.push(UiAction::HexonInstallFromRegistry(
@@ -176,7 +176,7 @@ pub fn render_hexon_manager(
                         .add(
                             egui::Button::new(egui::RichText::new(label).color(theme::TEXT_BRIGHT))
                                 .fill(fill),
-                        )
+                        ).observed(ui)
                         .clicked()
                     {
                         *active_tab = tab;
@@ -223,7 +223,7 @@ pub fn render_hexon_manager(
             ui.add_space(4.0);
             ui.label(egui::RichText::new(format!("{} maps, {} total", storage_info.count, format_size(storage_info.total_bytes))).small().color(theme::TEXT_MUTED));
             clipped_value(ui, &storage_info.base_dir, theme::TEXT_DIM);
-            if ui.button("Open folder").clicked() { actions.push(UiAction::HexonOpenStorageDir); }
+            if ui.button("Open folder").observed(ui).clicked() { actions.push(UiAction::HexonOpenStorageDir); }
 
         });
 

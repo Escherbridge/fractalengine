@@ -1,4 +1,6 @@
 use bevy_egui::egui;
+
+use crate::accessibility::ResponseExt;
 use fe_database::atlas::Visibility;
 
 /// Extension trait that adds a human-readable display name to `Visibility`.
@@ -19,9 +21,9 @@ impl VisibilityExt for Visibility {
 /// Render a radio-button group for selecting visibility.
 pub fn visibility_radio_ui(ui: &mut egui::Ui, current: &mut Visibility) {
     ui.horizontal(|ui| {
-        ui.selectable_value(current, Visibility::Private, "Private");
-        ui.selectable_value(current, Visibility::Public, "Public");
-        ui.selectable_value(current, Visibility::Unlisted, "Unlisted");
+        ui.selectable_value(current, Visibility::Private, "Private").observed(ui);
+        ui.selectable_value(current, Visibility::Public, "Public").observed(ui);
+        ui.selectable_value(current, Visibility::Unlisted, "Unlisted").observed(ui);
     });
 }
 

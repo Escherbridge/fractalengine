@@ -9,6 +9,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use crate::actions::{UiAction, UiManager};
 use crate::asset_ops::AssetDownloadStatus;
 use crate::node_manager::NodeManager;
@@ -70,7 +72,7 @@ pub(crate) fn asset_card_section(
                 theme::BG_BUTTON
             })
             .min_size(egui::vec2(ui.available_width(), 26.0));
-        let resp = ui.add_enabled(has_asset, btn);
+        let resp = ui.add_enabled(has_asset, btn).observed(ui);
         if resp.clicked() {
             ui_mgr.push_action(UiAction::DownloadNodeAsset {
                 node_id: sel.node_id.clone(),
@@ -100,5 +102,5 @@ pub(crate) fn asset_card_section(
             }
         }
         ui.add_space(4.0);
-    });
+    }).header_response.observed(ui);
 }

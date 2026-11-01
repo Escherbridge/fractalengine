@@ -43,9 +43,17 @@ use crate::verse_manager::{NodeEntry, PetalEntry, VerseManager};
 /// nothing is explicitly selected (FR-6's "drawn selection footprint").
 #[derive(Debug, Clone)]
 pub(crate) enum ResolvedVolumeSelection {
-    Proposal { id: String, footprint: Vec<[f32; 2]> },
-    Region { id: String, footprint: Vec<[f32; 2]> },
-    Drawn { footprint: Vec<[f32; 2]> },
+    Proposal {
+        id: String,
+        footprint: Vec<[f32; 2]>,
+    },
+    Region {
+        id: String,
+        footprint: Vec<[f32; 2]>,
+    },
+    Drawn {
+        footprint: Vec<[f32; 2]>,
+    },
 }
 
 impl ResolvedVolumeSelection {
@@ -245,7 +253,9 @@ pub fn drain_volume_report_result(
 #[derive(Debug)]
 pub(crate) enum VolumeDisplay<'a> {
     Unselected,
-    Pending { label: &'a str },
+    Pending {
+        label: &'a str,
+    },
     Ready {
         label: &'a str,
         result: &'a VolumeReportResult,

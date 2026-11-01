@@ -82,7 +82,7 @@ fn render_view_mode_row(
             } else {
                 theme::BG_BUTTON
             });
-            if ui.add(btn).clicked() && !active {
+            if ui.add(btn).observed(ui).clicked() && !active {
                 if let Some(current_doc) = &petal_map.terrain_json {
                     petal_map.terrain_json = Some(gis::set_view_mode_field(current_doc, mode));
                 }
@@ -108,7 +108,7 @@ fn render_overlay_row(
 ) {
     let mut visible = row.visible;
     ui.horizontal(|ui| {
-        if ui.checkbox(&mut visible, row.name.as_str()).changed() {
+        if ui.checkbox(&mut visible, row.name.as_str()).observed(ui).changed() {
             ui_mgr.push_action(gis::apply_overlay_toggle(
                 &row.key,
                 visible,

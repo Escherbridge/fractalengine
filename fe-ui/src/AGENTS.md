@@ -1296,9 +1296,9 @@ names: conversion happens inside the AccessKit builder, avoiding name
 allocations when accessibility is inactive. Never include token, invite,
 password, or other secret field contents in a name. Preserve native widget
 roles, values, actions, and enabled state; painted clickable labels/buttons
-need their action role supplied through `WidgetInfo` before naming.
+use `button_named` to supply their action role through `WidgetInfo`.
 
-All three methods capture the actual same-pass response through the public
+Each adapter captures the actual same-pass response through the public
 `ui_shell::layout_policy::record_response` seam. Keep observation at the
 control construction site so its layer, clip, and hit rectangle remain
 authoritative; do not reconstruct widget IDs or label container responses.

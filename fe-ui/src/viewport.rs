@@ -220,13 +220,18 @@ pub fn viewport_verse_browser(
 
         let mut card_clicked = false;
         ui.scope_builder(egui::UiBuilder::new().max_rect(card_rect), |ui| {
-            let resp = ui.add_sized(
-                [card_w, card_h],
-                egui::Button::new(
-                    egui::RichText::new(&verse.name)
-                        .strong()
-                        .size(13.0)
-                        .color(theme::TEXT_BRIGHT),
+            let resp = ui
+                .add_sized(
+                    [card_w, card_h],
+                    egui::Button::new(
+                        egui::RichText::new(&verse.name)
+                            .strong()
+                            .size(13.0)
+                            .color(theme::TEXT_BRIGHT),
+                    )
+                    .fill(theme::BG_PANEL)
+                    .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM))
+                    .corner_radius(6.0),
                 )
                 .named(ui, format_args!("Open verse {}", verse.name));
             if resp.clicked() {
@@ -242,11 +247,15 @@ pub fn viewport_verse_browser(
                 egui::vec2(22.0, 22.0),
             );
             ui.scope_builder(egui::UiBuilder::new().max_rect(gear_rect), |ui| {
-                let gear_resp = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new("\u{2699}")
-                            .size(14.0)
-                            .color(theme::ICON_GEAR),
+                let gear_resp = ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new("\u{2699}")
+                                .size(14.0)
+                                .color(theme::ICON_GEAR),
+                        )
+                        .fill(theme::BG_BUTTON)
+                        .corner_radius(4.0),
                     )
                     .named(ui, format_args!("Settings for verse {}", verse.name));
                 if gear_resp.clicked() {
@@ -315,7 +324,7 @@ pub fn viewport_verse_browser(
             .fill(egui::Color32::TRANSPARENT)
             .stroke(egui::Stroke::new(1.0_f32, theme::BG_BUTTON_ALT))
             .corner_radius(6.0),
-        );
+        ).observed(ui);
         if resp.clicked() {
             ui_mgr.open_dialog(ActiveDialog::CreateEntity {
                 kind: CreateKind::Verse,
@@ -466,13 +475,18 @@ pub fn viewport_fractal_browser(
 
             let mut card_clicked = false;
             ui.scope_builder(egui::UiBuilder::new().max_rect(card_rect), |ui| {
-                let resp = ui.add_sized(
-                    [card_w, card_h],
-                    egui::Button::new(
-                        egui::RichText::new(&fractal.name)
-                            .strong()
-                            .size(13.0)
-                            .color(theme::TEXT_BRIGHT),
+                let resp = ui
+                    .add_sized(
+                        [card_w, card_h],
+                        egui::Button::new(
+                            egui::RichText::new(&fractal.name)
+                                .strong()
+                                .size(13.0)
+                                .color(theme::TEXT_BRIGHT),
+                        )
+                        .fill(theme::BG_PANEL)
+                        .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM))
+                        .corner_radius(6.0),
                     )
                     .named(ui, format_args!("Open fractal {}", fractal.name));
                 if resp.clicked() {
@@ -488,11 +502,15 @@ pub fn viewport_fractal_browser(
                     egui::vec2(22.0, 22.0),
                 );
                 ui.scope_builder(egui::UiBuilder::new().max_rect(gear_rect), |ui| {
-                    let gear_resp = ui.add(
-                        egui::Button::new(
-                            egui::RichText::new("\u{2699}")
-                                .size(14.0)
-                                .color(theme::ICON_GEAR),
+                    let gear_resp = ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("\u{2699}")
+                                    .size(14.0)
+                                    .color(theme::ICON_GEAR),
+                            )
+                            .fill(theme::BG_BUTTON)
+                            .corner_radius(4.0),
                         )
                         .named(ui, format_args!("Settings for fractal {}", fractal.name));
                     if gear_resp.clicked() {
@@ -567,7 +585,7 @@ pub fn viewport_fractal_browser(
                 .fill(egui::Color32::TRANSPARENT)
                 .stroke(egui::Stroke::new(1.0_f32, theme::BG_BUTTON_ALT))
                 .corner_radius(6.0),
-            );
+            ).observed(ui);
             if resp.clicked() {
                 ui_mgr.open_dialog(ActiveDialog::CreateEntity {
                     kind: CreateKind::Fractal,
@@ -687,13 +705,18 @@ pub fn viewport_petal_browser(
 
             let mut card_clicked = false;
             ui.scope_builder(egui::UiBuilder::new().max_rect(card_rect), |ui| {
-                let resp = ui.add_sized(
-                    [card_w, card_h],
-                    egui::Button::new(
-                        egui::RichText::new(&petal.name)
-                            .strong()
-                            .size(13.0)
-                            .color(theme::TEXT_BRIGHT),
+                let resp = ui
+                    .add_sized(
+                        [card_w, card_h],
+                        egui::Button::new(
+                            egui::RichText::new(&petal.name)
+                                .strong()
+                                .size(13.0)
+                                .color(theme::TEXT_BRIGHT),
+                        )
+                        .fill(theme::BG_PANEL)
+                        .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM))
+                        .corner_radius(6.0),
                     )
                     .named(ui, format_args!("Open petal {}", petal.name));
                 if resp.clicked() {
@@ -709,11 +732,15 @@ pub fn viewport_petal_browser(
                     egui::vec2(22.0, 22.0),
                 );
                 ui.scope_builder(egui::UiBuilder::new().max_rect(gear_rect), |ui| {
-                    let gear_resp = ui.add(
-                        egui::Button::new(
-                            egui::RichText::new("\u{2699}")
-                                .size(14.0)
-                                .color(theme::ICON_GEAR),
+                    let gear_resp = ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("\u{2699}")
+                                    .size(14.0)
+                                    .color(theme::ICON_GEAR),
+                            )
+                            .fill(theme::BG_BUTTON)
+                            .corner_radius(4.0),
                         )
                         .named(ui, format_args!("Settings for petal {}", petal.name));
                     if gear_resp.clicked() {
@@ -790,7 +817,7 @@ pub fn viewport_petal_browser(
                 .fill(egui::Color32::TRANSPARENT)
                 .stroke(egui::Stroke::new(1.0_f32, theme::BG_BUTTON_ALT))
                 .corner_radius(6.0),
-            );
+            ).observed(ui);
             if resp.clicked() {
                 ui_mgr.open_dialog(ActiveDialog::CreateEntity {
                     kind: CreateKind::Petal,

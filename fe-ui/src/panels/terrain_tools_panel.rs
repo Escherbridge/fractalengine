@@ -68,7 +68,7 @@ pub(crate) fn render_palette(ui: &mut egui::Ui, tool_panel: &mut ToolPanelState)
                 } else {
                     theme::BG_BUTTON
                 });
-                if ui.add(btn).clicked() {
+                if ui.add(btn).observed(ui).clicked() {
                     tool_panel.terrain_tool_mode = mode;
                 }
                 if (i + 1) % 4 == 0 {
@@ -223,7 +223,7 @@ pub(crate) fn render_controls_and_emit(
         .button(format!(
             "Add {} proposal",
             tool_panel.terrain_tool_mode.label()
-        ))
+        )).observed(ui)
         .on_hover_text(PROPOSAL_ONLY_DISCLOSURE)
         .clicked()
     {

@@ -80,7 +80,7 @@ pub fn render_create_dialog(
             ui.horizontal(|ui| {
                 let can_create = !name_buf.trim().is_empty();
                 let create_clicked = ui
-                    .add_enabled(can_create, egui::Button::new("Create").fill(theme::BG_SAVE))
+                    .add_enabled(can_create, egui::Button::new("Create").fill(theme::BG_SAVE)).observed(ui)
                     .clicked();
                 if can_create && (create_clicked || submit_via_enter) {
                     let name = name_buf.trim().to_string();
@@ -93,7 +93,7 @@ pub fn render_create_dialog(
                     close = true;
                 }
                 if ui
-                    .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON))
+                    .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON)).observed(ui)
                     .clicked()
                 {
                     close = true;

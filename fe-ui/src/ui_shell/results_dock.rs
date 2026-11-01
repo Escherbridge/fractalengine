@@ -236,7 +236,7 @@ pub fn render(
                         ui_mgr.show_toast("Copied result row", ctx.input(|i| i.time));
                     }
                 }
-                if ui.button("Close Results").clicked() {
+                if ui.button("Close Results").observed(ui).clicked() {
                     results.open = false;
                 }
             });

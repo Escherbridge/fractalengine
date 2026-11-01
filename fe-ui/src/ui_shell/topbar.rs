@@ -487,10 +487,10 @@ pub fn render_close_confirmation(
         ui.heading("Close FractalEngine?");
         ui.label("Close this window and end the current session?");
         ui.horizontal(|ui| {
-            if ui.button("Cancel close").clicked() {
+            if ui.button("Cancel close").observed(ui).clicked() {
                 topbar.close_pending = false;
             }
-            if ui.button("Close FractalEngine").clicked() {
+            if ui.button("Close FractalEngine").observed(ui).clicked() {
                 topbar.close_pending = false;
                 topbar.close_confirmed = true;
             }
@@ -662,10 +662,10 @@ pub fn render_topbar(
                 if compact {
                     ui.menu_button("Tools", |ui| {
                         tool_buttons(ui, tool, right);
-                        if node_mgr.selected_entity().is_some() && ui.button("Deselect").clicked() {
+                        if node_mgr.selected_entity().is_some() && ui.button("Deselect").observed(ui).clicked() {
                             node_mgr.deselect();
                         }
-                    });
+                    }).response.observed(ui);
                 } else {
                     tool_buttons(ui, tool, right);
                 }
@@ -698,7 +698,7 @@ pub fn render_topbar(
                         ui.separator();
 
                         if compact {
-                            ui.menu_button("Panels", |ui| section_buttons(ui, gis_panel, right));
+                            ui.menu_button("Panels", |ui| section_buttons(ui, gis_panel, right)).response.observed(ui);
                         } else {
                             section_buttons(ui, gis_panel, right);
                         }

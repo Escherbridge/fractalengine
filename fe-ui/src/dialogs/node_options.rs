@@ -91,7 +91,7 @@ pub fn render_node_options_dialog(
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui
-                    .add(egui::Button::new("Save").fill(theme::BG_SAVE))
+                    .add(egui::Button::new("Save").fill(theme::BG_SAVE)).observed(ui)
                     .clicked()
                 {
                     let url = webpage_url_buf.trim().to_string();
@@ -118,7 +118,7 @@ pub fn render_node_options_dialog(
                     close = true;
                 }
                 if ui
-                    .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON))
+                    .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON)).observed(ui)
                     .clicked()
                 {
                     close = true;
@@ -184,7 +184,7 @@ pub fn render_node_options_dialog(
                             egui::RichText::new("Delete Node").color(egui::Color32::WHITE),
                         )
                         .fill(theme::BG_DANGER),
-                    )
+                    ).observed(ui)
                     .on_hover_text(
                         "Delete this node (sync-safe tombstone). Cascades to child nodes.",
                     )
@@ -219,7 +219,7 @@ pub fn render_node_options_dialog(
                                 egui::RichText::new("Confirm Delete").color(egui::Color32::WHITE),
                             )
                             .fill(theme::BG_DANGER),
-                        )
+                        ).observed(ui)
                         .clicked()
                     {
                         // Real remove-a-node path (fixes the husk bug): route
@@ -231,7 +231,7 @@ pub fn render_node_options_dialog(
                         close = true;
                     }
                     if ui
-                        .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON))
+                        .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON)).observed(ui)
                         .clicked()
                     {
                         *pending_delete = false;

@@ -90,7 +90,7 @@ pub(crate) fn left_sidebar(
                     .fill(theme::BG_BUTTON_ALT)
                     .min_size(egui::vec2(0.0, 24.0));
                     if ui
-                        .add(reset_btn)
+                        .add(reset_btn).observed(ui)
                         .on_hover_text("Wipe all data and re-seed defaults")
                         .clicked()
                     {
@@ -107,14 +107,14 @@ pub(crate) fn left_sidebar(
                                 )
                                 .fill(theme::BG_DANGER)
                                 .small(),
-                            )
+                            ).observed(ui)
                             .clicked()
                         {
                             db_tx.send(DbCommand::ResetDatabase).ok();
                             ui.ctx().data_mut(|d| d.remove::<bool>(pending_id));
                         }
                         if ui
-                            .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON).small())
+                            .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON).small()).observed(ui)
                             .clicked()
                         {
                             ui.ctx().data_mut(|d| d.remove::<bool>(pending_id));
@@ -170,7 +170,7 @@ fn sidebar_verse_header(
             }
             // Phase F: Join Verse button
             if ui
-                .add(egui::Button::new("Join").fill(theme::BG_BUTTON).small())
+                .add(egui::Button::new("Join").fill(theme::BG_BUTTON).small()).observed(ui)
                 .on_hover_text("Join a verse by invite")
                 .clicked()
             {
@@ -495,7 +495,7 @@ fn render_petals(
                         egui::Button::new(egui::RichText::new("Manifest").small())
                             .fill(theme::BG_BUTTON)
                             .small(),
-                    )
+                    ).observed(ui)
                     .on_hover_text("Edit petal hexon manifest")
                     .clicked()
                 {
@@ -841,14 +841,14 @@ fn sidebar_section_groups(
             });
         }
         if ui
-            .add(egui::Button::new("Manage Groups…").small())
+            .add(egui::Button::new("Manage Groups…").small()).observed(ui)
             .clicked()
         {
             ui_mgr.push_action(UiAction::RevealSection {
                 slug: "groups".to_string(),
             });
         }
-    });
+    }).header_response.observed(ui);
 }
 
 fn sidebar_section_space_overview(ui: &mut egui::Ui, dashboard: &DashboardState) {
@@ -875,7 +875,7 @@ fn sidebar_section_space_overview(ui: &mut egui::Ui, dashboard: &DashboardState)
                 ui.end_row();
             });
         ui.add_space(4.0);
-    });
+    }).header_response.observed(ui);
 }
 
 #[cfg(test)]

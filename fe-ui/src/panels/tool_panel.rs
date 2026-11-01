@@ -305,12 +305,12 @@ pub(crate) fn render_path_asset_section(
             &mut state.spacing_mode,
             SpacingMode::FixedSpacing,
             "Fixed spacing",
-        );
+        ).observed(ui);
         ui.selectable_value(
             &mut state.spacing_mode,
             SpacingMode::FixedCount,
             "Fixed count",
-        );
+        ).observed(ui);
     });
     ui.add_space(4.0);
 
@@ -344,7 +344,7 @@ pub(crate) fn render_path_asset_section(
     }
     ui.add_space(4.0);
 
-    ui.checkbox(&mut state.tangent_align, "Align to path tangent");
+    ui.checkbox(&mut state.tangent_align, "Align to path tangent").observed(ui);
     ui.add_space(6.0);
 
     // The stamp target is the track currently being edited in the Paths tab.
@@ -363,7 +363,7 @@ pub(crate) fn render_path_asset_section(
         ui.add_space(4.0);
     }
 
-    let resp = ui.add_enabled(can_stamp, egui::Button::new("Stamp along path"));
+    let resp = ui.add_enabled(can_stamp, egui::Button::new("Stamp along path")).observed(ui);
     if resp.clicked() {
         if let Some(track_node_id) = target_track.clone() {
             let descriptor = build_descriptor(state, asset_ref.clone());
@@ -668,7 +668,7 @@ fn render_asset_picker(ui: &mut egui::Ui, state: &mut ToolPanelState, verse_mgr:
                 Some(asset_buf)
             };
         }
-    });
+    }).header_response.observed(ui);
 }
 
 /// Build the SDK path-asset descriptor from the panel's control state.
@@ -815,7 +815,7 @@ pub(crate) fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) 
         .add_enabled(
             state.pen_mode != PenMode::Polyline,
             egui::Button::new("Smooth path"),
-        )
+        ).observed(ui)
         .on_hover_text("Resample the edited path's points into the chosen curve")
         .clicked()
     {
@@ -869,7 +869,7 @@ pub(crate) fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) 
     });
     ui.horizontal(|ui| {
         if ui
-            .button("Add Ellipse")
+            .button("Add Ellipse").observed(ui)
             .on_hover_text("Append an ellipse ring to the edited path")
             .clicked()
         {
@@ -882,7 +882,7 @@ pub(crate) fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) 
             state.queue_action(UiAction::PathAppendShape { points: pts });
         }
         if ui
-            .button("Add Circle")
+            .button("Add Circle").observed(ui)
             .on_hover_text("Append a circle ring to the edited path")
             .clicked()
         {
@@ -894,7 +894,7 @@ pub(crate) fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) 
             state.queue_action(UiAction::PathAppendShape { points: pts });
         }
         if ui
-            .button("Add Rectangle")
+            .button("Add Rectangle").observed(ui)
             .on_hover_text("Append a rectangle (Radius X \u{00d7} Radius Z) to the edited path")
             .clicked()
         {

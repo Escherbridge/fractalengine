@@ -94,7 +94,7 @@ fn render_source_selector(
             } else {
                 theme::BG_BUTTON
             });
-            if ui.add(btn).clicked() {
+            if ui.add(btn).observed(ui).clicked() {
                 gis_state.egress.source = source;
             }
         }
@@ -112,7 +112,7 @@ fn render_source_selector(
                         .desired_width(160.0),
                 )
                 .named(ui, "Export node ID");
-                if ui.small_button("Use viewport selection").clicked() {
+                if ui.small_button("Use viewport selection").observed(ui).clicked() {
                     if let Some(sel) = node_mgr.selected.as_ref() {
                         gis_state.egress.node_id_buf = sel.node_id.clone();
                     }

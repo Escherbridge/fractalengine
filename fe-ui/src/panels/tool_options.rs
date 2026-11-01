@@ -373,7 +373,7 @@ fn render_sculpt_shape_picker(
         .add_enabled(
             can_apply,
             egui::Button::new(format!("Apply {} region", sculpt.shape_mode.label())),
-        )
+        ).observed(ui)
         .on_hover_text("Commits a defined-shape earthwork region — a persisted, addressable node")
         .clicked();
     if clicked {
@@ -412,14 +412,14 @@ fn render_sculpt_shape_picker(
 fn render_brush_cross_links(ui: &mut egui::Ui, ui_mgr: &mut UiManager) {
     ui.horizontal_wrapped(|ui| {
         if ui
-            .button("Terrain Tools \u{2192}")
+            .button("Terrain Tools \u{2192}").observed(ui)
             .on_hover_text("Open the proposal palette and proposal list")
             .clicked()
         {
             ui_mgr.push_action(reveal(RightSidebarSection::TerrainTools));
         }
         if ui
-            .button("Earthwork report \u{2192}")
+            .button("Earthwork report \u{2192}").observed(ui)
             .on_hover_text("Open the cut/fill report for the current petal")
             .clicked()
         {
@@ -449,7 +449,7 @@ fn render_measure_options(
     ui.horizontal(|ui| {
         for mode in MeasureMode::ALL {
             if ui
-                .selectable_label(measure.mode == mode, mode.label())
+                .selectable_label(measure.mode == mode, mode.label()).observed(ui)
                 .clicked()
             {
                 measure.apply(MeasureEvent::SetMode(mode));
@@ -503,7 +503,7 @@ fn render_measure_options(
         if measure.mode == MeasureMode::Area {
             let can_close = measure.anchors.len() >= 3 && !measure.closed;
             if ui
-                .add_enabled(can_close, egui::Button::new("Close polygon"))
+                .add_enabled(can_close, egui::Button::new("Close polygon")).observed(ui)
                 .clicked()
             {
                 measure.apply(MeasureEvent::Close);
@@ -514,7 +514,7 @@ fn render_measure_options(
     let callout = dimension_callout::callout_from_measure(measure);
     let can_save = callout.is_some() && active_petal_id.is_some();
     if ui
-        .add_enabled(can_save, egui::Button::new("Save as callout"))
+        .add_enabled(can_save, egui::Button::new("Save as callout")).observed(ui)
         .on_hover_text("Persist this measurement as an addressable Dimension Callout node")
         .clicked()
     {

@@ -115,7 +115,7 @@ pub(crate) fn inspector_query_section(
                         .add(
                             egui::Button::new(egui::RichText::new(label).small())
                                 .fill(theme::BG_BUTTON),
-                        )
+                        ).observed(ui)
                         .clicked()
                     {
                         inspector.query_sql_buf = sql;

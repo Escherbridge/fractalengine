@@ -156,7 +156,7 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
                             "TerrainTileset", "GpxCollection", "Surface",
                             "Sound", "VisualLayer", "Theme", "Bundle",
                         ] {
-                            ui.selectable_value(add_hexon_type_buf, t.to_string(), *t);
+                            ui.selectable_value(add_hexon_type_buf, t.to_string(), *t).observed(ui);
                         }
                     })
                     .response
@@ -164,7 +164,7 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
 
                 let can_add = !add_hexon_id_buf.trim().is_empty();
                 if ui
-                    .add_enabled(can_add, egui::Button::new("Add").fill(theme::BG_SAVE))
+                    .add_enabled(can_add, egui::Button::new("Add").fill(theme::BG_SAVE)).observed(ui)
                     .clicked()
                 {
                     manifest.hexons.push(ManifestHexonEntry {
@@ -203,14 +203,14 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
                         .desired_width(f32::INFINITY),
                 )
                 .named(ui, "Manifest JSON preview");
-            });
+            }).header_response.observed(ui);
 
             // --- Save / Close ---
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 let save_label = if *dirty { "Save *" } else { "Save" };
                 if ui
-                    .add_enabled(*dirty, egui::Button::new(save_label).fill(theme::BG_SAVE))
+                    .add_enabled(*dirty, egui::Button::new(save_label).fill(theme::BG_SAVE)).observed(ui)
                     .clicked()
                 {
                     actions.push(UiAction::PetalManifestSave {
@@ -219,7 +219,7 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
                     });
                     *dirty = false;
                 }
-                if ui.add(egui::Button::new("Close").fill(theme::BG_BUTTON)).clicked() {
+                if ui.add(egui::Button::new("Close").fill(theme::BG_BUTTON)).observed(ui).clicked() {
                     close = true;
                 }
             });

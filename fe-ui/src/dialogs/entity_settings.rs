@@ -108,7 +108,7 @@ pub fn render_entity_settings_dialog(
                     .add(
                         egui::Button::new(egui::RichText::new("General").color(theme::TEXT_BRIGHT))
                             .fill(gen_fill),
-                    )
+                    ).observed(ui)
                     .clicked()
                 {
                     *active_tab = SettingsTab::General;
@@ -123,7 +123,7 @@ pub fn render_entity_settings_dialog(
                     .add(
                         egui::Button::new(egui::RichText::new("Access").color(theme::TEXT_BRIGHT))
                             .fill(acc_fill),
-                    )
+                    ).observed(ui)
                     .clicked()
                 {
                     *active_tab = SettingsTab::Access;
@@ -138,7 +138,7 @@ pub fn render_entity_settings_dialog(
                     .add(
                         egui::Button::new(egui::RichText::new("API").color(theme::TEXT_BRIGHT))
                             .fill(api_fill),
-                    )
+                    ).observed(ui)
                     .clicked()
                 {
                     *active_tab = SettingsTab::ApiAccess;
@@ -164,7 +164,7 @@ pub fn render_entity_settings_dialog(
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.add(egui::TextEdit::singleline(name_buf).desired_width(300.0)).labelled(ui, &name_label);
-                        if ui.add(egui::Button::new("Rename").fill(theme::BG_SAVE)).clicked() {
+                        if ui.add(egui::Button::new("Rename").fill(theme::BG_SAVE)).observed(ui).clicked() {
                             let new_name = name_buf.trim().to_string();
                             if !new_name.is_empty() {
                                 let etype = match entity_type {
@@ -195,7 +195,7 @@ pub fn render_entity_settings_dialog(
                         if let Some(ref mut da) = default_access_buf {
                             let mut is_viewer = da == "viewer";
                             if ui
-                                .radio_value(&mut is_viewer, true, "Public (viewer) — anyone can see")
+                                .radio_value(&mut is_viewer, true, "Public (viewer) — anyone can see").observed(ui)
                                 .clicked()
                             {
                                 *da = "viewer".to_string();
@@ -207,7 +207,7 @@ pub fn render_entity_settings_dialog(
                                     .ok();
                             }
                             if ui
-                                .radio_value(&mut is_viewer, false, "Private (none) — explicit grants only")
+                                .radio_value(&mut is_viewer, false, "Private (none) — explicit grants only").observed(ui)
                                 .clicked()
                             {
                                 *da = "none".to_string();
@@ -236,7 +236,7 @@ pub fn render_entity_settings_dialog(
                             )
                             .labelled(ui, &description_label);
                             if ui
-                                .add(egui::Button::new("Save Description").fill(theme::BG_SAVE))
+                                .add(egui::Button::new("Save Description").fill(theme::BG_SAVE)).observed(ui)
                                 .clicked()
                             {
                                 db_tx
@@ -281,7 +281,7 @@ pub fn render_entity_settings_dialog(
                         ui.add_space(4.0);
                         if !*pending_claim_ownership {
                             if ui
-                                .add(egui::Button::new("Claim Ownership").fill(theme::BG_BUTTON))
+                                .add(egui::Button::new("Claim Ownership").fill(theme::BG_BUTTON)).observed(ui)
                                 .clicked()
                             {
                                 *pending_claim_ownership = true;
@@ -296,7 +296,7 @@ pub fn render_entity_settings_dialog(
                             );
                             ui.horizontal(|ui| {
                                 if ui
-                                    .add(egui::Button::new("Confirm Claim").fill(theme::BG_SAVE))
+                                    .add(egui::Button::new("Confirm Claim").fill(theme::BG_SAVE)).observed(ui)
                                     .clicked()
                                 {
                                     db_tx
@@ -307,7 +307,7 @@ pub fn render_entity_settings_dialog(
                                         .ok();
                                     *pending_claim_ownership = false;
                                 }
-                                if ui.add(egui::Button::new("Cancel").fill(theme::BG_BUTTON)).clicked()
+                                if ui.add(egui::Button::new("Cancel").fill(theme::BG_BUTTON)).observed(ui).clicked()
                                 {
                                     *pending_claim_ownership = false;
                                 }
@@ -324,7 +324,7 @@ pub fn render_entity_settings_dialog(
                             .add(
                                 egui::Button::new(egui::RichText::new("Delete").color(egui::Color32::WHITE))
                                     .fill(theme::BG_DANGER),
-                            )
+                            ).observed(ui)
                             .clicked()
                         {
                             *pending_delete = true;
@@ -341,7 +341,7 @@ pub fn render_entity_settings_dialog(
                                         egui::RichText::new("Confirm Delete").color(egui::Color32::WHITE),
                                     )
                                     .fill(theme::BG_DANGER),
-                                )
+                                ).observed(ui)
                                 .clicked()
                             {
                                 let etype = match entity_type {
@@ -357,7 +357,7 @@ pub fn render_entity_settings_dialog(
                                     .ok();
                                 close = true;
                             }
-                            if ui.add(egui::Button::new("Cancel").fill(theme::BG_BUTTON)).clicked() {
+                            if ui.add(egui::Button::new("Cancel").fill(theme::BG_BUTTON)).observed(ui).clicked() {
                                 *pending_delete = false;
                             }
                         });
@@ -462,9 +462,9 @@ pub fn render_entity_settings_dialog(
                             .selected_text(invite_role_buf.as_str())
                             .width(100.0)
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(invite_role_buf, "viewer".to_string(), "Viewer");
-                                ui.selectable_value(invite_role_buf, "editor".to_string(), "Editor");
-                                ui.selectable_value(invite_role_buf, "manager".to_string(), "Manager");
+                                ui.selectable_value(invite_role_buf, "viewer".to_string(), "Viewer").observed(ui);
+                                ui.selectable_value(invite_role_buf, "editor".to_string(), "Editor").observed(ui);
+                                ui.selectable_value(invite_role_buf, "manager".to_string(), "Manager").observed(ui);
                             })
                             .response
                             .named(ui, "Invite role");
@@ -480,15 +480,15 @@ pub fn render_entity_settings_dialog(
                             })
                             .width(100.0)
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(invite_expiry_buf, 1, "1 hour");
-                                ui.selectable_value(invite_expiry_buf, 24, "24 hours");
-                                ui.selectable_value(invite_expiry_buf, 168, "7 days");
-                                ui.selectable_value(invite_expiry_buf, 720, "30 days");
+                                ui.selectable_value(invite_expiry_buf, 1, "1 hour").observed(ui);
+                                ui.selectable_value(invite_expiry_buf, 24, "24 hours").observed(ui);
+                                ui.selectable_value(invite_expiry_buf, 168, "7 days").observed(ui);
+                                ui.selectable_value(invite_expiry_buf, 720, "30 days").observed(ui);
                             })
                             .response
                             .named(ui, "Invite expiration");
 
-                        if ui.add(egui::Button::new("Generate").fill(theme::BG_SAVE)).clicked() {
+                        if ui.add(egui::Button::new("Generate").fill(theme::BG_SAVE)).observed(ui).clicked() {
                             let _etype = match entity_type {
                                 EntitySettingsType::Verse => "verse",
                                 EntitySettingsType::Fractal => "fractal",
@@ -625,9 +625,9 @@ pub fn render_entity_settings_dialog(
                             .selected_text(api_token_role_buf.as_str())
                             .width(100.0)
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(api_token_role_buf, "viewer".to_string(), "Viewer");
-                                ui.selectable_value(api_token_role_buf, "editor".to_string(), "Editor");
-                                ui.selectable_value(api_token_role_buf, "manager".to_string(), "Manager");
+                                ui.selectable_value(api_token_role_buf, "viewer".to_string(), "Viewer").observed(ui);
+                                ui.selectable_value(api_token_role_buf, "editor".to_string(), "Editor").observed(ui);
+                                ui.selectable_value(api_token_role_buf, "manager".to_string(), "Manager").observed(ui);
                             })
                             .response
                             .named(ui, "API token maximum role");
@@ -643,10 +643,10 @@ pub fn render_entity_settings_dialog(
                             })
                             .width(100.0)
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(api_token_expiry_buf, 1, "1 hour");
-                                ui.selectable_value(api_token_expiry_buf, 24, "24 hours");
-                                ui.selectable_value(api_token_expiry_buf, 168, "7 days");
-                                ui.selectable_value(api_token_expiry_buf, 720, "30 days");
+                                ui.selectable_value(api_token_expiry_buf, 1, "1 hour").observed(ui);
+                                ui.selectable_value(api_token_expiry_buf, 24, "24 hours").observed(ui);
+                                ui.selectable_value(api_token_expiry_buf, 168, "7 days").observed(ui);
+                                ui.selectable_value(api_token_expiry_buf, 720, "30 days").observed(ui);
                             })
                             .response
                             .named(ui, "API token expiration");
@@ -682,7 +682,7 @@ pub fn render_entity_settings_dialog(
                         .add_enabled(
                             client_valid,
                             egui::Button::new("Generate API Token").fill(theme::BG_SAVE),
-                        )
+                        ).observed(ui)
                         .clicked()
                     {
                         db_tx
@@ -719,7 +719,7 @@ pub fn render_entity_settings_dialog(
                                 )
                                 .named(ui, "Generated API token");
                                 ui.horizontal(|ui| {
-                                    if ui.button("Copy Token").clicked() {
+                                    if ui.button("Copy Token").observed(ui).clicked() {
                                         ui.ctx().copy_text(token.clone());
                                     }
                                     if ui.button("Copy curl").named(ui, "Copy health check curl command").clicked() {

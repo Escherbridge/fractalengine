@@ -97,7 +97,7 @@ pub fn render_gltf_import_dialog(
                 )
                 .labelled(ui, &path_label);
                 if ui
-                    .add(egui::Button::new("Browse...").fill(theme::BG_BUTTON))
+                    .add(egui::Button::new("Browse...").fill(theme::BG_BUTTON)).observed(ui)
                     .clicked()
                 {
                     match file_dialogs.choose(crate::file_dialogs::FileDialogRequest {
@@ -172,7 +172,7 @@ pub fn render_gltf_import_dialog(
                 .add_enabled(
                     !importing && can_import,
                     egui::Button::new("Import").fill(theme::BG_SAVE),
-                )
+                ).observed(ui)
                 .clicked()
             {
                 match file_dialogs.lease_path(
@@ -201,7 +201,7 @@ pub fn render_gltf_import_dialog(
                 .add_enabled(
                     !importing,
                     egui::Button::new("Cancel").fill(theme::BG_BUTTON),
-                )
+                ).observed(ui)
                 .clicked()
             {
                 close = true;

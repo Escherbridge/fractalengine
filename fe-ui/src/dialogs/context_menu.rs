@@ -894,7 +894,7 @@ fn render_delete_confirm(
                     egui::RichText::new("Confirm Delete").color(egui::Color32::WHITE),
                 )
                 .fill(theme::BG_DANGER),
-            )
+            ).observed(ui)
             .clicked()
         {
             if let Some(action) = proposal_delete {
@@ -911,7 +911,7 @@ fn render_delete_confirm(
             outcome.close = true;
         }
         if ui
-            .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON))
+            .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON)).observed(ui)
             .clicked()
         {
             *pending_delete = false;

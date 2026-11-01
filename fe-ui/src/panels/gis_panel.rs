@@ -172,7 +172,7 @@ fn render_tab_bar(ui: &mut egui::Ui, gis_state: &mut GisPanelState) {
             } else {
                 theme::BG_BUTTON
             });
-            if ui.add(btn).clicked() {
+            if ui.add(btn).observed(ui).clicked() {
                 gis_state.active_tab = tab;
             }
         }
@@ -209,7 +209,7 @@ fn render_annotations_tab(
                 .add_enabled(
                     !gis_state.query_pending,
                     egui::Button::new(label).fill(theme::BG_BUTTON),
-                )
+                ).observed(ui)
                 .clicked()
             {
                 gis_state.mode = GisQueryMode::Annotated;
@@ -262,7 +262,7 @@ fn render_query_section(
             } else {
                 theme::BG_BUTTON
             });
-            if ui.add(btn).clicked() {
+            if ui.add(btn).observed(ui).clicked() {
                 gis_state.mode = mode;
             }
         }
@@ -300,7 +300,7 @@ fn render_query_section(
                                 &mut gis_state.filter_value_type_buf,
                                 t.to_string(),
                                 t,
-                            );
+                            ).observed(ui);
                         }
                     })
                     .response
@@ -331,7 +331,7 @@ fn render_query_section(
                     .named(ui, "Bounding box maximum Z in meters");
             });
             ui.horizontal(|ui| {
-                if ui.small_button("Center on Selection").clicked() {
+                if ui.small_button("Center on Selection").observed(ui).clicked() {
                     let center = node_mgr
                         .selected
                         .as_ref()
@@ -345,7 +345,7 @@ fn render_query_section(
                         .unwrap_or([0.0, 0.0]);
                     gis_state.center_bbox_on(center, DEFAULT_BBOX_HALF_EXTENT);
                 }
-                if ui.small_button("Center on Origin").clicked() {
+                if ui.small_button("Center on Origin").observed(ui).clicked() {
                     gis_state.center_bbox_on([0.0, 0.0], DEFAULT_BBOX_HALF_EXTENT);
                 }
             });
@@ -360,7 +360,7 @@ fn render_query_section(
     };
     let can_run = !gis_state.query_pending;
     if ui
-        .add_enabled(can_run, egui::Button::new(run_label).fill(theme::BG_SAVE))
+        .add_enabled(can_run, egui::Button::new(run_label).fill(theme::BG_SAVE)).observed(ui)
         .clicked()
     {
         run_query(gis_state, verse_mgr, ui_mgr, petal_id, world_scale);

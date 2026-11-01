@@ -154,11 +154,14 @@ pub(crate) fn status_bar(
                 // when it first appears), clears only on click.
                 if let Some(msg) = identity_banner.message.clone() {
                     ui.separator();
-                    let resp = ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(format!("\u{26A0} {msg} (click to dismiss)"))
-                                .small()
-                                .color(theme::STATUS_OFFLINE),
+                    let resp = ui
+                        .add(
+                            egui::Label::new(
+                                egui::RichText::new(format!("\u{26A0} {msg} (click to dismiss)"))
+                                    .small()
+                                    .color(theme::STATUS_OFFLINE),
+                            )
+                            .sense(egui::Sense::click()),
                         )
                         .button_named(ui, "Dismiss identity warning");
                     if resp.clicked() {
@@ -177,11 +180,14 @@ pub(crate) fn status_bar(
                     .map(|notice| (notice.id, format!("\u{26A0} {}", notice.text)));
                 if let Some((latest_id, latest_label)) = latest {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let resp = ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(latest_label)
-                                    .small()
-                                    .color(theme::STATUS_OFFLINE),
+                        let resp = ui
+                            .add(
+                                egui::Label::new(
+                                    egui::RichText::new(latest_label)
+                                        .small()
+                                        .color(theme::STATUS_OFFLINE),
+                                )
+                                .sense(egui::Sense::click()),
                             )
                             .button_named(ui, "Open error history");
                         let mut dismiss_latest = false;

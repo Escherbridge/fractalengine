@@ -204,7 +204,7 @@ fn inspector_entity_section(
             });
         }
         ui.add_space(4.0);
-    });
+    }).header_response.observed(ui);
 }
 
 // ---------------------------------------------------------------------------
@@ -505,7 +505,7 @@ fn inspector_transform_section(
             ui_mgr.push_action(UiAction::ApplyNodeTransform);
         }
         ui.add_space(4.0);
-    });
+    }).header_response.observed(ui);
 }
 
 /// The "Portal URLs" section: `Save` pushes `UiAction::SaveUrl` (commits
@@ -577,7 +577,7 @@ fn inspector_url_meta_section(
                 theme::BG_BUTTON
             })
             .min_size(egui::vec2(ui.available_width(), 28.0));
-        let resp = ui.add_enabled(has_url, btn);
+        let resp = ui.add_enabled(has_url, btn).observed(ui);
         if resp.clicked() {
             bevy::log::info!(
                 "Portal: 'Open Portal' clicked — URL: {}",
@@ -592,7 +592,7 @@ fn inspector_url_meta_section(
         }
 
         ui.add_space(4.0);
-    });
+    }).header_response.observed(ui);
 }
 
 fn inspector_api_access_section(
@@ -689,9 +689,9 @@ fn inspector_api_access_section(
                             .selected_text(inspector.api_token_role_buf.as_str())
                             .width(100.0)
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut inspector.api_token_role_buf, "viewer".to_string(), "Viewer");
-                                ui.selectable_value(&mut inspector.api_token_role_buf, "editor".to_string(), "Editor");
-                                ui.selectable_value(&mut inspector.api_token_role_buf, "manager".to_string(), "Manager");
+                                ui.selectable_value(&mut inspector.api_token_role_buf, "viewer".to_string(), "Viewer").observed(ui);
+                                ui.selectable_value(&mut inspector.api_token_role_buf, "editor".to_string(), "Editor").observed(ui);
+                                ui.selectable_value(&mut inspector.api_token_role_buf, "manager".to_string(), "Manager").observed(ui);
                             }).response.named(ui, "API token maximum role");
                         ui.end_row();
 
@@ -706,10 +706,10 @@ fn inspector_api_access_section(
                             })
                             .width(100.0)
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut inspector.api_token_expiry_buf, 1, "1 hour");
-                                ui.selectable_value(&mut inspector.api_token_expiry_buf, 24, "24 hours");
-                                ui.selectable_value(&mut inspector.api_token_expiry_buf, 168, "7 days");
-                                ui.selectable_value(&mut inspector.api_token_expiry_buf, 720, "30 days");
+                                ui.selectable_value(&mut inspector.api_token_expiry_buf, 1, "1 hour").observed(ui);
+                                ui.selectable_value(&mut inspector.api_token_expiry_buf, 24, "24 hours").observed(ui);
+                                ui.selectable_value(&mut inspector.api_token_expiry_buf, 168, "7 days").observed(ui);
+                                ui.selectable_value(&mut inspector.api_token_expiry_buf, 720, "30 days").observed(ui);
                             }).response.named(ui, "API token expiration");
                         ui.end_row();
                     });
@@ -748,7 +748,7 @@ fn inspector_api_access_section(
                         egui::Button::new("Generate API Token")
                             .fill(theme::BG_SAVE)
                             .min_size(egui::vec2(ui.available_width(), 28.0)),
-                    )
+                    ).observed(ui)
                     .clicked()
                 {
                     db_tx
@@ -874,7 +874,7 @@ fn inspector_api_access_section(
                 }
 
                 ui.add_space(4.0);
-            });
+            }).header_response.observed(ui);
 
             ui.add_space(2.0);
 
@@ -1040,14 +1040,14 @@ fn inspector_api_access_section(
                         send_scoped_token_list(db_tx, &inspector.api_token_scope_buf, inspector.api_tokens_page);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(egui::Button::new("\u{21BB} Refresh").fill(theme::BG_BUTTON).small()).clicked() {
+                        if ui.add(egui::Button::new("\u{21BB} Refresh").fill(theme::BG_BUTTON).small()).observed(ui).clicked() {
                             send_scoped_token_list(db_tx, &inspector.api_token_scope_buf, inspector.api_tokens_page);
                         }
                     });
                 });
 
                 ui.add_space(4.0);
-            });
+            }).header_response.observed(ui);
         });
 }
 
@@ -1223,7 +1223,7 @@ fn inspector_properties_section(
                 .width(70.0)
                 .show_ui(ui, |ui| {
                     for &t in PROPERTY_TYPES {
-                        ui.selectable_value(&mut inspector.prop_add_type_buf, t.to_string(), t);
+                        ui.selectable_value(&mut inspector.prop_add_type_buf, t.to_string(), t).observed(ui);
                     }
                 })
                 .response
@@ -1243,7 +1243,7 @@ fn inspector_properties_section(
             })
             .min_size(egui::vec2(ui.available_width(), 24.0));
 
-        if ui.add_enabled(can_add, btn).clicked() {
+        if ui.add_enabled(can_add, btn).observed(ui).clicked() {
             let key = inspector.prop_add_key_buf.trim().to_string();
             let raw = inspector.prop_add_value_buf.trim().to_string();
             let value = match inspector.prop_add_type_buf.as_str() {
@@ -1268,7 +1268,7 @@ fn inspector_properties_section(
         }
 
         ui.add_space(4.0);
-    });
+    }).header_response.observed(ui);
 }
 
 // ---------------------------------------------------------------------------
@@ -1423,7 +1423,7 @@ fn inspector_schema_section(
                             &mut inspector.field_def_add_type_buf,
                             t.to_string(),
                             t,
-                        );
+                        ).observed(ui);
                     }
                 })
                 .response
@@ -1441,7 +1441,7 @@ fn inspector_schema_section(
             })
             .min_size(egui::vec2(ui.available_width(), 24.0));
 
-        if ui.add_enabled(can_add, btn).clicked() {
+        if ui.add_enabled(can_add, btn).observed(ui).clicked() {
             let key = inspector.field_def_add_key_buf.trim().to_string();
             let value_type = inspector.field_def_add_type_buf.clone();
             let scope = build_nav_scope(nav);
@@ -1471,7 +1471,7 @@ fn inspector_schema_section(
         }
 
         ui.add_space(4.0);
-    });
+    }).header_response.observed(ui);
 }
 
 // ---------------------------------------------------------------------------
