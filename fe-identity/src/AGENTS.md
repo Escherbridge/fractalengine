@@ -109,6 +109,28 @@ adds an atomic replace for files that are rewritten: a hidden sibling temp
 `std::fs::rename` moves it over `path` (same directory, so the protected DACL
 or `0600` mode travels with it); the temp is removed on any failure.
 
+### QA harness security correction (2026-11-01)
+
+The current Windows `create_owner_only_file` supplies the protected owner-only
+DACL directly to `CreateFileW(CREATE_NEW)` and writes through that same handle,
+with no sharing. This supersedes the historical create-empty/set-by-path/reopen
+sequence above. ABI declarations follow the vendored `windows-sys` definitions.
+No secret bytes are written through a reopened pathname. Existing secret-file
+journeys cover replacement, refused overwrite and junction-parent rejection.
+
+Secret writes reject symlink/reparse ancestry. On Windows each ancestor is
+opened with `OPEN_REPARSE_POINT | BACKUP_SEMANTICS`, checked through its handle,
+and held without write/delete sharing until creation/replacement completes. Thus
+ancestors cannot be renamed into junctions between validation and writing.
+Unix rejects existing symlink ancestry but does not claim handle-relative
+protection against a malicious concurrent directory writer. Owner-only file
+creation remains `create_new + 0600` there.
+
+`qa_storage_root()` resolves the explicit absolute `FE_QA_STORAGE_ROOT` and
+rejects redirected ancestors. GUI startup uses it for run-local identity,
+settings and storage; absent means normal desktop behavior. Invalid roots
+fail startup, and settings resolution independently avoids user persistence.
+
 ## §x25519-device-key (`x25519.rs`)
 
 `DeviceKeypair` wraps an `x25519_dalek::StaticSecret` (dependency approved

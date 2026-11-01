@@ -37,9 +37,15 @@ conductor/tracks/polish_lane_20261031/plan.md §QA-intake   S1/S2 routing
 git rev-parse --short HEAD                    # current
 Get-ChildItem .qa\stage | Sort LastWriteTime  # newest staged <sha>
 git diff --quiet <staged-sha> HEAD -- '*.rs' '*.toml' Cargo.lock '*.wgsl' fractalengine/assets
+git diff --quiet HEAD -- '*.rs' '*.toml' Cargo.lock '*.wgsl' fractalengine/assets
 ```
 
 Exit 0 → reuse the stage (docs/scripts-only commits never need a rebuild).
+Check untracked source files too (`git ls-files --others --exclude-standard`).
+The launcher compares a content fingerprint of tracked and untracked build
+inputs with `stage.json`, so a dirty working tree cannot silently reuse an
+older stage. `-AllowStaleStage` is an explicit fallback only: record
+`stage_matches_source: false` and do not call that pass current-source verification.
 Otherwise, and only if `Get-Process cargo,rustc` is empty, run
 `powershell -NoProfile -ExecutionPolicy Bypass -File tools\qa\stage.ps1`
 in the FOREGROUND with the max tool timeout (it sets
@@ -58,6 +64,9 @@ app exits. Then `F info` (run dir, pid, fixture ids, token roles) and
 `F shot --label launch`. Set `FE_QA_SHOTS_DIR=qa/passes/<NN>/shots` for the
 whole pass (Bash: `export FE_QA_SHOTS_DIR=...`; also `export
 MSYS_NO_PATHCONV=1` so `/api/...` args survive Git Bash).
+
+Immediately save `F info`'s `run_dir` as the pass's owned run. Keep that
+exact value through cleanup; another launch can replace `.qa/current`.
 
 ### (c) Drive each scenario in the rotation
 
@@ -93,7 +102,7 @@ cannot be driven: never click them.
 ### (d) Stop — always, even on failure
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\qa\stop.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\qa\stop.ps1 -Run <owned-run-dir>
 ```
 
 It kills the exact recorded pid tree (WebView2 children included), never by

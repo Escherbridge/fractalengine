@@ -1,61 +1,23 @@
-﻿# tools/qa/stop.ps1 — stop a run started by launch.ps1. Kills the EXACT pid
-# recorded in current.json plus its whole process tree (the Tauri backend
-# spawns a child msedgewebview2.exe that outlives a plain Stop-Process on
-# the root — verified empirically, see tools/qa/AGENTS.md §process-tree).
-# Never kills by name or pattern: other sessions' fractalengine/webview2
-# processes must survive this.
-#
-# Usage: powershell -File tools\qa\stop.ps1 [-Run <run-dir-or-timestamp>]
+# Stop only the recorded process identity and its verified descendants.
 [CmdletBinding()]
-param(
-    [string]$Run
-)
-
+param([string]$Run)
 . "$PSScriptRoot\_lib.ps1"
+$ErrorActionPreference = 'Stop'
 
-if ($Run) {
-    $runDir = if (Test-Path $Run) { (Resolve-Path $Run).Path } else { Join-Path $QaRunRoot $Run }
-} else {
-    $pointer = Join-Path $QaRepoRoot ".qa\current"
-    if (-not (Test-Path $pointer)) {
-        Write-QaLog "No -Run given and no .qa\current pointer — nothing to stop"
-        exit 1
-    }
-    $runDir = (Get-Content $pointer -Raw).Trim()
+if (-not $Run) {
+    $pointer = Join-Path $QaRepoRoot '.qa\current'
+    if (-not (Test-Path -LiteralPath $pointer)) { throw 'No QA run is recorded' }
+    $Run = (Get-Content -LiteralPath $pointer -Raw).Trim()
 }
-
-$currentPath = Join-Path $runDir "current.json"
-if (-not (Test-Path $currentPath)) {
-    Write-QaLog "No current.json under $runDir — nothing to stop"
-    exit 1
-}
-$current = Get-Content $currentPath -Raw | ConvertFrom-Json
-$rootId = [int]$current.pid
-
-$tree = Get-QaProcessTree -RootId $rootId
-$alive = $tree | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue }
-if ($alive.Count -eq 0) {
-    Write-QaLog "pid $rootId (and its tree) is already gone"
+$candidate = if ([IO.Path]::IsPathRooted($Run)) { $Run } else { Join-Path $QaRunRoot $Run }
+$runDir = Resolve-QaChildPath -Path $candidate -Root $QaRunRoot
+$current = Get-Content -LiteralPath (Join-Path $runDir 'current.json') -Raw | ConvertFrom-Json
+if (-not $current.process_identity) { throw 'Legacy run lacks process identity; refusing PID-only stop' }
+$process = Get-QaOwnedProcess -Identity $current.process_identity
+if (-not $process) {
+    Write-QaLog 'Recorded QA process is already gone (or PID was reused); nothing stopped'
     exit 0
 }
-
-Write-QaLog "Stopping process tree rooted at pid ${rootId}: $($alive -join ', ')"
-foreach ($id in $alive) {
-    Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
-}
-
-Start-Sleep -Milliseconds 500
-$stillAlive = $tree | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue }
-if ($stillAlive.Count -gt 0) {
-    Write-QaLog "Still alive after Stop-Process: $($stillAlive -join ', ') — retrying once"
-    Start-Sleep -Milliseconds 1000
-    foreach ($id in $stillAlive) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
-    Start-Sleep -Milliseconds 500
-    $stillAlive = $tree | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue }
-}
-
-if ($stillAlive.Count -gt 0) {
-    Write-QaLog "FAILED to stop: $($stillAlive -join ', ')"
-    exit 1
-}
+$process.Dispose()
+Stop-QaOwnedProcessTree -Identity $current.process_identity
 Write-QaLog "Stopped. Run dir kept at $runDir"

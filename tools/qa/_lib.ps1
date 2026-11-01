@@ -127,26 +127,6 @@ function Invoke-QaApiUpload {
     return $raw | ConvertFrom-Json
 }
 
-# BFS over Win32_Process.ParentProcessId starting at $RootId. Returns every
-# pid in the tree (root included), so Stop-Process can take out a spawned
-# WebView2 host/renderer/GPU helper the GUI never cleans up on SIGKILL —
-# verified empirically: the Tauri backend spawns a child `msedgewebview2.exe`
-# under this exact pid (tools/qa/AGENTS.md §process-tree).
-function Get-QaProcessTree {
-    param([Parameter(Mandatory)] [int]$RootId)
-    $ids = [System.Collections.Generic.List[int]]::new()
-    $frontier = [System.Collections.Generic.Queue[int]]::new()
-    $frontier.Enqueue($RootId)
-    while ($frontier.Count -gt 0) {
-        $id = $frontier.Dequeue()
-        if ($ids.Contains($id)) { continue }
-        $ids.Add($id)
-        Get-CimInstance Win32_Process -Filter "ParentProcessId=$id" -ErrorAction SilentlyContinue |
-            ForEach-Object { $frontier.Enqueue([int]$_.ProcessId) }
-    }
-    return $ids
-}
-
 # Newest <sha> directory under .qa/stage (by LastWriteTime), or $null if
 # none staged yet.
 function Get-QaLatestStageDir {
@@ -155,4 +135,147 @@ function Get-QaLatestStageDir {
         Sort-Object LastWriteTime -Descending
     if ($dirs.Count -eq 0) { return $null }
     return $dirs[0].FullName
+}
+
+# Resolve a child of a QA root without traversing a reparse point.
+function Resolve-QaChildPath {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Root)
+    $full = [IO.Path]::GetFullPath($Path)
+    $boundary = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+    if (-not $full.StartsWith($boundary, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "QA path is outside $Root`: $full"
+    }
+    $cursor = $full
+    while ($cursor -and $cursor.Length -ge $QaRepoRoot.Length) {
+        if (Test-Path -LiteralPath $cursor) {
+            $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "QA path traverses a reparse point: $cursor" }
+        }
+        $cursor = [IO.Path]::GetDirectoryName($cursor)
+    }
+    return $full
+}
+
+function Get-QaProcessIdentity {
+    param([Parameter(Mandatory)][int]$ProcessId)
+    $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $process) { return $null }
+    try {
+        $null = $process.Handle
+        return [pscustomobject]@{ pid = $process.Id; start_ticks = $process.StartTime.ToUniversalTime().Ticks.ToString(); exe_path = $process.MainModule.FileName }
+    } finally { $process.Dispose() }
+}
+
+function Get-QaOwnedProcess {
+    param([Parameter(Mandatory)]$Identity)
+    if (-not $Identity.start_ticks -or -not $Identity.exe_path) { throw 'Missing process identity; refusing PID-only cleanup' }
+    $process = Get-Process -Id ([int]$Identity.pid) -ErrorAction SilentlyContinue
+    if (-not $process) { return $null }
+    try {
+        $null = $process.Handle
+        if ($process.StartTime.ToUniversalTime().Ticks.ToString() -ne [string]$Identity.start_ticks -or
+            -not [string]::Equals($process.MainModule.FileName, $Identity.exe_path, [StringComparison]::OrdinalIgnoreCase)) {
+            $process.Dispose()
+            return $null
+        }
+        return $process
+    } catch { $process.Dispose(); throw }
+}
+
+# Toolhelp avoids WMI permissions while retaining parent PID information.
+function Get-QaOwnedProcessTree {
+    param([Parameter(Mandatory)]$Identity)
+    $root = Get-QaOwnedProcess -Identity $Identity
+    if (-not $root) { return @() }
+    try {
+    if (-not ('QaProcessSnapshot' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+public static class QaProcessSnapshot {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct Entry {
+        public uint size, usage, id; public UIntPtr heap; public uint module, threads, parent;
+        public int priority; public uint flags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string name;
+    }
+    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint id);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool Process32FirstW(IntPtr snapshot, ref Entry entry);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool Process32NextW(IntPtr snapshot, ref Entry entry);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    public static int[][] Read() {
+        IntPtr snapshot = CreateToolhelp32Snapshot(2, 0);
+        if (snapshot == new IntPtr(-1)) throw new System.ComponentModel.Win32Exception();
+        try {
+            var rows = new List<int[]>(); var entry = new Entry(); entry.size = (uint)Marshal.SizeOf(typeof(Entry));
+            if (!Process32FirstW(snapshot, ref entry)) throw new System.ComponentModel.Win32Exception();
+            do { rows.Add(new int[] { (int)entry.id, (int)entry.parent }); } while (Process32NextW(snapshot, ref entry));
+            return rows.ToArray();
+        } finally { CloseHandle(snapshot); }
+    }
+}
+'@
+    }
+    $rows = [QaProcessSnapshot]::Read()
+    $tree = New-Object System.Collections.Generic.List[object]
+    $tree.Add($Identity)
+    for ($i = 0; $i -lt $tree.Count; $i++) {
+        $parent = $tree[$i]
+        $parentProcess = Get-QaOwnedProcess -Identity $parent
+        if (-not $parentProcess) { continue }
+        try {
+        foreach ($row in $rows) {
+            if ($row[1] -ne [int]$parent.pid -or $row[0] -eq [int]$parent.pid) { continue }
+            if ($tree | Where-Object { [int]$_.pid -eq $row[0] }) { continue }
+            $child = Get-QaProcessIdentity -ProcessId $row[0]
+            if ($child -and [long]$child.start_ticks -ge [long]$parent.start_ticks) { $tree.Add($child) }
+        }
+        } finally { $parentProcess.Dispose() }
+    }
+    return $tree.ToArray()
+    } finally { $root.Dispose() }
+}
+
+function Stop-QaOwnedProcessTree {
+    param([Parameter(Mandatory)]$Identity)
+    $enumerationError = $null
+    try { $tree = @(Get-QaOwnedProcessTree -Identity $Identity) }
+    catch { $enumerationError = $_; $tree = @($Identity) }
+    [array]::Reverse($tree)
+    foreach ($entry in $tree) {
+        $process = Get-QaOwnedProcess -Identity $entry
+        if (-not $process) { continue }
+        try {
+            $process.Kill()
+            if (-not $process.WaitForExit(10000)) { throw "Process $($entry.pid) did not exit" }
+        } finally { $process.Dispose() }
+    }
+    if ($enumerationError) { throw "Root stopped, but descendant cleanup could not be verified: $enumerationError" }
+}
+
+function Get-QaStageManifest {
+    param([Parameter(Mandatory)][string]$StageDir)
+    $stage = Resolve-QaChildPath -Path $StageDir -Root $QaStageRoot
+    $manifest = Get-Content -LiteralPath (Join-Path $stage 'stage.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+    $exe = Join-Path $stage 'fractalengine.exe'
+    if ($manifest.kind -ne 'fractalengine-qa-stage-v1' -or
+        (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash -ne $manifest.exe_sha256) {
+        throw "Invalid or modified QA stage: $stage"
+    }
+    if (Test-Path -LiteralPath (Join-Path $stage 'assets')) { throw 'QA stage must not contain packaged assets' }
+    return $manifest
+}
+
+function Get-QaSourceFingerprint {
+    $paths = @(& git -C $QaRepoRoot ls-files --cached --others --exclude-standard -- '*.rs' '*.toml' 'Cargo.lock' '*.wgsl' 'fractalengine/assets')
+    if ($LASTEXITCODE -ne 0) { throw 'Could not enumerate QA build inputs' }
+    $lines = foreach ($relative in ($paths | Sort-Object -Unique)) {
+        $path = Join-Path $QaRepoRoot $relative
+        $hash = if (Test-Path -LiteralPath $path -PathType Leaf) { (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash } else { 'MISSING' }
+        "$relative=$hash"
+    }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($lines -join "`n")))).Replace('-', '') }
+    finally { $sha.Dispose() }
 }

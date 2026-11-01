@@ -11,8 +11,10 @@
 param()
 
 . "$PSScriptRoot\_lib.ps1"
+$ErrorActionPreference = 'Stop'
 
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
+$sourceFingerprint = Get-QaSourceFingerprint
 
 $busy = Get-Process cargo, rustc -ErrorAction SilentlyContinue
 if ($busy) {
@@ -23,6 +25,7 @@ if ($busy) {
     }
     Write-QaLog "cargo/rustc is running (pid $($busy[0].Id)) — another lane owns the build. Reusing the newest staged build instead of racing it:"
     Write-QaLog "  $existing"
+    $null = Get-QaStageManifest -StageDir $existing
     Write-Output $existing
     exit 0
 }
@@ -36,7 +39,9 @@ try {
     # NativeCommandError records (cosmetic noise — cargo's own "Finished"/
     # "Compiling" lines go to stderr), which is harmless since $LASTEXITCODE
     # (not $?) is what gates success below, but is confusing to read.
-    & cargo build -p fractalengine -p fe-terrain --example install_sample_hexons -j4
+    & cargo build -p fractalengine --bin fractalengine -j4
+    if ($LASTEXITCODE -ne 0) { throw "GUI build failed: $LASTEXITCODE" }
+    & cargo build -p fe-terrain --example install_sample_hexons -j4
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
         Write-QaLog "cargo build failed with exit code $exitCode"
@@ -47,7 +52,7 @@ try {
 }
 
 $sha = (& git -C $QaRepoRoot rev-parse --short HEAD).Trim()
-$stageDir = Join-Path $QaStageRoot $sha
+$stageDir = Resolve-QaChildPath -Path (Join-Path $QaStageRoot "$sha-$((Get-Date).ToString('yyyyMMddHHmmssfff'))") -Root $QaStageRoot
 New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
 
 $exeSrc = Join-Path $QaRepoRoot "target\debug\fractalengine.exe"
@@ -68,17 +73,18 @@ if (Test-Path $hexonInstallerSrc) {
     Copy-Item $hexonInstallerSrc (Join-Path $stageDir "install_sample_hexons.exe") -Force
 }
 
-# DELIBERATELY NOT staging an "assets" folder beside the exe: fe_runtime::app::
-# packaged_root() treats "<exe dir>/assets exists" as "this is a packaged
-# build" and cd's the whole process into the exe's directory before DB_PATH
-# ("data/fractalengine.db", CWD-relative) is ever touched. Every isolated
-# run dir would then collide on the SAME data/ under this one stage dir
-# instead of getting its own. launch.ps1 junctions
-# "<run>/fractalengine/assets" -> the real repo assets instead, which keeps
-# packaged_root() returning None (the "workspace checkout" branch) so the
-# CWD-relative DB/blob paths stay isolated per run. See tools/qa/AGENTS.md
-# §cwd-isolation for the full story (this was verified empirically, not
-# assumed — the task text that asked for isolation also asked to verify it).
+$manifest = @{
+    kind = 'fractalengine-qa-stage-v1'
+    source_commit = (& git -C $QaRepoRoot rev-parse HEAD).Trim()
+    source_dirty = [bool](& git -C $QaRepoRoot status --porcelain --untracked-files=no)
+    source_fingerprint = $sourceFingerprint
+    built_at = (Get-Date).ToUniversalTime().ToString('o')
+    exe_sha256 = (Get-FileHash -LiteralPath (Join-Path $stageDir 'fractalengine.exe') -Algorithm SHA256).Hash
+}
+if ((Get-QaSourceFingerprint) -ne $sourceFingerprint) { throw 'Build inputs changed while staging; rerun stage.ps1' }
+$manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $stageDir 'stage.json') -Encoding UTF8
+
+# Assets are copied into each run, never beside this staged executable.
 
 Write-QaLog "Staged $sha -> $stageDir ($([math]::Round($sw.Elapsed.TotalSeconds, 1))s total)"
 Write-Output $stageDir

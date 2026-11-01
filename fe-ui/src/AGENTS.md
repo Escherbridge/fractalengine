@@ -5,6 +5,14 @@ sidebar hierarchy, inspector, dialogs, the embedded webview ("portal"), and
 terrain/hexon map management. This doc replaces verbose inline comments —
 see each module's own doc-comment for the "what"; this file is the "why".
 
+## §qa-settings-isolation
+
+With explicit `FE_QA_STORAGE_ROOT`, settings resolve only to
+`<root>/config/settings.ron`; malformed roots disable persistence rather than
+falling back to user configuration. The existing settings restart journey
+uses pure path inputs to verify QA precedence without global environment
+mutation. GUI startup validates the same root before loading any settings.
+
 ## §brush-tool-and-numeric-boundary
 
 `Tool::Brush` converts the meter-valued radius/target/delta through the active

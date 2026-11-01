@@ -11,37 +11,33 @@ Files: `_lib.ps1` (shared helpers, dot-sourced), `stage.ps1`, `launch.ps1`,
 are gitignored (machine-local); `tools/qa/*.ps1` are explicitly un-ignored
 (`.gitignore` carves an exception out of the blanket `/tools/` rule).
 
-## §cwd-isolation
+## Storage isolation
 
-`fractalengine/src/main.rs`'s `DB_PATH` ("data/fractalengine.db") and
-`FsBlobStore::default_path()` ("data/blobs") are both CWD-relative, so
-launching each run with its own working directory isolates its DB and blob
-store — **except** `fe_runtime::app::packaged_root()` checks `<exe
-dir>/assets.is_dir()` and, if true, `std::env::set_current_dir`s the whole
-process into the exe's own directory before `DB_PATH` is ever touched. Stage
-an "assets" folder beside the staged exe (as the task text's "copy
-everything it loads at runtime" literally suggested) and EVERY run from
-that stage would collide on the same `data/` under the stage dir, silently
-defeating the isolation `launch.ps1` exists to provide.
+`FE_QA_STORAGE_ROOT=<absolute run directory>` is the opt-in GUI storage boundary.
+Startup rejects redirected roots, enters that root before touching relative
+state, forces blob/P2P/hexon overrides beneath it, and skips legacy per-user
+blob migration. Settings resolve to `<run>/config/settings.ron`. The node key
+is durable only under `<run>/identity`; other secrets use an in-memory store.
+The QA branch never constructs the OS-keystore backend or migrates user keys.
+Unset preserves normal desktop paths and identity behavior.
 
-The fix: `stage.ps1` stages the exe ALONE (no assets beside it), and
-`launch.ps1` junctions `<run>/fractalengine/assets` -> the repo's real
-`fractalengine/assets` (`cmd /c mklink /J`, no copy, no admin rights needed
-for a same-volume junction). That keeps `packaged_root()` returning `None`
-for every launch, which routes `file_asset_root()` through the
-"workspace checkout" branch (`<cwd>/fractalengine/assets`) instead — CWD
-stays the run dir, DB/blob isolation holds. Verified empirically (not just
-asserted): two consecutive runs from the same stage each got their own
-`data/fractalengine.db` with independent Genesis-seed verse ids.
+The launcher copies only root asset files, `branding/` and `samples/` into
+`<run>/fractalengine/assets`. It never junctions writable repository assets
+into a run. The staged exe has no adjacent `assets` directory. Native save
+locations remain user-selected until the file-dialog seam is supplied.
 
-Caveat: the junction makes `<run>/fractalengine/assets/imported/` an alias
-for the REAL repo's legacy GLB import cache, not a copy. That subtree is
-documented in the repo's own `.gitignore` as a "read-only fallback", and
-nothing observed in this slice wrote to it, but a future write there from a
-QA run would land in the real working tree. Worth re-checking if an
-`import` flow is ever added to the agent-driven QA loop.
+## Stage provenance
 
-## §bootstrap (why there's no "seed a verse before first launch" step)
+`stage.ps1` explicitly builds the GUI binary and installer example in separate
+serial Cargo calls. Each immutable stage gets a unique `<sha>-<timestamp>`
+name and `stage.json` recording commit, dirty state, executable SHA-256 and
+build-input fingerprint. The fingerprint hashes tracked and untracked Rust,
+Cargo, WGSL and asset files, including missing tracked paths. Source changes
+during staging fail the stage. Launch validates the executable and input
+fingerprint; mismatches require explicit `-AllowStaleStage` and are recorded
+as `stage_matches_source: false`, never current-source verification.
+
+## Bootstrap (H2 history; QA identity is now run-local)
 
 The original plan was to pre-seed a verse row directly into the (not yet
 opened) SurrealKV file via `fe-database/examples/seed_join_verse.rs`, with
@@ -82,17 +78,26 @@ This is also just a more faithful rehearsal of the real agent flow
 documented in `fractalengine/src/AGENTS.md` §qa-dev-token's "Agent recipe":
 launch, poll the token file, re-poll it after a scenario creates a verse.
 
-## §process-tree (why `stop.ps1` isn't one `Stop-Process`)
+## Process identity and cleanup
 
-The Tauri webview backend (`fe-webview`, default since 2026-06-30) spawns a
-child `msedgewebview2.exe` under the GUI's own pid — verified with
-`Get-CimInstance Win32_Process -Filter "ParentProcessId=<pid>"` against a
-live run. Stopping only the root pid would strand that child (and whatever
-it spawns in turn — WebView2 fans out into several helper processes).
-`Get-QaProcessTree` in `_lib.ps1` does a BFS over `ParentProcessId` from the
-exact recorded pid and `stop.ps1` kills every id in that result, never by
-name or pattern: this machine runs other, unrelated `msedgewebview2.exe`
-processes (editor extensions, other browsers) that must never be touched.
+A persistent PID is insufficient because Windows reuses PIDs. `current.json`
+records PID, executable path and UTC creation ticks. Shared helpers open a
+process handle, verify both identity fields, and retain that handle while
+killing/waiting. A stale identity is treated as gone; legacy PID-only records
+are refused by stop and retained by clean.
+
+A Toolhelp process snapshot supplies parent IDs without requiring WMI access.
+Descendants must be created after their recorded parent; each identity is
+rechecked before stopping children first, then the root. A snapshot error is
+reported rather than silently claiming no children exist. Launch uses a
+`finally` cleanup until it hands off a complete run record. Passes capture
+and stop their explicit owned run path; `.qa/current` is only discovery.
+
+`clean.ps1` confines candidates to the intended QA root, uses literal paths,
+retains live runs and their referenced stages, and refuses any candidate tree
+containing a reparse point. This conservatively retains old junction-based
+runs. Directory checks protect normal local cleanup, not a concurrent hostile
+filesystem writer; do not run cleanup against an untrusted shared QA tree.
 
 ## §fixture-basic
 

@@ -8,10 +8,12 @@
 param(
     [string]$Stage,
     [ValidateSet("basic", "none")]
-    [string]$Fixture = "basic"
+    [string]$Fixture = "basic",
+    [switch]$AllowStaleStage
 )
 
 . "$PSScriptRoot\_lib.ps1"
+$ErrorActionPreference = 'Stop'
 
 $swTotal = [System.Diagnostics.Stopwatch]::StartNew()
 
@@ -31,25 +33,30 @@ if (-not (Test-Path $exe)) {
     exit 1
 }
 Write-QaLog "Using staged build: $stageDir"
+$stageDir = Resolve-QaChildPath -Path $stageDir -Root $QaStageRoot
+$stageManifest = Get-QaStageManifest -StageDir $stageDir
+$stageMatchesSource = $stageManifest.source_fingerprint -eq (Get-QaSourceFingerprint)
+if (-not $stageMatchesSource -and -not $AllowStaleStage) { throw 'Stage build inputs differ from current source; rebuild or explicitly use -AllowStaleStage and report limited provenance' }
+if (-not $stageMatchesSource) { Write-Warning 'Using a stale QA stage; results do not verify current source' }
+$portProbe = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 8765)
+try { $portProbe.Start() } finally { $portProbe.Stop() }
 
 # --- Isolated run dir --------------------------------------------------------
 $ts = (Get-Date).ToString("yyyyMMdd-HHmmss-fff")
-$run = Join-Path $QaRunRoot $ts
+$run = Resolve-QaChildPath -Path (Join-Path $QaRunRoot $ts) -Root $QaRunRoot
 New-Item -ItemType Directory -Force -Path $run | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $run "data") | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $run "fractalengine") | Out-Null
 
-# CWD-relative DB isolation depends on NOT triggering fe_runtime::app::
-# packaged_root() (see stage.ps1's comment) — so the real assets tree is
-# junctioned in under the workspace-checkout layout
-# ("<run>/fractalengine/assets") instead of sitting beside the exe.
+# Copy the fixture assets into the run-local workspace layout.
 $assetsLink = Join-Path $run "fractalengine\assets"
 $assetsSrc = Join-Path $QaRepoRoot "fractalengine\assets"
-cmd /c mklink /J "$assetsLink" "$assetsSrc" | Out-Null
-if (-not (Test-Path $assetsLink)) {
-    Write-QaLog "Could not junction $assetsLink -> $assetsSrc"
-    exit 1
+New-Item -ItemType Directory -Path $assetsLink | Out-Null
+foreach ($name in @('branding', 'samples')) {
+    $source = Join-Path $assetsSrc $name
+    if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination $assetsLink -Recurse }
 }
+Get-ChildItem -LiteralPath $assetsSrc -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $assetsLink }
 
 $tokensPath = Join-Path $run "tokens.json"
 $hexonDir = Join-Path $run "hexons"
@@ -65,7 +72,8 @@ $hexonInstaller = Join-Path $stageDir "install_sample_hexons.exe"
 $sampleHexonsDir = Join-Path $QaRepoRoot "sample-hexons\dist"
 if ((Test-Path $hexonInstaller) -and (Test-Path $sampleHexonsDir)) {
     $env:FE_HEXON_DIR = $hexonDir
-    $installOut = & $hexonInstaller $sampleHexonsDir 2>&1
+    $installOut = & $hexonInstaller $sampleHexonsDir
+    if ($LASTEXITCODE -ne 0) { throw "Sample hexon installation failed: $LASTEXITCODE" }
     $installOut | ForEach-Object { Write-QaLog "install_sample_hexons: $_" }
     $installed = $installOut | Select-String -Pattern "^(installed|refreshed) (\S+)"
     if ($installed) {
@@ -75,28 +83,31 @@ if ((Test-Path $hexonInstaller) -and (Test-Path $sampleHexonsDir)) {
 
 # --- Launch -------------------------------------------------------------
 $env:FE_API_DEV_TOKEN_OUT = $tokensPath
+$env:FE_QA_STORAGE_ROOT = $run
 $env:FE_API_INPUT_ALLOW = "1"
 $env:FE_SYNC_RELAY = "disabled"
 $env:FE_HEXON_DIR = $hexonDir
 $env:RUST_LOG = "info"
 
 $swHealth = [System.Diagnostics.Stopwatch]::StartNew()
+$proc = $null
+$identity = $null
+$handedOff = $false
+try {
 $proc = Start-Process -FilePath $exe -WorkingDirectory $run -PassThru `
     -RedirectStandardOutput (Join-Path $run "stdout.log") `
     -RedirectStandardError (Join-Path $run "stderr.log") `
     -WindowStyle Hidden
+$null = $proc.Handle
+$identity = Get-QaProcessIdentity -ProcessId $proc.Id
+if (-not $identity) { throw 'QA process exited before its identity could be recorded' }
 $startedAt = (Get-Date).ToString("o")
 Write-QaLog "Launched pid=$($proc.Id) run=$run"
 
-# Every failure from here on must stop the already-launched process tree
-# before exiting — a bare `exit 1` mid-fixture would otherwise strand a
-# live fractalengine.exe (+ its webview children, §process-tree) that
-# nothing else ever reaps.
+# Throw into the enclosing lifecycle cleanup on every startup failure.
 function Fail {
     param([string]$Message)
-    Write-QaLog $Message
-    Get-QaProcessTree -RootId $proc.Id | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
-    exit 1
+    throw $Message
 }
 
 if (-not (Wait-QaHttp -Url "$QaApiBase/api/v1/health" -TimeoutSec 120)) {
@@ -200,6 +211,9 @@ $current = @{
     stage = $stageDir
     fixture = $Fixture
     started_at = $startedAt
+    process_identity = $identity
+    stage_manifest = $stageManifest
+    stage_matches_source = $stageMatchesSource
     run_dir = $run
     bootstrap_verse_id = $bootstrap.VerseId
     fixture_detail = $fixtureInfo
@@ -207,6 +221,14 @@ $current = @{
 }
 $current | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $run "current.json") -Encoding utf8
 $run | Set-Content (Join-Path $QaRepoRoot ".qa\current") -Encoding ascii -NoNewline
+$handedOff = $true
 
 Write-QaLog "Launch complete in $([math]::Round($swTotal.Elapsed.TotalSeconds, 1))s total. run=$run pid=$($proc.Id)"
 Write-Output $run
+} finally {
+    if (-not $handedOff -and $proc) {
+        if ($identity) { Stop-QaOwnedProcessTree -Identity $identity }
+        elseif (-not $proc.HasExited) { $proc.Kill(); $null = $proc.WaitForExit(10000) }
+    }
+    if ($proc) { $proc.Dispose() }
+}

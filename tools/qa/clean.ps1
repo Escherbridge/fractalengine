@@ -1,50 +1,52 @@
-﻿# tools/qa/clean.ps1 — prune .qa/stage and .qa/run, keeping the latest 3 of
-# each plus anything newer than -Days (default 7). Never touches a run dir
-# whose current.json still points at a LIVE pid (an in-flight QA session),
-# even if it is old.
-#
-# Usage: powershell -File tools\qa\clean.ps1 [-Days 7] [-Keep 3] [-DryRun]
+# Prune confined QA directories, retaining live runs and their stages.
 [CmdletBinding()]
-param(
-    [int]$Days = 7,
-    [int]$Keep = 3,
-    [switch]$DryRun
-)
-
+param([ValidateRange(0,36500)][int]$Days = 7, [ValidateRange(0,10000)][int]$Keep = 3, [switch]$DryRun)
 . "$PSScriptRoot\_lib.ps1"
-
+$ErrorActionPreference = 'Stop'
 $cutoff = (Get-Date).AddDays(-$Days)
+$liveRuns = @{}
+$liveStages = @{}
 
-function Prune-QaDir {
-    param([string]$Root, [string]$Label)
-    if (-not (Test-Path $Root)) { return }
-    $dirs = Get-ChildItem $Root -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
-    if ($dirs.Count -le $Keep) {
-        Write-QaLog "$Label`: $($dirs.Count) <= keep $Keep — nothing to prune"
-        return
-    }
-    $candidates = $dirs | Select-Object -Skip $Keep | Where-Object { $_.LastWriteTime -lt $cutoff }
-    foreach ($d in $candidates) {
-        $isLiveRun = $false
-        $cj = Join-Path $d.FullName "current.json"
-        if (Test-Path $cj) {
-            try {
-                $c = Get-Content $cj -Raw | ConvertFrom-Json
-                if (Get-Process -Id $c.pid -ErrorAction SilentlyContinue) { $isLiveRun = $true }
-            } catch {}
-        }
-        if ($isLiveRun) {
-            Write-QaLog "$Label`: SKIP $($d.Name) — pid still alive"
-            continue
-        }
-        if ($DryRun) {
-            Write-QaLog "$Label`: would remove $($d.FullName) (last write $($d.LastWriteTime))"
-        } else {
-            Write-QaLog "$Label`: removing $($d.FullName) (last write $($d.LastWriteTime))"
-            Remove-Item $d.FullName -Recurse -Force -ErrorAction SilentlyContinue
-        }
+function Assert-QaTreeWithoutReparse {
+    param([string]$Path)
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Reparse point retained: $Path" }
+    if ($item.PSIsContainer) {
+        foreach ($child in Get-ChildItem -LiteralPath $Path -Force) { Assert-QaTreeWithoutReparse -Path $child.FullName }
     }
 }
 
-Prune-QaDir -Root $QaStageRoot -Label "stage"
-Prune-QaDir -Root $QaRunRoot -Label "run"
+foreach ($directory in @(Get-ChildItem -LiteralPath $QaRunRoot -Directory -ErrorAction SilentlyContinue)) {
+    $record = Join-Path $directory.FullName 'current.json'
+    if (-not (Test-Path -LiteralPath $record)) { continue }
+    try {
+        $current = Get-Content -LiteralPath $record -Raw | ConvertFrom-Json
+        if (-not $current.process_identity) {
+            $liveRuns[$directory.FullName] = $true
+            if ($current.stage) { $liveStages[[IO.Path]::GetFullPath($current.stage)] = $true }
+            continue
+        }
+        $process = Get-QaOwnedProcess -Identity $current.process_identity
+        if ($process) {
+            $process.Dispose()
+            $liveRuns[$directory.FullName] = $true
+            $liveStages[[IO.Path]::GetFullPath($current.stage)] = $true
+        }
+    } catch {
+        throw "Cannot establish QA run ownership; cleanup refused: $record`: $_"
+    }
+}
+
+foreach ($root in @($QaStageRoot, $QaRunRoot)) {
+    if (-not (Test-Path -LiteralPath $root)) { continue }
+    $directories = @(Get-ChildItem -LiteralPath $root -Directory | Sort-Object LastWriteTime -Descending)
+    foreach ($directory in @($directories | Select-Object -Skip $Keep | Where-Object { $_.LastWriteTime -lt $cutoff })) {
+        if ($liveRuns.ContainsKey($directory.FullName) -or $liveStages.ContainsKey($directory.FullName)) { continue }
+        try {
+            $target = Resolve-QaChildPath -Path $directory.FullName -Root $root
+            Assert-QaTreeWithoutReparse -Path $target
+        } catch { Write-QaLog "Retaining unsafe cleanup candidate: $_"; continue }
+        if ($DryRun) { Write-QaLog "Would remove $target" }
+        else { Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop }
+    }
+}

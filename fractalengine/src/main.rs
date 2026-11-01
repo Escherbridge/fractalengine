@@ -25,13 +25,30 @@ mod window_chrome;
 const DB_PATH: &str = "data/fractalengine.db";
 
 fn main() {
+    let qa_root = match fe_identity::file_fallback::qa_storage_root() {
+        Ok(root) => root,
+        Err(error) => {
+            eprintln!("invalid QA storage root: {error}");
+            std::process::exit(1);
+        }
+    };
+    if let Some(root) = qa_root.as_ref() {
+        for (name, suffix) in [
+            ("FE_BLOB_DIR", "data/blobs"),
+            ("FE_P2P_DIR", "data/p2p"),
+            ("FE_HEXON_DIR", "hexons"),
+        ] {
+            std::env::set_var(name, root.join(suffix));
+        }
+    }
     // Packaged build: run from the executable's folder so `data/` (database,
     // P2P store, panic log) lands beside the binary wherever it is launched
     // from. Before any relative path is touched. See fe-runtime src/AGENTS.md
     // §packaged-layout.
-    if let Some(root) = fe_runtime::app::packaged_root() {
+    if let Some(root) = qa_root.clone().or_else(fe_runtime::app::packaged_root) {
         if let Err(error) = std::env::set_current_dir(&root) {
-            eprintln!("warning: could not enter {}: {error}", root.display());
+            eprintln!("could not enter {}: {error}", root.display());
+            std::process::exit(1);
         }
     }
 
@@ -73,8 +90,11 @@ fn main() {
     };
 
     // Secret store: OS keychain on desktop.
-    let secret_store: Arc<dyn fe_identity::SecretStore> =
-        Arc::new(fe_identity::OsKeystoreBackend::new());
+    let secret_store: Arc<dyn fe_identity::SecretStore> = if qa_root.is_some() {
+        Arc::new(fe_identity::InMemoryBackend::new())
+    } else {
+        Arc::new(fe_identity::OsKeystoreBackend::new())
+    };
 
     // Load or generate a persistent node keypair across three durability
     // tiers: OS keystore -> a key file under the per-user data directory ->
@@ -109,12 +129,35 @@ fn main() {
     let fe_identity::TieredKeypair {
         keypair: node_kp,
         source: identity_source,
-    } = fe_identity::load_or_generate_keypair_durable(
-        &secret_store,
-        "node_keypair",
-        &identity_fallback_dir,
-        &legacy_identity_dir,
-    );
+    } = if let Some(root) = qa_root.as_ref() {
+        let keypair = match fe_identity::file_fallback::load_or_generate(
+            &root.join("identity"),
+            "node_keypair",
+        ) {
+            Ok(keypair) => keypair,
+            Err(error) => {
+                eprintln!("could not load QA identity: {error}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(error) =
+            fe_identity::keychain::store_keypair(&secret_store, "node_keypair", &keypair)
+        {
+            eprintln!("could not initialize QA secret store: {error}");
+            std::process::exit(1);
+        }
+        fe_identity::TieredKeypair {
+            keypair,
+            source: fe_identity::KeypairSource::FileFallback,
+        }
+    } else {
+        fe_identity::load_or_generate_keypair_durable(
+            &secret_store,
+            "node_keypair",
+            &identity_fallback_dir,
+            &legacy_identity_dir,
+        )
+    };
     let identity_banner_message = match identity_source {
         fe_identity::KeypairSource::Keystore | fe_identity::KeypairSource::FileFallback => None,
         fe_identity::KeypairSource::Ephemeral => Some(
@@ -210,7 +253,7 @@ fn main() {
     // fe-database/src/handlers/blob_migration.rs, fe-sync/src/AGENTS.md
     // §blob-store. A migration failure is logged and never blocks startup:
     // the store is still usable, just not backfilled.
-    {
+    if qa_root.is_none() {
         let legacy_root = fe_sync::FsBlobStore::legacy_default_path();
         let new_root = fe_sync::FsBlobStore::default_path();
         let migration_rt = tokio::runtime::Builder::new_current_thread()

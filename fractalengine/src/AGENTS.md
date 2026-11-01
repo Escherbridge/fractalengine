@@ -1351,6 +1351,18 @@ verify (AIS D-AIS-7).
 
 ## §qa-dev-token (headless agent bootstrap, `FE_API_DEV_TOKEN_OUT`, 2026-11-01)
 
+### QA storage boundary
+
+The launcher sets `FE_QA_STORAGE_ROOT` to its confined absolute run directory.
+Startup validates it before any relative state, uses it instead of packaged
+CWD, overrides blob/P2P/hexon paths under it and skips the legacy user-blob
+migration. Settings load from its `config/` directory. The node key uses its
+`identity/` directory; all other secrets use an in-memory backend, initialized
+with that node key. The QA branch never constructs the OS-keystore backend
+and does not migrate a real user's identity. Without this explicit variable,
+desktop storage/keystore behavior is unchanged. See tools/qa/AGENTS.md for
+stage fingerprints, process identity and conservative cleanup rules.
+
 The screenshot/camera/input surfaces all need an **Owner** API token scoped to
 the active verse, and the only in-app mint door (Inspector → API Access →
 `DbCommand::MintApiToken`) caps `max_role` at `manager` by design. A headless

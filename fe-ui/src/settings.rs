@@ -172,7 +172,20 @@ fn clamp_multiplier(value: f32) -> f32 {
 /// `<platform config dir>/fractalengine/settings.ron`, or `None` when the
 /// platform has no config dir.
 pub fn settings_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|dir| dir.join("fractalengine").join("settings.ron"))
+    let qa_root = match fe_identity::file_fallback::qa_storage_root() {
+        Ok(root) => root,
+        Err(error) => {
+            warn!(%error, "invalid QA storage root; settings persistence disabled");
+            return None;
+        }
+    };
+    resolve_settings_path(qa_root.as_deref(), dirs::config_dir().as_deref())
+}
+
+fn resolve_settings_path(qa_root: Option<&Path>, config_root: Option<&Path>) -> Option<PathBuf> {
+    qa_root
+        .map(|root| root.join("config").join("settings.ron"))
+        .or_else(|| config_root.map(|root| root.join("fractalengine").join("settings.ron")))
 }
 
 /// What `load_settings_from` found on disk.
@@ -419,7 +432,10 @@ mod tests {
     #[test]
     fn saved_settings_survive_a_restart() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("fractalengine").join("settings.ron");
+        let normal = dir.path().join("user-config");
+        let isolated = dir.path().join("qa-run");
+        let path = resolve_settings_path(Some(&isolated), Some(&normal)).unwrap();
+        assert_eq!(path, isolated.join("config/settings.ron"));
         let edited = AppSettings {
             render_distance: 750.0,
             entity_cap: 2_000,
@@ -436,6 +452,14 @@ mod tests {
         let (loaded, outcome) = load_settings_from(&path);
         assert_eq!(outcome, LoadOutcome::Loaded);
         assert_eq!(loaded, edited);
+        assert!(
+            !normal.exists(),
+            "QA settings must not touch the user config tree"
+        );
+        assert_eq!(
+            resolve_settings_path(None, Some(&normal)),
+            Some(normal.join("fractalengine/settings.ron"))
+        );
         assert!(
             !path.with_file_name("settings.ron.tmp").exists(),
             "temp file renamed away"

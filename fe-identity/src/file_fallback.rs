@@ -7,6 +7,61 @@ use std::path::{Path, PathBuf};
 
 use crate::keypair::NodeKeypair;
 
+/// Resolve the opt-in run-local QA storage root; malformed roots fail closed.
+pub fn qa_storage_root() -> anyhow::Result<Option<PathBuf>> {
+    let Some(raw) = std::env::var_os("FE_QA_STORAGE_ROOT") else {
+        return Ok(None);
+    };
+    let root = PathBuf::from(raw);
+    anyhow::ensure!(root.is_absolute(), "FE_QA_STORAGE_ROOT must be absolute");
+    let _parents = pin_secret_parents(&root.join(".qa-root-probe"))?;
+    Ok(Some(root.canonicalize()?))
+}
+
+/// Reject redirected ancestors; Windows handles pin each directory during writes.
+fn pin_secret_parents(path: &Path) -> anyhow::Result<Vec<std::fs::File>> {
+    let absolute = std::path::absolute(path)?;
+    anyhow::ensure!(
+        !absolute
+            .components()
+            .any(|c| c == std::path::Component::ParentDir),
+        "secret paths must not contain parent traversal"
+    );
+    let parent = absolute
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("missing secret parent"))?;
+    let mut ancestors: Vec<_> = parent.ancestors().collect();
+    ancestors.reverse();
+    let mut pinned = Vec::new();
+    for directory in ancestors {
+        if !directory.exists() {
+            std::fs::create_dir(directory)?;
+        }
+        let metadata = std::fs::symlink_metadata(directory)?;
+        anyhow::ensure!(
+            !metadata.file_type().is_symlink(),
+            "secret parent is a symlink"
+        );
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+            let handle = std::fs::OpenOptions::new()
+                .access_mode(0x80)
+                .share_mode(0x1)
+                .custom_flags(0x0220_0000)
+                .open(directory)?;
+            anyhow::ensure!(
+                handle.metadata()?.file_attributes() & 0x400 == 0,
+                "secret parent is a reparse point"
+            );
+            pinned.push(handle);
+        }
+        #[cfg(not(windows))]
+        pinned.push(std::fs::File::open(directory)?);
+    }
+    Ok(pinned)
+}
+
 fn key_file_path(dir: &Path, account: &str) -> PathBuf {
     dir.join(format!("{account}.key"))
 }
@@ -106,6 +161,7 @@ fn create_key_file_securely(path: &Path, kp: &NodeKeypair) -> anyhow::Result<()>
 /// fe-identity/src/AGENTS.md §identity-tiers "owner-only files".
 #[cfg(unix)]
 pub fn create_owner_only_file(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+    let _parents = pin_secret_parents(path)?;
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::DirBuilder::new()
@@ -126,34 +182,13 @@ pub fn create_owner_only_file(path: &Path, contents: &[u8]) -> anyhow::Result<()
     Ok(())
 }
 
-/// Windows (our primary platform): no mode bit exists for `open()`, and the
-/// inherited ACL can be broader than owner-only (e.g. `BUILTIN\Users`), so the
-/// file is created EMPTY, given an explicit protected owner-only DACL
-/// (`windows_acl::restrict_to_owner`), and only then written. Any failure
-/// deletes the file and returns `Err` (fail closed).
+/// Create a Windows secret with its owner-only DACL in the creation call.
 #[cfg(windows)]
 pub fn create_owner_only_file(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)?;
-    }
-    drop(
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)?,
-    ); // close the handle before touching the file's security descriptor
-    let written = windows_acl::restrict_to_owner(path)
-        .map_err(|e| {
-            e.context(
-                "could not set an owner-only DACL; refusing to leave a secret \
-                 at the (possibly inherited) default ACL",
-            )
-        })
-        .and_then(|()| {
-            let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
-            file.write_all(contents)?;
-            Ok(())
-        });
+    let _parents = pin_secret_parents(path)?;
+    let mut file = windows_acl::create_owner_only(path)?;
+    let written = file.write_all(contents).map_err(anyhow::Error::from);
+    drop(file);
     if written.is_err() {
         let _ = std::fs::remove_file(path);
     }
@@ -178,6 +213,21 @@ pub fn create_owner_only_file(path: &Path, contents: &[u8]) -> anyhow::Result<()
 /// renamed over `path`, so a reader sees the old file or the new one, never a
 /// partial or broadly-readable one. The temp file is removed on any failure.
 pub fn replace_owner_only_file(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+    let _parents = pin_secret_parents(path)?;
+    if let Ok(metadata) = std::fs::symlink_metadata(path) {
+        anyhow::ensure!(
+            !metadata.file_type().is_symlink(),
+            "secret target is a symlink"
+        );
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            anyhow::ensure!(
+                metadata.file_attributes() & 0x400 == 0,
+                "secret target is a reparse point"
+            );
+        }
+    }
     let file_name = path
         .file_name()
         .ok_or_else(|| anyhow::anyhow!("{} has no file name", path.display()))?;
@@ -236,17 +286,27 @@ fn warn_if_permissions_loosened(_path: &Path) {}
 mod windows_acl {
     use std::ffi::c_void;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
     use std::path::Path;
 
     type Bool = i32;
     type DWord = u32;
+
+    #[repr(C)]
+    struct SecurityAttributes {
+        length: DWord,
+        descriptor: *mut c_void,
+        inherit: Bool,
+    }
 
     /// SDDL: Protected DACL (no inheritance), one ACE granting
     /// `FILE_ALL_ACCESS` to the Owner (`OW` resolves to whoever owns the
     /// object, i.e. the creating user).
     const OWNER_ONLY_SDDL: &str = "D:P(A;;FA;;;OW)";
     const SDDL_REVISION_1: DWord = 1;
+    #[cfg(test)]
     const DACL_SECURITY_INFORMATION: DWord = 0x0000_0004;
+    #[cfg(test)]
     const PROTECTED_DACL_SECURITY_INFORMATION: DWord = 0x8000_0000;
 
     #[link(name = "advapi32")]
@@ -258,6 +318,7 @@ mod windows_acl {
             security_descriptor_size: *mut u32,
         ) -> Bool;
 
+        #[cfg(test)]
         fn SetFileSecurityW(
             file_name: *const u16,
             security_information: DWord,
@@ -267,6 +328,15 @@ mod windows_acl {
 
     #[link(name = "kernel32")]
     extern "system" {
+        fn CreateFileW(
+            file_name: *const u16,
+            access: DWord,
+            sharing: DWord,
+            attributes: *const SecurityAttributes,
+            disposition: DWord,
+            flags: DWord,
+            template: *mut c_void,
+        ) -> *mut c_void;
         fn LocalFree(hmem: *mut c_void) -> *mut c_void;
     }
 
@@ -277,10 +347,53 @@ mod windows_acl {
             .collect()
     }
 
+    /// Create a new file with its protected owner-only DACL in the creation call.
+    pub(crate) fn create_owner_only(path: &Path) -> anyhow::Result<std::fs::File> {
+        let sddl: Vec<u16> = OWNER_ONLY_SDDL
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let path_w = wide_null(path);
+        // SAFETY: buffers and descriptor remain live through CreateFileW; File owns the returned handle.
+        unsafe {
+            let mut descriptor = std::ptr::null_mut();
+            if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut descriptor,
+                std::ptr::null_mut(),
+            ) == 0
+            {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            let attributes = SecurityAttributes {
+                length: std::mem::size_of::<SecurityAttributes>() as DWord,
+                descriptor,
+                inherit: 0,
+            };
+            let handle = CreateFileW(
+                path_w.as_ptr(),
+                0x4000_0000,
+                0,
+                &attributes,
+                1,
+                0x0020_0080,
+                std::ptr::null_mut(),
+            );
+            let error = std::io::Error::last_os_error();
+            LocalFree(descriptor);
+            if handle as isize == -1 {
+                return Err(error.into());
+            }
+            Ok(std::fs::File::from_raw_handle(handle))
+        }
+    }
+
     /// Restrict `path` to an owner-only, protected (non-inheriting) DACL.
     /// Returns `Err` on ANY failure, including a failure to even build the
     /// security descriptor — the caller must treat that as a hard tier
     /// failure, never silently keep the file at whatever ACL it inherited.
+    #[cfg(test)]
     pub(crate) fn restrict_to_owner(path: &Path) -> anyhow::Result<()> {
         let sddl: Vec<u16> = OWNER_ONLY_SDDL
             .encode_utf16()
@@ -408,6 +521,34 @@ mod tests {
             .expect("file present");
         assert_eq!(loaded.seed_bytes(), kp.seed_bytes());
 
+        let replacement = NodeKeypair::generate();
+        replace_owner_only_file(&path, hex::encode(replacement.seed_bytes()).as_bytes())
+            .expect("replace retains owner-only creation");
+        assert_eq!(
+            try_read_seed(&path).unwrap().unwrap().seed_bytes(),
+            replacement.seed_bytes()
+        );
+        assert!(create_owner_only_file(&path, b"must not overwrite").is_err());
+
+        let target = dir.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        let junction = dir.path().join("redirected");
+        let output = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&target)
+            .output()
+            .expect("mklink");
+        assert!(
+            output.status.success(),
+            "junction setup failed: {:?}",
+            output
+        );
+        assert!(create_owner_only_file(&junction.join("secret"), b"secret").is_err());
+        assert!(replace_owner_only_file(&junction.join("secret"), b"secret").is_err());
+        assert!(!target.join("secret").exists());
+        std::fs::remove_dir(&junction).expect("unlink junction without traversing it");
+
         if let Ok(output) = std::process::Command::new("icacls").arg(&path).output() {
             let listing = String::from_utf8_lossy(&output.stdout);
             assert!(
@@ -438,14 +579,12 @@ mod tests {
         let new_dir = tempdir();
         let legacy_dir = tempdir();
         let legacy_kp = NodeKeypair::generate();
-        create_key_file_securely(
-            &legacy_dir.path().join("node_keypair.key"),
-            &legacy_kp,
-        )
-        .expect("seed the legacy location");
+        create_key_file_securely(&legacy_dir.path().join("node_keypair.key"), &legacy_kp)
+            .expect("seed the legacy location");
 
-        let migrated = load_or_generate_migrating(new_dir.path(), legacy_dir.path(), "node_keypair")
-            .expect("migration ok");
+        let migrated =
+            load_or_generate_migrating(new_dir.path(), legacy_dir.path(), "node_keypair")
+                .expect("migration ok");
         assert_eq!(migrated.seed_bytes(), legacy_kp.seed_bytes());
         assert!(
             new_dir.path().join("node_keypair.key").exists(),
