@@ -39,7 +39,7 @@ pub struct GpxImportStatus {
 pub fn surface_gpx_import_status(
     status: Res<GpxImportStatus>,
     mut ui_mgr: ResMut<crate::actions::UiManager>,
-    time: Res<Time>,
+    time: Res<crate::notice::NoticeClock>,
 ) {
     if !status.is_changed() || status.petal_id.is_none() {
         return;

@@ -19,22 +19,40 @@ condition chips.
   `active_toast`'s signatures are unchanged on purpose: `panels/mod.rs`
   (Lane B frozen through W1/W2) calls both directly, and W3-S1 is the one
   that replaces the renderer to use `active_notice`/severity colors/hold/✕.
-- **Queue cap 4, evict `Info` first.** `evict_for_new_notice` never drops an
-  `Error` unless the queue is somehow all-`Error`. `error_history` (ring of
-  20, newest-pushed first) only ever receives `Error`-severity notices —
-  it's the status bar's "recent errors" popover source, not a general log.
+- **Queue cap 4: prune, then evict lowest — never upward.** A push first
+  drops expired notices; if the queue is still full, `evict_for_new_notice`
+  removes the oldest `Info`, else `Advisory`, else `Error` — but never one
+  that outranks the incoming notice, so an `Info` arriving into four live
+  `Error`s is dropped rather than thinning them (W1 critic). `error_history`
+  (ring of 20, newest-pushed first) only ever receives `Error`-severity
+  notices — it's the status bar's "recent errors" popover source.
+- **One clock: `notice::NoticeClock` (= `Time<Real>`).** bevy_egui feeds
+  `RawInput::time` from `Time<Real>`, and the renderer reads `ctx.input(|i|
+  i.time)`. A Bevy system that stamps with the default `Res<Time>`
+  (`Time<Virtual>`, clamped to 250 ms per frame) falls behind after every
+  hitch — startup, a big import, a window drag — and its notices then look
+  that much older: with more than 7 s of lag every Error expired on arrival.
+  Every notice-stamping system takes `Res<NoticeClock>`; egui-side code uses
+  `ctx.input(|i| i.time)`, which is the same value (W1 critic).
+- **Dismiss acknowledges.** `dismiss_notice(id)` on an `Error` also records it
+  as acknowledged; `latest_unacknowledged_error()` (what the status-bar
+  segment shows) then skips it and every older one, so the segment's Dismiss
+  actually clears it. The history ring keeps the entry.
 - **Hold-while-hovered.** `held_notice: Option<u64>` is a single id, not a
   per-notice flag on `Notice` itself, because only one notice renders at a
   time (the renderer calls `hold_notice`/`dismiss_notice` with the id
   `active_notice` just handed it). `hold_notice` on an id no longer queued
   is a no-op rather than resurrecting it.
-- **`humanize_db_error` keeps the raw string in the log, not the notice.**
-  For a recognized `"<prefix>: permission denied: <reason>"` shape it
-  returns a role-denial sentence; for anything else it returns a short
-  `"Something went wrong: {snippet}"` and the FULL raw string stays only in
-  the `bevy::log::error!`/`warn!` line the caller (`db_results/query.rs`'s
-  `handle_error`, W1-S2) keeps alongside the `show_error` call — the notice
-  itself is never the only place the real error text survives.
+- **The raw DB error lives in the history, not on screen.**
+  `UiManager::show_db_error(raw, &ctx, now)` shows `humanize_db_error(raw,
+  ctx)` — a role-denial sentence for a `"<prefix>: permission denied:
+  <reason>"` shape, else a short `"Something went wrong: {snippet}"` — and
+  keeps the untruncated `raw` as the notice's `detail`. The status-bar
+  history shows it under the humanized line and Copy copies it (plan §3 W1:
+  "raw message in the history only"). Every `DbResult` failure path uses it:
+  `db_results/query.rs::handle_error`, `terrain.rs`'s
+  `handle_petal_terrain_set_failed`, `hierarchy.rs`'s foreign
+  `JoinVerseFailed`.
 - **`send_or_toast`** replaces a bare `tx.send(cmd).is_err()` + `warn!` pair
   with one call that also tells the user ("Couldn't {what} — not connected")
   instead of failing silently on a closed channel (AGENTS.md anti-pattern
@@ -43,10 +61,36 @@ condition chips.
   (X-17) target list names other files: `sidebar.rs`, `create_entity.rs`,
   `gltf_import.rs`, `join.rs`, `entity_settings.rs`, `inspector.rs` — those
   slices call `send_or_toast` directly).
-- **`JoinRequestState`** (`pending`/`error`) is the single source of truth
-  the Join dialog (W1-S4) and the `JoinVerseFailed`/`VerseJoined` result
-  arms (W1-S2, `db_results/hierarchy.rs`) share, instead of each inferring
-  the other's state from `ActiveDialog::JoinDialog`'s own fields.
+- **Severity is chosen by meaning, not by habit.** `show_toast` (Info) is for
+  a completed action ("URL saved", "Joined {verse}"); `show_advisory` is for
+  guidance where nothing failed ("No node selected", "Navigate to a petal
+  first"); `show_error` is for any failure the user must act on ("URL not
+  saved — …", "Transform not applied — …", a visibility write that did not
+  persist). Only Error is held, ✕-able and kept in the history ring, so a
+  failure sent through `show_toast` vanishes in 2.5 s — ui_ux.md §6. The W1
+  advocate pass re-tiered `process_ui_actions` and `db_results/mod.rs`'s
+  `RequestFailed` arm onto this rule.
+- **One role word, one denial context.** `notice::role_label(Option<RoleLevel>)`
+  is the only role-to-copy mapping (Owner/Manager/Editor/Viewer, "Visitor"
+  for `RoleLevel::None`, "—" while unresolved); `DenialContext::new(&LocalUserRole,
+  verse_name)` and `notice::active_verse_name(&nav)` are the only way GUI
+  code builds a `humanize_db_error` context. Before the W1 advocate pass there
+  were three labelers that disagreed ("Visitor" vs lowercase "viewer" as a
+  guess for an unknown role vs "—"). With an unresolved role the denial reads
+  "Editor role needed[ in {verse}] to {verb}" — never "You're a —".
+- **`DialogRequestState`** (`pending`/`error`/`sent_at`, with
+  `start`/`finish`/`reset`/`waiting_within`) is the single source of truth a
+  dialog and its reply arm share — `join_request` (Join, finished by
+  `db_results/hierarchy.rs`) and `gltf_import_request` (glTF Import, finished
+  by `db_results/mod.rs::finish_gltf_import_request`). See
+  `dialogs/AGENTS.md` §dialog-requests. (It was `JoinRequestState` with only
+  `pending`/`error` until the W1 advocate pass gave Import the same shape in
+  place of its egui-temp lock, which the reply arm could not clear.)
+- **Extracted arm bodies.** `open_portal` (P-01) and `open_path_in_options`
+  (D-12) are the `OpenPortal`/`PathSelectTrack` arm bodies as named fns: the
+  dispatcher calls them and the tests drive them, so a test can no longer
+  pass against a hand-copied mirror of the arm. `SaveUrl` sends through
+  `send_or_toast` ("Couldn't save the URL — not connected").
 - **D-12 (Edit Path).** `UiAction::PathSelectTrack`'s handler now also
   activates the Pen tool (`ToolState::activate`, which does the one-shot
   Options reveal itself) and toasts "Path open in Options" — previously it

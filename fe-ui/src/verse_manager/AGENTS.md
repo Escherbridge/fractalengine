@@ -88,7 +88,10 @@ now a thin dispatcher (`db_results/mod.rs`) over one `handle_*` function per
   closes the dialog + navigates + toasts, and a failure writes
   `join_request.error` for the dialog to render inline instead of a toast;
   without a pending dialog a failure still reaches the user as a general
-  error notice (`ui_mgr.show_error`) rather than being dropped.
+  error notice (`ui_mgr.show_error`) rather than being dropped. The same
+  `DialogRequestState` shape closes the glTF Import dialog:
+  `mod.rs::finish_gltf_import_request` runs after `nodes.rs`'s
+  `GltfImported` handler (`dialogs/AGENTS.md` §dialog-requests).
 - `nodes.rs` — single-node lifecycle: `GltfImported`, `NodeCreated` (pen
   auto-create flush + Paths-tab re-query), `NodeDeleted`.
 - `roles.rs` — invites, peer roles, local role, log-only acks, and (M2/F6)

@@ -4,6 +4,7 @@
 use crate::actions::UiManager;
 use crate::gis::{GisPanelState, PathEditorState};
 use crate::navigation_manager::NavigationManager;
+use crate::notice::{active_verse_name, humanize_db_error, DenialContext};
 use crate::plugin::{InspectorFormState, LocalUserRole};
 
 /// Correlated `QueryResult`/`QueryFailed`: land the reply ONLY in the buffer
@@ -99,26 +100,62 @@ pub(super) fn handle_error(
              cleared pending pen state; click again to retry: {msg}"
         );
     }
-    let ctx = crate::notice::DenialContext {
-        role_label: role_label(local_role),
-        verse_name: nav
-            .active_verse_id
-            .as_deref()
-            .map(|_| nav.active_verse_name.as_str()),
-    };
-    ui_mgr.show_error(crate::notice::humanize_db_error(msg, &ctx), now);
+    let ctx = DenialContext::new(local_role, active_verse_name(nav));
+    // D-06: a failed import has no typed reply, so its prefix is what lets
+    // the Import dialog that asked unlock and say why, like Join does.
+    if msg.starts_with(GLTF_IMPORT_FAILED_PREFIX) && ui_mgr.gltf_import_request.finish() {
+        ui_mgr.gltf_import_request.error = Some(humanize_db_error(msg, &ctx));
+        return;
+    }
+    ui_mgr.show_db_error(msg, &ctx, now);
 }
 
-/// Human role label for [`crate::notice::DenialContext`] — `LocalUserRole`
-/// has no `Display` of its own (it wraps `fe_database::RoleLevel`, which
-/// prints lowercase); this is the one place that needs the capitalized form
-/// humanized copy reads naturally with ("Editor role needed...").
-fn role_label(local_role: &LocalUserRole) -> &'static str {
-    match local_role.role {
-        Some(fe_database::RoleLevel::Owner) => "Owner",
-        Some(fe_database::RoleLevel::Manager) => "Manager",
-        Some(fe_database::RoleLevel::Editor) => "Editor",
-        Some(fe_database::RoleLevel::Viewer) => "Viewer",
-        Some(fe_database::RoleLevel::None) | None => "Visitor",
+/// Prefix of the uncorrelated `DbResult::Error` an `ImportGltf` failure
+/// replies with (`fe-database/src/lib.rs`, the `ImportGltf` arm).
+const GLTF_IMPORT_FAILED_PREFIX: &str = "GLTF import failed";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dialogs::ActiveDialog;
+
+    /// D-06: the Import dialog's own failed import unlocks it with the reason
+    /// inline; any other error leaves its request in flight and goes to the
+    /// general notice instead.
+    #[test]
+    fn gltf_import_failure_unlocks_only_the_dialog_that_asked() {
+        let cases = [
+            ("GLTF import failed: file not found: a.glb", false, true),
+            ("Load hierarchy failed: disk full", true, false),
+        ];
+        for (raw, still_pending, inline) in cases {
+            let mut ui_mgr = UiManager::default();
+            ui_mgr.open_dialog(ActiveDialog::GltfImport {
+                file_path_buf: "a.glb".into(),
+                name_buf: String::new(),
+                position: [0.0; 3],
+            });
+            ui_mgr.gltf_import_request.start(1.0);
+            handle_error(
+                raw,
+                &mut PathEditorState::default(),
+                &mut ui_mgr,
+                &LocalUserRole::default(),
+                &NavigationManager::default(),
+                2.0,
+            );
+            assert_eq!(ui_mgr.gltf_import_request.pending, still_pending, "{raw}");
+            assert_eq!(
+                ui_mgr
+                    .gltf_import_request
+                    .error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("file not found")),
+                inline,
+                "{raw}"
+            );
+            assert_eq!(ui_mgr.latest_unacknowledged_error().is_some(), !inline, "{raw}");
+            assert!(matches!(ui_mgr.active_dialog, ActiveDialog::GltfImport { .. }));
+        }
     }
 }

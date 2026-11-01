@@ -34,8 +34,8 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-/// `local_role` (NEEDS-WIRING: `ui_shell::right_sidebar::render_maps_section`
-/// → this fn) is the live `LocalUserRole` resource — Set/Clear/Remove gate on
+/// `local_role` is the live `LocalUserRole` resource (threaded by
+/// `ui_shell::right_sidebar::render_maps_section`) — Set/Clear/Remove gate on
 /// it (X-02); the server-side `fe-policy` check on `SetPetalTerrain` stays
 /// authoritative regardless of what this control shows (ui_ux §3 "gating is
 /// advisory only").
@@ -406,21 +406,25 @@ fn render_installed_map_card(
                 }
 
                 // M-04: "Remove" → "Confirm remove" (two-step), gated the same
-                // way as Set/Clear above (X-02).
-                if local_role.can_edit() {
-                    if confirm_button(ui, ("hexon-remove", ts.hexon_id.as_str()), "Remove", "Confirm remove")
-                    {
-                        actions.push(UiAction::HexonRemoveTileset(ts.hexon_id.clone()));
-                    }
-                } else {
-                    let reason = role_denial_reason(local_role, "Editor", None);
-                    role_gated(
+                // way as Set/Clear above (X-02). A disabled scope around the
+                // one `confirm_button` keeps the denied look identical to the
+                // allowed one instead of a hand-styled lookalike.
+                let can_remove = local_role.can_edit();
+                let remove = ui.add_enabled_ui(can_remove, |ui| {
+                    confirm_button(
                         ui,
-                        false,
-                        &reason,
-                        egui::Button::new(egui::RichText::new("Remove").color(egui::Color32::WHITE))
-                            .fill(theme::BG_DANGER),
-                    );
+                        ("hexon-remove", ts.hexon_id.as_str()),
+                        "Remove",
+                        "Confirm remove",
+                    )
+                });
+                if !can_remove {
+                    remove
+                        .response
+                        .on_disabled_hover_text(role_denial_reason(local_role, "Editor", None));
+                }
+                if remove.inner {
+                    actions.push(UiAction::HexonRemoveTileset(ts.hexon_id.clone()));
                 }
             });
         });

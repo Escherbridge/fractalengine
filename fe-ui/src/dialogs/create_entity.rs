@@ -9,25 +9,16 @@ use bevy_egui::egui;
 
 use super::{ActiveDialog, CreateKind};
 use crate::actions::{send_or_toast, UiManager};
-use crate::navigation_manager::NavigationManager;
 use crate::theme;
-use crate::verse_manager::VerseManager;
 use fe_runtime::messages::DbCommand;
 
 pub fn render_create_dialog(
     ctx: &egui::Context,
     ui_mgr: &mut UiManager,
-    // W1-GATE compile-fix: unused since L-06's spawn_position now carries the
-    // camera-focus value the caller used to derive from these; kept in the
-    // signature in case a future wave needs tree context here.
-    _hierarchy: &mut VerseManager,
-    _nav: &mut NavigationManager,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
     // L-06: a node made via the tree "+" used to spawn at the petal origin,
-    // often off-screen; `Some(focus)` places it there instead. `None` keeps
-    // the old origin fallback. NEEDS-WIRING: `fe-ui/src/panels/mod.rs`'s
-    // call site (currently `render_create_dialog(ctx, ui_mgr, hierarchy, nav,
-    // db_tx)`) must pass the real camera focus target.
+    // often off-screen; `Some(focus)` (the camera focus target, threaded by
+    // `panels/mod.rs`) places it there instead. `None` keeps the origin.
     spawn_position: Option<[f32; 3]>,
 ) {
     let ActiveDialog::CreateEntity {
@@ -154,24 +145,6 @@ pub(crate) fn build_create_command(
             correlation_id: None,
         },
     }
-}
-
-/// Send a DB command to create the entity. The hierarchy will update when
-/// the DbResult comes back -- no local push to avoid duplicates.
-///
-/// Kept as a thin, bare-send wrapper (no `ui_mgr`, so no toast on a dead
-/// channel) for callers outside this dialog that don't hold a `UiManager`
-/// borrow conflict to route around — `render_create_dialog` itself now goes
-/// through [`build_create_command`] + `send_or_toast` instead.
-pub fn apply_create(
-    _hierarchy: &mut VerseManager,
-    _nav: &mut NavigationManager,
-    kind: CreateKind,
-    parent_id: &str,
-    name: &str,
-    db_tx: &crossbeam::channel::Sender<DbCommand>,
-) {
-    db_tx.send(build_create_command(kind, parent_id, name, None)).ok();
 }
 
 #[cfg(test)]

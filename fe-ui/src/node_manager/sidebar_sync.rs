@@ -18,7 +18,7 @@ pub(super) fn sync_sidebar_to_manager(
     node_query: Query<(Entity, &SpawnedNodeMarker)>,
     visibility: Res<VisibilityState>,
     mut ui_mgr: ResMut<UiManager>,
-    time: Res<Time>,
+    time: Res<crate::notice::NoticeClock>,
 ) {
     let Some(node_id) = manager.pending_sidebar_select.take() else {
         return;
@@ -55,7 +55,7 @@ mod tests {
     /// currently selected.
     fn app_with_selection() -> (App, Entity) {
         let mut app = App::new();
-        app.init_resource::<Time>()
+        app.init_resource::<crate::notice::NoticeClock>()
             .init_resource::<NodeManager>()
             .init_resource::<UiManager>()
             .init_resource::<VisibilityState>()
@@ -127,5 +127,29 @@ mod tests {
                 .map(|(msg, _)| msg.to_string());
             assert_eq!(toast.as_deref(), Some(HIDDEN_SELECT_TOAST), "{label}");
         }
+    }
+
+    /// Notices are stamped on `NoticeClock` (real time, what egui renders
+    /// against), not the virtual `Time` that lags after a hitch — a lag of
+    /// more than an Error's 7 s would otherwise hide it on arrival.
+    #[test]
+    fn notice_is_stamped_on_the_render_clock_not_virtual_time() {
+        let (mut app, _) = app_with_selection();
+        app.init_resource::<Time>(); // virtual time, left at 0 (lagging)
+        {
+            let mut clock = app
+                .world_mut()
+                .resource_mut::<crate::notice::NoticeClock>();
+            let start = clock.startup();
+            clock.update_with_instant(start);
+            clock.update_with_instant(start + std::time::Duration::from_secs(10));
+        }
+        app.world_mut()
+            .resource_mut::<VisibilityState>()
+            .set_node_override("n1", OverrideState::Hide);
+        sidebar_click(&mut app, "n1");
+        let ui_mgr = app.world().resource::<UiManager>();
+        let (notice, _) = ui_mgr.active_notice(10.0).expect("toast live at t=10");
+        assert_eq!(notice.spawned_at, 10.0);
     }
 }

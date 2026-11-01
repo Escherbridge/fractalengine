@@ -44,45 +44,76 @@ set local flags/owned values (`Option<DbCommand>`, `bool`); then act on
 `ui_mgr` again only after `.show()` returns, once the field-borrow's last use
 has passed.
 
+## §dialog-requests — one in-flight shape for Join and Import
+
+A dialog that must stay open until its DB reply lands keeps its round-trip in
+an `actions::DialogRequestState` on `UiManager` (`join_request`,
+`gltf_import_request`) — never in egui temp memory, because the reply arm in
+`verse_manager/db_results` has no egui context to clear it with. Lifecycle:
+the dialog `start(now)`s it only after `send_or_toast` succeeds; the reply arm
+`finish()`es it (true only for a request this dialog sent) and closes the
+dialog only while that dialog is still the active one; Cancel/close
+`reset()`s it. A dialog whose failure arrives as an uncorrelated
+`DbResult::Error` bounds its lock with `waiting_within(now, timeout)`.
+Both dialogs bound it (30 s): even a typed reply never comes if the DB thread
+died mid-request, and a lock without a bound leaves no Cancel and no close-X.
+
 ## §join-flow (D-05, W1-S4/W1-S2)
 
-`join.rs` no longer closes the moment Join is clicked. It sets
-`ui_mgr.join_request.pending` (via `send_or_toast`) and keeps the window open
-with a spinner; `join_request.error` (cleared by this file, set only by
+`join.rs` no longer closes the moment Join is clicked. It `start`s
+`ui_mgr.join_request` (after `send_or_toast`) and keeps the window open with a
+spinner; `join_request.error` (set only by
 `verse_manager/db_results/hierarchy.rs`'s `JoinVerseFailed` arm) renders
 inline. The window's native close-X is withheld while pending, same as
 Cancel/Join/the invite text field, so an in-flight join cannot be
 accidentally abandoned mid-air — only a `VerseJoined`/`JoinVerseFailed` reply
-or an explicit Cancel while *not* pending ends it.
+or an explicit Cancel while *not* pending ends it. The lock lifts after
+`JOIN_LOCK_TIMEOUT_SECONDS` (30 s) if no reply arrives at all.
 
 ## §gltf-import-flow (D-06, W1-S4)
 
 `gltf_import.rs::import_enabled(file_path, petal_id)` is the pure gate for
 Import (both must be non-blank). A click no longer closes the dialog; it
-locks the fields and shows "Importing…" via a timestamped egui-temp flag
-that self-expires after `IMPORT_LOCK_TIMEOUT_SECONDS` (30s) as a safety net.
-**NEEDS-WIRING** (not finishable inside this file's owns list): the
-`GltfImported` reply (`verse_manager/db_results/mod.rs`) should call
-`ui_mgr.close_dialog()` directly instead of relying on the timeout, and
-`panels/mod.rs`'s call site should thread the real petal `world_scale`
-(currently a literal) into the new `world_scale: f64` parameter that drives
-the Position row's meters display.
+`start`s `ui_mgr.gltf_import_request`, locks the fields and shows
+"Importing…". `db_results/mod.rs::finish_gltf_import_request` (called from the
+`GltfImported` arm) closes the dialog and toasts "Imported {name}". A failed
+import replies with an uncorrelated `DbResult::Error("GLTF import failed:
+…")`; `db_results/query.rs::handle_error` recognizes that prefix and, when
+the dialog's request is in flight, finishes it with the humanized reason as
+`gltf_import_request.error`, rendered inline so the user can fix the path and
+retry at once. `IMPORT_LOCK_TIMEOUT_SECONDS` (30 s) is only the no-reply
+safety net. The Position row reads in meters from the petal `world_scale`
+that `panels/mod.rs` threads in.
 
 ## §create-entity-flow (D-07, L-06, W1-S4)
 
-`create_entity.rs::build_create_command` is now the single pure builder for
-all four `DbCommand::Create*` variants (unit-tested table), used by both
-`render_create_dialog` (via `send_or_toast`, toasting only a dead-channel
-failure) and the legacy bare-send `apply_create` wrapper kept for other
-callers. Create is disabled on a blank name; the Name field autofocuses on
-open (nothing else in this small dialog competes for focus); Enter submits
-exactly like clicking Create. **NEEDS-WIRING:** `render_create_dialog` grew a
-`spawn_position: Option<[f32; 3]>` parameter (L-06 — a node made via the tree
-"+" was spawning at the origin, often off-screen) that `panels/mod.rs`'s call
-site must fill from the camera focus target; a successful create's toast
-(D-07) also needs the `VerseCreated`/`FractalCreated`/`PetalCreated`/
-`NodeCreated` arms in `verse_manager/db_results/mod.rs` to call
-`ui_mgr.show_toast(..)`, which is outside this file's owns list.
+`create_entity.rs::build_create_command` is the single pure builder for all
+four `DbCommand::Create*` variants (unit-tested table), sent by
+`render_create_dialog` through `send_or_toast`. (The bare-send `apply_create`
+wrapper had no callers and was deleted in the W1 advocate pass.) Create is
+disabled on a blank name; the Name field autofocuses on open (nothing else in
+this small dialog competes for focus); Enter submits exactly like clicking
+Create. A node spawns at `spawn_position` — the camera focus target
+`panels/mod.rs` threads in (L-06) — or the origin when there is none.
+**Still open (D-07 "toast on result"):** a successful create has no toast; the
+`VerseCreated`/`FractalCreated`/`PetalCreated`/`NodeCreated` arms in
+`verse_manager/db_results/` would need a `DialogRequestState` like Import's to
+tell a dialog-sent create from an API/pen one.
+
+## §hexon-manager — Maps section cards (M-01, M-03, M-04, X-02)
+
+`hexon_manager.rs` renders as the right-sidebar Maps section;
+`ActiveDialog::HexonManager` is only its state carrier. The Installed tab is
+one `egui::Frame` card per installed map (clipped region name + Seed toggle,
+a zoom/tiles/size line, then the Map and Remove actions) rather than the old
+7-column Grid, built from `panels::widgets::{clipped_value, role_gated,
+role_denial_reason, confirm_button}`. While `PetalMapState.pending_set` is
+`Some`, the active map's button reads "Applying…" instead of "Active map ✓"
+(`terrain_map/AGENTS.md` §petal-map truth). Remove is a `confirm_button`
+inside `add_enabled_ui(can_edit)`, so a Viewer sees the same button disabled
+with the role reason. The carrier's `pending_remove` field is now dead weight:
+`seed_hexon_manager()` in `ui_shell/right_sidebar.rs` still fills it, nothing
+reads it (removal belongs to the W6 dead-code sweep).
 
 ## §claim-ownership (F6)
 

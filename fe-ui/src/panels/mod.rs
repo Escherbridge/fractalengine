@@ -291,21 +291,17 @@ pub fn gardener_console(
                 // variant (early return otherwise, unchanged from today); the
                 // guard just quarantines that one dialog if it panics.
                 let _ = guarded(modal, "dialog_create_entity", || {
-                    // W1-GATE NEEDS-WIRING (L-06, W1-S4): spawn at the camera
-                    // focus target when one exists, same source `viewport.rs`
-                    // uses to frame a selection.
+                    // L-06: a new node spawns at the camera focus target when
+                    // one exists (the source `viewport.rs` frames selections with).
                     crate::dialogs::render_create_dialog(
                         ctx,
                         ui_mgr,
-                        hierarchy,
-                        nav,
                         db_tx,
                         camera_focus.target.as_ref().map(|(_, pos)| *pos),
                     )
                 });
                 let _ = guarded(modal, "dialog_gltf_import", || {
-                    // W1-GATE NEEDS-WIRING (W1-S4): meters readout needs the
-                    // active petal's real-world scale.
+                    // D-06: the meters readout needs the active petal's scale.
                     crate::dialogs::render_gltf_import_dialog(
                         ctx,
                         ui_mgr,

@@ -92,7 +92,7 @@ fn mesh_instance_watchdog(
     mut removed: RemovedComponents<Mesh3d>,
     mut budget: ResMut<MeshInstanceBudget>,
     mut ui_mgr: ResMut<UiManager>,
-    time: Res<Time>,
+    time: Res<crate::notice::NoticeClock>,
 ) {
     let count = meshes.iter().len();
     let (exceeded, announce) = watchdog_transition(budget.exceeded, count, budget.ceiling);

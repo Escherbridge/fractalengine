@@ -42,6 +42,17 @@ parameter clears a *matching* `pending_set` on the confirming echo, checked
 before the active-petal gate so the row can't get stuck "Applying…" forever
 just because the user navigated away mid-write.
 
+**The rollback target is the last CONFIRMED state, not the previous click**
+(W1 critic). A set sent while another is in flight carries the earlier
+`pending_set`'s snapshot forward (`actions::hexon::rollback_baseline`) —
+`petal_map` then holds the first set's *optimistic* map, and snapshotting that
+made a denied second set "restore" a map that was never persisted (two quick
+Set clicks, or a Viewer dragging the scale slider). Conversely, any
+non-matching `PetalTerrainLoaded` for the active petal is persisted truth (an
+earlier set's echo, a peer write, a plain Get), so it overwrites the pending
+snapshot. The denial notice goes through `UiManager::show_db_error`, which
+keeps the raw error in the history.
+
 `dialogs/hexon_manager.rs`'s Installed tab renders one card per map (M-01;
 a 7-column `Grid` doesn't fit a 440 px side panel) and shows "Applying…" in
 place of "Active map ✓" while `pending_set.is_some()` for that petal. Set/

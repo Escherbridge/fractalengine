@@ -61,8 +61,8 @@ pub(super) struct DescriptorCaches<'w, 's> {
     /// Phase 3 visibility hydration target (`view.state`/`view.groups` via
     /// `NodePropertiesLoaded`, `PetalViewStateLoaded`, `NodeViewSet`).
     visibility: ResMut<'w, crate::visibility::VisibilityState>,
-    /// Toast clock for the "Visibility not saved" failure notice.
-    time: Res<'w, Time>,
+    /// Notice clock for every notice this system shows (`notice::NoticeClock`).
+    time: Res<'w, crate::notice::NoticeClock>,
 }
 
 pub(super) fn apply_db_results(
@@ -174,17 +174,20 @@ pub(super) fn apply_db_results(
                 asset_path,
                 position,
                 ..
-            } => nodes::handle_gltf_imported(
-                node_id,
-                name,
-                petal_id,
-                asset_path,
-                *position,
-                &mut verse_mgr,
-                &nav,
-                &mut commands,
-                &asset_server,
-            ),
+            } => {
+                nodes::handle_gltf_imported(
+                    node_id,
+                    name,
+                    petal_id,
+                    asset_path,
+                    *position,
+                    &mut verse_mgr,
+                    &nav,
+                    &mut commands,
+                    &asset_server,
+                );
+                finish_gltf_import_request(name, &mut ui_mgr, caches.time.elapsed_secs_f64());
+            }
             DbResult::NodeCreated {
                 id,
                 petal_id,
@@ -440,7 +443,7 @@ pub(super) fn apply_db_results(
                         })
                 {
                     bevy::log::warn!("visibility write not persisted: {error}");
-                    ui_mgr.show_toast(toast, caches.time.elapsed_secs_f64());
+                    ui_mgr.show_error(toast, caches.time.elapsed_secs_f64());
                 }
             }
             DbResult::NodePropertySet { node_id, key } => {
@@ -507,9 +510,7 @@ pub(super) fn apply_db_results(
                 &mut petal_map,
                 &mut ui_mgr,
                 &local_role,
-                nav.active_verse_id
-                    .as_deref()
-                    .map(|_| nav.active_verse_name.as_str()),
+                crate::notice::active_verse_name(&nav),
                 caches.time.elapsed_secs_f64(),
             ),
             // p2p_asset_streaming S6: both the GUI's own echo and a
@@ -555,6 +556,18 @@ pub(super) fn apply_db_results(
         // This covers cases like ScopeResolved, NodeCreated, etc. that
         // the API thread may be waiting on.
         pending_api.try_deliver(result.clone());
+    }
+}
+
+/// D-06: a `GltfImported` that answers the Import dialog's own request
+/// closes it and confirms; an import from elsewhere (API, drop) leaves the
+/// dialogs alone. Same shape as `hierarchy::handle_verse_joined`.
+fn finish_gltf_import_request(name: &str, ui_mgr: &mut crate::actions::UiManager, now: f64) {
+    if ui_mgr.gltf_import_request.finish() {
+        if matches!(ui_mgr.active_dialog, crate::dialogs::ActiveDialog::GltfImport { .. }) {
+            ui_mgr.close_dialog();
+        }
+        ui_mgr.show_toast(format!("Imported {name}"), now);
     }
 }
 
@@ -709,6 +722,42 @@ mod tests {
             matches!(ui.active_dialog, ActiveDialog::JoinDialog { .. }),
             "the dialog stays open so the user sees the inline error"
         );
+    }
+
+    /// D-06: the Import dialog's own `GltfImported` closes it and confirms;
+    /// an import nobody in this dialog asked for leaves the open dialog be.
+    #[test]
+    fn gltf_import_reply_closes_only_the_dialog_that_asked() {
+        let gltf_dialog = || ActiveDialog::GltfImport {
+            file_path_buf: "model.glb".into(),
+            name_buf: "Model".into(),
+            position: [0.0; 3],
+        };
+        // (import dialog still the active one, request sent by it, closes)
+        for (import_dialog_active, dialog_requested, closes) in
+            [(true, true, true), (true, false, false), (false, true, false)]
+        {
+            let mut ui = UiManager::default();
+            ui.open_dialog(if import_dialog_active {
+                gltf_dialog()
+            } else {
+                ActiveDialog::JoinDialog {
+                    invite_buf: String::new(),
+                }
+            });
+            if dialog_requested {
+                ui.gltf_import_request.start(1.0);
+            }
+            finish_gltf_import_request("Model", &mut ui, 2.0);
+            let case = format!("active={import_dialog_active} requested={dialog_requested}");
+            assert_eq!(matches!(ui.active_dialog, ActiveDialog::None), closes, "{case}");
+            assert!(!ui.gltf_import_request.pending, "{case}");
+            assert_eq!(
+                ui.active_toast(2.0).map(|(msg, _)| msg.to_string()),
+                dialog_requested.then(|| "Imported Model".to_string()),
+                "{case}"
+            );
+        }
     }
 
     /// A foreign `JoinVerseFailed` (no dialog open, or already closed) must

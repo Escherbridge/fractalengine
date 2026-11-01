@@ -55,6 +55,17 @@ is set.
   `crate::panels::toolbar::Tool` (not re-exported further — see root
   `AGENTS.md` §compat).
 - `status_bar.rs` — bottom status bar (online/peer indicators, active verse). Dim "N hidden" chip when nodes are hidden by visibility groups, absent at zero.
+  Also (polish W1): one dim "⚠ {text}" chip per `UiManager::conditions()`
+  entry (X-05; the writers arrive with W3-S2's watchdog), and a right-aligned
+  error segment (X-01) showing `UiManager::latest_unacknowledged_error()`
+  while it is under 60 s old (`ERROR_SEGMENT_SECONDS`, egui clock — the same
+  `NoticeClock` value every notice is stamped with). Clicking it opens an
+  `egui::Popup` listing the ring (cap 20): each humanized line, its raw
+  `detail` underneath, a Copy (copies the raw text) and a Dismiss on the
+  newest, which clears the segment. It iterates the ring in place — no
+  per-frame copy. The segment is drawn LAST: its right-to-left layout takes
+  the rest of the row, so anything after it (the FR-7 guard error, the F6
+  identity banner) was pushed off-screen.
 - `sidebar.rs` — left verse/fractal/petal/node tree, drag-reorder, space
   overview. Eye toggles at all 4 tree levels (CollapsingState::show_header for
   the right-aligned gutter, same persistent-id scheme), muted hidden rows, active-petal
@@ -216,9 +227,14 @@ is set.
   control renders disabled with a hover explanation rather than hidden, so it
   stays discoverable. `role_denial_reason(role, needed, verse_name) -> String`
   builds that explanation ("`<needed>` role needed — you are `<role>`[ in
-  `<verse>`]"; an unresolved role, X-03, reads "—"). This is advisory UI only
+  `<verse>`]"); the role word is `crate::notice::role_label`, the same one
+  the denial notices use (unresolved, X-03, reads "—"; `RoleLevel::None`
+  reads "Visitor"). This is advisory UI only
   — the real guard is the DB thread's `fe-policy` gate; never trust a
-  client-side role to authorize anything.
+  client-side role to authorize anything. To gate a composite widget (e.g. a
+  `confirm_button`), wrap it in `ui.add_enabled_ui(allowed, ..)` and put
+  `on_disabled_hover_text(role_denial_reason(..))` on the scope's response —
+  see `dialogs/hexon_manager.rs`'s Remove.
 - **Two-step destructive confirm (X-06).** `confirm_button(ui, id_salt, label,
   confirm_label) -> bool` extracts the inspector token-revoke pattern
   (`inspector.rs`'s Revoke/Confirm Revoke) into one reusable widget: first
@@ -229,14 +245,10 @@ is set.
   this instead of hand-rolling the pending-flag dance (see
   `fe-ui/src/dialogs/AGENTS.md` §destructive-confirm, which this widget is
   now the canonical implementation of).
-- **Cross-module reach (CONTRACT-DRIFT, see track notes).** `widgets` is
-  declared `mod widgets;` (private to `panels`) in `panels/mod.rs`, but
-  `dialogs/hexon_manager.rs`, `dialogs/gltf_import.rs` and others need
-  `crate::panels::widgets::{role_gated, confirm_button, role_denial_reason,
-  clipped_value, world_to_meters, ...}` from outside `panels`. `panels/mod.rs`
-  is unowned in Wave 1 (first owned by W3-S1), so this file alone can't flip
-  the declaration to `pub(crate) mod widgets;` — the wave's GATE must apply
-  that one-line fix as a compile-error reconciliation.
+- **Cross-module reach.** `widgets` is `pub(crate) mod widgets;` in
+  `panels/mod.rs` (W1 gate) so `dialogs/` can reuse `role_gated`,
+  `confirm_button`, `role_denial_reason`, `clipped_value`, `world_to_meters`
+  and friends; it stays crate-private, not `pub`.
 
 ## §inspector-units
 

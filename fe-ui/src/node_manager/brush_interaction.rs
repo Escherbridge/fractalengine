@@ -164,7 +164,7 @@ pub(super) fn handle_brush_interaction(
     tool: Res<ToolState>,
     nav: Res<NavigationManager>,
     petal_map: Res<PetalMapState>,
-    time: Res<Time>,
+    time: Res<crate::notice::NoticeClock>,
     mut sculpt: ResMut<SculptToolState>,
     mut gesture: ResMut<BrushGesture>,
     mut ui_mgr: ResMut<UiManager>,

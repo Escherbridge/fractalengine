@@ -40,7 +40,7 @@ pub(super) fn open_track_on_select(
     nav: Res<NavigationManager>,
     markers: Query<&SpawnedNodeMarker>,
     pick_shapes: Query<&TrackPickShape>,
-    time: Res<Time>,
+    time: Res<crate::notice::NoticeClock>,
     mut ui_mgr: ResMut<crate::actions::UiManager>,
     visibility: Res<VisibilityState>,
     mut last_selected: Local<Option<String>>,
@@ -508,7 +508,7 @@ mod tests {
     /// flight. Returns the app plus a track-ribbon entity and a plain entity.
     fn loading_petal_app() -> (App, Entity, Entity) {
         let mut app = App::new();
-        app.init_resource::<Time>()
+        app.init_resource::<crate::notice::NoticeClock>()
             .init_resource::<NodeManager>()
             .init_resource::<PathEditorState>()
             .init_resource::<UiManager>()

@@ -3,9 +3,9 @@
 //! D-06: Import used to close unconditionally even on empty input, and a
 //! failed import was log-only — "succeeding" visibly while doing nothing.
 //! Import is now disabled until [`import_enabled`] holds, and a click keeps
-//! the dialog open with a spinner ("Importing…") rather than closing it —
-//! see the NEEDS-WIRING note at the bottom of this file for the one piece
-//! this slice cannot finish itself (closing on the DB reply).
+//! the dialog open with a spinner ("Importing…") until `db_results`'
+//! `GltfImported` arm finishes `ui_mgr.gltf_import_request` and closes it
+//! (see `dialogs/AGENTS.md` §gltf-import-flow).
 
 use bevy_egui::egui;
 
@@ -22,11 +22,10 @@ pub(crate) fn import_enabled(file_path: &str, petal_id: &str) -> bool {
     !file_path.trim().is_empty() && !petal_id.trim().is_empty()
 }
 
-/// How long an "Importing…" lock is honored before this dialog gives up
-/// waiting and re-enables itself — a safety net for the case where no
-/// `GltfImported` reply ever arrives (channel closed, DB thread crashed), so
-/// the dialog can never get stuck locked forever. A real reply ordinarily
-/// closes the dialog long before this (NEEDS-WIRING below).
+/// How long an "Importing…" lock is honored before this dialog re-enables
+/// itself. A failed import finishes the request through
+/// `db_results/query.rs::handle_error`, so this only fires when no reply
+/// arrives at all (the DB thread died mid-request).
 const IMPORT_LOCK_TIMEOUT_SECONDS: f64 = 30.0;
 
 pub fn render_gltf_import_dialog(
@@ -42,10 +41,11 @@ pub fn render_gltf_import_dialog(
     // `join.rs::render_join_dialog` (the borrow of `ui_mgr.active_dialog`
     // through `file_path_buf`/`name_buf`/`position` must end before `ui_mgr`
     // as a whole can be passed to `send_or_toast`/`close_dialog` again).
-    let importing_id = egui::Id::new("gltf_import_in_flight_since");
     let now = ctx.input(|i| i.time);
-    let importing_since: Option<f64> = ctx.data(|d| d.get_temp(importing_id));
-    let importing = importing_since.is_some_and(|t| now - t < IMPORT_LOCK_TIMEOUT_SECONDS);
+    let importing = ui_mgr
+        .gltf_import_request
+        .waiting_within(now, IMPORT_LOCK_TIMEOUT_SECONDS);
+    let error = ui_mgr.gltf_import_request.error.clone();
 
     let ActiveDialog::GltfImport {
         ref mut file_path_buf,
@@ -148,6 +148,9 @@ pub fn render_gltf_import_dialog(
                 ui.add(egui::Spinner::new().size(14.0));
                 ui.label("Importing\u{2026}");
             });
+        } else if let Some(err) = error.as_deref() {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(err).color(theme::STATUS_OFFLINE));
         }
 
         ui.add_space(8.0);
@@ -183,24 +186,15 @@ pub fn render_gltf_import_dialog(
     // a whole can be mutated again from here down.
     if let Some(cmd) = import_request {
         if send_or_toast(db_tx, cmd, ui_mgr, now, "import the model") {
-            ctx.data_mut(|d| d.insert_temp(importing_id, now));
+            ui_mgr.gltf_import_request.start(now);
         }
     }
 
     if !still_open || close {
-        ctx.data_mut(|d| d.remove::<f64>(importing_id));
+        ui_mgr.gltf_import_request.reset();
         ui_mgr.close_dialog();
     }
 }
-
-// NEEDS-WIRING: `fe-ui/src/panels/mod.rs` (gardener_console's call site)
-// needs to pass the active petal's real `world_scale` (the same
-// `PetalMapState.world_scale` other dialogs already thread) instead of a
-// literal here, and `fe-ui/src/verse_manager/db_results/mod.rs`'s
-// `GltfImported` arm should call `ui_mgr.close_dialog()` while
-// `ActiveDialog::GltfImport` is still the active dialog, so the dialog
-// closes on the real reply instead of riding out the
-// `IMPORT_LOCK_TIMEOUT_SECONDS` safety net above.
 
 #[cfg(test)]
 mod tests {

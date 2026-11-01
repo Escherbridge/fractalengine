@@ -473,20 +473,52 @@ pub enum UiAction {
     },
 }
 
-/// Join dialog's pending/denied round-trip (OD-2: `join.rs` sets `pending`
-/// on send and reads `error` back; `db_results/hierarchy.rs`'s
-/// `JoinVerseFailed`/`VerseJoined` arms are the only writers of either
-/// field once a join is in flight). See `fe-ui/src/AGENTS.md` §notices.
+/// In-flight round-trip of a dialog that stays open until its DB reply lands
+/// (OD-2) — shared by Join (`join_request`) and glTF Import
+/// (`gltf_import_request`). The dialog `start`s it on a successful send; the
+/// `db_results` reply arm `finish`es it. See `fe-ui/src/actions/AGENTS.md`
+/// §notices "Dialog requests".
 #[derive(Debug, Clone, Default)]
-pub struct JoinRequestState {
+pub struct DialogRequestState {
     pub pending: bool,
+    /// Humanized failure for the dialog to render inline.
     pub error: Option<String>,
+    /// When the request was sent (seconds since startup).
+    pub sent_at: f64,
 }
 
-/// Max notices simultaneously queued (OD-1). A push past this cap evicts
-/// the oldest `Info`, then the oldest `Advisory`; an `Error` is evicted only
-/// if every queued notice is already an `Error` (a pathological burst, not
-/// the steady state this cap is sized for).
+impl DialogRequestState {
+    /// Marks a request in flight and clears the previous attempt's error.
+    pub fn start(&mut self, now_secs: f64) {
+        self.pending = true;
+        self.error = None;
+        self.sent_at = now_secs;
+    }
+
+    /// Ends the in-flight request; `true` when one was pending, so only the
+    /// reply to a dialog-sent request closes or annotates the dialog.
+    pub fn finish(&mut self) -> bool {
+        std::mem::take(&mut self.pending)
+    }
+
+    /// Forgets the request (dialog closed or cancelled).
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Pending and younger than `timeout_secs` — the bound for a dialog whose
+    /// failure reply is an uncorrelated `DbResult::Error` that never
+    /// `finish`es it.
+    pub fn waiting_within(&self, now_secs: f64, timeout_secs: f64) -> bool {
+        self.pending && now_secs - self.sent_at < timeout_secs
+    }
+}
+
+/// Max notices simultaneously queued (OD-1). A push first drops expired
+/// notices, then (still at cap) evicts the oldest of the lowest severity —
+/// but never one that outranks the incoming notice: an `Info` arriving into
+/// four live `Error`s is dropped instead (it could not surface before they
+/// expire anyway).
 const NOTICE_QUEUE_CAP: usize = 4;
 
 /// Max retained entries in the `Error` history ring (OD-1).
@@ -512,15 +544,21 @@ pub struct UiManager {
     /// The id of the notice currently pinned open by hover (OD-1: an Error
     /// "holds while hovered"). Exempt from expiry until dismissed.
     held_notice: Option<u64>,
+    /// Newest `Error` id the user has dismissed; the status-bar segment
+    /// shows only history entries newer than this.
+    acknowledged_error_id: Option<u64>,
     /// Persistent status chips (X-05): a condition clears when set to
     /// `None`. A `Vec` rather than a `HashMap` because the chip row renders
     /// in insertion order and there are at most a handful at once.
     conditions: Vec<(&'static str, String)>,
     next_notice_id: u64,
     /// Join dialog's in-flight/denied state (OD-2); owned here so `join.rs`
-    /// (W1-S4) and `db_results/hierarchy.rs` (W1-S2) share one source of
-    /// truth instead of each guessing the other's state from `ActiveDialog`.
-    pub join_request: JoinRequestState,
+    /// and `db_results/hierarchy.rs` share one source of truth instead of
+    /// each guessing the other's state from `ActiveDialog`.
+    pub join_request: DialogRequestState,
+    /// glTF Import dialog's in-flight state (D-06); `gltf_import.rs` starts
+    /// it, `db_results`' `GltfImported` arm finishes it.
+    pub gltf_import_request: DialogRequestState,
 }
 
 impl Default for UiManager {
@@ -533,9 +571,11 @@ impl Default for UiManager {
             notices: VecDeque::new(),
             error_history: VecDeque::new(),
             held_notice: None,
+            acknowledged_error_id: None,
             conditions: Vec::new(),
             next_notice_id: 0,
-            join_request: JoinRequestState::default(),
+            join_request: DialogRequestState::default(),
+            gltf_import_request: DialogRequestState::default(),
         }
     }
 }
@@ -581,39 +621,54 @@ impl UiManager {
         self.active_dialog = ActiveDialog::None;
     }
 
-    /// Queues a severity-tagged notice and returns its id. Evicts per
+    /// Queues a severity-tagged notice and returns its id. Makes room per
     /// `NOTICE_QUEUE_CAP`'s rule (see its doc comment) when already at cap,
-    /// and additionally mirrors an `Error` into `error_history`.
-    fn push_notice(&mut self, severity: Severity, text: String, now_secs: f64) -> u64 {
+    /// and always mirrors an `Error` into `error_history`.
+    fn push_notice(
+        &mut self,
+        severity: Severity,
+        text: String,
+        detail: Option<String>,
+        now_secs: f64,
+    ) -> u64 {
         let id = self.next_notice_id;
         self.next_notice_id += 1;
-        if self.notices.len() >= NOTICE_QUEUE_CAP {
-            self.evict_for_new_notice();
-        }
         let notice = Notice {
             id,
             severity,
             text,
             spawned_at: now_secs,
+            detail,
         };
         if severity == Severity::Error {
             self.error_history.push_front(notice.clone());
             self.error_history.truncate(ERROR_HISTORY_CAP);
         }
-        self.notices.push_back(notice);
+        let held = self.held_notice;
+        self.notices.retain(|queued| {
+            held == Some(queued.id)
+                || now_secs - queued.spawned_at <= queued.severity.duration_secs()
+        });
+        if self.notices.len() < NOTICE_QUEUE_CAP || self.evict_for_new_notice(severity) {
+            self.notices.push_back(notice);
+        }
         id
     }
 
     /// OD-1 eviction order: the oldest `Info`, else the oldest `Advisory`,
-    /// else (only when every queued notice is already an `Error`) the
-    /// oldest `Error` — the cap must always make room for the new notice.
-    fn evict_for_new_notice(&mut self) {
+    /// else the oldest `Error` — but never a notice that outranks
+    /// `incoming`. Returns whether room was made.
+    fn evict_for_new_notice(&mut self, incoming: Severity) -> bool {
         for target in [Severity::Info, Severity::Advisory, Severity::Error] {
+            if target > incoming {
+                return false;
+            }
             if let Some(pos) = self.notices.iter().position(|n| n.severity == target) {
                 let _ = self.notices.remove(pos);
-                return;
+                return true;
             }
         }
+        false
     }
 
     /// True while `notice` is still visible: unexpired for its severity, or
@@ -645,19 +700,26 @@ impl UiManager {
     /// W1 `panels/mod.rs::render_toast` call site still compiles against
     /// `show_toast`/`active_toast` unmodified; W3-S1 replaces the renderer).
     pub fn show_toast(&mut self, msg: impl Into<String>, now_secs: f64) {
-        self.push_notice(Severity::Info, msg.into(), now_secs);
+        self.push_notice(Severity::Info, msg.into(), None, now_secs);
     }
 
     /// Show an Advisory notice (OD-1: 4s, non-blocking guidance — e.g. "no
     /// selection", not a failure).
     pub fn show_advisory(&mut self, msg: impl Into<String>, now_secs: f64) {
-        self.push_notice(Severity::Advisory, msg.into(), now_secs);
+        self.push_notice(Severity::Advisory, msg.into(), None, now_secs);
     }
 
     /// Show an Error notice (OD-1: 7s, holds while hovered, mirrored into
     /// `error_history`).
     pub fn show_error(&mut self, msg: impl Into<String>, now_secs: f64) {
-        self.push_notice(Severity::Error, msg.into(), now_secs);
+        self.push_notice(Severity::Error, msg.into(), None, now_secs);
+    }
+
+    /// Show a `DbResult::Error`-style failure: the humanized copy on screen,
+    /// the raw string kept as the history entry's `detail`.
+    pub fn show_db_error(&mut self, raw: &str, ctx: &crate::notice::DenialContext, now_secs: f64) {
+        let text = crate::notice::humanize_db_error(raw, ctx);
+        self.push_notice(Severity::Error, text, Some(raw.to_string()), now_secs);
     }
 
     /// Returns the highest-priority live notice and its fade alpha. `Error`
@@ -695,12 +757,16 @@ impl UiManager {
         }
     }
 
-    /// Dismisses a notice immediately (the renderer's ✕) and releases any
-    /// hold on it.
+    /// Dismisses a notice immediately (the renderer's ✕ or the status bar's
+    /// Dismiss) and releases any hold on it. Dismissing an `Error`
+    /// acknowledges it and every older one, so the status-bar segment clears.
     pub fn dismiss_notice(&mut self, id: u64) {
         self.notices.retain(|n| n.id != id);
         if self.held_notice == Some(id) {
             self.held_notice = None;
+        }
+        if self.error_history.iter().any(|n| n.id == id) {
+            self.acknowledged_error_id = self.acknowledged_error_id.max(Some(id));
         }
     }
 
@@ -708,6 +774,14 @@ impl UiManager {
     /// `ERROR_HISTORY_CAP` (OD-1).
     pub fn error_history(&self) -> impl Iterator<Item = &Notice> {
         self.error_history.iter()
+    }
+
+    /// The newest `Error` not yet dismissed — what the status-bar segment
+    /// shows (it adds its own age bound).
+    pub fn latest_unacknowledged_error(&self) -> Option<&Notice> {
+        self.error_history
+            .front()
+            .filter(|notice| Some(notice.id) > self.acknowledged_error_id)
     }
 
     /// Sets (or clears, on `None`) a persistent status chip (X-05's
@@ -752,6 +826,50 @@ pub(crate) fn send_or_toast(
     } else {
         true
     }
+}
+
+/// `UiAction::OpenPortal` (P-01): opens the portal for the selected node, or
+/// explains why not (Advisory for no selection, Error for a bad URL).
+/// Returns the URL the browser should navigate to.
+fn open_portal(
+    node_mgr: &crate::node_manager::NodeManager,
+    ui_mgr: &mut UiManager,
+    url: &str,
+    now_secs: f64,
+) -> Option<url::Url> {
+    match portal::compute_open_portal(node_mgr, url) {
+        portal::OpenPortalOutcome::Navigate(new_state, parsed) => {
+            bevy::log::info!("Portal: forwarding Navigate for URL: {parsed}");
+            ui_mgr.portal = new_state;
+            Some(parsed)
+        }
+        portal::OpenPortalOutcome::NoSelection => {
+            ui_mgr.show_advisory("No node selected", now_secs);
+            None
+        }
+        portal::OpenPortalOutcome::InvalidUrl(e) => {
+            bevy::log::warn!("UiAction::OpenPortal invalid URL: {e}");
+            ui_mgr.show_error("Not a valid URL — include https://", now_secs);
+            None
+        }
+    }
+}
+
+/// `UiAction::PathSelectTrack` (D-12, "Edit Path"): activates Pen —
+/// `ToolState::activate` does the one-shot Options reveal — loads the path,
+/// and names where it opened.
+fn open_path_in_options(
+    tool_state: &mut crate::plugin::ToolState,
+    right_sidebar: &mut crate::ui_shell::right_sidebar::RightSidebarState,
+    db_sender: &fe_runtime::app::DbCommandSender,
+    path_state: &mut crate::gis::PathEditorState,
+    ui_mgr: &mut UiManager,
+    track_node_id: String,
+    now_secs: f64,
+) {
+    tool_state.activate(crate::panels::toolbar::Tool::Pen, right_sidebar);
+    path::select_track(db_sender, path_state, track_node_id);
+    ui_mgr.show_toast("Path open in Options", now_secs);
 }
 
 /// Bundle of GIS/GPX/path-editor queue+state params to keep
@@ -821,7 +939,7 @@ pub(crate) fn process_ui_actions(
     mut hexon_ops: ResMut<PendingHexonOps>,
     mut asset_ops: ResMut<PendingAssetOps>,
     nav: Res<crate::navigation_manager::NavigationManager>,
-    time: Res<Time>,
+    time: Res<crate::notice::NoticeClock>,
     gis: GisPathParams,
     tool_state: ToolStateParams,
 ) {
@@ -850,8 +968,7 @@ pub(crate) fn process_ui_actions(
     for pen_action in tool_panel.drain_pending() {
         ui_mgr.push_action(pen_action);
     }
-    // egui reads toast time from the same Bevy clock (bevy_egui feeds
-    // `raw_input.time` from `Time`), so this is the correct scale for show_toast.
+    // `NoticeClock` is the clock egui renders notices against.
     let now_secs = time.elapsed_secs_f64();
 
     // Auto-close portal when the selected entity changes or is deselected.
@@ -863,24 +980,11 @@ pub(crate) fn process_ui_actions(
     let actions = ui_mgr.drain_actions();
     for action in actions {
         match action {
-            UiAction::OpenPortal { url } => match portal::compute_open_portal(&node_mgr, &url) {
-                portal::OpenPortalOutcome::Navigate(new_state, parsed) => {
-                    bevy::log::info!("Portal: forwarding Navigate for URL: {parsed}");
-                    ui_mgr.portal = new_state;
+            UiAction::OpenPortal { url } => {
+                if let Some(parsed) = open_portal(&node_mgr, &mut ui_mgr, &url, now_secs) {
                     browser_commands.write(BrowserCommand::Navigate { url: parsed });
                 }
-                portal::OpenPortalOutcome::NoSelection => {
-                    // P-01: was a silent no-op (see `portal.rs`'s now-stale
-                    // "matches original behavior" doc comment — DOC NOTE
-                    // below for its owner to update).
-                    ui_mgr.show_advisory("No node selected", now_secs);
-                }
-                portal::OpenPortalOutcome::InvalidUrl(e) => {
-                    bevy::log::warn!("UiAction::OpenPortal invalid URL: {e}");
-                    // P-01: was a silent warn-only no-op.
-                    ui_mgr.show_error("Not a valid URL — include https://", now_secs);
-                }
-            },
+            }
             UiAction::ClosePortal => {
                 ui_mgr.portal = PortalState::Closed;
                 browser_commands.write(BrowserCommand::Close);
@@ -894,24 +998,22 @@ pub(crate) fn process_ui_actions(
                 match portal::compute_save_url(&node_mgr, &inspector) {
                     portal::SaveUrlOutcome::Persist { node_id, url } => {
                         verse_mgr.update_node_url(&node_id, url.clone());
-                        if db_sender
-                            .0
-                            .send(fe_runtime::messages::DbCommand::UpdateNodeUrl { node_id, url })
-                            .is_err()
-                        {
-                            bevy::log::warn!(
-                                "db_sender channel closed — UpdateNodeUrl not persisted"
-                            );
-                        } else {
+                        if send_or_toast(
+                            &db_sender.0,
+                            fe_runtime::messages::DbCommand::UpdateNodeUrl { node_id, url },
+                            &mut ui_mgr,
+                            now_secs,
+                            "save the URL",
+                        ) {
                             ui_mgr.show_toast("URL saved", now_secs);
                         }
                     }
                     portal::SaveUrlOutcome::Blocked { reason } => {
                         bevy::log::warn!("UiAction::SaveUrl rejected: {reason}");
-                        ui_mgr.show_toast(format!("URL not saved — {reason}"), now_secs);
+                        ui_mgr.show_error(format!("URL not saved — {reason}"), now_secs);
                     }
                     portal::SaveUrlOutcome::NoSelection => {
-                        ui_mgr.show_toast("No node selected", now_secs);
+                        ui_mgr.show_advisory("No node selected", now_secs);
                     }
                 }
             }
@@ -919,7 +1021,7 @@ pub(crate) fn process_ui_actions(
                 if let Err(reason) =
                     transform::apply(&inspector, &mut node_mgr, &mut transform_query)
                 {
-                    ui_mgr.show_toast(format!("Transform not applied — {reason}"), now_secs);
+                    ui_mgr.show_error(format!("Transform not applied — {reason}"), now_secs);
                 }
             }
             UiAction::CreateNodeAt { position } => match nav.active_petal_id.as_deref() {
@@ -927,7 +1029,7 @@ pub(crate) fn process_ui_actions(
                     node::create_at(&db_sender, petal_id.to_string(), position);
                 }
                 None => {
-                    ui_mgr.show_toast("Navigate to a petal first", now_secs);
+                    ui_mgr.show_advisory("Navigate to a petal first", now_secs);
                 }
             },
             UiAction::SubmitQuery { sql, scope: _ } => {
@@ -1051,16 +1153,15 @@ pub(crate) fn process_ui_actions(
             UiAction::PathQueryTracks { petal_id } => {
                 path::query_tracks(&db_sender, &mut path_state, petal_id);
             }
-            UiAction::PathSelectTrack { track_node_id } => {
-                // D-12: activates Pen + reveals Options (ToolState's own
-                // one-shot reveal) and names where the path actually landed
-                // — the old "Tools panel" toast at the context-menu call
-                // site (`context_menu.rs:786`) pointed at a surface that no
-                // longer exists; that stale string is W4-S4's to remove.
-                active_tool_state.activate(crate::panels::toolbar::Tool::Pen, &mut right_sidebar);
-                path::select_track(&db_sender, &mut path_state, track_node_id);
-                ui_mgr.show_toast("Path open in Options", now_secs);
-            }
+            UiAction::PathSelectTrack { track_node_id } => open_path_in_options(
+                &mut active_tool_state,
+                &mut right_sidebar,
+                &db_sender,
+                &mut path_state,
+                &mut ui_mgr,
+                track_node_id,
+                now_secs,
+            ),
             UiAction::PathCreateTrack {
                 petal_id,
                 name,
@@ -1558,6 +1659,56 @@ mod tests {
         assert!(seen.contains(&"err".to_string()));
     }
 
+    /// A full queue of live Errors is never thinned by a later Info (the Info
+    /// is dropped); once they expire, the same Info push is queued normally.
+    #[test]
+    fn notice_queue_never_evicts_a_live_error_for_an_info() {
+        for (info_at, info_queued) in [(1.0, false), (8.0, true)] {
+            let mut mgr = UiManager::default();
+            for text in ["e1", "e2", "e3", "e4"] {
+                mgr.show_error(text, 0.0);
+            }
+            mgr.show_toast("saved", info_at);
+            let mut seen = Vec::new();
+            while let Some((notice, _)) = mgr.active_notice(info_at) {
+                seen.push(notice.text.clone());
+                let id = notice.id;
+                mgr.dismiss_notice(id);
+            }
+            let expected: Vec<&str> = if info_queued {
+                vec!["saved"]
+            } else {
+                vec!["e4", "e3", "e2", "e1"]
+            };
+            assert_eq!(seen, expected, "info_at={info_at}");
+        }
+    }
+
+    /// The status-bar segment shows the newest Error until it is dismissed;
+    /// a later Error brings it back. A DB error keeps its raw text.
+    #[test]
+    fn dismissed_error_clears_the_status_segment_until_the_next_one() {
+        let mut mgr = UiManager::default();
+        let ctx = crate::notice::DenialContext {
+            role_label: "Viewer",
+            verse_name: None,
+        };
+        mgr.show_db_error("Load hierarchy failed: disk full", &ctx, 0.0);
+        let first = mgr.latest_unacknowledged_error().expect("segment shown");
+        assert_eq!(first.detail.as_deref(), Some("Load hierarchy failed: disk full"));
+        let first_id = first.id;
+
+        mgr.dismiss_notice(first_id);
+        assert!(mgr.latest_unacknowledged_error().is_none());
+        assert_eq!(mgr.error_history().count(), 1, "dismiss keeps the history");
+
+        mgr.show_error("Transform not applied — locked", 1.0);
+        assert_eq!(
+            mgr.latest_unacknowledged_error().map(|n| n.text.as_str()),
+            Some("Transform not applied — locked")
+        );
+    }
+
     #[test]
     fn held_error_notice_outlives_its_duration_until_dismissed() {
         let mut mgr = UiManager::default();
@@ -1578,59 +1729,19 @@ mod tests {
 
     // ---- W1-S1: process_ui_actions handler arms ---------------------------
     //
-    // These mirror the real match arm verbatim (the established pattern in
-    // this file — see `apply_reveal` below) rather than driving the whole
-    // `process_ui_actions` system through a headless `App`: that system
-    // takes ~15 `SystemParam`s, several of them (`InspectorFormState`,
-    // `GisPanelState`, `PetalMapState`) with no `Default` impl, so building
-    // one just for these two arms would be disproportionate ceremony for a
-    // single-arm assertion. Every collaborator used below (`UiManager`,
-    // `NodeManager`, `ToolState`, `RightSidebarState`, `PathEditorState`,
-    // `portal::compute_open_portal`, `path::select_track`) is the real
-    // production type/function, not a mock.
-
-    /// The `OpenPortal` arm of `process_ui_actions`, verbatim.
-    fn apply_open_portal(
-        node_mgr: &crate::node_manager::NodeManager,
-        ui_mgr: &mut UiManager,
-        url: &str,
-        now_secs: f64,
-    ) {
-        match portal::compute_open_portal(node_mgr, url) {
-            portal::OpenPortalOutcome::Navigate(new_state, _parsed) => {
-                ui_mgr.portal = new_state;
-            }
-            portal::OpenPortalOutcome::NoSelection => {
-                ui_mgr.show_advisory("No node selected", now_secs);
-            }
-            portal::OpenPortalOutcome::InvalidUrl(_) => {
-                ui_mgr.show_error("Not a valid URL — include https://", now_secs);
-            }
-        }
-    }
+    // `process_ui_actions` takes ~15 `SystemParam`s (several without
+    // `Default`), so these drive the arms' extracted bodies — `open_portal`
+    // and `open_path_in_options`, which the dispatcher calls verbatim —
+    // with the real `UiManager`/`NodeManager`/`ToolState`/`PathEditorState`.
 
     #[test]
     fn open_portal_invalid_url_shows_error_notice() {
         let mgr = crate::node_manager::NodeManager::default();
         let mut ui_mgr = UiManager::default();
-        apply_open_portal(&mgr, &mut ui_mgr, "not a url", 0.0);
-        let (msg, _alpha) = ui_mgr.active_toast(0.0).expect("error notice shown");
-        assert_eq!(msg, "Not a valid URL — include https://");
-    }
-
-    /// The `PathSelectTrack` arm of `process_ui_actions`, verbatim.
-    fn apply_path_select_track(
-        tool: &mut crate::plugin::ToolState,
-        right: &mut crate::ui_shell::right_sidebar::RightSidebarState,
-        ui_mgr: &mut UiManager,
-        db_sender: &fe_runtime::app::DbCommandSender,
-        path_state: &mut crate::gis::PathEditorState,
-        now_secs: f64,
-        track_node_id: String,
-    ) {
-        tool.activate(crate::panels::toolbar::Tool::Pen, right);
-        path::select_track(db_sender, path_state, track_node_id);
-        ui_mgr.show_toast("Path open in Options", now_secs);
+        assert!(open_portal(&mgr, &mut ui_mgr, "not a url", 0.0).is_none());
+        let (notice, _alpha) = ui_mgr.active_notice(0.0).expect("error notice shown");
+        assert_eq!(notice.text, "Not a valid URL — include https://");
+        assert_eq!(notice.severity, Severity::Error);
     }
 
     #[test]
@@ -1645,14 +1756,14 @@ mod tests {
         let mut ui_mgr = UiManager::default();
         let mut path_state = crate::gis::PathEditorState::default();
 
-        apply_path_select_track(
+        open_path_in_options(
             &mut tool,
             &mut right,
-            &mut ui_mgr,
             &db_sender,
             &mut path_state,
-            0.0,
+            &mut ui_mgr,
             "track-1".to_string(),
+            0.0,
         );
 
         assert_eq!(tool.active_tool, crate::panels::toolbar::Tool::Pen);

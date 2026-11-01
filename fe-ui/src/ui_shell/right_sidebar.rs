@@ -1069,8 +1069,7 @@ fn render_maps_section(
     active_petal: Option<&str>,
     downloads: &crate::terrain_map::TilesetDownloads,
     app_settings: &AppSettings,
-    // W1-GATE NEEDS-WIRING (W1-S3): role-gates Set/Clear/Remove in
-    // `dialogs::render_hexon_manager` (X-02).
+    // X-02: role-gates Set/Clear/Remove in `dialogs::render_hexon_manager`.
     local_role: &LocalUserRole,
 ) {
     if !matches!(ui_mgr.active_dialog, ActiveDialog::HexonManager { .. }) {

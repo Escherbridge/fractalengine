@@ -12,7 +12,7 @@ mod peer_debug;
 mod petal_manifest;
 
 pub use context_menu::render_context_menu;
-pub use create_entity::{apply_create, render_create_dialog};
+pub use create_entity::render_create_dialog;
 pub use entity_settings::render_entity_settings_dialog;
 pub use gltf_import::render_gltf_import_dialog;
 pub use hexon_manager::render_hexon_manager;

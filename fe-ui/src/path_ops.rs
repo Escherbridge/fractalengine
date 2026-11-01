@@ -102,7 +102,7 @@ pub struct PathEditStatus {
 pub fn surface_path_edit_status(
     status: Res<PathEditStatus>,
     mut ui_mgr: ResMut<crate::actions::UiManager>,
-    time: Res<Time>,
+    time: Res<crate::notice::NoticeClock>,
 ) {
     if !status.is_changed() || status.track_node_id.is_none() {
         return;

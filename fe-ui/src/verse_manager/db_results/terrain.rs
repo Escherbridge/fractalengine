@@ -4,7 +4,7 @@
 
 use crate::actions::UiManager;
 use crate::navigation_manager::NavigationManager;
-use crate::notice::{humanize_db_error, DenialContext};
+use crate::notice::DenialContext;
 use crate::plugin::LocalUserRole;
 use crate::terrain_map::PetalMapState;
 use crate::terrain_proposal_state::ProposalEditState;
@@ -70,6 +70,13 @@ pub(super) fn handle_petal_terrain_loaded(
         .and_then(|v| v.as_f64())
         .filter(|s| s.is_finite() && *s > 0.0)
         .unwrap_or(1.0);
+    // Any other load for the active petal is persisted truth (an earlier,
+    // superseded set's echo, a peer's write, a plain Get), so it becomes what
+    // a still-pending set rolls back to if denied.
+    if let Some(pending) = petal_map.pending_set.as_mut() {
+        pending.previous_tileset_ids = petal_map.tileset_ids.clone();
+        pending.previous_world_scale = petal_map.world_scale;
+    }
     // Hexon-authoritative clamp bounds (scale orchestration track); see fe-ui/src/verse_manager/AGENTS.md.
     petal_map.scale_bounds = terrain
         .as_ref()
@@ -145,15 +152,7 @@ pub(super) fn handle_petal_terrain_set_failed(
         petal_map.tileset_ids = pending.previous_tileset_ids;
         petal_map.world_scale = pending.previous_world_scale;
     }
-    let role_label = local_role
-        .role
-        .map(|r| r.to_string())
-        .unwrap_or_else(|| "viewer".to_string());
-    let ctx = DenialContext {
-        role_label: &role_label,
-        verse_name,
-    };
-    ui_mgr.show_error(humanize_db_error(error, &ctx), now);
+    ui_mgr.show_db_error(error, &DenialContext::new(local_role, verse_name), now);
 }
 
 #[cfg(test)]
@@ -351,10 +350,93 @@ mod tests {
             petal_map.pending_set.is_none(),
             "the row must leave \"Applying…\" once the denial is handled"
         );
-        assert!(
-            ui_mgr.error_history().next().is_some(),
-            "a denial surfaces an error notice, never a silently-swallowed failure"
+        let notice = ui_mgr
+            .latest_unacknowledged_error()
+            .expect("a denial surfaces an error notice, never a silently-swallowed failure");
+        assert_eq!(
+            notice.text,
+            "You're a Viewer in Acme Verse — Editor role needed to do that"
         );
+        assert_eq!(
+            notice.detail.as_deref(),
+            Some("permission denied: viewer cannot set petal terrain"),
+            "the raw error stays in the history"
+        );
+    }
+
+    /// Two sets in flight: the second's denial must roll back to the last
+    /// PERSISTED state — the original when the first was denied too, the
+    /// first's map when its echo confirmed it — never to the first's
+    /// optimistic, unconfirmed map.
+    #[test]
+    fn superseded_set_denial_rolls_back_to_last_confirmed_map() {
+        for first_confirmed in [false, true] {
+            let mut nav = NavigationManager::default();
+            nav.active_petal_id = Some("p1".into());
+            let mut petal_map = PetalMapState {
+                petal_id: Some("p1".into()),
+                tileset_ids: vec!["original".into()],
+                world_scale: 1.0,
+                ..Default::default()
+            };
+            let sender = db_sender();
+            crate::actions::hexon::set_petal_map(
+                &sender,
+                &mut petal_map,
+                "p1".into(),
+                Some(installed_ts("first")),
+            );
+            let first_id = petal_map.pending_set.as_ref().unwrap().correlation_id.clone();
+            crate::actions::hexon::set_petal_map(
+                &sender,
+                &mut petal_map,
+                "p1".into(),
+                Some(installed_ts("second")),
+            );
+            let second_id = petal_map.pending_set.as_ref().unwrap().correlation_id.clone();
+
+            let mut ui_mgr = UiManager::default();
+            let local_role = LocalUserRole::default();
+            if first_confirmed {
+                handle_petal_terrain_loaded(
+                    "p1",
+                    &Some(json!({ "tileset_hexon_uris": ["first"], "world_scale": 1.0 })),
+                    &nav,
+                    &mut petal_map,
+                    &mut ProposalEditState::default(),
+                    Some(first_id.as_str()),
+                );
+            } else {
+                handle_petal_terrain_set_failed(
+                    "p1",
+                    "permission denied: x",
+                    &first_id,
+                    &mut petal_map,
+                    &mut ui_mgr,
+                    &local_role,
+                    None,
+                    0.0,
+                );
+            }
+            handle_petal_terrain_set_failed(
+                "p1",
+                "permission denied: x",
+                &second_id,
+                &mut petal_map,
+                &mut ui_mgr,
+                &local_role,
+                None,
+                0.0,
+            );
+
+            let expected = if first_confirmed { "first" } else { "original" };
+            assert_eq!(
+                petal_map.tileset_ids,
+                vec![expected.to_string()],
+                "first_confirmed={first_confirmed}"
+            );
+            assert!(petal_map.pending_set.is_none());
+        }
     }
 
     #[test]

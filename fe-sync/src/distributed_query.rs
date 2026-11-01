@@ -3785,7 +3785,11 @@ mod tests {
         let (second, second_rx) = call("q-2");
 
         // The production shape: one current-thread runtime, collectors
-        // spawned onto it, the loop yielding between commands.
+        // spawned onto it, the loop yielding between commands. The runtime
+        // lives until the test has both answers (`done` dropped): a fixed
+        // sleep let it shut down — cancelling the second collector — on a
+        // loaded machine (W1 GATE-DEFER).
+        let (done_tx, done_rx) = crossbeam::channel::bounded::<()>(0);
         let runtime_thread = std::thread::spawn(move || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -3796,7 +3800,12 @@ mod tests {
                     submit_distributed_query(&transport, &fabrics, &senders, first);
                     tokio::time::sleep(Duration::from_millis(50)).await;
                     submit_distributed_query(&transport, &fabrics, &senders, second);
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    while matches!(
+                        done_rx.try_recv(),
+                        Err(crossbeam::channel::TryRecvError::Empty)
+                    ) {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
                 });
         });
 
@@ -3805,11 +3814,21 @@ mod tests {
             .expect("first query answered");
         assert!(first.error.is_none(), "{:?}", first.error);
         let second = second_rx.recv_timeout(Duration::from_secs(5));
-        // Unpark a (regressed) blocked echo before asserting, so a failure
-        // reports instead of leaking a stuck runtime thread.
-        let queued: Vec<SyncEvent> = evt_rx.try_iter().collect();
-        drop(evt_rx);
-        runtime_thread.join().expect("runtime thread");
+        let queued: Vec<SyncEvent> = if second.is_ok() {
+            // Stop the runtime BEFORE draining: a drain while collectors are
+            // still live makes room for a late echo and over-counts.
+            drop(done_tx);
+            runtime_thread.join().expect("runtime thread");
+            evt_rx.try_iter().collect()
+        } else {
+            // Regressed: unpark the blocked echo first, so the failure
+            // reports instead of leaking a stuck runtime thread.
+            let queued = evt_rx.try_iter().collect();
+            drop(evt_rx);
+            drop(done_tx);
+            runtime_thread.join().expect("runtime thread");
+            queued
+        };
         let second = second.expect("a full event channel stalled the next query");
         assert!(second.error.is_none(), "{:?}", second.error);
         assert_eq!(queued.len(), 1, "only the pre-filled event was queued");

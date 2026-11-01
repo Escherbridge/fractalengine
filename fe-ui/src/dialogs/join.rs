@@ -4,9 +4,9 @@
 //! invite failed silently and a valid one gave no confirmation. It now stays
 //! open with a spinner while `ui_mgr.join_request.pending`, shows
 //! `join_request.error` inline on a typed `JoinVerseFailed` (see
-//! `fe-ui/src/AGENTS.md` §join-flow), and only `hierarchy.rs`'s
-//! `VerseJoined`/`JoinVerseFailed` handlers (W1-S2) clear `pending` — this
-//! file never clears it itself except on Cancel/close.
+//! `dialogs/AGENTS.md` §join-flow), and only `hierarchy.rs`'s
+//! `VerseJoined`/`JoinVerseFailed` handlers `finish` the request — this file
+//! only `start`s it on send and `reset`s it on Cancel/close.
 
 use bevy_egui::egui;
 
@@ -14,6 +14,11 @@ use super::ActiveDialog;
 use crate::actions::{send_or_toast, UiManager};
 use crate::theme;
 use fe_runtime::messages::DbCommand;
+
+/// How long a sent Join locks the dialog. Every join replies typed
+/// (`VerseJoined`/`JoinVerseFailed`), so this only fires when the DB thread
+/// died mid-request — without it Cancel and the close-X would never return.
+const JOIN_LOCK_TIMEOUT_SECONDS: f64 = 30.0;
 
 pub fn render_join_dialog(
     ctx: &egui::Context,
@@ -23,7 +28,10 @@ pub fn render_join_dialog(
     // Read `join_request` before taking the `active_dialog` sub-borrow below
     // (`invite_buf` borrows `ui_mgr.active_dialog`; `ui_mgr` as a whole is
     // only free again once that borrow's last use has passed).
-    let pending = ui_mgr.join_request.pending;
+    let now = ctx.input(|i| i.time);
+    let pending = ui_mgr
+        .join_request
+        .waiting_within(now, JOIN_LOCK_TIMEOUT_SECONDS);
     let error = ui_mgr.join_request.error.clone();
 
     let ActiveDialog::JoinDialog { ref mut invite_buf } = ui_mgr.active_dialog else {
@@ -95,7 +103,6 @@ pub fn render_join_dialog(
     // `invite_buf`'s borrow into `ui_mgr.active_dialog` ended above, so
     // `ui_mgr` as a whole can be mutated again from here down.
     if let Some(invite_string) = invite_to_send {
-        let now = ctx.input(|i| i.time);
         if send_or_toast(
             db_tx,
             DbCommand::JoinVerseByInvite { invite_string },
@@ -103,14 +110,12 @@ pub fn render_join_dialog(
             now,
             "join the verse",
         ) {
-            ui_mgr.join_request.pending = true;
-            ui_mgr.join_request.error = None;
+            ui_mgr.join_request.start(now);
         }
     }
 
     if !still_open || close {
-        ui_mgr.join_request.pending = false;
-        ui_mgr.join_request.error = None;
+        ui_mgr.join_request.reset();
         ui_mgr.close_dialog();
     }
 }
@@ -211,5 +216,40 @@ mod tests {
             ui_mgr.join_request.pending,
             "only the db-result handlers (W1-S2) may clear pending, never this render"
         );
+    }
+
+    /// A join whose reply never arrives (DB thread gone) stops locking the
+    /// dialog after `JOIN_LOCK_TIMEOUT_SECONDS`: Cancel works again.
+    #[test]
+    fn join_dialog_unlocks_when_no_reply_arrives() {
+        let ctx = egui::Context::default();
+        let (tx, _rx) = crossbeam::channel::unbounded();
+        let mut ui_mgr = UiManager::default();
+        ui_mgr.active_dialog = ActiveDialog::JoinDialog {
+            invite_buf: String::new(),
+        };
+        ui_mgr.join_request.start(0.0);
+        let mut time = JOIN_LOCK_TIMEOUT_SECONDS + 1.0;
+
+        run_frame(&ctx, time, Vec::new(), &mut ui_mgr, &tx);
+        let window_rect = ctx
+            .read_response(egui::Id::new("Join Verse"))
+            .map(|r| r.rect)
+            .expect("the Join Verse window must register an area response");
+        // Sweep the window; with the invite empty, the only control that can
+        // act is Cancel (or the close-X), and either one closes the dialog.
+        let steps = 10;
+        'sweep: for xi in 0..=steps {
+            for yi in 0..=steps {
+                let x = window_rect.left() + window_rect.width() * (xi as f32 / steps as f32);
+                let y = window_rect.top() + window_rect.height() * (yi as f32 / steps as f32);
+                click(&ctx, &mut time, egui::pos2(x, y), &mut ui_mgr, &tx);
+                if matches!(ui_mgr.active_dialog, ActiveDialog::None) {
+                    break 'sweep;
+                }
+            }
+        }
+        assert!(matches!(ui_mgr.active_dialog, ActiveDialog::None));
+        assert!(!ui_mgr.join_request.pending, "closing resets the request");
     }
 }

@@ -171,31 +171,20 @@ pub(crate) fn role_gated(
 }
 
 /// Plain-language denial copy for [`role_gated`]'s hover text (OD-3):
-/// "`<needed>` role needed — you are `<role>`[ in `<verse>`]". An unresolved
-/// role (`LocalUserRole.role == None`, X-03) reads as "—" rather than a
-/// guess.
+/// "`<needed>` role needed — you are `<role>`[ in `<verse>`]". The role word
+/// comes from [`crate::notice::role_label`], the same one the denial notices
+/// use, so an unresolved role (X-03) reads "—" rather than a guess.
 pub(crate) fn role_denial_reason(
     role: &LocalUserRole,
     needed: &str,
     verse_name: Option<&str>,
 ) -> String {
-    let role_label = role
-        .role
-        .map(|r| capitalize_first(&r.to_string()))
-        .unwrap_or_else(|| "\u{2014}".to_string());
+    let role_label = crate::notice::role_label(role.role);
     match verse_name {
         Some(name) if !name.is_empty() => {
             format!("{needed} role needed — you are {role_label} in {name}")
         }
         _ => format!("{needed} role needed — you are {role_label}"),
-    }
-}
-
-fn capitalize_first(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
     }
 }
 

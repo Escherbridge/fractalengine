@@ -175,8 +175,7 @@ pub(crate) fn set_petal_map(
         .map(|ts| vec![ts.hexon_id.clone()])
         .unwrap_or_default();
     let correlation_id = crate::actions::query::next_ui_query_id("petalmap");
-    let previous_tileset_ids = petal_map.tileset_ids.clone();
-    let previous_world_scale = petal_map.world_scale;
+    let (previous_tileset_ids, previous_world_scale) = rollback_baseline(petal_map);
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
         terrain,
@@ -219,8 +218,7 @@ pub(crate) fn set_petal_map_scale(
     let clamped_scale = clamp_to_bounds(world_scale, petal_map.scale_bounds);
     let terrain = tileset_to_terrain_json(&tileset, clamped_scale, petal_map.scale_bounds);
     let correlation_id = crate::actions::query::next_ui_query_id("petalmap");
-    let previous_tileset_ids = petal_map.tileset_ids.clone();
-    let previous_world_scale = petal_map.world_scale;
+    let (previous_tileset_ids, previous_world_scale) = rollback_baseline(petal_map);
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
         terrain: Some(terrain),
@@ -242,6 +240,20 @@ pub(crate) fn set_petal_map_scale(
                 "db_sender channel closed — SetPetalTerrain (scale) not dispatched; local map state unchanged"
             );
         }
+    }
+}
+
+/// What a new set rolls back to if denied: the last CONFIRMED state. While
+/// an earlier set is still in flight, `petal_map` holds that set's optimistic
+/// values, so the earlier snapshot is carried forward instead — otherwise a
+/// denied second set "restored" a first set that was never persisted.
+fn rollback_baseline(petal_map: &PetalMapState) -> (Vec<String>, f64) {
+    match &petal_map.pending_set {
+        Some(pending) => (
+            pending.previous_tileset_ids.clone(),
+            pending.previous_world_scale,
+        ),
+        None => (petal_map.tileset_ids.clone(), petal_map.world_scale),
     }
 }
 

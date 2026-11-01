@@ -35,7 +35,7 @@ pub struct AssetDownloadStatus {
 pub fn surface_asset_download_status(
     status: Res<AssetDownloadStatus>,
     mut ui_mgr: ResMut<crate::actions::UiManager>,
-    time: Res<Time>,
+    time: Res<crate::notice::NoticeClock>,
 ) {
     if !status.is_changed() || status.node_id.is_none() {
         return;

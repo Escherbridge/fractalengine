@@ -6,7 +6,9 @@ use fe_runtime::app::{DbCommandSender, PendingApiRequests};
 use fe_runtime::messages::{DbCommand, EntityType, VerseHierarchyData};
 
 use super::super::{FractalEntry, NodeEntry, PetalEntry, VerseEntry, VerseManager};
+use crate::dialogs::ActiveDialog;
 use crate::navigation_manager::NavigationManager;
+use crate::notice::{humanize_db_error, DenialContext, UNRESOLVED_ROLE_LABEL};
 
 /// `Seeded`: kick off the initial hierarchy load.
 pub(super) fn handle_seeded(db_sender: &DbCommandSender) {
@@ -27,9 +29,10 @@ pub(super) fn handle_verse_joined(
     ui_mgr: &mut crate::actions::UiManager,
     now: f64,
 ) {
-    if ui_mgr.join_request.pending {
-        ui_mgr.join_request.pending = false;
-        ui_mgr.close_dialog();
+    if ui_mgr.join_request.finish() {
+        if matches!(ui_mgr.active_dialog, ActiveDialog::JoinDialog { .. }) {
+            ui_mgr.close_dialog();
+        }
         nav.navigate_to_verse(verse_id, verse_name);
         ui_mgr.show_toast(format!("Joined {verse_name}"), now);
     }
@@ -49,21 +52,15 @@ pub(super) fn handle_join_verse_failed(
     ui_mgr: &mut crate::actions::UiManager,
     now: f64,
 ) {
-    // Join has no active verse/role yet, so the denial context is nominal —
-    // `humanize_db_error` only uses it for the "permission denied" branch,
-    // which a join failure (invalid/expired/already-a-member invite) never hits.
-    let humanized = crate::notice::humanize_db_error(
-        error,
-        &crate::notice::DenialContext {
-            role_label: "Visitor",
-            verse_name: None,
-        },
-    );
-    if ui_mgr.join_request.pending {
-        ui_mgr.join_request.pending = false;
-        ui_mgr.join_request.error = Some(humanized);
+    // No role exists yet in a verse being joined, so it is unresolved.
+    let ctx = DenialContext {
+        role_label: UNRESOLVED_ROLE_LABEL,
+        verse_name: None,
+    };
+    if ui_mgr.join_request.finish() {
+        ui_mgr.join_request.error = Some(humanize_db_error(error, &ctx));
     } else {
-        ui_mgr.show_error(humanized, now);
+        ui_mgr.show_db_error(error, &ctx, now);
     }
 }
 
