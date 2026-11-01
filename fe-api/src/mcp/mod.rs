@@ -126,6 +126,9 @@ pub enum ToolSeam {
     SimControl,
     /// The window-capture bridge (`ApiState.screenshot.bridge`, GUI hosts only).
     Screenshot,
+    /// The synthetic-input bridge (`ApiState.input.bridge`, GUI hosts only;
+    /// folded-in `agent_input_surface_20261031`).
+    Input,
 }
 
 /// Whether this host wires the seam `spec` needs. `screenshot` (the plain
@@ -140,6 +143,7 @@ pub fn tool_available(spec: &ToolSpec, state: &ApiState) -> bool {
         Some(ToolSeam::Screenshot) => {
             state.screenshot.bridge.is_some() || state.screenshot.vision.is_some()
         }
+        Some(ToolSeam::Input) => state.input.bridge.is_some(),
     }
 }
 
@@ -154,6 +158,9 @@ fn operator_opt_in_refusal(spec: &ToolSpec, state: &ApiState) -> Option<&'static
         } else {
             crate::screenshot::SCREENSHOT_GATE.disabled_message
         }),
+        Some(ToolSeam::Input) if !state.input.allowed => {
+            Some(crate::input::INPUT_GATE.disabled_message)
+        }
         _ => None,
     }
 }
@@ -271,6 +278,11 @@ static TOOLS: &[ToolSpec] = &[
         "Capture the application view as a PNG image. Empty arguments capture the live window exactly like plain GET. A `pose` (exactly one of camera/orbit/geo/tile/focus) and `mode` (window: moves the main camera, settles, restores by default; scene: off-screen render at any width/height, no UI, user's view untouched) move where the capture looks; the response's second content block is the resolved pose JSON. On by default (set FE_API_SCREENSHOT_ALLOW=0 to disable); not scope-confined (shows whatever verse is open); 1 capture/sec. Requires owner role."),
     tool!(get_camera, Owner, Global, requires Screenshot,
         "Read the live main-camera pose, locked state, active verse/fractal/petal and terrain projection info — pairs with `screenshot`'s pose kinds for a closed read-look loop. Shares the screenshot opt-in (on by default; set FE_API_SCREENSHOT_ALLOW=0 to disable); 10 reads/sec. Requires owner role."),
+    // --- Agent input surface (folded-in agent_input_surface_20261031;
+    // AGENTS.md §agent-input-surface): synthetic pointer/keyboard/scroll
+    // injection, closing the loop with get_camera/screenshot. ---
+    tool!(inject_input, Owner, Global, requires Input,
+        "Synthesize pointer/keyboard/scroll input into the running GUI: a batch of up to 64 commands (pointer_move, pointer_click, pointer_drag, key_press, text_entry, scroll), an optional wait_frames to settle (<=120) and an optional capture_after to attach a PNG of the result. OFF by default (set FE_API_INPUT_ALLOW=1 to enable) — unlike the default-on screenshot/camera surfaces, this MUTATES state; combined with them an Owner token gets full remote control. Refused with 409 while a posed capture holds the camera. 5 requests/sec. Requires owner role."),
 ];
 
 // ---------------------------------------------------------------------------
@@ -673,11 +685,12 @@ mod tests {
         }
         assert_eq!(
             TOOLS.len(),
-            38,
+            39,
             "DEC-C14: 27 non-sim + 5 sim (p2p_asset_streaming S6 added set_petal_render_distance); \
              CDL-SPEC10 A5 added 4 R5 device tools (register/list_device_formats, \
              ingest/list_device_payloads); §screenshot added `screenshot`; \
-             agent_vision_20261031 added `get_camera`"
+             agent_vision_20261031 added `get_camera`; agent_input_surface_20261031 added \
+             `inject_input`"
         );
     }
 

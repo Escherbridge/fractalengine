@@ -20,6 +20,7 @@ pub mod format;
 pub mod gis;
 pub mod gpx;
 pub mod hexon;
+pub mod input;
 pub mod iot;
 pub mod limits;
 pub mod mcp;
@@ -99,6 +100,13 @@ pub struct ApiConfig {
     /// its dynamic-capture/camera-read-back bridge; headless hosts pass
     /// `ScreenshotSurface::disabled()` (AGENTS.md §screenshot, §camera-state).
     pub screenshot: screenshot::ScreenshotSurface,
+    /// Agent input-injection surface (folded-in `agent_input_surface_20261031`
+    /// via agent_vision_20261031): operator opt-in (OFF unless
+    /// `FE_API_INPUT_ALLOW=1` — mutates state, unlike screenshot/camera's
+    /// default-on posture, [`input::input_allowed_from_env`]) + its API→Bevy
+    /// synthetic-input bridge (AGENTS.md §agent-input-surface); headless
+    /// hosts pass `input::InputSurface::disabled()`.
+    pub input: input::InputSurface,
 }
 
 /// Read `FE_API_UPLOAD_QUOTA_BYTES` once at startup; unset or unparseable
@@ -191,6 +199,7 @@ async fn run_server(config: ApiConfig) {
         elevated_query_allowed: config.elevated_query_allowed,
         upload_quota_bytes: config.upload_quota_bytes,
         screenshot: config.screenshot,
+        input: config.input,
     });
 
     // Background task: listen for revocation notifications from Bevy thread

@@ -42,8 +42,10 @@ use fractalengine_test_harness::api::ApiHarness;
 /// this golden list until CDL-SPEC10 A5 — a pre-existing drift this slice
 /// fixes incidentally while adding its own 4 R5 device tools) = 32 non-sim
 /// plus 5 sim = 37. agent_vision_20261031 added `get_camera` (shares
-/// `ToolSeam::Screenshot` with `screenshot`), for 38 total.
-const EXPECTED_TOOLS: [&str; 38] = [
+/// `ToolSeam::Screenshot` with `screenshot`), for 38; its folded-in
+/// `agent_input_surface_20261031` added `inject_input` (its own
+/// `ToolSeam::Input`), for 39 total.
+const EXPECTED_TOOLS: [&str; 39] = [
     "get_hierarchy",
     "create_verse",
     "create_fractal",
@@ -89,6 +91,8 @@ const EXPECTED_TOOLS: [&str; 38] = [
     // Agent vision: GUI hosts only (window-capture seam, §screenshot, §camera-state)
     "screenshot",
     "get_camera",
+    // Folded-in agent_input_surface_20261031: GUI hosts only (synthetic-input seam, §agent-input-surface)
+    "inject_input",
 ];
 
 // ---------------------------------------------------------------------------
@@ -678,6 +682,13 @@ fn emu(with_store: bool) -> Emu {
             true,
             Some(fe_runtime::screenshot::screenshot_bridge().0),
         ),
+        // Same shape as the window-capture seam above: opted in, bridge gone —
+        // the row is advertised and an admitted injection fails closed at
+        // once (keeps the per-tool sweeps below covering every row).
+        input: fe_api::input::InputSurface::new(
+            true,
+            Some(fe_runtime::input::input_bridge().0),
+        ),
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     });
     let model = Arc::new(Mutex::new(Model::default()));
@@ -872,7 +883,9 @@ async fn tools_list_inventory() {
     let non_lab: Vec<&str> = EXPECTED_TOOLS
         .iter()
         .copied()
-        .filter(|n| !n.starts_with("sim_") && *n != "screenshot" && *n != "get_camera")
+        .filter(|n| {
+            !n.starts_with("sim_") && *n != "screenshot" && *n != "get_camera" && *n != "inject_input"
+        })
         .collect();
     assert_eq!(names, non_lab, "31 tools off a sim lab host");
     // tools/list and the dispatch table are one source of truth.
@@ -910,7 +923,7 @@ async fn tools_list_inventory() {
     let lab_tools: Vec<&str> = EXPECTED_TOOLS
         .iter()
         .copied()
-        .filter(|n| *n != "screenshot" && *n != "get_camera")
+        .filter(|n| *n != "screenshot" && *n != "get_camera" && *n != "inject_input")
         .collect();
     assert_eq!(listed_tools(&lab, &lab_token).await, lab_tools);
 

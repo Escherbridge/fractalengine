@@ -68,7 +68,8 @@ when a route lands.
 | Sim control (§sim-control) | `POST /api/v1/sim/start`, `POST /api/v1/sim/stop`, `GET /api/v1/sim/status`, `POST /api/v1/sim/step`, `POST /api/v1/sim/inject-fault` |
 | Agent screenshot (§screenshot) | `GET /api/v1/debug/screenshot` → `image/png` (byte-identical, unchanged); `POST` same path → dynamic posed capture (window/scene, 5 pose kinds), PNG + `X-FE-Capture-Pose` header — ON unless `FE_API_SCREENSHOT_ALLOW=0`; Owner; 1/s per DID; scope-confined to the ACTIVE verse (uniform 404 otherwise) |
 | Agent camera read-back (§camera-state) | `GET /api/v1/debug/camera` — live pose/active hierarchy/projection; same opt-in as screenshot; Owner; 10/s per DID |
-| MCP | `POST /mcp` (`mcp::mcp_handler`) — 38-row `ToolSpec` table: 32 always advertised, `screenshot`/`get_camera` only on a GUI host (either capture bridge wired), the 5 `sim_*` only on a sim lab host (§mcp-dispatch); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
+| Agent input injection (§agent-input-surface) | `POST /api/v1/debug/input` — synthetic pointer/keyboard/scroll, optional `capture_after` PNG; OFF unless `FE_API_INPUT_ALLOW=1` (mutates state, unlike the two rows above); Owner; 5/s per DID; refused 409 while a posed capture holds the camera |
+| MCP | `POST /mcp` (`mcp::mcp_handler`) — 39-row `ToolSpec` table: 32 always advertised, `screenshot`/`get_camera` only on a GUI host (either capture bridge wired), `inject_input` only when its own input bridge is wired, the 5 `sim_*` only on a sim lab host (§mcp-dispatch); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
 
 ## §existence-oracle (REST/WS denial unification, 2026-10-10)
 
@@ -1718,11 +1719,11 @@ channel.
 ## §operator-gate (`operator_gate.rs`, 2026-10-31; per-gate default added agent_vision_20261031)
 
 Every deny-by-default operator surface (§elevated-query, §screenshot,
-§camera-state) runs ONE guard chain — a **guard chain** pattern, declared as
-data: `OperatorGate { opt_in_env, endpoint, enabled_warning,
-disabled_message, rate_key_prefix, rate_per_sec, rate_label, default_on }`
-(`fe_api::ELEVATED_QUERY_GATE`, `screenshot::SCREENSHOT_GATE`,
-`vision::CAMERA_STATE_GATE`). A new gated endpoint adds a `const` and calls
+§camera-state, §agent-input-surface) runs ONE guard chain — a **guard
+chain** pattern, declared as data: `OperatorGate { opt_in_env, endpoint,
+enabled_warning, disabled_message, rate_key_prefix, rate_per_sec, rate_label,
+default_on }` (`fe_api::ELEVATED_QUERY_GATE`, `screenshot::SCREENSHOT_GATE`,
+`vision::CAMERA_STATE_GATE`, `input::INPUT_GATE`). A new gated endpoint adds a `const` and calls
 the gate — it does not copy the chain. `OperatorGate` itself is edited once
 (agent_vision_20261031 V2 added `default_on`); every endpoint added after
 that only adds a `const`.
@@ -1943,3 +1944,98 @@ installed) plus the window's size/minimized state.
   name to report `CAMERA_STATE_GATE.disabled_message` instead of the
   screenshot one, so a disabled node's error text still names the right
   endpoint.
+
+## §agent-input-surface (`input.rs`, folded-in `agent_input_surface_20261031`
+via `agent_vision_20261031`; wiring landed plan I3)
+
+`POST /api/v1/debug/input` (+ MCP `inject_input`) synthesizes pointer,
+keyboard and scroll input into the running GUI, so an agent can close the
+loop `get_camera -> screenshot(pose) -> inject_input -> screenshot`. It is
+the one surface in this family that **mutates** state rather than observing
+it, so its posture deliberately diverges from §screenshot/§camera-state in
+exactly one place:
+
+- **Operator opt-in, OFF BY DEFAULT.** `ApiState.input.allowed` is read once
+  at startup from `FE_API_INPUT_ALLOW` (`input::input_allowed_from_env`,
+  `INPUT_GATE.default_on == false` — the pre-existing opt-in-only posture,
+  §operator-gate): unset or anything but `1` refuses with the disabled
+  message; `=1` admits and WARNs that, combined with the default-on
+  screenshot/camera surfaces, an Owner token now has full remote control of
+  this host's GUI. A field, not a per-request env read, so tests flip it
+  (mirrors `ApiHarness::spawn_with_screenshot` — `spawn_with_input` is its
+  `InputSurface` counterpart, fe-test-harness src/AGENTS.md §api-harness).
+- **Gate order (mirrors §screenshot's POST, spec AIS §4.5): opt-in → Owner
+  (typed) → 5/s per DID (key `input:<sub>`) → static validation (400) →
+  bridge.** A whole command batch counts once against the rate budget, since
+  a UI interaction is naturally multi-command, unlike a 1/s capture. On MCP
+  the dispatcher refuses the opt-in BEFORE `authorize`
+  (`operator_opt_in_refusal`, `ToolSeam::Input`), so the order is identical
+  there; `tool_available` hides the row entirely when `ApiState.input.bridge`
+  is unwired (headless/relay hosts, every harness default).
+- **One parse-and-validate path, shared by both doors**
+  (`input::validate_input_request`): a structural serde failure (including
+  `InputSpec`'s `deny_unknown_fields`, or REST's 64 KiB body cap) is
+  `malformed_body`; everything else is `InputSpec::validate`'s typed table,
+  run in table order (fe-runtime src/AGENTS.md §input-bridge has the full
+  command vocabulary and the per-field `non_finite`/`invalid_key`/
+  `text_too_long`/`wait_frames_out_of_range` checks). `ValidInputSpec` has no
+  public constructor besides `validate()` — no float or unmapped key crosses
+  the bridge unchecked.
+- **The bridge.** `ApiState.input.bridge` is `fe_runtime::input::InputRequest`
+  — a `BridgeRequest<InputOp, InputOutcome>` alias on the shared
+  §correlated-bridge envelope (fe-runtime §input-bridge explains why input
+  reuses that envelope rather than mirroring screenshot's own bridge shape).
+  Both doors go through `bridge_client::round_trip(bridge, caller_scope, op,
+  timeout, name)`, so the caller's scope can never be left off a request —
+  exactly like vision's capture/camera ops. `input::request_inject` maps
+  `RoundTripError` to `InputError` (busy/host-gone/timeout/uncorrelated), and
+  `input::run_inject` (shared by the REST handler and the MCP `inject_input`
+  handler) audits before crossing the bridge (`input::audit_inject`: did,
+  scope, command count, wait_frames, capture_after — mirrors
+  `vision::audit_capture`).
+- **Scope confinement is check-at-use, not an up-front resolve.** Unlike
+  `PetalArg`/`NodeArg` tools, `inject_input`'s `ScopeRule` is `Global` — the
+  caller's scope crosses the bridge as `caller_scope` and the Bevy host
+  refuses unless it covers the active verse AT DRAIN TIME AND AT INJECTION
+  TIME (`§INPUT-ADDENDUM` item 2), the same "check at use, never an
+  existence oracle" rule §existence-oracle states for REST. An out-of-scope
+  target and a nonexistent one answer IDENTICALLY:
+  `fe_runtime::input::DENIED_MESSAGE` is byte-identical to
+  `rest::NOT_FOUND_OR_DENIED` and to `fe_runtime::vision::DENIED_MESSAGE`
+  (asserted in `input.rs`'s own test), so a denied injection reads exactly
+  like a denied capture.
+- **Interaction with a posed capture (`§INPUT-ADDENDUM` item 4).** While
+  `CameraCaptureLock` holds the main camera for a vision job, an injection is
+  refused `camera_locked_by_capture` (409) rather than fighting the held
+  pose — synthetic input and a posed capture never run concurrently.
+- **Success body** (REST JSON, and the MCP tool's JSON-as-text payload):
+  `commands_applied`, `wait_frames_used`, and an optional
+  `capture_after_png_base64` (present only when `capture_after: true` asked
+  for a post-action PNG, captured through V5's shared `capture_png` helper —
+  the field is OMITTED, not `null`, when absent). REST is JSON-only on this
+  route (unlike the posed-capture route's raw-PNG body + pose header): an
+  injection's primary payload is the outcome, with the image as an
+  attachment.
+- **Headless/unwired hosts.** `InputSurface::disabled()` (relay, harness
+  default) answers both doors 503 "no window", and the MCP `inject_input` row
+  is not even advertised.
+
+How an agent calls it (GUI started with `FE_API_INPUT_ALLOW=1`, an Owner
+token):
+
+```bash
+curl -fsS -X POST -H "Authorization: Bearer $FE_TOKEN" -H "Content-Type: application/json" \
+  -d '{"commands":[{"kind":"pointer_click","x":640,"y":360,"button":"left"}],"wait_frames":5,"capture_after":true}' \
+  http://127.0.0.1:8765/api/v1/debug/input
+```
+
+MCP: `tools/call` with `{"name":"inject_input","arguments":{"commands":[{"kind":"key_press","key":"Enter"}]}}`.
+
+Tests: the REST door's gate/validation/error-mapping table lives in
+`input.rs`'s own `#[cfg(test)]` module (I2); the wire contract's validation
+table and bridge-capacity bound live in `fe-runtime/src/input.rs` (I1); the
+full-router flow (`disabled_without_opt_in_env`, `refused_below_owner_role`,
+`admitted_inject_round_trips_...`, `rate_limited_past_the_per_did_budget`,
+`headless_host_reports_unavailable_and_hides_the_mcp_row`,
+`inject_input_refused_while_a_posed_capture_holds_the_camera`) and the Bevy
+translation (`input_bridge.rs`) land with I4/I5.

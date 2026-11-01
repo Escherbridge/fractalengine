@@ -671,6 +671,7 @@ mod tests {
             elevated_query_allowed: false,
             upload_quota_bytes: crate::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
             screenshot: crate::screenshot::ScreenshotSurface::disabled(),
+            input: crate::input::InputSurface::disabled(),
             share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
         })
     }
@@ -791,6 +792,7 @@ mod tests {
             elevated_query_allowed: false,
             upload_quota_bytes: crate::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
             screenshot: crate::screenshot::ScreenshotSurface::disabled(),
+            input: crate::input::InputSurface::disabled(),
             share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
         });
 
@@ -879,6 +881,7 @@ mod tests {
             elevated_query_allowed: false,
             upload_quota_bytes: crate::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
             screenshot: crate::screenshot::ScreenshotSurface::disabled(),
+            input: crate::input::InputSurface::disabled(),
             share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
         });
 
@@ -946,6 +949,7 @@ mod tests {
             elevated_query_allowed: false,
             upload_quota_bytes: crate::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
             screenshot: crate::screenshot::ScreenshotSurface::disabled(),
+            input: crate::input::InputSurface::disabled(),
             share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
         });
 
@@ -984,6 +988,7 @@ mod tests {
             elevated_query_allowed: false,
             upload_quota_bytes: crate::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
             screenshot: crate::screenshot::ScreenshotSurface::disabled(),
+            input: crate::input::InputSurface::disabled(),
             share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
         })
     }

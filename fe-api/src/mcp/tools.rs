@@ -973,6 +973,43 @@ pub(super) fn get_camera(call: ToolCall<'_>) -> ToolFuture<'_> {
 }
 
 // ---------------------------------------------------------------------------
+// Agent input surface (folded-in agent_input_surface_20261031; AGENTS.md
+// §agent-input-surface) — the dispatcher already refused a node without the
+// operator opt-in and enforced the Owner floor.
+// ---------------------------------------------------------------------------
+
+/// `inject_input`: synthesize pointer/keyboard/scroll input into the running
+/// GUI (AIS spec §4.2, §4.4, plan I3). Mirrors `screenshot`'s shared-gate
+/// pattern minus the role step (FR-5 owns that in the dispatcher), and the
+/// REST door's ONE parse-and-validate path (`input::validate_input_request`)
+/// so a malformed or out-of-range batch reads identically on both doors.
+pub(super) fn inject_input(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let gate = crate::input::INPUT_GATE;
+        gate.check_opted_in(call.state.input.allowed)
+            .map_err(|refusal| refusal.message())?;
+        gate.check_rate(call.state, call.claims)
+            .await
+            .map_err(|refusal| refusal.message())?;
+
+        let spec = crate::input::validate_input_request(serde_json::from_value(call.args.clone()))
+            .map_err(|refusal| crate::input::InputError::Refusal(refusal).coded_message())?;
+        let output = crate::input::run_inject(call.state, call.claims, spec)
+            .await
+            .map_err(|error| error.coded_message())?;
+
+        let mut body = json!({
+            "commands_applied": output.commands_applied,
+            "wait_frames_used": output.wait_frames_used,
+        });
+        if let Some(png) = output.png {
+            body["capture_after_png_base64"] = json!(encode_base64(png).await?);
+        }
+        Ok(body)
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Input schemas (one fn per tool, named like the tool)
 // ---------------------------------------------------------------------------
 
@@ -1447,5 +1484,50 @@ pub(super) mod schema {
     /// Agent vision (agent_vision_20261031 §5.6): no arguments.
     pub fn get_camera() -> Value {
         json!({ "type": "object", "properties": {} })
+    }
+
+    /// Agent input surface (folded-in agent_input_surface_20261031 §4.2): a
+    /// batch of commands, each tagged by `kind`.
+    pub fn inject_input() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "commands": {
+                    "type": "array",
+                    "description": "1..=64 commands, applied in order; primary-window pixel coordinates (the same space a prior screenshot's PNG dimensions give an agent).",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {
+                                "type": "string",
+                                "enum": ["pointer_move", "pointer_click", "pointer_drag", "key_press", "text_entry", "scroll"]
+                            },
+                            "x": { "type": "number", "description": "pointer_move/pointer_click" },
+                            "y": { "type": "number", "description": "pointer_move/pointer_click" },
+                            "button": { "type": "string", "enum": ["left", "right", "middle"], "description": "pointer_click/pointer_drag" },
+                            "from": vec3_xy("pointer_drag start"),
+                            "to": vec3_xy("pointer_drag end"),
+                            "key": { "type": "string", "description": "key_press; a bevy KeyCode variant name, e.g. \"Enter\", \"KeyA\", \"ArrowLeft\" (<=32 ASCII alphanumeric chars)" },
+                            "text": { "type": "string", "description": "text_entry; <=4096 characters" },
+                            "dx": { "type": "number", "description": "scroll" },
+                            "dy": { "type": "number", "description": "scroll" }
+                        },
+                        "required": ["kind"]
+                    }
+                },
+                "wait_frames": { "type": "integer", "description": "frames to settle before replying; <=120, default 0" },
+                "capture_after": { "type": "boolean", "description": "attach a PNG of the window after the batch applies; default false" }
+            },
+            "required": ["commands"]
+        })
+    }
+
+    fn vec3_xy(desc: &str) -> Value {
+        json!({
+            "type": "object",
+            "description": desc,
+            "properties": { "x": { "type": "number" }, "y": { "type": "number" } },
+            "required": ["x", "y"]
+        })
     }
 }

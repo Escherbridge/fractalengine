@@ -61,6 +61,7 @@ fn state(db: Option<Db>, store: Arc<EntityStore>) -> Arc<ApiState> {
         elevated_query_allowed: false,
         upload_quota_bytes: fe_api::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
         screenshot: fe_api::screenshot::ScreenshotSurface::disabled(),
+        input: fe_api::input::InputSurface::disabled(),
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     })
 }

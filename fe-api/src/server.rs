@@ -75,6 +75,14 @@ pub struct ApiState {
     /// (AGENTS.md §screenshot, §camera-state). `ScreenshotSurface::disabled()`
     /// on headless hosts.
     pub screenshot: crate::screenshot::ScreenshotSurface,
+    /// Agent input-injection surface (folded-in `agent_input_surface_20261031`
+    /// via agent_vision_20261031): operator opt-in (OFF unless
+    /// `FE_API_INPUT_ALLOW=1` — this surface MUTATES state, unlike
+    /// screenshot/camera's default-on posture) + its API→Bevy synthetic-input
+    /// bridge (AGENTS.md §agent-input-surface). `InputSurface::disabled()`
+    /// on headless hosts and every test `ApiState` that does not exercise
+    /// this surface.
+    pub input: crate::input::InputSurface,
 }
 
 /// Build the complete axum [`Router`] (route inventory: fe-api/AGENTS.md §routes).
@@ -314,6 +322,10 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
             get(crate::screenshot::get_screenshot).post(crate::vision::post_screenshot),
         )
         .route("/api/v1/debug/camera", get(crate::vision::get_camera))
+        // Agent input injection (folded-in agent_input_surface_20261031):
+        // opt-in OFF unless FE_API_INPUT_ALLOW=1 — mutates state, unlike the
+        // two capture routes above (AGENTS.md §agent-input-surface).
+        .route("/api/v1/debug/input", post(crate::input::post_input))
         // Query endpoints (scope-guarded SurrealQL)
         .route("/api/v1/query", post(crate::rest::execute_query))
         .route(

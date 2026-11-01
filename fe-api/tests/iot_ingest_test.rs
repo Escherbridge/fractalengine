@@ -77,6 +77,7 @@ fn test_state(db: Db) -> Arc<ApiState> {
         elevated_query_allowed: false,
         upload_quota_bytes: fe_api::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
         screenshot: fe_api::screenshot::ScreenshotSurface::disabled(),
+        input: fe_api::input::InputSurface::disabled(),
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     })
 }
@@ -386,6 +387,7 @@ fn test_state_with_replication(
         elevated_query_allowed: false,
         upload_quota_bytes: fe_api::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
         screenshot: fe_api::screenshot::ScreenshotSurface::disabled(),
+        input: fe_api::input::InputSurface::disabled(),
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     });
     (state, repl_rx)
@@ -547,6 +549,7 @@ fn fallback_state(
         elevated_query_allowed: false,
         upload_quota_bytes: fe_api::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
         screenshot: fe_api::screenshot::ScreenshotSurface::disabled(),
+        input: fe_api::input::InputSurface::disabled(),
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     })
 }
@@ -773,6 +776,7 @@ async fn direct_path_with_db_reader_never_sends_the_fallback_command() {
         elevated_query_allowed: false,
         upload_quota_bytes: fe_api::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
         screenshot: fe_api::screenshot::ScreenshotSurface::disabled(),
+        input: fe_api::input::InputSurface::disabled(),
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     });
 

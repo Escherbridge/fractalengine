@@ -60,6 +60,7 @@ struct HarnessOptions {
     with_blob_store: bool,
     upload_quota_bytes: u64,
     screenshot: fe_api::screenshot::ScreenshotSurface,
+    input: fe_api::input::InputSurface,
 }
 
 impl Default for HarnessOptions {
@@ -74,6 +75,7 @@ impl Default for HarnessOptions {
             with_blob_store: true,
             upload_quota_bytes: fe_api::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
             screenshot: fe_api::screenshot::ScreenshotSurface::disabled(),
+            input: fe_api::input::InputSurface::disabled(),
         }
     }
 }
@@ -180,6 +182,18 @@ impl ApiHarness {
         .await
     }
 
+    /// Like [`Self::spawn`], with an explicit agent input-injection surface
+    /// (opt-in flag + synthetic-input bridge) — every other constructor
+    /// leaves it disabled and unwired, the production default for hosts
+    /// without a window (mirrors [`Self::spawn_with_screenshot`]).
+    pub async fn spawn_with_input(input: fe_api::input::InputSurface) -> Result<Self> {
+        Self::spawn_with_options(HarnessOptions {
+            input,
+            ..HarnessOptions::default()
+        })
+        .await
+    }
+
     /// Like [`Self::spawn`], with `blob_store: None` — a host that cannot
     /// store asset bytes, so uploads fail closed (503).
     pub async fn spawn_without_blob_store() -> Result<Self> {
@@ -213,6 +227,7 @@ impl ApiHarness {
             with_blob_store,
             upload_quota_bytes,
             screenshot,
+            input,
         } = options;
         // Production DB startup initialises the HLC before any op-log write; the
         // harness bypasses that startup, so do it once per process here.
@@ -267,6 +282,7 @@ impl ApiHarness {
             elevated_query_allowed,
             upload_quota_bytes,
             screenshot,
+            input,
         });
 
         let router = build_router(state.clone());
