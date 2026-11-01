@@ -128,22 +128,32 @@ pub enum ToolSeam {
     Screenshot,
 }
 
-/// Whether this host wires the seam `spec` needs.
+/// Whether this host wires the seam `spec` needs. `screenshot` (the plain
+/// capture, falls back to the legacy bridge on empty args) and `get_camera`
+/// (vision-bridge only) share `ToolSeam::Screenshot`, so either bridge being
+/// wired is enough to advertise the row; a fully headless host (neither) hides
+/// both (AC-9).
 pub fn tool_available(spec: &ToolSpec, state: &ApiState) -> bool {
     match spec.requires {
         None => true,
         Some(ToolSeam::SimControl) => state.sim_control_tx.is_some(),
-        Some(ToolSeam::Screenshot) => state.screenshot.bridge.is_some(),
+        Some(ToolSeam::Screenshot) => {
+            state.screenshot.bridge.is_some() || state.screenshot.vision.is_some()
+        }
     }
 }
 
 /// An operator opt-in the seam needs, refused BEFORE authz (mirrors the REST
-/// gate order — AGENTS.md §screenshot); `None` = no opt-in needed, or given.
+/// gate order — AGENTS.md §screenshot, §camera-state); `None` = no opt-in
+/// needed, or given. `get_camera` names the camera gate's disabled message
+/// even though both share `ApiState.screenshot.allowed` (one env var).
 fn operator_opt_in_refusal(spec: &ToolSpec, state: &ApiState) -> Option<&'static str> {
     match spec.requires {
-        Some(ToolSeam::Screenshot) if !state.screenshot.allowed => {
-            Some(crate::screenshot::SCREENSHOT_GATE.disabled_message)
-        }
+        Some(ToolSeam::Screenshot) if !state.screenshot.allowed => Some(if spec.name == "get_camera" {
+            crate::vision::CAMERA_STATE_GATE.disabled_message
+        } else {
+            crate::screenshot::SCREENSHOT_GATE.disabled_message
+        }),
         _ => None,
     }
 }
@@ -256,9 +266,11 @@ static TOOLS: &[ToolSpec] = &[
         "Ingest one device payload: base64 files (order preserved into asset_ids; total decoded size <= 11 MiB over MCP, use REST multipart POST /api/v1/petals/{petal_id}/iot/payloads for larger payloads), stored as generic assets under a declared format's mime, then recorded as one device_payload row. Requires editor role + petal scope."),
     tool!(list_device_payloads, Viewer, PetalArg("petal_id"),
         "List device_payload rows for a petal, optionally filtered by node_id, format_id and a recorded-time window (from_ms/to_ms). Requires viewer role + petal scope."),
-    // --- Agent visual verification (AGENTS.md §screenshot) ---
+    // --- Agent vision: dynamic capture + camera read-back (AGENTS.md §screenshot, §camera-state) ---
     tool!(screenshot, Owner, Global, requires Screenshot, content,
-        "Capture the live application window (3D viewport + all UI) as a PNG image, for visually verifying what the editor renders. Off unless the node operator set FE_API_SCREENSHOT_ALLOW=1; not scope-confined (shows whatever verse is open); 1 capture/sec. Requires owner role."),
+        "Capture the application view as a PNG image. Empty arguments capture the live window exactly like plain GET. A `pose` (exactly one of camera/orbit/geo/tile/focus) and `mode` (window: moves the main camera, settles, restores by default; scene: off-screen render at any width/height, no UI, user's view untouched) move where the capture looks; the response's second content block is the resolved pose JSON. On by default (set FE_API_SCREENSHOT_ALLOW=0 to disable); not scope-confined (shows whatever verse is open); 1 capture/sec. Requires owner role."),
+    tool!(get_camera, Owner, Global, requires Screenshot,
+        "Read the live main-camera pose, locked state, active verse/fractal/petal and terrain projection info — pairs with `screenshot`'s pose kinds for a closed read-look loop. Shares the screenshot opt-in (on by default; set FE_API_SCREENSHOT_ALLOW=0 to disable); 10 reads/sec. Requires owner role."),
 ];
 
 // ---------------------------------------------------------------------------
@@ -661,10 +673,11 @@ mod tests {
         }
         assert_eq!(
             TOOLS.len(),
-            37,
+            38,
             "DEC-C14: 27 non-sim + 5 sim (p2p_asset_streaming S6 added set_petal_render_distance); \
              CDL-SPEC10 A5 added 4 R5 device tools (register/list_device_formats, \
-             ingest/list_device_payloads); §screenshot added `screenshot`"
+             ingest/list_device_payloads); §screenshot added `screenshot`; \
+             agent_vision_20261031 added `get_camera`"
         );
     }
 

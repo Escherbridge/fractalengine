@@ -1,5 +1,6 @@
 //! Guard chain shared by every operator-gated endpoint (elevated query,
-//! screenshot): opt-in → typed Owner → per-DID rate — see AGENTS.md §operator-gate.
+//! screenshot, camera, input): opt-in → typed Owner → per-DID rate — see
+//! AGENTS.md §operator-gate.
 
 use fe_identity::api_token::ApiClaims;
 
@@ -11,7 +12,9 @@ pub const OWNER_REQUIRED: &str = "insufficient permissions (owner required)";
 /// One deny-by-default endpoint's policy: its opt-in env var and its rate budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OperatorGate {
-    /// Env var whose value `1` (and only `1`) opts the node in.
+    /// Env var whose value `1` (and only `1`) opts the node in; `0` opts it
+    /// out even when `default_on` is `true`. Any other value is ignored
+    /// (fail closed) — see [`opt_in_value_enables`].
     pub opt_in_env: &'static str,
     /// Human name used in logs ("elevated query endpoint").
     pub endpoint: &'static str,
@@ -25,6 +28,11 @@ pub struct OperatorGate {
     pub rate_per_sec: u32,
     /// The limit as named in the 429 text ("1 screenshot/sec").
     pub rate_label: &'static str,
+    /// Whether an unset (or empty) env value enables this surface
+    /// (agent_vision_20261031 DD-1/§5.1). `true` for screenshot/camera
+    /// (default-on, `=0` disables); `false` for elevated-query/input
+    /// (default-off, `=1` enables) — the pre-existing posture.
+    pub default_on: bool,
 }
 
 /// Why a gate refused, in gate order.
@@ -49,24 +57,49 @@ impl GateRefusal {
     }
 }
 
-/// Only the exact value `1` opts in (`true`, `yes`, ` 1` all stay off).
-pub fn opt_in_value_enables(value: Option<&str>) -> bool {
-    value == Some("1")
+/// Resolve one env value against a gate's default (spec agent_vision_20261031
+/// §5.1's table): unset/`""` takes `default_on`; `1` always enables; `0`
+/// always disables; anything else always disables (fail closed), regardless
+/// of `default_on`.
+pub fn opt_in_value_enables(value: Option<&str>, default_on: bool) -> bool {
+    match value {
+        None | Some("") => default_on,
+        Some("1") => true,
+        Some("0") => false,
+        Some(_) => false,
+    }
 }
 
 impl OperatorGate {
-    /// Read the opt-in once at startup (only `1` enables): loud WARN when on, a
-    /// warning for any other non-empty value, silence when unset.
+    /// Read the opt-in once at startup against this gate's `default_on`
+    /// (§5.1's table): loud WARN whenever the result is on — a default-on
+    /// variant when the env was unset, the plain variant on an explicit `1` —
+    /// a warning for any unrecognized value (fail closed either way), and
+    /// silence for an explicit `0` or an unset default-off gate.
     pub fn opted_in_from_env(&self) -> bool {
         let value = std::env::var(self.opt_in_env).ok();
-        let enabled = opt_in_value_enables(value.as_deref());
+        let value_ref = value.as_deref();
+        let enabled = opt_in_value_enables(value_ref, self.default_on);
+        let unset_or_empty = matches!(value_ref, None | Some(""));
         if enabled {
-            tracing::warn!("{}=1: {}", self.opt_in_env, self.enabled_warning);
-        } else if let Some(other) = value.as_deref().filter(|v| !v.is_empty()) {
+            if unset_or_empty {
+                tracing::warn!(
+                    "{} unset — {} enabled by default: {} (set {}=0 to disable)",
+                    self.opt_in_env, self.endpoint, self.enabled_warning, self.opt_in_env
+                );
+            } else {
+                tracing::warn!("{}=1: {}", self.opt_in_env, self.enabled_warning);
+            }
+        } else if let Some(other) = value_ref.filter(|v| !v.is_empty() && *v != "0") {
             tracing::warn!(
-                "{}={other:?} ignored (only `1` enables) — {} stays disabled",
+                "{}={other:?} ignored (only `1`/`0` are recognized) — {} stays disabled{}",
                 self.opt_in_env,
-                self.endpoint
+                self.endpoint,
+                if self.default_on {
+                    " (fail closed despite the default-on policy)"
+                } else {
+                    ""
+                }
             );
         }
         enabled
@@ -118,20 +151,35 @@ impl OperatorGate {
 mod tests {
     use super::*;
 
+    /// spec agent_vision_20261031 §5.1's table, both `default_on` columns:
+    /// unset/`""` follows the default, `1`/`0` are absolute, and garbage
+    /// values fail closed either way.
     #[test]
-    fn only_the_exact_value_one_opts_a_node_in() {
-        let cases = [
-            (Some("1"), true),
-            (None, false),
-            (Some(""), false),
-            (Some("0"), false),
-            (Some("true"), false),
-            (Some("yes"), false),
-            (Some(" 1"), false),
-            (Some("1 "), false),
+    fn per_gate_default_decides_the_unset_and_garbage_cases() {
+        let cases: &[(Option<&str>, bool, bool)] = &[
+            (None, false, false),
+            (None, true, true),
+            (Some(""), false, false),
+            (Some(""), true, true),
+            (Some("1"), false, true),
+            (Some("1"), true, true),
+            (Some("0"), false, false),
+            (Some("0"), true, false),
+            (Some("true"), false, false),
+            (Some("true"), true, false),
+            (Some("yes"), false, false),
+            (Some("yes"), true, false),
+            (Some(" 1"), false, false),
+            (Some(" 1"), true, false),
+            (Some("1 "), false, false),
+            (Some("1 "), true, false),
         ];
-        for (value, expected) in cases {
-            assert_eq!(opt_in_value_enables(value), expected, "{value:?}");
+        for &(value, default_on, expected) in cases {
+            assert_eq!(
+                opt_in_value_enables(value, default_on),
+                expected,
+                "value={value:?} default_on={default_on}"
+            );
         }
     }
 }

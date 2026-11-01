@@ -34,6 +34,7 @@ pub mod terrain;
 pub mod timeseries_query;
 pub mod types;
 pub mod upload;
+pub mod vision;
 pub mod visibility;
 pub mod ws;
 
@@ -90,9 +91,12 @@ pub struct ApiConfig {
     /// Per-owner upload quota — binaries pass [`upload_quota_bytes_from_env`]
     /// (AGENTS.md §asset-ingest).
     pub upload_quota_bytes: u64,
-    /// Agent screenshot surface — the GUI passes the env opt-in
-    /// ([`screenshot::screenshot_allowed_from_env`]) plus its capture bridge;
-    /// headless hosts pass `ScreenshotSurface::disabled()` (AGENTS.md §screenshot).
+    /// Agent screenshot + vision surface — the GUI passes the env opt-in
+    /// ([`screenshot::screenshot_allowed_from_env`]), which is now ON unless
+    /// the operator sets it to `0` (agent_vision_20261031 DD-1), plus its
+    /// capture bridge and (via [`screenshot::ScreenshotSurface::with_vision`])
+    /// its dynamic-capture/camera-read-back bridge; headless hosts pass
+    /// `ScreenshotSurface::disabled()` (AGENTS.md §screenshot, §camera-state).
     pub screenshot: screenshot::ScreenshotSurface,
 }
 
@@ -127,6 +131,9 @@ pub const ELEVATED_QUERY_GATE: operator_gate::OperatorGate = operator_gate::Oper
     rate_key_prefix: "elevated",
     rate_per_sec: 5,
     rate_label: "5 elevated queries/sec",
+    // Pre-existing posture, unchanged by agent_vision_20261031 DD-1: raw SQL
+    // writes stay opt-in only, never on by default.
+    default_on: false,
 };
 
 /// Read the `FE_API_ELEVATED_ALLOW` opt-in once at startup (only `1` enables);

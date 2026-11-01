@@ -40,9 +40,10 @@ use fractalengine_test_harness::api::ApiHarness;
 /// DEC-C14: the 20-name mcp_scene_primitives vocabulary + 12 shipped extras
 /// (`set_petal_render_distance`, p2p_asset_streaming S6, was missing from
 /// this golden list until CDL-SPEC10 A5 — a pre-existing drift this slice
-/// fixes incidentally while adding its own 4 R5 device tools) = 32 non-sim,
-/// + 5 sim = 36.
-const EXPECTED_TOOLS: [&str; 37] = [
+/// fixes incidentally while adding its own 4 R5 device tools) = 32 non-sim
+/// plus 5 sim = 37. agent_vision_20261031 added `get_camera` (shares
+/// `ToolSeam::Screenshot` with `screenshot`), for 38 total.
+const EXPECTED_TOOLS: [&str; 38] = [
     "get_hierarchy",
     "create_verse",
     "create_fractal",
@@ -85,8 +86,9 @@ const EXPECTED_TOOLS: [&str; 37] = [
     "list_device_formats",
     "ingest_device_payload",
     "list_device_payloads",
-    // Agent visual verification: GUI hosts only (window-capture seam, §screenshot)
+    // Agent vision: GUI hosts only (window-capture seam, §screenshot, §camera-state)
     "screenshot",
+    "get_camera",
 ];
 
 // ---------------------------------------------------------------------------
@@ -870,7 +872,7 @@ async fn tools_list_inventory() {
     let non_lab: Vec<&str> = EXPECTED_TOOLS
         .iter()
         .copied()
-        .filter(|n| !n.starts_with("sim_") && *n != "screenshot")
+        .filter(|n| !n.starts_with("sim_") && *n != "screenshot" && *n != "get_camera")
         .collect();
     assert_eq!(names, non_lab, "31 tools off a sim lab host");
     // tools/list and the dispatch table are one source of truth.
@@ -908,12 +910,13 @@ async fn tools_list_inventory() {
     let lab_tools: Vec<&str> = EXPECTED_TOOLS
         .iter()
         .copied()
-        .filter(|n| *n != "screenshot")
+        .filter(|n| *n != "screenshot" && *n != "get_camera")
         .collect();
     assert_eq!(listed_tools(&lab, &lab_token).await, lab_tools);
 
-    // A GUI host (window-capture bridge wired) advertises `screenshot` even
-    // before the operator opts in — the call then explains it is disabled.
+    // A GUI host (window-capture bridge wired) advertises `screenshot` AND
+    // `get_camera` (both share `ToolSeam::Screenshot`) even before the
+    // operator opts in — the call then explains it is disabled.
     let (screenshot_tx, _screenshot_rx) = fe_runtime::screenshot::screenshot_bridge();
     let gui = ApiHarness::spawn_with_screenshot(fe_api::screenshot::ScreenshotSurface::new(
         false,
@@ -924,6 +927,7 @@ async fn tools_list_inventory() {
     let gui_token = gui.mint_token("VERSE#v1", "viewer");
     let mut gui_tools = non_lab.clone();
     gui_tools.push("screenshot");
+    gui_tools.push("get_camera");
     assert_eq!(listed_tools(&gui, &gui_token).await, gui_tools);
     let full_table: Vec<&str> = tool_specs().iter().map(|t| t.name).collect();
     assert_eq!(full_table, EXPECTED_TOOLS);

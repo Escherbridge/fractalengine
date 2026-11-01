@@ -21,30 +21,46 @@ pub const SCREENSHOT_ALLOW_ENV: &str = "FE_API_SCREENSHOT_ALLOW";
 /// How long the API waits for the Bevy host to capture and encode a frame.
 pub const DEFAULT_SCREENSHOT_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The screenshot gate: opt-in → Owner → 1/s per DID (a capture can show any
-/// verse's data) — AGENTS.md §screenshot, §operator-gate.
+/// The screenshot gate: opt-in (ON unless `=0` — agent_vision_20261031 DD-1)
+/// → Owner → 1/s per DID (a capture can show any verse's data) — AGENTS.md
+/// §screenshot, §operator-gate.
 pub const SCREENSHOT_GATE: OperatorGate = OperatorGate {
     opt_in_env: SCREENSHOT_ALLOW_ENV,
     endpoint: "screenshot endpoint",
-    enabled_warning: "GET /api/v1/debug/screenshot and the MCP `screenshot` tool are ENABLED for \
-                      Owner tokens. A capture shows the whole window — whatever verse is open, \
-                      regardless of the token's scope. Enable only on a single-tenant node you \
-                      are actively driving with an agent",
+    enabled_warning: "GET/POST /api/v1/debug/screenshot and the MCP `screenshot` tool admit Owner \
+                      tokens. A capture shows the whole window — whatever verse is open, \
+                      regardless of the token's scope; a posed scene capture can also look \
+                      anywhere in the active petal without the user noticing. Set \
+                      FE_API_SCREENSHOT_ALLOW=0 to disable, or run only on a single-tenant node \
+                      you are actively driving with an agent",
     disabled_message: "screenshot endpoint is disabled on this node",
     rate_key_prefix: "screenshot",
     rate_per_sec: 1,
     rate_label: "1 screenshot/sec",
+    // agent_vision_20261031 DD-1: unset admits an Owner; `=0` refuses.
+    default_on: true,
 };
 
-/// The screenshot surface as wired on this host (`ApiState.screenshot`).
+/// The screenshot + vision surface as wired on this host (`ApiState.screenshot`).
 #[derive(Clone, Debug)]
 pub struct ScreenshotSurface {
     /// Operator opt-in, read once at startup ([`screenshot_allowed_from_env`]).
+    /// Shared by the plain GET, the dynamic POST and `GET /camera`
+    /// (agent_vision_20261031 §5.6 — one env var, one field).
     pub allowed: bool,
-    /// API→Bevy capture bridge; `None` on headless hosts (relay, tests).
+    /// API→Bevy capture bridge (the plain `GET` path only); `None` on
+    /// headless hosts (relay, tests).
     pub bridge: Option<ScreenshotRequestSender>,
-    /// Backstop for a capture that never answers.
+    /// Backstop for a capture/camera-read that never answers.
     pub reply_timeout: Duration,
+    /// API→Bevy dynamic-capture + camera-read-back bridge (§vision-bridge);
+    /// `None` on headless hosts and on every harness that only exercises the
+    /// plain GET path. Set via [`Self::with_vision`].
+    pub vision: Option<fe_runtime::vision::VisionRequestSender>,
+    /// Single-flight guard for posed captures (spec §5.5): a second posed
+    /// capture while one is in flight is refused at 409 WITHOUT ever
+    /// touching the bridge (`try_acquire_owned`, never blocks).
+    pub capture_slot: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 impl ScreenshotSurface {
@@ -54,17 +70,26 @@ impl ScreenshotSurface {
     }
 
     /// A surface with the given opt-in and bridge and the default timeout.
+    /// No vision bridge — call [`Self::with_vision`] to wire one.
     pub fn new(allowed: bool, bridge: Option<ScreenshotRequestSender>) -> Self {
         Self {
             allowed,
             bridge,
             reply_timeout: DEFAULT_SCREENSHOT_REPLY_TIMEOUT,
+            vision: None,
+            capture_slot: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
         }
     }
 
     /// Override the capture timeout (tests drive a short one).
     pub fn with_reply_timeout(mut self, reply_timeout: Duration) -> Self {
         self.reply_timeout = reply_timeout;
+        self
+    }
+
+    /// Wire the dynamic-capture/camera-read-back bridge (§vision-bridge).
+    pub fn with_vision(mut self, vision: fe_runtime::vision::VisionRequestSender) -> Self {
+        self.vision = Some(vision);
         self
     }
 }

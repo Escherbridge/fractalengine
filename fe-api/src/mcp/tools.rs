@@ -887,32 +887,85 @@ pub(super) fn list_device_payloads(call: ToolCall<'_>) -> ToolFuture<'_> {
 }
 
 // ---------------------------------------------------------------------------
-// Agent visual verification (AGENTS.md §screenshot) — the dispatcher already
-// refused a node without the operator opt-in and enforced the Owner floor.
+// Agent vision: dynamic capture + camera read-back (AGENTS.md §screenshot,
+// §camera-state) — the dispatcher already refused a node without the
+// operator opt-in and enforced the Owner floor.
 // ---------------------------------------------------------------------------
 
+/// Base64-encode PNG bytes off the async worker (mirrors `decode_base64`).
+async fn encode_base64(png: Vec<u8>) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(png)
+    })
+    .await
+    .map_err(|_| "encode failed".to_string())
+}
+
+/// Empty arguments capture the live window exactly like plain `GET` (the
+/// precedent kept byte-for-byte: `request_capture` is untouched by this
+/// track). Any argument at all switches to the dynamic pose/mode path over
+/// the vision bridge, returning the resolved pose as a second content block.
 pub(super) fn screenshot(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
         // The shared operator gate minus its role step (the dispatcher owns
         // authz — FR-5): opt-in (defense in depth), then the per-DID budget.
         let gate = crate::screenshot::SCREENSHOT_GATE;
-        let capture = async {
-            gate.check_opted_in(call.state.screenshot.allowed)?;
-            gate.check_rate(call.state, call.claims).await?;
-            crate::screenshot::request_capture(call.state).await
-        };
-        let png = capture.await.map_err(|error| error.message())?;
-        let size_bytes = png.len();
-        let data = tokio::task::spawn_blocking(move || {
-            use base64::Engine as _;
-            base64::engine::general_purpose::STANDARD.encode(png)
-        })
-        .await
-        .map_err(|_| "encode failed".to_string())?;
+        gate.check_opted_in(call.state.screenshot.allowed)
+            .map_err(|refusal| refusal.message())?;
+        gate.check_rate(call.state, call.claims)
+            .await
+            .map_err(|refusal| refusal.message())?;
+
+        let has_args = call.args.as_object().is_some_and(|o| !o.is_empty());
+        if !has_args {
+            let png = crate::screenshot::request_capture(call.state)
+                .await
+                .map_err(|error| error.message())?;
+            let size_bytes = png.len();
+            let data = encode_base64(png).await?;
+            return Ok(json!([
+                { "type": "image", "data": data, "mimeType": "image/png" },
+                { "type": "text", "text": format!("Captured the application window ({size_bytes} PNG bytes).") }
+            ]));
+        }
+
+        let spec: fe_runtime::vision::CaptureSpec = serde_json::from_value(call.args.clone())
+            .map_err(|error| format!("malformed arguments: {error}"))?;
+        let valid = spec.validate().map_err(|refusal| refusal.message)?;
+        let (png, pose) = crate::vision::run_capture(call.state, valid)
+            .await
+            .map_err(|error| error.message())?;
+        let pose_json = serde_json::to_string(&pose).unwrap_or_default();
+        let data = encode_base64(png).await?;
         Ok(json!([
             { "type": "image", "data": data, "mimeType": "image/png" },
-            { "type": "text", "text": format!("Captured the application window ({size_bytes} PNG bytes).") }
+            { "type": "text", "text": pose_json }
         ]))
+    })
+}
+
+/// `get_camera`: the live main-camera pose, active hierarchy and projection
+/// (spec §5.6), over the vision bridge's `ReadCamera` op.
+pub(super) fn get_camera(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let gate = crate::vision::CAMERA_STATE_GATE;
+        gate.check_opted_in(call.state.screenshot.allowed)
+            .map_err(|refusal| refusal.message())?;
+        gate.check_rate(call.state, call.claims)
+            .await
+            .map_err(|refusal| refusal.message())?;
+        match crate::vision::request_vision(call.state, fe_runtime::vision::VisionOp::ReadCamera)
+            .await
+            .map_err(|error| error.message())?
+        {
+            fe_runtime::vision::VisionOutput::Camera(state) => {
+                Ok(serde_json::to_value(state).unwrap_or_default())
+            }
+            fe_runtime::vision::VisionOutput::Capture { .. } => {
+                Err("vision bridge returned a capture reply for a camera request".to_string())
+            }
+        }
     })
 }
 
@@ -1304,7 +1357,88 @@ pub(super) mod schema {
         })
     }
 
+    /// Agent vision (agent_vision_20261031 §5.2): empty `{}` keeps the plain
+    /// capture; `pose` takes exactly one of camera/orbit/geo/tile/focus.
     pub fn screenshot() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["window", "scene"],
+                    "description": "window (default): moves the main camera, settles, captures \
+                                     the full UI, restores by default. scene: off-screen render \
+                                     at width/height, no UI, the user's view is untouched."
+                },
+                "pose": {
+                    "type": "object",
+                    "description": "Optional; EXACTLY ONE of camera/orbit/geo/tile/focus.",
+                    "properties": {
+                        "camera": {
+                            "type": "object",
+                            "properties": {
+                                "position": vec3("[x, y, z] world position"),
+                                "target": vec3("[x, y, z] look-at point"),
+                                "up": vec3("[x, y, z], default [0, 1, 0]"),
+                                "fov_deg": { "type": "number", "description": "1..=170, default 45" }
+                            },
+                            "required": ["position", "target"]
+                        },
+                        "orbit": {
+                            "type": "object",
+                            "properties": {
+                                "focus": vec3("[x, y, z] orbit focus point"),
+                                "yaw_deg": { "type": "number" },
+                                "pitch_deg": { "type": "number", "description": "±89" },
+                                "distance": { "type": "number", "description": "(0, 1e7]" }
+                            },
+                            "required": ["focus", "yaw_deg", "pitch_deg", "distance"]
+                        },
+                        "geo": {
+                            "type": "object",
+                            "properties": {
+                                "lat": { "type": "number", "description": "±85.0511 (Web-Mercator)" },
+                                "lon": { "type": "number", "description": "±180" },
+                                "altitude_m": { "type": "number", "description": "-500..=1e6, default 300" },
+                                "heading_deg": { "type": "number", "description": "0..360, default 0 = north" },
+                                "pitch_deg": { "type": "number", "description": "-90..=89, default -45" }
+                            },
+                            "required": ["lat", "lon"]
+                        },
+                        "tile": {
+                            "type": "object",
+                            "description": "Frames a Web-Mercator slippy tile (NW(x,y)..NW(x+1,y+1)) through the active petal's terrain projection.",
+                            "properties": {
+                                "z": { "type": "integer", "description": "0..=24" },
+                                "x": { "type": "integer" },
+                                "y": { "type": "integer" }
+                            },
+                            "required": ["z", "x", "y"]
+                        },
+                        "focus": {
+                            "type": "object",
+                            "description": "Frames a node's or petal's AABB; exactly one of node_id/petal_id.",
+                            "properties": {
+                                "node_id": { "type": "string" },
+                                "petal_id": { "type": "string" },
+                                "navigate": {
+                                    "type": "boolean",
+                                    "description": "window mode only; navigate into the target's petal first (not restored)"
+                                }
+                            }
+                        }
+                    }
+                },
+                "width": { "type": "integer", "description": "scene mode only; 64..=4096, default 1280" },
+                "height": { "type": "integer", "description": "scene mode only; 64..=4096, default 720" },
+                "settle_frames": { "type": "integer", "description": "<=600; default 30 with a pose, 0 for a bare window capture" },
+                "restore": { "type": "boolean", "description": "window mode only; default true" }
+            }
+        })
+    }
+
+    /// Agent vision (agent_vision_20261031 §5.6): no arguments.
+    pub fn get_camera() -> Value {
         json!({ "type": "object", "properties": {} })
     }
 }

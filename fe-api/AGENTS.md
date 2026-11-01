@@ -66,8 +66,9 @@ when a route lands.
 | Hexon tilesets | `POST /api/v1/hexons/tilesets/install?petal_id=…`, `DELETE /api/v1/hexons/tilesets/{id}?petal_id=…`, `PATCH …/{id}/seeding?petal_id=…`, `GET /api/v1/hexons/tilesets?petal_id=…`, `GET /api/v1/hexons/storage?petal_id=…` |
 | Hexon crate registry | `POST /api/v1/crates/publish`, `POST /api/v1/crates/{uri}/install?petal_id=…`, `DELETE …/{uri}/uninstall?petal_id=…`, `GET /api/v1/crates/search?petal_id=…`, `GET /api/v1/crates/installed?petal_id=…`, `GET /api/v1/crates/{uri}?petal_id=…`, `GET …/{uri}/entries?petal_id=…`, `GET …/{uri}/entries/{entry_id}/asset?petal_id=…`, `GET /api/v1/crates/available?petal_id=…` |
 | Sim control (§sim-control) | `POST /api/v1/sim/start`, `POST /api/v1/sim/stop`, `GET /api/v1/sim/status`, `POST /api/v1/sim/step`, `POST /api/v1/sim/inject-fault` |
-| Agent screenshot (§screenshot) | `GET /api/v1/debug/screenshot` → `image/png` — OFF unless `FE_API_SCREENSHOT_ALLOW=1`; Owner; 1/s per DID; NOT scope-confined |
-| MCP | `POST /mcp` (`mcp::mcp_handler`) — 37-row `ToolSpec` table: 31 always advertised, `screenshot` only on a GUI host (capture bridge wired), the 5 `sim_*` only on a sim lab host (§mcp-dispatch); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
+| Agent screenshot (§screenshot) | `GET /api/v1/debug/screenshot` → `image/png` (byte-identical, unchanged); `POST` same path → dynamic posed capture (window/scene, 5 pose kinds), PNG + `X-FE-Capture-Pose` header — ON unless `FE_API_SCREENSHOT_ALLOW=0`; Owner; 1/s per DID; NOT scope-confined |
+| Agent camera read-back (§camera-state) | `GET /api/v1/debug/camera` — live pose/active hierarchy/projection; same opt-in as screenshot; Owner; 10/s per DID |
+| MCP | `POST /mcp` (`mcp::mcp_handler`) — 38-row `ToolSpec` table: 32 always advertised, `screenshot`/`get_camera` only on a GUI host (either capture bridge wired), the 5 `sim_*` only on a sim lab host (§mcp-dispatch); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
 
 ## §existence-oracle (REST/WS denial unification, 2026-10-10)
 
@@ -1714,25 +1715,41 @@ channel.
 - Re-uploading identical bytes is idempotent at the blob layer but creates a
   new asset row (dedupe-by-hash is out of scope).
 
-## §operator-gate (`operator_gate.rs`, 2026-10-31)
+## §operator-gate (`operator_gate.rs`, 2026-10-31; per-gate default added agent_vision_20261031)
 
-Every deny-by-default operator surface (§elevated-query, §screenshot) runs ONE
-guard chain — a **guard chain** pattern, declared as data:
-`OperatorGate { opt_in_env, endpoint, enabled_warning, disabled_message,
-rate_key_prefix, rate_per_sec, rate_label }` (`fe_api::ELEVATED_QUERY_GATE`,
-`screenshot::SCREENSHOT_GATE`). A new gated endpoint adds a `const` and calls
-the gate — it does not copy the chain.
+Every deny-by-default operator surface (§elevated-query, §screenshot,
+§camera-state) runs ONE guard chain — a **guard chain** pattern, declared as
+data: `OperatorGate { opt_in_env, endpoint, enabled_warning,
+disabled_message, rate_key_prefix, rate_per_sec, rate_label, default_on }`
+(`fe_api::ELEVATED_QUERY_GATE`, `screenshot::SCREENSHOT_GATE`,
+`vision::CAMERA_STATE_GATE`). A new gated endpoint adds a `const` and calls
+the gate — it does not copy the chain. `OperatorGate` itself is edited once
+(agent_vision_20261031 V2 added `default_on`); every endpoint added after
+that only adds a `const`.
 
-- `opted_in_from_env()` — read once at startup; only the exact value `1` opts in
-  (`opt_in_value_enables`, table-tested: `true`/`yes`/` 1` stay off); loud WARN
-  when on, a warning for any other non-empty value. The result is stored on
-  `ApiState` (a field, never a per-request env read) so tests flip it.
+- **Per-gate default (`default_on`, agent_vision_20261031 DD-1).** Each gate
+  decides what an UNSET (or `""`) env value means:
+  `opt_in_value_enables(value, default_on)` resolves unset/`""` to
+  `default_on`, `"1"` always enables, `"0"` always disables, and any other
+  value always disables (fail closed) regardless of `default_on`
+  (table-tested both columns: `per_gate_default_decides_the_unset_and_garbage_cases`).
+  `ELEVATED_QUERY_GATE`/`INPUT_GATE` keep `default_on: false` (the
+  pre-existing opt-in-only posture); `SCREENSHOT_GATE`/`CAMERA_STATE_GATE`
+  set `default_on: true` — an agent gets visual verification out of the box,
+  and the operator opts OUT with `=0` instead of opting in with `=1`.
+- `opted_in_from_env()` — read once at startup against the gate's
+  `default_on`; loud WARN whenever the result is on (a default-on variant
+  naming the env var to set to `0`, when the value was unset; the plain `=1`
+  variant otherwise), a warning for any unrecognized value (fail closed
+  either way), silence for an explicit `0` or an unset default-off gate. The
+  result is stored on `ApiState` (a field, never a per-request env read) so
+  tests flip it.
 - `admit(allowed, state, claims)` — the REST chain: `check_opted_in` → typed
   `require_role_level(Owner)` → `check_rate` (the shared
   `query_guard::check_rate_limit` map, key `<prefix>:<did>`). Refusals are a
   `GateRefusal { Disabled, InsufficientRole, RateLimited }` whose `message()`
   text is identical on every surface; each surface keeps its own response
-  shape (elevated: legacy 200 + error body; screenshot: 403/429).
+  shape (elevated: legacy 200 + error body; screenshot/camera: 403/429).
 - **MCP.** The dispatcher owns authz (FR-5: `tools.rs` may not call a
   `require_*` guard), so an MCP handler calls `check_opted_in` +
   `check_rate` only; the dispatcher refuses the opt-in BEFORE `authorize`
@@ -1742,54 +1759,131 @@ the gate — it does not copy the chain.
   whether the bridge is spawned at all (fail-closed `NotConfigured`), and it
   has no rate budget (§sim-control).
 
-## §screenshot (`screenshot.rs`, agent visual verification, 2026-10-31)
+## §screenshot (`screenshot.rs` + `vision.rs`, agent visual verification; dynamic capture added agent_vision_20261031)
 
 `GET /api/v1/debug/screenshot` returns `image/png` of the GUI's primary window
 — the 3D viewport **and** every egui panel, exactly what the user sees. The MCP
 `screenshot` tool returns the same capture as an MCP image content block
 (`{"type":"image","mimeType":"image/png","data":<base64>}` plus a short text
-block). It exists so an agent driving the API can SEE the result of its edits.
+block) when called with empty arguments. It exists so an agent driving the
+API can SEE the result of its edits. **`POST` the same path** with a JSON
+body (or MCP `screenshot` with any arguments) runs a **dynamic posed
+capture** instead — the agent can tell it WHERE to look (an exact camera, an
+orbit, a lat/lon, a slippy tile, or a node/petal's AABB) and whether to move
+the real window camera or render off-screen; see the wire contract and the
+static validation table in `fe-runtime/src/AGENTS.md` §vision-bridge. The
+`GET` path's bytes and behaviour are byte-for-byte unchanged by any of this —
+a hard tripwire, not an aspiration.
 
 It is an **exfiltration surface**: a frame shows whatever verse is open,
-regardless of the token's scope. So the posture mirrors §elevated-query exactly
-(deny-by-default):
+regardless of the token's scope, and a posed scene capture can look anywhere
+in the active petal without the user noticing. So the posture mirrors
+§elevated-query (deny-by-default), with one change:
 
-- **Operator opt-in.** `ApiState.screenshot.allowed` is `false` unless the GUI
-  read `FE_API_SCREENSHOT_ALLOW=1` at startup
-  (`screenshot::screenshot_allowed_from_env`, loud WARN when enabled, a warning
-  for any other non-empty value). A field, not a per-request env read, so tests
-  set it (`ApiHarness::spawn_with_screenshot`). Off → every call gets
-  `screenshot endpoint is disabled on this node` (REST 403) before role, rate
-  limit or bridge. On MCP the dispatcher refuses BEFORE `authorize`
-  (`mcp/mod.rs::operator_opt_in_refusal`), so the order is identical there.
-- **Gate order: opt-in → Owner (typed) → 1/s per DID (key `screenshot:<sub>`,
-  REST 429) → bridge** — the shared `operator_gate::OperatorGate` chain
-  (`screenshot::SCREENSHOT_GATE`, §operator-gate). Owner of ANY scope passes —
-  single-tenant nodes only.
-- **The bridge.** `ApiState.screenshot.bridge` is a bounded (4) crossbeam
-  `fe_runtime::screenshot::ScreenshotRequest` channel carrying a ULID
-  correlation id + a oneshot reply slot (fe-runtime src/AGENTS.md
+- **Operator opt-in, ON BY DEFAULT (agent_vision_20261031 DD-1).**
+  `ApiState.screenshot.allowed` is read once at startup from
+  `FE_API_SCREENSHOT_ALLOW` (`screenshot::screenshot_allowed_from_env`,
+  `SCREENSHOT_GATE.default_on == true`): **unset admits an Owner**; `=0`
+  refuses with the disabled message; `=1` admits (and warns the same as
+  before); any other value fails closed and warns. A field, not a
+  per-request env read, so tests set it
+  (`ApiHarness::spawn_with_screenshot`). Off → every call (GET, POST, MCP,
+  and `GET /camera`) gets its gate's disabled message (REST 403) before
+  role, rate limit or bridge. On MCP the dispatcher refuses BEFORE
+  `authorize` (`mcp/mod.rs::operator_opt_in_refusal`), so the order is
+  identical there. §operator-gate has the full default-on/default-off table.
+- **Gate order (GET/legacy MCP): opt-in → Owner (typed) → 1/s per DID (key
+  `screenshot:<sub>`, REST 429) → bridge.** **Gate order (POST/dynamic MCP,
+  spec §5.7): opt-in → Owner → 1/s per DID → static validation (400) →
+  single-flight slot (409) → bridge.** Validation runs AFTER the gate on
+  purpose: an unauthenticated or un-opted caller never learns the parameter
+  grammar, and a refused caller never costs a parse. Owner of ANY scope
+  passes — single-tenant nodes only.
+- **The plain-GET bridge.** `ApiState.screenshot.bridge` is a bounded (4)
+  crossbeam `fe_runtime::screenshot::ScreenshotRequest` channel carrying a
+  ULID correlation id + a oneshot reply slot (fe-runtime src/AGENTS.md
   §screenshot-bridge). The API `try_send`s (full → 503 "busy", disconnected →
   503 "render host stopped") and awaits the reply for
   `ScreenshotSurface.reply_timeout` (5 s; 504 "screenshot timed out" — never a
   hang); a reply echoing a foreign correlation id is rejected. The Bevy side
   (`fractalengine/src/screenshot_bridge.rs`) serves every queued request with
   ONE `Screenshot::primary_window()` capture and PNG-encodes it on the compute
-  pool. Headless hosts (relay, harness default) pass
-  `ScreenshotSurface::disabled()` — no bridge, so the MCP row is not even
-  advertised (`ToolSeam::Screenshot`).
+  pool.
+- **The dynamic-capture bridge (`vision.rs::request_vision`, a SECOND,
+  separate bridge — fe-runtime src/AGENTS.md §vision-bridge explains why).**
+  `ApiState.screenshot.vision` is the same shape (bounded(4), `try_send`,
+  correlation id, reply timeout), wired via `ScreenshotSurface::with_vision`.
+  A posed capture additionally holds `ApiState.screenshot.capture_slot` (a
+  1-permit `tokio::sync::Semaphore`, `try_acquire_owned`) for the whole
+  round trip: a second posed capture arriving while one is in flight gets
+  409 `capture_in_progress` WITHOUT the slot ever touching the bridge
+  (`vision::run_capture`, shared by the REST `POST` handler and the MCP
+  `screenshot` handler so REST and MCP contend for the same single flight).
+  The reply timeout for a posed capture is `reply_timeout + 20s` (a settle
+  wall-clock cap; `GET /camera`'s `ReadCamera` op keeps the plain
+  `reply_timeout`, since it never settles).
+  `CaptureSpec::validate()` (fe-runtime §vision-bridge) is the only
+  constructor of `ValidCaptureSpec` that reaches the bridge — a 4 KiB body
+  cap and `deny_unknown_fields` both collapse into one `malformed_body`
+  refusal at the REST/MCP boundary (fe-runtime's `CaptureSpec` doesn't know
+  about raw bytes). An empty `POST` body is a bare default (window, no
+  pose) capture, not an error.
+- **Headless/unwired hosts.** `ScreenshotSurface::disabled()` (relay, harness
+  default) wires neither bridge — all three routes answer 503 "no window",
+  and the MCP rows (`screenshot`, `get_camera`) are not even advertised
+  (`ToolSeam::Screenshot`, available iff EITHER bridge is wired).
 
-How an agent calls it (GUI started with `FE_API_SCREENSHOT_ALLOW=1`, an Owner
-API token minted in the app's token settings):
+How an agent calls it (GUI started with `FE_API_SCREENSHOT_ALLOW` unset, an
+Owner API token minted in the app's token settings):
 
 ```bash
+# Plain capture — unchanged.
 curl -fsS -H "Authorization: Bearer $FE_TOKEN"   http://127.0.0.1:8765/api/v1/debug/screenshot -o frame.png
+
+# Posed scene capture: look straight down at a slippy tile, no UI, off-screen.
+curl -fsS -X POST -H "Authorization: Bearer $FE_TOKEN" -H "Content-Type: application/json" \
+  -d '{"mode":"scene","pose":{"tile":{"z":14,"x":8192,"y":5461}},"width":1024,"height":1024}' \
+  -D - http://127.0.0.1:8765/api/v1/debug/screenshot -o tile.png
+# -D - prints the X-FE-Capture-Pose header alongside the PNG.
 ```
 
-MCP: `tools/call` with `{"name":"screenshot","arguments":{}}` on `POST /mcp`.
-Humans do not need any of this: `F12` in the app saves a timestamped PNG to
-`data/screenshots/` and toasts the path (local keyboard — no API gate).
+MCP: `tools/call` with `{"name":"screenshot","arguments":{}}` for the plain
+capture, or `{"name":"screenshot","arguments":{"mode":"window","pose":{"orbit":{...}}}}`
+for a posed one (the response's second content block is the resolved pose
+JSON). Humans do not need any of this: `F12` in the app saves a timestamped
+PNG to `data/screenshots/` and toasts the path (local keyboard — no API gate).
 
-Tests: `tests/screenshot_test.rs` (refused when not opted in, refused below
-Owner, admitted capture returns the host's bytes verbatim then rate-limits,
-silent host times out) over a fake capture responder — renderer-free.
+Tests: `tests/screenshot_test.rs` (the plain `GET` path: refused when not
+opted in, refused below Owner, admitted capture returns the host's bytes
+verbatim then rate-limits, silent host times out) over a fake capture
+responder — renderer-free. `tests/vision_test.rs` (the dynamic `POST`/MCP
+path + `GET /camera`) covers the static validation table, the round trip
+(PNG + pose header/text, equal to what the fake vision responder received),
+the single-flight 409, a dynamic Bevy-side refusal mapping to 422, the
+camera-budget independence, the disabled/headless cases, and both MCP shapes
+— also renderer-free.
+
+## §camera-state (`vision.rs::get_camera`, agent_vision_20261031)
+
+`GET /api/v1/debug/camera` (+ MCP `get_camera`) answers an agent's half of
+the closed QA loop `get_camera -> screenshot(pose) -> get_camera`: the live
+main-camera pose, whether a posed capture currently holds it (`locked`), the
+active verse/fractal/petal, and the terrain projection (grounded
+`origin_ele`, world scale, tileset bounds/zoom range when a tileset is
+installed) plus the window's size/minimized state.
+
+- **Same opt-in as screenshot, own rate budget.** `CAMERA_STATE_GATE` reads
+  the SAME `FE_API_SCREENSHOT_ALLOW` field (`ApiState.screenshot.allowed`) —
+  one operator switch covers both surfaces — but has its own rate key
+  (`camera:<sub>`) and a 10/s budget, specifically so the closed loop never
+  burns the screenshot surface's 1/s capture budget
+  (`camera_state_round_trips_and_does_not_spend_the_capture_budget`).
+- **Goes over the vision bridge's `ReadCamera` op**, answered by the Bevy
+  host immediately in any state (even mid-capture, with `locked: true`) —
+  never the single-flight slot, which only a `Capture` op touches.
+- **MCP row sharing.** `get_camera`'s `ToolSpec.requires` is
+  `ToolSeam::Screenshot` (not a separate seam) — availability only needs
+  EITHER bridge wired, but `operator_opt_in_refusal` special-cases the tool
+  name to report `CAMERA_STATE_GATE.disabled_message` instead of the
+  screenshot one, so a disabled node's error text still names the right
+  endpoint.
