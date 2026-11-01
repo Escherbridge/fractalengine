@@ -382,3 +382,17 @@ this — those slices are done, no concurrent owner), the ADVOCATE and the CRITI
    the Bevy orchestrator; resolve_focus/start_job refuse an out-of-scope target, and the active-verse check runs in the
    orchestrator against nav.active_verse_id. The refusal for an out-of-scope target and a nonexistent target MUST be
    the SAME error (no existence oracle — fe-api/AGENTS.md §existence-oracle). Cross-verse `navigate` is refused outright.
+
+## §INPUT-ADDENDUM (binding for I1-I5 + run "input" reviewers; orchestrator 2026-11-01)
+
+The consolidation commit b5657c4 replaced the per-surface bridges with ONE correlated envelope:
+`fe-runtime/src/bridge.rs` `BridgeRequest<Op, Output>` (caller_scope REQUIRED) + `fe-api/src/bridge_client.rs`
+`round_trip(bridge, caller_scope, op, timeout, name)`. The AIS plan predates this — where it says "mirror
+screenshot.rs / screenshot_bridge.rs", read: reuse the envelope and round_trip.
+1. `InputRequest` is a `BridgeRequest<InputOp, InputOutcome>` alias; no third bridge shape.
+2. Input injection is SCOPE-CONFINED exactly like capture: the caller scope must cover the active verse at drain
+   time AND at injection time (check-at-use); out-of-scope → the uniform not_found_or_denied refusal.
+3. Input stays OFF by default (FE_API_INPUT_ALLOW=1 opt-in, Owner, rate-limited, via OperatorGate).
+4. Refused with 409 while a posed capture holds CameraCaptureLock (I5's added test).
+5. Injected events enter Bevy early enough that bevy_egui's input collection sees them (pointer + keyboard + text
+   + scroll); synthetic input never becomes OS-level input.
