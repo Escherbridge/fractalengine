@@ -250,6 +250,26 @@ fn is_modifier(logical: &Key) -> bool {
     matches!(logical, Key::Shift | Key::Control | Key::Alt | Key::Super)
 }
 
+/// Keys bevy_egui's `manage_clipboard` turns into a host OS clipboard
+/// read/write when chorded with Control/Super (src/AGENTS.md §agent-input-surface
+/// "Clipboard chords").
+const CLIPBOARD_CODES: [KeyCode; 3] = [KeyCode::KeyC, KeyCode::KeyV, KeyCode::KeyX];
+
+fn holds_command_modifier(held: &[(KeyCode, Key)]) -> bool {
+    held.iter()
+        .any(|(_, logical)| matches!(logical, Key::Control | Key::Super))
+}
+
+fn clipboard_chord(index: usize, field: &str) -> InputFailure {
+    unresolvable(
+        "clipboard_chord_refused",
+        format!(
+            "`commands[{index}].{field}` chords with a held Control/Super key, which would \
+             read or write the host's OS clipboard; synthetic input never touches the clipboard"
+        ),
+    )
+}
+
 fn key_event(code: KeyCode, logical: Key, state: ButtonState) -> Synthetic {
     Synthetic::Key {
         code,
@@ -381,6 +401,9 @@ fn plan_batch(spec: &ValidInputSpec, window_size: UVec2) -> Result<Vec<Frame>, I
                         ),
                     )
                 })?;
+                if holds_command_modifier(&held_modifiers) && CLIPBOARD_CODES.contains(&code) {
+                    return Err(clipboard_chord(index, "key"));
+                }
                 if is_modifier(&logical) {
                     if !held_modifiers.iter().any(|(held, _)| *held == code) {
                         frames.push(vec![key_event(code, logical.clone(), ButtonState::Pressed)]);
@@ -392,6 +415,11 @@ fn plan_batch(spec: &ValidInputSpec, window_size: UVec2) -> Result<Vec<Frame>, I
                 frames.push(vec![key_event(code, logical, ButtonState::Released)]);
             }
             InputCommand::TextEntry { text } => {
+                // A single-character run under Control/Super is a key chord to
+                // bevy_egui (`Key::from_name("v")`), not text.
+                if holds_command_modifier(&held_modifiers) {
+                    return Err(clipboard_chord(index, "text"));
+                }
                 let frame = text_frame(index, text)?;
                 if !frame.is_empty() {
                     frames.push(frame);
@@ -1055,6 +1083,33 @@ mod tests {
         assert_eq!(refusal_code(&mut off_window), "pointer_out_of_window");
         assert_eq!(refusal_code(&mut bell), "unsupported_text");
         assert_eq!(refusal_code(&mut huge_scroll), "scroll_out_of_range");
+        // Control/Super + C/V/X (as a key or a one-character text run) would
+        // read or write the host OS clipboard through bevy_egui: refused.
+        // Ctrl+A stays a legal chord.
+        let mut paste = h.send(batch(vec![key("ControlLeft"), key("KeyV")], 0, false));
+        let mut copy = h.send(batch(vec![key("SuperLeft"), key("KeyC")], 0, false));
+        let mut text_paste = h.send(batch(
+            vec![
+                key("ControlRight"),
+                InputCommand::TextEntry { text: "v".into() },
+            ],
+            0,
+            false,
+        ));
+        h.app.update();
+        assert_eq!(refusal_code(&mut paste), "clipboard_chord_refused");
+        assert_eq!(refusal_code(&mut copy), "clipboard_chord_refused");
+        assert_eq!(refusal_code(&mut text_paste), "clipboard_chord_refused");
+        assert!(h.keys().get_pressed().next().is_none());
+        let mut select_all = h.send(batch(vec![key("ControlLeft"), key("KeyA")], 0, false));
+        let select_all = (0..10)
+            .find_map(|_| {
+                h.app.update();
+                select_all.try_recv().ok()
+            })
+            .expect("a Ctrl+A chord completes");
+        assert!(select_all.result.is_ok(), "Ctrl+A is not a clipboard chord");
+        assert!(h.idle());
         let mut foreign = h.send_as("VERSE#other", batch(vec![click(1.0, 1.0)], 0, false));
         h.app.world_mut().insert_resource(CameraCaptureLock);
         let mut while_locked = h.send(batch(vec![click(1.0, 1.0)], 0, false));

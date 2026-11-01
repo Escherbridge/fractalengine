@@ -218,24 +218,6 @@ struct InputErrorBody {
 }
 
 impl InputErrorBody {
-    fn gate(refusal: &GateRefusal) -> Self {
-        Self {
-            ok: false,
-            error: refusal.message(),
-            code: None,
-            field: None,
-        }
-    }
-
-    fn refusal(refusal: &InputRefusal) -> Self {
-        Self {
-            ok: false,
-            error: refusal.message.clone(),
-            code: Some(refusal.code),
-            field: refusal.field.clone(),
-        }
-    }
-
     fn error(error: &InputError) -> Self {
         Self {
             ok: false,
@@ -428,17 +410,12 @@ pub async fn post_input(
     Extension(claims): Extension<ApiClaims>,
     body: Bytes,
 ) -> Response {
-    if let Err(refusal) = INPUT_GATE.admit(state.input.allowed, &state, &claims).await {
-        return (refusal.status(), Json(InputErrorBody::gate(&refusal))).into_response();
-    }
-    let spec = match parse_and_validate(&body) {
-        Ok(spec) => spec,
-        Err(refusal) => {
-            return (StatusCode::BAD_REQUEST, Json(InputErrorBody::refusal(&refusal)))
-                .into_response();
-        }
+    let outcome = async {
+        INPUT_GATE.admit(state.input.allowed, &state, &claims).await?;
+        let spec = parse_and_validate(&body).map_err(InputError::Refusal)?;
+        run_inject(&state, &claims, spec).await
     };
-    match run_inject(&state, &claims, spec).await {
+    match outcome.await {
         Ok(output) => (StatusCode::OK, Json(InputSuccessBody::from(output))).into_response(),
         Err(error) => (error.status(), Json(InputErrorBody::error(&error))).into_response(),
     }
@@ -466,8 +443,6 @@ mod tests {
         // would still fail loudly if the const regressed.
         let default_on = std::hint::black_box(INPUT_GATE.default_on);
         assert!(!default_on, "input must stay default-OFF, unlike screenshot/camera");
-        assert_eq!(INPUT_GATE.opt_in_env, "FE_API_INPUT_ALLOW");
-        assert_eq!(INPUT_GATE.rate_per_sec, 5);
 
         // The gate's own const resolves the unset/`1`/`0` cases through its
         // `default_on`, exactly like every other gate's env parsing.

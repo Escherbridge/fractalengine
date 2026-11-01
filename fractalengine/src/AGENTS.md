@@ -1241,6 +1241,23 @@ becomes the same messages winit writes — `CursorMoved`, `MouseButtonInput`,
 messages into egui events. Synthetic input is indistinguishable from real
 input to every downstream system, and never becomes OS-level input.
 
+**Clipboard chords are refused** (critic-input C1). bevy_egui's default
+`manage_clipboard` feature turns a Control/Super chord on C/X/V into an
+arboard read (paste) or write (copy/cut) of the HOST's OS clipboard — so a
+synthetic `[ControlLeft, KeyV]` into a text field, followed by
+`capture_after`, would exfiltrate the local user's clipboard, and Ctrl+C would
+overwrite it. `plan_batch` therefore refuses (`clipboard_chord_refused`, 422,
+before anything is injected) a `key_press` of `KeyC`/`KeyV`/`KeyX` and any
+`text_entry` while a synthetic Control/Super is held (a one-character run is a
+key chord to bevy_egui, `egui::Key::from_name`). Residual: a real Control key
+the local user is physically holding still chords with a synthetic `KeyV`
+(bevy_egui's `ModifierKeysState` merges both); that is the user's own action.
+Other UI-level effects (a click on the title bar's close button exits the app;
+a click on a "Browse…" button opens a native `rfd` dialog that synthetic input
+cannot drive and that blocks the frame loop until the user closes it — the
+job then replies `input_timed_out`) are inside the "full remote control"
+posture `INPUT_GATE.enabled_warning` names, not an escape.
+
 **Schedule (verified against the pinned bevy_egui 0.39.1 / bevy 0.18.1).**
 `drive_synthetic_input` runs in `PreUpdate` `.before(InputSystems)
 .before(EguiPreUpdateSet::ProcessInput)`. bevy_egui configures
@@ -1283,7 +1300,7 @@ first, INPUT-ADDENDUM item 4), `not_found_or_denied` (404 — `ViewScope::covers
 is false, the §vision scope gate), `input_in_progress` (409 — single flight),
 `no_window` (503) / `window_minimized` (422), then the planner's
 Bevy-only checks (422): `pointer_out_of_window`, `invalid_key` (name not in
-`resolve_key`'s table), `unsupported_text` (control characters other than
+`resolve_key`'s table), `clipboard_chord_refused` (above), `unsupported_text` (control characters other than
 `\n`/`\r`/`\t`), `scroll_out_of_range` (|delta| > 1000 lines — a finite but
 absurd wheel value never reaches the camera's zoom math), and
 `no_effective_input` (the plan has zero frames — a backstop: fe-runtime's
