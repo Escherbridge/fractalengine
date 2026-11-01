@@ -396,3 +396,7 @@ screenshot.rs / screenshot_bridge.rs", read: reuse the envelope and round_trip.
 4. Refused with 409 while a posed capture holds CameraCaptureLock (I5's added test).
 5. Injected events enter Bevy early enough that bevy_egui's input collection sees them (pointer + keyboard + text
    + scroll); synthetic input never becomes OS-level input.
+6. (INPUT-ADDENDUM, from the security review of run "input"'s MCP commit) `capture_after` on REST post_input and MCP
+   inject_input returns PNG pixels, so it MUST pass the SCREENSHOT gate too: SCREENSHOT_GATE opt-in check (honour
+   FE_API_SCREENSHOT_ALLOW=0) + the screenshot per-DID rate key + the same view-scope check as a capture; otherwise
+   refuse capture_after with the screenshot gate's refusal. One helper, both doors. Verified at run close (orchestrator).
