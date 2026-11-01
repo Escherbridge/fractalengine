@@ -741,3 +741,11 @@ fail-closed).
   edge widget. Window chrome deliberately bypasses UiAction (drag/resize must reach winit the same frame) —
   rationale in ui_shell AGENTS.md §window-chrome.
 - Lane A plan cd72a4e (52 slices / 6 waves). Polish wave 1 launching now via .omc/plans/polish-wave.js.
+
+### OF-14 (security review of agent-vision V2, 2026-10-31) — 2 HIGH + 1 MED · binding addendum
+- HIGH cross-scope IDOR: capture focus {node_id|petal_id} + navigate forwarded with no scope check (REST + MCP) →
+  a verse-B token could navigate the user's live view into verse A and capture it. HIGH insecure default: default-on
+  admits ANY Owner token of ANY scope. Disposition: default-on KEPT (explicit user directive, tradeoff surfaced), but
+  capture + camera read now require token scope to cover the ACTIVE verse; focus/navigate require coverage of the
+  target; one shared check for REST + MCP. Written as plan.md §SEC-ADDENDUM (binding for V5/advocate/critic of run
+  wf_06282f3b-a5d). Verification at run close; if unaddressed → dedicated fix agent before run 2.

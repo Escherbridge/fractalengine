@@ -345,3 +345,21 @@ Use `/security-review` plus `/code-review high`. Fix findings and record the ver
 ## 8. Commit strategy
 
 One commit per slice after its gate is green: `feat(fe-runtime): V1 vision wire contract`, …, `fix(...)` for the review fixes, `docs(conductor): ...` for CLOSE. Trailer per the repo rule. **No push**; pushes are held for the user.
+
+## §SEC-ADDENDUM (binding, orchestrator 2026-10-31 — from the background security review of V2's commit)
+
+Applies to V5, the ADVOCATE and the CRITIC. A HIGH finding is not "done" until all of these hold:
+
+1. **Scope confinement (keeps the user's default-on decision, closes cross-scope exfil).** Every capture (REST GET/POST
+   screenshot, MCP screenshot) and every camera read (GET /api/v1/debug/camera, MCP read) is refused unless the caller's
+   token scope COVERS THE ACTIVE VERSE at the moment of capture. V5's orchestrator therefore reports the active
+   verse/fractal/petal ids to the API side (in the request reply or a pre-check query), and fe-api resolves coverage with
+   the same scope helpers the petal-scoped endpoints use. A verse-B Owner token can never receive verse-A pixels.
+2. **Focus targets.** `focus {node_id | petal_id}` is resolved to its verse BEFORE run_capture; the token scope must
+   cover it. `navigate: true` additionally requires that coverage AND must never switch the user's view to a verse the
+   token doesn't cover. Unresolvable ids → typed 404/422, never "capture whatever is on screen".
+3. **One check, both doors.** REST and MCP call one shared authorization function (no MCP-only gap). Flow tests through
+   ApiHarness: verse-B token refused for an active-verse-A capture; cross-verse focus refused; navigate across verses
+   refused; covered scope succeeds — for REST and MCP.
+4. Default-on stays (user directive, RUNBOOK §3 2026-10-31); document in fe-api/AGENTS.md §screenshot that default-on is
+   bounded by (1).
