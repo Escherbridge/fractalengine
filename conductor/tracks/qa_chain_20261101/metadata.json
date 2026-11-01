@@ -13,6 +13,8 @@
   "plan": "./plan.md",
   "progress_ledger": "../../qa-chain-progress-20261101.md",
   "pushed": false,
+  "final_publication_authorized": true,
+  "release_gate": "Only after complete QA goal and local verification; CI must succeed and downloadable tagged assets be verified",
   "verification": {
     "h3_live_pass": "qa/passes/01/verdict.md: gold 1/2, new S1/S2 2, coverage 2/2",
     "integrated_sweep": "pending",

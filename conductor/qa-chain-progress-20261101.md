@@ -9,7 +9,8 @@ current_slice: S4 native dialog and window seams
 
 # QA chain continuation
 
-The user authorized finishing the full handoff queue. Work stays local; no push is authorized.
+The user authorized finishing the full handoff queue. Implementation remains local until the goal is complete.
+Latest steering also authorizes final CI and downloadable tagged-release publication after the goal passes.
 Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.
 
 ## Execution queue
@@ -24,7 +25,9 @@ Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.
 - [ ] Five UX audits, synthesis, and polish W7+ plan.
 - [ ] Polish W2, W3, W4, W5, W6, then synthesized W7+.
 - [ ] One campaign-end integrated check, clippy, formatting and test sweep; independent verification.
+- [ ] Include the actual 18-scenario harness runner and separate iot-bridge workspace; resolve strict relay skips.
 - [ ] Reconcile track metadata, findings, reviews and final handoff.
+- [ ] Push the finished goal, wait for CI success, verify release assets and publish tagged downloads/links.
 
 ## Binding execution constraints
 
@@ -33,6 +36,10 @@ Apply all fixes before the campaign-end test sweep. Required live proofs and a h
 Extend or swap existing journey tests; do not add small test functions. Never stage `conductor/.conductor_session_log`.
 Only stop exact QA process identities; do not kill by process name. Never publish tokens in logs or reports.
 Use accurate attribution for the executing agent. The old scripts' Claude trailer does not describe this continuation.
+Commit coherent reviewable changes often. Refactor around core interaction boundaries for readability and extension;
+use small named helpers and shared rules, avoid duplicated per-call-site validation or speculative frameworks.
+No push, tag or publication during implementation; the user's later release instruction authorizes the final stage
+once the complete goal and local verification pass. Follow repository release conventions and verify actual assets.
 
 ## Findings from initial inspection
 
@@ -120,4 +127,18 @@ Same-run restart and complete standalone/modal title aggregation remain pending;
 S4 preparation found no existing close confirmation: native/X requests currently auto-close. The writer will
 add one shared confirmation for OS, X and debug close requests, queued native-dialog answers, physical window
 controls and QA-only loopback port selection. It owns source/cargo. S6 root-cause/layout preparation is read-only.
+S4 source and client slices landed as `572da0b` and `c002e9f`; final staging/live proof and exact independent
+rechecks are in progress. The implementation includes operation-owned input leases, atomic QA save/copy,
+fail-closed queued dialogs, one chrome mailbox/confirmation path, and monotonic client waits.
+
+The user's later steering explicitly prioritizes readable/extensible design patterns and frequent coherent
+commits. The final publication gate is now authorized: complete the goal and local verification, wait for green
+same-SHA main CI, then publish a versioned QA prerelease through the existing tagged pipeline and verify all
+seven archives, checksums, full Release run including Docker, and actual download links. The current version is
+0.1.0; no immutable tag has been created. Use the actual completion date for the QA prerelease suffix.
+
+Final verification and release preflights are saved in `.omc/research/qa-final-verification-plan.md` and
+`qa-release-preflight.md`. Workspace tests alone omit the ordinary 18-scenario harness main and separate
+extensions/iot-bridge workspace. Strict relay acceptance still has skip-and-return paths that must not masquerade
+as exercised assertions. Use the pinned toolchain, explicit terrain/render feature and bounded log extraction.
 The original user in-app checks remain explicit: AC-11 screenshots, opted-in input, and delta-viz P1/P2.

@@ -116,7 +116,8 @@ _Link: [./tracks/qa_chain_20261101/](./tracks/qa_chain_20261101/) · in progress
 
 H3 live evidence and harness/navigation/clipboard repairs are local; the shared AccessKit/state/log bridge is in
 implementation and combined smoke. Current ownership, evidence and remaining queue:
-[qa-chain-progress-20261101.md](./qa-chain-progress-20261101.md). No push is authorized.
+[qa-chain-progress-20261101.md](./qa-chain-progress-20261101.md). Final CI/tagged-release publication is authorized
+after the complete goal and local verification pass; implementation stays local until then.
 
 ### [ ] polish_lane_20261031 — finish stubs, complete features, close seams, usability of every feature
 
