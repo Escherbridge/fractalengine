@@ -13,6 +13,7 @@ use tracing_subscriber::EnvFilter;
 
 mod asset_bridge;
 mod gpx_bridge;
+mod input_bridge;
 mod panic_log;
 mod screenshot_bridge;
 mod terrain_bridge;
@@ -417,6 +418,9 @@ fn main() {
     // Agent vision bridge: posed captures + camera read-back (src/AGENTS.md
     // §vision) — separate from the plain GET bridge above.
     let (vision_tx, vision_rx) = fe_runtime::vision::vision_bridge();
+    // Agent input bridge: synthetic pointer/keyboard/scroll (src/AGENTS.md
+    // §agent-input-surface; the endpoint is OFF unless FE_API_INPUT_ALLOW=1).
+    let (input_tx, input_rx) = fe_runtime::input::input_bridge();
     let (transform_broadcast_tx, _) =
         tokio::sync::broadcast::channel::<fe_runtime::messages::TransformUpdate>(1024);
     // Revocation broadcast: Bevy sends revoked JTIs, API thread updates its cache.
@@ -552,6 +556,12 @@ fn main() {
             Some(screenshot_tx),
         )
         .with_vision(vision_tx),
+        // Agent input surface: OFF unless FE_API_INPUT_ALLOW=1 (read once
+        // here; loud WARN when on) — fe-api/AGENTS.md §agent-input-surface.
+        input: fe_api::input::InputSurface::new(
+            fe_api::input::input_allowed_from_env(),
+            Some(input_tx),
+        ),
     });
 
     // Window chrome: taskbar/window icon + the title bar's brand mark.
@@ -572,6 +582,9 @@ fn main() {
     );
     // Agent vision: posed window/scene captures + camera read-back (src/AGENTS.md §vision).
     vision_bridge::install(&mut app, vision_rx);
+    // Agent input: replay synthetic batches as winit-shaped messages ahead of
+    // bevy_input + bevy_egui (src/AGENTS.md §agent-input-surface).
+    input_bridge::install(&mut app, input_rx);
 
     // ---- Entity Store (in-memory hot cache) ----
     app.insert_resource(SharedEntityStore(entity_store));

@@ -1221,3 +1221,99 @@ any phase ─(caller hung up)─► finish_job(caller_gone)
   ECS inputs (`frame_box` passes the view's direction + FOV) and applies the
   result. No framing formula is duplicated here.
 - Every started capture logs one INFO line (correlation id, mode, pose kind).
+
+## §agent-input-surface (synthetic input, `agent_vision_20261031` I4 = AIS S4)
+
+`input_bridge.rs` is the Bevy end of fe-api §agent-input-surface
+(`POST /api/v1/debug/input`, MCP `inject_input`), over the separate
+`fe_runtime::input` bridge (fe-runtime §input-bridge). `main.rs` creates the
+bridge, hands the sender to `ApiConfig.input` (`InputSurface::new(
+input_allowed_from_env(), Some(tx))` — OFF unless `FE_API_INPUT_ALLOW=1`, the
+bridge is wired either way exactly like screenshot), and calls
+`input_bridge::install(&mut app, rx)` — the same wiring the test uses. The
+relay passes `InputSurface::disabled()` (no window).
+
+**Translation: winit-shaped messages, not resource pokes.** Each command
+becomes the same messages winit writes — `CursorMoved`, `MouseButtonInput`,
+`MouseWheel` (line units), `KeyboardInput` — so `bevy_input` builds
+`ButtonInput<MouseButton>`/`ButtonInput<KeyCode>`/`ButtonInput<Key>`/
+`AccumulatedMouseScroll` from them and bevy_egui 0.39 turns the very same
+messages into egui events. Synthetic input is indistinguishable from real
+input to every downstream system, and never becomes OS-level input.
+
+**Schedule (verified against the pinned bevy_egui 0.39.1 / bevy 0.18.1).**
+`drive_synthetic_input` runs in `PreUpdate` `.before(InputSystems)
+.before(EguiPreUpdateSet::ProcessInput)`. bevy_egui configures
+`EguiPreUpdateSet::ProcessInput.after(InputSystems)` and reads Bevy messages
+in its `EguiInputSet::ReadBevyMessages` subset, so messages written before
+`InputSystems` reach both `bevy_input` and egui in the frame they are
+written. `restore_real_cursor` runs in `PostUpdate`.
+
+**One frame per step** (planned up front by the pure `plan_batch`):
+
+| command | frames |
+|---|---|
+| `pointer_move` | cursor |
+| `pointer_click` | cursor + press · release |
+| `pointer_drag` | cursor(from) + press · cursor(to) · release |
+| `key_press` | press · release (modifiers: see below) |
+| `text_entry` | ONE frame: each control-free run is one `Key::Character(run)` press+release (egui reads it as `Event::Text`), `\n`/`\r\n` → Enter, `\t` → Tab |
+| `scroll` | wheel |
+
+- **Sticky modifiers.** `ShiftLeft/Right`, `ControlLeft/Right`,
+  `AltLeft/Right`, `SuperLeft/Right` key presses stay down through the next
+  non-modifier command and are released after its last frame (or at batch
+  end), so `[ControlLeft, KeyS]` is Ctrl+S and `[ShiftLeft, KeyA]` types `A`
+  (the "Sticky Keys" accessibility pattern; the v1 vocabulary has no explicit
+  chord command). Logical keys follow a US layout; letters upper-case while
+  Shift is held, other shifted symbols are not modelled.
+- **Coordinates** are primary-window PHYSICAL pixels (AIS OD-4: the size a
+  screenshot PNG reports), converted to logical for `CursorMoved`.
+- **Settle + reply.** After the last input frame, `wait_frames` (validated
+  ≤ 120 in fe-runtime) frames pass, then the reply goes out on the NEXT
+  frame, so the input frame's `Update` systems have always run.
+  `capture_after` queues one `Screenshot::primary_window()` through the
+  shared `screenshot_bridge::capture_png` (sole owner unchanged) and replies
+  with that PNG; a minimized window at capture time replies
+  `window_minimized`.
+
+**Refusals, all decided BEFORE anything is injected** (the batch is atomic at
+arrival): `camera_locked_by_capture` (409 — `CameraCaptureLock` exists; checked
+first, INPUT-ADDENDUM item 4), `not_found_or_denied` (404 — `ViewScope::covers`
+is false, the §vision scope gate), `input_in_progress` (409 — single flight),
+`no_window` (503) / `window_minimized` (422), then the planner's
+Bevy-only checks (422): `pointer_out_of_window`, `invalid_key` (name not in
+`resolve_key`'s table), `unsupported_text` (control characters other than
+`\n`/`\r`/`\t`), `scroll_out_of_range` (|delta| > 1000 lines — a finite but
+absurd wheel value never reaches the camera's zoom math).
+
+**Check at use, every frame a job runs** (INPUT-ADDENDUM item 2): caller hung
+up → `caller_gone`; `CameraCaptureLock` appeared → `camera_locked_by_capture`;
+the view stopped being covered (user switched verse) → the uniform denial;
+`INPUT_WALL_CLOCK_CAP` (4.5 s, under fe-api's 5 s reply timeout) →
+`input_timed_out`. Every abort goes through `finish`, the single exit, which
+writes a release for every button/key the job still holds (a half-done drag
+never leaves `ButtonInput` stuck pressed), despawns an unread capture, sends
+egui/picking a `CursorMoved` back to the user's real pointer, then replies.
+Non-uniform failure messages say how many input frames had been applied.
+
+**The cursor without an OS warp.** Picking, the gimbal and viewport clicks
+read `Window::cursor_position()`, so the synthetic pointer must be on the
+`Window`. But bevy_winit's `changed_windows` (in `Last`, `Changed<Window>`)
+calls `winit_window.set_cursor_position` whenever the window's cursor differs
+from its cache — writing the cursor normally would warp the user's real OS
+cursor. So the override is written with `bypass_change_detection()` in
+PreUpdate (the real value saved in `RealCursor`) and put back the same way in
+PostUpdate, before `Last`: every PreUpdate/Update/PostUpdate reader sees the
+synthetic pointer while a job runs, and the window/cache pair bevy_winit
+compares never diverges because of us.
+
+**Idle cost**: one empty `try_recv`, then return (no allocation); the
+PostUpdate restore is one `Option` check.
+
+Flow test: `synthetic_input_replays_as_real_bevy_input_and_refuses_at_arrival_and_at_use`
+(one journey over a real `InputPlugin` App — clicks, settle, refusals, chords,
+text, drag, scroll, single flight, mid-batch scope loss and capture lock,
+wall-clock cap, `capture_after` PNG equality with a direct encode, abandoned
+caller). True input-to-pixel confirmation is the standing user-gated in-app
+verify (AIS D-AIS-7).

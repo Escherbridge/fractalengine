@@ -479,6 +479,8 @@ fn main() -> anyhow::Result<()> {
         upload_quota_bytes: fe_api::upload_quota_bytes_from_env(),
         // Headless: no window to capture — the screenshot surface stays off.
         screenshot: fe_api::screenshot::ScreenshotSurface::disabled(),
+        // Headless: no window to inject into — the input surface stays off.
+        input: fe_api::input::InputSurface::disabled(),
     });
 
     app.insert_resource(RevocationBroadcastSender(revocation_tx));
