@@ -10,6 +10,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use super::ActiveDialog;
 use crate::actions::{send_or_toast, UiManager};
 use crate::theme;
@@ -71,7 +73,8 @@ pub fn render_join_dialog(
                 .desired_width(f32::INFINITY)
                 .hint_text("Paste invite string here...")
                 .font(egui::TextStyle::Monospace),
-        );
+        )
+        .named(ui, "Verse invite string");
 
         if let Some(err) = error.as_deref() {
             ui.add_space(4.0);

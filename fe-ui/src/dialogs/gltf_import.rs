@@ -9,6 +9,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use super::ActiveDialog;
 use crate::actions::{send_or_toast, UiManager};
 use crate::navigation_manager::NavigationManager;
@@ -82,7 +84,7 @@ pub fn render_gltf_import_dialog(
     }
     window.show(ctx, |ui| {
         ui.add_enabled_ui(!importing, |ui| {
-            ui.label(
+            let path_label = ui.label(
                 egui::RichText::new("File Path:")
                     .small()
                     .color(theme::TEXT_DIM),
@@ -92,7 +94,8 @@ pub fn render_gltf_import_dialog(
                     egui::TextEdit::singleline(file_path_buf)
                         .hint_text("path/to/model.glb")
                         .desired_width(ui.available_width() - 70.0),
-                );
+                )
+                .labelled(ui, &path_label);
                 if ui
                     .add(egui::Button::new("Browse...").fill(theme::BG_BUTTON))
                     .clicked()
@@ -119,7 +122,7 @@ pub fn render_gltf_import_dialog(
             });
 
             ui.add_space(4.0);
-            ui.label(
+            let name_label = ui.label(
                 egui::RichText::new("Display Name:")
                     .small()
                     .color(theme::TEXT_DIM),
@@ -128,7 +131,8 @@ pub fn render_gltf_import_dialog(
                 egui::TextEdit::singleline(name_buf)
                     .hint_text("My Model")
                     .desired_width(f32::INFINITY),
-            );
+            )
+            .labelled(ui, &name_label);
 
             ui.add_space(4.0);
             ui.label(

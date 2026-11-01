@@ -3,6 +3,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use super::{ActiveDialog, EntitySettingsType, SettingsTab};
 use crate::actions::UiManager;
 use crate::theme;
@@ -158,10 +160,10 @@ pub fn render_entity_settings_dialog(
             match current_tab {
                 SettingsTab::General => {
                     // --- Rename ---
-                    ui.label(egui::RichText::new("Name").color(theme::TEXT_SECTION).strong());
+                    let name_label = ui.label(egui::RichText::new("Name").color(theme::TEXT_SECTION).strong());
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(name_buf).desired_width(300.0));
+                        ui.add(egui::TextEdit::singleline(name_buf).desired_width(300.0)).labelled(ui, &name_label);
                         if ui.add(egui::Button::new("Rename").fill(theme::BG_SAVE)).clicked() {
                             let new_name = name_buf.trim().to_string();
                             if !new_name.is_empty() {
@@ -222,7 +224,7 @@ pub fn render_entity_settings_dialog(
                     // --- Description (Fractal only) ---
                     if *entity_type == EntitySettingsType::Fractal {
                         ui.add_space(12.0);
-                        ui.label(
+                        let description_label = ui.label(
                             egui::RichText::new("Description").color(theme::TEXT_SECTION).strong(),
                         );
                         ui.add_space(4.0);
@@ -231,7 +233,8 @@ pub fn render_entity_settings_dialog(
                                 egui::TextEdit::multiline(desc)
                                     .desired_rows(3)
                                     .desired_width(f32::INFINITY),
-                            );
+                            )
+                            .labelled(ui, &description_label);
                             if ui
                                 .add(egui::Button::new("Save Description").fill(theme::BG_SAVE))
                                 .clicked()
@@ -462,7 +465,9 @@ pub fn render_entity_settings_dialog(
                                 ui.selectable_value(invite_role_buf, "viewer".to_string(), "Viewer");
                                 ui.selectable_value(invite_role_buf, "editor".to_string(), "Editor");
                                 ui.selectable_value(invite_role_buf, "manager".to_string(), "Manager");
-                            });
+                            })
+                            .response
+                            .named(ui, "Invite role");
 
                         ui.label("Expires:");
                         egui::ComboBox::from_id_salt("invite_expiry")
@@ -479,7 +484,9 @@ pub fn render_entity_settings_dialog(
                                 ui.selectable_value(invite_expiry_buf, 24, "24 hours");
                                 ui.selectable_value(invite_expiry_buf, 168, "7 days");
                                 ui.selectable_value(invite_expiry_buf, 720, "30 days");
-                            });
+                            })
+                            .response
+                            .named(ui, "Invite expiration");
 
                         if ui.add(egui::Button::new("Generate").fill(theme::BG_SAVE)).clicked() {
                             let _etype = match entity_type {
@@ -513,8 +520,9 @@ pub fn render_entity_settings_dialog(
                                         .desired_rows(2)
                                         .desired_width(f32::INFINITY)
                                         .font(egui::TextStyle::Monospace),
-                                );
-                                if ui.button("Copy to Clipboard").clicked() {
+                                )
+                                .named(ui, "Generated invite link");
+                                if ui.button("Copy to Clipboard").named(ui, "Copy generated invite link").clicked() {
                                     ui.ctx().copy_text(link.clone());
                                 }
                             });
@@ -546,7 +554,7 @@ pub fn render_entity_settings_dialog(
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new("API Endpoint").small().color(theme::TEXT_MUTED));
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.small_button("Copy").clicked() {
+                                    if ui.small_button("Copy").named(ui, "Copy API endpoint URL").clicked() {
                                         ui.ctx().copy_text(base_url.to_string());
                                     }
                                     ui.label(
@@ -607,7 +615,8 @@ pub fn render_entity_settings_dialog(
                             egui::TextEdit::singleline(api_token_scope_buf)
                                 .desired_width(200.0)
                                 .font(egui::TextStyle::Monospace),
-                        );
+                        )
+                        .named(ui, "API token scope");
                     });
 
                     ui.horizontal(|ui| {
@@ -619,7 +628,9 @@ pub fn render_entity_settings_dialog(
                                 ui.selectable_value(api_token_role_buf, "viewer".to_string(), "Viewer");
                                 ui.selectable_value(api_token_role_buf, "editor".to_string(), "Editor");
                                 ui.selectable_value(api_token_role_buf, "manager".to_string(), "Manager");
-                            });
+                            })
+                            .response
+                            .named(ui, "API token maximum role");
 
                         ui.label("Expires:");
                         egui::ComboBox::from_id_salt("api_token_expiry")
@@ -636,7 +647,9 @@ pub fn render_entity_settings_dialog(
                                 ui.selectable_value(api_token_expiry_buf, 24, "24 hours");
                                 ui.selectable_value(api_token_expiry_buf, 168, "7 days");
                                 ui.selectable_value(api_token_expiry_buf, 720, "30 days");
-                            });
+                            })
+                            .response
+                            .named(ui, "API token expiration");
                     });
 
                     // Client DID (W6-7b): blank mints a fresh client; the DB
@@ -650,7 +663,8 @@ pub fn render_entity_settings_dialog(
                                 .desired_width(220.0)
                                 .hint_text("blank = new client")
                                 .font(egui::TextStyle::Monospace),
-                        );
+                        )
+                        .named(ui, "API token client DID");
                     });
                     let client_trimmed = api_token_client_buf.trim();
                     let client_valid = client_trimmed.is_empty()
@@ -702,12 +716,13 @@ pub fn render_entity_settings_dialog(
                                         .desired_rows(3)
                                         .desired_width(f32::INFINITY)
                                         .font(egui::TextStyle::Monospace),
-                                );
+                                )
+                                .named(ui, "Generated API token");
                                 ui.horizontal(|ui| {
                                     if ui.button("Copy Token").clicked() {
                                         ui.ctx().copy_text(token.clone());
                                     }
-                                    if ui.button("Copy curl").clicked() {
+                                    if ui.button("Copy curl").named(ui, "Copy health check curl command").clicked() {
                                         let curl_cmd = format!(
                                             "curl -s {}/health -H \"Authorization: Bearer {}\"",
                                             base_url, token,
@@ -730,7 +745,7 @@ pub fn render_entity_settings_dialog(
                                                 .monospace()
                                                 .color(theme::TEXT_SECTION),
                                         );
-                                        if ui.small_button("Copy").clicked() {
+                                        if ui.small_button("Copy").named(ui, "Copy generated token client DID").clicked() {
                                             ui.ctx().copy_text(client.clone());
                                         }
                                     });
@@ -761,7 +776,8 @@ pub fn render_entity_settings_dialog(
                                         .desired_rows(6)
                                         .desired_width(f32::INFINITY)
                                         .font(egui::TextStyle::Monospace),
-                                );
+                                )
+                                .named(ui, "API request examples");
                             });
                     }
 
@@ -801,7 +817,7 @@ pub fn render_entity_settings_dialog(
                                         );
 
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            if ui.add(egui::Button::new("Revoke").fill(theme::BG_DANGER).small()).clicked() {
+                                            if ui.add(egui::Button::new("Revoke").fill(theme::BG_DANGER).small()).named(ui, format_args!("Revoke API token {} for scope {}", i + 1, tok.scope)).clicked() {
                                                 revoke_jti = Some((tok.jti.clone(), tok.sub.clone()));
                                             }
                                             ui.label(
@@ -897,7 +913,7 @@ pub fn render_entity_settings_dialog(
                                         );
 
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            if ui.add(egui::Button::new("Revoke").fill(theme::BG_DANGER).small()).clicked() {
+                                            if ui.add(egui::Button::new("Revoke").fill(theme::BG_DANGER).small()).named(ui, format_args!("Revoke API token {} for scope {}", i + 1, tok.scope)).clicked() {
                                                 revoke_scoped_jti = Some((tok.jti.clone(), tok.sub.clone()));
                                             }
                                             ui.label(

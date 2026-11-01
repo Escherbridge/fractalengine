@@ -2,6 +2,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use super::ActiveDialog;
 use crate::actions::{UiAction, UiManager};
 use crate::terrain_map::manifest::ManifestHexonEntry;
@@ -52,7 +54,7 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
             // --- Render distance ---
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Render distance:").color(theme::TEXT_SECTION));
-                let resp = ui.add(egui::TextEdit::singleline(render_distance_buf).desired_width(80.0));
+                let resp = ui.add(egui::TextEdit::singleline(render_distance_buf).desired_width(80.0)).named(ui, "Render distance in world units");
                 if resp.changed() {
                     if let Ok(v) = render_distance_buf.parse::<f32>() {
                         manifest.render_distance = v;
@@ -96,7 +98,7 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
                             ui.label(&entry.hexon_id);
                             ui.label(&entry.hexon_type);
 
-                            if ui.checkbox(&mut entry.required, "").changed() {
+                            if ui.checkbox(&mut entry.required, "").named(ui, format_args!("Require hexon {}", entry.hexon_id)).changed() {
                                 *dirty = true;
                             }
 
@@ -113,7 +115,7 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
                             }
 
                             if ui
-                                .add(egui::Button::new("X").fill(theme::BG_DANGER))
+                                .add(egui::Button::new("X").fill(theme::BG_DANGER)).named(ui, format_args!("Remove hexon {} from manifest", entry.hexon_id))
                                 .on_hover_text("Remove from manifest")
                                 .clicked()
                             {
@@ -142,7 +144,8 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
                     egui::TextEdit::singleline(add_hexon_id_buf)
                         .hint_text("hexon-id")
                         .desired_width(200.0),
-                );
+                )
+                .named(ui, "Hexon ID to add");
                 ui.label("Type:");
                 egui::ComboBox::from_id_salt("hexon_type_combo")
                     .selected_text(add_hexon_type_buf.as_str())
@@ -155,7 +158,9 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
                         ] {
                             ui.selectable_value(add_hexon_type_buf, t.to_string(), *t);
                         }
-                    });
+                    })
+                    .response
+                    .named(ui, "Hexon type to add");
 
                 let can_add = !add_hexon_id_buf.trim().is_empty();
                 if ui
@@ -196,7 +201,8 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
                         .font(egui::TextStyle::Monospace)
                         .desired_rows(8)
                         .desired_width(f32::INFINITY),
-                );
+                )
+                .named(ui, "Manifest JSON preview");
             });
 
             // --- Save / Close ---

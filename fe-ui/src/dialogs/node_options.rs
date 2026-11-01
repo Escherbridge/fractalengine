@@ -7,6 +7,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use super::context_menu::{render_verb_button, verb_action, Verb};
 use super::ActiveDialog;
 use crate::actions::{UiAction, UiManager};
@@ -61,11 +63,12 @@ pub fn render_node_options_dialog(
                 .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM)),
         )
         .show(ctx, |ui| {
-            ui.label(egui::RichText::new("Name:").small().color(theme::TEXT_DIM));
-            ui.add(egui::TextEdit::singleline(node_name_buf).desired_width(f32::INFINITY));
+            let name_label = ui.label(egui::RichText::new("Name:").small().color(theme::TEXT_DIM));
+            ui.add(egui::TextEdit::singleline(node_name_buf).desired_width(f32::INFINITY))
+                .labelled(ui, &name_label);
 
             ui.add_space(6.0);
-            ui.label(
+            let url_label = ui.label(
                 egui::RichText::new("Portal URL:")
                     .small()
                     .color(theme::TEXT_DIM),
@@ -74,7 +77,8 @@ pub fn render_node_options_dialog(
                 egui::TextEdit::singleline(webpage_url_buf)
                     .hint_text("https://\u{2026}")
                     .desired_width(f32::INFINITY),
-            );
+            )
+            .labelled(ui, &url_label);
             ui.label(
                 egui::RichText::new(
                     "This URL will be rendered in the embedded webview when selected.",

@@ -7,6 +7,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use super::{ActiveDialog, CreateKind};
 use crate::actions::{send_or_toast, UiManager};
 use crate::theme;
@@ -57,12 +59,14 @@ pub fn render_create_dialog(
                 .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM)),
         )
         .show(ctx, |ui| {
-            ui.label(egui::RichText::new("Name:").small().color(theme::TEXT_DIM));
-            let name_resp = ui.add(
-                egui::TextEdit::singleline(name_buf)
-                    .hint_text("Enter name\u{2026}")
-                    .desired_width(f32::INFINITY),
-            );
+            let name_label = ui.label(egui::RichText::new("Name:").small().color(theme::TEXT_DIM));
+            let name_resp = ui
+                .add(
+                    egui::TextEdit::singleline(name_buf)
+                        .hint_text("Enter name\u{2026}")
+                        .desired_width(f32::INFINITY),
+                )
+                .labelled(ui, &name_label);
             // D-07: autofocus — the Name field is the only control worth
             // typing into first, and nothing else in this dialog competes
             // for focus, so "nothing is focused yet" always means this.

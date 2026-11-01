@@ -11,6 +11,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use super::ActiveDialog;
 use crate::actions::{UiAction, UiManager};
 use crate::panels::widgets::{clipped_value, confirm_button, role_denial_reason, role_gated};
@@ -84,7 +86,8 @@ pub fn render_hexon_manager(
                     egui::TextEdit::singleline(filter_text)
                         .hint_text("Search maps...")
                         .desired_width(ui.available_width()),
-                );
+                )
+                .named(ui, "Search installed maps");
 
                 ui.horizontal_wrapped(|ui| {
                     if ui
@@ -130,7 +133,8 @@ pub fn render_hexon_manager(
                         egui::TextEdit::singleline(registry_uri_buf)
                             .hint_text("hexon_id or hexon_id@version")
                             .desired_width((ui.available_width() - 120.0).max(64.0)),
-                    );
+                    )
+                    .named(ui, "Registry map ID and optional version");
                     let can_install = registry_url.is_some() && !registry_uri_buf.trim().is_empty();
                     if ui
                         .add_enabled(
@@ -308,6 +312,7 @@ fn render_installed_map_card(
                     let mut seeding = ts.seeding_enabled;
                     if ui
                         .checkbox(&mut seeding, "Seed")
+                        .named(ui, format_args!("Seed map {}", ts.region_name))
                         .on_hover_text("Allow other peers to download tiles from your copy")
                         .changed()
                     {
@@ -339,7 +344,8 @@ fn render_installed_map_card(
                     ui.add_enabled(
                         false,
                         egui::Button::new("Applying\u{2026}").fill(theme::BG_BUTTON),
-                    );
+                    )
+                    .named(ui, format_args!("Applying map {}", ts.region_name));
                 } else if is_active_map {
                     let reason = map_action_denial_reason(local_role, active_petal_id);
                     let resp = role_gated(
@@ -351,6 +357,7 @@ fn render_installed_map_card(
                         )
                         .fill(theme::BG_BUTTON_ACTIVE),
                     )
+                    .named(ui, format_args!("Clear petal map {}", ts.region_name))
                     .on_hover_text("Click to clear this petal's map");
                     if resp.clicked() {
                         if let Some(pid) = active_petal_id {
@@ -367,7 +374,8 @@ fn render_installed_map_card(
                         local_role.can_edit() && active_petal_id.is_some(),
                         &reason,
                         egui::Button::new("Set petal map").fill(theme::BG_BUTTON),
-                    );
+                    )
+                    .named(ui, format_args!("Set petal map to {}", ts.region_name));
                     if resp.clicked() {
                         if let Some(pid) = active_petal_id {
                             actions.push(UiAction::PetalSetMap {
@@ -481,7 +489,11 @@ fn render_scale_controls(
             } else {
                 theme::BG_BUTTON
             };
-            if ui.add(egui::Button::new(*label).fill(fill)).clicked() {
+            if ui
+                .add(egui::Button::new(*label).fill(fill))
+                .named(ui, format_args!("Set terrain scale to {label}"))
+                .clicked()
+            {
                 petal_map.world_scale = clamped_preset;
                 actions.push(UiAction::PetalSetMapScale {
                     petal_id: petal_id.to_string(),
@@ -494,12 +506,14 @@ fn render_scale_controls(
 
     // Log slider: live-preview the camera on drag; persist terrain on release.
     let mut scale = petal_map.world_scale.clamp(slider_min, slider_max);
-    let resp = ui.add(
-        egui::Slider::new(&mut scale, slider_min..=slider_max)
-            .logarithmic(true)
-            .custom_formatter(|v, _| format!("1:{}", (1.0 / v).round() as i64))
-            .text("scale"),
-    );
+    let resp = ui
+        .add(
+            egui::Slider::new(&mut scale, slider_min..=slider_max)
+                .logarithmic(true)
+                .custom_formatter(|v, _| format!("1:{}", (1.0 / v).round() as i64))
+                .text("scale"),
+        )
+        .named(ui, "Terrain world scale");
     if resp.changed() {
         petal_map.world_scale = scale;
     }
@@ -591,6 +605,7 @@ fn render_available_tab(
                             );
                         } else if ui
                             .add(egui::Button::new("Download").fill(theme::BG_SAVE))
+                            .named(ui, format_args!("Download map {}", ts.region_name))
                             .clicked()
                         {
                             actions.push(UiAction::HexonStartDownload(ts.hexon_id.clone()));
@@ -634,6 +649,13 @@ fn render_downloads_tab(
                                 DownloadStatus::Downloading => {
                                     if ui
                                         .add(egui::Button::new("Cancel").fill(theme::BG_DANGER))
+                                        .named(
+                                            ui,
+                                            format_args!(
+                                                "Cancel download of map {}",
+                                                dl.tileset_id
+                                            ),
+                                        )
                                         .clicked()
                                     {
                                         actions.push(UiAction::HexonCancelDownload(id.clone()));
