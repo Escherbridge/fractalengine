@@ -23,8 +23,9 @@ Unset preserves normal desktop paths and identity behavior.
 
 The launcher copies only root asset files, `branding/` and `samples/` into
 `<run>/fractalengine/assets`. It never junctions writable repository assets
-into a run. The staged exe has no adjacent `assets` directory. Native save
-locations remain user-selected until the file-dialog seam is supplied.
+into a run. The staged exe has no adjacent `assets` directory. Normal desktop
+dialogs remain user-selected; synthetic-input runs use the guarded queued
+provider described below and never fall back to native blocking pickers.
 
 ## Stage provenance
 
