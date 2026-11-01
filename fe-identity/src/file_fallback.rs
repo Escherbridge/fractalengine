@@ -90,17 +90,24 @@ pub fn load_or_generate_migrating(
     Ok(kp)
 }
 
-/// Create `path` holding the seed hex as its only content, with permissions
-/// restricted AT creation — never a separate step after the fact, so there
-/// is no window where the key sits more broadly readable than intended.
-/// `create_new` makes this atomic: a concurrent first-run race (two
-/// launches racing to create the same file) loses with an `AlreadyExists`
-/// error instead of silently reopening or truncating whatever the winner
-/// wrote.
-#[cfg(unix)]
+/// Create `path` holding the seed hex as its only content, owner-only from
+/// creation (see [`create_owner_only_file`]).
 fn create_key_file_securely(path: &Path, kp: &NodeKeypair) -> anyhow::Result<()> {
+    create_owner_only_file(path, hex::encode(kp.seed_bytes()).as_bytes())
+}
+
+/// Create `path` (which must not exist) holding `contents`, with permissions
+/// restricted AT creation and before any content is written — never a
+/// separate step after the fact, so there is no window where the secret sits
+/// more broadly readable than intended. `create_new` makes this atomic: a
+/// concurrent race loses with `AlreadyExists` instead of silently reopening
+/// or truncating whatever the winner wrote. Fails closed (deletes the file,
+/// returns `Err`) if owner-only permissions cannot be established — see
+/// fe-identity/src/AGENTS.md §identity-tiers "owner-only files".
+#[cfg(unix)]
+pub fn create_owner_only_file(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -111,54 +118,85 @@ fn create_key_file_securely(path: &Path, kp: &NodeKeypair) -> anyhow::Result<()>
         .create_new(true)
         .mode(0o600)
         .open(path)?;
-    file.write_all(hex::encode(kp.seed_bytes()).as_bytes())?;
+    if let Err(e) = file.write_all(contents) {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        return Err(e.into());
+    }
     Ok(())
 }
 
-/// Windows (our primary platform): `create_new` still makes creation
-/// atomic, but — unlike unix — there is no mode bit to set in the same
-/// `open()` call, and we do NOT rely on whatever ACL the parent directory's
-/// inheritance hands us (a security-review follow-up: an inherited ACL can
-/// be broader than owner-only, e.g. `BUILTIN\Users`). Immediately after
-/// creating the file we set an explicit, protected (non-inheriting),
-/// owner-only DACL (`windows_acl::restrict_to_owner`). If that fails for
-/// ANY reason, we delete what we just wrote and return `Err` — the tier
-/// FAILS CLOSED, never leaving a plaintext seed at a possibly-inherited
-/// ACL. The caller (`keychain::load_or_generate_keypair_durable`) treats
-/// this exactly like any other file-tier failure and falls through to the
-/// loud ephemeral tier.
+/// Windows (our primary platform): no mode bit exists for `open()`, and the
+/// inherited ACL can be broader than owner-only (e.g. `BUILTIN\Users`), so the
+/// file is created EMPTY, given an explicit protected owner-only DACL
+/// (`windows_acl::restrict_to_owner`), and only then written. Any failure
+/// deletes the file and returns `Err` (fail closed).
 #[cfg(windows)]
-fn create_key_file_securely(path: &Path, kp: &NodeKeypair) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
+pub fn create_owner_only_file(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
     }
-    {
-        let mut file = std::fs::OpenOptions::new()
+    drop(
+        std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(path)?;
-        file.write_all(hex::encode(kp.seed_bytes()).as_bytes())?;
-    } // close the handle before touching the file's security descriptor
-    if let Err(e) = windows_acl::restrict_to_owner(path) {
+            .open(path)?,
+    ); // close the handle before touching the file's security descriptor
+    let written = windows_acl::restrict_to_owner(path)
+        .map_err(|e| {
+            e.context(
+                "could not set an owner-only DACL; refusing to leave a secret \
+                 at the (possibly inherited) default ACL",
+            )
+        })
+        .and_then(|()| {
+            let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
+            file.write_all(contents)?;
+            Ok(())
+        });
+    if written.is_err() {
         let _ = std::fs::remove_file(path);
-        return Err(e.context(
-            "could not set an owner-only DACL on the file-tier identity key; \
-             refusing to leave it at the (possibly inherited) default ACL",
-        ));
     }
-    Ok(())
+    written
 }
 
 #[cfg(not(any(unix, windows)))]
-fn create_key_file_securely(path: &Path, kp: &NodeKeypair) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
+pub fn create_owner_only_file(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
     }
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)?;
-    file.write_all(hex::encode(kp.seed_bytes()).as_bytes())?;
+    file.write_all(contents)?;
+    Ok(())
+}
+
+/// Atomically replace (or create) `path` with `contents`, owner-only: the
+/// bytes go to a fresh sibling via [`create_owner_only_file`], which is then
+/// renamed over `path`, so a reader sees the old file or the new one, never a
+/// partial or broadly-readable one. The temp file is removed on any failure.
+pub fn replace_owner_only_file(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("{} has no file name", path.display()))?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let mut temp_name = std::ffi::OsString::from(".");
+    temp_name.push(file_name);
+    temp_name.push(format!(".{}.{nanos}.tmp", std::process::id()));
+    let temp_path = path.with_file_name(temp_name);
+    create_owner_only_file(&temp_path, contents)?;
+    if let Err(e) = std::fs::rename(&temp_path, path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(anyhow::anyhow!(
+            "could not move the new file into place at {}: {e}",
+            path.display()
+        ));
+    }
     Ok(())
 }
 

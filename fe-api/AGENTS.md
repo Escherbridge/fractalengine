@@ -69,6 +69,7 @@ when a route lands.
 | Agent screenshot (§screenshot) | `GET /api/v1/debug/screenshot` → `image/png` (byte-identical, unchanged); `POST` same path → dynamic posed capture (window/scene, 5 pose kinds), PNG + `X-FE-Capture-Pose` header — ON unless `FE_API_SCREENSHOT_ALLOW=0`; Owner; 1/s per DID; scope-confined to the ACTIVE verse (uniform 404 otherwise) |
 | Agent camera read-back (§camera-state) | `GET /api/v1/debug/camera` — live pose/active hierarchy/projection; same opt-in as screenshot; Owner; 10/s per DID |
 | Agent input injection (§agent-input-surface) | `POST /api/v1/debug/input` — synthetic pointer/keyboard/scroll, optional `capture_after` PNG (which must also clear the screenshot gate); OFF unless `FE_API_INPUT_ALLOW=1` (mutates state, unlike the two rows above); Owner; 5/s per DID; scope-confined to the ACTIVE verse; refused 409 while a posed capture holds the camera |
+| Agent token bootstrap (§qa-dev-token) | Not a route: the GUI writes loopback-only API tokens (Owner where the node owns the verse) for every local verse to `FE_API_DEV_TOKEN_OUT` once the API listens; unset = off |
 | MCP | `POST /mcp` (`mcp::mcp_handler`) — 39-row `ToolSpec` table: 32 always advertised, `screenshot`/`get_camera` only on a GUI host (either capture bridge wired), `inject_input` only when its own input bridge is wired, the 5 `sim_*` only on a sim lab host (§mcp-dispatch); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
 
 ## §existence-oracle (REST/WS denial unification, 2026-10-10)
@@ -1843,7 +1844,8 @@ look anywhere in the active petal without the user noticing. So the posture mirr
   (`ToolSeam::Screenshot`, available iff EITHER bridge is wired).
 
 How an agent calls it (GUI started with `FE_API_SCREENSHOT_ALLOW` unset, an
-Owner API token minted in the app's token settings):
+Owner API token read from the GUI's opt-in dev-token file — §qa-dev-token;
+the Inspector's mint door caps at `manager`):
 
 ```bash
 # Plain capture — unchanged.
@@ -2055,3 +2057,28 @@ contract's validation table and bridge-capacity bound are
 refused by the screenshot gate on both doors, admitted round trip with the
 PNG attachment, 5/s rate limit, headless, the 409 camera lock); the Bevy
 translation is `fractalengine/src/input_bridge.rs`'s journey.
+
+## §qa-dev-token (`dev_token.rs`, headless agent bootstrap, 2026-11-01)
+
+`FE_API_DEV_TOKEN_OUT=<path>` makes the GUI write loopback-only API tokens for
+every local verse to `<path>` once the API is listening, and rewrite the file
+when the verse set changes — the way a headless QA agent gets the Owner token
+§screenshot/§camera-state/§agent-input-surface need (the Inspector's mint
+door caps at `manager`). The host wiring, file format and security posture
+live in `fractalengine/src/AGENTS.md` §qa-dev-token; this crate owns:
+
+- `emit_dev_tokens(path, bound, db, keypair, client_did, verse_ids)` — the
+  loopback check FIRST (`loopback_api_base`; a non-loopback `bound` mints and
+  writes nothing), then one `fe_identity::mint_client_api_token` per verse at
+  `role_manager::resolve_role` of the node's own DID (never above it; none →
+  no token), 8 h TTL (`DEV_TOKEN_TTL_SECS`), written atomically owner-only via
+  `fe_identity::file_fallback::replace_owner_only_file`. Returns a
+  token-free `DevTokenEmission` that is safe to log.
+- `spawn_dev_token_writer(DevTokenWriter)` — the thread: waits on
+  `ApiConfig::listening_tx` (the actual bound address, sent by `run_server`
+  right after `bind`), refuses a non-loopback bind for the life of the
+  process, then re-emits per (coalesced) verse-id list.
+- `ApiConfig::listening_tx` is `None` on the relay and in every harness, so
+  nothing else changes.
+
+Flow test: `tests/screenshot_test.rs::owner_capture_via_the_dev_token_file_returns_the_host_png_then_is_rate_limited`.

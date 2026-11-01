@@ -1348,3 +1348,71 @@ text, drag, scroll, single flight, mid-batch scope loss and capture lock,
 wall-clock cap, `capture_after` PNG equality with a direct encode, abandoned
 caller). True input-to-pixel confirmation is the standing user-gated in-app
 verify (AIS D-AIS-7).
+
+## §qa-dev-token (headless agent bootstrap, `FE_API_DEV_TOKEN_OUT`, 2026-11-01)
+
+The screenshot/camera/input surfaces all need an **Owner** API token scoped to
+the active verse, and the only in-app mint door (Inspector → API Access →
+`DbCommand::MintApiToken`) caps `max_role` at `manager` by design. A headless
+QA agent therefore had no way in. `FE_API_DEV_TOKEN_OUT=<path>` is the opt-in
+bootstrap: the GUI writes, and keeps rewriting, a token file the agent reads.
+
+```json
+{ "api_base": "http://127.0.0.1:8765",
+  "tokens":  { "<verse_id>": "<jwt>", ... },
+  "roles":   { "<verse_id>": "owner" | "manager" | "editor" | "viewer", ... },
+  "client":  "did:key:z6Mk...",
+  "expires_at": "<RFC 3339, every token valid at least until then>" }
+```
+
+- **Wiring.** `main.rs` reads the env once (`fe_api::dev_token::dev_token_out_from_env`,
+  WARNs with the path when set) and, only then, hands
+  `fe_api::dev_token::spawn_dev_token_writer` a seed-copy of the node keypair,
+  a clone of the DB thread's shared handle (role reads only), the API's
+  `listening_tx` notification (`ApiConfig::listening_tx`, the ACTUAL bound
+  address) and a verse-id channel. `qa_dev_token.rs` feeds that channel:
+  the full id list on the first frame and again whenever the SET of
+  `VerseManager.verses` ids changes (create, join, delete) — allocation-free on
+  every other frame. The writer coalesces queued lists to the newest and
+  rewrites the whole file each time (fresh 8 h tokens for every verse).
+- **Never above the node's own role.** Each verse's token is minted at
+  `role_manager::resolve_role(local_did, "VERSE#<id>")`: Owner for a verse
+  this node created (what scenario-created verses are), the visitor role for a
+  joined one, and no token at all for `none`. The file's `roles` map says
+  which; only `owner` entries can capture or inject. Same rule the Inspector
+  door enforces ("requested role must not exceed caller's own role").
+- **One minting implementation.** Tokens come from
+  `fe_identity::mint_client_api_token` (the signer the Inspector door uses),
+  with one fresh client DID per process (`fe_identity::new_client_did`), so an
+  agent's uploads share one owner bucket across rewrites. They are NOT recorded
+  in the `api_token` store: the 8 h TTL bounds them, they never show in the
+  Inspector's token list, and they can't be revoked from it — restart without
+  the env var and let them expire, or rotate the node key.
+- **Loopback only, fail closed.** `loopback_api_base` refuses any bound
+  address whose IP is not loopback (`0.0.0.0`, a LAN IP, `[::]`, an
+  IPv4-mapped address): the writer logs an error and exits, nothing is minted
+  and nothing is written for the life of the process. Today the GUI binds
+  `127.0.0.1:8765` hard-coded; the check guards a future configurable bind.
+- **Owner-only file, atomic.** `fe_identity::file_fallback::replace_owner_only_file`
+  writes a hidden sibling temp through `create_owner_only_file` (the identity
+  key file's pattern: `create_new` + `0o600` on unix; on Windows created empty,
+  given the protected owner-only DACL, THEN written; any failure deletes it)
+  and renames it over the path. A reader sees the old file or the new one,
+  never a partial or broadly readable one. No token is ever logged — the
+  writer logs path, api_base, the verse→role map and `expires_at`.
+- **Unset = no change.** No env var → no writer thread, no Bevy system, no
+  `listening_tx`. The relay passes `listening_tx: None` and never emits.
+
+Agent recipe: launch the GUI with `FE_API_DEV_TOKEN_OUT=<scratch>/fe-tokens.json`
+(plus `FE_API_INPUT_ALLOW=1` to drive input), poll the file until `tokens`
+holds the active verse, then `GET {api_base}/api/v1/debug/camera` with
+`Authorization: Bearer <tokens[verse]>`; a scenario that creates a verse
+re-reads the file for the new id.
+
+Flow test (one journey, fe-api R9 batch):
+`fe-api/tests/screenshot_test.rs::owner_capture_via_the_dev_token_file_returns_the_host_png_then_is_rate_limited`
+— non-loopback refused with nothing written; one Owner token per owned verse,
+a Viewer token for a visited verse, none for a `none` verse; owner-only on
+disk (`icacls` oracle on Windows, mode bits on unix); a new verse rewrites the
+file with no temp left behind; then the agent captures with the token read
+from the file (Viewer refused, Owner admitted, rate limit).

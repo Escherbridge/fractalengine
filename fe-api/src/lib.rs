@@ -12,6 +12,7 @@ pub mod bridge_client;
 pub mod canonical_ws;
 pub mod crs;
 pub mod db_reader;
+pub mod dev_token;
 pub mod device;
 pub mod endpoint;
 pub mod entity_store_bridge;
@@ -107,6 +108,9 @@ pub struct ApiConfig {
     /// synthetic-input bridge (AGENTS.md §agent-input-surface); headless
     /// hosts pass `input::InputSurface::disabled()`.
     pub input: input::InputSurface,
+    /// Told the bound address once the listener is up — the GUI's opt-in
+    /// dev-token writer waits on it (AGENTS.md §qa-dev-token); `None` elsewhere.
+    pub listening_tx: Option<crossbeam::channel::Sender<std::net::SocketAddr>>,
 }
 
 /// Read `FE_API_UPLOAD_QUOTA_BYTES` once at startup; unset or unparseable
@@ -226,7 +230,13 @@ async fn run_server(config: ApiConfig) {
         .await
         .unwrap_or_else(|e| panic!("failed to bind API server to {}: {}", config.bind_addr, e));
 
-    tracing::info!("API server listening on {}", listener.local_addr().unwrap());
+    let local_addr = listener.local_addr().unwrap();
+    tracing::info!("API server listening on {local_addr}");
+    if let Some(listening_tx) = config.listening_tx {
+        if listening_tx.send(local_addr).is_err() {
+            tracing::warn!("API listening notification had no receiver");
+        }
+    }
 
     axum::serve(listener, router)
         .await

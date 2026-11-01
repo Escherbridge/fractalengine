@@ -481,6 +481,8 @@ fn main() -> anyhow::Result<()> {
         screenshot: fe_api::screenshot::ScreenshotSurface::disabled(),
         // Headless: no window to inject into — the input surface stays off.
         input: fe_api::input::InputSurface::disabled(),
+        // Dev-token emission is GUI-only (fe-api/AGENTS.md §qa-dev-token).
+        listening_tx: None,
     });
 
     app.insert_resource(RevocationBroadcastSender(revocation_tx));

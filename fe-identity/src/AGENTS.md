@@ -95,6 +95,20 @@ secure create returns `Err` from `load_or_generate`/
 treats exactly like a file-tier read failure — fall through to the loud
 ephemeral tier, never a silently open-permissioned key file.
 
+**Owner-only files, generalized (2026-11-01).** The pattern above is now
+`file_fallback::create_owner_only_file(path, contents)` (public;
+`create_key_file_securely` is a one-line call into it) so other secrets
+reuse it instead of re-deriving it — first consumer: the GUI's agent-QA token
+file (fe-api/AGENTS.md §qa-dev-token). One tightening rode along: on Windows
+the file is now created EMPTY, restricted to the owner-only DACL, and only
+THEN written, so the content never exists under the inherited ACL even for
+the instant between write and `SetFileSecurityW`. A failed content write also
+deletes the file (unix and Windows). `replace_owner_only_file(path, contents)`
+adds an atomic replace for files that are rewritten: a hidden sibling temp
+(`.<name>.<pid>.<nanos>.tmp`) goes through `create_owner_only_file`, then
+`std::fs::rename` moves it over `path` (same directory, so the protected DACL
+or `0600` mode travels with it); the temp is removed on any failure.
+
 ## §x25519-device-key (`x25519.rs`)
 
 `DeviceKeypair` wraps an `x25519_dalek::StaticSecret` (dependency approved

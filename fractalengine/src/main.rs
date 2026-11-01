@@ -15,6 +15,7 @@ mod asset_bridge;
 mod gpx_bridge;
 mod input_bridge;
 mod panic_log;
+mod qa_dev_token;
 mod screenshot_bridge;
 mod terrain_bridge;
 mod vision_bridge;
@@ -145,6 +146,13 @@ fn main() {
     // NodeKeypair is not Clone, so we recreate from the same seed bytes.
     let db_keypair = fe_identity::NodeKeypair::from_bytes(&node_kp.seed_bytes())
         .expect("recreate keypair from seed");
+    // Opt-in agent-QA token file (src/AGENTS.md §qa-dev-token): unset = None,
+    // and nothing below changes behaviour.
+    let dev_token_out = fe_api::dev_token::dev_token_out_from_env();
+    let dev_token_keypair = dev_token_out.as_ref().map(|_| {
+        fe_identity::NodeKeypair::from_bytes(&node_kp.seed_bytes())
+            .expect("recreate keypair from seed")
+    });
 
     // Phase E: replication channel (DB → sync bridge).
     // The DB thread emits ReplicationEvents; we bridge them to SyncCommand::WriteRowEntry
@@ -459,6 +467,10 @@ fn main() {
         });
     }
 
+    // The dev-token writer resolves the local role per verse on its own clone.
+    let dev_token_db = dev_token_out.as_ref().map(|_| shared_db.clone());
+    let (api_listening_tx, api_listening_rx) = crossbeam::channel::bounded(1);
+
     // Direct reader = clone of the DB thread's handle (never a second SurrealKV
     // open: the store lock refuses it, os error 33). Hydration failure leaves the
     // editor running with the analytics surface closed. See AGENTS.md §entity-store-analytics.
@@ -562,7 +574,23 @@ fn main() {
             fe_api::input::input_allowed_from_env(),
             Some(input_tx),
         ),
+        listening_tx: dev_token_out.is_some().then_some(api_listening_tx),
     });
+
+    // Agent QA: write loopback-only API tokens for every local verse once the
+    // API is listening, and rewrite on verse-set changes (src/AGENTS.md §qa-dev-token).
+    if let (Some(path), Some(db), Some(keypair)) = (dev_token_out, dev_token_db, dev_token_keypair)
+    {
+        let (verse_ids_tx, verse_ids_rx) = crossbeam::channel::unbounded();
+        fe_api::dev_token::spawn_dev_token_writer(fe_api::dev_token::DevTokenWriter {
+            path,
+            db,
+            keypair,
+            listening_rx: api_listening_rx,
+            verse_ids_rx,
+        });
+        qa_dev_token::install(&mut app, verse_ids_tx);
+    }
 
     // Window chrome: taskbar/window icon + the title bar's brand mark.
     if let Some(icon) = window_chrome::brand_icon() {
