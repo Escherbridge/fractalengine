@@ -1698,6 +1698,8 @@ mod tests {
             .init_resource::<InspectorFormState>()
             .init_resource::<NodeManager>()
             .init_resource::<PathEditorState>()
+            .init_resource::<crate::terrain_map::PetalMapState>()
+            .init_resource::<crate::gis::GisPanelState>()
             .init_resource::<fe_runtime::app::PendingApiRequests>()
             .init_resource::<super::super::PrimitiveDescriptorCache>()
             .init_resource::<super::super::PathAssetCache>()

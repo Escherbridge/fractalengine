@@ -10,6 +10,9 @@ param(
     [ValidateSet("basic", "terrain", "none")]
     [string]$Fixture = "basic",
     [ValidateRange(1,65535)][int]$ApiPort = 8765,
+    [switch]$DisableSyntheticInput,
+    [switch]$A11yTiming,
+    [switch]$A11yContinuous,
     [switch]$AllowStaleStage
 )
 
@@ -17,6 +20,8 @@ param(
 . "$PSScriptRoot\_fixture.ps1"
 $QaApiBase = "http://127.0.0.1:$ApiPort"
 $ErrorActionPreference = 'Stop'
+if ($A11yTiming -and -not $DisableSyntheticInput) { throw 'A11yTiming requires DisableSyntheticInput for a normal OS comparison' }
+if ($A11yContinuous -and -not $A11yTiming) { throw 'A11yContinuous requires A11yTiming' }
 
 $swTotal = [System.Diagnostics.Stopwatch]::StartNew()
 
@@ -85,7 +90,9 @@ if ($Fixture -ne 'none') {
 $env:FE_API_DEV_TOKEN_OUT = $tokensPath
 $env:FE_QA_STORAGE_ROOT = $run
 $env:FE_QA_API_PORT = $ApiPort.ToString()
-$env:FE_API_INPUT_ALLOW = "1"
+$env:FE_API_INPUT_ALLOW = $(if ($DisableSyntheticInput) { '0' } else { '1' })
+$env:FE_QA_A11Y_TIMING = $(if ($A11yTiming) { '1' } else { '0' })
+$env:FE_QA_A11Y_CONTINUOUS = $(if ($A11yContinuous) { '1' } else { '0' })
 $env:FE_SYNC_RELAY = "disabled"
 $env:FE_HEXON_DIR = $hexonDir
 $env:RUST_LOG = "info"
@@ -149,6 +156,7 @@ $current = @{
     tokens_path = $tokensPath
     stage = $stageDir
     fixture = $Fixture
+    qa_options = @{ synthetic_input = -not [bool]$DisableSyntheticInput; a11y_timing = [bool]$A11yTiming; a11y_continuous = [bool]$A11yContinuous }
     started_at = $startedAt
     process_identity = $identity
     descendant_identities = $recordedDescendants

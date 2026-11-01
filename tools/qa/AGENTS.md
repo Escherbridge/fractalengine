@@ -268,6 +268,11 @@ A passing probe alone does not establish performance acceptance: the collector
 must finish its same-process pair, debug input/tree endpoints must remain
 denied, fixture/load conditions must match, and screenshots need independent
 review. `FRAME_TIME` is full-app wall time, not isolated accessibility CPU cost.
-NEEDS-WIRING: `launch.ps1` still forces the synthetic input gate on; its owner
-must add a recorded gate-off launch option and explicit timing opt-ins before
-this source-only proof can run.
+`launch.ps1 -DisableSyntheticInput -A11yTiming` explicitly opts into the
+normal gate-off OS/timing path. Add `-A11yContinuous` to request the same
+controlled continuous cadence in both measurement phases. Timing requires
+gate-off input; continuous requires timing. Defaults preserve ordinary
+synthetic QA launches. All three values are written to current.json's
+qa_options and explicitly override inherited timing/input environment flags.
+The collector still owns phase readiness, same-process conditions and honest
+incomplete outcomes; launch success does not establish OS/performance proof.
