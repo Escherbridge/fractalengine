@@ -5,6 +5,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use crate::actions::node_props::{ANNOTATION_BODY_KEY, ANNOTATION_COLOR_KEY, ANNOTATION_TITLE_KEY};
 use crate::actions::{UiAction, UiManager};
 use crate::node_manager::NodeManager;
@@ -31,29 +33,32 @@ pub(crate) fn annotation_card_section(
     .show(ui, |ui| {
         ui.add_space(4.0);
 
-        ui.label(egui::RichText::new("Title").small().color(theme::TEXT_DIM));
+        let title_label = ui.label(egui::RichText::new("Title").small().color(theme::TEXT_DIM));
         ui.add(
             egui::TextEdit::singleline(&mut inspector.annotation_title_buf)
                 .hint_text("Untitled")
                 .desired_width(f32::INFINITY),
-        );
+        )
+        .labelled(ui, &title_label);
 
         ui.add_space(4.0);
-        ui.label(egui::RichText::new("Body").small().color(theme::TEXT_DIM));
+        let body_label = ui.label(egui::RichText::new("Body").small().color(theme::TEXT_DIM));
         ui.add(
             egui::TextEdit::multiline(&mut inspector.annotation_body_buf)
                 .desired_rows(3)
                 .desired_width(f32::INFINITY),
-        );
+        )
+        .labelled(ui, &body_label);
 
         ui.add_space(4.0);
-        ui.label(egui::RichText::new("Color").small().color(theme::TEXT_DIM));
+        let color_label = ui.label(egui::RichText::new("Color").small().color(theme::TEXT_DIM));
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut inspector.annotation_color_buf)
                     .hint_text("#RRGGBB")
                     .desired_width(100.0),
-            );
+            )
+            .labelled(ui, &color_label);
             // Interactive swatch: egui's own color picker, bound to the hex
             // buffer via round-trip parse/format so the stored value stays a
             // hex string per the gis.annotation.color contract (see
@@ -61,7 +66,10 @@ pub(crate) fn annotation_card_section(
             let mut rgb = parse_hex_color(&inspector.annotation_color_buf)
                 .map(|(r, g, b)| [r, g, b])
                 .unwrap_or([255, 255, 255]);
-            if egui::widgets::color_picker::color_edit_button_srgb(ui, &mut rgb).changed() {
+            if egui::widgets::color_picker::color_edit_button_srgb(ui, &mut rgb)
+                .named(ui, "Annotation color picker")
+                .changed()
+            {
                 inspector.annotation_color_buf = rgb_to_hex(rgb[0], rgb[1], rgb[2]);
             }
             if parse_hex_color(&inspector.annotation_color_buf).is_none()

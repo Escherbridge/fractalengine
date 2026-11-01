@@ -7,6 +7,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use crate::actions::{UiAction, UiManager};
 use crate::gis::{self, GisPanelState, GisPanelTab, GisQueryMode};
 use crate::gpx_ops::GpxImportStatus;
@@ -281,12 +283,14 @@ fn render_query_section(
                     egui::TextEdit::singleline(&mut gis_state.filter_key_buf)
                         .hint_text("key")
                         .desired_width(90.0),
-                );
+                )
+                .named(ui, "Property filter key");
                 ui.add(
                     egui::TextEdit::singleline(&mut gis_state.filter_value_buf)
                         .hint_text("value")
                         .desired_width(90.0),
-                );
+                )
+                .named(ui, "Property filter value");
                 egui::ComboBox::from_id_salt("gis_filter_value_type")
                     .selected_text(gis_state.filter_value_type_buf.clone())
                     .width(70.0)
@@ -298,7 +302,9 @@ fn render_query_section(
                                 t,
                             );
                         }
-                    });
+                    })
+                    .response
+                    .named(ui, "Property filter value type");
             });
         }
         GisQueryMode::Bbox => {
@@ -308,8 +314,10 @@ fn render_query_section(
                         .small()
                         .color(theme::TEXT_DIM),
                 );
-                ui.add(egui::TextEdit::singleline(&mut gis_state.bbox_min[0]).desired_width(50.0));
-                ui.add(egui::TextEdit::singleline(&mut gis_state.bbox_min[1]).desired_width(50.0));
+                ui.add(egui::TextEdit::singleline(&mut gis_state.bbox_min[0]).desired_width(50.0))
+                    .named(ui, "Bounding box minimum X in meters");
+                ui.add(egui::TextEdit::singleline(&mut gis_state.bbox_min[1]).desired_width(50.0))
+                    .named(ui, "Bounding box minimum Z in meters");
             });
             ui.horizontal(|ui| {
                 ui.label(
@@ -317,8 +325,10 @@ fn render_query_section(
                         .small()
                         .color(theme::TEXT_DIM),
                 );
-                ui.add(egui::TextEdit::singleline(&mut gis_state.bbox_max[0]).desired_width(50.0));
-                ui.add(egui::TextEdit::singleline(&mut gis_state.bbox_max[1]).desired_width(50.0));
+                ui.add(egui::TextEdit::singleline(&mut gis_state.bbox_max[0]).desired_width(50.0))
+                    .named(ui, "Bounding box maximum X in meters");
+                ui.add(egui::TextEdit::singleline(&mut gis_state.bbox_max[1]).desired_width(50.0))
+                    .named(ui, "Bounding box maximum Z in meters");
             });
             ui.horizontal(|ui| {
                 if ui.small_button("Center on Selection").clicked() {

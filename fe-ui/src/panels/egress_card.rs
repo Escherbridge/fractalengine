@@ -4,6 +4,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use crate::actions::UiManager;
 use crate::gis::egress_strings::{self as es, EgressSource, ExportFormat};
 use crate::gis::GisPanelState;
@@ -40,7 +42,8 @@ pub(crate) fn egress_section(
                 .small()
                 .color(theme::TEXT_DIM),
         );
-        ui.add(egui::TextEdit::singleline(&mut gis_state.egress.base_url_buf).desired_width(200.0));
+        ui.add(egui::TextEdit::singleline(&mut gis_state.egress.base_url_buf).desired_width(200.0))
+            .named(ui, "API base URL");
     });
     ui.add_space(6.0);
 
@@ -107,7 +110,8 @@ fn render_source_selector(
                     egui::TextEdit::singleline(&mut gis_state.egress.node_id_buf)
                         .hint_text("node id")
                         .desired_width(160.0),
-                );
+                )
+                .named(ui, "Export node ID");
                 if ui.small_button("Use viewport selection").clicked() {
                     if let Some(sel) = node_mgr.selected.as_ref() {
                         gis_state.egress.node_id_buf = sel.node_id.clone();
@@ -178,7 +182,8 @@ fn render_share_section(
                 .small()
                 .color(theme::TEXT_DIM),
         );
-        ui.add(egui::TextEdit::singleline(&mut gis_state.egress.ttl_buf).desired_width(70.0));
+        ui.add(egui::TextEdit::singleline(&mut gis_state.egress.ttl_buf).desired_width(70.0))
+            .named(ui, "Share link lifetime in seconds");
         ui.label(
             egui::RichText::new("default 3600, max 86400")
                 .small()

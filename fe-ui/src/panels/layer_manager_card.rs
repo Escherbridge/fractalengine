@@ -5,6 +5,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use crate::actions::{UiAction, UiManager};
 use crate::gis::{self, OverlayEntry, OverlayKey};
 use crate::settings::AppSettings;
@@ -124,7 +126,9 @@ fn render_overlay_row(
                 .small()
                 .color(theme::TEXT_DIM),
         );
-        let resp = ui.add(egui::Slider::new(&mut opacity, 0.0..=1.0));
+        let resp = ui
+            .add(egui::Slider::new(&mut opacity, 0.0..=1.0))
+            .named(ui, format_args!("{} opacity", row.name));
         if resp.changed() {
             if let Some(current) = &petal_map.terrain_json {
                 petal_map.terrain_json =

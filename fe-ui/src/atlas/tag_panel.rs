@@ -1,5 +1,7 @@
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use super::petal_wizard::TagError;
 
 /// Validate a tag string, returning Ok or a TagError.
@@ -39,7 +41,11 @@ pub fn tag_input_ui(
         for (i, tag) in tags.iter().enumerate() {
             ui.horizontal(|ui| {
                 ui.label(tag.as_str());
-                if ui.small_button("×").clicked() {
+                if ui
+                    .small_button("×")
+                    .named(ui, format_args!("Remove tag {tag}"))
+                    .clicked()
+                {
                     to_remove = Some(i);
                 }
             });
@@ -51,8 +57,8 @@ pub fn tag_input_ui(
 
     let mut submitted: Option<String> = None;
     ui.horizontal(|ui| {
-        ui.text_edit_singleline(input);
-        if ui.button("Add").clicked() && !input.is_empty() {
+        ui.text_edit_singleline(input).named(ui, "New tag");
+        if ui.button("Add").named(ui, "Add tag").clicked() && !input.is_empty() {
             submitted = Some(input.clone());
         }
     });

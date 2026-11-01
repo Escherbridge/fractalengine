@@ -7,6 +7,8 @@
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
+
 use crate::actions::{UiAction, UiManager};
 use crate::gis::{
     min_neighbor_gap_m, smoothness_readback, CornerKind, PathEditorState, PathPointRow,
@@ -121,7 +123,8 @@ fn render_track_list(
             egui::TextEdit::singleline(&mut path_state.new_track_name_buf)
                 .hint_text("New path name")
                 .desired_width(180.0),
-        );
+        )
+        .named(ui, "New path name");
         if ui
             .add(egui::Button::new("New Path").fill(theme::BG_SAVE))
             .clicked()
@@ -212,8 +215,23 @@ fn render_track_list(
                                 row.annotation_title.as_deref().unwrap_or(&row.name),
                             )
                             .color(theme::TEXT_BRIGHT);
-                            if ui
-                                .add(egui::Label::new(label).sense(egui::Sense::click()))
+                            let response =
+                                ui.add(egui::Label::new(label).sense(egui::Sense::click()));
+                            response.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    ui.is_enabled(),
+                                    "Open path",
+                                )
+                            });
+                            if response
+                                .named(
+                                    ui,
+                                    format_args!(
+                                        "Open path {}",
+                                        row.annotation_title.as_deref().unwrap_or(&row.name)
+                                    ),
+                                )
                                 .clicked()
                             {
                                 selected = Some(row.node_id.clone());
@@ -224,7 +242,17 @@ fn render_track_list(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     if pending {
-                                        if ui.small_button("Cancel").clicked() {
+                                        if ui
+                                            .small_button("Cancel")
+                                            .named(
+                                                ui,
+                                                format_args!(
+                                                    "Cancel deletion of path {}",
+                                                    row.name
+                                                ),
+                                            )
+                                            .clicked()
+                                        {
                                             cancel_delete = true;
                                         }
                                         if ui
@@ -236,11 +264,22 @@ fn render_track_list(
                                                 )
                                                 .fill(theme::BG_DANGER),
                                             )
+                                            .named(
+                                                ui,
+                                                format_args!(
+                                                    "Confirm deletion of path {}",
+                                                    row.name
+                                                ),
+                                            )
                                             .clicked()
                                         {
                                             to_delete = Some(row.node_id.clone());
                                         }
-                                    } else if ui.small_button("Delete").clicked() {
+                                    } else if ui
+                                        .small_button("Delete")
+                                        .named(ui, format_args!("Delete path {}", row.name))
+                                        .clicked()
+                                    {
                                         arm_delete = Some(row.node_id.clone());
                                     }
                                 },
@@ -471,17 +510,29 @@ fn render_edit_view(
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    if ui.small_button("Remove").clicked() {
+                                    if ui
+                                        .small_button("Remove")
+                                        .named(ui, format_args!("Remove point {i}"))
+                                        .clicked()
+                                    {
                                         to_remove = Some(i);
                                     }
-                                    if ui.small_button("Annotate").clicked() {
+                                    if ui
+                                        .small_button("Annotate")
+                                        .named(ui, format_args!("Annotate point {i}"))
+                                        .clicked()
+                                    {
                                         to_annotate = Some(i);
                                     }
                                     // Numeric height (Bevy Y) field for this point.
                                     let mut new_y = point.position[1];
-                                    let resp = ui.add(
-                                        egui::DragValue::new(&mut new_y).speed(0.05).prefix("Y "),
-                                    );
+                                    let resp = ui
+                                        .add(
+                                            egui::DragValue::new(&mut new_y)
+                                                .speed(0.05)
+                                                .prefix("Y "),
+                                        )
+                                        .named(ui, format_args!("Point {i} height in world units"));
                                     if resp.changed() {
                                         to_move = Some((
                                             i,
@@ -580,7 +631,8 @@ fn render_style_controls(
             ui,
             &mut rgba,
             egui::color_picker::Alpha::Opaque,
-        );
+        )
+        .named(ui, "Path border color picker");
         if resp.changed() {
             // Live feedback: mirror the picked value into `style` every frame so
             // the swatch/preview tracks the drag.
@@ -608,7 +660,9 @@ fn render_style_controls(
         let mut w = style.width;
         // Range starts at 0.1 (step 0.1), matching the thin default (petal-local
         // meters). Dial up for wider roads/paths.
-        let resp = ui.add(egui::Slider::new(&mut w, 0.1..=20.0).step_by(0.1));
+        let resp = ui
+            .add(egui::Slider::new(&mut w, 0.1..=20.0).step_by(0.1))
+            .named(ui, "Border width in meters");
         if resp.changed() {
             // Live feedback every frame; persist only on release below.
             style.width = w;
@@ -624,7 +678,11 @@ fn render_style_controls(
         let mut v = style.visible;
         // A checkbox is a single click — no per-frame drag churn — so persist
         // immediately on change.
-        if ui.add(egui::Checkbox::new(&mut v, "Visible")).changed() {
+        if ui
+            .add(egui::Checkbox::new(&mut v, "Visible"))
+            .named(ui, "Path visible")
+            .changed()
+        {
             style.visible = v;
             changed_visible = Some(v);
         }
@@ -653,7 +711,8 @@ fn render_style_controls(
             ui,
             &mut rgba,
             egui::color_picker::Alpha::OnlyBlend,
-        );
+        )
+        .named(ui, "Path fill color picker");
         if response.changed() {
             style.fill_color = [
                 rgba.r() as f32 / 255.0,
@@ -692,7 +751,8 @@ fn render_snap_controls(ui: &mut egui::Ui, snap: &mut crate::gis::PathSnapSettin
             .strong()
             .color(theme::TEXT_SECTION),
     );
-    ui.checkbox(&mut snap.enabled, "Enable snapping");
+    ui.checkbox(&mut snap.enabled, "Enable snapping")
+        .named(ui, "Enable path snapping");
     ui.add_enabled_ui(snap.enabled, |ui| {
         ui.horizontal(|ui| {
             ui.label("Grid step (m)");
@@ -700,7 +760,8 @@ fn render_snap_controls(ui: &mut egui::Ui, snap: &mut crate::gis::PathSnapSettin
                 egui::DragValue::new(&mut snap.grid_step_m)
                     .range(0.01..=1_000_000.0)
                     .speed(0.1),
-            );
+            )
+            .named(ui, "Grid step in meters");
         });
         ui.horizontal(|ui| {
             ui.label("Anchor radius (m)");
@@ -708,7 +769,8 @@ fn render_snap_controls(ui: &mut egui::Ui, snap: &mut crate::gis::PathSnapSettin
                 egui::DragValue::new(&mut snap.anchor_radius_m)
                     .range(0.0..=1_000_000.0)
                     .speed(0.1),
-            );
+            )
+            .named(ui, "Anchor snap radius in meters");
         });
     });
 }
@@ -901,7 +963,7 @@ pub(crate) fn render_corner_settings(
                     // Seed from geometry truth when handles exist — the stored
                     // scalar may be stale (drag-created anchors).
                     let mut s = slider_seed(row.handle_in, row.handle_out, min_gap, row.smoothness);
-                    let resp = ui.add(egui::Slider::new(&mut s, 0.0..=1.0).step_by(0.01));
+                    let resp = ui.add(egui::Slider::new(&mut s, 0.0..=1.0).step_by(0.01)).named(ui, format_args!("Vertex {idx} smoothness"));
                     if resp.changed() {
                         // Live feedback every frame: derive collinear symmetric
                         // handles into the buffer; persist only on release below.
@@ -949,7 +1011,7 @@ pub(crate) fn render_corner_settings(
                             .color(theme::TEXT_DIM),
                     );
                     let mut s = readback;
-                    ui.add_enabled(false, egui::Slider::new(&mut s, 0.0..=1.0));
+                    ui.add_enabled(false, egui::Slider::new(&mut s, 0.0..=1.0)).named(ui, format_args!("Vertex {idx} smoothness (asymmetric handles)"));
                 });
                 let fmt_len = |h: Option<[f32; 3]>| {
                     h.map(|v| {
@@ -1001,14 +1063,16 @@ fn render_annotate_form(
                 ui.add(
                     egui::TextEdit::singleline(&mut path_state.annotate_title_buf)
                         .desired_width(200.0),
-                );
+                )
+                .named(ui, "Point annotation title");
             });
             ui.horizontal(|ui| {
                 ui.label("Body ");
                 ui.add(
                     egui::TextEdit::singleline(&mut path_state.annotate_body_buf)
                         .desired_width(200.0),
-                );
+                )
+                .named(ui, "Point annotation body");
             });
             ui.horizontal(|ui| {
                 ui.label("Color");
@@ -1016,7 +1080,8 @@ fn render_annotate_form(
                     egui::TextEdit::singleline(&mut path_state.annotate_color_buf)
                         .hint_text("#00ff00")
                         .desired_width(120.0),
-                );
+                )
+                .named(ui, "Point annotation color");
             });
             ui.add_space(4.0);
             ui.horizontal(|ui| {
