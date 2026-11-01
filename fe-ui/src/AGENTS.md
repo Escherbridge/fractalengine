@@ -1307,3 +1307,8 @@ context so their inner action responses can be named directly.
 
 Source inventory and static checks do not establish exhaustive UI coverage;
 make completion claims only after the integrated live accessibility audit.
+
+`panels::widgets::confirm_button(ui, id_salt, label, confirm_label, name)`
+is the single production confirmation API. Supply a contextual accessible
+`name` (prefer `format_args!` for repeated rows); the helper names the arm,
+confirm, and cancel responses directly. Existing tests call this same API.

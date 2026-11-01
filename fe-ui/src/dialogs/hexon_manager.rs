@@ -15,7 +15,7 @@ use crate::accessibility::ResponseExt;
 
 use super::ActiveDialog;
 use crate::actions::{UiAction, UiManager};
-use crate::panels::widgets::{clipped_value, confirm_button_named, role_denial_reason, role_gated};
+use crate::panels::widgets::{clipped_value, confirm_button, role_denial_reason, role_gated};
 use crate::plugin::LocalUserRole;
 use crate::terrain_map::dto::{
     AvailableTilesetDto, DownloadStatus, HexonManagerTab, InstalledTilesetDto,
@@ -392,7 +392,7 @@ fn render_installed_map_card(
                 // allowed one instead of a hand-styled lookalike.
                 let can_remove = local_role.can_edit();
                 let remove = ui.add_enabled_ui(can_remove, |ui| {
-                    confirm_button_named(
+                    confirm_button(
                         ui,
                         ("hexon-remove", ts.hexon_id.as_str()),
                         "Remove",

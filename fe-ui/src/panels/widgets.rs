@@ -203,18 +203,8 @@ pub(crate) fn role_denial_reason(
 /// "elsewhere" and disarms too, without firing). State lives in egui temp
 /// memory keyed by `id_salt`, so callers need no extra struct field (the
 /// motivating case: single-click destruction with no undo, X-06/X-07).
-#[cfg(test)]
-pub(crate) fn confirm_button(
-    ui: &mut egui::Ui,
-    id_salt: impl std::hash::Hash,
-    label: &str,
-    confirm_label: &str,
-) -> bool {
-    confirm_button_named(ui, id_salt, label, confirm_label, label)
-}
-
 /// Two-step confirmation with a contextual accessible action name.
-pub(crate) fn confirm_button_named(
+pub(crate) fn confirm_button(
     ui: &mut egui::Ui,
     id_salt: impl std::hash::Hash,
     label: &str,
@@ -451,7 +441,7 @@ mod tests {
         // Lay out the unarmed "Delete" button and capture its rect.
         let mut unarmed_rect = egui::Rect::NOTHING;
         run_frame(&ctx, &mut time, Vec::new(), |ui| {
-            let fired = confirm_button(ui, "row-1", "Delete", "Confirm delete");
+            let fired = confirm_button(ui, "row-1", "Delete", "Confirm delete", "Delete row 1");
             assert!(!fired, "the very first render must not fire");
             unarmed_rect = ui.min_rect();
         });
@@ -459,14 +449,14 @@ mod tests {
         // First click arms it — must not fire yet.
         let mut fired_on_arm = false;
         click_sequence(&ctx, &mut time, unarmed_rect.center(), |ui| {
-            fired_on_arm = confirm_button(ui, "row-1", "Delete", "Confirm delete");
+            fired_on_arm = confirm_button(ui, "row-1", "Delete", "Confirm delete", "Delete row 1");
         });
         assert!(!fired_on_arm, "arming must not itself confirm");
 
         // Now armed: Confirm is the left-most of the Confirm/Cancel pair.
         let mut armed_rect = egui::Rect::NOTHING;
         run_frame(&ctx, &mut time, Vec::new(), |ui| {
-            let fired = confirm_button(ui, "row-1", "Delete", "Confirm delete");
+            let fired = confirm_button(ui, "row-1", "Delete", "Confirm delete", "Delete row 1");
             assert!(!fired, "a bare re-render while armed must not fire");
             armed_rect = ui.min_rect();
         });
@@ -475,14 +465,14 @@ mod tests {
         // Second click, on Confirm, fires.
         let mut fired_on_confirm = false;
         click_sequence(&ctx, &mut time, confirm_point, |ui| {
-            fired_on_confirm = confirm_button(ui, "row-1", "Delete", "Confirm delete");
+            fired_on_confirm = confirm_button(ui, "row-1", "Delete", "Confirm delete", "Delete row 1");
         });
         assert!(fired_on_confirm, "the second click on Confirm must fire");
 
         // It disarmed after firing: the very next render is the single
         // button again, at the original unarmed position.
         run_frame(&ctx, &mut time, Vec::new(), |ui| {
-            let fired = confirm_button(ui, "row-1", "Delete", "Confirm delete");
+            let fired = confirm_button(ui, "row-1", "Delete", "Confirm delete", "Delete row 1");
             assert!(!fired, "a render right after firing must not re-fire");
             assert_eq!(
                 ui.min_rect(),
@@ -497,12 +487,12 @@ mod tests {
         // missed click.
         let mut fired_on_rearm = false;
         click_sequence(&ctx, &mut time, unarmed_rect.center(), |ui| {
-            fired_on_rearm = confirm_button(ui, "row-1", "Delete", "Confirm delete");
+            fired_on_rearm = confirm_button(ui, "row-1", "Delete", "Confirm delete", "Delete row 1");
         });
         assert!(!fired_on_rearm);
         time += 5.0; // > the 4s arm window
         run_frame(&ctx, &mut time, Vec::new(), |ui| {
-            let fired = confirm_button(ui, "row-1", "Delete", "Confirm delete");
+            let fired = confirm_button(ui, "row-1", "Delete", "Confirm delete", "Delete row 1");
             assert!(!fired);
             assert_eq!(
                 ui.min_rect(),

@@ -19,7 +19,7 @@ for mutual exclusion; don't replace it with a separate `open: bool` flag.
 Destructive buttons use a two-step inline confirm: first click flips a
 pending flag, second click ("Confirm …") executes; "Cancel" clears the flag.
 **Canonical implementation (W1-S4): `panels::widgets::confirm_button(ui,
-id_salt, label, confirm_label) -> bool`** — extracted from this exact
+id_salt, label, confirm_label, accessible_name) -> bool`** — extracted from this exact
 `entity_settings.rs`/inspector-Revoke shape, now also timing out after 4s and
 disarming on a click elsewhere. New destructive actions call this instead of
 re-deriving the pending-flag dance; existing per-dialog variant-field flags
