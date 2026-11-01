@@ -126,3 +126,4 @@ try {
 } finally {
     $process.Dispose()
 }
+if (-not $passed) { exit 2 }
