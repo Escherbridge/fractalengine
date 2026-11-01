@@ -240,21 +240,20 @@ adds a second `TopBottomPanel::top`.
   mirror `is_maximized()` into `TopbarState.maximized` (restore glyph, grips off).
 - **Why a request slot, not a `UiAction`.** Widgets never touch `Window`: they
   write ONE typed `WindowChromeRequest` into the manager's own state
-  (`TopbarState.chrome_request`), and `apply_window_chrome` is the single
+  (`TopbarState::try_request_chrome`), and `apply_window_chrome` is the single
   writer of `Window` for chrome (a command + single-executor pattern; the
   render fn stays a humble object, tested through real egui frames). It is not
   routed through `UiAction`/`UiManager` because `start_drag_move` /
   `start_drag_resize` must reach winit while the press that started them is
-  still live — the request applies the SAME frame, right after
-  `gardener_ui_system` — and window chrome is shell state, not a domain action
-  an API/MCP caller should address. `apply_window_chrome` reads the slot via
+  still live — the request applies the SAME frame, after egui output and QA request dispatch.
+  A pending request returns typed busy rather than being overwritten. UI-scale changes are separate and cannot
+  cancel a queued window operation. `apply_window_chrome` reads the slot via
   `Deref` first so idle frames never flag `TopbarState` changed.
-- **Close.** The X writes `WindowCloseRequested { window }` — the same message
-  winit raises for Alt+F4 / the OS close. Bevy's `close_when_requested` then
-  despawns the window and `exit_on_all_closed` raises `AppExit`, so shutdown is
-  exactly the OS-close path (no `process::exit`). Alt+F4 keeps working natively:
-  winit keeps `WS_SYSMENU` on undecorated Windows windows.
+- **Close.** X, Alt+F4/OS, and QA requests share `WindowCloseRequested`. The editor disables Bevy's
+  automatic close handler and `receive_close_requests` opens one confirmation. Cancel preserves the window;
+  confirmation lets the single chrome executor despawn it, and `exit_on_all_closed` raises `AppExit`.
+  No route calls `process::exit`. Close confirmation is exposed through the QA state probe.
 - **Tests** (`topbar.rs`): real egui frames with synthetic pointer events —
   drag from free space moves; a drag that starts on the close X neither moves
-  nor closes; click on X closes; double-click toggles maximize; a top-band press
+  nor closes; click on X requests confirmation; double-click toggles maximize; a top-band press
   resizes (not while maximized); a table test covers every edge/corner.

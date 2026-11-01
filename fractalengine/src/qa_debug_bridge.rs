@@ -11,7 +11,9 @@ use bevy_egui::{
     egui::accesskit as ak, EguiContext, EguiOutput, EguiPostUpdateSet, EguiPreUpdateSet,
     PrimaryEguiContext,
 };
-use fe_runtime::qa_debug::{redact, QaFailure, QaLogRing, QaOp, QaReceiver, TreeFilter};
+use fe_runtime::qa_debug::{
+    redact, QaFailure, QaLogRing, QaOp, QaReceiver, TreeFilter, WindowAction,
+};
 use fe_ui::actions::UiManager;
 use fe_ui::dialogs::ActiveDialog;
 use fe_ui::navigation_manager::NavigationManager;
@@ -31,6 +33,12 @@ struct QaHost {
 #[derive(Resource)]
 struct QaEnabled(bool);
 
+#[derive(Resource)]
+struct QaControls {
+    dialogs: Option<std::sync::Arc<fe_ui::file_dialogs::QaFileDialogs>>,
+    listener: crossbeam::channel::Receiver<std::net::SocketAddr>,
+}
+
 #[derive(Resource, Default)]
 struct FrameNavigation((Option<String>, Option<String>, Option<String>));
 
@@ -42,9 +50,17 @@ fn cursor(nav: &NavigationManager) -> (Option<String>, Option<String>, Option<St
     )
 }
 
-pub fn install(app: &mut App, enabled: bool, rx: QaReceiver, logs: QaLogRing) {
+pub fn install(
+    app: &mut App,
+    enabled: bool,
+    rx: QaReceiver,
+    logs: QaLogRing,
+    dialogs: Option<std::sync::Arc<fe_ui::file_dialogs::QaFileDialogs>>,
+    listener: crossbeam::channel::Receiver<std::net::SocketAddr>,
+) {
     app.insert_resource(QaEnabled(enabled));
     app.insert_resource(QaHost { rx, logs });
+    app.insert_resource(QaControls { dialogs, listener });
     app.init_resource::<FrameNavigation>();
     app.add_systems(
         PreUpdate,
@@ -53,7 +69,12 @@ pub fn install(app: &mut App, enabled: bool, rx: QaReceiver, logs: QaLogRing) {
             .before(EguiPreUpdateSet::BeginPass),
     );
     if enabled {
-        app.add_systems(PostUpdate, serve.after(EguiPostUpdateSet::ProcessOutput));
+        app.add_systems(
+            PostUpdate,
+            serve
+                .after(EguiPostUpdateSet::ProcessOutput)
+                .before(fe_ui::ui_shell::topbar::WindowChromeApply),
+        );
     }
 }
 
@@ -64,7 +85,13 @@ fn prepare_accessibility(
     nav: Res<NavigationManager>,
     mut frame_nav: ResMut<FrameNavigation>,
     host: Res<QaHost>,
+    controls: Res<QaControls>,
 ) {
+    for bound in controls.listener.try_iter() {
+        if let Some(dialogs) = &controls.dialogs {
+            dialogs.set_listener(bound);
+        }
+    }
     for mut context in &mut contexts {
         if enabled.0 || requested.get() {
             context.get_mut().enable_accesskit();
@@ -198,6 +225,7 @@ pub(crate) fn flatten(update: &ak::TreeUpdate, filter: &TreeFilter) -> Vec<Value
 
 #[derive(SystemParam)]
 struct UiState<'w, 's> {
+    topbar: ResMut<'w, fe_ui::ui_shell::topbar::TopbarState>,
     nav: Res<'w, NavigationManager>,
     verses: Res<'w, VerseManager>,
     nodes: Res<'w, NodeManager>,
@@ -250,6 +278,9 @@ impl UiState<'_, '_> {
         if self.gis.open {
             windows.push("Data");
         }
+        if self.topbar.close_pending {
+            windows.push("Close FractalEngine?");
+        }
         let viewport = self.viewport.0;
         let pending = self.asset.0.len()
             + self.gpx.0.len()
@@ -272,9 +303,17 @@ fn serve(
     frame_nav: Res<FrameNavigation>,
     frame: Res<FrameCount>,
     view: ViewScope,
-    state: UiState,
-    mut contexts: Query<(&mut EguiContext, &EguiOutput), With<PrimaryEguiContext>>,
+    mut state: UiState,
+    mut contexts: Query<
+        (
+            &mut EguiContext,
+            &EguiOutput,
+            &mut bevy_egui::EguiContextSettings,
+        ),
+        With<PrimaryEguiContext>,
+    >,
     windows: Query<&Window, With<PrimaryWindow>>,
+    controls: Res<QaControls>,
 ) {
     host.logs.set_verse(state.nav.active_verse_id.as_deref());
     for request in host.rx.try_iter().take(32) {
@@ -289,7 +328,39 @@ fn serve(
             }));
             continue;
         }
-        let Ok((mut context, output)) = contexts.single_mut() else {
+        if let QaOp::DialogAnswers(batch) = &request.op {
+            let result = controls
+                .dialogs
+                .as_ref()
+                .ok_or(QaFailure {
+                    code: "qa_controls_disabled",
+                    message: "QA controls require input opt-in, loopback and an isolated QA root",
+                })
+                .and_then(|dialogs| {
+                    dialogs
+                        .enqueue(
+                            state.nav.active_verse_id.as_deref().unwrap_or_default(),
+                            batch,
+                        )
+                        .map(|queued| json!({"queued":queued}))
+                        .map_err(|error| QaFailure {
+                            code: error.code,
+                            message: error.message,
+                        })
+                });
+            request.reply(result);
+            continue;
+        }
+        if matches!(request.op, QaOp::Window(_))
+            && !controls.dialogs.as_ref().is_some_and(|d| d.enabled())
+        {
+            request.reply(Err(QaFailure {
+                code: "qa_controls_disabled",
+                message: "QA controls require input opt-in, loopback and an isolated QA root",
+            }));
+            continue;
+        }
+        let Ok((mut context, output, mut context_settings)) = contexts.single_mut() else {
             request.reply(Err(QaFailure {
                 code: "ui_unavailable",
                 message: "primary UI context unavailable",
@@ -308,8 +379,59 @@ fn serve(
                     message: "primary accessibility tree not ready; retry",
                 }),
             },
-            QaOp::UiState => Ok(state.snapshot(ppp, frame.0)),
+            QaOp::UiState => {
+                let mut snapshot = state.snapshot(ppp, frame.0);
+                snapshot["window"] = windows.single().ok().map(|window| json!({"width":window.physical_width(),"height":window.physical_height(),"maximized":state.topbar.maximized,"minimized":state.topbar.minimized,"ui_scale":context_settings.scale_factor})).unwrap_or(Value::Null);
+                if let Some(update) = output.platform_output.accesskit_update.as_ref() {
+                    let nodes = flatten(update, &TreeFilter::default());
+                    if let Some(titles) = snapshot["open_windows"].as_array_mut() {
+                        for node in nodes.iter().filter(|node| {
+                            matches!(
+                                node["role"].as_str(),
+                                Some("window" | "dialog" | "alertdialog")
+                            )
+                        }) {
+                            if let Some(title) =
+                                node["name"].as_str().filter(|title| !title.is_empty())
+                            {
+                                let value = json!(title);
+                                if !titles.contains(&value) {
+                                    titles.push(value);
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(snapshot)
+            }
             QaOp::Logs(filter) => Ok(host.logs.read(filter)),
+            QaOp::Window(action) => {
+                use fe_ui::ui_shell::topbar::WindowChromeRequest as Request;
+                let chrome = match action {
+                    WindowAction::Size { width, height } => Some(Request::SetSize {
+                        width: *width,
+                        height: *height,
+                    }),
+                    WindowAction::Maximize => Some(Request::Maximize),
+                    WindowAction::Restore => Some(Request::Restore),
+                    WindowAction::Minimize => Some(Request::Minimize),
+                    WindowAction::Close => Some(Request::Close),
+                    WindowAction::UiScale { factor } => {
+                        context_settings.scale_factor = *factor;
+                        None
+                    }
+                };
+                if let Some(chrome) = chrome {
+                    state.topbar.try_request_chrome(chrome).map_err(|_| QaFailure {code:"window_request_busy",message:"another window request is pending; retry"})
+                        .map(|_| json!({"accepted":true,"action":action,"close_requires_confirmation":true}))
+                } else {
+                    Ok(json!({"accepted":true,"action":action}))
+                }
+            }
+            QaOp::DialogAnswers(_) => Err(QaFailure {
+                code: "qa_operation_unavailable",
+                message: "dialog operation unavailable in this frame",
+            }),
         };
         request.reply(result);
     }

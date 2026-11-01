@@ -650,6 +650,12 @@ async fn input_injection_disabled_role_round_trip_rate_limited_headless_and_came
                                 json!({"navigation":{"verse_id":verse},"selection":null})
                             }
                             fe_runtime::qa_debug::QaOp::Logs(filter) => logs.read(filter),
+                            fe_runtime::qa_debug::QaOp::DialogAnswers(batch) => {
+                                json!({"queued":batch.answers.len()})
+                            }
+                            fe_runtime::qa_debug::QaOp::Window(action) => {
+                                json!({"accepted":true,"action":action})
+                            }
                         })
                     };
                     request.reply(result);
@@ -704,6 +710,72 @@ async fn input_injection_disabled_role_round_trip_rate_limited_headless_and_came
                     "{result}"
                 );
             }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        for (path, tool, args) in [
+            (
+                "dialog-answers",
+                "dialog_answers",
+                json!({"answers":[{"kind":"open","cancel":true}]}),
+            ),
+            (
+                "window",
+                "window",
+                json!({"action":"size","width":1024,"height":640}),
+            ),
+        ] {
+            for (token, status) in [
+                (
+                    &owner,
+                    if allowed {
+                        StatusCode::OK
+                    } else {
+                        StatusCode::FORBIDDEN
+                    },
+                ),
+                (
+                    &foreign,
+                    if allowed {
+                        StatusCode::NOT_FOUND
+                    } else {
+                        StatusCode::FORBIDDEN
+                    },
+                ),
+                (&editor, StatusCode::FORBIDDEN),
+            ] {
+                let response = h
+                    .request(
+                        Request::builder()
+                            .method("POST")
+                            .uri(format!("/api/v1/debug/{path}"))
+                            .header("authorization", format!("Bearer {token}"))
+                            .header("content-type", "application/json")
+                            .body(Body::from(args.to_string()))
+                            .unwrap(),
+                    )
+                    .await;
+                assert_eq!(response.status(), status);
+                let result = mcp_call(&h, token, tool, args.clone()).await;
+                assert_eq!(
+                    result["isError"].as_bool().unwrap_or(false),
+                    status != StatusCode::OK,
+                    "{result}"
+                );
+            }
+        }
+        if allowed {
+            let response = h
+                .request(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/debug/window")
+                        .header("authorization", format!("Bearer {owner}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"action":"size","width":0,"height":640}"#))
+                        .unwrap(),
+                )
+                .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         }
     }
     let click =

@@ -289,6 +289,8 @@ static TOOLS: &[ToolSpec] = &[
     // AGENTS.md §agent-input-surface): synthetic pointer/keyboard/scroll
     // injection, closing the loop with get_camera/screenshot. ---
     tool!(ui_tree, Owner, Global, requires QaDebug, "Read the primary window accessibility tree in physical screenshot pixels. Scoped to the active verse; FE_API_INPUT_ALLOW=1 required. Requires owner role."),
+    tool!(dialog_answers, Owner, Global, requires QaDebug, "Queue bounded open/save/folder answers for QA file dialogs in the active verse. Requires input opt-in, an actual loopback listener and an isolated QA root; paths stay inside that run. Requires owner role."),
+    tool!(window, Owner, Global, requires QaDebug, "Request QA window size in physical pixels, app UI scale, maximize/restore/minimize, or close confirmation. Requires input opt-in, loopback listener and isolated QA root. Close never bypasses confirmation. Requires owner role."),
     tool!(ui_state, Owner, Global, requires QaDebug, "Read authoritative navigation, selection, tool, viewport, notices and pending state. FE_API_INPUT_ALLOW=1 required. Requires owner role."),
     tool!(ui_logs, Owner, Global, requires QaDebug, "Read a bounded, redacted log tail for the current verse generation. FE_API_INPUT_ALLOW=1 required. Requires owner role."),
     tool!(inject_input, Owner, Global, requires Input,
@@ -695,7 +697,7 @@ mod tests {
         }
         assert_eq!(
             TOOLS.len(),
-            42,
+            44,
             "DEC-C14: 27 non-sim + 5 sim (p2p_asset_streaming S6 added set_petal_render_distance); \
              CDL-SPEC10 A5 added 4 R5 device tools (register/list_device_formats, \
              ingest/list_device_payloads); §screenshot added `screenshot`; \

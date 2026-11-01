@@ -1,5 +1,18 @@
 # fe-runtime/src — module rationale
 
+## §qa-controls
+
+`qa_debug::DialogAnswerBatch` and `WindowAction` extend the existing scoped QA bridge. Dialog batches contain
+1–32 answers, each with exactly a path or cancellation, and the host queue is capped at 64. Window size is
+physical pixels within 640–8192 by 480–8192; app UI scale is finite within 0.75–2.0. The GUI routes requests
+through the same shell executor as caption actions and returns busy rather than replacing a queued action.
+`build_app_with_confirmed_close` disables automatic OS close only for the editor, whose UI supplies confirmation;
+the original `build_app`/`build_app_with_window` helpers retain their default close behavior.
+
+`messages::FileReadLease` owns standard file/ancestry handles across a deferred import, without GUI type coupling.
+`DbCommand::ImportGltf` carries an optional lease; the DB worker drops it after the real import handler returns.
+Normal/API/harness constructors use `None`. GPX/Hexon UI queues carry their own `DialogPath` until parsing finishes.
+
 ## §scene-change
 
 `messages.rs::SceneChange` is the process-wide scene-delta contract. Every

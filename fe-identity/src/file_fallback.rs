@@ -19,7 +19,7 @@ pub fn qa_storage_root() -> anyhow::Result<Option<PathBuf>> {
 }
 
 /// Reject redirected ancestors; Windows handles pin each directory during writes.
-pub(crate) fn pin_secret_parents(path: &Path) -> anyhow::Result<Vec<std::fs::File>> {
+pub fn pin_secret_parents(path: &Path) -> anyhow::Result<Vec<std::fs::File>> {
     let absolute = std::path::absolute(path)?;
     anyhow::ensure!(
         !absolute
@@ -159,53 +159,37 @@ fn create_key_file_securely(path: &Path, kp: &NodeKeypair) -> anyhow::Result<()>
 /// or truncating whatever the winner wrote. Fails closed (deletes the file,
 /// returns `Err`) if owner-only permissions cannot be established — see
 /// fe-identity/src/AGENTS.md §identity-tiers "owner-only files".
-#[cfg(unix)]
 pub fn create_owner_only_file(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
-    let _parents = pin_secret_parents(path)?;
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(parent)?;
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)?;
-    if let Err(e) = file.write_all(contents) {
-        drop(file);
-        let _ = std::fs::remove_file(path);
-        return Err(e.into());
-    }
-    Ok(())
+    create_owner_only_file_with(path, |file| file.write_all(contents))
 }
 
-/// Create a Windows secret with its owner-only DACL in the creation call.
-#[cfg(windows)]
-pub fn create_owner_only_file(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+fn create_owner_only_file_with(
+    path: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> anyhow::Result<()> {
     let _parents = pin_secret_parents(path)?;
+    #[cfg(windows)]
     let mut file = windows_acl::create_owner_only(path)?;
-    let written = file.write_all(contents).map_err(anyhow::Error::from);
-    drop(file);
-    if written.is_err() {
-        let _ = std::fs::remove_file(path);
-    }
-    written
-}
-
-#[cfg(not(any(unix, windows)))]
-pub fn create_owner_only_file(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)?;
-    }
+    #[cfg(unix)]
+    let mut file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)?
+    };
+    #[cfg(not(any(unix, windows)))]
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)?;
-    file.write_all(contents)?;
-    Ok(())
+    let result = write(&mut file).map_err(anyhow::Error::from);
+    drop(file);
+    if result.is_err() {
+        let _ = std::fs::remove_file(path);
+    }
+    result
 }
 
 /// Atomically replace (or create) `path` with `contents`, owner-only: the
@@ -213,6 +197,19 @@ pub fn create_owner_only_file(path: &Path, contents: &[u8]) -> anyhow::Result<()
 /// renamed over `path`, so a reader sees the old file or the new one, never a
 /// partial or broadly-readable one. The temp file is removed on any failure.
 pub fn replace_owner_only_file(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+    replace_owner_only_file_with(path, |file| file.write_all(contents))
+}
+
+/// Stream a trusted source into an owner-only atomic replacement.
+pub fn copy_owner_only_file(source: &Path, path: &Path) -> anyhow::Result<()> {
+    let mut source = std::fs::File::open(source)?;
+    replace_owner_only_file_with(path, |file| std::io::copy(&mut source, file).map(|_| ()))
+}
+
+fn replace_owner_only_file_with(
+    path: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> anyhow::Result<()> {
     let _parents = pin_secret_parents(path)?;
     if let Ok(metadata) = std::fs::symlink_metadata(path) {
         anyhow::ensure!(
@@ -239,7 +236,7 @@ pub fn replace_owner_only_file(path: &Path, contents: &[u8]) -> anyhow::Result<(
     temp_name.push(file_name);
     temp_name.push(format!(".{}.{nanos}.tmp", std::process::id()));
     let temp_path = path.with_file_name(temp_name);
-    create_owner_only_file(&temp_path, contents)?;
+    create_owner_only_file_with(&temp_path, write)?;
     if let Err(e) = std::fs::rename(&temp_path, path) {
         let _ = std::fs::remove_file(&temp_path);
         return Err(anyhow::anyhow!(

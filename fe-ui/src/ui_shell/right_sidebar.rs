@@ -365,6 +365,7 @@ pub fn render_right_sidebar(
             ui_mgr,
             petal_map,
             nav.active_petal_id.as_deref(),
+            nav.active_verse_id.as_deref(),
             downloads,
             app_settings,
             local_role,
@@ -1067,6 +1068,7 @@ fn render_maps_section(
     ui_mgr: &mut UiManager,
     petal_map: &mut PetalMapState,
     active_petal: Option<&str>,
+    active_verse: Option<&str>,
     downloads: &crate::terrain_map::TilesetDownloads,
     app_settings: &AppSettings,
     // X-02: role-gates Set/Clear/Remove in `dialogs::render_hexon_manager`.
@@ -1105,6 +1107,7 @@ fn render_maps_section(
         ui_mgr,
         petal_map,
         active_petal,
+        active_verse,
         &downloads.0,
         registry_url.as_deref(),
         local_role,

@@ -9,7 +9,9 @@
 
 use bevy::ecs::system::NonSendMarker;
 use bevy::math::CompassOctant;
-use bevy::prelude::{Entity, Messages, Query, ResMut, Resource, With};
+use bevy::prelude::{
+    Commands, Entity, MessageReader, Messages, Query, ResMut, Resource, SystemSet, With,
+};
 use bevy::window::{PrimaryWindow, Window, WindowCloseRequested};
 use bevy_egui::egui;
 
@@ -34,11 +36,20 @@ const BRAND_ICON_SIZE: f32 = 22.0;
 pub enum WindowChromeRequest {
     Minimize,
     ToggleMaximize,
+    Maximize,
+    Restore,
+    SetSize {
+        width: u32,
+        height: u32,
+    },
     /// Routed through `WindowCloseRequested` — the OS close path, never a hard exit.
     Close,
     StartMove,
     StartResize(CompassOctant),
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct WindowChromeBusy;
 
 /// The host binary's app-icon pixels (straight RGBA8), shown at the bar's left.
 #[derive(Debug, Clone)]
@@ -52,16 +63,36 @@ pub struct BrandIcon {
 /// mirror, and the brand mark (pixels + lazily uploaded egui texture).
 #[derive(Resource, Default)]
 pub struct TopbarState {
+    pub close_pending: bool,
+    close_confirmed: bool,
     /// Set by the bar this frame, consumed by `apply_window_chrome`.
-    pub chrome_request: Option<WindowChromeRequest>,
+    chrome_request: Option<WindowChromeRequest>,
     /// Mirror of the OS window's maximized state (restore glyph, grips off).
     pub maximized: bool,
+    pub minimized: bool,
     /// Supplied by the binary (`TopbarState::with_brand_icon`); `None` = name only.
     pub brand_icon: Option<BrandIcon>,
     brand_texture: Option<egui::TextureHandle>,
 }
 
 impl TopbarState {
+    /// Accept one window request without replacing an operation already queued.
+    pub fn try_request_chrome(
+        &mut self,
+        request: WindowChromeRequest,
+    ) -> Result<(), WindowChromeBusy> {
+        if self.chrome_request.is_some() {
+            return Err(WindowChromeBusy);
+        }
+        self.chrome_request = Some(request);
+        Ok(())
+    }
+
+    fn request_from_ui(&mut self, request: WindowChromeRequest) {
+        if self.try_request_chrome(request).is_err() {
+            bevy::log::warn!("window request already pending; UI request refused");
+        }
+    }
     /// State carrying the app icon the bar shows beside the app name.
     pub fn with_brand_icon(icon: BrandIcon) -> Self {
         Self {
@@ -206,7 +237,7 @@ pub fn render_window_resize_grips(ctx: &egui::Context, topbar: &mut TopbarState)
         if let Some(direction) =
             origin.and_then(|pos| resize_direction_at(pos, screen, RESIZE_BAND))
         {
-            topbar.chrome_request = Some(WindowChromeRequest::StartResize(direction));
+            topbar.request_from_ui(WindowChromeRequest::StartResize(direction));
         }
     }
 }
@@ -292,7 +323,7 @@ fn caption_button(ui: &mut egui::Ui, glyph: CaptionGlyph, tooltip: &str) -> egui
 /// Minimize / maximize-restore / close, laid right-to-left (close outermost).
 fn caption_buttons(ui: &mut egui::Ui, topbar: &mut TopbarState) {
     if caption_button(ui, CaptionGlyph::Close, "Close FractalEngine").clicked() {
-        topbar.chrome_request = Some(WindowChromeRequest::Close);
+        topbar.request_from_ui(WindowChromeRequest::Close);
     }
     let (glyph, tooltip) = if topbar.maximized {
         (CaptionGlyph::Restore, "Restore down")
@@ -300,10 +331,10 @@ fn caption_buttons(ui: &mut egui::Ui, topbar: &mut TopbarState) {
         (CaptionGlyph::Maximize, "Maximize")
     };
     if caption_button(ui, glyph, tooltip).clicked() {
-        topbar.chrome_request = Some(WindowChromeRequest::ToggleMaximize);
+        topbar.request_from_ui(WindowChromeRequest::ToggleMaximize);
     }
     if caption_button(ui, CaptionGlyph::Minimize, "Minimize").clicked() {
-        topbar.chrome_request = Some(WindowChromeRequest::Minimize);
+        topbar.request_from_ui(WindowChromeRequest::Minimize);
     }
 }
 
@@ -333,13 +364,23 @@ pub fn apply_window_chrome(
     mut windows: Query<(Entity, &mut Window), With<PrimaryWindow>>,
     close_requests: Option<ResMut<Messages<WindowCloseRequested>>>,
     _main_thread: NonSendMarker,
+    mut commands: Commands,
 ) {
     let Ok((entity, mut window)) = windows.single_mut() else {
         return;
     };
-    let os_maximized = bevy::winit::WINIT_WINDOWS
-        .with_borrow(|winit| winit.get_window(entity).map(|w| w.is_maximized()));
-    if let Some(maximized) = os_maximized {
+    if topbar.close_confirmed {
+        topbar.close_confirmed = false;
+        commands.entity(entity).despawn();
+        return;
+    }
+    let os_state = bevy::winit::WINIT_WINDOWS.with_borrow(|winit| {
+        winit
+            .get_window(entity)
+            .map(|w| (w.is_maximized(), w.is_minimized().unwrap_or(false)))
+    });
+    if let Some((maximized, minimized)) = os_state {
+        topbar.minimized = minimized;
         if topbar.maximized != maximized {
             topbar.maximized = maximized;
         }
@@ -351,6 +392,22 @@ pub fn apply_window_chrome(
     topbar.chrome_request = None;
     match request {
         WindowChromeRequest::Minimize => window.set_minimized(true),
+        WindowChromeRequest::Maximize => {
+            window.set_minimized(false);
+            window.set_maximized(true);
+            topbar.maximized = true;
+        }
+        WindowChromeRequest::Restore => {
+            window.set_minimized(false);
+            window.set_maximized(false);
+            topbar.maximized = false;
+        }
+        WindowChromeRequest::SetSize { width, height } => {
+            window.set_minimized(false);
+            window.set_maximized(false);
+            topbar.maximized = false;
+            window.resolution.set_physical_resolution(width, height);
+        }
         WindowChromeRequest::ToggleMaximize => {
             let maximize = !topbar.maximized;
             window.set_maximized(maximize);
@@ -367,6 +424,48 @@ pub fn apply_window_chrome(
             None => bevy::log::warn!("close requested but WindowCloseRequested is not registered"),
         },
     }
+}
+
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WindowChromeApply;
+
+/// Route OS, caption, and QA close requests through one confirmation.
+pub fn receive_close_requests(
+    mut requests: MessageReader<WindowCloseRequested>,
+    mut topbar: ResMut<TopbarState>,
+    windows: Query<Entity, With<PrimaryWindow>>,
+) {
+    let Ok(primary) = windows.single() else {
+        return;
+    };
+    if requests.read().any(|request| request.window == primary) {
+        topbar.close_pending = true;
+    }
+}
+
+pub fn render_close_confirmation(
+    mut contexts: bevy_egui::EguiContexts,
+    mut topbar: ResMut<TopbarState>,
+) {
+    if !topbar.close_pending {
+        return;
+    }
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+    egui::Modal::new(egui::Id::new("close-fractalengine-confirmation")).show(ctx, |ui| {
+        ui.heading("Close FractalEngine?");
+        ui.label("Close this window and end the current session?");
+        ui.horizontal(|ui| {
+            if ui.button("Cancel close").clicked() {
+                topbar.close_pending = false;
+            }
+            if ui.button("Close FractalEngine").clicked() {
+                topbar.close_pending = false;
+                topbar.close_confirmed = true;
+            }
+        });
+    });
 }
 
 /// Renders the top toolbar. Migrated verbatim from `panels::toolbar::top_toolbar`
@@ -554,7 +653,7 @@ pub fn render_topbar(
                 bar.double_clicked(),
                 bar.drag_started_by(egui::PointerButton::Primary),
             ) {
-                topbar.chrome_request = Some(request);
+                topbar.request_from_ui(request);
             }
         });
 }
@@ -562,6 +661,7 @@ pub fn render_topbar(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::prelude::{App, Update};
 
     use crate::panels::toolbar::{input_context, Tool};
 
@@ -740,6 +840,40 @@ mod tests {
     fn close_x_click_requests_the_graceful_close_path() {
         let mut bar = TitleBarHarness::new();
         assert_eq!(bar.click(CLOSE_BUTTON), vec![WindowChromeRequest::Close]);
+        let mut pending = TopbarState::default();
+        pending
+            .try_request_chrome(WindowChromeRequest::Minimize)
+            .unwrap();
+        assert!(pending
+            .try_request_chrome(WindowChromeRequest::Maximize)
+            .is_err());
+        assert_eq!(pending.chrome_request, Some(WindowChromeRequest::Minimize));
+        let mut app = App::new();
+        app.add_message::<WindowCloseRequested>()
+            .init_resource::<TopbarState>()
+            .add_systems(Update, receive_close_requests);
+        let window = app
+            .world_mut()
+            .spawn((Window::default(), PrimaryWindow))
+            .id();
+        app.world_mut()
+            .write_message(WindowCloseRequested { window });
+        app.update();
+        assert!(app.world().resource::<TopbarState>().close_pending);
+        assert!(
+            app.world().get_entity(window).is_ok(),
+            "a close request waits for confirmation"
+        );
+        app.world_mut().resource_mut::<TopbarState>().close_pending = false;
+        app.update();
+        assert!(
+            !app.world().resource::<TopbarState>().close_pending,
+            "cancel remains cancelled without another request"
+        );
+        app.world_mut()
+            .write_message(WindowCloseRequested { window });
+        app.update();
+        assert!(app.world().resource::<TopbarState>().close_pending);
     }
 
     #[test]

@@ -1,5 +1,19 @@
 # fractalengine (GUI binary) — main wiring rationale
 
+## §qa-dialog-window-controls
+
+Actual API listener notification is fanned out once to the dev-token writer and QA control host; cloned receivers
+must not compete for that notification. QA dialog controls activate only with the input opt-in, a valid QA root,
+and an actual loopback address. Input-enabled hosts without those prerequisites use a disabled provider, never
+a native blocking fallback. `FE_QA_API_PORT` selects a nonzero loopback port only when a validated QA root exists;
+normal GUI bind behavior remains port 8765. The launcher records the matching `api_base`.
+
+QA-only continuous winit updates keep restore/window operations serviceable while minimized. Requests share
+the topbar executor and real close confirmation. The UI state probe adds actual physical window dimensions,
+maximized/minimized mirrors, app UI scale and close confirmation; semantic Window/Dialog titles supplement
+explicit UiManager state. File selection and safe output are owned by `fe-ui::file_dialogs`, including guards
+that survive the real consuming import/export operation.
+
 `src/main.rs` boots the desktop GUI: it spins up the DB / network / sync / API
 threads, builds the Bevy `App` (DefaultPlugins + egui + renderer + fe-ui +
 terrain + webview), and bridges the background threads to Bevy resources.

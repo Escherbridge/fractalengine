@@ -79,7 +79,7 @@ impl Default for PetalMapState {
 /// Registry operation requested by the UI; drained by the main binary.
 #[derive(Debug, Clone)]
 pub enum HexonOp {
-    Install(PathBuf),
+    Install(crate::file_dialogs::DialogPath),
     Remove(String),
     SetSeeding(String, bool),
     RefreshList,

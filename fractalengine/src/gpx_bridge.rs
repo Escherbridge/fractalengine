@@ -1054,7 +1054,7 @@ enum PendingPathRead {
         color: String,
     },
     ExportGpx {
-        save_path: std::path::PathBuf,
+        save_path: fe_ui::file_dialogs::DialogPath,
     },
 }
 
@@ -1190,6 +1190,8 @@ pub fn drain_path_ops(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut status: ResMut<PathEditStatus>,
     mut commands: Commands,
+    ui_mgr: Option<Res<fe_ui::actions::UiManager>>,
+    nav: Option<Res<fe_ui::navigation_manager::NavigationManager>>,
 ) {
     if ops.0.is_empty() {
         return;
@@ -1610,9 +1612,27 @@ pub fn drain_path_ops(
                 );
             }
             PathOp::ExportGpx { track_node_id } => {
-                let Some(dialog_path) = prompt_gpx_save_path(&track_node_id) else {
-                    tracing::debug!(track_node_id = %track_node_id, "GPX export cancelled by user");
-                    continue;
+                let dialog_path = match prompt_gpx_save_path(
+                    &track_node_id,
+                    &ui_mgr
+                        .as_ref()
+                        .map(|u| u.file_dialogs.clone())
+                        .unwrap_or_default(),
+                    nav.as_ref().and_then(|n| n.active_verse_id.as_deref()),
+                ) {
+                    Ok(Some(path)) => path,
+                    Ok(None) => {
+                        tracing::debug!(track_node_id = %track_node_id, "GPX export cancelled by user");
+                        continue;
+                    }
+                    Err(error) => {
+                        *status = PathEditStatus {
+                            track_node_id: Some(track_node_id),
+                            message: None,
+                            error: Some(error.to_string()),
+                        };
+                        continue;
+                    }
                 };
                 db_tx
                     .0
@@ -1634,14 +1654,17 @@ pub fn drain_path_ops(
 /// (the bridge has no node-name lookup here without a DB round trip; the
 /// suggested name is a placeholder the user can rename in the dialog).
 /// `None` means the user cancelled.
-fn prompt_gpx_save_path(track_node_id: &str) -> Option<std::path::PathBuf> {
-    let mut dialog = rfd::FileDialog::new()
-        .set_file_name(format!("{track_node_id}.gpx"))
-        .add_filter("GPX", &["gpx"]);
-    if let Some(dir) = dirs::download_dir() {
-        dialog = dialog.set_directory(dir);
-    }
-    dialog.save_file()
+fn prompt_gpx_save_path(
+    track_node_id: &str,
+    dialogs: &fe_ui::file_dialogs::FileDialogs,
+    verse_id: Option<&str>,
+) -> Result<Option<fe_ui::file_dialogs::DialogPath>, fe_ui::file_dialogs::DialogFailure> {
+    dialogs.choose(fe_ui::file_dialogs::FileDialogRequest {
+        kind: fe_runtime::qa_debug::DialogKind::Save,
+        verse_id,
+        filters: &[("GPX", &["gpx"])],
+        suggested_name: Some(&format!("{track_node_id}.gpx")),
+    })
 }
 
 /// Advances pending path-editor DB round trips as their results arrive.
@@ -2195,7 +2218,7 @@ pub fn advance_path_edits(
                             .map(|c| c.origin.clone())
                             .unwrap_or_else(|| Projection::new(0.0, 0.0, 0.0));
                         let xml = scene_nodes_to_gpx(&[export_node], &projection);
-                        match std::fs::write(&save_path, xml) {
+                        match save_path.write_bytes(xml.as_bytes()) {
                             Ok(()) => {
                                 tracing::info!(track_node_id = %node_id, path = %save_path.display(), "GPX exported");
                                 *status = PathEditStatus {

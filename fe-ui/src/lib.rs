@@ -6,6 +6,7 @@ pub mod actions;
 pub mod asset_ops;
 pub mod atlas;
 pub mod dialogs;
+pub mod file_dialogs;
 pub mod geometry;
 pub mod gimbal;
 pub mod gis;

@@ -54,6 +54,78 @@ pub enum QaOp {
     UiTree(TreeFilter),
     UiState,
     Logs(LogFilter),
+    DialogAnswers(DialogAnswerBatch),
+    Window(WindowAction),
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DialogKind {
+    Open,
+    Save,
+    Folder,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DialogAnswer {
+    pub kind: DialogKind,
+    pub path: Option<String>,
+    #[serde(default)]
+    pub cancel: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DialogAnswerBatch {
+    pub answers: Vec<DialogAnswer>,
+}
+
+impl DialogAnswerBatch {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.answers.is_empty() || self.answers.len() > 32 {
+            return Err("answers must contain 1..32 entries");
+        }
+        if self.answers.iter().any(|a| {
+            if a.cancel {
+                a.path.is_some()
+            } else {
+                a.path
+                    .as_ref()
+                    .is_none_or(|p| p.is_empty() || p.len() > 4096)
+            }
+        }) {
+            return Err("each answer requires exactly one nonempty path or cancel=true");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WindowAction {
+    Size { width: u32, height: u32 },
+    UiScale { factor: f32 },
+    Maximize,
+    Restore,
+    Minimize,
+    Close,
+}
+
+impl WindowAction {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if let Self::UiScale { factor } = self {
+            if !factor.is_finite() || !(0.75..=2.0).contains(factor) {
+                return Err("app UI scale must be finite in 0.75..2.0");
+            }
+        }
+        if let Self::Size { width, height } = self {
+            if !(640..=8192).contains(width) || !(480..=8192).contains(height) {
+                return Err("physical window size must be 640..8192 by 480..8192 pixels");
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]

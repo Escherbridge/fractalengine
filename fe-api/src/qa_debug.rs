@@ -8,7 +8,7 @@ use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use fe_identity::api_token::ApiClaims;
-use fe_runtime::qa_debug::{LogFilter, QaOp, TreeFilter};
+use fe_runtime::qa_debug::{DialogAnswerBatch, LogFilter, QaOp, TreeFilter, WindowAction};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -29,6 +29,8 @@ pub enum QaKind {
     Tree,
     State,
     Logs,
+    DialogAnswers,
+    Window,
 }
 
 fn parse(kind: QaKind, args: Value) -> Result<QaOp, String> {
@@ -49,6 +51,28 @@ fn parse(kind: QaKind, args: Value) -> Result<QaOp, String> {
             filter.validate()?;
             Ok(QaOp::Logs(filter))
         }
+        QaKind::DialogAnswers => {
+            let batch: DialogAnswerBatch =
+                serde_json::from_value(args).map_err(|e| e.to_string())?;
+            batch.validate()?;
+            Ok(QaOp::DialogAnswers(batch))
+        }
+        QaKind::Window => {
+            let action: WindowAction = serde_json::from_value(args).map_err(|e| e.to_string())?;
+            action.validate()?;
+            Ok(QaOp::Window(action))
+        }
+    }
+}
+
+fn qa_response(outcome: Result<Value, (StatusCode, String, String)>) -> Response {
+    match outcome {
+        Ok(data) => Json(json!({"ok":true,"data":data})).into_response(),
+        Err((status, code, message)) => (
+            status,
+            Json(json!({"ok":false,"code":code,"error":message})),
+        )
+            .into_response(),
     }
 }
 
@@ -152,14 +176,7 @@ async fn get(state: Arc<ApiState>, claims: ApiClaims, uri: Uri, kind: QaKind) ->
             }
         },
     };
-    match outcome {
-        Ok(data) => Json(json!({ "ok": true, "data": data })).into_response(),
-        Err((status, code, message)) => (
-            status,
-            Json(json!({ "ok": false, "code": code, "error": message })),
-        )
-            .into_response(),
-    }
+    qa_response(outcome)
 }
 
 pub async fn ui_tree(
@@ -182,4 +199,45 @@ pub async fn logs(
     uri: Uri,
 ) -> Response {
     get(state, claims, uri, QaKind::Logs).await
+}
+
+async fn post(
+    state: Arc<ApiState>,
+    claims: ApiClaims,
+    body: axum::body::Bytes,
+    kind: QaKind,
+) -> Response {
+    let outcome = match QA_GATE.admit(state.input.allowed, &state, &claims).await {
+        Err(error) => Err((error.status(), "qa_gate_refused".into(), error.message())),
+        Ok(()) => match serde_json::from_slice::<Value>(&body) {
+            Err(_) => Err((
+                StatusCode::BAD_REQUEST,
+                "malformed_body".into(),
+                "invalid QA request JSON".into(),
+            )),
+            Ok(args) => {
+                let args = if matches!(kind, QaKind::DialogAnswers) && args.is_array() {
+                    json!({"answers":args})
+                } else {
+                    args
+                };
+                admitted_run(&state, &claims, kind, args).await
+            }
+        },
+    };
+    qa_response(outcome)
+}
+pub async fn dialog_answers(
+    State(state): State<Arc<ApiState>>,
+    Extension(claims): Extension<ApiClaims>,
+    body: axum::body::Bytes,
+) -> Response {
+    post(state, claims, body, QaKind::DialogAnswers).await
+}
+pub async fn window(
+    State(state): State<Arc<ApiState>>,
+    Extension(claims): Extension<ApiClaims>,
+    body: axum::body::Bytes,
+) -> Response {
+    post(state, claims, body, QaKind::Window).await
 }

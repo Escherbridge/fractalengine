@@ -9,7 +9,7 @@ pub enum GpxOp {
     /// Import the GPX file at `path` into `petal_id`.
     ImportFile {
         petal_id: String,
-        path: std::path::PathBuf,
+        path: crate::file_dialogs::DialogPath,
     },
 }
 

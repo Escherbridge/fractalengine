@@ -1,8 +1,6 @@
 //! Hexon/tileset/petal-map action handling. See `fe-ui/src/AGENTS.md`
 //! §terrain-map.
 
-use std::path::PathBuf;
-
 use fe_runtime::app::DbCommandSender;
 use fe_runtime::messages::DbCommand;
 
@@ -16,8 +14,11 @@ use crate::terrain_map::{
 
 use super::UiManager;
 
-pub(crate) fn install_from_file(hexon_ops: &mut PendingHexonOps, path: PathBuf) {
-    bevy::log::info!("Hexon: install from file {:?}", path);
+pub(crate) fn install_from_file(
+    hexon_ops: &mut PendingHexonOps,
+    path: crate::file_dialogs::DialogPath,
+) {
+    bevy::log::info!("Hexon: install from file {}", path.display());
     hexon_ops.0.push(HexonOp::Install(path));
 }
 

@@ -106,6 +106,19 @@ pub fn build_app(handles: BevyHandles) -> App {
 /// [`build_app`] with an explicit primary-window description (the GUI binary's
 /// frameless chrome — fractalengine/src/AGENTS.md §window-chrome).
 pub fn build_app_with_window(handles: BevyHandles, primary_window: Window) -> App {
+    build_app_with_close_policy(handles, primary_window, true)
+}
+
+/// Build the editor GUI with close requests delegated to its confirmation UI.
+pub fn build_app_with_confirmed_close(handles: BevyHandles, primary_window: Window) -> App {
+    build_app_with_close_policy(handles, primary_window, false)
+}
+
+fn build_app_with_close_policy(
+    handles: BevyHandles,
+    primary_window: Window,
+    close_when_requested: bool,
+) -> App {
     let mut app = App::new();
 
     // Phase B: register the "blob" asset source BEFORE DefaultPlugins so Bevy
@@ -140,6 +153,7 @@ pub fn build_app_with_window(handles: BevyHandles, primary_window: Window) -> Ap
             })
             .set(bevy::window::WindowPlugin {
                 primary_window: Some(primary_window),
+                close_when_requested,
                 ..Default::default()
             }),
     );

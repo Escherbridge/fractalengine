@@ -250,6 +250,7 @@ async fn each_dcl20_mutation_records_exactly_one_bypass_of_its_own_kind() {
     let before = snapshot_counts();
     let op_log_before = h.op_log_count().await;
     h.send(DbCommand::ImportGltf {
+        file_lease: None,
         petal_id: petal_id.clone(),
         name: "Imported".into(),
         file_path: glb_path.to_str().unwrap().into(),
@@ -448,6 +449,7 @@ async fn a_ktx2_refused_import_still_records_its_bypass() {
     std::fs::write(&glb_path, ktx2_glb_bytes()).expect("write ktx2 glb fixture");
     let before = snapshot_counts();
     h.send(DbCommand::ImportGltf {
+        file_lease: None,
         petal_id,
         name: "Refused".into(),
         file_path: glb_path.to_str().unwrap().into(),

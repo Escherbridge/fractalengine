@@ -329,6 +329,15 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         .route("/api/v1/debug/ui-tree", get(crate::qa_debug::ui_tree))
         .route("/api/v1/debug/ui-state", get(crate::qa_debug::ui_state))
         .route("/api/v1/debug/logs", get(crate::qa_debug::logs))
+        .route(
+            "/api/v1/debug/dialog-answers",
+            post(crate::qa_debug::dialog_answers)
+                .layer(axum::extract::DefaultBodyLimit::max(65536)),
+        )
+        .route(
+            "/api/v1/debug/window",
+            post(crate::qa_debug::window).layer(axum::extract::DefaultBodyLimit::max(65536)),
+        )
         // Query endpoints (scope-guarded SurrealQL)
         .route("/api/v1/query", post(crate::rest::execute_query))
         .route(

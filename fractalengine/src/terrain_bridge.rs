@@ -2416,7 +2416,7 @@ mod tests {
         app.world_mut()
             .resource_mut::<PendingHexonOps>()
             .0
-            .push(HexonOp::Install(tampered_path));
+            .push(HexonOp::Install(tampered_path.into()));
         app.update(); // drains the op, spawning the background install thread
         assert!(
             rx.try_recv().is_err(),
@@ -2438,7 +2438,7 @@ mod tests {
         app.world_mut()
             .resource_mut::<PendingHexonOps>()
             .0
-            .push(HexonOp::Install(sealed_path));
+            .push(HexonOp::Install(sealed_path.into()));
         app.update();
         assert!(
             rx.try_recv().is_err(),

@@ -2,11 +2,13 @@
 //! binary resolves the file and imports it as a node/track for the petal.
 //! Mirrors `actions::asset`'s queue-for-main-binary pattern.
 
-use std::path::PathBuf;
-
 use crate::gpx_ops::{GpxOp, PendingGpxOps};
 
-pub(crate) fn request_import(gpx_ops: &mut PendingGpxOps, petal_id: String, path: PathBuf) {
+pub(crate) fn request_import(
+    gpx_ops: &mut PendingGpxOps,
+    petal_id: String,
+    path: crate::file_dialogs::DialogPath,
+) {
     bevy::log::info!(
         "GPX: import requested for petal {petal_id}: {}",
         path.display()

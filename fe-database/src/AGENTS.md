@@ -3,6 +3,12 @@
 Design rationale for fe-database source modules. Code carries terse one-line
 doc comments; the "why" lives here.
 
+## §qa-input-lease
+
+`ImportGltf.file_lease` is optional operation-owned file/ancestry protection for isolated QA imports.
+The database command arm retains it through `import_gltf_handler(...).await` and drops it after that read/write
+operation returns. Normal callers pass `None`; authorization and imported asset persistence are unchanged.
+
 ## §diagnostics
 
 Two read-only examples inspect the live SurrealKV store (`FE_DB_PATH`, default

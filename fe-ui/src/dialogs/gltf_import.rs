@@ -46,6 +46,9 @@ pub fn render_gltf_import_dialog(
         .gltf_import_request
         .waiting_within(now, IMPORT_LOCK_TIMEOUT_SECONDS);
     let error = ui_mgr.gltf_import_request.error.clone();
+    let file_dialogs = ui_mgr.file_dialogs.clone();
+    let mut dialog_failure = None;
+    let mut chosen_lease = None;
 
     let ActiveDialog::GltfImport {
         ref mut file_path_buf,
@@ -94,17 +97,23 @@ pub fn render_gltf_import_dialog(
                     .add(egui::Button::new("Browse...").fill(theme::BG_BUTTON))
                     .clicked()
                 {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("GLTF Models", &["glb", "gltf"])
-                        .add_filter("All Files", &["*"])
-                        .pick_file()
-                    {
-                        *file_path_buf = path.display().to_string();
-                        if name_buf.is_empty() {
-                            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                                *name_buf = stem.to_string();
+                    match file_dialogs.choose(crate::file_dialogs::FileDialogRequest {
+                        kind: fe_runtime::qa_debug::DialogKind::Open,
+                        verse_id: nav.active_verse_id.as_deref(),
+                        filters: &[("GLTF Models", &["glb", "gltf"]), ("All Files", &["*"])],
+                        suggested_name: None,
+                    }) {
+                        Ok(Some(path)) => {
+                            *file_path_buf = path.display().to_string();
+                            if name_buf.is_empty() {
+                                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                                    *name_buf = stem.to_string();
+                                }
                             }
+                            chosen_lease = Some(path);
                         }
+                        Ok(None) => {}
+                        Err(error) => dialog_failure = Some(error.to_string()),
                     }
                 }
             });
@@ -162,19 +171,33 @@ pub fn render_gltf_import_dialog(
                 )
                 .clicked()
             {
-                import_request = Some(DbCommand::ImportGltf {
-                    petal_id: petal_id.clone(),
-                    name: if name_buf.trim().is_empty() {
-                        "Imported Model".to_string()
-                    } else {
-                        name_buf.trim().to_string()
-                    },
-                    file_path: file_path_buf.trim().to_string(),
-                    position: *position,
-                });
+                match file_dialogs.lease_path(
+                    std::path::Path::new(file_path_buf.trim()),
+                    fe_runtime::qa_debug::DialogKind::Open,
+                    nav.active_verse_id.as_deref(),
+                ) {
+                    Ok(path) => {
+                        import_request = Some(DbCommand::ImportGltf {
+                            file_lease: path.read_lease(),
+                            petal_id: petal_id.clone(),
+                            name: if name_buf.trim().is_empty() {
+                                "Imported Model".to_string()
+                            } else {
+                                name_buf.trim().to_string()
+                            },
+                            file_path: file_path_buf.trim().to_string(),
+                            position: *position,
+                        });
+                        chosen_lease = Some(path);
+                    }
+                    Err(error) => dialog_failure = Some(error.to_string()),
+                }
             }
             if ui
-                .add_enabled(!importing, egui::Button::new("Cancel").fill(theme::BG_BUTTON))
+                .add_enabled(
+                    !importing,
+                    egui::Button::new("Cancel").fill(theme::BG_BUTTON),
+                )
                 .clicked()
             {
                 close = true;
@@ -184,6 +207,12 @@ pub fn render_gltf_import_dialog(
 
     // The sub-borrow into `ui_mgr.active_dialog` ended above, so `ui_mgr` as
     // a whole can be mutated again from here down.
+    if let Some(path) = chosen_lease {
+        ui_mgr.gltf_file_lease = Some(path);
+    }
+    if let Some(error) = dialog_failure {
+        ui_mgr.show_error(error, now);
+    }
     if let Some(cmd) = import_request {
         if send_or_toast(db_tx, cmd, ui_mgr, now, "import the model") {
             ui_mgr.gltf_import_request.start(now);
@@ -207,8 +236,18 @@ mod tests {
             ("model.glb", "", false, "no active petal"),
             ("", "petal-1", false, "no path"),
             ("model.glb", "petal-1", true, "both set"),
-            ("   ", "petal-1", false, "whitespace-only path is still blank"),
-            ("model.glb", "   ", false, "whitespace-only petal id is still blank"),
+            (
+                "   ",
+                "petal-1",
+                false,
+                "whitespace-only path is still blank",
+            ),
+            (
+                "model.glb",
+                "   ",
+                false,
+                "whitespace-only petal id is still blank",
+            ),
         ];
         for (file_path, petal_id, expected, why) in cases {
             assert_eq!(
@@ -217,5 +256,157 @@ mod tests {
                 "{why}: import_enabled({file_path:?}, {petal_id:?})"
             );
         }
+
+        use crate::file_dialogs::{FileDialogProvider, FileDialogRequest, QaFileDialogs};
+        use fe_runtime::qa_debug::{DialogAnswer, DialogAnswerBatch, DialogKind};
+        let root = std::env::temp_dir().join(format!(
+            "fe-dialog-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("model.glb"), b"fixture").unwrap();
+        let provider = QaFileDialogs::new(root.clone()).unwrap();
+        let request = |kind| FileDialogRequest {
+            kind,
+            verse_id: Some("v"),
+            filters: &[],
+            suggested_name: None,
+        };
+        let answer = |kind, path: Option<&str>, cancel| DialogAnswerBatch {
+            answers: vec![DialogAnswer {
+                kind,
+                path: path.map(str::to_owned),
+                cancel,
+            }],
+        };
+        assert_eq!(
+            provider
+                .enqueue("v", &answer(DialogKind::Open, Some("model.glb"), false))
+                .unwrap_err()
+                .code,
+            "qa_controls_disabled"
+        );
+        provider.set_listener("127.0.0.1:8765".parse().unwrap());
+        assert_eq!(
+            provider.choose(request(DialogKind::Open)).unwrap_err().code,
+            "dialog_answer_missing"
+        );
+        for path in [
+            "../escape.glb",
+            "\\\\server\\share\\file.glb",
+            "model.glb:stream",
+        ] {
+            assert!(
+                provider
+                    .enqueue("v", &answer(DialogKind::Open, Some(path), false))
+                    .is_err(),
+                "unsafe path must be refused: {path}"
+            );
+        }
+        #[cfg(windows)]
+        for path in [
+            "NUL",
+            "CON.txt",
+            "PRN ",
+            "AUX.",
+            "COM1.gpx",
+            "LPT9.hexon",
+            "COM¹",
+            "LPT²",
+            "COM³",
+            "CONIN$",
+            "CONOUT$",
+            "C:relative.glb",
+        ] {
+            assert!(
+                provider
+                    .enqueue("v", &answer(DialogKind::Save, Some(path), false))
+                    .is_err(),
+                "Windows device/relative alias must be refused: {path}"
+            );
+        }
+        provider
+            .enqueue("v", &answer(DialogKind::Open, Some("model.glb"), false))
+            .unwrap();
+        let selected = provider.choose(request(DialogKind::Open)).unwrap().unwrap();
+        assert_eq!(selected.file_name().unwrap(), "model.glb");
+        drop(selected);
+        provider
+            .enqueue("v", &answer(DialogKind::Save, Some("model.glb"), false))
+            .unwrap();
+        let overwrite = provider.choose(request(DialogKind::Save)).unwrap().unwrap();
+        overwrite
+            .write_bytes(b"operation-owned lease released")
+            .unwrap();
+        drop(overwrite);
+        provider
+            .enqueue("v", &answer(DialogKind::Open, None, true))
+            .unwrap();
+        assert!(provider
+            .enqueue(
+                "other",
+                &answer(DialogKind::Open, Some("../invalid"), false)
+            )
+            .is_err());
+        assert!(provider
+            .choose(request(DialogKind::Open))
+            .unwrap()
+            .is_none());
+        provider
+            .enqueue("v", &answer(DialogKind::Open, None, true))
+            .unwrap();
+        assert_eq!(
+            provider.choose(request(DialogKind::Save)).unwrap_err().code,
+            "dialog_answer_kind_mismatch"
+        );
+        provider
+            .enqueue("v", &answer(DialogKind::Open, None, true))
+            .unwrap();
+        assert_eq!(
+            provider
+                .choose(FileDialogRequest {
+                    verse_id: Some("other"),
+                    ..request(DialogKind::Open)
+                })
+                .unwrap_err()
+                .code,
+            "dialog_answer_scope_changed"
+        );
+        provider
+            .enqueue("v", &answer(DialogKind::Save, Some("export.glb"), false))
+            .unwrap();
+        let selected = provider.choose(request(DialogKind::Save)).unwrap().unwrap();
+        selected.write_bytes(b"saved").unwrap();
+        drop(selected);
+        assert_eq!(std::fs::read(root.join("export.glb")).unwrap(), b"saved");
+        let outside = root.with_extension("outside");
+        std::fs::write(&outside, b"outside unchanged").unwrap();
+        std::fs::hard_link(&outside, root.join("linked.glb")).unwrap();
+        provider
+            .enqueue("v", &answer(DialogKind::Save, Some("linked.glb"), false))
+            .unwrap();
+        let selected = provider.choose(request(DialogKind::Save)).unwrap().unwrap();
+        selected.write_bytes(b"inside replacement").unwrap();
+        drop(selected);
+        assert_eq!(
+            std::fs::read(&outside).unwrap(),
+            b"outside unchanged",
+            "QA saves replace the selected entry instead of writing through a hard link"
+        );
+        std::fs::remove_file(outside).unwrap();
+        provider
+            .enqueue("v", &answer(DialogKind::Folder, Some("."), false))
+            .unwrap();
+        assert!(provider
+            .choose(request(DialogKind::Folder))
+            .unwrap()
+            .unwrap()
+            .is_dir());
+        drop(provider);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

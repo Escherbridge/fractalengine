@@ -1956,6 +1956,13 @@ installed) plus the window's size/minimized state.
 ## §agent-input-surface (`input.rs`, folded-in `agent_input_surface_20261031`
 via `agent_vision_20261031`; wiring landed plan I3)
 
+S4 extends the existing QA core with `POST /api/v1/debug/dialog-answers` and `POST /api/v1/debug/window`,
+plus MCP `dialog_answers` and `window`. The shared default-off Owner gate and active-verse check run on both doors;
+host mutations additionally require a validated isolated QA root and the actual loopback listener notification.
+Bodies are capped at 64 KiB. REST dialog answers accept an array or `{answers:[...]}`; MCP uses the latter.
+Window actions are `size`, `ui_scale`, `maximize`, `restore`, `minimize`, and `close`. Close requests confirmation.
+App UI scale changes only the application's egui scale, never system display settings.
+
 Clipboard isolation also applies at the GUI sink: the input bridge removes egui
 `CopyText` and `CopyImage` output before platform processing throughout injection,
 settling/capture, and the final success or abort frame. The planner still refuses

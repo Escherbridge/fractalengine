@@ -28,6 +28,26 @@ before egui widget construction. Non-finite values recover to defaults and
 finite values clamp to practical caps. Brush cursor and commit share the same
 sanitized radius. Missing petal/map is a warned, visible no-op.
 
+## §file-dialogs
+
+`file_dialogs` is the Strategy boundary for GLTF/GPX import, Hexon install, and asset/GPX export.
+`UiManager.file_dialogs` owns the selected provider. Normal input-disabled builds use native rfd;
+synthetic-input hosts fail closed unless an isolated QA root and an actual loopback listener enable
+the queued provider. Missing or wrong-kind answers produce typed errors through the normal notice/status path.
+Answers have a bounded active-verse lease and batches validate completely before mutating the queue.
+
+QA paths reject traversal, UNC/device prefixes, drive-relative paths, ADS, redirected ancestors and Windows
+reserved device components, including extension/superscript aliases. See Microsoft's
+[filename rules](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file) and
+[console device names](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilea).
+Open inputs require existing files; save outputs require an existing confined parent. `DialogPath` owns the
+selected file/ancestry guards through its consuming operation. Windows handles prevent replacement of inputs
+while an import reads them. Unix directory handles do not provide the same rename exclusion.
+
+Export callers use `DialogPath::write_bytes` or `copy_from`, never a check followed by a plain path reopen.
+QA output streams into an owner-only sibling and atomically replaces the destination entry through the shared
+identity file helper; a leaf changed into a link cannot redirect the write. Native exports preserve native semantics.
+
 ## §navigation-ancestry
 
 Global tree rows and viewport cards enter descendants through

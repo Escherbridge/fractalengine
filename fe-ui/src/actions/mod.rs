@@ -21,7 +21,6 @@ pub(crate) mod terrain_proposal;
 mod transform;
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
 
 use bevy::prelude::*;
 use fe_webview::ipc::BrowserCommand;
@@ -77,7 +76,7 @@ pub enum UiAction {
         key: String,
     },
     // Hexon Manager actions
-    HexonInstallFromFile(PathBuf),
+    HexonInstallFromFile(crate::file_dialogs::DialogPath),
     HexonRemoveTileset(String),
     HexonToggleSeeding(String, bool),
     HexonStartDownload(String),
@@ -145,7 +144,7 @@ pub enum UiAction {
     /// contract (mirrors `DownloadNodeAsset`/`asset_ops`).
     GpxImportFile {
         petal_id: String,
-        path: PathBuf,
+        path: crate::file_dialogs::DialogPath,
     },
     // Path editor actions — see AGENTS.md §path-editor.
     /// Run the "track nodes" query for a petal (Paths tab track list).
@@ -527,6 +526,8 @@ const ERROR_HISTORY_CAP: usize = 20;
 /// Centralized UI state resource.
 #[derive(Resource)]
 pub struct UiManager {
+    pub file_dialogs: crate::file_dialogs::FileDialogs,
+    pub gltf_file_lease: Option<crate::file_dialogs::DialogPath>,
     /// Actions queued during egui rendering, drained each frame in Update.
     actions: Vec<UiAction>,
     /// Portal webview lifecycle.
@@ -564,6 +565,8 @@ pub struct UiManager {
 impl Default for UiManager {
     fn default() -> Self {
         Self {
+            file_dialogs: crate::file_dialogs::FileDialogs::default(),
+            gltf_file_lease: None,
             actions: Vec::new(),
             portal: PortalState::Closed,
             sidebar_open: true,
@@ -618,6 +621,7 @@ impl UiManager {
     }
 
     pub fn close_dialog(&mut self) {
+        self.gltf_file_lease = None;
         self.active_dialog = ActiveDialog::None;
     }
 
@@ -1593,7 +1597,10 @@ mod tests {
         let cases: Vec<Case> = vec![
             // Both live (Error spawned first): severity alone decides.
             Case {
-                pushes: vec![(Severity::Error, 0.0, "boom"), (Severity::Info, 1.0, "saved")],
+                pushes: vec![
+                    (Severity::Error, 0.0, "boom"),
+                    (Severity::Info, 1.0, "saved"),
+                ],
                 query_at: 1.5,
                 expected: "boom",
             },
@@ -1602,14 +1609,20 @@ mod tests {
             // exists for: an Info arriving after an Error never hides it
             // early just by being more recent.
             Case {
-                pushes: vec![(Severity::Error, 0.0, "boom"), (Severity::Info, 1.0, "saved")],
+                pushes: vec![
+                    (Severity::Error, 0.0, "boom"),
+                    (Severity::Info, 1.0, "saved"),
+                ],
                 query_at: 5.0,
                 expected: "boom",
             },
             // Once the Error itself expires (t=7.5 > 7s), the still-live
             // Info takes over — expiry is still respected per severity.
             Case {
-                pushes: vec![(Severity::Error, 0.0, "boom"), (Severity::Info, 6.0, "saved")],
+                pushes: vec![
+                    (Severity::Error, 0.0, "boom"),
+                    (Severity::Info, 6.0, "saved"),
+                ],
                 query_at: 7.5,
                 expected: "saved",
             },
@@ -1695,7 +1708,10 @@ mod tests {
         };
         mgr.show_db_error("Load hierarchy failed: disk full", &ctx, 0.0);
         let first = mgr.latest_unacknowledged_error().expect("segment shown");
-        assert_eq!(first.detail.as_deref(), Some("Load hierarchy failed: disk full"));
+        assert_eq!(
+            first.detail.as_deref(),
+            Some("Load hierarchy failed: disk full")
+        );
         let first_id = first.id;
 
         mgr.dismiss_notice(first_id);

@@ -683,8 +683,10 @@ pub fn spawn_db_thread_shared(
                             Err(e) => send_result(&tx, DbResult::Error(format!("Create node failed: {e}"))),
                         }
                     }
-                    Ok(DbCommand::ImportGltf { petal_id, name, file_path, position }) => {
-                        match handlers::crud::import_gltf_handler(&db, &blob_store, &petal_id, &name, &file_path, position).await {
+                    Ok(DbCommand::ImportGltf { petal_id, name, file_path, position, file_lease }) => {
+                        let result = handlers::crud::import_gltf_handler(&db, &blob_store, &petal_id, &name, &file_path, position).await;
+                        drop(file_lease);
+                        match result {
                             Ok((node_id, asset_id, asset_path)) => {
                                 if let Some(ref ect) = entity_change_tx {
                                     let _ = ect.send(fe_runtime::messages::SceneChange::NodeAdded {

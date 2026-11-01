@@ -70,6 +70,33 @@ fn main() {
     }
 
     let qa_enabled = fe_api::input::input_allowed_from_env();
+    let qa_dialogs = if qa_enabled {
+        qa_root
+            .as_ref()
+            .map(|root| fe_ui::file_dialogs::QaFileDialogs::new(root.clone()).map(Arc::new))
+            .transpose()
+            .unwrap_or_else(|error| {
+                eprintln!("could not configure QA dialogs: {error}");
+                std::process::exit(1);
+            })
+    } else {
+        None
+    };
+    let qa_api_port = if qa_root.is_some() {
+        match std::env::var("FE_QA_API_PORT") {
+            Ok(value) => value
+                .parse::<u16>()
+                .ok()
+                .filter(|port| *port > 0)
+                .unwrap_or_else(|| {
+                    eprintln!("FE_QA_API_PORT must be a nonzero port");
+                    std::process::exit(1);
+                }),
+            Err(_) => 8765,
+        }
+    } else {
+        8765
+    };
     let qa_logs = fe_runtime::qa_debug::QaLogRing::default();
     tracing_subscriber::registry()
         .with(EnvFilter::from_default_env())
@@ -438,7 +465,7 @@ fn main() {
 
     // Frameless primary window: fe-ui's topbar is the title bar (src/AGENTS.md
     // §window-chrome).
-    let mut app = fe_runtime::app::build_app_with_window(
+    let mut app = fe_runtime::app::build_app_with_confirmed_close(
         BevyHandles {
             net_cmd_tx: ch.net_cmd_tx,
             net_evt_rx: ch.net_evt_rx,
@@ -453,6 +480,9 @@ fn main() {
 
     // GUI-only plugins (removed from fe-runtime so the headless relay can skip them)
     app.add_plugins(bevy_egui::EguiPlugin::default());
+    if qa_enabled {
+        app.insert_resource(bevy::winit::WinitSettings::continuous());
+    }
     app.add_plugins(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default());
 
     // Insert sync resources into Bevy world
@@ -534,6 +564,22 @@ fn main() {
     // The dev-token writer resolves the local role per verse on its own clone.
     let dev_token_db = dev_token_out.as_ref().map(|_| shared_db.clone());
     let (api_listening_tx, api_listening_rx) = crossbeam::channel::bounded(1);
+    let (dev_listening_tx, dev_listening_rx) = crossbeam::channel::bounded(1);
+    let (qa_listening_tx, qa_listening_rx) = crossbeam::channel::bounded(1);
+    let notify_dev = dev_token_out.is_some();
+    let notify_controls = qa_dialogs.is_some();
+    if notify_dev || notify_controls {
+        std::thread::spawn(move || {
+            if let Ok(bound) = api_listening_rx.recv() {
+                if notify_dev && dev_listening_tx.send(bound).is_err() {
+                    tracing::warn!("dev-token listener notification was dropped");
+                }
+                if notify_controls && qa_listening_tx.send(bound).is_err() {
+                    tracing::warn!("QA-control listener notification was dropped");
+                }
+            }
+        });
+    }
 
     // Direct reader = clone of the DB thread's handle (never a second SurrealKV
     // open: the store lock refuses it, os error 33). Hydration failure leaves the
@@ -596,7 +642,7 @@ fn main() {
     }
 
     let _api_thread = fe_api::spawn_api_thread(fe_api::ApiConfig {
-        bind_addr: "127.0.0.1:8765".to_string(),
+        bind_addr: format!("127.0.0.1:{qa_api_port}"),
         api_cmd_tx: api_cmd_tx.clone(),
         transform_broadcast_tx: transform_broadcast_tx.clone(),
         verifying_key: api_verifying_key,
@@ -635,7 +681,7 @@ fn main() {
         // Agent input surface: OFF unless FE_API_INPUT_ALLOW=1 (read once
         // here; loud WARN when on) — fe-api/AGENTS.md §agent-input-surface.
         input: fe_api::input::InputSurface::new(qa_enabled, Some(input_tx)).with_qa_debug(qa_tx),
-        listening_tx: dev_token_out.is_some().then_some(api_listening_tx),
+        listening_tx: (notify_dev || notify_controls).then_some(api_listening_tx),
     });
 
     // Agent QA: write loopback-only API tokens for every local verse once the
@@ -647,7 +693,7 @@ fn main() {
             path,
             db,
             keypair,
-            listening_rx: api_listening_rx,
+            listening_rx: dev_listening_rx,
             verse_ids_rx,
         });
         qa_dev_token::install(&mut app, verse_ids_tx);
@@ -674,7 +720,14 @@ fn main() {
     // Agent input: replay synthetic batches as winit-shaped messages ahead of
     // bevy_input + bevy_egui (src/AGENTS.md §agent-input-surface).
     input_bridge::install(&mut app, input_rx);
-    qa_debug_bridge::install(&mut app, qa_enabled, qa_rx, qa_logs);
+    qa_debug_bridge::install(
+        &mut app,
+        qa_enabled,
+        qa_rx,
+        qa_logs,
+        qa_dialogs.clone(),
+        qa_listening_rx,
+    );
 
     // ---- Entity Store (in-memory hot cache) ----
     app.insert_resource(SharedEntityStore(entity_store));
@@ -747,6 +800,13 @@ fn main() {
         app.insert_resource(fe_ui::settings::SettingsPersistence { path });
     }
     app.add_plugins(fe_ui::plugin::GardenerConsolePlugin);
+    if qa_enabled {
+        app.world_mut()
+            .resource_mut::<fe_ui::actions::UiManager>()
+            .file_dialogs = qa_dialogs
+            .map(|dialogs| fe_ui::file_dialogs::FileDialogs(dialogs))
+            .unwrap_or_else(fe_ui::file_dialogs::FileDialogs::disabled);
+    }
     // Terrain runtime: petal map assignments + tileset registry bridge.
     app.add_plugins(fe_terrain::terrain_plugin::TerrainPlugin);
     // Splat view: synthesized terrain splats + Mesh/Splats/Hybrid view modes.

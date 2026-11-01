@@ -339,8 +339,9 @@ impl TestPeer {
                             name,
                             file_path,
                             position,
+                            file_lease,
                         }) => {
-                            match import_gltf(
+                            let result = import_gltf(
                                 &db,
                                 &db_blob_store,
                                 &petal_id,
@@ -348,8 +349,9 @@ impl TestPeer {
                                 &file_path,
                                 position,
                             )
-                            .await
-                            {
+                            .await;
+                            drop(file_lease);
+                            match result {
                                 Ok((node_id, asset_id, asset_path)) => {
                                     db_result_tx
                                         .send(DbResult::GltfImported {

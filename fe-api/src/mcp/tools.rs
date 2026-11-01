@@ -1001,6 +1001,12 @@ fn run_qa(call: ToolCall<'_>, kind: crate::qa_debug::QaKind) -> ToolFuture<'_> {
 pub(super) fn ui_tree(call: ToolCall<'_>) -> ToolFuture<'_> {
     run_qa(call, crate::qa_debug::QaKind::Tree)
 }
+pub(super) fn dialog_answers(call: ToolCall<'_>) -> ToolFuture<'_> {
+    run_qa(call, crate::qa_debug::QaKind::DialogAnswers)
+}
+pub(super) fn window(call: ToolCall<'_>) -> ToolFuture<'_> {
+    run_qa(call, crate::qa_debug::QaKind::Window)
+}
 pub(super) fn ui_state(call: ToolCall<'_>) -> ToolFuture<'_> {
     run_qa(call, crate::qa_debug::QaKind::State)
 }
@@ -1040,6 +1046,12 @@ pub(super) fn inject_input(call: ToolCall<'_>) -> ToolFuture<'_> {
 
 pub(super) mod schema {
     use serde_json::{json, Value};
+    pub fn dialog_answers() -> Value {
+        json!({"type":"object","additionalProperties":false,"required":["answers"],"properties":{"answers":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"type":"string","enum":["open","save","folder"]},"path":{"type":"string","maxLength":4096},"cancel":{"type":"boolean"}}}}}})
+    }
+    pub fn window() -> Value {
+        json!({"type":"object","additionalProperties":false,"required":["action"],"properties":{"action":{"type":"string","enum":["size","ui_scale","maximize","restore","minimize","close"]},"width":{"type":"integer","minimum":640,"maximum":8192},"height":{"type":"integer","minimum":480,"maximum":8192},"factor":{"type":"number","minimum":0.75,"maximum":2.0}}})
+    }
 
     pub fn ui_tree() -> Value {
         json!({"type":"object", "additionalProperties":false, "properties":{"name":{"type":"string","maxLength":256},"role":{"type":"string","maxLength":64},"interactive":{"type":"boolean"}}})

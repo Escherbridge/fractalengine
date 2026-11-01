@@ -42,6 +42,7 @@ pub fn run() -> Result<TestResult> {
 
     // 3. Import the GLB
     peer.send(DbCommand::ImportGltf {
+        file_lease: None,
         petal_id: petal_id.clone(),
         name: "TestCube".into(),
         file_path: glb_path.to_str().unwrap().into(),

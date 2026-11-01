@@ -2,6 +2,12 @@
 
 ## §secret-store (`secret_store/`)
 
+QA dialog exports reuse `replace_owner_only_file` and `copy_owner_only_file` for atomic safe output.
+Both create an owner-only sibling, retain one creation handle while writing/streaming, and rename the entry
+over the destination. This avoids writing through a final leaf replaced by a link; the copy helper streams
+without buffering a whole asset. `pin_secret_parents` is public so the dialog boundary can retain the same
+validated ancestry guards through deferred operations rather than reimplement platform handle policy.
+
 `SecretStore` is a pluggable trait for string secrets keyed by
 `(service, account)`; implementations are `Send + Sync + 'static` so they can
 be shared across threads as `Arc<dyn SecretStore>`. Three backends:

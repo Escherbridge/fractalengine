@@ -853,8 +853,15 @@ impl Plugin for GardenerConsolePlugin {
         // The title bar's window request (move/resize/min/max/close) applies
         // the same frame it was raised — ui_shell/AGENTS.md §window-chrome.
         app.add_systems(
+            PostUpdate,
+            crate::ui_shell::topbar::apply_window_chrome
+                .in_set(crate::ui_shell::topbar::WindowChromeApply)
+                .after(bevy_egui::EguiPostUpdateSet::PostProcessOutput),
+        );
+        app.add_systems(Update, crate::ui_shell::topbar::receive_close_requests);
+        app.add_systems(
             EguiPrimaryContextPass,
-            crate::ui_shell::topbar::apply_window_chrome.after(gardener_ui_system),
+            crate::ui_shell::topbar::render_close_confirmation.after(gardener_ui_system),
         );
         // FR-3 (data_icons_20260713): floating point labels over the viewport.
         // After `gardener_ui_system` so it reads the same-frame `ViewportRect`

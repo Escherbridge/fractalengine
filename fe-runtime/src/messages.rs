@@ -1,5 +1,8 @@
 use bevy::prelude::Message;
 
+/// Operation-owned input-file and ancestry handles retained through a read.
+pub type FileReadLease = std::sync::Arc<Vec<std::fs::File>>;
+
 /// Re-exported so callers that depend on `fe-runtime` but not directly on
 /// `fe-sdk` (fe-sim, fe-api, fe-test-harness) can construct
 /// `InsertIotReadings`/`InsertDevicePayloads.source_class` without a new
@@ -435,6 +438,7 @@ pub enum DbCommand {
         correlation_id: Option<String>,
     },
     ImportGltf {
+        file_lease: Option<FileReadLease>,
         petal_id: String,
         name: String,
         file_path: String,
@@ -1469,7 +1473,9 @@ pub enum DbResult {
     /// so this always reaches fe-ui's dispatcher, never an API waiter. Lets
     /// the Join dialog show the failure inline instead of a generic status-bar
     /// `Error` (see fe-ui `verse_manager/AGENTS.md` §db-results).
-    JoinVerseFailed { error: String },
+    JoinVerseFailed {
+        error: String,
+    },
 }
 
 /// Field definition info for UI display.

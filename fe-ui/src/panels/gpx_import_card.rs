@@ -18,6 +18,7 @@ pub(crate) fn gpx_import_section(
     ui_mgr: &mut UiManager,
     gpx_status: &GpxImportStatus,
     petal_id: &str,
+    verse_id: Option<&str>,
 ) {
     ui.label(
         egui::RichText::new("GPX Import")
@@ -29,15 +30,24 @@ pub(crate) fn gpx_import_section(
         .add(egui::Button::new("\u{1F4C1} Import GPX...").fill(theme::BG_BUTTON))
         .clicked()
     {
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("GPX Tracks", &["gpx"])
-            .add_filter("All Files", &["*"])
-            .pick_file()
-        {
-            ui_mgr.push_action(UiAction::GpxImportFile {
-                petal_id: petal_id.to_string(),
-                path,
-            });
+        match ui_mgr
+            .file_dialogs
+            .choose(crate::file_dialogs::FileDialogRequest {
+                kind: fe_runtime::qa_debug::DialogKind::Open,
+                verse_id,
+                filters: &[("GPX Tracks", &["gpx"]), ("All Files", &["*"])],
+                suggested_name: None,
+            }) {
+            Ok(Some(path)) => {
+                ui_mgr.push_action(UiAction::GpxImportFile {
+                    petal_id: petal_id.to_string(),
+                    path,
+                });
+            }
+            Ok(None) => {}
+            Err(error) => {
+                ui_mgr.show_error(error.to_string(), ui.input(|i| i.time));
+            }
         }
     }
 

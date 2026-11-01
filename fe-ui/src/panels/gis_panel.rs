@@ -85,6 +85,7 @@ pub(crate) fn render_gis_panel(
                         &petal_id,
                         gpx_status,
                         world_scale,
+                        nav.active_verse_id.as_deref(),
                     );
                 }
                 GisPanelTab::Annotations => {
@@ -238,6 +239,7 @@ fn render_query_section(
     petal_id: &str,
     gpx_status: &GpxImportStatus,
     world_scale: f64,
+    verse_id: Option<&str>,
 ) {
     ui.label(
         egui::RichText::new("Query")
@@ -371,7 +373,7 @@ fn render_query_section(
     ui.add_space(6.0);
     ui.separator();
     ui.add_space(4.0);
-    crate::panels::gpx_import_card::gpx_import_section(ui, ui_mgr, gpx_status, petal_id);
+    crate::panels::gpx_import_card::gpx_import_section(ui, ui_mgr, gpx_status, petal_id, verse_id);
 }
 
 /// Dispatches the active query mode: DB round-trip (annotated/property) via

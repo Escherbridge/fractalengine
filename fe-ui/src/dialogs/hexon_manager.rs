@@ -44,10 +44,13 @@ pub fn render_hexon_manager(
     ui_mgr: &mut UiManager,
     petal_map: &mut PetalMapState,
     active_petal_id: Option<&str>,
+    active_verse_id: Option<&str>,
     downloads: &crate::terrain_map::dto::DownloadProgressMap,
     registry_url: Option<&str>,
     local_role: &LocalUserRole,
 ) -> bool {
+    let file_dialogs = ui_mgr.file_dialogs.clone();
+    let mut dialog_failure = None;
     let ActiveDialog::HexonManager {
         ref mut installed_tilesets,
         ref mut available_tilesets,
@@ -117,11 +120,15 @@ pub fn render_hexon_manager(
                         .add(egui::Button::new("Install from file...").fill(theme::BG_SAVE))
                         .clicked()
                     {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("Hexon archive", &["hexon"])
-                            .pick_file()
-                        {
-                            actions.push(UiAction::HexonInstallFromFile(path));
+                        match file_dialogs.choose(crate::file_dialogs::FileDialogRequest {
+                            kind: fe_runtime::qa_debug::DialogKind::Open,
+                            verse_id: active_verse_id,
+                            filters: &[("Hexon archive", &["hexon"])],
+                            suggested_name: None,
+                        }) {
+                            Ok(Some(path)) => actions.push(UiAction::HexonInstallFromFile(path)),
+                            Ok(None) => {}
+                            Err(error) => dialog_failure = Some(error.to_string()),
                         }
                     }
                 });
@@ -254,6 +261,9 @@ pub fn render_hexon_manager(
         });
 
     // Drain collected actions
+    if let Some(error) = dialog_failure {
+        ui_mgr.show_error(error, ctx.input(|i| i.time));
+    }
     for action in actions {
         ui_mgr.push_action(action);
     }

@@ -34,6 +34,8 @@ pub fn drain_asset_ops(
     verse_mgr: Res<VerseManager>,
     blob_store: Option<Res<AssetBlobStore>>,
     mut status: ResMut<AssetDownloadStatus>,
+    ui_mgr: Option<Res<fe_ui::actions::UiManager>>,
+    nav: Option<Res<fe_ui::navigation_manager::NavigationManager>>,
 ) {
     if ops.0.is_empty() {
         return;
@@ -47,7 +49,14 @@ pub fn drain_asset_ops(
     for op in ops.0.drain(..) {
         let AssetOp::Download { node_id } = op;
         match resolve_asset(&verse_mgr, &blob_store.0, &node_id) {
-            Ok(resolved) => match prompt_and_copy(&resolved) {
+            Ok(resolved) => match prompt_and_copy(
+                &resolved,
+                &ui_mgr
+                    .as_ref()
+                    .map(|u| u.file_dialogs.clone())
+                    .unwrap_or_default(),
+                nav.as_ref().and_then(|n| n.active_verse_id.as_deref()),
+            ) {
                 Some(Ok(dest)) => {
                     tracing::info!(node_id = %node_id, path = %dest.display(), "Asset downloaded");
                     *status = AssetDownloadStatus {
@@ -127,15 +136,24 @@ fn resolve_asset(
 /// Open a native save dialog (suggested filename from `resolved`, default dir
 /// Downloads) and copy the blob to the chosen destination on confirm.
 /// `None` means the user cancelled — caller must not touch `status` in that case.
-fn prompt_and_copy(resolved: &ResolvedAsset) -> Option<Result<PathBuf, String>> {
-    let mut dialog = rfd::FileDialog::new().set_file_name(resolved.suggested_name.clone());
-    if let Some(dir) = dirs::download_dir() {
-        dialog = dialog.set_directory(dir);
-    }
-    let dest = dialog.save_file()?;
+fn prompt_and_copy(
+    resolved: &ResolvedAsset,
+    dialogs: &fe_ui::file_dialogs::FileDialogs,
+    verse_id: Option<&str>,
+) -> Option<Result<PathBuf, String>> {
+    let dest = match dialogs.choose(fe_ui::file_dialogs::FileDialogRequest {
+        kind: fe_runtime::qa_debug::DialogKind::Save,
+        verse_id,
+        filters: &[],
+        suggested_name: Some(&resolved.suggested_name),
+    }) {
+        Ok(Some(path)) => path,
+        Ok(None) => return None,
+        Err(error) => return Some(Err(error.to_string())),
+    };
     Some(
-        std::fs::copy(&resolved.blob_path, &dest)
-            .map(|_| dest)
+        dest.copy_from(&resolved.blob_path)
+            .map(|_| dest.as_ref().to_path_buf())
             .map_err(|e| format!("copy failed: {e}")),
     )
 }
