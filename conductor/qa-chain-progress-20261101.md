@@ -4,7 +4,7 @@ date: 2026-11-01
 status: in_progress
 source: ./handoff-20261101-qa-chain.md
 current_writer: /root/nav_clipboard_executor
-current_slice: S7 offline terrain integration and live numeric validation; S6 endpoint recheck
+current_slice: Combined S7/property-reply/S2 build, then terrain numeric and accessibility live validation
 parallel_code_worktrees: S7 ready on qa/s7-fixture; remaining S2 names in qa/s2-complete (code-only)
 ---
 
@@ -30,6 +30,28 @@ Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.
 - [ ] Include the actual 18-scenario harness runner and separate iot-bridge workspace; resolve strict relay skips.
 - [ ] Reconcile track metadata, findings, reviews and final handoff.
 - [ ] Push the finished goal, wait for CI success, verify release assets and publish tagged downloads/links.
+
+## Current acceptance state
+
+- Main source/Cargo/live owner: nav_clipboard_executor. Combined stage is building; no other lane launches apps.
+- S7 commits364b984/f3daa14/615c86b/55887d5 and strict relay6176471 are integrated. Initial GUI/helper build passed,
+  but strict basic setup exposed QA-0022: an unselected node's property write persisted while its API reply was
+  skipped by the GUI selection guard. No terrain arithmetic or full-coverage success is claimed from that run.
+- Property repair ed65f77 correlates all three property request/reply families, validates exact identity through
+  shared REST/MCP/WS cores and forwards API replies before Inspector selection guards. Independent security and
+  design reviews are clean in production;9c4b2e5 adds two missing resources to its real Bevy dispatcher journey.
+  API success and durable readback must be reverified live in the combined stage.
+- S2 source is integrated through da71a1b, preserving the property correlation fields and strict divider edges.
+  The original branch range214045a..1974bac is independently clean for semantics/security and design. Actual
+  compilation, all-panel unnamed/repeated/disabled auditing, normal OS activation and paired frame timing remain
+  pending. Launcher9c4b2e5 adds explicit gate-off/timing options;11cb8d4 restores all nine invoking-process
+  environment values in finally. The separate reviewer closed that launcher finding statically.
+- S6 focused pass04 is committed; exact resize-radius endpoints remain a new-stage live check. Earlier zero
+  measured violations still had unknown coverage and do not certify every control or compact visual state.
+- S5 has a separate docs-only checkout qa/s5-catalog. Its current expansion has922 provisional checkpoints
+  across GUI/API/OS plus planned/unreachable cases; none is counted as executed. Final scope follows actual
+  source reachability and must be refreshed after polish. Full QA convergence, UX audits, W2-W6/W7+, the integrated
+  sweep and final CI/tagged release remain open.
 
 ## Binding execution constraints
 

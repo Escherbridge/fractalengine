@@ -12,11 +12,12 @@
   "spec": "./spec.md",
   "plan": "./plan.md",
   "progress_ledger": "../../qa-chain-progress-20261101.md",
-  "current_slice": "S7 integration/live numeric validation and S6 endpoint runtime recheck",
+  "current_slice": "Combined S7, property-reply repair and S2 build; live numeric/accessibility validation pending",
   "parallel_code_only": [
-    {"slice": "S7", "branch": "qa/s7-fixture", "worktree": ".omc/worktrees/qa-s7", "head": "1b5646d", "validation": "static recheck clean; compile/live pending integration after S6", "owner": "released"},
+    {"slice": "S7", "branch": "qa/s7-fixture", "worktree": ".omc/worktrees/qa-s7", "head": "1b5646d", "validation": "integrated; initial build passed, strict live setup found QA-0022; combined live proof pending", "owner": "released"},
     {"slice": "S2 forms", "branch": "qa/s2-accessibility", "worktree": ".omc/worktrees/qa-s2", "head": "9b72e64", "validation": "static review clean; compile/live pending integration", "owner": "released"},
-    {"slice": "S2 remaining names", "branch": "qa/s2-complete", "worktree": ".omc/worktrees/qa-s2-complete", "base": "214045a", "validation": "code-only continuation; no Cargo/apps", "owner": "/root/a11y_forms_executor"}
+    {"slice": "S2 remaining names", "branch": "qa/s2-complete", "worktree": ".omc/worktrees/qa-s2-complete", "base": "214045a", "head": "1974bac", "validation": "integrated through da71a1b; independent security/design static clean; combined compile/live pending", "owner": "released"},
+    {"slice": "S5", "branch": "qa/s5-catalog", "worktree": ".omc/worktrees/qa-s5-catalog", "validation": "docs/client coverage ledger; no Cargo/apps or execution claims", "owner": "/root/s5_catalog_executor"}
   ],
   "pushed": false,
   "final_publication_authorized": true,
