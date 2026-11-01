@@ -8,7 +8,13 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
 use base64::Engine as _;
+use fe_api::input::InputSurface;
+use fe_api::operator_gate::OWNER_REQUIRED;
 use fe_api::screenshot::ScreenshotSurface;
+use fe_runtime::input::{
+    camera_locked_by_capture, input_bridge, InputOp, InputOutput, InputRequestReceiver,
+    CAMERA_LOCKED_BY_CAPTURE_CODE,
+};
 use fe_runtime::screenshot::screenshot_bridge;
 use fe_runtime::vision::{
     vision_bridge, ActiveHierarchy, CameraState, PoseSource, ProjectionState, ResolvedPose,
@@ -20,6 +26,9 @@ use serde_json::json;
 
 const SCREENSHOT: &str = "/api/v1/debug/screenshot";
 const CAMERA: &str = "/api/v1/debug/camera";
+/// The folded-in `agent_input_surface_20261031` route (I5 extends this
+/// journey file rather than adding a new one — TEST POLICY 2026-11-01).
+const INPUT: &str = "/api/v1/debug/input";
 /// Not a real PNG on purpose: the API must relay the host's bytes verbatim.
 const FAKE_PNG: &[u8] = b"\x89PNG\r\n\x1a\nfake-vision-frame";
 
@@ -84,6 +93,30 @@ async fn get_camera(h: &ApiHarness, token: &str) -> Reply {
                 .uri(CAMERA)
                 .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
+                .expect("build request"),
+        )
+        .await;
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let bytes = body_bytes(resp).await;
+    Reply {
+        status,
+        headers,
+        bytes,
+    }
+}
+
+/// POST to the folded-in input-injection route; same `Reply` shape as
+/// `post_screenshot` (this door is JSON-only, never a raw PNG body).
+async fn post_input(h: &ApiHarness, token: &str, body: &serde_json::Value) -> Reply {
+    let resp = h
+        .request(
+            Request::builder()
+                .method("POST")
+                .uri(INPUT)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
                 .expect("build request"),
         )
         .await;
@@ -241,6 +274,33 @@ fn serve_vision(rx: VisionRequestReceiver, delay: Duration) {
                     }
                 }
                 VisionOp::ReadCamera => Ok(VisionOutput::Camera(fake_camera_state())),
+            };
+            request.reply(result);
+        }
+    });
+}
+
+/// Stand-in for the Bevy host's `drain_input_requests` (folded-in
+/// `agent_input_surface_20261031`, I5). Every admitted `Inject` is answered
+/// with the exact batch size/`wait_frames` it received plus `FAKE_PNG` when
+/// `capture_after` was set — so a test asserting on the reply is really
+/// asserting the `ValidInputSpec` round-tripped the bridge intact (AC-3).
+/// `lock: true` instead answers every request with
+/// [`camera_locked_by_capture`], simulating a posed vision capture holding
+/// `CameraCaptureLock` (`§INPUT-ADDENDUM` item 4) without needing a second,
+/// real capture job in flight.
+fn serve_input(rx: InputRequestReceiver, lock: bool) {
+    std::thread::spawn(move || {
+        while let Ok(request) = rx.recv() {
+            let InputOp::Inject(spec) = &request.op;
+            let result = if lock {
+                Err(camera_locked_by_capture())
+            } else {
+                Ok(InputOutput {
+                    commands_applied: spec.commands().len() as u32,
+                    wait_frames_used: spec.wait_frames(),
+                    png: spec.capture_after().then(|| FAKE_PNG.to_vec()),
+                })
             };
             request.reply(result);
         }
@@ -535,4 +595,174 @@ async fn mcp_screenshot_without_args_still_uses_the_plain_bridge() {
         vrx.try_recv().is_err(),
         "empty-args screenshot must not touch the vision bridge"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Folded-in agent_input_surface_20261031 (plan I5, amended): extends this
+// SAME journey file rather than a new one (TEST POLICY 2026-11-01). AIS spec
+// AC-1..AC-6 plus `§INPUT-ADDENDUM` item 4's camera-lock interaction with
+// this track's `CameraCaptureLock`, as ONE journey test — the input surface
+// has no prior fe-api full-router coverage, so it earns one new test rather
+// than a scatter of point tests (mirrors the "one long journey" doctrine
+// `fe-runtime::input` and `fe-api::input`'s own unit tests already use).
+// ---------------------------------------------------------------------------
+
+/// AC-1 (disabled) -> AC-2 (role floor) -> AC-3 (round trip + capture_after)
+/// -> AC-4 (rate limit) -> AC-5 (headless) -> I5's camera-lock case, each in
+/// its own harness because the gate posture under test differs per step.
+/// Every assertion goes red if its own branch inverts: flipping `allowed`,
+/// the token's role, the fake responder's `lock` flag, the bridge wiring, or
+/// the sixth rate-limited call would each fail only its own step.
+#[tokio::test]
+async fn input_injection_disabled_role_round_trip_rate_limited_headless_and_camera_lock_journey() {
+    let click = |x: f32, y: f32| json!({ "kind": "pointer_click", "x": x, "y": y, "button": "left" });
+
+    // AC-1: disabled without the opt-in — refused before role, rate or the
+    // bridge, on both doors.
+    {
+        let (tx, rx) = input_bridge();
+        let h = ApiHarness::spawn_with_input(InputSurface::new(false, Some(tx)))
+            .await
+            .expect("spawn harness");
+        let owner = owner_token(&h).await;
+
+        let rest = post_input(&h, &owner, &json!({ "commands": [click(1.0, 1.0)] })).await;
+        assert_eq!(rest.status, StatusCode::FORBIDDEN, "{:?}", rest.json());
+        assert_eq!(
+            rest.json()["error"],
+            "input injection endpoint is disabled on this node"
+        );
+
+        let mcp = mcp_call(&h, &owner, "inject_input", json!({ "commands": [click(1.0, 1.0)] })).await;
+        assert_eq!(mcp["isError"], true, "{mcp}");
+
+        assert!(
+            rx.try_recv().is_err(),
+            "nothing may reach the render host while disabled"
+        );
+    }
+
+    // AC-2: role floor — a below-Owner token is refused even with the env
+    // on, on both doors, before the bridge.
+    {
+        let (tx, rx) = input_bridge();
+        let h = ApiHarness::spawn_with_input(InputSurface::new(true, Some(tx)))
+            .await
+            .expect("spawn harness");
+        let verse = h.seed_verse("Input Verse").await.expect("seed verse");
+        let editor = h.mint_token(&format!("VERSE#{verse}"), "editor");
+
+        let rest = post_input(&h, &editor, &json!({ "commands": [click(1.0, 1.0)] })).await;
+        assert_eq!(rest.status, StatusCode::FORBIDDEN, "{:?}", rest.json());
+        assert_eq!(rest.json()["error"], OWNER_REQUIRED);
+
+        let mcp = mcp_call(&h, &editor, "inject_input", json!({ "commands": [click(1.0, 1.0)] })).await;
+        assert_eq!(mcp["isError"], true, "{mcp}");
+
+        assert!(
+            rx.try_recv().is_err(),
+            "nothing may reach the render host below Owner"
+        );
+    }
+
+    // AC-3: the admitted batch crosses the bridge intact (the fake host
+    // echoes its own size/wait_frames back), and `capture_after` attaches
+    // FAKE_PNG as base64 in the JSON success body (this door is JSON-only,
+    // unlike the posed-capture route's raw-PNG body).
+    {
+        let (tx, rx) = input_bridge();
+        let h = ApiHarness::spawn_with_input(
+            InputSurface::new(true, Some(tx)).with_reply_timeout(Duration::from_millis(400)),
+        )
+        .await
+        .expect("spawn harness");
+        serve_input(rx, false);
+        let owner = owner_token(&h).await;
+
+        let body = json!({
+            "commands": [click(12.0, 34.0), { "kind": "scroll", "dx": 0.0, "dy": -3.0 }],
+            "wait_frames": 5,
+            "capture_after": true,
+        });
+        let rest = post_input(&h, &owner, &body).await;
+        assert_eq!(rest.status, StatusCode::OK, "{:?}", rest.json());
+        let reply = rest.json();
+        assert_eq!(reply["commands_applied"], 2);
+        assert_eq!(reply["wait_frames_used"], 5);
+        let png_b64 = reply["capture_after_png_base64"]
+            .as_str()
+            .expect("capture_after attaches a PNG");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(png_b64)
+                .expect("valid base64"),
+            FAKE_PNG
+        );
+    }
+
+    // AC-4: a burst past the 5/s per-DID budget is rate limited on the 6th
+    // call within the window — same token, same harness.
+    {
+        let (tx, rx) = input_bridge();
+        let h = ApiHarness::spawn_with_input(InputSurface::new(true, Some(tx)))
+            .await
+            .expect("spawn harness");
+        serve_input(rx, false);
+        let owner = owner_token(&h).await;
+
+        for i in 0..5 {
+            let rest = post_input(&h, &owner, &json!({ "commands": [click(i as f32, 0.0)] })).await;
+            assert_eq!(rest.status, StatusCode::OK, "call {i}: {:?}", rest.json());
+        }
+        let limited = post_input(&h, &owner, &json!({ "commands": [click(99.0, 0.0)] })).await;
+        assert_eq!(limited.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", limited.json());
+        assert_eq!(
+            limited.json()["error"],
+            "rate limit exceeded (5 input requests/sec)"
+        );
+    }
+
+    // AC-5: headless (opted in, no window/bridge) — REST 503, MCP hides the
+    // `inject_input` row entirely (mirrors `headless_host_reports_no_window_
+    // and_hides_both_mcp_rows` above, for this surface).
+    {
+        let h = ApiHarness::spawn_with_input(InputSurface::new(true, None))
+            .await
+            .expect("spawn harness");
+        let owner = owner_token(&h).await;
+
+        let rest = post_input(&h, &owner, &json!({ "commands": [click(1.0, 1.0)] })).await;
+        assert_eq!(rest.status, StatusCode::SERVICE_UNAVAILABLE, "{:?}", rest.json());
+
+        let names = mcp_tool_names(&h, &owner).await;
+        assert!(!names.contains(&"inject_input".to_string()), "{names:?}");
+    }
+
+    // I5 / `§INPUT-ADDENDUM` item 4: refused 409 while a posed capture holds
+    // `CameraCaptureLock` — the fake host answers every `Inject` with the
+    // `camera_locked_by_capture` failure the real `drain_input_requests`
+    // gives while the lock exists, and the API must map it to 409 on both
+    // doors with the stable code.
+    {
+        let (tx, rx) = input_bridge();
+        let h = ApiHarness::spawn_with_input(InputSurface::new(true, Some(tx)))
+            .await
+            .expect("spawn harness");
+        serve_input(rx, true);
+        let owner = owner_token(&h).await;
+
+        let rest = post_input(&h, &owner, &json!({ "commands": [click(1.0, 1.0)] })).await;
+        assert_eq!(rest.status, StatusCode::CONFLICT, "{:?}", rest.json());
+        assert_eq!(rest.json()["code"], CAMERA_LOCKED_BY_CAPTURE_CODE);
+
+        let mcp = mcp_call(&h, &owner, "inject_input", json!({ "commands": [click(2.0, 2.0)] })).await;
+        assert_eq!(mcp["isError"], true, "{mcp}");
+        assert_eq!(
+            mcp["content"][0]["text"],
+            format!(
+                "{CAMERA_LOCKED_BY_CAPTURE_CODE}: {}",
+                camera_locked_by_capture().message
+            )
+        );
+    }
 }
