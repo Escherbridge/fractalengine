@@ -18,6 +18,7 @@ pub struct ResultsDockState {
     pub rows: Vec<Value>,
     pub error: Option<String>,
     pub submitted_scope: String,
+    has_run: bool,
     pub elapsed_ms: Option<u128>,
     columns: Vec<String>,
     cells: Vec<Vec<String>>,
@@ -47,6 +48,7 @@ impl ResultsDockState {
     pub fn begin(&mut self, id: String, scope: String) {
         *self = Self {
             open: true,
+            has_run: true,
             request_id: Some(id),
             submitted_scope: scope,
             started: Some(Instant::now()),
@@ -57,6 +59,8 @@ impl ResultsDockState {
     pub fn complete(&mut self, rows: &[Value]) {
         self.finish();
         self.error = None;
+        self.selected_row = None;
+        self.sort = None;
         self.rows = rows.to_vec();
         self.node_ids = rows
             .iter()
@@ -99,6 +103,14 @@ impl ResultsDockState {
 
     pub fn fail(&mut self, error: &str) {
         self.finish();
+        self.rows.clear();
+        self.cells.clear();
+        self.columns.clear();
+        self.widths.clear();
+        self.order.clear();
+        self.node_ids.clear();
+        self.selected_row = None;
+        self.sort = None;
         self.error = Some(error.to_owned());
     }
 
@@ -112,25 +124,38 @@ impl ResultsDockState {
             .submitted_scope
             .strip_prefix("VERSE#")
             .map(|s| s.split("-FRACTAL#").next().unwrap_or(s));
-        if submitted_verse.is_some() && submitted_verse != active_verse {
+        if self.has_run && submitted_verse != active_verse {
             *self = Self::default();
         }
     }
 
     pub(crate) fn sort_by(&mut self, column: usize) {
+        if column >= self.columns.len() {
+            return;
+        }
         let ascending = self
             .sort
             .map(|(c, ascending)| c != column || !ascending)
             .unwrap_or(true);
         let key = &self.columns[column];
         self.order.sort_by(|&a, &b| {
-            let numbers = self.rows[a]
-                .get(key)
-                .and_then(Value::as_f64)
-                .zip(self.rows[b].get(key).and_then(Value::as_f64));
-            let order = numbers
-                .and_then(|(a, b)| a.partial_cmp(&b))
-                .unwrap_or_else(|| self.cells[a][column].cmp(&self.cells[b][column]));
+            let left = self.rows[a].get(key).unwrap_or(&Value::Null);
+            let right = self.rows[b].get(key).unwrap_or(&Value::Null);
+            let rank = |value: &Value| match value {
+                Value::Null => 0,
+                Value::Bool(_) => 1,
+                Value::Number(_) => 2,
+                Value::String(_) => 3,
+                Value::Array(_) => 4,
+                Value::Object(_) => 5,
+            };
+            let order =
+                rank(left)
+                    .cmp(&rank(right))
+                    .then_with(|| match (left.as_f64(), right.as_f64()) {
+                        (Some(a), Some(b)) => a.total_cmp(&b),
+                        _ => self.cells[a][column].cmp(&self.cells[b][column]),
+                    });
             let order = if ascending { order } else { order.reverse() };
             order.then(a.cmp(&b))
         });
@@ -180,7 +205,7 @@ pub fn render(
         .default_height(180.0)
         .height_range(72.0..=max_height)
         .show(ctx, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.strong("Results");
                 ui.label(format!(
                     "{} rows · {} ms",
@@ -190,9 +215,12 @@ pub fn render(
                 if results.pending() {
                     ui.spinner();
                 }
-                if let Some(row) = results.selected_row {
+                if let Some(row) = results
+                    .selected_row
+                    .and_then(|index| results.cells.get(index))
+                {
                     if ui.button("Copy row").clicked() {
-                        ctx.copy_text(results.cells[row].join("\t"));
+                        ctx.copy_text(row.join("\t"));
                         ui_mgr.show_toast("Copied result row", ctx.input(|i| i.time));
                     }
                 }
@@ -212,95 +240,112 @@ pub fn render(
                 });
                 return;
             }
-            let row_height = 24.0;
+            let row_height = ui.spacing().interact_size.y.max(
+                ui.text_style_height(&egui::TextStyle::Button)
+                    + ui.spacing().button_padding.y * 2.0,
+            );
             let total_width =
                 results.widths.iter().sum::<f32>() + results.widths.len() as f32 * 8.0;
             egui::ScrollArea::both()
                 .id_salt("query_result_table")
                 .auto_shrink([false, false])
-                .show_rows(ui, row_height, results.display_order().len() + 1, |ui, range| {
-                    ui.set_min_width(total_width);
-                    for display_row in range {
-                        if display_row == 0 {
-                            ui.horizontal(|ui| {
-                                for col in 0..results.columns.len() {
-                                    let label = match results.sort {
-                                        Some((c, true)) if c == col => {
-                                            format!("{} ↑", results.columns[col])
-                                        }
-                                        Some((c, false)) if c == col => {
-                                            format!("{} ↓", results.columns[col])
-                                        }
-                                        _ => results.columns[col].clone(),
-                                    };
-                                    let response = ui.add_sized(
-                                        [results.widths[col] - 6.0, row_height],
-                                        egui::Button::new(label).truncate(),
-                                    );
-                                    super::layout_policy::record_response(ui, &response);
-                                    if response.clicked() {
-                                        results.sort_by(col);
+                .show_rows(
+                    ui,
+                    row_height,
+                    results.display_order().len() + 1,
+                    |ui, range| {
+                        ui.set_min_width(total_width);
+                        for display_row in range {
+                            if display_row == 0 {
+                                ui.horizontal(|ui| {
+                                    for col in 0..results.columns.len() {
+                                        let label = match results.sort {
+                                            Some((c, true)) if c == col => {
+                                                format!("{} ↑", results.columns[col])
+                                            }
+                                            Some((c, false)) if c == col => {
+                                                format!("{} ↓", results.columns[col])
+                                            }
+                                            _ => results.columns[col].clone(),
+                                        };
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2(results.widths[col], row_height),
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                            |ui| {
+                                                ui.spacing_mut().item_spacing.x = 0.0;
+                                                let response = ui.add_sized(
+                                                    [results.widths[col] - 6.0, row_height],
+                                                    egui::Button::new(label).truncate(),
+                                                );
+                                                super::layout_policy::record_response(
+                                                    ui, &response,
+                                                );
+                                                if response.clicked() {
+                                                    results.sort_by(col);
+                                                }
+                                                let (rect, response) = ui.allocate_exact_size(
+                                                    egui::vec2(6.0, row_height),
+                                                    egui::Sense::drag(),
+                                                );
+                                                ui.painter().vline(
+                                                    rect.center().x,
+                                                    rect.y_range(),
+                                                    egui::Stroke::new(1.0, crate::theme::TEXT_DIM),
+                                                );
+                                                if response.dragged() {
+                                                    results.widths[col] = (results.widths[col]
+                                                        + response.drag_delta().x)
+                                                        .clamp(60.0, 600.0);
+                                                }
+                                            },
+                                        );
                                     }
-                                    let (rect, response) = ui.allocate_exact_size(
-                                        egui::vec2(6.0, row_height),
-                                        egui::Sense::drag(),
-                                    );
-                                    ui.painter().vline(
-                                        rect.center().x,
-                                        rect.y_range(),
-                                        egui::Stroke::new(1.0, crate::theme::TEXT_DIM),
-                                    );
-                                    if response.dragged() {
-                                        results.widths[col] = (results.widths[col]
-                                            + response.drag_delta().x)
-                                            .clamp(60.0, 600.0);
-                                    }
-                                }
-                            });
-                            continue;
-                        }
-                        let row = results.order[display_row - 1];
-                        ui.push_id(row, |ui| {
-                            ui.horizontal(|ui| {
-                                let node = row_node(&results.rows[row], nav, hierarchy);
-                                for col in 0..results.columns.len() {
-                                    let text = &results.cells[row][col];
-                                    let response = ui
-                                        .add_sized(
-                                            [results.widths[col], row_height],
-                                            egui::Button::selectable(
-                                                results.selected_row == Some(row),
-                                                text,
+                                });
+                                continue;
+                            }
+                            let row = results.order[display_row - 1];
+                            ui.push_id(row, |ui| {
+                                ui.horizontal(|ui| {
+                                    let node = row_node(&results.rows[row], nav, hierarchy);
+                                    for col in 0..results.columns.len() {
+                                        let text = &results.cells[row][col];
+                                        let response = ui
+                                            .add_sized(
+                                                [results.widths[col], row_height],
+                                                egui::Button::selectable(
+                                                    results.selected_row == Some(row),
+                                                    text,
+                                                )
+                                                .truncate(),
                                             )
-                                            .truncate(),
-                                        )
-                                        .on_hover_text(text);
-                                    super::layout_policy::record_response(ui, &response);
-                                    if response.clicked() {
-                                        results.selected_row = Some(row);
-                                        if let Some(node) = node {
-                                            nodes.request_select_and_frame(
-                                                &node.id,
-                                                node.position,
-                                                focus,
-                                            );
+                                            .on_hover_text(text);
+                                        super::layout_policy::record_response(ui, &response);
+                                        if response.clicked() {
+                                            results.selected_row = Some(row);
+                                            if let Some(node) = node {
+                                                nodes.request_select_and_frame(
+                                                    &node.id,
+                                                    node.position,
+                                                    focus,
+                                                );
+                                            }
                                         }
+                                        response.context_menu(|ui| {
+                                            if ui.button("Copy cell").clicked() {
+                                                ctx.copy_text(text.clone());
+                                                ui.close();
+                                            }
+                                            if ui.button("Copy row").clicked() {
+                                                ctx.copy_text(results.cells[row].join("\t"));
+                                                ui.close();
+                                            }
+                                        });
                                     }
-                                    response.context_menu(|ui| {
-                                        if ui.button("Copy cell").clicked() {
-                                            ctx.copy_text(text.clone());
-                                            ui.close();
-                                        }
-                                        if ui.button("Copy row").clicked() {
-                                            ctx.copy_text(results.cells[row].join("\t"));
-                                            ui.close();
-                                        }
-                                    });
-                                }
-                            })
-                        });
-                    }
-                });
+                                })
+                            });
+                        }
+                    },
+                );
         });
 }
 

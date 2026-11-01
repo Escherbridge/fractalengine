@@ -32,7 +32,7 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
         .collapsible(false)
         .resizable(true)
         .default_width(600.0)
-        .min_width(450.0)
+        .min_width(crate::ui_shell::layout_policy::dialog_width(ctx,450.0))
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .frame(
             egui::Frame::NONE

@@ -253,7 +253,12 @@ enum CaptionGlyph {
 
 /// One painted caption button (vector glyph — independent of font coverage).
 fn caption_button(ui: &mut egui::Ui, glyph: CaptionGlyph, tooltip: &str) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(CAPTION_BUTTON_SIZE, egui::Sense::click());
+    let size = if ui.ctx().viewport_rect().width() < 760.0 {
+        egui::vec2(24.0, 28.0)
+    } else {
+        CAPTION_BUTTON_SIZE
+    };
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     let response = response.on_hover_text(tooltip);
     let painter = ui.painter_at(rect);
     let hovered = response.hovered();
@@ -346,14 +351,16 @@ fn brand(ui: &mut egui::Ui, topbar: &mut TopbarState) {
             egui::vec2(BRAND_ICON_SIZE, BRAND_ICON_SIZE),
         )));
     }
-    ui.add(
-        egui::Label::new(
-            egui::RichText::new("FractalEngine")
-                .color(theme::TEXT_STRONG)
-                .strong(),
-        )
-        .selectable(false),
-    );
+    if ui.ctx().viewport_rect().width() >= 760.0 {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new("FractalEngine")
+                    .color(theme::TEXT_STRONG)
+                    .strong(),
+            )
+            .selectable(false),
+        );
+    }
 }
 
 /// Bevy system: perform the bar's pending window request on the primary
@@ -468,6 +475,97 @@ pub fn render_close_confirmation(
     });
 }
 
+fn tool_buttons(ui: &mut egui::Ui, tool: &mut ToolState, right: &mut RightSidebarState) {
+    for def in &TOOL_DEFS {
+        let active = tool.active_tool == def.tool;
+        // tool_inspector_ux_20260719 (FR-1): active MODE reads via
+        // luminance, not a saturated-blue hue (ui_ux.md §1).
+        let caption = if ui.ctx().viewport_rect().width() < 1160.0 {
+            def.glyph.to_owned()
+        } else {
+            format!("{} {}", def.glyph, def.name)
+        };
+        let btn = egui::Button::new(caption).fill(mode_button_fill(active));
+        if super::layout_policy::action(ui, btn, def.name)
+            .on_hover_text(tool_tooltip_text(def))
+            .clicked()
+        {
+            // D1/D9: one activation writer — re-press toggles to
+            // Select, and the options reveal is its job, not ours.
+            tool.activate(def.tool, right);
+        }
+    }
+}
+
+fn section_buttons(
+    ui: &mut egui::Ui,
+    gis_panel: &mut crate::gis::GisPanelState,
+    right: &mut RightSidebarState,
+) {
+    if ui
+        .add(egui::Button::new("\u{1F5FA} Data").fill(if gis_panel.open {
+            theme::BG_BUTTON_ACTIVE
+        } else {
+            theme::BG_BUTTON
+        }))
+        .on_hover_text("Query nodes and layers, export for BI")
+        .clicked()
+    {
+        gis_panel.open = !gis_panel.open;
+    }
+
+    // D7: "Tools" was the PathTools reveal; that section is
+    // retired, so the button is the Options surface's toggle —
+    // one label for "the active tool's settings", whatever the
+    // active tool is.
+    if ui
+        .add(egui::Button::new("\u{1F527} Options").fill(
+            if right.is_active(RightSidebarSection::Options) {
+                theme::BG_BUTTON_ACTIVE
+            } else {
+                theme::BG_BUTTON
+            },
+        ))
+        .on_hover_text("Settings for the active tool (pen curves, brush, stamping)")
+        .clicked()
+    {
+        right.toggle(RightSidebarSection::Options);
+    }
+
+    // FR-1 (D-A10): Settings is a one-at-a-time right-sidebar
+    // section now, not a floating modal — toggle it like the
+    // other tool surfaces.
+    if ui
+        .add(egui::Button::new("\u{2699} Settings").fill(
+            if right.is_active(RightSidebarSection::Settings) {
+                theme::BG_BUTTON_ACTIVE
+            } else {
+                theme::BG_BUTTON
+            },
+        ))
+        .on_hover_text("Application settings (render distance, mesh budget, ...)")
+        .clicked()
+    {
+        right.toggle(RightSidebarSection::Settings);
+    }
+
+    // FR-2 (D-A10): Maps (map manager) is a right-sidebar section
+    // too; the section self-seeds its data + refresh on open.
+    if ui
+        .add(egui::Button::new("\u{1F4E6} Maps").fill(
+            if right.is_active(RightSidebarSection::Maps) {
+                theme::BG_BUTTON_ACTIVE
+            } else {
+                theme::BG_BUTTON
+            },
+        ))
+        .on_hover_text("Manage petal maps")
+        .clicked()
+    {
+        right.toggle(RightSidebarSection::Maps);
+    }
+}
+
 /// Renders the top toolbar. Migrated verbatim from `panels::toolbar::top_toolbar`
 /// (FR-4). The former "Tools" button is the **Options** toggle since D7 — the
 /// `PathTools` section it used to reveal is retired into the Options
@@ -528,24 +626,16 @@ pub fn render_topbar(
                 }
                 ui.separator();
 
-                for def in &TOOL_DEFS {
-                    let active = tool.active_tool == def.tool;
-                    // tool_inspector_ux_20260719 (FR-1): active MODE reads via
-                    // luminance, not a saturated-blue hue (ui_ux.md §1).
-                    let caption = if ctx.viewport_rect().width() < 1160.0 {
-                        def.glyph.to_owned()
-                    } else {
-                        format!("{} {}", def.glyph, def.name)
-                    };
-                    let btn = egui::Button::new(caption).fill(mode_button_fill(active));
-                    if super::layout_policy::action(ui, btn, def.name)
-                        .on_hover_text(tool_tooltip_text(def))
-                        .clicked()
-                    {
-                        // D1/D9: one activation writer — re-press toggles to
-                        // Select, and the options reveal is its job, not ours.
-                        tool.activate(def.tool, right);
-                    }
+                let compact = ctx.viewport_rect().width() < 760.0;
+                if compact {
+                    ui.menu_button("Tools", |ui| {
+                        tool_buttons(ui, tool, right);
+                        if node_mgr.selected_entity().is_some() && ui.button("Deselect").clicked() {
+                            node_mgr.deselect();
+                        }
+                    });
+                } else {
+                    tool_buttons(ui, tool, right);
                 }
                 // Publish the frame's input context for the egui-side surfaces
                 // that cannot read Bevy resources (viewport hint + right-click).
@@ -559,7 +649,8 @@ pub fn render_topbar(
 
                 ui.separator();
 
-                if node_mgr.selected_entity().is_some()
+                if !compact
+                    && node_mgr.selected_entity().is_some()
                     && ui
                         .add(egui::Button::new("\u{2715} Deselect").fill(theme::BG_DANGER))
                         .clicked()
@@ -573,71 +664,10 @@ pub fn render_topbar(
                         caption_buttons(ui, topbar);
                         ui.separator();
 
-                        if ui
-                            .add(egui::Button::new("\u{1F5FA} Data").fill(if gis_panel.open {
-                                theme::BG_BUTTON_ACTIVE
-                            } else {
-                                theme::BG_BUTTON
-                            }))
-                            .on_hover_text("Query nodes and layers, export for BI")
-                            .clicked()
-                        {
-                            gis_panel.open = !gis_panel.open;
-                        }
-
-                        // D7: "Tools" was the PathTools reveal; that section is
-                        // retired, so the button is the Options surface's toggle —
-                        // one label for "the active tool's settings", whatever the
-                        // active tool is.
-                        if ui
-                            .add(egui::Button::new("\u{1F527} Options").fill(
-                                if right.is_active(RightSidebarSection::Options) {
-                                    theme::BG_BUTTON_ACTIVE
-                                } else {
-                                    theme::BG_BUTTON
-                                },
-                            ))
-                            .on_hover_text(
-                                "Settings for the active tool (pen curves, brush, stamping)",
-                            )
-                            .clicked()
-                        {
-                            right.toggle(RightSidebarSection::Options);
-                        }
-
-                        // FR-1 (D-A10): Settings is a one-at-a-time right-sidebar
-                        // section now, not a floating modal — toggle it like the
-                        // other tool surfaces.
-                        if ui
-                            .add(egui::Button::new("\u{2699} Settings").fill(
-                                if right.is_active(RightSidebarSection::Settings) {
-                                    theme::BG_BUTTON_ACTIVE
-                                } else {
-                                    theme::BG_BUTTON
-                                },
-                            ))
-                            .on_hover_text(
-                                "Application settings (render distance, mesh budget, ...)",
-                            )
-                            .clicked()
-                        {
-                            right.toggle(RightSidebarSection::Settings);
-                        }
-
-                        // FR-2 (D-A10): Maps (map manager) is a right-sidebar section
-                        // too; the section self-seeds its data + refresh on open.
-                        if ui
-                            .add(egui::Button::new("\u{1F4E6} Maps").fill(
-                                if right.is_active(RightSidebarSection::Maps) {
-                                    theme::BG_BUTTON_ACTIVE
-                                } else {
-                                    theme::BG_BUTTON
-                                },
-                            ))
-                            .on_hover_text("Manage petal maps")
-                            .clicked()
-                        {
-                            right.toggle(RightSidebarSection::Maps);
+                        if compact {
+                            ui.menu_button("Panels", |ui| section_buttons(ui, gis_panel, right));
+                        } else {
+                            section_buttons(ui, gis_panel, right);
                         }
                         ui.min_rect().min.x
                     });

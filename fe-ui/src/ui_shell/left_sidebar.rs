@@ -71,7 +71,8 @@ pub fn render_left_sidebar(
     // hierarchy_visibility_groups_20260808 Phase 1: sidebar eye toggles.
     vis_state: &mut crate::visibility::VisibilityState,
 ) {
-    sidebar_state.open = left_visibility(state.policy, state.user_intent);
+    sidebar_state.open = left_visibility(state.policy, state.user_intent)
+        && super::layout_policy::can_show_left(ctx);
     sidebar::left_sidebar(
         ctx,
         sidebar_state,
@@ -104,6 +105,21 @@ mod tests {
         // through all of them (D-A11 sticky).
         let p = LeftSidebarPolicy::Manual;
         assert!(left_visibility(p, true));
+        for (physical, scale) in [(640.0, 2.0), (1024.0, 1.0), (1280.0, 1.0), (1920.0, 1.0)] {
+            let points = physical / scale;
+            let protected = super::super::layout_policy::protected_width(points, scale);
+            let left = if points >= protected + 240.0 {
+                (points - protected - 120.0).clamp(120.0, 400.0)
+            } else {
+                0.0
+            };
+            let right = (points - protected - left).max(0.0);
+            assert!(points - left - right >= points * 0.45 - 0.01);
+            assert!(
+                left_visibility(p, true),
+                "effective collapse must not change user intent"
+            );
+        }
     }
 
     #[test]

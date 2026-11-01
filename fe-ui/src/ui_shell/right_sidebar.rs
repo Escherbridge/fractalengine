@@ -285,6 +285,9 @@ pub fn render_right_sidebar(
     // are its sole writers.
     volume_report: &VolumeReportState,
 ) {
+    if !super::layout_policy::can_show_right(ctx) {
+        return;
+    }
     let portal_open = ui_mgr.portal_is_open();
     if portal_open {
         // Portal open swaps the whole right region to the portal toolbar.
@@ -1383,7 +1386,7 @@ fn section_glyph(section: RightSidebarSection) -> &'static str {
 /// selection-default), which is why it writes `toggle` rather than the
 /// idempotent `reveal` that `UiAction::RevealSection` uses.
 fn section_rail(ui: &mut egui::Ui, state: &mut RightSidebarState) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.add_space(8.0);
         for section in ALL_SECTIONS {
             let glyph = section_glyph(section);

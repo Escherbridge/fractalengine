@@ -68,7 +68,7 @@ pub fn render_gltf_import_dialog(
         .collapsible(false)
         .resizable(false)
         .default_width(340.0)
-        .max_width(400.0)
+        .max_width(crate::ui_shell::layout_policy::dialog_width(ctx, 400.0))
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .frame(
             egui::Frame::NONE

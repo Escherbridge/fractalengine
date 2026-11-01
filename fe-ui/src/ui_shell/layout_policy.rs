@@ -83,15 +83,34 @@ pub fn scroll<R>(
     output
 }
 
-/// Width left after reserving the viewport and a compact opposite sidebar.
+/// Physical-pixel viewport floor, expressed in the current egui point scale.
+pub fn protected_width(window_width: f32, pixels_per_point: f32) -> f32 {
+    (window_width * 0.45)
+        .max(360.0 / pixels_per_point.max(0.01))
+        .min(window_width)
+}
+
+pub fn can_show_left(ctx: &egui::Context) -> bool {
+    ctx.available_rect().width()
+        >= protected_width(ctx.viewport_rect().width(), ctx.pixels_per_point()) + 240.0
+}
+
+pub fn can_show_right(ctx: &egui::Context) -> bool {
+    ctx.available_rect().width()
+        >= protected_width(ctx.viewport_rect().width(), ctx.pixels_per_point()) + 120.0
+}
+
 pub fn right_width(ctx: &egui::Context) -> f32 {
-    let protected = (ctx.viewport_rect().width() * 0.45).max(360.0);
-    (ctx.available_rect().width() - protected).max(120.0)
+    (ctx.available_rect().width()
+        - protected_width(ctx.viewport_rect().width(), ctx.pixels_per_point()))
+    .max(0.0)
 }
 
 pub fn left_width(ctx: &egui::Context) -> f32 {
-    let protected = (ctx.viewport_rect().width() * 0.45).max(360.0);
-    (ctx.available_rect().width() - protected - 280.0).clamp(120.0, 400.0)
+    (ctx.available_rect().width()
+        - protected_width(ctx.viewport_rect().width(), ctx.pixels_per_point())
+        - 120.0)
+        .clamp(120.0, 400.0)
 }
 
 pub fn editor_height(ctx: &egui::Context) -> f32 {
@@ -108,6 +127,12 @@ pub fn trailing_row<R>(
     })
 }
 
+pub fn dialog_width(ctx: &egui::Context, preferred: f32) -> f32 {
+    preferred
+        .min((ctx.viewport_rect().width() * 0.55).max(120.0))
+        .min((ctx.viewport_rect().width() - 16.0).max(0.0))
+}
+
 pub fn bounded_window<'a>(
     ctx: &egui::Context,
     title: impl Into<egui::WidgetText>,
@@ -115,7 +140,7 @@ pub fn bounded_window<'a>(
     let screen = ctx.viewport_rect();
     egui::Window::new(title)
         .constrain_to(screen.shrink(8.0))
-        .max_width((screen.width() * 0.55).max(280.0))
+        .max_width(dialog_width(ctx, f32::INFINITY))
         .max_height((screen.height() - 90.0).max(160.0))
         .hscroll(true)
         .vscroll(true)

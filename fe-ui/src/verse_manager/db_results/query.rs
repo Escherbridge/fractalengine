@@ -48,12 +48,11 @@ pub(super) fn route_query_reply(
 }
 
 /// Legacy uncorrelated `QueryResult` (no current GUI sender): flag-priority
-/// claim — GIS panel > Paths tab > ad-hoc Query tab.
+/// claim — pending GIS panel or Paths tab only.
 pub(super) fn handle_query_result(
     data: &[serde_json::Value],
     gis_panel: &mut GisPanelState,
     path_state: &mut PathEditorState,
-    inspector: &mut InspectorFormState,
 ) {
     if gis_panel.query_pending {
         gis_panel.results = crate::gis::parse_gis_rows(data);
@@ -61,7 +60,6 @@ pub(super) fn handle_query_result(
     } else if path_state.tracks_pending {
         crate::actions::path::apply_track_rows(path_state, crate::gis::parse_gis_rows(data));
     }
-    let _ = inspector; // Ad-hoc output requires a matching request id.
 }
 
 /// `Error`: log, clear a stranded pen create, and surface a humanized error

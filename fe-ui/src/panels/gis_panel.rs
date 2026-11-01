@@ -50,7 +50,7 @@ pub(crate) fn render_gis_panel(
         .open(&mut still_open)
         .resizable(true)
         .default_width(360.0)
-        .min_width(300.0)
+        .min_width(crate::ui_shell::layout_policy::dialog_width(ctx, 300.0))
         .frame(
             egui::Frame::NONE
                 .fill(theme::BG_DIALOG)
@@ -528,6 +528,6 @@ fn render_results(
     if let Some((node_id, pos)) = clicked_row {
         // camera_focus_clip_20260716 FR-2: carry node_id so apply_camera_focus
         // can prefer the live spawned transform over this cached fallback.
-        node_mgr.request_select_and_frame(&node_id,pos,camera_focus);
+        node_mgr.request_select_and_frame(&node_id, pos, camera_focus);
     }
 }

@@ -375,7 +375,7 @@ pub(super) fn apply_db_results(
             DbResult::QueryResult {
                 data,
                 correlation_id: None,
-            } => query::handle_query_result(data, &mut gis_panel, &mut path_state, &mut inspector),
+            } => query::handle_query_result(data, &mut gis_panel, &mut path_state),
             DbResult::Error(msg) => query::handle_error(
                 msg,
                 &mut path_state,
@@ -1547,6 +1547,31 @@ mod tests {
             .begin("ui-query-6".into(), "VERSE#v".into());
         ins.query_results.complete(&[]);
         assert!(ins.query_results.rows.is_empty() && ins.query_results.error.is_none());
+        ins.query_results.complete(&[
+            json!({"n":2}),
+            json!({"n":10}),
+            json!({"n":"15"}),
+            json!({"n":null}),
+            json!({"n":true}),
+        ]);
+        ins.query_results.sort_by(0);
+        assert_eq!(ins.query_results.display_order(), &[3, 4, 0, 1, 2]);
+        ins.query_results.sort_by(0);
+        assert_eq!(ins.query_results.display_order(), &[2, 1, 0, 4, 3]);
+        ins.query_results.begin("no-verse".into(), String::new());
+        ins.query_results.complete(&[json!({"old":true})]);
+        ins.query_results.invalidate(Some("v"));
+        assert!(
+            ins.query_results.rows.is_empty(),
+            "entering a verse clears no-verse results"
+        );
+        let rows_before = ins.query_results.rows.clone();
+        query::handle_query_result(&[json!({"foreign":true})], &mut gis, &mut path);
+        assert_eq!(
+            ins.query_results.rows, rows_before,
+            "unmatched legacy replies never replace dock data"
+        );
+
         assert_eq!(path.tracks.len(), 1);
         assert_eq!(path.tracks[0].node_id, "track-1");
         assert!(!path.tracks_pending && path.tracks_request_id.is_none());

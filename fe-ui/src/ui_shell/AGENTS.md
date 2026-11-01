@@ -300,3 +300,12 @@ unsafe ID reconstruction or post-EndPass read_response fallback is used. Each sh
 observations with its cumulative pass number so discarded/repeated egui passes do not mix geometry.
 S2 can use these small helpers while naming the remaining controls. Unvisited controls remain explicit
 coverage gaps. Narrow tool captions shorten to glyphs while accessible names retain full tool names.
+
+
+Compact geometry keeps the requested section and manual left-sidebar intent unchanged. When both
+120-point sidebar minima cannot coexist with the protected viewport, effective left visibility collapses;
+it returns on widening. The viewport floor is 360 physical pixels divided by current pixels-per-point.
+A still-infeasible right section also yields without changing its request. At narrow widths the topbar
+uses native Tools/Panels menus, smaller caption cells and icon-only branding; section rails wrap.
+Native dialog minimum and maximum widths use the same policy cap, so caller preferences cannot invert
+resize constraints at the supported 640-pixel window / 2x UI scale edge.
