@@ -107,18 +107,21 @@ function New-QaSceneFixture {
     }
     if ($Name -eq 'basic') {
         $plain = Invoke-QaFixtureApi GET "/api/v1/petals/$($petals[0])/terrain" $token
+        if ($plain.petal_id -cne $petals[0]) { throw 'fixture: plain terrain read returned another petal' }
         Assert-QaFixtureJson $plain.terrain $null 'basic/Petal A/terrain'
     }
     $predicate = "petal_id = '$($petals[0])' AND properties.qa_fixture = 'terrain' AND properties.qa_role = 'value' AND tombstone = NONE"
-    $rowsSql = "SELECT node_id, petal_id, display_name, position, properties.qa_value AS qa_value FROM node WHERE $predicate ORDER BY properties.qa_value ASC"
+    $rowsSql = "SELECT node_id, petal_id, display_name, position, properties.qa_value AS qa_value FROM node WHERE $predicate ORDER BY qa_value ASC"
     $sumSql = "SELECT count() AS fixture_count, math::sum(properties.qa_value) AS fixture_sum FROM node WHERE $predicate GROUP ALL"
     $rows = Invoke-QaFixtureApi POST '/api/v1/query' $token @{sql=$rowsSql}
     $sum = Invoke-QaFixtureApi POST '/api/v1/query' $token @{sql=$sumSql}
     $queryRows = @($rows.data)
     $sumRows = @($sum.data)
-    if ($queryRows.Count -ne 3 -or $sumRows.Count -ne 1 -or $sumRows[0].fixture_count -ne 3 -or $sumRows[0].fixture_sum -ne 60) {
+    if ($queryRows.Count -ne 3 -or $sumRows.Count -ne 1) {
         throw 'fixture: scoped query oracle must contain exactly 3 values summing to 60'
     }
+    Assert-QaFixtureJson $sumRows[0].fixture_count 3 'query/count'
+    Assert-QaFixtureJson $sumRows[0].fixture_sum 60 'query/sum'
     for ($index = 0; $index -lt 3; $index++) {
         if ($queryRows[$index].node_id -cne $nodeIds[$index] -or $queryRows[$index].petal_id -cne $petals[0] -or
             $queryRows[$index].display_name -cne "Cube $($index+1)" -or $queryRows[$index].qa_value -ne 10*($index+1)) {
@@ -131,9 +134,9 @@ function New-QaSceneFixture {
     }
     if (@($markers.data).Count -ne 2) { throw 'fixture: origin marker rows missing' }
     for ($index = 0; $index -lt 2; $index++) {
-        $matches = @($markers.data | Where-Object { $_.node_id -ceq $markerIds[$index] -and $_.petal_id -ceq $petals[$index] })
-        if ($matches.Count -ne 1) { throw 'fixture: origin marker hierarchy differs' }
-        Assert-QaFixtureJson $matches[0].position @(0,0,0) "marker/$index/position"
+        $markerRows = @($markers.data | Where-Object { $_.node_id -ceq $markerIds[$index] -and $_.petal_id -ceq $petals[$index] })
+        if ($markerRows.Count -ne 1) { throw 'fixture: origin marker hierarchy differs' }
+        Assert-QaFixtureJson $markerRows[0].position @(0,0,0) "marker/$index/position"
     }
     return @{
         name=$Name; verse_id=$verseId; fractal_id=$fractalId; petal_a_id=$petals[0]; petal_b_id=$petals[1]

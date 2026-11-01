@@ -2,13 +2,13 @@
 
 use std::{io::Cursor, path::PathBuf};
 
-use anyhow::{Context, Result, ensure};
-use fe_format::{HexonArchive, HexonManifest, manifest::ElevationEncoding, manifest::TilesetMeta};
+use anyhow::{ensure, Context, Result};
+use fe_format::{manifest::ElevationEncoding, manifest::TilesetMeta, HexonArchive, HexonManifest};
 use fe_terrain::{
     config::TileSourceMode,
     petal_binding::config_for_tileset,
     projection::Projection,
-    tiles::{HexonStore, TileCoord, TilesetRegistry, assemble_bundles, bundle_tileset},
+    tiles::{assemble_bundles, bundle_tileset, HexonStore, TileCoord, TilesetRegistry},
 };
 use image::{ImageFormat, Rgb, RgbImage};
 use serde_json::json;

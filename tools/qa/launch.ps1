@@ -1,5 +1,5 @@
 ﻿# tools/qa/launch.ps1 — start a staged build in a fresh, isolated run dir
-# and (for the "basic" fixture) seed a deterministic scene over REST before
+# and seed checked basic/terrain scenes over REST before
 # handing back control. See tools/qa/AGENTS.md for the full design and the
 # non-obvious gotchas this script works around.
 #

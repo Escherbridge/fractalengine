@@ -42,11 +42,12 @@ read-back that is evidence only, never a UX step).
 | S01 | G1 | "Make a new world, a fractal in it and a petal to build in" | none needed |
 | S02 | G2 | "Pick the cube and slide it along X with the arrows" | basic |
 | S03 | G3 | "Go from Petal A to Petal B and back" | basic |
-| S04 | G4 | "Give this petal a map and see the terrain" | basic + TerrainTileset hexon |
-| S05 | G5 | "Sculpt a cut, see the cut/fill heatmap and read the volume" | S04's petal |
-| S06 | G6 | "Run a query template from the Inspector" | basic |
+| S04 | G4 | "Give this petal a map and see the terrain" | basic or terrain; generated offline TerrainRGB |
+| S05 | G5 | "Raise/lower a known square and verify cut/fill" | fresh terrain; two bound petals |
+| S06 | G6 | "Query three known values and their sum" | basic or terrain; values 10/20/30 |
 | S07 | G7 | "Move, maximize and close the window" | basic |
 | S08 | - | polish visual checklist (18 items, `.omc/research/polish-ux-20261031.md`) | basic |
+| S09 | - | queued native dialogs and physical window controls | basic |
 
 ## Rotation (fe-qa-pass §rotation)
 

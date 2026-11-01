@@ -2,43 +2,50 @@
 type: Scenario
 id: S04
 gold: G4
-title: Set a petal map and see terrain
-fixture: basic + an installed TerrainTileset hexon
-verified_in_pass: "none (blocked: no offline TerrainTileset sample, QA-0005)"
-tags: [gold, terrain, maps, petal-map]
+title: Set a petal map and see offline terrain
+fixture: basic or terrain
+verified_in_pass: "pending S7 build and live validation"
+tags: [gold, terrain, maps, petal-map, offline]
 ---
 
-# S04 — "Give this petal a map and see the terrain"
+# Give this petal a map and see the terrain
 
-**Precondition:** `F info` → `fixture.terrain_bound` or at least one map in
-the Maps "Installed" tab. `launch.ps1` installs any `TerrainTileset` hexon
-from `sample-hexons/dist/` into the run's `FE_HEXON_DIR`; none ships today
-(the three samples are Terrain/Scene/GpxCollection), so this scenario is
-**BLOCKED** and recorded as such until one does. Do NOT click "Install from
-file…": it opens a native `rfd` dialog synthetic input cannot drive and
-that blocks the frame loop (fractalengine `src/AGENTS.md`
-§agent-input-surface) — the next input call then times out.
+Launch `tools/qa/launch.ps1 -Fixture basic` for a plain Petal A and an
+offline terrain-bound Petal B. Use `-Fixture terrain` for two bound petals
+when continuing into the independent raise/lower oracle in S05. The staged
+generator creates a real TerrainTileset and installs it through verified
+bundle assembly. Generation or binding failure fails launch; no absent-map
+fallback is a valid fixture.
 
-**Success signal (gold G4):** after "Set petal map", the row reads "Active
-map ✓" AND terrain tiles render in the viewport within ~10 s, with no
-silent failure (M-03/X-01).
+Define `F` as `python tools/qa/fe.py --run <this-run>`. Read `F info` for
+the exact IDs and `<run>/terrain-fixture/descriptor.json` for the serialized
+config, tile ring and oracle. This setup is evidence, not a gold UI step.
 
-## Steps
+1. Enter Petal B through its named sidebar row. Capture and inspect the
+   viewport, then open Maps using the named button. Installed must contain
+   **QA flat sector and analytic tent hill**, id `qa-analytic-terrain`.
+   Its map control must report Active map. Record column alignment and
+   viewport width as layout evidence.
+2. To exercise actual map selection, clear that active assignment using
+   its row control, inspect the result, then click the same row's Set petal
+   map control. Locate each control from the current UI tree and screenshot.
+   The UI may select its normal hybrid policy; the installed source has no
+   external tile URL. Do not substitute a REST PUT for these gold actions.
+3. Close Maps with its named Close button. Capture now and after residency
+   settles. Inspect both the window and a scene-only capture. Verify a real
+   rendered terrain surface with a flat origin sector and the separate
+   hill around local (80,80), not just the editor grid. A camera capture
+   aimed at the descriptor hill can help inspect this landmark.
+4. Probe `F camera`: projection must be present and world scale 1. Read
+   `/api/v1/petals/{petal_b_id}/terrain` as evidence: enabled, TerrainRGB,
+   installed id, min/max zoom 17 and scale 1 must match. Local bound tile
+   coverage and a visible surface are prerequisites for S05; camera
+   `wait-settle` alone does not certify asset or terrain completion.
 
-1. Enter Petal B (S03 steps 1-4, cards path).
-2. Open Maps: `F click 856 20 --wait 10 --capture --label s04-maps`.
-   **Checkpoint 1:** Maps panel with Installed/Available/Downloads tabs,
-   the run's hexon dir path, at least one installed map row with its "Map"
-   column ("Set petal map"), and header/body columns aligned (M-01).
-3. Click that row's "Set petal map" (locate it), then shoot now and 2 s later:
-   ```
-   F click <Set petal map> --wait 10 --capture --label s04-set
-   F wait-settle --timeout 15
-   F shot --label s04-terrain
-   F shot --no-ui --label s04-scene-only
-   ```
-   **Checkpoint 2:** "Active map ✓"; terrain visible in the window shot and
-   in the scene-only render; `F camera` → `projection` is non-null.
-4. Close Maps (`F click 1250 89`). **Checkpoint 3:** the viewport returns
-   to its full width. *(pass 01 probe: the right panel stays at the Maps
-   width and squeezes the viewport to ~110 px — QA-0003, S2.)*
+Success requires the real UI map assignment, visible loaded terrain,
+matching projection/units and no silent failure. If tiles never load,
+record a blocker and do not count a blank grid or zero report as success.
+The descriptor's nine offline 256px tiles cover a 3x3 ring; there is no
+external dataset or GIS installation prerequisite. S09 covers queued
+Install from file; synthetic Browse without an answer returns a typed
+in-app error and must never open a blocking native picker.

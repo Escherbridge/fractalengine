@@ -108,37 +108,43 @@ containing a reparse point. This conservatively retains old junction-based
 runs. Directory checks protect normal local cleanup, not a concurrent hostile
 filesystem writer; do not run cleanup against an untrusted shared QA tree.
 
-## §fixture-basic
+## Fixture modes and oracle
 
-`launch.ps1 -Fixture basic` (the default) builds, over REST, using the
-bootstrap flow above:
+`launch.ps1 -Fixture basic` binds deterministic offline terrain to Petal B;
+`-Fixture terrain` binds it to both Petal A and Petal B. `-Fixture none`
+skips generation and all REST fixture writes. Neither seeded mode silently
+continues when terrain is unavailable. The staged `build_qa_terrain.exe`
+runs before the GUI and uses the real TerrainRGB export, bundling, verified
+assembly and installation path. Its descriptor lives at
+`<run>/terrain-fixture/descriptor.json`; implementation rationale and numeric
+oracle are in `fe-terrain/examples/AGENTS.md`. External GIS data and network
+tile sources are not prerequisites.
 
-```
-QA Basic (verse)
-└── QA Fractal
-    ├── Petal A — "Cube 1/2/3" nodes, all bound to one uploaded
-    │             fractalengine/assets/samples/info_panel.glb asset
-    └── Petal B — terrain-bound IF a TerrainTileset hexon is installed
-                  from sample-hexons/dist/ (install_sample_hexons.exe,
-                  staged alongside the exe), else left plain and logged.
-```
+Both seeded modes create one QA verse, one QA Fractal and two petals. Petal A
+holds Cube 1/2/3 using the uploaded run-local sample GLB at (-12,0,0),
+(0,0,-12), (12,0,0), outside the rectangle oracle. Each cube has
+`qa_fixture=terrain`, `qa_role=value` and `qa_value=10/20/30`. Both petals
+also contain an asset-free `QA oracle origin` marker at (0,0,0), tagged
+`qa_role=marker`, `qa_marker=flat-origin`, `qa_base_m=0`. Marker rows are
+excluded from value queries but deliberately appear in all-node queries.
 
-As of this writing all three sample hexons under `sample-hexons/dist/`
-(`alpine-demo-terrain`, `lakeside-scene`, `morning-run-gpx`) are `Terrain`,
-`Scene` and `GpxCollection` kind respectively — `install_sample_hexons`
-expects `TerrainTileset` and skips all three. So the terrain-binding step
-is exercised as a no-op path today; `fixture_detail.terrain_bound` in
-`current.json` says whether it actually ran. The PUT body it would send
-(`fe_terrain::config::TerrainConfig`, DEC-C22's strictest-reader contract)
-is `{enabled, origin:{origin_lat,origin_lon,origin_ele}, tile_source_url,
-elevation_source, tile_source_mode, tileset_hexon_uris:[<hexon_id>]}` —
-`tileset_hexon_uris` takes the bare hexon id (`fe-ui/src/terrain_map/mod.rs`
-confirms this, no `hexon://` scheme prefix).
+`_fixture.ps1` owns checked REST setup. It requires successful envelopes and
+valid created IDs, checks each property echo and readback, compares terrain
+PUT echoes and GET readback structurally against the typed descriptor, then
+verifies scoped node identities/positions, both markers, count 3 and sum 60.
+Any failure throws into launch's exact process-tree cleanup. Token strings
+are never logged. Persistence readback does not prove rendered residency.
 
-`current.json` (written to the run dir, pointed at by `.qa/current`) records
-`fixture_detail` with every id a later QA-loop script needs:
-`verse_id`, `fractal_id`, `petal_a_id`, `petal_b_id`, `asset_id`,
-`node_ids`, `terrain_bound`.
+`current.json` records hierarchy, value-node and marker-node IDs,
+`terrain_petal_ids`, descriptor path, exact query SQL and terrain oracle.
+`terrain_bound=true` means the requested binding echoes and readbacks passed;
+S04 still inspects real terrain on screen before S05. Native/world scale 1,
+TerrainRGB and offline mode come from serialized TerrainConfig.
+
+The generator is deterministic at fixed code/dependency versions: fixed
+manifest IDs/timestamps, ordered tile generation and bundling. Runtime IDs,
+installation timestamps and run paths remain per-run. Source archive BLAKE3
+is recorded in its descriptor for later reproducibility checks.
 
 ## §fe-py
 
