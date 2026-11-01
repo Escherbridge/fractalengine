@@ -16,6 +16,7 @@ mod gpx_bridge;
 mod panic_log;
 mod screenshot_bridge;
 mod terrain_bridge;
+mod vision_bridge;
 mod window_chrome;
 
 /// SurrealKV database path, opened exactly once per process by the DB thread.
@@ -411,8 +412,11 @@ fn main() {
     // Channel: API thread sends ApiCommand -> tx, Bevy drains from rx.
     let (api_cmd_tx, api_cmd_rx) = crossbeam::channel::bounded(256);
     // Agent screenshot bridge: API thread -> Bevy capture (fe-api/AGENTS.md
-    // §screenshot; the endpoint stays off unless FE_API_SCREENSHOT_ALLOW=1).
+    // §screenshot; the endpoint is on unless FE_API_SCREENSHOT_ALLOW=0).
     let (screenshot_tx, screenshot_rx) = fe_runtime::screenshot::screenshot_bridge();
+    // Agent vision bridge: posed captures + camera read-back (src/AGENTS.md
+    // §vision) — separate from the plain GET bridge above.
+    let (vision_tx, vision_rx) = fe_runtime::vision::vision_bridge();
     let (transform_broadcast_tx, _) =
         tokio::sync::broadcast::channel::<fe_runtime::messages::TransformUpdate>(1024);
     // Revocation broadcast: Bevy sends revoked JTIs, API thread updates its cache.
@@ -541,12 +545,13 @@ fn main() {
         elevated_query_allowed: fe_api::elevated_query_allowed_from_env(),
         // Per-owner asset upload quota (default 2 GiB) — fe-api/AGENTS.md §asset-ingest.
         upload_quota_bytes: fe_api::upload_quota_bytes_from_env(),
-        // Agent screenshot surface: off unless FE_API_SCREENSHOT_ALLOW=1 (read
-        // once here; loud WARN when on) — fe-api/AGENTS.md §screenshot.
+        // Agent screenshot + vision surface: on unless FE_API_SCREENSHOT_ALLOW=0
+        // (read once here; loud WARN when on) — fe-api/AGENTS.md §screenshot.
         screenshot: fe_api::screenshot::ScreenshotSurface::new(
             fe_api::screenshot::screenshot_allowed_from_env(),
             Some(screenshot_tx),
-        ),
+        )
+        .with_vision(vision_tx),
     });
 
     // Window chrome: taskbar/window icon + the title bar's brand mark.
@@ -566,6 +571,8 @@ fn main() {
             screenshot_bridge::surface_saved_screenshots,
         ),
     );
+    // Agent vision: posed window/scene captures + camera read-back (src/AGENTS.md §vision).
+    vision_bridge::install(&mut app, vision_rx);
 
     // ---- Entity Store (in-memory hot cache) ----
     app.insert_resource(SharedEntityStore(entity_store));

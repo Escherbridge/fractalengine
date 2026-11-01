@@ -1036,11 +1036,21 @@ Editor+-gated (RP-4) and every writer validates its `did:key` grammar
 
 `screenshot_bridge.rs` is the Bevy end of fe-api §screenshot:
 
-- Both paths go through ONE helper, `capture_primary_window_png(commands,
-  on_encoded)`: spawn `Screenshot::primary_window()`, and on
+- Every capture goes through ONE helper, `pub(crate) capture_png(commands,
+  screenshot, on_encoded) -> Entity`: spawn the given `Screenshot` (primary
+  window, or a render-target image for §vision scene mode), and on
   `ScreenshotCaptured` run the one-shot `on_encoded` continuation with the PNG
   on the `AsyncComputeTaskPool` (observers are `Fn`, so the `FnOnce`
   continuation sits in an `Arc<Mutex<Option<_>>>` slot taken on first fire).
+  It returns the `Screenshot` entity so a torn-down §vision job can despawn a
+  capture that will never fire. `capture_primary_window_png` (F12 + GET) is a
+  one-line wrapper over it.
+- While `fe_renderer::camera::CameraCaptureLock` exists (a §vision window job
+  holds the camera at an agent's pose), `drain_screenshot_requests` returns
+  WITHOUT draining: a plain GET stays queued and is served unchanged the first
+  frame after the lock lifts, so it never returns a half-posed frame. The GET's
+  own 5 s timeout still applies (a posed job's settle can outlast it — the agent
+  then sees 504 and retries).
 - `drain_screenshot_requests` drains every queued
   `fe_runtime::screenshot::ScreenshotRequest` (the API thread's bounded bridge,
   created in `main.rs` and handed to `ApiConfig.screenshot`) and serves them all
@@ -1065,3 +1075,91 @@ Editor+-gated (RP-4) and every writer validates its `did:key` grammar
   `data/screenshots/fractalengine-YYYYMMDD-HHMMSS-mmm.png` (UTC; `data/` is the
   app data dir beside the DB) off-thread, and `surface_saved_screenshots` toasts
   the absolute path or the failure. No API gate — it is the local keyboard.
+
+## §vision (agent-vision capture orchestrator, `agent_vision_20261031` V5)
+
+`vision_bridge.rs` is the Bevy end of fe-api §screenshot's `POST` (posed
+capture) and §camera-state's `GET /api/v1/debug/camera`, over the separate
+`fe_runtime::vision` bridge (fe-runtime §vision-bridge). `main.rs` creates the
+bridge, hands the sender to `ScreenshotSurface::with_vision`, and calls
+`vision_bridge::install(&mut app, rx)` — the same wiring the tests use.
+
+**Schedule.** `drain_vision_requests` (Update, after
+`fetch_and_spawn_terrain_chunks` so it reads the freshly grounded projection)
+answers `ReadCamera` in the frame it arrives (any job state; `locked: true`
+while a window job holds the camera) and resolves a `Capture`: every dynamic
+refusal (`no_projection`, `tile_outside_tileset`, `geo_out_of_projection_range`,
+`node_not_found`, `node_hidden`, `not_active_petal`, `petal_not_found`,
+`nothing_to_frame`, `window_minimized`, `no_window`, `degenerate_camera`) is
+decided there, before anything moves, and a second capture while a job exists
+is `capture_in_progress` (fe-api also refuses it earlier via its 1-permit
+slot). Then `(apply_vision_pose, advance_vision_job).chain()` runs in
+PostUpdate **before `TransformSystems::Propagate`**: the pose is written after
+`orbit_camera_system` (private to fe-renderer, in Update) could have touched
+the camera this frame, and before propagation, so the posed frame renders the
+same frame.
+
+**State machine** (`VisionJob(Option<ActiveJob>)`, single flight):
+
+```
+drain: resolve ──refusal──► reply 422/409 (nothing moved)
+   │ ok (window+pose: insert CameraCaptureLock)
+   ├─ focus.navigate ─► Navigating ─(target spawned ≥2 frames, or 300-frame cap)─► resolve
+   ▼
+Posing ─► Settling ─(frames ≥ settle [scene: ≥2 AND capture ring resident])─► Capturing ─► finish_job
+              └─(600 frames or 20 s: capture anyway, settled:false)─┘          (PNG on compute pool)
+any phase ─(24 s job cap)─► finish_job(capture_timed_out)
+```
+
+- **Window mode** snapshots `Transform` + the orbit controller (focus,
+  distance, yaw, pitch, targets) + fov at pose time, writes the pose directly
+  (`orbit_camera_system` is gated off by `run_if(camera_unlocked)` from the
+  next frame), captures the primary window (egui included), then
+  `restore: true` (default) puts the snapshot back bit-identically;
+  `restore: false` re-derives the controller via `orbit_from_look_at` so the
+  next drag continues without a jump (roll and |pitch| > 89° are dropped; the
+  posed fov stays).
+- **Scene mode** spawns a `Camera3d` + `CaptureCamera` + `StreamingFocus`
+  (`order: -1`, the main camera's near/far with the pose fov and output
+  aspect) rendering into a fresh `Rgba8UnormSrgb` image
+  (`new_target_texture` + `COPY_SRC`), so the user's view is never touched and
+  a minimized window still serves it (whether Windows keeps ticking the Bevy
+  loop while minimized is the AC-11 in-app check). Settle waits at least 2
+  frames (an image not yet on the GPU makes Bevy skip and leak the
+  `Screenshot`) and until `CaptureFocusResidency` reports this camera's ring
+  with 0 pending (fe-terrain §terrain_plugin "Multi-focus streaming").
+- **`finish_job` is the ONLY exit**: it removes `CameraCaptureLock`, restores
+  the camera (always, on any failure), despawns the capture camera, removes its
+  image, despawns a capture that never fired, then replies. The 24 s job cap
+  sits under fe-api's 5 s + 20 s reply timeout, so a wedged renderer yields a
+  typed `capture_timed_out` with the camera restored, never a frozen camera.
+- **Pose resolution** uses only `ValidCaptureSpec` floats (validate-once) plus
+  resolver math; `f64`→`f32` casts are re-checked finite (`finite_vec3`) and
+  every pose must pass `fe_renderer::camera::pose_transform` before anything is
+  written. `geo`/`tile` read the RUNTIME `ActiveTileSource.projection`
+  (grounded `origin_ele`), the effective world scale, and the resident
+  `TerrainHeightField` for ground (else the grounded origin). `focus` uses
+  `fe_ui::gimbal::subtree_world_aabb` over the node's subtree (a node with no
+  `Aabb` yet frames its translation), keeps the main camera's view direction,
+  and refuses an effectively-hidden node (the D-14 picker rule, plus the
+  entity's own `Visibility::Hidden`); a petal focus unions its visible nodes
+  and falls back to the tileset bounds.
+- **`navigate: true`** (window only) switches only the hierarchy levels that
+  differ via `NavigationManager`, then waits for the target's
+  `SpawnedNodeMarker`. Navigation is a user-visible side effect and is NOT
+  restored; `restore` covers the camera pose only.
+- **Gizmos**: one PostStartup pass (`isolate_gizmos_from_capture_cameras`) puts
+  every `GizmoConfigStore` group on render layer 1 and gives the main camera
+  layers 0+1, so scene captures (default layer 0) carry no grid/axis/gimbal
+  overlays while the user's view is unchanged. Nothing else in the workspace
+  uses `RenderLayers`; a gizmo group registered after PostStartup would render
+  into scene captures.
+- **Known limits**: node residency (fe-ui `residency_ledger`) follows the main
+  camera only, so a scene capture far from the user's view shows terrain but
+  may lack nodes not resident there. The V1 `ResolvedPose` has no field for
+  tile `coverage: "unbounded"` / out-of-served-zoom notes, so those are not
+  reported. Scope confinement (plan §SEC-ADDENDUM: the token must cover the
+  active verse / the focus target's verse) belongs to fe-api and is NOT wired
+  as of V5; this module supplies its input — the active verse/fractal/petal
+  ids via `ReadCamera` (the addendum's "pre-check query").
+- Every started capture logs one INFO line (correlation id, mode, pose kind).

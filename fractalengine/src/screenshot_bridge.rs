@@ -6,10 +6,11 @@ use std::sync::{Arc, Mutex};
 
 use bevy::image::Image;
 use bevy::input::ButtonInput;
-use bevy::prelude::{Commands, KeyCode, On, Query, Res, ResMut, Resource, Time, With};
+use bevy::prelude::{Commands, Entity, KeyCode, On, Query, Res, ResMut, Resource, Time, With};
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
 use bevy::tasks::AsyncComputeTaskPool;
 use bevy::window::{PrimaryWindow, Window};
+use fe_renderer::camera::CameraCaptureLock;
 use fe_runtime::screenshot::{ScreenshotRequest, ScreenshotRequestReceiver};
 
 /// Bevy side of the API→Bevy capture bridge.
@@ -43,17 +44,22 @@ pub fn encode_png(image: Image) -> Result<Vec<u8>, String> {
     Ok(png)
 }
 
-/// Capture the primary window once (egui included) and hand the PNG-encoded
-/// frame to `on_encoded` on the compute pool — the frame loop never encodes.
-/// The one capture path both the API bridge and F12 share.
-fn capture_primary_window_png(
+/// Capture `screenshot`'s target once and hand the PNG-encoded frame to
+/// `on_encoded` on the compute pool — the frame loop never encodes. THE one
+/// capture path: F12, the plain GET bridge and agent-vision captures
+/// (window or render-to-texture) all go through it. Returns the
+/// `Screenshot` entity so a torn-down caller can despawn a capture that
+/// will never fire (src/AGENTS.md §vision).
+pub(crate) fn capture_png(
     commands: &mut Commands,
+    screenshot: Screenshot,
     on_encoded: impl FnOnce(Result<Vec<u8>, String>) + Send + 'static,
-) {
+) -> Entity {
     // Observers are `Fn`; the slot runs the one-shot continuation exactly once.
     let continuation = Arc::new(Mutex::new(Some(on_encoded)));
-    commands.spawn(Screenshot::primary_window()).observe(
-        move |captured: On<ScreenshotCaptured>| {
+    commands
+        .spawn(screenshot)
+        .observe(move |captured: On<ScreenshotCaptured>| {
             let Some(on_encoded) = continuation.lock().ok().and_then(|mut slot| slot.take()) else {
                 return;
             };
@@ -61,8 +67,16 @@ fn capture_primary_window_png(
             AsyncComputeTaskPool::get()
                 .spawn(async move { on_encoded(encode_png(image)) })
                 .detach();
-        },
-    );
+        })
+        .id()
+}
+
+/// Capture the primary window once (egui included); see [`capture_png`].
+fn capture_primary_window_png(
+    commands: &mut Commands,
+    on_encoded: impl FnOnce(Result<Vec<u8>, String>) + Send + 'static,
+) {
+    capture_png(commands, Screenshot::primary_window(), on_encoded);
 }
 
 /// Why the primary window cannot be captured right now, if it cannot. A
@@ -79,12 +93,18 @@ pub fn capture_refusal(primary_window: Option<&Window>) -> Option<&'static str> 
 }
 
 /// Bevy system: serve every pending API capture request with ONE capture of
-/// the primary window, replying to each with its own correlation id.
+/// the primary window, replying to each with its own correlation id. While a
+/// posed agent-vision capture holds the camera (`CameraCaptureLock`) the
+/// queue is left untouched, so a plain GET never returns a half-posed frame.
 pub fn drain_screenshot_requests(
     bridge: Res<ScreenshotBridge>,
     primary_window: Query<&Window, With<PrimaryWindow>>,
+    capture_lock: Option<Res<CameraCaptureLock>>,
     mut commands: Commands,
 ) {
+    if capture_lock.is_some() {
+        return;
+    }
     let requests: Vec<ScreenshotRequest> = bridge.0.try_iter().collect();
     if requests.is_empty() {
         return;
@@ -275,6 +295,41 @@ mod tests {
         let (reply, captures) = drain_once_with_window(1280, 720);
         assert_eq!(captures, 1);
         assert!(reply.is_none(), "the reply waits for the captured frame");
+    }
+
+    /// While a posed agent-vision capture holds the camera, a plain GET stays
+    /// QUEUED (not refused, not captured): it is served unchanged the first
+    /// frame after the lock lifts, so it never sees a half-posed frame.
+    #[test]
+    fn plain_get_requests_stay_queued_while_a_posed_job_holds_the_camera() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = bevy::ecs::world::World::new();
+        let (tx, rx) = fe_runtime::screenshot::screenshot_bridge();
+        world.insert_resource(ScreenshotBridge(rx));
+        let mut window = Window::default();
+        window.resolution.set_physical_resolution(1280, 720);
+        world.spawn((window, PrimaryWindow));
+        world.insert_resource(CameraCaptureLock);
+        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+        tx.try_send(ScreenshotRequest {
+            correlation_id: "queued".to_string(),
+            reply_tx,
+        })
+        .expect("bridge has room");
+
+        world
+            .run_system_once(drain_screenshot_requests)
+            .expect("system runs");
+        assert_eq!(world.query::<&Screenshot>().iter(&world).count(), 0);
+        assert!(reply_rx.try_recv().is_err(), "no reply while locked");
+        assert_eq!(tx.len(), 1, "the request is still queued, not drained");
+
+        world.remove_resource::<CameraCaptureLock>();
+        world
+            .run_system_once(drain_screenshot_requests)
+            .expect("system runs");
+        assert_eq!(world.query::<&Screenshot>().iter(&world).count(), 1);
+        assert_eq!(tx.len(), 0, "drained once the lock lifted");
     }
 
     #[test]

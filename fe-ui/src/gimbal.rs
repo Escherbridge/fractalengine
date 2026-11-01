@@ -98,6 +98,56 @@ pub fn gimbal_center(
     .or(Some(g_tx.translation()))
 }
 
+/// World-space `(min, max)` box enclosing every `Aabb` in `entity`'s subtree —
+/// the same DFS as [`gimbal_center`], but visiting all nodes rather than
+/// stopping at the first; `None` when no node carries an `Aabb`. Agent-vision
+/// `focus` framing uses it (fractalengine `src/AGENTS.md` §vision).
+pub fn subtree_world_aabb(
+    entity: Entity,
+    g_transform_query: &Query<&GlobalTransform>,
+    aabb_query: &Query<&bevy::camera::primitives::Aabb>,
+    children_query: &Query<&Children>,
+) -> Option<(Vec3, Vec3)> {
+    let mut bounds: Option<(Vec3, Vec3)> = None;
+    // `visit` never returns `Some`, so the walk covers the whole subtree.
+    find_in_subtree::<()>(
+        entity,
+        |ent| {
+            if let (Ok(ent_gtx), Ok(aabb)) = (g_transform_query.get(ent), aabb_query.get(ent)) {
+                let (lo, hi) = world_box(ent_gtx, aabb);
+                bounds = Some(match bounds {
+                    Some((min, max)) => (min.min(lo), max.max(hi)),
+                    None => (lo, hi),
+                });
+            }
+            None
+        },
+        |ent| {
+            children_query
+                .get(ent)
+                .map(|c| c.iter().collect())
+                .unwrap_or_default()
+        },
+    );
+    bounds
+}
+
+/// World-space `(min, max)` of a local `Aabb`'s eight corners under `transform`.
+fn world_box(transform: &GlobalTransform, aabb: &bevy::camera::primitives::Aabb) -> (Vec3, Vec3) {
+    let center = Vec3::from(aabb.center);
+    let half = Vec3::from(aabb.half_extents);
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    for corner in 0..8u8 {
+        let sign = |bit: u8| if corner & bit == 0 { -1.0 } else { 1.0 };
+        let local = center + half * Vec3::new(sign(1), sign(2), sign(4));
+        let world = transform.transform_point(local);
+        min = min.min(world);
+        max = max.max(world);
+    }
+    (min, max)
+}
+
 /// Draw the gimbal handles at `center` given the current `tool` and which
 /// axis (if any) is highlighted (`highlight` covers both hover and drag).
 pub fn draw_gimbal(
@@ -294,6 +344,52 @@ mod tests {
             |e| children.get(&e).cloned().unwrap_or_default(),
         );
         assert_eq!(found, Some(Vec3::splat(7.0)));
+    }
+
+    /// A glTF-shaped subtree (root → child → grandchild, each with its own
+    /// box and transform) yields ONE world box enclosing every descendant —
+    /// not just the first box the DFS meets (that is `gimbal_center`'s job).
+    #[test]
+    fn subtree_world_aabb_unions_every_descendant_box() {
+        use bevy::camera::primitives::Aabb;
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        let grandchild = world
+            .spawn((
+                GlobalTransform::from(Transform::from_xyz(0.0, 10.0, 0.0).with_scale(Vec3::splat(2.0))),
+                Aabb::from_min_max(Vec3::splat(-1.0), Vec3::splat(1.0)),
+            ))
+            .id();
+        let child = world
+            .spawn((
+                GlobalTransform::from(Transform::from_xyz(5.0, 0.0, 0.0)),
+                Aabb::from_min_max(Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 1.0, 1.0)),
+            ))
+            .add_child(grandchild)
+            .id();
+        let root = world
+            .spawn(GlobalTransform::IDENTITY)
+            .add_child(child)
+            .id();
+        let lone = world.spawn(GlobalTransform::IDENTITY).id();
+
+        let (whole, none) = world
+            .run_system_once(
+                move |transforms: Query<&GlobalTransform>,
+                      aabbs: Query<&Aabb>,
+                      children: Query<&Children>| {
+                    (
+                        subtree_world_aabb(root, &transforms, &aabbs, &children),
+                        subtree_world_aabb(lone, &transforms, &aabbs, &children),
+                    )
+                },
+            )
+            .expect("system runs");
+        let (min, max) = whole.expect("the subtree carries boxes");
+        // child box: x 4..6, y 0..1, z -1..1; grandchild (scale 2 at y=10): ±2 around (0,10,0).
+        assert!((min - Vec3::new(-2.0, 0.0, -2.0)).length() < 1e-5, "{min:?}");
+        assert!((max - Vec3::new(6.0, 12.0, 2.0)).length() < 1e-5, "{max:?}");
+        assert_eq!(none, None, "no Aabb anywhere in the subtree → None");
     }
 
     #[test]
