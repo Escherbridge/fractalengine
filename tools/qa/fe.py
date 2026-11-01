@@ -5,11 +5,14 @@ import argparse
 import base64
 import datetime
 import json
+import ipaddress
+import math
 import os
 import sys
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 
 EXIT_OK = 0
 EXIT_REFUSED = 2
@@ -73,18 +76,49 @@ class NotRunning(Exception):
 def read_json_file(path):
     # launch.ps1 writes current.json with PowerShell 5.1's UTF-8 BOM.
     with open(path, "r", encoding="utf-8-sig") as handle:
-        return json.load(handle)
+        return require_object(json.load(handle), path)
 
 
-def load_run():
-    if not os.path.exists(CURRENT_POINTER):
-        raise NotRunning("no .qa/current pointer - run tools\\qa\\launch.ps1 first")
-    with open(CURRENT_POINTER, "r", encoding="utf-8-sig") as handle:
-        run_dir = handle.read().strip()
+def require_object(value, source="API response"):
+    if not isinstance(value, dict):
+        raise Refused(0, "invalid_response", source + " must be a JSON object")
+    return value
+
+
+def decode_object(raw):
+    try:
+        payload = require_object(json.loads(raw.decode("utf-8")))
+    except (ValueError, UnicodeDecodeError) as error:
+        raise Refused(0, "invalid_response", "API returned malformed JSON: " + str(error))
+    if payload.get("ok") is False:
+        raise Refused(0, payload.get("code", "invalid_response"), str(payload.get("error", "API refused the request")))
+    return require_object(payload["data"]) if "data" in payload else payload
+
+
+def load_run(explicit=None):
+    if explicit:
+        candidate = explicit if os.path.isabs(explicit) or os.path.exists(explicit) else os.path.join(REPO_ROOT, ".qa", "run", explicit)
+        run_dir = os.path.dirname(candidate) if os.path.basename(candidate) == "current.json" else candidate
+    else:
+        if not os.path.exists(CURRENT_POINTER):
+            raise NotRunning("no .qa/current pointer - run tools\\qa\\launch.ps1 first")
+        with open(CURRENT_POINTER, "r", encoding="utf-8-sig") as handle:
+            run_dir = handle.read().strip()
+    run_dir = os.path.realpath(run_dir)
     current_path = os.path.join(run_dir, "current.json")
     if not os.path.exists(current_path):
         raise NotRunning("no current.json under " + run_dir)
     current = read_json_file(current_path)
+    api_base = current.get("api_base")
+    if not isinstance(api_base, str):
+        raise Refused(0, "invalid_run", "QA API base must be a string")
+    parsed = urllib.parse.urlsplit(api_base)
+    try:
+        loopback = parsed.hostname == "localhost" or ipaddress.ip_address(parsed.hostname).is_loopback
+    except ValueError:
+        loopback = False
+    if parsed.scheme != "http" or not loopback or parsed.username or parsed.password or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+        raise Refused(0, "invalid_run", "QA API base must be a loopback HTTP origin")
     current["run_dir"] = run_dir
     return current
 
@@ -93,7 +127,10 @@ def load_tokens(run):
     path = run.get("tokens_path") or os.path.join(run["run_dir"], "tokens.json")
     if not os.path.exists(path):
         raise NotRunning("no tokens file at " + path)
-    return read_json_file(path)
+    tokens = read_json_file(path)
+    require_object(tokens.get("tokens"), "tokens map")
+    require_object(tokens.get("roles"), "roles map")
+    return tokens
 
 
 def owner_verses(tokens):
@@ -176,10 +213,11 @@ def active_cache_path(run):
 
 
 def read_camera_with(run, token):
-    status, _headers, raw = http(run, "GET", "/api/v1/debug/camera", token, timeout=10.0)
-    if status == 429:
-        time.sleep(0.2)
+    for attempt in range(RETRY_ATTEMPTS):
         status, _headers, raw = http(run, "GET", "/api/v1/debug/camera", token, timeout=10.0)
+        if status != 429 or attempt + 1 == RETRY_ATTEMPTS:
+            break
+        time.sleep(0.25)
     return status, raw
 
 
@@ -193,7 +231,7 @@ def resolve_token(run, verse=None):
         status, raw = read_camera_with(run, token)
         if status != 200:
             raise refusal_from(status, raw)
-        return verse, token, json.loads(raw.decode("utf-8")).get("data")
+        return verse, token, decode_object(raw)
 
     candidates = owner_verses(tokens)
     cache = active_cache_path(run)
@@ -210,7 +248,7 @@ def resolve_token(run, verse=None):
         if status == 200:
             with open(cache, "w", encoding="utf-8") as handle:
                 handle.write(candidate)
-            return candidate, token, json.loads(raw.decode("utf-8")).get("data")
+            return candidate, token, decode_object(raw)
         last = refusal_from(status, raw)
         if status != 404:
             raise last
@@ -340,9 +378,7 @@ def run_input(run, args, commands):
                          "of the batch under the old verse's token (expected for cross-verse "
                          "navigation - re-shoot to see the result)"})
         return
-    payload = json.loads(raw.decode("utf-8"))
-    if isinstance(payload, dict) and "data" in payload and isinstance(payload["data"], dict):
-        payload = payload["data"]
+    payload = decode_object(raw)
     result = {"token_verse": verse, "commands": commands}
     png = payload.pop("capture_after_png_base64", None) if isinstance(payload, dict) else None
     result["outcome"] = payload
@@ -380,6 +416,10 @@ def command_move(run, args):
 
 
 def command_click(run, args):
+    if args.name:
+        args.x, args.y = locate(run, args.name, args.role, args.nth, args.verse)
+    elif args.x is None or args.y is None:
+        raise Refused(0, "missing_coordinates", "click needs X Y or --name TEXT")
     click = {"kind": "pointer_click", "x": args.x, "y": args.y, "button": args.button}
     run_input(run, args, [click, dict(click)] if args.double else [click])
 
@@ -399,6 +439,11 @@ def command_key(run, args):
 
 
 def command_type(run, args):
+    if args.into:
+        x, y = locate(run, args.into, args.role, args.nth, args.verse, input_only=True)
+        focus_args = argparse.Namespace(**vars(args))
+        focus_args.capture = False
+        run_input(run, focus_args, [{"kind":"pointer_click", "x":x, "y":y, "button":"left"}])
     run_input(run, args, [{"kind": "text_entry", "text": args.text}])
 
 
@@ -411,13 +456,15 @@ def command_scroll(run, args):
 
 
 def pose_signature(camera):
-    pose = (camera or {}).get("pose") or {}
+    pose = require_object(require_object(camera).get("pose"), "camera pose")
     rounded = lambda values: [round(v, 4) for v in (values or [])]
     return (rounded(pose.get("position")), rounded(pose.get("target")), (camera or {}).get("locked"),
             json.dumps((camera or {}).get("active"), sort_keys=True))
 
 
 def command_wait_settle(run, args):
+    if not math.isfinite(args.timeout) or args.timeout <= 0 or not math.isfinite(args.interval) or args.interval <= 0 or args.stable_polls < 1:
+        raise Refused(0, "invalid_settle_options", "timeout/interval must be finite positive values and stable-polls >= 1")
     verse, token, camera = resolve_token(run, args.verse)
     deadline = time.time() + args.timeout
     stable = 0
@@ -429,7 +476,7 @@ def command_wait_settle(run, args):
         polls += 1
         if status != 200:
             raise refusal_from(status, raw)
-        camera = json.loads(raw.decode("utf-8")).get("data")
+        camera = decode_object(raw)
         signature = pose_signature(camera)
         stable = stable + 1 if signature == previous and not camera.get("locked") else 0
         previous = signature
@@ -467,6 +514,144 @@ def command_api(run, args):
     sys.stdout.write(raw.decode("utf-8", "replace") + "\n")
 
 
+def probe(run, path, verse=None, params=None):
+    _verse, token, _camera = resolve_token(run, verse)
+    query = "?" + urllib.parse.urlencode(params) if params else ""
+    _status, _headers, raw = call(run, "GET", "/api/v1/debug/" + path + query, token)
+    return decode_object(raw)
+
+
+def tree_nodes(tree):
+    nodes = tree.get("nodes")
+    if not isinstance(nodes, list) or any(not isinstance(node, dict) for node in nodes):
+        raise Refused(0, "invalid_response", "UI tree nodes must be an array of objects")
+    if tree.get("coordinate_space") != "physical_pixels":
+        raise Refused(0, "coordinate_space_mismatch", "UI tree must use physical screenshot pixels")
+    for node in nodes:
+        if not isinstance(node.get("name"), str) or not isinstance(node.get("role"), str):
+            raise Refused(0, "invalid_response", "UI node names/roles must be strings")
+        if node.get("bounds") is not None:
+            bounds = require_object(node["bounds"], "widget bounds")
+            if any(not isinstance(bounds.get(k), (int, float)) or not math.isfinite(bounds[k]) for k in ("x","y","w","h")):
+                raise Refused(0, "invalid_response", "widget bounds must contain finite x/y/w/h numbers")
+    return nodes
+
+
+def locate(run, name, role=None, nth=None, verse=None, input_only=False):
+    params = {"name":name, "interactive":1}
+    if role:
+        params["role"] = role
+    tree = probe(run, "ui-tree", verse, params)
+    window = require_object(tree.get("window"), "primary window dimensions")
+    width, height = window.get("width"), window.get("height")
+    if not isinstance(width, (int, float)) or not isinstance(height, (int, float)):
+        raise Refused(0, "invalid_response", "primary window dimensions must be numbers")
+    nodes = []
+    for node in tree_nodes(tree):
+        bounds = node.get("bounds")
+        if not node.get("enabled") or node.get("hidden") or not bounds:
+            continue
+        if input_only and node["role"] not in {"textinput","multilinetextinput","searchinput","passwordinput"}:
+            continue
+        x, y = bounds["x"] + bounds["w"] / 2, bounds["y"] + bounds["h"] / 2
+        if 0 <= x < width and 0 <= y < height:
+            nodes.append(node)
+    exact = [n for n in nodes if n.get("name", "").casefold() == name.casefold()]
+    if exact:
+        nodes = exact
+    if not nodes:
+        raise Refused(0, "locator_not_found", "no enabled visible widget named " + name)
+    if nth is None and len(nodes) != 1:
+        raise Refused(0, "ambiguous_locator", "candidates: " + json.dumps([{k:n.get(k) for k in ("id","name","role","bounds")} for n in nodes]))
+    index = nth if nth is not None else 0
+    if index < 0 or index >= len(nodes):
+        raise Refused(0, "locator_index", "--nth is zero-based and outside the matching candidates")
+    bounds = require_object(nodes[index]["bounds"], "widget bounds")
+    if bounds.get("w", 0) <= 0 or bounds.get("h", 0) <= 0:
+        raise Refused(0, "empty_widget_bounds", "locator has no clickable rectangle")
+    return bounds["x"] + bounds["w"] / 2, bounds["y"] + bounds["h"] / 2
+
+
+def command_ui(run, args):
+    params = {}
+    if args.find:
+        params["name"] = args.find
+    if args.role:
+        params["role"] = args.role
+    if args.interactive:
+        params["interactive"] = 1
+    tree = probe(run, "ui-tree", args.verse, params)
+    tree_nodes(tree)
+    emit(tree)
+
+
+def dotted(value, path):
+    for key in path.split("."):
+        if not isinstance(value, dict) or key not in value:
+            raise Refused(0, "state_path_missing", "state path not present: " + path)
+        value = value[key]
+    return value
+
+
+def command_state(run, args):
+    state = probe(run, "ui-state", args.verse)
+    emit(dotted(state, args.path) if args.path else state)
+
+
+def command_logs(run, args):
+    params = {"since":args.since, "level":args.level}
+    emit(probe(run, "logs", args.verse, params))
+
+
+def command_wait_for(run, args):
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        raise Refused(0, "invalid_timeout", "timeout must be finite and positive")
+    if args.state and "=" not in args.state:
+        raise Refused(0, "invalid_state_predicate", "--state requires PATH=JSON_VALUE")
+    if args.state:
+        path, text = args.state.split("=", 1)
+        try:
+            expected = json.loads(text)
+        except ValueError:
+            expected = text
+    deadline = time.monotonic() + args.timeout
+    while time.monotonic() < deadline:
+        if args.name:
+            found = [n for n in tree_nodes(probe(run, "ui-tree", args.verse, {"name":args.name})) if not n.get("hidden")]
+            ready = not found if args.gone else bool(found)
+        else:
+            ready = dotted(probe(run, "ui-state", args.verse), path) == expected
+            if args.gone:
+                ready = not ready
+        if ready:
+            emit({"matched":True, "predicate":args.name or args.state, "gone":args.gone})
+            return
+        time.sleep(0.25)
+    raise Refused(0, "wait_timeout", "predicate did not match within %.1fs" % args.timeout)
+
+
+def log_watermark(run, verse):
+    try:
+        snapshot = probe(run, "logs", verse, {"level":"warn"})
+        return snapshot.get("generation"), snapshot.get("latest_seq", 0)
+    except (Refused, NotRunning):
+        return None
+
+
+def print_action_logs(run, verse, watermark):
+    if watermark is None:
+        return
+    try:
+        generation, seq = watermark
+        snapshot = probe(run, "logs", verse, {"since":seq, "level":"warn"})
+        entries = snapshot.get("entries")
+        if not isinstance(entries, list):
+            raise Refused(0, "invalid_response", "logs entries must be an array")
+        emit({"new_logs":entries, "generation_changed":snapshot.get("generation") != generation})
+    except (Refused, NotRunning) as error:
+        emit({"new_logs_unavailable":str(error)})
+
+
 # --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
@@ -475,10 +660,30 @@ def build_parser():
     parser = argparse.ArgumentParser(prog="fe.py", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--verse", help="use this verse's token instead of probing for the active one")
+    parser.add_argument("--run", help="explicit QA run directory, current.json, or run timestamp")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("info", help="run dir, pid, fixture ids, token roles").set_defaults(func=command_info)
     sub.add_parser("camera", help="GET /api/v1/debug/camera").set_defaults(func=command_camera)
+    ui = sub.add_parser("ui", help="primary window accessibility tree in physical pixels")
+    ui.add_argument("--find")
+    ui.add_argument("--role")
+    ui.add_argument("--interactive", action="store_true")
+    ui.set_defaults(func=command_ui)
+    state = sub.add_parser("state", help="authoritative UI state")
+    state.add_argument("--path")
+    state.set_defaults(func=command_state)
+    logs = sub.add_parser("logs", help="bounded redacted current-verse log tail")
+    logs.add_argument("--since", type=int, default=0)
+    logs.add_argument("--level", choices=("trace","debug","info","warn","error"), default="warn")
+    logs.set_defaults(func=command_logs)
+    wait = sub.add_parser("wait-for", help="wait for a named widget or state PATH=VALUE")
+    predicate = wait.add_mutually_exclusive_group(required=True)
+    predicate.add_argument("--name")
+    predicate.add_argument("--state")
+    wait.add_argument("--gone", action="store_true")
+    wait.add_argument("--timeout", type=float, default=10)
+    wait.set_defaults(func=command_wait_for)
 
     shot = sub.add_parser("shot", help="capture a PNG (window+UI by default)")
     shot.add_argument("--pose", help='raw pose JSON, e.g. \'{"camera":{"position":[0,5,10],"target":[0,0,0]}}\'')
@@ -511,8 +716,11 @@ def build_parser():
     move.add_argument("y", type=float)
 
     click = input_parser("click", "pointer_click at x y", command_click)
-    click.add_argument("x", type=float)
-    click.add_argument("y", type=float)
+    click.add_argument("x", type=float, nargs="?")
+    click.add_argument("y", type=float, nargs="?")
+    click.add_argument("--name")
+    click.add_argument("--role")
+    click.add_argument("--nth", type=int)
     click.add_argument("--button", choices=("left", "right", "middle"), default="left")
     click.add_argument("--double", action="store_true")
 
@@ -526,6 +734,9 @@ def build_parser():
 
     text = input_parser("type", "text_entry", command_type)
     text.add_argument("text")
+    text.add_argument("--into", help="click this named input before entering text")
+    text.add_argument("--role")
+    text.add_argument("--nth", type=int)
 
     scroll = input_parser("scroll", "wheel lines (positive = up/zoom in), optionally at x y", command_scroll)
     scroll.add_argument("dy", type=float)
@@ -550,8 +761,12 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
-        run = load_run()
-        args.func(run, args)
+        run = load_run(args.run)
+        watermark = log_watermark(run, args.verse) if args.command in {"move","click","drag","key","type","scroll"} else None
+        try:
+            args.func(run, args)
+        finally:
+            print_action_logs(run, args.verse, watermark)
         return EXIT_OK
     except Refused as refusal:
         emit(refusal.as_dict())

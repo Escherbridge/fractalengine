@@ -930,8 +930,9 @@ pub(super) fn screenshot(call: ToolCall<'_>) -> ToolFuture<'_> {
         }
 
         // The same typed model + validation REST uses (one parse path, two doors).
-        let valid = crate::vision::validate_capture_request(serde_json::from_value(call.args.clone()))
-            .map_err(|refusal| crate::vision::VisionError::Refusal(refusal).coded_message())?;
+        let valid =
+            crate::vision::validate_capture_request(serde_json::from_value(call.args.clone()))
+                .map_err(|refusal| crate::vision::VisionError::Refusal(refusal).coded_message())?;
         let (png, pose) = crate::vision::run_capture(call.state, call.claims, valid)
             .await
             .map_err(|error| error.coded_message())?;
@@ -983,6 +984,30 @@ pub(super) fn get_camera(call: ToolCall<'_>) -> ToolFuture<'_> {
 /// pattern minus the role step (FR-5 owns that in the dispatcher), and the
 /// REST door's ONE parse-and-validate path (`input::validate_input_request`)
 /// so a malformed or out-of-range batch reads identically on both doors.
+fn run_qa(call: ToolCall<'_>, kind: crate::qa_debug::QaKind) -> ToolFuture<'_> {
+    Box::pin(async move {
+        crate::qa_debug::run(call.state, call.claims, kind, call.args.clone())
+            .await
+            .map_err(|(_, code, message)| {
+                if code == "not_found_or_denied" {
+                    message
+                } else {
+                    format!("{code}: {message}")
+                }
+            })
+    })
+}
+
+pub(super) fn ui_tree(call: ToolCall<'_>) -> ToolFuture<'_> {
+    run_qa(call, crate::qa_debug::QaKind::Tree)
+}
+pub(super) fn ui_state(call: ToolCall<'_>) -> ToolFuture<'_> {
+    run_qa(call, crate::qa_debug::QaKind::State)
+}
+pub(super) fn ui_logs(call: ToolCall<'_>) -> ToolFuture<'_> {
+    run_qa(call, crate::qa_debug::QaKind::Logs)
+}
+
 pub(super) fn inject_input(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
         let gate = crate::input::INPUT_GATE;
@@ -1015,6 +1040,16 @@ pub(super) fn inject_input(call: ToolCall<'_>) -> ToolFuture<'_> {
 
 pub(super) mod schema {
     use serde_json::{json, Value};
+
+    pub fn ui_tree() -> Value {
+        json!({"type":"object", "additionalProperties":false, "properties":{"name":{"type":"string","maxLength":256},"role":{"type":"string","maxLength":64},"interactive":{"type":"boolean"}}})
+    }
+    pub fn ui_state() -> Value {
+        json!({"type":"object", "additionalProperties":false,"properties":{}})
+    }
+    pub fn ui_logs() -> Value {
+        json!({"type":"object", "additionalProperties":false,"properties":{"since":{"type":"integer","minimum":0},"level":{"type":"string","enum":["trace","debug","info","warn","error"]}}})
+    }
 
     fn vec3(desc: &str) -> Value {
         json!({ "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": desc })

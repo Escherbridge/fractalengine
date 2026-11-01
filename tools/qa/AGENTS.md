@@ -172,3 +172,34 @@ Run the app lifecycle outside the restricted sandbox when native WebView
 creation stalls before the first frame; bootstrap pass 01 observed that
 failure and succeeded in the owner context. Stop the exact recorded PID
 tree at the end, even if the app has crashed.
+
+## §locators-and-probes
+
+`fe.py --run <directory|timestamp|current.json>` binds a command to an explicit
+owned run; without it `.qa/current` remains the convenience pointer. Run/token
+files and object-shaped API envelopes use one boundary decoder. Arrays, null
+data and malformed JSON produce typed refusals rather than AttributeError.
+The API origin must be loopback HTTP before any bearer token is sent.
+
+`ui [--find TEXT] [--role ROLE] [--interactive]` reads the primary-window tree.
+`click --name TEXT [--role ROLE] [--nth N]` clicks its physical rectangle centre;
+exact names take precedence over substrings, ambiguity lists candidates and
+exits 2, and nth is zero-based. Hidden/disabled widgets are excluded.
+Locator centres outside the physical primary window are also excluded;
+`type --into` restricts matches to input roles rather than caption labels.
+`type --into NAME TEXT` first focuses the named input. `state [--path a.b]`
+reads authoritative state; `logs --since SEQ --level warn` reads diagnostics.
+`wait-for --name TEXT [--gone]` and `wait-for --state PATH=JSON_VALUE` poll with
+a bounded timeout. State string values can be passed without JSON quotes.
+
+Each pointer/key/text/scroll action reads a log watermark before acting and
+prints NEW warn/error entries afterward. QA read budgets are independent of
+injection. A generation change is explicit, and unavailable logs do not replace
+the original action's outcome. `wait-settle` is camera stability only; use state
+or feature-specific persisted read-back for stronger completion assertions.
+
+Stage directories now contain timestamps. Read `stage.json.source_commit` for
+git history and compare `source_fingerprint` with Get-QaSourceFingerprint before
+reuse. The whole directory name is never a git ref. WebView2 data is run-local
+under `webview`; tokens retain owner-only ACLs and the client may need the same
+owner execution context as the GUI. Do not weaken those ACLs.

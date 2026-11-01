@@ -1437,3 +1437,36 @@ a Viewer token for a visited verse, none for a `none` verse; owner-only on
 disk (`icacls` oracle on Windows, mode bits on unix); a new verse rewrites the
 file with no temp left behind; then the agent captures with the token read
 from the file (Viewer refused, Owner admitted, rate limit).
+
+## §qa-debug / §ui-tree
+
+`qa_debug_bridge.rs` forces egui AccessKit generation only for active OS
+accessibility or the captured QA gate. It runs after Egui InitContexts and before
+BeginPass, never resets Bevy's latched AccessibilityRequested flag, and leaves
+bevy_egui's existing OS forwarding intact. The workspace enables bevy_egui's
+accesskit feature for normal builds. With both OS activation and QA absent,
+egui generation is disabled. No debug data is served unless the QA gate is on.
+
+After ProcessOutput the host serves bounded requests from the primary context.
+Tree flattening composes every ancestor affine transform, including egui's root
+pixels-per-point transform; bounds use transformed bounding rectangles. Names
+resolve label and labelled_by targets, including Label/TextRun values. Disabled
+and hidden states inherit from ancestors. The output is in PHYSICAL screenshot
+pixels, matching input_bridge; older plan wording calling these logical pixels
+was incorrect. Tree flattening occurs only on an admitted request, not each
+frame. OS tree updates are borrowed, never taken. A navigation signature sampled
+before the pass must still match when replying, and ViewScope checks current
+terrain/spawned-node ancestry before any reply.
+
+Selection export reads NodeManager and the selected entity's Transform, verifies
+SpawnedNodeMarker and current petal/fractal/verse membership, and never exposes
+stale InspectorFormState buffers. Dialog titles use an explicit variant match:
+Debug formatting would expose token/invite buffers. Password node and descendant
+values are omitted; all other exported strings pass credential redaction.
+
+`qa_log.rs` attaches its optional Layer to the existing startup subscriber.
+Sensitive field names are wholly redacted; the runtime ring handles credential
+patterns, truncation, bounds and verse generations. No token or mutable secret
+store is exposed by these surfaces. QA startup also sets
+WEBVIEW2_USER_DATA_FOLDER to the run's `webview` directory so stage reuse does not
+share a browser profile between fixtures.

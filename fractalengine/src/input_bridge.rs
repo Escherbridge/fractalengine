@@ -1146,6 +1146,53 @@ mod tests {
     /// caller. Every assertion goes red if its branch inverts.
     #[test]
     fn synthetic_input_replays_as_real_bevy_input_and_refuses_at_arrival_and_at_use() {
+        {
+            use bevy_egui::egui::accesskit as ak;
+            let mut root = ak::Node::new(ak::Role::Window);
+            root.set_children([ak::NodeId(2), ak::NodeId(3), ak::NodeId(5)]);
+            root.set_transform(ak::Affine::scale(2.0));
+            root.set_disabled();
+            let mut button = ak::Node::new(ak::Role::Button);
+            button.set_label("Maps");
+            button.add_action(ak::Action::Click);
+            button.set_transform(ak::Affine::translate((10.0, 20.0)));
+            button.set_bounds(ak::Rect::new(1.0, 2.0, 11.0, 12.0));
+            let mut password = ak::Node::new(ak::Role::PasswordInput);
+            password.set_value("secret-value");
+            password.set_children([ak::NodeId(4)]);
+            let mut text = ak::Node::new(ak::Role::TextRun);
+            text.set_value("secret-value");
+            let mut linked = ak::Node::new(ak::Role::Button);
+            linked.set_labelled_by([ak::NodeId(3), ak::NodeId(4), ak::NodeId(6)]);
+            let mut unvisited = ak::Node::new(ak::Role::PasswordInput);
+            unvisited.set_value("unvisited-secret");
+            let update = ak::TreeUpdate {
+                nodes: vec![
+                    (ak::NodeId(1), root),
+                    (ak::NodeId(2), button),
+                    (ak::NodeId(3), password),
+                    (ak::NodeId(4), text),
+                    (ak::NodeId(5), linked),
+                    (ak::NodeId(6), unvisited),
+                ],
+                tree: Some(ak::Tree::new(ak::NodeId(1))),
+                focus: ak::NodeId(2),
+            };
+            let flat = crate::qa_debug_bridge::flatten(&update, &Default::default());
+            let button = flat.iter().find(|n| n["name"] == "Maps").unwrap();
+            assert_eq!(
+                button["bounds"],
+                serde_json::json!({"x":22.0,"y":44.0,"w":20.0,"h":20.0})
+            );
+            assert_eq!(button["enabled"], false);
+            assert_eq!(button["parent"], "1");
+            assert!(!serde_json::to_string(&flat)
+                .unwrap()
+                .contains("secret-value"));
+            assert!(!serde_json::to_string(&flat)
+                .unwrap()
+                .contains("unvisited-secret"));
+        }
         let mut h = harness();
 
         // Idle: an empty channel injects nothing and leaves no job.

@@ -2087,3 +2087,35 @@ live in `fractalengine/src/AGENTS.md` §qa-dev-token; this crate owns:
   nothing else changes.
 
 Flow test: `tests/screenshot_test.rs::owner_capture_via_the_dev_token_file_returns_the_host_png_then_is_rate_limited`.
+
+## §qa-debug / §ui-tree
+
+`GET /api/v1/debug/ui-tree`, `/ui-state`, and `/logs` share one read core with
+MCP `ui_tree`, `ui_state`, and `ui_logs`. All are default-OFF under the captured
+`FE_API_INPUT_ALLOW=1` flag, require Owner, and spend a separate per-DID QA
+budget of 20 reads/sec. Injection keeps its independent 5/sec budget. Headless
+hosts have no QA seam and do not advertise these MCP tools. The GUI checks the
+caller's scope against the active rendered view at use; denial has the same
+`not_found_or_denied` / `not found or not permitted` contract as vision/input.
+
+Tree filters: `name` (case-insensitive substring, max 256 bytes), `role`
+(case/separator-insensitive role name, max 64 bytes), `interactive=1|0`.
+Bounds are PHYSICAL screenshot pixels and can be sent directly to the existing
+input endpoint. Each response includes `coordinate_space`, frame, active verse,
+pixels-per-point and primary-window dimensions. Nodes retain stable ids, parent,
+role, resolved accessible name, redacted value, enabled/hidden ancestor state,
+focus, selection and toggle state. Password values and descendant text values
+are omitted. This export does not consume or alter the OS accessibility tree.
+
+UI state projects authoritative navigation/selection/Transform, active tool,
+open surfaces, visible notices/status chips, physical viewport rect and exposed
+pending operations. DB/sync pending totals are null because no authoritative
+counter exists. `settled` explicitly covers UI gestures, capture lock and known
+UI operation queues; it does not certify asynchronous DB/sync/terrain completion.
+
+Logs accept `since=<unsigned sequence>` and `level=trace|debug|info|warn|error`
+(minimum severity). The result includes entries, latest_seq and generation.
+Historical records clear on an active-verse boundary; scope is checked before
+reading. Logs are redacted at ingest and bounded; see fe-runtime §qa-debug for
+attribution limits. The bridge refuses a frame whose navigation changed while
+it was rendered, allowing clients to retry rather than reading a stale tree.

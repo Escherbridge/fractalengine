@@ -9,13 +9,16 @@ use fe_runtime::channels::ChannelHandles;
 use fe_runtime::messages::DbCommand;
 use fe_runtime::PeerRegistry;
 use fe_ui::plugin::LocalUserRole;
+use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
 mod asset_bridge;
 mod gpx_bridge;
 mod input_bridge;
 mod panic_log;
+mod qa_debug_bridge;
 mod qa_dev_token;
+mod qa_log;
 mod screenshot_bridge;
 mod terrain_bridge;
 mod vision_bridge;
@@ -37,6 +40,7 @@ fn main() {
             ("FE_BLOB_DIR", "data/blobs"),
             ("FE_P2P_DIR", "data/p2p"),
             ("FE_HEXON_DIR", "hexons"),
+            ("WEBVIEW2_USER_DATA_FOLDER", "webview"),
         ] {
             std::env::set_var(name, root.join(suffix));
         }
@@ -65,9 +69,19 @@ fn main() {
         std::env::set_var("SURREAL_DATASTORE_SYNC_DATA", "every");
     }
 
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+    let qa_enabled = fe_api::input::input_allowed_from_env();
+    let qa_logs = fe_runtime::qa_debug::QaLogRing::default();
+    tracing_subscriber::registry()
+        .with(EnvFilter::from_default_env())
+        .with(tracing_subscriber::fmt::layer())
+        .with(qa_enabled.then(|| qa_log::QaLogLayer(qa_logs.clone())))
         .init();
+    if qa_enabled {
+        tracing::warn!(
+            "FE_API_INPUT_ALLOW=1: {}",
+            fe_api::input::INPUT_GATE.enabled_warning
+        );
+    }
 
     // Application settings (D-78) load first: the relay spec must be registered
     // before the sync thread builds its endpoint. See src/AGENTS.md §app-settings.
@@ -478,6 +492,7 @@ fn main() {
     // Agent input bridge: synthetic pointer/keyboard/scroll (src/AGENTS.md
     // §agent-input-surface; the endpoint is OFF unless FE_API_INPUT_ALLOW=1).
     let (input_tx, input_rx) = fe_runtime::input::input_bridge();
+    let (qa_tx, qa_rx) = fe_runtime::qa_debug::qa_bridge();
     let (transform_broadcast_tx, _) =
         tokio::sync::broadcast::channel::<fe_runtime::messages::TransformUpdate>(1024);
     // Revocation broadcast: Bevy sends revoked JTIs, API thread updates its cache.
@@ -619,10 +634,7 @@ fn main() {
         .with_vision(vision_tx),
         // Agent input surface: OFF unless FE_API_INPUT_ALLOW=1 (read once
         // here; loud WARN when on) — fe-api/AGENTS.md §agent-input-surface.
-        input: fe_api::input::InputSurface::new(
-            fe_api::input::input_allowed_from_env(),
-            Some(input_tx),
-        ),
+        input: fe_api::input::InputSurface::new(qa_enabled, Some(input_tx)).with_qa_debug(qa_tx),
         listening_tx: dev_token_out.is_some().then_some(api_listening_tx),
     });
 
@@ -662,6 +674,7 @@ fn main() {
     // Agent input: replay synthetic batches as winit-shaped messages ahead of
     // bevy_input + bevy_egui (src/AGENTS.md §agent-input-surface).
     input_bridge::install(&mut app, input_rx);
+    qa_debug_bridge::install(&mut app, qa_enabled, qa_rx, qa_logs);
 
     // ---- Entity Store (in-memory hot cache) ----
     app.insert_resource(SharedEntityStore(entity_store));

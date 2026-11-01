@@ -18,7 +18,8 @@ time (cubes in A, empty grid in B) and the app staying alive.
 
 1. Open QA Basic from the sidebar.
    ```
-   F click 43 290 --wait 10 && F shot --label s03-verse
+   F click 43 290 --wait 10
+   F shot --label s03-verse
    ```
    **Checkpoint 1:** header "QA Basic — Select a Fractal", one "QA Fractal"
    card ("2 petals"), verse picker reads "QA Basic".
@@ -30,7 +31,9 @@ time (cubes in A, empty grid in B) and the app staying alive.
    cards "Petal A · 3 nodes" and "Petal B · 0 nodes".
 3. Enter Petal A from its card.
    ```
-   F click 330 160 --wait 60 && F wait-settle && F shot --label s03-petal-a
+   F click 330 160 --wait 60
+   F wait-settle
+   F shot --label s03-petal-a
    ```
    **Checkpoint 3:** three red cubes; crumb "QA Basic / QA Fractal / Petal A".
 4. Back out with Escape, then enter Petal B from its card.

@@ -33,7 +33,8 @@ the Volume report shows numeric cut / fill / net within 10 s — never a
 4. Open the Volume report (locate "Volume" in the tool panel / Data window),
    choose the region if asked, then:
    ```
-   F wait-settle --timeout 15 && F shot --label s05-volume
+   F wait-settle --timeout 15
+   F shot --label s05-volume
    ```
    **Checkpoint 4:** cut, fill and net volumes with units; no stale
    "Computing…" after 10 s. Evidence (probe only):

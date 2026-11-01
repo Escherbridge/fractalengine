@@ -34,13 +34,19 @@ conductor/tracks/polish_lane_20261031/plan.md §QA-intake   S1/S2 routing
 ### (a) Stage — only if the build inputs moved
 
 ```powershell
-git rev-parse --short HEAD                    # current
-Get-ChildItem .qa\stage | Sort LastWriteTime  # newest staged <sha>
-git diff --quiet <staged-sha> HEAD -- '*.rs' '*.toml' Cargo.lock '*.wgsl' fractalengine/assets
-git diff --quiet HEAD -- '*.rs' '*.toml' Cargo.lock '*.wgsl' fractalengine/assets
+. tools/qa/_lib.ps1
+$qaStage = Get-QaLatestStageDir
+if ($qaStage) {
+    $qaManifest = Get-QaStageManifest -StageDir $qaStage
+    $qaManifest.source_commit                    # actual source commit
+    $qaManifest.source_fingerprint -eq (Get-QaSourceFingerprint)
+} else { $false }
 ```
 
-Exit 0 → reuse the stage (docs/scripts-only commits never need a rebuild).
+True → reuse the stage (docs/scripts-only commits never need a rebuild).
+Stage directory names contain a timestamp: never pass the whole directory
+name to git as a commit. Use `stage.json.source_commit` when inspecting
+history and its source fingerprint when deciding whether the binary matches.
 Check untracked source files too (`git ls-files --others --exclude-standard`).
 The launcher compares a content fingerprint of tracked and untracked build
 inputs with `stage.json`, so a dirty working tree cannot silently reuse an

@@ -129,6 +129,7 @@ pub enum ToolSeam {
     /// The synthetic-input bridge (`ApiState.input.bridge`, GUI hosts only;
     /// folded-in `agent_input_surface_20261031`).
     Input,
+    QaDebug,
 }
 
 /// Whether this host wires the seam `spec` needs. `screenshot` (the plain
@@ -144,6 +145,7 @@ pub fn tool_available(spec: &ToolSpec, state: &ApiState) -> bool {
             state.screenshot.bridge.is_some() || state.screenshot.vision.is_some()
         }
         Some(ToolSeam::Input) => state.input.bridge.is_some(),
+        Some(ToolSeam::QaDebug) => state.input.qa_debug.is_some(),
     }
 }
 
@@ -152,6 +154,9 @@ pub fn tool_available(spec: &ToolSpec, state: &ApiState) -> bool {
 /// needed, or given. `get_camera` names the camera gate's disabled message
 /// even though both share `ApiState.screenshot.allowed` (one env var).
 fn operator_opt_in_refusal(spec: &ToolSpec, state: &ApiState) -> Option<&'static str> {
+    if spec.requires == Some(ToolSeam::QaDebug) && !state.input.allowed {
+        return Some(crate::qa_debug::QA_GATE.disabled_message);
+    }
     match spec.requires {
         Some(ToolSeam::Screenshot) if !state.screenshot.allowed => {
             Some(if spec.name == "get_camera" {
@@ -283,6 +288,9 @@ static TOOLS: &[ToolSpec] = &[
     // --- Agent input surface (folded-in agent_input_surface_20261031;
     // AGENTS.md §agent-input-surface): synthetic pointer/keyboard/scroll
     // injection, closing the loop with get_camera/screenshot. ---
+    tool!(ui_tree, Owner, Global, requires QaDebug, "Read the primary window accessibility tree in physical screenshot pixels. Scoped to the active verse; FE_API_INPUT_ALLOW=1 required. Requires owner role."),
+    tool!(ui_state, Owner, Global, requires QaDebug, "Read authoritative navigation, selection, tool, viewport, notices and pending state. FE_API_INPUT_ALLOW=1 required. Requires owner role."),
+    tool!(ui_logs, Owner, Global, requires QaDebug, "Read a bounded, redacted log tail for the current verse generation. FE_API_INPUT_ALLOW=1 required. Requires owner role."),
     tool!(inject_input, Owner, Global, requires Input,
         "Synthesize pointer/keyboard/scroll input into the running GUI: a batch of up to 64 commands (pointer_move, pointer_click, pointer_drag, key_press, text_entry, scroll), an optional wait_frames to settle (<=120) and an optional capture_after to attach a PNG of the result (capture_after also needs the screenshot surface on and spends its 1 capture/sec budget). Scope-confined: the token must cover the open verse. OFF by default (set FE_API_INPUT_ALLOW=1 to enable) — unlike the default-on screenshot/camera surfaces, this MUTATES state; combined with them an Owner token gets full remote control. Refused with 409 while a posed capture holds the camera. Control/Super+C/V/X clipboard chords are refused, and text/image clipboard writes from UI controls are suppressed throughout injection and settling, including its final frame; idle user copies remain enabled. Synthetic input never reads or writes the host OS clipboard. 5 requests/sec. Requires owner role."),
 ];
@@ -687,7 +695,7 @@ mod tests {
         }
         assert_eq!(
             TOOLS.len(),
-            39,
+            42,
             "DEC-C14: 27 non-sim + 5 sim (p2p_asset_streaming S6 added set_petal_render_distance); \
              CDL-SPEC10 A5 added 4 R5 device tools (register/list_device_formats, \
              ingest/list_device_payloads); §screenshot added `screenshot`; \

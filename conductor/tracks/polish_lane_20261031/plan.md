@@ -768,5 +768,6 @@ T28, S-1, D-23, CANON-WS, CDL-NET and the INTENT items are OUT (spec.md).
 
 | QA id | Sev | Title | Evidence | Root cause | Suggested wave |
 |---|---|---|---|---|---|
-| QA-0001 | S1 | Sidebar petal from verse view aborts on incomplete hierarchy | `qa/passes/01/verdict.md`, resumed S03 before-crash PNG | `fe-ui/src/panels/sidebar.rs:461` calls petal navigation without its fractal | Next QA fix, before full pass |
+| ~~QA-0001~~ | S1 | CLOSED in pass 02: sidebar petal from verse view supplies full ancestry | `qa/passes/02/verdict.md` | Navigation fix verified live | Closed |
 | QA-0015 | S2 | Maps leaves almost no central viewport | `qa/passes/01/shots/131138-720-s02-inspector-after.png` | Unconfirmed; large side-panel geometry visible | qa-surfaces S6 / layout wave |
+| QA-0018 | S2 | Selected Inspector content starts below the window after Maps expansion | `qa/passes/02/shots/140836-049-s3-authoritative-selection-after.png` | Unconfirmed; tree puts controls at y=693–1157 in a 720px window | qa-surfaces S6 / layout wave |

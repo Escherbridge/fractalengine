@@ -27,9 +27,11 @@ block) and the run's log, not pixel offsets.
 
 1. Maximize and restore.
    ```
-   F click 1195 20 --wait 20 && F camera     # window.width/height grow
+   F click 1195 20 --wait 20
+   F camera     # window.width/height grow
    F shot --label s07-max
-   F click 1195 20 --wait 20 && F camera     # back to 1280x720
+   F click 1195 20 --wait 20
+   F camera     # back to 1280x720
    ```
    **Checkpoint 1:** maximized shot fills the bigger window with no
    unpainted strip or stretched UI; the button glyph switches to "restore".

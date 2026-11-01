@@ -75,12 +75,30 @@ pub struct InputKey(pub String);
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InputCommand {
-    PointerMove { x: f32, y: f32 },
-    PointerClick { x: f32, y: f32, button: PointerButton },
-    PointerDrag { from: PointerPoint, to: PointerPoint, button: PointerButton },
-    KeyPress { key: InputKey },
-    TextEntry { text: String },
-    Scroll { dx: f32, dy: f32 },
+    PointerMove {
+        x: f32,
+        y: f32,
+    },
+    PointerClick {
+        x: f32,
+        y: f32,
+        button: PointerButton,
+    },
+    PointerDrag {
+        from: PointerPoint,
+        to: PointerPoint,
+        button: PointerButton,
+    },
+    KeyPress {
+        key: InputKey,
+    },
+    TextEntry {
+        text: String,
+    },
+    Scroll {
+        dx: f32,
+        dy: f32,
+    },
 }
 
 /// `POST /api/v1/debug/input` request body (and the MCP `inject_input`
@@ -406,14 +424,50 @@ mod tests {
     /// capacity. Each assertion would go red if its branch inverted.
     #[test]
     fn input_spec_validation_defaults_and_bridge_journey() {
+        let credential = "eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJzZWNyZXQifQ.c2lnbmF0dXJl";
+        let redacted =
+            crate::qa_debug::redact(&format!("value=\"{credential}\" Bearer opaque-credential"));
+        assert!(!redacted.contains(credential));
+        assert!(!redacted.contains("opaque-credential"));
+        assert_eq!(
+            crate::qa_debug::redact("Bearer abc+private/rest=="),
+            "Bearer [REDACTED]"
+        );
+        let ring = crate::qa_debug::QaLogRing::default();
+        ring.set_verse(Some("A"));
+        for _ in 0..2005 {
+            ring.push(Some("A"), "warn", "test", credential);
+        }
+        let logs = ring.read(&crate::qa_debug::LogFilter::default());
+        assert_eq!(logs["entries"].as_array().unwrap().len(), 2000);
+        assert!(!logs.to_string().contains(credential));
+        ring.push(Some("B"), "warn", "test", "foreign private node name");
+        ring.push(None, "warn", "test", "unscoped private node name");
+        let scoped = ring.read(&crate::qa_debug::LogFilter::default());
+        assert!(!scoped.to_string().contains("private node name"));
+        ring.set_verse(Some("B"));
+        assert!(ring.read(&crate::qa_debug::LogFilter::default())["entries"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(crate::qa_debug::TreeFilter {
+            name: Some("x".repeat(257)),
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
         // Row 1: no_commands.
-        let empty = InputSpec::default().validate().expect_err("empty batch is refused");
+        let empty = InputSpec::default()
+            .validate()
+            .expect_err("empty batch is refused");
         assert_eq!(empty.code, "no_commands");
         assert_eq!(empty.field, Some("commands".to_string()));
 
         // Row 2: too_many_commands.
         let oversized = InputSpec {
-            commands: (0..MAX_COMMANDS_PER_REQUEST + 1).map(|i| click(i as f32, 0.0)).collect(),
+            commands: (0..MAX_COMMANDS_PER_REQUEST + 1)
+                .map(|i| click(i as f32, 0.0))
+                .collect(),
             ..Default::default()
         }
         .validate()
@@ -423,7 +477,13 @@ mod tests {
 
         // Row 3a: non_finite on PointerMove, index-scoped.
         let bad_move = InputSpec {
-            commands: vec![click(1.0, 1.0), InputCommand::PointerMove { x: f32::NAN, y: 0.0 }],
+            commands: vec![
+                click(1.0, 1.0),
+                InputCommand::PointerMove {
+                    x: f32::NAN,
+                    y: 0.0,
+                },
+            ],
             ..Default::default()
         }
         .validate()
@@ -449,7 +509,10 @@ mod tests {
         let bad_drag = InputSpec {
             commands: vec![InputCommand::PointerDrag {
                 from: PointerPoint { x: 0.0, y: 0.0 },
-                to: PointerPoint { x: f32::NEG_INFINITY, y: 0.0 },
+                to: PointerPoint {
+                    x: f32::NEG_INFINITY,
+                    y: 0.0,
+                },
                 button: PointerButton::Left,
             }],
             ..Default::default()
@@ -462,7 +525,9 @@ mod tests {
         // Row 3c: invalid_key — empty, too long, and non-alphanumeric all refuse.
         for bad_name in ["", &"A".repeat(MAX_KEY_LEN + 1), "Key A"] {
             let refusal = InputSpec {
-                commands: vec![InputCommand::KeyPress { key: InputKey(bad_name.to_string()) }],
+                commands: vec![InputCommand::KeyPress {
+                    key: InputKey(bad_name.to_string()),
+                }],
                 ..Default::default()
             }
             .validate()
@@ -473,7 +538,9 @@ mod tests {
 
         // Row 3d: text_too_long.
         let bad_text = InputSpec {
-            commands: vec![InputCommand::TextEntry { text: "x".repeat(MAX_TEXT_LEN + 1) }],
+            commands: vec![InputCommand::TextEntry {
+                text: "x".repeat(MAX_TEXT_LEN + 1),
+            }],
             ..Default::default()
         }
         .validate()
@@ -484,7 +551,12 @@ mod tests {
         // Row 3d': no_effective_input — empty text would plan zero input
         // frames (INPUT-ADDENDUM item 7, the panic=abort crash class).
         let empty_text = InputSpec {
-            commands: vec![click(1.0, 1.0), InputCommand::TextEntry { text: String::new() }],
+            commands: vec![
+                click(1.0, 1.0),
+                InputCommand::TextEntry {
+                    text: String::new(),
+                },
+            ],
             ..Default::default()
         }
         .validate()
@@ -494,7 +566,10 @@ mod tests {
 
         // Row 3e: non_finite on Scroll.
         let bad_scroll = InputSpec {
-            commands: vec![InputCommand::Scroll { dx: f32::NAN, dy: 0.0 }],
+            commands: vec![InputCommand::Scroll {
+                dx: f32::NAN,
+                dy: 0.0,
+            }],
             ..Default::default()
         }
         .validate()
@@ -514,9 +589,12 @@ mod tests {
         assert_eq!(bad_wait.field, Some("wait_frames".to_string()));
 
         // Defaults: a bare valid batch resolves wait_frames=0, capture_after=false.
-        let bare = InputSpec { commands: vec![click(5.0, 5.0)], ..Default::default() }
-            .validate()
-            .expect("a well-formed single click is valid");
+        let bare = InputSpec {
+            commands: vec![click(5.0, 5.0)],
+            ..Default::default()
+        }
+        .validate()
+        .expect("a well-formed single click is valid");
         assert_eq!(bare.wait_frames(), DEFAULT_WAIT_FRAMES);
         assert_eq!(bare.capture_after(), DEFAULT_CAPTURE_AFTER);
         assert_eq!(bare.commands().len(), 1);

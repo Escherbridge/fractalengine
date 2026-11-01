@@ -11,6 +11,7 @@ pub mod input;
 pub mod ktx2_guard;
 pub mod messages;
 pub mod peer_registry;
+pub mod qa_debug;
 pub mod safe_id;
 pub mod screenshot;
 pub mod shared_node;

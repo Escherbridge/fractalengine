@@ -475,7 +475,10 @@ async fn camera_state_round_trips_and_does_not_spend_the_capture_budget() {
     let camera = get_camera(&h, &owner).await;
     assert_eq!(camera.status, StatusCode::OK, "{:?}", camera.json());
     assert_eq!(camera.json()["data"]["locked"], false);
-    assert_eq!(camera.json()["data"]["active"]["verse_name"], "Vision Verse");
+    assert_eq!(
+        camera.json()["data"]["active"]["verse_name"],
+        "Vision Verse"
+    );
     assert_eq!(
         camera.json()["data"]["projection"]["origin_ele_grounded"],
         5.0
@@ -521,7 +524,12 @@ async fn headless_host_reports_no_window_and_hides_both_mcp_rows() {
     let owner = owner_token(&h).await;
 
     let post = post_screenshot(&h, &owner, &json!({})).await;
-    assert_eq!(post.status, StatusCode::SERVICE_UNAVAILABLE, "{:?}", post.json());
+    assert_eq!(
+        post.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{:?}",
+        post.json()
+    );
     assert!(post.json()["error"]
         .as_str()
         .is_some_and(|e| e.contains("no window")));
@@ -562,8 +570,8 @@ async fn mcp_screenshot_with_pose_returns_image_and_pose_text() {
         .expect("valid base64");
     assert_eq!(decoded, FAKE_PNG);
     assert_eq!(content[1]["type"], "text");
-    let pose: ResolvedPose =
-        serde_json::from_str(content[1]["text"].as_str().expect("pose text")).expect("valid pose json");
+    let pose: ResolvedPose = serde_json::from_str(content[1]["text"].as_str().expect("pose text"))
+        .expect("valid pose json");
     assert_eq!(pose.source, PoseSource::Camera);
 }
 
@@ -615,7 +623,91 @@ async fn mcp_screenshot_without_args_still_uses_the_plain_bridge() {
 /// the sixth rate-limited call would each fail only its own step.
 #[tokio::test]
 async fn input_injection_disabled_role_round_trip_rate_limited_headless_and_camera_lock_journey() {
-    let click = |x: f32, y: f32| json!({ "kind": "pointer_click", "x": x, "y": y, "button": "left" });
+    for allowed in [false, true] {
+        let (qa_tx, qa_rx) = fe_runtime::qa_debug::qa_bridge();
+        let h = ApiHarness::spawn_with_input(InputSurface::new(allowed, None).with_qa_debug(qa_tx))
+            .await
+            .expect("QA harness");
+        let verse = h.seed_verse("QA verse").await.unwrap();
+        let scope = format!("VERSE#{verse}");
+        let owner = h.mint_token(&scope, "owner");
+        let foreign = h.mint_token("VERSE#foreign", "owner");
+        let editor = h.mint_token(&scope, "editor");
+        if allowed {
+            std::thread::spawn(move || {
+                let logs = fe_runtime::qa_debug::QaLogRing::default();
+                logs.set_verse(Some(&verse));
+                logs.push(Some(&verse), "warn", "qa", "Bearer confidential");
+                while let Ok(request) = qa_rx.recv() {
+                    let result = if request.caller_scope != scope {
+                        Err(fe_runtime::qa_debug::QaFailure::denied())
+                    } else {
+                        Ok(match &request.op {
+                            fe_runtime::qa_debug::QaOp::UiTree(_) => {
+                                json!({"coordinate_space":"physical_pixels","nodes":[{"name":"Maps","bounds":{"x":800,"y":10,"w":55,"h":20}}]})
+                            }
+                            fe_runtime::qa_debug::QaOp::UiState => {
+                                json!({"navigation":{"verse_id":verse},"selection":null})
+                            }
+                            fe_runtime::qa_debug::QaOp::Logs(filter) => logs.read(filter),
+                        })
+                    };
+                    request.reply(result);
+                }
+            });
+        }
+        for (path, tool) in [
+            ("ui-tree?name=Maps&interactive=1", "ui_tree"),
+            ("ui-state", "ui_state"),
+            ("logs?level=warn", "ui_logs"),
+        ] {
+            for (token, status) in [
+                (
+                    &owner,
+                    if allowed {
+                        StatusCode::OK
+                    } else {
+                        StatusCode::FORBIDDEN
+                    },
+                ),
+                (
+                    &foreign,
+                    if allowed {
+                        StatusCode::NOT_FOUND
+                    } else {
+                        StatusCode::FORBIDDEN
+                    },
+                ),
+                (&editor, StatusCode::FORBIDDEN),
+            ] {
+                let response = h
+                    .request(
+                        Request::builder()
+                            .uri(format!("/api/v1/debug/{path}"))
+                            .header("authorization", format!("Bearer {token}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await;
+                assert_eq!(response.status(), status);
+                let body: serde_json::Value =
+                    serde_json::from_slice(&body_bytes(response).await).unwrap();
+                if status == StatusCode::OK && tool == "ui_tree" {
+                    assert_eq!(body["data"]["nodes"][0]["name"], "Maps");
+                    assert!(body["data"]["nodes"][0]["bounds"]["w"].as_u64().unwrap() > 0);
+                }
+                assert!(!body.to_string().contains("confidential"));
+                let result = mcp_call(&h, token, tool, json!({})).await;
+                assert_eq!(
+                    result["isError"].as_bool().unwrap_or(false),
+                    status != StatusCode::OK,
+                    "{result}"
+                );
+            }
+        }
+    }
+    let click =
+        |x: f32, y: f32| json!({ "kind": "pointer_click", "x": x, "y": y, "button": "left" });
 
     // AC-1: disabled without the opt-in — refused before role, rate or the
     // bridge, on both doors.
@@ -633,7 +725,13 @@ async fn input_injection_disabled_role_round_trip_rate_limited_headless_and_came
             "input injection endpoint is disabled on this node"
         );
 
-        let mcp = mcp_call(&h, &owner, "inject_input", json!({ "commands": [click(1.0, 1.0)] })).await;
+        let mcp = mcp_call(
+            &h,
+            &owner,
+            "inject_input",
+            json!({ "commands": [click(1.0, 1.0)] }),
+        )
+        .await;
         assert_eq!(mcp["isError"], true, "{mcp}");
 
         assert!(
@@ -656,7 +754,13 @@ async fn input_injection_disabled_role_round_trip_rate_limited_headless_and_came
         assert_eq!(rest.status, StatusCode::FORBIDDEN, "{:?}", rest.json());
         assert_eq!(rest.json()["error"], OWNER_REQUIRED);
 
-        let mcp = mcp_call(&h, &editor, "inject_input", json!({ "commands": [click(1.0, 1.0)] })).await;
+        let mcp = mcp_call(
+            &h,
+            &editor,
+            "inject_input",
+            json!({ "commands": [click(1.0, 1.0)] }),
+        )
+        .await;
         assert_eq!(mcp["isError"], true, "{mcp}");
 
         assert!(
@@ -753,7 +857,12 @@ async fn input_injection_disabled_role_round_trip_rate_limited_headless_and_came
             assert_eq!(rest.status, StatusCode::OK, "call {i}: {:?}", rest.json());
         }
         let limited = post_input(&h, &owner, &json!({ "commands": [click(99.0, 0.0)] })).await;
-        assert_eq!(limited.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", limited.json());
+        assert_eq!(
+            limited.status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "{:?}",
+            limited.json()
+        );
         assert_eq!(
             limited.json()["error"],
             "rate limit exceeded (5 input requests/sec)"
@@ -770,7 +879,12 @@ async fn input_injection_disabled_role_round_trip_rate_limited_headless_and_came
         let owner = owner_token(&h).await;
 
         let rest = post_input(&h, &owner, &json!({ "commands": [click(1.0, 1.0)] })).await;
-        assert_eq!(rest.status, StatusCode::SERVICE_UNAVAILABLE, "{:?}", rest.json());
+        assert_eq!(
+            rest.status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{:?}",
+            rest.json()
+        );
 
         let names = mcp_tool_names(&h, &owner).await;
         assert!(!names.contains(&"inject_input".to_string()), "{names:?}");
@@ -793,7 +907,13 @@ async fn input_injection_disabled_role_round_trip_rate_limited_headless_and_came
         assert_eq!(rest.status, StatusCode::CONFLICT, "{:?}", rest.json());
         assert_eq!(rest.json()["code"], CAMERA_LOCKED_BY_CAPTURE_CODE);
 
-        let mcp = mcp_call(&h, &owner, "inject_input", json!({ "commands": [click(2.0, 2.0)] })).await;
+        let mcp = mcp_call(
+            &h,
+            &owner,
+            "inject_input",
+            json!({ "commands": [click(2.0, 2.0)] }),
+        )
+        .await;
         assert_eq!(mcp["isError"], true, "{mcp}");
         assert_eq!(
             mcp["content"][0]["text"],

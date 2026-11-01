@@ -326,6 +326,9 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         // opt-in OFF unless FE_API_INPUT_ALLOW=1 — mutates state, unlike the
         // two capture routes above (AGENTS.md §agent-input-surface).
         .route("/api/v1/debug/input", post(crate::input::post_input))
+        .route("/api/v1/debug/ui-tree", get(crate::qa_debug::ui_tree))
+        .route("/api/v1/debug/ui-state", get(crate::qa_debug::ui_state))
+        .route("/api/v1/debug/logs", get(crate::qa_debug::logs))
         // Query endpoints (scope-guarded SurrealQL)
         .route("/api/v1/query", post(crate::rest::execute_query))
         .route(

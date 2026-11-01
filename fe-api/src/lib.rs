@@ -26,6 +26,7 @@ pub mod iot;
 pub mod limits;
 pub mod mcp;
 pub mod operator_gate;
+pub mod qa_debug;
 pub mod query_guard;
 pub mod render_distance;
 pub mod rest;
@@ -37,8 +38,8 @@ pub mod terrain;
 pub mod timeseries_query;
 pub mod types;
 pub mod upload;
-pub mod vision;
 pub mod visibility;
+pub mod vision;
 pub mod ws;
 
 use std::sync::Arc;

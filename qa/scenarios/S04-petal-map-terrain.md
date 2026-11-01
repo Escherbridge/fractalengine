@@ -33,7 +33,8 @@ silent failure (M-03/X-01).
 3. Click that row's "Set petal map" (locate it), then shoot now and 2 s later:
    ```
    F click <Set petal map> --wait 10 --capture --label s04-set
-   F wait-settle --timeout 15 && F shot --label s04-terrain
+   F wait-settle --timeout 15
+   F shot --label s04-terrain
    F shot --no-ui --label s04-scene-only
    ```
    **Checkpoint 2:** "Active map ✓"; terrain visible in the window shot and

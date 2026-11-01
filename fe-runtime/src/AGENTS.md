@@ -709,3 +709,21 @@ brand-new region with nothing to extend — one long journey). The single
 the defaults a valid batch resolves to, a full mixed-vocabulary batch
 round-tripped through JSON, both failure constructors, and the bridge's own
 bounded capacity — one function, each assertion red if its branch inverts.
+
+## §qa-debug
+
+`qa_debug.rs` defines the bounded correlated read bridge for UI tree, UI state
+and logs. It shares the existing BridgeRequest envelope. Filter strings are
+bounded substrings, never regexes; unsupported query keys are refused.
+`QaLogRing` holds at most 2000 redacted records, with messages bounded to 4096
+bytes. The sequence is monotonic across verse generations. A verse change
+clears retained records; startup/no-verse records are not retained. Payloads
+are retained only for explicitly scoped events whose verse matches the active
+verse. Other events expose severity, static target and a withheld-message
+marker; navigation never assigns background payloads to the active scope.
+
+The shared redactor removes JWT-shaped base64url triples and Bearer values
+before truncation. The host Layer additionally redacts sensitive named fields.
+It is deliberately conservative and may hide nonsecret dotted identifiers.
+No redactor can infer every possible secret embedded in arbitrary prose;
+callers must continue to avoid logging secrets at their source.

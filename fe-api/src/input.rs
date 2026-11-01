@@ -78,6 +78,7 @@ pub fn input_allowed_from_env() -> bool {
 /// The input surface as wired on this host.
 #[derive(Clone, Debug)]
 pub struct InputSurface {
+    pub qa_debug: Option<fe_runtime::qa_debug::QaSender>,
     /// Operator opt-in, read once at startup ([`input_allowed_from_env`]).
     pub allowed: bool,
     /// API→Bevy input bridge; `None` on headless hosts (relay, every
@@ -97,10 +98,16 @@ impl InputSurface {
     /// A surface with the given opt-in and bridge and the default timeout.
     pub fn new(allowed: bool, bridge: Option<InputRequestSender>) -> Self {
         Self {
+            qa_debug: None,
             allowed,
             bridge,
             reply_timeout: DEFAULT_INPUT_REPLY_TIMEOUT,
         }
+    }
+
+    pub fn with_qa_debug(mut self, bridge: fe_runtime::qa_debug::QaSender) -> Self {
+        self.qa_debug = Some(bridge);
+        self
     }
 
     /// Override the reply timeout (tests drive a short one).
@@ -411,7 +418,9 @@ pub async fn post_input(
     body: Bytes,
 ) -> Response {
     let outcome = async {
-        INPUT_GATE.admit(state.input.allowed, &state, &claims).await?;
+        INPUT_GATE
+            .admit(state.input.allowed, &state, &claims)
+            .await?;
         let spec = parse_and_validate(&body).map_err(InputError::Refusal)?;
         run_inject(&state, &claims, spec).await
     };
@@ -442,13 +451,25 @@ mod tests {
         // non-const binding keeps the check a real runtime assertion that
         // would still fail loudly if the const regressed.
         let default_on = std::hint::black_box(INPUT_GATE.default_on);
-        assert!(!default_on, "input must stay default-OFF, unlike screenshot/camera");
+        assert!(
+            !default_on,
+            "input must stay default-OFF, unlike screenshot/camera"
+        );
 
         // The gate's own const resolves the unset/`1`/`0` cases through its
         // `default_on`, exactly like every other gate's env parsing.
-        assert!(!crate::operator_gate::opt_in_value_enables(None, INPUT_GATE.default_on));
-        assert!(crate::operator_gate::opt_in_value_enables(Some("1"), INPUT_GATE.default_on));
-        assert!(!crate::operator_gate::opt_in_value_enables(Some("0"), INPUT_GATE.default_on));
+        assert!(!crate::operator_gate::opt_in_value_enables(
+            None,
+            INPUT_GATE.default_on
+        ));
+        assert!(crate::operator_gate::opt_in_value_enables(
+            Some("1"),
+            INPUT_GATE.default_on
+        ));
+        assert!(!crate::operator_gate::opt_in_value_enables(
+            Some("0"),
+            INPUT_GATE.default_on
+        ));
 
         // `InputSurface::disabled()` is off and unwired, the default for
         // every host without a window.
@@ -501,8 +522,14 @@ mod tests {
                 }),
                 StatusCode::BAD_REQUEST,
             ),
-            (InputError::Unavailable("no window"), StatusCode::SERVICE_UNAVAILABLE),
-            (InputError::TimedOut(Duration::from_secs(5)), StatusCode::GATEWAY_TIMEOUT),
+            (
+                InputError::Unavailable("no window"),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                InputError::TimedOut(Duration::from_secs(5)),
+                StatusCode::GATEWAY_TIMEOUT,
+            ),
             (
                 InputError::Failure(InputFailure {
                     status_class: InputFailureClass::Unresolvable,
@@ -544,18 +571,31 @@ mod tests {
         // denial — which is byte-identical to the REST existence-oracle text
         // and to vision's own denial, so an agent sees one uniform string
         // whether a capture or an injection was denied.
-        assert_eq!(fe_runtime::input::DENIED_MESSAGE, crate::rest::NOT_FOUND_OR_DENIED);
-        assert_eq!(fe_runtime::input::DENIED_MESSAGE, fe_runtime::vision::DENIED_MESSAGE);
+        assert_eq!(
+            fe_runtime::input::DENIED_MESSAGE,
+            crate::rest::NOT_FOUND_OR_DENIED
+        );
+        assert_eq!(
+            fe_runtime::input::DENIED_MESSAGE,
+            fe_runtime::vision::DENIED_MESSAGE
+        );
         let field_scoped = InputError::Refusal(InputRefusal {
             code: "non_finite",
             field: Some("commands[0].x".to_string()),
             message: "must be finite".to_string(),
         });
-        assert_eq!(field_scoped.coded_message(), "non_finite (commands[0].x): must be finite");
+        assert_eq!(
+            field_scoped.coded_message(),
+            "non_finite (commands[0].x): must be finite"
+        );
         let unscoped = InputError::Failure(fe_runtime::input::camera_locked_by_capture());
         assert_eq!(
             unscoped.coded_message(),
-            format!("{}: {}", fe_runtime::input::CAMERA_LOCKED_BY_CAPTURE_CODE, unscoped.message())
+            format!(
+                "{}: {}",
+                fe_runtime::input::CAMERA_LOCKED_BY_CAPTURE_CODE,
+                unscoped.message()
+            )
         );
         let denial = InputError::Failure(fe_runtime::input::denied());
         assert_eq!(denial.coded_message(), crate::rest::NOT_FOUND_OR_DENIED);
