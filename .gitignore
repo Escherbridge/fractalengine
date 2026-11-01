@@ -28,8 +28,19 @@ coverage/
 # Built sample hexon packages (regenerate via `cargo run -p fe-hexon --example build_sample_hexons`)
 sample-hexons/dist/
 
-# Local tooling fetched for e2e verification (BI egress A22) - never committed
-/tools/
+# Local tooling fetched for e2e verification (BI egress A22) - never committed.
+# NOTE: `/tools/*` (not `/tools/`) - a bare directory pattern makes git prune
+# the whole subtree during the ignore walk, so a `!` exception for anything
+# inside it never gets evaluated (verified with `git check-ignore -v`); the
+# glob-of-immediate-children form ignores each top-level entry individually
+# instead, so the negation below actually takes effect.
+/tools/*
+# ...except our own authored QA scripts (tools/qa/AGENTS.md) - these ARE tracked
+!/tools/qa/
+
+# Agent-QA staged builds + isolated run dirs (tools/qa/stage.ps1, launch.ps1) -
+# ephemeral, machine-local, can be large (a staged exe per commit)
+.qa/
 
 # cargo-fuzz outputs (fuzz/ is its own workspace)
 /fuzz/target/
