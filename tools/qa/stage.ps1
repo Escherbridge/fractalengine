@@ -32,7 +32,7 @@ if ($busy) {
 
 Push-Location $QaRepoRoot
 try {
-    Write-QaLog "Building fractalengine + install_sample_hexons (cargo build -p fractalengine -p fe-terrain --example install_sample_hexons)..."
+    Write-QaLog "Building fractalengine and offline QA terrain helpers..."
     $env:CARGO_PROFILE_DEV_DEBUG = "0"
     $env:RUST_MIN_STACK = "134217728"
     # No `2>&1` here: PowerShell 5.1 wraps a native command's stderr lines in
@@ -41,7 +41,7 @@ try {
     # (not $?) is what gates success below, but is confusing to read.
     & cargo build -p fractalengine --bin fractalengine -j $Jobs
     if ($LASTEXITCODE -ne 0) { throw "GUI build failed: $LASTEXITCODE" }
-    & cargo build -p fe-terrain --example install_sample_hexons -j $Jobs
+    & cargo build -p fe-terrain --example install_sample_hexons --example build_qa_terrain -j $Jobs
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
         Write-QaLog "cargo build failed with exit code $exitCode"
@@ -72,6 +72,9 @@ $hexonInstallerSrc = Join-Path $QaRepoRoot "target\debug\examples\install_sample
 if (Test-Path $hexonInstallerSrc) {
     Copy-Item $hexonInstallerSrc (Join-Path $stageDir "install_sample_hexons.exe") -Force
 }
+$terrainBuilderSrc = Join-Path $QaRepoRoot 'target/debug/examples/build_qa_terrain.exe'
+if (-not (Test-Path -LiteralPath $terrainBuilderSrc)) { throw 'Offline QA terrain helper is missing after build' }
+Copy-Item -LiteralPath $terrainBuilderSrc -Destination (Join-Path $stageDir 'build_qa_terrain.exe')
 
 $manifest = @{
     kind = 'fractalengine-qa-stage-v1'

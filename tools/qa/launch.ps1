@@ -3,17 +3,18 @@
 # handing back control. See tools/qa/AGENTS.md for the full design and the
 # non-obvious gotchas this script works around.
 #
-# Usage: powershell -File tools\qa\launch.ps1 [-Stage <sha>] [-Fixture basic|none]
+# Usage: powershell -File tools\qa\launch.ps1 [-Stage <sha>] [-Fixture basic|terrain|none]
 [CmdletBinding()]
 param(
     [string]$Stage,
-    [ValidateSet("basic", "none")]
+    [ValidateSet("basic", "terrain", "none")]
     [string]$Fixture = "basic",
     [ValidateRange(1,65535)][int]$ApiPort = 8765,
     [switch]$AllowStaleStage
 )
 
 . "$PSScriptRoot\_lib.ps1"
+. "$PSScriptRoot\_fixture.ps1"
 $QaApiBase = "http://127.0.0.1:$ApiPort"
 $ErrorActionPreference = 'Stop'
 
@@ -63,24 +64,21 @@ Get-ChildItem -LiteralPath $assetsSrc -File | ForEach-Object { Copy-Item -Litera
 $tokensPath = Join-Path $run "tokens.json"
 $hexonDir = Join-Path $run "hexons"
 
-# --- Optional offline step: install the one sample hexon that is a real
-# TerrainTileset (if any — the three shipped under sample-hexons/dist/ are
-# Terrain/Scene/GpxCollection as of this writing, so this currently always
-# no-ops; kept so the fixture step below picks it up the moment a tileset
-# IS shipped, without script changes). Runs before launch: it only touches
-# files under $hexonDir, no running process needed.
-$terrainHexonId = $null
-$hexonInstaller = Join-Path $stageDir "install_sample_hexons.exe"
-$sampleHexonsDir = Join-Path $QaRepoRoot "sample-hexons\dist"
-if ((Test-Path $hexonInstaller) -and (Test-Path $sampleHexonsDir)) {
-    $env:FE_HEXON_DIR = $hexonDir
-    $installOut = & $hexonInstaller $sampleHexonsDir
-    if ($LASTEXITCODE -ne 0) { throw "Sample hexon installation failed: $LASTEXITCODE" }
-    $installOut | ForEach-Object { Write-QaLog "install_sample_hexons: $_" }
-    $installed = $installOut | Select-String -Pattern "^(installed|refreshed) (\S+)"
-    if ($installed) {
-        $terrainHexonId = $installed[0].Matches[0].Groups[2].Value
-    }
+# Generate and install the requested offline fixture before the GUI opens its store.
+$terrainDescriptor = $null
+if ($Fixture -ne 'none') {
+    $terrainBuilder = Join-Path $stageDir 'build_qa_terrain.exe'
+    if (-not (Test-Path -LiteralPath $terrainBuilder)) { throw 'Requested fixture requires a staged build_qa_terrain.exe' }
+    $builderOutput = & $terrainBuilder $run
+    if ($LASTEXITCODE -ne 0) { throw "Offline QA terrain generation failed: $LASTEXITCODE" }
+    $descriptorPath = Join-Path $run 'terrain-fixture/descriptor.json'
+    $terrainDescriptor = Get-Content -LiteralPath $descriptorPath -Raw | ConvertFrom-Json
+    if ($terrainDescriptor.schema -cne 'fe-qa-terrain-v1' -or $terrainDescriptor.tile_count -ne 9 -or
+        $terrainDescriptor.flat_pixel_samples -le 0 -or $terrainDescriptor.encoded_peak_m -le 7 -or
+        $terrainDescriptor.terrain_config.elevation_source -cne 'terrain_rgb' -or
+        $terrainDescriptor.terrain_config.tile_source_mode -cne 'offline' -or
+        $terrainDescriptor.terrain_config.world_scale -ne 1) { throw 'Offline QA terrain descriptor is invalid' }
+    Write-QaLog "Installed deterministic offline terrain: $($terrainDescriptor.tileset_id)"
 }
 
 # --- Launch -------------------------------------------------------------
@@ -136,74 +134,9 @@ Write-QaLog "Bootstrap owner token ready (verse $($bootstrap.VerseId)) after ${t
 
 $fixtureInfo = $null
 $swFixture = [System.Diagnostics.Stopwatch]::StartNew()
-if ($Fixture -eq "basic") {
-    # 1 verse -> 1 fractal -> 2 petals, a few GLB nodes, terrain on one petal
-    # IF a TerrainTileset hexon is available offline (tools/qa/AGENTS.md
-    # §fixture-basic has the full shape + the REST calls this mirrors).
-    $verseResp = Invoke-QaApi -Method POST -Path "/api/v1/verses" -Token $bootstrap.Token -JsonBody '{"name":"QA Basic"}'
-    if (-not $verseResp.ok) { Fail "fixture: create verse failed: $($verseResp.error)" }
-    $verseId = $verseResp.data.id
-
-    $verseToken = Wait-QaOwnerToken -TokensPath $tokensPath -VerseId $verseId -TimeoutSec 30
-    if (-not $verseToken) { Fail "fixture: QA Basic verse never got its own owner token" }
-    $vt = $verseToken.Token
-
-    $fractalResp = Invoke-QaApi -Method POST -Path "/api/v1/verses/$verseId/fractals" -Token $vt -JsonBody '{"name":"QA Fractal"}'
-    if (-not $fractalResp.ok) { Fail "fixture: create fractal failed: $($fractalResp.error)" }
-    $fractalId = $fractalResp.data.id
-
-    $petalAResp = Invoke-QaApi -Method POST -Path "/api/v1/verses/$verseId/fractals/$fractalId/petals" -Token $vt -JsonBody '{"name":"Petal A"}'
-    $petalBResp = Invoke-QaApi -Method POST -Path "/api/v1/verses/$verseId/fractals/$fractalId/petals" -Token $vt -JsonBody '{"name":"Petal B"}'
-    if (-not $petalAResp.ok -or -not $petalBResp.ok) { Fail "fixture: create petal failed" }
-    $petalAId = $petalAResp.data.id
-    $petalBId = $petalBResp.data.id
-
-    # A GLB with a real scene + mesh: fe-test-harness's 48-byte test_cube.glb
-    # has no `scenes`, so its nodes rendered nothing (tools/qa/AGENTS.md §fixture-basic).
-    $glbPath = Join-Path $QaRepoRoot "fractalengine\assets\samples\info_panel.glb"
-    $uploadResp = Invoke-QaApiUpload -Path "/api/v1/petals/$petalAId/assets" -Token $vt -FilePath $glbPath
-    if (-not $uploadResp.ok) { Fail "fixture: GLB upload failed: $($uploadResp.error)" }
-    $assetId = $uploadResp.data.asset_id
-
-    $nodeIds = @()
-    $positions = @(@(0, 0, 0), @(2, 0, 0), @(-2, 0, 0))
-    $names = @("Cube 1", "Cube 2", "Cube 3")
-    for ($i = 0; $i -lt 3; $i++) {
-        $body = @{ name = $names[$i]; asset_id = $assetId; position = $positions[$i] } | ConvertTo-Json -Compress
-        $nodeResp = Invoke-QaApi -Method POST -Path "/api/v1/verses/$verseId/fractals/$fractalId/petals/$petalAId/nodes" -Token $vt -JsonBody $body
-        if (-not $nodeResp.ok) { Fail "fixture: create node $($names[$i]) failed: $($nodeResp.error)" }
-        $nodeIds += $nodeResp.data.id
-    }
-
-    $terrainBound = $false
-    if ($terrainHexonId) {
-        $terrainBody = @{
-            enabled = $true
-            origin = @{ origin_lat = 46.5; origin_lon = 8.0; origin_ele = 0.0 }
-            tile_source_url = ""
-            elevation_source = "none"
-            tile_source_mode = "offline"
-            tileset_hexon_uris = @($terrainHexonId)
-        } | ConvertTo-Json -Compress
-        $terrainResp = Invoke-QaApi -Method PUT -Path "/api/v1/petals/$petalBId/terrain" -Token $vt -JsonBody $terrainBody
-        $terrainBound = [bool]$terrainResp.ok
-        if (-not $terrainBound) { Write-QaLog "fixture: terrain PUT failed (continuing without it): $($terrainResp.error)" }
-    } else {
-        Write-QaLog "fixture: no TerrainTileset hexon available offline under sample-hexons/dist — skipping terrain binding (per spec: 'if a sample hexon is available offline')"
-    }
-
-    $fixtureInfo = @{
-        name = "basic"
-        verse_id = $verseId
-        fractal_id = $fractalId
-        petal_a_id = $petalAId
-        petal_b_id = $petalBId
-        asset_id = $assetId
-        node_ids = $nodeIds
-        terrain_petal_id = $(if ($terrainBound) { $petalBId } else { $null })
-        terrain_bound = $terrainBound
-    }
-    Write-QaLog "Fixture 'basic' seeded: verse=$verseId fractal=$fractalId petals=[$petalAId,$petalBId] nodes=$($nodeIds.Count) terrain_bound=$terrainBound"
+if ($Fixture -ne 'none') {
+    $fixtureInfo = New-QaSceneFixture -Name $Fixture -BootstrapToken $bootstrap.Token -TokensPath $tokensPath -Run $run -TerrainDescriptor $terrainDescriptor
+    Write-QaLog "Fixture '$Fixture' verified: 3 values sum to 60; terrain petals=$($fixtureInfo.terrain_petal_ids -join ',')"
 }
 $fixtureMs = $swFixture.ElapsedMilliseconds
 $capturedTree = @(Get-QaOwnedProcessTree -Identity $identity)
