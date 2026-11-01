@@ -17,7 +17,7 @@ are gitignored (machine-local); `tools/qa/*.ps1` are explicitly un-ignored
 Startup rejects redirected roots, enters that root before touching relative
 state, forces blob/P2P/hexon overrides beneath it, and skips legacy per-user
 blob migration. Settings resolve to `<run>/config/settings.ron`. The node key
-is durable only under `<run>/identity`; other secrets use an in-memory store.
+is durable only under `<run>/identity`; all service/account secrets persist in an owner-only run-local store.
 The QA branch never constructs the OS-keystore backend or migrates user keys.
 Unset preserves normal desktop paths and identity behavior.
 
@@ -92,6 +92,14 @@ rechecked before stopping children first, then the root. A snapshot error is
 reported rather than silently claiming no children exist. Launch uses a
 `finally` cleanup until it hands off a complete run record. Passes capture
 and stop their explicit owned run path; `.qa/current` is only discovery.
+
+A timestamp captured before each Toolhelp snapshot bounds descendant start
+creation times from above; a later PID replacement is rejected. Successful
+launch persists the exact descendant identities in `current.json`. After a
+root crash, stop never infers a tree from its dead/recycled PID: it only reaps
+those recorded identities. Clean also retains a run and its stage for recorded
+live descendants. Children born after the last snapshot remain unproven after
+a crash; the stop command reports that limitation explicitly.
 
 `clean.ps1` confines candidates to the intended QA root, uses literal paths,
 retains live runs and their referenced stages, and refuses any candidate tree

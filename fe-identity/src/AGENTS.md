@@ -131,6 +131,17 @@ rejects redirected ancestors. GUI startup uses it for run-local identity,
 settings and storage; absent means normal desktop behavior. Invalid roots
 fail startup, and settings resolution independently avoids user persistence.
 
+The QA `RunLocalBackend` implements the same `SecretStore` trait for every
+service/account value, including share signers, namespace secrets and canonical
+scope keys. A fixed `identity/secrets.json` path stores a map whose keys encode
+service/account bytes as delimiter-separated hex, so arbitrary account strings
+never become filesystem paths. Updates use the owner-only atomic replacement
+helper and a per-backend lock; all consumers in one GUI process share that
+backend. Reopening the same run retains its secrets and deletion state without
+contacting the OS keystore. This is a single-writer run store, not a multiprocess
+database. The existing trait-object journey covers reopen, overwrite, delete,
+and traversal-shaped account names without global environment mutation.
+
 ## §x25519-device-key (`x25519.rs`)
 
 `DeviceKeypair` wraps an `x25519_dalek::StaticSecret` (dependency approved

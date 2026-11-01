@@ -203,6 +203,9 @@ if ($Fixture -eq "basic") {
     Write-QaLog "Fixture 'basic' seeded: verse=$verseId fractal=$fractalId petals=[$petalAId,$petalBId] nodes=$($nodeIds.Count) terrain_bound=$terrainBound"
 }
 $fixtureMs = $swFixture.ElapsedMilliseconds
+$capturedTree = @(Get-QaOwnedProcessTree -Identity $identity)
+if (-not ($capturedTree | Where-Object { [int]$_.pid -eq [int]$identity.pid })) { throw 'QA process exited before successful handoff' }
+$recordedDescendants = @($capturedTree | Where-Object { [int]$_.pid -ne [int]$identity.pid })
 
 $current = @{
     pid = $proc.Id
@@ -212,6 +215,8 @@ $current = @{
     fixture = $Fixture
     started_at = $startedAt
     process_identity = $identity
+    descendant_identities = $recordedDescendants
+    descendants_captured_at = [DateTime]::UtcNow.ToString('o')
     stage_manifest = $stageManifest
     stage_matches_source = $stageMatchesSource
     run_dir = $run

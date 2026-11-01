@@ -1366,7 +1366,7 @@ The launcher sets `FE_QA_STORAGE_ROOT` to its confined absolute run directory.
 Startup validates it before any relative state, uses it instead of packaged
 CWD, overrides blob/P2P/hexon paths under it and skips the legacy user-blob
 migration. Settings load from its `config/` directory. The node key uses its
-`identity/` directory; all other secrets use an in-memory backend, initialized
+`identity/` directory; all other secrets use a run-local persistent backend, initialized
 with that node key. The QA branch never constructs the OS-keystore backend
 and does not migrate a real user's identity. Without this explicit variable,
 desktop storage/keystore behavior is unchanged. See tools/qa/AGENTS.md for

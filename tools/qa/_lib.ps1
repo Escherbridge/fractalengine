@@ -217,6 +217,7 @@ public static class QaProcessSnapshot {
 }
 '@
     }
+    $snapshotStarted = [DateTime]::UtcNow.Ticks
     $rows = [QaProcessSnapshot]::Read()
     $tree = New-Object System.Collections.Generic.List[object]
     $tree.Add($Identity)
@@ -229,7 +230,8 @@ public static class QaProcessSnapshot {
             if ($row[1] -ne [int]$parent.pid -or $row[0] -eq [int]$parent.pid) { continue }
             if ($tree | Where-Object { [int]$_.pid -eq $row[0] }) { continue }
             $child = Get-QaProcessIdentity -ProcessId $row[0]
-            if ($child -and [long]$child.start_ticks -ge [long]$parent.start_ticks) { $tree.Add($child) }
+            if ($child -and [long]$child.start_ticks -ge [long]$parent.start_ticks -and
+                [long]$child.start_ticks -le $snapshotStarted) { $tree.Add($child) }
         }
         } finally { $parentProcess.Dispose() }
     }
@@ -238,11 +240,16 @@ public static class QaProcessSnapshot {
 }
 
 function Stop-QaOwnedProcessTree {
-    param([Parameter(Mandatory)]$Identity)
+    param([Parameter(Mandatory)]$Identity, [object[]]$RecordedDescendants = @())
     $enumerationError = $null
     try { $tree = @(Get-QaOwnedProcessTree -Identity $Identity) }
     catch { $enumerationError = $_; $tree = @($Identity) }
-    [array]::Reverse($tree)
+    $known = @{}
+    foreach ($entry in (@($tree) + @($RecordedDescendants) + @($Identity))) {
+        if (-not $entry) { continue }
+        $known["$($entry.pid):$($entry.start_ticks)"] = $entry
+    }
+    $tree = @($known.Values | Sort-Object { [long]$_.start_ticks } -Descending)
     foreach ($entry in $tree) {
         $process = Get-QaOwnedProcess -Identity $entry
         if (-not $process) { continue }

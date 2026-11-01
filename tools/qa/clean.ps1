@@ -26,11 +26,14 @@ foreach ($directory in @(Get-ChildItem -LiteralPath $QaRunRoot -Directory -Error
             if ($current.stage) { $liveStages[[IO.Path]::GetFullPath($current.stage)] = $true }
             continue
         }
-        $process = Get-QaOwnedProcess -Identity $current.process_identity
-        if ($process) {
-            $process.Dispose()
-            $liveRuns[$directory.FullName] = $true
-            $liveStages[[IO.Path]::GetFullPath($current.stage)] = $true
+        foreach ($identity in (@($current.process_identity) + @($current.descendant_identities))) {
+            if (-not $identity) { continue }
+            $process = Get-QaOwnedProcess -Identity $identity
+            if ($process) {
+                $process.Dispose()
+                $liveRuns[$directory.FullName] = $true
+                $liveStages[[IO.Path]::GetFullPath($current.stage)] = $true
+            }
         }
     } catch {
         throw "Cannot establish QA run ownership; cleanup refused: $record`: $_"

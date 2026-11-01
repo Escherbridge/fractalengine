@@ -16,7 +16,7 @@ The independent static review found and fixed five issues:
 | --- | --- | --- |
 | HIGH | Example-only Cargo selection could stage a stale GUI under current HEAD | Explicit GUI build and installer build; unique immutable stage; executable SHA-256 and tracked/untracked build-input fingerprint |
 | HIGH | Persistent PID-only stop could kill a recycled unrelated PID | PID + executable + creation ticks; held process handles; Toolhelp descendants checked and stopped before root |
-| HIGH | QA used real user settings and OS-keystore identity | Explicit run-local storage root; isolated settings/node key; memory secret store; force local blob/P2P/hexons; skip user blob migration |
+| HIGH | QA used real user settings and OS-keystore identity | Explicit run-local storage root; isolated settings/node key; persistent run-local secret store; force local blob/P2P/hexons; skip user blob migration |
 | MEDIUM | Windows secret creation applied permissions and reopened by pathname | Owner DACL supplied at CreateFileW creation; one nonshared handle; ancestor handles reject and pin reparse boundaries |
 | MEDIUM | Cleaner lacked path/reparse confinement and live-stage protection | Confined literal paths; retain trees containing reparse points; retain legacy/identity-verified live runs and referenced stages |
 
@@ -52,6 +52,17 @@ and screenshot, copied assets and run-local state, clean exact-process stop,
 failed startup cleanup, and the extended journey tests. Legacy stages without
 stage.json intentionally cannot be launched by the strengthened scripts.
 The already-staged pre-fix executable does not verify these changes.
+
+Follow-up review corrections are also applied, with integrated verification
+still pending: all QA secrets now use a persistent run-local SecretStore,
+retaining share signers, verse namespace secrets and canonical scope keys
+across same-run restarts. Process identities resolved from a Toolhelp snapshot
+must predate the timestamp captured before that snapshot, rejecting PID
+replacements born while identities are resolved. Successful launch records
+descendant identities. Stop can reap those identities after a root crash,
+and clean retains a run/stage while any recorded descendant remains alive.
+Children born after the last snapshot cannot be proven absent after a crash;
+stop reports this limitation instead of claiming complete orphan cleanup.
 
 The cleaner conservatively rejects existing reparse trees; it does not claim
 security against a concurrently malicious shared filesystem writer. Unix

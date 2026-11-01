@@ -90,8 +90,14 @@ fn main() {
     };
 
     // Secret store: OS keychain on desktop.
-    let secret_store: Arc<dyn fe_identity::SecretStore> = if qa_root.is_some() {
-        Arc::new(fe_identity::InMemoryBackend::new())
+    let secret_store: Arc<dyn fe_identity::SecretStore> = if let Some(root) = qa_root.as_ref() {
+        match fe_identity::secret_store::RunLocalBackend::new(root.join("identity")) {
+            Ok(store) => Arc::new(store),
+            Err(error) => {
+                eprintln!("could not initialize run-local secret storage: {error}");
+                std::process::exit(1);
+            }
+        }
     } else {
         Arc::new(fe_identity::OsKeystoreBackend::new())
     };

@@ -4,6 +4,9 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+mod run_local;
+pub use run_local::RunLocalBackend;
+
 /// Errors that can occur during secret store operations.
 #[derive(Debug, thiserror::Error)]
 pub enum SecretStoreError {
@@ -284,5 +287,59 @@ mod tests {
             store.get("svc", "acct").unwrap(),
             Some("via_trait".to_string())
         );
+
+        let root = std::env::temp_dir().join(format!(
+            "fe-secret-store-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let run = root.join("qa-run");
+        let normal_user = root.join("normal-user");
+        let persistent: std::sync::Arc<dyn SecretStore> =
+            std::sync::Arc::new(RunLocalBackend::new(run.clone()).unwrap());
+        for (service, account, value) in [
+            ("fractalengine", "share_signer", "signer"),
+            ("verse-namespace", "did:key/example", "namespace-secret"),
+            ("canonical", "../../scope:key", "scope-secret"),
+        ] {
+            persistent.set(service, account, value).unwrap();
+        }
+        drop(persistent);
+        let reopened = RunLocalBackend::new(run.clone()).unwrap();
+        assert_eq!(
+            reopened
+                .get("fractalengine", "share_signer")
+                .unwrap()
+                .as_deref(),
+            Some("signer")
+        );
+        assert_eq!(
+            reopened
+                .get("verse-namespace", "did:key/example")
+                .unwrap()
+                .as_deref(),
+            Some("namespace-secret")
+        );
+        reopened
+            .set("canonical", "../../scope:key", "updated")
+            .unwrap();
+        reopened.delete("fractalengine", "share_signer").unwrap();
+        reopened.delete("missing", "missing").unwrap();
+        drop(reopened);
+        let reopened = RunLocalBackend::new(run).unwrap();
+        assert_eq!(reopened.get("fractalengine", "share_signer").unwrap(), None);
+        assert_eq!(
+            reopened
+                .get("canonical", "../../scope:key")
+                .unwrap()
+                .as_deref(),
+            Some("updated")
+        );
+        assert!(!normal_user.exists());
+        drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

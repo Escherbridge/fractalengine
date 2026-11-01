@@ -15,9 +15,10 @@ $current = Get-Content -LiteralPath (Join-Path $runDir 'current.json') -Raw | Co
 if (-not $current.process_identity) { throw 'Legacy run lacks process identity; refusing PID-only stop' }
 $process = Get-QaOwnedProcess -Identity $current.process_identity
 if (-not $process) {
-    Write-QaLog 'Recorded QA process is already gone (or PID was reused); nothing stopped'
-    exit 0
+    Write-QaLog 'Recorded root is already gone; checking only explicitly recorded descendant identities'
+    Write-Warning 'Children born after the last captured snapshot cannot be proven absent after root exit'
+} else {
+    $process.Dispose()
 }
-$process.Dispose()
-Stop-QaOwnedProcessTree -Identity $current.process_identity
+Stop-QaOwnedProcessTree -Identity $current.process_identity -RecordedDescendants @($current.descendant_identities)
 Write-QaLog "Stopped. Run dir kept at $runDir"

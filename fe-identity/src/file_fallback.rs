@@ -19,7 +19,7 @@ pub fn qa_storage_root() -> anyhow::Result<Option<PathBuf>> {
 }
 
 /// Reject redirected ancestors; Windows handles pin each directory during writes.
-fn pin_secret_parents(path: &Path) -> anyhow::Result<Vec<std::fs::File>> {
+pub(crate) fn pin_secret_parents(path: &Path) -> anyhow::Result<Vec<std::fs::File>> {
     let absolute = std::path::absolute(path)?;
     anyhow::ensure!(
         !absolute
