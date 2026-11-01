@@ -103,7 +103,7 @@ bootstrap flow above:
 QA Basic (verse)
 └── QA Fractal
     ├── Petal A — "Cube 1/2/3" nodes, all bound to one uploaded
-    │             fe-test-harness/src/fixtures/test_cube.glb asset
+    │             fractalengine/assets/samples/info_panel.glb asset
     └── Petal B — terrain-bound IF a TerrainTileset hexon is installed
                   from sample-hexons/dist/ (install_sample_hexons.exe,
                   staged alongside the exe), else left plain and logged.
@@ -125,3 +125,37 @@ confirms this, no `hexon://` scheme prefix).
 `fixture_detail` with every id a later QA-loop script needs:
 `verse_id`, `fractal_id`, `petal_a_id`, `petal_b_id`, `asset_id`,
 `node_ids`, `terrain_bound`.
+
+## §fe-py
+
+`fe.py` is a Python 3 standard-library client for camera read-back,
+screenshots and synthetic input. It discovers the run from `.qa/current`
+and `current.json`, reads owner tokens without printing them, and probes
+`GET /api/v1/debug/camera` to choose the token covering the active verse.
+`--verse` pins a token explicitly. A cached verse id accelerates the next
+invocation; the token file is always read again so newly created verses
+are discoverable.
+
+Commands: `info`, `camera`, `shot`, `move`, `click`, `drag`, `key`, `type`,
+`scroll`, `wait-settle`, and `api`. `shot --help` lists camera/orbit/tile/
+geo/focus poses. Input commands accept `--capture` for a post-action PNG.
+Screenshots go to `<run>/shots`, `FE_QA_SHOTS_DIR`, or explicit `--out`.
+Resolved pose metadata is printed alongside the path. The raw `api`
+command is for fixture setup and evidence read-back, not UI gold steps.
+
+Exit codes are 0 for success, 2 for typed refusal or malformed command
+values, and 3 when the app/run/token file is unavailable. Owner-only
+token files written by an unsandboxed app also require the drive client
+to run in that owner's execution context; do not weaken the token ACL.
+Bounded retries cover 409/429 refusals. A successful click that navigates
+to another owned verse is reported as `view_changed_verse`, because the
+host correctly denies the remaining old-scope batch. Capture again under
+the new verse's token before continuing.
+
+`wait-settle` requires three consecutive equal camera poses by default;
+it does not certify asset/terrain completion. The pass method and gold
+tasks live in `.claude/skills/fe-qa-pass/SKILL.md` and `qa/scenarios/`.
+Run the app lifecycle outside the restricted sandbox when native WebView
+creation stalls before the first frame; bootstrap pass 01 observed that
+failure and succeeded in the owner context. Stop the exact recorded PID
+tree at the end, even if the app has crashed.

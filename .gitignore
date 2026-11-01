@@ -41,6 +41,8 @@ sample-hexons/dist/
 # Agent-QA staged builds + isolated run dirs (tools/qa/stage.ps1, launch.ps1) -
 # ephemeral, machine-local, can be large (a staged exe per commit)
 .qa/
+# QA pass screenshots (fe-qa-pass skill) - verdict.md + findings.jsonl are tracked, PNGs are not
+/qa/passes/**/shots/
 
 # cargo-fuzz outputs (fuzz/ is its own workspace)
 /fuzz/target/

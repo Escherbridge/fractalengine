@@ -763,3 +763,10 @@ T28, S-1, D-23, CANON-WS, CDL-NET and the INTENT items are OUT (spec.md).
 - [ ] W5 leaves · [ ] W5 gate · [ ] W5 advocate · [ ] W5 critic + security-review · [ ] W5 re-gate
 - [ ] W6 leaves · [ ] W6 gate · [ ] W6 advocate · [ ] W6 critic · [ ] W6 re-gate · [ ] visual
 - [ ] CLOSE (ledger, board, retro) · [ ] user in-app look (user-gated, OUT of agent scope)
+
+## §QA-intake
+
+| QA id | Sev | Title | Evidence | Root cause | Suggested wave |
+|---|---|---|---|---|---|
+| QA-0001 | S1 | Sidebar petal from verse view aborts on incomplete hierarchy | `qa/passes/01/verdict.md`, resumed S03 before-crash PNG | `fe-ui/src/panels/sidebar.rs:461` calls petal navigation without its fractal | Next QA fix, before full pass |
+| QA-0015 | S2 | Maps leaves almost no central viewport | `qa/passes/01/shots/131138-720-s02-inspector-after.png` | Unconfirmed; large side-panel geometry visible | qa-surfaces S6 / layout wave |

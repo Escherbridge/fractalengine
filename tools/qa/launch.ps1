@@ -144,7 +144,9 @@ if ($Fixture -eq "basic") {
     $petalAId = $petalAResp.data.id
     $petalBId = $petalBResp.data.id
 
-    $glbPath = Join-Path $QaRepoRoot "fe-test-harness\src\fixtures\test_cube.glb"
+    # A GLB with a real scene + mesh: fe-test-harness's 48-byte test_cube.glb
+    # has no `scenes`, so its nodes rendered nothing (tools/qa/AGENTS.md §fixture-basic).
+    $glbPath = Join-Path $QaRepoRoot "fractalengine\assets\samples\info_panel.glb"
     $uploadResp = Invoke-QaApiUpload -Path "/api/v1/petals/$petalAId/assets" -Token $vt -FilePath $glbPath
     if (-not $uploadResp.ok) { Fail "fixture: GLB upload failed: $($uploadResp.error)" }
     $assetId = $uploadResp.data.asset_id
