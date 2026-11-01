@@ -740,3 +740,7 @@ before truncation. The host Layer additionally redacts sensitive named fields.
 It is deliberately conservative and may hide nonsecret dotted identifiers.
 No redactor can infer every possible secret embedded in arbitrary prose;
 callers must continue to avoid logging secrets at their source.
+
+## Correlated node properties
+
+Set/Get/DeleteNodeProperty and their three typed replies carry optional correlation IDs. GUI requests use None; every API origin, including background tracking writes with a dropped receiver, uses a fresh ID. The existing reply-family hub delivers only an exact correlation match and consumes closed waiters without shifting a reply. Database failures reuse correlated_failure and RequestFailed. This prevents both lost GUI-filtered acknowledgments and unrelated property results satisfying an API waiter.

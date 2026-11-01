@@ -136,6 +136,7 @@ impl Harness {
     fn properties(&self, node_id: &str) -> serde_json::Value {
         self.send(DbCommand::GetNodeProperties {
             node_id: node_id.into(),
+            correlation_id: None,
         });
         match self.recv() {
             DbResult::NodePropertiesLoaded { properties, .. } => properties,

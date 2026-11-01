@@ -67,6 +67,7 @@ fn set_node_property_on_nonexistent_node_returns_error() {
             node_id: "does-not-exist".to_string(),
             key: "gis.annotation.title".to_string(),
             value: serde_json::json!("test"),
+            correlation_id: None,
         })
         .unwrap();
 
@@ -83,6 +84,17 @@ fn set_node_property_on_nonexistent_node_returns_error() {
         }
         other => panic!("expected DbResult::Error for nonexistent node_id, got {other:?}"),
     }
+    db.cmd_tx
+        .send(DbCommand::SetNodeProperty {
+            node_id: "does-not-exist".into(),
+            key: "gis.annotation.title".into(),
+            value: serde_json::json!("test"),
+            correlation_id: Some("api-property-failure".into()),
+        })
+        .unwrap();
+    assert!(matches!(db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap(),
+        DbResult::RequestFailed { correlation_id, error }
+        if correlation_id == "api-property-failure" && error.contains("matched no node")));
 }
 
 // --- HS-P6-CALLOUT: a dimension_callout node's property bag round-trips ---
@@ -161,6 +173,7 @@ fn set_property(db: &TestDb, node_id: &str, key: &str, value: serde_json::Value)
             node_id: node_id.to_string(),
             key: key.to_string(),
             value,
+            correlation_id: None,
         })
         .unwrap();
     match db
@@ -178,6 +191,7 @@ fn get_properties(db: &TestDb, node_id: &str) -> serde_json::Value {
     db.cmd_tx
         .send(DbCommand::GetNodeProperties {
             node_id: node_id.to_string(),
+            correlation_id: None,
         })
         .unwrap();
     match db
@@ -270,6 +284,7 @@ fn delete_node_property_on_nonexistent_node_returns_error() {
         .send(DbCommand::DeleteNodeProperty {
             node_id: "does-not-exist".to_string(),
             key: "gis.annotation.title".to_string(),
+            correlation_id: None,
         })
         .unwrap();
 
@@ -286,4 +301,14 @@ fn delete_node_property_on_nonexistent_node_returns_error() {
         }
         other => panic!("expected DbResult::Error for nonexistent node_id, got {other:?}"),
     }
+    db.cmd_tx
+        .send(DbCommand::DeleteNodeProperty {
+            node_id: "does-not-exist".into(),
+            key: "gis.annotation.title".into(),
+            correlation_id: Some("api-property-failure".into()),
+        })
+        .unwrap();
+    assert!(matches!(db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap(),
+        DbResult::RequestFailed { correlation_id, error }
+        if correlation_id == "api-property-failure" && error.contains("matched no node")));
 }

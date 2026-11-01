@@ -100,6 +100,7 @@ pub(super) fn handle_node_created(
                     node_id: id.to_string(),
                     key: key.to_string(),
                     value,
+                    correlation_id: None,
                 })
                 .is_err()
             {

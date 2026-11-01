@@ -302,6 +302,7 @@ pub(crate) fn persist_override(
             node_id: node_id.to_string(),
             key: key.to_string(),
             value,
+            correlation_id: None,
         })
         .is_err()
     {
@@ -494,6 +495,7 @@ mod tests {
                 node_id,
                 key,
                 value,
+                correlation_id: None,
             }) => {
                 assert_eq!(node_id, "node-x");
                 assert_eq!(key, STAMP_SCALE_KEY);
@@ -571,6 +573,7 @@ mod tests {
                 node_id,
                 key,
                 value,
+                ..
             } if node_id == "path-1#inst-3"
                 && key == "stamp.override.scale"
                 && value == &serde_json::json!(scale)
@@ -618,6 +621,7 @@ mod tests {
                 node_id,
                 key,
                 value,
+                correlation_id: None,
             }) => {
                 assert_eq!(node_id, "node-2");
                 assert_eq!(key, STAMP_SCALE_KEY);

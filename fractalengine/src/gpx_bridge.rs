@@ -933,6 +933,7 @@ pub fn advance_gpx_imports(
                             node_id: id.clone(),
                             key: prop_key,
                             value,
+                            correlation_id: None,
                         })
                         .ok();
                 }
@@ -965,6 +966,7 @@ pub fn advance_gpx_imports(
                             node_id: id.clone(),
                             key: GPX_POINTS_KEY.to_string(),
                             value: route_points_to_json(&track.route_points),
+                            correlation_id: None,
                         })
                         .ok();
                     spawn_track_route(&mut route_map, &mut commands, id, track.route_points, None);
@@ -984,6 +986,7 @@ pub fn advance_gpx_imports(
                         node_id: id.clone(),
                         key: GPX_TYPE_KEY.to_string(),
                         value: serde_json::json!("waypoint"),
+                        correlation_id: None,
                     })
                     .ok();
                 db_tx
@@ -992,6 +995,7 @@ pub fn advance_gpx_imports(
                         node_id: id.clone(),
                         key: ANNOTATION_TITLE_KEY.to_string(),
                         value: serde_json::json!(wp.title),
+                        correlation_id: None,
                     })
                     .ok();
                 if let Some(track_id) = wp.track_node_id {
@@ -1001,6 +1005,7 @@ pub fn advance_gpx_imports(
                             node_id: id.clone(),
                             key: GPX_TRACK_ID_KEY.to_string(),
                             value: serde_json::json!(track_id),
+                            correlation_id: None,
                         })
                         .ok();
                 }
@@ -1317,6 +1322,7 @@ pub fn drain_path_ops(
                             .0
                             .send(DbCommand::GetNodeProperties {
                                 node_id: track_node_id.clone(),
+                                correlation_id: None,
                             })
                             .ok();
                     }
@@ -1370,6 +1376,7 @@ pub fn drain_path_ops(
                         .0
                         .send(DbCommand::GetNodeProperties {
                             node_id: track_node_id.clone(),
+                            correlation_id: None,
                         })
                         .ok();
                     pending
@@ -1423,6 +1430,7 @@ pub fn drain_path_ops(
                         .0
                         .send(DbCommand::GetNodeProperties {
                             node_id: track_node_id.clone(),
+                            correlation_id: None,
                         })
                         .ok();
                     pending
@@ -1473,6 +1481,7 @@ pub fn drain_path_ops(
                             .0
                             .send(DbCommand::GetNodeProperties {
                                 node_id: track_node_id.clone(),
+                                correlation_id: None,
                             })
                             .ok();
                     }
@@ -1529,6 +1538,7 @@ pub fn drain_path_ops(
                         .0
                         .send(DbCommand::GetNodeProperties {
                             node_id: track_node_id.clone(),
+                            correlation_id: None,
                         })
                         .ok();
                     pending.reads.entry(track_node_id).or_default().push_back(
@@ -1580,6 +1590,7 @@ pub fn drain_path_ops(
                         .0
                         .send(DbCommand::GetNodeProperties {
                             node_id: track_node_id.clone(),
+                            correlation_id: None,
                         })
                         .ok();
                     pending
@@ -1600,6 +1611,7 @@ pub fn drain_path_ops(
                     .0
                     .send(DbCommand::GetNodeProperties {
                         node_id: track_node_id.clone(),
+                        correlation_id: None,
                     })
                     .ok();
                 pending.reads.entry(track_node_id).or_default().push_back(
@@ -1638,6 +1650,7 @@ pub fn drain_path_ops(
                     .0
                     .send(DbCommand::GetNodeProperties {
                         node_id: track_node_id.clone(),
+                        correlation_id: None,
                     })
                     .ok();
                 pending.reads.entry(track_node_id).or_default().push_back(
@@ -1725,6 +1738,7 @@ pub fn advance_path_edits(
                             node_id: id.clone(),
                             key: GPX_TYPE_KEY.to_string(),
                             value: serde_json::json!("track"),
+                            correlation_id: None,
                         })
                         .ok();
                     db_tx
@@ -1733,6 +1747,7 @@ pub fn advance_path_edits(
                             node_id: id.clone(),
                             key: GPX_POINTS_KEY.to_string(),
                             value: serde_json::Value::Array(vec![]),
+                            correlation_id: None,
                         })
                         .ok();
                     db_tx
@@ -1741,6 +1756,7 @@ pub fn advance_path_edits(
                             node_id: id.clone(),
                             key: TRACK_NAME_KEY.to_string(),
                             value: serde_json::json!(name.clone()),
+                            correlation_id: None,
                         })
                         .ok();
                     // Status is set once all three property confirms land — see
@@ -1760,6 +1776,7 @@ pub fn advance_path_edits(
                                 node_id: id.clone(),
                                 key: GPX_TYPE_KEY.to_string(),
                                 value: serde_json::json!("waypoint"),
+                                correlation_id: None,
                             })
                             .ok();
                         db_tx
@@ -1768,6 +1785,7 @@ pub fn advance_path_edits(
                                 node_id: id.clone(),
                                 key: ANNOTATION_TITLE_KEY.to_string(),
                                 value: serde_json::json!(annotate.title),
+                                correlation_id: None,
                             })
                             .ok();
                         db_tx
@@ -1776,6 +1794,7 @@ pub fn advance_path_edits(
                                 node_id: id.clone(),
                                 key: ANNOTATION_BODY_KEY.to_string(),
                                 value: serde_json::json!(annotate.body),
+                                correlation_id: None,
                             })
                             .ok();
                         db_tx
@@ -1784,6 +1803,7 @@ pub fn advance_path_edits(
                                 node_id: id.clone(),
                                 key: ANNOTATION_COLOR_KEY.to_string(),
                                 value: serde_json::json!(annotate.color),
+                                correlation_id: None,
                             })
                             .ok();
                         *status = PathEditStatus {
@@ -1799,7 +1819,7 @@ pub fn advance_path_edits(
                 // matching annotate waiter fall through — the import path
                 // (`advance_gpx_imports`) or materialization handles them.
             }
-            DbResult::NodePropertySet { node_id, key } => {
+            DbResult::NodePropertySet { node_id, key, .. } => {
                 // FR-4: gate CreateTrack's success status on the actual
                 // property confirms instead of the optimistic set that used
                 // to happen on NodeCreated above.
@@ -1818,6 +1838,7 @@ pub fn advance_path_edits(
             DbResult::NodePropertiesLoaded {
                 node_id,
                 properties,
+                ..
             } => {
                 let Some(queue) = pending.reads.get_mut(node_id) else {
                     continue;
@@ -2319,6 +2340,7 @@ fn persist_and_render_points(
             node_id: track_node_id.to_string(),
             key: GPX_POINTS_KEY.to_string(),
             value: route_points_to_json(&points),
+            correlation_id: None,
         })
         .ok();
     reconcile_track_render(
@@ -2396,6 +2418,7 @@ pub fn request_petal_gpx_materialization(
             .0
             .send(DbCommand::GetNodeProperties {
                 node_id: node.id.clone(),
+                correlation_id: None,
             })
             .ok();
     }
@@ -2438,6 +2461,7 @@ pub fn advance_path_materialization(
             DbResult::NodePropertiesLoaded {
                 node_id,
                 properties,
+                ..
             } => {
                 let is_track =
                     properties.get(GPX_TYPE_KEY).and_then(|v| v.as_str()) == Some("track");
@@ -2494,7 +2518,7 @@ pub fn advance_path_materialization(
                     force_line_redraw,
                 );
             }
-            DbResult::NodePropertySet { node_id, key } => {
+            DbResult::NodePropertySet { node_id, key, .. } => {
                 // track_styling_20260713: a live style edit lands as
                 // `NodePropertySet` (no property bag) — re-read the node so the
                 // `NodePropertiesLoaded` arm above refreshes `TrackStyleMap` and
@@ -2510,6 +2534,7 @@ pub fn advance_path_materialization(
                         .0
                         .send(DbCommand::GetNodeProperties {
                             node_id: node_id.clone(),
+                            correlation_id: None,
                         })
                         .ok();
                 }

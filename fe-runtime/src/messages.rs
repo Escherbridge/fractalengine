@@ -628,15 +628,18 @@ pub enum DbCommand {
         node_id: String,
         key: String,
         value: serde_json::Value,
+        correlation_id: Option<String>,
     },
     /// Get all custom properties of a node.
     GetNodeProperties {
         node_id: String,
+        correlation_id: Option<String>,
     },
     /// Delete a custom property from a node.
     DeleteNodeProperty {
         node_id: String,
         key: String,
+        correlation_id: Option<String>,
     },
     /// Delete a node row and cascade to its child waypoint nodes.
     DeleteNode {
@@ -1219,16 +1222,19 @@ pub enum DbResult {
     NodePropertiesLoaded {
         node_id: String,
         properties: serde_json::Value,
+        correlation_id: Option<String>,
     },
     /// Result of `SetNodeProperty`.
     NodePropertySet {
         node_id: String,
         key: String,
+        correlation_id: Option<String>,
     },
     /// Result of `DeleteNodeProperty`.
     NodePropertyDeleted {
         node_id: String,
         key: String,
+        correlation_id: Option<String>,
     },
     /// Result of `DeleteNode` — the node and its cascaded waypoints are gone.
     NodeDeleted {

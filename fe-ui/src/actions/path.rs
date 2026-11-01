@@ -56,6 +56,7 @@ pub(crate) fn select_track(
         .0
         .send(DbCommand::GetNodeProperties {
             node_id: track_node_id,
+            correlation_id: None,
         })
         .is_err()
     {
@@ -329,6 +330,7 @@ pub(crate) fn set_style(
                 node_id: track_node_id.clone(),
                 key: key.to_string(),
                 value,
+                correlation_id: None,
             })
             .is_err()
         {
@@ -1143,7 +1145,10 @@ mod tests {
         );
         assert!(state.points_pending);
         match rx.try_recv() {
-            Ok(DbCommand::GetNodeProperties { node_id }) => assert_eq!(node_id, "track-1"),
+            Ok(DbCommand::GetNodeProperties {
+                node_id,
+                correlation_id: None,
+            }) => assert_eq!(node_id, "track-1"),
             other => panic!("expected GetNodeProperties, got {other:?}"),
         }
     }

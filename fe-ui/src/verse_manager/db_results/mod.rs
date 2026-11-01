@@ -65,6 +65,29 @@ pub(super) struct DescriptorCaches<'w, 's> {
     time: Res<'w, crate::notice::NoticeClock>,
 }
 
+fn forward_correlated_property_reply(
+    result: &DbResult,
+    pending: &mut fe_runtime::app::PendingApiRequests,
+) -> bool {
+    let correlated = matches!(
+        result,
+        DbResult::NodePropertiesLoaded {
+            correlation_id: Some(_),
+            ..
+        } | DbResult::NodePropertySet {
+            correlation_id: Some(_),
+            ..
+        } | DbResult::NodePropertyDeleted {
+            correlation_id: Some(_),
+            ..
+        }
+    );
+    if correlated {
+        pending.try_deliver(result.clone());
+    }
+    correlated
+}
+
 pub(super) fn apply_db_results(
     mut reader: MessageReader<DbResult>,
     mut verse_mgr: ResMut<VerseManager>,
@@ -90,6 +113,7 @@ pub(super) fn apply_db_results(
         caches.spawned.iter().map(|m| m.node_id.clone()).collect();
     let mesh_budget_exceeded = caches.mesh_budget.exceeded;
     for result in reader.read() {
+        let property_forwarded = forward_correlated_property_reply(result, &mut pending_api);
         inspector
             .query_results
             .invalidate(nav.active_verse_id.as_deref());
@@ -384,10 +408,11 @@ pub(super) fn apply_db_results(
                 &nav,
                 caches.time.elapsed_secs_f64(),
             ),
-            // Property handlers return `false` to skip `try_deliver` for stale/unselected results.
+            // API delivery precedes selection guards; cache hydration still runs.
             DbResult::NodePropertiesLoaded {
                 node_id,
                 properties,
+                ..
             } => {
                 // Resolve the node's owning petal so the path-asset cache entry
                 // knows where to materialize (borrow ends before the handler call).
@@ -451,7 +476,7 @@ pub(super) fn apply_db_results(
                     ui_mgr.show_error(toast, caches.time.elapsed_secs_f64());
                 }
             }
-            DbResult::NodePropertySet { node_id, key } => {
+            DbResult::NodePropertySet { node_id, key, .. } => {
                 if !properties::handle_node_property_set(
                     node_id,
                     key,
@@ -465,7 +490,7 @@ pub(super) fn apply_db_results(
                     continue;
                 }
             }
-            DbResult::NodePropertyDeleted { node_id, key } => {
+            DbResult::NodePropertyDeleted { node_id, key, .. } => {
                 if !properties::handle_node_property_deleted(
                     node_id,
                     key,
@@ -560,7 +585,9 @@ pub(super) fn apply_db_results(
         // Also try delivering every result to pending API requests.
         // This covers cases like ScopeResolved, NodeCreated, etc. that
         // the API thread may be waiting on.
-        pending_api.try_deliver(result.clone());
+        if !property_forwarded {
+            pending_api.try_deliver(result.clone());
+        }
     }
 }
 
@@ -1082,6 +1109,7 @@ mod tests {
                 node_id,
                 key,
                 value,
+                correlation_id: None,
             } = cmd
             {
                 assert_eq!(node_id, "node-7");
@@ -1658,29 +1686,91 @@ mod tests {
     // --- property handlers (continue semantics) ---
 
     #[test]
-    fn properties_loaded_skips_delivery_when_not_selected() {
-        let mut path_state = PathEditorState::default();
-        let mut ins = InspectorFormState::default();
-        let mut cache = super::super::PrimitiveDescriptorCache::default();
-        let mut pa_cache = super::super::PathAssetCache::default();
-        let delivered = properties::handle_node_properties_loaded(
-            "n1",
-            None,
-            &json!({}),
-            &mut path_state,
-            &NodeManager::default(),
-            &mut ins,
-            &mut cache,
-            &mut pa_cache,
-            &mut crate::actions::asset::StampInteractionState::default(),
-            &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
-            &mut crate::visibility::VisibilityState::default(),
-            &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
-        );
+    fn properties_loaded_preserves_unselected_ui_and_delivers_correlated_api_reply() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .add_message::<DbResult>()
+            .init_resource::<VerseManager>()
+            .init_resource::<NavigationManager>()
+            .insert_resource(sender().0)
+            .init_resource::<UiManager>()
+            .init_resource::<crate::plugin::LocalUserRole>()
+            .init_resource::<InspectorFormState>()
+            .init_resource::<NodeManager>()
+            .init_resource::<PathEditorState>()
+            .init_resource::<fe_runtime::app::PendingApiRequests>()
+            .init_resource::<super::super::PrimitiveDescriptorCache>()
+            .init_resource::<super::super::PathAssetCache>()
+            .init_resource::<super::super::PathAssetApplied>()
+            .init_resource::<crate::actions::asset::StampInteractionState>()
+            .init_resource::<crate::actions::terrain_proposal::EarthworkNodeMap>()
+            .init_resource::<crate::actions::dimension_callout::DimensionCalloutMap>()
+            .init_resource::<crate::terrain_proposal_state::ProposalEditState>()
+            .init_resource::<crate::timeseries_settings::TimeseriesSettingsState>()
+            .init_resource::<crate::plugin::MeshInstanceBudget>()
+            .init_resource::<super::super::ResidencyLedger>()
+            .init_resource::<crate::visibility::VisibilityState>()
+            .init_resource::<crate::notice::NoticeClock>()
+            .add_systems(Update, apply_db_results);
+        app.world_mut()
+            .resource_mut::<InspectorFormState>()
+            .node_properties = json!({"existing":"untouched"});
+        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+        app.world_mut()
+            .resource_mut::<fe_runtime::app::PendingApiRequests>()
+            .enqueue_for(
+                &DbCommand::GetNodeProperties {
+                    node_id: "n1".into(),
+                    correlation_id: Some("api-properties".into()),
+                },
+                reply_tx,
+            );
+        for id in [None, Some("wrong")] {
+            app.world_mut()
+                .write_message(DbResult::NodePropertiesLoaded {
+                    node_id: "n1".into(),
+                    properties: json!({"api":99}),
+                    correlation_id: id.map(str::to_string),
+                });
+        }
+        app.update();
         assert!(
-            !delivered,
-            "unselected result must continue (skip try_deliver)"
+            reply_rx.try_recv().is_err(),
+            "GUI and unmatched replies cannot satisfy the API waiter"
         );
+        let reply = DbResult::NodePropertiesLoaded {
+            node_id: "n1".into(),
+            properties: json!({"api":10}),
+            correlation_id: Some("api-properties".into()),
+        };
+        app.world_mut().write_message(reply.clone());
+        app.update();
+        assert!(
+            matches!(reply_rx.try_recv(), Ok(DbResult::NodePropertiesLoaded {
+            node_id, correlation_id: Some(id), properties,
+        }) if node_id == "n1" && id == "api-properties" && properties == json!({"api":10}))
+        );
+        let (next_tx, mut next_rx) = tokio::sync::oneshot::channel();
+        app.world_mut()
+            .resource_mut::<fe_runtime::app::PendingApiRequests>()
+            .enqueue_for(
+                &DbCommand::GetNodeProperties {
+                    node_id: "n1".into(),
+                    correlation_id: Some("next-properties".into()),
+                },
+                next_tx,
+            );
+        app.world_mut().write_message(reply);
+        app.update();
+        assert!(
+            next_rx.try_recv().is_err(),
+            "a duplicate cannot claim a new waiter"
+        );
+        assert_eq!(
+            app.world().resource::<InspectorFormState>().node_properties,
+            json!({"existing":"untouched"})
+        );
+        assert!(app.world().resource::<NodeManager>().selected.is_none());
     }
 
     #[test]
@@ -1840,7 +1930,7 @@ mod tests {
             "stale descriptor must be evicted"
         );
         assert!(
-            matches!(rx.try_recv(), Ok(DbCommand::GetNodeProperties { node_id }) if node_id == "n1"),
+            matches!(rx.try_recv(), Ok(DbCommand::GetNodeProperties { node_id , correlation_id: None }) if node_id == "n1"),
             "primitive write must re-fetch even when unselected"
         );
     }
@@ -1918,7 +2008,7 @@ mod tests {
         assert!(for_selected);
         assert!(ins.node_properties_loading);
         assert!(
-            matches!(rx.try_recv(), Ok(DbCommand::GetNodeProperties { node_id }) if node_id == "n1")
+            matches!(rx.try_recv(), Ok(DbCommand::GetNodeProperties { node_id , correlation_id: None }) if node_id == "n1")
         );
     }
 

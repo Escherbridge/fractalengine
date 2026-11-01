@@ -304,6 +304,7 @@ pub(crate) fn bind_created_callout(
                 node_id: node_id.to_string(),
                 key: key.to_string(),
                 value,
+                correlation_id: None,
             })
             .is_err()
         {

@@ -606,6 +606,7 @@ fn persist_earthwork_volume_report(
                 node_id: node_id.clone(),
                 key: key.to_string(),
                 value: serde_json::json!(value),
+                correlation_id: None,
             })
             .is_err()
         {

@@ -138,6 +138,7 @@ impl Harness {
             node_id: node_id.into(),
             key: key.into(),
             value,
+            correlation_id: None,
         });
         assert!(matches!(self.recv(), DbResult::NodePropertySet { .. }));
     }
@@ -145,6 +146,7 @@ impl Harness {
     fn get_properties(&self, node_id: &str) -> serde_json::Value {
         self.send(DbCommand::GetNodeProperties {
             node_id: node_id.into(),
+            correlation_id: None,
         });
         match self.recv() {
             DbResult::NodePropertiesLoaded { properties, .. } => properties,

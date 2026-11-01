@@ -149,6 +149,7 @@ fn set_property(db: &TestDb, node_id: &str, key: &str, value: serde_json::Value)
             node_id: node_id.to_string(),
             key: key.to_string(),
             value,
+            correlation_id: None,
         })
         .unwrap();
     match db

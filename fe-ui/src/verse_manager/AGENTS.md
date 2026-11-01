@@ -378,3 +378,7 @@ The instanced DRAW currently rides Bevy auto-instancing over the shared GLB
 asset handles from `spawn_stamped_entity` (same `Mesh3d`+material = one batch);
 `InstanceBatch` (with overrides folded into its matrices) is the seam for a
 future custom pipeline.
+
+## Property API delivery and UI hydration
+
+The dispatcher forwards correlated property replies before selected-node guards, then still runs the existing cache/Inspector handlers. Selection filters affect Inspector buffers, never the API acknowledgment. Unmatched and duplicate correlated replies have no fallback; the final dispatcher delivery skips replies already forwarded. The existing unselected-properties journey runs the actual Bevy dispatcher, proving both API delivery and untouched UI state.

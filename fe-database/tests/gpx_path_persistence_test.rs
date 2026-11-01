@@ -136,6 +136,7 @@ fn set_property(db: &TestDb, node_id: &str, key: &str, value: serde_json::Value)
             node_id: node_id.to_string(),
             key: key.to_string(),
             value,
+            correlation_id: None,
         })
         .unwrap();
     match db
@@ -153,6 +154,7 @@ fn get_properties(db: &TestDb, node_id: &str) -> serde_json::Value {
     db.cmd_tx
         .send(DbCommand::GetNodeProperties {
             node_id: node_id.to_string(),
+            correlation_id: None,
         })
         .unwrap();
     match db

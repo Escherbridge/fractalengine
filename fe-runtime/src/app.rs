@@ -268,6 +268,9 @@ struct PendingEntry {
 fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
     match cmd {
         DbCommand::InsertIotReadings { correlation_id, .. }
+        | DbCommand::SetNodeProperty { correlation_id, .. }
+        | DbCommand::GetNodeProperties { correlation_id, .. }
+        | DbCommand::DeleteNodeProperty { correlation_id, .. }
         | DbCommand::CreateAsset { correlation_id, .. }
         | DbCommand::CreateNodeWithAsset { correlation_id, .. }
         | DbCommand::SetPetalTerrain { correlation_id, .. }
@@ -294,6 +297,9 @@ fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
 fn correlation_of_result(result: &DbResult) -> Option<&str> {
     match result {
         DbResult::IotReadingsInserted { correlation_id, .. }
+        | DbResult::NodePropertySet { correlation_id, .. }
+        | DbResult::NodePropertiesLoaded { correlation_id, .. }
+        | DbResult::NodePropertyDeleted { correlation_id, .. }
         | DbResult::IotReadingsRejected { correlation_id, .. }
         | DbResult::AssetCreated { correlation_id, .. }
         | DbResult::GltfImported { correlation_id, .. }
@@ -1340,6 +1346,79 @@ mod tests {
             "API set reply leaked to a GET waiter"
         );
         assert_eq!(received_owner(&mut set_rx), Some(serde_json::json!("d")));
+
+        for family in 0..3 {
+            let command = |id: &str| match family {
+                0 => DbCommand::SetNodeProperty {
+                    node_id: "n".into(),
+                    key: "k".into(),
+                    value: serde_json::json!(10),
+                    correlation_id: Some(id.into()),
+                },
+                1 => DbCommand::GetNodeProperties {
+                    node_id: "n".into(),
+                    correlation_id: Some(id.into()),
+                },
+                _ => DbCommand::DeleteNodeProperty {
+                    node_id: "n".into(),
+                    key: "k".into(),
+                    correlation_id: Some(id.into()),
+                },
+            };
+            let reply = |id: Option<&str>| {
+                let correlation_id = id.map(str::to_string);
+                match family {
+                    0 => DbResult::NodePropertySet {
+                        node_id: "n".into(),
+                        key: "k".into(),
+                        correlation_id,
+                    },
+                    1 => DbResult::NodePropertiesLoaded {
+                        node_id: "n".into(),
+                        properties: serde_json::json!({"k":10}),
+                        correlation_id,
+                    },
+                    _ => DbResult::NodePropertyDeleted {
+                        node_id: "n".into(),
+                        key: "k".into(),
+                        correlation_id,
+                    },
+                }
+            };
+            let mut properties = PendingApiRequests::default();
+            let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+            let (live_tx, mut live_rx) = tokio::sync::oneshot::channel();
+            properties.enqueue_for(&command("closed"), closed_tx);
+            drop(closed_rx);
+            properties.enqueue_for(&command("live"), live_tx);
+            for other in [
+                reply(None),
+                reply(Some("unknown")),
+                reply(Some("closed")),
+                DbResult::Error("unrelated GUI error".into()),
+            ] {
+                assert!(!properties.try_deliver(other));
+                assert!(
+                    live_rx.try_recv().is_err(),
+                    "property family {family} consumed another reply"
+                );
+            }
+            assert!(properties.try_deliver(reply(Some("live"))));
+            assert_eq!(
+                correlation_of_result(&live_rx.try_recv().unwrap()),
+                Some("live")
+            );
+            assert!(!properties.try_deliver(reply(Some("live"))));
+            let (failed_tx, mut failed_rx) = tokio::sync::oneshot::channel();
+            properties.enqueue_for(&command("failed"), failed_tx);
+            assert!(properties.try_deliver(DbResult::RequestFailed {
+                correlation_id: "failed".into(),
+                error: "property failed".into()
+            }));
+            assert!(
+                matches!(failed_rx.try_recv(), Ok(DbResult::RequestFailed { correlation_id, .. }) if correlation_id == "failed")
+            );
+        }
     }
 
     fn get_terrain_cmd(petal_id: &str, correlation_id: Option<&str>) -> DbCommand {
@@ -1580,6 +1659,7 @@ mod tests {
         pending.enqueue_for(
             &DbCommand::GetNodeProperties {
                 node_id: "n1".to_string(),
+                correlation_id: None,
             },
             props_tx,
         );
@@ -1737,10 +1817,12 @@ mod tests {
             (
                 DbCommand::GetNodeProperties {
                     node_id: "n".to_string(),
+                    correlation_id: None,
                 },
                 DbResult::NodePropertiesLoaded {
                     node_id: "n".to_string(),
                     properties: serde_json::Value::Null,
+                    correlation_id: None,
                 },
             ),
             (
@@ -1748,20 +1830,24 @@ mod tests {
                     node_id: "n".to_string(),
                     key: "k".to_string(),
                     value: serde_json::Value::Null,
+                    correlation_id: None,
                 },
                 DbResult::NodePropertySet {
                     node_id: "n".to_string(),
                     key: "k".to_string(),
+                    correlation_id: None,
                 },
             ),
             (
                 DbCommand::DeleteNodeProperty {
                     node_id: "n".to_string(),
                     key: "k".to_string(),
+                    correlation_id: None,
                 },
                 DbResult::NodePropertyDeleted {
                     node_id: "n".to_string(),
                     key: "k".to_string(),
+                    correlation_id: None,
                 },
             ),
             (

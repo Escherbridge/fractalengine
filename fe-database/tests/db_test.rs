@@ -439,6 +439,7 @@ fn test_cascade_tombstone_emits_scoped_removal_for_each_node() {
                 node_id: node_id.clone(),
                 key: "parent_id".to_string(),
                 value: serde_json::json!(parent_id),
+                correlation_id: None,
             })
             .unwrap();
         assert!(matches!(
@@ -664,6 +665,7 @@ fn test_set_property_emits_scene_change() {
             node_id: node_id.clone(),
             key: prop_key.clone(),
             value: prop_val.clone(),
+            correlation_id: None,
         })
         .unwrap();
 
@@ -673,7 +675,9 @@ fn test_set_property_emits_scene_change() {
         .recv_timeout(Duration::from_secs(5))
         .expect("SetNodeProperty result")
     {
-        DbResult::NodePropertySet { node_id: nid, key } => {
+        DbResult::NodePropertySet {
+            node_id: nid, key, ..
+        } => {
             assert_eq!(nid, node_id);
             assert_eq!(key, prop_key);
         }
@@ -718,6 +722,7 @@ fn test_delete_property_emits_scene_change() {
             node_id: node_id.clone(),
             key: prop_key.clone(),
             value: serde_json::json!(0.75),
+            correlation_id: None,
         })
         .unwrap();
     db.res_rx
@@ -732,6 +737,7 @@ fn test_delete_property_emits_scene_change() {
         .send(DbCommand::DeleteNodeProperty {
             node_id: node_id.clone(),
             key: prop_key.clone(),
+            correlation_id: None,
         })
         .unwrap();
 
@@ -740,7 +746,9 @@ fn test_delete_property_emits_scene_change() {
         .recv_timeout(Duration::from_secs(5))
         .expect("DeleteNodeProperty result")
     {
-        DbResult::NodePropertyDeleted { node_id: nid, key } => {
+        DbResult::NodePropertyDeleted {
+            node_id: nid, key, ..
+        } => {
             assert_eq!(nid, node_id);
             assert_eq!(key, prop_key);
         }

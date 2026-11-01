@@ -1469,3 +1469,7 @@ They are owner-decided (R2) ordinary replicated rows, written by
 `DbCommand::EnrolLocalDevice` / `RevokeLocalDevice`. Inbound, they are admitted by signed
 self-authorship, not role, in `handlers::replicated_row` (`canon_log/AGENTS.md`
 §device-enrolment).
+
+## Node property acknowledgment correlation
+
+The three node property commands echo optional correlation IDs on their typed replies. Failures reuse handlers::correlated_failure: API requests get RequestFailed with the exact ID, GUI requests retain Error. Persistence, scene-change broadcasts and node-log append behavior remain shared. A persisted property must acknowledge independently of which node the GUI currently selects.

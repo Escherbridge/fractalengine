@@ -1073,7 +1073,7 @@ pub fn spawn_db_thread_shared(
                             Err(e) => send_result(&tx, DbResult::Error(format!("Get node transform failed: {e}"))),
                         }
                     }
-                    Ok(DbCommand::SetNodeProperty { node_id, key, value }) => {
+                    Ok(DbCommand::SetNodeProperty { node_id, key, value , correlation_id }) => {
                         match handlers::entity_property::set_entity_property_handler(&db, &node_id, &key, &value).await {
                             Ok(()) => {
                                 if let Some(ref ect) = entity_change_tx {
@@ -1096,18 +1096,18 @@ pub fn spawn_db_thread_shared(
                                 ).await {
                                     tracing::warn!("node_log append failed for {node_id}: {e}");
                                 }
-                                send_result(&tx, DbResult::NodePropertySet { node_id, key });
+                                send_result(&tx, DbResult::NodePropertySet { node_id, key , correlation_id });
                             }
-                            Err(e) => send_result(&tx, DbResult::Error(format!("Set node property failed: {e}"))),
+                            Err(e) => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("Set node property failed: {e}"))),
                         }
                     }
-                    Ok(DbCommand::GetNodeProperties { node_id }) => {
+                    Ok(DbCommand::GetNodeProperties { node_id , correlation_id }) => {
                         match handlers::entity_property::get_entity_properties_handler(&db, &node_id).await {
-                            Ok(properties) => send_result(&tx, DbResult::NodePropertiesLoaded { node_id, properties }),
-                            Err(e) => send_result(&tx, DbResult::Error(format!("Get node properties failed: {e}"))),
+                            Ok(properties) => send_result(&tx, DbResult::NodePropertiesLoaded { node_id, properties , correlation_id }),
+                            Err(e) => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("Get node properties failed: {e}"))),
                         }
                     }
-                    Ok(DbCommand::DeleteNodeProperty { node_id, key }) => {
+                    Ok(DbCommand::DeleteNodeProperty { node_id, key , correlation_id }) => {
                         match handlers::entity_property::delete_entity_property_handler(&db, &node_id, &key).await {
                             Ok(()) => {
                                 if let Some(ref ect) = entity_change_tx {
@@ -1130,9 +1130,9 @@ pub fn spawn_db_thread_shared(
                                 ).await {
                                     tracing::warn!("node_log append failed for {node_id}: {e}");
                                 }
-                                send_result(&tx, DbResult::NodePropertyDeleted { node_id, key });
+                                send_result(&tx, DbResult::NodePropertyDeleted { node_id, key , correlation_id });
                             }
-                            Err(e) => send_result(&tx, DbResult::Error(format!("Delete node property failed: {e}"))),
+                            Err(e) => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("Delete node property failed: {e}"))),
                         }
                     }
                     Ok(DbCommand::DeleteNode { node_id }) => {

@@ -58,6 +58,7 @@ pub(super) fn sync_manager_to_inspector(
                 .0
                 .send(fe_runtime::messages::DbCommand::GetNodeProperties {
                     node_id: sel.node_id.clone(),
+                    correlation_id: None,
                 });
         }
         // Reset API token tab state for the new selection

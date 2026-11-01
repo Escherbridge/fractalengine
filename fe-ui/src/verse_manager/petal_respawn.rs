@@ -83,6 +83,7 @@ impl NodeSpawner<'_> {
                         .0
                         .send(DbCommand::GetNodeProperties {
                             node_id: node.id.clone(),
+                            correlation_id: None,
                         })
                         .is_err()
                 {

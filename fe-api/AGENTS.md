@@ -2126,3 +2126,7 @@ Historical records clear on an active-verse boundary; scope is checked before
 reading. Logs are redacted at ingest and bounded; see fe-runtime §qa-debug for
 attribution limits. The bridge refuses a frame whose navigation changed while
 it was rendered, allowing clients to retry rather than reading a stale tree.
+
+## Property reply identity
+
+REST, MCP and WebSocket property operations share the property core methods. Each method supplies a fresh correlation ID and requires the expected reply variant, echoed ID, node ID and applicable key. Correlated failures must echo the same ID. The projection fallback uses the same checked read core; route-tracker background property writes also carry fresh IDs despite dropped receivers. WebSocket errors retain the client-safe operation failed envelope while logging internal detail. The API never waits for a node to become selected in the GUI.

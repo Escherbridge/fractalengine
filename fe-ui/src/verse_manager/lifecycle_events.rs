@@ -41,6 +41,7 @@ pub(super) fn apply_lifecycle_events(
                 .0
                 .send(DbCommand::GetNodeProperties {
                     node_id: path_id.clone(),
+                    correlation_id: None,
                 })
                 .is_err()
             {

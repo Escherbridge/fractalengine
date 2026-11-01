@@ -1,9 +1,4 @@
-//! Handlers for per-node property results. All three gate on `node_id` still
-//! matching the current selection — a stale async response must not stomp a
-//! different node's buffers (see `fe-ui/src/AGENTS.md` §gis-query-ui
-//! annotation-save-fix). Each returns `false` when the dispatcher must
-//! `continue` (skipping `pending_api.try_deliver`), preserving the original
-//! mega-match's control flow exactly.
+//! Selection-safe property hydration; API replies route independently before these handlers.
 
 use fe_runtime::app::DbCommandSender;
 use fe_runtime::messages::DbCommand;
@@ -178,6 +173,7 @@ pub(super) fn handle_node_property_set(
     if refresh_editing_track || for_selected || primitive_write || path_asset_write {
         let _ = db_sender.0.send(DbCommand::GetNodeProperties {
             node_id: node_id.to_string(),
+            correlation_id: None,
         });
     }
     for_selected

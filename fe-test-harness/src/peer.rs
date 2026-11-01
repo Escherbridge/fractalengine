@@ -898,24 +898,25 @@ impl TestPeer {
                                 tracing::warn!("NodeTransformLoaded send failed: {e:?}");
                             }
                         }
-                        Ok(DbCommand::SetNodeProperty { node_id, key, .. }) => {
+                        Ok(DbCommand::SetNodeProperty { node_id, key, correlation_id, .. }) => {
                             if let Err(e) =
-                                db_result_tx.send(DbResult::NodePropertySet { node_id, key })
+                                db_result_tx.send(DbResult::NodePropertySet { node_id, key , correlation_id })
                             {
                                 tracing::warn!("NodePropertySet send failed: {e:?}");
                             }
                         }
-                        Ok(DbCommand::GetNodeProperties { node_id }) => {
+                        Ok(DbCommand::GetNodeProperties { node_id, correlation_id }) => {
                             if let Err(e) = db_result_tx.send(DbResult::NodePropertiesLoaded {
                                 node_id,
                                 properties: serde_json::json!({}),
+                                correlation_id,
                             }) {
                                 tracing::warn!("NodePropertiesLoaded send failed: {e:?}");
                             }
                         }
-                        Ok(DbCommand::DeleteNodeProperty { node_id, key }) => {
+                        Ok(DbCommand::DeleteNodeProperty { node_id, key, correlation_id }) => {
                             if let Err(e) =
-                                db_result_tx.send(DbResult::NodePropertyDeleted { node_id, key })
+                                db_result_tx.send(DbResult::NodePropertyDeleted { node_id, key , correlation_id })
                             {
                                 tracing::warn!("NodePropertyDeleted send failed: {e:?}");
                             }

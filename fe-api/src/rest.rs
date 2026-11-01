@@ -631,56 +631,87 @@ pub(crate) async fn set_property_core(
     key: String,
     value: serde_json::Value,
 ) -> Result<PropertySetDto, String> {
+    let correlation_id = ulid::Ulid::new().to_string();
     let cmd = DbCommand::SetNodeProperty {
         node_id: node_id.to_string(),
-        key,
+        key: key.clone(),
         value,
+        correlation_id: Some(correlation_id.clone()),
     };
     match db_round_trip(state, cmd).await? {
-        DbResult::NodePropertySet { node_id, key } => Ok(PropertySetDto { node_id, key }),
-        DbResult::Error(e) => Err(e),
-        _ => Err("unexpected response".to_string()),
+        DbResult::NodePropertySet {
+            node_id: reply_node,
+            key: reply_key,
+            correlation_id: Some(reply_id),
+        } if reply_id == correlation_id && reply_node == node_id && reply_key == key => {
+            Ok(PropertySetDto {
+                node_id: reply_node,
+                key: reply_key,
+            })
+        }
+        DbResult::RequestFailed {
+            error,
+            correlation_id: reply_id,
+        } if reply_id == correlation_id => Err(error),
+        _ => Err("unexpected property response".to_string()),
     }
 }
 
-/// Property-read core shared by REST + MCP `get_properties` (caller has authorized).
+/// Property-read core shared by REST + MCP (caller has authorized).
 pub(crate) async fn get_properties_core(
     state: &crate::server::ApiState,
     node_id: &str,
 ) -> Result<PropertiesDto, String> {
+    let correlation_id = ulid::Ulid::new().to_string();
     let cmd = DbCommand::GetNodeProperties {
         node_id: node_id.to_string(),
+        correlation_id: Some(correlation_id.clone()),
     };
     match db_round_trip(state, cmd).await? {
         DbResult::NodePropertiesLoaded {
-            node_id,
+            node_id: reply_node,
             properties,
-        } => Ok(PropertiesDto {
-            node_id,
+            correlation_id: Some(reply_id),
+        } if reply_id == correlation_id && reply_node == node_id => Ok(PropertiesDto {
+            node_id: reply_node,
             properties,
         }),
-        DbResult::Error(e) => Err(e),
-        _ => Err("unexpected response".to_string()),
+        DbResult::RequestFailed {
+            error,
+            correlation_id: reply_id,
+        } if reply_id == correlation_id => Err(error),
+        _ => Err("unexpected property response".to_string()),
     }
 }
 
-/// Property-delete core shared by REST + MCP `delete_property` (caller has authorized).
+/// Property-delete core shared by REST + MCP (caller has authorized).
 pub(crate) async fn delete_property_core(
     state: &crate::server::ApiState,
     node_id: &str,
     key: &str,
 ) -> Result<PropertySetDto, String> {
+    let correlation_id = ulid::Ulid::new().to_string();
     let cmd = DbCommand::DeleteNodeProperty {
         node_id: node_id.to_string(),
         key: key.to_string(),
+        correlation_id: Some(correlation_id.clone()),
     };
     match db_round_trip(state, cmd).await? {
-        DbResult::NodePropertyDeleted { .. } => Ok(PropertySetDto {
-            node_id: node_id.to_string(),
-            key: key.to_string(),
-        }),
-        DbResult::Error(e) => Err(e),
-        _ => Err("unexpected response".to_string()),
+        DbResult::NodePropertyDeleted {
+            node_id: reply_node,
+            key: reply_key,
+            correlation_id: Some(reply_id),
+        } if reply_id == correlation_id && reply_node == node_id && reply_key == key => {
+            Ok(PropertySetDto {
+                node_id: reply_node,
+                key: reply_key,
+            })
+        }
+        DbResult::RequestFailed {
+            error,
+            correlation_id: reply_id,
+        } if reply_id == correlation_id => Err(error),
+        _ => Err("unexpected property response".to_string()),
     }
 }
 
@@ -2002,27 +2033,14 @@ async fn load_petal_projection(
         }
     }
 
-    // Fallback: channel-based query to get terrain config from properties
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    let _ = state.api_cmd_tx.send(ApiCommand::DbRequest {
-        cmd: DbCommand::GetNodeProperties {
-            node_id: petal_id.to_string(),
-        },
-        reply_tx,
-    });
-
-    match tokio::time::timeout(std::time::Duration::from_secs(3), reply_rx).await {
-        Ok(Ok(DbResult::NodePropertiesLoaded { properties, .. })) => {
-            let lat = properties.get("origin_lat")?.as_f64()?;
-            let lon = properties.get("origin_lon")?.as_f64()?;
-            let ele = properties
-                .get("origin_ele")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0);
-            Some(fe_terrain::projection::Projection::new(lat, lon, ele))
-        }
-        _ => None,
-    }
+    let properties = get_properties_core(state, petal_id).await.ok()?.properties;
+    let lat = properties.get("origin_lat")?.as_f64()?;
+    let lon = properties.get("origin_lon")?.as_f64()?;
+    let ele = properties
+        .get("origin_ele")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    Some(fe_terrain::projection::Projection::new(lat, lon, ele))
 }
 
 async fn direct_get_elevation_profile(
@@ -2254,6 +2272,7 @@ async fn check_tracking_and_alert(
                 node_id: node_id.to_string(),
                 key: key.to_string(),
                 value: value.clone(),
+                correlation_id: Some(ulid::Ulid::new().to_string()),
             },
             reply_tx: tx,
         });
@@ -2275,6 +2294,7 @@ async fn check_tracking_and_alert(
                 node_id: node_id.to_string(),
                 key: "tracking_alert".to_string(),
                 value: alert_value,
+                correlation_id: Some(ulid::Ulid::new().to_string()),
             },
             reply_tx: tx,
         });
@@ -2387,7 +2407,7 @@ mod tests {
         .unwrap();
         println!("DEBUG: Crate registry record created");
 
-        let (api_cmd_tx, _) = crossbeam::channel::bounded(1);
+        let (api_cmd_tx, api_cmd_rx) = crossbeam::channel::bounded(1);
         let (transform_broadcast_tx, _) = tokio::sync::broadcast::channel(1);
         let (entity_change_tx, _) = tokio::sync::broadcast::channel(1);
         let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&[0u8; 32]).unwrap();
@@ -2493,5 +2513,106 @@ mod tests {
         // statements are allowed"); the blocked-keyword path says "… is not
         // allowed in queries". Both contain "allowed", so match on that.
         assert!(body_json["error"].as_str().unwrap().contains("allowed"));
+
+        for operation in 0..3 {
+            for fault in 0..7 {
+                if operation == 1 && fault == 3 {
+                    continue;
+                }
+                let call = async {
+                    match operation {
+                        0 => set_property_core(&state, "node", "key".into(), serde_json::json!(10))
+                            .await
+                            .map(|_| ()),
+                        1 => get_properties_core(&state, "node").await.map(|_| ()),
+                        _ => delete_property_core(&state, "node", "key")
+                            .await
+                            .map(|_| ()),
+                    }
+                };
+                let respond = async {
+                    let ApiCommand::DbRequest { cmd, reply_tx } = api_cmd_rx
+                        .recv_timeout(std::time::Duration::from_secs(1))
+                        .unwrap()
+                    else {
+                        panic!("expected property request");
+                    };
+                    let correlation_id = match cmd {
+                        DbCommand::SetNodeProperty {
+                            correlation_id: Some(id),
+                            ..
+                        }
+                        | DbCommand::GetNodeProperties {
+                            correlation_id: Some(id),
+                            ..
+                        }
+                        | DbCommand::DeleteNodeProperty {
+                            correlation_id: Some(id),
+                            ..
+                        } => id,
+                        other => panic!("uncorrelated or wrong command: {other:?}"),
+                    };
+                    let id = if fault == 1 || fault == 6 {
+                        "wrong".to_string()
+                    } else {
+                        correlation_id
+                    };
+                    let node_id = if fault == 2 { "other-node" } else { "node" }.to_string();
+                    let key = if fault == 3 { "other-key" } else { "key" }.to_string();
+                    let reply = if fault >= 5 {
+                        DbResult::RequestFailed {
+                            correlation_id: id,
+                            error: "mock property failure".into(),
+                        }
+                    } else {
+                        match (operation, fault == 4) {
+                            (0, false) => DbResult::NodePropertySet {
+                                node_id,
+                                key,
+                                correlation_id: Some(id),
+                            },
+                            (1, false) | (0, true) => DbResult::NodePropertiesLoaded {
+                                node_id,
+                                properties: serde_json::json!({"key":10}),
+                                correlation_id: Some(id),
+                            },
+                            _ => DbResult::NodePropertyDeleted {
+                                node_id,
+                                key,
+                                correlation_id: Some(id),
+                            },
+                        }
+                    };
+                    // Delete's wrong-type case must differ from its expected response too.
+                    let reply = if operation == 2 && fault == 4 {
+                        DbResult::NodePropertiesLoaded {
+                            node_id: "node".into(),
+                            properties: serde_json::json!({}),
+                            correlation_id: match reply {
+                                DbResult::NodePropertyDeleted { correlation_id, .. } => {
+                                    correlation_id
+                                }
+                                _ => unreachable!(),
+                            },
+                        }
+                    } else {
+                        reply
+                    };
+                    reply_tx.send(reply).unwrap();
+                };
+                let (result, ()) = tokio::join!(call, respond);
+                if fault == 0 {
+                    assert!(result.is_ok());
+                } else if fault == 5 {
+                    assert_eq!(result.unwrap_err(), "mock property failure");
+                } else {
+                    assert_eq!(
+                        result.unwrap_err(),
+                        "unexpected property response",
+                        "operation {operation}, fault {fault}"
+                    );
+                }
+            }
+        }
     }
 }

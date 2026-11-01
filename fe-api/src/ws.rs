@@ -662,6 +662,11 @@ fn scene_snapshot_message(
 /// Execute one `EntityCommand`: role + scope enforcement, then a `DbRequest`
 /// round-trip. Ok(json) on success; Err(client-safe message) otherwise.
 /// Scene deltas reach subscribers via the DB thread's entity-change broadcast.
+fn entity_command_failure(error: String) -> String {
+    tracing::error!("WS entity command failed: {error}");
+    "operation failed".into()
+}
+
 async fn handle_entity_command(
     state: &ApiState,
     claims: &ApiClaims,
@@ -706,12 +711,18 @@ async fn handle_entity_command(
             node_id,
             key,
             value,
-        } => DbCommand::SetNodeProperty {
-            node_id,
-            key,
-            value,
-        },
-        Ec::DeleteNodeProperty { node_id, key } => DbCommand::DeleteNodeProperty { node_id, key },
+        } => {
+            let dto = crate::rest::set_property_core(state, &node_id, key, value)
+                .await
+                .map_err(entity_command_failure)?;
+            return Ok(serde_json::json!({"node_id": dto.node_id, "key": dto.key}));
+        }
+        Ec::DeleteNodeProperty { node_id, key } => {
+            let dto = crate::rest::delete_property_core(state, &node_id, &key)
+                .await
+                .map_err(entity_command_failure)?;
+            return Ok(serde_json::json!({"node_id": dto.node_id, "key": dto.key}));
+        }
     };
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -732,16 +743,7 @@ async fn handle_entity_command(
         Ok(Ok(DbResult::NodeDeleted { node_id, petal_id })) => Ok(serde_json::json!({
             "node_id": node_id, "petal_id": petal_id,
         })),
-        Ok(Ok(DbResult::NodePropertySet { node_id, key })) => Ok(serde_json::json!({
-            "node_id": node_id, "key": key,
-        })),
-        Ok(Ok(DbResult::NodePropertyDeleted { node_id, key })) => Ok(serde_json::json!({
-            "node_id": node_id, "key": key,
-        })),
-        Ok(Ok(DbResult::Error(e))) => {
-            tracing::error!("WS entity command failed: {e}");
-            Err("operation failed".into())
-        }
+        Ok(Ok(DbResult::Error(e))) => Err(entity_command_failure(e)),
         Ok(Ok(_)) => Err("unexpected response".into()),
         Ok(Err(_)) => Err("request cancelled".into()),
         Err(_) => Err("request timed out".into()),

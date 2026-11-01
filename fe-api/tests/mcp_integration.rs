@@ -430,31 +430,60 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
             node_id,
             key,
             value,
+            correlation_id,
         } => {
             m.log
                 .push(json!({ "cmd": "SetNodeProperty", "node_id": node_id, "key": key }));
             match m.node(&node_id) {
                 Some(n) => {
                     n.properties.insert(key.clone(), value);
-                    DbResult::NodePropertySet { node_id, key }
+                    DbResult::NodePropertySet {
+                        node_id,
+                        key,
+                        correlation_id,
+                    }
                 }
-                None => DbResult::Error(format!("SetNodeProperty matched no node {node_id}")),
+                None => match correlation_id {
+                    Some(correlation_id) => DbResult::RequestFailed {
+                        correlation_id,
+                        error: format!("SetNodeProperty matched no node {node_id}"),
+                    },
+                    None => DbResult::Error(format!("SetNodeProperty matched no node {node_id}")),
+                },
             }
         }
-        DbCommand::GetNodeProperties { node_id } => match m.node(&node_id) {
+        DbCommand::GetNodeProperties {
+            node_id,
+            correlation_id,
+        } => match m.node(&node_id) {
             Some(n) => DbResult::NodePropertiesLoaded {
                 node_id,
                 properties: serde_json::Value::Object(n.properties.clone()),
+                correlation_id,
             },
-            None => DbResult::Error(format!("no node {node_id}")),
+            None => match correlation_id {
+                Some(correlation_id) => DbResult::RequestFailed {
+                    correlation_id,
+                    error: format!("no node {node_id}"),
+                },
+                None => DbResult::Error(format!("no node {node_id}")),
+            },
         },
-        DbCommand::DeleteNodeProperty { node_id, key } => {
+        DbCommand::DeleteNodeProperty {
+            node_id,
+            key,
+            correlation_id,
+        } => {
             m.log
                 .push(json!({ "cmd": "DeleteNodeProperty", "node_id": node_id, "key": key }));
             if let Some(n) = m.node(&node_id) {
                 n.properties.remove(&key);
             }
-            DbResult::NodePropertyDeleted { node_id, key }
+            DbResult::NodePropertyDeleted {
+                node_id,
+                key,
+                correlation_id,
+            }
         }
         // Mirrors create_asset_handler: metadata only; the blob must already exist.
         DbCommand::CreateAsset {
@@ -685,10 +714,7 @@ fn emu(with_store: bool) -> Emu {
         // Same shape as the window-capture seam above: opted in, bridge gone —
         // the row is advertised and an admitted injection fails closed at
         // once (keeps the per-tool sweeps below covering every row).
-        input: fe_api::input::InputSurface::new(
-            true,
-            Some(fe_runtime::input::input_bridge().0),
-        ),
+        input: fe_api::input::InputSurface::new(true, Some(fe_runtime::input::input_bridge().0)),
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     });
     let model = Arc::new(Mutex::new(Model::default()));
@@ -884,7 +910,10 @@ async fn tools_list_inventory() {
         .iter()
         .copied()
         .filter(|n| {
-            !n.starts_with("sim_") && *n != "screenshot" && *n != "get_camera" && *n != "inject_input"
+            !n.starts_with("sim_")
+                && *n != "screenshot"
+                && *n != "get_camera"
+                && *n != "inject_input"
         })
         .collect();
     assert_eq!(names, non_lab, "31 tools off a sim lab host");

@@ -65,7 +65,10 @@ pub(crate) fn annotation_field_for_key(key: &str) -> Option<AnnotationField> {
 pub(crate) fn load(db_sender: &DbCommandSender, node_id: String) {
     if db_sender
         .0
-        .send(DbCommand::GetNodeProperties { node_id })
+        .send(DbCommand::GetNodeProperties {
+            node_id,
+            correlation_id: None,
+        })
         .is_err()
     {
         bevy::log::warn!("db_sender channel closed — GetNodeProperties not dispatched");
@@ -84,6 +87,7 @@ pub(crate) fn set(
             node_id,
             key,
             value,
+            correlation_id: None,
         })
         .is_err()
     {
@@ -94,7 +98,11 @@ pub(crate) fn set(
 pub(crate) fn delete(db_sender: &DbCommandSender, node_id: String, key: String) {
     if db_sender
         .0
-        .send(DbCommand::DeleteNodeProperty { node_id, key })
+        .send(DbCommand::DeleteNodeProperty {
+            node_id,
+            key,
+            correlation_id: None,
+        })
         .is_err()
     {
         bevy::log::warn!("db_sender channel closed — DeleteNodeProperty not dispatched");
@@ -123,6 +131,7 @@ pub(crate) fn handle_clear(db_sender: &DbCommandSender, node_id: String) {
             .send(DbCommand::DeleteNodeProperty {
                 node_id: node_id.clone(),
                 key: key.to_string(),
+                correlation_id: None,
             })
             .is_err()
         {
