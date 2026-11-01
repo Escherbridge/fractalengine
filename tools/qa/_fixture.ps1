@@ -38,7 +38,12 @@ function Assert-QaFixtureJson {
     } elseif ($Expected -is [string]) {
         if ($Actual -isnot [string] -or $Actual -cne $Expected) { throw "fixture: $Context string differs" }
     } else {
-        if ($null -eq $Actual -or $Actual -is [string] -or $Actual -is [bool] -or [double]$Actual -ne [double]$Expected) {
+        $numericTypes = @([byte],[sbyte],[int16],[uint16],[int32],[uint32],[int64],[uint64],[single],[double],[decimal])
+        if ($null -eq $Actual -or $Actual.GetType() -notin $numericTypes) {
+            throw "fixture: $Context expected a JSON number"
+        }
+        $number = [double]$Actual
+        if ([double]::IsNaN($number) -or [double]::IsInfinity($number) -or $number -ne [double]$Expected) {
             throw "fixture: $Context number differs"
         }
     }
@@ -78,7 +83,8 @@ function New-QaSceneFixture {
     if ($uploaded.ok -ne $true) { throw "fixture: GLB upload failed: $($uploaded.error)" }
     $assetId = Assert-QaFixtureId $uploaded.data.asset_id 'upload asset'
     $nodeIds = @()
-    $positions = @(@(-12,0,0), @(0,0,-12), @(12,0,0))
+    $positions = @(@(0,0,0), @(2,0,0), @(-2,0,0))
+    if ($Name -eq 'terrain') { $positions = @(@(-12,0,0), @(0,0,-12), @(12,0,0)) }
     for ($index = 0; $index -lt 3; $index++) {
         $node = Invoke-QaFixtureApi POST "/api/v1/verses/$verseId/fractals/$fractalId/petals/$($petals[0])/nodes" $token @{
             name="Cube $($index+1)"; asset_id=$assetId; position=$positions[$index]
@@ -111,7 +117,8 @@ function New-QaSceneFixture {
         Assert-QaFixtureJson $plain.terrain $null 'basic/Petal A/terrain'
     }
     $predicate = "petal_id = '$($petals[0])' AND properties.qa_fixture = 'terrain' AND properties.qa_role = 'value' AND tombstone = NONE"
-    $rowsSql = "SELECT node_id, petal_id, display_name, position, properties.qa_value AS qa_value FROM node WHERE $predicate ORDER BY qa_value ASC"
+    $positionProjection = 'position.coordinates[0] AS x, elevation AS y, position.coordinates[1] AS z'
+    $rowsSql = "SELECT node_id, petal_id, display_name, $positionProjection, properties.qa_value AS qa_value FROM node WHERE $predicate ORDER BY qa_value ASC"
     $sumSql = "SELECT count() AS fixture_count, math::sum(properties.qa_value) AS fixture_sum FROM node WHERE $predicate GROUP ALL"
     $rows = Invoke-QaFixtureApi POST '/api/v1/query' $token @{sql=$rowsSql}
     $sum = Invoke-QaFixtureApi POST '/api/v1/query' $token @{sql=$sumSql}
@@ -124,19 +131,24 @@ function New-QaSceneFixture {
     Assert-QaFixtureJson $sumRows[0].fixture_sum 60 'query/sum'
     for ($index = 0; $index -lt 3; $index++) {
         if ($queryRows[$index].node_id -cne $nodeIds[$index] -or $queryRows[$index].petal_id -cne $petals[0] -or
-            $queryRows[$index].display_name -cne "Cube $($index+1)" -or $queryRows[$index].qa_value -ne 10*($index+1)) {
-            throw 'fixture: query row identity or value differs'
+            $queryRows[$index].display_name -cne "Cube $($index+1)") {
+            throw 'fixture: query row identity differs'
         }
-        Assert-QaFixtureJson $queryRows[$index].position $positions[$index] "value/$index/position"
+        Assert-QaFixtureJson $queryRows[$index].qa_value (10*($index+1)) "value/$index/qa_value"
+        Assert-QaFixtureJson $queryRows[$index].x $positions[$index][0] "value/$index/x"
+        Assert-QaFixtureJson $queryRows[$index].y $positions[$index][1] "value/$index/y"
+        Assert-QaFixtureJson $queryRows[$index].z $positions[$index][2] "value/$index/z"
     }
     $markers = Invoke-QaFixtureApi POST '/api/v1/query' $token @{
-        sql="SELECT node_id, petal_id, position FROM node WHERE properties.qa_fixture = 'terrain' AND properties.qa_role = 'marker' AND tombstone = NONE"
+        sql="SELECT node_id, petal_id, $positionProjection FROM node WHERE properties.qa_fixture = 'terrain' AND properties.qa_role = 'marker' AND tombstone = NONE"
     }
     if (@($markers.data).Count -ne 2) { throw 'fixture: origin marker rows missing' }
     for ($index = 0; $index -lt 2; $index++) {
         $markerRows = @($markers.data | Where-Object { $_.node_id -ceq $markerIds[$index] -and $_.petal_id -ceq $petals[$index] })
         if ($markerRows.Count -ne 1) { throw 'fixture: origin marker hierarchy differs' }
-        Assert-QaFixtureJson $markerRows[0].position @(0,0,0) "marker/$index/position"
+        Assert-QaFixtureJson $markerRows[0].x 0 "marker/$index/x"
+        Assert-QaFixtureJson $markerRows[0].y 0 "marker/$index/y"
+        Assert-QaFixtureJson $markerRows[0].z 0 "marker/$index/z"
     }
     return @{
         name=$Name; verse_id=$verseId; fractal_id=$fractalId; petal_a_id=$petals[0]; petal_b_id=$petals[1]

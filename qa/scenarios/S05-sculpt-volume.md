@@ -13,7 +13,12 @@ tags: [gold, terrain-tools, sculpt, earthwork, volume, analytic-oracle]
 Use a fresh `launch.ps1 -Fixture terrain` run, both petals bound to the
 descriptor's offline TerrainRGB source at native/world scale 1. S04 must
 first establish actual resident terrain at the origin in each petal.
-The hill lies away from the oracle; the square[-5,5]x[-5,5] is flat 0m.
+The hill lies away from the oracle; the square[-5,5]x[-5,5] encodes flat
+absolute elevation 0m. Runtime grounding subtracts the center-tile mean
+(approximately 0.14m), so its local surface can be Y=-mean. Authored Y=0
+nodes are not a claim of exact surface seating. Inspect grounding and align
+the live setup if needed; constant-depth volume expectations are relative
+to the resident base and do not change with this uniform offset.
 Value nodes are outside that square, and origin markers are asset-free.
 
 1. Enter Petal A. Press B for Brush, then open Options. Locate controls

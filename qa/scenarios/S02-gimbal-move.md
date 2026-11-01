@@ -4,57 +4,57 @@ id: S02
 gold: G2
 title: Select a GLB node and move it with the gimbal
 fixture: basic
-verified_in_pass: "01"
+verified_in_pass: "01 historical; revised fixture journey pending"
 tags: [gold, selection, gimbal, transform]
 ---
 
-# S02 — "Pick the cube and slide it along X with the arrows"
+# Pick a cube and slide it along X with the arrows
 
-**Success signal (gold G2):** the picked cube visibly moves to the right
-along the red X arrow, and the move persists (REST read-back of the node's
-position shows x changed). Time limit: 2 minutes of driving.
+Success requires the selected cube to move visibly along the red X axis
+and the committed transform to persist. Allow two minutes of driving.
 
-## Steps
+Use a fresh basic fixture for the original arrangement: Cube 1 at (0,0,0),
+Cube 2 at (2,0,0), Cube 3 at (-2,0,0). Petal A has no terrain assignment.
+Its extra QA oracle origin row is asset-free; it does not replace Cube 1.
+The terrain fixture intentionally has a different arrangement and is not
+the baseline for this journey.
 
-1. Enter Petal A of QA Basic (cards, never the sidebar petal row — see S03 step 7).
-   ```
-   F click 43 290 --wait 10            # sidebar "QA Basic" (prints view_changed_verse)
-   F click 340 140 --wait 10           # "QA Fractal" card
-   F click 330 160 --wait 60           # "Petal A" card
-   F wait-settle
-   F shot --label s02-petal-a
-   ```
-   **Checkpoint 1:** three red cubes in the viewport (Cube 2 right, Cube 3
-   left of the centre one); title crumb reads "QA Basic / QA Fractal / Petal A";
-   hint line "Click an object to select it" at the bottom.
-2. Select the centre cube (Cube 1, world origin).
-   ```
-   F click 640 370 --wait 10
-   F key g --wait 5 --capture --label s02-move-tool
-   ```
-   **Checkpoint 2:** Move is highlighted in the toolbar, a "Deselect" button
-   appears, the gimbal (red X, green Y, blue Z arrows) sits on the centre
-   cube, and the right panel shows "Gimbal active — drag an axis to move".
-3. Drag the red X arrow head to the right.
-   ```
-   F drag 750 408 850 450 --wait 10 --capture --label s02-dragged
-   ```
-   **Checkpoint 3:** the cube and its gimbal moved right along X (it now
-   overlaps Cube 2 at x≈2).
-4. Evidence read-back (not a UX step):
-   ```
+1. Expand QA Basic / QA Fractal in the sidebar using current controls as
+   needed. Click the named Petal A row, then inspect the resulting frame
+   and `F state --path navigation`. Require the complete verse/fractal/
+   petal ancestry and three rendered fixture cubes. The repaired sidebar
+   path is supported; the historical QA-0001 crash is a regression check,
+   not a reason to avoid it.
+2. Select Cube 1 by its named sidebar label, expanding Petal A if needed:
+
+   ```powershell
+   F click --name 'Cube 1' --role label
+   F state --path selection
    F api GET /api/v1/nodes/{node_ids[0]}
+   F key g --capture --label s02-move-tool
    ```
-   `data.data.position.coordinates[0]` must be > 0 (it was 0 at launch).
 
-## Expected visuals to judge every checkpoint against
+   Record the actual selected node ID and before transform. The selected
+   ID must equal fixture node_ids[0]. In a pristine basic run X is 0; if a
+   prior action moved it, retain the actual baseline rather than assuming
+   zero. Inspect the Move tool and gimbal on that cube. A separate viewport
+   click selection check can use the cube's current visible geometry.
+3. Locate the red X arrow head in the latest screenshot. Drag it toward
+   positive X using those grounded coordinates and capture the result.
+   Require the same selected node, visible cube/gimbal movement and an
+   increased X relative to the recorded before value. Do not reuse a fixed
+   pixel drag or require overlap with Cube 2: window size and camera pose
+   affect projected displacement.
+4. Read the selected node and authoritative selection again. Raw query
+   storage uses GeoJSON `position.coordinates=[x,z]` and separate
+   `elevation=y`; it is not a three-element position array. Require the
+   committed X to increase from its actual before value and agree with
+   displayed/authoritative selection after commit. Y and Z should stay
+   within normal drag tolerance for an X-axis move. Re-enter the petal and
+   verify the committed position persists.
 
-- The selected node is distinguishable from the unselected ones (outline or
-  tint), not only by the gimbal. *(pass 01: no selection outline — QA-0006.)*
-- The Inspector's Position X reflects the drag without a manual refresh.
-  A previous probe's blank Inspector claim was not confirmed: Maps was
-  covering the viewport in that capture. Record only visible evidence.
-- If Maps is open, record how much viewport remains (QA-0015) and close
-  it before dragging. The prior probe does not establish why Maps opened.
-- Nothing in the status bar contradicts the scene ("0 models" with three
-  cubes on screen is a finding — QA-0004).
+At every checkpoint judge selection distinction, Inspector refresh,
+visible axis feedback, clipping and footer accuracy. If Maps obscures the
+viewport, record its retained width and close it before dragging. Preserve
+the actual before/after captures and raw transform values; a changed query
+alone does not prove a successful visible gimbal interaction.

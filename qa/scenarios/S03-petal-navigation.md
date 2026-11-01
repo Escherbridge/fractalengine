@@ -2,71 +2,57 @@
 type: Scenario
 id: S03
 gold: G3
-title: Navigate between petals (cards and sidebar)
+title: Navigate between petals using cards and the sidebar
 fixture: basic
-verified_in_pass: "01"
+verified_in_pass: "01 historical; revised fixture journey pending"
 tags: [gold, navigation, sidebar, hierarchy]
 ---
 
-# S03 — "Go from Petal A to Petal B and back"
+# Go from Petal A to Petal B and back
 
-**Success signal (gold G3):** the user can reach Petal B from Petal A and
-return, by the cards AND by the sidebar tree, with the scene swapping each
-time (cubes in A, empty grid in B) and the app staying alive.
+Success requires navigation through both cards and the sidebar, complete
+ancestry at each destination, scene replacement and the app staying alive.
 
-## Steps
+The revised fresh basic fixture has Petal A with four rows (three asset
+cubes plus one asset-free QA oracle origin marker) and Petal B with one
+asset-free origin marker and a bound offline map. B is not an empty grid.
+Terrain mode has the same row counts but binds both petals. Later imports
+or earthwork regions can add rows; record actual current IDs/counts before
+this journey and compare against that baseline instead of assuming pristine
+counts. Asset-free marker rows do not imply a visible cube.
 
-1. Open QA Basic from the sidebar.
-   ```
-   F click 43 290 --wait 10
-   F shot --label s03-verse
-   ```
-   **Checkpoint 1:** header "QA Basic — Select a Fractal", one "QA Fractal"
-   card ("2 petals"), verse picker reads "QA Basic".
-2. Open the fractal from its card.
-   ```
-   F click 340 140 --wait 10 --capture --label s03-fractal
-   ```
-   **Checkpoint 2:** "QA Basic / QA Fractal — Select a Petal to enter",
-   cards "Petal A · 3 nodes" and "Petal B · 0 nodes".
-3. Enter Petal A from its card.
-   ```
-   F click 330 160 --wait 60
-   F wait-settle
-   F shot --label s03-petal-a
-   ```
-   **Checkpoint 3:** three red cubes; crumb "QA Basic / QA Fractal / Petal A".
-4. Back out with Escape, then enter Petal B from its card.
-   ```
-   F key Escape --wait 10 --capture --label s03-escape
-   F click 522 160 --wait 30 --capture --label s03-petal-b
-   ```
-   **Checkpoint 4:** after Escape the petal cards are back; after the click
-   the crumb reads "… / Petal B" and the viewport is an empty grid.
-   *(pass 01: Escape does nothing in a petal although the hint line says
-   "Esc = back out one step" — QA-0008. Fallback so the rest of the
-   scenario still runs: `F click 246 52 --wait 10` ("◀ Back"), then the
-   Petal B card.)*
-5. Expand QA Basic in the sidebar and go back to Petal A from the tree.
-   ```
-   F click 9 290 --wait 10 --capture --label s03-tree-expanded
-   ```
-   Locate the "Petal A" row under QA Basic › QA Fractal in that capture, then
-   `F click <x> <y> --wait 30 --capture --label s03-tree-petal-a`.
-   **Checkpoint 5:** Petal A's cubes are back; the app is alive (exit 0).
-6. Evidence: `F camera` → `active.petal_id == {petal_a_id}`.
-7. **Sidebar petal row from a verse-level view** (the path a new user takes
-   first). Back out to the fractal picker (`F click 246 52` "◀ Back", then
-   `F click 252 52` "◀ Fractals"; `F camera` → `active` has no fractal_id),
-   then click a petal row of QA Basic in the sidebar tree (locate it in the
-   capture; pass 01 used `F click 74 353` for "Petal B").
-   **Checkpoint 7:** the app enters the clicked Petal B. *(pass 01: the app aborts —
-   `build_scope: petal_id requires fractal_id`, QA-0001, S1. Run this step
-   LAST: it ends the run.)*
+1. Open QA Basic from its named verse row. Inspect the verse-level view:
+   one QA Fractal card and two petals; navigation must have verse ancestry
+   with no active fractal/petal. Locate the current card controls through
+   the UI tree and screenshot instead of replaying historical coordinates.
+2. Open the QA Fractal card. Require the matching verse/fractal crumb and
+   Petal A / Petal B cards. On a pristine fixture their node counts are
+   four and one. If the current baseline differs, the cards must show
+   those actual counts, with each known marker/value node in its own petal.
+3. Enter Petal A from its card. Inspect the three asset cubes, asset-free
+   marker row and complete QA Basic / QA Fractal / Petal A navigation.
+   Basic A has no bound terrain; terrain-mode A does. Record the current
+   cube transforms, especially a Cube 1 moved by S02.
+4. Press Escape and inspect whether the petal cards return. If the
+   advertised back gesture fails, retain the evidence for QA-0008 and use
+   the current visible Back control to continue. Enter Petal B by its card.
+   Require complete Petal B ancestry, no Petal A cube entities, its marker
+   row, and the bound map's rendered surface once resident. A loading map
+   is not an empty-grid success. Inspect `F state --path selection` for
+   stale Cube 1 selection or Inspector state after navigation.
+5. Expand the verse/fractal tree if needed and click the named Petal A
+   label. Require its cubes and stored transforms to return, correct full
+   ancestry and a live app. Repeat named navigation to B and back. Confirm
+   each scene/selection state against the baseline rather than footer
+   model counts alone.
+6. Back out to the verse-level fractal picker while leaving the tree
+   expanded. Verify no active fractal/petal, then click Petal B directly
+   from the sidebar. This is the former QA-0001 crash path. Require complete
+   verse/fractal/petal ancestry, the expected B marker/map scene and
+   continued API/input responsiveness. Return directly to A the same way.
 
-## Expected visuals
-
-- The verse row collapsing when clicked (L-01 "sidebar collapse trap") is
-  recorded, not failed: compare `s03-verse` with the launch shot.
-- The crumb/ID line and the "◀ Back"/"◀ Fractals" button must not overlap
-  the title (V-01).
+Capture card counts, both scenes, the verse-level direct-sidebar path and
+state readbacks. Record row-collapse behavior, overlapping crumbs, missing
+terrain residency and stale selection separately. The historical abort
+has a repaired regression path; do not label this step as intentionally
+ending the run.

@@ -24,3 +24,12 @@ The 128² cell-center integration lattice has 16384 samples, area 100m² and
 respective fill 200m³ or cut 100m³. Nonzero expected volumes and residency checks
 are mandatory because the current report can silently skip missing samples.
 No query/report result generated here proves rendered runtime coverage.
+
+Runtime grounding subtracts the center tile's mean elevation (approximately
+0.14m for this hill), so encoded absolute-zero terrain may render at local
+Y=-mean instead of Y=0. Seeded nodes and asset-free markers record Y=0 as
+authored coordinates; that does not claim their meshes sit exactly on the
+rendered surface. Live validation must inspect actual grounding and may align
+its setup after integration. Do not change production grounding for a fixture.
+The constant-depth raise/lower oracle is relative to the resident base and
+is unaffected by a uniform grounding offset.

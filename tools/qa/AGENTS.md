@@ -121,8 +121,9 @@ oracle are in `fe-terrain/examples/AGENTS.md`. External GIS data and network
 tile sources are not prerequisites.
 
 Both seeded modes create one QA verse, one QA Fractal and two petals. Petal A
-holds Cube 1/2/3 using the uploaded run-local sample GLB at (-12,0,0),
-(0,0,-12), (12,0,0), outside the rectangle oracle. Each cube has
+holds Cube 1/2/3 using the uploaded run-local sample GLB. Basic preserves
+their original (0,0,0), (2,0,0), (-2,0,0) arrangement for S02. Terrain mode
+uses (-12,0,0), (0,0,-12), (12,0,0), outside the rectangle oracle. Each cube has
 `qa_fixture=terrain`, `qa_role=value` and `qa_value=10/20/30`. Both petals
 also contain an asset-free `QA oracle origin` marker at (0,0,0), tagged
 `qa_role=marker`, `qa_marker=flat-origin`, `qa_base_m=0`. Marker rows are
@@ -132,6 +133,10 @@ excluded from value queries but deliberately appear in all-node queries.
 valid created IDs, checks each property echo and readback, compares terrain
 PUT echoes and GET readback structurally against the typed descriptor, then
 verifies scoped node identities/positions, both markers, count 3 and sum 60.
+Raw query positions are GeoJSON Point[x,z] plus separate elevation; fixture
+queries project numeric x/y/z aliases and assert every coordinate and
+qa_value without accepting strings or booleans as numbers. A fresh Petal A
+has four rows and Petal B one; S03 records actual counts after prior edits.
 Any failure throws into launch's exact process-tree cleanup. Token strings
 are never logged. Persistence readback does not prove rendered residency.
 
@@ -140,6 +145,11 @@ are never logged. Persistence readback does not prove rendered residency.
 `terrain_bound=true` means the requested binding echoes and readbacks passed;
 S04 still inspects real terrain on screen before S05. Native/world scale 1,
 TerrainRGB and offline mode come from serialized TerrainConfig.
+
+Encoded flat elevation is absolute 0m. Runtime grounding subtracts the
+center tile's mean (approximately 0.14m), so local terrain Y may be -mean.
+Authored Y=0 nodes/markers are not claimed to sit exactly on that surface;
+inspect and align live setup if needed, without changing production grounding.
 
 The generator is deterministic at fixed code/dependency versions: fixed
 manifest IDs/timestamps, ordered tile generation and bundling. Runtime IDs,
