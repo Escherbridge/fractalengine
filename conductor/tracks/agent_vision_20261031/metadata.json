@@ -3,10 +3,10 @@
   "type": "feature",
   "title": "Agent vision: default-on screenshots, dynamic camera/geo/tile capture, camera read-back (+ agent_input_surface folded in)",
   "description": "Screenshots on by default (FE_API_SCREENSHOT_ALLOW unset = on, =0 = off; Owner + rate limit kept; headless stays disabled) via a per-gate default on OperatorGate. New POST /api/v1/debug/screenshot (GET unchanged) and matching MCP params: window mode (optional pose on the main camera, settle, capture, restore) or scene mode (off-screen render-to-texture camera, no UI, user view untouched). Pose = exactly one of camera/orbit/geo/tile/focus; strict finite+range validation through a validate-once newtype; resolved pose returned as X-FE-Capture-Pose header / MCP text part. New GET /api/v1/debug/camera + MCP get_camera for closed-loop agents. Terrain streaming becomes multi-focus so scene captures stream their own tiles. Executes agent_input_surface_20261031 (synthetic input, default OFF) in the same program.",
-  "status": "pending",
+  "status": "done-pending-user-verify",
   "priority": "P1",
   "created_at": "2026-10-31T00:00:00Z",
-  "updated_at": "2026-10-31T00:00:00Z",
+  "updated_at": "2026-11-01T00:00:00Z",
   "origin": "user directive 2026-10-31: enable screenshot support by default, make it dynamic (camera, tile coordinates etc.), fold in the recent session's context",
   "alignment": "Public seam S-AGENT-GUI (conductor/open-core.md). Agent QA capability usable by any self-hoster; no business logic.",
   "depends_on": [],
@@ -19,9 +19,10 @@
   "spec": "./spec.md",
   "plan": "./plan.md",
   "progress": {
-    "done": 10,
-    "open": 9,
+    "done": 19,
+    "open": 0,
     "plan": "./plan.md",
+    "user_verify": ["in-app AC-11 (default-on screenshot, posed window/scene capture against the live window)", "in-app input with FE_API_INPUT_ALLOW=1 (click/drag/text into the GUI; Ctrl+V refused)", "full campaign-end sweep", "retro + archive"],
     "runs": {
       "vision": {
         "status": "reviewed",
@@ -41,7 +42,27 @@
           "critic": "reviews/critic-vision.md (VERDICT: PASS-WITH-FIXES (7))"
         },
         "gate": "check + clippy 1.99.0 -D warnings (6 crates) + test fe-runtime/fe-api/fe-renderer/fractalengine 676 passed 0 failed 1 ignored + fe-terrain --features render lib 339 passed",
-        "open_after": ["I1-I5 (agent_input_surface)", "G4", "CLOSE", "full sweep", "in-app AC-11 (user-gated)", "retro + archive"],
+        "open_after": [],
+        "pushed": false
+      },
+      "input": {
+        "status": "reviewed",
+        "reviewed_at": "2026-11-01",
+        "slices_done": ["I1", "I2", "I3", "I4", "I5", "ADVOCATE", "CRITIC"],
+        "commits": {
+          "I1": "cc347b1",
+          "I2": "9882e1d335c0dc1320fc70189a44f76276ead223",
+          "I3": "e3b37af75f2718a2bf35080089804afec406ee00",
+          "I4": "94f34f31d43507c4510002904eea2de03804bfdb",
+          "I5": "ccc397a0f4e9b80631685310af7c3265d4c5915e",
+          "advocate": "53c25de6fbd65f561cb33c56d18cbc4e16e76d9e",
+          "critic": "db5adfd"
+        },
+        "reviews": {
+          "advocate": "reviews/advocate-input.md (VERDICT: APPROVE-WITH-FIXES (6))",
+          "critic": "reviews/critic-input.md (VERDICT: PASS-WITH-FIXES (3))"
+        },
+        "gate": "check --tests + clippy 1.99.0 -D warnings (fe-api fe-runtime fe-renderer fe-ui fractalengine) + touched batches: fractalengine input_bridge 1, fe-api lib input 1, fe-api vision_test 10, fe-api mcp_integration 31, fe-runtime input 1 - all pass",
         "pushed": false
       }
     }
@@ -58,7 +79,8 @@
   "notes": [
     "2026-10-31: planned (docs only) at 7ea181b while polish wave 1 reviewers own fe-ui/fe-runtime/fe-database. Evidence: fe-api/src/operator_gate.rs, fe-api/src/screenshot.rs, fe-runtime/src/screenshot.rs, fractalengine/src/screenshot_bridge.rs, fe-renderer/src/camera.rs (orbit_camera_system rewrites Transform every frame; deactivate_foreign_cameras would disable a capture camera), fe-terrain/src/{projection.rs,terrain_plugin.rs,petal_binding.rs (ActiveTileSource holds the live, grounded projection)}.",
     "2026-10-31: open-core.md S-AGENT-GUI row and RUNBOOK §3 updated in the planning commit to record DD-1 (screenshots default-on overrides 'both off by default').",
-    "2026-10-31: CROSS-TRACK. TOOLS.len(): 37 -> 38 (V2 get_camera) -> 39 (I3 inject_input) -> peer_networking_support P14 bumps from 39. Shared-file order: this track, then relay_operability, then plugin_host_revival. Polish W4-S3 (terrain_plugin.rs, fe-terrain/fe-renderer AGENTS.md) and W5-S1 (fe-api/fe-runtime AGENTS.md) rebase onto this track."
+    "2026-10-31: CROSS-TRACK. TOOLS.len(): 37 -> 38 (V2 get_camera) -> 39 (I3 inject_input) -> peer_networking_support P14 bumps from 39. Shared-file order: this track, then relay_operability, then plugin_host_revival. Polish W4-S3 (terrain_plugin.rs, fe-terrain/fe-renderer AGENTS.md) and W5-S1 (fe-api/fe-runtime AGENTS.md) rebase onto this track.",
+    "2026-11-01: input run closed (I1-I5, advocate 53c25de, critic db5adfd: synthetic Control/Super+C/V/X clipboard chords refused so injected input never reads or writes the host OS clipboard). Status done-pending-user-verify; nothing pushed."
   ],
   "partitions": {
     "computed_at": "2026-10-31T00:00:00Z",
