@@ -8,11 +8,11 @@
   "origin": "User /goal to finish qa-chain-handoff-20261101, reinforced authorization for agent interaction surfaces and fixes",
   "alignment": "S-AGENT-GUI; user-facing correctness, accessibility and reproducible end-to-end verification",
   "depends_on": [],
-  "related": ["agent_vision_20261031", "polish_lane_20261031", "ux_audit_20261101"],
+  "related": ["agent_vision_20261031", "polish_lane_20261031", "ux_audit_20261101", "rich_data_history_20261101"],
   "spec": "./spec.md",
   "plan": "./plan.md",
   "progress_ledger": "../../qa-chain-progress-20261101.md",
-  "current_slice": "Combined S7, property-reply repair and S2 build; live numeric/accessibility validation pending",
+  "current_slice": "Pass06 W4/RD1 live validation and locator repair; prioritized rich schema/history work in isolated checkouts",
   "parallel_code_only": [
     {"slice": "S7", "branch": "qa/s7-fixture", "worktree": ".omc/worktrees/qa-s7", "head": "1b5646d", "validation": "integrated; initial build passed, strict live setup found QA-0022; combined live proof pending", "owner": "released"},
     {"slice": "S2 forms", "branch": "qa/s2-accessibility", "worktree": ".omc/worktrees/qa-s2", "head": "9b72e64", "validation": "static review clean; compile/live pending integration", "owner": "released"},

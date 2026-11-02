@@ -1,0 +1,14 @@
+{
+  "id": "rich_data_history_20261101",
+  "type": "feature",
+  "title": "Rich object data, replay and measurement timelines",
+  "status": "in_progress",
+  "priority": "P0",
+  "origin": "User priority during QA campaign; explicitly selected both object replay and charted appended measurements",
+  "spec": "./spec.md",
+  "plan": "./plan.md",
+  "related": ["qa_chain_20261101", "polish_lane_20261031"],
+  "history_target": "both",
+  "release_gate": "Original QA campaign completion, integrated verification, same-SHA CI and verified tagged artifacts",
+  "verification": {"static_reviews": "in_progress", "backend_compile": "pending", "live_both_scenario": "pending", "integrated_sweep": "pending"}
+}

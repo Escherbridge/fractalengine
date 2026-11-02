@@ -33,25 +33,37 @@ Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.
 
 ## Current acceptance state
 
-- Main source/Cargo/live owner: nav_clipboard_executor. Combined stage is building; no other lane launches apps.
-- S7 commits364b984/f3daa14/615c86b/55887d5 and strict relay6176471 are integrated. Initial GUI/helper build passed,
-  but strict basic setup exposed QA-0022: an unselected node's property write persisted while its API reply was
-  skipped by the GUI selection guard. No terrain arithmetic or full-coverage success is claimed from that run.
-- Property repair ed65f77 correlates all three property request/reply families, validates exact identity through
-  shared REST/MCP/WS cores and forwards API replies before Inspector selection guards. Independent security and
-  design reviews are clean in production;9c4b2e5 adds two missing resources to its real Bevy dispatcher journey.
-  API success and durable readback must be reverified live in the combined stage.
-- S2 source is integrated through da71a1b, preserving the property correlation fields and strict divider edges.
-  The original branch range214045a..1974bac is independently clean for semantics/security and design. Actual
-  compilation, all-panel unnamed/repeated/disabled auditing, normal OS activation and paired frame timing remain
-  pending. Launcher9c4b2e5 adds explicit gate-off/timing options;11cb8d4 restores all nine invoking-process
-  environment values in finally. The separate reviewer closed that launcher finding statically.
-- S6 focused pass04 is committed; exact resize-radius endpoints remain a new-stage live check. Earlier zero
-  measured violations still had unknown coverage and do not certify every control or compact visual state.
-- S5 has a separate docs-only checkout qa/s5-catalog. Its current expansion has922 provisional checkpoints
-  across GUI/API/OS plus planned/unreachable cases; none is counted as executed. Final scope follows actual
-  source reachability and must be refreshed after polish. Full QA convergence, UX audits, W2-W6/W7+, the integrated
-  sweep and final CI/tagged release remain open.
+- User priority now includes complex typed object schemas, sequential data/creation/transform simulation and
+  BOTH replayable object changes and charted appended measurements (explicit async answer). Track:
+  `rich_data_history_20261101`. This steering preserves the original full QA/CI/release goal.
+- Main9650d69 includes reviewed RD1 editor/S5 catalog plus W4 finite-readiness guard. Pass06 live checks are in
+  progress: automatic200fill/-100net, full16384sample coverage, explicit0/16384unavailable, restore/config300/
+  unbind/rebind/switch flows. Typed editor actual GUI/type/draft checks are still running; no final pass verdict.
+- Rich core code is isolated on qa/rich-data-core: schema commitsc801125/7ea7998/139bf56/8f7870d/05fe598,
+  history1fe217f and scope/identity repair2f600e8. The reviewer closed historical fact-scope, queued Scoped writes
+  and receipt identity findings, but Local role authorization needs correction before approval/merge. Backend
+  compilation and all new history live proofs remain pending.
+- A shared full NodeMaterialized message and typed receipt/history/preview results are ready for UI wiring.
+  The native history/measurement UI is not implemented yet. RD5 driver is code-only in qa/rich-data-driver,
+  with pure scenario3cc981c and redirect-safe common transport0a42c03. No scenario execution is claimed.
+- Main source/Cargo/live owner remains nav_clipboard_executor; no other lane launches apps or Cargo. The current
+  stage9650d69 compiled successfully. Pass06 is a focused live validation, not a complete coverage pass.
+- S7 fixtures and strict relay6176471 are integrated. Pass05 verified deterministic generation, visible terrain,
+  three UI values10/20/30 and aggregate3/60, and persisted200fill/100cut. Its report needed a refresh workaround;
+  W4 fixes94aea74/9650d69 are being verified in pass06. The original unselected-property API timeout QA-0022 is
+  fixed by ed65f77 and verified; typed correlation and shared REST/MCP/WS validation remain in place.
+- S2 source compiled and actual normal OS UIA proof is committed in f6681b9: gate-off eleven named buttons and
+  matching-process wall-frame comparison. Mean17.6802ms baseline versus18.1348ms active is an observed wall-time
+  difference, not isolated CPU cost. Debug/input remained denied. All-panel accessibility/disabled-state coverage
+  remains pending. Launcher11cb8d4 restores all nine invoking-process environment overrides.
+- S6 exact divider edges at ppp2, selection preservation and genuine pick/deselect were isolated and verified in
+  pass05. Earlier zero measured layout violations retain explicit unknown coverage; compact visuals still need
+  polish. Current pass06 has grounded a real locator defect: a hidden picker option's full bounds center lies
+  outside its actual clipped hit area. The owner is repairing visible-hit selection rather than blaming parsing.
+- S5 f505199/536a8e6 is integrated as02682a5/694f5f8 and independently statically approved. Its922 checkpoints
+  include889 currently applicable cases; new RD1/history features require reconciliation. No full coverage or
+  convergence is claimed, and catalog_source_fingerprint remains null. UX audits, remaining polish, final full
+  passes, integrated verification and same-SHA CI/tagged downloads remain open.
 
 ## Binding execution constraints
 
