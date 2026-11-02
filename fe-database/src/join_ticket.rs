@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use crate::join_invite::{JoinRole, VerifiedJoinInvitation, MAX_TICKET_BYTES};
 use iroh::TransportAddr;
-use iroh_docs::{ticket::DocTicket, Capability};
+use iroh_docs::{DocTicket, Capability};
 
 const MAX_PEERS: usize = 8;
 const MAX_ADDRESSES: usize = 16;

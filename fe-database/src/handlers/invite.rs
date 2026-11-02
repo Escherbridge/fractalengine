@@ -262,7 +262,7 @@ mod tests {
         let peer = iroh::EndpointAddr::new(owner_key.to_iroh_secret().public())
             .with_ip_addr("127.0.0.1:40000".parse().unwrap());
         let native_only_fixture = fe_runtime::join_invite::JoinCredential::new(
-            iroh_docs::ticket::DocTicket::new(capability, vec![peer]).to_string(),
+            iroh_docs::DocTicket::new(capability, vec![peer]).to_string(),
         )
         .unwrap();
         let issued = super::super::addressed_join::issue(

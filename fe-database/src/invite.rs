@@ -198,7 +198,7 @@ mod tests {
             };
             let peer = iroh::EndpointAddr::new(kp.to_iroh_secret().public())
                 .with_ip_addr("127.0.0.1:40000".parse().unwrap());
-            let ticket = iroh_docs::ticket::DocTicket::new(capability, vec![peer]).to_string();
+            let ticket = iroh_docs::DocTicket::new(capability, vec![peer]).to_string();
             let addressed = JoinInvitation::issue_owner(
                 &kp,
                 recipient.clone(),
