@@ -3,7 +3,8 @@ use std::sync::{Arc, Mutex};
 use bevy::prelude::IntoScheduleConfigs;
 use fe_identity::NodeIdentity;
 use fe_runtime::app::{
-    ApiCommandReceiver, ApiCommandSender, BevyHandles, PendingApiRequests, TransformBroadcastSender,
+    ApiCommandReceiver, ApiCommandSender, AppOptions, BevyHandles, LoggingOwnership,
+    PendingApiRequests, TransformBroadcastSender,
 };
 use fe_runtime::channels::ChannelHandles;
 use fe_runtime::messages::DbCommand;
@@ -468,7 +469,7 @@ fn main() {
 
     // Frameless primary window: fe-ui's topbar is the title bar (src/AGENTS.md
     // §window-chrome).
-    let mut app = fe_runtime::app::build_app_with_confirmed_close(
+    let mut app = fe_runtime::app::build_app_with_options(
         BevyHandles {
             net_cmd_tx: ch.net_cmd_tx,
             net_evt_rx: ch.net_evt_rx,
@@ -479,6 +480,10 @@ fn main() {
             lifecycle_rx: Some(lifecycle_rx),
         },
         window_chrome::primary_window(),
+        AppOptions {
+            close_when_requested: false,
+            logging: LoggingOwnership::External,
+        },
     );
 
     plugin_bridge::install(&mut app);

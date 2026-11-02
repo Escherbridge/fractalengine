@@ -869,3 +869,24 @@ CommitStampOverrides is a local editor-only command carrying loaded stamp proper
 path identity and points, optional known versions, full scope and three finite draft fields.
 It does not extend the public NodeMutation JSON grammar. Its single correlated ordinary
 NodeMutationCommitted reply contains the final state after all three facts commit together.
+
+
+## Logging ownership
+
+`app::AppOptions` makes window-close and process-logging ownership explicit at the GUI builder
+boundary. `LoggingOwnership::Bevy` is the default for every existing constructor, including
+`build_app_with_confirmed_close`; standalone callers retain DefaultPlugins' normal LogPlugin.
+`LoggingOwnership::External` disables only LogPlugin before the group is installed. It requires
+the embedding executable to initialize its tracing subscriber and log bridge first.
+
+The GUI binary owns early EnvFilter, formatting and optional QA-log layers so startup services
+share the same subscriber as the eventual Bevy app. It selects External instead of asking Bevy
+to install a second process-global logger. This does not inspect global state, retry logging
+initialization or hide logger errors with filters. Headless/relay code choosing its own plugin
+group is unaffected.
+
+Pinned Bevy 0.18.1 `bevy_internal/src/default_plugins.rs` includes LogPlugin in DefaultPlugins.
+`bevy_log/src/lib.rs::LogPlugin::build` installs both LogTracer and the global tracing subscriber;
+`bevy_app/src/plugin_group.rs::PluginGroupBuilder::disable` prevents that plugin from building.
+The existing core-resource journey inspects configured plugin groups without initializing global
+subscribers or a native window, and checks that asset/window/winit/render plugins stay enabled.

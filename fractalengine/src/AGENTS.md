@@ -1649,3 +1649,12 @@ array is the CAS input; removal preserves every field of all surviving stored ro
 CheckedAnchorMetadata shares the exact checked route read/commit path with move/removal; its
 original context remains inside Undo until the asynchronous read matches. No legacy index-only
 SetAnchorCorner op is emitted by the context or ordinary Corner control after admission.
+
+
+## Process logging owner
+
+`main` installs the tracing registry with EnvFilter, formatting and optional QA-log layers before
+starting settings, identity, database, network and sync services. Its runtime AppOptions explicitly
+choose `LoggingOwnership::External` and confirmed window close. The runtime then omits Bevy's
+LogPlugin while retaining the rest of DefaultPlugins, so startup and in-app events use one process
+subscriber and QA capture remains installed. See `fe-runtime/src/AGENTS.md` Logging ownership.

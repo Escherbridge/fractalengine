@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use bevy::app::PluginGroupBuilder;
 use bevy::asset::io::AssetSourceBuilder;
 use bevy::prelude::*;
 
@@ -99,6 +100,39 @@ pub fn file_asset_root() -> std::path::PathBuf {
     }
 }
 
+/// Process-wide tracing ownership; see AGENTS.md logging-ownership.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum LoggingOwnership {
+    #[default]
+    Bevy,
+    External,
+}
+
+impl LoggingOwnership {
+    fn configure(self, plugins: PluginGroupBuilder) -> PluginGroupBuilder {
+        match self {
+            Self::Bevy => plugins,
+            Self::External => plugins.disable::<bevy::log::LogPlugin>(),
+        }
+    }
+}
+
+/// Runtime GUI policies; existing constructors retain these defaults.
+#[derive(Debug, Clone, Copy)]
+pub struct AppOptions {
+    pub close_when_requested: bool,
+    pub logging: LoggingOwnership,
+}
+
+impl Default for AppOptions {
+    fn default() -> Self {
+        Self {
+            close_when_requested: true,
+            logging: LoggingOwnership::Bevy,
+        }
+    }
+}
+
 /// Build a full GUI application with `DefaultPlugins`, blob asset source, and
 /// the core ECS resources. The caller is responsible for adding GUI-specific
 /// plugins such as `EguiPlugin` and `FrameTimeDiagnosticsPlugin` after this
@@ -110,18 +144,26 @@ pub fn build_app(handles: BevyHandles) -> App {
 /// [`build_app`] with an explicit primary-window description (the GUI binary's
 /// frameless chrome — fractalengine/src/AGENTS.md §window-chrome).
 pub fn build_app_with_window(handles: BevyHandles, primary_window: Window) -> App {
-    build_app_with_close_policy(handles, primary_window, true)
+    build_app_with_options(handles, primary_window, AppOptions::default())
 }
 
 /// Build the editor GUI with close requests delegated to its confirmation UI.
 pub fn build_app_with_confirmed_close(handles: BevyHandles, primary_window: Window) -> App {
-    build_app_with_close_policy(handles, primary_window, false)
+    build_app_with_options(
+        handles,
+        primary_window,
+        AppOptions {
+            close_when_requested: false,
+            ..Default::default()
+        },
+    )
 }
 
-fn build_app_with_close_policy(
+/// Build a GUI app with explicit window-close and process-logging policies.
+pub fn build_app_with_options(
     handles: BevyHandles,
     primary_window: Window,
-    close_when_requested: bool,
+    options: AppOptions,
 ) -> App {
     let mut app = App::new();
 
@@ -149,18 +191,17 @@ fn build_app_with_close_policy(
     // (src/AGENTS.md §packaged-layout).
     let asset_root = file_asset_root();
     tracing::info!("Bevy AssetPlugin file_path = {}", asset_root.display());
-    app.add_plugins(
-        DefaultPlugins
-            .set(bevy::asset::AssetPlugin {
-                file_path: asset_root.to_string_lossy().into_owned(),
-                ..Default::default()
-            })
-            .set(bevy::window::WindowPlugin {
-                primary_window: Some(primary_window),
-                close_when_requested,
-                ..Default::default()
-            }),
-    );
+    let plugins = DefaultPlugins
+        .set(bevy::asset::AssetPlugin {
+            file_path: asset_root.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
+        .set(bevy::window::WindowPlugin {
+            primary_window: Some(primary_window),
+            close_when_requested: options.close_when_requested,
+            ..Default::default()
+        });
+    app.add_plugins(options.logging.configure(plugins));
 
     app.add_plugins(crate::diag15m::Diag15MPlugin); // DIAG-15M
 
@@ -842,6 +883,19 @@ mod tests {
 
     #[test]
     fn setup_core_systems_inserts_resources() {
+        assert_eq!(AppOptions::default().logging, LoggingOwnership::Bevy);
+        assert!(AppOptions::default().close_when_requested);
+        for (ownership, expects_log_plugin) in [
+            (LoggingOwnership::Bevy, true),
+            (LoggingOwnership::External, false),
+        ] {
+            let plugins = ownership.configure(DefaultPlugins.build());
+            assert_eq!(plugins.enabled::<bevy::log::LogPlugin>(), expects_log_plugin);
+            assert!(plugins.enabled::<bevy::asset::AssetPlugin>());
+            assert!(plugins.enabled::<bevy::window::WindowPlugin>());
+            assert!(plugins.enabled::<bevy::winit::WinitPlugin>());
+            assert!(plugins.enabled::<bevy::render::RenderPlugin>());
+        }
         let ch = crate::channels::ChannelHandles::new();
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
