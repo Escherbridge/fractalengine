@@ -186,7 +186,7 @@ pub(crate) async fn get_entity_details_handler(
     let scope = prepared.scope.clone();
     let role = prepared.role.to_string();
     let parts = crate::parse_scope(&scope)?;
-    let result_index = prepared.guards.len();
+    let result_index = prepared.guards.len() + 1;
     let (table, id) = table_identity(entity_type);
     let columns = match entity_type {
         EntityType::Verse => "name, default_access",

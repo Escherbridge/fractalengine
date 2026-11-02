@@ -1622,5 +1622,7 @@ assert an actor. The read retains missing default access as absent and returns
 only valid viewer/none values, optional description, actual name and scope.
 Fields are bounded at 64 KiB. Failure returns a correlated static unavailable
 message; detailed database errors remain in local logs. The response index is
-the number of preceding guard statements: pinned SurrealDB's executor does not
-return BEGIN, but does return COMMIT after the SELECT.
+the number of preceding guard statements plus one: pinned SurrealDB emits a
+NONE result for BEGIN at index zero, then each guard, SELECT and COMMIT. The
+SDK retains those indexes. Existing production-dispatcher settings journeys
+assert the selected fields, so an empty guard result cannot count as readback.
