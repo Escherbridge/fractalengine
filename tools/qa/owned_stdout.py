@@ -114,7 +114,7 @@ def context(lease, root, pass_id, run_id, checkpoint, live):
         require(not current.get("restart"), "restarted app cannot use the original lifetime's stdout")
     if live:
         lease.live_process(identity)
-    file = lease.file(source)
+    file = lease.file(source, active_writer=True)
     binding = {"pass_id": pass_id, "run_id": run_id, "checkpoint": checkpoint,
         "process_identity": identity, "source_path": str(source.relative_to(root)),
         "source_identity": file.identity(), "stage_commit": manifest["source_commit"],

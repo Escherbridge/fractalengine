@@ -18,6 +18,7 @@ sys.path.insert(0, str(tools))
 from layout_check import analyze
 from owned_stdout import context, digest, prefix_hash, window_projection
 from owned_stdout_windows import WindowsLease
+from coverage import artifact, evidence_object
 
 identity = {"pass_id": "fixture", "run_id": "offline-owned-fixture"}
 before = {"camera": {"pose": {"position": [0, 1, 2]}}, "hierarchy": {"verses": []}}
@@ -183,6 +184,7 @@ stdout_cases = [("stdout-info", True), ("stdout-reviewed-warning", True), ("stdo
     ("stdout-missing-warning", False), ("stdout-unreviewed-warning", False), ("stdout-truncated", False),
     ("stdout-replaced", False), ("stdout-prefix-modified", False), ("stdout-restarted", False),
     ("stdout-forged-liveness", False), ("stdout-forged-file-id", False), ("stdout-forged-projection", False),
+    ("stdout-projection-invalid-shape", False), ("stdout-projection-omits-warning", False),
     ("stdout-unclassified-line", False), ("stdout-partial-line", False), ("stdout-oversized", False),
     ("stdout-input-on", False), ("stdout-wrong-path", False), ("stdout-wrong-executable", False),
     ("stdout-mixed-ring", False), ("stdout-not-os", False), ("stdout-foreign-begin", False)]
@@ -203,7 +205,8 @@ for label, expected in stdout_cases:
     current_path = run / "current.json"
     current_path.write_text(json.dumps(current), encoding="utf-8")
     prefix = b"2026-11-02T12:00:00.000000Z INFO qa_fixture: baseline\n"
-    level = "WARN" if label in {"stdout-reviewed-warning", "stdout-missing-warning", "stdout-unreviewed-warning"} else "INFO"
+    level = "WARN" if label in {"stdout-reviewed-warning", "stdout-missing-warning", "stdout-unreviewed-warning",
+                                "stdout-projection-omits-warning"} else "INFO"
     raw = ("2026-11-02T12:00:01.000000Z " + level + " qa_fixture: synthetic private-message sentinel\n").encode()
     source_path = run / "stdout.log"
     source_path.write_bytes(prefix + raw)
@@ -215,6 +218,7 @@ for label, expected in stdout_cases:
         end = {**binding, "schema": "fe-qa-owned-stdout-window-v1", "observed_live": True,
             "offset": len(prefix + raw), "prefix_sha256": prefix_hash(pinned, len(prefix + raw)),
             "raw_window_sha256": digest(raw), "projection": window_projection(raw)}
+    original_warnings = copy.deepcopy(end["projection"]["warnings"])
     if label == "stdout-truncated":
         source_path.write_bytes(prefix)
     elif label == "stdout-replaced":
@@ -230,6 +234,10 @@ for label, expected in stdout_cases:
         end["source_identity"] = {"volume": "00000000", "file_id": "0000000000000000"}
     elif label == "stdout-forged-projection":
         end["projection"]["lines"][0]["message"] = "unredacted synthetic message"
+    elif label == "stdout-projection-invalid-shape":
+        end["projection"] = {"lines": "invalid", "warnings": []}
+    elif label == "stdout-projection-omits-warning":
+        end["projection"]["warnings"] = []
     elif label in {"stdout-unclassified-line", "stdout-partial-line"}:
         raw = b"unclassified fixture output\n" if label.endswith("unclassified-line") else raw[:-1]
         source_path.write_bytes(prefix + raw)
@@ -259,7 +267,7 @@ for label, expected in stdout_cases:
         "checkpoints": [{"id": checkpoint, "family": "F114", "reachability": reachability}],
         "gold_tasks": {"G9": [checkpoint]}}
     warnings = [{**entry, "expected": True, "reason": "known synthetic offline warning"}
-                for entry in end["projection"]["warnings"]]
+                for entry in original_warnings]
     if label == "stdout-missing-warning":
         warnings = []
     elif label == "stdout-unreviewed-warning":
@@ -287,6 +295,35 @@ for label, expected in stdout_cases:
         "passed": completed.returncode == (0 if expected else 2), "command": command,
         "stdout": completed.stdout, "stderr": completed.stderr,
         "limit": "synthetic final-audit fixtures; live begin/end process checks remain separately required"})
+for label, replacement, expected in [("exception-snapshot-control", False, True),
+        ("exception-substituted-after-artifact-hash", True, False)]:
+    root = output / label
+    evidence = root / "qa" / "passes" / "fixture"
+    evidence.mkdir(parents=True)
+    record = {**identity, "checkpoint": "F112.gate-off"}
+    valid = {**copy.deepcopy(gate_refusal), "checkpoint": "F112.gate-off"}
+    initial = copy.deepcopy(valid)
+    if replacement:
+        initial["response"] = {"status": 200, "body": {"ok": True}}
+    original = json.dumps(initial, sort_keys=True).encode()
+    source = evidence / "refusal.json"
+    source.write_bytes(original)
+    declaration = {"path": "qa/passes/fixture/refusal.json", "kind": "api", "sha256": digest(original)}
+    record["artifacts"] = [declaration]
+    artifact(root, evidence, declaration)
+    # Deterministic interleaving: replace bytes after the old hash step, before parsing.
+    if replacement:
+        source.write_text(json.dumps(valid, sort_keys=True), encoding="utf-8")
+    accepted, detail = True, "parsed the declared snapshot"
+    try:
+        evidence_object(root, record, declaration["path"], {"api"})
+    except ValueError as error:
+        accepted, detail = False, str(error)
+    (root / "initial.json").write_bytes(original)
+    (root / "record.json").write_text(json.dumps(record), encoding="utf-8")
+    results.append({"case": label, "expected_accepted": expected, "accepted": accepted,
+                    "passed": accepted == expected, "detail": detail,
+                    "boundary": "actual artifact hash then actual evidence_object; no timing-dependent race"})
 summary = {"scope": "offline synthetic validator fixtures; zero application checkpoint coverage",
            "passed": all(result["passed"] for result in results), "cases": results}
 (output / "results.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")

@@ -337,6 +337,11 @@ negative exception. Their watermark is exactly
 `kind:"expected_input_disabled"`, `refusal_artifact` and `no_effect_artifact`.
 Both paths refer to declared hash-validated current-pass artifacts, at most64KiB
 each; each JSON object repeats the record's `pass_id`, `run_id`, `checkpoint`.
+The exact bounded byte snapshot being parsed is hashed against its unique
+declaration again; an earlier artifact hash is never reused to trust a later
+unchecked read. On Windows the snapshot also pins its ancestry and file with
+read-only sharing. Replacing the file after initial artifact validation cannot
+substitute an unhashed refusal payload.
 The diagnostic artifact has schema `fe-qa-gate-off-refusal-v1`, the exact request
 `{method:"GET",path:"/api/v1/debug/logs"}` and raw response
 `{status:403,body:{ok:false,code:"qa_gate_refused",error:"QA diagnostics endpoint is disabled on this node"}}`.
@@ -368,8 +373,12 @@ and creation time, and recheck liveness before publication. They never enumerate
 processes, change focus, inject input, read tokens or change application state.
 
 The Windows-only file adapter pins every existing ancestor with native handles,
-rejects reparse points, aliases, UNC/ADS/device/reserved paths and wrong types,
-and denies delete sharing. The source is only current.json's canonical
+rejects reparse points, aliases, UNC/ADS/device/reserved paths and wrong types.
+Directories, immutable receipts and executables permit FILE_SHARE_READ only,
+denying both write and delete sharing. Every child's parent is pinned before
+its absolute CreateFile call. Only the existing active stdout file explicitly
+permits FILE_SHARE_READ|FILE_SHARE_WRITE for the logger; it still denies delete
+sharing. A cached path cannot switch sharing roles. The source is only current.json's canonical
 `<run>/stdout.log` or `<run>/starts/<current-attempt>/stdout.log`. Volume/file ID,
 process lifetime and source/stage binding must remain equal. Each source prefix
 scan is capped at64MiB; the captured byte window is at most1MiB. Offsets cannot
@@ -441,6 +450,11 @@ prefix, changed lifetime, forged file/projection, partial/unclassified lines,
 bounds, input-on, wrong source/executable, mixed ring and non-OS cases. Those
 fixtures deliberately skip live-process admission and use no running app. Root
 still needs separate live begin/end and exact-lifetime refusal evidence.
+The same packet interleaves actual artifact hashing, byte substitution and the
+actual refusal evidence parser without a timing-dependent race. The unchanged
+snapshot must parse, while a replacement containing a plausible gate-off refusal
+must fail its declared hash. Malformed projection shapes and omitted warning
+projections also refuse through the actual strict CLI.
 
 ### Degenerate nested scroll observations
 

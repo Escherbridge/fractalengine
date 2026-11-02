@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -82,11 +83,33 @@ def validate_context(checkpoint, record, args):
 
 def evidence_object(root, record, path, kinds):
     require(nonempty(path), "log exception needs an evidence path")
-    require(any(item["path"] == path and item["kind"] in kinds for item in record["artifacts"]),
+    declared = [item for item in record["artifacts"] if item["path"] == path and item["kind"] in kinds]
+    require(len(declared) == 1,
             "log exception must reference a declared, hash-validated artifact")
-    source = root / path
-    require(source.stat().st_size <= 65536, "log exception evidence exceeds 64 KiB")
-    value = read_json(source.read_text(encoding="utf-8-sig"))
+    relative = Path(path)
+    require(not relative.is_absolute() and not relative.drive and ".." not in relative.parts,
+            "log exception path must be relative to the evidence root")
+    evidence_dir = root / "qa" / "passes" / record["pass_id"]
+    source = root / relative
+    require(evidence_dir.resolve() == evidence_dir.absolute(), "log exception pass directory must not be redirected")
+    require(source.resolve().is_relative_to(evidence_dir.resolve()), "log exception is outside this pass")
+    if os.name == "nt":
+        from owned_stdout_windows import WindowsLease
+        with WindowsLease() as lease:
+            pinned = lease.file(source)
+            size = pinned.size()
+            require(size <= 65536, "log exception evidence exceeds 64 KiB")
+            raw = pinned.read(0, size)
+    else:
+        with source.open("rb") as handle:
+            raw = handle.read(65537)
+    require(len(raw) <= 65536, "log exception evidence exceeds 64 KiB")
+    expected_hash = declared[0].get("sha256")
+    require(isinstance(expected_hash, str) and re.fullmatch(r"[a-fA-F0-9]{64}", expected_hash),
+            "log exception needs a declared SHA256")
+    require(hashlib.sha256(raw).hexdigest().lower() == expected_hash.lower(),
+            "log exception parsed bytes differ from the declared artifact hash")
+    value = read_json(raw.decode("utf-8-sig"))
     require(isinstance(value, dict), "log exception evidence must be an object")
     for key in ("pass_id", "run_id", "checkpoint"):
         require(value.get(key) == record.get(key), "log exception evidence has foreign " + key)

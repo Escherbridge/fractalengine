@@ -89,7 +89,7 @@ class WindowsLease:
         for name, (arguments, result) in signatures.items():
             function = getattr(self.api, name)
             function.argtypes, function.restype = arguments, result
-        self.handles, self.files, self.processes = [], {}, []
+        self.handles, self.files, self.roles, self.processes = [], {}, {}, []
 
     def __enter__(self):
         return self
@@ -98,16 +98,22 @@ class WindowsLease:
         for handle in reversed(self.handles):
             self.api.CloseHandle(handle)
 
-    def _open(self, path, directory=False, create=False):
+    def _open(self, path, directory=False, create=False, active_writer=False):
         path = canonical(path)
         key = os.path.normcase(str(path))
+        if active_writer and (directory or create):
+            raise ValueError("write sharing is reserved for the existing active stdout file")
+        if path.parent != path and os.path.normcase(str(path.parent)) not in self.files:
+            raise ValueError("owned path parent must be pinned before opening the child")
         if key in self.files:
             if create:
                 raise ValueError("log artifact already exists")
+            if self.roles[key] != (directory, active_writer):
+                raise ValueError("a pinned path cannot change its sharing role")
             return self.files[key]
         access = 0xC0000000 if create else 0x80000000
-        # Allow the existing log writer, but deny deletion/renaming while pinned.
-        share = 1 if create else 3
+        # Only the active stdout writer needs FILE_SHARE_WRITE.
+        share = 3 if active_writer else 1
         flags = 0x00200000 | (0x02000000 if directory else 0)
         handle = self.api.CreateFileW(str(path), access, share, None, 1 if create else 3, flags, None)
         if handle in (None, ctypes.c_void_p(-1).value):
@@ -125,13 +131,14 @@ class WindowsLease:
         if os.path.normcase(final) != key:
             raise ValueError("owned path resolved through an alias")
         self.files[key] = pinned
+        self.roles[key] = (directory, active_writer)
         return pinned
 
-    def file(self, path, create=False):
+    def file(self, path, create=False, active_writer=False):
         path = canonical(path)
         for parent in reversed(path.parents):
             self._open(parent, directory=True)
-        return self._open(path, create=create)
+        return self._open(path, create=create, active_writer=active_writer)
 
     def live_process(self, identity):
         if (not isinstance(identity, dict) or type(identity.get("pid")) is not int or not 0 < identity["pid"] <= 0xFFFFFFFF
