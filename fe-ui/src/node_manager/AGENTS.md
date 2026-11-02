@@ -929,9 +929,9 @@ ToolState owns session-local ToolSnapSettings. Grid, angle and scale snapping de
 The entity gimbal uses these helpers during the existing live drag. Release still captures the original full Transform and enters the existing checked Undo commit once; snapping does not mutate journal history or send a second write. Individual path-point/segment gimbals keep their separate existing Pen/Paths snap contract; these object controls do not imply universal path snapping. The extended drag-restore journey exercises numeric boundary cases and an actual held gimbal followed by release capture. It is authored source until the sole builder executes it.
 
 
-## ?terrain-authoring
+## terrain-authoring
 
-TerrainAuthoringState owns session intent, not navigation authority. A placement captures full Verse/Fractal/Petal IDs and the loaded map?s Petal, scale, tilesets and origin. Its private TerrainAuthoringCommit wraps an ordinary terrain UiAction; the dispatcher rechecks current navigation/map identity, advisory Editor ability and finite bounded geometry immediately before using it. There is no deserializer or new API request shape. The database still derives its real actor and stored permissions.
+TerrainAuthoringState owns session intent, not navigation authority. A placement captures full Verse/Fractal/Petal IDs and the loaded map's Petal, scale, tilesets and origin. Its private TerrainAuthoringCommit wraps an ordinary terrain UiAction; the dispatcher rechecks current navigation/map identity, advisory Editor ability and finite bounded geometry immediately before using it. There is no deserializer or new API request shape. The database still derives its real actor and stored permissions.
 
 Circle/rectangle and proposal buttons arm one captured placement; only a fresh viewport click queues persistence. The preview and commit share shape_at. Polygon clicks append at most256 meter-space vertices to SculptToolState.region_draft; Enter/double-click/Close requests a nonzero polygon, Backspace removes one vertex, and Escape/right-click/tool/navigation/map/access change cancels. The staged Escape ladder treats a pending placement/draft as a gesture. Draft markers and segments use the existing always-visible gimbal overlay. Ground hits retain the existing XZ ground-plane picking convention shared by Brush and Measure.
 

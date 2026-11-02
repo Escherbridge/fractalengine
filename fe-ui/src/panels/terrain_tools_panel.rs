@@ -1,4 +1,4 @@
-//! Proposal placement palette and sculpt controls; see panels/AGENTS.md ?terrain-authoring.
+//! Proposal placement palette and sculpt controls; see panels/AGENTS.md section terrain-authoring.
 
 use bevy_egui::egui;
 
@@ -107,7 +107,7 @@ fn render_world_scale_chip(ui: &mut egui::Ui, world_scale: f64) {
     );
 }
 
-/// Arm a captured proposal for one viewport click; see panels/AGENTS.md ?terrain-authoring.
+/// Arm a captured proposal for one viewport click; see panels/AGENTS.md section terrain-authoring.
 pub(crate) fn render_controls_and_emit(
     ui: &mut egui::Ui,
     tool_panel: &mut ToolPanelState,

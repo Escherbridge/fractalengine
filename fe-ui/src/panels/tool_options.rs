@@ -1,4 +1,4 @@
-//! Active-tool options dispatcher; see panels/AGENTS.md ?tool-options.
+//! Active-tool options dispatcher; see panels/AGENTS.md section tool-options.
 
 use bevy_egui::egui;
 
@@ -59,7 +59,7 @@ pub(crate) fn arm_has_live_controls(arm: ToolOptionsArm) -> bool {
     )
 }
 
-/// Render the active tool?s controls through their shared state.
+/// Render the active tool's controls through their shared state.
 pub(crate) fn render(
     ui: &mut egui::Ui,
     active_tool: Tool,
@@ -133,19 +133,19 @@ fn render_pen_picker(ui:&mut egui::Ui,path:&mut PathEditorState,ui_mgr:&mut UiMa
     ui.label("Path in the active Petal");
     let Some(petal)=petal_id.and_then(|id|tree.find_petal(id)) else {ui.label("Open a Petal before choosing a path.");return};
     if ui.add_enabled(!path.tracks_pending,egui::Button::new("Refresh paths")).named(ui,"Refresh Pen path picker").clicked(){ui_mgr.push_action(UiAction::PathQueryTracks{petal_id:petal.id.clone()});}
-    if path.tracks_pending {ui.label("Loading paths?");}
+    if path.tracks_pending {ui.label("Loading paths...");}
     for track in path.tracks.iter().filter(|row|petal.nodes.iter().any(|node|node.id==row.node_id)).take(256) {
         if ui.add(egui::Button::selectable(path.editing_track_id.as_deref()==Some(track.node_id.as_str()),&track.name).truncate()).named(ui,format_args!("Edit Pen path {}",track.name)).on_hover_text(&track.node_id).clicked(){ui_mgr.push_action(UiAction::PathSelectTrack{track_node_id:track.node_id.clone()});}
     }
     if !path.tracks.iter().any(|row|petal.nodes.iter().any(|node|node.id==row.node_id))&&!path.tracks_pending {ui.label("No paths loaded. Refresh, or click the viewport with Pen to create one.");}
     if path.editing_track_id.as_deref().is_some_and(|id|petal.nodes.iter().any(|node|node.id==id)) {
-        if path.points_pending {ui.label("Loading path points?");return}
+        if path.points_pending {ui.label("Loading path points...");return}
         let unit=if world_scale.is_finite()&&world_scale>0.0 {"m"} else {"world units"};
         for (index,point) in path.points.iter().take(256).enumerate() {
             let [x,y,z]=point.position.map(|v|crate::geometry::world_to_meters(v,world_scale));
             if ui.add(egui::Button::selectable(path.selected_point==Some(index),format!("Point {}: {x:.2}, {y:.2}, {z:.2} {unit}",index+1)).truncate()).named(ui,format_args!("Select Pen path point {}",index+1)).clicked(){path.selected_point=Some(index);path.selected_segment=None;}
         }
-        if path.points.len()>256 {ui.label("First256 points shown; Data ? Paths contains the complete editor.");}
+        if path.points.len()>256 {ui.label("First 256 points shown; Data > Paths contains the complete editor.");}
     }
 }
 
@@ -312,7 +312,7 @@ fn render_sculpt_shape_picker(
         if authoring.shape_armed(){ui.label("Click the viewport to place the captured shape. Escape or Cancel stops placement.");}
     }
     let area=terrain_tools_panel::sculpt_footprint_area(sculpt);
-    ui.label(format!("Footprint area ? {area:.1} m?"));
+    ui.label(format!("Footprint area \u{2248} {area:.1} m\u{b2}"));
     if ui.add_enabled(authoring.is_active()||!sculpt.region_draft.is_empty(),egui::Button::new("Cancel / clear draft")).named(ui,"Cancel earthwork placement or polygon draft").clicked(){authoring.cancel();sculpt.region_draft.clear();}
     if !can_place {ui.label("Editor access and an enabled, loaded map in the active Petal are required.");}
 }
