@@ -573,6 +573,8 @@ pub enum DbCommand {
     },
     /// Wipe all tables, re-apply schema, and re-seed default data.
     ResetDatabase,
+    /// Correlated local development reset; host admission is captured outside the command.
+    ResetDevelopmentDatabase { request_id: String },
     /// Persist a transform change for a node (position/rotation/scale).
     UpdateNodeTransform {
         node_id: String,
@@ -1325,11 +1327,13 @@ pub enum DbResult {
         verse_id: String,
         verse_name: String,
     },
-    /// Database was fully reset (tables wiped, schema re-applied, re-seeded).
+    /// Local database rows were cleared; reload even if restoring defaults failed.
     DatabaseReset {
         petal_name: String,
         rooms: Vec<String>,
     },
+    /// Exact local reset outcome; a failed seed can follow a committed clear.
+    DevelopmentDatabaseReset { request_id: String, cleared: bool, error: Option<String> },
     // --- Entity Settings results ---
     EntityDetailsLoaded {
         entity_type: EntityType,

@@ -483,6 +483,7 @@ pub fn spawn_db_thread_shared(
     );
     let (startup_tx, startup_rx) =
         std::sync::mpsc::sync_channel::<Result<repo::Db, DbInitError>>(0);
+    let development_reset_permit = admin::DevelopmentResetPermit::capture();
     let handle = std::thread::spawn(move || {
         // The blob store handle is owned by the DB thread so future handlers
         // (Phase B: import refactor, Phase C: migration) can write to it
@@ -832,10 +833,23 @@ pub fn spawn_db_thread_shared(
                             Err(e) => send_result(&tx, DbResult::JoinVerseFailed { error: format!("Join verse failed: {e}") }),
                         }
                     }
-                    Ok(DbCommand::ResetDatabase) => {
-                        match handlers::admin::reset_database_handler(&db, &blob_store, &local_did).await {
-                            Ok((petal_name, rooms)) => send_result(&tx, DbResult::DatabaseReset { petal_name, rooms }),
-                            Err(e) => send_result(&tx, DbResult::Error(format!("Database reset failed: {e}"))),
+                    Ok(command @ (DbCommand::ResetDatabase | DbCommand::ResetDevelopmentDatabase { .. })) => {
+                        let request_id = match command {
+                            DbCommand::ResetDevelopmentDatabase { request_id } => Some(request_id),
+                            _ => None,
+                        };
+                        let outcome = handlers::admin::reset_database_handler(&db, &blob_store, &local_did, &development_reset_permit).await;
+                        let (petal_name, rooms, error) = match outcome.seed {
+                            Ok((name, rooms)) => (name, rooms, None),
+                            Err(error) => (String::new(), Vec::new(), Some(error.to_string())),
+                        };
+                        if outcome.cleared {
+                            send_result(&tx, DbResult::DatabaseReset { petal_name, rooms });
+                        }
+                        if let Some(request_id) = request_id {
+                            send_result(&tx, DbResult::DevelopmentDatabaseReset { request_id, cleared: outcome.cleared, error });
+                        } else if let Some(error) = error {
+                            send_result(&tx, DbResult::Error(format!("Database reset failed: {error}")));
                         }
                     }
                     Ok(DbCommand::UpdateNodeTransform { node_id, position, rotation, scale }) => {

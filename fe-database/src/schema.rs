@@ -934,6 +934,45 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Complete allowlist for explicit development reset; distinct from replicated projection tables.
+pub const DEVELOPMENT_RESET_TABLE_NAMES: &[&str] = &[
+    "petal",
+    "room",
+    "model",
+    "role",
+    "role_grant",
+    "role_statement_pending",
+    "local_migration_marker",
+    "op_log",
+    "verse",
+    "verse_member",
+    "fractal",
+    "node",
+    "asset",
+    "node_log",
+    "iot_reading",
+    "device_format",
+    "device_payload",
+    "observation_window_member",
+    "field_def",
+    "crate_registry",
+    "crate_entry",
+    "verified_op_log",
+    "materializer_apply_marker",
+    "scope_epoch_state",
+    "migration_shadow_ledger",
+    "canon_capability_chain",
+    "canon_sealed_artifact",
+    "canon_scope_key_index",
+    "canon_device_enrolment",
+    "observation_batch",
+    "observation_catalog_reading",
+    "observation_catalog_payload",
+    "observation_catalog_conflict",
+    "observation_hydration",
+    "api_token",
+];
+
 /// All table names, for admin operations like dump / clear.
 ///
 /// Deliberately excludes the canonical-log tables: SPEC-4 §1.4 makes the verified log the

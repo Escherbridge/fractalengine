@@ -420,3 +420,23 @@ not spawn a process or promise an automatic restart. The confirmation discloses
 unsaved requirements and pending local settings. The user must reopen the app;
 automatic cross-platform restart needs orderly DB/API/sync thread shutdown first.
 The QA launcher remains the sole automated QA lifecycle owner.
+
+
+## Development database reset gate
+
+Danger zone is visible only in debug builds or when FE_DEV_TOOLS=1 was captured
+at startup. The host permit also requires runtime quiescence. The current GUI
+has live API, DB, plugin and sync writers with no coordinated stop/invalidate
+barrier, so its permit is deliberately not runtime-ready. Controls explain that
+isolated maintenance is required; typing RESET cannot bypass that gate. Neither
+legacy ResetDatabase nor the correlated command can clear a live GUI database.
+
+The future ready host uses exact RESET plus the shared two-click confirmation,
+scoped to a continuous Settings lifetime and navigation context. It waits for the
+exact request ID; after30 seconds an unknown result remains unconfirmed and
+cannot silently retry. Late matching replies still resolve it. Clear success
+plus default-seed failure is reported as a committed clear with a restoration
+error, never as an untouched database or a successful reset. GUI clear replies
+invalidate navigation and selection before reloading. They do not erase peers,
+identity, preferences or blob files. Root must finish actual API EntityStore,
+sync catalog and plugin/session invalidation before admitting a ready live host.

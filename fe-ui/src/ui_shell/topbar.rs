@@ -10,7 +10,7 @@
 use bevy::ecs::system::NonSendMarker;
 use bevy::math::CompassOctant;
 use bevy::prelude::{
-    Commands, Entity, MessageReader, Messages, Query, ResMut, Resource, SystemSet, With,
+    Commands, Entity, MessageReader, Messages, Query, Res, ResMut, Resource, SystemSet, With,
 };
 use bevy::window::{PrimaryWindow, Window, WindowCloseRequested};
 use bevy_egui::egui;

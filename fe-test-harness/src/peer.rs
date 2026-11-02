@@ -182,6 +182,7 @@ impl TestPeer {
                                                    // so clone the seed bytes.
         let kp_seed = keypair.seed_bytes();
         let db_local_did = local_did.clone();
+        let development_reset_permit = fe_database::admin::DevelopmentResetPermit::capture();
         let db_handle = std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -443,7 +444,7 @@ impl TestPeer {
                         }
                         Ok(DbCommand::ResetDatabase) => {
                             match async {
-                                fe_database::admin::clear_all_tables(&db).await?;
+                                fe_database::admin::clear_for_development_reset(&db, &db_local_did, &development_reset_permit).await?;
                                 seed_test_data(&db, &db_local_did).await
                             }
                             .await
@@ -460,6 +461,11 @@ impl TestPeer {
                                         )))
                                         .ok();
                                 }
+                            }
+                        }
+                        Ok(DbCommand::ResetDevelopmentDatabase { request_id }) => {
+                            if db_result_tx.send(DbResult::DevelopmentDatabaseReset { request_id, cleared: false, error: Some("Reset is unavailable in a running test peer".into()) }).is_err() {
+                                tracing::warn!("DB result channel closed during refused development reset");
                             }
                         }
                         Ok(DbCommand::UpdateNodeTransform { .. }) => {

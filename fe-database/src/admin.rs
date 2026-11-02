@@ -1,5 +1,90 @@
 use crate::repo::Db;
 
+/// Host-captured development capability; not serialized or supplied by commands.
+#[derive(Debug, Clone)]
+pub struct DevelopmentResetPermit {
+    enabled: bool,
+    runtime_ready: bool,
+}
+
+impl DevelopmentResetPermit {
+    pub fn capture() -> Self {
+        Self { enabled: cfg!(debug_assertions) || std::env::var("FE_DEV_TOOLS").as_deref() == Ok("1"), runtime_ready: false }
+    }
+
+    pub fn disabled() -> Self { Self { enabled: false, runtime_ready: false } }
+
+    pub fn is_enabled(&self) -> bool { self.enabled }
+
+    /// Trusted maintenance hosts only: the caller owns an isolated, unopened-to-peers store.
+    pub fn capture_for_offline_store() -> Self {
+        Self { runtime_ready: true, ..Self::capture() }
+    }
+
+    pub fn is_runtime_ready(&self) -> bool { self.runtime_ready }
+
+}
+
+/// A host-admitted immutable reset intention fenced again at commit.
+pub struct DevelopmentResetPlan {
+    sql: String,
+    verses: Vec<serde_json::Value>,
+    table_count: usize,
+}
+
+impl DevelopmentResetPlan {
+    pub async fn commit(self, db: &Db) -> anyhow::Result<()> {
+        db.query(self.sql).bind(("reset_verses", self.verses)).await?.check()?;
+        tracing::info!(table_count = self.table_count, "Development local database rows cleared atomically");
+        Ok(())
+    }
+}
+
+/// Atomically clear all known local database rows after global Owner admission.
+pub async fn clear_for_development_reset(
+    db: &Db,
+    local_did: &str,
+    permit: &DevelopmentResetPermit,
+) -> anyhow::Result<()> {
+    prepare_development_reset(db, local_did, permit).await?.commit(db).await
+}
+
+/// Capture global ownership and the complete allowlisted local table set.
+pub async fn prepare_development_reset(
+    db: &Db,
+    local_did: &str,
+    permit: &DevelopmentResetPermit,
+) -> anyhow::Result<DevelopmentResetPlan> {
+    anyhow::ensure!(permit.enabled, "Local database reset requires developer tools enabled at startup");
+    anyhow::ensure!(permit.runtime_ready, "Local database reset is unavailable while API and synchronization writers are running; close the app for isolated maintenance");
+    anyhow::ensure!(local_did.starts_with("did:key:") && local_did.len() > 16, "Local database reset requires a resolved node identity");
+    let mut snapshot = db.query("SELECT verse_id, created_by FROM verse ORDER BY verse_id LIMIT 1025; INFO FOR DB;")
+        .await?.check()?;
+    let verses: Vec<serde_json::Value> = snapshot.take(0)?;
+    let metadata: serde_json::Value = snapshot.take(1)?;
+    anyhow::ensure!(verses.len() <= 1024, "Local database reset exceeds the 1024-Verse safety bound");
+    let mut identities = std::collections::BTreeSet::new();
+    for verse in &verses {
+        let verse_id = verse["verse_id"].as_str().filter(|id| !id.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("Local database reset found unknown Verse identity"))?;
+        anyhow::ensure!(identities.insert(verse_id), "Local database reset found ambiguous Verse identity");
+        anyhow::ensure!(verse["created_by"].as_str() == Some(local_did), "Local database reset requires this node to own every stored Verse");
+    }
+    let tables = metadata["tables"].as_object().ok_or_else(|| anyhow::anyhow!("Local database reset cannot verify the table inventory"))?;
+    anyhow::ensure!(tables.len() <= 64, "Local database reset table inventory is too large");
+    for name in tables.keys() {
+        anyhow::ensure!(crate::schema::DEVELOPMENT_RESET_TABLE_NAMES.contains(&name.as_str()), "Local database reset refuses an unknown table");
+    }
+    let mut sql = String::from("BEGIN TRANSACTION; IF (SELECT verse_id, created_by FROM verse ORDER BY verse_id) != $reset_verses { THROW 'Local database ownership changed'; };
+");
+    for name in tables.keys() { sql.push_str(&format!("DELETE FROM {name};
+")); }
+    for name in tables.keys() { sql.push_str(&format!("IF array::len((SELECT VALUE id FROM {name} LIMIT 1)) != 0 {{ THROW 'Local database reset left rows'; }};
+")); }
+    sql.push_str("COMMIT TRANSACTION;");
+    Ok(DevelopmentResetPlan { sql, verses, table_count: tables.len() })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KnownTable {
     Petal,

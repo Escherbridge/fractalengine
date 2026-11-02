@@ -105,6 +105,36 @@ async fn asset_row_can_omit_data_field_when_content_hash_set() {
     let rows: Vec<serde_json::Value> = res.take(0).expect("take");
     assert_eq!(rows.len(), 1, "expected one row");
     assert_eq!(rows[0]["content_hash"].as_str(), Some("deadbeef"));
+
+    use fe_database::admin::{clear_for_development_reset, DevelopmentResetPermit};
+    let owner = "did:key:z6Mk-reset-owner-fixture";
+    let offline = DevelopmentResetPermit::capture_for_offline_store();
+    assert!(clear_for_development_reset(&db, owner, &DevelopmentResetPermit::disabled()).await.is_err());
+    let running = clear_for_development_reset(&db, owner, &DevelopmentResetPermit::capture()).await.unwrap_err();
+    assert!(running.to_string().contains("writers are running"));
+    db.query("CREATE verse SET verse_id='reset-foreign', name='Foreign', created_by='did:key:z6Mk-foreign-owner-fixture', created_at='2026-11-02'").await.unwrap().check().unwrap();
+    assert!(clear_for_development_reset(&db, owner, &offline).await.unwrap_err().to_string().contains("own every"));
+    let mut unchanged = db.query("SELECT * FROM asset WHERE asset_id='a1'").await.unwrap().check().unwrap();
+    assert_eq!(unchanged.take::<Vec<serde_json::Value>>(0).unwrap().len(), 1);
+    db.query("UPDATE verse SET created_by=$owner").bind(("owner", owner.to_string())).await.unwrap().check().unwrap();
+    db.query("DEFINE TABLE unexpected_reset_fixture SCHEMALESS").await.unwrap().check().unwrap();
+    assert!(clear_for_development_reset(&db, owner, &offline).await.unwrap_err().to_string().contains("unknown table"));
+    db.query("REMOVE TABLE unexpected_reset_fixture").await.unwrap().check().unwrap();
+    fe_database::api_token_store::apply_api_token_schema(&db).await.unwrap();
+    db.query("CREATE node_log SET log_id='reset-log', node_id='reset-node', hlc_timestamp=1, op='baseline', source_did=$owner, payload={nested:{value:1}}, row_version=1, created_at='2026-11-02'; CREATE api_token SET jti='reset-token', scope='verse:reset-foreign', max_role='viewer', sub=$owner, created_at='2026-11-02', expires_at='2026-11-03', revoked=false; CREATE canon_sealed_artifact SET artifact_id_hex='reset-private', content_class='sealed_artifact', content_bytes='Zml4dHVyZQ=='; CREATE verified_op_log SET op_id_hex='reset-canon', envelope_bytes='Zml4dHVyZQ==', operation_kind=1, branch_id='reset', author_public_key_hex='fixture', wall_ms=1, hlc_counter=0")
+        .bind(("owner", owner.to_string())).await.unwrap().check().unwrap();
+    let admitted = fe_database::admin::prepare_development_reset(&db, owner, &offline).await.unwrap();
+    db.query("UPDATE verse SET created_by='did:key:z6Mk-foreign-owner-fixture'").await.unwrap().check().unwrap();
+    assert!(admitted.commit(&db).await.is_err(), "changed global ownership must invalidate the captured plan");
+    let mut retained = db.query("SELECT * FROM asset; SELECT * FROM api_token; SELECT * FROM canon_sealed_artifact; SELECT * FROM verified_op_log; SELECT * FROM node_log").await.unwrap().check().unwrap();
+    for slot in 0..5 { assert_eq!(retained.take::<Vec<serde_json::Value>>(slot).unwrap().len(), 1, "refusal must preserve each stored plane"); }
+    db.query("UPDATE verse SET created_by=$owner").bind(("owner", owner.to_string())).await.unwrap().check().unwrap();
+    clear_for_development_reset(&db, owner, &offline).await.unwrap();
+    for table in fe_database::schema::DEVELOPMENT_RESET_TABLE_NAMES {
+        let mut check = db.query(format!("SELECT VALUE id FROM {table} LIMIT 1")).await.unwrap().check().unwrap();
+        assert!(check.take::<Vec<serde_json::Value>>(0).unwrap().is_empty(), "reset retained {table}");
+    }
+    clear_for_development_reset(&db, owner, &offline).await.unwrap();
 }
 
 #[tokio::test]

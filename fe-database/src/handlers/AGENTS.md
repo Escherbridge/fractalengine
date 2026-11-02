@@ -73,3 +73,34 @@ bounded decoder. Changed requirements raise whole-row admission to Manager at
 each current/requested Petal scope. Unchanged requirements preserve the Editor
 floor for other Petal updates. Automatic installation/fetch, fallback rendering
 and residency policy remain separate product decisions.
+
+
+## Development reset
+
+The DB thread captures DevelopmentResetPermit before spawning; no command owns
+an enablement boolean. The live GUI and active test-peer permits are not runtime-
+ready, so both legacy and correlated reset routes refuse before store reads or
+writes. A trusted offline maintenance host may capture an offline permit only
+while it exclusively owns an isolated store with no API/sync/plugin writers.
+
+After host admission, clear_for_development_reset requires a resolved local DID,
+at most1024 unique stored Verse identities and literal creator ownership of
+EVERY Verse. ZeroVerse stores require the same developer gate. The immutable prepared intention carries its SQL and exact global ownership
+snapshot with private fields; commit fences that snapshot in the clear transaction. Metadata is read through
+INFO FOR DB and every table must belong to the dedicated complete reset allowlist;
+unknown tables refuse. This list includes all generated schema tables plus
+api_token, including private and canonical history. It is intentionally separate
+from projection/admin/replication table lists. Trusted hosts must not run DDL
+concurrently. All present known tables are deleted and checked empty in ONE
+transaction. Schema definitions and external blob files remain.
+
+Seeding follows a committed clear. ResetOutcome distinguishes admission/clear
+failure from a committed clear whose default-content restoration failed. The GUI
+receives a clear notification in both latter cases and the exact correlated
+outcome; no success receipt precedes the commit. Live admission stays disabled
+until root provides coordinated writer shutdown and hot-store/catalog/session
+invalidation. The existing isolated asset schema journey now retains its original
+assertions and covers disabled/running/foreign/unknown-table refusals, unchanged
+asset data, revocation between preparation and commit preserving all five stored
+planes, ordinary history/private/token/canonical rows, complete clear and an
+empty-store repeat. This authored journey has not been executed in this lane.

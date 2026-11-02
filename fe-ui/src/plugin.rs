@@ -891,6 +891,7 @@ impl Plugin for GardenerConsolePlugin {
                 crate::settings::sync_app_settings_to_mesh_budget,
                 crate::settings::sync_app_settings_to_camera,
                 crate::settings::save_app_settings_debounced,
+                crate::settings::observe_development_reset,
                 crate::settings::clear_petal_render_override_on_nav_change,
             ),
         );

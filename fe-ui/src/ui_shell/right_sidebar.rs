@@ -304,9 +304,18 @@ pub fn render_right_sidebar(
     let portal_open = ui_mgr.portal_is_open();
     if portal_open {
         // Portal open swaps the whole right region to the portal toolbar.
-        let _ = super::modal::guarded(modal, "portal_toolbar", || {
-            portal_toolbar::right_portal_toolbar(ctx, ui_mgr);
-        });
+        if modal.disabled_panels.contains("portal_toolbar") {
+            egui::SidePanel::right("portal_toolbar_quarantine").show(ctx, |ui| {
+                ui.label("Web page controls are unavailable after an error.");
+                if ui.button("Retry web page controls").observed(ui).clicked() {
+                    modal.clear_quarantine("portal_toolbar");
+                }
+            });
+        } else {
+            let _ = super::modal::guarded(modal, "portal_toolbar", || {
+                portal_toolbar::right_portal_toolbar(ctx, ui_mgr);
+            });
+        }
         // Portal owns the region — drop a stale Maps carrier so it can't linger.
         clear_maps_carrier(ui_mgr);
         return;
@@ -321,12 +330,7 @@ pub fn render_right_sidebar(
     let Some(current_section) = section else { return; };
     let guard_key = section_guard_key(current_section);
     if modal.disabled_panels.contains(guard_key) {
-        section_chrome(ctx, state, current_section, |ui| {
-            ui.colored_label(theme::NOTICE_TEXT, format!("{} is unavailable after an error.", section_label(current_section)));
-            if ui.button("Retry section").named(ui, format_args!("Retry {} section", section_label(current_section))).clicked() {
-                modal.clear_quarantine(guard_key);
-            }
-        });
+        render_quarantined_section(ctx, state, current_section, modal);
         return;
     }
     let _ = super::modal::guarded(modal, guard_key, || match section {
@@ -435,6 +439,20 @@ pub fn render_right_sidebar(
             local_role,
         ),
         None => {}
+    });
+}
+
+fn render_quarantined_section(
+    ctx: &egui::Context,
+    state: &mut RightSidebarState,
+    section: RightSidebarSection,
+    modal: &mut super::modal::ModalManagerState,
+) {
+    section_chrome(ctx, state, section, |ui| {
+        ui.colored_label(theme::NOTICE_TEXT, format!("{} is unavailable after an error.", section_label(section)));
+        if ui.button("Retry section").named(ui, format_args!("Retry {} section", section_label(section))).clicked() {
+            modal.clear_quarantine(section_guard_key(section));
+        }
     });
 }
 
@@ -705,7 +723,7 @@ fn render_settings_section(
         } else if session.is_saved(app_settings) {
             if session.saved_at.is_some() { ui.label("Settings saved"); }
         } else {
-            ui.label("Saving settings...");
+            ui.label("Settings have unsaved changes");
         }
         if session.needs_restart(app_settings) {
             ui.label("Restart required; close and reopen FractalEngine.");
@@ -825,6 +843,65 @@ fn render_settings_section(
         );
         ui.add_space(2.0);
         render_timeseries_fabric_controls(ui, ts_settings, nav, db_tx);
+        render_development_reset(ui, session, nav, db_tx, topbar);
+    });
+}
+
+fn render_development_reset(
+    ui: &mut egui::Ui,
+    session: &mut crate::settings::SettingsSession,
+    nav: &NavigationManager,
+    db_tx: &crossbeam::channel::Sender<DbCommand>,
+    topbar: &mut super::topbar::TopbarState,
+) {
+    use crate::settings::DatabaseResetState;
+    if !session.developer_tools_enabled() { return; }
+    ui.add_space(12.0);
+    ui.separator();
+    settings_heading(ui, "Danger zone");
+    ui.label("Reset the local database, including object data, history and API token records. This node must own every stored Verse.");
+    ui.label("Identity, local preferences and cached blob files are retained. Shared peers are not erased.");
+    match &session.reset {
+        DatabaseResetState::Awaiting { .. } => { ui.label("Reset pending. Do not repeat this request."); return; }
+        DatabaseResetState::Unconfirmed { .. } => { ui.label("Reset outcome unconfirmed. Waiting for the original reply; no retry has been sent."); return; }
+        DatabaseResetState::Finished { cleared, error } => {
+            if let Some(error) = error { ui.colored_label(theme::NOTICE_TEXT, error); }
+            if *cleared {
+                ui.label("Local database cleared. Close and reopen FractalEngine before reconnecting.");
+                if ui.button("Close after database reset...").observed(ui).clicked() { topbar.close_pending = true; }
+            } else if ui.button("Dismiss reset error").observed(ui).clicked() { session.reset = DatabaseResetState::Ready; }
+            return;
+        }
+        DatabaseResetState::Ready => {}
+    }
+    let ready = session.reset_runtime_ready();
+    if !ready {
+        ui.label("Reset is unavailable while API and synchronization writers are running. Close the app for isolated developer maintenance.");
+    }
+    let scope = super::modal::confirmation_scope(ui.ctx(), "development-reset", nav.active_scope().as_deref().unwrap_or("no-active-verse"));
+    if session.reset_confirmation_scope != Some(scope.value()) {
+        session.reset_confirmation.clear();
+        session.reset_confirmation_revision = session.reset_confirmation_revision.wrapping_add(1);
+        session.reset_confirmation_scope = Some(scope.value());
+    }
+    ui.add_enabled_ui(ready, |ui| {
+        ui.label("Type RESET to confirm");
+        let response = ui.add(egui::TextEdit::singleline(&mut session.reset_confirmation)).named(ui, "Database reset confirmation");
+        if response.changed() { session.reset_confirmation_revision = session.reset_confirmation_revision.wrapping_add(1); }
+        let typed = session.reset_confirmation == "RESET";
+        let confirmed = ui.add_enabled_ui(typed, |ui| {
+            crate::panels::widgets::confirm_button(ui, (scope, session.reset_confirmation_revision, "reset-local-database"), "Reset local database", "Confirm reset local database", "Reset local database")
+        }).inner;
+        if confirmed && ready && typed {
+            let request_id = format!("ui-reset-{}", ulid::Ulid::new());
+            if db_tx.send(DbCommand::ResetDevelopmentDatabase { request_id: request_id.clone() }).is_ok() {
+                session.reset = DatabaseResetState::Awaiting { request_id, sent_at: ui.input(|input| input.time) };
+            } else {
+                bevy::log::warn!("DB command channel closed during local reset request");
+                session.reset = DatabaseResetState::Finished { cleared: false, error: Some("Reset request was not sent: database connection unavailable".into()) };
+            }
+            session.reset_confirmation.clear();
+        }
     });
 }
 
@@ -2490,6 +2567,42 @@ mod tests {
                 "clean focus, key release and blur cannot retry a failed draft"
             );
         }
+
+        let retry_ctx = egui::Context::default();
+        let mut quarantine = super::super::modal::ModalManagerState::default();
+        quarantine.disabled_panels.extend(["right.settings".to_owned(), "right.maps".to_owned()]);
+        let mut retry_state = st(Some(RightSidebarSection::Settings));
+        let mut retry_time = 0.0;
+        let retry_frame = |events: Vec<egui::Event>, time: &mut f64, state: &mut RightSidebarState, modal: &mut super::super::modal::ModalManagerState| {
+            *time += 0.05;
+            super::super::layout_policy::begin_frame(&retry_ctx, true);
+            let _ = retry_ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0))), time: Some(*time), events, ..Default::default() }, |ctx| {
+                super::super::layout_policy::begin_ui_pass(ctx);
+                if modal.disabled_panels.contains("right.settings") { render_quarantined_section(ctx, state, RightSidebarSection::Settings, modal); }
+            });
+            super::super::layout_policy::observations(&retry_ctx)
+        };
+        let observed = retry_frame(vec![], &mut retry_time, &mut retry_state, &mut quarantine);
+        let retry_point = observed.controls.last().unwrap().hit.center();
+        for pressed in [true, false] {
+            retry_frame(vec![egui::Event::PointerMoved(retry_point), egui::Event::PointerButton { pos: retry_point, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }], &mut retry_time, &mut retry_state, &mut quarantine);
+        }
+        assert!(!quarantine.disabled_panels.contains("right.settings"));
+        assert!(quarantine.disabled_panels.contains("right.maps"), "native Retry clears only its own section");
+
+        let reset_ctx = egui::Context::default();
+        let mut reset_session = crate::settings::SettingsSession::default();
+        reset_session.reset_confirmation = "RESET".into();
+        let mut reset_topbar = super::super::topbar::TopbarState::default();
+        super::super::layout_policy::begin_frame(&reset_ctx, true);
+        let _ = reset_ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0))), ..Default::default() }, |ctx| {
+            super::super::layout_policy::begin_ui_pass(ctx);
+            egui::CentralPanel::default().show(ctx, |ui| { render_development_reset(ui, &mut reset_session, &nav, &tx, &mut reset_topbar); });
+        });
+        let observed = super::super::layout_policy::observations(&reset_ctx);
+        assert!(!observed.controls.is_empty());
+        assert!(observed.controls.iter().all(|control| !control.allowed), "typing RESET cannot bypass runtime quiescence");
+        assert!(rx.is_empty());
     }
 
     const ALL: [RightSidebarSection; 7] = ALL_SECTIONS;

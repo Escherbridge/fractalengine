@@ -306,7 +306,7 @@ pub struct SettingsPersistence {
 }
 
 /// Disk-save receipts and the startup baseline for local Settings UI.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Debug)]
 pub struct SettingsSession {
     startup_relay: Option<String>,
     persisted: Option<AppSettings>,
@@ -314,9 +314,39 @@ pub struct SettingsSession {
     pub saved_at: Option<f64>,
     pub error: Option<String>,
     pub retry_requested: bool,
+    pub(crate) reset: DatabaseResetState,
+    pub(crate) reset_confirmation: String,
+    pub(crate) reset_confirmation_scope: Option<u64>,
+    pub(crate) reset_confirmation_revision: u64,
+    reset_permit: fe_database::admin::DevelopmentResetPermit,
+}
+
+#[derive(Debug, Default)]
+pub(crate) enum DatabaseResetState {
+    #[default]
+    Ready,
+    Awaiting { request_id: String, sent_at: f64 },
+    Unconfirmed { request_id: String },
+    Finished { cleared: bool, error: Option<String> },
+}
+
+impl Default for SettingsSession {
+    fn default() -> Self {
+        Self {
+            startup_relay: None, persisted: None, persistence_available: false,
+            saved_at: None, error: None, retry_requested: false,
+            reset: DatabaseResetState::Ready, reset_confirmation: String::new(),
+            reset_confirmation_scope: None, reset_confirmation_revision: 0,
+            reset_permit: fe_database::admin::DevelopmentResetPermit::capture(),
+        }
+    }
 }
 
 impl SettingsSession {
+    pub fn developer_tools_enabled(&self) -> bool { self.reset_permit.is_enabled() }
+
+    pub fn reset_runtime_ready(&self) -> bool { self.reset_permit.is_runtime_ready() }
+
     pub fn needs_restart(&self, settings: &AppSettings) -> bool {
         self.startup_relay.as_ref().is_some_and(|relay| relay != &settings.relay)
     }
@@ -385,6 +415,38 @@ pub fn save_app_settings_debounced(
                 warn!(path = %persistence.path.display(), error = %err, "failed to save settings");
                 session.error = Some(format!("Settings not saved: {err}"));
             }
+        }
+    }
+}
+
+/// Consume only this session's exact reset reply and retain unknown outcomes.
+pub fn observe_development_reset(
+    mut results: MessageReader<fe_runtime::messages::DbResult>,
+    mut session: ResMut<SettingsSession>,
+    time: Res<crate::notice::NoticeClock>,
+    mut ui_mgr: ResMut<crate::actions::UiManager>,
+    mut nav: ResMut<crate::navigation_manager::NavigationManager>,
+    mut node_mgr: ResMut<crate::node_manager::NodeManager>,
+) {
+    for result in results.read() {
+        if matches!(result, fe_runtime::messages::DbResult::DatabaseReset { .. }) {
+            nav.back_from_verse();
+            node_mgr.deselect();
+        }
+        let fe_runtime::messages::DbResult::DevelopmentDatabaseReset { request_id, cleared, error } = result else { continue; };
+        let pending_id = match &session.reset {
+            DatabaseResetState::Awaiting { request_id, .. } | DatabaseResetState::Unconfirmed { request_id } => Some(request_id),
+            _ => None,
+        };
+        if pending_id != Some(request_id) { continue; }
+        session.reset_confirmation.clear();
+        session.reset = DatabaseResetState::Finished { cleared: *cleared, error: error.clone() };
+        if let Some(error) = error { ui_mgr.show_error(error.clone(), time.elapsed_secs_f64()); }
+        else if *cleared { ui_mgr.show_toast("Database reset", time.elapsed_secs_f64()); }
+    }
+    if let DatabaseResetState::Awaiting { request_id, sent_at } = &session.reset {
+        if time.elapsed_secs_f64() - sent_at >= 30.0 {
+            session.reset = DatabaseResetState::Unconfirmed { request_id: request_id.clone() };
         }
     }
 }
@@ -854,6 +916,23 @@ mod tests {
         assert_eq!(load_settings_from(&path).0.entity_cap, 99);
         app.world_mut().resource_mut::<AppSettings>().relay = "disabled".into();
         assert!(app.world().resource::<SettingsSession>().needs_restart(app.world().resource::<AppSettings>()));
+
+        app.add_message::<fe_runtime::messages::DbResult>()
+            .init_resource::<crate::actions::UiManager>()
+            .init_resource::<crate::navigation_manager::NavigationManager>()
+            .init_resource::<crate::node_manager::NodeManager>()
+            .init_resource::<crate::notice::NoticeClock>()
+            .add_systems(Update, observe_development_reset);
+        app.world_mut().resource_mut::<SettingsSession>().reset = DatabaseResetState::Awaiting { request_id: "owned-reset".into(), sent_at: 0.0 };
+        app.world_mut().write_message(fe_runtime::messages::DbResult::DevelopmentDatabaseReset { request_id: "other-reset".into(), cleared: true, error: None });
+        app.update();
+        assert!(matches!(app.world().resource::<SettingsSession>().reset, DatabaseResetState::Awaiting { .. }));
+        app.world_mut().resource_mut::<crate::notice::NoticeClock>().advance_by(std::time::Duration::from_secs(31));
+        app.update();
+        assert!(matches!(app.world().resource::<SettingsSession>().reset, DatabaseResetState::Unconfirmed { .. }));
+        app.world_mut().write_message(fe_runtime::messages::DbResult::DevelopmentDatabaseReset { request_id: "owned-reset".into(), cleared: true, error: Some("Local database cleared, default content unavailable".into()) });
+        app.update();
+        assert!(matches!(app.world().resource::<SettingsSession>().reset, DatabaseResetState::Finished { cleared: true, error: Some(_) }));
     }
 
     #[test]
