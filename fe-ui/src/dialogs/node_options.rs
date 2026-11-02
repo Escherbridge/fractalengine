@@ -47,8 +47,13 @@ pub fn render_node_options_dialog(
         .all_nodes()
         .find(|n| n.id == current_node_id)
         .map(|n| n.name.clone());
-    let current_url = hierarchy.all_nodes().find(|node| node.id == current_node_id).and_then(|node| node.webpage_url.clone());
+    let current_url = hierarchy
+        .all_nodes()
+        .find(|node| node.id == current_node_id)
+        .and_then(|node| node.webpage_url.clone());
 
+    let storage = hierarchy.node_url_storage(&current_node_id);
+    let storage_allows_save = storage.is_none_or(|storage| storage.supports_save());
     let can_edit = local_role.can_edit()
         && crate::actions::portal::node_scope(hierarchy, &current_node_id)
             .is_some_and(|scope| nav.active_scope().as_ref() == Some(&scope));
@@ -89,7 +94,7 @@ pub fn render_node_options_dialog(
                     .color(theme::TEXT_DIM),
             );
             ui.add_enabled(
-                can_edit,
+                can_edit && storage_allows_save,
                 egui::TextEdit::singleline(webpage_url_buf)
                     .hint_text("https://\u{2026}")
                     .desired_width(f32::INFINITY),
@@ -104,6 +109,16 @@ pub fn render_node_options_dialog(
                 .color(theme::TEXT_MUTED),
             );
 
+            if let Some(explanation) = storage.and_then(|storage| storage.explanation()) {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(explanation)
+                            .small()
+                            .color(theme::TEXT_DIM),
+                    )
+                    .wrap(),
+                );
+            }
             let validated_url = crate::actions::portal::validate_url(webpage_url_buf);
             if let Err(reason) = &validated_url {
                 ui.colored_label(theme::STATUS_OFFLINE, reason);
@@ -119,7 +134,7 @@ pub fn render_node_options_dialog(
                     .clicked()
                 {
                     if let Ok(url) = &validated_url {
-                        if *url != current_url {
+                        if *url != current_url && storage_allows_save {
                             pending_actions.push(UiAction::SaveNodeUrl {
                                 node_id: current_node_id.clone(),
                                 url: url.clone(),

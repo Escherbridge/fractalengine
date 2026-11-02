@@ -114,6 +114,7 @@ pub struct VerseManager {
     pub(crate) node_cache_epochs: std::collections::HashMap<String, u64>,
     pub(crate) next_node_cache_epoch: u64,
     pub(crate) url_asset_ids: std::collections::HashMap<String, Option<String>>,
+    pub(crate) url_storage: std::collections::HashMap<String, fe_runtime::messages::NodeUrlStorage>,
 }
 
 impl VerseManager {
@@ -126,6 +127,7 @@ impl VerseManager {
             node_cache_epochs: Default::default(),
             next_node_cache_epoch: 0,
             url_asset_ids: Default::default(),
+            url_storage: Default::default(),
         };
         mgr.rebuild_node_index();
         mgr

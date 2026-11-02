@@ -389,3 +389,10 @@ remain distinct transactions; the URL saved notice confirms only the URL transac
 continue through egui output plus shared feedback, retaining A8 synthetic clipboard suppression.
 
 Context point ownership begins at vertex/handle classification, before any menu click. A dialog-owned PointEditOrigin sidecar is discarded on every dialog replacement. Both Corner/Smooth and removal refuse a route that changed since classification. Their queued intents carry that original origin and recheck it at dispatcher use. The existing menu journey reorders and changes points before the first real pointer click and asserts neither verb queues a mutation.
+
+## Node Options Portal storage
+
+Node Options uses the same confirmed storage explanation as Inspector. Known unsupported URL
+storage disables its URL editor/action while the shared Save still permits authorized rename.
+Missing unique metadata explains that explicit nonempty Save creates local Portal metadata;
+opening or selecting the dialog does not create it.

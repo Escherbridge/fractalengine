@@ -162,13 +162,27 @@ projection; the real-store journey checks metadata inverse and rejects timestamp
 
 ## Portal URL transaction
 
-transform::update_node_url_handler resolves stored scope and captures the DB identity's Editor
-authority. The ordinary atomic operation includes those authority/ancestry guards plus exact
-node asset/Petal/tombstone, model URL and exclusive live reference guards. One UPDATE RETURN
-AFTER sets or clears model.external_url; its row is decoded only after commit. Shared models and
-assetless nodes refuse, avoiding cross-object metadata writes or phantom success. No model-row
-replication reader exists here, so the receipt is local persistence only. Existing atomic rollback
-journey now includes URL set/clear, Viewer/scope/shared refusal and induced rollback, unexecuted.
+`PreparedUrlWrite` seals the actual local Editor authority and stored ancestry, exact live
+node/asset identity, current model snapshot and exclusive live reference. Capturing and using
+node/model snapshots share canonical presence/value SQL projections. SurrealDB NONE becomes
+JSON null on decode but is not equal to NULL in SQL; raw optional-field JSON is therefore not
+an exact comparison fence. Both NONE and legacy NULL tombstones count as live here. Optional
+absence is projected as a boolean plus a scalar, identically at capture and transaction use.
+
+Existing local model metadata updates use the ordinary atomic operation with model URL CAS
+and UPDATE RETURN AFTER. A unique imported node can lack this separate local metadata row:
+only its first explicit nonempty Portal URL Save may initialize it. The SAME transaction fences
+no existing model, exactly one live node reference and one existing asset row, then CREATEs local
+model metadata with the URL and transform selected from that stored node's position/elevation,
+rotation and scale. It does not alter the node, asset or node history and does not claim new physical
+placement or replication. Selection never inserts metadata. Clearing an absent URL refuses
+without creating a row or ordinary operation. Shared/assetless targets refuse writes.
+
+The sealed preparation seam lets the existing real-store atomic journey introduce a new reference
+or reparent after capture, proving refusal at use. The journey also imports through the production
+handler, verifies missing metadata, explicit initialization/set/clear, induced CREATE rollback,
+NONE/null binding behavior and unchanged node/asset/history. These are authored, unexecuted
+assertions until the sole builder's integrated sweep.
 
 ## Current Portal URL read
 
@@ -176,7 +190,8 @@ ReadNodeUrl captures the DB thread identity's actual Viewer authority and stored
 fences the exact live node/Petal/asset metadata in the SAME read transaction as the model URL
 query. A write-triggered read can require that committed asset ID; an initial current read obtains
 its exact metadata anchor in the fenced transaction. The model must belong to that same Petal.
-Assetless nodes return a true absent URL. Ambiguous/missing/changed targets refuse. The reply
+Assetless nodes return a true absent URL. Missing local model metadata and shared assets return
+typed storage availability without a selection warning; ambiguous or changed identities refuse. The reply
 carries exact node, scope and actual asset identity, without any API waiter fallback.
 
 The projection returns at most8193 Unicode scalar values plus the original scalar count, then
@@ -188,3 +203,13 @@ not a query execution claim. Existing real-store URL journey adds Viewer/scope/a
 raw legacy read, size refusal and model replacement with no operation-log writes.
 
 Portal URL writes use the runtime shared raw production/fixture policy at handler admission and again immediately before atomic commit. The fixture exception is host-captured and nonserialized; callers cannot grant it with request fields. Existing actual Editor, ancestry, unique model reference, CAS and readback checks remain mandatory.
+
+### URL read diagnostics and storage availability
+
+The read transaction inspects all response errors before decoding its known result slots. It selects
+the first substantive error rather than a canceled-transaction echo and emits only a bounded static
+fence/projection reason plus statement index. Raw database diagnostics can include stored URL
+values, so they are never forwarded from this read path. The model/reference SELECTs remain
+inside the same Viewer/ancestry/node identity transaction and return at most two rows each.
+Ready and MissingModel are writable subject to the authoritative write fence; NoAsset and
+SharedModel explain unsupported persistence inline. Bounded legacy URL values remain literal.

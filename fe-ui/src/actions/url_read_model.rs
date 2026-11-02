@@ -90,6 +90,15 @@ impl UrlReadModel {
                     .into(),
             );
         }
+        if let Some(storage) = hierarchy
+            .node_url_storage(node_id)
+            .filter(|storage| !storage.supports_save())
+        {
+            return Err(storage
+                .explanation()
+                .unwrap_or("Portal URL storage is unavailable")
+                .into());
+        }
         if !self.writes.contains_key(node_id) && self.writes.len() >= MAX_PENDING {
             return Err(
                 "Too many URL saves are waiting; retry after existing requests finish".into(),
@@ -385,10 +394,17 @@ pub(crate) fn finish_read(
             .is_some_and(|asset| snapshot.asset_id.as_ref() != Some(asset))
         || snapshot.asset_id.is_some() != owner.anchor.has_asset
         || snapshot.url.as_ref().is_some_and(|url| url.len() > 8192)
+        || (snapshot.storage == fe_runtime::messages::NodeUrlStorage::NoAsset)
+            != snapshot.asset_id.is_none()
+        || (matches!(
+            snapshot.storage,
+            fe_runtime::messages::NodeUrlStorage::MissingModel
+                | fe_runtime::messages::NodeUrlStorage::NoAsset
+        ) && snapshot.url.is_some())
     {
         return;
     }
-    hierarchy.confirm_node_url(node_id, snapshot.url.clone(), snapshot.asset_id.clone());
+    hierarchy.confirm_node_url_snapshot(snapshot);
     if let Some(form) = owner.form {
         if nodes
             .selected

@@ -468,3 +468,11 @@ Existing node URL journey covers save A/select B/ack/reselect A, clean and dirty
 timeout recovery, newer-write/older-read ordering, foreign nonce/asset, model replacement and
 same-looking hierarchy rebuild. These source extensions remain unexecuted until the integrated
 sweep. No LoadHierarchy or API reply fallback is used to refresh Portal URLs.
+
+## Portal storage availability
+
+The exact-node URL read also confirms NodeUrlStorage alongside the actual asset identity.
+Its map is bounded by cached nodes and shares the existing rebuild/add/remove invalidation.
+Committed snapshots preserve it only for the same actual model identity. Terminal reset through
+VerseManager::default clears this state. No standalone Resource or unbounded request registry
+is added. Ordinary missing/shared/assetless metadata is inline state, not an advisory per selection.

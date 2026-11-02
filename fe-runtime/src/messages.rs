@@ -1833,9 +1833,34 @@ pub struct NodeHierarchyData {
     pub webpage_url: Option<String>,
 }
 
+/// Local Portal URL persistence availability for one exact node/model read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeUrlStorage {
+    Ready,
+    MissingModel,
+    NoAsset,
+    SharedModel,
+}
+
+impl NodeUrlStorage {
+    pub fn supports_save(self) -> bool {
+        matches!(self, Self::Ready | Self::MissingModel)
+    }
+
+    pub fn explanation(self) -> Option<&'static str> {
+        match self {
+            Self::Ready => None,
+            Self::MissingModel => Some("This object has no local Portal metadata. Saving a nonempty URL creates it for this object; clearing an absent URL makes no change."),
+            Self::NoAsset => Some("Portal URL storage is unavailable for this object because it has no model asset."),
+            Self::SharedModel => Some("Portal URL storage is unavailable because this asset is shared by other objects. Choose an object with an independent asset."),
+        }
+    }
+}
+
 /// Exact node/model identity and bounded current URL from one authorized read.
 #[derive(Debug, Clone)]
 pub struct NodeUrlSnapshot {
+    pub storage: NodeUrlStorage,
     pub node_id: String,
     pub scope: String,
     pub asset_id: Option<String>,

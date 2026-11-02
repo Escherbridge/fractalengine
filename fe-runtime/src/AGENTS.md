@@ -913,3 +913,10 @@ node. Both GUI result families are consumed before PendingApiRequests fallback.
 Preview checks are pure and cheap. Effect admission rechecks a retained Windows process handle, creation ticks, executable and exact IPv4 loopback listener PID before navigation or persistence; any failed live check permanently revokes the capability. Expiry is conservatively anchored to process creation and also bounded by a monotonic deadline. Windows TCP table reads are bounded to one MiB and two retries. Unsupported platforms refuse the exception. Environment and receipt files are never reread during navigation. The capability does not change external browser policy or grant registry/API/other private hosts access.
 
 `portal_url::embedded_preview_allowed` and `embedded_allowed` share production policy plus the captured fixture exception. The preview is advisory; DB writes and navigation call the live variant. The DB also rechecks immediately before its atomic URL commit after asynchronous scope/model reads. Model ownership, actual Editor permission, ancestry/CAS and committed readback remain independent mandatory fences.
+
+## Portal storage availability
+
+NodeUrlSnapshot includes NodeUrlStorage: Ready, MissingModel, NoAsset or SharedModel. These
+are facts from the same current Viewer-fenced read, not permission grants. MissingModel means
+an explicit first nonempty Save may initialize unique local Portal metadata; it does not imply a
+replicated node URL field. NoAsset/SharedModel explain why persistence is unsupported.

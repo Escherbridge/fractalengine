@@ -205,7 +205,7 @@ fn inspector_tab_body(
             ui.add_space(2.0);
             inspector_transform_section(ui, inspector, node_mgr, ui_mgr, local_role);
             ui.add_space(2.0);
-            inspector_url_meta_section(ui, inspector, node_mgr, ui_mgr, local_role);
+            inspector_url_meta_section(ui, inspector, node_mgr, ui_mgr, local_role, hierarchy);
             ui.add_space(2.0);
             inspector_properties_section(ui, inspector, node_mgr, ui_mgr);
             ui.add_space(2.0);
@@ -618,6 +618,7 @@ fn inspector_url_meta_section(
     node_mgr: &NodeManager,
     ui_mgr: &mut UiManager,
     local_role: &LocalUserRole,
+    hierarchy: &VerseManager,
 ) {
     if node_mgr.selected.is_none() {
         ui.label("Select an object to inspect its Portal URL.");
@@ -651,6 +652,13 @@ fn inspector_url_meta_section(
             ui.horizontal(|ui| { ui.spinner(); ui.label("Refreshing stored Portal URL…"); });
         }
 
+        let storage = node_mgr.selected.as_ref().and_then(|selected| hierarchy.node_url_storage(&selected.node_id));
+        if let Some(explanation) = storage.and_then(|storage| storage.explanation()) {
+            ui.add(egui::Label::new(egui::RichText::new(explanation).small().color(theme::TEXT_DIM)).wrap());
+        }
+        let storage_allows_save = storage.is_none_or(|storage| storage.supports_save())
+            && !(storage == Some(fe_runtime::messages::NodeUrlStorage::MissingModel) && inspector.external_url.trim().is_empty());
+
         if local_role.can_manage() {
             ui.add_space(4.0);
             ui.add(egui::Label::new(egui::RichText::new(
@@ -672,7 +680,7 @@ fn inspector_url_meta_section(
         let editable = local_role.can_edit();
         if ui
             .add_enabled(
-                valid && editable,
+                valid && editable && storage_allows_save,
                 egui::Button::new("\u{1F4BE} Save")
                     .fill(theme::BG_SAVE)
                     .min_size(egui::vec2(ui.available_width(), 28.0)),
@@ -682,6 +690,8 @@ fn inspector_url_meta_section(
                 "Select a node to save its Portal URL."
             } else if !editable {
                 "Editor access is required to save this Portal URL."
+            } else if !storage_allows_save {
+                "This object cannot store this URL; see its Portal storage explanation."
             } else {
                 "Correct the Portal URL before saving."
             })
@@ -3424,7 +3434,7 @@ mod tests {
                                 ui, form, nodes, &polish_tx, &manager, notices,
                             );
                         } else {
-                            inspector_url_meta_section(ui, form, nodes, notices, &manager);
+                            inspector_url_meta_section(ui, form, nodes, notices, &manager, &VerseManager::default());
                         }
                     });
                 },
@@ -3498,7 +3508,7 @@ mod tests {
                                 &AssetDownloadStatus::default(),
                             ),
                             1 => inspector_transform_section(ui, form, nodes, feedback, role),
-                            2 => inspector_url_meta_section(ui, form, nodes, feedback, role),
+                            2 => inspector_url_meta_section(ui, form, nodes, feedback, role, &VerseManager::default()),
                             _ => inspector_api_access_section(
                                 ui, form, nodes, &target_tx, role, feedback,
                             ),

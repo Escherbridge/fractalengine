@@ -786,3 +786,9 @@ events remain outside this Inspector contract.
 The Portal URL section shows Refreshing stored Portal URL while its exact-node read is pending.
 The draft remains editable; an incoming current read updates it only if its clean baseline still
 matches. This pending cue does not imply a browser navigation or URL write.
+
+## Portal URL storage state
+
+Inspector displays the typed current storage explanation inline. Shared/assetless objects disable
+Save; missing unique local metadata explains first nonempty Save initialization and disables an
+empty clear. Draft preview/open remains available under the existing URL security policy.

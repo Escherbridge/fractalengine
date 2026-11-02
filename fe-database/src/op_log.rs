@@ -1985,6 +1985,81 @@ mod tests {
         assert_eq!(replaced.asset_id.as_deref(),Some("url-other"));
         assert_eq!(replaced.url.as_deref(),Some("https://example.com/current-model"));
         assert_eq!(op_log_count(&url_db).await,shared_ops,"URL reads and refused reads append no operations");
+        use crate::handlers::transform::{prepare_node_url_write, read_node_url_handler, update_node_url_handler};
+        use fe_runtime::messages::NodeUrlStorage;
+        let store: crate::BlobStoreHandle = std::sync::Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
+        let import_dir = tempfile::tempdir().unwrap();
+        let import_path = import_dir.path().join("portal.gltf");
+        std::fs::write(&import_path, br#"{"asset":{"version":"2.0"}}"#).unwrap();
+        let (imported_node, imported_asset, _) = crate::handlers::crud::import_gltf_handler(
+            &url_db, &store, "url-p", "Unique imported Portal", import_path.to_str().unwrap(), [2.0,3.0,4.0],
+        ).await.unwrap();
+        let missing = read_node_url_handler(&url_db,&imported_node,&url_scope,None,"did:qa").await.unwrap();
+        assert_eq!(missing.storage,NodeUrlStorage::MissingModel,"ordinary imports have no implicit model metadata");
+        assert!(missing.url.is_none());
+        let mut before = url_db.query("SELECT * OMIT id FROM node WHERE node_id=$node; SELECT * OMIT id FROM asset WHERE asset_id=$asset; SELECT * OMIT id FROM node_log WHERE node_id=$node; SELECT tombstone FROM node WHERE node_id=$node")
+            .bind(("node",imported_node.clone())).bind(("asset",imported_asset.clone())).await.unwrap().check().unwrap();
+        let before_node: Vec<serde_json::Value> = before.take(0).unwrap();
+        let before_asset: Vec<serde_json::Value> = before.take(1).unwrap();
+        let before_journal: Vec<serde_json::Value> = before.take(2).unwrap();
+        let raw_tombstone: Vec<serde_json::Value> = before.take(3).unwrap();
+        let mut binding_probe = url_db.query("RETURN {raw_matches: (SELECT tombstone FROM node WHERE node_id=$node) = $snapshot, none_matches_null: NONE = $null, null_matches_null: NULL = $null, live_none: (NONE = NONE OR NONE = NULL), live_null: (NULL = NONE OR NULL = NULL)}")
+            .bind(("node",imported_node.clone())).bind(("snapshot",serde_json::json!(raw_tombstone))).bind(("null",serde_json::Value::Null)).await.unwrap().check().unwrap();
+        let probe: serde_json::Value = binding_probe.take(0).unwrap();
+        assert_eq!(probe["raw_matches"],false,"raw NONE snapshots rebound as JSON NULL are not an exact CAS");
+        assert_eq!(probe["none_matches_null"],false);
+        assert_eq!(probe["null_matches_null"],true);
+        assert_eq!(probe["live_none"],true);
+        assert_eq!(probe["live_null"],true);
+        let mut guard_failure = url_db.query("BEGIN TRANSACTION; IF true { THROW 'URL node identity changed'; }; SELECT asset_id FROM model LIMIT 1; COMMIT TRANSACTION;").await.unwrap();
+        let diagnostic = crate::handlers::transform::url_read_transaction_error(guard_failure.take_errors(),2).to_string();
+        assert!(diagnostic.contains("URL node identity changed"),"the actual guard error must survive canceled transaction echoes");
+        let mut projection_failure = url_db.query("BEGIN TRANSACTION; SELECT string::len({private_url:'https://example.com/private-value'}) AS value FROM model LIMIT 1; COMMIT TRANSACTION;").await.unwrap();
+        let diagnostic = crate::handlers::transform::url_read_transaction_error(projection_failure.take_errors(),1).to_string();
+        assert!(diagnostic.contains("model projection failed"));
+        assert!(!diagnostic.contains("https://"),"diagnostics must not emit stored URL values");
+
+        let absent_ops = op_log_count(&url_db).await;
+        assert!(update_node_url_handler(&url_db,&imported_node,None,&url_scope,"did:qa").await.is_err(),"clear does not initialize absent metadata");
+        assert!(update_node_url_handler(&url_db,&imported_node,Some("https://example.com/viewer".into()),&url_scope,"did:url-viewer").await.is_err());
+        assert_eq!(op_log_count(&url_db).await,absent_ops);
+        let pending = prepare_node_url_write(&url_db,&imported_node,Some("https://example.com/first".into()),&url_scope,"did:qa").await.unwrap();
+        let (competing_node,_) = crate::handlers::crud::create_node_with_asset_as(&url_db,"url-p","shared after capture",&imported_asset,[0.0;3],[0.0;3],[1.0;3],"did:qa").await.unwrap();
+        let shared_after_capture = op_log_count(&url_db).await;
+        assert!(pending.commit(&url_db).await.is_err(),"a new live reference refuses initialization at transaction use");
+        assert_eq!(op_log_count(&url_db).await,shared_after_capture);
+        assert_eq!(read_node_url_handler(&url_db,&imported_node,&url_scope,None,"did:qa").await.unwrap().storage,NodeUrlStorage::SharedModel);
+        url_db.query("DELETE node WHERE node_id=$node").bind(("node",competing_node)).await.unwrap().check().unwrap();
+        let pending = prepare_node_url_write(&url_db,&imported_node,Some("https://example.com/first".into()),&url_scope,"did:qa").await.unwrap();
+        url_db.query("CREATE fractal CONTENT {fractal_id:'url-foreign-f',verse_id:'tree-foreign',owner_did:'did:foreign',name:'foreign',created_at:'2026-11-02'}; UPDATE petal SET fractal_id='url-foreign-f' WHERE petal_id='url-p'").await.unwrap().check().unwrap();
+        assert!(pending.commit(&url_db).await.is_err(),"initialization remains fenced to captured ancestry");
+        assert_eq!(op_log_count(&url_db).await,shared_after_capture);
+        url_db.query("UPDATE petal SET fractal_id='url-f' WHERE petal_id='url-p'; DEFINE EVENT refuse_url_create ON TABLE model WHEN $event='CREATE' THEN { THROW 'induced URL initialization failure'; }").await.unwrap().check().unwrap();
+        assert!(update_node_url_handler(&url_db,&imported_node,Some("https://example.com/first".into()),&url_scope,"did:qa").await.is_err());
+        assert_eq!(op_log_count(&url_db).await,shared_after_capture,"failed initialization rolls back its ordinary operation");
+        assert_eq!(read_node_url_handler(&url_db,&imported_node,&url_scope,None,"did:qa").await.unwrap().storage,NodeUrlStorage::MissingModel);
+        url_db.query("REMOVE EVENT refuse_url_create ON TABLE model").await.unwrap().check().unwrap();
+        let initialized = update_node_url_handler(&url_db,&imported_node,Some("https://example.com/first".into()),&url_scope,"did:qa").await.unwrap();
+        assert_eq!(initialized["external_url"],"https://example.com/first");
+        assert_eq!(initialized["transform"]["position"],before_node[0]["position"]);
+        assert_eq!(initialized["transform"]["elevation"],before_node[0]["elevation"]);
+        assert_eq!(initialized["transform"]["rotation"],before_node[0]["rotation"]);
+        assert_eq!(initialized["transform"]["scale"],before_node[0]["scale"]);
+        let ready = read_node_url_handler(&url_db,&imported_node,&url_scope,Some(&imported_asset),"did:qa").await.unwrap();
+        assert_eq!(ready.storage,NodeUrlStorage::Ready);
+        assert_eq!(ready.url.as_deref(),Some("https://example.com/first"));
+        update_node_url_handler(&url_db,&imported_node,None,&url_scope,"did:qa").await.unwrap();
+        assert!(read_node_url_handler(&url_db,&imported_node,&url_scope,None,"did:qa").await.unwrap().url.is_none());
+        update_node_url_handler(&url_db,&imported_node,Some("https://example.com/second".into()),&url_scope,"did:qa").await.unwrap();
+        assert_eq!(read_node_url_handler(&url_db,&imported_node,&url_scope,None,"did:qa").await.unwrap().url.as_deref(),Some("https://example.com/second"));
+        let mut after = url_db.query("SELECT * OMIT id FROM node WHERE node_id=$node; SELECT * OMIT id FROM asset WHERE asset_id=$asset; SELECT * OMIT id FROM node_log WHERE node_id=$node; SELECT asset_id FROM model WHERE asset_id=$asset")
+            .bind(("node",imported_node)).bind(("asset",imported_asset)).await.unwrap().check().unwrap();
+        assert_eq!(after.take::<Vec<serde_json::Value>>(0).unwrap(),before_node,"Portal metadata cannot change physical node state");
+        assert_eq!(after.take::<Vec<serde_json::Value>>(1).unwrap(),before_asset,"asset content is retained");
+        assert_eq!(after.take::<Vec<serde_json::Value>>(2).unwrap(),before_journal,"object history is retained");
+        assert_eq!(after.take::<Vec<serde_json::Value>>(3).unwrap().len(),1,"only the explicit first Save initializes metadata");
+        assert_eq!(op_log_count(&url_db).await,shared_after_capture+3,"first Save, clear and update each commit once");
+
 
     }
 

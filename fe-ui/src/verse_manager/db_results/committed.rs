@@ -104,6 +104,7 @@ pub(super) fn apply(
         .url_asset_ids
         .get(&node.node_id)
         .is_some_and(|asset| asset == &current.asset_id);
+    let url_storage = manager.node_url_storage(&node.node_id);
     let webpage_url = manager
         .all_nodes()
         .find(|entry| entry.id == node.node_id)
@@ -129,6 +130,9 @@ pub(super) fn apply(
     }
     if same_url_model {
         manager.confirm_node_url(&node.node_id, webpage_url, current.asset_id.clone());
+        if let Some(storage) = url_storage {
+            manager.confirm_node_url_storage(&node.node_id, storage);
+        }
     }
     manager
         .committed_versions

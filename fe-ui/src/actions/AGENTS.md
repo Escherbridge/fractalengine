@@ -440,3 +440,11 @@ read captures the node's current metadata atomically; it cannot write or imperso
 the old model. A second refusal ends refresh with explicit reselect recovery.
 
 QA fixture URL previews test the original draft before trimming or URL parsing. Public URLs keep existing trim/production validation. Navigate commands retain raw strings until effect admission; browser events use the cheap shared preview because the backend already owns live navigation admission. URL acknowledgement ownership and local model persistence semantics are unchanged.
+
+### Portal storage availability
+
+Current URL snapshots hydrate both URL and typed local storage availability under the existing
+nonce/cache/form ownership checks. Unsupported NoAsset/SharedModel states block dispatch
+advisorially; the database remains authoritative. MissingModel admits explicit nonempty Save,
+which may initialize local Portal metadata after the database proves exclusive live ownership.
+No URL draft is discarded merely because storage is unavailable, and selection performs no write.

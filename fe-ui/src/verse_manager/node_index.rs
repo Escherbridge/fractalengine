@@ -30,6 +30,7 @@ impl VerseManager {
         self.node_index.clear();
         self.node_cache_epochs.clear();
         self.url_asset_ids.clear();
+        self.url_storage.clear();
         for (vi, verse) in self.verses.iter().enumerate() {
             for (fi, fractal) in verse.fractals.iter().enumerate() {
                 for (pi, petal) in fractal.petals.iter().enumerate() {
@@ -99,6 +100,7 @@ impl VerseManager {
         };
         self.node_index.insert(node.id.clone(), (vi, fi, pi));
         self.url_asset_ids.remove(&node.id);
+        self.url_storage.remove(&node.id);
         if let Some(epoch) = self.next_node_cache_epoch.checked_add(1) {
             self.next_node_cache_epoch = epoch;
             self.node_cache_epochs.insert(node.id.clone(), epoch);
@@ -118,6 +120,7 @@ impl VerseManager {
         self.committed_versions.remove(node_id);
         self.node_cache_epochs.remove(node_id);
         self.url_asset_ids.remove(node_id);
+        self.url_storage.remove(node_id);
     }
 
     /// Indexed node lookup; stale/missing entries fall back to a full walk and self-heal.
@@ -190,7 +193,38 @@ impl VerseManager {
         if self.petal_id_of(node_id).is_some() {
             self.update_node_url(node_id, url);
             self.url_asset_ids.insert(node_id.to_owned(), asset_id);
+            self.url_storage.remove(node_id);
         }
+    }
+
+    /// Store persistence availability only with an exact authorized URL snapshot.
+    pub(crate) fn confirm_node_url_snapshot(
+        &mut self,
+        snapshot: &fe_runtime::messages::NodeUrlSnapshot,
+    ) {
+        self.confirm_node_url(
+            &snapshot.node_id,
+            snapshot.url.clone(),
+            snapshot.asset_id.clone(),
+        );
+        self.confirm_node_url_storage(&snapshot.node_id, snapshot.storage);
+    }
+
+    pub(crate) fn confirm_node_url_storage(
+        &mut self,
+        node_id: &str,
+        storage: fe_runtime::messages::NodeUrlStorage,
+    ) {
+        if self.url_asset_ids.contains_key(node_id) {
+            self.url_storage.insert(node_id.to_owned(), storage);
+        }
+    }
+
+    pub(crate) fn node_url_storage(
+        &self,
+        node_id: &str,
+    ) -> Option<fe_runtime::messages::NodeUrlStorage> {
+        self.url_storage.get(node_id).copied()
     }
 
     /// Update display name of a node by its ID (`DbResult::NodeRenamed`).
@@ -298,9 +332,15 @@ mod tests {
     #[test]
     fn node_url_receipts_refresh_current_cache_and_preserve_drafts() {
         let raw = "http://127.1:49152/web/one";
-        let command: fe_webview::ipc::BrowserCommand = serde_json::from_value(serde_json::json!({ "cmd": "navigate", "url": raw })).unwrap();
-        let fe_webview::ipc::BrowserCommand::Navigate { url } = command else { panic!("Navigate command"); };
-        assert_eq!(url, raw, "the command boundary must preserve alias spelling before policy validation");
+        let command: fe_webview::ipc::BrowserCommand =
+            serde_json::from_value(serde_json::json!({ "cmd": "navigate", "url": raw })).unwrap();
+        let fe_webview::ipc::BrowserCommand::Navigate { url } = command else {
+            panic!("Navigate command");
+        };
+        assert_eq!(
+            url, raw,
+            "the command boundary must preserve alias spelling before policy validation"
+        );
         assert!(!fe_runtime::portal_url::embedded_allowed(&url));
         let mut mgr = make_tree();
         mgr.update_node_url("node-1", Some("https://example.com".to_string()));
@@ -358,6 +398,7 @@ mod tests {
                     scope: expected_scope,
                     asset_id: Some("asset-a".into()),
                     url: Some(url.into()),
+                    storage: fe_runtime::messages::NodeUrlStorage::Ready,
                 }),
             }
         };
@@ -805,6 +846,110 @@ mod tests {
         assert_eq!(
             inspector.external_url,
             "https://example.com/rebound-current"
+        );
+        inspector.external_url = "https://example.com/unsaved-preview".into();
+        url_read_model::request_current(
+            &tx, &mut ui, &mgr, &nav, &nodes, &inspector, "node-1", None, 70.0,
+        )
+        .unwrap();
+        let mut unsupported = read(rx.try_recv().unwrap(), "");
+        if let DbResult::NodeUrlRead {
+            outcome: Ok(snapshot),
+            ..
+        } = &mut unsupported
+        {
+            snapshot.asset_id = Some("asset-c".into());
+            snapshot.url = None;
+            snapshot.storage = fe_runtime::messages::NodeUrlStorage::SharedModel;
+        }
+        url_read_model::finish_read(
+            &mut ui,
+            &mut mgr,
+            &nav,
+            &nodes,
+            &mut inspector,
+            &unsupported,
+            71.0,
+            &tx,
+        );
+        assert_eq!(
+            mgr.node_url_storage("node-1"),
+            Some(fe_runtime::messages::NodeUrlStorage::SharedModel)
+        );
+        assert!(
+            ui.active_toast(71.0).is_none(),
+            "ordinary unsupported storage is inline state, not a selection warning"
+        );
+        assert_eq!(
+            inspector.external_url, "https://example.com/unsaved-preview",
+            "storage status cannot discard a newer draft"
+        );
+        portal::save_url(
+            &tx,
+            &mut ui,
+            &mgr,
+            &nav,
+            &nodes,
+            &role,
+            "node-1".into(),
+            Some(inspector.external_url.clone()),
+            72.0,
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "a known shared asset cannot queue a URL save"
+        );
+        url_read_model::request_current(
+            &tx, &mut ui, &mgr, &nav, &nodes, &inspector, "node-1", None, 73.0,
+        )
+        .unwrap();
+        let mut missing = read(rx.try_recv().unwrap(), "");
+        if let DbResult::NodeUrlRead {
+            outcome: Ok(snapshot),
+            ..
+        } = &mut missing
+        {
+            snapshot.asset_id = Some("asset-c".into());
+            snapshot.url = None;
+            snapshot.storage = fe_runtime::messages::NodeUrlStorage::MissingModel;
+        }
+        url_read_model::finish_read(
+            &mut ui,
+            &mut mgr,
+            &nav,
+            &nodes,
+            &mut inspector,
+            &missing,
+            74.0,
+            &tx,
+        );
+        assert_eq!(
+            mgr.node_url_storage("node-1"),
+            Some(fe_runtime::messages::NodeUrlStorage::MissingModel)
+        );
+        assert!(fe_runtime::messages::NodeUrlStorage::MissingModel
+            .explanation()
+            .unwrap()
+            .contains("Saving a nonempty URL creates"));
+        portal::save_url(
+            &tx,
+            &mut ui,
+            &mgr,
+            &nav,
+            &nodes,
+            &role,
+            "node-1".into(),
+            Some(inspector.external_url.clone()),
+            75.0,
+        );
+        assert!(
+            matches!(rx.try_recv().unwrap(), DbCommand::UpdateNodeUrl { .. }),
+            "explicit Save owns missing local metadata initialization"
+        );
+        mgr.rebuild_node_index();
+        assert!(
+            mgr.node_url_storage("node-1").is_none(),
+            "cache rebuild retires persistence status with its asset anchor"
         );
     }
 
