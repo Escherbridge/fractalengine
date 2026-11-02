@@ -969,3 +969,13 @@ has redacted Debug and no serialization implementation; source metadata carries
 no ticket. The desktop coordinator owns native export between DB preparation and
 issuance, and native validation before admission. TestPeer explicitly refuses
 these desktop operations rather than fabricating storage or network readiness.
+
+
+## QA invitation transfer
+
+qa_invitation defines a separate capacity-one correlated bridge for observing public metadata
+or consuming the latest GUI-issued addressed invitation. Commands cannot supply credentials,
+tokens, clipboard selectors or arbitrary operations. Consume names the exact generation, target,
+recipient, role and expiry. Work is bounded to three seconds, with a fifteen-second consume
+lease. Credential-bearing results use redacted JoinCredential and do not serialize as generic
+diagnostics. InputCommand Debug redacts TextEntry for the actual masked Join input path.

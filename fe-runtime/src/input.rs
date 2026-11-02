@@ -72,7 +72,7 @@ pub struct InputKey(pub String);
 
 /// The v1 command vocabulary (AIS spec §4.2), each variant translated
 /// Bevy-side into the same resources real OS input populates.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InputCommand {
     PointerMove {
@@ -99,6 +99,19 @@ pub enum InputCommand {
         dx: f32,
         dy: f32,
     },
+}
+
+impl std::fmt::Debug for InputCommand {
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PointerMove {x,y} => f.debug_struct("PointerMove").field("x",x).field("y",y).finish(),
+            Self::PointerClick {x,y,button} => f.debug_struct("PointerClick").field("x",x).field("y",y).field("button",button).finish(),
+            Self::PointerDrag {from,to,button} => f.debug_struct("PointerDrag").field("from",from).field("to",to).field("button",button).finish(),
+            Self::KeyPress {key} => f.debug_struct("KeyPress").field("key",key).finish(),
+            Self::TextEntry {..} => f.write_str("TextEntry([redacted])"),
+            Self::Scroll {dx,dy} => f.debug_struct("Scroll").field("dx",dx).field("dy",dy).finish(),
+        }
+    }
 }
 
 /// `POST /api/v1/debug/input` request body (and the MCP `inject_input`

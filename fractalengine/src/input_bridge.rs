@@ -51,7 +51,7 @@ pub struct SyntheticClipboardGuard(bool);
 pub struct RealCursor(Option<Option<DVec2>>);
 
 /// One synthetic input event, exactly what winit would have delivered.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 enum Synthetic {
     /// Pointer to a primary-window physical-pixel point.
     Cursor(Vec2),
@@ -62,6 +62,13 @@ enum Synthetic {
         state: ButtonState,
     },
     Scroll(Vec2),
+}
+
+impl std::fmt::Debug for Synthetic {
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name=match self {Self::Cursor(..)=>"Cursor",Self::Button(..)=>"Button",Self::Key {..}=>"Key",Self::Scroll(..)=>"Scroll"};
+        f.debug_struct(name).finish_non_exhaustive()
+    }
 }
 
 /// Everything one frame injects, in order.

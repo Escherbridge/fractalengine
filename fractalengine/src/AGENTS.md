@@ -1688,3 +1688,8 @@ Transform. The snapshot labels the canonical stamp address, owning Path and inde
 it never treats the persisted metadata row's origin TRS as the rendered position.
 This read-only projection adds no command route or permission bypass. Existing QA
 Owner, caller scope, input enablement and frame ownership gates remain unchanged.
+
+
+Synthetic input diagnostics expose only event variants, excluding Key::Character payloads.
+The ordinary injection audit records actor, scope and command count without input text.
+This preserves credentials when the one-use invitation client drives masked Join.

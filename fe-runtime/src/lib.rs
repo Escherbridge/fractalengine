@@ -20,6 +20,7 @@ pub mod petal_requirements;
 pub mod plugin_host;
 pub mod portal_url;
 pub mod qa_debug;
+pub mod qa_invitation;
 pub mod qa_portal;
 pub mod qa_web;
 pub mod safe_id;
