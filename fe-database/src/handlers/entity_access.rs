@@ -18,7 +18,15 @@ fn scope_contains(target: &crate::ScopeParts, scope: &str) -> bool {
     let Ok(candidate) = crate::parse_scope(scope) else {
         return false;
     };
-    target.verse_id == candidate.verse_id
+    let unambiguous = |parts: &crate::ScopeParts| {
+        std::iter::once(parts.verse_id.as_str())
+            .chain(parts.fractal_id.as_deref())
+            .chain(parts.petal_id.as_deref())
+            .all(|id| !id.contains('#'))
+    };
+    unambiguous(target)
+        && unambiguous(&candidate)
+        && target.verse_id == candidate.verse_id
         && target
             .fractal_id
             .as_ref()
@@ -140,9 +148,9 @@ pub(crate) async fn load(
     }
     let mut records: Vec<crate::api_token_store::ApiTokenRecord> =
         serde_json::from_value(row["tokens"].clone())?;
+    let tokens_truncated = records.len() > MAX_TOKENS;
     records.retain(|record| scope_contains(&parts, &record.scope));
     let mut tokens = super::api_token::records_to_info(records);
-    let tokens_truncated = tokens.len() > MAX_TOKENS;
     tokens.truncate(MAX_TOKENS);
     Ok(EntityAccessSnapshot {
         local_did: local_did.into(),

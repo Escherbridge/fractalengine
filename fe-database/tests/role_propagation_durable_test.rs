@@ -352,7 +352,11 @@ fn an_editor_creating_a_petal_gets_no_implicit_owner_row() {
             )],
         ),
     ] {
-        for foreign_scope in foreign_scopes {
+        let malformed_scopes = [
+            format!("{}-FRACTAL#misplaced", target.scope),
+            format!("{}-PETAL#misplaced", target.scope),
+        ];
+        for foreign_scope in foreign_scopes.into_iter().chain(malformed_scopes) {
             let foreign = fe_database::api_token_store::ApiTokenRecord {
                 jti: format!("foreign-{}", ulid::Ulid::new()),
                 scope: foreign_scope.clone(),
@@ -383,7 +387,7 @@ fn an_editor_creating_a_petal_gets_no_implicit_owner_row() {
             );
             assert!(
                 loaded.tokens.iter().all(|row| row.jti != foreign.jti),
-                "Hyphen-prefix scope must not expose foreign metadata: {} / {}",
+                "Foreign or malformed scope must not expose token metadata: {} / {}",
                 boundary.scope,
                 foreign.scope
             );
@@ -403,7 +407,7 @@ fn an_editor_creating_a_petal_gets_no_implicit_owner_row() {
             };
             assert!(
                 result.is_err(),
-                "Hyphen-prefix token is outside the parsed target components"
+                "Foreign or malformed token is outside the parsed target components"
             );
             assert!(
                 !rt.block_on(fe_database::api_token_store::is_token_revoked(

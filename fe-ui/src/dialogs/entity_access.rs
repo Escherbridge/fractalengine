@@ -362,10 +362,10 @@ pub(crate) fn token_controls(
         ui.label(notice);
     }
     if snapshot.tokens.is_empty() {
-        ui.label("No active API tokens in this entry's scope.");
+        ui.label("No active token metadata in this loaded list.");
     }
     if snapshot.tokens_truncated {
-        ui.label("Showing the first 50 active tokens. Revoking entries and refreshing reveals later records.");
+        ui.label("This token list is bounded. Some later active tokens may not be shown.");
     }
     for token in &snapshot.tokens {
         ui.push_id((&token.jti, &token.sub, &token.scope), |ui| {
