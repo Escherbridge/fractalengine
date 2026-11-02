@@ -29,7 +29,7 @@ impl ParentMutation {
         db: &Db,
         statements: &[&str],
         bindings: Vec<(String, Value)>,
-    ) -> anyhow::Result<surrealdb::Response> {
+    ) -> anyhow::Result<surrealdb::IndexedResults> {
         let mut script = String::from("BEGIN TRANSACTION;\n");
         for statement in self
             .guards
