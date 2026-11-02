@@ -81,8 +81,21 @@ try {
         if (-not $sealProcess.Start()) { throw 'Fixture sealer did not start' }
         $sealProcess.StartInfo.EnvironmentVariables.Remove('FE_SECRET_HEXON_SEAL_KEY')
         if (-not $sealProcess.WaitForExit(30000)) {
-            $sealProcess.Kill()
-            $null = $sealProcess.WaitForExit(5000)
+            $cleanup = @{ status = 'termination_requested'; process_identity = $null; identity_capture = 'not_attempted' }
+            try {
+                $cleanup.process_identity = Get-QaProcessIdentity -ProcessId $sealProcess.Id
+                $cleanup.identity_capture = if ($cleanup.process_identity) { 'captured' } else { 'already_absent' }
+            } catch { $cleanup.identity_capture = 'unavailable' }
+            $failures = New-Object System.Collections.Generic.List[string]
+            try { $sealProcess.Kill() }
+            catch { $failures.Add('termination_' + $_.Exception.GetType().Name) }
+            try {
+                if (-not $sealProcess.WaitForExit(5000)) { $failures.Add('exit_deadline_exceeded') }
+            } catch { $failures.Add('wait_' + $_.Exception.GetType().Name) }
+            $cleanup.status = if ($failures.Count) { 'incomplete' } else { 'verified_exit' }
+            $cleanup.failures = @($failures)
+            $cleanup | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $instanceDir 'sealer-cleanup.json') -Encoding utf8
+            if ($failures.Count) { throw ('Fixture sealer timeout cleanup incomplete: ' + ($failures -join ', ') + '; see the owned instance sealer-cleanup.json') }
             throw 'Fixture seal/RequireSealed verification exceeded 30 seconds'
         }
         if ($sealProcess.ExitCode -ne 0) { throw 'Fixture seal/RequireSealed verification failed; no provider published' }

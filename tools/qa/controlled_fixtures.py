@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import socket
 import stat
+import threading
 import time
 import urllib.parse
 import zipfile
@@ -126,6 +127,11 @@ class Archive:
 class FixtureServer(http.server.HTTPServer):
     allow_reuse_address = False
 
+    def __init__(self, *args, **kwargs):
+        self._connection_deadlines = {}
+        self._deadline_lock = threading.Lock()
+        super().__init__(*args, **kwargs)
+
     def server_bind(self):
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
@@ -133,8 +139,41 @@ class FixtureServer(http.server.HTTPServer):
 
     def get_request(self):
         connection, address = super().get_request()
+        self.request_count += 1
         connection.settimeout(2)
+        self.arm_deadline(connection, min(time.monotonic() + 2, self.deadline))
         return connection, address
+
+    def arm_deadline(self, connection, deadline):
+        token = object()
+        timer = threading.Timer(max(0, deadline - time.monotonic()), self.expire_connection,
+                                args=(connection, token))
+        timer.daemon = True
+        with self._deadline_lock:
+            previous = self._connection_deadlines.pop(connection, None)
+            if previous:
+                previous[1].cancel()
+            self._connection_deadlines[connection] = (token, timer)
+            timer.start()
+
+    def expire_connection(self, connection, token):
+        with self._deadline_lock:
+            current = self._connection_deadlines.get(connection)
+            if not current or current[0] is not token:
+                return
+            del self._connection_deadlines[connection]
+        try:
+            connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        connection.close()
+
+    def close_request(self, request):
+        with self._deadline_lock:
+            previous = self._connection_deadlines.pop(request, None)
+            if previous:
+                previous[1].cancel()
+        super().close_request(request)
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -143,11 +182,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
 
-    def do_GET(self):
-        self.server.request_count += 1
+    def handle_one_request(self):
         if self.server.request_count > MAX_REQUESTS or time.monotonic() >= self.server.deadline:
-            self.send_error(503)
+            self.close_connection = True
             return
+        try:
+            super().handle_one_request()
+        except OSError:
+            pass
+        finally:
+            self.close_connection = True
+
+    def parse_request(self):
+        valid = super().parse_request()
+        if valid:
+            self.server.arm_deadline(self.connection, self.server.deadline)
+        return valid
+
+    def do_GET(self):
         if (len(self.path) > 2048 or self.headers.get("Authorization")
                 or self.headers.get("Host") != self.server.origin.removeprefix("http://")):
             self.send_error(400)

@@ -633,6 +633,18 @@ without taking over another service. It has a maximum of 2,000 requests, a
 budget; no blind mutation retries occur. Run-local stdout/stderr contain no
 tokens, signing seeds or HTTP request data.
 
+Every accepted connection consumes the request budget before request-line/header
+parsing, including incomplete, malformed and unsupported requests. One request
+is admitted per connection. An absolute two-second request-line/header deadline
+actively shuts down that socket even when bytes trickle in faster than the idle
+timeout. After valid headers, the socket deadline switches to the original global
+expiry so deliberately slow bodies remain possible. Global expiry also actively
+closes an in-flight response; neither malformed requests nor stalled writes can
+extend the owned provider's lifetime. Completed connections cancel their timers.
+Exceptional sealer timeout cleanup retains its exact available identity, kill/
+wait outcomes and explicit failures in the instance's `sealer-cleanup.json`;
+an unsuccessful bounded wait is reported as incomplete cleanup.
+
 `/web/one` links to `/web/two` and `/web/three`. The three static pages have
 distinct visible titles, no scripts/resources/forms and no-store headers. This
 provides a deterministic two-link history fixture. Canonical Portal policy
@@ -689,6 +701,16 @@ launcher handshake supplies that trust boundary. The actual UI Join/RBAC/replica
 outcomes still require the real second identity, never a different bearer token
 in the first GUI. Both roots initially own separate Genesis scopes; the name
 "Viewer" describes its intended role in the Owner's shared verse after joining.
+
+Pair publication acquires the lifecycle lease only after both launch calls have
+released theirs. Under that lease it re-reads provenance, rechecks both original
+exact live root identities, retains their process handles and refreshes descendant
+snapshots before publishing through `pair.pending.json`. This is a point-in-time
+liveness check, not a guarantee that either process stays alive afterward. All
+handles and the publication lease are released before failure cleanup takes its
+own lease. Failure cleanup addresses only captured original identities, never a
+new lifetime later written at the same run path; unavailable original ownership
+is explicitly retained for inspection rather than guessed from a replacement.
 
 The launcher deliberately disables relays. A direct local peer connection must
 be observed after real GUI invite generation/join; no global network settings,
