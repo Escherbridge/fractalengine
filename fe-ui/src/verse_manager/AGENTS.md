@@ -1,5 +1,19 @@
 # fe-ui/src/verse_manager — hierarchy tree + DB result draining
 
+## §committed-object-materialization
+
+`db_results/committed.rs` adapts only current `NodeMaterialized` and `NodeMutationCommitted`
+snapshots. Exact-version history results have no scene-write path. The manager rejects regressing
+commit versions and unexpected parent changes, upserts one tree entry, and retains complete transforms.
+New active-petal objects materialize through the existing residency and spawn budgets; existing resident
+entities receive the confirmed transform in place. A newer current commit cancels an unfinished local
+axis drag. Complete property bags feed the existing primitive, path, visibility and selected-Inspector
+hydration path, retaining the typed editor's draft/conflict decisions.
+
+Hierarchy transport includes unit quaternion rotation and scale. Legacy quaternion and ordinary Euler
+storage share `fe_runtime::node_history::stored_rotation_quaternion`; all respawn branches retain them.
+Fallback placards keep their existing half-unit display offset, separately from the confirmed node position.
+
 Initial hierarchy navigation selects one populated petal with its actual ancestors, falling back to
 the first empty verse. Delayed role replies are discarded when their scope no longer matches the valid
 current cursor. See `../AGENTS.md` §navigation-ancestry.

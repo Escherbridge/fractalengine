@@ -25,6 +25,7 @@ pub(super) fn handle_gltf_imported(
     verse_mgr.add_node(
         petal_id,
         NodeEntry {
+            transform: Default::default(),
             id: node_id.to_string(),
             name: name.to_string(),
             has_asset: true,
@@ -68,6 +69,7 @@ pub(super) fn handle_node_created(
     verse_mgr.add_node(
         petal_id,
         NodeEntry {
+            transform: Default::default(),
             id: id.to_string(),
             name: name.to_string(),
             has_asset,

@@ -3,6 +3,28 @@
 use super::{NodeEntry, VerseManager};
 
 impl VerseManager {
+    /// Replace a current node snapshot without duplicating or retaining an old parent entry.
+    pub(crate) fn upsert_node(&mut self, petal_id: &str, node: NodeEntry) -> bool {
+        if self.find_petal(petal_id).is_none() {
+            return false;
+        }
+        if let Some(previous) = self.petal_id_of(&node.id).map(str::to_owned) {
+            self.remove_node(&previous, &node.id);
+        }
+        self.add_node(petal_id, node)
+    }
+
+    /// Retain all transform components for later petal and residency respawns.
+    pub(crate) fn update_node_transform(
+        &mut self,
+        node_id: &str,
+        transform: bevy::prelude::Transform,
+    ) {
+        if let Some(node) = self.node_entry_mut(node_id) {
+            node.position = transform.translation.to_array();
+            node.transform = transform;
+        }
+    }
     /// Rebuild the node_id → tree-indices map from scratch.
     pub(crate) fn rebuild_node_index(&mut self) {
         self.node_index.clear();
@@ -80,6 +102,7 @@ impl VerseManager {
             petal.nodes.retain(|n| n.id != node_id);
         }
         self.node_index.remove(node_id);
+        self.committed_versions.remove(node_id);
     }
 
     /// Indexed node lookup; stale/missing entries fall back to a full walk and self-heal.
@@ -156,6 +179,7 @@ mod tests {
 
     fn node(id: &str) -> NodeEntry {
         NodeEntry {
+            transform: Default::default(),
             id: id.to_string(),
             name: id.to_string(),
             has_asset: true,
@@ -298,6 +322,36 @@ mod tests {
         mgr.update_node_position("node-5", [7.0, 7.0, 7.0]);
         let n = mgr.all_nodes().find(|n| n.id == "node-5").unwrap();
         assert_eq!(n.position, [7.0, 7.0, 7.0]);
+        let rotation = bevy::prelude::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let transform = bevy::prelude::Transform {
+            translation: bevy::prelude::Vec3::new(3.0, 0.0, 4.0),
+            rotation,
+            scale: bevy::prelude::Vec3::new(2.0, 1.0, 0.5),
+        };
+        mgr.update_node_transform("node-5", transform);
+        let snapshot = mgr
+            .all_nodes()
+            .find(|node| node.id == "node-5")
+            .unwrap()
+            .clone();
+        assert_eq!(snapshot.world_transform(), transform);
+        assert!(mgr.upsert_node("petal-2", snapshot.clone()));
+        assert!(mgr.upsert_node("petal-2", snapshot));
+        assert_eq!(
+            mgr.all_nodes().filter(|node| node.id == "node-5").count(),
+            1
+        );
+        assert_eq!(mgr.petal_id_of("node-5"), Some("petal-2"));
+        assert_eq!(
+            mgr.find_petal("petal-2")
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|node| node.id == "node-5")
+                .unwrap()
+                .world_transform(),
+            transform
+        );
     }
 
     #[test]

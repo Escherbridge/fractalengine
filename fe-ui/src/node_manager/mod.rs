@@ -60,12 +60,12 @@ pub use path_segment_interaction::TrackPickShape;
 /// FR-1 typed selection read-model, re-exported for the gimbal, the object-aware
 /// left-click dispatch (FR-2), and panels (the tool inspector projects it to name
 /// the live selection + gimbal affordance).
-pub(crate) use selection::{project_selection, SelectionKind, SelectionState};
+pub(crate) use selection::{SelectionKind, SelectionState, project_selection};
 
 /// FR-2 object-aware left-click dispatch model, re-exported for the FR-3 path
 /// gimbal drag, the right-click menu (`dialogs::context_menu`), and future
 /// terrain/road-builder consumers of the shared table.
-pub use dispatch::{resolve_operation, HandleSide, HitTarget, Operation};
+pub use dispatch::{HandleSide, HitTarget, Operation, resolve_operation};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -209,7 +209,12 @@ impl GestureParams<'_, '_> {
 
 impl NodeManager {
     /// Queue selection through the normal entity resolver and frame its live transform.
-    pub fn request_select_and_frame(&mut self, node_id: &str, fallback: [f32; 3], focus: &mut crate::plugin::CameraFocusTarget) {
+    pub fn request_select_and_frame(
+        &mut self,
+        node_id: &str,
+        fallback: [f32; 3],
+        focus: &mut crate::plugin::CameraFocusTarget,
+    ) {
         self.pending_sidebar_select = Some(node_id.to_owned());
         focus.target = Some((node_id.to_owned(), fallback));
     }
@@ -244,6 +249,18 @@ impl NodeManager {
 
     pub fn deselect(&mut self) {
         self.selected = None;
+    }
+
+    /// A newer persisted snapshot wins over an unfinished local axis drag.
+    pub(crate) fn accept_committed_transform(&mut self, node_id: &str) {
+        if let Some(selection) = self
+            .selected
+            .as_mut()
+            .filter(|selection| selection.node_id == node_id)
+        {
+            selection.drag = None;
+            selection.drag_committed = false;
+        }
     }
 
     /// Drop an in-flight entity gimbal drag WITHOUT committing it, yielding the

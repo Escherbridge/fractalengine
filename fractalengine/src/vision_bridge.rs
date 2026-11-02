@@ -16,21 +16,19 @@ use bevy::time::Real;
 use bevy::transform::TransformSystems;
 use bevy::window::PrimaryWindow;
 use fe_renderer::camera::{
-    compute_orbit_transform, frame_world_box, orbit_from_look_at, pose_transform,
     CameraCaptureLock, CameraScaleSettings, CaptureCamera, LookAtPose, OrbitCameraController,
-    StreamingFocus,
+    StreamingFocus, compute_orbit_transform, frame_world_box, orbit_from_look_at, pose_transform,
 };
 use fe_renderer::terrain_height::TerrainHeightField;
 use fe_runtime::vision::{
-    denied, ActiveHierarchy, AltitudeReference, CameraState, CaptureMode, FocusTarget, PoseSource,
-    ProjectionState, ResolvedGeo, ResolvedOrbit, ResolvedPose, ValidCaptureSpec, ValidPoseSpec,
-    VisionFailure, VisionFailureClass, VisionOp, VisionOutput, VisionRequest,
-    VisionRequestReceiver, WindowState, DEFAULT_FOV_DEG, DEFAULT_HEIGHT, DEFAULT_WIDTH,
-    SETTLE_MAX,
+    ActiveHierarchy, AltitudeReference, CameraState, CaptureMode, DEFAULT_FOV_DEG, DEFAULT_HEIGHT,
+    DEFAULT_WIDTH, FocusTarget, PoseSource, ProjectionState, ResolvedGeo, ResolvedOrbit,
+    ResolvedPose, SETTLE_MAX, ValidCaptureSpec, ValidPoseSpec, VisionFailure, VisionFailureClass,
+    VisionOp, VisionOutput, VisionRequest, VisionRequestReceiver, WindowState, denied,
 };
 use fe_terrain::camera_framing::{
-    coverage_check, frame_bounds_top_down, geo_pose, tile_bounds, union_bounds,
-    within_projection_range, Coverage, FramedPose,
+    Coverage, FramedPose, coverage_check, frame_bounds_top_down, geo_pose, tile_bounds,
+    union_bounds, within_projection_range,
 };
 use fe_terrain::petal_binding::{ActivePetalTerrain, ActiveTileSource};
 use fe_terrain::projection::Projection as GeoProjection;
@@ -39,7 +37,7 @@ use fe_terrain::terrain_plugin::CaptureFocusResidency;
 use fe_ui::navigation_manager::NavigationManager;
 use fe_ui::plugin::SpawnedNodeMarker;
 use fe_ui::verse_manager::VerseManager;
-use fe_ui::visibility::{effective_visibility, NodeAncestry, VisibilityState};
+use fe_ui::visibility::{NodeAncestry, VisibilityState, effective_visibility};
 
 use crate::screenshot_bridge::{capture_png, capture_refusal};
 
@@ -610,9 +608,11 @@ fn resolve_pose(
             up,
             fov_deg,
         }) => {
-            let (Some(position), Some(target), Some(up)) =
-                (finite_vec3(*position), finite_vec3(*target), finite_vec3(*up))
-            else {
+            let (Some(position), Some(target), Some(up)) = (
+                finite_vec3(*position),
+                finite_vec3(*target),
+                finite_vec3(*up),
+            ) else {
                 return Err(unresolvable(
                     "degenerate_camera",
                     "camera coordinates exceed the world's float range",
@@ -663,7 +663,7 @@ fn resolve_pose(
         )?,
         Some(ValidPoseSpec::Tile { z, x, y }) => resolve_tile(terrain, (*z, *x, *y), view)?,
         Some(ValidPoseSpec::Focus { target, navigate }) => {
-            return resolve_focus(target, *navigate, caller_scope, view, scene, terrain)
+            return resolve_focus(target, *navigate, caller_scope, view, scene, terrain);
         }
     };
     Ok(Resolution::Ready(pose))
@@ -687,7 +687,9 @@ fn resolve_geo(
     let ground_abs = projection
         .wgs84_to_local(lat, lon, projection.origin_ele)
         .ok()
-        .and_then(|local| terrain.ground_world((local[0] * scale) as f32, (local[2] * scale) as f32))
+        .and_then(|local| {
+            terrain.ground_world((local[0] * scale) as f32, (local[2] * scale) as f32)
+        })
         .map(|ground| f64::from(ground) / scale + projection.origin_ele)
         .unwrap_or(projection.origin_ele);
     let framed = geo_pose(
@@ -739,7 +741,9 @@ fn frame_geo_bounds(
     let ground_y = projection
         .wgs84_to_local(center_lat, center_lon, projection.origin_ele)
         .ok()
-        .and_then(|local| terrain.ground_world((local[0] * scale) as f32, (local[2] * scale) as f32))
+        .and_then(|local| {
+            terrain.ground_world((local[0] * scale) as f32, (local[2] * scale) as f32)
+        })
         .map(f64::from)
         .unwrap_or(0.0);
     let framed = frame_bounds_top_down(
@@ -757,7 +761,9 @@ fn frame_geo_bounds(
 fn active_ancestry(nav: Option<&NavigationManager>) -> NodeAncestry<'_> {
     NodeAncestry {
         verse_id: nav.and_then(|n| n.active_verse_id.as_deref()).unwrap_or(""),
-        fractal_id: nav.and_then(|n| n.active_fractal_id.as_deref()).unwrap_or(""),
+        fractal_id: nav
+            .and_then(|n| n.active_fractal_id.as_deref())
+            .unwrap_or(""),
         petal_id: nav.and_then(|n| n.active_petal_id.as_deref()).unwrap_or(""),
     }
 }
@@ -815,7 +821,10 @@ fn authorized_target<'a>(
     scene: &'a SceneLookup,
 ) -> Option<(&'a str, &'a str)> {
     let nav = scene.nav.as_deref()?;
-    let active = nav.active_verse_id.as_deref().zip(nav.active_petal_id.as_deref());
+    let active = nav
+        .active_verse_id
+        .as_deref()
+        .zip(nav.active_petal_id.as_deref());
     let verses = scene.verses.as_deref();
     let located = match target {
         FocusTarget::Node(node_id) => verses.and_then(|v| locate_node(v, node_id)).or_else(|| {
@@ -829,7 +838,11 @@ fn authorized_target<'a>(
         }),
         FocusTarget::Petal(petal_id) => verses
             .and_then(|v| locate_petal(v, petal_id))
-            .zip(verses.and_then(|v| v.find_petal(petal_id)).map(|p| p.id.as_str()))
+            .zip(
+                verses
+                    .and_then(|v| v.find_petal(petal_id))
+                    .map(|p| p.id.as_str()),
+            )
             .or_else(|| active.filter(|(_, petal)| petal == petal_id)),
     };
     located.filter(|(verse, _)| scope_covers_verse(caller_scope, verse))
@@ -873,10 +886,9 @@ fn resolve_focus(
     }
     match target {
         FocusTarget::Node(node_id) => {
-            let spawned = scene
-                .markers
-                .iter()
-                .find(|(_, marker, _)| marker.node_id == *node_id && marker.petal_id == target_petal);
+            let spawned = scene.markers.iter().find(|(_, marker, _)| {
+                marker.node_id == *node_id && marker.petal_id == target_petal
+            });
             let Some((entity, _, own_visibility)) = spawned else {
                 return Err(unresolvable(
                     "node_not_found",
@@ -896,7 +908,9 @@ fn resolve_focus(
         FocusTarget::Petal(petal_id) => {
             let mut bounds: Option<(Vec3, Vec3)> = None;
             for (entity, marker, own_visibility) in &scene.markers {
-                if marker.petal_id != *petal_id || !node_visible(scene, &marker.node_id, own_visibility) {
+                if marker.petal_id != *petal_id
+                    || !node_visible(scene, &marker.node_id, own_visibility)
+                {
                     continue;
                 }
                 if let Some((lo, hi)) = node_box(scene, entity) {
@@ -1049,7 +1063,9 @@ fn read_camera(
         verse_id: nav.and_then(|n| n.active_verse_id.clone()),
         verse_name: nav.map(|n| n.active_verse_name.clone()).unwrap_or_default(),
         fractal_id: nav.and_then(|n| n.active_fractal_id.clone()),
-        fractal_name: nav.map(|n| n.active_fractal_name.clone()).unwrap_or_default(),
+        fractal_name: nav
+            .map(|n| n.active_fractal_name.clone())
+            .unwrap_or_default(),
         petal_id: nav.and_then(|n| n.active_petal_id.clone()),
     };
     let projection = terrain.projection().map(|p| ProjectionState {
@@ -1120,7 +1136,14 @@ pub fn drain_vision_requests(
             continue;
         }
         let caller_scope = request.caller_scope.clone();
-        match start_job(&spec, &caller_scope, windows.single().ok(), &cameras, &mut scene, &terrain) {
+        match start_job(
+            &spec,
+            &caller_scope,
+            windows.single().ok(),
+            &cameras,
+            &mut scene,
+            &terrain,
+        ) {
             Ok((phase, pose, nav_snapshot)) => {
                 let holds_camera = spec.mode() == CaptureMode::Window && spec.pose().is_some();
                 let source = source_of(spec.pose());
@@ -1142,7 +1165,10 @@ pub fn drain_vision_requests(
                     settle_frames: spec.settle_frames(),
                     restore: spec.restore().unwrap_or(false),
                     holds_camera,
-                    size: spec.width().zip(spec.height()).map(|(w, h)| UVec2::new(w, h)),
+                    size: spec
+                        .width()
+                        .zip(spec.height())
+                        .map(|(w, h)| UVec2::new(w, h)),
                     started: time.elapsed(),
                     phase,
                     pose,
@@ -1175,12 +1201,18 @@ fn start_job(
             return Err(refusal);
         }
     }
-    let size = spec.width().zip(spec.height()).map(|(w, h)| UVec2::new(w, h));
+    let size = spec
+        .width()
+        .zip(spec.height())
+        .map(|(w, h)| UVec2::new(w, h));
     let view = view_context(cameras, window, size)?;
     match resolve_pose(spec.pose(), caller_scope, &view, scene, terrain)? {
         Resolution::Ready(pose) => {
             pose.transform().ok_or_else(|| {
-                unresolvable("degenerate_camera", "the resolved pose has no valid orientation")
+                unresolvable(
+                    "degenerate_camera",
+                    "the resolved pose has no valid orientation",
+                )
             })?;
             Ok((JobPhase::Posing, Some(pose), None))
         }
@@ -1249,10 +1281,16 @@ pub fn apply_vision_pose(
                 break 'step Step::Continue;
             }
             let target = target.clone();
-            let resolved = view_context(&cameras, window, active.size)
-                .and_then(|view| {
-                    resolve_focus(&target, false, &active.caller_scope, &view, &scene, &terrain)
-                });
+            let resolved = view_context(&cameras, window, active.size).and_then(|view| {
+                resolve_focus(
+                    &target,
+                    false,
+                    &active.caller_scope,
+                    &view,
+                    &scene,
+                    &terrain,
+                )
+            });
             match resolved {
                 Ok(Resolution::Ready(pose)) => {
                     active.pose = Some(pose);
@@ -1262,7 +1300,7 @@ pub fn apply_vision_pose(
                     break 'step Step::Finish(Err(unresolvable(
                         "not_active_petal",
                         "navigation did not reach the target petal",
-                    )))
+                    )));
                 }
                 Err(refusal) => break 'step Step::Finish(Err(refusal)),
             }
@@ -1278,7 +1316,16 @@ pub fn apply_vision_pose(
     if let Step::Finish(outcome) = step {
         if let Some(active) = job.0.take() {
             let nav = scene.nav.as_deref_mut();
-            finish_job(active, outcome, window, &mut cameras, nav, &terrain, &mut images, &mut commands);
+            finish_job(
+                active,
+                outcome,
+                window,
+                &mut cameras,
+                nav,
+                &terrain,
+                &mut images,
+                &mut commands,
+            );
         }
     }
 }
@@ -1291,17 +1338,23 @@ fn pose_job(
     images: &mut Assets<Image>,
     commands: &mut Commands,
 ) -> Result<(), VisionFailure> {
-    let pose = active.pose.ok_or_else(|| failed("unresolved_pose", "no pose to apply"))?;
-    let posed = pose
-        .transform()
-        .ok_or_else(|| unresolvable("degenerate_camera", "the resolved pose has no valid orientation"))?;
+    let pose = active
+        .pose
+        .ok_or_else(|| failed("unresolved_pose", "no pose to apply"))?;
+    let posed = pose.transform().ok_or_else(|| {
+        unresolvable(
+            "degenerate_camera",
+            "the resolved pose has no valid orientation",
+        )
+    })?;
     match active.mode {
         CaptureMode::Window => {
             if active.holds_camera {
                 let (mut transform, controller, mut projection) =
                     cameras.single_mut().map_err(|_| no_main_camera())?;
                 if active.snapshot.is_none() {
-                    active.snapshot = Some(CameraSnapshot::take(&transform, &controller, &projection));
+                    active.snapshot =
+                        Some(CameraSnapshot::take(&transform, &controller, &projection));
                 }
                 *transform = posed;
                 if let Projection::Perspective(perspective) = projection.as_mut() {
@@ -1448,7 +1501,7 @@ pub fn advance_vision_job(
                         break 'step Step::Finish(Err(failed(
                             "capture_failed",
                             "the scene render target is missing",
-                        )))
+                        )));
                     }
                 };
                 let (result_tx, result_rx) = crossbeam::channel::bounded(1);
@@ -1474,7 +1527,16 @@ pub fn advance_vision_job(
     if let Step::Finish(outcome) = step {
         if let Some(active) = job.0.take() {
             let nav = nav.as_deref_mut();
-            finish_job(active, outcome, window, &mut cameras, nav, &terrain, &mut images, &mut commands);
+            finish_job(
+                active,
+                outcome,
+                window,
+                &mut cameras,
+                nav,
+                &terrain,
+                &mut images,
+                &mut commands,
+            );
         }
     }
 }
@@ -1590,8 +1652,8 @@ mod tests {
     use bevy::render::view::screenshot::ScreenshotCaptured;
     use bevy::tasks::{AsyncComputeTaskPool, TaskPool};
     use fe_runtime::vision::{
-        vision_bridge, CaptureSpec, FocusPose, OrbitPose, PoseSpec, TilePose, VisionReply,
-        VisionRequestSender,
+        CaptureSpec, FocusPose, OrbitPose, PoseSpec, TilePose, VisionReply, VisionRequestSender,
+        vision_bridge,
     };
     use fe_ui::verse_manager::{FractalEntry, NodeEntry, PetalEntry, VerseEntry};
     use fe_ui::visibility::OverrideState;
@@ -1726,9 +1788,10 @@ mod tests {
                 TextureFormat::Rgba8UnormSrgb,
                 bevy::asset::RenderAssetUsages::default(),
             );
-            self.app
-                .world_mut()
-                .trigger(ScreenshotCaptured { entity: shot, image });
+            self.app.world_mut().trigger(ScreenshotCaptured {
+                entity: shot,
+                image,
+            });
         }
 
         /// Update until `reply` resolves (the PNG encodes off-thread).
@@ -1817,6 +1880,7 @@ mod tests {
     /// plus verse w / petal r (node n3).
     fn two_petal_tree(h: &mut Harness) {
         let node = |id: &str| NodeEntry {
+            transform: Default::default(),
             id: id.to_string(),
             name: id.to_string(),
             ..Default::default()
@@ -1934,7 +1998,11 @@ mod tests {
         h.app.update();
 
         let cameras = h.capture_cameras();
-        assert_eq!(cameras.len(), 1, "exactly one CaptureCamera + StreamingFocus");
+        assert_eq!(
+            cameras.len(),
+            1,
+            "exactly one CaptureCamera + StreamingFocus"
+        );
         let target = h.app.world().get::<RenderTarget>(cameras[0]).cloned();
         let Some(RenderTarget::Image(image_target)) = target else {
             panic!("capture camera must render to an image, got {target:?}");
@@ -1959,7 +2027,11 @@ mod tests {
         assert!(!pose.restored);
         h.app.update();
         assert!(h.capture_cameras().is_empty(), "capture camera despawned");
-        assert_eq!(h.app.world().resource::<Assets<Image>>().len(), 0, "image freed");
+        assert_eq!(
+            h.app.world().resource::<Assets<Image>>().len(),
+            0,
+            "image freed"
+        );
         assert_eq!(h.main_state(), before, "main camera still bit-identical");
     }
 
@@ -1982,9 +2054,15 @@ mod tests {
             for _ in 0..10 {
                 h.app.update();
             }
-            assert!(h.screenshots().is_empty(), "settle_frames passed but tiles are pending");
+            assert!(
+                h.screenshots().is_empty(),
+                "settle_frames passed but tiles are pending"
+            );
             if resolves {
-                h.app.world_mut().resource_mut::<CaptureFocusResidency>().pending = 0;
+                h.app
+                    .world_mut()
+                    .resource_mut::<CaptureFocusResidency>()
+                    .pending = 0;
             } else {
                 h.advance_clock(SETTLE_WALL_CLOCK_CAP);
             }
@@ -2022,10 +2100,15 @@ mod tests {
         assert_eq!(pose.source, PoseSource::Orbit);
         assert!(pose.restored);
         assert_eq!(pose.settle_frames_used, 4);
-        assert!((Vec3::new(pose.position[0] as f32, pose.position[1] as f32, pose.position[2] as f32)
-            - expected.translation)
-            .length()
-            < 1e-4);
+        assert!(
+            (Vec3::new(
+                pose.position[0] as f32,
+                pose.position[1] as f32,
+                pose.position[2] as f32
+            ) - expected.translation)
+                .length()
+                < 1e-4
+        );
         h.app.update();
         assert!(!h.locked(), "lock released");
         assert_eq!(h.main_state(), before, "snapshot restored bit-identically");
@@ -2083,7 +2166,10 @@ mod tests {
         let busy = expect_failure(second.try_recv().expect("refused at once"));
         assert_eq!(busy.code, "capture_in_progress");
         assert_eq!(busy.status_class, VisionFailureClass::Busy);
-        assert!(h.capture_cameras().is_empty(), "the refused job spawned nothing");
+        assert!(
+            h.capture_cameras().is_empty(),
+            "the refused job spawned nothing"
+        );
         assert!(first.try_recv().is_err(), "the first job is still running");
     }
 
@@ -2110,7 +2196,10 @@ mod tests {
         h.app.update();
         assert!(!h.locked(), "lock released on teardown");
         assert_eq!(h.main_state(), before, "camera restored on teardown");
-        assert!(h.screenshots().is_empty(), "the orphaned Screenshot is despawned");
+        assert!(
+            h.screenshots().is_empty(),
+            "the orphaned Screenshot is despawned"
+        );
     }
 
     #[test]
@@ -2141,19 +2230,29 @@ mod tests {
         let (x, y) = tile_of(47.5, -121.5, 12);
         let mut inside = h.capture(tile_capture(12, x, y));
         h.app.update();
-        assert!(inside.try_recv().is_err(), "an inside tile is captured, not refused");
+        assert!(
+            inside.try_recv().is_err(),
+            "an inside tile is captured, not refused"
+        );
         let cameras = h.capture_cameras();
         assert_eq!(cameras.len(), 1);
         let posed = *h.app.world().get::<Transform>(cameras[0]).unwrap();
         let bounds = tile_bounds(12, x, y);
         let projection = GeoProjection::new(47.5, -121.5, 120.0);
         let centre = projection
-            .wgs84_to_local((bounds[0] + bounds[2]) / 2.0, (bounds[1] + bounds[3]) / 2.0, 120.0)
+            .wgs84_to_local(
+                (bounds[0] + bounds[2]) / 2.0,
+                (bounds[1] + bounds[3]) / 2.0,
+                120.0,
+            )
             .unwrap();
         assert!((posed.translation.x - centre[0] as f32).abs() < 1e-2);
         assert!((posed.translation.z - centre[2] as f32).abs() < 1e-2);
         assert!(posed.translation.y > 0.0);
-        assert!(Vec3::from(posed.forward()).dot(Vec3::NEG_Y) > 0.999, "looks straight down");
+        assert!(
+            Vec3::from(posed.forward()).dot(Vec3::NEG_Y) > 0.999,
+            "looks straight down"
+        );
     }
 
     #[test]
@@ -2193,7 +2292,11 @@ mod tests {
         let refusal = expect_failure(reply.try_recv().expect("answered in one frame"));
         assert_eq!(refusal.code, "not_active_petal");
         let nav = h.app.world().resource::<NavigationManager>();
-        assert_eq!(nav.active_petal_id.as_deref(), Some("p"), "no navigation happened");
+        assert_eq!(
+            nav.active_petal_id.as_deref(),
+            Some("p"),
+            "no navigation happened"
+        );
     }
 
     /// `navigate: true` (window mode) switches the active petal, waits for
@@ -2205,7 +2308,11 @@ mod tests {
         let mut reply = h.capture(focus_capture("n2", true));
         h.app.update();
         assert_eq!(
-            h.app.world().resource::<NavigationManager>().active_petal_id.as_deref(),
+            h.app
+                .world()
+                .resource::<NavigationManager>()
+                .active_petal_id
+                .as_deref(),
             Some("q"),
             "navigated to the node's petal"
         );
@@ -2255,7 +2362,11 @@ mod tests {
         h.app.update();
         let failure = expect_failure(reply.try_recv().expect("torn down"));
         assert_eq!(failure.code, "capture_timed_out");
-        assert_eq!(h.active_petal().as_deref(), Some("p"), "failure restores navigation");
+        assert_eq!(
+            h.active_petal().as_deref(),
+            Some("p"),
+            "failure restores navigation"
+        );
         h.app.update();
         assert!(!h.locked());
         assert_eq!(h.main_state(), before);
@@ -2268,7 +2379,9 @@ mod tests {
         let mut h = harness((1280, 720));
         two_petal_tree(&mut h);
         let before = h.main_state();
-        let spec = orbit_capture(CaptureMode::Scene, 0, None).validate().unwrap();
+        let spec = orbit_capture(CaptureMode::Scene, 0, None)
+            .validate()
+            .unwrap();
         let mut capture = h.send_as("VERSE#w", VisionOp::Capture(spec));
         let mut read = h.send_as("VERSE#w", VisionOp::ReadCamera);
         h.app.update();
@@ -2303,7 +2416,10 @@ mod tests {
         for target in ["n3", "ghost"] {
             let mut reply = h.capture(focus_capture(target, true));
             h.app.update();
-            assert_eq!(expect_failure(reply.try_recv().expect("answered")), denied());
+            assert_eq!(
+                expect_failure(reply.try_recv().expect("answered")),
+                denied()
+            );
             assert_eq!(h.active_petal().as_deref(), Some("p"), "never navigated");
             assert!(!h.locked());
         }
@@ -2326,8 +2442,14 @@ mod tests {
         for _ in 0..10 {
             h.app.update();
         }
-        assert_eq!(expect_failure(reply.try_recv().expect("answered")), denied());
-        assert!(h.screenshots().is_empty(), "no frame of the uncovered verse");
+        assert_eq!(
+            expect_failure(reply.try_recv().expect("answered")),
+            denied()
+        );
+        assert!(
+            h.screenshots().is_empty(),
+            "no frame of the uncovered verse"
+        );
         assert!(!h.locked());
         assert_eq!(h.main_state(), before);
     }
@@ -2342,12 +2464,17 @@ mod tests {
 
     /// A verse-w capture and camera read, both expected to get the denial.
     fn assert_verse_w_denied(h: &mut Harness) {
-        let spec = orbit_capture(CaptureMode::Scene, 0, None).validate().unwrap();
+        let spec = orbit_capture(CaptureMode::Scene, 0, None)
+            .validate()
+            .unwrap();
         let mut capture = h.send_as("VERSE#w", VisionOp::Capture(spec));
         let mut read = h.send_as("VERSE#w", VisionOp::ReadCamera);
         h.app.update();
         for reply in [&mut capture, &mut read] {
-            assert_eq!(expect_failure(reply.try_recv().expect("answered at once")), denied());
+            assert_eq!(
+                expect_failure(reply.try_recv().expect("answered at once")),
+                denied()
+            );
         }
         assert!(h.capture_cameras().is_empty());
     }
@@ -2371,8 +2498,14 @@ mod tests {
         open_verse_w(&mut h);
         assert_verse_w_denied(&mut h);
 
-        h.app.world_mut().resource_mut::<ActivePetalTerrain>().petal_id = Some("r".into());
-        assert!(verse_w_read_is_served(&mut h), "only verse w is on screen now");
+        h.app
+            .world_mut()
+            .resource_mut::<ActivePetalTerrain>()
+            .petal_id = Some("r".into());
+        assert!(
+            verse_w_read_is_served(&mut h),
+            "only verse w is on screen now"
+        );
 
         let stale = spawn_node(&mut h, "n1", "p", Vec3::ZERO);
         assert_verse_w_denied(&mut h);
@@ -2380,7 +2513,9 @@ mod tests {
         assert!(verse_w_read_is_served(&mut h));
 
         // Frame-time re-check: v content reappearing mid-settle denies.
-        let spec = orbit_capture(CaptureMode::Window, 5, None).validate().unwrap();
+        let spec = orbit_capture(CaptureMode::Window, 5, None)
+            .validate()
+            .unwrap();
         let mut reply = h.send_as("VERSE#w", VisionOp::Capture(spec));
         h.app.update();
         assert!(h.locked(), "admitted at arrival");
@@ -2388,7 +2523,10 @@ mod tests {
         for _ in 0..10 {
             h.app.update();
         }
-        assert_eq!(expect_failure(reply.try_recv().expect("answered")), denied());
+        assert_eq!(
+            expect_failure(reply.try_recv().expect("answered")),
+            denied()
+        );
         assert!(h.screenshots().is_empty(), "no frame showing verse v");
         assert!(!h.locked());
     }
@@ -2433,7 +2571,11 @@ mod tests {
         assert_eq!(failure.code, "capture_timed_out");
         let nav = h.app.world().resource::<NavigationManager>();
         assert_eq!(nav.active_verse_id.as_deref(), Some("w"));
-        assert_eq!(nav.active_petal_id.as_deref(), Some("r"), "the user's own move stands");
+        assert_eq!(
+            nav.active_petal_id.as_deref(),
+            Some("r"),
+            "the user's own move stands"
+        );
     }
 
     /// AC-8: the read-back names the active hierarchy and the RUNTIME-grounded
@@ -2454,7 +2596,10 @@ mod tests {
         assert_eq!(state.active.petal_id.as_deref(), Some("p"));
         let projection = state.projection.expect("a map is bound");
         assert_eq!(projection.origin_ele_grounded, 312.5);
-        assert_eq!(projection.tileset_bounds, Some([47.0, -122.0, 48.0, -121.0]));
+        assert_eq!(
+            projection.tileset_bounds,
+            Some([47.0, -122.0, 48.0, -121.0])
+        );
         assert_eq!(projection.zoom_range, Some([10, 14]));
         assert!(!state.locked);
         assert_eq!((state.window.width, state.window.height), (1280, 720));
@@ -2470,7 +2615,11 @@ mod tests {
         h.app.update();
         let mut reply = h.send(VisionOp::ReadCamera);
         h.app.update();
-        let state = match reply.try_recv().expect("answered while the job runs").result {
+        let state = match reply
+            .try_recv()
+            .expect("answered while the job runs")
+            .result
+        {
             Ok(VisionOutput::Camera(state)) => state,
             other => panic!("expected camera state, got {other:?}"),
         };
@@ -2486,18 +2635,26 @@ mod tests {
         h.app.insert_resource(store);
         h.app.update();
         let world = h.app.world();
-        let main_layers = world.get::<RenderLayers>(h.main).expect("main camera layered");
+        let main_layers = world
+            .get::<RenderLayers>(h.main)
+            .expect("main camera layered");
         let gizmo_layers = world
             .resource::<GizmoConfigStore>()
             .config::<DefaultGizmoConfigGroup>()
             .0
             .render_layers
             .clone();
-        assert!(main_layers.intersects(&gizmo_layers), "main camera draws gizmos");
+        assert!(
+            main_layers.intersects(&gizmo_layers),
+            "main camera draws gizmos"
+        );
         assert!(
             !RenderLayers::default().intersects(&gizmo_layers),
             "a default-layer capture camera does not"
         );
-        assert!(main_layers.intersects(&RenderLayers::default()), "main still sees the scene");
+        assert!(
+            main_layers.intersects(&RenderLayers::default()),
+            "main still sees the scene"
+        );
     }
 }

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use bevy::prelude::*;
 
-use fe_database::{hash_from_hex, BlobStoreHandle};
+use fe_database::{BlobStoreHandle, hash_from_hex};
 use fe_ui::asset_ops::{AssetDownloadStatus, AssetOp, PendingAssetOps};
 use fe_ui::verse_manager::VerseManager;
 
@@ -113,7 +113,7 @@ fn resolve_asset(
             return Err(
                 "Asset is not cached locally yet — reopen this node or re-sync to fetch it"
                     .to_string(),
-            )
+            );
         }
         None => return Err("This node has no asset".to_string()),
     };
@@ -283,6 +283,7 @@ mod tests {
         let blob_store: BlobStoreHandle = Arc::new(store);
 
         let node = NodeEntry {
+            transform: Default::default(),
             id: "node-1".to_string(),
             name: "My Cool Model".to_string(),
             has_asset: true,
@@ -312,6 +313,7 @@ mod tests {
     #[test]
     fn resolve_asset_reports_clear_error_when_has_asset_but_no_cached_path() {
         let node = NodeEntry {
+            transform: Default::default(),
             id: "node-2".to_string(),
             name: "Uncached Model".to_string(),
             has_asset: true,
@@ -339,6 +341,7 @@ mod tests {
     #[test]
     fn resolve_asset_reports_no_asset_for_node_without_one() {
         let node = NodeEntry {
+            transform: Default::default(),
             id: "node-3".to_string(),
             name: "Empty".to_string(),
             has_asset: false,
@@ -373,6 +376,7 @@ mod tests {
         let missing_hash = "0".repeat(64);
 
         let node = NodeEntry {
+            transform: Default::default(),
             id: "node-4".to_string(),
             name: "Ghost".to_string(),
             has_asset: true,

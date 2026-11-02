@@ -9,7 +9,7 @@ use fe_runtime::messages::{
 };
 
 use super::invite::{generate_namespace_secret, store_namespace_secret};
-use crate::{hash_from_hex, hash_to_hex, replicate_row, BlobStoreHandle, ReplicationSender};
+use crate::{BlobStoreHandle, ReplicationSender, hash_from_hex, hash_to_hex, replicate_row};
 
 // ---------------------------------------------------------------------------
 // Verse
@@ -691,8 +691,12 @@ pub(crate) async fn load_hierarchy_handler(
                                                                     model_url_map.get(aid)
                                                                 })
                                                                 .and_then(|u| u.clone());
+                                                            let stored_rotation = n["rotation"].as_array().map(|items| items.iter().filter_map(serde_json::Value::as_f64).collect::<Vec<_>>()).unwrap_or_else(|| vec![0.0; 3]);
+                                                            let rotation = fe_runtime::node_history::stored_rotation_quaternion(&stored_rotation).unwrap_or([0.0, 0.0, 0.0, 1.0]);
+                                                            let scale = std::array::from_fn(|axis| n["scale"][axis].as_f64().filter(|value| value.is_finite() && (*value as f32).is_finite()).unwrap_or(1.0) as f32);
                                                             NodeHierarchyData {
-                                                                id: n["node_id"]
+                                                                rotation, scale,
+id: n["node_id"]
                                                                     .as_str()
                                                                     .unwrap_or_default()
                                                                     .to_string(),
@@ -1406,7 +1410,7 @@ pub(crate) async fn promote_instance_handler(
             Err(e) => {
                 return Err(anyhow::anyhow!(
                     "PromoteInstance lookup statement failed: {e}"
-                ))
+                ));
             }
         }
     };
@@ -1552,7 +1556,7 @@ pub(crate) async fn duplicate_node_handler(
         Err(e) => {
             return Err(anyhow::anyhow!(
                 "DuplicateNode lookup statement failed: {e}"
-            ))
+            ));
         }
     };
     let Some(src) = rows.first() else {

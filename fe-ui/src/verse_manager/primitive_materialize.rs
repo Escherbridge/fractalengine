@@ -6,10 +6,10 @@
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
-use fe_sdk::primitive::{PrimitiveDescriptor, PRIMITIVE_PROPERTY_KEY};
+use fe_sdk::primitive::{PRIMITIVE_PROPERTY_KEY, PrimitiveDescriptor};
 
-use super::primitive_reconcile::{resolve_primitive_material, PrimitiveMaterialAssets};
-use super::spawn::{build_primitive_mesh, spawn_primitive_entity, FallbackSign, PrimitiveNode};
+use super::primitive_reconcile::{PrimitiveMaterialAssets, resolve_primitive_material};
+use super::spawn::{FallbackSign, PrimitiveNode, build_primitive_mesh, spawn_primitive_entity};
 use super::{NodeEntry, TextureRegistryRes, VerseManager};
 use crate::navigation_manager::NavigationManager;
 use crate::plugin::SpawnedNodeMarker;
@@ -215,7 +215,7 @@ pub(super) fn materialize_cached_primitives(
             &mut materials,
             &mut images,
         );
-        spawn_primitive_entity(
+        let entity = spawn_primitive_entity(
             &mut commands,
             &mut meshes,
             &node.id,
@@ -225,6 +225,9 @@ pub(super) fn materialize_cached_primitives(
             descriptor.clone(),
             material,
         );
+        let mut transform = node.world_transform();
+        transform.translation = Vec3::from_array(pos);
+        commands.entity(entity).insert(transform);
         bevy::log::debug!(
             "Materialized cached primitive node={} without selection (FR-1)",
             node.id
@@ -251,6 +254,7 @@ mod tests {
 
     fn node(id: &str, asset_path: Option<&str>) -> NodeEntry {
         NodeEntry {
+            transform: Default::default(),
             id: id.to_string(),
             name: id.to_string(),
             has_asset: asset_path.is_some(),

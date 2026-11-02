@@ -9,10 +9,10 @@ use bevy::prelude::*;
 use fe_renderer::camera::OrbitCameraController;
 use fe_runtime::diag15m::RenderPressure;
 
+use super::VerseManager;
 use super::path_asset_materialize::PathAssetCache;
 use super::petal_respawn::NodeSpawner;
-use super::spawn::{ResidencyBudget, ResidentNode, MAX_PETAL_NODES, RESIDENCY_TAPER_FACTOR};
-use super::VerseManager;
+use super::spawn::{MAX_PETAL_NODES, RESIDENCY_TAPER_FACTOR, ResidencyBudget, ResidentNode};
 use crate::navigation_manager::NavigationManager;
 use crate::node_manager::NodeManager;
 use crate::plugin::SpawnedNodeMarker;
@@ -776,6 +776,7 @@ mod tests {
 
     fn node(id: String, position: [f32; 3]) -> NodeEntry {
         NodeEntry {
+            transform: Default::default(),
             name: id.clone(),
             id,
             has_asset: false,

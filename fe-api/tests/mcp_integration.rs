@@ -21,16 +21,16 @@ use axum::{Extension, Json};
 use base64::Engine as _;
 use serde_json::json;
 
-use fe_api::mcp::{mcp_handler, tool_specs, HierarchyTarget, JsonRpcRequest, ScopeRule, ToolSeam};
+use fe_api::mcp::{HierarchyTarget, JsonRpcRequest, ScopeRule, ToolSeam, mcp_handler, tool_specs};
 use fe_api::rest::NOT_FOUND_OR_DENIED;
 use fe_api::server::ApiState;
-use fe_api::upload::{ingest_glb_with_limit, GlbPayload, UploadError, UploadOwner, UNKNOWN_ASSET};
-use fe_database::handlers::crud::{create_asset_reply, AssetRegistration};
-use fe_database::handlers::device_payload;
+use fe_api::upload::{GlbPayload, UNKNOWN_ASSET, UploadError, UploadOwner, ingest_glb_with_limit};
 use fe_database::RoleLevel;
+use fe_database::handlers::crud::{AssetRegistration, create_asset_reply};
+use fe_database::handlers::device_payload;
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::app::PendingApiRequests;
-use fe_runtime::blob_store::{hash_from_hex, BlobHash, BlobStore, BlobStoreHandle};
+use fe_runtime::blob_store::{BlobHash, BlobStore, BlobStoreHandle, hash_from_hex};
 use fe_runtime::messages::{
     ApiCommand, DbCommand, DbResult, FractalHierarchyData, NodeHierarchyData, PetalHierarchyData,
     VerseHierarchyData,
@@ -250,6 +250,8 @@ fn hierarchy(m: &Model) -> Vec<VerseHierarchyData> {
                                 .iter()
                                 .filter(|n| n.petal_id == *pid)
                                 .map(|n| NodeHierarchyData {
+                                    rotation: [0.0, 0.0, 0.0, 1.0],
+                                    scale: [1.0; 3],
                                     id: n.id.clone(),
                                     name: n.name.clone(),
                                     has_asset: n.asset_id.is_some(),
@@ -1053,10 +1055,12 @@ async fn tools_list_inventory() {
     assert_eq!(listed_tools(&gui, &gui_token).await, gui_tools);
     let full_table: Vec<&str> = tool_specs().iter().map(|t| t.name).collect();
     assert_eq!(full_table, EXPECTED_TOOLS);
-    assert!(tool_specs()
-        .iter()
-        .filter(|t| t.name.starts_with("sim_"))
-        .all(|t| t.requires == Some(ToolSeam::SimControl)));
+    assert!(
+        tool_specs()
+            .iter()
+            .filter(|t| t.name.starts_with("sim_"))
+            .all(|t| t.requires == Some(ToolSeam::SimControl))
+    );
 
     // initialize + notifications/initialized handshake.
     let (_, body) = h
@@ -1692,11 +1696,13 @@ async fn wart_update_transform_foreign_node_is_denied() {
     let resp = call_tool(&state, &home_editor, "update_transform", transform(&ulid())).await;
     assert_eq!(tool_text(&resp), NOT_FOUND_OR_DENIED);
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-    assert!(model
-        .lock()
-        .unwrap()
-        .logged("UpdateNodeTransform")
-        .is_empty());
+    assert!(
+        model
+            .lock()
+            .unwrap()
+            .logged("UpdateNodeTransform")
+            .is_empty()
+    );
 
     let resp = call_tool(
         &state,
@@ -1877,11 +1883,13 @@ async fn rest_create_node_rejects_a_foreign_petal_behind_an_own_prefix() {
         json!({ "ok": true, "data": { "id": id, "name": "rest-node" }, "error": null })
     );
     assert_eq!(created[0]["position"], json!([0.0, 0.0, 0.0]));
-    assert!(model
-        .lock()
-        .unwrap()
-        .logged("CreateNodeWithAsset")
-        .is_empty());
+    assert!(
+        model
+            .lock()
+            .unwrap()
+            .logged("CreateNodeWithAsset")
+            .is_empty()
+    );
 }
 
 /// MCP-2.4: REST create_node with `asset_id` is `place_asset` — the same core,
@@ -2431,11 +2439,13 @@ async fn place_asset_rejects_a_foreign_scope_asset() {
     )
     .await;
     assert_eq!(tool_text(&resp), UNKNOWN_ASSET, "unplaced foreign upload");
-    assert!(model
-        .lock()
-        .unwrap()
-        .logged("CreateNodeWithAsset")
-        .is_empty());
+    assert!(
+        model
+            .lock()
+            .unwrap()
+            .logged("CreateNodeWithAsset")
+            .is_empty()
+    );
     let resp = call_tool(
         &state,
         &foreign_editor,

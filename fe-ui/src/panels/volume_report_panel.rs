@@ -20,8 +20,8 @@ use crate::accessibility::ResponseExt;
 use fe_renderer::terrain_overlay::{VolumeReportRequest, VolumeReportResult};
 use fe_runtime::messages::DbResult;
 
-use crate::actions::terrain_proposal::{SculptShapeMode, SculptToolState};
 use crate::actions::UiManager;
+use crate::actions::terrain_proposal::{SculptShapeMode, SculptToolState};
 use crate::navigation_manager::NavigationManager;
 use crate::panels::proposal_report_panel::earthwork_regions_from_terrain;
 use crate::panels::toolbar::Tool;
@@ -286,11 +286,7 @@ pub(crate) fn resolve_volume_display(state: &VolumeReportState) -> VolumeDisplay
 
 /// "m"/"wu" per NFR-4 — never mislabels world units as meters.
 pub(crate) fn volume_unit_suffix(scaled: bool) -> &'static str {
-    if scaled {
-        "m"
-    } else {
-        "wu"
-    }
+    if scaled { "m" } else { "wu" }
 }
 
 // ---------------------------------------------------------------------------
@@ -659,13 +655,15 @@ mod tests {
         for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             for metric in 0..8 {
                 let mut invalid = answer.clone();
-                invalid.items.push(fe_renderer::terrain_overlay::VolumeItem {
-                    id: "overflow".into(),
-                    kind: "raise".into(),
-                    cut_m3: 0.0,
-                    fill_m3: 0.0,
-                    overlap_area_m2: 0.0,
-                });
+                invalid
+                    .items
+                    .push(fe_renderer::terrain_overlay::VolumeItem {
+                        id: "overflow".into(),
+                        kind: "raise".into(),
+                        cut_m3: 0.0,
+                        fill_m3: 0.0,
+                        overlap_area_m2: 0.0,
+                    });
                 match metric {
                     0 => invalid.area_m2 = value,
                     1 => invalid.cut_m3 = value,
@@ -681,7 +679,11 @@ mod tests {
                 assert!(volume_report_to_tsv(&invalid, &[]).is_empty());
                 app.world_mut().write_message(invalid);
                 app.update();
-                assert_eq!(shown_cut(&app), None, "nonfinite metric {metric} must not be Ready");
+                assert_eq!(
+                    shown_cut(&app),
+                    None,
+                    "nonfinite metric {metric} must not be Ready"
+                );
             }
         }
         app.world_mut().write_message(answer.clone());
@@ -778,6 +780,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, (name, asset, url, _))| NodeEntry {
+                transform: Default::default(),
                 id: format!("n{i}"),
                 name: name.to_string(),
                 position: [5.0, 0.0, 5.0],
@@ -806,6 +809,7 @@ mod tests {
         let far = PetalEntry {
             id: "p1".into(),
             nodes: vec![NodeEntry {
+                transform: Default::default(),
                 id: "far".into(),
                 name: "Far".into(),
                 position: [500.0, 0.0, 500.0],

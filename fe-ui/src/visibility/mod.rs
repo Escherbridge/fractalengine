@@ -15,10 +15,10 @@ use std::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 
 pub use resolve::{
-    effective_visibility, fractal_effective_visible, glyph_for_bool, glyph_for_rollup,
-    hidden_chip_label, node_eye_tooltip, node_hidden_reason, petal_effective_visible, rollup,
-    toggle_node_override, toggle_scope_hidden, verse_effective_visible, HiddenReason, NodeAncestry,
-    RollupState,
+    HiddenReason, NodeAncestry, RollupState, effective_visibility, fractal_effective_visible,
+    glyph_for_bool, glyph_for_rollup, hidden_chip_label, node_eye_tooltip, node_hidden_reason,
+    petal_effective_visible, rollup, toggle_node_override, toggle_scope_hidden,
+    verse_effective_visible,
 };
 
 use crate::navigation_manager::NavigationManager;
@@ -725,11 +725,13 @@ mod tests {
                         name: "Petal 1".into(),
                         nodes: vec![
                             NodeEntry {
+                                transform: Default::default(),
                                 id: "n1".into(),
                                 name: "N1".into(),
                                 ..Default::default()
                             },
                             NodeEntry {
+                                transform: Default::default(),
                                 id: "n2".into(),
                                 name: "N2".into(),
                                 ..Default::default()
@@ -746,6 +748,7 @@ mod tests {
                         id: "p2".into(),
                         name: "Petal 2".into(),
                         nodes: vec![NodeEntry {
+                            transform: Default::default(),
                             id: "n3".into(),
                             name: "N3".into(),
                             ..Default::default()
@@ -789,11 +792,13 @@ mod tests {
             name: "Petal".into(),
             nodes: vec![
                 NodeEntry {
+                    transform: Default::default(),
                     id: "n1".into(),
                     name: "N1".into(),
                     ..Default::default()
                 },
                 NodeEntry {
+                    transform: Default::default(),
                     id: "n2".into(),
                     name: "N2".into(),
                     ..Default::default()

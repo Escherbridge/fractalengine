@@ -100,7 +100,7 @@ pub(super) fn spawn_node_entity(
     name: &str,
     position: [f32; 3],
     asset_path: &str,
-) {
+) -> Entity {
     let handle: Handle<Scene> = asset_server.load(scene_asset_path(asset_path));
     let entity = commands
         .spawn((
@@ -120,6 +120,7 @@ pub(super) fn spawn_node_entity(
         entity,
         petal_id
     );
+    entity
 }
 
 /// Marker component for fallback sign entities (nodes without geometry).
@@ -270,7 +271,7 @@ pub(super) fn spawn_fallback_sign(
     petal_id: &str,
     name: &str,
     position: [f32; 3],
-) {
+) -> Entity {
     // A thin vertical cuboid: 0.8 wide, 0.6 tall, 0.02 deep — like a placard.
     let mesh = meshes.add(Cuboid::new(0.8, 0.6, 0.02));
     let material = materials.add(StandardMaterial {
@@ -301,6 +302,7 @@ pub(super) fn spawn_fallback_sign(
         entity,
         petal_id
     );
+    entity
 }
 
 #[cfg(test)]

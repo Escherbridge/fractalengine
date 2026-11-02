@@ -5,13 +5,13 @@
 //! See `fe-ui/src/verse_manager/AGENTS.md` §primitives.
 
 use bevy::prelude::*;
-use fe_hexon::handlers::material::{resolve_material_textures, MaterialHandle};
+use fe_hexon::handlers::material::{MaterialHandle, resolve_material_textures};
 use fe_hexon::registry::FsBlobStore;
-use fe_sdk::primitive::{PrimitiveDescriptor, PRIMITIVE_PROPERTY_KEY};
+use fe_sdk::primitive::{PRIMITIVE_PROPERTY_KEY, PrimitiveDescriptor};
 
+use super::TextureRegistryRes;
 use super::primitive_materialize::{FallbackSignQuery, PrimitiveEntityQuery};
 use super::spawn::{build_primitive_mesh, spawn_primitive_entity};
-use super::TextureRegistryRes;
 use crate::navigation_manager::NavigationManager;
 use crate::node_manager::NodeManager;
 use crate::plugin::InspectorFormState;
@@ -120,7 +120,7 @@ pub(super) fn reconcile_selected_primitive(
             &mut materials,
             &mut images,
         );
-        spawn_primitive_entity(
+        let entity = spawn_primitive_entity(
             &mut commands,
             &mut meshes,
             &node_id,
@@ -130,6 +130,10 @@ pub(super) fn reconcile_selected_primitive(
             descriptor,
             material,
         );
+        commands.entity(entity).insert(Transform {
+            translation: Vec3::from_array(pos),
+            ..*transform
+        });
     }
 }
 

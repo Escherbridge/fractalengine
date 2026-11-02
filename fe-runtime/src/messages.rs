@@ -1651,6 +1651,8 @@ pub struct NodeHierarchyData {
     pub name: String,
     pub has_asset: bool,
     pub position: [f32; 3],
+    pub rotation: [f32; 4],
+    pub scale: [f32; 3],
     pub asset_path: Option<String>,
     /// The petal that owns this node — used by the UI to scope scene entity
     /// spawn/despawn to the currently active petal.

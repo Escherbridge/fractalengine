@@ -1,6 +1,7 @@
 //! Drains `DbResult` messages into the hierarchy, dialogs, and inspector —
 //! a thin dispatcher over per-domain handler submodules; see ../AGENTS.md §db-results.
 
+mod committed;
 mod fields;
 mod hierarchy;
 mod nodes;
@@ -55,6 +56,16 @@ pub(super) struct DescriptorCaches<'w, 's> {
         &'static crate::plugin::SpawnedNodeMarker,
         Without<super::spawn::PathAssetInstance>,
     >,
+    current_nodes: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static crate::plugin::SpawnedNodeMarker,
+            Option<&'static super::spawn::FallbackSign>,
+        ),
+        With<super::spawn::ResidentNode>,
+    >,
     mesh_budget: Res<'w, crate::plugin::MeshInstanceBudget>,
     /// D-74: `HierarchyLoaded` only spawns ledger-admitted nodes (§residency-ledger).
     residency: Res<'w, super::ResidencyLedger>,
@@ -103,7 +114,7 @@ pub(super) fn apply_db_results(
     mut petal_map: ResMut<crate::terrain_map::PetalMapState>,
     mut gis_panel: ResMut<crate::gis::GisPanelState>,
     mut path_state: ResMut<crate::gis::PathEditorState>,
-    node_mgr: Res<crate::node_manager::NodeManager>,
+    mut node_mgr: ResMut<crate::node_manager::NodeManager>,
     mut caches: DescriptorCaches,
 ) {
     // Live scene node_ids: repeat HierarchyLoaded events (API polls, joins)
@@ -114,6 +125,37 @@ pub(super) fn apply_db_results(
     let mesh_budget_exceeded = caches.mesh_budget.exceeded;
     for result in reader.read() {
         let property_forwarded = forward_correlated_property_reply(result, &mut pending_api);
+        let materialization = match result {
+            DbResult::NodeMaterialized { node, .. } => Some(node.clone()),
+            DbResult::NodeMutationCommitted { receipt, .. } => {
+                committed::from_receipt(receipt, &verse_mgr)
+            }
+            _ => None,
+        };
+        if let Some(current) = materialization {
+            if committed::apply(
+                &current,
+                &mut verse_mgr,
+                &mut commands,
+                &caches.current_nodes,
+            ) {
+                node_mgr.accept_committed_transform(&current.node.node_id);
+                properties::handle_node_properties_loaded(
+                    &current.node.node_id,
+                    Some(&current.node.petal_id),
+                    &current.properties,
+                    &mut path_state,
+                    &node_mgr,
+                    &mut inspector,
+                    &mut caches.primitive,
+                    &mut caches.path_asset,
+                    &mut caches.stamp_state,
+                    &mut caches.earthwork_map,
+                    &mut caches.visibility,
+                    &mut caches.callout_map,
+                );
+            }
+        }
         inspector
             .query_results
             .invalidate(nav.active_verse_id.as_deref());
@@ -643,6 +685,7 @@ mod tests {
                         expanded: true,
                         render_distance: None,
                         nodes: vec![NodeEntry {
+                            transform: Default::default(),
                             id: "n1".into(),
                             name: "Node".into(),
                             has_asset: false,
@@ -962,6 +1005,8 @@ mod tests {
                 view_hidden: false,
                 render_distance: None,
                 nodes: vec![NodeHierarchyData {
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0; 3],
                     id: "n".into(),
                     name: "Node".into(),
                     has_asset: true,

@@ -178,8 +178,8 @@ impl TestPeer {
         let db_blob_store = blob_store.clone();
         let db_repl_tx = repl_tx;
         let _db_keypair = NodeKeypair::generate(); // separate keypair for DB invite ops
-                                                   // We actually want to use the SAME keypair for invite generation,
-                                                   // so clone the seed bytes.
+        // We actually want to use the SAME keypair for invite generation,
+        // so clone the seed bytes.
         let kp_seed = keypair.seed_bytes();
         let db_local_did = local_did.clone();
         let db_handle = std::thread::spawn(move || {
@@ -1850,6 +1850,8 @@ async fn load_hierarchy(db: &surrealdb::Surreal<Db>) -> anyhow::Result<Vec<Verse
                     let has_asset = nrow["asset_id"].as_str().is_some();
 
                     nodes.push(NodeHierarchyData {
+                        rotation: [0.0, 0.0, 0.0, 1.0],
+                        scale: [1.0; 3],
                         id: nid,
                         name: nname,
                         has_asset,

@@ -69,7 +69,7 @@ pub(super) fn broadcast_transform(
 
     // Keep in-memory NodeEntry in sync so respawn_on_petal_change uses the
     // updated position instead of the stale initial one.
-    verse_mgr.update_node_position(&marker.node_id, [pos.x, pos.y, pos.z]);
+    verse_mgr.update_node_transform(&marker.node_id, *transform);
 
     if db_sender
         .0
@@ -89,11 +89,25 @@ pub(super) fn apply_inbound_transforms(
     inbound_rx: Option<Res<fe_runtime::app::InboundTransformReceiver>>,
     mut node_query: Query<(Entity, &mut Transform, &SpawnedNodeMarker)>,
     mut commands: Commands,
+    mut verse_mgr: ResMut<crate::verse_manager::VerseManager>,
 ) {
     let Some(rx) = inbound_rx else { return };
 
     // Drain all pending updates (non-blocking)
     while let Ok(update) = rx.0.try_recv() {
+        verse_mgr.update_node_transform(
+            &update.node_id,
+            Transform {
+                translation: Vec3::from_array(update.position),
+                rotation: Quat::from_euler(
+                    EulerRot::XYZ,
+                    update.rotation[0],
+                    update.rotation[1],
+                    update.rotation[2],
+                ),
+                scale: Vec3::from_array(update.scale),
+            },
+        );
         let mut found = false;
         for (entity, mut transform, marker) in node_query.iter_mut() {
             if marker.node_id == update.node_id {

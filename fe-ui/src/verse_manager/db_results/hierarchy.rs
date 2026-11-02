@@ -8,7 +8,7 @@ use fe_runtime::messages::{DbCommand, EntityType, VerseHierarchyData};
 use super::super::{FractalEntry, NodeEntry, PetalEntry, VerseEntry, VerseManager};
 use crate::dialogs::ActiveDialog;
 use crate::navigation_manager::NavigationManager;
-use crate::notice::{humanize_db_error, DenialContext, UNRESOLVED_ROLE_LABEL};
+use crate::notice::{DenialContext, UNRESOLVED_ROLE_LABEL, humanize_db_error};
 
 /// `Seeded`: kick off the initial hierarchy load.
 pub(super) fn handle_seeded(db_sender: &DbCommandSender) {
@@ -78,6 +78,7 @@ pub(super) fn handle_elevated_query_result(changed_rows: usize, db_sender: &DbCo
 pub(super) fn handle_database_reset(verse_mgr: &mut VerseManager, db_sender: &DbCommandSender) {
     bevy::log::info!("Database reset — clearing hierarchy");
     verse_mgr.verses.clear();
+    verse_mgr.committed_versions.clear();
     verse_mgr.rebuild_node_index();
     if db_sender.0.send(DbCommand::LoadHierarchy).is_err() {
         bevy::log::error!(
@@ -173,7 +174,7 @@ pub(super) fn handle_hierarchy_loaded(
                                             } else if remaining == 0 {
                                                 skipped += 1;
                                             } else {
-                                                super::super::spawn::spawn_node_entity(
+                                                let entity = super::super::spawn::spawn_node_entity(
                                                     commands,
                                                     asset_server,
                                                     &n.id,
@@ -182,12 +183,31 @@ pub(super) fn handle_hierarchy_loaded(
                                                     n.position,
                                                     ap,
                                                 );
+                                                let rotation = Quat::from_array(n.rotation);
+                                                let (rx, ry, rz) = rotation.to_euler(EulerRot::XYZ);
+                                                commands.entity(entity).insert((
+                                                    Transform {
+                                                        translation: Vec3::from_array(n.position),
+                                                        rotation,
+                                                        scale: Vec3::from_array(n.scale),
+                                                    },
+                                                    fe_runtime::messages::DbConfirmedTransform {
+                                                        position: n.position,
+                                                        rotation: [rx, ry, rz],
+                                                        scale: n.scale,
+                                                    },
+                                                ));
                                                 already_spawned.insert(n.id.clone());
                                                 remaining -= 1;
                                             }
                                         }
                                     }
                                     NodeEntry {
+                                        transform: Transform {
+                                            rotation: Quat::from_array(n.rotation),
+                                            scale: Vec3::from_array(n.scale),
+                                            ..default()
+                                        },
                                         id: n.id.clone(),
                                         name: n.name.clone(),
                                         has_asset: n.has_asset,

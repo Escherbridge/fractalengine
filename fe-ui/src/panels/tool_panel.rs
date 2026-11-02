@@ -252,20 +252,22 @@ impl ToolPanelState {
             MAX_ANGLE_INPUT_DEG,
         );
         sanitize_f32(&mut self.stamp_arc_m, 0.0, 0.0, MAX_DISTANCE_INPUT);
-        debug_assert!([
-            self.spacing_value,
-            self.pen_tension,
-            self.shape_radius,
-            self.shape_radius_z,
-            self.terrain_footprint_radius,
-            self.terrain_target_height,
-            self.terrain_delta,
-            self.stamp_scale,
-            self.stamp_yaw_deg,
-            self.stamp_arc_m,
-        ]
-        .into_iter()
-        .all(f32::is_finite));
+        debug_assert!(
+            [
+                self.spacing_value,
+                self.pen_tension,
+                self.shape_radius,
+                self.shape_radius_z,
+                self.terrain_footprint_radius,
+                self.terrain_target_height,
+                self.terrain_delta,
+                self.stamp_scale,
+                self.stamp_yaw_deg,
+                self.stamp_arc_m,
+            ]
+            .into_iter()
+            .all(f32::is_finite)
+        );
     }
 
     /// Queues a pen-tool `UiAction` for the drain in `process_ui_actions`.
@@ -305,12 +307,14 @@ pub(crate) fn render_path_asset_section(
             &mut state.spacing_mode,
             SpacingMode::FixedSpacing,
             "Fixed spacing",
-        ).observed(ui);
+        )
+        .observed(ui);
         ui.selectable_value(
             &mut state.spacing_mode,
             SpacingMode::FixedCount,
             "Fixed count",
-        ).observed(ui);
+        )
+        .observed(ui);
     });
     ui.add_space(4.0);
 
@@ -344,7 +348,8 @@ pub(crate) fn render_path_asset_section(
     }
     ui.add_space(4.0);
 
-    ui.checkbox(&mut state.tangent_align, "Align to path tangent").observed(ui);
+    ui.checkbox(&mut state.tangent_align, "Align to path tangent")
+        .observed(ui);
     ui.add_space(6.0);
 
     // The stamp target is the track currently being edited in the Paths tab.
@@ -363,7 +368,9 @@ pub(crate) fn render_path_asset_section(
         ui.add_space(4.0);
     }
 
-    let resp = ui.add_enabled(can_stamp, egui::Button::new("Stamp along path")).observed(ui);
+    let resp = ui
+        .add_enabled(can_stamp, egui::Button::new("Stamp along path"))
+        .observed(ui);
     if resp.clicked() {
         if let Some(track_node_id) = target_track.clone() {
             let descriptor = build_descriptor(state, asset_ref.clone());
@@ -668,7 +675,9 @@ fn render_asset_picker(ui: &mut egui::Ui, state: &mut ToolPanelState, verse_mgr:
                 Some(asset_buf)
             };
         }
-    }).header_response.observed(ui);
+    })
+    .header_response
+    .observed(ui);
 }
 
 /// Build the SDK path-asset descriptor from the panel's control state.
@@ -815,7 +824,8 @@ pub(crate) fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) 
         .add_enabled(
             state.pen_mode != PenMode::Polyline,
             egui::Button::new("Smooth path"),
-        ).observed(ui)
+        )
+        .observed(ui)
         .on_hover_text("Resample the edited path's points into the chosen curve")
         .clicked()
     {
@@ -869,7 +879,8 @@ pub(crate) fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) 
     });
     ui.horizontal(|ui| {
         if ui
-            .button("Add Ellipse").observed(ui)
+            .button("Add Ellipse")
+            .observed(ui)
             .on_hover_text("Append an ellipse ring to the edited path")
             .clicked()
         {
@@ -882,7 +893,8 @@ pub(crate) fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) 
             state.queue_action(UiAction::PathAppendShape { points: pts });
         }
         if ui
-            .button("Add Circle").observed(ui)
+            .button("Add Circle")
+            .observed(ui)
             .on_hover_text("Append a circle ring to the edited path")
             .clicked()
         {
@@ -894,7 +906,8 @@ pub(crate) fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) 
             state.queue_action(UiAction::PathAppendShape { points: pts });
         }
         if ui
-            .button("Add Rectangle").observed(ui)
+            .button("Add Rectangle")
+            .observed(ui)
             .on_hover_text("Append a rectangle (Radius X \u{00d7} Radius Z) to the edited path")
             .clicked()
         {
@@ -925,6 +938,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, (name, path))| NodeEntry {
+                transform: Default::default(),
                 id: format!("node-{i}"),
                 name: (*name).to_string(),
                 has_asset: path.is_some(),
@@ -1104,19 +1118,21 @@ mod tests {
         state.sanitize_numeric_state();
         assert_eq!(state.shape_radius_z, 3.0);
         assert_eq!(state.stamp_scale, 1.0);
-        assert!([
-            state.spacing_value,
-            state.pen_tension,
-            state.shape_radius,
-            state.shape_radius_z,
-            state.terrain_footprint_radius,
-            state.terrain_target_height,
-            state.terrain_delta,
-            state.stamp_scale,
-            state.stamp_yaw_deg,
-            state.stamp_arc_m,
-        ]
-        .into_iter()
-        .all(f32::is_finite));
+        assert!(
+            [
+                state.spacing_value,
+                state.pen_tension,
+                state.shape_radius,
+                state.shape_radius_z,
+                state.terrain_footprint_radius,
+                state.terrain_target_height,
+                state.terrain_delta,
+                state.stamp_scale,
+                state.stamp_yaw_deg,
+                state.stamp_arc_m,
+            ]
+            .into_iter()
+            .all(f32::is_finite)
+        );
     }
 }

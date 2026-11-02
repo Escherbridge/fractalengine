@@ -27,8 +27,8 @@ use bevy::prelude::*;
 use crate::plugin::UiSet;
 
 pub use path_asset_materialize::{
-    invalidate_path_stamp_projection, PathAssetApplied, PathAssetCache, StampRenderIndex,
-    StampTrackRenderData,
+    PathAssetApplied, PathAssetCache, StampRenderIndex, StampTrackRenderData,
+    invalidate_path_stamp_projection,
 };
 // T4 right-click classification: the stamp marker-id format + the per-instance
 // marker component, consumed by `node_manager::context_pick`.
@@ -37,9 +37,9 @@ pub(crate) use path_asset_materialize::MAX_STAMPS_PER_PETAL;
 pub(crate) use path_asset_materialize::{parse_stamp_marker_id, stamp_marker_id};
 pub use primitive_materialize::PrimitiveDescriptorCache;
 pub use primitive_reconcile::PrimitiveMaterialAssets;
-pub use residency_ledger::{radius_scale_for_pressure, ResidencyLedger};
+pub use residency_ledger::{ResidencyLedger, radius_scale_for_pressure};
 pub(crate) use spawn::MAX_PETAL_NODES;
-pub use spawn::{build_primitive_mesh, PathAssetInstance, PrimitiveNode, ResidentNode};
+pub use spawn::{PathAssetInstance, PrimitiveNode, ResidentNode, build_primitive_mesh};
 
 // ---------------------------------------------------------------------------
 // Hierarchy tree types
@@ -83,9 +83,20 @@ pub struct NodeEntry {
     pub name: String,
     pub has_asset: bool,
     pub position: [f32; 3],
+    pub transform: Transform,
     pub webpage_url: Option<String>,
     /// Path to the GLTF/GLB asset, if any.  Drives scene-entity materialisation.
     pub asset_path: Option<String>,
+}
+
+impl NodeEntry {
+    /// Complete scene transform, using the authoritative tree position.
+    pub(crate) fn world_transform(&self) -> Transform {
+        Transform {
+            translation: Vec3::from_array(self.position),
+            ..self.transform
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +109,7 @@ pub struct VerseManager {
     pub verses: Vec<VerseEntry>,
     /// node_id → (verse, fractal, petal) indices; see `node_index.rs` + AGENTS.md §node-index.
     pub(crate) node_index: std::collections::HashMap<String, (usize, usize, usize)>,
+    pub(crate) committed_versions: std::collections::HashMap<String, i64>,
 }
 
 impl VerseManager {
@@ -106,6 +118,7 @@ impl VerseManager {
         let mut mgr = Self {
             verses,
             node_index: Default::default(),
+            committed_versions: Default::default(),
         };
         mgr.rebuild_node_index();
         mgr
@@ -219,6 +232,7 @@ mod tests {
 
     fn make_tree() -> VerseManager {
         let node = NodeEntry {
+            transform: Default::default(),
             id: "node-1".to_string(),
             name: "Node 1".to_string(),
             has_asset: true,
@@ -301,6 +315,7 @@ mod tests {
         });
 
         mgr.verses[0].fractals[0].petals[0].nodes.push(NodeEntry {
+            transform: Default::default(),
             id: "n1".to_string(),
             name: "N1".to_string(),
             has_asset: false,

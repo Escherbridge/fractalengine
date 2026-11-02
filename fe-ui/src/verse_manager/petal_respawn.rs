@@ -10,8 +10,8 @@ use fe_runtime::app::DbCommandSender;
 use fe_runtime::messages::DbCommand;
 
 use super::path_asset_materialize::PathAssetApplied;
-use super::primitive_materialize::{spawn_branch, PrimitiveDescriptorCache, SpawnBranch};
-use super::primitive_reconcile::{resolve_primitive_material, PrimitiveMaterialAssets};
+use super::primitive_materialize::{PrimitiveDescriptorCache, SpawnBranch, spawn_branch};
+use super::primitive_reconcile::{PrimitiveMaterialAssets, resolve_primitive_material};
 use super::residency_ledger::ResidencyLedger;
 use super::{NodeEntry, TextureRegistryRes, VerseManager};
 use crate::navigation_manager::NavigationManager;
@@ -35,7 +35,7 @@ pub(super) struct NodeSpawner<'w> {
 impl NodeSpawner<'_> {
     /// Spawn `node` of `petal_id` through its FR-1 branch.
     pub(super) fn spawn(&mut self, commands: &mut Commands, node: &NodeEntry, petal_id: &str) {
-        match spawn_branch(node, &self.primitive_cache) {
+        let entity = match spawn_branch(node, &self.primitive_cache) {
             SpawnBranch::Gltf(asset_path) => super::spawn::spawn_node_entity(
                 commands,
                 &self.asset_server,
@@ -63,10 +63,10 @@ impl NodeSpawner<'_> {
                     node.position,
                     descriptor,
                     material,
-                );
+                )
             }
             SpawnBranch::Fallback => {
-                super::spawn::spawn_fallback_sign(
+                let entity = super::spawn::spawn_fallback_sign(
                     commands,
                     &mut self.meshes,
                     &mut self.materials,
@@ -91,8 +91,22 @@ impl NodeSpawner<'_> {
                         "db_sender channel closed during node spawn — DB thread may have crashed"
                     );
                 }
+                entity
             }
+        };
+        let mut transform = node.world_transform();
+        if node.asset_path.is_none() && self.primitive_cache.get(&node.id).is_none() {
+            transform.translation.y += 0.5;
         }
+        let (x, y, z) = node.transform.rotation.to_euler(EulerRot::XYZ);
+        commands.entity(entity).insert((
+            transform,
+            fe_runtime::messages::DbConfirmedTransform {
+                position: node.position,
+                rotation: [x, y, z],
+                scale: node.transform.scale.to_array(),
+            },
+        ));
     }
 }
 

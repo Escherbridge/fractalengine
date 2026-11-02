@@ -3,6 +3,24 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Decode legacy quaternion or ordinary Euler XYZ storage into a unit quaternion.
+pub fn stored_rotation_quaternion(rotation: &[f64]) -> Option<[f32; 4]> {
+    use bevy::math::{EulerRot, Quat};
+    if rotation
+        .iter()
+        .any(|value| !value.is_finite() || !(*value as f32).is_finite())
+    {
+        return None;
+    }
+    let quaternion = match rotation {
+        [x, y, z] => Quat::from_euler(EulerRot::XYZ, *x as f32, *y as f32, *z as f32),
+        [x, y, z, w] => Quat::from_array([*x as f32, *y as f32, *z as f32, *w as f32]),
+        _ => return None,
+    };
+    let length = quaternion.length_squared();
+    (length.is_finite() && length > f32::EPSILON).then(|| quaternion.normalize().to_array())
+}
+
 /// Trusted admission context, constructed by API auth or the local desktop.
 #[derive(Debug, Clone)]
 pub enum NodeAccessGrant {
