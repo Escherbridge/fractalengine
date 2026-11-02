@@ -12,8 +12,18 @@ use crate::theme;
 
 /// Queue an explicit copy through egui and show its receipt.
 pub(crate) fn copy_with_feedback(ui: &egui::Ui, ui_mgr: &mut UiManager, value: &str, toast: &str) {
-    ui.ctx().copy_text(value.to_owned());
-    ui_mgr.show_toast(toast, ui.input(|input| input.time));
+    copy_in_context(ui.ctx(), ui_mgr, value, toast);
+}
+
+/// Queue an explicit context-owned copy through the same egui output seam.
+pub(crate) fn copy_in_context(
+    ctx: &egui::Context,
+    ui_mgr: &mut UiManager,
+    value: &str,
+    toast: &str,
+) {
+    ctx.copy_text(value.to_owned());
+    ui_mgr.show_toast(toast, ctx.input(|input| input.time));
 }
 
 /// Read-only, width-capped, copyable value box.
@@ -44,24 +54,33 @@ pub(crate) fn copy_value_box(
         .corner_radius(3.0)
         .show(ui, |ui| {
             ui.set_max_width(ui.available_width());
-            ui.horizontal(|ui| {
-                left(ui);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add(
-                            egui::Button::new("\u{1F4CB}")
-                                .fill(egui::Color32::TRANSPARENT)
-                                .small(),
-                        )
-                        .named(ui, format_args!("Copy {label}"))
-                        .on_hover_text("Copy to clipboard")
-                        .clicked()
-                    {
-                        copy_with_feedback(ui, ui_mgr, copy_value, toast);
-                    }
-                    right(ui);
-                });
-            });
+            let minimum = 24.0_f32.max(20.0 / ui.ctx().pixels_per_point());
+            egui::containers::Sides::new()
+                .shrink_left()
+                .truncate()
+                .height(minimum)
+                .show(
+                    ui,
+                    |ui| {
+                        ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
+                        left(ui);
+                    },
+                    |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new("\u{1F4CB}")
+                                    .fill(egui::Color32::TRANSPARENT)
+                                    .min_size(egui::Vec2::splat(minimum)),
+                            )
+                            .named(ui, format_args!("Copy {label}"))
+                            .on_hover_text("Copy to clipboard")
+                            .clicked()
+                        {
+                            copy_with_feedback(ui, ui_mgr, copy_value, toast);
+                        }
+                        right(ui);
+                    },
+                );
             ui.add(
                 egui::Label::new(
                     egui::RichText::new(display)
@@ -145,10 +164,13 @@ pub(crate) fn clipped_value_copyable(
     color: egui::Color32,
     toast: &str,
 ) -> egui::Response {
+    let minimum = 24.0_f32.max(20.0 / ui.ctx().pixels_per_point());
     let resp = ui
-        .add(
+        .add_sized(
+            [ui.available_width().max(minimum), minimum],
             egui::Label::new(egui::RichText::new(value).small().monospace().color(color))
                 .truncate()
+                .selectable(false)
                 .sense(egui::Sense::click()),
         )
         .button_named(ui, format_args!("Copy {label}"))
@@ -330,7 +352,8 @@ mod tests {
         time: &mut f64,
         events: Vec<egui::Event>,
         mut body: impl FnMut(&mut egui::Ui),
-    ) {
+    ) -> egui::FullOutput {
+        crate::ui_shell::layout_policy::begin_frame(ctx, true);
         *time += 0.05;
         let raw = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -341,7 +364,7 @@ mod tests {
             events,
             ..Default::default()
         };
-        let _ = ctx.run(raw, |ctx| {
+        ctx.run(raw, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 // W1-GATE fix: `CentralPanel`'s own `ui` always fills the
                 // whole panel, so `ui.min_rect()` on it is the full screen
@@ -350,7 +373,7 @@ mod tests {
                 // just the widgets `body` adds.
                 ui.scope(|ui| body(ui));
             });
-        });
+        })
     }
 
     fn pointer_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
@@ -433,6 +456,87 @@ mod tests {
             role_denial_reason(&role, "Editor", None),
             "Editor role needed — you are \u{2014}"
         );
+        for width in [160.0, 260.0] {
+            let ctx = egui::Context::default();
+            let mut time = 0.0;
+            let mut notices = UiManager::default();
+            let address = "http://127.0.0.1:8882/".to_owned() + &"long-path/".repeat(12);
+            let boxed = "boxed:".to_owned() + &address;
+            let link = std::cell::Cell::new(None);
+            let mut body = |ui: &mut egui::Ui| {
+                ui.set_max_width(width);
+                let response = clipped_value_copyable(
+                    ui,
+                    &mut notices,
+                    "Local API address",
+                    &address,
+                    theme::TEXT_BRIGHT,
+                    "Copied local API address",
+                );
+                link.set(Some((response.id, response.rect)));
+                copy_value_box(
+                    ui,
+                    &mut notices,
+                    "Fixture endpoint",
+                    "Preview only",
+                    &boxed,
+                    "Copied boxed value",
+                    |ui| {
+                        ui.label(
+                            "A deliberately long header that must leave room for the copy action",
+                        );
+                    },
+                    |_| {},
+                );
+            };
+            run_frame(&ctx, &mut time, Vec::new(), &mut body);
+            run_frame(&ctx, &mut time, Vec::new(), &mut body);
+            let (link_id, link_rect) = link.get().unwrap();
+            let controls = crate::ui_shell::layout_policy::observations(&ctx).controls;
+            let actions = controls
+                .iter()
+                .filter(|control| control.clickable || control.draggable)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                actions.len(),
+                2,
+                "clickable value and boxed copy have explicit targets"
+            );
+            for action in &actions {
+                assert!(
+                    action.hit.width() >= 24.0 && action.hit.height() >= 24.0,
+                    "{width}: {:?}",
+                    action.hit
+                );
+                assert!(
+                    action.clip.contains_rect(action.rect),
+                    "{width}: copy target clipped"
+                );
+            }
+            let boxed_rect = actions
+                .iter()
+                .find(|control| control.id != link_id.value())
+                .unwrap()
+                .rect;
+            for (at, expected) in [
+                (link_rect.center(), &address),
+                (boxed_rect.center(), &boxed),
+            ] {
+                run_frame(
+                    &ctx,
+                    &mut time,
+                    vec![egui::Event::PointerMoved(at)],
+                    &mut body,
+                );
+                run_frame(&ctx, &mut time, vec![pointer_button(at, true)], &mut body);
+                let output = run_frame(&ctx, &mut time, vec![pointer_button(at, false)], &mut body);
+                assert!(output.platform_output.commands.iter().any(|command| matches!(command, egui::OutputCommand::CopyText(value) if value == expected)), "copy uses the full value through egui, independent of clipping");
+            }
+            assert_eq!(
+                notices.active_toast(time).map(|(text, _)| text),
+                Some("Copied boxed value")
+            );
+        }
     }
 
     #[test]

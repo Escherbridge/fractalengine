@@ -88,6 +88,255 @@ fn content_counts<'a>(
     ))
 }
 
+enum FooterAction {
+    TogglePeers,
+    DismissIdentity,
+    DismissError(u64),
+    CopyError(String),
+}
+
+struct FooterDetails<'a> {
+    manager: &'a UiManager,
+    modal: &'a ModalManagerState,
+    hidden: Option<&'a str>,
+    identity: Option<&'a str>,
+    latest: Option<(u64, &'a str)>,
+    counts: Option<&'a ContentCounts<'a>>,
+    peer_count: u64,
+}
+
+fn footer_button(
+    ui: &mut egui::Ui,
+    caption: &str,
+    name: &str,
+    width: f32,
+    minimum: f32,
+) -> egui::Response {
+    ui.add_sized(
+        [width.max(minimum), minimum],
+        egui::Button::new(caption).truncate(),
+    )
+    .button_named(ui, name)
+}
+
+fn counts_label(counts: &ContentCounts<'_>) -> String {
+    format!(
+        "{}: {} petal{} \u{00b7} {} object{}",
+        counts.level,
+        counts.petals,
+        if counts.petals == 1 { "" } else { "s" },
+        counts.objects,
+        if counts.objects == 1 { "" } else { "s" }
+    )
+}
+
+fn bounded_details(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
+    ui.set_max_width(520.0_f32.min((ui.ctx().viewport_rect().width() - 32.0).max(120.0)));
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+    egui::ScrollArea::vertical()
+        .max_height((ui.ctx().viewport_rect().height() - 100.0).max(80.0))
+        .show(ui, body);
+}
+
+fn footer_actions(
+    ui: &mut egui::Ui,
+    details: &FooterDetails<'_>,
+    minimum: f32,
+    compact: bool,
+) -> Option<FooterAction> {
+    let mut action = None;
+    let width = |normal| if compact { minimum } else { normal };
+    let condition_count = details.manager.conditions().count()
+        + usize::from(details.hidden.is_some())
+        + usize::from(details.modal.last_error.is_some());
+    let status = footer_button(
+        ui,
+        &if compact {
+            "!".into()
+        } else if condition_count > 0 {
+            format!("Status {condition_count}")
+        } else {
+            "Status".into()
+        },
+        "Open status details",
+        width(80.0),
+        minimum,
+    )
+    .on_hover_text(format!(
+        "{condition_count} active conditions. Open complete status details."
+    ));
+    egui::Popup::from_toggle_button_response(&status)
+        .id(egui::Id::new("footer_status_details"))
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .layout(egui::Layout::top_down(egui::Align::Min))
+        .show(|ui| {
+            bounded_details(ui, |ui| {
+                ui.heading("Status details");
+                if let Some(counts) = details.counts {
+                    ui.label(format!("{}: {}", counts.level, counts.name));
+                    ui.label(counts_label(counts));
+                } else {
+                    ui.label("Content counts unavailable");
+                }
+                if let Some(hidden) = details.hidden {
+                    ui.label(hidden);
+                }
+                for (_, condition) in details.manager.conditions() {
+                    ui.add(egui::Label::new(condition).wrap());
+                }
+                if let Some(error) = &details.modal.last_error {
+                    ui.add(egui::Label::new(error).wrap());
+                }
+                if condition_count == 0 {
+                    ui.label("No active conditions.");
+                }
+            })
+        });
+
+    let identity_id = egui::Id::new("footer_identity_warning");
+    if let Some(message) = details.identity {
+        let response = footer_button(
+            ui,
+            if compact { "ID" } else { "Identity !" },
+            "Open identity warning",
+            width(80.0),
+            minimum,
+        )
+        .on_hover_text(message);
+        egui::Popup::from_toggle_button_response(&response)
+            .id(identity_id)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .layout(egui::Layout::top_down(egui::Align::Min))
+            .show(|ui| {
+                bounded_details(ui, |ui| {
+                    ui.heading("Identity warning");
+                    ui.add(egui::Label::new(message).wrap());
+                    if ui
+                        .add(
+                            egui::Button::new("Dismiss warning")
+                                .min_size(egui::Vec2::splat(minimum)),
+                        )
+                        .button_named(ui, "Dismiss identity warning")
+                        .clicked()
+                    {
+                        action = Some(FooterAction::DismissIdentity);
+                        ui.close();
+                    }
+                })
+            });
+    } else {
+        egui::Popup::close_id(ui.ctx(), identity_id);
+    }
+
+    let response = footer_button(
+        ui,
+        if compact {
+            "Err"
+        } else if details.latest.is_some() {
+            "Error"
+        } else {
+            "Errors"
+        },
+        "Open error history",
+        width(72.0),
+        minimum,
+    )
+    .on_hover_text(
+        details
+            .latest
+            .map(|(_, text)| text)
+            .unwrap_or("Open error history"),
+    );
+    egui::Popup::from_toggle_button_response(&response)
+        .id(egui::Id::new("footer_error_history"))
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .layout(egui::Layout::top_down(egui::Align::Min))
+        .show(|ui| {
+            bounded_details(ui, |ui| {
+                ui.heading("Error history");
+                let mut empty = true;
+                for notice in details.manager.error_history() {
+                    empty = false;
+                    egui::containers::Sides::new()
+                        .shrink_left()
+                        .wrap()
+                        .height(minimum)
+                        .show(
+                            ui,
+                            |ui| {
+                                ui.vertical(|ui| {
+                                    ui.add(egui::Label::new(&notice.text).wrap());
+                                    if let Some(detail) = &notice.detail {
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(detail).monospace(),
+                                            )
+                                            .wrap(),
+                                        );
+                                    }
+                                });
+                            },
+                            |ui| {
+                                if footer_button(
+                                    ui,
+                                    "Copy",
+                                    &format!("Copy error notice {}", notice.id),
+                                    48.0,
+                                    minimum,
+                                )
+                                .clicked()
+                                {
+                                    action = Some(FooterAction::CopyError(
+                                        notice.detail.as_ref().unwrap_or(&notice.text).clone(),
+                                    ));
+                                }
+                                if details.latest.is_some_and(|(id, _)| id == notice.id)
+                                    && footer_button(
+                                        ui,
+                                        "Dismiss",
+                                        &format!("Dismiss error notice {}", notice.id),
+                                        72.0,
+                                        minimum,
+                                    )
+                                    .clicked()
+                                {
+                                    action = Some(FooterAction::DismissError(notice.id));
+                                }
+                            },
+                        );
+                    ui.separator();
+                }
+                if empty {
+                    ui.label("No recorded errors.");
+                }
+            })
+        });
+
+    let caption = if compact {
+        details.peer_count.to_string()
+    } else {
+        format!(
+            "{} {}",
+            details.peer_count,
+            if details.peer_count == 1 {
+                "peer"
+            } else {
+                "peers"
+            }
+        )
+    };
+    if footer_button(ui, &caption, "Open peer debug panel", width(80.0), minimum)
+        .on_hover_text(format!(
+            "{} peers. Open connection and peer details",
+            details.peer_count
+        ))
+        .clicked()
+    {
+        action = Some(FooterAction::TogglePeers);
+    }
+    action
+}
+
 pub(crate) fn status_bar(
     ctx: &egui::Context,
     dashboard: &DashboardState,
@@ -95,20 +344,36 @@ pub(crate) fn status_bar(
     nav: &NavigationManager,
     ui_mgr: &mut UiManager,
     modal: &ModalManagerState,
-    // hierarchy_visibility_groups_20260808 RATIFICATION #16: persistent
-    // "N hidden" chip — absent when nothing is hidden in the active petal.
-    // `&mut` because F19's memoization cache lives on `VisibilityState`
-    // itself (this fn is a plain call, not a Bevy system — no `Local<T>`
-    // available to cache in here directly).
     hierarchy: &VerseManager,
     vis_state: &mut VisibilityState,
-    // F6: startup identity-degradation warning — session-sticky until the
-    // user clicks it away (fractalengine/src/AGENTS.md §identity-tiers).
     identity_banner: &mut crate::plugin::IdentityBanner,
     local_role: &crate::plugin::LocalUserRole,
     node_identity: Option<&fe_identity::NodeIdentity>,
 ) {
     let minimum = 24.0_f32.max(20.0 / ctx.pixels_per_point());
+    let counts = content_counts(hierarchy, nav);
+    let hidden_count = vis_state.hidden_count_in_active_petal_cached(hierarchy, nav);
+    let hidden = visibility::hidden_chip_label(hidden_count);
+    let now = ctx.input(|input| input.time);
+    let latest = ui_mgr
+        .latest_unacknowledged_error()
+        .filter(|notice| now - notice.spawned_at < ERROR_SEGMENT_SECONDS)
+        .map(|notice| (notice.id, notice.text.as_str()));
+    let details = FooterDetails {
+        manager: ui_mgr,
+        modal,
+        hidden: hidden.as_deref(),
+        identity: identity_banner.message.as_deref(),
+        latest,
+        counts: counts.as_ref(),
+        peer_count: sync_status
+            .map(|status| status.peer_count as u64)
+            .unwrap_or(dashboard.peer_count),
+    };
+    let online = sync_status
+        .map(|status| status.online)
+        .unwrap_or(dashboard.is_online);
+    let mut action = None;
     egui::TopBottomPanel::bottom("statusbar")
         .exact_height(minimum + 4.0)
         .frame(
@@ -117,239 +382,68 @@ pub(crate) fn status_bar(
                 .inner_margin(egui::Margin::symmetric(8, 2)),
         )
         .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                // Phase F: prefer SyncStatus over DashboardState for online/peer info
-                let is_online = sync_status.map(|s| s.online).unwrap_or(dashboard.is_online);
-                let peer_count = sync_status
-                    .map(|s| s.peer_count as u64)
-                    .unwrap_or(dashboard.peer_count);
-
-                if is_online {
-                    ui.colored_label(theme::STATUS_ONLINE_DOT, "\u{25CF}");
-                    ui.label(
-                        egui::RichText::new("Online")
-                            .small()
-                            .color(theme::STATUS_ONLINE),
-                    );
-                } else {
-                    ui.colored_label(theme::STATUS_OFFLINE_DOT, "\u{25CF}");
-                    ui.label(
-                        egui::RichText::new("Offline")
-                            .small()
-                            .color(theme::STATUS_OFFLINE),
-                    );
-                }
-
-                ui.separator();
-                // Clickable peer count opens debug panel
-                let peer_label = egui::RichText::new(format!(
-                    "{} {}",
-                    peer_count,
-                    if peer_count == 1 { "peer" } else { "peers" }
-                ))
-                .small()
-                .color(theme::STATUS_NORMAL);
-                if ui
-                    .add(egui::Button::new(peer_label).min_size(egui::Vec2::splat(minimum)))
-                    .button_named(ui, "Open peer debug panel")
-                    .on_hover_text("Open connection and peer details")
-                    .clicked()
-                {
-                    if matches!(ui_mgr.active_dialog, ActiveDialog::PeerDebug) {
-                        ui_mgr.close_dialog();
-                    } else {
-                        ui_mgr.open_dialog(ActiveDialog::PeerDebug);
-                    }
-                }
-
-                ui.separator();
-                crate::role_chip::role_status(ui, local_role, nav, node_identity);
-
-                ui.separator();
-                if let Some(counts) = content_counts(hierarchy, nav) {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(format!(
-                                "{}: {} petal{} \u{00b7} {} object{}",
-                                counts.level,
-                                counts.petals,
-                                if counts.petals == 1 { "" } else { "s" },
-                                counts.objects,
-                                if counts.objects == 1 { "" } else { "s" },
-                            ))
-                            .small()
-                            .color(theme::TEXT_MUTED),
-                        )
-                        .selectable(false),
-                    )
-                    .on_hover_text(format!(
-                        "{}: {}. Counts include hidden objects in the loaded hierarchy.",
-                        counts.level, counts.name
-                    ));
-                } else {
-                    ui.label(
-                        egui::RichText::new("Content counts unavailable")
-                            .small()
-                            .color(theme::TEXT_MUTED),
-                    );
-                }
-
-                // hierarchy_visibility_groups_20260808 RATIFICATION #16: dim
-                // persistent "N hidden" chip — an abnormal-condition
-                // indicator per ui_ux.md §6, not a toast. Absent when zero.
-                // Memoized (F19): counts HIERARCHY ROWS, not spawned
-                // entities — see `visibility::hidden_count_in_active_petal`
-                // docs for why that's a deliberately different number than
-                // `sync_node_visibility`'s per-frame apply count.
-                let hidden_count = vis_state.hidden_count_in_active_petal_cached(hierarchy, nav);
-                if let Some(label) = visibility::hidden_chip_label(hidden_count) {
-                    ui.separator();
-                    ui.label(egui::RichText::new(label).small().color(theme::TEXT_MUTED));
-                }
-
-                // X-05: every persistent condition (e.g. "mesh budget
-                // exceeded", written by W3-S2's watchdog) as a dim chip —
-                // same abnormal-condition tier as the hidden-count chip above.
-                for (_key, text) in ui_mgr.conditions() {
-                    ui.separator();
-                    ui.label(
-                        egui::RichText::new(format!("\u{26A0} {text}"))
-                            .small()
-                            .color(theme::TEXT_MUTED),
-                    );
-                }
-
-                // Persistent guard-error segment (Q-5, FR-7): a disabled
-                // panel's error stays visible for the session — no
-                // auto-clear on petal switch, unlike the general §6
-                // clears-on-resolution tier (ratified exception for this
-                // guard, since the panel itself stays disabled).
-                if let Some(err) = &modal.last_error {
-                    ui.separator();
-                    ui.label(
-                        egui::RichText::new(format!("\u{26A0} {err}"))
-                            .small()
-                            .color(theme::STATUS_OFFLINE),
-                    );
-                }
-
-                // F6: identity-degradation banner — session-sticky (no
-                // auto-fade like a toast, since the user may not be looking
-                // when it first appears), clears only on click.
-                if let Some(msg) = identity_banner.message.clone() {
-                    ui.separator();
-                    let resp = ui
-                        .add_sized(
-                            [ui.available_width().min(240.0), minimum],
-                            egui::Label::new(
-                                egui::RichText::new(format!("\u{26A0} {msg} (click to dismiss)"))
-                                    .small()
-                                    .color(theme::STATUS_OFFLINE),
-                            )
-                            .truncate()
-                            .sense(egui::Sense::click()),
-                        )
-                        .button_named(ui, "Dismiss identity warning");
-                    if resp.clicked() {
-                        identity_banner.dismiss();
-                    }
-                }
-
-                // X-01: the newest undismissed error under a minute old,
-                // right-aligned. Drawn LAST because its right-to-left layout
-                // takes the rest of the row. Click opens the history ring
-                // (cap 20) with the raw detail and a Copy per entry.
-                let now = ui.ctx().input(|i| i.time);
-                let latest = ui_mgr
-                    .latest_unacknowledged_error()
-                    .filter(|notice| now - notice.spawned_at < ERROR_SEGMENT_SECONDS)
-                    .map(|notice| (notice.id, format!("\u{26A0} {}", notice.text)));
-                if let Some((latest_id, latest_label)) = latest {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let resp = ui
-                            .add_sized(
-                                [ui.available_width().min(240.0), minimum],
+            let compact = ui.available_width() < 600.0;
+            action = egui::containers::Sides::new()
+                .shrink_left()
+                .truncate()
+                .height(minimum)
+                .show(
+                    ui,
+                    |ui| {
+                        ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
+                        ui.label(
+                            egui::RichText::new(if online { "Online" } else { "Offline" })
+                                .small()
+                                .color(theme::STATUS_NORMAL),
+                        );
+                        ui.separator();
+                        crate::role_chip::role_status(ui, local_role, nav, node_identity);
+                        ui.separator();
+                        if let Some(counts) = &counts {
+                            ui.add(
                                 egui::Label::new(
-                                    egui::RichText::new(latest_label)
+                                    egui::RichText::new(counts_label(counts))
                                         .small()
-                                        .color(theme::STATUS_OFFLINE),
+                                        .color(theme::TEXT_MUTED),
                                 )
-                                .truncate()
-                                .sense(egui::Sense::click()),
+                                .selectable(false)
+                                .truncate(),
                             )
-                            .button_named(ui, "Open error history");
-                        let mut dismiss_latest = false;
-                        let mut copy_notice = None;
-                        egui::Popup::from_toggle_button_response(&resp)
-                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                            .show(|ui| {
-                                ui.set_min_width(280.0);
-                                ui.label(egui::RichText::new("Error history").strong());
-                                ui.separator();
-                                for notice in ui_mgr.error_history() {
-                                    ui.horizontal(|ui| {
-                                        ui.vertical(|ui| {
-                                            ui.label(egui::RichText::new(&notice.text).small());
-                                            if let Some(detail) = &notice.detail {
-                                                ui.label(
-                                                    egui::RichText::new(detail)
-                                                        .small()
-                                                        .monospace()
-                                                        .color(theme::TEXT_MUTED),
-                                                );
-                                            }
-                                        });
-                                        if ui
-                                            .add(
-                                                egui::Button::new("Copy")
-                                                    .min_size(egui::Vec2::splat(minimum)),
-                                            )
-                                            .named(
-                                                ui,
-                                                format_args!("Copy error notice {}", notice.id),
-                                            )
-                                            .clicked()
-                                        {
-                                            let raw =
-                                                notice.detail.as_ref().unwrap_or(&notice.text);
-                                            copy_notice = Some(raw.clone());
-                                        }
-                                        if notice.id == latest_id
-                                            && ui
-                                                .add(
-                                                    egui::Button::new("Dismiss")
-                                                        .min_size(egui::Vec2::splat(minimum)),
-                                                )
-                                                .named(
-                                                    ui,
-                                                    format_args!(
-                                                        "Dismiss error notice {}",
-                                                        notice.id
-                                                    ),
-                                                )
-                                                .clicked()
-                                        {
-                                            dismiss_latest = true;
-                                        }
-                                    });
-                                }
-                            });
-                        if let Some(raw) = copy_notice {
-                            super::widgets::copy_with_feedback(
-                                ui,
-                                ui_mgr,
-                                &raw,
-                                "Copied error details",
+                            .on_hover_text(format!(
+                                "{}: {}. Counts include hidden objects in the loaded hierarchy.",
+                                counts.level, counts.name
+                            ));
+                        } else {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new("Content counts unavailable")
+                                        .small()
+                                        .color(theme::TEXT_MUTED),
+                                )
+                                .selectable(false)
+                                .truncate(),
                             );
                         }
-                        if dismiss_latest {
-                            ui_mgr.dismiss_notice(latest_id);
-                        }
-                    });
-                }
-            });
+                    },
+                    |ui| footer_actions(ui, &details, minimum, compact),
+                )
+                .1;
         });
+    match action {
+        Some(FooterAction::TogglePeers) => {
+            if matches!(ui_mgr.active_dialog, ActiveDialog::PeerDebug) {
+                ui_mgr.close_dialog();
+            } else {
+                ui_mgr.open_dialog(ActiveDialog::PeerDebug);
+            }
+        }
+        Some(FooterAction::DismissIdentity) => identity_banner.dismiss(),
+        Some(FooterAction::DismissError(id)) => ui_mgr.dismiss_notice(id),
+        Some(FooterAction::CopyError(raw)) => {
+            super::widgets::copy_in_context(ctx, ui_mgr, &raw, "Copied error details");
+        }
+        None => {}
+    }
 }
 
-/// How long the newest error stays in the status bar (plan W1-S2 step 5).
 const ERROR_SEGMENT_SECONDS: f64 = 60.0;

@@ -641,3 +641,24 @@ widgets::copy_with_feedback is the explicit copy-and-notice seam used by the
 value widgets, hierarchy Copy ID and error details. It queues the original value
 through egui's normal output; the host's synthetic-input clipboard suppression
 remains authoritative. It never reads or writes the host clipboard directly.
+
+
+### Reserved footer actions and diagnostic overflow
+
+Footer peer, Status, identity-warning and error-history controls are allocated
+first on the right by Sides::shrink_left with fixed bounded action widths. The
+left side contains only clipped/truncated online, role and content metadata.
+Long conditions or quarantined-panel messages cannot consume action space.
+Status shows an active-condition count and opens complete wrapped conditions,
+hidden counts, quarantine details and scoped content totals. Error history stays
+reachable after the latest error ages out or is acknowledged. Identity warnings
+open their full message and a separate Dismiss action. Popup IDs remain stable
+when the optional identity control appears or disappears; its dismissal closes
+that popup. Typed footer actions apply after immutable rendering, retaining
+notice history and unrelated conditions.
+
+The same reservation rule applies to copy_value_box headers: copy controls and
+trailing actions allocate before the informational title. Clickable value rows
+and copy icons reserve the shared minimum target height/width; ordinary labels
+are unchanged. Copies still use the egui output seam, including context-owned
+footer copies, so synthetic input never bypasses A8 suppression.

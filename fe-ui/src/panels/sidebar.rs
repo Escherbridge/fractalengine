@@ -1191,6 +1191,296 @@ mod tests {
                 _ => None,
             }
         }
+        for width in [1024.0, 1280.0] {
+            let ctx = egui::Context::default();
+            let condition_a =
+                "Mesh budget exceeded; inspect heavy objects before importing more. ".repeat(6);
+            let condition_b =
+                "Some content is waiting for its source peer; local edits remain available. "
+                    .repeat(5);
+            let guard_error =
+                "Inspector disabled after a panel error; use its Retry action. ".repeat(6);
+            let identity_message =
+                "Identity storage is unavailable; this session uses a temporary identity. "
+                    .repeat(6);
+            let recent_error = "A fixture write failed and did not change stored data. ".repeat(6);
+            let mut manager = crate::actions::UiManager::default();
+            manager.set_condition("fixture_mesh", Some(condition_a.clone()));
+            manager.set_condition("fixture_peer", Some(condition_b.clone()));
+            manager.show_error(recent_error.clone(), 0.0);
+            let modal = crate::ui_shell::modal::ModalManagerState {
+                last_error: Some(guard_error.clone()),
+                disabled_panels: std::collections::HashSet::from(["right.inspector".into()]),
+            };
+            let mut banner = crate::plugin::IdentityBanner {
+                message: Some(identity_message.clone()),
+            };
+            let nav = crate::navigation_manager::NavigationManager {
+                active_verse_id: Some("v".into()),
+                active_verse_name: "Counted verse".into(),
+                active_fractal_id: Some("f".into()),
+                active_petal_id: Some("p".into()),
+                ..Default::default()
+            };
+            let mut time = 0.0;
+            let mut draw = |events: Vec<egui::Event>| {
+                time += 0.05;
+                crate::ui_shell::layout_policy::begin_frame(&ctx, true);
+                ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 720.0),
+                        )),
+                        time: Some(time),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        crate::panels::status_bar::status_bar(
+                            ctx,
+                            &crate::atlas::DashboardState::default(),
+                            None,
+                            &nav,
+                            &mut manager,
+                            &modal,
+                            &hierarchy,
+                            &mut crate::visibility::VisibilityState::default(),
+                            &mut banner,
+                            &crate::plugin::LocalUserRole {
+                                role: Some(fe_database::RoleLevel::Owner),
+                            },
+                            None,
+                        );
+                    },
+                )
+            };
+            let _ = draw(Vec::new());
+            let output = draw(Vec::new());
+            let actions = crate::ui_shell::layout_policy::observations(&ctx)
+                .controls
+                .into_iter()
+                .filter(|control| control.clickable || control.draggable)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                actions.len(),
+                4,
+                "peer/status/identity/errors are real reserved actions"
+            );
+            for action in &actions {
+                assert!(
+                    action.hit.width() >= 24.0 && action.hit.height() >= 24.0,
+                    "{width}: {:?}",
+                    action.hit
+                );
+                assert!(
+                    action.clip.contains_rect(action.rect),
+                    "{width}: clipped action {:?}",
+                    action.rect
+                );
+                assert!(
+                    egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 720.0))
+                        .contains_rect(action.rect)
+                );
+            }
+            for (index, left) in actions.iter().enumerate() {
+                for right in actions.iter().skip(index + 1) {
+                    let overlap = left.rect.intersect(right.rect);
+                    assert!(
+                        overlap.width() <= 0.1 || overlap.height() <= 0.1,
+                        "reserved footer actions overlap"
+                    );
+                }
+            }
+            for caption in ["Status 3", "Identity !", "Error", "0 peers"] {
+                assert!(
+                    output
+                        .shapes
+                        .iter()
+                        .any(|shape| text_rect(&shape.shape, caption).is_some()),
+                    "missing footer action {caption}"
+                );
+            }
+            let status = output
+                .shapes
+                .iter()
+                .find_map(|shape| text_rect(&shape.shape, "Status 3"))
+                .unwrap()
+                .center();
+            draw(vec![
+                egui::Event::PointerMoved(status),
+                egui::Event::PointerButton {
+                    pos: status,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            draw(vec![egui::Event::PointerButton {
+                pos: status,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            let output = draw(Vec::new());
+            for full in [&condition_a, &condition_b, &guard_error] {
+                let (rect, clip) = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| {
+                        text_rect(&shape.shape, full).map(|rect| (rect, shape.clip_rect))
+                    })
+                    .expect("complete condition in overflow");
+                assert!(
+                    clip.contains_rect(rect),
+                    "full overflow text must paint inside its viewport"
+                );
+            }
+            draw(vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            let output = draw(Vec::new());
+            let identity = output
+                .shapes
+                .iter()
+                .find_map(|shape| text_rect(&shape.shape, "Identity !"))
+                .unwrap()
+                .center();
+            draw(vec![
+                egui::Event::PointerMoved(identity),
+                egui::Event::PointerButton {
+                    pos: identity,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            draw(vec![egui::Event::PointerButton {
+                pos: identity,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            let output = draw(Vec::new());
+            assert!(
+                output
+                    .shapes
+                    .iter()
+                    .any(|shape| text_rect(&shape.shape, &identity_message).is_some()),
+                "complete identity warning is reachable"
+            );
+            let dismiss = output
+                .shapes
+                .iter()
+                .find_map(|shape| text_rect(&shape.shape, "Dismiss warning"))
+                .unwrap()
+                .center();
+            draw(vec![
+                egui::Event::PointerMoved(dismiss),
+                egui::Event::PointerButton {
+                    pos: dismiss,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            draw(vec![egui::Event::PointerButton {
+                pos: dismiss,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            let output = draw(Vec::new());
+            assert!(!egui::Popup::is_id_open(
+                &ctx,
+                egui::Id::new("footer_identity_warning")
+            ));
+            let error = output
+                .shapes
+                .iter()
+                .find_map(|shape| text_rect(&shape.shape, "Error"))
+                .unwrap()
+                .center();
+            draw(vec![
+                egui::Event::PointerMoved(error),
+                egui::Event::PointerButton {
+                    pos: error,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            draw(vec![egui::Event::PointerButton {
+                pos: error,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            let output = draw(Vec::new());
+            let (rect, clip) = output
+                .shapes
+                .iter()
+                .find_map(|shape| {
+                    text_rect(&shape.shape, &recent_error).map(|rect| (rect, shape.clip_rect))
+                })
+                .expect("complete error history is reachable");
+            assert!(clip.contains_rect(rect));
+            let popup_actions = crate::ui_shell::layout_policy::observations(&ctx)
+                .controls
+                .into_iter()
+                .filter(|control| control.clickable && control.rect.min.y < 680.0)
+                .collect::<Vec<_>>();
+            assert!(
+                popup_actions.len() >= 2,
+                "copy and dismiss remain reachable beside full error text"
+            );
+            for action in &popup_actions {
+                assert!(action.hit.width() >= 24.0 && action.hit.height() >= 24.0);
+                assert!(action.clip.contains_rect(action.rect));
+            }
+            let dismiss_error = output
+                .shapes
+                .iter()
+                .find_map(|shape| text_rect(&shape.shape, "Dismiss"))
+                .unwrap()
+                .center();
+            draw(vec![
+                egui::Event::PointerMoved(dismiss_error),
+                egui::Event::PointerButton {
+                    pos: dismiss_error,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            draw(vec![egui::Event::PointerButton {
+                pos: dismiss_error,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            let output = draw(Vec::new());
+            assert!(
+                output
+                    .shapes
+                    .iter()
+                    .any(|shape| text_rect(&shape.shape, "Errors").is_some()),
+                "error history stays reachable after acknowledgement"
+            );
+            assert!(banner.message.is_none());
+            assert!(manager.latest_unacknowledged_error().is_none());
+            assert_eq!(
+                manager.conditions().count(),
+                2,
+                "dismissals preserve unrelated conditions"
+            );
+            assert_eq!(modal.disabled_panels.len(), 1);
+        }
+
         let ctx = egui::Context::default();
         let mut notices = crate::actions::UiManager::default();
         let mut time = 0.0;
