@@ -695,6 +695,7 @@ use crate::repo::Table;
 
 /// Run every table's DDL against `db` (idempotent).
 pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
+    crate::api_auth::apply_schema(db).await?;
     use crate::repo::Repo;
     Repo::<Verse>::apply_schema(db).await?;
     Repo::<VerseMemberRow>::apply_schema(db).await?;

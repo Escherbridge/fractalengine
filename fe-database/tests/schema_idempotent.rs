@@ -123,13 +123,19 @@ async fn asset_row_can_omit_data_field_when_content_hash_set() {
     fe_database::api_token_store::apply_api_token_schema(&db).await.unwrap();
     db.query("CREATE node_log SET log_id='reset-log', node_id='reset-node', hlc_timestamp=1, op='baseline', source_did=$owner, payload={nested:{value:1}}, row_version=1, created_at='2026-11-02'; CREATE api_token SET jti='reset-token', scope='verse:reset-foreign', max_role='viewer', sub=$owner, created_at='2026-11-02', expires_at='2026-11-03', revoked=false; CREATE canon_sealed_artifact SET artifact_id_hex='reset-private', content_class='sealed_artifact', content_bytes='Zml4dHVyZQ=='; CREATE verified_op_log SET op_id_hex='reset-canon', envelope_bytes='Zml4dHVyZQ==', operation_kind=1, branch_id='reset', author_public_key_hex='fixture', wall_ms=1, hlc_counter=0")
         .bind(("owner", owner.to_string())).await.unwrap().check().unwrap();
+    let reset_generation=fe_database::api_auth::current_generation(&db).await.unwrap();
     let admitted = fe_database::admin::prepare_development_reset(&db, owner, &offline).await.unwrap();
     db.query("UPDATE verse SET created_by='did:key:z6Mk-foreign-owner-fixture'").await.unwrap().check().unwrap();
     assert!(admitted.commit(&db).await.is_err(), "changed global ownership must invalidate the captured plan");
+    assert_eq!(fe_database::api_auth::current_generation(&db).await.unwrap(),reset_generation,"A refused reset preserves credential generation atomically");
     let mut retained = db.query("SELECT * FROM asset; SELECT * FROM api_token; SELECT * FROM canon_sealed_artifact; SELECT * FROM verified_op_log; SELECT * FROM node_log").await.unwrap().check().unwrap();
     for slot in 0..5 { assert_eq!(retained.take::<Vec<serde_json::Value>>(slot).unwrap().len(), 1, "refusal must preserve each stored plane"); }
     db.query("UPDATE verse SET created_by=$owner").bind(("owner", owner.to_string())).await.unwrap().check().unwrap();
     clear_for_development_reset(&db, owner, &offline).await.unwrap();
+    let rotated=fe_database::api_auth::current_generation(&db).await.unwrap();
+    assert_ne!(rotated,reset_generation);
+    apply_schema(&db).await.unwrap();
+    assert_eq!(fe_database::api_auth::current_generation(&db).await.unwrap(),rotated,"Schema reapplication preserves retired credentials");
     for table in fe_database::schema::DEVELOPMENT_RESET_TABLE_NAMES {
         let mut check = db.query(format!("SELECT VALUE id FROM {table} LIMIT 1")).await.unwrap().check().unwrap();
         assert!(check.take::<Vec<serde_json::Value>>(0).unwrap().is_empty(), "reset retained {table}");

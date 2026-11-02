@@ -56,6 +56,7 @@ pub use fe_runtime::timeseries::{
 };
 
 pub mod admin;
+pub mod api_auth;
 pub mod api_token_store;
 pub mod atlas;
 pub mod canon_log;

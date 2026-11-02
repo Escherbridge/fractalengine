@@ -91,7 +91,7 @@ INFO FOR DB and every table must belong to the dedicated complete reset allowlis
 unknown tables refuse. This list includes all generated schema tables plus
 api_token, including private and canonical history. It is intentionally separate
 from projection/admin/replication table lists. Trusted hosts must not run DDL
-concurrently. All present known tables are deleted and checked empty in ONE
+concurrently. All reset content tables are deleted and checked empty in ONE
 transaction. Schema definitions and external blob files remain.
 
 Seeding follows a committed clear. ResetOutcome distinguishes admission/clear
@@ -213,3 +213,7 @@ values, so they are never forwarded from this read path. The model/reference SEL
 inside the same Viewer/ancestry/node identity transaction and return at most two rows each.
 Ready and MissingModel are writable subject to the authoritative write fence; NoAsset and
 SharedModel explain unsupported persistence inline. Bounded legacy URL values remain literal.
+
+## Reset credential authority
+
+The authentication singleton is recognized as private retained metadata, outside the reset content list. Reset rotates its generation in the same fenced clear transaction; failure preserves both content and prior credential validity. Ordinary API-token mint persistence additionally fences its captured generation, preventing a signed receipt from committing across a reset. See ../AGENTS.md section api-auth-lifecycle.

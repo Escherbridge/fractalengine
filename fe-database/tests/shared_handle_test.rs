@@ -141,7 +141,22 @@ fn shared_reader_errors_instead_of_hanging_after_db_thread_exit() {
     let identity = fe_identity::NodeKeypair::generate();
     let terminal = spawn_on_with_identity(dir.path(), Some(identity.clone()));
     terminal.cmd_tx.send(DbCommand::CreateVerse { name: "before-terminal".into() }).unwrap();
-    assert!(matches!(terminal.res_rx.recv_timeout(TIMEOUT).unwrap(), DbResult::VerseCreated { .. }));
+    let DbResult::VerseCreated {id:before_verse,..}=terminal.res_rx.recv_timeout(TIMEOUT).unwrap() else {panic!("created owned verse")};
+    let auth_runtime=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let previous_generation=auth_runtime.block_on(fe_database::api_auth::current_generation(&terminal.db_thread.shared_db)).unwrap();
+    let old_owner_jti=fe_database::api_auth::new_jti(&previous_generation).unwrap();
+    let old_owner=fe_identity::mint_api_token(&identity,&format!("VERSE#{before_verse}"),"owner",3600,&old_owner_jti).unwrap();
+    terminal.cmd_tx.send(DbCommand::MintApiToken {scope:format!("VERSE#{before_verse}"),max_role:"viewer".into(),ttl_hours:1,label:None,client_did:None,correlation_id:None}).unwrap();
+    let DbResult::ApiTokenMinted {jti:revoked_jti,..}=terminal.res_rx.recv_timeout(TIMEOUT).unwrap() else {panic!("persisted token mint")};
+    terminal.cmd_tx.send(DbCommand::RevokeApiToken {jti:revoked_jti.clone(),sub:identity.to_did_key()}).unwrap();
+    assert!(matches!(terminal.res_rx.recv_timeout(TIMEOUT).unwrap(),DbResult::ApiTokenRevoked {..}));
+    terminal.cmd_tx.send(DbCommand::Shutdown).unwrap();
+    assert!(matches!(terminal.res_rx.recv_timeout(TIMEOUT).unwrap(),DbResult::Stopped));
+    terminal.db_thread.join_handle.join().unwrap();
+    drop(terminal.db_thread.shared_db);
+    let terminal=spawn_on_with_identity(dir.path(),Some(identity.clone()));
+    assert!(auth_runtime.block_on(fe_database::api_token_store::is_token_revoked(&terminal.db_thread.shared_db,&revoked_jti)).unwrap(),"Ordinary revocation survives closing and reopening the real store");
+    assert_eq!(auth_runtime.block_on(fe_database::api_auth::current_generation(&terminal.db_thread.shared_db)).unwrap(),previous_generation,"Ordinary restart does not invalidate unrelated credentials");
     let reader = terminal.db_thread.shared_db.clone();
     let jobs = fe_runtime::maintenance::HostJobs::default();
     jobs.freeze().unwrap();
@@ -187,7 +202,7 @@ fn shared_reader_errors_instead_of_hanging_after_db_thread_exit() {
     assert!(read_verse_on_foreign_runtime(reader, "any".into()).is_err());
     drop(terminal.db_thread.shared_db);
 
-    let reopened = spawn_on_with_identity(dir.path(), Some(identity));
+    let reopened = spawn_on_with_identity(dir.path(), Some(identity.clone()));
     reopened.cmd_tx.send(DbCommand::LoadHierarchy).unwrap();
     match reopened.res_rx.recv_timeout(TIMEOUT).unwrap() {
         DbResult::HierarchyLoaded { verses } => {
@@ -196,6 +211,16 @@ fn shared_reader_errors_instead_of_hanging_after_db_thread_exit() {
         }
         other => panic!("expected reopened hierarchy, got {other:?}"),
     }
+    let current_generation=auth_runtime.block_on(fe_database::api_auth::current_generation(&reopened.db_thread.shared_db)).unwrap();
+    assert_ne!(current_generation,previous_generation,"Terminal reset durably advances authentication generation");
+    assert!(!fe_database::api_auth::accepts_jti(&current_generation,&old_owner_jti),"Old Owner JWT cannot regain authority after reopen");
+    assert!(fe_identity::verify_api_token(&old_owner,&identity.verifying_key()).is_ok(),"Reset retires credential authority without rotating the signing key");
+    reopened.cmd_tx.send(DbCommand::CreateVerse {name:"fresh-auth-generation".into()}).unwrap();
+    let DbResult::VerseCreated {id:fresh_verse,..}=reopened.res_rx.recv_timeout(TIMEOUT).unwrap() else {panic!("fresh owned verse")};
+    reopened.cmd_tx.send(DbCommand::MintApiToken {scope:format!("VERSE#{fresh_verse}"),max_role:"viewer".into(),ttl_hours:1,label:None,client_did:None,correlation_id:None}).unwrap();
+    let DbResult::ApiTokenMinted {token,jti,..}=reopened.res_rx.recv_timeout(TIMEOUT).unwrap() else {panic!("fresh token mint")};
+    assert!(fe_database::api_auth::accepts_jti(&current_generation,&jti),"New real DB-thread mint uses reopened generation");
+    assert_eq!(fe_identity::verify_api_token(&token,&identity.verifying_key()).unwrap().jti,jti);
     reopened.cmd_tx.send(DbCommand::TerminalDevelopmentReset {
         request_id: "replayed-proof".into(), confirmation: "RESET".into(), proof: replay,
     }).unwrap();

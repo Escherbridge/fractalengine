@@ -35,12 +35,22 @@ pub struct DevelopmentResetPlan {
     sql: String,
     verses: Vec<serde_json::Value>,
     table_count: usize,
+    auth_generation: String,
+    next_auth_generation: String,
 }
 
 impl DevelopmentResetPlan {
     pub async fn commit(self, db: &Db) -> anyhow::Result<()> {
-        db.query(self.sql).bind(("reset_verses", self.verses)).await?.check()?;
-        tracing::info!(table_count = self.table_count, "Development local database rows cleared atomically");
+        db.query(self.sql)
+            .bind(("reset_verses", self.verses))
+            .bind(("reset_auth_before", self.auth_generation))
+            .bind(("reset_auth_after", self.next_auth_generation))
+            .await?
+            .check()?;
+        tracing::info!(
+            table_count = self.table_count,
+            "Development local database rows cleared atomically"
+        );
         Ok(())
     }
 }
@@ -51,7 +61,10 @@ pub async fn clear_for_development_reset(
     local_did: &str,
     permit: &DevelopmentResetPermit,
 ) -> anyhow::Result<()> {
-    prepare_development_reset(db, local_did, permit).await?.commit(db).await
+    prepare_development_reset(db, local_did, permit)
+        .await?
+        .commit(db)
+        .await
 }
 
 /// Capture global ownership and the complete allowlisted local table set.
@@ -60,35 +73,77 @@ pub async fn prepare_development_reset(
     local_did: &str,
     permit: &DevelopmentResetPermit,
 ) -> anyhow::Result<DevelopmentResetPlan> {
-    anyhow::ensure!(permit.enabled, "Local database reset requires developer tools enabled at startup");
+    anyhow::ensure!(
+        permit.enabled,
+        "Local database reset requires developer tools enabled at startup"
+    );
     anyhow::ensure!(permit.runtime_ready, "Local database reset is unavailable while API and synchronization writers are running; close the app for isolated maintenance");
-    anyhow::ensure!(local_did.starts_with("did:key:") && local_did.len() > 16, "Local database reset requires a resolved node identity");
-    let mut snapshot = db.query("SELECT verse_id, created_by FROM verse ORDER BY verse_id LIMIT 1025; INFO FOR DB;")
-        .await?.check()?;
+    anyhow::ensure!(
+        local_did.starts_with("did:key:") && local_did.len() > 16,
+        "Local database reset requires a resolved node identity"
+    );
+    let auth_generation = crate::api_auth::current_generation(db).await?;
+    let next_auth_generation = ulid::Ulid::new().to_string();
+    let mut snapshot = db
+        .query("SELECT verse_id, created_by FROM verse ORDER BY verse_id LIMIT 1025; INFO FOR DB;")
+        .await?
+        .check()?;
     let verses: Vec<serde_json::Value> = snapshot.take(0)?;
     let metadata: Option<serde_json::Value> = snapshot.take(1)?;
-    let metadata = metadata.ok_or_else(|| anyhow::anyhow!("Local database reset cannot read the table inventory"))?;
-    anyhow::ensure!(verses.len() <= 1024, "Local database reset exceeds the 1024-Verse safety bound");
+    let metadata = metadata
+        .ok_or_else(|| anyhow::anyhow!("Local database reset cannot read the table inventory"))?;
+    anyhow::ensure!(
+        verses.len() <= 1024,
+        "Local database reset exceeds the 1024-Verse safety bound"
+    );
     let mut identities = std::collections::BTreeSet::new();
     for verse in &verses {
-        let verse_id = verse["verse_id"].as_str().filter(|id| !id.is_empty())
+        let verse_id = verse["verse_id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
             .ok_or_else(|| anyhow::anyhow!("Local database reset found unknown Verse identity"))?;
-        anyhow::ensure!(identities.insert(verse_id), "Local database reset found ambiguous Verse identity");
-        anyhow::ensure!(verse["created_by"].as_str() == Some(local_did), "Local database reset requires this node to own every stored Verse");
+        anyhow::ensure!(
+            identities.insert(verse_id),
+            "Local database reset found ambiguous Verse identity"
+        );
+        anyhow::ensure!(
+            verse["created_by"].as_str() == Some(local_did),
+            "Local database reset requires this node to own every stored Verse"
+        );
     }
-    let tables = metadata["tables"].as_object().ok_or_else(|| anyhow::anyhow!("Local database reset cannot verify the table inventory"))?;
-    anyhow::ensure!(tables.len() <= 64, "Local database reset table inventory is too large");
+    let tables = metadata["tables"]
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("Local database reset cannot verify the table inventory"))?;
+    anyhow::ensure!(
+        tables.len() <= 64,
+        "Local database reset table inventory is too large"
+    );
     for name in tables.keys() {
-        anyhow::ensure!(crate::schema::DEVELOPMENT_RESET_TABLE_NAMES.contains(&name.as_str()), "Local database reset refuses an unknown table");
+        anyhow::ensure!(
+            name == crate::api_auth::STATE_TABLE
+                || crate::schema::DEVELOPMENT_RESET_TABLE_NAMES.contains(&name.as_str()),
+            "Local database reset refuses an unknown table"
+        );
     }
-    let mut sql = String::from("BEGIN TRANSACTION; IF (SELECT verse_id, created_by FROM verse ORDER BY verse_id) != $reset_verses { THROW 'Local database ownership changed'; };
-");
-    for name in tables.keys() { sql.push_str(&format!("DELETE FROM {name};
-")); }
-    for name in tables.keys() { sql.push_str(&format!("IF array::len((SELECT VALUE id FROM {name} LIMIT 1)) != 0 {{ THROW 'Local database reset left rows'; }};
-")); }
-    sql.push_str("COMMIT TRANSACTION;");
-    Ok(DevelopmentResetPlan { sql, verses, table_count: tables.len() })
+    let mut sql = String::from("BEGIN TRANSACTION; IF (SELECT verse_id, created_by FROM verse ORDER BY verse_id) != $reset_verses { THROW 'Local database ownership changed'; }; IF (SELECT VALUE generation FROM api_auth_state WHERE id = api_auth_state:current) != [$reset_auth_before] { THROW 'Credential generation changed'; }; UPDATE api_auth_state:current SET generation = $reset_auth_after;\n");
+    let content_tables: Vec<_> = tables
+        .keys()
+        .filter(|name| name.as_str() != crate::api_auth::STATE_TABLE)
+        .collect();
+    for name in &content_tables {
+        sql.push_str(&format!("DELETE FROM {name};\n"));
+    }
+    for name in &content_tables {
+        sql.push_str(&format!("IF array::len((SELECT VALUE id FROM {name} LIMIT 1)) != 0 {{ THROW 'Local database reset left rows'; }};\n"));
+    }
+    sql.push_str("IF (SELECT VALUE generation FROM api_auth_state WHERE id = api_auth_state:current) != [$reset_auth_after] { THROW 'Credential reset unconfirmed'; }; COMMIT TRANSACTION;");
+    Ok(DevelopmentResetPlan {
+        sql,
+        verses,
+        table_count: content_tables.len(),
+        auth_generation,
+        next_auth_generation,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
