@@ -1450,3 +1450,8 @@ on final navigation; ordinary verse changes retain their existing close/open beh
 NavigationManager owns a monotonic intent revision alongside its cursor. Addressed admission
 captures that revision to suppress late initial hierarchy navigation even after Cancel, until an
 explicit navigation/back action begins a new cursor lifecycle. Call manager methods for intents.
+
+
+Navigation replica submissions are nonblocking and retain only definitely-unsent transitions.
+A superseded addressed handoff queues an exact native lease close before ordinary navigation
+continues; mismatched handoffs are retained until accepted cleanup rather than dropped.

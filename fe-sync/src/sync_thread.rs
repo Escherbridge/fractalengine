@@ -732,6 +732,7 @@ pub fn spawn_sync_thread_with_transport(
 
             // Phase E: per-verse replica map.
             let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
+            let mut joined_leases = crate::join_ticket::JoinedReplicaLeases::default();
 
             // A2: per-replica inbound pump handles (verse_id -> forwarder).
             let mut inbound_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
@@ -893,7 +894,8 @@ pub fn spawn_sync_thread_with_transport(
                                 let outcome = match now {
                                     Ok(now) if request.deadline > std::time::Instant::now()
                                         && request.invitation.revalidate(&local_did, now.as_secs()).is_ok() => {
-                                        Ok(replicas.get(&request.invitation.manifest().verse_id).is_some_and(|replica|
+                                        Ok(joined_leases.owns(&crate::join_ticket::JoinedReplicaLease::for_request(&request))
+                                            && replicas.get(&request.invitation.manifest().verse_id).is_some_and(|replica|
                                             replica.joined_peer_ready(&request.invitation.manifest().namespace_id, request.invitation.issuer_did())))
                                     }
                                     _ => Err("Invitation readiness deadline or identity is invalid"),
@@ -987,6 +989,7 @@ pub fn spawn_sync_thread_with_transport(
                                     &peers,
                                 )
                                 .await;
+                                joined_leases.forget(&verse_id);
                                 let opened = handle_open_verse_replica(
                                     &mut replicas,
                                     &mut inbound_pumps,
@@ -1008,6 +1011,7 @@ pub fn spawn_sync_thread_with_transport(
                                 if let Some((request_id, deadline, expires_at, reply)) = join_reply {
                                     let unexpired = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).is_ok_and(|now| now.as_secs() < expires_at);
                                     let outcome = if opened.native_ready && deadline > std::time::Instant::now() && unexpired {
+                                        joined_leases.opened(crate::join_ticket::JoinedReplicaLease {request_id:request_id.clone(),verse_id:verse_id.clone(),namespace_id:namespace_id.clone()});
                                         Ok(())
                                     } else {
                                         handle_close_verse_replica(&mut replicas, &mut inbound_pumps, &verse_id).await;
@@ -1023,7 +1027,15 @@ pub fn spawn_sync_thread_with_transport(
                                     fabrics.entry(verse_id.clone()).or_default(),
                                 );
                             }
-                            Some(SyncCommand::CloseVerseReplica { verse_id }) => {
+                            Some(command @ (SyncCommand::CloseVerseReplica { .. } | SyncCommand::CloseJoinedReplica { .. })) => {
+                                let verse_id = match command {
+                                    SyncCommand::CloseJoinedReplica {lease} => {
+                                        if !joined_leases.take(&lease) {continue;}
+                                        lease.verse_id
+                                    }
+                                    SyncCommand::CloseVerseReplica {verse_id} => {joined_leases.forget(&verse_id);verse_id}
+                                    _ => unreachable!(),
+                                };
                                 // S8b verse binding: ads learned on a verse
                                 // stop counting once this node leaves it.
                                 tileset_providers.forget_verse(&verse_id);
@@ -5387,6 +5399,17 @@ mod tests {
         assert_eq!(replicas.len(), 1);
         assert_eq!(inbound_pumps.len(), 1);
 
+        let mut leases = crate::join_ticket::JoinedReplicaLeases::default();
+        let old = crate::join_ticket::JoinedReplicaLease {request_id:"old-join".into(),verse_id:"verse-1".into(),namespace_id:"0".repeat(64)};
+        let mut newer = old.clone();newer.request_id="new-join".into();
+        leases.opened(newer.clone());
+        assert!(!leases.take(&old) && replicas.contains_key("verse-1"),"Late old-generation cleanup cannot close the newer pipeline");
+        let mut wrong_namespace = newer.clone();wrong_namespace.namespace_id="1".repeat(64);
+        assert!(!leases.take(&wrong_namespace),"Cleanup also pins the exact native namespace");
+        leases.forget("verse-1");
+        assert!(!leases.take(&newer),"An ordinary reopen relinquishes the old join lease");
+        leases.opened(newer.clone());
+        assert!(leases.take(&newer),"Only exact current ownership admits the normal close path");
         handle_close_verse_replica(&mut replicas, &mut inbound_pumps, "verse-1").await;
         assert!(!replicas.contains_key("verse-1"), "replica closed");
         assert!(!inbound_pumps.contains_key("verse-1"), "pump aborted");

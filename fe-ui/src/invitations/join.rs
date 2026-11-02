@@ -10,7 +10,9 @@ use fe_runtime::{
     messages::{DbCommand, DbResult},
 };
 use fe_sync::{
-    join_ticket::{JoinReplicaOpened, JoinReplicaReadiness, JoinReplicaRequest},
+    join_ticket::{
+        JoinReplicaOpened, JoinReplicaReadiness, JoinReplicaRequest, JoinedReplicaLease,
+    },
     SyncCommand, SyncCommandSenderRes,
 };
 use std::time::{Duration, Instant};
@@ -70,6 +72,7 @@ struct Attempt {
 struct Input {
     credential: JoinCredential,
     revision: u64,
+    deadline: Instant,
 }
 
 #[derive(Debug, Default)]
@@ -78,7 +81,7 @@ pub(crate) struct JoinState {
     input: Option<Input>,
     attempt: Option<Attempt>,
     submitted_nonces: std::collections::HashSet<String>,
-    cleanup_verse: Option<String>,
+    cleanup_lease: Option<JoinedReplicaLease>,
     admission_navigation_revision: Option<u64>,
     pub error: Option<&'static str>,
     status: Option<&'static str>,
@@ -88,7 +91,7 @@ pub(crate) struct ReadyJoin {
     pub scope: fe_database::ScopeParts,
     pub verse_name: String,
     pub fractal_name: Option<String>,
-    pub namespace: String,
+    pub lease: JoinedReplicaLease,
 }
 
 impl JoinState {
@@ -101,16 +104,22 @@ impl JoinState {
     pub fn active(&self) -> bool {
         self.input.is_some() || self.attempt.is_some()
     }
+    pub(crate) fn wait_for_handoff(&mut self) {
+        if self.input.is_some() {
+            self.status = Some("Waiting for the previous native replica handoff or cleanup...");
+        }
+    }
     pub fn progress(&self) -> Option<&'static str> {
         self.status
     }
     pub fn queue(&mut self, credential: JoinCredential) -> bool {
-        if self.active() || self.cleanup_verse.is_some() {
+        if self.active() || self.cleanup_lease.is_some() {
             return false;
         }
         self.input = Some(Input {
             credential,
             revision: self.revision,
+            deadline: Instant::now() + Duration::from_secs(30),
         });
         self.status = Some("Validating the addressed invitation...");
         self.error = None;
@@ -125,7 +134,11 @@ impl JoinState {
         self.input = None;
         if let Some(attempt) = self.attempt.take() {
             if attempt.replica_requested {
-                self.retain_cleanup(attempt.invitation.manifest().verse_id.clone());
+                self.retain_cleanup(JoinedReplicaLease {
+                    request_id: attempt.generation,
+                    verse_id: attempt.invitation.manifest().verse_id.clone(),
+                    namespace_id: attempt.invitation.manifest().namespace_id.clone(),
+                });
             }
         }
         self.status = None;
@@ -145,6 +158,10 @@ impl JoinState {
             return;
         };
         if let Some(input) = &self.input {
+            if Instant::now() >= input.deadline {
+                self.fail("Join submission expired while waiting for the previous native cleanup. Nothing was resubmitted.");
+                return;
+            }
             if input.revision != self.revision || input.credential.as_str() != invite_buf.trim() {
                 self.fail("Join input changed; the previous request was canceled.");
                 return;
@@ -169,26 +186,26 @@ impl JoinState {
             }
         }
     }
-    pub(crate) fn retain_cleanup(&mut self, verse: String) {
-        debug_assert!(self.cleanup_verse.is_none());
-        self.cleanup_verse = Some(verse);
+    pub(crate) fn retain_cleanup(&mut self, lease: JoinedReplicaLease) {
+        debug_assert!(self.cleanup_lease.is_none());
+        self.cleanup_lease = Some(lease);
     }
     pub fn cleanup(&mut self, nav: &NavigationManager, sync: Option<&SyncCommandSenderRes>) {
-        let Some(verse) = &self.cleanup_verse else {
+        let Some(lease) = &self.cleanup_lease else {
             return;
         };
         // The active navigation cursor owns its replica independently of this dialog.
-        if nav.active_verse_id.as_deref() == Some(verse.as_str()) {
-            self.cleanup_verse = None;
+        if nav.active_verse_id.as_deref() == Some(lease.verse_id.as_str()) {
+            self.cleanup_lease = None;
             return;
         }
         let Some(sync) = sync else {
             return;
         };
-        match sync.0.try_send(SyncCommand::CloseVerseReplica {
-            verse_id: verse.clone(),
+        match sync.0.try_send(SyncCommand::CloseJoinedReplica {
+            lease: lease.clone(),
         }) {
-            Ok(()) => self.cleanup_verse = None,
+            Ok(()) => self.cleanup_lease = None,
             Err(crossbeam::channel::TrySendError::Full(_)) => {
                 self.status = Some("Waiting to queue cleanup of the canceled join...");
             }
@@ -290,7 +307,7 @@ impl JoinState {
                 revision: input.revision,
                 credential: input.credential,
                 invitation,
-                deadline: Instant::now() + Duration::from_secs(30),
+                deadline: input.deadline,
                 cursor: Cursor::capture(nav),
                 stage: Stage::Admitting,
                 replica_requested: false,
@@ -370,7 +387,9 @@ impl JoinState {
                         attempt.stage = Stage::Waiting(Instant::now() + Duration::from_millis(250));
                         self.status = Some("Waiting for a successful live sync with the issuer...");
                     } else if *after_role {
-                        if let Some(destination) = destination(&attempt.invitation, hierarchy) {
+                        if let Some(destination) =
+                            destination(&attempt.invitation, &attempt.generation, hierarchy)
+                        {
                             self.attempt = None;
                             self.status =
                                 Some("Ready: live issuer sync and stored scope access confirmed.");
@@ -444,7 +463,11 @@ fn admission_matches(admission: &JoinAdmission, invitation: &VerifiedJoinInvitat
         && admission.scope == invitation.scope()
         && admission.role == invitation.role().as_str()
 }
-fn destination(invitation: &VerifiedJoinInvitation, hierarchy: &VerseManager) -> Option<ReadyJoin> {
+fn destination(
+    invitation: &VerifiedJoinInvitation,
+    generation: &str,
+    hierarchy: &VerseManager,
+) -> Option<ReadyJoin> {
     let scope = fe_database::parse_scope(invitation.scope()).ok()?;
     let verse = hierarchy.verses.iter().find(|v| {
         v.id == scope.verse_id
@@ -463,7 +486,11 @@ fn destination(invitation: &VerifiedJoinInvitation, hierarchy: &VerseManager) ->
         scope,
         verse_name: verse.name.clone(),
         fractal_name,
-        namespace: invitation.manifest().namespace_id.clone(),
+        lease: JoinedReplicaLease {
+            request_id: generation.into(),
+            verse_id: invitation.manifest().verse_id.clone(),
+            namespace_id: invitation.manifest().namespace_id.clone(),
+        },
     })
 }
 fn unix_now() -> Option<u64> {

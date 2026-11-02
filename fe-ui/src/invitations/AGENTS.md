@@ -69,3 +69,20 @@ active dialog/attempt. Cancel, failure and replacement do not erase that guard. 
 hierarchy selection consults it, so a late joined row cannot select itself after the dialog closes
 on an empty store. NavigationManager records explicit navigation/back intents; a changed revision
 permits the next ordinary initial-navigation lifecycle. Terminal read-model reset clears the guard.
+
+
+## Exact native lease ownership
+
+A joined pipeline has a local lease naming its request generation, Verse and namespace. Sync
+records it only after successful native open; ordinary reopen/close invalidates it. Readiness
+and CloseJoinedReplica check that exact lease. Conditional cleanup then uses the ordinary close
+path (pump, gossip, provider and blob-access invalidation), without any new network protocol.
+
+ReplicaHandoff retains its lease when Verse/namespace does not match. Before a navigation
+transition, superseded handoff cleanup must enter the FIFO; Full retains the lease and returns
+from the frame. Normal navigation close/open also uses try_send and records only accepted
+commands. A matching handoff is consumed only after the previous navigation close is accepted.
+New Join admission waits while a previous handoff remains owned, under its input deadline.
+The existing lifecycle journey covers ready B superseded by C before adoption, including a
+full bounded queue; the existing sync lifetime journey covers stale generation/namespace and
+ordinary-reopen refusal of conditional cleanup.

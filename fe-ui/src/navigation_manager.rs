@@ -161,54 +161,47 @@ pub(crate) fn handle_verse_replica_lifecycle(
     sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
     secret_store: Option<Res<fe_database::SecretStoreRes>>,
     mut last_verse: Local<Option<String>>,
-    mut initialized: Local<bool>,
     mut joined: Option<ResMut<crate::invitations::ReplicaHandoff>>,
 ) {
-    let Some(ref sync) = sync_sender else { return };
-
-    if !*initialized {
-        *last_verse = nav.active_verse_id.clone();
-        *initialized = true;
-        // Open any verse that was already active on startup.
-        if let Some(ref vid) = nav.active_verse_id {
-            let adopted = joined
-                .as_mut()
-                .is_some_and(|handoff| handoff.take_for(vid, &verse_mgr));
-            if !adopted {
-                open_replica(sync, vid, &verse_mgr, secret_store.as_deref());
+    let Some(ref sync) = sync_sender else {
+        return;
+    };
+    if joined
+        .as_mut()
+        .is_some_and(|handoff| !handoff.cleanup_superseded(&nav, &verse_mgr, sync))
+    {
+        return;
+    }
+    if *last_verse == nav.active_verse_id {
+        if let Some(verse) = nav.active_verse_id.as_deref() {
+            if let Some(handoff) = joined.as_mut() {
+                handoff.take_for(verse, &verse_mgr);
             }
         }
         return;
     }
-
-    if *last_verse == nav.active_verse_id {
-        return;
-    }
-
-    // Close the previous replica.
-    if let Some(ref old) = *last_verse {
-        if sync
-            .0
-            .send(fe_sync::SyncCommand::CloseVerseReplica {
-                verse_id: old.clone(),
-            })
-            .is_err()
-        {
-            bevy::log::error!("sync_sender channel closed while closing verse replica — sync thread may have crashed");
+    if let Some(old) = last_verse.as_ref() {
+        match sync.0.try_send(fe_sync::SyncCommand::CloseVerseReplica {
+            verse_id: old.clone(),
+        }) {
+            Ok(()) => *last_verse = None,
+            Err(crossbeam::channel::TrySendError::Full(_)) => return,
+            Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                bevy::log::error!(
+                    "Sync channel closed while closing the previous navigation replica"
+                );
+                return;
+            }
         }
     }
-
-    // Open the new one.
-    if let Some(ref new_vid) = nav.active_verse_id {
+    if let Some(new_verse) = nav.active_verse_id.as_deref() {
         let adopted = joined
             .as_mut()
-            .is_some_and(|handoff| handoff.take_for(new_vid, &verse_mgr));
-        if !adopted {
-            open_replica(sync, new_vid, &verse_mgr, secret_store.as_deref());
+            .is_some_and(|handoff| handoff.take_for(new_verse, &verse_mgr));
+        if adopted || open_replica(sync, new_verse, &verse_mgr, secret_store.as_deref()) {
+            *last_verse = Some(new_verse.into());
         }
     }
-
-    *last_verse = nav.active_verse_id.clone();
 }
 
 fn open_replica(
@@ -216,7 +209,7 @@ fn open_replica(
     verse_id: &str,
     verse_mgr: &VerseManager,
     secret_store: Option<&fe_database::SecretStoreRes>,
-) {
+) -> bool {
     let Some(ns_id) = verse_mgr
         .verses
         .iter()
@@ -233,26 +226,23 @@ fn open_replica(
             "open_replica: verse {verse_id} has no namespace_id in the tree — \
              replica not opened; its writes will not publish this session"
         );
-        return;
+        return true;
     };
     let ns_secret = secret_store
         .and_then(|ss| fe_database::get_namespace_secret(ss.0.as_ref(), verse_id).ok())
         .flatten();
-    if sync
-        .0
-        .send(fe_sync::SyncCommand::OpenVerseReplica {
-            verse_id: verse_id.to_string(),
-            namespace_id: ns_id,
-            namespace_secret: ns_secret,
-            // The UI sends no explicit peers today — the sync thread merges
-            // the FE_SYNC_BOOTSTRAP env set (see fe-sync sync_thread.rs).
-            bootstrap_peers: Vec::new(),
-        })
-        .is_err()
-    {
-        bevy::log::error!(
-            "sync_sender channel closed while opening verse replica — sync thread may have crashed"
-        );
+    match sync.0.try_send(fe_sync::SyncCommand::OpenVerseReplica {
+        verse_id: verse_id.into(),
+        namespace_id: ns_id,
+        namespace_secret: ns_secret,
+        bootstrap_peers: Vec::new(),
+    }) {
+        Ok(()) => true,
+        Err(crossbeam::channel::TrySendError::Full(_)) => false,
+        Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+            bevy::log::error!("Sync channel closed while opening the navigation replica");
+            false
+        }
     }
 }
 
@@ -427,6 +417,78 @@ mod tests {
         assert!(
             sync_rx.try_recv().is_err(),
             "a verse without a namespace_id must not open a replica"
+        );
+        use crate::invitations::ReplicaHandoff;
+        use fe_sync::{join_ticket::JoinedReplicaLease, SyncCommand};
+        let old_join = JoinedReplicaLease {
+            request_id: "ready-B-generation".into(),
+            verse_id: "B".into(),
+            namespace_id: "ab".repeat(32),
+        };
+        let mut handoff = ReplicaHandoff::default();
+        assert!(handoff.install(old_join.clone()));
+        let mut hierarchy = app.world_mut().resource_mut::<VerseManager>();
+        for (id, namespace) in [("B", "ab".repeat(32)), ("C", "cd".repeat(32))] {
+            hierarchy.verses.push(VerseEntry {
+                id: id.into(),
+                name: id.into(),
+                namespace_id: Some(namespace),
+                expanded: true,
+                fractals: Vec::new(),
+            });
+        }
+        assert!(
+            !handoff.take_for("C", &hierarchy) && handoff.pending(),
+            "A mismatched take cannot discard the ready-B ownership lease"
+        );
+        drop(hierarchy);
+        app.insert_resource(handoff);
+        app.world_mut()
+            .resource_mut::<NavigationManager>()
+            .navigate_to_verse("B", "B");
+        app.world_mut()
+            .resource_mut::<NavigationManager>()
+            .navigate_to_verse("C", "C");
+        let sender = app
+            .world()
+            .resource::<fe_sync::SyncCommandSenderRes>()
+            .0
+            .clone();
+        for i in 0..4 {
+            sender
+                .try_send(SyncCommand::CloseVerseReplica {
+                    verse_id: format!("occupied-{i}"),
+                })
+                .unwrap();
+        }
+        app.update();
+        assert!(
+            app.world().resource::<ReplicaHandoff>().pending(),
+            "Full bounded queue retains superseded B while native lifecycle returns"
+        );
+        for _ in 0..4 {
+            assert!(matches!(
+                sync_rx.try_recv(),
+                Ok(SyncCommand::CloseVerseReplica { .. })
+            ));
+        }
+        app.update();
+        assert!(
+            matches!(sync_rx.try_recv(),Ok(SyncCommand::CloseJoinedReplica {lease}) if lease==old_join),
+            "Exact B generation is cleaned before the unrelated current C is opened"
+        );
+        assert!(
+            matches!(sync_rx.try_recv(),Ok(SyncCommand::CloseVerseReplica {verse_id:v}) if v==verse_id)
+        );
+        assert!(
+            matches!(sync_rx.try_recv(),Ok(SyncCommand::OpenVerseReplica {verse_id,namespace_id,..}) if verse_id=="C" && namespace_id=="cd".repeat(32)),
+            "Independently selected C is opened and never receives B's conditional close"
+        );
+        assert!(!app.world().resource::<ReplicaHandoff>().pending() && sync_rx.try_recv().is_err());
+        app.update();
+        assert!(
+            sync_rx.try_recv().is_err(),
+            "Accepted cleanup/open commands are not replayed"
         );
     }
 }

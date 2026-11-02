@@ -325,7 +325,13 @@ mod tests {
             .unwrap();
         let native = fe_sync::SyncCommandSenderRes(native_tx);
         let nav = crate::navigation_manager::NavigationManager::default();
-        ui_mgr.join_flow.retain_cleanup("canceled-join".into());
+        ui_mgr
+            .join_flow
+            .retain_cleanup(fe_sync::join_ticket::JoinedReplicaLease {
+                request_id: "canceled-generation".into(),
+                verse_id: "canceled-join".into(),
+                namespace_id: "ab".repeat(32),
+            });
         ui_mgr.join_flow.cleanup(&nav, Some(&native));
         assert!(
             !ui_mgr
@@ -338,7 +344,7 @@ mod tests {
         );
         ui_mgr.join_flow.cleanup(&nav, Some(&native));
         assert!(
-            matches!(native_rx.try_recv(),Ok(fe_sync::SyncCommand::CloseVerseReplica {verse_id}) if verse_id=="canceled-join"),
+            matches!(native_rx.try_recv(),Ok(fe_sync::SyncCommand::CloseJoinedReplica {lease}) if lease.verse_id=="canceled-join" && lease.request_id=="canceled-generation"),
             "Cleanup is ordered after the old accepted command"
         );
         assert!(ui_mgr

@@ -1975,3 +1975,10 @@ admission module. The sync module re-exports that one policy and owns only live
 export, capability import, subscriptions, dial and readiness effects. This avoids
 DB-to-sync waits and duplicate ticket parsing rules; no database command trusts
 a caller-supplied native-validation boolean.
+
+
+Joined native pipelines retain a local generation/Verse/namespace lease. Native readiness must
+match that lease, as must the local-only CloseJoinedReplica command. Ordinary Open/Close
+invalidates it. Exact conditional close enters the ordinary close branch, including gossip,
+provider and blob-access cleanup. A stale dialog or superseded handoff cannot close a newer
+pipeline with the same Verse ID, and no new transport or wire protocol is introduced.

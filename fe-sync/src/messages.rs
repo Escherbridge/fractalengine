@@ -12,6 +12,9 @@ use crate::relay_config::RelayHealth;
 /// Commands sent **to** the sync thread.
 #[derive(Debug, Clone)]
 pub enum SyncCommand {
+    CloseJoinedReplica {
+        lease: crate::join_ticket::JoinedReplicaLease,
+    },
     ExportJoinTicket {
         request: crate::join_ticket::ExportJoinTicket,
         reply: crossbeam::channel::Sender<crate::join_ticket::JoinTicketExported>,
