@@ -1433,3 +1433,10 @@ queues a retained origin, calls the real invalidation, and checks late promotion
 through registered readers plus late save refusal through the production receipt
 handler. Queue reset is explicit source evidence; no-write alone does not prove
 the private queue was empty. These assertions remain unexecuted until the sweep.
+
+
+## Addressed invitation coordination
+
+`invitations` owns nonblocking desktop issuance and join phases. Access retains one exact-target
+Owner-issued invitation, with a recipient DID selected from known peers or entered explicitly.
+See `invitations/AGENTS.md` for cross-thread ownership and credential lifetime boundaries.

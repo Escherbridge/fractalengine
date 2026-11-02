@@ -20,7 +20,7 @@ pub fn render_entity_settings_dialog(
     api_endpoint: Option<std::net::SocketAddr>,
 ) {
     super::entity_details::request_if_needed(ui_mgr, db_tx, ctx.input(|input| input.time));
-    super::entity_access::service(ui_mgr,db_tx,known_peers);
+    super::entity_access::service(ui_mgr, db_tx, known_peers);
     // Early-return guard: only render when EntitySettings is active.
     let ActiveDialog::EntitySettings {
         ref entity_type,
@@ -61,8 +61,8 @@ pub fn render_entity_settings_dialog(
     let mut close = false;
     let mut still_open = true;
     let mut send_failure = None;
-    let mut access_action=None;
-    let mut copied_access=false;
+    let mut access_action = None;
+    let mut copied_access = false;
 
     crate::ui_shell::layout_policy::bounded_window(ctx, title)
         .open(&mut still_open)
@@ -378,10 +378,7 @@ pub fn render_entity_settings_dialog(
                 SettingsTab::Access => {
                     ui.label(egui::RichText::new("Peer Access").strong());
                     access_action=super::entity_access::role_controls(ui,access,known_peers);
-                    let (invite_action,copied)=super::entity_access::invite_controls(ui,access,invite_role_buf,invite_expiry_buf);
-                    if let Some(action) = invite_action {
-                        access_action = Some(action);
-                    }
+                    let copied=super::entity_access::invite_controls(ui,access,invite_role_buf,invite_expiry_buf,known_peers);
                     copied_access |= copied;
                 }
                 SettingsTab::ApiAccess => {
@@ -393,8 +390,12 @@ pub fn render_entity_settings_dialog(
             });
         });
 
-    if let Some(action)=access_action {super::entity_access::submit(ui_mgr,action,db_tx);}
-    if copied_access {ui_mgr.show_toast("Copied access value",ctx.input(|input|input.time));}
+    if let Some(action) = access_action {
+        super::entity_access::submit(ui_mgr, action, db_tx);
+    }
+    if copied_access {
+        ui_mgr.show_toast("Copied access value", ctx.input(|input| input.time));
+    }
     if let Some(message) = send_failure {
         ui_mgr.show_error(message, ctx.input(|input| input.time));
     }

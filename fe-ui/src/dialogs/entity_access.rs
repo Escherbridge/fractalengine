@@ -34,6 +34,7 @@ pub struct EntityAccessState {
     confirmed_request_id: String,
     api_open: bool,
     reveal_secret: bool,
+    pub(crate) invitation: crate::invitations::IssueState,
 }
 
 impl Default for EntityAccessState {
@@ -49,17 +50,19 @@ impl Default for EntityAccessState {
             confirmed_request_id: String::new(),
             api_open: false,
             reveal_secret: false,
+            invitation: crate::invitations::IssueState::default(),
         }
     }
 }
 
 impl EntityAccessState {
     pub(crate) fn refresh(&mut self) {
+        self.invitation.reset();
         self.queued_read = true;
         self.error = None;
     }
     pub(crate) fn pending_work(&self) -> bool {
-        self.waiting() || self.queued_read
+        self.waiting() || self.queued_read || self.invitation.busy()
     }
     pub(crate) fn waiting(&self) -> bool {
         self.pending.is_some()
@@ -224,6 +227,7 @@ pub(crate) fn submit(
     {
         return;
     }
+    access.invitation.reset();
     queue(access, target, action, sender);
 }
 
@@ -301,7 +305,7 @@ pub(crate) fn role_controls(
     }
     let owner =
         fe_database::RoleLevel::from(snapshot.local_role.as_str()) == fe_database::RoleLevel::Owner;
-    let enabled = !state.waiting() && !state.read_required;
+    let enabled = !state.waiting() && !state.read_required && !state.invitation.busy();
     ui.label("Effective roles include inherited access and grants from other managers.");
     for (did, role) in &snapshot.roles {
         ui.push_id(did,|ui|{
@@ -357,7 +361,7 @@ pub(crate) fn token_controls(
         ui.label("Load stored access to view tokens for this entry.");
         return None;
     };
-    let enabled = !state.waiting() && !state.read_required;
+    let enabled = !state.waiting() && !state.read_required && !state.invitation.busy();
     if let Some(notice) = &snapshot.notice {
         ui.label(notice);
     }
@@ -407,6 +411,9 @@ pub(crate) fn select_tab(tab: &mut SettingsTab, state: &mut EntityAccessState, n
     if *tab == SettingsTab::ApiAccess && next != SettingsTab::ApiAccess {
         state.leave_api();
     }
+    if next != SettingsTab::Access {
+        state.invitation.reset();
+    }
     *tab = next;
     if matches!(next, SettingsTab::Access | SettingsTab::ApiAccess) {
         state.refresh();
@@ -418,12 +425,44 @@ pub(crate) fn invite_controls(
     state: &mut EntityAccessState,
     role: &mut String,
     expiry: &mut u32,
-) -> (Option<EntityAccessAction>, bool) {
-    let mut action = None;
-    let mut copied = false;
+    peers: Option<&fe_runtime::PeerRegistry>,
+) -> bool {
     ui.separator();
-    ui.label("Generate scoped invite");
-    ui.add_enabled_ui(!state.waiting() && !state.read_required, |ui| {
+    ui.label("Invite a peer to this scope");
+    let owner = state
+        .snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.local_role == "owner");
+    if !owner {
+        state.invitation.reset();
+        ui.label("Fresh addressed invitations currently require the Verse Owner. Manager-issued invitations await delegation proof support.");
+        return false;
+    }
+    if state.invitation.recipient.is_empty() {
+        let owner_did = state.snapshot.as_ref().map(|s| s.local_did.as_str());
+        if let Some(did) = peers
+            .into_iter()
+            .flat_map(|p| p.iter())
+            .map(|(did, _)| did)
+            .filter(|did| Some(did.as_str()) != owner_did)
+            .min()
+        {
+            state.invitation.recipient = did.clone();
+        }
+    }
+    let Some(target) = state.target.as_ref() else {
+        return false;
+    };
+    state.invitation.synchronize(target, role, *expiry);
+    let editing = !state.waiting() && !state.read_required && !state.invitation.busy();
+    ui.add_enabled_ui(editing, |ui| {
+        ui.label("Recipient DID");
+        ui.add(
+            egui::TextEdit::singleline(&mut state.invitation.recipient)
+                .char_limit(256)
+                .desired_width(f32::INFINITY),
+        )
+        .named(ui, "Invitation recipient DID");
         egui::ComboBox::from_id_salt("entity_invite_role")
             .selected_text(role.as_str())
             .show_ui(ui, |ui| {
@@ -435,33 +474,73 @@ pub(crate) fn invite_controls(
             .named(ui, "Scoped invite role");
         ui.add(egui::DragValue::new(expiry).range(1..=720).suffix(" hours"))
             .named(ui, "Scoped invite expiry hours");
-        if ui
-            .button("Generate invite")
-            .named(ui, "Generate invite for this entry")
-            .clicked()
-        {
-            action = Some(EntityAccessAction::GenerateInvite {
-                role: role.clone(),
-                expiry_hours: *expiry,
-            });
-        }
     });
-    if let Some(link) = state
-        .snapshot
-        .as_ref()
-        .and_then(|snapshot| snapshot.invite_link.as_ref())
+    state.invitation.synchronize(target, role, *expiry);
+    if ui
+        .add_enabled(
+            editing && state.invitation.can_request(),
+            egui::Button::new("Generate invite"),
+        )
+        .named(ui, "Generate invite for this entry")
+        .clicked()
     {
-        ui.label("Invite generated for this entry. Treat it as an access credential.");
+        state.invitation.request();
+    }
+    if let Some(progress) = state.invitation.progress() {
+        ui.spinner();
+        ui.label(progress);
+    }
+    if let Some(error) = state.invitation.error {
+        ui.colored_label(theme::STATUS_OFFLINE, error);
+    }
+    ui.label("Expiry limits accepting this envelope. The native document capability is a transferable bearer credential without its own expiry. Scoped roles do not hide other bytes in the Verse; revocation does not erase cached capabilities.");
+    let mut copied = false;
+    if let Some(issued) = state.invitation.ready() {
+        ui.label("Addressed invitation generated. Share it only with the named recipient.");
         if ui
             .button("Copy invite link")
             .named(ui, "Copy scoped invite link")
             .clicked()
         {
-            ui.ctx().copy_text(link.clone());
+            ui.ctx().copy_text(issued.credential.as_str().into());
             copied = true;
         }
     }
-    (action, copied)
+    copied
+}
+
+pub(crate) fn invitation_context(
+    dialog: &mut ActiveDialog,
+) -> Option<(EntityAccessTarget, &mut crate::invitations::IssueState)> {
+    let target = current_target(dialog);
+    let ActiveDialog::EntitySettings {
+        access,
+        details,
+        active_tab,
+        invite_role_buf,
+        invite_expiry_buf,
+        ..
+    } = dialog
+    else {
+        return None;
+    };
+    let valid = *active_tab == SettingsTab::Access
+        && details.can_write()
+        && details.loaded.as_ref().is_some_and(|d| d.role == "owner")
+        && !access.read_required
+        && !access.waiting()
+        && access
+            .snapshot
+            .as_ref()
+            .is_some_and(|s| s.local_role == "owner");
+    let Some(target) = target.filter(|_| valid) else {
+        access.invitation.reset();
+        return None;
+    };
+    access
+        .invitation
+        .synchronize(&target, invite_role_buf, *invite_expiry_buf);
+    Some((target, &mut access.invitation))
 }
 
 fn shell_quote(value: &str) -> String {

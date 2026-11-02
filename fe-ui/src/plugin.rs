@@ -1018,6 +1018,7 @@ impl Plugin for GardenerConsolePlugin {
             Update,
             resolve_local_role_on_nav_change.in_set(UiSet::ProcessActions),
         );
+        app.add_systems(Update, crate::invitations::drive.in_set(UiSet::ProcessActions).run_if(fe_runtime::maintenance::editor_running));
         // Surface asset-download outcomes (written by the main binary's bridge) as toasts.
         app.add_systems(Update, crate::asset_ops::surface_asset_download_status);
         // Surface GPX-import outcomes (written by the main binary's bridge) as toasts.
