@@ -7,6 +7,19 @@ execution_status: NOT_RUN
 
 # Region journeys
 
+The catalog is source-reconciled against `d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9` on2026-11-02, with no imported
+PASS evidence and the final fingerprint pending main's build fixes. Native Data History, Measurements and
+Enforced schema are GUI cases F134–F136; the rich-data API driver remains separate setup/API evidence. Row menus/
+appearance, scoped Access/Query, checked stamp/point edits and supported Undo are current. Removed Reset/Config
+writes/InviteDialog and erroneous old visibility-chord aliases retain IDs and retirement reasons. A separate
+terminal-reset branch is not current main reachability.
+
+`tools/qa/catalog_sources.py` regenerates source/endpoint inventories, the feature table and all eleven checkpoint
+matrices from canonical JSON plus explicit ownership rules. Lexical candidates are not a GUI denominator, and
+regeneration does not verify execution or a new fingerprint. Every current API/library/OS case remains required;
+missing fixtures are BLOCKED rather than skipped. Rotation covers all regions within three passes; convergence
+still requires complete current-pass coverage/all gold and two successive zero-new-S1/S2 passes.
+
 [J03 rich-data](J03-rich-data.md) extends J03/J09/J10 with explicit object replay and appended measurement
 oracles. Its declarative runner produces current-pass API evidence and a safe offline actual-data report;
 it does not execute or pass the product GUI/OS acceptance work. See that supplement for prerequisites and CLI.

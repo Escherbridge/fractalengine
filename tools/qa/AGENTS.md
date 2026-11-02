@@ -907,3 +907,38 @@ Fixture servers have separate ownership records and must be stopped first.
 `fe.py portal-fixture capture --out shots/portal-one.png` saves actual owned WebView2 CapturePreview bytes plus `portal-one.png.json`. Output requires an existing destination directory beneath the selected run; the client never creates directories. It rejects Windows ADS, reserved device names, drive-relative paths, control characters and trailing-dot/space components before path resolution, and refuses overwrite, traversal outside the run and redirected ancestors. Windows directory handles pin every existing ancestor before either exclusive PNG/receipt creation, with both evidence handles retained through their writes. Failed writes may leave partial new evidence; they never report success or replace prior evidence. J02 lists the pending negative path cases. The client validates the native source marker, PNG dimensions and SHA-256 against the response receipt and prints paths/metadata without image base64. A capture proves the native source and bytes, not visual correctness; inspect the actual PNG independently. All four commands retain ordinary before/after log observations. The third-link negative may intentionally produce the native policy error, which still needs an explicit expected-refusal log review.
 
 For J02: open saved fixture page one in the app, observe and capture, second-link then observe/capture page two, use the actual app Back and Forward controls and repeat native observations/captures, Reload, then refused-third-link and verify its denial plus the unchanged native page. Close and ensure further native operations refuse. Input off, Viewer, foreign scope, missing/expired helper, changed page/popup/scope and callback timeout remain separate negative checkpoints. Source authoring and journey extensions are not execution evidence.
+
+## Catalog source census
+
+`qa/feature-checkpoints.json` remains the canonical capability/variant denominator. Its families own regions,
+journeys, concrete entries/outcomes and source paths. `checkpoint_notes` preserves retired IDs and reasons;
+excluded IDs are never PASS and do not remain in executable gold membership. New source controls extend the
+catalog before any coverage claim. `audited_source_commit` identifies this source review; the final staged
+fingerprint stays null until the main owner reconciles the final build inputs. No historical PASS is imported.
+
+`catalog_source_rules.json` supplies explicit shared-source and action ownership where a file serves multiple
+families. `catalog_sources.py` uses only stdlib file reads and writes the catalog views; it never calls Git,
+launches processes/apps, reads token stores or accesses network. After reviewing source and the canonical JSON,
+use the actual audited full commit (this snapshot is d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9):
+
+```powershell
+python tools/qa/catalog_sources.py --source-commit d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9 --write
+```
+
+The command refreshes `qa/catalog-source-census.json`, `qa/source-inventory.md`, the feature table and each
+J01–J11 checkpoint matrix. Hand-authored journey steps remain intact. Without `--write` it prints only census
+counts, unmapped owners and missing endpoint IDs. It does not mutate the canonical catalog or fingerprint.
+Review every unmapped owner and endpoint delta; fail an audit rather than assigning a convenient unrelated
+family. A family owner is responsibility, not evidence that every caller's feature was exercised.
+
+The census is deliberately lexical: literal cfg(test) items are blanked with line numbers preserved; string
+delimiters are balanced; comments/macros/dynamic wrappers are not a Rust AST. A candidate can be a naming wrapper
+or helper for the same control. Some legacy UiAction adapters have no current GUI constructor. Actual dynamic
+children, disabled reasons, overlay content, pixel geometry and per-control state variants require source plus
+the live tree and judged screenshots. Candidate count is never a coverage denominator or an execution result.
+Normalized production-source hashes are census provenance only, not the campaign build-input fingerprint.
+
+For current Portal catalog obligations see J02: captured exact `/web/one` and `/web/two` QA capabilities now
+exist in the audited source. The older fixture paragraph above describes the pre-capability integration state;
+starting the helper still cannot itself grant permission or prove embedded browsing. Only the main owner may
+prepare/relaunch the exact controlled fixture and test the live listener/policy boundaries.

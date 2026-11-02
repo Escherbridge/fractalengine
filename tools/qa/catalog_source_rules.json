@@ -1,0 +1,418 @@
+{
+  "type": "FeatureSourceOwnership",
+  "actions": {
+    "OpenPortal": [
+      "F024",
+      "F025"
+    ],
+    "ClosePortal": [
+      "F025"
+    ],
+    "PortalGoBack": [
+      "F025"
+    ],
+    "SaveUrl": [
+      "F024"
+    ],
+    "ApplyNodeTransform": [
+      "F018"
+    ],
+    "CreateNodeAt": [
+      "F020"
+    ],
+    "SubmitQuery": [
+      "F033",
+      "F034"
+    ],
+    "LoadNodeProperties": [
+      "F021",
+      "F030"
+    ],
+    "SetNodeProperty": [
+      "F030",
+      "F032"
+    ],
+    "DeleteNodeProperty": [
+      "F030",
+      "F032"
+    ],
+    "HexonInstallFromFile": [
+      "F120"
+    ],
+    "HexonRemoveTileset": [
+      "F123"
+    ],
+    "HexonToggleSeeding": [
+      "F123"
+    ],
+    "HexonStartDownload": [
+      "F122"
+    ],
+    "HexonCancelDownload": [
+      "F122"
+    ],
+    "HexonRefreshList": [
+      "F119"
+    ],
+    "HexonOpenStorageDir": [
+      "F123"
+    ],
+    "HexonInstallFromRegistry": [
+      "F121"
+    ],
+    "PetalSetMap": [
+      "F047"
+    ],
+    "PetalSetMapScale": [
+      "F048"
+    ],
+    "PetalManifestSave": [
+      "F124"
+    ],
+    "PetalSetRenderOverride": [
+      "F061"
+    ],
+    "PetalManifestOpen": [
+      "F124"
+    ],
+    "DownloadNodeAsset": [
+      "F026"
+    ],
+    "GisQueryAnnotated": [
+      "F040",
+      "F042"
+    ],
+    "GisQueryPropertyFilter": [
+      "F040"
+    ],
+    "GisSetLayer": [
+      "F049"
+    ],
+    "GisSetViewMode": [
+      "F049"
+    ],
+    "GpxImportFile": [
+      "F064"
+    ],
+    "PathQueryTracks": [
+      "F063"
+    ],
+    "PathSelectTrack": [
+      "F063",
+      "F077"
+    ],
+    "PathCreateTrack": [
+      "F063",
+      "F065"
+    ],
+    "PathDeleteTrack": [
+      "F063",
+      "F077"
+    ],
+    "PathAppendPoint": [
+      "F065"
+    ],
+    "PathAppendSmoothPoint": [
+      "F065"
+    ],
+    "PathSetAnchorHandles": [
+      "F067",
+      "F069"
+    ],
+    "PathSetAnchorCorner": [
+      "F067",
+      "F077"
+    ],
+    "PathRemovePoint": [
+      "F069",
+      "F077"
+    ],
+    "PathMovePoint": [
+      "F069"
+    ],
+    "PathTransformPoints": [
+      "F072"
+    ],
+    "PathAnnotatePoint": [
+      "F070"
+    ],
+    "PathExportGpx": [
+      "F078"
+    ],
+    "PathSetStyle": [
+      "F071"
+    ],
+    "PathAssetApply": [
+      "F074"
+    ],
+    "PathSmoothCurrent": [
+      "F066"
+    ],
+    "PathAppendShape": [
+      "F068"
+    ],
+    "TerrainProposalAdd": [
+      "F050",
+      "F051"
+    ],
+    "TerrainProposalDelete": [
+      "F051"
+    ],
+    "TerrainProposalSelect": [
+      "F051"
+    ],
+    "SelectStamp": [
+      "F075"
+    ],
+    "SetStampScale": [
+      "F075"
+    ],
+    "SetStampRotation": [
+      "F075"
+    ],
+    "SlideStampAlongPath": [
+      "F075"
+    ],
+    "SculptBrushStroke": [
+      "F052"
+    ],
+    "SculptShapeRegion": [
+      "F053",
+      "F054"
+    ],
+    "SculptDeleteRegion": [
+      "F057"
+    ],
+    "SaveMeasureAsCallout": [
+      "F059"
+    ],
+    "DeleteNode": [
+      "F012",
+      "F022",
+      "F076",
+      "F077"
+    ],
+    "DuplicateNode": [
+      "F021"
+    ],
+    "RenameNode": [
+      "F012",
+      "F021",
+      "F023"
+    ],
+    "PromoteStamp": [
+      "F075",
+      "F076"
+    ],
+    "ClearNodeProperties": [
+      "F022",
+      "F023"
+    ],
+    "CopyApiString": [
+      "F027"
+    ],
+    "ReportObject": [
+      "F027"
+    ],
+    "RevealSection": [
+      "F082"
+    ],
+    "SetNodeView": [
+      "F008",
+      "F009"
+    ],
+    "SetGroupRegistry": [
+      "F010"
+    ],
+    "SetScopeHidden": [
+      "F008"
+    ],
+    "SetNodeGroups": [
+      "F011"
+    ],
+    "SetAppOverlay": [
+      "F060"
+    ],
+    "PortalGoForward": [
+      "F025"
+    ],
+    "PortalReload": [
+      "F025"
+    ],
+    "PortalOpenExternal": [
+      "F025"
+    ],
+    "SaveNodeUrl": [
+      "F024"
+    ],
+    "PathSetAnchorMetadata": [
+      "F139"
+    ],
+    "ContextSetAnchorCorner": [
+      "F139"
+    ],
+    "PathMovePointFromGesture": [
+      "F139"
+    ],
+    "PathMovePointUntracked": [
+      "F139"
+    ],
+    "CommitTerrainAuthoring": [
+      "F053"
+    ],
+    "OpenTerrainReport": [
+      "F055"
+    ],
+    "GisRefreshAnnotations": [
+      "F039"
+    ],
+    "ApplyStampOverrides": [
+      "F138"
+    ],
+    "InspectStampNode": [
+      "F075",
+      "F138"
+    ],
+    "DownloadStampProperties": [
+      "F138"
+    ]
+  },
+  "files": {
+    "fe-ui/src/object_data/mod.rs": [
+      "F134",
+      "F135",
+      "F136"
+    ],
+    "fe-ui/src/object_data/history.rs": [
+      "F134"
+    ],
+    "fe-ui/src/object_data/measurements.rs": [
+      "F135"
+    ],
+    "fe-ui/src/object_data/schema.rs": [
+      "F136"
+    ],
+    "fe-ui/src/panels/property_grid.rs": [
+      "F137"
+    ],
+    "fe-ui/src/panels/property_value.rs": [
+      "F137"
+    ],
+    "fe-ui/src/panels/tree_entry.rs": [
+      "F001",
+      "F002",
+      "F003",
+      "F007",
+      "F008",
+      "F013",
+      "F133"
+    ],
+    "fe-ui/src/panels/tree_appearance.rs": [
+      "F133"
+    ],
+    "fe-ui/src/dialogs/entity_access.rs": [
+      "F096",
+      "F097",
+      "F098",
+      "F102",
+      "F103"
+    ],
+    "fe-ui/src/dialogs/entity_details.rs": [
+      "F093",
+      "F094",
+      "F095"
+    ],
+    "fe-ui/src/dialogs/requirements_state.rs": [
+      "F124"
+    ],
+    "fe-ui/src/panels/transform_options.rs": [
+      "F028"
+    ],
+    "fe-ui/src/panels/tool_inspector.rs": [
+      "F075",
+      "F138",
+      "F139"
+    ],
+    "fe-ui/src/ui_shell/setting_draft.rs": [
+      "F083",
+      "F084"
+    ],
+    "fe-ui/src/ui_shell/modal.rs": [
+      "F080",
+      "F089",
+      "F091"
+    ],
+    "fe-ui/src/panels/widgets.rs": [
+      "F089"
+    ],
+    "fe-ui/src/accessibility.rs": [
+      "F109",
+      "F114"
+    ],
+    "fe-ui/src/panels/toolbar.rs": [
+      "F014",
+      "F081",
+      "F090"
+    ],
+    "fe-ui/src/panels/portal_toolbar.rs": [
+      "F025"
+    ],
+    "fe-ui/src/panels/annotation_card.rs": [
+      "F032"
+    ],
+    "fe-ui/src/panels/path_editor_card.rs": [
+      "F063",
+      "F069",
+      "F070",
+      "F071",
+      "F072",
+      "F078",
+      "F139"
+    ],
+    "fe-ui/src/panels/inspector.rs": [
+      "F018",
+      "F024",
+      "F029",
+      "F030",
+      "F031",
+      "F100",
+      "F101",
+      "F134",
+      "F135",
+      "F136",
+      "F137"
+    ],
+    "fe-ui/src/atlas/visibility_control.rs": [
+      "F094"
+    ],
+    "fe-ui/src/role_chip.rs": [
+      "F087"
+    ],
+    "fe-ui/src/panels/tool_panel.rs": [
+      "F066",
+      "F067",
+      "F068",
+      "F073",
+      "F074",
+      "F075",
+      "F138"
+    ],
+    "fe-ui/src/verse_manager/db_results/nodes.rs": [
+      "F065",
+      "F139"
+    ],
+    "fe-ui/src/gis/layers.rs": [
+      "F060"
+    ]
+  },
+  "action_notes": {
+    "PetalManifestSave": "Legacy intent is refused; canonical requirements controller uses correlated typed DB commands and F124 owns its rendered Save.",
+    "RenameNode": "Semantic rename also routes directly through Node Options/Entity Details; absence of a UiAction constructor does not retire rename.",
+    "PathMovePointUntracked": "Internal legacy adapter, not a new standalone GUI control.",
+    "PetalSetRenderOverride": "Legacy action enum has no current render/gesture producer; the Settings session-override surface owns F061 through its current resource path. No separate GUI action is claimed.",
+    "SelectStamp": "Legacy adapter has no current render/gesture constructor; current viewport stamp selection and Inspector targets are covered by F075/F138.",
+    "SetStampScale": "Legacy per-field adapter has no current render constructor; actual selected-stamp scale uses atomic ApplyStampOverrides (F138).",
+    "SetStampRotation": "Legacy per-field adapter has no current render constructor; actual yaw/quaternion-preserving editor uses atomic ApplyStampOverrides (F138).",
+    "SlideStampAlongPath": "Legacy per-field adapter has no current render constructor; current metric slide uses atomic ApplyStampOverrides (F138)."
+  }
+}

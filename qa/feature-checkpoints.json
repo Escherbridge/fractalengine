@@ -1,8 +1,8 @@
 {
   "type": "FeatureCheckpointCatalog",
-  "catalog_source_commit": "214045aab523259c56c701c8fe9741117e38a7d0",
+  "catalog_source_commit": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
   "catalog_source_fingerprint": null,
-  "snapshot_date": "2026-11-01",
+  "snapshot_date": "2026-11-02",
   "execution_evidence": false,
   "reachability": {
     "Y": "GUI",
@@ -225,12 +225,12 @@
     {
       "id": "F009.solo-ShiftH",
       "family": "F009",
-      "reachability": "Y"
+      "reachability": "U"
     },
     {
       "id": "F009.show-AltH",
       "family": "F009",
-      "reachability": "Y"
+      "reachability": "U"
     },
     {
       "id": "F009.escape-solo",
@@ -340,27 +340,27 @@
     {
       "id": "F013.row-rename",
       "family": "F013",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F013.row-settings",
       "family": "F013",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F013.row-copy-id",
       "family": "F013",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F013.row-delete-cancel",
       "family": "F013",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F013.row-delete-confirm",
       "family": "F013",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F014.select-button",
@@ -720,12 +720,12 @@
     {
       "id": "F024.save-config-url",
       "family": "F024",
-      "reachability": "Y"
+      "reachability": "U"
     },
     {
       "id": "F024.open-config",
       "family": "F024",
-      "reachability": "Y"
+      "reachability": "U"
     },
     {
       "id": "F024.invalid-url",
@@ -800,47 +800,47 @@
     {
       "id": "F028.grid-snap",
       "family": "F028",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F028.angle-snap",
       "family": "F028",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F028.scale-snap",
       "family": "F028",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F028.uniform-scale",
       "family": "F028",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F028.axis-lock",
       "family": "F028",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F028.undo",
       "family": "F028",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F028.redo",
       "family": "F028",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F028.frame-F",
       "family": "F028",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F028.delete-shortcut",
       "family": "F028",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F029.properties-tab",
@@ -1395,22 +1395,22 @@
     {
       "id": "F046.selected-petal-scope",
       "family": "F046",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F046.no-petal-refusal",
       "family": "F046",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F046.foreign-table-refusal",
       "family": "F046",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F046.cross-petal-refusal",
       "family": "F046",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F047.set-map",
@@ -2550,22 +2550,22 @@
     {
       "id": "F086.reset-open",
       "family": "F086",
-      "reachability": "Y"
+      "reachability": "U"
     },
     {
       "id": "F086.reset-cancel",
       "family": "F086",
-      "reachability": "Y"
+      "reachability": "U"
     },
     {
       "id": "F086.reset-confirm",
       "family": "F086",
-      "reachability": "Y"
+      "reachability": "U"
     },
     {
       "id": "F086.isolated-data-gone",
       "family": "F086",
-      "reachability": "Y"
+      "reachability": "U"
     },
     {
       "id": "F087.info",
@@ -2800,7 +2800,7 @@
     {
       "id": "F092.shortcut-help",
       "family": "F092",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F092.panel-retry",
@@ -2930,22 +2930,22 @@
     {
       "id": "F097.assign-role",
       "family": "F097",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F097.revoke-role",
       "family": "F097",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F097.downgrade-cancel",
       "family": "F097",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F097.downgrade-confirm",
       "family": "F097",
-      "reachability": "P"
+      "reachability": "Y"
     },
     {
       "id": "F098.role-viewer",
@@ -4816,17 +4816,1187 @@
       "id": "F116.mcp-set-field-schema",
       "family": "F116",
       "reachability": "A"
+    },
+    {
+      "id": "F013.target-identity",
+      "family": "F013",
+      "reachability": "Y"
+    },
+    {
+      "id": "F013.inactive-scope-disabled",
+      "family": "F013",
+      "reachability": "Y"
+    },
+    {
+      "id": "F013.menu-reopen-disarms",
+      "family": "F013",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.config-unsupported",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.typed-current-hydration",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.dirty-draft-readback",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.pending-url-save",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.failed-save-retains-draft",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.selection-switch-late-read",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.node-options-url-save",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.unique-live-url-model",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F025.forward",
+      "family": "F025",
+      "reachability": "Y"
+    },
+    {
+      "id": "F025.reload",
+      "family": "F025",
+      "reachability": "Y"
+    },
+    {
+      "id": "F025.open-external",
+      "family": "F025",
+      "reachability": "Y"
+    },
+    {
+      "id": "F025.embedded-unavailable-disabled",
+      "family": "F025",
+      "reachability": "Y"
+    },
+    {
+      "id": "F025.toolbar-content-bounds",
+      "family": "F025",
+      "reachability": "Y"
+    },
+    {
+      "id": "F025.exact-web-permit",
+      "family": "F025",
+      "reachability": "Y"
+    },
+    {
+      "id": "F025.helper-dead-refusal",
+      "family": "F025",
+      "reachability": "Y"
+    },
+    {
+      "id": "F025.permit-expired-refusal",
+      "family": "F025",
+      "reachability": "Y"
+    },
+    {
+      "id": "F025.redirect-policy",
+      "family": "F025",
+      "reachability": "Y"
+    },
+    {
+      "id": "F028.axis-any",
+      "family": "F028",
+      "reachability": "Y"
+    },
+    {
+      "id": "F028.axis-X",
+      "family": "F028",
+      "reachability": "Y"
+    },
+    {
+      "id": "F028.axis-Y",
+      "family": "F028",
+      "reachability": "Y"
+    },
+    {
+      "id": "F028.axis-Z",
+      "family": "F028",
+      "reachability": "Y"
+    },
+    {
+      "id": "F028.grid-increment",
+      "family": "F028",
+      "reachability": "Y"
+    },
+    {
+      "id": "F028.angle-increment",
+      "family": "F028",
+      "reachability": "Y"
+    },
+    {
+      "id": "F028.scale-increment",
+      "family": "F028",
+      "reachability": "Y"
+    },
+    {
+      "id": "F028.point-selection-guidance",
+      "family": "F028",
+      "reachability": "Y"
+    },
+    {
+      "id": "F028.text-focus-no-shortcut",
+      "family": "F028",
+      "reachability": "Y"
+    },
+    {
+      "id": "F028.no-pivot-promise",
+      "family": "F028",
+      "reachability": "Y"
+    },
+    {
+      "id": "F018.collapsed-transform",
+      "family": "F018",
+      "reachability": "Y"
+    },
+    {
+      "id": "F018.preserved-selection",
+      "family": "F018",
+      "reachability": "Y"
+    },
+    {
+      "id": "F018.compact-axis-labels",
+      "family": "F018",
+      "reachability": "Y"
+    },
+    {
+      "id": "F018.native-target-minimum",
+      "family": "F018",
+      "reachability": "Y"
+    },
+    {
+      "id": "F018.no-selection-disabled",
+      "family": "F018",
+      "reachability": "Y"
+    },
+    {
+      "id": "F018.role-disabled",
+      "family": "F018",
+      "reachability": "Y"
+    },
+    {
+      "id": "F053.arm-shape",
+      "family": "F053",
+      "reachability": "Y"
+    },
+    {
+      "id": "F053.viewport-place",
+      "family": "F053",
+      "reachability": "Y"
+    },
+    {
+      "id": "F053.polygon-enter-close",
+      "family": "F053",
+      "reachability": "Y"
+    },
+    {
+      "id": "F053.polygon-double-close",
+      "family": "F053",
+      "reachability": "Y"
+    },
+    {
+      "id": "F053.polygon-button-close",
+      "family": "F053",
+      "reachability": "Y"
+    },
+    {
+      "id": "F053.polygon-backspace",
+      "family": "F053",
+      "reachability": "Y"
+    },
+    {
+      "id": "F053.polygon-collinear-refusal",
+      "family": "F053",
+      "reachability": "Y"
+    },
+    {
+      "id": "F053.owner-navigation-cancel",
+      "family": "F053",
+      "reachability": "Y"
+    },
+    {
+      "id": "F053.no-map-disabled",
+      "family": "F053",
+      "reachability": "Y"
+    },
+    {
+      "id": "F053.role-disabled",
+      "family": "F053",
+      "reachability": "Y"
+    },
+    {
+      "id": "F055.choose-existing-report",
+      "family": "F055",
+      "reachability": "Y"
+    },
+    {
+      "id": "F055.current-target-read-only",
+      "family": "F055",
+      "reachability": "Y"
+    },
+    {
+      "id": "F055.incomplete-not-zero",
+      "family": "F055",
+      "reachability": "Y"
+    },
+    {
+      "id": "F056.object-impact-overlap",
+      "family": "F056",
+      "reachability": "Y"
+    },
+    {
+      "id": "F056.object-impact-properties",
+      "family": "F056",
+      "reachability": "Y"
+    },
+    {
+      "id": "F056.report-scroll",
+      "family": "F056",
+      "reachability": "Y"
+    },
+    {
+      "id": "F060.grid-scale-units",
+      "family": "F060",
+      "reachability": "Y"
+    },
+    {
+      "id": "F060.no-map-grid-explanation",
+      "family": "F060",
+      "reachability": "Y"
+    },
+    {
+      "id": "F092.shortcut-help-close",
+      "family": "F092",
+      "reachability": "Y"
+    },
+    {
+      "id": "F097.refresh-disarms",
+      "family": "F097",
+      "reachability": "Y"
+    },
+    {
+      "id": "F097.owner-protected",
+      "family": "F097",
+      "reachability": "Y"
+    },
+    {
+      "id": "F097.own-grant-revoke",
+      "family": "F097",
+      "reachability": "Y"
+    },
+    {
+      "id": "F097.inherited-role",
+      "family": "F097",
+      "reachability": "Y"
+    },
+    {
+      "id": "F097.new-target-late-reply",
+      "family": "F097",
+      "reachability": "Y"
+    },
+    {
+      "id": "F097.timeout-needs-readback",
+      "family": "F097",
+      "reachability": "Y"
+    },
+    {
+      "id": "F100.masked-default",
+      "family": "F100",
+      "reachability": "Y"
+    },
+    {
+      "id": "F100.reveal-toggle",
+      "family": "F100",
+      "reachability": "Y"
+    },
+    {
+      "id": "F100.correlated-mint",
+      "family": "F100",
+      "reachability": "Y"
+    },
+    {
+      "id": "F100.wrong-target-late-secret",
+      "family": "F100",
+      "reachability": "Y"
+    },
+    {
+      "id": "F100.listener-read-example",
+      "family": "F100",
+      "reachability": "Y"
+    },
+    {
+      "id": "F100.pending-denied",
+      "family": "F100",
+      "reachability": "Y"
+    },
+    {
+      "id": "F100.timeout-clears",
+      "family": "F100",
+      "reachability": "Y"
+    },
+    {
+      "id": "F102.entity-target-binding",
+      "family": "F102",
+      "reachability": "Y"
+    },
+    {
+      "id": "F102.masked-default",
+      "family": "F102",
+      "reachability": "Y"
+    },
+    {
+      "id": "F102.reveal-toggle",
+      "family": "F102",
+      "reachability": "Y"
+    },
+    {
+      "id": "F102.leave-tab-clears",
+      "family": "F102",
+      "reachability": "Y"
+    },
+    {
+      "id": "F102.role-change-refresh-confirm",
+      "family": "F102",
+      "reachability": "Y"
+    },
+    {
+      "id": "F102.actual-listener-example",
+      "family": "F102",
+      "reachability": "Y"
+    },
+    {
+      "id": "F102.failed-write-requires-read",
+      "family": "F102",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.initial-load-disabled",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.installed-id-choice",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.manual-id",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.unknown-reference",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.save-ack-keeps-newer-draft",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.conflict-review-use-saved",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.conflict-review-keep-draft",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.timeout-reload-keeps-draft",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.nav-late-ack-refused",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.unapplied-add-dirty",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.declaration-only",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.legacy-distance-preserved",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.no-residency-effect",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F126.wasm-scene-read",
+      "family": "F126",
+      "reachability": "A"
+    },
+    {
+      "id": "F126.wasm-scene-write",
+      "family": "F126",
+      "reachability": "A"
+    },
+    {
+      "id": "F126.unbound-refused",
+      "family": "F126",
+      "reachability": "A"
+    },
+    {
+      "id": "F126.stored-scope-grants",
+      "family": "F126",
+      "reachability": "A"
+    },
+    {
+      "id": "F126.property-projection",
+      "family": "F126",
+      "reachability": "A"
+    },
+    {
+      "id": "F126.forged-origin-refused",
+      "family": "F126",
+      "reachability": "A"
+    },
+    {
+      "id": "F126.clone-revocation",
+      "family": "F126",
+      "reachability": "A"
+    },
+    {
+      "id": "F126.stop-queued-refused",
+      "family": "F126",
+      "reachability": "A"
+    },
+    {
+      "id": "F126.timeout-unknown",
+      "family": "F126",
+      "reachability": "A"
+    },
+    {
+      "id": "F126.no-raw-sql-bypass",
+      "family": "F126",
+      "reachability": "A"
+    },
+    {
+      "id": "F133.verse-entry",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.fractal-entry",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.petal-entry",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.node-entry",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.hue-saturation-wheel",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.hue",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.saturation",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.brightness",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.hex",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.icon",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.save",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.cancel",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.escape",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.reset-draft",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.invalid-hex",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.deleted-target",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.independent-entry",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.local-persistence",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.data-tab",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.refresh",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.version-row",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.previous-page",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.next-page",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.exact-version",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.invalid-version",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.earlier",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.later",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.play",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.pause",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.copy-properties",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.unavailable-coverage",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.current-unchanged",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.target-change",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.access-denied",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.timeout",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F135.open",
+      "family": "F135",
+      "reachability": "Y"
+    },
+    {
+      "id": "F135.refresh",
+      "family": "F135",
+      "reachability": "Y"
+    },
+    {
+      "id": "F135.series-select",
+      "family": "F135",
+      "reachability": "Y"
+    },
+    {
+      "id": "F135.event-time-order",
+      "family": "F135",
+      "reachability": "Y"
+    },
+    {
+      "id": "F135.chart-table-parity",
+      "family": "F135",
+      "reachability": "Y"
+    },
+    {
+      "id": "F135.metric-units",
+      "family": "F135",
+      "reachability": "Y"
+    },
+    {
+      "id": "F135.empty-series",
+      "family": "F135",
+      "reachability": "Y"
+    },
+    {
+      "id": "F135.point-limit",
+      "family": "F135",
+      "reachability": "Y"
+    },
+    {
+      "id": "F135.series-limit",
+      "family": "F135",
+      "reachability": "Y"
+    },
+    {
+      "id": "F135.finite-extremes",
+      "family": "F135",
+      "reachability": "Y"
+    },
+    {
+      "id": "F135.copy-tsv",
+      "family": "F135",
+      "reachability": "Y"
+    },
+    {
+      "id": "F135.target-change",
+      "family": "F135",
+      "reachability": "Y"
+    },
+    {
+      "id": "F135.timeout",
+      "family": "F135",
+      "reachability": "Y"
+    },
+    {
+      "id": "F136.verse-scope",
+      "family": "F136",
+      "reachability": "Y"
+    },
+    {
+      "id": "F136.fractal-scope",
+      "family": "F136",
+      "reachability": "Y"
+    },
+    {
+      "id": "F136.petal-scope",
+      "family": "F136",
+      "reachability": "Y"
+    },
+    {
+      "id": "F136.refresh-definitions",
+      "family": "F136",
+      "reachability": "Y"
+    },
+    {
+      "id": "F136.select-definition",
+      "family": "F136",
+      "reachability": "Y"
+    },
+    {
+      "id": "F136.refresh-stored",
+      "family": "F136",
+      "reachability": "Y"
+    },
+    {
+      "id": "F136.edit-json",
+      "family": "F136",
+      "reachability": "Y"
+    },
+    {
+      "id": "F136.save-next",
+      "family": "F136",
+      "reachability": "Y"
+    },
+    {
+      "id": "F136.invalid-rule",
+      "family": "F136",
+      "reachability": "Y"
+    },
+    {
+      "id": "F136.incompatible-revision",
+      "family": "F136",
+      "reachability": "Y"
+    },
+    {
+      "id": "F136.conflict-load-stored",
+      "family": "F136",
+      "reachability": "Y"
+    },
+    {
+      "id": "F136.timeout-retains-draft",
+      "family": "F136",
+      "reachability": "Y"
+    },
+    {
+      "id": "F136.newer-edit-retained",
+      "family": "F136",
+      "reachability": "Y"
+    },
+    {
+      "id": "F136.manager-denied",
+      "family": "F136",
+      "reachability": "Y"
+    },
+    {
+      "id": "F137.edit-string",
+      "family": "F137",
+      "reachability": "Y"
+    },
+    {
+      "id": "F137.edit-number",
+      "family": "F137",
+      "reachability": "Y"
+    },
+    {
+      "id": "F137.edit-bool",
+      "family": "F137",
+      "reachability": "Y"
+    },
+    {
+      "id": "F137.edit-array",
+      "family": "F137",
+      "reachability": "Y"
+    },
+    {
+      "id": "F137.edit-object",
+      "family": "F137",
+      "reachability": "Y"
+    },
+    {
+      "id": "F137.edit-null",
+      "family": "F137",
+      "reachability": "Y"
+    },
+    {
+      "id": "F137.save",
+      "family": "F137",
+      "reachability": "Y"
+    },
+    {
+      "id": "F137.cancel",
+      "family": "F137",
+      "reachability": "Y"
+    },
+    {
+      "id": "F137.copy",
+      "family": "F137",
+      "reachability": "Y"
+    },
+    {
+      "id": "F137.expand",
+      "family": "F137",
+      "reachability": "Y"
+    },
+    {
+      "id": "F137.collapse",
+      "family": "F137",
+      "reachability": "Y"
+    },
+    {
+      "id": "F137.invalid-retained",
+      "family": "F137",
+      "reachability": "Y"
+    },
+    {
+      "id": "F137.concurrent-readback",
+      "family": "F137",
+      "reachability": "Y"
+    },
+    {
+      "id": "F137.pending-timeout",
+      "family": "F137",
+      "reachability": "Y"
+    },
+    {
+      "id": "F137.refresh-stored",
+      "family": "F137",
+      "reachability": "Y"
+    },
+    {
+      "id": "F137.horizontal-actions",
+      "family": "F137",
+      "reachability": "Y"
+    },
+    {
+      "id": "F137.exact-i64",
+      "family": "F137",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.scale-XYZ",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.yaw",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.slide-meters",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.one-atomic-apply",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.pending",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.stored-reload",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.stale-baseline-refused",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.preserve-quaternion",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.curved-sample",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.no-implicit-clamp",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.invalid-disabled",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F139.corner",
+      "family": "F139",
+      "reachability": "Y"
+    },
+    {
+      "id": "F139.smooth",
+      "family": "F139",
+      "reachability": "Y"
+    },
+    {
+      "id": "F139.symmetric",
+      "family": "F139",
+      "reachability": "Y"
+    },
+    {
+      "id": "F139.smoothness",
+      "family": "F139",
+      "reachability": "Y"
+    },
+    {
+      "id": "F139.height-enter",
+      "family": "F139",
+      "reachability": "Y"
+    },
+    {
+      "id": "F139.height-blur",
+      "family": "F139",
+      "reachability": "Y"
+    },
+    {
+      "id": "F139.drag-release-one-intent",
+      "family": "F139",
+      "reachability": "Y"
+    },
+    {
+      "id": "F139.idle-no-resubmit",
+      "family": "F139",
+      "reachability": "Y"
+    },
+    {
+      "id": "F139.context-preclick-owner",
+      "family": "F139",
+      "reachability": "Y"
+    },
+    {
+      "id": "F139.route-reorder-refused",
+      "family": "F139",
+      "reachability": "Y"
+    },
+    {
+      "id": "F139.nav-refused",
+      "family": "F139",
+      "reachability": "Y"
+    },
+    {
+      "id": "F139.atomic-failure-no-projection",
+      "family": "F139",
+      "reachability": "Y"
+    },
+    {
+      "id": "F140.object-transform",
+      "family": "F140",
+      "reachability": "Y"
+    },
+    {
+      "id": "F140.undo",
+      "family": "F140",
+      "reachability": "Y"
+    },
+    {
+      "id": "F140.redo",
+      "family": "F140",
+      "reachability": "Y"
+    },
+    {
+      "id": "F140.consecutive-same-object",
+      "family": "F140",
+      "reachability": "Y"
+    },
+    {
+      "id": "F140.point-move",
+      "family": "F140",
+      "reachability": "Y"
+    },
+    {
+      "id": "F140.point-remove",
+      "family": "F140",
+      "reachability": "Y"
+    },
+    {
+      "id": "F140.point-handles-corner",
+      "family": "F140",
+      "reachability": "Y"
+    },
+    {
+      "id": "F140.whole-track",
+      "family": "F140",
+      "reachability": "Y"
+    },
+    {
+      "id": "F140.focus-popup-denied",
+      "family": "F140",
+      "reachability": "Y"
+    },
+    {
+      "id": "F140.gesture-denied",
+      "family": "F140",
+      "reachability": "Y"
+    },
+    {
+      "id": "F140.peer-conflict",
+      "family": "F140",
+      "reachability": "Y"
+    },
+    {
+      "id": "F140.nav-clears",
+      "family": "F140",
+      "reachability": "Y"
+    },
+    {
+      "id": "F140.unknown-outcome-readback",
+      "family": "F140",
+      "reachability": "Y"
+    },
+    {
+      "id": "F140.unsupported-edit-not-recorded",
+      "family": "F140",
+      "reachability": "Y"
+    },
+    {
+      "id": "F009.solo-AltH",
+      "family": "F009",
+      "reachability": "Y"
+    },
+    {
+      "id": "F009.show-ShiftH",
+      "family": "F009",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.page-limit",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F136.unsupported-keyword",
+      "family": "F136",
+      "reachability": "Y"
+    },
+    {
+      "id": "F136.descriptor-byte-limit",
+      "family": "F136",
+      "reachability": "Y"
+    },
+    {
+      "id": "F136.descriptor-depth-limit",
+      "family": "F136",
+      "reachability": "Y"
+    },
+    {
+      "id": "F136.descriptor-rule-limit",
+      "family": "F136",
+      "reachability": "Y"
+    },
+    {
+      "id": "F140.bounded-stack",
+      "family": "F140",
+      "reachability": "Y"
     }
   ],
   "gold_tasks": {
     "G1": [
       "F005.verse-create",
       "F005.fractal-create",
-      "F005.petal-create"
+      "F005.petal-create",
+      "F133.verse-entry",
+      "F133.fractal-entry",
+      "F133.petal-entry",
+      "F133.node-entry",
+      "F133.hue-saturation-wheel",
+      "F133.hue",
+      "F133.saturation",
+      "F133.brightness",
+      "F133.hex",
+      "F133.icon",
+      "F133.save",
+      "F133.cancel",
+      "F133.escape",
+      "F133.reset-draft",
+      "F133.invalid-hex",
+      "F133.deleted-target",
+      "F133.independent-entry",
+      "F133.local-persistence",
+      "F013.row-rename",
+      "F013.row-settings",
+      "F013.row-copy-id",
+      "F013.row-delete-cancel",
+      "F013.row-delete-confirm",
+      "F013.target-identity",
+      "F013.inactive-scope-disabled",
+      "F013.menu-reopen-disarms"
     ],
     "G2": [
       "F019.import-success",
-      "F017.move-X"
+      "F017.move-X",
+      "F140.object-transform",
+      "F140.undo",
+      "F140.redo",
+      "F140.consecutive-same-object",
+      "F140.point-move",
+      "F140.point-remove",
+      "F140.point-handles-corner",
+      "F140.whole-track",
+      "F140.focus-popup-denied",
+      "F140.gesture-denied",
+      "F140.peer-conflict",
+      "F140.nav-clears",
+      "F140.unknown-outcome-readback",
+      "F140.unsupported-edit-not-recorded",
+      "F028.grid-snap",
+      "F028.angle-snap",
+      "F028.scale-snap",
+      "F028.uniform-scale",
+      "F028.axis-lock",
+      "F028.undo",
+      "F028.redo",
+      "F028.frame-F",
+      "F028.delete-shortcut",
+      "F028.axis-any",
+      "F028.axis-X",
+      "F028.axis-Y",
+      "F028.axis-Z",
+      "F028.grid-increment",
+      "F028.angle-increment",
+      "F028.scale-increment",
+      "F028.point-selection-guidance",
+      "F028.text-focus-no-shortcut",
+      "F028.no-pivot-promise",
+      "F140.bounded-stack"
     ],
     "G3": [
       "F034.run-button",
@@ -4856,7 +6026,77 @@
       "F131.per-anchor-statistics",
       "F131.half-open-window",
       "F131.latest-event-time",
-      "F131.stored-xyz-distance"
+      "F131.stored-xyz-distance",
+      "F134.data-tab",
+      "F134.refresh",
+      "F134.version-row",
+      "F134.previous-page",
+      "F134.next-page",
+      "F134.exact-version",
+      "F134.invalid-version",
+      "F134.earlier",
+      "F134.later",
+      "F134.play",
+      "F134.pause",
+      "F134.copy-properties",
+      "F134.unavailable-coverage",
+      "F134.current-unchanged",
+      "F134.target-change",
+      "F134.access-denied",
+      "F134.timeout",
+      "F135.open",
+      "F135.refresh",
+      "F135.series-select",
+      "F135.event-time-order",
+      "F135.chart-table-parity",
+      "F135.metric-units",
+      "F135.empty-series",
+      "F135.point-limit",
+      "F135.series-limit",
+      "F135.finite-extremes",
+      "F135.copy-tsv",
+      "F135.target-change",
+      "F135.timeout",
+      "F136.verse-scope",
+      "F136.fractal-scope",
+      "F136.petal-scope",
+      "F136.refresh-definitions",
+      "F136.select-definition",
+      "F136.refresh-stored",
+      "F136.edit-json",
+      "F136.save-next",
+      "F136.invalid-rule",
+      "F136.incompatible-revision",
+      "F136.conflict-load-stored",
+      "F136.timeout-retains-draft",
+      "F136.newer-edit-retained",
+      "F136.manager-denied",
+      "F137.edit-string",
+      "F137.edit-number",
+      "F137.edit-bool",
+      "F137.edit-array",
+      "F137.edit-object",
+      "F137.edit-null",
+      "F137.save",
+      "F137.cancel",
+      "F137.copy",
+      "F137.expand",
+      "F137.collapse",
+      "F137.invalid-retained",
+      "F137.concurrent-readback",
+      "F137.pending-timeout",
+      "F137.refresh-stored",
+      "F137.horizontal-actions",
+      "F137.exact-i64",
+      "F046.selected-petal-scope",
+      "F046.no-petal-refusal",
+      "F046.foreign-table-refusal",
+      "F046.cross-petal-refusal",
+      "F134.page-limit",
+      "F136.unsupported-keyword",
+      "F136.descriptor-byte-limit",
+      "F136.descriptor-depth-limit",
+      "F136.descriptor-rule-limit"
     ],
     "G4": [
       "F054.raise-square-UI",
@@ -4867,7 +6107,30 @@
     "G5": [
       "F064.import-valid-gpx",
       "F074.fixed-count",
-      "F078.reimport-roundtrip"
+      "F078.reimport-roundtrip",
+      "F138.scale-XYZ",
+      "F138.yaw",
+      "F138.slide-meters",
+      "F138.one-atomic-apply",
+      "F138.pending",
+      "F138.stored-reload",
+      "F138.stale-baseline-refused",
+      "F138.preserve-quaternion",
+      "F138.curved-sample",
+      "F138.no-implicit-clamp",
+      "F138.invalid-disabled",
+      "F139.corner",
+      "F139.smooth",
+      "F139.symmetric",
+      "F139.smoothness",
+      "F139.height-enter",
+      "F139.height-blur",
+      "F139.drag-release-one-intent",
+      "F139.idle-no-resubmit",
+      "F139.context-preclick-owner",
+      "F139.route-reorder-refused",
+      "F139.nav-refused",
+      "F139.atomic-failure-no-projection"
     ],
     "G6": [
       "F079.maximize",
@@ -4878,7 +6141,17 @@
     "G7": [
       "F098.generate",
       "F098.second-host-join",
-      "F103.identity-viewer"
+      "F103.identity-viewer",
+      "F097.assign-role",
+      "F097.revoke-role",
+      "F097.downgrade-cancel",
+      "F097.downgrade-confirm",
+      "F097.refresh-disarms",
+      "F097.owner-protected",
+      "F097.own-grant-revoke",
+      "F097.inherited-role",
+      "F097.new-target-late-reply",
+      "F097.timeout-needs-readback"
     ],
     "G8": [
       "F105.replicate-node",
@@ -4953,7 +6226,7 @@
       "region": "R1",
       "journey": "J01",
       "entry": "Chevrons vs active/inactive names at all three levels",
-      "expected": "collapse/navigation are independently checked; current trap is a finding",
+      "expected": "Only chevrons collapse; names navigate complete ancestry and clicking current name is a no-op",
       "requires_persistence": false,
       "sources": [
         "fe-ui/src/panels/sidebar.rs"
@@ -4989,7 +6262,7 @@
       "region": "R1",
       "journey": "J01",
       "entry": "Node row select/Options; inactive-petal node row",
-      "expected": "authoritative selection/Inspector; current inactive behavior explicit",
+      "expected": "Stable node selection/Inspector identity; inactive-Petal row enters complete ancestry and requests bounded deferred selection",
       "requires_persistence": false,
       "sources": [
         "fe-ui/src/panels/sidebar.rs"
@@ -5011,7 +6284,7 @@
       "id": "F009",
       "region": "R1",
       "journey": "J01",
-      "entry": "H; Shift+H; Alt+H; Escape isolate",
+      "entry": "H hides selection; Shift+H shows all active-Petal objects; Alt+H isolates; Escape clears isolate",
       "expected": "durable hide/show, session-only solo, no hidden-object pick",
       "requires_persistence": false,
       "sources": [
@@ -5057,11 +6330,13 @@
       "id": "F013",
       "region": "R1",
       "journey": "J01",
-      "entry": "Sidebar row Rename/Settings/Copy ID/Delete menus",
-      "expected": "W2-S1 adds routes; refresh denominator after landing",
+      "entry": "Each hierarchy row menu: Rename\u2026 / Options\u2026 / Copy ID / Delete\u2026; current/inactive exact scope",
+      "expected": "Clicked entry ID/ancestry owns the dialog, confirmations and role gate; Copy ID uses A8-safe output; selection does not substitute another target",
       "requires_persistence": false,
       "sources": [
-        "fe-ui/src/panels/sidebar.rs"
+        "fe-ui/src/panels/tree_entry.rs",
+        "fe-ui/src/dialogs/entity_details.rs",
+        "fe-ui/src/dialogs/node_options.rs"
       ]
     },
     {
@@ -5183,23 +6458,30 @@
       "id": "F024",
       "region": "R2",
       "journey": "J02",
-      "entry": "Webpage/config URL Save/Open Portal; invalid URL",
-      "expected": "correct field persists, errors visible, no false Saved",
+      "entry": "Inspector Save Portal URL / Open Portal and Node Options URL Save; unsupported Config URL explanation",
+      "expected": "Typed exact-node current read hydrates clean drafts; pending/failed/conflicting save is not Saved; canonical production URL policy; no Config URL editor/write exists",
       "requires_persistence": true,
       "sources": [
         "fe-ui/src/panels/inspector.rs",
-        "fe-ui/src/dialogs/node_options.rs"
+        "fe-ui/src/dialogs/node_options.rs",
+        "fe-ui/src/actions/portal.rs",
+        "fe-ui/src/actions/url_read_model.rs",
+        "fe-runtime/src/portal_url.rs"
       ]
     },
     {
       "id": "F025",
       "region": "R2",
       "journey": "J02",
-      "entry": "Portal back/close/load failure/selection change",
-      "expected": "local page history and complete teardown",
+      "entry": "Portal Back / Forward / Reload / Open externally / Close; controlled WEB and production policy",
+      "expected": "One live fixture permit and one native navigation enforcement owner; actual page history/failure, bounded content rectangle and teardown; no broad loopback bypass",
       "requires_persistence": false,
       "sources": [
-        "fe-ui/src/panels/portal_toolbar.rs"
+        "fe-ui/src/panels/portal_toolbar.rs",
+        "fe-ui/src/actions/portal.rs",
+        "fe-runtime/src/qa_web.rs",
+        "fe-runtime/src/portal_url.rs",
+        "fe-webview/src/plugin.rs"
       ]
     },
     {
@@ -5229,12 +6511,14 @@
       "id": "F028",
       "region": "R2",
       "journey": "J02",
-      "entry": "Grid/angle/scale snap; axis lock; undo/redo; F; Delete shortcut",
-      "expected": "W2/W4/W5 planned; current hints are not working controls",
+      "entry": "Move/Rotate/Scale Options axis Any/X/Y/Z, snap increments; Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, F and Delete",
+      "expected": "Real object/whole-track constraints use current map units; frame/delete respect current target and role; Undo only supported checked edits and never restores foreign/peer state",
       "requires_persistence": false,
       "sources": [
-        "fe-ui/src/panels/tool_options.rs",
-        "fe-ui/src/node_manager/shortcuts.rs"
+        "fe-ui/src/panels/transform_options.rs",
+        "fe-ui/src/node_manager/transform_snap.rs",
+        "fe-ui/src/node_manager/shortcuts.rs",
+        "fe-ui/src/undo.rs"
       ]
     },
     {
@@ -5429,11 +6713,13 @@
       "id": "F046",
       "region": "R3",
       "journey": "J03",
-      "entry": "Scoped GUI SQL/no active petal refusal",
-      "expected": "W5 replaces RawQuery; unsafe current path is finding",
+      "entry": "Inspector Query Run/Ctrl+Enter and Data scoped templates, with no active Petal/foreign table/cross-Petal refusal",
+      "expected": "Correlated ScopedQuery is bounded to actual current Petal; independent foreign rows/tables cannot leak and stale navigation cannot claim dock",
       "requires_persistence": false,
       "sources": [
-        "fe-ui/src/actions/query.rs"
+        "fe-ui/src/actions/query.rs",
+        "fe-api/src/query_guard.rs",
+        "fe-database/src/handlers/scoped_query.rs"
       ]
     },
     {
@@ -5507,19 +6793,21 @@
       "id": "F053",
       "region": "R4",
       "journey": "J04",
-      "entry": "Brush/Circle/Rectangle/Polygon, Apply/clear",
-      "expected": "defined shape differs from weighted stroke; incomplete Polygon producer is blocker",
+      "entry": "Brush Options Earthwork shape Brush/Circle/Rectangle/Polygon; Place region / Close polygon / Cancel",
+      "expected": "Captured owning Petal/map/role and actual viewport placement; polygon Enter/double-click/button close, Backspace and Escape; no origin-only fake placement",
       "requires_persistence": true,
       "sources": [
-        "fe-ui/src/panels/tool_options.rs"
+        "fe-ui/src/panels/tool_options.rs",
+        "fe-ui/src/node_manager/terrain_authoring.rs",
+        "fe-ui/src/actions/terrain_proposal.rs"
       ]
     },
     {
       "id": "F054",
       "region": "R4",
       "journey": "J04",
-      "entry": "Rectangle Radius5/Raise2/Apply; separate-petal Lower positive1",
-      "expected": "area100, fill200/cut100; exact footprint + positive oracle",
+      "entry": "TERRAIN flat pad: Brush Rectangle Radius5 / Raise Delta2, arm and place known origin; fresh B Lower Delta1",
+      "expected": "Actual footprint equals independent [-5,5]^2; complete sampled area100, fill200 or cut100; controlled placement receipt and map scale1 precede numeric acceptance",
       "requires_persistence": true,
       "sources": [
         "fe-ui/src/panels/tool_options.rs",
@@ -5756,11 +7044,13 @@
       "id": "F075",
       "region": "R5",
       "journey": "J05",
-      "entry": "Stamp Index/Select/Promote/Scale/Rotate/Slide Apply",
-      "expected": "single stamp ownership/overrides and arc-length constraint",
+      "entry": "Selected stamp Index/Select/Promote and XYZ scale, yaw, slide-meters Apply/Reload stored",
+      "expected": "Apply is one checked atomic override batch; preserved quaternion/nonuniform axes, actual curve sampler and meters; pending/error/conflict never false Saved",
       "requires_persistence": true,
       "sources": [
-        "fe-ui/src/panels/tool_panel.rs"
+        "fe-ui/src/panels/tool_panel.rs",
+        "fe-ui/src/actions/path.rs",
+        "fe-ui/src/path_ops.rs"
       ]
     },
     {
@@ -5778,11 +7068,13 @@
       "id": "F077",
       "region": "R5",
       "journey": "J05",
-      "entry": "Path context Edit/Add Stamps/Delete Track; anchor Corner-Smooth/Delete Point",
-      "expected": "whole-track warning vs point deletion and correct geometry",
+      "entry": "Path/point classified context verbs with original owner Petal and PointEditOrigin",
+      "expected": "Corner/Smooth and Remove Point retain pre-click route identity; navigation/reorder/property changes refuse stale gesture; one checked atomic write, target-specific confirmation",
       "requires_persistence": true,
       "sources": [
-        "fe-ui/src/dialogs/context_menu.rs"
+        "fe-ui/src/dialogs/context_menu.rs",
+        "fe-ui/src/actions/path.rs",
+        "fe-ui/src/path_ops.rs"
       ]
     },
     {
@@ -5878,11 +7170,12 @@
       "id": "F086",
       "region": "R6",
       "journey": "J06",
-      "entry": "Reset Database current location and confirmation",
-      "expected": "isolated terminal fixture only; typed RESET planned W2",
+      "entry": "Retired sidebar Reset Database route; terminal reset is a separate unintegrated shell task",
+      "expected": "No Reset renderer/action in audited main; preserve IDs as exclusions until a reviewed isolated terminal route is integrated",
       "requires_persistence": true,
       "sources": [
-        "fe-ui/src/panels/sidebar.rs"
+        "fe-ui/src/panels/sidebar.rs",
+        "fe-ui/src/ui_shell/right_sidebar.rs"
       ]
     },
     {
@@ -5946,10 +7239,11 @@
       "id": "F092",
       "region": "R6",
       "journey": "J06",
-      "entry": "Restart now, shortcut help, panel Retry/quarantine",
-      "expected": "W2/W3 planned; panic=abort caveat forbids fake live proof",
+      "entry": "Topbar Open keyboard and pointer help; restart/retry/quarantine remain planned",
+      "expected": "Actual help matches supported commands and closes cleanly; no live panic=abort recovery or app-restart control is claimed",
       "requires_persistence": false,
       "sources": [
+        "fe-ui/src/ui_shell/topbar.rs",
         "fe-ui/src/ui_shell/modal.rs"
       ]
     },
@@ -5991,22 +7285,24 @@
       "id": "F096",
       "region": "R7",
       "journey": "J07",
-      "entry": "Access peer badges/online state",
-      "expected": "currently read-only; do not claim assignment by reading badge",
+      "entry": "Entity Options Access: effective inherited role and online/offline badges",
+      "expected": "Target-scoped stored access snapshot, not stale display buffers; badge read and actual role mutation are distinct",
       "requires_persistence": false,
       "sources": [
-        "fe-ui/src/dialogs/entity_settings.rs"
+        "fe-ui/src/dialogs/entity_access.rs",
+        "fe-ui/src/dialogs/entity_details.rs"
       ]
     },
     {
       "id": "F097",
       "region": "R7",
       "journey": "J07",
-      "entry": "Access role assignment/revoke/downgrade confirmation",
-      "expected": "W3 server-authorized controls not yet located",
+      "entry": "Access Role to assign for <did> / Save role\u2026 / Confirm role change / revoke confirmation / Refresh entity access",
+      "expected": "Effective inherited role and own-grant revocation are distinct; exact loaded request identity disarms old confirms; stored authority/owner refusal/timeout retained",
       "requires_persistence": false,
       "sources": [
-        "fe-ui/src/dialogs/entity_settings.rs"
+        "fe-ui/src/dialogs/entity_access.rs",
+        "fe-runtime/src/entity_access.rs"
       ]
     },
     {
@@ -6305,11 +7601,14 @@
       "id": "F124",
       "region": "R11",
       "journey": "J11",
-      "entry": "Petal Manifest add ID/type/Required/Remove/JSON/Save/Close dirty",
-      "expected": "requirements exact, discard safety, duplicate render distance planned removal",
+      "entry": "Petal Manifest bounded requirements declaration: load / Add installed or manual ID/type / Required / Remove / Save / Copy / Close",
+      "expected": "Target-scoped CAS storage/readback preserves unknown references and retained drafts; this declares dependencies only, not install/fallback/scene gating or render-distance changes",
       "requires_persistence": true,
       "sources": [
-        "fe-ui/src/dialogs/petal_manifest.rs"
+        "fe-ui/src/dialogs/petal_manifest.rs",
+        "fe-ui/src/dialogs/requirements_state.rs",
+        "fe-runtime/src/petal_requirements.rs",
+        "fe-database/src/handlers/petal_requirements.rs"
       ]
     },
     {
@@ -6328,11 +7627,15 @@
       "id": "F126",
       "region": "R11",
       "journey": "J11",
-      "entry": "Plugin/Rhai/read/transaction execution",
-      "expected": "no execution panel located, W6 library seam is not new GUI",
+      "entry": "PluginHost library/runtime injection; Native/Rhai/WASM scene reads and transactions (no plugin UI)",
+      "expected": "Bound reviewed manifest/grants/session origin; actual DB receipt not queue acknowledgement; revoke/stop prevents queued and cloned calls; unknown write outcome reconciled; no SQL/KV bypass or component-WIT claim",
       "requires_persistence": false,
       "sources": [
-        "fe-api/src/mcp/mod.rs"
+        "fe-plugin/src/scene_host.rs",
+        "fe-plugin/src/context.rs",
+        "fe-plugin/src/rhai/host_api.rs",
+        "fe-plugin/src/wasm/host_imports.rs",
+        "fe-runtime/src/plugin_host.rs"
       ]
     },
     {
@@ -6350,12 +7653,13 @@
       "id": "F128",
       "region": "R6",
       "journey": "J06",
-      "entry": "ActiveDialog::InviteDialog variant",
-      "expected": "result handler opens it but transient renderer has no branch",
+      "entry": "Retired unrendered ActiveDialog::InviteDialog enum and legacy opener",
+      "expected": "Legacy invite result cannot capture an invisible modal or retain credentials; use target-scoped Entity Options Access controls",
       "requires_persistence": false,
       "sources": [
         "fe-ui/src/dialogs/mod.rs",
-        "fe-ui/src/panels/mod.rs"
+        "fe-ui/src/actions/mod.rs",
+        "fe-ui/src/dialogs/entity_access.rs"
       ]
     },
     {
@@ -6410,6 +7714,280 @@
         "fe-database/src/handlers/crud.rs",
         "tools/qa/rich_data.py"
       ]
+    },
+    {
+      "id": "F133",
+      "region": "R1",
+      "journey": "J01",
+      "entry": "Row Appearance\u2026 for each Verse/Fractal/Petal/Node: wheel, HSV, #RRGGBB, icon, Save/Cancel/Reset",
+      "expected": "Per-entry kind+stable-ID local preference; selected/ancestor/visibility state remains distinct; Save persists locally, Cancel/Escape/deleted target and invalid hex do not write",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/tree_appearance.rs",
+        "fe-ui/src/panels/tree_entry.rs",
+        "fe-ui/src/settings.rs"
+      ]
+    },
+    {
+      "id": "F134",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "Inspector tab: Data > Object data section: History; Refresh object history / Replay object version N / exact version / Earlier / Later / Play/Pause / Copy",
+      "expected": "Bounded pages and read-only replay preserve live scene/current properties; actual per-object versions and unavailable coverage; correlation rejects stale target, errors and timeout remain visible",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/object_data/mod.rs",
+        "fe-ui/src/object_data/history.rs",
+        "fe-ui/src/panels/inspector.rs"
+      ]
+    },
+    {
+      "id": "F135",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "Inspector Data > Measurements; Object measurement series / Refresh object measurements / Copy displayed measurements",
+      "expected": "Actual event-time chart/table sorted by timestamp then ID, metrics/units separate; six raw/six derived fixture; honest64-series/1024-point limits and finite scaling; A8-safe TSV matches displayed rows",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/object_data/mod.rs",
+        "fe-ui/src/object_data/measurements.rs",
+        "fe-runtime/src/node_measurements.rs"
+      ]
+    },
+    {
+      "id": "F136",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "Inspector Data > Enforced schema: scope/definition, Refresh, Versioned enforced schema JSON, Save next revision, Load stored rules",
+      "expected": "Bounded supported vocabulary, exact submitted descriptor acknowledgement and next revision; Manager gate; invalid/incompatible/conflict/timeout preserve drafts and newer edits",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/object_data/mod.rs",
+        "fe-ui/src/object_data/schema.rs",
+        "fe-sdk/src/property_schema.rs"
+      ]
+    },
+    {
+      "id": "F137",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "Properties typed row Edit/Save/Cancel/Copy/Delete, Expand/Collapse stored array/object and Refresh stored values",
+      "expected": "Row draft retains real JSON types and exact large integer; confirmation/pending/timeout do not imply committed value; compact horizontal scrolling preserves separated native targets",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/inspector.rs",
+        "fe-ui/src/panels/property_value.rs",
+        "fe-ui/src/panels/property_grid.rs"
+      ]
+    },
+    {
+      "id": "F138",
+      "region": "R5",
+      "journey": "J05",
+      "entry": "Selected stamp Options XYZ scale / yaw / slide meters / Apply / Reload stored values",
+      "expected": "One checked atomic batch against captured full baseline; curved path sampler, world-scale conversion once, untouched quaternion/nonuniform axes preserved; invalid legacy draft never silently repaired",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/tool_panel.rs",
+        "fe-ui/src/actions/path.rs",
+        "fe-ui/src/path_ops.rs"
+      ]
+    },
+    {
+      "id": "F139",
+      "region": "R5",
+      "journey": "J05",
+      "entry": "Path selected vertex Corner/Smooth/Symmetric, smoothness, Y height, context corner/remove",
+      "expected": "Retained original full route identity across pointer frames; numeric text finalizes only Enter/blur, one intent on release; stale navigation/reorder/refused CAS cannot alter another point or optimistic authority",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/path_editor_card.rs",
+        "fe-ui/src/panels/tool_options.rs",
+        "fe-ui/src/dialogs/context_menu.rs",
+        "fe-ui/src/actions/path.rs",
+        "fe-ui/src/path_ops.rs"
+      ]
+    },
+    {
+      "id": "F140",
+      "region": "R2",
+      "journey": "J02",
+      "entry": "Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z supported checked object/track/point history",
+      "expected": "Receipt-backed local Undo/Redo only: transform, point move/remove/handles/corner and whole-track; exact same-object version links, peer conflicts/unknown outcomes reconcile without blind retry or foreign rollback",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/undo.rs",
+        "fe-ui/src/node_manager/shortcuts.rs",
+        "fe-ui/src/node_manager/transform_broadcast.rs",
+        "fe-ui/src/path_ops.rs"
+      ]
     }
-  ]
+  ],
+  "checkpoint_notes": {
+    "F013.row-rename": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Shared tree_entry row menus are integrated; Settings route is now labelled Options\u2026 and retains this stable semantic ID."
+    },
+    "F013.row-settings": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Shared tree_entry row menus are integrated; Settings route is now labelled Options\u2026 and retains this stable semantic ID."
+    },
+    "F013.row-copy-id": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Shared tree_entry row menus are integrated; Settings route is now labelled Options\u2026 and retains this stable semantic ID."
+    },
+    "F013.row-delete-cancel": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Shared tree_entry row menus are integrated; Settings route is now labelled Options\u2026 and retains this stable semantic ID."
+    },
+    "F013.row-delete-confirm": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Shared tree_entry row menus are integrated; Settings route is now labelled Options\u2026 and retains this stable semantic ID."
+    },
+    "F024.save-config-url": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Removed ignored Inspector Config URL buffer/editor had no hydration or persistence consumer. The current Manager-visible unsupported explanation is tested by config-unsupported; separate model metadata is outside this route."
+    },
+    "F024.open-config": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Removed ignored Inspector Config URL buffer/editor had no hydration or persistence consumer. The current Manager-visible unsupported explanation is tested by config-unsupported; separate model metadata is outside this route."
+    },
+    "F028.grid-snap": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Integrated transform constraints and focus/delete/Undo shortcuts; exact supported Undo operations are enumerated in F140."
+    },
+    "F028.angle-snap": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Integrated transform constraints and focus/delete/Undo shortcuts; exact supported Undo operations are enumerated in F140."
+    },
+    "F028.scale-snap": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Integrated transform constraints and focus/delete/Undo shortcuts; exact supported Undo operations are enumerated in F140."
+    },
+    "F028.uniform-scale": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Integrated transform constraints and focus/delete/Undo shortcuts; exact supported Undo operations are enumerated in F140."
+    },
+    "F028.axis-lock": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Integrated transform constraints and focus/delete/Undo shortcuts; exact supported Undo operations are enumerated in F140."
+    },
+    "F028.undo": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Integrated transform constraints and focus/delete/Undo shortcuts; exact supported Undo operations are enumerated in F140."
+    },
+    "F028.redo": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Integrated transform constraints and focus/delete/Undo shortcuts; exact supported Undo operations are enumerated in F140."
+    },
+    "F028.frame-F": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Integrated transform constraints and focus/delete/Undo shortcuts; exact supported Undo operations are enumerated in F140."
+    },
+    "F028.delete-shortcut": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Integrated transform constraints and focus/delete/Undo shortcuts; exact supported Undo operations are enumerated in F140."
+    },
+    "F086.reset-open": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Sidebar Reset Database was removed. Main has no replacement renderer; a separate isolated terminal-reset branch is not current GUI reachability. Do not execute or report PASS."
+    },
+    "F086.reset-cancel": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Sidebar Reset Database was removed. Main has no replacement renderer; a separate isolated terminal-reset branch is not current GUI reachability. Do not execute or report PASS."
+    },
+    "F086.reset-confirm": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Sidebar Reset Database was removed. Main has no replacement renderer; a separate isolated terminal-reset branch is not current GUI reachability. Do not execute or report PASS."
+    },
+    "F086.isolated-data-gone": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Sidebar Reset Database was removed. Main has no replacement renderer; a separate isolated terminal-reset branch is not current GUI reachability. Do not execute or report PASS."
+    },
+    "F092.shortcut-help": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Current topbar Shortcuts popup lists actual supported chords; other retry/restart/quarantine placeholders remain planned."
+    },
+    "F097.assign-role": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Target Access controller has scoped assignment/revoke with confirmation and authoritative readback."
+    },
+    "F097.revoke-role": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Target Access controller has scoped assignment/revoke with confirmation and authoritative readback."
+    },
+    "F097.downgrade-cancel": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Target Access controller has scoped assignment/revoke with confirmation and authoritative readback."
+    },
+    "F097.downgrade-confirm": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Target Access controller has scoped assignment/revoke with confirmation and authoritative readback."
+    },
+    "F128.enum-opener": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Obsolete enum/opener retired; canonical invite path is F098 target-scoped Access. Retained stable ID is not a missing live renderer."
+    },
+    "F128.missing-renderer": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Obsolete enum/opener retired; canonical invite path is F098 target-scoped Access. Retained stable ID is not a missing live renderer."
+    },
+    "F009.solo-ShiftH": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Old catalog assigned the wrong chord; retired alias is superseded by F009.solo-AltH. Actual Shift+H shows all; Alt+H isolates."
+    },
+    "F009.show-AltH": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Old catalog assigned the wrong chord; retired alias is superseded by F009.show-ShiftH. Actual Shift+H shows all; Alt+H isolates."
+    },
+    "F046.selected-petal-scope": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "GUI submission now sends correlated ScopedQuery with the selected Petal set; no-Petal refuses before dispatch."
+    },
+    "F046.no-petal-refusal": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "GUI submission now sends correlated ScopedQuery with the selected Petal set; no-Petal refuses before dispatch."
+    },
+    "F046.foreign-table-refusal": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "GUI submission now sends correlated ScopedQuery with the selected Petal set; no-Petal refuses before dispatch."
+    },
+    "F046.cross-petal-refusal": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "GUI submission now sends correlated ScopedQuery with the selected Petal set; no-Petal refuses before dispatch."
+    },
+    "F092.restart-now": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "No integrated restart/retry/quarantine control for this planned case. The actual keyboard/pointer help popup has separate current Y variants."
+    },
+    "F092.panel-retry": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "No integrated restart/retry/quarantine control for this planned case. The actual keyboard/pointer help popup has separate current Y variants."
+    },
+    "F092.quarantine-recovery": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "No integrated restart/retry/quarantine control for this planned case. The actual keyboard/pointer help popup has separate current Y variants."
+    },
+    "F127.tag-input": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Atlas model/room/tag helper has no established production opener. Shared visibility radios used by Entity Options belong to F094; this helper presence is not another GUI route."
+    },
+    "F127.tag-add": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Atlas model/room/tag helper has no established production opener. Shared visibility radios used by Entity Options belong to F094; this helper presence is not another GUI route."
+    },
+    "F127.tag-remove": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Atlas model/room/tag helper has no established production opener. Shared visibility radios used by Entity Options belong to F094; this helper presence is not another GUI route."
+    },
+    "F127.atlas-room": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Atlas model/room/tag helper has no established production opener. Shared visibility radios used by Entity Options belong to F094; this helper presence is not another GUI route."
+    },
+    "F127.atlas-model": {
+      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+      "reason": "Atlas model/room/tag helper has no established production opener. Shared visibility radios used by Entity Options belong to F094; this helper presence is not another GUI route."
+    }
+  },
+  "audited_source_commit": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9"
 }

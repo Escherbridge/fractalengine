@@ -58,10 +58,10 @@ Missing owned scope/assets or controlled same-root restart evidence are explicit
 
 For product UI evidence, inspect `F ui --interactive`, select actual returned objects through the hierarchy,
 and reopen `Inspector tab: Properties`/`Inspector tab: Query`. Verify nested values, per-anchor results, selected
-identity and full transforms against stored readbacks; judge screenshots. After separate History/chart/editor
-work integrates, source-reconcile concrete labels/actions and add distinct GUI checkpoints. Those new routes
-are not established by this API-only slice. Unverified controls stay UNKNOWN/BLOCKED; F129–F132 API success
-cannot complete them or silently shrink the GUI denominator.
+identity and full transforms against stored readbacks; judge screenshots. Native History, Measurements, Enforced
+schema and typed row editors are now integrated: [J03's native continuation](J03.md#native-rich-data-continuation)
+owns their concrete routes and F134–F137 GUI variants. History is a read-only preview, not live-scene rollback.
+Unverified controls stay UNKNOWN/BLOCKED; F129–F132 API success cannot complete them or shrink the GUI denominator.
 
 Before every PNG, close the API Access/token dialog or clear that tab. Record token-free tree/state/commands,
 then capture and judge through the shared procedure. No generated token or encoded payload belongs in evidence.
