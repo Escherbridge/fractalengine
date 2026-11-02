@@ -1,7 +1,8 @@
 ---
-type: Scenario
+type: ScenarioSupplement
 id: S02
-gold: G2
+legacy_gold: G2
+covered_by: [J02]
 title: Select a GLB node and move it with the gimbal
 fixture: basic
 verified_in_pass: "01 historical; revised fixture journey pending"

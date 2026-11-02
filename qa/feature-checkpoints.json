@@ -1,0 +1,6139 @@
+{
+  "type": "FeatureCheckpointCatalog",
+  "catalog_source_commit": "214045aab523259c56c701c8fe9741117e38a7d0",
+  "catalog_source_fingerprint": null,
+  "snapshot_date": "2026-11-01",
+  "execution_evidence": false,
+  "reachability": {
+    "Y": "GUI",
+    "A": "API or QA tool",
+    "O": "OS accessibility/performance",
+    "P": "planned",
+    "U": "no production route established"
+  },
+  "checkpoints": [
+    {
+      "id": "F001.tree-enter",
+      "family": "F001",
+      "reachability": "Y"
+    },
+    {
+      "id": "F001.card-enter",
+      "family": "F001",
+      "reachability": "Y"
+    },
+    {
+      "id": "F001.picker-enter",
+      "family": "F001",
+      "reachability": "Y"
+    },
+    {
+      "id": "F001.back",
+      "family": "F001",
+      "reachability": "Y"
+    },
+    {
+      "id": "F001.empty-browser",
+      "family": "F001",
+      "reachability": "Y"
+    },
+    {
+      "id": "F001.long-name-scroll",
+      "family": "F001",
+      "reachability": "Y"
+    },
+    {
+      "id": "F002.tree-enter",
+      "family": "F002",
+      "reachability": "Y"
+    },
+    {
+      "id": "F002.card-enter",
+      "family": "F002",
+      "reachability": "Y"
+    },
+    {
+      "id": "F002.back",
+      "family": "F002",
+      "reachability": "Y"
+    },
+    {
+      "id": "F002.other-verse-expanded",
+      "family": "F002",
+      "reachability": "Y"
+    },
+    {
+      "id": "F003.tree-enter",
+      "family": "F003",
+      "reachability": "Y"
+    },
+    {
+      "id": "F003.card-enter",
+      "family": "F003",
+      "reachability": "Y"
+    },
+    {
+      "id": "F003.back",
+      "family": "F003",
+      "reachability": "Y"
+    },
+    {
+      "id": "F003.direct-from-verse-cursor",
+      "family": "F003",
+      "reachability": "Y"
+    },
+    {
+      "id": "F004.verse-chevron",
+      "family": "F004",
+      "reachability": "Y"
+    },
+    {
+      "id": "F004.verse-active-name",
+      "family": "F004",
+      "reachability": "Y"
+    },
+    {
+      "id": "F004.verse-inactive-name",
+      "family": "F004",
+      "reachability": "Y"
+    },
+    {
+      "id": "F004.fractal-chevron",
+      "family": "F004",
+      "reachability": "Y"
+    },
+    {
+      "id": "F004.fractal-active-name",
+      "family": "F004",
+      "reachability": "Y"
+    },
+    {
+      "id": "F004.fractal-inactive-name",
+      "family": "F004",
+      "reachability": "Y"
+    },
+    {
+      "id": "F004.petal-chevron",
+      "family": "F004",
+      "reachability": "Y"
+    },
+    {
+      "id": "F004.petal-active-name",
+      "family": "F004",
+      "reachability": "Y"
+    },
+    {
+      "id": "F004.petal-inactive-name",
+      "family": "F004",
+      "reachability": "Y"
+    },
+    {
+      "id": "F005.verse-create",
+      "family": "F005",
+      "reachability": "Y"
+    },
+    {
+      "id": "F005.fractal-create",
+      "family": "F005",
+      "reachability": "Y"
+    },
+    {
+      "id": "F005.petal-create",
+      "family": "F005",
+      "reachability": "Y"
+    },
+    {
+      "id": "F005.blank-name",
+      "family": "F005",
+      "reachability": "Y"
+    },
+    {
+      "id": "F005.enter-submit",
+      "family": "F005",
+      "reachability": "Y"
+    },
+    {
+      "id": "F005.escape-cancel",
+      "family": "F005",
+      "reachability": "Y"
+    },
+    {
+      "id": "F005.cancel-button",
+      "family": "F005",
+      "reachability": "Y"
+    },
+    {
+      "id": "F006.add-empty-node",
+      "family": "F006",
+      "reachability": "Y"
+    },
+    {
+      "id": "F006.add-gltf-node",
+      "family": "F006",
+      "reachability": "Y"
+    },
+    {
+      "id": "F007.active-node-select",
+      "family": "F007",
+      "reachability": "Y"
+    },
+    {
+      "id": "F007.node-options",
+      "family": "F007",
+      "reachability": "Y"
+    },
+    {
+      "id": "F007.inactive-petal-node",
+      "family": "F007",
+      "reachability": "Y"
+    },
+    {
+      "id": "F008.verse-eye",
+      "family": "F008",
+      "reachability": "Y"
+    },
+    {
+      "id": "F008.fractal-eye",
+      "family": "F008",
+      "reachability": "Y"
+    },
+    {
+      "id": "F008.petal-eye",
+      "family": "F008",
+      "reachability": "Y"
+    },
+    {
+      "id": "F008.node-eye",
+      "family": "F008",
+      "reachability": "Y"
+    },
+    {
+      "id": "F008.mixed-rollup",
+      "family": "F008",
+      "reachability": "Y"
+    },
+    {
+      "id": "F008.inactive-petal-guard",
+      "family": "F008",
+      "reachability": "Y"
+    },
+    {
+      "id": "F009.hide-H",
+      "family": "F009",
+      "reachability": "Y"
+    },
+    {
+      "id": "F009.solo-ShiftH",
+      "family": "F009",
+      "reachability": "Y"
+    },
+    {
+      "id": "F009.show-AltH",
+      "family": "F009",
+      "reachability": "Y"
+    },
+    {
+      "id": "F009.escape-solo",
+      "family": "F009",
+      "reachability": "Y"
+    },
+    {
+      "id": "F010.open-groups",
+      "family": "F010",
+      "reachability": "Y"
+    },
+    {
+      "id": "F010.add",
+      "family": "F010",
+      "reachability": "Y"
+    },
+    {
+      "id": "F010.rename-enter",
+      "family": "F010",
+      "reachability": "Y"
+    },
+    {
+      "id": "F010.rename-escape",
+      "family": "F010",
+      "reachability": "Y"
+    },
+    {
+      "id": "F010.visibility",
+      "family": "F010",
+      "reachability": "Y"
+    },
+    {
+      "id": "F010.move-up",
+      "family": "F010",
+      "reachability": "Y"
+    },
+    {
+      "id": "F010.move-down",
+      "family": "F010",
+      "reachability": "Y"
+    },
+    {
+      "id": "F010.delete-cancel",
+      "family": "F010",
+      "reachability": "Y"
+    },
+    {
+      "id": "F010.delete-confirm",
+      "family": "F010",
+      "reachability": "Y"
+    },
+    {
+      "id": "F011.join-group",
+      "family": "F011",
+      "reachability": "Y"
+    },
+    {
+      "id": "F011.leave-group",
+      "family": "F011",
+      "reachability": "Y"
+    },
+    {
+      "id": "F011.empty-groups",
+      "family": "F011",
+      "reachability": "Y"
+    },
+    {
+      "id": "F011.group-cap",
+      "family": "F011",
+      "reachability": "Y"
+    },
+    {
+      "id": "F011.viewer-denied",
+      "family": "F011",
+      "reachability": "Y"
+    },
+    {
+      "id": "F012.rename-node",
+      "family": "F012",
+      "reachability": "Y"
+    },
+    {
+      "id": "F012.rename-entity",
+      "family": "F012",
+      "reachability": "Y"
+    },
+    {
+      "id": "F012.delete-node",
+      "family": "F012",
+      "reachability": "Y"
+    },
+    {
+      "id": "F012.delete-active-petal",
+      "family": "F012",
+      "reachability": "Y"
+    },
+    {
+      "id": "F012.delete-active-fractal",
+      "family": "F012",
+      "reachability": "Y"
+    },
+    {
+      "id": "F012.delete-active-verse",
+      "family": "F012",
+      "reachability": "Y"
+    },
+    {
+      "id": "F013.row-rename",
+      "family": "F013",
+      "reachability": "P"
+    },
+    {
+      "id": "F013.row-settings",
+      "family": "F013",
+      "reachability": "P"
+    },
+    {
+      "id": "F013.row-copy-id",
+      "family": "F013",
+      "reachability": "P"
+    },
+    {
+      "id": "F013.row-delete-cancel",
+      "family": "F013",
+      "reachability": "P"
+    },
+    {
+      "id": "F013.row-delete-confirm",
+      "family": "F013",
+      "reachability": "P"
+    },
+    {
+      "id": "F014.select-button",
+      "family": "F014",
+      "reachability": "Y"
+    },
+    {
+      "id": "F014.select-S",
+      "family": "F014",
+      "reachability": "Y"
+    },
+    {
+      "id": "F014.move-button",
+      "family": "F014",
+      "reachability": "Y"
+    },
+    {
+      "id": "F014.move-G",
+      "family": "F014",
+      "reachability": "Y"
+    },
+    {
+      "id": "F014.rotate-button",
+      "family": "F014",
+      "reachability": "Y"
+    },
+    {
+      "id": "F014.rotate-R",
+      "family": "F014",
+      "reachability": "Y"
+    },
+    {
+      "id": "F014.scale-button",
+      "family": "F014",
+      "reachability": "Y"
+    },
+    {
+      "id": "F014.scale-X",
+      "family": "F014",
+      "reachability": "Y"
+    },
+    {
+      "id": "F014.pen-button",
+      "family": "F014",
+      "reachability": "Y"
+    },
+    {
+      "id": "F014.pen-P",
+      "family": "F014",
+      "reachability": "Y"
+    },
+    {
+      "id": "F014.brush-button",
+      "family": "F014",
+      "reachability": "Y"
+    },
+    {
+      "id": "F014.brush-B",
+      "family": "F014",
+      "reachability": "Y"
+    },
+    {
+      "id": "F014.measure-button",
+      "family": "F014",
+      "reachability": "Y"
+    },
+    {
+      "id": "F014.measure-M",
+      "family": "F014",
+      "reachability": "Y"
+    },
+    {
+      "id": "F014.repeated-key-toggle",
+      "family": "F014",
+      "reachability": "Y"
+    },
+    {
+      "id": "F015.viewport-node",
+      "family": "F015",
+      "reachability": "Y"
+    },
+    {
+      "id": "F015.viewport-empty",
+      "family": "F015",
+      "reachability": "Y"
+    },
+    {
+      "id": "F015.sidebar-node",
+      "family": "F015",
+      "reachability": "Y"
+    },
+    {
+      "id": "F015.deselect-button",
+      "family": "F015",
+      "reachability": "Y"
+    },
+    {
+      "id": "F015.hidden-node-refusal",
+      "family": "F015",
+      "reachability": "Y"
+    },
+    {
+      "id": "F016.orbit",
+      "family": "F016",
+      "reachability": "Y"
+    },
+    {
+      "id": "F016.pan",
+      "family": "F016",
+      "reachability": "Y"
+    },
+    {
+      "id": "F016.viewport-wheel",
+      "family": "F016",
+      "reachability": "Y"
+    },
+    {
+      "id": "F016.inspector-wheel",
+      "family": "F016",
+      "reachability": "Y"
+    },
+    {
+      "id": "F016.floating-window-wheel",
+      "family": "F016",
+      "reachability": "Y"
+    },
+    {
+      "id": "F017.move-X",
+      "family": "F017",
+      "reachability": "Y"
+    },
+    {
+      "id": "F017.move-Y",
+      "family": "F017",
+      "reachability": "Y"
+    },
+    {
+      "id": "F017.move-Z",
+      "family": "F017",
+      "reachability": "Y"
+    },
+    {
+      "id": "F017.rotate-X",
+      "family": "F017",
+      "reachability": "Y"
+    },
+    {
+      "id": "F017.rotate-Y",
+      "family": "F017",
+      "reachability": "Y"
+    },
+    {
+      "id": "F017.rotate-Z",
+      "family": "F017",
+      "reachability": "Y"
+    },
+    {
+      "id": "F017.scale-X",
+      "family": "F017",
+      "reachability": "Y"
+    },
+    {
+      "id": "F017.scale-Y",
+      "family": "F017",
+      "reachability": "Y"
+    },
+    {
+      "id": "F017.scale-Z",
+      "family": "F017",
+      "reachability": "Y"
+    },
+    {
+      "id": "F017.escape-cancel",
+      "family": "F017",
+      "reachability": "Y"
+    },
+    {
+      "id": "F018.position-X",
+      "family": "F018",
+      "reachability": "Y"
+    },
+    {
+      "id": "F018.position-Y",
+      "family": "F018",
+      "reachability": "Y"
+    },
+    {
+      "id": "F018.position-Z",
+      "family": "F018",
+      "reachability": "Y"
+    },
+    {
+      "id": "F018.rotation-X",
+      "family": "F018",
+      "reachability": "Y"
+    },
+    {
+      "id": "F018.rotation-Y",
+      "family": "F018",
+      "reachability": "Y"
+    },
+    {
+      "id": "F018.rotation-Z",
+      "family": "F018",
+      "reachability": "Y"
+    },
+    {
+      "id": "F018.scale-X",
+      "family": "F018",
+      "reachability": "Y"
+    },
+    {
+      "id": "F018.scale-Y",
+      "family": "F018",
+      "reachability": "Y"
+    },
+    {
+      "id": "F018.scale-Z",
+      "family": "F018",
+      "reachability": "Y"
+    },
+    {
+      "id": "F018.apply-button",
+      "family": "F018",
+      "reachability": "Y"
+    },
+    {
+      "id": "F018.enter-commit",
+      "family": "F018",
+      "reachability": "Y"
+    },
+    {
+      "id": "F018.invalid-number",
+      "family": "F018",
+      "reachability": "Y"
+    },
+    {
+      "id": "F019.browse-valid",
+      "family": "F019",
+      "reachability": "Y"
+    },
+    {
+      "id": "F019.typed-valid-path",
+      "family": "F019",
+      "reachability": "Y"
+    },
+    {
+      "id": "F019.import-name",
+      "family": "F019",
+      "reachability": "Y"
+    },
+    {
+      "id": "F019.import-success",
+      "family": "F019",
+      "reachability": "Y"
+    },
+    {
+      "id": "F019.browse-cancel",
+      "family": "F019",
+      "reachability": "Y"
+    },
+    {
+      "id": "F019.malformed-gltf",
+      "family": "F019",
+      "reachability": "Y"
+    },
+    {
+      "id": "F019.no-petal",
+      "family": "F019",
+      "reachability": "Y"
+    },
+    {
+      "id": "F019.no-path",
+      "family": "F019",
+      "reachability": "Y"
+    },
+    {
+      "id": "F020.ground-empty-node",
+      "family": "F020",
+      "reachability": "Y"
+    },
+    {
+      "id": "F020.ground-gltf-node",
+      "family": "F020",
+      "reachability": "Y"
+    },
+    {
+      "id": "F021.edit-properties",
+      "family": "F021",
+      "reachability": "Y"
+    },
+    {
+      "id": "F021.rename",
+      "family": "F021",
+      "reachability": "Y"
+    },
+    {
+      "id": "F021.duplicate",
+      "family": "F021",
+      "reachability": "Y"
+    },
+    {
+      "id": "F022.clear-properties",
+      "family": "F022",
+      "reachability": "Y"
+    },
+    {
+      "id": "F022.delete-leaf-cancel",
+      "family": "F022",
+      "reachability": "Y"
+    },
+    {
+      "id": "F022.delete-leaf-confirm",
+      "family": "F022",
+      "reachability": "Y"
+    },
+    {
+      "id": "F022.delete-subtree-cancel",
+      "family": "F022",
+      "reachability": "Y"
+    },
+    {
+      "id": "F022.delete-subtree-confirm",
+      "family": "F022",
+      "reachability": "Y"
+    },
+    {
+      "id": "F023.save-name",
+      "family": "F023",
+      "reachability": "Y"
+    },
+    {
+      "id": "F023.cancel-name",
+      "family": "F023",
+      "reachability": "Y"
+    },
+    {
+      "id": "F023.clear-properties",
+      "family": "F023",
+      "reachability": "Y"
+    },
+    {
+      "id": "F023.delete-parity",
+      "family": "F023",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.save-webpage-url",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.open-webpage",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.save-config-url",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.open-config",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.invalid-url",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F025.load-page",
+      "family": "F025",
+      "reachability": "Y"
+    },
+    {
+      "id": "F025.follow-link",
+      "family": "F025",
+      "reachability": "Y"
+    },
+    {
+      "id": "F025.back",
+      "family": "F025",
+      "reachability": "Y"
+    },
+    {
+      "id": "F025.close",
+      "family": "F025",
+      "reachability": "Y"
+    },
+    {
+      "id": "F025.load-failure",
+      "family": "F025",
+      "reachability": "Y"
+    },
+    {
+      "id": "F025.selected-node-change",
+      "family": "F025",
+      "reachability": "Y"
+    },
+    {
+      "id": "F026.asset-save",
+      "family": "F026",
+      "reachability": "Y"
+    },
+    {
+      "id": "F026.save-cancel",
+      "family": "F026",
+      "reachability": "Y"
+    },
+    {
+      "id": "F026.write-error",
+      "family": "F026",
+      "reachability": "Y"
+    },
+    {
+      "id": "F026.overwrite-after-input-release",
+      "family": "F026",
+      "reachability": "Y"
+    },
+    {
+      "id": "F027.copy-api-string",
+      "family": "F027",
+      "reachability": "Y"
+    },
+    {
+      "id": "F027.report-object",
+      "family": "F027",
+      "reachability": "Y"
+    },
+    {
+      "id": "F027.query-object",
+      "family": "F027",
+      "reachability": "Y"
+    },
+    {
+      "id": "F028.grid-snap",
+      "family": "F028",
+      "reachability": "P"
+    },
+    {
+      "id": "F028.angle-snap",
+      "family": "F028",
+      "reachability": "P"
+    },
+    {
+      "id": "F028.scale-snap",
+      "family": "F028",
+      "reachability": "P"
+    },
+    {
+      "id": "F028.uniform-scale",
+      "family": "F028",
+      "reachability": "P"
+    },
+    {
+      "id": "F028.axis-lock",
+      "family": "F028",
+      "reachability": "P"
+    },
+    {
+      "id": "F028.undo",
+      "family": "F028",
+      "reachability": "P"
+    },
+    {
+      "id": "F028.redo",
+      "family": "F028",
+      "reachability": "P"
+    },
+    {
+      "id": "F028.frame-F",
+      "family": "F028",
+      "reachability": "P"
+    },
+    {
+      "id": "F028.delete-shortcut",
+      "family": "F028",
+      "reachability": "P"
+    },
+    {
+      "id": "F029.properties-tab",
+      "family": "F029",
+      "reachability": "Y"
+    },
+    {
+      "id": "F029.api-tab",
+      "family": "F029",
+      "reachability": "Y"
+    },
+    {
+      "id": "F029.query-tab",
+      "family": "F029",
+      "reachability": "Y"
+    },
+    {
+      "id": "F029.no-selection",
+      "family": "F029",
+      "reachability": "Y"
+    },
+    {
+      "id": "F029.change-selected-node",
+      "family": "F029",
+      "reachability": "Y"
+    },
+    {
+      "id": "F030.string",
+      "family": "F030",
+      "reachability": "Y"
+    },
+    {
+      "id": "F030.number",
+      "family": "F030",
+      "reachability": "Y"
+    },
+    {
+      "id": "F030.bool",
+      "family": "F030",
+      "reachability": "Y"
+    },
+    {
+      "id": "F030.datetime",
+      "family": "F030",
+      "reachability": "Y"
+    },
+    {
+      "id": "F030.geometry-point",
+      "family": "F030",
+      "reachability": "Y"
+    },
+    {
+      "id": "F030.geometry-polygon",
+      "family": "F030",
+      "reachability": "Y"
+    },
+    {
+      "id": "F030.blob-ref",
+      "family": "F030",
+      "reachability": "Y"
+    },
+    {
+      "id": "F030.hexon-ref",
+      "family": "F030",
+      "reachability": "Y"
+    },
+    {
+      "id": "F030.address",
+      "family": "F030",
+      "reachability": "Y"
+    },
+    {
+      "id": "F030.array",
+      "family": "F030",
+      "reachability": "Y"
+    },
+    {
+      "id": "F030.object",
+      "family": "F030",
+      "reachability": "Y"
+    },
+    {
+      "id": "F030.invalid-number",
+      "family": "F030",
+      "reachability": "Y"
+    },
+    {
+      "id": "F030.invalid-json",
+      "family": "F030",
+      "reachability": "Y"
+    },
+    {
+      "id": "F030.add",
+      "family": "F030",
+      "reachability": "Y"
+    },
+    {
+      "id": "F030.delete-cancel",
+      "family": "F030",
+      "reachability": "Y"
+    },
+    {
+      "id": "F030.delete-confirm",
+      "family": "F030",
+      "reachability": "Y"
+    },
+    {
+      "id": "F030.selection-reload",
+      "family": "F030",
+      "reachability": "Y"
+    },
+    {
+      "id": "F031.key",
+      "family": "F031",
+      "reachability": "Y"
+    },
+    {
+      "id": "F031.type",
+      "family": "F031",
+      "reachability": "Y"
+    },
+    {
+      "id": "F031.add-field",
+      "family": "F031",
+      "reachability": "Y"
+    },
+    {
+      "id": "F031.delete-cancel",
+      "family": "F031",
+      "reachability": "Y"
+    },
+    {
+      "id": "F031.delete-confirm",
+      "family": "F031",
+      "reachability": "Y"
+    },
+    {
+      "id": "F031.pending-id-disabled",
+      "family": "F031",
+      "reachability": "Y"
+    },
+    {
+      "id": "F032.title",
+      "family": "F032",
+      "reachability": "Y"
+    },
+    {
+      "id": "F032.body",
+      "family": "F032",
+      "reachability": "Y"
+    },
+    {
+      "id": "F032.color",
+      "family": "F032",
+      "reachability": "Y"
+    },
+    {
+      "id": "F032.save",
+      "family": "F032",
+      "reachability": "Y"
+    },
+    {
+      "id": "F032.node-change",
+      "family": "F032",
+      "reachability": "Y"
+    },
+    {
+      "id": "F033.this-node",
+      "family": "F033",
+      "reachability": "Y"
+    },
+    {
+      "id": "F033.device-data",
+      "family": "F033",
+      "reachability": "Y"
+    },
+    {
+      "id": "F033.all-petal-nodes",
+      "family": "F033",
+      "reachability": "Y"
+    },
+    {
+      "id": "F033.no-petal-disabled",
+      "family": "F033",
+      "reachability": "Y"
+    },
+    {
+      "id": "F034.run-button",
+      "family": "F034",
+      "reachability": "Y"
+    },
+    {
+      "id": "F034.ctrl-enter",
+      "family": "F034",
+      "reachability": "Y"
+    },
+    {
+      "id": "F034.filter",
+      "family": "F034",
+      "reachability": "Y"
+    },
+    {
+      "id": "F034.empty-results",
+      "family": "F034",
+      "reachability": "Y"
+    },
+    {
+      "id": "F034.syntax-error",
+      "family": "F034",
+      "reachability": "Y"
+    },
+    {
+      "id": "F034.pending",
+      "family": "F034",
+      "reachability": "Y"
+    },
+    {
+      "id": "F034.timeout",
+      "family": "F034",
+      "reachability": "Y"
+    },
+    {
+      "id": "F035.open",
+      "family": "F035",
+      "reachability": "Y"
+    },
+    {
+      "id": "F035.close",
+      "family": "F035",
+      "reachability": "Y"
+    },
+    {
+      "id": "F035.resize",
+      "family": "F035",
+      "reachability": "Y"
+    },
+    {
+      "id": "F035.scroll",
+      "family": "F035",
+      "reachability": "Y"
+    },
+    {
+      "id": "F035.virtualized-200",
+      "family": "F035",
+      "reachability": "Y"
+    },
+    {
+      "id": "F036.numeric-ascending",
+      "family": "F036",
+      "reachability": "Y"
+    },
+    {
+      "id": "F036.numeric-descending",
+      "family": "F036",
+      "reachability": "Y"
+    },
+    {
+      "id": "F036.text-ascending",
+      "family": "F036",
+      "reachability": "Y"
+    },
+    {
+      "id": "F036.text-descending",
+      "family": "F036",
+      "reachability": "Y"
+    },
+    {
+      "id": "F036.mixed-types",
+      "family": "F036",
+      "reachability": "Y"
+    },
+    {
+      "id": "F036.column-resize",
+      "family": "F036",
+      "reachability": "Y"
+    },
+    {
+      "id": "F037.copy-cell",
+      "family": "F037",
+      "reachability": "Y"
+    },
+    {
+      "id": "F037.copy-row",
+      "family": "F037",
+      "reachability": "Y"
+    },
+    {
+      "id": "F037.context-action",
+      "family": "F037",
+      "reachability": "Y"
+    },
+    {
+      "id": "F037.selected-row-toolbar",
+      "family": "F037",
+      "reachability": "Y"
+    },
+    {
+      "id": "F038.select-current-row",
+      "family": "F038",
+      "reachability": "Y"
+    },
+    {
+      "id": "F038.frame-current-row",
+      "family": "F038",
+      "reachability": "Y"
+    },
+    {
+      "id": "F038.scene-match",
+      "family": "F038",
+      "reachability": "Y"
+    },
+    {
+      "id": "F038.foreign-node-refusal",
+      "family": "F038",
+      "reachability": "Y"
+    },
+    {
+      "id": "F038.stale-petal",
+      "family": "F038",
+      "reachability": "Y"
+    },
+    {
+      "id": "F038.stale-verse",
+      "family": "F038",
+      "reachability": "Y"
+    },
+    {
+      "id": "F038.pending-nav-change",
+      "family": "F038",
+      "reachability": "Y"
+    },
+    {
+      "id": "F039.query-tab",
+      "family": "F039",
+      "reachability": "Y"
+    },
+    {
+      "id": "F039.annotations-tab",
+      "family": "F039",
+      "reachability": "Y"
+    },
+    {
+      "id": "F039.layers-tab",
+      "family": "F039",
+      "reachability": "Y"
+    },
+    {
+      "id": "F039.paths-tab",
+      "family": "F039",
+      "reachability": "Y"
+    },
+    {
+      "id": "F039.export-tab",
+      "family": "F039",
+      "reachability": "Y"
+    },
+    {
+      "id": "F039.independent-buffers",
+      "family": "F039",
+      "reachability": "Y"
+    },
+    {
+      "id": "F039.empty-state",
+      "family": "F039",
+      "reachability": "Y"
+    },
+    {
+      "id": "F039.pending-state",
+      "family": "F039",
+      "reachability": "Y"
+    },
+    {
+      "id": "F039.error-state",
+      "family": "F039",
+      "reachability": "Y"
+    },
+    {
+      "id": "F040.annotated",
+      "family": "F040",
+      "reachability": "Y"
+    },
+    {
+      "id": "F040.property-string",
+      "family": "F040",
+      "reachability": "Y"
+    },
+    {
+      "id": "F040.property-number",
+      "family": "F040",
+      "reachability": "Y"
+    },
+    {
+      "id": "F040.property-bool",
+      "family": "F040",
+      "reachability": "Y"
+    },
+    {
+      "id": "F040.property-json",
+      "family": "F040",
+      "reachability": "Y"
+    },
+    {
+      "id": "F040.bbox",
+      "family": "F040",
+      "reachability": "Y"
+    },
+    {
+      "id": "F041.min-X",
+      "family": "F041",
+      "reachability": "Y"
+    },
+    {
+      "id": "F041.min-Z",
+      "family": "F041",
+      "reachability": "Y"
+    },
+    {
+      "id": "F041.max-X",
+      "family": "F041",
+      "reachability": "Y"
+    },
+    {
+      "id": "F041.max-Z",
+      "family": "F041",
+      "reachability": "Y"
+    },
+    {
+      "id": "F041.center-selection",
+      "family": "F041",
+      "reachability": "Y"
+    },
+    {
+      "id": "F041.center-origin",
+      "family": "F041",
+      "reachability": "Y"
+    },
+    {
+      "id": "F041.run",
+      "family": "F041",
+      "reachability": "Y"
+    },
+    {
+      "id": "F041.invalid-bounds",
+      "family": "F041",
+      "reachability": "Y"
+    },
+    {
+      "id": "F042.annotation-select",
+      "family": "F042",
+      "reachability": "Y"
+    },
+    {
+      "id": "F042.query-row-select",
+      "family": "F042",
+      "reachability": "Y"
+    },
+    {
+      "id": "F042.independent-result-buffers",
+      "family": "F042",
+      "reachability": "Y"
+    },
+    {
+      "id": "F043.api-base",
+      "family": "F043",
+      "reachability": "Y"
+    },
+    {
+      "id": "F043.source-petal",
+      "family": "F043",
+      "reachability": "Y"
+    },
+    {
+      "id": "F043.source-node",
+      "family": "F043",
+      "reachability": "Y"
+    },
+    {
+      "id": "F043.source-bbox",
+      "family": "F043",
+      "reachability": "Y"
+    },
+    {
+      "id": "F043.use-viewport-selection",
+      "family": "F043",
+      "reachability": "Y"
+    },
+    {
+      "id": "F043.unavailable-source",
+      "family": "F043",
+      "reachability": "Y"
+    },
+    {
+      "id": "F044.sql",
+      "family": "F044",
+      "reachability": "Y"
+    },
+    {
+      "id": "F044.query-endpoint",
+      "family": "F044",
+      "reachability": "Y"
+    },
+    {
+      "id": "F044.parquet-url",
+      "family": "F044",
+      "reachability": "Y"
+    },
+    {
+      "id": "F044.csv-url",
+      "family": "F044",
+      "reachability": "Y"
+    },
+    {
+      "id": "F044.duckdb-snippet",
+      "family": "F044",
+      "reachability": "Y"
+    },
+    {
+      "id": "F044.parquet-roundtrip",
+      "family": "F044",
+      "reachability": "Y"
+    },
+    {
+      "id": "F044.csv-roundtrip",
+      "family": "F044",
+      "reachability": "Y"
+    },
+    {
+      "id": "F044.encoding-auth-crs",
+      "family": "F044",
+      "reachability": "Y"
+    },
+    {
+      "id": "F045.ttl-valid",
+      "family": "F045",
+      "reachability": "Y"
+    },
+    {
+      "id": "F045.ttl-invalid",
+      "family": "F045",
+      "reachability": "Y"
+    },
+    {
+      "id": "F045.mint-curl-copy",
+      "family": "F045",
+      "reachability": "Y"
+    },
+    {
+      "id": "F045.mint-api-readback",
+      "family": "F045",
+      "reachability": "A"
+    },
+    {
+      "id": "F046.selected-petal-scope",
+      "family": "F046",
+      "reachability": "P"
+    },
+    {
+      "id": "F046.no-petal-refusal",
+      "family": "F046",
+      "reachability": "P"
+    },
+    {
+      "id": "F046.foreign-table-refusal",
+      "family": "F046",
+      "reachability": "P"
+    },
+    {
+      "id": "F046.cross-petal-refusal",
+      "family": "F046",
+      "reachability": "P"
+    },
+    {
+      "id": "F047.set-map",
+      "family": "F047",
+      "reachability": "Y"
+    },
+    {
+      "id": "F047.clear-map",
+      "family": "F047",
+      "reachability": "Y"
+    },
+    {
+      "id": "F047.no-map",
+      "family": "F047",
+      "reachability": "Y"
+    },
+    {
+      "id": "F047.petal-switch",
+      "family": "F047",
+      "reachability": "Y"
+    },
+    {
+      "id": "F047.denied-set-rollback",
+      "family": "F047",
+      "reachability": "Y"
+    },
+    {
+      "id": "F048.native-preset",
+      "family": "F048",
+      "reachability": "Y"
+    },
+    {
+      "id": "F048.scale-preset",
+      "family": "F048",
+      "reachability": "Y"
+    },
+    {
+      "id": "F048.scale-slider",
+      "family": "F048",
+      "reachability": "Y"
+    },
+    {
+      "id": "F048.invalid-scale-clamp",
+      "family": "F048",
+      "reachability": "Y"
+    },
+    {
+      "id": "F049.layer-hidden",
+      "family": "F049",
+      "reachability": "Y"
+    },
+    {
+      "id": "F049.layer-visible",
+      "family": "F049",
+      "reachability": "Y"
+    },
+    {
+      "id": "F049.opacity",
+      "family": "F049",
+      "reachability": "Y"
+    },
+    {
+      "id": "F049.mesh",
+      "family": "F049",
+      "reachability": "Y"
+    },
+    {
+      "id": "F049.splats",
+      "family": "F049",
+      "reachability": "Y"
+    },
+    {
+      "id": "F049.hybrid",
+      "family": "F049",
+      "reachability": "Y"
+    },
+    {
+      "id": "F050.raise",
+      "family": "F050",
+      "reachability": "Y"
+    },
+    {
+      "id": "F050.lower",
+      "family": "F050",
+      "reachability": "Y"
+    },
+    {
+      "id": "F050.flatten",
+      "family": "F050",
+      "reachability": "Y"
+    },
+    {
+      "id": "F050.ramp",
+      "family": "F050",
+      "reachability": "Y"
+    },
+    {
+      "id": "F050.slope",
+      "family": "F050",
+      "reachability": "Y"
+    },
+    {
+      "id": "F050.pad",
+      "family": "F050",
+      "reachability": "Y"
+    },
+    {
+      "id": "F050.cut",
+      "family": "F050",
+      "reachability": "Y"
+    },
+    {
+      "id": "F050.fill",
+      "family": "F050",
+      "reachability": "Y"
+    },
+    {
+      "id": "F051.radius",
+      "family": "F051",
+      "reachability": "Y"
+    },
+    {
+      "id": "F051.target",
+      "family": "F051",
+      "reachability": "Y"
+    },
+    {
+      "id": "F051.delta",
+      "family": "F051",
+      "reachability": "Y"
+    },
+    {
+      "id": "F051.add",
+      "family": "F051",
+      "reachability": "Y"
+    },
+    {
+      "id": "F051.select",
+      "family": "F051",
+      "reachability": "Y"
+    },
+    {
+      "id": "F051.delete-cancel",
+      "family": "F051",
+      "reachability": "Y"
+    },
+    {
+      "id": "F051.delete-confirm",
+      "family": "F051",
+      "reachability": "Y"
+    },
+    {
+      "id": "F052.radius",
+      "family": "F052",
+      "reachability": "Y"
+    },
+    {
+      "id": "F052.strength",
+      "family": "F052",
+      "reachability": "Y"
+    },
+    {
+      "id": "F052.material",
+      "family": "F052",
+      "reachability": "Y"
+    },
+    {
+      "id": "F052.raise-stroke",
+      "family": "F052",
+      "reachability": "Y"
+    },
+    {
+      "id": "F052.lower-stroke",
+      "family": "F052",
+      "reachability": "Y"
+    },
+    {
+      "id": "F052.level-stroke",
+      "family": "F052",
+      "reachability": "Y"
+    },
+    {
+      "id": "F052.smooth-stroke",
+      "family": "F052",
+      "reachability": "Y"
+    },
+    {
+      "id": "F053.brush",
+      "family": "F053",
+      "reachability": "Y"
+    },
+    {
+      "id": "F053.circle",
+      "family": "F053",
+      "reachability": "Y"
+    },
+    {
+      "id": "F053.rectangle",
+      "family": "F053",
+      "reachability": "Y"
+    },
+    {
+      "id": "F053.polygon-draft",
+      "family": "F053",
+      "reachability": "Y"
+    },
+    {
+      "id": "F053.apply",
+      "family": "F053",
+      "reachability": "Y"
+    },
+    {
+      "id": "F053.clear-draft",
+      "family": "F053",
+      "reachability": "Y"
+    },
+    {
+      "id": "F053.insufficient-polygon",
+      "family": "F053",
+      "reachability": "Y"
+    },
+    {
+      "id": "F054.raise-square-UI",
+      "family": "F054",
+      "reachability": "Y"
+    },
+    {
+      "id": "F054.raise-square-persistence",
+      "family": "F054",
+      "reachability": "Y"
+    },
+    {
+      "id": "F054.lower-square-UI",
+      "family": "F054",
+      "reachability": "Y"
+    },
+    {
+      "id": "F054.lower-square-persistence",
+      "family": "F054",
+      "reachability": "Y"
+    },
+    {
+      "id": "F055.selected-volume",
+      "family": "F055",
+      "reachability": "Y"
+    },
+    {
+      "id": "F055.drawn-volume",
+      "family": "F055",
+      "reachability": "Y"
+    },
+    {
+      "id": "F055.region-volume",
+      "family": "F055",
+      "reachability": "Y"
+    },
+    {
+      "id": "F055.pending",
+      "family": "F055",
+      "reachability": "Y"
+    },
+    {
+      "id": "F055.no-map",
+      "family": "F055",
+      "reachability": "Y"
+    },
+    {
+      "id": "F055.overlap",
+      "family": "F055",
+      "reachability": "Y"
+    },
+    {
+      "id": "F055.missing-sample",
+      "family": "F055",
+      "reachability": "Y"
+    },
+    {
+      "id": "F055.late-tile-refresh",
+      "family": "F055",
+      "reachability": "Y"
+    },
+    {
+      "id": "F056.totals",
+      "family": "F056",
+      "reachability": "Y"
+    },
+    {
+      "id": "F056.per-item",
+      "family": "F056",
+      "reachability": "Y"
+    },
+    {
+      "id": "F056.nodes-inside",
+      "family": "F056",
+      "reachability": "Y"
+    },
+    {
+      "id": "F056.copy-tsv",
+      "family": "F056",
+      "reachability": "Y"
+    },
+    {
+      "id": "F057.heatmap",
+      "family": "F057",
+      "reachability": "Y"
+    },
+    {
+      "id": "F057.live-preview",
+      "family": "F057",
+      "reachability": "Y"
+    },
+    {
+      "id": "F057.preview-no-db-write",
+      "family": "F057",
+      "reachability": "Y"
+    },
+    {
+      "id": "F057.committed-region-delete",
+      "family": "F057",
+      "reachability": "Y"
+    },
+    {
+      "id": "F057.base-restored",
+      "family": "F057",
+      "reachability": "Y"
+    },
+    {
+      "id": "F058.tape",
+      "family": "F058",
+      "reachability": "Y"
+    },
+    {
+      "id": "F058.area",
+      "family": "F058",
+      "reachability": "Y"
+    },
+    {
+      "id": "F058.append-anchor",
+      "family": "F058",
+      "reachability": "Y"
+    },
+    {
+      "id": "F058.undo",
+      "family": "F058",
+      "reachability": "Y"
+    },
+    {
+      "id": "F058.clear",
+      "family": "F058",
+      "reachability": "Y"
+    },
+    {
+      "id": "F058.close-polygon",
+      "family": "F058",
+      "reachability": "Y"
+    },
+    {
+      "id": "F058.independent-distance",
+      "family": "F058",
+      "reachability": "Y"
+    },
+    {
+      "id": "F058.independent-area",
+      "family": "F058",
+      "reachability": "Y"
+    },
+    {
+      "id": "F059.copy-distance",
+      "family": "F059",
+      "reachability": "Y"
+    },
+    {
+      "id": "F059.copy-slope",
+      "family": "F059",
+      "reachability": "Y"
+    },
+    {
+      "id": "F059.copy-bearing",
+      "family": "F059",
+      "reachability": "Y"
+    },
+    {
+      "id": "F059.copy-area",
+      "family": "F059",
+      "reachability": "Y"
+    },
+    {
+      "id": "F059.save-tape-callout",
+      "family": "F059",
+      "reachability": "Y"
+    },
+    {
+      "id": "F059.save-area-callout",
+      "family": "F059",
+      "reachability": "Y"
+    },
+    {
+      "id": "F059.incomplete-disabled",
+      "family": "F059",
+      "reachability": "Y"
+    },
+    {
+      "id": "F060.scale-bar",
+      "family": "F060",
+      "reachability": "Y"
+    },
+    {
+      "id": "F060.metric-grid",
+      "family": "F060",
+      "reachability": "Y"
+    },
+    {
+      "id": "F060.offline-on",
+      "family": "F060",
+      "reachability": "Y"
+    },
+    {
+      "id": "F060.offline-off",
+      "family": "F060",
+      "reachability": "Y"
+    },
+    {
+      "id": "F061.global",
+      "family": "F061",
+      "reachability": "Y"
+    },
+    {
+      "id": "F061.petal-shared",
+      "family": "F061",
+      "reachability": "Y"
+    },
+    {
+      "id": "F061.session-override",
+      "family": "F061",
+      "reachability": "Y"
+    },
+    {
+      "id": "F061.precedence",
+      "family": "F061",
+      "reachability": "Y"
+    },
+    {
+      "id": "F061.session-lifetime",
+      "family": "F061",
+      "reachability": "Y"
+    },
+    {
+      "id": "F062.register-device-format",
+      "family": "F062",
+      "reachability": "A"
+    },
+    {
+      "id": "F062.ingest-device-payload",
+      "family": "F062",
+      "reachability": "A"
+    },
+    {
+      "id": "F062.list-device-payload",
+      "family": "F062",
+      "reachability": "A"
+    },
+    {
+      "id": "F062.ingest-reading",
+      "family": "F062",
+      "reachability": "A"
+    },
+    {
+      "id": "F062.query-timeseries",
+      "family": "F062",
+      "reachability": "A"
+    },
+    {
+      "id": "F062.sim-start-stop-step-fault",
+      "family": "F062",
+      "reachability": "A"
+    },
+    {
+      "id": "F063.new-path",
+      "family": "F063",
+      "reachability": "Y"
+    },
+    {
+      "id": "F063.select-path",
+      "family": "F063",
+      "reachability": "Y"
+    },
+    {
+      "id": "F063.edit-path",
+      "family": "F063",
+      "reachability": "Y"
+    },
+    {
+      "id": "F063.back",
+      "family": "F063",
+      "reachability": "Y"
+    },
+    {
+      "id": "F063.delete-cancel",
+      "family": "F063",
+      "reachability": "Y"
+    },
+    {
+      "id": "F063.delete-confirm",
+      "family": "F063",
+      "reachability": "Y"
+    },
+    {
+      "id": "F064.import-valid-gpx",
+      "family": "F064",
+      "reachability": "Y"
+    },
+    {
+      "id": "F064.import-malformed",
+      "family": "F064",
+      "reachability": "Y"
+    },
+    {
+      "id": "F064.import-cancel",
+      "family": "F064",
+      "reachability": "Y"
+    },
+    {
+      "id": "F064.no-duplicate-after-failure",
+      "family": "F064",
+      "reachability": "Y"
+    },
+    {
+      "id": "F065.pen-P",
+      "family": "F065",
+      "reachability": "Y"
+    },
+    {
+      "id": "F065.click-corner",
+      "family": "F065",
+      "reachability": "Y"
+    },
+    {
+      "id": "F065.drag-smooth",
+      "family": "F065",
+      "reachability": "Y"
+    },
+    {
+      "id": "F065.alt-drag-symmetric",
+      "family": "F065",
+      "reachability": "Y"
+    },
+    {
+      "id": "F065.deferred-new-track",
+      "family": "F065",
+      "reachability": "Y"
+    },
+    {
+      "id": "F066.polyline",
+      "family": "F066",
+      "reachability": "Y"
+    },
+    {
+      "id": "F066.catmull-rom",
+      "family": "F066",
+      "reachability": "Y"
+    },
+    {
+      "id": "F066.bezier",
+      "family": "F066",
+      "reachability": "Y"
+    },
+    {
+      "id": "F066.tension",
+      "family": "F066",
+      "reachability": "Y"
+    },
+    {
+      "id": "F066.samples",
+      "family": "F066",
+      "reachability": "Y"
+    },
+    {
+      "id": "F066.smooth-path",
+      "family": "F066",
+      "reachability": "Y"
+    },
+    {
+      "id": "F066.disabled-without-track",
+      "family": "F066",
+      "reachability": "Y"
+    },
+    {
+      "id": "F067.new-corner",
+      "family": "F067",
+      "reachability": "Y"
+    },
+    {
+      "id": "F067.new-smooth",
+      "family": "F067",
+      "reachability": "Y"
+    },
+    {
+      "id": "F067.new-symmetric",
+      "family": "F067",
+      "reachability": "Y"
+    },
+    {
+      "id": "F067.selected-corner",
+      "family": "F067",
+      "reachability": "Y"
+    },
+    {
+      "id": "F067.selected-smooth",
+      "family": "F067",
+      "reachability": "Y"
+    },
+    {
+      "id": "F067.selected-symmetric",
+      "family": "F067",
+      "reachability": "Y"
+    },
+    {
+      "id": "F067.smoothness",
+      "family": "F067",
+      "reachability": "Y"
+    },
+    {
+      "id": "F068.radius-X",
+      "family": "F068",
+      "reachability": "Y"
+    },
+    {
+      "id": "F068.radius-Z",
+      "family": "F068",
+      "reachability": "Y"
+    },
+    {
+      "id": "F068.segments",
+      "family": "F068",
+      "reachability": "Y"
+    },
+    {
+      "id": "F068.ellipse",
+      "family": "F068",
+      "reachability": "Y"
+    },
+    {
+      "id": "F068.circle",
+      "family": "F068",
+      "reachability": "Y"
+    },
+    {
+      "id": "F068.rectangle",
+      "family": "F068",
+      "reachability": "Y"
+    },
+    {
+      "id": "F068.no-track-disabled",
+      "family": "F068",
+      "reachability": "Y"
+    },
+    {
+      "id": "F069.point-select",
+      "family": "F069",
+      "reachability": "Y"
+    },
+    {
+      "id": "F069.point-Y",
+      "family": "F069",
+      "reachability": "Y"
+    },
+    {
+      "id": "F069.point-remove",
+      "family": "F069",
+      "reachability": "Y"
+    },
+    {
+      "id": "F069.point-annotate",
+      "family": "F069",
+      "reachability": "Y"
+    },
+    {
+      "id": "F069.point-drag",
+      "family": "F069",
+      "reachability": "Y"
+    },
+    {
+      "id": "F069.handle-drag",
+      "family": "F069",
+      "reachability": "Y"
+    },
+    {
+      "id": "F069.segment-drag",
+      "family": "F069",
+      "reachability": "Y"
+    },
+    {
+      "id": "F069.release-single-commit",
+      "family": "F069",
+      "reachability": "Y"
+    },
+    {
+      "id": "F070.title",
+      "family": "F070",
+      "reachability": "Y"
+    },
+    {
+      "id": "F070.body",
+      "family": "F070",
+      "reachability": "Y"
+    },
+    {
+      "id": "F070.color",
+      "family": "F070",
+      "reachability": "Y"
+    },
+    {
+      "id": "F070.save",
+      "family": "F070",
+      "reachability": "Y"
+    },
+    {
+      "id": "F070.cancel",
+      "family": "F070",
+      "reachability": "Y"
+    },
+    {
+      "id": "F071.border-color",
+      "family": "F071",
+      "reachability": "Y"
+    },
+    {
+      "id": "F071.border-width",
+      "family": "F071",
+      "reachability": "Y"
+    },
+    {
+      "id": "F071.closed-zone",
+      "family": "F071",
+      "reachability": "Y"
+    },
+    {
+      "id": "F071.fill-color",
+      "family": "F071",
+      "reachability": "Y"
+    },
+    {
+      "id": "F071.fill-alpha",
+      "family": "F071",
+      "reachability": "Y"
+    },
+    {
+      "id": "F072.snapping-enabled",
+      "family": "F072",
+      "reachability": "Y"
+    },
+    {
+      "id": "F072.snapping-grid",
+      "family": "F072",
+      "reachability": "Y"
+    },
+    {
+      "id": "F072.anchor-radius",
+      "family": "F072",
+      "reachability": "Y"
+    },
+    {
+      "id": "F072.whole-path-gimbal",
+      "family": "F072",
+      "reachability": "Y"
+    },
+    {
+      "id": "F073.asset-filter",
+      "family": "F073",
+      "reachability": "Y"
+    },
+    {
+      "id": "F073.select-asset",
+      "family": "F073",
+      "reachability": "Y"
+    },
+    {
+      "id": "F073.clear-asset",
+      "family": "F073",
+      "reachability": "Y"
+    },
+    {
+      "id": "F073.manual-blob-uri",
+      "family": "F073",
+      "reachability": "Y"
+    },
+    {
+      "id": "F073.missing-asset",
+      "family": "F073",
+      "reachability": "Y"
+    },
+    {
+      "id": "F074.fixed-spacing",
+      "family": "F074",
+      "reachability": "Y"
+    },
+    {
+      "id": "F074.fixed-count",
+      "family": "F074",
+      "reachability": "Y"
+    },
+    {
+      "id": "F074.tangent-align",
+      "family": "F074",
+      "reachability": "Y"
+    },
+    {
+      "id": "F074.stamp-apply",
+      "family": "F074",
+      "reachability": "Y"
+    },
+    {
+      "id": "F074.descriptor-readback",
+      "family": "F074",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.index",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.select",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.promote",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.scale",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.rotate",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.slide",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.apply",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F076.promote",
+      "family": "F076",
+      "reachability": "Y"
+    },
+    {
+      "id": "F076.scale-rotate",
+      "family": "F076",
+      "reachability": "Y"
+    },
+    {
+      "id": "F076.slide",
+      "family": "F076",
+      "reachability": "Y"
+    },
+    {
+      "id": "F076.delete-instance",
+      "family": "F076",
+      "reachability": "Y"
+    },
+    {
+      "id": "F077.edit-track",
+      "family": "F077",
+      "reachability": "Y"
+    },
+    {
+      "id": "F077.add-stamps",
+      "family": "F077",
+      "reachability": "Y"
+    },
+    {
+      "id": "F077.delete-track",
+      "family": "F077",
+      "reachability": "Y"
+    },
+    {
+      "id": "F077.anchor-corner",
+      "family": "F077",
+      "reachability": "Y"
+    },
+    {
+      "id": "F077.anchor-smooth",
+      "family": "F077",
+      "reachability": "Y"
+    },
+    {
+      "id": "F077.delete-point",
+      "family": "F077",
+      "reachability": "Y"
+    },
+    {
+      "id": "F078.export-save",
+      "family": "F078",
+      "reachability": "Y"
+    },
+    {
+      "id": "F078.export-cancel",
+      "family": "F078",
+      "reachability": "Y"
+    },
+    {
+      "id": "F078.parse-export",
+      "family": "F078",
+      "reachability": "Y"
+    },
+    {
+      "id": "F078.reimport-roundtrip",
+      "family": "F078",
+      "reachability": "Y"
+    },
+    {
+      "id": "F079.minimize",
+      "family": "F079",
+      "reachability": "Y"
+    },
+    {
+      "id": "F079.maximize",
+      "family": "F079",
+      "reachability": "Y"
+    },
+    {
+      "id": "F079.restore",
+      "family": "F079",
+      "reachability": "Y"
+    },
+    {
+      "id": "F079.caption-close",
+      "family": "F079",
+      "reachability": "Y"
+    },
+    {
+      "id": "F079.caption-drag",
+      "family": "F079",
+      "reachability": "Y"
+    },
+    {
+      "id": "F079.caption-double-click",
+      "family": "F079",
+      "reachability": "Y"
+    },
+    {
+      "id": "F079.resize-grips",
+      "family": "F079",
+      "reachability": "Y"
+    },
+    {
+      "id": "F080.cancel-close",
+      "family": "F080",
+      "reachability": "Y"
+    },
+    {
+      "id": "F080.confirm-close",
+      "family": "F080",
+      "reachability": "Y"
+    },
+    {
+      "id": "F080.dirty-manifest-reason",
+      "family": "F080",
+      "reachability": "Y"
+    },
+    {
+      "id": "F081.hierarchy-toggle",
+      "family": "F081",
+      "reachability": "Y"
+    },
+    {
+      "id": "F081.ctrl-B",
+      "family": "F081",
+      "reachability": "Y"
+    },
+    {
+      "id": "F081.compact-tools",
+      "family": "F081",
+      "reachability": "Y"
+    },
+    {
+      "id": "F081.compact-panels",
+      "family": "F081",
+      "reachability": "Y"
+    },
+    {
+      "id": "F081.compact-deselect",
+      "family": "F081",
+      "reachability": "Y"
+    },
+    {
+      "id": "F082.inspector",
+      "family": "F082",
+      "reachability": "Y"
+    },
+    {
+      "id": "F082.options",
+      "family": "F082",
+      "reachability": "Y"
+    },
+    {
+      "id": "F082.terrain-tools",
+      "family": "F082",
+      "reachability": "Y"
+    },
+    {
+      "id": "F082.volume-report",
+      "family": "F082",
+      "reachability": "Y"
+    },
+    {
+      "id": "F082.settings",
+      "family": "F082",
+      "reachability": "Y"
+    },
+    {
+      "id": "F082.maps",
+      "family": "F082",
+      "reachability": "Y"
+    },
+    {
+      "id": "F082.groups",
+      "family": "F082",
+      "reachability": "Y"
+    },
+    {
+      "id": "F082.data",
+      "family": "F082",
+      "reachability": "Y"
+    },
+    {
+      "id": "F082.toggle-vs-reveal",
+      "family": "F082",
+      "reachability": "Y"
+    },
+    {
+      "id": "F083.render-distance",
+      "family": "F083",
+      "reachability": "Y"
+    },
+    {
+      "id": "F083.mesh-budget",
+      "family": "F083",
+      "reachability": "Y"
+    },
+    {
+      "id": "F083.entity-cap",
+      "family": "F083",
+      "reachability": "Y"
+    },
+    {
+      "id": "F083.stamp-ceiling",
+      "family": "F083",
+      "reachability": "Y"
+    },
+    {
+      "id": "F083.durable-readback",
+      "family": "F083",
+      "reachability": "Y"
+    },
+    {
+      "id": "F084.orbit-sensitivity",
+      "family": "F084",
+      "reachability": "Y"
+    },
+    {
+      "id": "F084.zoom-speed",
+      "family": "F084",
+      "reachability": "Y"
+    },
+    {
+      "id": "F084.relay-valid",
+      "family": "F084",
+      "reachability": "Y"
+    },
+    {
+      "id": "F084.relay-invalid",
+      "family": "F084",
+      "reachability": "Y"
+    },
+    {
+      "id": "F084.registry-valid",
+      "family": "F084",
+      "reachability": "Y"
+    },
+    {
+      "id": "F084.registry-invalid",
+      "family": "F084",
+      "reachability": "Y"
+    },
+    {
+      "id": "F084.save-restart-indication",
+      "family": "F084",
+      "reachability": "Y"
+    },
+    {
+      "id": "F085.mirror",
+      "family": "F085",
+      "reachability": "Y"
+    },
+    {
+      "id": "F085.sharded",
+      "family": "F085",
+      "reachability": "Y"
+    },
+    {
+      "id": "F085.balanced",
+      "family": "F085",
+      "reachability": "Y"
+    },
+    {
+      "id": "F085.durability-R",
+      "family": "F085",
+      "reachability": "Y"
+    },
+    {
+      "id": "F085.bucket-preset",
+      "family": "F085",
+      "reachability": "Y"
+    },
+    {
+      "id": "F085.bucket-number",
+      "family": "F085",
+      "reachability": "Y"
+    },
+    {
+      "id": "F085.mode-limit",
+      "family": "F085",
+      "reachability": "Y"
+    },
+    {
+      "id": "F086.reset-open",
+      "family": "F086",
+      "reachability": "Y"
+    },
+    {
+      "id": "F086.reset-cancel",
+      "family": "F086",
+      "reachability": "Y"
+    },
+    {
+      "id": "F086.reset-confirm",
+      "family": "F086",
+      "reachability": "Y"
+    },
+    {
+      "id": "F086.isolated-data-gone",
+      "family": "F086",
+      "reachability": "Y"
+    },
+    {
+      "id": "F087.info",
+      "family": "F087",
+      "reachability": "Y"
+    },
+    {
+      "id": "F087.advisory",
+      "family": "F087",
+      "reachability": "Y"
+    },
+    {
+      "id": "F087.error",
+      "family": "F087",
+      "reachability": "Y"
+    },
+    {
+      "id": "F087.error-history",
+      "family": "F087",
+      "reachability": "Y"
+    },
+    {
+      "id": "F087.role",
+      "family": "F087",
+      "reachability": "Y"
+    },
+    {
+      "id": "F087.mesh-budget",
+      "family": "F087",
+      "reachability": "Y"
+    },
+    {
+      "id": "F087.peers",
+      "family": "F087",
+      "reachability": "Y"
+    },
+    {
+      "id": "F087.counters",
+      "family": "F087",
+      "reachability": "Y"
+    },
+    {
+      "id": "F088.open",
+      "family": "F088",
+      "reachability": "Y"
+    },
+    {
+      "id": "F088.save",
+      "family": "F088",
+      "reachability": "Y"
+    },
+    {
+      "id": "F088.folder",
+      "family": "F088",
+      "reachability": "Y"
+    },
+    {
+      "id": "F088.cancel",
+      "family": "F088",
+      "reachability": "Y"
+    },
+    {
+      "id": "F088.empty-queue",
+      "family": "F088",
+      "reachability": "Y"
+    },
+    {
+      "id": "F088.kind-mismatch",
+      "family": "F088",
+      "reachability": "Y"
+    },
+    {
+      "id": "F088.traversal",
+      "family": "F088",
+      "reachability": "A"
+    },
+    {
+      "id": "F088.junction",
+      "family": "F088",
+      "reachability": "A"
+    },
+    {
+      "id": "F088.alternate-stream",
+      "family": "F088",
+      "reachability": "A"
+    },
+    {
+      "id": "F088.reserved-device",
+      "family": "F088",
+      "reachability": "A"
+    },
+    {
+      "id": "F088.drive-relative",
+      "family": "F088",
+      "reachability": "A"
+    },
+    {
+      "id": "F088.atomic-batch",
+      "family": "F088",
+      "reachability": "A"
+    },
+    {
+      "id": "F089.size-1280",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F089.size-1920",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F089.size-1024",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F089.all-panels",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F089.all-dialogs",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F089.long-name",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F089.long-path",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F089.UI-scale1.25",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F089.compact-scale2",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F089.divider-endpoints",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F090.inspector-wheel",
+      "family": "F090",
+      "reachability": "Y"
+    },
+    {
+      "id": "F090.viewport-wheel",
+      "family": "F090",
+      "reachability": "Y"
+    },
+    {
+      "id": "F090.floating-window-wheel",
+      "family": "F090",
+      "reachability": "Y"
+    },
+    {
+      "id": "F090.text-B",
+      "family": "F090",
+      "reachability": "Y"
+    },
+    {
+      "id": "F090.text-G",
+      "family": "F090",
+      "reachability": "Y"
+    },
+    {
+      "id": "F090.text-R",
+      "family": "F090",
+      "reachability": "Y"
+    },
+    {
+      "id": "F090.text-X",
+      "family": "F090",
+      "reachability": "Y"
+    },
+    {
+      "id": "F090.text-Enter",
+      "family": "F090",
+      "reachability": "Y"
+    },
+    {
+      "id": "F091.gesture",
+      "family": "F091",
+      "reachability": "Y"
+    },
+    {
+      "id": "F091.solo",
+      "family": "F091",
+      "reachability": "Y"
+    },
+    {
+      "id": "F091.path-edit",
+      "family": "F091",
+      "reachability": "Y"
+    },
+    {
+      "id": "F091.selection",
+      "family": "F091",
+      "reachability": "Y"
+    },
+    {
+      "id": "F091.tool",
+      "family": "F091",
+      "reachability": "Y"
+    },
+    {
+      "id": "F091.context-menu",
+      "family": "F091",
+      "reachability": "Y"
+    },
+    {
+      "id": "F091.modal",
+      "family": "F091",
+      "reachability": "Y"
+    },
+    {
+      "id": "F092.restart-now",
+      "family": "F092",
+      "reachability": "P"
+    },
+    {
+      "id": "F092.shortcut-help",
+      "family": "F092",
+      "reachability": "P"
+    },
+    {
+      "id": "F092.panel-retry",
+      "family": "F092",
+      "reachability": "P"
+    },
+    {
+      "id": "F092.quarantine-recovery",
+      "family": "F092",
+      "reachability": "P"
+    },
+    {
+      "id": "F093.verse-gear",
+      "family": "F093",
+      "reachability": "Y"
+    },
+    {
+      "id": "F093.fractal-gear",
+      "family": "F093",
+      "reachability": "Y"
+    },
+    {
+      "id": "F093.petal-gear",
+      "family": "F093",
+      "reachability": "Y"
+    },
+    {
+      "id": "F093.general-tab",
+      "family": "F093",
+      "reachability": "Y"
+    },
+    {
+      "id": "F093.access-tab",
+      "family": "F093",
+      "reachability": "Y"
+    },
+    {
+      "id": "F093.api-tab",
+      "family": "F093",
+      "reachability": "Y"
+    },
+    {
+      "id": "F093.local-role",
+      "family": "F093",
+      "reachability": "Y"
+    },
+    {
+      "id": "F094.rename",
+      "family": "F094",
+      "reachability": "Y"
+    },
+    {
+      "id": "F094.private",
+      "family": "F094",
+      "reachability": "Y"
+    },
+    {
+      "id": "F094.public",
+      "family": "F094",
+      "reachability": "Y"
+    },
+    {
+      "id": "F094.unlisted",
+      "family": "F094",
+      "reachability": "Y"
+    },
+    {
+      "id": "F094.description-save",
+      "family": "F094",
+      "reachability": "Y"
+    },
+    {
+      "id": "F094.loading",
+      "family": "F094",
+      "reachability": "Y"
+    },
+    {
+      "id": "F094.error",
+      "family": "F094",
+      "reachability": "Y"
+    },
+    {
+      "id": "F095.orphan-claim",
+      "family": "F095",
+      "reachability": "Y"
+    },
+    {
+      "id": "F095.confirm-claim",
+      "family": "F095",
+      "reachability": "Y"
+    },
+    {
+      "id": "F095.cancel-claim",
+      "family": "F095",
+      "reachability": "Y"
+    },
+    {
+      "id": "F095.owned-unavailable",
+      "family": "F095",
+      "reachability": "Y"
+    },
+    {
+      "id": "F095.delete-cancel",
+      "family": "F095",
+      "reachability": "Y"
+    },
+    {
+      "id": "F095.delete-confirm",
+      "family": "F095",
+      "reachability": "Y"
+    },
+    {
+      "id": "F096.peer-role-badge",
+      "family": "F096",
+      "reachability": "Y"
+    },
+    {
+      "id": "F096.online-badge",
+      "family": "F096",
+      "reachability": "Y"
+    },
+    {
+      "id": "F096.offline-badge",
+      "family": "F096",
+      "reachability": "Y"
+    },
+    {
+      "id": "F097.assign-role",
+      "family": "F097",
+      "reachability": "P"
+    },
+    {
+      "id": "F097.revoke-role",
+      "family": "F097",
+      "reachability": "P"
+    },
+    {
+      "id": "F097.downgrade-cancel",
+      "family": "F097",
+      "reachability": "P"
+    },
+    {
+      "id": "F097.downgrade-confirm",
+      "family": "F097",
+      "reachability": "P"
+    },
+    {
+      "id": "F098.role-viewer",
+      "family": "F098",
+      "reachability": "Y"
+    },
+    {
+      "id": "F098.role-editor",
+      "family": "F098",
+      "reachability": "Y"
+    },
+    {
+      "id": "F098.role-manager",
+      "family": "F098",
+      "reachability": "Y"
+    },
+    {
+      "id": "F098.expiry-1h",
+      "family": "F098",
+      "reachability": "Y"
+    },
+    {
+      "id": "F098.expiry-24h",
+      "family": "F098",
+      "reachability": "Y"
+    },
+    {
+      "id": "F098.expiry-7d",
+      "family": "F098",
+      "reachability": "Y"
+    },
+    {
+      "id": "F098.expiry-30d",
+      "family": "F098",
+      "reachability": "Y"
+    },
+    {
+      "id": "F098.generate",
+      "family": "F098",
+      "reachability": "Y"
+    },
+    {
+      "id": "F098.copy",
+      "family": "F098",
+      "reachability": "Y"
+    },
+    {
+      "id": "F098.second-host-join",
+      "family": "F098",
+      "reachability": "Y"
+    },
+    {
+      "id": "F099.join-valid",
+      "family": "F099",
+      "reachability": "Y"
+    },
+    {
+      "id": "F099.join-invalid",
+      "family": "F099",
+      "reachability": "Y"
+    },
+    {
+      "id": "F099.join-expired",
+      "family": "F099",
+      "reachability": "Y"
+    },
+    {
+      "id": "F099.already-joined",
+      "family": "F099",
+      "reachability": "Y"
+    },
+    {
+      "id": "F099.cancel",
+      "family": "F099",
+      "reachability": "Y"
+    },
+    {
+      "id": "F099.no-partial-on-error",
+      "family": "F099",
+      "reachability": "Y"
+    },
+    {
+      "id": "F100.role-viewer",
+      "family": "F100",
+      "reachability": "Y"
+    },
+    {
+      "id": "F100.role-editor",
+      "family": "F100",
+      "reachability": "Y"
+    },
+    {
+      "id": "F100.role-manager",
+      "family": "F100",
+      "reachability": "Y"
+    },
+    {
+      "id": "F100.expiry-1h",
+      "family": "F100",
+      "reachability": "Y"
+    },
+    {
+      "id": "F100.expiry-24h",
+      "family": "F100",
+      "reachability": "Y"
+    },
+    {
+      "id": "F100.expiry-7d",
+      "family": "F100",
+      "reachability": "Y"
+    },
+    {
+      "id": "F100.expiry-30d",
+      "family": "F100",
+      "reachability": "Y"
+    },
+    {
+      "id": "F100.client",
+      "family": "F100",
+      "reachability": "Y"
+    },
+    {
+      "id": "F100.generate",
+      "family": "F100",
+      "reachability": "Y"
+    },
+    {
+      "id": "F100.dismiss",
+      "family": "F100",
+      "reachability": "Y"
+    },
+    {
+      "id": "F100.copy-token",
+      "family": "F100",
+      "reachability": "Y"
+    },
+    {
+      "id": "F100.copy-curl",
+      "family": "F100",
+      "reachability": "Y"
+    },
+    {
+      "id": "F101.node-scope",
+      "family": "F101",
+      "reachability": "Y"
+    },
+    {
+      "id": "F101.petal-scope",
+      "family": "F101",
+      "reachability": "Y"
+    },
+    {
+      "id": "F101.page-next",
+      "family": "F101",
+      "reachability": "Y"
+    },
+    {
+      "id": "F101.page-previous",
+      "family": "F101",
+      "reachability": "Y"
+    },
+    {
+      "id": "F101.refresh",
+      "family": "F101",
+      "reachability": "Y"
+    },
+    {
+      "id": "F101.revoke-cancel",
+      "family": "F101",
+      "reachability": "Y"
+    },
+    {
+      "id": "F101.revoke-confirm",
+      "family": "F101",
+      "reachability": "Y"
+    },
+    {
+      "id": "F101.revoked-denial",
+      "family": "F101",
+      "reachability": "Y"
+    },
+    {
+      "id": "F101.unrelated-token-intact",
+      "family": "F101",
+      "reachability": "Y"
+    },
+    {
+      "id": "F102.scope",
+      "family": "F102",
+      "reachability": "Y"
+    },
+    {
+      "id": "F102.role",
+      "family": "F102",
+      "reachability": "Y"
+    },
+    {
+      "id": "F102.expiry",
+      "family": "F102",
+      "reachability": "Y"
+    },
+    {
+      "id": "F102.client",
+      "family": "F102",
+      "reachability": "Y"
+    },
+    {
+      "id": "F102.generate",
+      "family": "F102",
+      "reachability": "Y"
+    },
+    {
+      "id": "F102.scoped-revoke",
+      "family": "F102",
+      "reachability": "Y"
+    },
+    {
+      "id": "F102.revoked-denial",
+      "family": "F102",
+      "reachability": "Y"
+    },
+    {
+      "id": "F103.identity-viewer",
+      "family": "F103",
+      "reachability": "Y"
+    },
+    {
+      "id": "F103.identity-editor",
+      "family": "F103",
+      "reachability": "Y"
+    },
+    {
+      "id": "F103.identity-manager",
+      "family": "F103",
+      "reachability": "Y"
+    },
+    {
+      "id": "F103.identity-owner",
+      "family": "F103",
+      "reachability": "Y"
+    },
+    {
+      "id": "F103.remote-downgrade",
+      "family": "F103",
+      "reachability": "Y"
+    },
+    {
+      "id": "F103.server-denial",
+      "family": "F103",
+      "reachability": "Y"
+    },
+    {
+      "id": "F103.stale-role-navigation",
+      "family": "F103",
+      "reachability": "Y"
+    },
+    {
+      "id": "F104.peer-segment",
+      "family": "F104",
+      "reachability": "Y"
+    },
+    {
+      "id": "F104.peer-debug",
+      "family": "F104",
+      "reachability": "Y"
+    },
+    {
+      "id": "F104.close",
+      "family": "F104",
+      "reachability": "Y"
+    },
+    {
+      "id": "F104.relay-status",
+      "family": "F104",
+      "reachability": "Y"
+    },
+    {
+      "id": "F104.offline-status",
+      "family": "F104",
+      "reachability": "Y"
+    },
+    {
+      "id": "F105.replicate-node",
+      "family": "F105",
+      "reachability": "Y"
+    },
+    {
+      "id": "F105.replicate-transform",
+      "family": "F105",
+      "reachability": "Y"
+    },
+    {
+      "id": "F105.replicate-property",
+      "family": "F105",
+      "reachability": "Y"
+    },
+    {
+      "id": "F105.replicate-terrain",
+      "family": "F105",
+      "reachability": "Y"
+    },
+    {
+      "id": "F105.replicate-visibility",
+      "family": "F105",
+      "reachability": "Y"
+    },
+    {
+      "id": "F106.disconnect",
+      "family": "F106",
+      "reachability": "Y"
+    },
+    {
+      "id": "F106.reconnect",
+      "family": "F106",
+      "reachability": "Y"
+    },
+    {
+      "id": "F106.leave-replica",
+      "family": "F106",
+      "reachability": "Y"
+    },
+    {
+      "id": "F106.reopen-replica",
+      "family": "F106",
+      "reachability": "Y"
+    },
+    {
+      "id": "F106.remote-delete",
+      "family": "F106",
+      "reachability": "Y"
+    },
+    {
+      "id": "F106.no-duplicates",
+      "family": "F106",
+      "reachability": "Y"
+    },
+    {
+      "id": "F107.camera",
+      "family": "F107",
+      "reachability": "A"
+    },
+    {
+      "id": "F107.current-shot",
+      "family": "F107",
+      "reachability": "A"
+    },
+    {
+      "id": "F107.orbit-shot",
+      "family": "F107",
+      "reachability": "A"
+    },
+    {
+      "id": "F107.geo-shot",
+      "family": "F107",
+      "reachability": "A"
+    },
+    {
+      "id": "F107.tile-shot",
+      "family": "F107",
+      "reachability": "A"
+    },
+    {
+      "id": "F107.node-focus",
+      "family": "F107",
+      "reachability": "A"
+    },
+    {
+      "id": "F107.petal-focus",
+      "family": "F107",
+      "reachability": "A"
+    },
+    {
+      "id": "F107.no-ui",
+      "family": "F107",
+      "reachability": "A"
+    },
+    {
+      "id": "F107.dimensions",
+      "family": "F107",
+      "reachability": "A"
+    },
+    {
+      "id": "F107.restore",
+      "family": "F107",
+      "reachability": "A"
+    },
+    {
+      "id": "F107.normal-F12",
+      "family": "F107",
+      "reachability": "Y"
+    },
+    {
+      "id": "F108.pointer-move",
+      "family": "F108",
+      "reachability": "A"
+    },
+    {
+      "id": "F108.click",
+      "family": "F108",
+      "reachability": "A"
+    },
+    {
+      "id": "F108.double-click",
+      "family": "F108",
+      "reachability": "A"
+    },
+    {
+      "id": "F108.right-click",
+      "family": "F108",
+      "reachability": "A"
+    },
+    {
+      "id": "F108.drag",
+      "family": "F108",
+      "reachability": "A"
+    },
+    {
+      "id": "F108.key",
+      "family": "F108",
+      "reachability": "A"
+    },
+    {
+      "id": "F108.text",
+      "family": "F108",
+      "reachability": "A"
+    },
+    {
+      "id": "F108.scroll",
+      "family": "F108",
+      "reachability": "A"
+    },
+    {
+      "id": "F108.capture-after",
+      "family": "F108",
+      "reachability": "A"
+    },
+    {
+      "id": "F108.settle",
+      "family": "F108",
+      "reachability": "A"
+    },
+    {
+      "id": "F108.modifier-release",
+      "family": "F108",
+      "reachability": "A"
+    },
+    {
+      "id": "F108.no-cursor-warp",
+      "family": "F108",
+      "reachability": "A"
+    },
+    {
+      "id": "F109.ui-find",
+      "family": "F109",
+      "reachability": "A"
+    },
+    {
+      "id": "F109.role-filter",
+      "family": "F109",
+      "reachability": "A"
+    },
+    {
+      "id": "F109.interactive-filter",
+      "family": "F109",
+      "reachability": "A"
+    },
+    {
+      "id": "F109.named-click",
+      "family": "F109",
+      "reachability": "A"
+    },
+    {
+      "id": "F109.named-type",
+      "family": "F109",
+      "reachability": "A"
+    },
+    {
+      "id": "F109.named-wait",
+      "family": "F109",
+      "reachability": "A"
+    },
+    {
+      "id": "F109.gone-wait",
+      "family": "F109",
+      "reachability": "A"
+    },
+    {
+      "id": "F109.ambiguity-refused",
+      "family": "F109",
+      "reachability": "A"
+    },
+    {
+      "id": "F109.finite-deadline",
+      "family": "F109",
+      "reachability": "A"
+    },
+    {
+      "id": "F110.state",
+      "family": "F110",
+      "reachability": "A"
+    },
+    {
+      "id": "F110.path",
+      "family": "F110",
+      "reachability": "A"
+    },
+    {
+      "id": "F110.state-wait",
+      "family": "F110",
+      "reachability": "A"
+    },
+    {
+      "id": "F110.logs-since",
+      "family": "F110",
+      "reachability": "A"
+    },
+    {
+      "id": "F110.logs-level",
+      "family": "F110",
+      "reachability": "A"
+    },
+    {
+      "id": "F110.new-warnings",
+      "family": "F110",
+      "reachability": "A"
+    },
+    {
+      "id": "F110.redaction",
+      "family": "F110",
+      "reachability": "A"
+    },
+    {
+      "id": "F110.bounded-ring",
+      "family": "F110",
+      "reachability": "A"
+    },
+    {
+      "id": "F110.navigation-generation",
+      "family": "F110",
+      "reachability": "A"
+    },
+    {
+      "id": "F111.dialog-answer",
+      "family": "F111",
+      "reachability": "A"
+    },
+    {
+      "id": "F111.physical-size",
+      "family": "F111",
+      "reachability": "A"
+    },
+    {
+      "id": "F111.ui-scale",
+      "family": "F111",
+      "reachability": "A"
+    },
+    {
+      "id": "F111.maximize",
+      "family": "F111",
+      "reachability": "A"
+    },
+    {
+      "id": "F111.restore",
+      "family": "F111",
+      "reachability": "A"
+    },
+    {
+      "id": "F111.minimize",
+      "family": "F111",
+      "reachability": "A"
+    },
+    {
+      "id": "F111.close-confirm",
+      "family": "F111",
+      "reachability": "A"
+    },
+    {
+      "id": "F112.gate-off",
+      "family": "F112",
+      "reachability": "A"
+    },
+    {
+      "id": "F112.non-owner",
+      "family": "F112",
+      "reachability": "A"
+    },
+    {
+      "id": "F112.foreign-scope",
+      "family": "F112",
+      "reachability": "A"
+    },
+    {
+      "id": "F112.malformed",
+      "family": "F112",
+      "reachability": "A"
+    },
+    {
+      "id": "F112.rate",
+      "family": "F112",
+      "reachability": "A"
+    },
+    {
+      "id": "F112.busy",
+      "family": "F112",
+      "reachability": "A"
+    },
+    {
+      "id": "F112.rest-mcp-parity",
+      "family": "F112",
+      "reachability": "A"
+    },
+    {
+      "id": "F112.relay-no-gui",
+      "family": "F112",
+      "reachability": "A"
+    },
+    {
+      "id": "F113.synthetic-copy-text",
+      "family": "F113",
+      "reachability": "Y"
+    },
+    {
+      "id": "F113.synthetic-copy-image",
+      "family": "F113",
+      "reachability": "A"
+    },
+    {
+      "id": "F113.normal-copy-sentinel",
+      "family": "F113",
+      "reachability": "A"
+    },
+    {
+      "id": "F113.clipboard-chord-refusal",
+      "family": "F113",
+      "reachability": "A"
+    },
+    {
+      "id": "F114.owned-hwnd-uia",
+      "family": "F114",
+      "reachability": "O"
+    },
+    {
+      "id": "F114.named-buttons",
+      "family": "F114",
+      "reachability": "O"
+    },
+    {
+      "id": "F114.finite-bounds",
+      "family": "F114",
+      "reachability": "O"
+    },
+    {
+      "id": "F114.input-debug-denied",
+      "family": "F114",
+      "reachability": "O"
+    },
+    {
+      "id": "F115.inactive-baseline",
+      "family": "F115",
+      "reachability": "O"
+    },
+    {
+      "id": "F115.active-provider",
+      "family": "F115",
+      "reachability": "O"
+    },
+    {
+      "id": "F115.same-cadence",
+      "family": "F115",
+      "reachability": "O"
+    },
+    {
+      "id": "F115.frame-sample-summary",
+      "family": "F115",
+      "reachability": "O"
+    },
+    {
+      "id": "F115.incomplete-baseline-refusal",
+      "family": "F115",
+      "reachability": "O"
+    },
+    {
+      "id": "F116.mcp-get-hierarchy",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-create-verse",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-create-fractal",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-create-petal",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-create-node",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-update-transform",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-read-node",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-node-address",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-delete-node",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-promote-instance",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-query-timeseries",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-sim-start",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-sim-stop",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-sim-status",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-sim-step",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-sim-inject-fault",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-upload-asset",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-place-asset",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-set-property",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-get-properties",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-delete-property",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-create-waypoint",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-move-waypoint",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-import-gpx",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-set-petal-terrain",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-set-petal-render-distance",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-list-visibility-groups",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-set-visibility-group",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-list-tilesets",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-install-tileset",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-get-gis-nodes",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-query",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-register-device-format",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-list-device-formats",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-ingest-device-payload",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-list-device-payloads",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-screenshot",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-get-camera",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-ui-tree",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-dialog-answers",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-window",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-ui-state",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-ui-logs",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-inject-input",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-health",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-ready",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-ws",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-shared-token",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-hierarchy",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-verses",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-verses-verse-id-fractals",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-verses-verse-id-fractals-fractal-id-petals",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-verses-verse-id-fractals-fractal-id-petals-petal-id-nodes",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-delete-api-v1-nodes-node-id",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-nodes-node-id",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-nodes-node-id-address",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-address",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-petals-petal-id-nodes",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-petals-petal-id-earthwork-summary",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-petals-petal-id-paths-path-id-instances-instance-index-promote",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-nodes-node-id-transform",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-patch-api-v1-nodes-node-id-transform",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-nodes-node-id-properties",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-patch-api-v1-nodes-node-id-properties",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-delete-api-v1-nodes-node-id-properties-key",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-assets-content-hash",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-assets-by-id-asset-id",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-petals-petal-id-assets",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-nodes-node-id-asset",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-petals-petal-id-export",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-petals-petal-id-import",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-petals-petal-id-import-gpx",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-petals-petal-id-export-gpx",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-delete-api-v1-petals-petal-id-terrain",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-petals-petal-id-terrain",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-put-api-v1-petals-petal-id-terrain",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-delete-api-v1-petals-petal-id-render-distance",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-petals-petal-id-render-distance",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-put-api-v1-petals-petal-id-render-distance",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-petals-petal-id-visibility-groups",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-put-api-v1-petals-petal-id-visibility-groups",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-delete-api-v1-petals-petal-id-visibility-groups-group-id",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-patch-api-v1-petals-petal-id-visibility-groups-group-id",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-tiles-elevation-tileset-id-z-x-y-png",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-tiles-satellite-tileset-id-z-x-y-jpg",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-tilesets",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-tilesets-tileset-id-meta",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-petals-petal-id-gis-nodes",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-petals-petal-id-gis-tracks",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-petals-petal-id-waypoints",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-patch-api-v1-nodes-waypoint-id-move",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-nodes-track-id-elevation-profile",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-nodes-track-id-stats",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-field-defs",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-field-defs-scope",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-delete-api-v1-field-defs-by-id-field-def-id",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-patch-api-v1-field-defs-by-id-field-def-id",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-nodes",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-debug-screenshot",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-debug-screenshot",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-debug-camera",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-debug-input",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-debug-ui-tree",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-debug-ui-state",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-debug-logs",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-debug-dialog-answers",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-debug-window",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-query",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-query-elevated",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-petals-petal-id-export-parquet",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-petals-petal-id-export-csv",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-petals-petal-id-iot-readings",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-verses-verse-id-device-formats",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-verses-verse-id-device-formats",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-petals-petal-id-iot-payloads",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-petals-petal-id-iot-payloads",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-query-share",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-analytics-query",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-hexons-tilesets-install",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-delete-api-v1-hexons-tilesets-hexon-id",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-patch-api-v1-hexons-tilesets-hexon-id-seeding",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-hexons-tilesets",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-hexons-storage",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-crates-publish",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-crates-hexon-uri-install",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-delete-api-v1-crates-hexon-uri-uninstall",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-crates-search",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-crates-installed",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-crates-hexon-uri",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-crates-hexon-uri-entries",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-crates-hexon-uri-entries-entry-id-asset",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-crates-available",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-sim-start",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-sim-stop",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-sim-status",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-sim-step",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-sim-inject-fault",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-mcp",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F117.same-root-restart",
+      "family": "F117",
+      "reachability": "Y"
+    },
+    {
+      "id": "F117.same-node-identity",
+      "family": "F117",
+      "reachability": "Y"
+    },
+    {
+      "id": "F117.durable-node-edit",
+      "family": "F117",
+      "reachability": "Y"
+    },
+    {
+      "id": "F117.durable-setting",
+      "family": "F117",
+      "reachability": "Y"
+    },
+    {
+      "id": "F117.durable-map",
+      "family": "F117",
+      "reachability": "Y"
+    },
+    {
+      "id": "F117.durable-asset",
+      "family": "F117",
+      "reachability": "Y"
+    },
+    {
+      "id": "F117.no-duplicate-entities",
+      "family": "F117",
+      "reachability": "Y"
+    },
+    {
+      "id": "F118.key-migration",
+      "family": "F118",
+      "reachability": "A"
+    },
+    {
+      "id": "F118.store-migration",
+      "family": "F118",
+      "reachability": "A"
+    },
+    {
+      "id": "F118.token-migration",
+      "family": "F118",
+      "reachability": "A"
+    },
+    {
+      "id": "F118.backup-administration",
+      "family": "F118",
+      "reachability": "A"
+    },
+    {
+      "id": "F119.installed-tab",
+      "family": "F119",
+      "reachability": "Y"
+    },
+    {
+      "id": "F119.available-tab",
+      "family": "F119",
+      "reachability": "Y"
+    },
+    {
+      "id": "F119.downloads-tab",
+      "family": "F119",
+      "reachability": "Y"
+    },
+    {
+      "id": "F119.filter",
+      "family": "F119",
+      "reachability": "Y"
+    },
+    {
+      "id": "F119.refresh",
+      "family": "F119",
+      "reachability": "Y"
+    },
+    {
+      "id": "F119.close",
+      "family": "F119",
+      "reachability": "Y"
+    },
+    {
+      "id": "F119.empty",
+      "family": "F119",
+      "reachability": "Y"
+    },
+    {
+      "id": "F119.populated",
+      "family": "F119",
+      "reachability": "Y"
+    },
+    {
+      "id": "F119.error",
+      "family": "F119",
+      "reachability": "Y"
+    },
+    {
+      "id": "F119.progress",
+      "family": "F119",
+      "reachability": "Y"
+    },
+    {
+      "id": "F120.install-valid",
+      "family": "F120",
+      "reachability": "Y"
+    },
+    {
+      "id": "F120.install-cancel",
+      "family": "F120",
+      "reachability": "Y"
+    },
+    {
+      "id": "F120.wrong-archive-kind",
+      "family": "F120",
+      "reachability": "Y"
+    },
+    {
+      "id": "F120.corrupt-archive",
+      "family": "F120",
+      "reachability": "Y"
+    },
+    {
+      "id": "F121.registry-uri",
+      "family": "F121",
+      "reachability": "Y"
+    },
+    {
+      "id": "F121.registry-valid",
+      "family": "F121",
+      "reachability": "Y"
+    },
+    {
+      "id": "F121.registry-unavailable",
+      "family": "F121",
+      "reachability": "Y"
+    },
+    {
+      "id": "F121.hash-mismatch",
+      "family": "F121",
+      "reachability": "Y"
+    },
+    {
+      "id": "F122.download-progress",
+      "family": "F122",
+      "reachability": "Y"
+    },
+    {
+      "id": "F122.download-complete",
+      "family": "F122",
+      "reachability": "Y"
+    },
+    {
+      "id": "F122.cancel",
+      "family": "F122",
+      "reachability": "Y"
+    },
+    {
+      "id": "F122.bytes-hash",
+      "family": "F122",
+      "reachability": "Y"
+    },
+    {
+      "id": "F123.seed-on",
+      "family": "F123",
+      "reachability": "Y"
+    },
+    {
+      "id": "F123.seed-off",
+      "family": "F123",
+      "reachability": "Y"
+    },
+    {
+      "id": "F123.remove-cancel",
+      "family": "F123",
+      "reachability": "Y"
+    },
+    {
+      "id": "F123.remove-confirm",
+      "family": "F123",
+      "reachability": "Y"
+    },
+    {
+      "id": "F123.active-map-safety",
+      "family": "F123",
+      "reachability": "Y"
+    },
+    {
+      "id": "F123.open-folder",
+      "family": "F123",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.add-id",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.type",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.required",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.remove",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.json",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.save",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.close-clean",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.close-dirty-cancel",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F124.close-dirty-discard",
+      "family": "F124",
+      "reachability": "Y"
+    },
+    {
+      "id": "F125.glb-byte-roundtrip",
+      "family": "F125",
+      "reachability": "Y"
+    },
+    {
+      "id": "F125.gpx-coordinate-roundtrip",
+      "family": "F125",
+      "reachability": "Y"
+    },
+    {
+      "id": "F125.hexon-bundle-roundtrip",
+      "family": "F125",
+      "reachability": "Y"
+    },
+    {
+      "id": "F126.plugin-read",
+      "family": "F126",
+      "reachability": "A"
+    },
+    {
+      "id": "F126.plugin-transaction",
+      "family": "F126",
+      "reachability": "A"
+    },
+    {
+      "id": "F126.rhai-execution",
+      "family": "F126",
+      "reachability": "A"
+    },
+    {
+      "id": "F127.tag-input",
+      "family": "F127",
+      "reachability": "U"
+    },
+    {
+      "id": "F127.tag-add",
+      "family": "F127",
+      "reachability": "U"
+    },
+    {
+      "id": "F127.tag-remove",
+      "family": "F127",
+      "reachability": "U"
+    },
+    {
+      "id": "F127.atlas-room",
+      "family": "F127",
+      "reachability": "U"
+    },
+    {
+      "id": "F127.atlas-model",
+      "family": "F127",
+      "reachability": "U"
+    },
+    {
+      "id": "F128.enum-opener",
+      "family": "F128",
+      "reachability": "U"
+    },
+    {
+      "id": "F128.missing-renderer",
+      "family": "F128",
+      "reachability": "U"
+    }
+  ],
+  "gold_tasks": {
+    "G1": [
+      "F005.verse-create",
+      "F005.fractal-create",
+      "F005.petal-create"
+    ],
+    "G2": [
+      "F019.import-success",
+      "F017.move-X"
+    ],
+    "G3": [
+      "F034.run-button",
+      "F034.ctrl-enter",
+      "F036.numeric-ascending",
+      "F038.select-current-row"
+    ],
+    "G4": [
+      "F054.raise-square-UI",
+      "F054.raise-square-persistence",
+      "F054.lower-square-UI",
+      "F054.lower-square-persistence"
+    ],
+    "G5": [
+      "F064.import-valid-gpx",
+      "F074.fixed-count",
+      "F078.reimport-roundtrip"
+    ],
+    "G6": [
+      "F079.maximize",
+      "F079.restore",
+      "F080.cancel-close",
+      "F080.confirm-close"
+    ],
+    "G7": [
+      "F098.generate",
+      "F098.second-host-join",
+      "F103.identity-viewer"
+    ],
+    "G8": [
+      "F105.replicate-node",
+      "F105.replicate-transform",
+      "F106.reconnect"
+    ],
+    "G9": [
+      "F112.rest-mcp-parity",
+      "F113.synthetic-copy-text",
+      "F114.owned-hwnd-uia",
+      "F115.frame-sample-summary"
+    ],
+    "G10": [
+      "F117.same-root-restart",
+      "F117.same-node-identity",
+      "F117.durable-node-edit",
+      "F117.durable-setting",
+      "F117.durable-map",
+      "F117.durable-asset",
+      "F117.no-duplicate-entities"
+    ],
+    "G11": [
+      "F120.install-valid",
+      "F121.registry-valid",
+      "F122.download-complete",
+      "F124.save"
+    ]
+  },
+  "families": [
+    {
+      "id": "F001",
+      "region": "R1",
+      "journey": "J01",
+      "entry": "Verse picker/tree/card enter/back; empty browser; long-name scroll",
+      "expected": "navigation IDs/names and visible cards agree",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/sidebar.rs",
+        "fe-ui/src/viewport.rs"
+      ]
+    },
+    {
+      "id": "F002",
+      "region": "R1",
+      "journey": "J01",
+      "entry": "Fractal row/card/back; expanded tree under different verse",
+      "expected": "complete correct ancestry, descendants clear",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/sidebar.rs",
+        "fe-ui/src/navigation_manager.rs"
+      ]
+    },
+    {
+      "id": "F003",
+      "region": "R1",
+      "journey": "J01",
+      "entry": "Petal row/card/back; enter expanded petal from verse-only cursor",
+      "expected": "old scene leaves/new scene appears, no mixed scope/crash",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/sidebar.rs",
+        "fe-ui/src/navigation_manager.rs"
+      ]
+    },
+    {
+      "id": "F004",
+      "region": "R1",
+      "journey": "J01",
+      "entry": "Chevrons vs active/inactive names at all three levels",
+      "expected": "collapse/navigation are independently checked; current trap is a finding",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/sidebar.rs"
+      ]
+    },
+    {
+      "id": "F005",
+      "region": "R1",
+      "journey": "J01",
+      "entry": "Create verse/fractal/petal: name/Create; blank; Enter; Escape; Cancel",
+      "expected": "exactly one persisted row or none on refusal/cancel",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/create_entity.rs",
+        "fe-ui/src/panels/sidebar.rs",
+        "fe-ui/src/viewport.rs"
+      ]
+    },
+    {
+      "id": "F006",
+      "region": "R1",
+      "journey": "J01",
+      "entry": "Add Node vs Add GLTF Model",
+      "expected": "distinguish empty row from asset-bearing import",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/sidebar.rs",
+        "fe-ui/src/dialogs/gltf_import.rs"
+      ]
+    },
+    {
+      "id": "F007",
+      "region": "R1",
+      "journey": "J01",
+      "entry": "Node row select/Options; inactive-petal node row",
+      "expected": "authoritative selection/Inspector; current inactive behavior explicit",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/sidebar.rs"
+      ]
+    },
+    {
+      "id": "F008",
+      "region": "R1",
+      "journey": "J01",
+      "entry": "Verse/fractal/petal/node eyes; mixed rollup; active-petal guard",
+      "expected": "effective visibility + persisted overrides/ancestors correct",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/sidebar.rs",
+        "fe-ui/src/visibility/groups.rs"
+      ]
+    },
+    {
+      "id": "F009",
+      "region": "R1",
+      "journey": "J01",
+      "entry": "H; Shift+H; Alt+H; Escape isolate",
+      "expected": "durable hide/show, session-only solo, no hidden-object pick",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/node_manager/shortcuts.rs",
+        "fe-ui/src/visibility/groups.rs"
+      ]
+    },
+    {
+      "id": "F010",
+      "region": "R1",
+      "journey": "J01",
+      "entry": "Manage Groups; Add; rename; eye; up/down; Delete",
+      "expected": "registry name/order/visibility persists",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/ui_shell/right_sidebar.rs"
+      ]
+    },
+    {
+      "id": "F011",
+      "region": "R1",
+      "journey": "J01",
+      "entry": "Selected-node group join/leave; cap/empty/denied",
+      "expected": "membership/effective visibility and disabled reason",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/ui_shell/right_sidebar.rs"
+      ]
+    },
+    {
+      "id": "F012",
+      "region": "R1",
+      "journey": "J01",
+      "entry": "Reachable entity/node rename/delete including active ancestor",
+      "expected": "no stale nav/index/entities or deleted husk",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/node_options.rs",
+        "fe-ui/src/dialogs/entity_settings.rs"
+      ]
+    },
+    {
+      "id": "F013",
+      "region": "R1",
+      "journey": "J01",
+      "entry": "Sidebar row Rename/Settings/Copy ID/Delete menus",
+      "expected": "W2-S1 adds routes; refresh denominator after landing",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/sidebar.rs"
+      ]
+    },
+    {
+      "id": "F014",
+      "region": "R2",
+      "journey": "J02",
+      "entry": "Select S; Move G; Rotate R; Scale X; repeated-key toggle",
+      "expected": "tool/Options/selection consistent",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/toolbar.rs",
+        "fe-ui/src/node_manager/shortcuts.rs"
+      ]
+    },
+    {
+      "id": "F015",
+      "region": "R2",
+      "journey": "J02",
+      "entry": "Viewport select/empty deselect; sidebar select; Deselect",
+      "expected": "NodeManager/Inspector same node; hidden exclusion",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/node_manager/viewport_pick.rs",
+        "fe-ui/src/panels/sidebar.rs",
+        "fe-ui/src/ui_shell/topbar.rs"
+      ]
+    },
+    {
+      "id": "F016",
+      "region": "R2",
+      "journey": "J02",
+      "entry": "Orbit/pan/wheel zoom; UI wheel capture",
+      "expected": "camera changes only intended components",
+      "requires_persistence": false,
+      "sources": [
+        "fe-renderer/src/camera.rs"
+      ]
+    },
+    {
+      "id": "F017",
+      "region": "R2",
+      "journey": "J02",
+      "entry": "Each Move/Rotate/Scale gimbal axis; Escape cancel",
+      "expected": "committed REST transform matches viewport; cancel no commit",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/node_manager/gimbal_interaction.rs"
+      ]
+    },
+    {
+      "id": "F018",
+      "region": "R2",
+      "journey": "J02",
+      "entry": "Inspector Position/Rotation/Scale XYZ, Apply/Enter, invalid input",
+      "expected": "exact typed transform and units/readback",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/inspector.rs"
+      ]
+    },
+    {
+      "id": "F019",
+      "region": "R2",
+      "journey": "J02",
+      "entry": "GLTF path/Browse/name/Import, valid/invalid/cancel",
+      "expected": "renderable one-node import and scoped run-local answer",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/gltf_import.rs"
+      ]
+    },
+    {
+      "id": "F020",
+      "region": "R2",
+      "journey": "J02",
+      "entry": "Ground Add Empty Node / Add GLTF Model",
+      "expected": "correct world placement and parent",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/context_menu.rs"
+      ]
+    },
+    {
+      "id": "F021",
+      "region": "R2",
+      "journey": "J02",
+      "entry": "Node Edit Properties / Rename... / Duplicate",
+      "expected": "correct target, new duplicate ID, rename ack",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/context_menu.rs",
+        "fe-ui/src/dialogs/node_options.rs"
+      ]
+    },
+    {
+      "id": "F022",
+      "region": "R2",
+      "journey": "J02",
+      "entry": "Clear Properties; leaf/cascade Delete; confirm/cancel",
+      "expected": "clearing retains node, deletion correct subtree only",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/context_menu.rs",
+        "fe-ui/src/dialogs/node_options.rs"
+      ]
+    },
+    {
+      "id": "F023",
+      "region": "R2",
+      "journey": "J02",
+      "entry": "Node Options Save/Cancel and action parity",
+      "expected": "same durable effects as context surface",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/node_options.rs"
+      ]
+    },
+    {
+      "id": "F024",
+      "region": "R2",
+      "journey": "J02",
+      "entry": "Webpage/config URL Save/Open Portal; invalid URL",
+      "expected": "correct field persists, errors visible, no false Saved",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/inspector.rs",
+        "fe-ui/src/dialogs/node_options.rs"
+      ]
+    },
+    {
+      "id": "F025",
+      "region": "R2",
+      "journey": "J02",
+      "entry": "Portal back/close/load failure/selection change",
+      "expected": "local page history and complete teardown",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/portal_toolbar.rs"
+      ]
+    },
+    {
+      "id": "F026",
+      "region": "R2",
+      "journey": "J02",
+      "entry": "Download asset Save/cancel/error",
+      "expected": "output bytes/hash and status, confined path",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/asset_card.rs"
+      ]
+    },
+    {
+      "id": "F027",
+      "region": "R2",
+      "journey": "J02",
+      "entry": "Copy API String / Report / Query",
+      "expected": "real egress text and toast; synthetic clipboard isolated",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/dialogs/context_menu.rs",
+        "fe-ui/src/panels/egress_card.rs"
+      ]
+    },
+    {
+      "id": "F028",
+      "region": "R2",
+      "journey": "J02",
+      "entry": "Grid/angle/scale snap; axis lock; undo/redo; F; Delete shortcut",
+      "expected": "W2/W4/W5 planned; current hints are not working controls",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/tool_options.rs",
+        "fe-ui/src/node_manager/shortcuts.rs"
+      ]
+    },
+    {
+      "id": "F029",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "Inspector Properties / API Access / Query; no selection",
+      "expected": "no stale selected/token/form state",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/inspector.rs"
+      ]
+    },
+    {
+      "id": "F030",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "Property key/value/type variants, Add/delete, selection reload",
+      "expected": "typed JSON preserved, invalid numeric/JSON refused",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/inspector.rs"
+      ]
+    },
+    {
+      "id": "F031",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "Field key/type/Add Field/delete/pending ID",
+      "expected": "schema persists; no DeleteFieldDef pending-N",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/inspector.rs"
+      ]
+    },
+    {
+      "id": "F032",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "Annotation title/body/color Save Annotation",
+      "expected": "correct node properties and visible marker/color",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/annotation_card.rs"
+      ]
+    },
+    {
+      "id": "F033",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "This node / This node's device data / All nodes in this petal / no-petal template",
+      "expected": "real SQL/table/scope and independently expected rows",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/query_tab.rs"
+      ]
+    },
+    {
+      "id": "F034",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "SQL editor Run/Ctrl+Enter; empty/filter/error/timeout",
+      "expected": "correlated result/error, no stale result, proper pending state",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/query_tab.rs",
+        "fe-ui/src/actions/query.rs"
+      ]
+    },
+    {
+      "id": "F035",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "Results open/Close Results, vertical resize/scroll/virtualization",
+      "expected": "count/time/header correct, viewport protected",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/ui_shell/results_dock.rs"
+      ]
+    },
+    {
+      "id": "F036",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "Numeric/text ascending/descending headers; column resize",
+      "expected": "seeded 10/20/30 order and stable row targeting",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/ui_shell/results_dock.rs"
+      ]
+    },
+    {
+      "id": "F037",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "Copy cell/Copy row/context/toolbar",
+      "expected": "correct selected content action; host clipboard suppressed",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/ui_shell/results_dock.rs"
+      ]
+    },
+    {
+      "id": "F038",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "Row select/frame/match; foreign row; nav invalidation",
+      "expected": "correct current-petal node only, camera focus, stale blocked",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/ui_shell/results_dock.rs"
+      ]
+    },
+    {
+      "id": "F039",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "Data Query / Annotations / Layers / Paths / Export",
+      "expected": "independent buffers and empty/pending/error states",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/gis_panel.rs"
+      ]
+    },
+    {
+      "id": "F040",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "Data Annotated / Property typed filter / Bbox",
+      "expected": "rows independently match fixture, scope and filter",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/gis_panel.rs"
+      ]
+    },
+    {
+      "id": "F041",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "Bbox min/max XZ, Center on Selection/Origin, Run",
+      "expected": "numeric bounds and result inclusion exact",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/gis_panel.rs"
+      ]
+    },
+    {
+      "id": "F042",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "Annotations list row selection vs Query results",
+      "expected": "correct node/independent data; no unrelated rows",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/gis_panel.rs"
+      ]
+    },
+    {
+      "id": "F043",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "Export base/source Petal/Node/Bbox/Use viewport selection",
+      "expected": "source-specific correct SQL/URL and unavailable state",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/egress_card.rs"
+      ]
+    },
+    {
+      "id": "F044",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "All rendered BI copy rows/formats",
+      "expected": "encoding/base/CRS/auth strings + actual API format roundtrip",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/egress_card.rs"
+      ]
+    },
+    {
+      "id": "F045",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "Share TTL and Mint via curl copy",
+      "expected": "command generation only; mint is API, invalid fallback recorded",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/egress_card.rs"
+      ]
+    },
+    {
+      "id": "F046",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "Scoped GUI SQL/no active petal refusal",
+      "expected": "W5 replaces RawQuery; unsafe current path is finding",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/actions/query.rs"
+      ]
+    },
+    {
+      "id": "F047",
+      "region": "R4",
+      "journey": "J04",
+      "entry": "Installed Set petal map/clear; no map; petal switch",
+      "expected": "config readback and visible correct terrain",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/hexon_manager.rs"
+      ]
+    },
+    {
+      "id": "F048",
+      "region": "R4",
+      "journey": "J04",
+      "entry": "Map scale preset/slider/clamp",
+      "expected": "native/world scale and measurement units correct",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/hexon_manager.rs"
+      ]
+    },
+    {
+      "id": "F049",
+      "region": "R4",
+      "journey": "J04",
+      "entry": "Layer visible/opacity; Mesh/Splats/Hybrid",
+      "expected": "persisted layer/mode and actual render change",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/layer_manager_card.rs"
+      ]
+    },
+    {
+      "id": "F050",
+      "region": "R4",
+      "journey": "J04",
+      "entry": "Palette Raise/Lower/Flatten/Ramp/Slope/Pad/Cut/Fill",
+      "expected": "eight proposal semantics and Proposal only disclosure",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/terrain_tools_panel.rs"
+      ]
+    },
+    {
+      "id": "F051",
+      "region": "R4",
+      "journey": "J04",
+      "entry": "Proposal radius/target/delta/Add/select/delete",
+      "expected": "origin 24-gon/params persist; correct selected/deleted ID",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/terrain_tools_panel.rs"
+      ]
+    },
+    {
+      "id": "F052",
+      "region": "R4",
+      "journey": "J04",
+      "entry": "Brush radius/strength/material; Raise/Lower/Level/Smooth",
+      "expected": "weighted freeform stroke, durable region node",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/terrain_tools_panel.rs",
+        "fe-ui/src/node_manager/brush_interaction.rs"
+      ]
+    },
+    {
+      "id": "F053",
+      "region": "R4",
+      "journey": "J04",
+      "entry": "Brush/Circle/Rectangle/Polygon, Apply/clear",
+      "expected": "defined shape differs from weighted stroke; incomplete Polygon producer is blocker",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/tool_options.rs"
+      ]
+    },
+    {
+      "id": "F054",
+      "region": "R4",
+      "journey": "J04",
+      "entry": "Rectangle Radius5/Raise2/Apply; separate-petal Lower positive1",
+      "expected": "area100, fill200/cut100; exact footprint + positive oracle",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/tool_options.rs",
+        "fe-ui/src/panels/volume_report_panel.rs"
+      ]
+    },
+    {
+      "id": "F055",
+      "region": "R4",
+      "journey": "J04",
+      "entry": "Volume selected/drawn/region, pending/no map/overlap",
+      "expected": "true correlated figure, units/step, no missing-sample zero pass",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/volume_report_panel.rs"
+      ]
+    },
+    {
+      "id": "F056",
+      "region": "R4",
+      "journey": "J04",
+      "entry": "Volume totals/per-item/Nodes inside/Copy as TSV",
+      "expected": "independent numeric/composite/containment assertions",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/volume_report_panel.rs"
+      ]
+    },
+    {
+      "id": "F057",
+      "region": "R4",
+      "journey": "J04",
+      "entry": "Heatmap/live preview, committed region delete",
+      "expected": "true base unchanged, preview no DB write, revert correct",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/terrain_preview.rs",
+        "fe-ui/src/panels/terrain_tools_panel.rs"
+      ]
+    },
+    {
+      "id": "F058",
+      "region": "R4",
+      "journey": "J04",
+      "entry": "Measure Tape/Area; anchors; Undo/Clear/Close polygon",
+      "expected": "independent distance/slope/bearing/area and closed state",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/tool_options.rs",
+        "fe-ui/src/node_manager/measure.rs"
+      ]
+    },
+    {
+      "id": "F059",
+      "region": "R4",
+      "journey": "J04",
+      "entry": "Measurement copy rows/Save as callout",
+      "expected": "durable dimension_callout snapshots geometry",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/tool_options.rs"
+      ]
+    },
+    {
+      "id": "F060",
+      "region": "R4",
+      "journey": "J04",
+      "entry": "Scale bar/Metric grid/Offline tiles",
+      "expected": "correct metric overlay and no network fallback",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/ui_shell/right_sidebar.rs"
+      ]
+    },
+    {
+      "id": "F061",
+      "region": "R4",
+      "journey": "J04",
+      "entry": "Global/This petal(shared)/Session override horizons",
+      "expected": "precedence, proper DB/session lifetime",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/ui_shell/right_sidebar.rs"
+      ]
+    },
+    {
+      "id": "F062",
+      "region": "R4",
+      "journey": "J04",
+      "entry": "IoT/device/sensor payload and sim ingress",
+      "expected": "no dedicated GUI located; inspect ingested data via Query",
+      "requires_persistence": false,
+      "sources": [
+        "fe-api/src/mcp/mod.rs"
+      ]
+    },
+    {
+      "id": "F063",
+      "region": "R5",
+      "journey": "J05",
+      "entry": "Paths New Path/select/edit/Back/Delete",
+      "expected": "track row/editing/stamps consistency",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/path_editor_card.rs"
+      ]
+    },
+    {
+      "id": "F064",
+      "region": "R5",
+      "journey": "J05",
+      "entry": "Import GPX... valid/malformed/cancel",
+      "expected": "real track coordinates/projection, no partial duplicate",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/gpx_import_card.rs"
+      ]
+    },
+    {
+      "id": "F065",
+      "region": "R5",
+      "journey": "J05",
+      "entry": "Pen P click/drag/Alt-drag corner/smooth anchors",
+      "expected": "points/handles and one deferred auto-created track",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/tool_options.rs",
+        "fe-ui/src/node_manager/path_point_interaction.rs"
+      ]
+    },
+    {
+      "id": "F066",
+      "region": "R5",
+      "journey": "J05",
+      "entry": "Polyline/Catmull-Rom/Bezier/tension/samples/Smooth path",
+      "expected": "independent resampled geometry; proper disabled state",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/tool_panel.rs"
+      ]
+    },
+    {
+      "id": "F067",
+      "region": "R5",
+      "journey": "J05",
+      "entry": "New anchor and selected Corner/Smooth/Symmetric/smoothness",
+      "expected": "correct persisted handle geometry/constraints",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/tool_panel.rs",
+        "fe-ui/src/panels/path_editor_card.rs"
+      ]
+    },
+    {
+      "id": "F068",
+      "region": "R5",
+      "journey": "J05",
+      "entry": "Radius X/Z/Segments; Add Ellipse/Circle/Rectangle",
+      "expected": "generated geometry/count; no-track state honest",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/tool_panel.rs"
+      ]
+    },
+    {
+      "id": "F069",
+      "region": "R5",
+      "journey": "J05",
+      "entry": "Point select/Y/Remove/Annotate and point/handle/segment drag",
+      "expected": "correct index/geometry, one release commit",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/path_editor_card.rs",
+        "fe-ui/src/node_manager/path_point_interaction.rs"
+      ]
+    },
+    {
+      "id": "F070",
+      "region": "R5",
+      "journey": "J05",
+      "entry": "Point annotation title/body/color Save/Cancel",
+      "expected": "waypoint at actual anchor, no cancel row",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/path_editor_card.rs"
+      ]
+    },
+    {
+      "id": "F071",
+      "region": "R5",
+      "journey": "J05",
+      "entry": "Border color/width, Closed zone, Fill color/alpha",
+      "expected": "visible ribbon/fill and gis.track.* persisted",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/path_editor_card.rs"
+      ]
+    },
+    {
+      "id": "F072",
+      "region": "R5",
+      "journey": "J05",
+      "entry": "Enable snapping/grid/anchor radius and path gimbal",
+      "expected": "metric placement and whole-path transforms durable",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/path_editor_card.rs",
+        "fe-ui/src/node_manager/path_point_interaction.rs"
+      ]
+    },
+    {
+      "id": "F073",
+      "region": "R5",
+      "journey": "J05",
+      "entry": "Asset filter/select/clear/manual blob://",
+      "expected": "actual installed model selection and missing states",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/tool_panel.rs"
+      ]
+    },
+    {
+      "id": "F074",
+      "region": "R5",
+      "journey": "J05",
+      "entry": "Fixed spacing/count/tangent align/Stamp along path",
+      "expected": "instance count/positions and path_asset descriptor",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/tool_panel.rs"
+      ]
+    },
+    {
+      "id": "F075",
+      "region": "R5",
+      "journey": "J05",
+      "entry": "Stamp Index/Select/Promote/Scale/Rotate/Slide Apply",
+      "expected": "single stamp ownership/overrides and arc-length constraint",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/tool_panel.rs"
+      ]
+    },
+    {
+      "id": "F076",
+      "region": "R5",
+      "journey": "J05",
+      "entry": "Stamp context Promote/Scale-Rotate/Slide/Delete",
+      "expected": "proper object class/scope; no accidental parent removal",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/context_menu.rs"
+      ]
+    },
+    {
+      "id": "F077",
+      "region": "R5",
+      "journey": "J05",
+      "entry": "Path context Edit/Add Stamps/Delete Track; anchor Corner-Smooth/Delete Point",
+      "expected": "whole-track warning vs point deletion and correct geometry",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/context_menu.rs"
+      ]
+    },
+    {
+      "id": "F078",
+      "region": "R5",
+      "journey": "J05",
+      "entry": "Export GPX save/cancel/reimport",
+      "expected": "parsable run-local output and coordinate roundtrip",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/path_editor_card.rs"
+      ]
+    },
+    {
+      "id": "F079",
+      "region": "R6",
+      "journey": "J06",
+      "entry": "Caption minimize/maximize/restore/close, drag/double-click/resize grips",
+      "expected": "same owned window, exact terminal process lifecycle",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/ui_shell/topbar.rs"
+      ]
+    },
+    {
+      "id": "F080",
+      "region": "R6",
+      "journey": "J06",
+      "entry": "Cancel close/Close FractalEngine and dirty manifest reason",
+      "expected": "confirmation not bypassed; final action last",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/ui_shell/topbar.rs"
+      ]
+    },
+    {
+      "id": "F081",
+      "region": "R6",
+      "journey": "J06",
+      "entry": "Hierarchy toggle/Ctrl-B/compact Tools/Panels/Deselect",
+      "expected": "equivalent responsive controls at all widths",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/ui_shell/topbar.rs"
+      ]
+    },
+    {
+      "id": "F082",
+      "region": "R6",
+      "journey": "J06",
+      "entry": "Inspector/Options/Terrain tools/Volume report/Settings/Maps/Groups/Data",
+      "expected": "section toggle vs reveal, no viewport takeover",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/ui_shell/right_sidebar.rs",
+        "fe-ui/src/ui_shell/topbar.rs"
+      ]
+    },
+    {
+      "id": "F083",
+      "region": "R6",
+      "journey": "J06",
+      "entry": "Render distance/Mesh budget/Entity cap/Stamp ceiling",
+      "expected": "actual residency plus durable settings",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/ui_shell/right_sidebar.rs"
+      ]
+    },
+    {
+      "id": "F084",
+      "region": "R6",
+      "journey": "J06",
+      "entry": "Orbit sensitivity/Zoom speed/Relay/Hexon registry",
+      "expected": "valid/invalid settings, save/restart indication",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/ui_shell/right_sidebar.rs"
+      ]
+    },
+    {
+      "id": "F085",
+      "region": "R6",
+      "journey": "J06",
+      "entry": "Mirror/Sharded/Balanced; Durability R; bucket presets/numeric",
+      "expected": "confirmed verse settings, R mode limits",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/ui_shell/right_sidebar.rs"
+      ]
+    },
+    {
+      "id": "F086",
+      "region": "R6",
+      "journey": "J06",
+      "entry": "Reset Database current location and confirmation",
+      "expected": "isolated terminal fixture only; typed RESET planned W2",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/sidebar.rs"
+      ]
+    },
+    {
+      "id": "F087",
+      "region": "R6",
+      "journey": "J06",
+      "entry": "Info/error notices/status/role/budget/peer segment",
+      "expected": "actual success/error agreement, visible lasting failure",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/panels/mod.rs",
+        "fe-ui/src/panels/status_bar.rs"
+      ]
+    },
+    {
+      "id": "F088",
+      "region": "R6",
+      "journey": "J06",
+      "entry": "All native open/save/folder answer/cancel/empty/invalid-kind/path cases",
+      "expected": "no blocked frame, typed refusal and confinement",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/file_dialogs.rs"
+      ]
+    },
+    {
+      "id": "F089",
+      "region": "R6",
+      "journey": "J06",
+      "entry": "Every panel/modal at three sizes, long names/paths, UI scale1.25",
+      "expected": "real hit/clip/text provenance, >=45% viewport, unknowns counted",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/ui_shell/layout_policy.rs"
+      ]
+    },
+    {
+      "id": "F090",
+      "region": "R6",
+      "journey": "J06",
+      "entry": "Panel wheel vs viewport wheel, text-focused B/G/R/X/Enter",
+      "expected": "no unintended camera/tool changes",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/ui_shell/topbar.rs",
+        "fe-ui/src/node_manager/shortcuts.rs"
+      ]
+    },
+    {
+      "id": "F091",
+      "region": "R6",
+      "journey": "J06",
+      "entry": "Escape gesture/solo/path-edit/selection/tool ladder; context/modal case",
+      "expected": "real staged ordering; missing modal rung is finding",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/node_manager/shortcuts.rs"
+      ]
+    },
+    {
+      "id": "F092",
+      "region": "R6",
+      "journey": "J06",
+      "entry": "Restart now, shortcut help, panel Retry/quarantine",
+      "expected": "W2/W3 planned; panic=abort caveat forbids fake live proof",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/ui_shell/modal.rs"
+      ]
+    },
+    {
+      "id": "F093",
+      "region": "R7",
+      "journey": "J07",
+      "entry": "Entity gears at verse/fractal/petal; General/Access/API",
+      "expected": "correct entity scope/local role, reachable Claim limitations",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/dialogs/entity_settings.rs",
+        "fe-ui/src/viewport.rs"
+      ]
+    },
+    {
+      "id": "F094",
+      "region": "R7",
+      "journey": "J07",
+      "entry": "General Rename/Public-Private/Save Description",
+      "expected": "correct durable row and real loading/error/default state",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/entity_settings.rs"
+      ]
+    },
+    {
+      "id": "F095",
+      "region": "R7",
+      "journey": "J07",
+      "entry": "Claim Ownership/Confirm Claim/Cancel, Delete confirm",
+      "expected": "orphan-only behavior, safe normal-owner unavailable state",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/entity_settings.rs"
+      ]
+    },
+    {
+      "id": "F096",
+      "region": "R7",
+      "journey": "J07",
+      "entry": "Access peer badges/online state",
+      "expected": "currently read-only; do not claim assignment by reading badge",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/dialogs/entity_settings.rs"
+      ]
+    },
+    {
+      "id": "F097",
+      "region": "R7",
+      "journey": "J07",
+      "entry": "Access role assignment/revoke/downgrade confirmation",
+      "expected": "W3 server-authorized controls not yet located",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/dialogs/entity_settings.rs"
+      ]
+    },
+    {
+      "id": "F098",
+      "region": "R7",
+      "journey": "J07",
+      "entry": "Invite role/expiry/Generate/Copy to Clipboard",
+      "expected": "second host joins with exact role, expiry/refusals",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/entity_settings.rs"
+      ]
+    },
+    {
+      "id": "F099",
+      "region": "R7",
+      "journey": "J07",
+      "entry": "Join text/Join/Cancel; invalid/expired/already joined",
+      "expected": "no partial hierarchy on error, real live replica on success",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/join.rs"
+      ]
+    },
+    {
+      "id": "F100",
+      "region": "R7",
+      "journey": "J07",
+      "entry": "Inspector API role/expiry/client/Generate/dismiss/copy token-curl",
+      "expected": "crypto/client/scope verification; no token screenshots/logs",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/inspector.rs"
+      ]
+    },
+    {
+      "id": "F101",
+      "region": "R7",
+      "journey": "J07",
+      "entry": "API list/node-scope variants/paging/Refresh/Revoke/confirm/cancel",
+      "expected": "revoked token denied, unrelated token intact",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/panels/inspector.rs"
+      ]
+    },
+    {
+      "id": "F102",
+      "region": "R7",
+      "journey": "J07",
+      "entry": "Entity API scope/role/expiry/client/Generate/scoped revoke",
+      "expected": "same lifecycle with entity scope readback",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/entity_settings.rs"
+      ]
+    },
+    {
+      "id": "F103",
+      "region": "R7",
+      "journey": "J07",
+      "entry": "Actual Viewer/Editor/Manager/Owner identity and remote downgrade",
+      "expected": "UI restriction plus independent server refusal, stale role reset",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/entity_settings.rs",
+        "fe-ui/src/node_manager/shortcuts.rs"
+      ]
+    },
+    {
+      "id": "F104",
+      "region": "R8",
+      "journey": "J08",
+      "entry": "Status peers -> PeerDebug -> Close",
+      "expected": "own real peer/relay/offline status, no unsolicited invite send",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/dialogs/peer_debug.rs",
+        "fe-ui/src/panels/status_bar.rs"
+      ]
+    },
+    {
+      "id": "F105",
+      "region": "R8",
+      "journey": "J08",
+      "entry": "Two-host joined UI edits: node/transform/data/terrain/eyes",
+      "expected": "remote screenshot+API converge, correct scope/author",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/navigation_manager.rs"
+      ]
+    },
+    {
+      "id": "F106",
+      "region": "R8",
+      "journey": "J08",
+      "entry": "Reconnect/leave/reopen and remote deletes",
+      "expected": "durable agreement without duplicate entities",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/navigation_manager.rs"
+      ]
+    },
+    {
+      "id": "F107",
+      "region": "R9",
+      "journey": "J09",
+      "entry": "camera/shot/current/orbit/geo/tile/focus/no-ui dimensions",
+      "expected": "actual PNG/pose/restore and scope/capture gate semantics",
+      "requires_persistence": false,
+      "sources": [
+        "fe-api/src/mcp/mod.rs",
+        "fractalengine/src/screenshot_bridge.rs"
+      ]
+    },
+    {
+      "id": "F108",
+      "region": "R9",
+      "journey": "J09",
+      "entry": "move/click/double/right/drag/key/text/scroll/capture_after/settle",
+      "expected": "real UI effect/refusal/modifier release/no cursor warp",
+      "requires_persistence": false,
+      "sources": [
+        "fractalengine/src/input_bridge.rs",
+        "fe-api/src/mcp/mod.rs"
+      ]
+    },
+    {
+      "id": "F109",
+      "region": "R9",
+      "journey": "J09",
+      "entry": "ui/find/role/interactive; click-name/type-into/wait-for",
+      "expected": "ambiguity refused, physical bounds directly clickable",
+      "requires_persistence": false,
+      "sources": [
+        "fractalengine/src/qa_debug_bridge.rs"
+      ]
+    },
+    {
+      "id": "F110",
+      "region": "R9",
+      "journey": "J09",
+      "entry": "state/path/wait-state and logs/since/level/new warnings",
+      "expected": "truthful settled fields, bounded/redacted/scope-confined logs",
+      "requires_persistence": false,
+      "sources": [
+        "fractalengine/src/qa_debug_bridge.rs"
+      ]
+    },
+    {
+      "id": "F111",
+      "region": "R9",
+      "journey": "J09",
+      "entry": "dialog answers and window size/UI scale/maximize/restore/minimize/close",
+      "expected": "actual loopback/root checks and real close confirmation",
+      "requires_persistence": false,
+      "sources": [
+        "fractalengine/src/qa_debug_bridge.rs"
+      ]
+    },
+    {
+      "id": "F112",
+      "region": "R9",
+      "journey": "J09",
+      "entry": "Input-off/role/foreign scope/malformed/rate/busy REST+MCP",
+      "expected": "identical typed shared-surface refusal; relay no GUI mutation",
+      "requires_persistence": false,
+      "sources": [
+        "fe-api/src/mcp/mod.rs"
+      ]
+    },
+    {
+      "id": "F113",
+      "region": "R9",
+      "journey": "J09",
+      "entry": "Synthetic copy sink + ordinary noninjected copy sentinel",
+      "expected": "synthetic no OS write, normal user copy functions",
+      "requires_persistence": false,
+      "sources": [
+        "fractalengine/src/input_bridge.rs"
+      ]
+    },
+    {
+      "id": "F114",
+      "region": "R9",
+      "journey": "J09",
+      "entry": "Normal OS AccessKit with debug/input off",
+      "expected": "owned-HWND read-only UIA sees named provider; REST debug refused",
+      "requires_persistence": false,
+      "sources": [
+        "fractalengine/src/qa_debug_bridge.rs"
+      ]
+    },
+    {
+      "id": "F115",
+      "region": "R9",
+      "journey": "J09",
+      "entry": "Controlled inactive/active timing",
+      "expected": "actual samples, fixed same cadence, vsync/full-app caveat",
+      "requires_persistence": false,
+      "sources": [
+        "fractalengine/src/qa_debug_bridge.rs"
+      ]
+    },
+    {
+      "id": "F116",
+      "region": "R9",
+      "journey": "J09",
+      "entry": "Every registered MCP tool and REST method/path in source-inventory.md; API only",
+      "expected": "explicit scope/role and independent readback, separate denominator",
+      "requires_persistence": false,
+      "sources": [
+        "fe-api/src/mcp/mod.rs",
+        "fe-api/src/server.rs"
+      ]
+    },
+    {
+      "id": "F117",
+      "region": "R10",
+      "journey": "J10",
+      "entry": "Stop/relaunch same owned QA root after edits/settings/map",
+      "expected": "same identity/data/assets/settings; new run is not restart",
+      "requires_persistence": true,
+      "sources": [
+        "fractalengine/src/main.rs",
+        "fe-ui/src/navigation_manager.rs"
+      ]
+    },
+    {
+      "id": "F118",
+      "region": "R10",
+      "journey": "J10",
+      "entry": "Key/store/token migration/backup administration",
+      "expected": "no GUI editor located; CLI/API/harness proof only",
+      "requires_persistence": false,
+      "sources": [
+        "fractalengine/src/main.rs"
+      ]
+    },
+    {
+      "id": "F119",
+      "region": "R11",
+      "journey": "J11",
+      "entry": "Maps Installed/Available/Downloads/filter/Refresh/Close",
+      "expected": "all populated/empty/error/progress tab cases",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/dialogs/hexon_manager.rs"
+      ]
+    },
+    {
+      "id": "F120",
+      "region": "R11",
+      "journey": "J11",
+      "entry": "Install from file valid/cancel/wrong archive type",
+      "expected": "one installed TerrainTileset, typed refusal for legacy Terrain",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/hexon_manager.rs"
+      ]
+    },
+    {
+      "id": "F121",
+      "region": "R11",
+      "journey": "J11",
+      "entry": "Registry URI/Install from registry valid/unavailable",
+      "expected": "controlled local lookup/hash/integrity and failure feedback",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/hexon_manager.rs"
+      ]
+    },
+    {
+      "id": "F122",
+      "region": "R11",
+      "journey": "J11",
+      "entry": "Available Download / Downloads Cancel",
+      "expected": "real provider bytes/hash/progress/cancellation",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/hexon_manager.rs"
+      ]
+    },
+    {
+      "id": "F123",
+      "region": "R11",
+      "journey": "J11",
+      "entry": "Installed Seed/Remove-confirm/Open folder",
+      "expected": "persistence, active-map removal safety, run-only folder",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/hexon_manager.rs"
+      ]
+    },
+    {
+      "id": "F124",
+      "region": "R11",
+      "journey": "J11",
+      "entry": "Petal Manifest add ID/type/Required/Remove/JSON/Save/Close dirty",
+      "expected": "requirements exact, discard safety, duplicate render distance planned removal",
+      "requires_persistence": true,
+      "sources": [
+        "fe-ui/src/dialogs/petal_manifest.rs"
+      ]
+    },
+    {
+      "id": "F125",
+      "region": "R11",
+      "journey": "J11",
+      "entry": "Actual GPX/GLB/hexon interoperability",
+      "expected": "supported data/bytes roundtrip, no file-exists-only oracle",
+      "requires_persistence": true,
+      "sources": [
+        "fe-api/src/mcp/mod.rs",
+        "fe-ui/src/panels/gpx_import_card.rs"
+      ]
+    },
+    {
+      "id": "F126",
+      "region": "R11",
+      "journey": "J11",
+      "entry": "Plugin/Rhai/read/transaction execution",
+      "expected": "no execution panel located, W6 library seam is not new GUI",
+      "requires_persistence": false,
+      "sources": [
+        "fe-api/src/mcp/mod.rs"
+      ]
+    },
+    {
+      "id": "F127",
+      "region": "R11",
+      "journey": "J11",
+      "entry": "Atlas model/room/tag editor resources/helper",
+      "expected": "no production renderer/opener for tag_input_ui found",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/atlas/tag_panel.rs"
+      ]
+    },
+    {
+      "id": "F128",
+      "region": "R6",
+      "journey": "J06",
+      "entry": "ActiveDialog::InviteDialog variant",
+      "expected": "result handler opens it but transient renderer has no branch",
+      "requires_persistence": false,
+      "sources": [
+        "fe-ui/src/dialogs/mod.rs",
+        "fe-ui/src/panels/mod.rs"
+      ]
+    }
+  ]
+}

@@ -1,7 +1,8 @@
 ---
-type: Scenario
+type: ScenarioSupplement
 id: S05
-gold: G5
+legacy_gold: G5
+covered_by: [J04]
 title: Apply exact raise and lower regions and inspect cut/fill
 fixture: fresh terrain with two bound petals
 verified_in_pass: "pending S7 build and live validation"

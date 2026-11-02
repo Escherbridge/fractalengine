@@ -1,7 +1,8 @@
 ---
-type: Scenario
+type: ScenarioSupplement
 id: S04
-gold: G4
+legacy_gold: G4
+covered_by: [J04, J11]
 title: Set a petal map and see offline terrain
 fixture: basic or terrain
 verified_in_pass: "pending S7 build and live validation"

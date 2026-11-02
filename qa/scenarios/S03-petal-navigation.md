@@ -1,7 +1,8 @@
 ---
-type: Scenario
+type: ScenarioSupplement
 id: S03
-gold: G3
+legacy_gold: G3
+covered_by: [J01]
 title: Navigate between petals using cards and the sidebar
 fixture: basic
 verified_in_pass: "01 historical; revised fixture journey pending"

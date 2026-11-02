@@ -1,7 +1,8 @@
 ---
-type: Scenario
+type: ScenarioSupplement
 id: S06
-gold: G6
+legacy_gold: G6
+covered_by: [J03]
 title: Run scoped Inspector queries with a nonzero data oracle
 fixture: basic or terrain
 verified_in_pass: "pending seeded-value UI validation"
