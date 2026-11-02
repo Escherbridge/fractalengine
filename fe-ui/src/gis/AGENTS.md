@@ -56,3 +56,11 @@ submodule declared in the same file); `actions::gis`'s own body
 disambiguates by writing `crate::gis::{self, ...}` for the former. Don't
 merge them — the split keeps pure logic unit-testable without any
 `DbCommandSender`/Bevy `Res`/`ResMut` in scope.
+
+## Paths/Data continuation
+
+Annotations has its own correlated read model, independent of Query mode, rows, errors and request.
+The panel synchronizes the active Petal even while closed, clears both buffers on a Petal change,
+and auto-loads Annotations once per Petal; failed refreshes require an explicit retry. A successful
+empty reply renders `0 results`. Unknown and older-Petal request IDs cannot claim this buffer.
+Share TTL accepts only integer seconds 1..=86400, matching fe-api; invalid drafts produce no curl.

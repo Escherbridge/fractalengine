@@ -20,7 +20,14 @@ pub(crate) fn egress_section(
     ui_mgr: &mut UiManager,
     petal_id: &str,
     world_scale: f64,
+    api_endpoint: Option<std::net::SocketAddr>,
 ) {
+    let running_api = api_endpoint.map(|address| format!("http://{address}"));
+    if gis_state.egress.base_url_buf == es::DEFAULT_API_BASE {
+        if let Some(base) = &running_api {
+            gis_state.egress.base_url_buf = base.clone();
+        }
+    }
     ui.label(
         egui::RichText::new("Copy for BI")
             .strong()
@@ -44,6 +51,15 @@ pub(crate) fn egress_section(
         );
         ui.add(egui::TextEdit::singleline(&mut gis_state.egress.base_url_buf).desired_width(200.0))
             .named(ui, "API base URL");
+        if ui
+            .add_enabled(running_api.is_some(), egui::Button::new("Use running API"))
+            .named(ui, "Use running API endpoint for export")
+            .clicked()
+        {
+            if let Some(base) = &running_api {
+                gis_state.egress.base_url_buf = base.clone();
+            }
+        }
     });
     ui.add_space(6.0);
 
@@ -89,11 +105,7 @@ fn render_source_selector(
             (EgressSource::Bbox, "Bbox"),
         ] {
             let active = gis_state.egress.source == source;
-            let btn = egui::Button::new(label).fill(if active {
-                theme::BG_BUTTON_ACTIVE
-            } else {
-                theme::BG_BUTTON
-            });
+            let btn = egui::Button::new(label).fill(theme::tab_fill(active));
             if ui.add(btn).observed(ui).clicked() {
                 gis_state.egress.source = source;
             }
@@ -112,7 +124,11 @@ fn render_source_selector(
                         .desired_width(160.0),
                 )
                 .named(ui, "Export node ID");
-                if ui.small_button("Use viewport selection").observed(ui).clicked() {
+                if ui
+                    .small_button("Use viewport selection")
+                    .observed(ui)
+                    .clicked()
+                {
                     if let Some(sel) = node_mgr.selected.as_ref() {
                         gis_state.egress.node_id_buf = sel.node_id.clone();
                     }
@@ -190,15 +206,15 @@ fn render_share_section(
                 .color(theme::TEXT_MUTED),
         );
     });
-    let ttl = gis_state
-        .egress
-        .ttl_buf
-        .trim()
-        .parse::<u64>()
-        .unwrap_or(es::DEFAULT_SHARE_TTL_SECS)
-        .min(86_400);
-    let curl = es::mint_share_curl(base, sql, ExportFormat::Parquet, ttl);
-    copy_row(ui, ui_mgr, "Mint via curl", &curl);
+    match es::parse_share_ttl(&gis_state.egress.ttl_buf) {
+        Ok(ttl) => {
+            let curl = es::mint_share_curl(base, sql, ExportFormat::Parquet, ttl);
+            copy_row(ui, ui_mgr, "Mint via curl", &curl);
+        }
+        Err(error) => {
+            ui.colored_label(theme::STATUS_OFFLINE, error);
+        }
+    }
     ui.label(
         egui::RichText::new("Run with your API token; the response contains the signed URL.")
             .small()

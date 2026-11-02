@@ -1756,6 +1756,22 @@ mod tests {
             "the Query-tab rows must not reach GIS"
         );
         assert!(!gis.query_pending && gis.query_request_id.is_none());
+        gis.sync_petal(Some("p"));
+        gis.query_request_id = Some("query-independent".into());
+        gis.query_pending = true;
+        gis.results = crate::gis::parse_gis_rows(&[track_row("query-only")]);
+        gis.annotations.request_id = Some("annotations-1".into());
+        assert!(query::route_query_reply("annotations-1", Ok(&[]), &mut gis, &mut path, &mut ins));
+        assert!(gis.annotations.loaded && gis.annotations.rows.is_empty());
+        assert_eq!(gis.results[0].node_id, "query-only");
+        assert!(gis.query_pending);
+        gis.annotations.request_id = Some("annotations-2".into());
+        assert!(query::route_query_reply("annotations-2", Err("denied"), &mut gis, &mut path, &mut ins));
+        assert_eq!(gis.annotations.error.as_deref(), Some("denied"));
+        gis.annotations.request_id = Some("annotations-old-petal".into());
+        gis.sync_petal(Some("other"));
+        assert!(!query::route_query_reply("annotations-old-petal", Ok(&track_rows), &mut gis, &mut path, &mut ins));
+        assert!(!gis.annotations.loaded && gis.annotations.rows.is_empty() && gis.results.is_empty());
     }
 
     /// An API waiter's ULID-correlated reply and a stale GUI id (the user

@@ -400,6 +400,8 @@ pub fn gardener_console(
             cursor_world,
             vis_state,
             app_settings,
+            local_role,
+            inspector.api_endpoint,
         )
     });
 

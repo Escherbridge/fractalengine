@@ -21,6 +21,7 @@ pub(crate) fn layer_manager_section(
     petal_id: &str,
     visibility: &VisibilityState,
     settings: &AppSettings,
+    local_role: &crate::plugin::LocalUserRole,
 ) {
     ui.label(
         egui::RichText::new("Layers")
@@ -30,7 +31,9 @@ pub(crate) fn layer_manager_section(
     ui.add_space(4.0);
 
     if petal_map.terrain_json.is_some() {
-        render_view_mode_row(ui, petal_map, ui_mgr, petal_id);
+        ui.add_enabled_ui(local_role.role.is_some_and(|role| role.can_edit()), |ui| {
+            render_view_mode_row(ui, petal_map, ui_mgr, petal_id)
+        });
         ui.add_space(4.0);
         ui.separator();
         ui.add_space(4.0);
@@ -45,7 +48,15 @@ pub(crate) fn layer_manager_section(
 
     let rows = gis::overlay_registry(petal_map.terrain_json.as_ref(), visibility, settings);
     for row in &rows {
-        render_overlay_row(ui, petal_map, ui_mgr, petal_id, visibility, row);
+        let shared = matches!(row.key, OverlayKey::TerrainLayer(_) | OverlayKey::Group(_));
+        ui.add_enabled_ui(
+            !shared || local_role.role.is_some_and(|role| role.can_edit()),
+            |ui| {
+                render_overlay_row(ui, petal_map, ui_mgr, petal_id, visibility, row);
+            },
+        )
+        .response
+        .on_disabled_hover_text("Editor access is required to change shared layers");
     }
 }
 
@@ -108,7 +119,11 @@ fn render_overlay_row(
 ) {
     let mut visible = row.visible;
     ui.horizontal(|ui| {
-        if ui.checkbox(&mut visible, row.name.as_str()).observed(ui).changed() {
+        if ui
+            .checkbox(&mut visible, row.name.as_str())
+            .observed(ui)
+            .changed()
+        {
             ui_mgr.push_action(gis::apply_overlay_toggle(
                 &row.key,
                 visible,

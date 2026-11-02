@@ -41,7 +41,10 @@ pub(crate) fn render_gis_panel(
     // VIS-PH5: the unified overlay registry's Group + ruler-overlay rows.
     visibility: &crate::visibility::VisibilityState,
     app_settings: &crate::settings::AppSettings,
+    local_role: &crate::plugin::LocalUserRole,
+    api_endpoint: Option<std::net::SocketAddr>,
 ) {
+    gis_state.sync_petal(nav.active_petal_id.as_deref());
     if !gis_state.open {
         return;
     }
@@ -110,6 +113,7 @@ pub(crate) fn render_gis_panel(
                         &petal_id,
                         visibility,
                         app_settings,
+                        local_role,
                     );
                 }
                 GisPanelTab::Paths => {
@@ -132,6 +136,9 @@ pub(crate) fn render_gis_panel(
                         ui_mgr,
                         cursor_world,
                         &petal_id,
+                        nav,
+                        world_scale,
+                        local_role.role.is_some_and(|role| role.can_edit()),
                     );
                 }
                 GisPanelTab::Export => {
@@ -142,6 +149,7 @@ pub(crate) fn render_gis_panel(
                         ui_mgr,
                         &petal_id,
                         world_scale,
+                        api_endpoint,
                     );
                 }
             }
@@ -153,7 +161,7 @@ pub(crate) fn render_gis_panel(
 }
 
 fn render_tab_bar(ui: &mut egui::Ui, gis_state: &mut GisPanelState) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         for (tab, label) in [
             (GisPanelTab::Query, "Query"),
             (GisPanelTab::Annotations, "Annotations"),
@@ -167,11 +175,7 @@ fn render_tab_bar(ui: &mut egui::Ui, gis_state: &mut GisPanelState) {
             } else {
                 theme::TEXT_DIM
             }))
-            .fill(if active {
-                theme::BG_BUTTON_ACTIVE
-            } else {
-                theme::BG_BUTTON
-            });
+            .fill(theme::tab_fill(active));
             if ui.add(btn).observed(ui).clicked() {
                 gis_state.active_tab = tab;
             }
@@ -179,56 +183,49 @@ fn render_tab_bar(ui: &mut egui::Ui, gis_state: &mut GisPanelState) {
     });
 }
 
-/// Annotations tab: every annotated node in the active petal, reusing the
-/// "nodes with annotations" query flow (`GisQueryMode::Annotated` +
-/// `gis_state.results`) behind a Refresh button instead of the Query tab's
-/// Run Query flow.
+/// Renders the petal-scoped annotation read model.
 fn render_annotations_tab(
     ui: &mut egui::Ui,
     gis_state: &mut GisPanelState,
     node_mgr: &mut NodeManager,
-    verse_mgr: &VerseManager,
+    _verse_mgr: &VerseManager,
     ui_mgr: &mut UiManager,
     camera_focus: &mut CameraFocusTarget,
     petal_id: &str,
     world_scale: f64,
 ) {
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("Annotated Nodes")
-                .strong()
-                .color(theme::TEXT_SECTION),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let label = if gis_state.query_pending {
-                "Refreshing..."
-            } else {
-                "Refresh"
-            };
-            if ui
-                .add_enabled(
-                    !gis_state.query_pending,
-                    egui::Button::new(label).fill(theme::BG_BUTTON),
-                ).observed(ui)
+    let state = &gis_state.annotations;
+    let auto_load = !state.loaded && state.request_id.is_none() && state.error.is_none();
+    let refresh = ui
+        .horizontal(|ui| {
+            ui.strong("Annotated Nodes");
+            ui.add_enabled(state.request_id.is_none(), egui::Button::new("Refresh"))
+                .named(ui, "Refresh annotations")
                 .clicked()
-            {
-                gis_state.mode = GisQueryMode::Annotated;
-                run_query(gis_state, verse_mgr, ui_mgr, petal_id, world_scale);
-            }
+        })
+        .inner;
+    if auto_load || refresh {
+        // Reserve before dispatch so another frame cannot queue the same load.
+        gis_state.annotations.loaded = true;
+        ui_mgr.push_action(UiAction::GisRefreshAnnotations {
+            petal_id: petal_id.to_owned(),
         });
-    });
-    ui.add_space(4.0);
-
-    if let Some(err) = &gis_state.last_error {
-        ui.label(
-            egui::RichText::new(err)
-                .small()
-                .color(theme::STATUS_OFFLINE),
-        );
-        ui.add_space(4.0);
     }
-
-    render_results(ui, gis_state, node_mgr, camera_focus, world_scale);
+    let state = &gis_state.annotations;
+    if state.request_id.is_some() {
+        ui.label("Loading annotations...");
+    }
+    if let Some(error) = &state.error {
+        ui.colored_label(theme::STATUS_OFFLINE, error);
+    }
+    render_result_rows(
+        ui,
+        &state.rows,
+        state.loaded && state.request_id.is_none() && state.error.is_none(),
+        node_mgr,
+        camera_focus,
+        world_scale,
+    );
 }
 
 fn render_query_section(
@@ -300,7 +297,8 @@ fn render_query_section(
                                 &mut gis_state.filter_value_type_buf,
                                 t.to_string(),
                                 t,
-                            ).observed(ui);
+                            )
+                            .observed(ui);
                         }
                     })
                     .response
@@ -331,7 +329,11 @@ fn render_query_section(
                     .named(ui, "Bounding box maximum Z in meters");
             });
             ui.horizontal(|ui| {
-                if ui.small_button("Center on Selection").observed(ui).clicked() {
+                if ui
+                    .small_button("Center on Selection")
+                    .observed(ui)
+                    .clicked()
+                {
                     let center = node_mgr
                         .selected
                         .as_ref()
@@ -360,7 +362,8 @@ fn render_query_section(
     };
     let can_run = !gis_state.query_pending;
     if ui
-        .add_enabled(can_run, egui::Button::new(run_label).fill(theme::BG_SAVE)).observed(ui)
+        .add_enabled(can_run, egui::Button::new(run_label).fill(theme::BG_SAVE))
+        .observed(ui)
         .clicked()
     {
         run_query(gis_state, verse_mgr, ui_mgr, petal_id, world_scale);
@@ -458,19 +461,41 @@ fn render_results(
     camera_focus: &mut CameraFocusTarget,
     world_scale: f64,
 ) {
+    render_result_rows(
+        ui,
+        &gis_state.results,
+        !gis_state.query_pending && gis_state.last_error.is_none(),
+        node_mgr,
+        camera_focus,
+        world_scale,
+    );
+}
+
+fn render_result_rows(
+    ui: &mut egui::Ui,
+    rows: &[gis::GisResultRow],
+    completed: bool,
+    node_mgr: &mut NodeManager,
+    camera_focus: &mut CameraFocusTarget,
+    world_scale: f64,
+) {
     ui.label(
-        egui::RichText::new(format!("Results ({})", gis_state.results.len()))
+        egui::RichText::new(format!("Results ({})", rows.len()))
             .strong()
             .color(theme::TEXT_SECTION),
     );
     ui.add_space(4.0);
 
-    if gis_state.results.is_empty() {
+    if rows.is_empty() {
         ui.label(
-            egui::RichText::new("No results yet.")
-                .small()
-                .color(theme::TEXT_MUTED)
-                .italics(),
+            egui::RichText::new(if completed {
+                "0 results"
+            } else {
+                "No results yet."
+            })
+            .small()
+            .color(theme::TEXT_MUTED)
+            .italics(),
         );
         return;
     }
@@ -479,7 +504,7 @@ fn render_results(
     egui::ScrollArea::vertical()
         .max_height(220.0)
         .show(ui, |ui| {
-            for row in &gis_state.results {
+            for row in rows {
                 egui::Frame::NONE
                     .fill(theme::BG_PEER_ROW_EVEN)
                     .inner_margin(egui::Margin::symmetric(6, 4))

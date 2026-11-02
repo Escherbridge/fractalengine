@@ -373,3 +373,13 @@ Supported point actions reserve their old position while rows remain unchanged
 and queue CheckedMovePoint; the host binds complete stored JSON. Gesture origins
 are checked again when actions drain. Untracked multi-point edits preserve their
 legacy queue and invalidate redo. Pending saves/gestures refuse competing edits.
+
+## Checked point removal
+
+`PathRemovePoint` carries `PointEditOrigin` captured by the confirmed surface. Dispatch requires the
+same full navigation and route, an active-Petal node and advisory Editor access. The Undo controller
+reserves a removal using the complete loaded route and known version, then the host resolves the
+authorized current row. Full point order and metadata must still match before one checked property
+mutation is sent; the DB transaction rechecks scope, version, before JSON and actual authority.
+No UI row is removed optimistically. The existing receipt/reconciliation projection updates route
+rendering and supports checked Undo/Redo with the original untouched point metadata.

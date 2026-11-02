@@ -51,6 +51,15 @@ pub struct GisResultRow {
     pub annotation_color: Option<String>,
 }
 
+/// An independent, correlated Annotations read model.
+#[derive(Default)]
+pub struct AnnotationResults {
+    pub rows: Vec<GisResultRow>,
+    pub request_id: Option<String>,
+    pub loaded: bool,
+    pub error: Option<String>,
+}
+
 /// GIS Query & Layer Manager panel state — an independent floating window,
 /// not part of the mutual-exclusion `ActiveDialog` set (see
 /// `fe-ui/src/dialogs/AGENTS.md`), so it can stay open alongside the
@@ -67,7 +76,9 @@ pub struct GisPanelState {
     // Bbox mode (local XZ plane, see `query::bbox_contains`)
     pub bbox_min: [String; 2],
     pub bbox_max: [String; 2],
-    // Shared result state
+    pub(crate) petal_id: Option<String>,
+    pub annotations: AnnotationResults,
+    // Query result state
     pub results: Vec<GisResultRow>,
     /// `true` while a `RawQuery` round-trip issued by this panel is in flight.
     pub query_pending: bool,
@@ -90,6 +101,8 @@ impl Default for GisPanelState {
             filter_value_type_buf: "string".into(),
             bbox_min: ["-50".into(), "-50".into()],
             bbox_max: ["50".into(), "50".into()],
+            petal_id: None,
+            annotations: AnnotationResults::default(),
             results: Vec::new(),
             query_pending: false,
             query_request_id: None,
@@ -100,6 +113,17 @@ impl Default for GisPanelState {
 }
 
 impl GisPanelState {
+    pub(crate) fn sync_petal(&mut self, petal_id: Option<&str>) {
+        if self.petal_id.as_deref() != petal_id {
+            self.petal_id = petal_id.map(str::to_owned);
+            self.annotations = AnnotationResults::default();
+            self.results.clear();
+            self.query_pending = false;
+            self.query_request_id = None;
+            self.last_error = None;
+        }
+    }
+
     /// Resets the bbox fields to a fixed-size box centered on `center` (XZ).
     pub(crate) fn center_bbox_on(&mut self, center: [f32; 2], half_extent: f32) {
         self.bbox_min = [

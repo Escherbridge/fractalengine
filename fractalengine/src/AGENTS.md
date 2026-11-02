@@ -1638,3 +1638,10 @@ and drops the old projection even if ActivePetalTerrain has not caught up. The
 current typed node ID/petal is checked again before extracting gpx_points.
 
 The existing Owner/scope/input-gated ui-state diagnostic counts queued and in-flight target Access work through UiManager::target_access_pending. It exposes only a pending boolean in ui_known, never roles, token/invite values or a new control route. The retired unrendered InviteDialog is no longer reported as an open window. DB/sync/terrain completion remains explicitly unknown.
+
+## Checked point removal bridge
+
+`CheckedRemovePoint` shares the existing checked-move reservation/read/commit path. Pending legacy
+route writes must drain first, stale requests are discarded by editor generation, and the bridge
+projects only the Undo controller's matching authoritative receipt. The complete persisted point
+array is the CAS input; removal preserves every field of all surviving stored rows.

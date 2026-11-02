@@ -6,6 +6,16 @@ pub(crate) const DEFAULT_API_BASE: &str = "http://localhost:8765";
 /// Default shareable-link TTL in seconds (plan D2: default 1h, max 24h).
 pub(crate) const DEFAULT_SHARE_TTL_SECS: u64 = 3600;
 
+/// Validates the exact API share lifetime contract without coercion.
+pub(crate) fn parse_share_ttl(value: &str) -> Result<u64, &'static str> {
+    value
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|ttl| (1..=86_400).contains(ttl))
+        .ok_or("Enter a whole number of seconds from 1 to 86400.")
+}
+
 /// Which spatial context the egress SQL is scoped to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum EgressSource {
@@ -318,6 +328,20 @@ mod tests {
 
     #[test]
     fn mint_share_curl_exact() {
+        for (input, expected) in [
+            ("1", Some(1)),
+            (" 3600 ", Some(3600)),
+            ("86400", Some(86400)),
+            ("", None),
+            ("0", None),
+            ("-1", None),
+            ("1.5", None),
+            ("abc", None),
+            ("86401", None),
+            ("18446744073709551616", None),
+        ] {
+            assert_eq!(parse_share_ttl(input).ok(), expected, "{input}");
+        }
         let cmd = mint_share_curl(
             DEFAULT_API_BASE,
             "SELECT * FROM node WHERE petal_id = 'p'",

@@ -95,7 +95,7 @@ struct PathDraft {
     node_id: String,
     index: usize,
     before: [f32; 3],
-    after: [f32; 3],
+    after: Option<[f32; 3]>,
     version: Option<i64>,
     rows: Vec<crate::gis::PathPointRow>,
 }
@@ -127,6 +127,26 @@ pub struct PointEditOrigin {
     points: Vec<crate::gis::PathPointRow>,
 }
 impl PointEditOrigin {
+    /// Binds an inline confirmation to every currently rendered route field.
+    pub(crate) fn confirmation_key(
+        state: &crate::gis::PathEditorState,
+        nav: &NavigationManager,
+    ) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        navigation_key(nav).hash(&mut hash);
+        state.editing_track_id.hash(&mut hash);
+        for row in &state.points {
+            row.position.map(f32::to_bits).hash(&mut hash);
+            row.time_seconds.map(f64::to_bits).hash(&mut hash);
+            row.handle_in.map(|v| v.map(f32::to_bits)).hash(&mut hash);
+            row.handle_out.map(|v| v.map(f32::to_bits)).hash(&mut hash);
+            row.corner.to_code().to_bits().hash(&mut hash);
+            row.smoothness.to_bits().hash(&mut hash);
+        }
+        hash.finish()
+    }
+
     pub(crate) fn capture(
         state: &crate::gis::PathEditorState,
         nav: &NavigationManager,
@@ -374,7 +394,7 @@ impl UndoState {
                 node_id: node_id.into(),
                 index,
                 before,
-                after,
+                after: Some(after),
                 version,
                 rows: rows.to_vec(),
             }),
@@ -383,6 +403,38 @@ impl UndoState {
             conflict: false,
         });
         Ok(Some(id))
+    }
+    /// Reserve removal against the complete captured route and current history version.
+    pub(crate) fn reserve_path_remove(
+        &mut self,
+        nav: &NavigationManager,
+        node_id: &str,
+        index: usize,
+        version: Option<i64>,
+        rows: &[crate::gis::PathPointRow],
+    ) -> Result<String, String> {
+        self.sync(nav);
+        self.ready()?;
+        let before = rows.get(index).ok_or("Path point is unavailable")?.position;
+        let id = request_id();
+        self.pending = Some(Pending {
+            request_id: id.clone(),
+            resolve_id: None,
+            generation: self.generation,
+            entry: None,
+            path: Some(PathDraft {
+                node_id: node_id.into(),
+                index,
+                before,
+                after: None,
+                version,
+                rows: rows.to_vec(),
+            }),
+            origin: Origin::Normal,
+            started: Instant::now(),
+            conflict: false,
+        });
+        Ok(id)
     }
     /// Authorize a current-state read before preparing a reserved point mutation.
     pub fn path_read_command(&self, id: &str) -> Result<DbCommand, String> {
@@ -456,8 +508,15 @@ impl UndoState {
         }) {
             return Err("Path point changed since the gesture; move skipped".into());
         }
-        for (target, value) in row[..3].iter_mut().zip(draft.after) {
-            *target = serde_json::json!(value as f64);
+        if let Some(position) = draft.after {
+            for (target, value) in row[..3].iter_mut().zip(position) {
+                *target = serde_json::json!(value as f64);
+            }
+        } else {
+            after
+                .as_array_mut()
+                .ok_or("Path points are unavailable")?
+                .remove(draft.index);
         }
         let entry = Entry {
             node_id: draft.node_id,

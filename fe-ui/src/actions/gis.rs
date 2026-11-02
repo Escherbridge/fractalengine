@@ -48,6 +48,34 @@ pub(crate) fn query_annotated(
     submit_query(db_sender, gis_state, sql, petal_id, vars);
 }
 
+/// Submits the independent Annotations query without changing Query inputs.
+pub(crate) fn refresh_annotations(
+    db_sender: &DbCommandSender,
+    gis_state: &mut GisPanelState,
+    petal_id: String,
+) {
+    gis_state.sync_petal(Some(&petal_id));
+    let request_id = crate::actions::query::next_ui_query_id("annotations");
+    let state = &mut gis_state.annotations;
+    state.request_id = Some(request_id.clone());
+    state.error = None;
+    let (sql, vars) = gis::annotation_query(&petal_id);
+    if db_sender
+        .0
+        .send(DbCommand::ScopedQuery {
+            sql,
+            vars,
+            correlation_id: request_id,
+            petal_scope: vec![petal_id],
+        })
+        .is_err()
+    {
+        bevy::log::warn!("db_sender channel closed ? Annotations ScopedQuery not dispatched");
+        state.request_id = None;
+        state.error = Some("DB channel closed".into());
+    }
+}
+
 /// Runs the property key/value filter query for `petal_id`.
 pub(crate) fn query_property_filter(
     db_sender: &DbCommandSender,

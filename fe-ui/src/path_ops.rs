@@ -10,7 +10,15 @@ use bevy::prelude::*;
 #[derive(Debug, Clone)]
 pub enum PathOp {
     /// Resolve and commit one reserved point move through exact persisted receipts.
-    CheckedMovePoint {track_node_id:String,request_id:String},
+    CheckedMovePoint {
+        track_node_id: String,
+        request_id: String,
+    },
+    /// Remove one reserved point through the same exact persisted receipt boundary.
+    CheckedRemovePoint {
+        track_node_id: String,
+        request_id: String,
+    },
     /// Create a new (empty) track node named `name` under `petal_id`.
     /// `correlation_id` is `Some` only for the Pen auto-create path, which
     /// generates a fe-ui-side id (`gis::next_pen_correlation_id`) so the bridge

@@ -834,6 +834,29 @@ mod tests {
             [1.0, 0.0, 2.0, 17.25, -0.5, 0.0, 0.0, 0.5, 0.0, 0.0, 2.0, 0.6],
             [8.0, 2.0, 9.0, 29.5]
         ]);
+        let removal_rows = crate::gis::decode_gpx_points(&points);
+        for stale in [false, true] {
+            let mut removal = crate::undo::UndoState::default();
+            let request = removal.reserve_path_remove(&proof_nav, "node-1", 0, Some(3), &removal_rows).unwrap();
+            let mut current: fe_runtime::node_history::NodeRowSnapshot = serde_json::from_value(serde_json::json!({
+                "node_id":"node-1", "petal_id":"p", "position":[0.0,0.0,0.0], "elevation":0.0,
+                "rotation":[0.0,0.0,0.0], "scale":[1.0,1.0,1.0], "interactive":false,
+                "created_at":"test", "edit_seq":3, "properties":{"gpx_points":points}
+            })).unwrap();
+            if stale { current.properties.get_mut("gpx_points").unwrap()[1][0] = serde_json::json!(999); }
+            let (tx, rx_remove) = crossbeam::channel::unbounded();
+            let result = removal.commit_path(&proof_nav, &request, &current, &tx);
+            if stale {
+                assert!(result.is_err() && rx_remove.try_recv().is_err(), "reindexed route cannot remove another point");
+            } else {
+                result.unwrap();
+                let DbCommand::CommitCheckedNodeMutation { mutation: NodeMutation::PropertySet { value, .. }, expected, .. } = rx_remove.try_recv().unwrap() else { panic!("checked removal required") };
+                assert_eq!(value, serde_json::json!([points[1].clone()]));
+                assert!(matches!(expected.before, fe_runtime::node_history::NodeEditBefore::PathPoints(ref before) if before == &points));
+                assert_eq!(expected.history_version, Some(3));
+                assert!(removal.take_path_projection(&proof_nav).is_none(), "no optimistic removal");
+            }
+        }
         let rows = crate::gis::decode_gpx_points(&points);
         let id = app
             .world_mut()

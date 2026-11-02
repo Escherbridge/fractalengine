@@ -725,3 +725,15 @@ The existing Inspector editing journey covers empty/deselected states, Viewer in
 rejection, Manager Apply, compact transform and Portal hit rectangles and clips, and real token
 pagination/refresh commands and the cancel/confirm revocation sequence with long token metadata. It observes egui responses and output only, without host input or
 clipboard access.
+
+## Paths/Data continuation
+
+Paths use one-based display indices while queue indices remain zero-based. Point coordinates and
+height edits convert between world units and meters through the active map scale. Numeric height
+drags retain a local widget draft and send one checked move only when released; authoritative rows
+remain untouched before the matching receipt. Empty manual names choose the first available `Path N`.
+Point Remove uses the shared timed Confirm/Cancel widget, salted by complete navigation/track/route
+content. Shared layer controls and path edits advertise Editor access; local ruler overlays remain
+available to viewers, and DB authorization remains authoritative. Data and export source tabs use
+the shared tab fill; export can reset to the actual running API endpoint explicitly. Shared copy
+widgets retain the A8 clipboard guard and toast behavior.

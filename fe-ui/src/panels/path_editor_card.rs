@@ -76,6 +76,9 @@ pub(crate) fn path_editor_section(
     ui_mgr: &mut UiManager,
     cursor_world: &ViewportCursorWorld,
     petal_id: &str,
+    nav: &crate::navigation_manager::NavigationManager,
+    world_scale: f64,
+    can_edit: bool,
 ) {
     if let Some(track_id) = path_state.editing_track_id.clone() {
         render_edit_view(
@@ -86,9 +89,12 @@ pub(crate) fn path_editor_section(
             cursor_world,
             &track_id,
             petal_id,
+            nav,
+            world_scale,
+            can_edit,
         );
     } else {
-        render_track_list(ui, path_state, ui_mgr, petal_id);
+        render_track_list(ui, path_state, ui_mgr, petal_id, can_edit);
     }
 }
 
@@ -110,6 +116,7 @@ fn render_track_list(
     path_state: &mut PathEditorState,
     ui_mgr: &mut UiManager,
     petal_id: &str,
+    can_edit: bool,
 ) {
     ui.label(
         egui::RichText::new("Paths")
@@ -126,10 +133,19 @@ fn render_track_list(
         )
         .named(ui, "New path name");
         if ui
-            .add(egui::Button::new("New Path").fill(theme::BG_SAVE)).observed(ui)
+            .add_enabled(can_edit, egui::Button::new("New Path").fill(theme::BG_SAVE))
+            .observed(ui)
             .clicked()
         {
-            let name = std::mem::take(&mut path_state.new_track_name_buf);
+            let entered = std::mem::take(&mut path_state.new_track_name_buf);
+            let name = if entered.trim().is_empty() {
+                (1..)
+                    .map(|index| format!("Path {index}"))
+                    .find(|name| !path_state.tracks.iter().any(|row| &row.name == name))
+                    .unwrap_or_else(|| "Path 1".into())
+            } else {
+                entered
+            };
             // Manual create: correlation_id None — this isn't a pen auto-create,
             // so the bridge generates its own id and nothing flushes a pen point.
             ui_mgr.push_action(UiAction::PathCreateTrack {
@@ -160,7 +176,8 @@ fn render_track_list(
                 .add_enabled(
                     !path_state.tracks_pending,
                     egui::Button::new(label).fill(theme::BG_BUTTON),
-                ).observed(ui)
+                )
+                .observed(ui)
                 .clicked()
             {
                 ui_mgr.push_action(UiAction::PathQueryTracks {
@@ -311,6 +328,9 @@ fn render_edit_view(
     _cursor_world: &ViewportCursorWorld,
     track_id: &str,
     petal_id: &str,
+    nav: &crate::navigation_manager::NavigationManager,
+    world_scale: f64,
+    can_edit: bool,
 ) {
     ui.horizontal(|ui| {
         if ui.small_button("\u{2190} Back").observed(ui).clicked() {
@@ -340,7 +360,8 @@ fn render_edit_view(
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         if ui
-            .add(egui::Button::new("Export GPX").fill(theme::BG_SAVE)).observed(ui)
+            .add(egui::Button::new("Export GPX").fill(theme::BG_SAVE))
+            .observed(ui)
             .clicked()
         {
             ui_mgr.push_action(UiAction::PathExportGpx {
@@ -353,7 +374,11 @@ fn render_edit_view(
     // visibility). Bound to `edited_track_style` (seeded from the track's
     // `gis.track.*` props on select); each change emits a focused `PathSetStyle`
     // via the deferred-push idiom so the borrow on `path_state` ends first.
-    let to_style = render_style_controls(ui, &mut path_state.edited_track_style);
+    let to_style = ui
+        .add_enabled_ui(can_edit, |ui| {
+            render_style_controls(ui, &mut path_state.edited_track_style)
+        })
+        .inner;
     if let Some((color, width, visible, closed, fill_color)) = to_style {
         ui_mgr.push_action(UiAction::PathSetStyle {
             track_node_id: track_id.to_string(),
@@ -420,13 +445,13 @@ fn render_edit_view(
             .map(format_distance_m)
             .unwrap_or_else(|| "\u{2014}".to_string());
         ui.label(
-            egui::RichText::new(format!("Segment {}\u{2013}{}: {}", seg, seg + 1, len))
+            egui::RichText::new(format!("Segment {}\u{2013}{}: {}", seg + 1, seg + 2, len))
                 .small()
                 .color(theme::STATUS_ONLINE),
         );
     } else if let Some(pt) = path_state.selected_point {
         ui.label(
-            egui::RichText::new(format!("Vertex {pt} selected"))
+            egui::RichText::new(format!("Point {} selected", pt + 1))
                 .small()
                 .color(theme::STATUS_ONLINE),
         );
@@ -460,6 +485,7 @@ fn render_edit_view(
     // or the two ends of the selected segment get an active row fill.
     let sel_point = path_state.selected_point;
     let sel_seg = path_state.selected_segment;
+    let route_key = crate::undo::PointEditOrigin::confirmation_key(path_state, nav);
     let mut to_remove: Option<usize> = None;
     let mut to_annotate: Option<usize> = None;
     // FR-1b: a numeric Height (Y, the user's "z-axis") edit on a point row.
@@ -493,8 +519,20 @@ fn render_edit_view(
                             ui.label(egui::RichText::new(glyph).small().color(theme::ICON_POINT));
                             ui.label(
                                 egui::RichText::new(format!(
-                                    "{i}: ({:.1}, {:.1}, {:.1})",
-                                    point.position[0], point.position[1], point.position[2]
+                                    "{}: ({:.1}, {:.1}, {:.1}) m",
+                                    i + 1,
+                                    crate::panels::widgets::world_to_meters(
+                                        point.position[0],
+                                        world_scale
+                                    ),
+                                    crate::panels::widgets::world_to_meters(
+                                        point.position[1],
+                                        world_scale
+                                    ),
+                                    crate::panels::widgets::world_to_meters(
+                                        point.position[2],
+                                        world_scale
+                                    )
                                 ))
                                 .color(theme::TEXT_BRIGHT),
                             );
@@ -502,33 +540,68 @@ fn render_edit_view(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     if ui
-                                        .small_button("Remove")
-                                        .named(ui, format_args!("Remove point {i}"))
-                                        .clicked()
+                                        .add_enabled_ui(can_edit, |ui| {
+                                            crate::panels::widgets::confirm_button(
+                                                ui,
+                                                ("remove-point", track_id, route_key, i),
+                                                "Remove",
+                                                "Confirm",
+                                                format!("Remove point {}", i + 1),
+                                            )
+                                        })
+                                        .inner
                                     {
                                         to_remove = Some(i);
                                     }
                                     if ui
-                                        .small_button("Annotate")
-                                        .named(ui, format_args!("Annotate point {i}"))
+                                        .add_enabled(
+                                            can_edit,
+                                            egui::Button::new("Annotate").small(),
+                                        )
+                                        .named(ui, format_args!("Annotate point {}", i + 1))
                                         .clicked()
                                     {
                                         to_annotate = Some(i);
                                     }
                                     // Numeric height (Bevy Y) field for this point.
-                                    let mut new_y = point.position[1];
+                                    let id = ui.id().with(("point-height", track_id, route_key, i));
+                                    let mut draft = ui
+                                        .ctx()
+                                        .data_mut(|data| data.get_temp::<f32>(id))
+                                        .unwrap_or_else(|| {
+                                            crate::panels::widgets::world_to_meters(
+                                                point.position[1],
+                                                world_scale,
+                                            )
+                                        });
                                     let resp = ui
-                                        .add(
-                                            egui::DragValue::new(&mut new_y)
+                                        .add_enabled(
+                                            can_edit,
+                                            egui::DragValue::new(&mut draft)
                                                 .speed(0.05)
-                                                .prefix("Y "),
+                                                .range(-1_000_000.0..=1_000_000.0)
+                                                .prefix("Y ")
+                                                .suffix(" m"),
                                         )
-                                        .named(ui, format_args!("Point {i} height in world units"));
-                                    if resp.changed() {
-                                        to_move = Some((
-                                            i,
-                                            [point.position[0], new_y, point.position[2]],
-                                        ));
+                                        .named(
+                                            ui,
+                                            format_args!("Point {} height in meters", i + 1),
+                                        );
+                                    if resp.dragged() || resp.changed() {
+                                        ui.ctx().data_mut(|data| data.insert_temp(id, draft));
+                                    }
+                                    if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+                                        let new_y = crate::panels::widgets::meters_to_world(
+                                            draft,
+                                            world_scale,
+                                        );
+                                        if new_y.is_finite() {
+                                            to_move = Some((
+                                                i,
+                                                [point.position[0], new_y, point.position[2]],
+                                            ));
+                                        }
+                                        ui.ctx().data_mut(|data| data.remove::<f32>(id));
                                     }
                                 },
                             );
@@ -539,10 +612,13 @@ fn render_edit_view(
         });
 
     if let Some(index) = to_remove {
-        ui_mgr.push_action(UiAction::PathRemovePoint {
-            track_node_id: track_id.to_string(),
-            index,
-        });
+        if let Some(origin) = crate::undo::PointEditOrigin::capture(path_state, nav) {
+            ui_mgr.push_action(UiAction::PathRemovePoint {
+                track_node_id: track_id.to_string(),
+                index,
+                origin,
+            });
+        }
         if path_state.annotating_index == Some(index) {
             path_state.close_annotate_form();
         }
@@ -562,7 +638,9 @@ fn render_edit_view(
     // Shift/Alt+click on the point's viewport marker. Reuses the
     // `gis.annotation.*` contract once the bridge creates the waypoint node.
     if let Some(index) = path_state.annotating_index {
-        render_annotate_form(ui, path_state, ui_mgr, track_id, index);
+        ui.add_enabled_ui(can_edit, |ui| {
+            render_annotate_form(ui, path_state, ui_mgr, track_id, index)
+        });
     }
 }
 
@@ -682,7 +760,8 @@ fn render_style_controls(
     ui.horizontal(|ui| {
         let mut closed = style.closed;
         if ui
-            .add(egui::Checkbox::new(&mut closed, "Closed zone")).observed(ui)
+            .add(egui::Checkbox::new(&mut closed, "Closed zone"))
+            .observed(ui)
             .changed()
         {
             style.closed = closed;
@@ -1077,7 +1156,8 @@ fn render_annotate_form(
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 if ui
-                    .add(egui::Button::new("Save").fill(theme::BG_SAVE)).observed(ui)
+                    .add(egui::Button::new("Save").fill(theme::BG_SAVE))
+                    .observed(ui)
                     .clicked()
                 {
                     ui_mgr.push_action(UiAction::PathAnnotatePoint {
@@ -1090,7 +1170,8 @@ fn render_annotate_form(
                     path_state.close_annotate_form();
                 }
                 if ui
-                    .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON)).observed(ui)
+                    .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON))
+                    .observed(ui)
                     .clicked()
                 {
                     path_state.close_annotate_form();

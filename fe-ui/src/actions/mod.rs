@@ -122,6 +122,8 @@ pub enum UiAction {
     GisQueryAnnotated {
         petal_id: String,
     },
+    /// Refresh the independent Annotations tab.
+    GisRefreshAnnotations { petal_id: String },
     /// Run the property key/value filter query for a petal.
     GisQueryPropertyFilter {
         petal_id: String,
@@ -203,6 +205,7 @@ pub enum UiAction {
     PathRemovePoint {
         track_node_id: String,
         index: usize,
+        origin: crate::undo::PointEditOrigin,
     },
     /// Move the point at `index` to a new world position (viewport drag commit).
     PathMovePointFromGesture {track_node_id:String,index:usize,position:[f32;3],origin:crate::undo::PointEditOrigin},
@@ -1158,6 +1161,11 @@ pub(crate) fn process_ui_actions(
             UiAction::GisQueryAnnotated { petal_id } => {
                 gis::query_annotated(&db_sender, &mut gis_panel, petal_id);
             }
+            UiAction::GisRefreshAnnotations { petal_id } => {
+                if nav.active_petal_id.as_deref() == Some(petal_id.as_str()) {
+                    gis::refresh_annotations(&db_sender, &mut gis_panel, petal_id);
+                }
+            }
             UiAction::GisQueryPropertyFilter {
                 petal_id,
                 key,
@@ -1283,11 +1291,22 @@ pub(crate) fn process_ui_actions(
                     corner,
                 );
             }
-            UiAction::PathRemovePoint {
-                track_node_id,
-                index,
-            } => {
-                path::remove_point(&mut path_ops, &mut path_state, track_node_id, index);
+            UiAction::PathRemovePoint { track_node_id, index, origin } => {
+                let editable = local_role.role.is_some_and(|role| role.can_edit())
+                    && verse_mgr.find_petal(nav.active_petal_id.as_deref().unwrap_or_default())
+                        .is_some_and(|petal| petal.nodes.iter().any(|node| node.id == track_node_id));
+                if !editable || !origin.matches(&path_state, &nav) {
+                    ui_mgr.show_advisory("Path changed or Editor access is unavailable; removal skipped", now_secs);
+                    continue;
+                }
+                match undo.reserve_path_remove(&nav, &track_node_id, index,
+                    verse_mgr.committed_versions.get(&track_node_id).copied(), &path_state.points) {
+                    Ok(request_id) => {
+                        path_ops.0.push(crate::path_ops::PathOp::CheckedRemovePoint { track_node_id, request_id });
+                        ui_mgr.show_toast("Saving point removal...", now_secs);
+                    }
+                    Err(error) => ui_mgr.show_advisory(error, now_secs),
+                }
             }
             UiAction::PathMovePointFromGesture {track_node_id,index,position,origin}=>{
                 if !origin.matches(&path_state,&nav){ui_mgr.show_advisory("Path changed during the gesture; move skipped",now_secs);continue;}

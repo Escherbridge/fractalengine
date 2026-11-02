@@ -25,6 +25,17 @@ pub(super) fn route_query_reply(
             Ok(data) => gis_panel.results = crate::gis::parse_gis_rows(data),
             Err(error) => gis_panel.last_error = Some(error.to_string()),
         }
+    } else if gis_panel.annotations.request_id.as_deref() == Some(id) {
+        let state = &mut gis_panel.annotations;
+        state.request_id = None;
+        state.loaded = true;
+        match reply {
+            Ok(data) => {
+                state.rows = crate::gis::parse_gis_rows(data);
+                state.error = None;
+            }
+            Err(error) => state.error = Some(error.to_string()),
+        }
     } else if path_state.tracks_request_id.as_deref() == Some(id) {
         match reply {
             Ok(data) => {
