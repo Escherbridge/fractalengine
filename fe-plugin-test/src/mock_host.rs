@@ -197,12 +197,7 @@ impl fe_sdk::plugin_host::TransactionSink for MockHostEnv {
                     {
                         return Err("plugin v1 refuses path/stamp lifecycle deletion".into());
                     }
-                    if self
-                        .nodes
-                        .values()
-                        .chain(staged.nodes.values())
-                        .any(|node| depends_on(node, node_id))
-                    {
+                    if self.nodes.values().any(|node| depends_on(node, node_id)) {
                         return Err("plugin v1 refuses deletion with dependent children".into());
                     }
                     deleted_node_ids.push(node_id.clone());
@@ -378,6 +373,28 @@ mod tests {
             );
             assert_eq!(case.transactions, before.transactions);
         }
+        let mut transient = base.clone();
+        let before_batches = transient.transactions.len();
+        let receipt = TransactionSink::commit(
+            &mut transient,
+            "petal_01",
+            &[
+                PendingOp::SetProperty {
+                    node_id: "child".into(),
+                    key: "parent_id".into(),
+                    value: serde_json::json!("node_01"),
+                },
+                delete.clone(),
+                PendingOp::DeleteNode {
+                    node_id: "child".into(),
+                },
+            ],
+        )
+        .expect("a temporary link between initially unrelated nodes may disappear with both nodes");
+        assert_eq!(receipt.op_count, 3);
+        assert!(transient.nodes.is_empty());
+        assert!(transient.properties.is_empty());
+        assert_eq!(transient.transactions.len(), before_batches + 1);
         let mut plain = base;
         assert_eq!(
             TransactionSink::commit(&mut plain, "petal_01", &[delete])

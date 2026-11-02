@@ -80,8 +80,8 @@ introducing an engine dependency into the testing kit.
 
 Plain-node deletion follows the production v1 lifecycle boundary: any path/stamp
 marker on the staged target refuses deletion, even when the marker value is null.
-Existing live dependencies and links introduced by earlier operations refuse at
-delete preparation; links introduced later are checked against every deleted ID
-before clone-swap. An earlier child deletion does not bypass the production
+Existing live dependencies refuse at delete preparation; surviving staged links
+are checked against every deleted ID before clone-swap. Temporary links between
+initially unrelated nodes may disappear when both nodes are deleted in the batch. An earlier child deletion does not bypass the production
 preflight against the original stored snapshots. Refusal leaves all node data,
 property records, scene changes and committed batches unchanged.
