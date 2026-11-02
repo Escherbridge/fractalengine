@@ -12,7 +12,9 @@ hydration path, retaining the typed editor's draft/conflict decisions.
 
 Hierarchy transport includes unit quaternion rotation and scale. Legacy quaternion and ordinary Euler
 storage share `fe_runtime::node_history::stored_rotation_quaternion`; all respawn branches retain them.
-Fallback placards keep their existing half-unit display offset, separately from the confirmed node position.
+Fallback placards encode their half-unit display offset in mesh vertices, so the marker entity,
+Inspector, gimbal and confirmed transform all retain the logical node position. Unknown asset-backed
+receipts request authoritative hierarchy hydration instead of creating a pathless replacement.
 
 Initial hierarchy navigation selects one populated petal with its actual ancestors, falling back to
 the first empty verse. Delayed role replies are discarded when their scope no longer matches the valid

@@ -178,8 +178,8 @@ impl TestPeer {
         let db_blob_store = blob_store.clone();
         let db_repl_tx = repl_tx;
         let _db_keypair = NodeKeypair::generate(); // separate keypair for DB invite ops
-        // We actually want to use the SAME keypair for invite generation,
-        // so clone the seed bytes.
+                                                   // We actually want to use the SAME keypair for invite generation,
+                                                   // so clone the seed bytes.
         let kp_seed = keypair.seed_bytes();
         let db_local_did = local_did.clone();
         let db_handle = std::thread::spawn(move || {

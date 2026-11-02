@@ -252,22 +252,20 @@ impl ToolPanelState {
             MAX_ANGLE_INPUT_DEG,
         );
         sanitize_f32(&mut self.stamp_arc_m, 0.0, 0.0, MAX_DISTANCE_INPUT);
-        debug_assert!(
-            [
-                self.spacing_value,
-                self.pen_tension,
-                self.shape_radius,
-                self.shape_radius_z,
-                self.terrain_footprint_radius,
-                self.terrain_target_height,
-                self.terrain_delta,
-                self.stamp_scale,
-                self.stamp_yaw_deg,
-                self.stamp_arc_m,
-            ]
-            .into_iter()
-            .all(f32::is_finite)
-        );
+        debug_assert!([
+            self.spacing_value,
+            self.pen_tension,
+            self.shape_radius,
+            self.shape_radius_z,
+            self.terrain_footprint_radius,
+            self.terrain_target_height,
+            self.terrain_delta,
+            self.stamp_scale,
+            self.stamp_yaw_deg,
+            self.stamp_arc_m,
+        ]
+        .into_iter()
+        .all(f32::is_finite));
     }
 
     /// Queues a pen-tool `UiAction` for the drain in `process_ui_actions`.
@@ -1118,21 +1116,19 @@ mod tests {
         state.sanitize_numeric_state();
         assert_eq!(state.shape_radius_z, 3.0);
         assert_eq!(state.stamp_scale, 1.0);
-        assert!(
-            [
-                state.spacing_value,
-                state.pen_tension,
-                state.shape_radius,
-                state.shape_radius_z,
-                state.terrain_footprint_radius,
-                state.terrain_target_height,
-                state.terrain_delta,
-                state.stamp_scale,
-                state.stamp_yaw_deg,
-                state.stamp_arc_m,
-            ]
-            .into_iter()
-            .all(f32::is_finite)
-        );
+        assert!([
+            state.spacing_value,
+            state.pen_tension,
+            state.shape_radius,
+            state.shape_radius_z,
+            state.terrain_footprint_radius,
+            state.terrain_target_height,
+            state.terrain_delta,
+            state.stamp_scale,
+            state.stamp_yaw_deg,
+            state.stamp_arc_m,
+        ]
+        .into_iter()
+        .all(f32::is_finite));
     }
 }

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use bevy::prelude::*;
 
-use fe_database::{BlobStoreHandle, hash_from_hex};
+use fe_database::{hash_from_hex, BlobStoreHandle};
 use fe_ui::asset_ops::{AssetDownloadStatus, AssetOp, PendingAssetOps};
 use fe_ui::verse_manager::VerseManager;
 

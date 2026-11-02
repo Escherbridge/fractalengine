@@ -15,10 +15,10 @@ use std::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 
 pub use resolve::{
-    HiddenReason, NodeAncestry, RollupState, effective_visibility, fractal_effective_visible,
-    glyph_for_bool, glyph_for_rollup, hidden_chip_label, node_eye_tooltip, node_hidden_reason,
-    petal_effective_visible, rollup, toggle_node_override, toggle_scope_hidden,
-    verse_effective_visible,
+    effective_visibility, fractal_effective_visible, glyph_for_bool, glyph_for_rollup,
+    hidden_chip_label, node_eye_tooltip, node_hidden_reason, petal_effective_visible, rollup,
+    toggle_node_override, toggle_scope_hidden, verse_effective_visible, HiddenReason, NodeAncestry,
+    RollupState,
 };
 
 use crate::navigation_manager::NavigationManager;

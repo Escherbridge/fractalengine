@@ -10,8 +10,8 @@ use fe_runtime::app::DbCommandSender;
 use fe_runtime::messages::DbCommand;
 
 use super::path_asset_materialize::PathAssetApplied;
-use super::primitive_materialize::{PrimitiveDescriptorCache, SpawnBranch, spawn_branch};
-use super::primitive_reconcile::{PrimitiveMaterialAssets, resolve_primitive_material};
+use super::primitive_materialize::{spawn_branch, PrimitiveDescriptorCache, SpawnBranch};
+use super::primitive_reconcile::{resolve_primitive_material, PrimitiveMaterialAssets};
 use super::residency_ledger::ResidencyLedger;
 use super::{NodeEntry, TextureRegistryRes, VerseManager};
 use crate::navigation_manager::NavigationManager;
@@ -94,10 +94,7 @@ impl NodeSpawner<'_> {
                 entity
             }
         };
-        let mut transform = node.world_transform();
-        if node.asset_path.is_none() && self.primitive_cache.get(&node.id).is_none() {
-            transform.translation.y += 0.5;
-        }
+        let transform = node.world_transform();
         let (x, y, z) = node.transform.rotation.to_euler(EulerRot::XYZ);
         commands.entity(entity).insert((
             transform,

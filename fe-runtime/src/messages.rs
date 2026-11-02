@@ -845,6 +845,15 @@ pub enum DbCommand {
         grant: crate::node_history::NodeAccessGrant,
         correlation_id: Option<String>,
     },
+    /// Desktop-only scoped measurement projection; not an API pending-reply family.
+    ReadNodeMeasurements {
+        node_id: String,
+        petal_id: String,
+        series: Option<crate::node_measurements::MeasurementSeries>,
+        limit: usize,
+        grant: crate::node_history::NodeAccessGrant,
+        correlation_id: String,
+    },
     /// Delete a field definition by ID.
     DeleteFieldDef {
         field_def_id: String,
@@ -1153,6 +1162,10 @@ pub enum DbResult {
     NodeStateAtVersionLoaded {
         state: crate::node_history::NodeStateAtVersion,
         correlation_id: Option<String>,
+    },
+    NodeMeasurementsLoaded {
+        measurements: crate::node_measurements::NodeMeasurements,
+        correlation_id: String,
     },
     VerseCreated {
         id: String,

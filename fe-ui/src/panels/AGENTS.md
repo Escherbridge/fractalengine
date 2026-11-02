@@ -1,5 +1,9 @@
 # fe-ui/src/panels — the egui shell
 
+The Inspector Data tab delegates object history, event-time measurements and enforced schema editing
+to `../object_data`. Its state is an Inspector read model; historical results never apply to current
+scene entities. See `../object_data/AGENTS.md` for scopes, bounds, request routing and retained drafts.
+
 Sidebar descendant clicks restore their complete verse/fractal ancestry through NavigationManager;
 expanded rows can belong to a different parent than the current cursor. See `../AGENTS.md` §navigation-ancestry.
 

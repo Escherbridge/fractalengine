@@ -772,3 +772,12 @@ it never trusts a supplied actor label. Local write/read/schema floors are
 Editor/Viewer/Manager. SetFieldSchema also requires grant; GetFieldSchema is the
 correlated Viewer descriptor-read command. API schema GET/PUT still return the
 same JSON payloads. The enum remains non-deserializable from request bodies.
+
+
+## Object data projections
+
+`node_measurements` owns the desktop measurement DTOs and shared 64-series/1,024-point bounds.
+`ReadNodeMeasurements` is a desktop-only command and is intentionally not registered as a pending
+API reply family. Its fresh `ui-*` request ID is consumed by the Inspector state. API measurement
+queries continue through their existing admitted query surfaces. Typed history replies retain their
+existing API families; native views claim only their own exact GUI request IDs.

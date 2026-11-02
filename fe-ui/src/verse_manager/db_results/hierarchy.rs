@@ -8,7 +8,7 @@ use fe_runtime::messages::{DbCommand, EntityType, VerseHierarchyData};
 use super::super::{FractalEntry, NodeEntry, PetalEntry, VerseEntry, VerseManager};
 use crate::dialogs::ActiveDialog;
 use crate::navigation_manager::NavigationManager;
-use crate::notice::{DenialContext, UNRESOLVED_ROLE_LABEL, humanize_db_error};
+use crate::notice::{humanize_db_error, DenialContext, UNRESOLVED_ROLE_LABEL};
 
 /// `Seeded`: kick off the initial hierarchy load.
 pub(super) fn handle_seeded(db_sender: &DbCommandSender) {

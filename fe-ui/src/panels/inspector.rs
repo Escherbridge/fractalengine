@@ -46,6 +46,13 @@ pub(crate) fn right_inspector(
     asset_status: &crate::asset_ops::AssetDownloadStatus,
 ) {
     sync_property_editor_scope(inspector, node_mgr, ui.ctx().input(|input| input.time));
+    crate::object_data::synchronize(
+        &mut inspector.object_data,
+        node_mgr,
+        hierarchy,
+        nav,
+        local_role,
+    );
     if node_mgr.selected_entity().is_some() {
         crate::ui_shell::layout_policy::trailing_row(ui, |ui| {
             if ui
@@ -72,11 +79,12 @@ pub(crate) fn right_inspector(
 
     // Tab bar
     ui.add_space(2.0);
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         for (tab, label) in [
             (InspectorTab::Properties, "Properties"),
             (InspectorTab::ApiAccess, "API Access"),
             (InspectorTab::Query, "Query"),
+            (InspectorTab::Data, "Data"),
         ] {
             let active = inspector.active_tab == tab;
             let btn = egui::Button::new(egui::RichText::new(label).small().color(if active {
@@ -88,7 +96,8 @@ pub(crate) fn right_inspector(
                 theme::BG_BUTTON_ACTIVE
             } else {
                 theme::BG_BUTTON
-            });
+            })
+            .min_size(egui::Vec2::splat(crate::object_data::target_size(ui)));
             if ui
                 .add(btn)
                 .named(ui, format_args!("Inspector tab: {label}"))
@@ -148,7 +157,7 @@ pub(crate) fn right_inspector(
             ui.add_space(2.0);
             inspector_properties_section(ui, inspector, node_mgr, ui_mgr);
             ui.add_space(2.0);
-            inspector_schema_section(ui, inspector, node_mgr, local_role, db_tx, nav);
+            inspector_schema_section(ui, inspector, node_mgr, local_role, db_tx, nav, ui_mgr);
         }
         InspectorTab::ApiAccess => {
             ui.add_space(4.0);
@@ -158,21 +167,15 @@ pub(crate) fn right_inspector(
             ui.add_space(4.0);
             crate::panels::query_tab::inspector_query_section(ui, inspector, nav, node_mgr, ui_mgr);
         }
+        InspectorTab::Data => {
+            crate::object_data::render(ui, &mut inspector.object_data, local_role, db_tx, ui_mgr);
+        }
     }
 }
 
 /// Build a scope string from the current navigation state.
 pub(crate) fn build_nav_scope(nav: &NavigationManager) -> String {
-    match (
-        &nav.active_verse_id,
-        &nav.active_fractal_id,
-        &nav.active_petal_id,
-    ) {
-        (Some(v), Some(f), Some(p)) => fe_database::build_scope(v, Some(f), Some(p)),
-        (Some(v), Some(f), None) => fe_database::build_scope(v, Some(f), None),
-        (Some(v), None, _) => fe_database::build_scope(v, None, None),
-        _ => String::new(),
-    }
+    nav.active_scope().unwrap_or_default()
 }
 
 fn inspector_entity_section(
@@ -1770,6 +1773,7 @@ fn inspector_schema_section(
     local_role: &LocalUserRole,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
     nav: &NavigationManager,
+    ui_mgr: &mut UiManager,
 ) {
     if !local_role.can_manage() {
         return;
@@ -1855,30 +1859,35 @@ fn inspector_schema_section(
                                 .small()
                                 .color(theme::TEXT_DIM),
                         );
-                        if ui
-                            .add(
-                                egui::Button::new(egui::RichText::new("\u{2715}").small())
-                                    .fill(theme::BG_DANGER)
-                                    .small(),
-                            )
-                            .named(ui, format_args!("Delete field definition {}", fd.key))
-                            .on_hover_text(format!("Delete field def '{}'", fd.key))
-                            .clicked()
-                        {
-                            delete_idx = Some(idx);
-                        }
+                        ui.add_enabled_ui(!fd.field_def_id.starts_with("pending-"), |ui| {
+                            if super::widgets::confirm_button(
+                                ui,
+                                ("delete-field-definition", &fd.field_def_id),
+                                "Delete",
+                                "Confirm",
+                                format_args!("Delete field definition {}", fd.key),
+                            ) {
+                                delete_idx = Some(idx);
+                            }
+                        })
+                        .response
+                        .on_disabled_hover_text("Waiting for the stored definition ID");
                         ui.end_row();
                     }
                 });
         }
 
         if let Some(idx) = delete_idx {
-            let fd = inspector.field_defs.remove(idx);
-            db_tx
-                .send(DbCommand::DeleteFieldDef {
-                    field_def_id: fd.field_def_id,
-                })
-                .ok();
+            let fd = &inspector.field_defs[idx];
+            crate::actions::send_or_toast(
+                db_tx,
+                DbCommand::DeleteFieldDef {
+                    field_def_id: fd.field_def_id.clone(),
+                },
+                ui_mgr,
+                ui.input(|input| input.time),
+                "delete field definition",
+            );
         }
 
         ui.add_space(6.0);
@@ -1934,17 +1943,30 @@ fn inspector_schema_section(
             let key = inspector.field_def_add_key_buf.trim().to_string();
             let value_type = inspector.field_def_add_type_buf.clone();
             let scope = build_nav_scope(nav);
+            if scope.is_empty() {
+                ui_mgr.show_error(
+                    "Choose a valid Verse, Fractal and Petal before creating a definition",
+                    ui.input(|input| input.time),
+                );
+                return;
+            }
 
             // Send DbCommand to persist
-            db_tx
-                .send(DbCommand::CreateFieldDef {
+            if !crate::actions::send_or_toast(
+                db_tx,
+                DbCommand::CreateFieldDef {
                     scope: scope.clone(),
                     entity_type: "node".to_string(),
                     key: key.clone(),
                     value_type: value_type.clone(),
                     default_val: None,
-                })
-                .ok();
+                },
+                ui_mgr,
+                ui.input(|input| input.time),
+                "create field definition",
+            ) {
+                return;
+            }
 
             // Add locally for immediate feedback
             let entry = crate::plugin::FieldDefEntry {
@@ -2000,7 +2022,12 @@ mod tests {
             ),
             ("empty-note", "string", "", json!("")),
             ("amount", "number", "  -1.5e2  ", json!(-150.0)),
-            ("counter", "number", "18446744073709551615", json!(u64::MAX)),
+            (
+                "counter",
+                "number",
+                "9007199254740993",
+                json!(9007199254740993_u64),
+            ),
             ("flag", "bool", " false ", json!(false)),
             (
                 "config",
@@ -2085,7 +2112,7 @@ mod tests {
         }
         assert_eq!(
             inspector.node_properties["counter"].as_u64(),
-            Some(u64::MAX)
+            Some(9007199254740993_u64)
         );
         let stored = inspector.node_properties.clone();
         for (kind, invalid) in [
@@ -2094,6 +2121,8 @@ mod tests {
             ("number", "-Infinity"),
             ("number", "1e999"),
             ("number", "01"),
+            ("number", "18446744073709551615"),
+            ("object", r#"{"nested":18446744073709551615}"#),
             ("number", r#""12""#),
             ("bool", "yes"),
             ("bool", "1"),
@@ -2435,6 +2464,273 @@ mod tests {
             .remove(actions.cancel.as_deref().unwrap());
         assert_eq!(inspector.node_properties, stored);
         assert!(ui_mgr.drain_actions().is_empty());
+
+        use crate::object_data::ObjectDataSection;
+        use crate::verse_manager::{FractalEntry, NodeEntry, PetalEntry, VerseEntry};
+        use fe_runtime::messages::DbResult;
+        use fe_runtime::node_history::{NodeHistoryCoverage, NodeHistoryPage};
+        use fe_runtime::node_measurements::{
+            MeasurementPoint, MeasurementSeries, NodeMeasurements,
+        };
+        while rx.try_recv().is_ok() {}
+        let tree = VerseManager::from_verses(vec![VerseEntry {
+            id: "v".into(),
+            name: "Verse".into(),
+            fractals: vec![FractalEntry {
+                id: "f".into(),
+                name: "Fractal".into(),
+                petals: vec![PetalEntry {
+                    id: "p".into(),
+                    name: "Petal".into(),
+                    nodes: vec![
+                        NodeEntry {
+                            id: "node-1".into(),
+                            position: [6.0, 0.0, 8.0],
+                            ..Default::default()
+                        },
+                        NodeEntry {
+                            id: "node-2".into(),
+                            position: [10.0, 2.0, 6.0],
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }]);
+        let mut nav = NavigationManager::default();
+        nav.navigate_to_petal_in_fractal("v", "Verse", "f", "Fractal", "p");
+        let owner = LocalUserRole {
+            role: Some(fe_database::RoleLevel::Owner),
+        };
+        let data_ctx = egui::Context::default();
+        let mut data_time = 100.0;
+        inspector.active_tab = InspectorTab::Data;
+        let native_frame = |width: f32,
+                            nodes: &mut NodeManager,
+                            inspector: &mut InspectorFormState,
+                            notices: &mut UiManager,
+                            role: &LocalUserRole,
+                            time: &mut f64| {
+            *time += 0.05;
+            crate::ui_shell::layout_policy::begin_frame(&data_ctx, true);
+            let output = data_ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 1100.0),
+                    )),
+                    time: Some(*time),
+                    ..Default::default()
+                },
+                |context| {
+                    crate::ui_shell::layout_policy::begin_ui_pass(context);
+                    egui::CentralPanel::default().show(context, |ui| {
+                        right_inspector(
+                            ui,
+                            inspector,
+                            nodes,
+                            &tree,
+                            notices,
+                            role,
+                            &db_sender.0,
+                            &nav,
+                            &crate::asset_ops::AssetDownloadStatus::default(),
+                        );
+                    });
+                },
+            );
+            (
+                output,
+                crate::ui_shell::layout_policy::observations(&data_ctx),
+            )
+        };
+        native_frame(
+            640.0,
+            &mut nodes,
+            &mut inspector,
+            &mut ui_mgr,
+            &owner,
+            &mut data_time,
+        );
+        let DbCommand::ReadNodeHistory {
+            node_id,
+            after_version,
+            limit,
+            at_version,
+            grant,
+            correlation_id: Some(history_id),
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("Data opens the typed history reader");
+        };
+        assert_eq!(node_id, "node-1");
+        assert_eq!(after_version, 0);
+        assert_eq!(limit, 50);
+        assert!(at_version.is_none());
+        assert!(matches!(
+            grant,
+            fe_runtime::node_history::NodeAccessGrant::Local
+        ));
+        let page = NodeHistoryPage {
+            coverage: NodeHistoryCoverage {
+                node_id: "node-1".into(),
+                journal_version: 1,
+                current_version: 5,
+                coverage_start_version: Some(1),
+                coverage_started_at: Some("2026-11-01T00:00:00Z".into()),
+                supported_operations: vec!["property_set".into(), "full_transform".into()],
+                order: "commit_version".into(),
+                event_time_ordering: false,
+                current_state_verified: true,
+            },
+            entries: vec![],
+            next_after_version: None,
+        };
+        assert!(!crate::object_data::route(
+            &mut inspector.object_data,
+            &DbResult::NodeHistoryLoaded {
+                page: page.clone(),
+                correlation_id: Some("stale-request".into())
+            }
+        ));
+        assert!(crate::object_data::route(
+            &mut inspector.object_data,
+            &DbResult::NodeHistoryLoaded {
+                page: page.clone(),
+                correlation_id: Some(history_id.clone())
+            }
+        ));
+        assert_eq!(
+            tree.all_nodes()
+                .find(|node| node.id == "node-1")
+                .unwrap()
+                .position,
+            [6.0, 0.0, 8.0],
+            "browsing history must not rewind the live tree"
+        );
+        assert_eq!(
+            inspector.node_properties, stored,
+            "history replies must not replace current property buffers"
+        );
+        inspector
+            .object_data
+            .activate(ObjectDataSection::Measurements);
+        native_frame(
+            640.0,
+            &mut nodes,
+            &mut inspector,
+            &mut ui_mgr,
+            &owner,
+            &mut data_time,
+        );
+        let DbCommand::ReadNodeMeasurements {
+            node_id,
+            petal_id,
+            correlation_id,
+            ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("Measurements uses its scoped typed reader");
+        };
+        assert_eq!((node_id.as_str(), petal_id.as_str()), ("node-1", "p"));
+        let series = MeasurementSeries {
+            metric: "calibrated".into(),
+            units: "m".into(),
+        };
+        let measurements = NodeMeasurements {
+            node_id: "node-1".into(),
+            petal_id: "p".into(),
+            series: Some(series.clone()),
+            available_series: vec![series],
+            series_truncated: false,
+            points: [21.0, 23.0, 25.0]
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| MeasurementPoint {
+                    reading_id: format!("r{index}"),
+                    recorded_at: format!("2026-11-01T00:0{index}:00Z"),
+                    recorded_at_ms: 1793491200000 + index as i64 * 60000,
+                    value,
+                })
+                .collect(),
+            truncated: false,
+            limit: 1024,
+        };
+        assert!(crate::object_data::route(
+            &mut inspector.object_data,
+            &DbResult::NodeMeasurementsLoaded {
+                measurements,
+                correlation_id
+            }
+        ));
+        for width in [260.0, 640.0, 1000.0] {
+            let (_, observed) = native_frame(
+                width,
+                &mut nodes,
+                &mut inspector,
+                &mut ui_mgr,
+                &owner,
+                &mut data_time,
+            );
+            assert!(
+                observed
+                    .controls
+                    .iter()
+                    .any(|control| (control.rect.height() - 170.0).abs() < 0.1),
+                "the native chart must have measured geometry"
+            );
+            assert!(
+                rx.try_recv().is_err(),
+                "cached measurements must not query every frame"
+            );
+        }
+        inspector.object_data.activate(ObjectDataSection::Schema);
+        native_frame(
+            640.0,
+            &mut nodes,
+            &mut inspector,
+            &mut ui_mgr,
+            &owner,
+            &mut data_time,
+        );
+        assert!(
+            matches!(rx.try_recv().unwrap(), DbCommand::ListFieldDefs { scope } if scope == "VERSE#v-FRACTAL#f-PETAL#p")
+        );
+        nodes.select(Entity::from_bits(2), "node-2");
+        native_frame(
+            640.0,
+            &mut nodes,
+            &mut inspector,
+            &mut ui_mgr,
+            &owner,
+            &mut data_time,
+        );
+        while rx.try_recv().is_ok() {}
+        assert!(
+            !crate::object_data::route(
+                &mut inspector.object_data,
+                &DbResult::NodeHistoryLoaded {
+                    page,
+                    correlation_id: Some(history_id)
+                }
+            ),
+            "a previous selection's reply must not claim the new target"
+        );
+        native_frame(
+            640.0,
+            &mut nodes,
+            &mut inspector,
+            &mut ui_mgr,
+            &LocalUserRole::default(),
+            &mut data_time,
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "unresolved access must not start a data read"
+        );
     }
 
     #[test]

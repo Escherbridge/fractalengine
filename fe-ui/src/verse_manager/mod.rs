@@ -27,8 +27,8 @@ use bevy::prelude::*;
 use crate::plugin::UiSet;
 
 pub use path_asset_materialize::{
-    PathAssetApplied, PathAssetCache, StampRenderIndex, StampTrackRenderData,
-    invalidate_path_stamp_projection,
+    invalidate_path_stamp_projection, PathAssetApplied, PathAssetCache, StampRenderIndex,
+    StampTrackRenderData,
 };
 // T4 right-click classification: the stamp marker-id format + the per-instance
 // marker component, consumed by `node_manager::context_pick`.
@@ -37,9 +37,9 @@ pub(crate) use path_asset_materialize::MAX_STAMPS_PER_PETAL;
 pub(crate) use path_asset_materialize::{parse_stamp_marker_id, stamp_marker_id};
 pub use primitive_materialize::PrimitiveDescriptorCache;
 pub use primitive_reconcile::PrimitiveMaterialAssets;
-pub use residency_ledger::{ResidencyLedger, radius_scale_for_pressure};
+pub use residency_ledger::{radius_scale_for_pressure, ResidencyLedger};
 pub(crate) use spawn::MAX_PETAL_NODES;
-pub use spawn::{PathAssetInstance, PrimitiveNode, ResidentNode, build_primitive_mesh};
+pub use spawn::{build_primitive_mesh, PathAssetInstance, PrimitiveNode, ResidentNode};
 
 // ---------------------------------------------------------------------------
 // Hierarchy tree types

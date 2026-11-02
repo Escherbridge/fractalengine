@@ -102,7 +102,7 @@ pub(super) fn sync_manager_to_inspector(
 mod tests {
     #![allow(clippy::field_reassign_with_default)] // default-then-set is clearer in test fixtures
     use super::*;
-    use crate::actions::portal::{SaveUrlOutcome, compute_save_url};
+    use crate::actions::portal::{compute_save_url, SaveUrlOutcome};
     use crate::verse_manager::{FractalEntry, NodeEntry, PetalEntry, VerseEntry};
     use bevy::prelude::Entity;
 

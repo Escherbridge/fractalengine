@@ -2,10 +2,16 @@
 
 use bevy::prelude::*;
 use fe_runtime::messages::{CommittedNodeMaterialization, DbConfirmedTransform, NodeDto};
-use fe_runtime::node_history::{NodeMutationReceipt, stored_rotation_quaternion};
+use fe_runtime::node_history::{stored_rotation_quaternion, NodeMutationReceipt};
 
 use super::super::{NodeEntry, VerseManager};
 use crate::plugin::SpawnedNodeMarker;
+
+pub(super) enum MaterializationOutcome {
+    Applied { transform_changed: bool },
+    NeedsHierarchy,
+    Ignored,
+}
 
 pub(super) fn from_receipt(
     receipt: &NodeMutationReceipt,
@@ -26,10 +32,11 @@ pub(super) fn from_receipt(
     }
     let rotation = stored_rotation_quaternion(&state.rotation)?;
     let (rx, ry, rz) = Quat::from_array(rotation).to_euler(EulerRot::XYZ);
-    let asset_path = manager
-        .all_nodes()
-        .find(|node| node.id == state.node_id)
-        .and_then(|node| node.asset_path.clone());
+    let existing = manager.all_nodes().find(|node| node.id == state.node_id);
+    if state.asset_id.is_some() && existing.is_none() {
+        return None;
+    }
+    let asset_path = existing.and_then(|node| node.asset_path.clone());
     Some(CommittedNodeMaterialization {
         node: NodeDto {
             node_id: state.node_id.clone(),
@@ -56,24 +63,23 @@ pub(super) fn apply(
     manager: &mut VerseManager,
     commands: &mut Commands,
     entities: &Query<
-        (
-            Entity,
-            &SpawnedNodeMarker,
-            Option<&super::super::spawn::FallbackSign>,
-        ),
+        (Entity, &SpawnedNodeMarker, &Transform),
         With<super::super::spawn::ResidentNode>,
     >,
-) -> bool {
+) -> MaterializationOutcome {
     let node = &current.node;
     if manager
         .committed_versions
         .get(&node.node_id)
         .is_some_and(|version| *version > current.history_version)
-        || manager
-            .petal_id_of(&node.node_id)
-            .is_some_and(|petal| petal != node.petal_id)
     {
-        return false;
+        return MaterializationOutcome::Ignored;
+    }
+    if manager
+        .petal_id_of(&node.node_id)
+        .is_some_and(|petal| petal != node.petal_id)
+    {
+        return MaterializationOutcome::NeedsHierarchy;
     }
     let transform = Transform {
         translation: Vec3::from_array(node.position),
@@ -88,8 +94,12 @@ pub(super) fn apply(
             "Invalid committed scene transform withheld for {}",
             node.node_id
         );
-        return false;
+        return MaterializationOutcome::Ignored;
     }
+    let previous = manager
+        .all_nodes()
+        .find(|entry| entry.id == node.node_id)
+        .map(NodeEntry::world_transform);
     let webpage_url = manager
         .all_nodes()
         .find(|entry| entry.id == node.node_id)
@@ -110,21 +120,17 @@ pub(super) fn apply(
             "Committed node {} has an unloaded parent; hierarchy reload is required",
             node.node_id
         );
-        return false;
+        return MaterializationOutcome::NeedsHierarchy;
     }
     manager
         .committed_versions
         .insert(node.node_id.clone(), current.history_version);
-    for (entity, marker, fallback) in entities.iter() {
+    let mut changed = false;
+    for (entity, marker, existing_transform) in entities.iter() {
         if marker.node_id != node.node_id || marker.petal_id != node.petal_id {
             continue;
         }
-        let mut scene_transform = transform;
-        if fallback.is_some() {
-            scene_transform.translation.y += 0.5;
-        }
         commands.entity(entity).insert((
-            scene_transform,
             Name::new(node.name.clone()),
             DbConfirmedTransform {
                 position: node.position,
@@ -132,6 +138,12 @@ pub(super) fn apply(
                 scale: node.scale,
             },
         ));
+        if previous != Some(transform) || *existing_transform != transform {
+            commands.entity(entity).insert(transform);
+            changed = true;
+        }
     }
-    true
+    MaterializationOutcome::Applied {
+        transform_changed: changed,
+    }
 }

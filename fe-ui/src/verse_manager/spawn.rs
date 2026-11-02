@@ -273,20 +273,26 @@ pub(super) fn spawn_fallback_sign(
     position: [f32; 3],
 ) -> Entity {
     // A thin vertical cuboid: 0.8 wide, 0.6 tall, 0.02 deep — like a placard.
-    let mesh = meshes.add(Cuboid::new(0.8, 0.6, 0.02));
+    let mut sign = Mesh::from(Cuboid::new(0.8, 0.6, 0.02));
+    if let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) =
+        sign.attribute_mut(Mesh::ATTRIBUTE_POSITION)
+    {
+        for position in positions {
+            position[1] += 0.5;
+        }
+    }
+    let mesh = meshes.add(sign);
     let material = materials.add(StandardMaterial {
         base_color: Color::srgba(0.3, 0.35, 0.5, 0.9),
         alpha_mode: AlphaMode::Blend,
         unlit: true,
         ..default()
     });
-    // Position the sign slightly above the node's Y so it hovers at eye level.
-    let sign_y = position[1] + 0.5;
     let entity = commands
         .spawn((
             Mesh3d(mesh),
             MeshMaterial3d(material),
-            Transform::from_xyz(position[0], sign_y, position[2]),
+            Transform::from_xyz(position[0], position[1], position[2]),
             Name::new(format!("[{}]", name)),
             SpawnedNodeMarker {
                 node_id: node_id.to_string(),

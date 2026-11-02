@@ -60,12 +60,12 @@ pub use path_segment_interaction::TrackPickShape;
 /// FR-1 typed selection read-model, re-exported for the gimbal, the object-aware
 /// left-click dispatch (FR-2), and panels (the tool inspector projects it to name
 /// the live selection + gimbal affordance).
-pub(crate) use selection::{SelectionKind, SelectionState, project_selection};
+pub(crate) use selection::{project_selection, SelectionKind, SelectionState};
 
 /// FR-2 object-aware left-click dispatch model, re-exported for the FR-3 path
 /// gimbal drag, the right-click menu (`dialogs::context_menu`), and future
 /// terrain/road-builder consumers of the shared table.
-pub use dispatch::{HandleSide, HitTarget, Operation, resolve_operation};
+pub use dispatch::{resolve_operation, HandleSide, HitTarget, Operation};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -252,15 +252,18 @@ impl NodeManager {
     }
 
     /// A newer persisted snapshot wins over an unfinished local axis drag.
-    pub(crate) fn accept_committed_transform(&mut self, node_id: &str) {
+    pub(crate) fn accept_committed_transform(&mut self, node_id: &str) -> bool {
         if let Some(selection) = self
             .selected
             .as_mut()
             .filter(|selection| selection.node_id == node_id)
         {
+            let interrupted = selection.drag.is_some() || selection.drag_committed;
             selection.drag = None;
             selection.drag_committed = false;
+            return interrupted;
         }
+        false
     }
 
     /// Drop an in-flight entity gimbal drag WITHOUT committing it, yielding the

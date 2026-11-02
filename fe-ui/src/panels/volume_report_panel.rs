@@ -20,8 +20,8 @@ use crate::accessibility::ResponseExt;
 use fe_renderer::terrain_overlay::{VolumeReportRequest, VolumeReportResult};
 use fe_runtime::messages::DbResult;
 
-use crate::actions::UiManager;
 use crate::actions::terrain_proposal::{SculptShapeMode, SculptToolState};
+use crate::actions::UiManager;
 use crate::navigation_manager::NavigationManager;
 use crate::panels::proposal_report_panel::earthwork_regions_from_terrain;
 use crate::panels::toolbar::Tool;
@@ -286,7 +286,11 @@ pub(crate) fn resolve_volume_display(state: &VolumeReportState) -> VolumeDisplay
 
 /// "m"/"wu" per NFR-4 — never mislabels world units as meters.
 pub(crate) fn volume_unit_suffix(scaled: bool) -> &'static str {
-    if scaled { "m" } else { "wu" }
+    if scaled {
+        "m"
+    } else {
+        "wu"
+    }
 }
 
 // ---------------------------------------------------------------------------

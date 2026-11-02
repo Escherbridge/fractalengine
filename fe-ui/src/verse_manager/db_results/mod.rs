@@ -62,7 +62,7 @@ pub(super) struct DescriptorCaches<'w, 's> {
         (
             Entity,
             &'static crate::plugin::SpawnedNodeMarker,
-            Option<&'static super::spawn::FallbackSign>,
+            &'static Transform,
         ),
         With<super::spawn::ResidentNode>,
     >,
@@ -99,6 +99,20 @@ fn forward_correlated_property_reply(
     correlated
 }
 
+fn request_committed_hierarchy(sender: &fe_runtime::app::DbCommandSender, requested: &mut bool) {
+    if *requested {
+        return;
+    }
+    *requested = true;
+    if sender
+        .0
+        .send(fe_runtime::messages::DbCommand::LoadHierarchy)
+        .is_err()
+    {
+        bevy::log::warn!("DB channel closed while hydrating committed object");
+    }
+}
+
 pub(super) fn apply_db_results(
     mut reader: MessageReader<DbResult>,
     mut verse_mgr: ResMut<VerseManager>,
@@ -123,23 +137,57 @@ pub(super) fn apply_db_results(
     let mut already_spawned: std::collections::HashSet<String> =
         caches.spawned.iter().map(|m| m.node_id.clone()).collect();
     let mesh_budget_exceeded = caches.mesh_budget.exceeded;
+    let mut hierarchy_requested = false;
     for result in reader.read() {
+        crate::object_data::synchronize(
+            &mut inspector.object_data,
+            &node_mgr,
+            &verse_mgr,
+            &nav,
+            &local_role,
+        );
+        if crate::object_data::route(&mut inspector.object_data, result) {
+            continue;
+        }
         let property_forwarded = forward_correlated_property_reply(result, &mut pending_api);
         let materialization = match result {
             DbResult::NodeMaterialized { node, .. } => Some(node.clone()),
             DbResult::NodeMutationCommitted { receipt, .. } => {
-                committed::from_receipt(receipt, &verse_mgr)
+                let current = committed::from_receipt(receipt, &verse_mgr);
+                if current.is_none() {
+                    bevy::log::warn!(
+                        "Current object receipt needs authoritative hierarchy hydration"
+                    );
+                    request_committed_hierarchy(&db_sender, &mut hierarchy_requested);
+                }
+                current
             }
             _ => None,
         };
         if let Some(current) = materialization {
-            if committed::apply(
+            let outcome = committed::apply(
                 &current,
                 &mut verse_mgr,
                 &mut commands,
                 &caches.current_nodes,
-            ) {
-                node_mgr.accept_committed_transform(&current.node.node_id);
+            );
+            let transform_changed = match outcome {
+                committed::MaterializationOutcome::Applied { transform_changed } => {
+                    Some(transform_changed)
+                }
+                committed::MaterializationOutcome::NeedsHierarchy => {
+                    request_committed_hierarchy(&db_sender, &mut hierarchy_requested);
+                    None
+                }
+                committed::MaterializationOutcome::Ignored => None,
+            };
+            if let Some(transform_changed) = transform_changed {
+                if transform_changed && node_mgr.accept_committed_transform(&current.node.node_id) {
+                    ui_mgr.show_advisory(
+                        "Object updated; unfinished move cancelled",
+                        caches.time.elapsed_secs_f64(),
+                    );
+                }
                 properties::handle_node_properties_loaded(
                     &current.node.node_id,
                     Some(&current.node.petal_id),
@@ -544,13 +592,29 @@ pub(super) fn apply_db_results(
                     continue;
                 }
             }
-            DbResult::FieldDefsListed { field_defs, .. } => {
-                fields::handle_field_defs_listed(field_defs, &mut inspector)
+            DbResult::FieldDefsListed { scope, field_defs } => {
+                if nav.active_scope().as_deref() == Some(scope.as_str()) {
+                    fields::handle_field_defs_listed(field_defs, &mut inspector);
+                }
             }
             // Field-def mutations only need a re-list, which the panel re-sends itself.
             DbResult::FieldDefCreated { .. }
             | DbResult::FieldDefUpdated { .. }
-            | DbResult::FieldDefDeleted { .. } => {}
+            | DbResult::FieldDefDeleted { .. } => {
+                if let Some(scope) = nav.active_scope() {
+                    if db_sender
+                        .0
+                        .send(fe_runtime::messages::DbCommand::ListFieldDefs { scope })
+                        .is_err()
+                    {
+                        bevy::log::warn!(
+                            "DB channel closed while refreshing committed field definitions"
+                        );
+                    } else {
+                        inspector.field_defs_loading = true;
+                    }
+                }
+            }
             // Both GUI and API-initiated (correlated) sets apply here, so the
             // host's live terrain tracks every write (fe-runtime §api-reply-correlation).
             // M-03: the correlation id is threaded through so a GUI-correlated

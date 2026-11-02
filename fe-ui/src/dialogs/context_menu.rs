@@ -315,7 +315,8 @@ pub(crate) fn proposal_delete_action(hit: &HitTarget) -> Option<UiAction> {
 }
 
 /// Disabled-hint for seam-gated verbs whose T5 egress string is absent (FR-4).
-const SEAM_GATED_HINT: &str = "No API endpoint for this object yet \u{2014} lights up when the read/write \
+const SEAM_GATED_HINT: &str =
+    "No API endpoint for this object yet \u{2014} lights up when the read/write \
      API surface (endpoint_api_surface) provides one.";
 
 /// The one button body every verb row shares: danger tint for the destructive
@@ -1359,24 +1360,20 @@ mod tests {
 
     #[test]
     fn point_verb_action_none_for_non_anchor_hits_or_other_verbs() {
-        assert!(
-            point_verb_action(
-                Verb::SetCornerSmooth,
-                &HitTarget::Node(entity(1)),
-                "track-1",
-                CornerKind::Corner
-            )
-            .is_none()
-        );
-        assert!(
-            point_verb_action(
-                Verb::Delete,
-                &HitTarget::PathVertex { idx: 0 },
-                "track-1",
-                CornerKind::Corner
-            )
-            .is_none()
-        );
+        assert!(point_verb_action(
+            Verb::SetCornerSmooth,
+            &HitTarget::Node(entity(1)),
+            "track-1",
+            CornerKind::Corner
+        )
+        .is_none());
+        assert!(point_verb_action(
+            Verb::Delete,
+            &HitTarget::PathVertex { idx: 0 },
+            "track-1",
+            CornerKind::Corner
+        )
+        .is_none());
     }
 
     #[test]
@@ -1396,13 +1393,11 @@ mod tests {
     #[test]
     fn edit_region_actions_none_for_other_verbs_or_targets() {
         assert!(edit_region_actions(Verb::EditRegionParams, &HitTarget::Node(entity(1))).is_none());
-        assert!(
-            edit_region_actions(
-                Verb::Delete,
-                &HitTarget::TerrainProposal { id: "r1".into() }
-            )
-            .is_none()
-        );
+        assert!(edit_region_actions(
+            Verb::Delete,
+            &HitTarget::TerrainProposal { id: "r1".into() }
+        )
+        .is_none());
     }
 
     #[test]

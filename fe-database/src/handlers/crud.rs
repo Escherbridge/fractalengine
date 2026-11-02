@@ -9,7 +9,7 @@ use fe_runtime::messages::{
 };
 
 use super::invite::{generate_namespace_secret, store_namespace_secret};
-use crate::{BlobStoreHandle, ReplicationSender, hash_from_hex, hash_to_hex, replicate_row};
+use crate::{hash_from_hex, hash_to_hex, replicate_row, BlobStoreHandle, ReplicationSender};
 
 // ---------------------------------------------------------------------------
 // Verse

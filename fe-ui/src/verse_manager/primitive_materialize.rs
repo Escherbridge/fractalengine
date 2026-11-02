@@ -6,10 +6,10 @@
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
-use fe_sdk::primitive::{PRIMITIVE_PROPERTY_KEY, PrimitiveDescriptor};
+use fe_sdk::primitive::{PrimitiveDescriptor, PRIMITIVE_PROPERTY_KEY};
 
-use super::primitive_reconcile::{PrimitiveMaterialAssets, resolve_primitive_material};
-use super::spawn::{FallbackSign, PrimitiveNode, build_primitive_mesh, spawn_primitive_entity};
+use super::primitive_reconcile::{resolve_primitive_material, PrimitiveMaterialAssets};
+use super::spawn::{build_primitive_mesh, spawn_primitive_entity, FallbackSign, PrimitiveNode};
 use super::{NodeEntry, TextureRegistryRes, VerseManager};
 use crate::navigation_manager::NavigationManager;
 use crate::plugin::SpawnedNodeMarker;
@@ -193,8 +193,7 @@ pub(super) fn materialize_cached_primitives(
         }
         remaining -= 1;
 
-        // Promote a fallback sign (undoing its +0.5 hover offset), or spawn
-        // fresh at the tree position when no placeholder exists yet.
+        // Promote the placeholder at its logical node transform.
         let pos = if let Some((entity, _, transform)) = fallback_signs
             .iter()
             .find(|(_, m, _)| m.node_id == node.id && m.petal_id == petal_id)
@@ -202,7 +201,7 @@ pub(super) fn materialize_cached_primitives(
             commands.entity(entity).despawn();
             [
                 transform.translation.x,
-                transform.translation.y - 0.5,
+                transform.translation.y,
                 transform.translation.z,
             ]
         } else {

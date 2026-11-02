@@ -1538,6 +1538,13 @@ pub fn spawn_db_thread_shared(
                         };
                         send_result(&tx, reply);
                     }
+                    Ok(DbCommand::ReadNodeMeasurements { node_id, petal_id, series, limit, grant, correlation_id }) => {
+                        let reply = match handlers::node_measurements::read(&db, &node_id, &petal_id, series, limit, &grant, &local_did).await {
+                            Ok(measurements) => DbResult::NodeMeasurementsLoaded { measurements, correlation_id },
+                            Err(error) => DbResult::RequestFailed {error:format!("Read measurements failed: {error}"),correlation_id},
+                        };
+                        send_result(&tx, reply);
+                    }
                     Ok(DbCommand::ReadNodeHistory { node_id, after_version, limit, at_version, grant, correlation_id }) => {
                         let reply = handlers::node_history::read_reply(&db,&node_id,after_version,limit,at_version,&grant,&local_did,correlation_id).await;
                         send_result(&tx, reply);

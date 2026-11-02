@@ -16,19 +16,20 @@ use bevy::time::Real;
 use bevy::transform::TransformSystems;
 use bevy::window::PrimaryWindow;
 use fe_renderer::camera::{
+    compute_orbit_transform, frame_world_box, orbit_from_look_at, pose_transform,
     CameraCaptureLock, CameraScaleSettings, CaptureCamera, LookAtPose, OrbitCameraController,
-    StreamingFocus, compute_orbit_transform, frame_world_box, orbit_from_look_at, pose_transform,
+    StreamingFocus,
 };
 use fe_renderer::terrain_height::TerrainHeightField;
 use fe_runtime::vision::{
-    ActiveHierarchy, AltitudeReference, CameraState, CaptureMode, DEFAULT_FOV_DEG, DEFAULT_HEIGHT,
-    DEFAULT_WIDTH, FocusTarget, PoseSource, ProjectionState, ResolvedGeo, ResolvedOrbit,
-    ResolvedPose, SETTLE_MAX, ValidCaptureSpec, ValidPoseSpec, VisionFailure, VisionFailureClass,
-    VisionOp, VisionOutput, VisionRequest, VisionRequestReceiver, WindowState, denied,
+    denied, ActiveHierarchy, AltitudeReference, CameraState, CaptureMode, FocusTarget, PoseSource,
+    ProjectionState, ResolvedGeo, ResolvedOrbit, ResolvedPose, ValidCaptureSpec, ValidPoseSpec,
+    VisionFailure, VisionFailureClass, VisionOp, VisionOutput, VisionRequest,
+    VisionRequestReceiver, WindowState, DEFAULT_FOV_DEG, DEFAULT_HEIGHT, DEFAULT_WIDTH, SETTLE_MAX,
 };
 use fe_terrain::camera_framing::{
-    Coverage, FramedPose, coverage_check, frame_bounds_top_down, geo_pose, tile_bounds,
-    union_bounds, within_projection_range,
+    coverage_check, frame_bounds_top_down, geo_pose, tile_bounds, union_bounds,
+    within_projection_range, Coverage, FramedPose,
 };
 use fe_terrain::petal_binding::{ActivePetalTerrain, ActiveTileSource};
 use fe_terrain::projection::Projection as GeoProjection;
@@ -37,7 +38,7 @@ use fe_terrain::terrain_plugin::CaptureFocusResidency;
 use fe_ui::navigation_manager::NavigationManager;
 use fe_ui::plugin::SpawnedNodeMarker;
 use fe_ui::verse_manager::VerseManager;
-use fe_ui::visibility::{NodeAncestry, VisibilityState, effective_visibility};
+use fe_ui::visibility::{effective_visibility, NodeAncestry, VisibilityState};
 
 use crate::screenshot_bridge::{capture_png, capture_refusal};
 
@@ -1652,8 +1653,8 @@ mod tests {
     use bevy::render::view::screenshot::ScreenshotCaptured;
     use bevy::tasks::{AsyncComputeTaskPool, TaskPool};
     use fe_runtime::vision::{
-        CaptureSpec, FocusPose, OrbitPose, PoseSpec, TilePose, VisionReply, VisionRequestSender,
-        vision_bridge,
+        vision_bridge, CaptureSpec, FocusPose, OrbitPose, PoseSpec, TilePose, VisionReply,
+        VisionRequestSender,
     };
     use fe_ui::verse_manager::{FractalEntry, NodeEntry, PetalEntry, VerseEntry};
     use fe_ui::visibility::OverrideState;

@@ -50,7 +50,9 @@ impl PropertyValueKind {
     pub(crate) fn hint(self) -> &'static str {
         match self {
             Self::String => "Text is saved exactly, including whitespace.",
-            Self::Number => "A finite JSON number, for example 12 or -1.5e2.",
+            Self::Number => {
+                "A finite JSON number, for example 12 or -1.5e2. Integers use signed 64-bit storage."
+            }
             Self::Boolean => "Use true or false, in lowercase.",
             Self::Object => "A JSON object, for example {\"name\": \"value\"}.",
             Self::Array => "A JSON array, for example [1, {\"name\": \"value\"}].",
@@ -87,6 +89,7 @@ impl PropertyValueKind {
             Self::String | Self::Boolean => unreachable!(),
         };
         if valid {
+            fe_sdk::property_schema::validate_persistable_numbers(&value)?;
             Ok(value)
         } else {
             Err(self.hint().to_owned())

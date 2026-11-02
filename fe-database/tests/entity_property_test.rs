@@ -523,6 +523,129 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
             other => panic!("historical state: {other:?}"),
         }
     }
+    let other_node = create_node(&db, &petal_id, "Other measurement anchor", [20.0, 0.0, 0.0]);
+    let mut readings = [(2, 12.0), (0, 10.0), (1, 11.0)]
+        .into_iter()
+        .map(|(minute, value)| fe_runtime::messages::IotReadingInput {
+            node_id: historical.clone(),
+            metric: "distance".into(),
+            units: "m".into(),
+            value,
+            recorded_at: Some(format!("2026-11-01T00:0{minute}:00Z")),
+            payload_id: None,
+        })
+        .collect::<Vec<_>>();
+    readings.push(fe_runtime::messages::IotReadingInput {
+        node_id: historical.clone(),
+        metric: "distance".into(),
+        units: "ft".into(),
+        value: 33.0,
+        recorded_at: Some("2026-11-01T00:00:00Z".into()),
+        payload_id: None,
+    });
+    readings.push(fe_runtime::messages::IotReadingInput {
+        node_id: other_node,
+        metric: "distance".into(),
+        units: "m".into(),
+        value: 999.0,
+        recorded_at: Some("2026-11-01T00:00:00Z".into()),
+        payload_id: None,
+    });
+    db.cmd_tx
+        .send(DbCommand::InsertIotReadings {
+            petal_id: petal_id.clone(),
+            verse_id: None,
+            source_did: "did:qa-simulation".into(),
+            source_class: fe_runtime::messages::SourceClass::Simulation,
+            readings,
+            correlation_id: Some("native-measurements-ingest".into()),
+        })
+        .unwrap();
+    assert!(matches!(
+        db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap(),
+        DbResult::IotReadingsInserted { written: 5, .. }
+    ));
+    for (units, limit, expected, truncated) in [
+        ("m", 2, vec![10.0, 11.0], true),
+        ("ft", 1024, vec![33.0], false),
+        ("m", usize::MAX, vec![10.0, 11.0, 12.0], false),
+    ] {
+        db.cmd_tx
+            .send(DbCommand::ReadNodeMeasurements {
+                node_id: historical.clone(),
+                petal_id: petal_id.clone(),
+                series: Some(fe_runtime::node_measurements::MeasurementSeries {
+                    metric: "distance".into(),
+                    units: units.into(),
+                }),
+                limit,
+                grant: fe_runtime::node_history::NodeAccessGrant::Local,
+                correlation_id: format!("native-measurements-{units}-{limit}"),
+            })
+            .unwrap();
+        let DbResult::NodeMeasurementsLoaded { measurements, .. } =
+            db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap()
+        else {
+            panic!("expected scoped persisted measurements");
+        };
+        assert_eq!(measurements.node_id, historical);
+        assert_eq!(measurements.petal_id, petal_id);
+        assert_eq!(
+            measurements
+                .points
+                .iter()
+                .map(|point| point.value)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            measurements.available_series.len(),
+            2,
+            "units must distinguish series"
+        );
+        assert_eq!(measurements.truncated, truncated);
+        assert_eq!(measurements.limit, limit.clamp(1, 1024));
+        assert!(
+            measurements
+                .points
+                .windows(2)
+                .all(|pair| pair[0].recorded_at_ms <= pair[1].recorded_at_ms),
+            "arrival order cannot become chart order"
+        );
+    }
+    let foreign_petal = seed_hierarchy(&db);
+    for (id, petal, grant) in [
+        (
+            historical.clone(),
+            foreign_petal,
+            fe_runtime::node_history::NodeAccessGrant::Local,
+        ),
+        (
+            historical.clone(),
+            petal_id.clone(),
+            fe_runtime::node_history::NodeAccessGrant::Scoped("VERSE#foreign".into()),
+        ),
+        (
+            "absent-node".into(),
+            petal_id.clone(),
+            fe_runtime::node_history::NodeAccessGrant::Local,
+        ),
+    ] {
+        db.cmd_tx
+            .send(DbCommand::ReadNodeMeasurements {
+                node_id: id,
+                petal_id: petal,
+                series: None,
+                limit: 1024,
+                grant,
+                correlation_id: "native-measurements-refused".into(),
+            })
+            .unwrap();
+        assert!(
+            matches!(db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap(), DbResult::RequestFailed { correlation_id, .. } if correlation_id == "native-measurements-refused")
+        );
+    }
+
     db.cmd_tx
         .send(DbCommand::UpdateFieldDef {
             field_def_id,
