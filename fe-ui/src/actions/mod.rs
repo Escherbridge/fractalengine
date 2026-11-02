@@ -1516,7 +1516,7 @@ pub(crate) fn process_ui_actions(
                 if stamp_state.selected().is_some_and(|stamp| stamp_state.promoted_node_id(stamp)==Some(node_id.as_str())) {
                     tool_panel.stamp_edit_target=None;
                     stamp_state.forget_baseline(&node_id);
-                    send_or_toast(&db_sender.0,DbCommand::GetNodeProperties {node_id,correlation_id:None},&mut ui_mgr,now_secs,"reload stamp values");
+                    send_or_toast(&db_sender.0,fe_runtime::messages::DbCommand::GetNodeProperties {node_id,correlation_id:None},&mut ui_mgr,now_secs,"reload stamp values");
                 }
             }
             UiAction::ApplyStampOverrides { edit } => {
