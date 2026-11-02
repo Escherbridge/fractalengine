@@ -1017,7 +1017,7 @@ mod tests {
             true
         ));
         let mut other_nav = NavigationManager::default();
-        other_nav.navigate_to_petal("petal-B".into());
+        other_nav.navigate_to_petal("petal-B");
         let mut other_map = map.clone();
         other_map.petal_id = Some("petal-B".into());
         assert!(
