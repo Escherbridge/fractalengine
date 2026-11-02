@@ -1,18 +1,31 @@
 ---
 type: QA Investigation
 title: Terrain report coverage and refresh gaps
-status: runtime-reproduced-open
+status: fixed-focused-runtime
 date: 2026-11-01
 scope: S7 fixture prerequisites
 ---
 
-# Report gaps retained for later hardening
+# Report gaps reproduced and repaired
 
 Pass05 reproduced these failures on stage74a817e-20261101165518420.
 Fresh one-region Raise2 and Lower1 operations persisted200fill and100cut,
 but their initial UI reports cached zero. A Radius5→5.01→5 refresh displayed
 the exact expected values. See `passes/05/verdict.md` and QA-0023.
 Production terrain algorithms remain unchanged in that evidence checkpoint.
+
+Pass06 stage9650d69 verified the bounded W4-S3 repair. A fresh Raise2 and
+independent Lower1 display200fill and100cut automatically, with16384/16384
+measured sample pairs. A controlled map-origin coverage hole displays explicit
+unavailable0/16384 and suppresses numeric/copy output. Restoring the original
+origin automatically returns200 without editing the footprint. Latest-config
+replacement, petal switching and unbind/rebind were also exercised. See
+`passes/06/verdict.md`; its formal ledger remains UNKNOWN because initial log
+counters were not retained. Expanded existing tests await the final sweep.
+
+The implementation details below describe the pass05 failure state and the
+original hardening rationale; the responder now retains and refreshes the
+latest scoped request and publishes explicit coverage counts.
 
 1. **Missing coverage can look like a measured zero.**
    `fe-terrain/src/sculpt/mod.rs::cut_fill_volume` adds volume only when

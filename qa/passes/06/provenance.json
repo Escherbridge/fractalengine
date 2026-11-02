@@ -1,0 +1,20 @@
+{
+  "run_id": "20261101-175614-744",
+  "stage": {
+    "built_at": "2026-11-02T00:55:41.8255933Z",
+    "exe_sha256": "AA0146F39561257658697CCE5FD4BE12BD7CDE409BD078441966019F5D1EE2DC",
+    "source_dirty": true,
+    "kind": "fractalengine-qa-stage-v1",
+    "source_fingerprint": "D888A437F9594CF8E29EEF53205391EAE2113100F9141847897CDF6D5395F22B",
+    "source_commit": "9650d69937fdbb210c09ec0e087420888f00ae37"
+  },
+  "client_visibility_commit": "b76625c",
+  "client_log_followup": "853ffd5",
+  "cleanup": {
+    "stop_exit": 0,
+    "stopped_local": "18:55:55.077",
+    "recorded_identities": 8,
+    "still_matching": 0
+  },
+  "formal_coverage_limitation": "Starting log generation/seq were read internally but omitted from pre853 client output; they were not separately captured before cleanup. They are not reconstructed."
+}
