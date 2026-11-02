@@ -100,7 +100,8 @@ fn forward_correlated_property_reply(
     correlated
 }
 
-fn request_committed_hierarchy(pending: &mut bool) {
+fn request_committed_hierarchy(pending: &mut bool, nav: &mut NavigationManager) {
+    nav.suppress_initial_auto_navigation();
     *pending = true;
 }
 
@@ -172,7 +173,7 @@ pub(super) fn apply_db_results(
                 let current=committed::from_gltf_import(result).cloned();
                 if current.is_none() {
                     bevy::log::warn!("Asset placement receipt needs authoritative hierarchy hydration");
-                    request_committed_hierarchy(&mut caches.committed_hierarchy_pending);
+                    request_committed_hierarchy(&mut caches.committed_hierarchy_pending, &mut nav);
                 }
                 current
             }
@@ -182,7 +183,7 @@ pub(super) fn apply_db_results(
                     bevy::log::warn!(
                         "Current object receipt needs authoritative hierarchy hydration"
                     );
-                    request_committed_hierarchy(&mut caches.committed_hierarchy_pending);
+                    request_committed_hierarchy(&mut caches.committed_hierarchy_pending, &mut nav);
                 }
                 current
             }
@@ -202,7 +203,7 @@ pub(super) fn apply_db_results(
                     Some(transform_changed)
                 }
                 committed::MaterializationOutcome::NeedsHierarchy => {
-                    request_committed_hierarchy(&mut caches.committed_hierarchy_pending);
+                    request_committed_hierarchy(&mut caches.committed_hierarchy_pending, &mut nav);
                     None
                 }
                 committed::MaterializationOutcome::Ignored => None,
@@ -1963,8 +1964,8 @@ mod tests {
         app.update();
         assert!(
             matches!(reply_rx.try_recv(), Ok(DbResult::NodePropertiesLoaded {
-                        node_id, correlation_id: Some(id), properties,
-                    }) if node_id == "n1" && id == "api-properties" && properties == json!({"api":10}))
+                            node_id, correlation_id: Some(id), properties,
+                        }) if node_id == "n1" && id == "api-properties" && properties == json!({"api":10}))
         );
         let (next_tx, mut next_rx) = tokio::sync::oneshot::channel();
         app.world_mut()
@@ -2137,9 +2138,9 @@ mod tests {
         );
         let entity = placed_entities[0].0;
         let current:fe_runtime::node_history::NodeRowSnapshot=serde_json::from_value(json!({
-                        "node_id":"placed","petal_id":"p1","display_name":"Placed","asset_id":"placed-asset","position":[9.0,2.0,4.0],"elevation":2.0,
-                        "rotation":[0.25,0.5,0.75],"scale":[2.0,0.5,3.0],"interactive":true,"created_at":"test","edit_seq":1,"properties":{}
-                    })).unwrap();
+                            "node_id":"placed","petal_id":"p1","display_name":"Placed","asset_id":"placed-asset","position":[9.0,2.0,4.0],"elevation":2.0,
+                            "rotation":[0.25,0.5,0.75],"scale":[2.0,0.5,3.0],"interactive":true,"created_at":"test","edit_seq":1,"properties":{}
+                        })).unwrap();
         app.world_mut()
             .write_message(DbResult::NodeMutationCommitted {
                 receipt: fe_runtime::node_history::NodeMutationReceipt {
@@ -2314,7 +2315,7 @@ mod tests {
         if let DbResult::GltfImported { request, .. } = &mut late {
             *request = Some(replacement);
         }
-        app.world_mut().write_message(late);
+        app.world_mut().write_message(late.clone());
         app.update();
         assert!(
             matches!(
@@ -2330,6 +2331,116 @@ mod tests {
                 .filter(|node| node.id == "late-import")
                 .count(),
             1
+        );
+        use fe_runtime::messages::{
+            FractalHierarchyData, NodeHierarchyData, PetalHierarchyData, VerseHierarchyData,
+        };
+        let reload = DbResult::HierarchyLoaded {
+            verses: vec![VerseHierarchyData {
+                id: "v1".into(),
+                name: "Verse".into(),
+                namespace_id: None,
+                timeseries: Default::default(),
+                view_hidden: false,
+                fractals: vec![FractalHierarchyData {
+                    id: "f1".into(),
+                    name: "Fractal".into(),
+                    view_hidden: false,
+                    petals: vec![PetalHierarchyData {
+                        id: "p1".into(),
+                        name: "Petal".into(),
+                        view_hidden: false,
+                        render_distance: None,
+                        nodes: vec![NodeHierarchyData {
+                            id: "late-import".into(),
+                            name: "Late import".into(),
+                            petal_id: "p1".into(),
+                            position: [3.0, 2.0, 4.0],
+                            rotation,
+                            scale: [2.0, 0.5, 3.0],
+                            has_asset: true,
+                            asset_path: Some("models/placed.glb".into()),
+                            webpage_url: None,
+                        }],
+                    }],
+                }],
+            }],
+        };
+        let mut hydration = late.clone();
+        if let DbResult::GltfImported {
+            materialization, ..
+        } = &mut hydration
+        {
+            *materialization = None;
+        }
+        app.insert_resource(NavigationManager::default());
+        app.world_mut().write_message(reload.clone());
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<NavigationManager>()
+                .active_scope()
+                .as_deref(),
+            Some("VERSE#v1-FRACTAL#f1-PETAL#p1"),
+            "startup still selects the populated Petal when no intent or hydration intervened"
+        );
+        let _ = db_commands.try_iter().collect::<Vec<_>>();
+        app.world_mut().write_message(hydration.clone());
+        app.update();
+        assert!(
+            db_commands
+                .try_iter()
+                .any(|command| matches!(command, DbCommand::LoadHierarchy))
+        );
+        app.world_mut()
+            .resource_mut::<NavigationManager>()
+            .back_from_verse();
+        app.world_mut().write_message(reload.clone());
+        app.update();
+        assert!(
+            app.world()
+                .resource::<NavigationManager>()
+                .active_verse_id
+                .is_none(),
+            "exit between refresh admission and its late hierarchy reply remains authoritative"
+        );
+        app.world_mut().write_message(late);
+        app.world_mut().write_message(hydration.clone());
+        app.update();
+        assert!(
+            app.world()
+                .resource::<NavigationManager>()
+                .active_verse_id
+                .is_none(),
+            "a stale import after explicit exit cannot choose a Verse"
+        );
+        let _ = db_commands.try_iter().collect::<Vec<_>>();
+        app.world_mut().write_message(reload.clone());
+        app.world_mut().write_message(reload.clone());
+        app.update();
+        assert!(
+            app.world()
+                .resource::<NavigationManager>()
+                .active_verse_id
+                .is_none(),
+            "repeated reloads preserve exit"
+        );
+        app.insert_resource(NavigationManager::default());
+        app.world_mut().write_message(hydration);
+        app.update();
+        assert!(
+            !app.world()
+                .resource::<NavigationManager>()
+                .initial_auto_navigation_allowed(),
+            "receipt-triggered hydration suppresses startup selection without choosing a cursor"
+        );
+        app.world_mut().write_message(reload);
+        app.update();
+        assert!(
+            app.world()
+                .resource::<NavigationManager>()
+                .active_verse_id
+                .is_none()
         );
     }
 

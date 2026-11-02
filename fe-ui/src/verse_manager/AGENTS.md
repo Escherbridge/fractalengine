@@ -524,3 +524,9 @@ The result system tries it once at the end of each frame, including frames with
 no replies. Full retains it for a later frame; accepted or disconnected clears it.
 No mutation is retried. The existing App receipt journey fills the bounded queue,
 processes multiple unsupported births, then checks one refresh after space opens.
+
+Receipt-triggered hierarchy hydration suppresses NavigationManager's startup
+auto-selection gate before queueing the read. It does not change the cursor or
+advance async user navigation intent. The existing full App journey covers normal
+startup, exit between read and late hierarchy reply, stale receipts after exit,
+repeated reloads, and hydration arriving before any explicit navigation.
