@@ -1,0 +1,155 @@
+{
+  "run_dir": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658",
+  "process_identity": {
+    "pid": 77240,
+    "start_ticks": "639291861959377036",
+    "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\70a1001-20261101191506675\\fractalengine.exe"
+  },
+  "reseeded": false,
+  "readiness": null,
+  "node_id": "01M6D0VZSPGMEPRBB47TSJB80V",
+  "checks": {
+    "00_complex": true,
+    "01_series": true,
+    "02_number": true,
+    "03_bool": true,
+    "04_string": true,
+    "05_disposable": true
+  },
+  "readback": {
+    "ok": true,
+    "data": {
+      "node_id": "01M6D0VZSPGMEPRBB47TSJB80V",
+      "properties": {
+        "00_complex": {
+          "meta": null,
+          "samples": [
+            {
+              "t": "2026-11-01T00:00:00Z",
+              "value": 10.5
+            },
+            {
+              "t": "2026-11-01T00:01:00Z",
+              "value": 12
+            }
+          ],
+          "sensor": {
+            "calibration": {
+              "gain": 2,
+              "offset": 1.25
+            },
+            "id": "probe-7",
+            "valid": true
+          }
+        },
+        "01_series": [
+          {
+            "t": "2026-11-01T00:00:00Z",
+            "v": 10.5
+          },
+          {
+            "t": "2026-11-01T00:01:00Z",
+            "v": 12
+          },
+          null,
+          [
+            1,
+            2,
+            3
+          ]
+        ],
+        "02_number": -150.25,
+        "03_bool": false,
+        "04_string": "  first\nsecond\tcrab  ",
+        "05_disposable": "delete only this key",
+        "qa_fixture": "terrain",
+        "qa_role": "value",
+        "qa_value": 10
+      }
+    },
+    "error": null
+  },
+  "fixture_detail": {
+    "fractal_id": "01M6D0VZG5ZN7XZMTXE8PWF1YT",
+    "terrain_petal_ids": [
+      "01M6D0VZJ6383Q4HNNET8RSEYF",
+      "01M6D0VZM9W1JPJ1ZWK0PNMH4R"
+    ],
+    "terrain_tileset_id": "qa-analytic-terrain",
+    "query_sum_sql": "SELECT count() AS fixture_count, math::sum(properties.qa_value) AS fixture_sum FROM node WHERE petal_id = '01M6D0VZJ6383Q4HNNET8RSEYF' AND properties.qa_fixture = 'terrain' AND properties.qa_role = 'value' AND tombstone = NONE GROUP ALL",
+    "node_ids": [
+      "01M6D0VZSPGMEPRBB47TSJB80V",
+      "01M6D0W06VJ2D2XQM0SH0P2VP5",
+      "01M6D0W0K6X4GWAEMPSMZMC4NH"
+    ],
+    "query_rows_sql": "SELECT node_id, petal_id, display_name, position.coordinates[0] AS x, elevation AS y, position.coordinates[1] AS z, properties.qa_value AS qa_value FROM node WHERE petal_id = '01M6D0VZJ6383Q4HNNET8RSEYF' AND properties.qa_fixture = 'terrain' AND properties.qa_role = 'value' AND tombstone = NONE ORDER BY qa_value ASC",
+    "marker_node_ids": [
+      "01M6D0W0ZQY2RVH4XCSX2CWXJV",
+      "01M6D0W1DQFXYZMQTWK50WZX6M"
+    ],
+    "terrain_petal_id": "01M6D0VZJ6383Q4HNNET8RSEYF",
+    "terrain_descriptor": "terrain-fixture/descriptor.json",
+    "terrain_bound": true,
+    "query_sum": 60,
+    "petal_b_id": "01M6D0VZM9W1JPJ1ZWK0PNMH4R",
+    "terrain_oracle": {
+      "area_m2": 100,
+      "base_elevation_m": 0,
+      "expected_sample_count": 16384,
+      "footprint_xz_m": [
+        [
+          -5,
+          -5
+        ],
+        [
+          5,
+          -5
+        ],
+        [
+          5,
+          5
+        ],
+        [
+          -5,
+          5
+        ]
+      ],
+      "lattice_axis": 128,
+      "lower": {
+        "cut_m3": 100,
+        "fill_m3": 0,
+        "net_m3": -100,
+        "positive_delta_m": 1
+      },
+      "raise": {
+        "cut_m3": 0,
+        "fill_m3": 200,
+        "net_m3": 200,
+        "positive_delta_m": 2
+      },
+      "raw_absolute_tolerance": 0.001,
+      "world_scale": 1
+    },
+    "name": "terrain",
+    "petal_a_id": "01M6D0VZJ6383Q4HNNET8RSEYF",
+    "verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+    "query_count": 3,
+    "asset_id": "01M6D0VZQ5M1MRW8FJAQ03K6ZP"
+  },
+  "stage_manifest": {
+    "built_at": "2026-11-02T02:15:07.3101182Z",
+    "exe_sha256": "4098F8856B3BC7551F6F7DB40F47CEC19B41DD10EBC0011B922C38731164E048",
+    "source_dirty": true,
+    "kind": "fractalengine-qa-stage-v1",
+    "source_fingerprint": "541396B742075E91B8AB9BA625870CFFD37D4382F57761CF975C65E4E0DB8F15",
+    "source_commit": "70a10012d661d22600fc0ba810d0dd7297ec2961"
+  },
+  "restart": {
+    "attempt": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\starts\\20261101-201634-494-de87e0b9a0434156a22a9593fabca3e5\\start.json",
+    "preserved_root": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658",
+    "stale_stage_allowed": false,
+    "reseeded": false,
+    "port_changed": false,
+    "previous_start": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\starts\\20261101-201634-494-de87e0b9a0434156a22a9593fabca3e5\\previous-start.json"
+  }
+}

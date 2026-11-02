@@ -4,8 +4,8 @@ date: 2026-11-01
 status: in_progress
 source: ./handoff-20261101-qa-chain.md
 current_writer: /root
-current_slice: Native data and tree integration reviews after interrupted grid pass07; no app or Cargo running
-parallel_code_worktrees: Tree controls frozen5244c34; rich core hierarchy safety correction; native rich-data UI (code-only)
+current_slice: Reviewed core/native/tree/grid/terrain/keyboard/scroll integrated through c576aae; fresh production stage in progress; no app running
+parallel_code_worktrees: Plugin host independently reviewed with blockers; isolated dialog-safety author; code-only outside root Cargo owner
 ---
 
 # QA chain continuation
@@ -269,3 +269,11 @@ Final verification and release preflights are saved in `.omc/research/qa-final-v
 extensions/iot-bridge workspace. Strict relay acceptance still has skip-and-return paths that must not masquerade
 as exercised assertions. Use the pinned toolchain, explicit terrain/render feature and bounded log extraction.
 The original user in-app checks remain explicit: AC-11 screenshots, opted-in input, and delta-viz P1/P2.
+
+## Integration checkpoint after focused pass08
+
+Core schema/history/authority commits are integrated throughfaf4e81; native data through eb76362; hierarchy selection, authoritative settings, per-entry color wheel and icon palette through f45b238. Compact property-grid followups f70ab2b/b4134ee, terrain volume/material/object-impact reports597c51c/1cf0a7a, keyboard98fba78/db64dc1 and actual scroll geometry e6ce23a/c576aae are integrated after separate static review. Conflicts were additive directory documentation except the selection reset retained alongside the reviewed native selection code. Production compilation and live acceptance of this combined slice remain pending.
+
+Focused pass08 restarted the same saved data without reseeding, retained six exact typed values, and exercised native Copy/Edit/Cancel/confirmed Delete with authoritative whole-bag readbacks. QA-0029/0030 record observed compact action/editor defects; reviewed fixes above await fresh-build live closure. Old scroll metadata produced false horizontal-only tall-content clipping; corrected geometry awaits live comparison, with unresolved ancestry explicitly UNKNOWN. These partial focused checks earn no full-campaign convergence credit. Root77240 and all seven captured descendants were independently confirmed absent after stop0; evidence isqa/passes/08/cleanup-identities.json. No application runs during integration.
+
+Plugin host source is frozen at5cf2bbf in its isolated checkout. Independent review found WASM invalid-memory-to-empty writes and missing DB-queue revocation leases. Those must be corrected and re-reviewed before integration. Real package activation and device delivery are not claimed by an installed idle host. The dialog-safety worker also found PetalManifest Save only wrote a hidden render-distance default and did not persist requirements; its bounded UI correction must refuse unsupported Save rather than invent durability. Full requirements persistence remains a separately explicit implementation item.

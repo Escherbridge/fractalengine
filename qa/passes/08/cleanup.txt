@@ -1,0 +1,1 @@
+﻿[21:04:49.313] Stopped. Run dir kept at C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\.qa\run\20261101-191920-658
