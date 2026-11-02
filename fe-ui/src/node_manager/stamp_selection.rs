@@ -507,8 +507,24 @@ fn maintain_selection_and_catalog(
     mut catalog: ResMut<StampSelectionCatalog>,
     mut tools: ResMut<crate::panels::tool_panel::ToolPanelState>,
     mut requests: ResMut<StampSelectionRequests>,
+    role: Res<LocalUserRole>,
     mut attempted: Local<Option<(Entity, u64)>>,
 ) {
+    if !role.can_edit() && state.selection_promotion.take().is_some() {
+        state.selection_error("Editor access changed; select the stamp again before promotion");
+    }
+    if !role.role.is_some_and(|role| role.can_view()) {
+        *attempted = manager
+            .selected_entity()
+            .map(|entity| (entity, manager.selection_generation));
+        state.clear_selection();
+        *requests = Default::default();
+        if catalog.source.is_some() || !catalog.targets.is_empty() || catalog.revision_key != 0 {
+            *catalog = Default::default();
+        }
+        tools.stamp_selection_catalog = None;
+        return;
+    }
     if state.selection_origin.as_ref().is_some_and(|origin| {
         manager.selected_entity() != Some(origin.target.entity)
             || manager.selection_generation != origin.generation
@@ -687,6 +703,7 @@ fn receive_selection_results(
     map: Res<PetalMapState>,
     live: LiveStamps,
     visibility: Res<VisibilityState>,
+    role: Res<LocalUserRole>,
 ) {
     for reply in replies.read() {
         match reply {
@@ -704,7 +721,8 @@ fn receive_selection_results(
                     && properties["owning_path_id"] == capture.path_id
                     && properties["instance_index"].as_u64()
                         == Some(u64::from(capture.instance_index));
-                let current = identity
+                let current = role.can_edit()
+                    && identity
                     && state.selection_origin.as_ref().is_some_and(|origin| {
                         origin.promotion() == *capture
                             && origin.is_current_selection(&manager)

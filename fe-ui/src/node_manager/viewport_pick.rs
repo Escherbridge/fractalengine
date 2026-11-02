@@ -687,8 +687,129 @@ mod tests {
             .resource::<crate::gis::PathEditorState>()
             .selected_segment
             .is_none());
-        let capture = capture.clone();
-        let promotion_request = correlation_id.clone();
+        let mut capture = capture.clone();
+        let mut promotion_request = correlation_id.clone();
+        for remaining_role in [Some(fe_database::RoleLevel::Viewer), None] {
+            app.world_mut()
+                .resource_mut::<crate::plugin::LocalUserRole>()
+                .role = remaining_role;
+            app.update();
+            let state = app
+                .world()
+                .resource::<crate::actions::asset::StampInteractionState>();
+            assert!(
+                state.selection_promotion.is_none(),
+                "Editor loss cancels the pending promotion"
+            );
+            if remaining_role.is_some() {
+                assert!(
+                    state.selected().is_some(),
+                    "Viewer inspection remains selected"
+                );
+                assert!(
+                    !app.world()
+                        .resource::<crate::node_manager::StampSelectionCatalog>()
+                        .targets
+                        .is_empty(),
+                    "Viewer inspection retains the live selector"
+                );
+            } else {
+                assert!(
+                    state.selected().is_none(),
+                    "view loss clears the stamp projection"
+                );
+                assert!(app
+                    .world()
+                    .resource::<crate::node_manager::StampSelectionCatalog>()
+                    .targets
+                    .is_empty());
+                assert!(app
+                    .world()
+                    .resource::<crate::panels::tool_panel::ToolPanelState>()
+                    .stamp_selection_catalog
+                    .is_none());
+            }
+            app.world_mut().write_message(DbResult::CheckedStampPromoted {
+                capture: capture.clone(), node_id: "t1#inst-1".into(),
+                properties: serde_json::json!({"node_kind":"stamp","path_id":"t1","owning_path_id":"t1","instance_index":1}),
+                newly_promoted: true, correlation_id: promotion_request.clone(),
+            });
+            app.update();
+            assert_eq!(
+                app.world()
+                    .resource::<NodeManager>()
+                    .selected
+                    .as_ref()
+                    .unwrap()
+                    .node_id,
+                "t1::stamp::1",
+                "a receipt after Editor loss cannot bind a durable address"
+            );
+            let stamp_ref = crate::actions::asset::StampRef {
+                track_node_id: "t1".into(),
+                stamp_index: 1,
+            };
+            assert!(
+                app.world()
+                    .resource::<crate::actions::asset::StampInteractionState>()
+                    .loaded_properties(&stamp_ref)
+                    .is_none(),
+                "unauthorized receipt cannot hydrate properties"
+            );
+            assert!(
+                stamp_rx.try_recv().is_err(),
+                "role-loss handling cannot write or re-promote"
+            );
+            app.world_mut()
+                .resource_mut::<crate::plugin::LocalUserRole>()
+                .role = Some(fe_database::RoleLevel::Editor);
+            app.world_mut().write_message(DbResult::CheckedStampPromoted {
+                capture: capture.clone(), node_id: "t1#inst-1".into(),
+                properties: serde_json::json!({"node_kind":"stamp","path_id":"t1","owning_path_id":"t1","instance_index":1}),
+                newly_promoted: false, correlation_id: promotion_request.clone(),
+            });
+            app.update();
+            assert!(
+                app.world()
+                    .resource::<crate::actions::asset::StampInteractionState>()
+                    .loaded_properties(&stamp_ref)
+                    .is_none(),
+                "a regrant cannot revive the invalidated receipt"
+            );
+            if remaining_role.is_none() {
+                assert!(
+                    app.world()
+                        .resource::<crate::actions::asset::StampInteractionState>()
+                        .selected()
+                        .is_none(),
+                    "view regrant alone cannot resurrect stamp inspection"
+                );
+            }
+            assert!(
+                stamp_rx.try_recv().is_err(),
+                "regrant needs an explicit selection before promotion"
+            );
+            let origin = app
+                .world()
+                .resource::<crate::node_manager::StampSelectionCatalog>()
+                .origin(1)
+                .unwrap();
+            app.world_mut()
+                .resource_mut::<crate::actions::UiManager>()
+                .push_action(crate::actions::UiAction::SelectStamp { origin });
+            app.update();
+            let commands: Vec<_> = stamp_rx.try_iter().collect();
+            let [DbCommand::PromoteCheckedStamp {
+                capture: fresh_capture,
+                correlation_id: fresh_request,
+            }] = commands.as_slice()
+            else {
+                panic!("an explicit authorized reselect queues one fresh promotion: {commands:?}")
+            };
+            assert_ne!(&promotion_request, fresh_request);
+            capture = fresh_capture.clone();
+            promotion_request = fresh_request.clone();
+        }
         let late_capture = capture.clone();
         let late_request = promotion_request.clone();
         app.world_mut().write_message(DbResult::CheckedStampPromoted {capture,node_id:"t1#inst-1".into(),

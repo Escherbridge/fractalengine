@@ -975,3 +975,10 @@ then the actual native selector, correlated promotion reply, loaded editor and o
 It covers Viewer/context inspection without writes, F10, stale descriptor/navigation/role queues,
 pre-restamp proof refusal and late-receipt non-resurrection. Source-only authorship is not execution
 evidence; root owns the integrated verification sweep.
+
+Pending promotion ownership is invalidated as soon as Editor access is lost. Viewer selection
+remains inspectable, but even a later regrant cannot revive that request. Completion independently
+requires current Editor access before hydration or semantic binding. Loss of all view access clears
+the stamp projection, queued intents and both catalog mirrors; restoring access requires explicit
+selection. The existing App journey covers both role losses after dispatch and before receipt,
+late receipt after regrant, and a fresh authorized reselect through the production dispatcher.
