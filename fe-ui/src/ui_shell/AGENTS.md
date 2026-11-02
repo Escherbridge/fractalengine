@@ -440,3 +440,11 @@ error, never as an untouched database or a successful reset. GUI clear replies
 invalidate navigation and selection before reloading. They do not erase peers,
 identity, preferences or blob files. Root must finish actual API EntityStore,
 sync catalog and plugin/session invalidation before admitting a ready live host.
+
+## Inspector tab lifecycle
+
+The report's open_report_node_properties adapter preserves deferred NodeManager
+selection and reveals Inspector through set_active_tab(Properties). This shared
+transition clears API secrets and pending mint ownership immediately, including
+when the report opens Properties for the already selected node in the same scope.
+Never assign Inspector tabs directly; the form owns the private tab lifecycle.

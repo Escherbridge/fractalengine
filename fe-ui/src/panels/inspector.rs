@@ -95,7 +95,7 @@ pub(crate) fn right_inspector(
             (InspectorTab::Query, "Query"),
             (InspectorTab::Data, "Data"),
         ] {
-            let active = inspector.active_tab == tab;
+            let active = inspector.active_tab() == tab;
             let btn = egui::Button::new(egui::RichText::new(label).small().color(if active {
                 theme::TEXT_BRIGHT
             } else {
@@ -112,15 +112,7 @@ pub(crate) fn right_inspector(
                 .named(ui, format_args!("Inspector tab: {label}"))
                 .clicked()
             {
-                let prev_tab = inspector.active_tab;
-                inspector.active_tab = tab;
-
-                // Clear sensitive state when leaving the API tab
-                if prev_tab == InspectorTab::ApiAccess && tab != InspectorTab::ApiAccess {
-                    inspector.generated_api_token = None;
-                    inspector.generated_api_token_client = None;
-                    inspector.api_token_request.cancel();
-                }
+                inspector.set_active_tab(tab);
 
                 // Auto-populate scope + fetch tokens when entering API tab
                 if tab == InspectorTab::ApiAccess {
@@ -144,7 +136,7 @@ pub(crate) fn right_inspector(
     });
     ui.separator();
 
-    match inspector.active_tab {
+    match inspector.active_tab() {
         InspectorTab::Properties => {
             ui.add_space(4.0);
             inspector_entity_section(ui, node_mgr, ui_mgr);
@@ -658,7 +650,7 @@ impl InspectorTokenRequest {
         id.starts_with(INSPECTOR_MINT_PREFIX)
     }
 
-    fn cancel(&mut self) {
+    pub(crate) fn cancel(&mut self) {
         self.pending = None;
         self.error = None;
         self.revealed = false;
@@ -736,7 +728,11 @@ pub(crate) fn synchronize_token_target(
         inspector.api_tokens_page = 0;
         inspector.api_tokens_loading = false;
     }
-    if changed || !can_manage || selected.is_none() {
+    if changed
+        || !can_manage
+        || selected.is_none()
+        || inspector.active_tab() != InspectorTab::ApiAccess
+    {
         inspector.generated_api_token = None;
         inspector.generated_api_token_client = None;
         inspector.api_token_request.cancel();
@@ -752,7 +748,8 @@ pub(crate) fn submit_inspector_token(
 ) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NONCE: AtomicU64 = AtomicU64::new(1);
-    if !can_manage
+    if inspector.active_tab() != InspectorTab::ApiAccess
+        || !can_manage
         || inspector.api_token_request.pending.is_some()
         || inspector.api_token_request.node_id.as_deref() != Some(node_id)
         || inspector.api_token_scope_buf.is_empty()
@@ -2926,7 +2923,7 @@ mod tests {
         };
         let data_ctx = egui::Context::default();
         let mut data_time = 100.0;
-        inspector.active_tab = InspectorTab::Data;
+        inspector.set_active_tab(InspectorTab::Data);
         let native_frame = |width: f32,
                             nodes: &mut NodeManager,
                             inspector: &mut InspectorFormState,
@@ -3496,6 +3493,7 @@ mod tests {
         );
         assert!(matches!(&notices.drain_actions()[..], [UiAction::SaveUrl]));
         let scope = "VERSE#v#FRACTAL#f#PETAL#p";
+        polish.set_active_tab(InspectorTab::ApiAccess);
         synchronize_token_target(&mut polish, Some("polish-node"), scope, true);
         let endpoint = fe_runtime::app::RuntimeApiEndpoint(Some("127.0.0.1:8882".parse().unwrap()));
         polish.api_endpoint = endpoint.0;
@@ -3640,6 +3638,74 @@ mod tests {
         assert_eq!(
             token_expiry_label("unavailable", date),
             "Expiry unavailable"
+        );
+        let mut report_sidebar = crate::ui_shell::right_sidebar::RightSidebarState::default();
+        report_sidebar.reveal(crate::ui_shell::right_sidebar::RightSidebarSection::ProposalReport);
+        polish.api_token_request.revealed = true;
+        crate::ui_shell::right_sidebar::open_report_node_properties(
+            "polish-node".into(),
+            &mut polish_nodes,
+            &mut polish,
+            &mut report_sidebar,
+        );
+        assert_eq!(polish.active_tab(), InspectorTab::Properties);
+        assert!(report_sidebar
+            .is_active(crate::ui_shell::right_sidebar::RightSidebarSection::Inspector));
+        assert_eq!(
+            polish_nodes.pending_sidebar_select.as_deref(),
+            Some("polish-node")
+        );
+        assert_eq!(
+            polish_nodes.selected.as_ref().unwrap().node_id,
+            "polish-node"
+        );
+        assert_eq!(polish.api_token_request.scope, scope);
+        assert!(
+            polish.generated_api_token.is_none()
+                && polish.generated_api_token_client.is_none()
+                && !polish.api_token_request.revealed
+        );
+        submit_inspector_token(&mut polish, "polish-node", true, &polish_tx, now);
+        assert!(
+            polish_rx.try_recv().is_err(),
+            "inactive API cannot submit a mint"
+        );
+        polish.set_active_tab(InspectorTab::ApiAccess);
+        submit_inspector_token(&mut polish, "polish-node", true, &polish_tx, now);
+        let DbCommand::MintApiToken {
+            correlation_id: Some(report_nonce),
+            ..
+        } = polish_rx.try_recv().unwrap()
+        else {
+            panic!("mint must stay correlated")
+        };
+        crate::ui_shell::right_sidebar::open_report_node_properties(
+            "polish-node".into(),
+            &mut polish_nodes,
+            &mut polish,
+            &mut report_sidebar,
+        );
+        synchronize_token_target(&mut polish, Some("polish-node"), scope, true);
+        assert!(polish.api_token_request.pending.is_none());
+        assert!(!polish
+            .api_token_request
+            .accept(&report_nonce, scope, "viewer", "client", now));
+        polish.set_active_tab(InspectorTab::ApiAccess);
+        assert!(!polish
+            .api_token_request
+            .accept(&report_nonce, scope, "viewer", "client", now));
+        let (_, returned) = surface(
+            true,
+            vec![],
+            &mut panel_time,
+            &mut polish,
+            &polish_nodes,
+            &mut notices,
+        );
+        assert!(
+            polish.generated_api_token.is_none()
+                && polish.generated_api_token_client.is_none()
+                && !painted(&returned).contains("private-fixture")
         );
         synchronize_token_target(&mut polish, Some("polish-node"), "VERSE#other", true);
         assert!(

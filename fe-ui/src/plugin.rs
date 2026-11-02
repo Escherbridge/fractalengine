@@ -254,7 +254,7 @@ pub struct FieldDefEntry {
 /// resource only holds the mutable text buffers that the egui widgets edit.
 #[derive(Resource)]
 pub struct InspectorFormState {
-    pub active_tab: InspectorTab,
+    active_tab: InspectorTab,
     pub external_url: String,
     pub config_url: String,
     pub pos: [String; 3],
@@ -311,6 +311,22 @@ pub struct InspectorFormState {
     pub field_def_add_type_buf: String,
     pub field_def_add_desc_buf: String,
     pub field_def_add_required: bool,
+}
+
+impl InspectorFormState {
+    pub fn active_tab(&self) -> InspectorTab {
+        self.active_tab
+    }
+
+    /// Change tabs and discard API secrets and pending ownership on exit.
+    pub fn set_active_tab(&mut self, tab: InspectorTab) {
+        self.active_tab = tab;
+        if tab != InspectorTab::ApiAccess {
+            self.generated_api_token = None;
+            self.generated_api_token_client = None;
+            self.api_token_request.cancel();
+        }
+    }
 }
 
 impl Default for InspectorFormState {

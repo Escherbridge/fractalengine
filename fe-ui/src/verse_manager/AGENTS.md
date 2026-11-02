@@ -436,3 +436,7 @@ before generic feedback; render safe static text without backend payload echo.
 The shared mint_command helper takes correlation_id last: Inspector supplies
 Some, legacy Entity Settings supplies None. The runtime mint reply family
 preserves exact-ID routing and the DB door preserves Manager authorization.
+
+Mint acceptance also requires the actual Inspector API tab. Target synchronization
+discards pending ownership outside that tab before handling either success or
+failure, even if the selected node and scope have not changed.

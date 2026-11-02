@@ -240,6 +240,18 @@ pub fn active_section(
     Some(RightSidebarSection::Inspector)
 }
 
+/// Open a report target through the Inspector's tab lifecycle.
+pub(crate) fn open_report_node_properties(
+    node_id: String,
+    node_mgr: &mut NodeManager,
+    inspector: &mut InspectorFormState,
+    state: &mut RightSidebarState,
+) {
+    node_mgr.pending_sidebar_select = Some(node_id);
+    inspector.set_active_tab(crate::plugin::InspectorTab::Properties);
+    state.reveal(RightSidebarSection::Inspector);
+}
+
 /// Renders the right region. Portal-open swaps the whole region to the portal
 /// toolbar (preserved); otherwise dispatches to the active section's render fn.
 pub fn render_right_sidebar(
@@ -391,9 +403,7 @@ pub fn render_right_sidebar(
                         .and_then(|id| hierarchy.find_petal(id))
                         .is_some_and(|petal| petal.nodes.iter().any(|node| &node.id == node_id))
             }) {
-                node_mgr.pending_sidebar_select = Some(node_id);
-                inspector_form.active_tab = crate::plugin::InspectorTab::Properties;
-                state.reveal(RightSidebarSection::Inspector);
+                open_report_node_properties(node_id, node_mgr, inspector_form, state);
             }
         }
         Some(RightSidebarSection::Settings) => render_settings_section(

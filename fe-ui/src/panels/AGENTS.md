@@ -381,6 +381,10 @@ Selection, scope, access loss or leaving the API tab clears pending ownership
 and generated secrets. A timeout is explicitly unconfirmed, since a token may
 have been created; late replies are discarded and the list can be refreshed.
 Backend failures render safe static text rather than echoing arbitrary payloads.
+Tab transitions use InspectorFormState::set_active_tab; the underlying tab is
+private so programmatic openers cannot skip exit cleanup. Target synchronization
+also clears secrets outside API Access, and submission and result acceptance
+check the actual current tab. Returning to API never restores a canceled nonce.
 
 `tokens::handle_api_token_minted` receives the actual current node/scope/role
 from the result dispatcher and synchronizes that target before acceptance.
@@ -402,7 +406,11 @@ chrono version for RFC3339 parsing, human relative text and full-time hover.
 Existing Inspector, token-result and runtime-correlation tests are extended in
 place, including invalid URL preservation/no SaveUrl, no-selection API text,
 nonce duplication/failure/timeout/target fences, masked rendering and the
-nondefault 8882 endpoint example. Readbacks are model fixtures and no tests run
+nondefault 8882 endpoint example. The same journey calls the report's actual
+Properties opener for the same selected node/scope, checks immediate secret and
+reveal cleanup, then rejects its pending reply before and after returning to API.
+The existing token-result test also exercises this path through the real result
+handler without a token-list refresh for the rejected reply. Readbacks are model fixtures and no tests run
 in this source-only lane; integrated compilation, DB/UI/A8 proof remain pending.
 
 ## Selected report incomplete state

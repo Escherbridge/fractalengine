@@ -1428,3 +1428,7 @@ one scoped nonce until matching reply, failure or timeout; selection/scope/acces
 changes clear late secrets. See panels/AGENTS.md for the request/reveal/curl
 contract. plugin.rs mirrors the confirmed RuntimeApiEndpoint through its
 existing UiShellParams bundle; no default port is advertised as a listener.
+
+Inspector tabs are private form state: read active_tab() and transition through
+set_active_tab(), including programmatic openers. Leaving API Access clears
+pending ownership, generated token/client and reveal state synchronously.

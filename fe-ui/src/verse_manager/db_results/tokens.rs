@@ -39,13 +39,15 @@ pub(super) fn handle_api_token_minted(
             current_scope,
             can_manage,
         );
-        if inspector.api_token_request.accept(
-            id,
-            scope,
-            max_role,
-            client,
-            std::time::Instant::now(),
-        ) {
+        if inspector.active_tab() == crate::plugin::InspectorTab::ApiAccess
+            && inspector.api_token_request.accept(
+                id,
+                scope,
+                max_role,
+                client,
+                std::time::Instant::now(),
+            )
+        {
             inspector.generated_api_token = Some(token.clone());
             inspector.generated_api_token_client = Some(client.clone());
             refresh_inspector_tokens(db_sender, inspector);
@@ -342,6 +344,7 @@ mod tests {
             panic!("expected EntitySettings dialog to stay open");
         }
         while rx.try_recv().is_ok() {}
+        inspector.set_active_tab(crate::plugin::InspectorTab::ApiAccess);
         crate::panels::inspector::synchronize_token_target(
             &mut inspector,
             Some("n1"),
@@ -408,6 +411,56 @@ mod tests {
         } = &ui_mgr.active_dialog
         {
             assert_eq!(generated_api_token.as_deref(), Some("private-fixture"));
+        }
+        while rx.try_recv().is_ok() {}
+        crate::panels::inspector::submit_inspector_token(
+            &mut inspector,
+            "n1",
+            true,
+            &db_sender.0,
+            std::time::Instant::now(),
+        );
+        let DbCommand::MintApiToken {
+            correlation_id: Some(report_nonce),
+            ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("report transition fixture needs a pending mint")
+        };
+        if let DbResult::ApiTokenMinted { correlation_id, .. } = &mut correlated {
+            *correlation_id = Some(report_nonce);
+        }
+        let mut nodes = crate::node_manager::NodeManager::default();
+        nodes.select(bevy::prelude::Entity::from_bits(1), "n1");
+        let mut sidebar = crate::ui_shell::right_sidebar::RightSidebarState::default();
+        crate::ui_shell::right_sidebar::open_report_node_properties(
+            "n1".into(),
+            &mut nodes,
+            &mut inspector,
+            &mut sidebar,
+        );
+        for tab in [
+            crate::plugin::InspectorTab::Properties,
+            crate::plugin::InspectorTab::ApiAccess,
+        ] {
+            inspector.set_active_tab(tab);
+            assert!(handle_api_token_minted(
+                &correlated,
+                Some("n1"),
+                "VERSE#v1",
+                true,
+                &mut ui_mgr,
+                &mut inspector,
+                &db_sender,
+            ));
+            assert!(
+                inspector.generated_api_token.is_none()
+                    && inspector.generated_api_token_client.is_none()
+            );
+            assert!(
+                rx.try_recv().is_err(),
+                "late report-transition reply must not refresh as accepted"
+            );
         }
         assert!(handle_api_token_minted(
             &correlated,
