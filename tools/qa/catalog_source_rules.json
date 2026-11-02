@@ -159,7 +159,8 @@
       "F051"
     ],
     "SelectStamp": [
-      "F075"
+      "F075",
+      "F138"
     ],
     "SetStampScale": [
       "F075"
@@ -411,9 +412,10 @@
     "RenameNode": "Semantic rename also routes directly through Node Options/Entity Details; absence of a UiAction constructor does not retire rename.",
     "PathMovePointUntracked": "Internal legacy adapter, not a new standalone GUI control.",
     "PetalSetRenderOverride": "Legacy action enum has no current render/gesture producer; the Settings session-override surface owns F061 through its current resource path. No separate GUI action is claimed.",
-    "SelectStamp": "Legacy adapter has no current render/gesture constructor in this audited snapshot. F075/F138 selection remains a mandatory GUI outcome, blocked by QA-0047 until the pending scene-bound selection correction is integrated and reconciled; no successful current producer is inferred.",
+    "SelectStamp": "Options one-based Select emits a private live scene/source origin; lower-tier viewport and fresh context picks enter the same NodeManager controller without inventing UiAction references. F10 path pick priority remains. No unchecked current-index GUI mutation.",
     "SetStampScale": "Legacy per-field adapter has no current render constructor; actual selected-stamp scale uses atomic ApplyStampOverrides (F138).",
     "SetStampRotation": "Legacy per-field adapter has no current render constructor; actual yaw/quaternion-preserving editor uses atomic ApplyStampOverrides (F138).",
-    "SlideStampAlongPath": "Legacy per-field adapter has no current render constructor; current metric slide uses atomic ApplyStampOverrides (F138)."
+    "SlideStampAlongPath": "Legacy per-field adapter has no current render constructor; current metric slide uses atomic ApplyStampOverrides (F138).",
+    "PromoteStamp": "Actual context Promote carries the selected private scene/source origin into the same checked promotion controller. Public legacy PromoteInstance API remains a separate caller-current-index contract."
   }
 }

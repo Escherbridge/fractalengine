@@ -1012,10 +1012,10 @@ fingerprint stays null until the main owner reconciles the final build inputs. N
 `catalog_source_rules.json` supplies explicit shared-source and action ownership where a file serves multiple
 families. `catalog_sources.py` uses only stdlib file reads and writes the catalog views; it never calls Git,
 launches processes/apps, reads token stores or accesses network. After reviewing source and the canonical JSON,
-use the actual audited full commit (this snapshot is 07852fadc0b7e5eedfca0429566cb45ec27675d3):
+use the actual audited full commit (this snapshot is 84ca20af4a47951cf9dbd22d457526a0840291e6):
 
 ```powershell
-python tools/qa/catalog_sources.py --source-commit 07852fadc0b7e5eedfca0429566cb45ec27675d3 --write
+python tools/qa/catalog_sources.py --source-commit 84ca20af4a47951cf9dbd22d457526a0840291e6 --write
 ```
 
 The command refreshes `qa/catalog-source-census.json`, `qa/source-inventory.md`, the feature table and each
@@ -1036,4 +1036,4 @@ exist in the audited source. The older fixture paragraph above describes the pre
 starting the helper still cannot itself grant permission or prove embedded browsing. Only the main owner may
 prepare/relaunch the exact controlled fixture and test the live listener/policy boundaries.
 
-The current followup includes terminal Settings Reset, typed Portal storage/explicit initialization, fixed native fixture APIs and durable REST/legacy WebSocket credential validity. Explicit action ownership keys must name a parsed UiAction variant; stale names fail generation instead of falling through silently. Stamp selection and terminal-close evidence remain pending source reconciliation in the canonical catalog. Generation does not clear that list or grant a final fingerprint.
+The current followup includes terminal Settings Reset, typed Portal storage/explicit initialization, fixed native fixture APIs and durable REST/legacy WebSocket credential validity. Explicit action ownership keys must name a parsed UiAction variant; stale names fail generation instead of falling through silently. The current stamp viewport/context/index producers carry live origins and the terminal watcher retains its original process/EOF evidence. F143 separates actual observer admission from synthetic validator-only cases; the latter provide zero application coverage. P2P QA-0050 remains pending source reconciliation. Generation does not clear that list or grant a final fingerprint.

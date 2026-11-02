@@ -1,6 +1,6 @@
 {
   "type": "FeatureCheckpointCatalog",
-  "catalog_source_commit": "07852fadc0b7e5eedfca0429566cb45ec27675d3",
+  "catalog_source_commit": "84ca20af4a47951cf9dbd22d457526a0840291e6",
   "catalog_source_fingerprint": null,
   "snapshot_date": "2026-11-02",
   "execution_evidence": false,
@@ -6511,6 +6511,371 @@
       "id": "F116.rest-post-api-v1-debug-portal-fixture-capture",
       "family": "F116",
       "reachability": "A"
+    },
+    {
+      "id": "F075.viewport-select",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.context-select",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.one-based-number-target",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.explicit-select-during-ribbon-priority",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.viewer-read-only-selection",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.editor-lazy-checked-promotion",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.confirmed-semantic-address",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.make-editable-reveals-bound-node",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.no-synthetic-node-read",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.selection-other-object-clears",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.path-subselection-clears",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.petal-change-clears",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.late-promotion-does-not-select",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.pre-restamp-source-refused",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.reflowed-instance-refused",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.hidden-instance-refused",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.no-view-access-clears",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.editor-loss-invalidates-pending",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.late-receipt-after-regrant-refused",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.fresh-reselect-after-regrant",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.role-change-at-use-refused",
+      "family": "F075",
+      "reachability": "A"
+    },
+    {
+      "id": "F075.ancestry-change-at-use-refused",
+      "family": "F075",
+      "reachability": "A"
+    },
+    {
+      "id": "F075.descriptor-change-at-use-refused",
+      "family": "F075",
+      "reachability": "A"
+    },
+    {
+      "id": "F075.path-row-reorder-refused",
+      "family": "F075",
+      "reachability": "A"
+    },
+    {
+      "id": "F075.petal-map-change-refused",
+      "family": "F075",
+      "reachability": "A"
+    },
+    {
+      "id": "F075.history-tail-change-refused",
+      "family": "F075",
+      "reachability": "A"
+    },
+    {
+      "id": "F075.target-collision-refused",
+      "family": "F075",
+      "reachability": "A"
+    },
+    {
+      "id": "F075.creation-schema-change-refused",
+      "family": "F075",
+      "reachability": "A"
+    },
+    {
+      "id": "F075.atomic-operation-rollback",
+      "family": "F075",
+      "reachability": "A"
+    },
+    {
+      "id": "F075.existing-target-no-new-operation",
+      "family": "F075",
+      "reachability": "A"
+    },
+    {
+      "id": "F075.shared-sampler-degenerate-cases",
+      "family": "F075",
+      "reachability": "A"
+    },
+    {
+      "id": "F075.shared-sampler-cap4096",
+      "family": "F075",
+      "reachability": "A"
+    },
+    {
+      "id": "F075.legacy-current-index-api-separate",
+      "family": "F075",
+      "reachability": "A"
+    },
+    {
+      "id": "F138.apply-current-selection",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.apply-stale-selection-refused",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.apply-pre-restamp-refused",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.viewer-apply-disabled",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.role-loss-after-dispatch-no-hydration",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.full-view-loss-clears-catalog",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.preserve-entity-on-address-bind",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F086.stamp-selection-requests-and-catalogs-cleared",
+      "family": "F086",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.watch-live-arm",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.watch-timeout-no-control",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.watch-existing-begin-refused",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.watch-existing-end-refused",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.watch-same-output-refused",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.watch-timeout-bound-refused",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.watch-wrong-lifetime-refused",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-clean",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-confirm-ack",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-reviewed-warning",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-nonzero-exit",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-wrong-pid",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-exit-before-arm",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-live-boolean-bypass",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-wrong-session",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-wrong-begin-hash",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-late-append",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-timeout-overflow",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-missing-warning",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-old-schema",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-missing-lifecycle",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-no-confirmation",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-already-confirming-before-close",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-close-not-applied",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-confirm-before-input-failed",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-confirm-refused",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-confirm-wrong-scope",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-controller-not-armed",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-controller-hash-substitution",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-command-wrong-run",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-other-checkpoint",
+      "family": "F143",
+      "reachability": "A"
+    },
+    {
+      "id": "F143.validator-not-gui",
+      "family": "F143",
+      "reachability": "A"
     }
   ],
   "gold_tasks": {
@@ -6720,7 +7085,14 @@
       "F139.atomic-failure-no-projection",
       "F067.selected-point-one-based-label",
       "F069.point-number-target-identity",
-      "F069.compact-point-action-targets"
+      "F069.compact-point-action-targets",
+      "F075.viewport-select",
+      "F075.context-select",
+      "F075.one-based-number-target",
+      "F075.viewer-read-only-selection",
+      "F075.confirmed-semantic-address",
+      "F075.late-receipt-after-regrant-refused",
+      "F138.apply-current-selection"
     ],
     "G6": [
       "F079.maximize",
@@ -6765,7 +7137,11 @@
       "F142.rest-restart-revoke",
       "F142.ws-idle-revocation-closes",
       "F142.rest-pre-reset-owner-denied",
-      "F142.rest-fresh-generation-allowed"
+      "F142.rest-fresh-generation-allowed",
+      "F143.watch-live-arm",
+      "F143.validator-clean",
+      "F143.validator-late-append",
+      "F143.validator-missing-lifecycle"
     ],
     "G10": [
       "F117.same-root-restart",
@@ -7651,13 +8027,21 @@
       "id": "F075",
       "region": "R5",
       "journey": "J05",
-      "entry": "Selected stamp Index/Select/Promote and XYZ scale, yaw, slide-meters Apply/Reload stored",
-      "expected": "Apply is one checked atomic override batch; preserved quaternion/nonuniform axes, actual curve sampler and meters; pending/error/conflict never false Saved",
+      "entry": "Actual lower-tier viewport/context stamp pick, or Options one-based Stamp number / Select the rendered stamp number; checked lazy promotion and bound-node inspection",
+      "expected": "One live entity/source/generation capture across all producers; preserve F10 path-tier priority, Viewer never promotes, Editor promotion is atomically fenced and only its matching receipt binds the same entity to the durable address; stale/late/role-lost work cannot select",
       "requires_persistence": true,
       "sources": [
         "fe-ui/src/panels/tool_panel.rs",
         "fe-ui/src/actions/path.rs",
-        "fe-ui/src/path_ops.rs"
+        "fe-ui/src/path_ops.rs",
+        "fe-ui/src/node_manager/stamp_selection.rs",
+        "fe-ui/src/node_manager/viewport_pick.rs",
+        "fe-ui/src/node_manager/context_pick.rs",
+        "fe-ui/src/node_manager/inspector_sync.rs",
+        "fe-ui/src/verse_manager/path_asset_materialize.rs",
+        "fe-database/src/handlers/stamp_promotion.rs",
+        "fe-runtime/src/messages.rs",
+        "fe-sdk/src/path_asset.rs"
       ]
     },
     {
@@ -7668,7 +8052,9 @@
       "expected": "proper object class/scope; no accidental parent removal",
       "requires_persistence": true,
       "sources": [
-        "fe-ui/src/dialogs/context_menu.rs"
+        "fe-ui/src/dialogs/context_menu.rs",
+        "fe-ui/src/node_manager/stamp_selection.rs",
+        "fe-ui/src/actions/asset.rs"
       ]
     },
     {
@@ -7711,10 +8097,14 @@
       "region": "R6",
       "journey": "J06",
       "entry": "Cancel close/Close FractalEngine and dirty manifest reason",
-      "expected": "confirmation not bypassed; final action last",
+      "expected": "Actual caption and modal confirmation, judged PNG and ordered lifecycle plus exact retained-root clean exit and sealed complete stdout EOF; observer performs no app control, and synthetic validator data cannot prove this GUI outcome",
       "requires_persistence": false,
       "sources": [
-        "fe-ui/src/ui_shell/topbar.rs"
+        "fe-ui/src/ui_shell/topbar.rs",
+        "tools/qa/terminal_stdout.py",
+        "tools/qa/owned_stdout.py",
+        "tools/qa/owned_stdout_windows.py",
+        "tools/qa/coverage.py"
       ]
     },
     {
@@ -7787,7 +8177,9 @@
         "fractalengine/src/terminal_reset/mod.rs",
         "fractalengine/src/terminal_reset/presentation.rs",
         "fe-runtime/src/maintenance.rs",
-        "fe-database/src/admin.rs"
+        "fe-database/src/admin.rs",
+        "fe-ui/src/node_manager/stamp_selection.rs",
+        "fe-ui/src/actions/asset.rs"
       ]
     },
     {
@@ -8404,7 +8796,10 @@
       "sources": [
         "fe-ui/src/panels/tool_panel.rs",
         "fe-ui/src/actions/path.rs",
-        "fe-ui/src/path_ops.rs"
+        "fe-ui/src/path_ops.rs",
+        "fe-ui/src/node_manager/stamp_selection.rs",
+        "fe-ui/src/actions/asset.rs",
+        "fe-database/src/handlers/stamp_overrides.rs"
       ]
     },
     {
@@ -8467,6 +8862,21 @@
         "fe-database/src/api_auth.rs",
         "fe-database/src/handlers/api_token.rs",
         "fe-database/src/admin.rs"
+      ]
+    },
+    {
+      "id": "F143",
+      "region": "R9",
+      "journey": "J09",
+      "entry": "Terminal watch-close CLI admission/refusal and separately synthetic strict evidence-validator packet",
+      "expected": "Actual observer arming/refusals are bounded and control no app; synthetic schemas/hash/session/EOF/lifecycle cases exercise the real validator only, yield zero GUI/application coverage and never substitute for F080 actual terminal-close evidence",
+      "requires_persistence": false,
+      "sources": [
+        "tools/qa/terminal_stdout.py",
+        "tools/qa/owned_stdout_windows.py",
+        "tools/qa/owned_stdout.py",
+        "tools/qa/coverage.py",
+        "tools/qa/scenarios/evidence-boundaries.py"
       ]
     }
   ],
@@ -8636,9 +9046,11 @@
       "reason": "Atlas model/room/tag helper has no established production opener. Shared visibility radios used by Entity Options belong to F094; this helper presence is not another GUI route."
     }
   },
-  "audited_source_commit": "07852fadc0b7e5eedfca0429566cb45ec27675d3",
+  "audited_source_commit": "84ca20af4a47951cf9dbd22d457526a0840291e6",
   "pending_source_reconciliation": [
-    "Stamp selection/checked promotion is not integrated in this audited snapshot. F075/F138 remain mandatory GUI outcomes, blocked by QA-0047; no successful producer or execution is inferred.",
-    "Terminal-close retained-handle evidence correction is not integrated. F080.confirm-close remains mandatory; ordinary post-exit stdout end is unsupported."
+    "P2P QA-0050 repair remains isolated and is not part of this audited source. Actual two-root invite/join/role/replica and P2P transfer acceptance remains required; no completed collaboration is inferred."
+  ],
+  "source_acceptance_obligations": [
+    "Terminal watcher live retained-handle/timeout/nonzero-exit/writer-release refusal experiments remain mandatory root-owned acceptance. Synthetic F143 validator cases provide zero application coverage and cannot replace actual F080.confirm-close GUI/lifecycle/native-exit proof."
   ]
 }

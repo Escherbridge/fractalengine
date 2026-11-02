@@ -1,7 +1,7 @@
 ---
 type: FeatureSourceInventory
 date: 2026-11-02
-source_commit: 07852fadc0b7e5eedfca0429566cb45ec27675d3
+source_commit: 84ca20af4a47951cf9dbd22d457526a0840291e6
 execution_status: NOT_RUN
 ---
 
@@ -11,7 +11,7 @@ This is an audited source census, not execution evidence. The final staged finge
 
 Lexical producer candidates, excluding literal cfg(test) items while preserving line numbers. Helpers/named wrappers can repeat one control; conditional production openers require manual reconciliation. Not a Rust parser, live-tree census or proof of execution.
 
-Counts: 84 UiAction variants; 679 lexical control/naming candidates; 49 MCP tools; 103 REST method/path cases. Full candidate lines and normalized-source hashes are retained in catalog-source-census.json.
+Counts: 84 UiAction variants; 684 lexical control/naming candidates; 49 MCP tools; 103 REST method/path cases. Full candidate lines and normalized-source hashes are retained in catalog-source-census.json.
 
 Candidates map to owning capability families; this is routing responsibility, not an automatic assertion that every branch is covered. A shared helper is not an extra control. Every current mandatory checkpoint still requires current-pass evidence and independent assertions.
 
@@ -53,16 +53,16 @@ Candidates map to owning capability families; this is routing responsibility, no
 | `GisSetViewMode` | F049 | `fe-ui/src/panels/layer_manager_card.rs:100` |  |
 | `GpxImportFile` | F064 | `fe-ui/src/panels/gpx_import_card.rs:45` |  |
 | `PathQueryTracks` | F063 | `fe-ui/src/node_manager/pointer/mod.rs:211`, `fe-ui/src/panels/gis_panel.rs:128`, `fe-ui/src/panels/path_editor_card.rs:193`, `fe-ui/src/panels/path_editor_card.rs:335`, `fe-ui/src/panels/tool_options.rs:175` |  |
-| `PathSelectTrack` | F063, F077 | `fe-ui/src/dialogs/context_menu.rs:854`, `fe-ui/src/dialogs/context_menu.rs:867`, `fe-ui/src/node_manager/pointer/mod.rs:79`, `fe-ui/src/panels/path_editor_card.rs:306`, `fe-ui/src/panels/tool_options.rs:200` |  |
+| `PathSelectTrack` | F063, F077 | `fe-ui/src/dialogs/context_menu.rs:853`, `fe-ui/src/dialogs/context_menu.rs:866`, `fe-ui/src/node_manager/pointer/mod.rs:79`, `fe-ui/src/panels/path_editor_card.rs:306`, `fe-ui/src/panels/tool_options.rs:200` |  |
 | `PathCreateTrack` | F063, F065 | `fe-ui/src/node_manager/path_point_interaction.rs:518`, `fe-ui/src/panels/path_editor_card.rs:159` |  |
 | `PathDeleteTrack` | F063, F077 | `fe-ui/src/panels/path_editor_card.rs:312` |  |
 | `PathAppendPoint` | F065 | `fe-ui/src/node_manager/path_point_interaction.rs:489`, `fe-ui/src/verse_manager/db_results/nodes.rs:151` |  |
 | `PathAppendSmoothPoint` | F065 | `fe-ui/src/node_manager/path_point_interaction.rs:479`, `fe-ui/src/verse_manager/db_results/nodes.rs:142` |  |
 | `PathSetAnchorHandles` | F067, F069 | `fe-ui/src/node_manager/path_handle_interaction.rs:353` |  |
 | `PathSetAnchorMetadata` | F139 | `fe-ui/src/panels/tool_options.rs:325` |  |
-| `PathSetAnchorCorner` | F067, F077 | `fe-ui/src/dialogs/context_menu.rs:273`, `fe-ui/src/dialogs/context_menu.rs:907`, `fe-ui/src/node_manager/path_handle_interaction.rs:362` |  |
-| `ContextSetAnchorCorner` | F139 | `fe-ui/src/dialogs/context_menu.rs:908` |  |
-| `PathRemovePoint` | F069, F077 | `fe-ui/src/dialogs/context_menu.rs:900`, `fe-ui/src/panels/path_editor_card.rs:602` |  |
+| `PathSetAnchorCorner` | F067, F077 | `fe-ui/src/dialogs/context_menu.rs:273`, `fe-ui/src/dialogs/context_menu.rs:906`, `fe-ui/src/node_manager/path_handle_interaction.rs:362` |  |
+| `ContextSetAnchorCorner` | F139 | `fe-ui/src/dialogs/context_menu.rs:907` |  |
+| `PathRemovePoint` | F069, F077 | `fe-ui/src/dialogs/context_menu.rs:899`, `fe-ui/src/panels/path_editor_card.rs:602` |  |
 | `PathMovePointFromGesture` | F139 | `fe-ui/src/node_manager/path_gimbal_drag.rs:154`, `fe-ui/src/node_manager/path_point_interaction.rs:749` |  |
 | `PathMovePointUntracked` | F139 | `fe-ui/src/node_manager/path_gimbal_drag.rs:161` | Internal legacy adapter, not a new standalone GUI control. |
 | `PathMovePoint` | F069 | `fe-ui/src/panels/path_editor_card.rs:613` |  |
@@ -70,19 +70,19 @@ Candidates map to owning capability families; this is routing responsibility, no
 | `PathAnnotatePoint` | F070 | `fe-ui/src/panels/path_editor_card.rs:1231` |  |
 | `PathExportGpx` | F078 | `fe-ui/src/panels/path_editor_card.rs:364` |  |
 | `PathSetStyle` | F071 | `fe-ui/src/panels/path_editor_card.rs:380` |  |
-| `PathAssetApply` | F074 | `fe-ui/src/panels/tool_panel.rs:469` |  |
-| `PathSmoothCurrent` | F066 | `fe-ui/src/panels/tool_panel.rs:945` |  |
-| `PathAppendShape` | F068 | `fe-ui/src/panels/tool_panel.rs:1006`, `fe-ui/src/panels/tool_panel.rs:1019`, `fe-ui/src/panels/tool_panel.rs:1032` |  |
+| `PathAssetApply` | F074 | `fe-ui/src/panels/tool_panel.rs:472` |  |
+| `PathSmoothCurrent` | F066 | `fe-ui/src/panels/tool_panel.rs:1005` |  |
+| `PathAppendShape` | F068 | `fe-ui/src/panels/tool_panel.rs:1066`, `fe-ui/src/panels/tool_panel.rs:1079`, `fe-ui/src/panels/tool_panel.rs:1092` |  |
 | `TerrainProposalAdd` | F050, F051 | `fe-ui/src/node_manager/terrain_authoring.rs:96`, `fe-ui/src/node_manager/terrain_authoring.rs:354` |  |
 | `CommitTerrainAuthoring` | F053 | `fe-ui/src/node_manager/brush_interaction.rs:193`, `fe-ui/src/node_manager/brush_interaction.rs:214`, `fe-ui/src/node_manager/brush_interaction.rs:312` |  |
 | `TerrainProposalDelete` | F051 | `fe-ui/src/dialogs/context_menu.rs:351`, `fe-ui/src/panels/terrain_tools_panel.rs:315` |  |
 | `TerrainProposalSelect` | F051 | `fe-ui/src/dialogs/context_menu.rs:292` |  |
 | `OpenTerrainReport` | F055 | `fe-ui/src/dialogs/context_menu.rs:313`, `fe-ui/src/panels/volume_report_panel.rs:237` |  |
-| `SelectStamp` | F075 | No render/gesture reference in census | Legacy adapter has no current render/gesture constructor in this audited snapshot. F075/F138 selection remains a mandatory GUI outcome, blocked by QA-0047 until the pending scene-bound selection correction is integrated and reconciled; no successful current producer is inferred. |
-| `InspectStampNode` | F075, F138 | `fe-ui/src/panels/tool_panel.rs:638` |  |
-| `CheckStampSave` | F066, F067, F068, F073, F074, F075, F138 | `fe-ui/src/panels/tool_panel.rs:518` |  |
-| `DownloadStampProperties` | F138 | `fe-ui/src/panels/tool_panel.rs:632` |  |
-| `ApplyStampOverrides` | F138 | `fe-ui/src/panels/tool_panel.rs:628` |  |
+| `SelectStamp` | F075, F138 | `fe-ui/src/panels/tool_panel.rs:629` | Options one-based Select emits a private live scene/source origin; lower-tier viewport and fresh context picks enter the same NodeManager controller without inventing UiAction references. F10 path pick priority remains. No unchecked current-index GUI mutation. |
+| `InspectStampNode` | F075, F138 | `fe-ui/src/panels/tool_panel.rs:698` |  |
+| `CheckStampSave` | F066, F067, F068, F073, F074, F075, F138 | `fe-ui/src/panels/tool_panel.rs:521` |  |
+| `DownloadStampProperties` | F138 | `fe-ui/src/panels/tool_panel.rs:692` |  |
+| `ApplyStampOverrides` | F138 | `fe-ui/src/panels/tool_panel.rs:688` |  |
 | `SetStampScale` | F075 | No render/gesture reference in census | Legacy per-field adapter has no current render constructor; actual selected-stamp scale uses atomic ApplyStampOverrides (F138). |
 | `SetStampRotation` | F075 | No render/gesture reference in census | Legacy per-field adapter has no current render constructor; actual yaw/quaternion-preserving editor uses atomic ApplyStampOverrides (F138). |
 | `SlideStampAlongPath` | F075 | No render/gesture reference in census | Legacy per-field adapter has no current render constructor; current metric slide uses atomic ApplyStampOverrides (F138). |
@@ -90,10 +90,10 @@ Candidates map to owning capability families; this is routing responsibility, no
 | `SculptShapeRegion` | F053, F054 | `fe-ui/src/node_manager/terrain_authoring.rs:102`, `fe-ui/src/node_manager/terrain_authoring.rs:374`, `fe-ui/src/node_manager/terrain_authoring.rs:432` |  |
 | `SculptDeleteRegion` | F057 | `fe-ui/src/dialogs/context_menu.rs:353` |  |
 | `SaveMeasureAsCallout` | F059 | `fe-ui/src/panels/tool_options.rs:608` |  |
-| `DeleteNode` | F012, F022, F076, F077 | `fe-ui/src/dialogs/context_menu.rs:223`, `fe-ui/src/dialogs/context_menu.rs:999`, `fe-ui/src/dialogs/node_options.rs:315` |  |
+| `DeleteNode` | F012, F022, F076, F077 | `fe-ui/src/dialogs/context_menu.rs:223`, `fe-ui/src/dialogs/context_menu.rs:998`, `fe-ui/src/dialogs/node_options.rs:315` |  |
 | `DuplicateNode` | F021 | `fe-ui/src/dialogs/context_menu.rs:227` |  |
 | `RenameNode` | F012, F021, F023 | No render/gesture reference in census | Semantic rename also routes directly through Node Options/Entity Details; absence of a UiAction constructor does not retire rename. |
-| `PromoteStamp` | F075, F076 | `fe-ui/src/dialogs/context_menu.rs:840` |  |
+| `PromoteStamp` | F075, F076 | `fe-ui/src/dialogs/context_menu.rs:841` | Actual context Promote carries the selected private scene/source origin into the same checked promotion controller. Public legacy PromoteInstance API remains a separate caller-current-index contract. |
 | `ClearNodeProperties` | F022, F023 | `fe-ui/src/dialogs/context_menu.rs:228` |  |
 | `CopyApiString` | F027 | `fe-ui/src/dialogs/context_menu.rs:229` |  |
 | `ReportObject` | F027 | `fe-ui/src/dialogs/context_menu.rs:230` |  |
@@ -139,7 +139,7 @@ Candidates map to owning capability families; this is routing responsibility, no
 | `fe-ui/src/panels/status_bar.rs` | F087, F104 | 4 |
 | `fe-ui/src/panels/terrain_tools_panel.rs` | F050, F051, F052, F057 | 28 |
 | `fe-ui/src/panels/tool_options.rs` | F053, F054, F058, F059, F065, F139 | 25 |
-| `fe-ui/src/panels/tool_panel.rs` | F066, F067, F068, F073, F074, F075, F138 | 54 |
+| `fe-ui/src/panels/tool_panel.rs` | F066, F067, F068, F073, F074, F075, F138 | 59 |
 | `fe-ui/src/panels/transform_options.rs` | F028 | 16 |
 | `fe-ui/src/panels/tree_appearance.rs` | F133 | 18 |
 | `fe-ui/src/panels/tree_entry.rs` | F001, F002, F003, F007, F008, F013, F133 | 13 |
@@ -325,4 +325,6 @@ Missing endpoint checkpoint summary: `{"routes": [], "tools": []}`.
 
 Developer Settings now owns terminal Reset (F086); only a disposable owned store may exercise it. Config URL has an explicit unsupported Inspector explanation and no editor/save route. The old InviteDialog enum/opener is retired. Petal Requirements is declaration-only. PluginHost has no plugin-management GUI. Native Portal fixture evidence (F141) is separate from GUI browsing (F025). Durable REST/legacy WebSocket auth (F142) requires actual lifecycle outcomes, not schema presence.
 
-Pending source reconciliation: `["Stamp selection/checked promotion is not integrated in this audited snapshot. F075/F138 remain mandatory GUI outcomes, blocked by QA-0047; no successful producer or execution is inferred.", "Terminal-close retained-handle evidence correction is not integrated. F080.confirm-close remains mandatory; ordinary post-exit stdout end is unsupported."]`.
+Pending source reconciliation: `["P2P QA-0050 repair remains isolated and is not part of this audited source. Actual two-root invite/join/role/replica and P2P transfer acceptance remains required; no completed collaboration is inferred."]`.
+
+Additional live acceptance obligations: `["Terminal watcher live retained-handle/timeout/nonzero-exit/writer-release refusal experiments remain mandatory root-owned acceptance. Synthetic F143 validator cases provide zero application coverage and cannot replace actual F080.confirm-close GUI/lifecycle/native-exit proof."]`.

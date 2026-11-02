@@ -127,6 +127,7 @@ def census(root, snapshot):
              "routes":[item["checkpoint"] for item in routes if item["checkpoint"] not in {c["id"] for c in catalog["checkpoints"]}]}
     return {"type":"FeatureSourceCensus","audited_source_commit":snapshot,"execution_evidence":False,
             "pending_source_reconciliation":catalog.get("pending_source_reconciliation",[]),
+            "source_acceptance_obligations":catalog.get("source_acceptance_obligations",[]),
             "limits":"Lexical producer candidates, excluding literal cfg(test) items while preserving line numbers. Helpers/named wrappers can repeat one control; conditional production openers require manual reconciliation. Not a Rust parser, live-tree census or proof of execution.",
             "source_sha256":{source:hashlib.sha256(text.encode()).hexdigest() for source,text in texts.items()},
             "actions":actions,"control_candidates":controls,"mcp_tools":tools,"rest_cases":routes,"unmapped":unmapped,"missing_checkpoint_ids":missing}
@@ -156,7 +157,8 @@ def render(data):
     lines += ["","## Reconciliation limits and explicit gaps","", "Unmapped producer summary: `"+json.dumps(data["unmapped"],sort_keys=True)+"`.","",
               "Missing endpoint checkpoint summary: `"+json.dumps(data["missing_checkpoint_ids"],sort_keys=True)+"`.","",
               "Developer Settings now owns terminal Reset (F086); only a disposable owned store may exercise it. Config URL has an explicit unsupported Inspector explanation and no editor/save route. The old InviteDialog enum/opener is retired. Petal Requirements is declaration-only. PluginHost has no plugin-management GUI. Native Portal fixture evidence (F141) is separate from GUI browsing (F025). Durable REST/legacy WebSocket auth (F142) requires actual lifecycle outcomes, not schema presence.","",
-              "Pending source reconciliation: `"+json.dumps(data.get("pending_source_reconciliation",[]))+"`."]
+              "Pending source reconciliation: `"+json.dumps(data.get("pending_source_reconciliation",[]))+"`.","",
+              "Additional live acceptance obligations: `"+json.dumps(data.get("source_acceptance_obligations",[]))+"`."]
     return "\n".join(lines)+"\n"
 
 
