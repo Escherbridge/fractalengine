@@ -22,8 +22,8 @@ use fe_runtime::messages::DbCommand;
 
 /// One entry in an object's right-click menu. The set is the union of the
 /// ratified per-object verb tables (spec Q-1); [`menu_for`] selects the subset
-/// valid for each [`HitTarget`]. `CopyApi`/`Report`/`ReportVolume` are the
-/// T5-seam verbs (FR-4) — see [`verb_is_seam_gated`].
+/// valid for each [`HitTarget`]. Copy/API reports use the egress seam;
+/// terrain volume reports open the local measured-report surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Verb {
     /// Empty ground: create a new empty node at the cursor.
@@ -205,7 +205,7 @@ pub(crate) fn track_delete_confirm_message(point_count: Option<usize>) -> String
 /// Whether a verb needs the `endpoint_api_surface` (T5) egress seam. Such verbs
 /// render disabled-with-hint until the seam yields a string (FR-4, ui_ux §6).
 pub(crate) fn verb_is_seam_gated(verb: Verb) -> bool {
-    matches!(verb, Verb::CopyApi | Verb::Report | Verb::ReportVolume)
+    matches!(verb, Verb::CopyApi | Verb::Report)
 }
 
 /// Map a verb acting on `node_id` to the `UiAction` it queues, when the verb is
@@ -223,7 +223,7 @@ pub(crate) fn verb_action(verb: Verb, node_id: &str, cascade: bool) -> Option<Ui
         Verb::Duplicate => Some(UiAction::DuplicateNode { node_id: id }),
         Verb::ClearProperties => Some(UiAction::ClearNodeProperties { node_id: id }),
         Verb::CopyApi => Some(UiAction::CopyApiString { node_id: id }),
-        Verb::Report | Verb::ReportVolume => Some(UiAction::ReportObject { node_id: id }),
+        Verb::Report => Some(UiAction::ReportObject { node_id: id }),
         Verb::EditProperties => Some(UiAction::LoadNodeProperties { node_id: id }),
         _ => None,
     }
@@ -295,6 +295,18 @@ pub(crate) fn edit_region_actions(verb: Verb, hit: &HitTarget) -> Option<[UiActi
         ]),
         _ => None,
     }
+}
+
+/// Scoped, read-only terrain report routing for either ground-overlay target.
+pub(crate) fn terrain_report_action(hit: &HitTarget, petal_id: Option<&str>) -> Option<UiAction> {
+    let id = match hit {
+        HitTarget::TerrainProposal { id } | HitTarget::EarthworkRegion { id } => id,
+        _ => return None,
+    };
+    Some(UiAction::OpenTerrainReport {
+        petal_id: petal_id?.to_owned(),
+        id: id.clone(),
+    })
 }
 
 /// Ground-overlay delete routing (proposals aren't nodes — `DeleteNode`/cascade
@@ -454,6 +466,7 @@ pub fn render_context_menu(
     // `gardener_console` param under that same name — pass `&*path_state`.
     path_state: &PathEditorState,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
+    active_petal: Option<&str>,
 ) {
     let ActiveDialog::ContextMenu {
         ref screen_pos,
@@ -510,6 +523,7 @@ pub fn render_context_menu(
                             pending_delete,
                             descendant_count,
                             &mut outcome,
+                            active_petal,
                         );
                     }
                 });
@@ -563,6 +577,7 @@ fn render_target_menu(
     pending_delete: &mut bool,
     descendant_count: &mut Option<usize>,
     outcome: &mut MenuOutcome,
+    active_petal: Option<&str>,
 ) {
     // Stamp payload + live promotion state (the promoted node id backs the
     // node-scoped verbs; it can land WHILE the menu is open — verbs light up).
@@ -685,7 +700,20 @@ fn render_target_menu(
                     }
                 }
             }
-            Verb::CopyApi | Verb::Report | Verb::ReportVolume => {
+            Verb::ReportVolume => {
+                let action = terrain_report_action(&target.hit, active_petal);
+                if render_target_gated_verb_button(
+                    ui,
+                    verb,
+                    &target.hit,
+                    action.is_some(),
+                    "Navigate to this object's Petal to open its volume report.",
+                ) {
+                    outcome.actions.extend(action);
+                    outcome.close = true;
+                }
+            }
+            Verb::CopyApi | Verb::Report => {
                 let egress = node_backed.as_deref().and_then(|id| match verb {
                     Verb::CopyApi => crate::gis::egress_strings::api_string_for(id),
                     _ => crate::gis::egress_strings::report_for(id),
@@ -1175,7 +1203,17 @@ mod tests {
     fn only_egress_verbs_are_seam_gated() {
         assert!(verb_is_seam_gated(Verb::CopyApi));
         assert!(verb_is_seam_gated(Verb::Report));
-        assert!(verb_is_seam_gated(Verb::ReportVolume));
+        assert!(!verb_is_seam_gated(Verb::ReportVolume));
+        assert!(verb_action(Verb::ReportVolume, "r1", false).is_none());
+        for hit in [
+            HitTarget::TerrainProposal { id: "p2".into() },
+            HitTarget::EarthworkRegion { id: "r1".into() },
+        ] {
+            assert!(matches!(terrain_report_action(&hit, Some("petal-1")),
+                Some(UiAction::OpenTerrainReport { petal_id, .. }) if petal_id == "petal-1"));
+            assert!(terrain_report_action(&hit, None).is_none());
+        }
+        assert!(terrain_report_action(&HitTarget::Empty, Some("petal-1")).is_none());
         for v in [
             Verb::CreateNode,
             Verb::Delete,
@@ -1455,7 +1493,9 @@ mod tests {
             for verb in menu_for(&region) {
                 let routed = edit_region_actions(verb, &region).is_some()
                     || proposal_delete_action(&region).is_some() && verb == Verb::Delete
-                    || matches!(verb, Verb::CopyApi | Verb::Report | Verb::ReportVolume); // seam-gated, node.rs pattern
+                    || verb == Verb::ReportVolume
+                        && terrain_report_action(&region, Some("petal-1")).is_some()
+                    || matches!(verb, Verb::CopyApi | Verb::Report);
                 assert!(routed, "{region:?} verb {verb:?} has no routing");
             }
         }

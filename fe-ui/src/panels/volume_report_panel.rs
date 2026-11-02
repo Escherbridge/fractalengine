@@ -9,7 +9,7 @@ use fe_renderer::terrain_overlay::{VolumeReportRequest, VolumeReportResult};
 use fe_runtime::messages::DbResult;
 
 use crate::actions::terrain_proposal::{SculptShapeMode, SculptToolState};
-use crate::actions::UiManager;
+use crate::actions::{UiAction, UiManager};
 use crate::navigation_manager::NavigationManager;
 use crate::panels::proposal_report_panel::earthwork_regions_from_terrain;
 use crate::panels::toolbar::Tool;
@@ -107,6 +107,145 @@ pub(crate) fn resolve_volume_selection(
         }
     }
     None
+}
+
+const REPORT_TARGET_LIMIT: usize = 128;
+
+fn report_target_kind(
+    proposal_state: &ProposalEditState,
+    terrain: &serde_json::Value,
+    id: &str,
+) -> Option<&'static str> {
+    let record = terrain
+        .get("proposals")?
+        .as_array()?
+        .iter()
+        .find(|record| record.get("id").and_then(serde_json::Value::as_str) == Some(id))?;
+    let footprint = record.get("footprint")?.as_array()?;
+    if footprint.len() < 3
+        || !footprint.iter().all(|point| {
+            serde_json::from_value::<[f32; 2]>(point.clone())
+                .is_ok_and(|point| point.into_iter().all(f32::is_finite))
+        })
+    {
+        return None;
+    }
+    if record.get("material").is_some() {
+        return Some("Region");
+    }
+    (proposal_state.hydrated
+        && proposal_state
+            .proposals
+            .iter()
+            .any(|record| record.id == id))
+    .then_some("Proposal")
+}
+
+fn current_report_terrain<'a>(
+    petal_id: &str,
+    active_petal: Option<&str>,
+    map: &'a PetalMapState,
+) -> Option<&'a serde_json::Value> {
+    if active_petal != Some(petal_id) || map.petal_id.as_deref() != Some(petal_id) || !map.loaded {
+        return None;
+    }
+    map.terrain_json.as_ref().filter(|terrain| {
+        terrain.get("enabled").and_then(serde_json::Value::as_bool) != Some(false)
+    })
+}
+
+/// Apply the read-only report action through the existing selection authority.
+pub(crate) fn open_terrain_report(
+    petal_id: &str,
+    id: &str,
+    nav: &NavigationManager,
+    map: &PetalMapState,
+    proposal_state: &mut ProposalEditState,
+    sidebar: &mut crate::ui_shell::right_sidebar::RightSidebarState,
+    can_view: bool,
+) -> bool {
+    let Some(terrain) =
+        current_report_terrain(petal_id, nav.active_petal_id.as_deref(), map).filter(|_| can_view)
+    else {
+        return false;
+    };
+    if report_target_kind(proposal_state, terrain, id).is_none() {
+        return false;
+    }
+    proposal_state.selected = Some(id.to_owned());
+    sidebar.reveal(crate::ui_shell::right_sidebar::RightSidebarSection::ProposalReport);
+    true
+}
+
+/// Bounded target controls for proposals and Brush-created regions.
+pub(crate) fn render_report_target_picker(
+    ui: &mut egui::Ui,
+    ui_mgr: &mut UiManager,
+    proposal_state: &ProposalEditState,
+    map: &PetalMapState,
+    active_petal: Option<&str>,
+) {
+    let Some((petal_id, terrain)) = active_petal
+        .and_then(|id| current_report_terrain(id, active_petal, map).map(|terrain| (id, terrain)))
+    else {
+        ui.label("Load terrain for the active Petal to choose a report target.");
+        return;
+    };
+    let regions = terrain
+        .get("proposals")
+        .and_then(serde_json::Value::as_array);
+    let ids = proposal_state
+        .proposals
+        .iter()
+        .map(|record| record.id.as_str())
+        .chain(
+            regions
+                .into_iter()
+                .flatten()
+                .filter(|record| record.get("material").is_some())
+                .filter_map(|record| record.get("id").and_then(serde_json::Value::as_str)),
+        );
+    let mut seen = std::collections::HashSet::new();
+    let targets: Vec<_> = ids
+        .filter_map(|id| report_target_kind(proposal_state, terrain, id).map(|kind| (id, kind)))
+        .filter(|(id, _)| seen.insert(*id))
+        .take(REPORT_TARGET_LIMIT + 1)
+        .collect();
+    ui.label(egui::RichText::new("Report target").strong());
+    if targets.is_empty() {
+        ui.label(
+            "No saved proposals or Brush regions in this Petal. Draw a shape to report a draft.",
+        );
+        return;
+    }
+    egui::ScrollArea::vertical()
+        .id_salt("terrain_report_targets")
+        .max_height(144.0)
+        .show(ui, |ui| {
+            for (id, kind) in targets.iter().take(REPORT_TARGET_LIMIT) {
+                let label = format!("{kind} {}", short_text(id));
+                let selected = proposal_state.selected.as_deref() == Some(*id);
+                let button = egui::Button::selectable(selected, label)
+                    .truncate()
+                    .min_size(egui::vec2(0.0, 24.0));
+                if ui
+                    .add(button)
+                    .named(ui, format_args!("Open terrain report for {kind} {id}"))
+                    .on_hover_text(*id)
+                    .clicked()
+                {
+                    ui_mgr.push_action(UiAction::OpenTerrainReport {
+                        petal_id: petal_id.to_owned(),
+                        id: (*id).to_owned(),
+                    });
+                }
+            }
+        });
+    if targets.len() > REPORT_TARGET_LIMIT {
+        ui.label(
+            "First 128 report targets shown; other targets can be opened from their viewport menu.",
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -791,14 +930,114 @@ mod tests {
         let terrain = serde_json::json!({"proposals": [{
             "id": "r1", "op": "raise", "material": "earth", "delta": 2.0,
             "footprint": [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+        }, {
+            "id": "p2", "op": "raise", "delta": 2.0,
+            "footprint": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
         }]});
         let mut app = volume_app();
         app.world_mut()
             .resource_mut::<NavigationManager>()
             .active_petal_id = Some("p1".into());
         app.update(); // petal-entry baseline frame
-        app.world_mut().resource_mut::<PetalMapState>().terrain_json = Some(terrain.clone());
-        app.world_mut().resource_mut::<ProposalEditState>().selected = Some("r1".into());
+        let nav = app.world().resource::<NavigationManager>();
+        let mut map = PetalMapState {
+            petal_id: Some("p1".into()),
+            loaded: true,
+            terrain_json: Some(terrain.clone()),
+            ..Default::default()
+        };
+        let mut proposals = ProposalEditState::default();
+        proposals.replace_all(vec![crate::terrain_proposal_state::ProposalRecord {
+            id: "p2".into(),
+            op: crate::terrain_proposal_state::ProposalOp::Raise,
+            footprint: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+            target_height: None,
+            delta: Some(2.0),
+        }]);
+        let records_before = proposals.proposals.clone();
+        let mut sidebar = crate::ui_shell::right_sidebar::RightSidebarState::default();
+        sidebar.collapsed = true;
+        assert!(!open_terrain_report(
+            "other",
+            "r1",
+            nav,
+            &map,
+            &mut proposals,
+            &mut sidebar,
+            true
+        ));
+        assert!(!open_terrain_report(
+            "p1",
+            "missing",
+            nav,
+            &map,
+            &mut proposals,
+            &mut sidebar,
+            true
+        ));
+        assert!(!open_terrain_report(
+            "p1",
+            "r1",
+            nav,
+            &map,
+            &mut proposals,
+            &mut sidebar,
+            false
+        ));
+        map.petal_id = Some("other".into());
+        assert!(!open_terrain_report(
+            "p1",
+            "r1",
+            nav,
+            &map,
+            &mut proposals,
+            &mut sidebar,
+            true
+        ));
+        map.petal_id = Some("p1".into());
+        map.loaded = false;
+        assert!(!open_terrain_report(
+            "p1",
+            "r1",
+            nav,
+            &map,
+            &mut proposals,
+            &mut sidebar,
+            true
+        ));
+        map.loaded = true;
+        assert!(proposals.selected.is_none() && sidebar.collapsed);
+        assert!(open_terrain_report(
+            "p1",
+            "p2",
+            nav,
+            &map,
+            &mut proposals,
+            &mut sidebar,
+            true
+        ));
+        for _ in 0..2 {
+            assert!(open_terrain_report(
+                "p1",
+                "r1",
+                nav,
+                &map,
+                &mut proposals,
+                &mut sidebar,
+                true
+            ));
+            assert_eq!(proposals.selected.as_deref(), Some("r1"));
+            assert!(sidebar
+                .is_active(crate::ui_shell::right_sidebar::RightSidebarSection::ProposalReport));
+            assert!(!sidebar.collapsed);
+        }
+        assert_eq!(
+            proposals.proposals, records_before,
+            "report selection never alters terrain records"
+        );
+        assert_eq!(map.terrain_json, Some(terrain.clone()));
+        app.insert_resource(map);
+        app.insert_resource(proposals);
         app.update();
 
         let request = app.world().resource::<CapturedRequests>().0[0].clone();

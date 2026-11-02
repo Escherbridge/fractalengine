@@ -356,7 +356,7 @@ pub fn render_right_sidebar(
                 ctx,
                 state,
                 proposal_state,
-                petal_map.world_scale,
+                petal_map,
                 ui_mgr,
                 hierarchy,
                 nav.active_petal_id.as_deref(),
@@ -593,7 +593,7 @@ fn render_proposal_report_section(
     ctx: &egui::Context,
     state: &mut RightSidebarState,
     proposal_state: &ProposalEditState,
-    world_scale: f64,
+    petal_map: &PetalMapState,
     ui_mgr: &mut UiManager,
     hierarchy: &VerseManager,
     active_petal: Option<&str>,
@@ -606,6 +606,13 @@ fn render_proposal_report_section(
             ui.label("Viewer access to this Petal is required to read its report.");
             return;
         }
+        volume_report_panel::render_report_target_picker(
+            ui,
+            ui_mgr,
+            proposal_state,
+            petal_map,
+            active_petal,
+        );
         volume_report_panel::render_volume_report_body(
             ui,
             ui_mgr,
@@ -621,7 +628,11 @@ fn render_proposal_report_section(
                 .any(|record| &record.id == selected)
         }) {
             ui.collapsing("Footprint geometry", |ui| {
-                proposal_report_panel::render_report_body(ui, proposal_state, world_scale);
+                proposal_report_panel::render_report_body(
+                    ui,
+                    proposal_state,
+                    petal_map.world_scale,
+                );
             });
         }
     });

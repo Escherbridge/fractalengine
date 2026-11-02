@@ -541,3 +541,16 @@ The status bar receives LocalUserRole and optional injected NodeIdentity through
 gardener_console. Role text is bounded/truncated with full verse and capability
 details on hover; connection status uses neutral shared tokens. See ../AGENTS.md
 §feedback-status for contrast pairs and condition ownership.
+
+## Terrain report target picker
+
+The Volume report includes a read-only target list for the active, loaded Petal:
+palette proposals and actual material-bearing Brush regions share the existing
+`ProposalEditState.selected` authority. The Viewer-gated report section hosts
+the picker, which shows at most 128 named, selected-state controls in a bounded
+scroll area. Names include target kind and ID; long visible IDs truncate with
+full-ID hover text. Every click queues the same validated `OpenTerrainReport`
+action used by the viewport menu. Draft fallback and volume/material/intersection
+math are unchanged. Existing report and context-menu journeys cover the shared
+handler and stale-map/Petal/role refusals; source authoring alone does not prove
+compiled or live behavior.

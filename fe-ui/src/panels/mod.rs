@@ -370,6 +370,7 @@ pub fn gardener_console(
                         tool_panel,
                         &*path_state,
                         db_tx,
+                        nav.active_petal_id.as_deref(),
                     )
                 });
             }

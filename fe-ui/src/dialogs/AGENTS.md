@@ -328,3 +328,10 @@ clear entry point. Editing the requirements add-ID/type controls also marks
 the dialog dirty before Add is pressed; Close/X therefore cannot silently
 drop that input. Copy JSON includes table requirements only and explicitly
 excludes unapplied Add fields, with a visible Add instruction and copy notice.
+
+## Terrain volume report routing
+
+Report Volume is independent of the API egress seam. Both palette proposals
+and Brush regions queue `OpenTerrainReport` with the render pass's active Petal;
+the action handler revalidates map ownership, target existence and Viewer access.
+Copy API and ordinary Report / Query retain their existing egress behavior.

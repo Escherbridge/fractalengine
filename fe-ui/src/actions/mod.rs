@@ -294,6 +294,11 @@ pub enum UiAction {
     TerrainProposalSelect {
         id: String,
     },
+    /// Select an existing active-Petal terrain target and reveal its measured report.
+    OpenTerrainReport {
+        petal_id: String,
+        id: String,
+    },
 
     // -----------------------------------------------------------------------
     // Wave-1 registration SCAFFOLD (spatial-builder-program-20260725).
@@ -918,6 +923,7 @@ pub(crate) struct ToolStateParams<'w> {
     /// holds the same resource in a different schedule, so there is no
     /// same-frame access conflict.
     right_sidebar: ResMut<'w, crate::ui_shell::right_sidebar::RightSidebarState>,
+    local_role: Res<'w, crate::plugin::LocalUserRole>,
     /// `UiAction::SetNodeView`'s optimistic session target (bundled for the
     /// same param-ceiling reason as `right_sidebar`).
     visibility: ResMut<'w, crate::visibility::VisibilityState>,
@@ -969,6 +975,7 @@ pub(crate) fn process_ui_actions(
         mut earthwork_map,
         mut callout_map,
         mut right_sidebar,
+        local_role,
         mut visibility,
         mut app_settings,
         mut render_override,
@@ -1370,6 +1377,22 @@ pub(crate) fn process_ui_actions(
             }
             UiAction::TerrainProposalSelect { id } => {
                 proposal_state.selected = Some(id);
+            }
+            UiAction::OpenTerrainReport { petal_id, id } => {
+                if !crate::panels::volume_report_panel::open_terrain_report(
+                    &petal_id,
+                    &id,
+                    &nav,
+                    &petal_map,
+                    &mut proposal_state,
+                    &mut right_sidebar,
+                    local_role.role.is_some_and(|role| role.can_view()),
+                ) {
+                    ui_mgr.show_advisory(
+                        "Report target unavailable in the active Petal or Viewer access required",
+                        now_secs,
+                    );
+                }
             }
 
             // ---- Wave-1 dispatch — each arm calls its per-track handler

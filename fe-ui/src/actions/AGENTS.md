@@ -355,3 +355,13 @@ captured navigation scope; no petal fails locally without sending. Stored DB
 ancestry/Viewer authorization is independent of UI scope/role hints. Dead
 transport ends the correct pending buffer. Trusted programmatic API/report
 queries remain unchanged.
+
+## Read-only terrain report selection
+
+`OpenTerrainReport { petal_id, id }` is shared by the report picker and viewport
+Report Volume command. Its handler checks current Viewer access, active-Petal
+identity, loaded/enabled map ownership and an existing proposal or Brush region.
+It then changes only `ProposalEditState.selected` and reveals the Volume report;
+repeated opens are idempotent. Stale/foreign/missing targets leave selection and
+sidebar unchanged and produce an advisory. No DB, clipboard or geometry write
+is part of this command.
