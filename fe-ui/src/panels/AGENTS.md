@@ -805,3 +805,13 @@ The existing two-step track deletion, route-salted point confirmation, Editor ga
 drafts, and checked receipt projection are unchanged. Stamp Clear is an explicit native minimum
 button; the selected asset readout wraps before it rather than taking its hit area. Native journeys
 exercise real response rectangles/clips at compact widths and click the existing actions.
+
+
+## Explicit rendered stamp selector
+
+Selected stamp Options includes a one-based Stamp number and Select stamp action over the actual
+rendered target catalog. This makes editing reachable while preserving the intentional edited-path
+ribbon priority. The numeric draft alone never persists or selects; only an available owned scene
+target produces a captured request. Viewer can inspect and Editor can promote/apply, with actual
+role/source/scene checks repeated at dispatch and DB use. Catalog source/targets are immutable Arc
+values, avoiding per-frame copies of routes and properties.

@@ -948,3 +948,30 @@ Vertex/handle context classification also captures the complete PointEditOrigin 
 
 Selection sync starts a typed current Portal URL read after setting the initial stored buffer.
 It captures that clean baseline, so an asynchronous refresh cannot erase edits typed meanwhile.
+
+
+## Stamp selection
+
+stamp_selection.rs adapts NodeManager's selected live entity to stamp metadata; it does not add a
+second selection authority. Lower-tier left picks and freshly classified context Stamp picks share
+a captured scene entity/marker, full navigation, raw authoritative source properties/version and
+rendered descriptor/points/scale proof. Path handle, point and edited-ribbon tiers remain ahead of
+the node tier (F10). The explicit one-based Options selector offers actual rendered entities when
+a ribbon intentionally owns a center pick. Missing, hidden, wrong-Petal, stale/reflowed, or replaced
+entities refuse. A shared Arc source proof is attached at actual materialization, preventing old
+entities being interpreted under a newly loaded descriptor before restamp.
+
+The catalog rebuilds on a no-allocation revision key; immutable source contexts and target arrays
+are shared, and full raw comparisons at use remain authoritative. Every queued selection and Apply
+is checked against current NodeManager generation, source, scene proof and actual advisory role.
+Viewer selection sends no promotion write. Editor selection queues the private checked DB capture;
+only the matching confirmed receipt binds the durable node address to the same entity. Inspector
+identity includes entity and semantic address; synthetic marker IDs never trigger property reads.
+Canonical, validated full properties can restore an existing promoted node for read-only inspection.
+Different object/path sub-selection/Petal changes clear the projection; late receipts cannot select.
+
+The existing real AABB/ribbon App journey uses the production registration and action dispatcher,
+then the actual native selector, correlated promotion reply, loaded editor and one native Apply.
+It covers Viewer/context inspection without writes, F10, stale descriptor/navigation/role queues,
+pre-restamp proof refusal and late-receipt non-resurrection. Source-only authorship is not execution
+evidence; root owns the integrated verification sweep.

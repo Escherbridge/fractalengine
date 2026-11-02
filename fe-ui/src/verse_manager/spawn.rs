@@ -153,11 +153,13 @@ pub(super) fn spawn_stamped_entity(
     name: &str,
     transform: Transform,
     asset_path: &str,
+    selection_source: super::path_asset_materialize::StampSelectionSource,
 ) {
     let handle: Handle<Scene> = asset_server.load(scene_asset_path(asset_path));
     let entity = commands
         .spawn((
             SceneRoot(handle),
+            selection_source,
             transform,
             Name::new(name.to_string()),
             SpawnedNodeMarker {

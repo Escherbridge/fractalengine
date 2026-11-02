@@ -325,12 +325,8 @@ pub enum UiAction {
     // -----------------------------------------------------------------------
 
     // --- T2 stamped_asset_nodes: individual stamp select + scale/rotate/slide ---
-    /// Select a single stamp on a path as an individual (promoting) node
-    /// (T2 FR-2). Identified pre-promotion by `(track_node_id, stamp_index)`.
-    SelectStamp {
-        track_node_id: String,
-        stamp_index: usize,
-    },
+    /// Select an owned live stamp under its captured scene, source and navigation identity.
+    SelectStamp { origin: crate::node_manager::StampSelectionOrigin },
     /// Open the explicitly selected, already-promoted stamp in the Inspector.
     InspectStampNode {node_id:String},
     /// Resolve the exact pending stamp save receipt.
@@ -430,12 +426,8 @@ pub enum UiAction {
         node_id: String,
         name: String,
     },
-    /// Promote an un-promoted stamp to a full node (T4 FR-3 / T2 FR-5), via
-    /// T1 FR-5. Identified pre-promotion by `(track_node_id, stamp_index)`.
-    PromoteStamp {
-        track_node_id: String,
-        stamp_index: usize,
-    },
+    /// Promote the context-selected stamp through its checked source capture.
+    PromoteStamp { origin: crate::node_manager::StampSelectionOrigin },
     /// Clear an object's custom properties WITHOUT deleting it — the distinct
     /// verb that is NOT delete (T4 FR-2 husk-bug clarification).
     ClearNodeProperties {
@@ -957,6 +949,7 @@ pub(crate) struct ToolStateParams<'w> {
     tool_panel: ResMut<'w, crate::panels::tool_panel::ToolPanelState>,
     proposal_state: ResMut<'w, ProposalEditState>,
     stamp_state: ResMut<'w, asset::StampInteractionState>,
+    stamp_requests: ResMut<'w, crate::node_manager::StampSelectionRequests>,
     sculpt_state: ResMut<'w, terrain_proposal::SculptToolState>,
     /// T3: region_id↔node_id bookkeeping for earthwork endpoint rows (D-A8).
     earthwork_map: ResMut<'w, terrain_proposal::EarthworkNodeMap>,
@@ -1019,6 +1012,7 @@ pub(crate) fn process_ui_actions(
         mut tool_panel,
         mut proposal_state,
         mut stamp_state,
+        mut stamp_requests,
         mut sculpt_state,
         mut earthwork_map,
         mut callout_map,
@@ -1491,28 +1485,12 @@ pub(crate) fn process_ui_actions(
             // ---- Wave-1 dispatch — each arm calls its per-track handler
             // (T2/T3/T4 leaf logic + integration). See the enum block above. ----
             // T2 stamped_asset_nodes (asset.rs):
-            UiAction::SelectStamp {
-                track_node_id,
-                stamp_index,
-            } => {
-                asset::handle_select_stamp(&mut stamp_state, track_node_id, stamp_index);
-                // T2 FR-5 / N-9: the FIRST individual select of an un-promoted
-                // stamp queues exactly one PromoteStamp (drained here so the
-                // marker can never fire twice; dispatched next drain pass).
-                if let Some(pending) = stamp_state.take_pending_promotion() {
-                    ui_mgr.push_action(UiAction::PromoteStamp {
-                        track_node_id: pending.track_node_id,
-                        stamp_index: pending.stamp_index,
-                    });
-                }
-            }
+            UiAction::SelectStamp {origin} => {stamp_requests.push(origin);}
             UiAction::InspectStampNode {node_id} => {
-                if stamp_state.selected().is_some_and(|stamp|stamp_state.promoted_node_id(stamp)==Some(node_id.as_str())) {
-                    if let Some(petal_id)=nav.active_petal_id.as_deref() {
-                        node_mgr.request_select_after_navigation(&node_id,petal_id);
-                        right_sidebar.reveal_slug("inspector");
-                    }
-                }
+                if stamp_state.selected().is_some_and(|stamp|stamp_state.promoted_node_id(stamp)==Some(node_id.as_str()))
+                    && node_mgr.selected.as_ref().is_some_and(|selected|selected.node_id==node_id) {
+                    right_sidebar.reveal_slug("inspector");
+                } else {ui_mgr.show_advisory("Select the current promoted stamp before opening its node",now_secs);}
             }
             UiAction::CheckStampSave => {
                 if let Err(error)=stamp_state.check_edit(&db_sender) {ui_mgr.show_error(error,now_secs);}
@@ -1525,10 +1503,9 @@ pub(crate) fn process_ui_actions(
                 }
             }
             UiAction::ApplyStampOverrides { edit } => {
-                match asset::apply_overrides(&db_sender,&mut stamp_state,edit,&nav,&path_state,&local_role) {
-                    Ok(())=>ui_mgr.show_toast("Saving stamp changes...",now_secs),
-                    Err(error)=>ui_mgr.show_error(error,now_secs),
-                }
+                if let Some(origin)=stamp_state.selection_origin.as_ref().filter(|origin|origin.is_current_selection(&node_mgr)) {
+                    stamp_requests.push_edit(origin.clone(),edit);
+                } else {ui_mgr.show_advisory("Stamp selection changed; review the current stamp before applying",now_secs);}
             }
             UiAction::SetStampScale {
                 track_node_id,
@@ -1655,18 +1632,7 @@ pub(crate) fn process_ui_actions(
             UiAction::RenameNode { node_id, name } => {
                 node::handle_rename(&db_sender, node_id, name);
             }
-            UiAction::PromoteStamp {
-                track_node_id,
-                stamp_index,
-            } => {
-                node::handle_promote_stamp(
-                    &db_sender,
-                    &mut stamp_state,
-                    nav.active_petal_id.as_deref(),
-                    track_node_id,
-                    stamp_index,
-                );
-            }
+            UiAction::PromoteStamp {origin} => {stamp_requests.push(origin);}
             UiAction::ClearNodeProperties { node_id } => {
                 node_props::handle_clear(&db_sender, node_id);
             }

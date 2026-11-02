@@ -646,7 +646,7 @@ fn render_target_menu(
             let selected = stamp_state.selected() == Some(stamp);
             let header = format!(
                 "Stamp {}{}",
-                stamp.stamp_index,
+                stamp.stamp_index + 1,
                 if selected { " \u{2014} selected" } else { "" }
             );
             ui.label(egui::RichText::new(header).small().color(theme::TEXT_DIM));
@@ -829,19 +829,18 @@ fn render_target_menu(
             // --- stamp verbs (T2 payload) ---
             Verb::PromoteToNode => {
                 if let Some(stamp) = &stamp_ref {
+                    let origin=stamp_state.selection_origin.as_ref().filter(|origin| {
+                        matches!(&target.hit,HitTarget::Stamp(entity) if origin.is_target(*entity,&stamp.track_node_id,stamp.stamp_index))
+                    });
                     let clicked = render_target_gated_verb_button(
-                        ui,
-                        verb,
-                        &target.hit,
-                        promoted_id.is_none(),
-                        "Already promoted \u{2014} this stamp is a full addressable node.",
+                        ui, verb, &target.hit, promoted_id.is_none() && origin.is_some(),
+                        "Already promoted, or its live selection changed; select this stamp again.",
                     );
                     if clicked {
-                        outcome.actions.push(UiAction::PromoteStamp {
-                            track_node_id: stamp.track_node_id.clone(),
-                            stamp_index: stamp.stamp_index,
-                        });
-                        outcome.close = true;
+                        if let Some(origin)=origin {
+                            outcome.actions.push(UiAction::PromoteStamp {origin:origin.clone()});
+                            outcome.close=true;
+                        }
                     }
                 }
             }
@@ -854,7 +853,7 @@ fn render_target_menu(
                         outcome.actions.push(UiAction::PathSelectTrack {
                             track_node_id: stamp.track_node_id.clone(),
                         });
-                        tool_panel.stamp_edit_index = stamp.stamp_index as u32;
+                        tool_panel.stamp_edit_index = stamp.stamp_index.saturating_add(1) as u32;
                         outcome.toast = Some("Stamp controls opened in Options");
                         outcome.close = true;
                     }

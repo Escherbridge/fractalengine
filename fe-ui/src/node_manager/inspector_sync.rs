@@ -25,7 +25,8 @@ pub(super) fn sync_manager_to_inspector(
     // Plain query used on initial selection so the inspector populates even when
     // the transform hasn't changed this frame (e.g. freshly selected static node).
     all_query: Query<&Transform>,
-    mut last_selected: Local<Option<Entity>>,
+    mut last_selected: Local<Option<(Entity, String)>>,
+    instances: Query<&crate::verse_manager::PathAssetInstance>,
     nav: Res<crate::navigation_manager::NavigationManager>,
     mut ui_mgr: ResMut<crate::actions::UiManager>,
     time: Res<crate::notice::NoticeClock>,
@@ -38,13 +39,27 @@ pub(super) fn sync_manager_to_inspector(
 
     // On initial selection the transform hasn't Changed<> yet — read it
     // unconditionally so the inspector populates immediately.
-    let just_selected = *last_selected != Some(entity);
-    *last_selected = Some(entity);
+    let selected_id = manager
+        .selected
+        .as_ref()
+        .map(|selected| selected.node_id.as_str())
+        .unwrap_or_default();
+    let just_selected = last_selected
+        .as_ref()
+        .is_none_or(|(previous, id)| *previous != entity || id != selected_id);
+    if just_selected {
+        *last_selected = Some((entity, selected_id.into()));
+    }
 
     // Sync per-node URL from VerseManager on selection change so the
     // inspector shows the correct URL for the newly-selected node.
+    let unpromoted = instances.contains(entity)
+        && crate::verse_manager::parse_stamp_marker_id(selected_id).is_some();
     if just_selected {
-        if let Some(ref sel) = manager.selected {
+        if unpromoted {
+            inspector.external_url.clear();
+        }
+        if let Some(sel) = manager.selected.as_ref().filter(|_| !unpromoted) {
             inspector.external_url = stored_node_url(&verse_mgr, &sel.node_id);
             if let Err(reason) = crate::actions::url_read_model::request_current(
                 &db_sender.0,
@@ -62,7 +77,7 @@ pub(super) fn sync_manager_to_inspector(
         }
         // Load properties for the newly selected node
         if let Some(ref sel) = manager.selected {
-            inspector.node_properties_loading = true;
+            inspector.node_properties_loading = !unpromoted;
             inspector.node_properties = serde_json::Value::Object(Default::default());
             // Clear the Annotation card buffers so they don't briefly show the
             // previous node's values while the async property load is in flight
@@ -70,12 +85,18 @@ pub(super) fn sync_manager_to_inspector(
             inspector.annotation_title_buf.clear();
             inspector.annotation_body_buf.clear();
             inspector.annotation_color_buf.clear();
-            let _ = db_sender
-                .0
-                .send(fe_runtime::messages::DbCommand::GetNodeProperties {
-                    node_id: sel.node_id.clone(),
-                    correlation_id: None,
-                });
+            if !unpromoted {
+                if db_sender
+                    .0
+                    .send(fe_runtime::messages::DbCommand::GetNodeProperties {
+                        node_id: sel.node_id.clone(),
+                        correlation_id: None,
+                    })
+                    .is_err()
+                {
+                    bevy::log::warn!("selected node property read channel closed");
+                }
+            }
         }
         // Reset API token tab state for the new selection
         inspector.generated_api_token = None;

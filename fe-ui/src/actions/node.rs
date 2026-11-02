@@ -8,7 +8,6 @@
 use fe_runtime::app::DbCommandSender;
 use fe_runtime::messages::{CallerAuth, DbCommand};
 
-use crate::actions::asset::StampInteractionState;
 use crate::actions::UiManager;
 
 /// Send `CreateNode` for an empty node at `position` in `petal_id`.
@@ -86,48 +85,6 @@ pub(crate) fn handle_rename(db_sender: &DbCommandSender, node_id: String, name: 
         .is_err()
     {
         bevy::log::warn!("db_sender channel closed — RenameNode not sent");
-    }
-}
-
-/// T4 FR-3 / T2 FR-5 — promote an un-promoted stamp to a full addressable node
-/// via the spine's `PromoteInstance` (T1 FR-5). `petal_id` is the ACTIVE petal
-/// (stamps only materialize there — the dispatcher threads
-/// `NavigationManager.active_petal_id`); a missing petal warns, never a silent
-/// no-op (N-8). Auth is `CallerAuth::Local` — the UI asserts no role (N-5).
-/// Already-promoted stamps are skipped (idempotent, N-9).
-pub(crate) fn handle_promote_stamp(
-    db_sender: &DbCommandSender,
-    stamp_state: &mut StampInteractionState,
-    active_petal_id: Option<&str>,
-    track_node_id: String,
-    stamp_index: usize,
-) {
-    let stamp = crate::actions::asset::StampRef {
-        track_node_id,
-        stamp_index,
-    };
-    if stamp_state.is_promoted(&stamp) {
-        return; // already a full node — nothing to send (N-9)
-    }
-    let Some(petal_id) = active_petal_id else {
-        bevy::log::warn!(
-            "promote stamp {}::{} skipped: no active petal to scope PromoteInstance (N-8)",
-            stamp.track_node_id,
-            stamp.stamp_index
-        );
-        return;
-    };
-    if db_sender
-        .0
-        .send(DbCommand::PromoteInstance {
-            petal_id: petal_id.to_string(),
-            path_id: stamp.track_node_id.clone(),
-            instance_index: stamp.stamp_index as u32,
-            auth: CallerAuth::Local,
-        })
-        .is_err()
-    {
-        bevy::log::warn!("db_sender channel closed — PromoteInstance not sent");
     }
 }
 

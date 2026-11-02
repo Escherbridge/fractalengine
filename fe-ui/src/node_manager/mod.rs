@@ -51,6 +51,9 @@ mod terrain_authoring;
 pub use terrain_authoring::{TerrainAuthoringCommit, TerrainAuthoringState};
 pub(crate) use terrain_authoring::shape_at;
 mod viewport_pick;
+mod stamp_selection;
+pub use stamp_selection::StampSelectionOrigin;
+pub(crate) use stamp_selection::{StampSelectionCatalog, StampSelectionRequests};
 
 use bevy::prelude::*;
 
@@ -80,6 +83,7 @@ pub use dispatch::{resolve_operation, HandleSide, HitTarget, Operation};
 #[derive(Resource, Default)]
 pub struct NodeManager {
     pub selected: Option<NodeSelection>,
+    pub(crate) selection_generation: u64,
     pub(crate) pending_transform_before: Option<Transform>,
     /// Sidebar click stores the node_id here; `sync_sidebar_to_manager`
     /// resolves the ECS Entity and calls `select()`.
@@ -266,6 +270,7 @@ impl NodeManager {
             // Already selected — keep drag state intact.
             return;
         }
+        self.selection_generation = self.selection_generation.wrapping_add(1);
         self.pending_transform_before=None;
         self.selected = Some(NodeSelection {
             entity,
@@ -275,7 +280,31 @@ impl NodeManager {
         });
     }
 
+    /// Select a validated live stamp and supersede automatic track-selection followups.
+    pub(super) fn select_live_stamp(&mut self, entity: Entity, node_id: String) {
+        self.pending_sidebar_select = None;
+        self.pending_navigation_select = None;
+        self.select(entity, node_id);
+    }
+
+    /// Bind an authoritative promoted address to the same selected live stamp entity.
+    pub(crate) fn bind_promoted_stamp(&mut self, entity: Entity, node_id: &str) -> bool {
+        let Some(selected) = self
+            .selected
+            .as_mut()
+            .filter(|selected| selected.entity == entity)
+        else {
+            return false;
+        };
+        if selected.node_id != node_id {
+            selected.node_id = node_id.into();
+            self.selection_generation = self.selection_generation.wrapping_add(1);
+        }
+        true
+    }
+
     pub fn deselect(&mut self) {
+        if self.selected.is_some() {self.selection_generation=self.selection_generation.wrapping_add(1);}
         self.pending_transform_before=None;
         self.pending_navigation_select = None;
         self.selected = None;
@@ -342,6 +371,7 @@ impl Plugin for NodeManagerPlugin {
         app.init_resource::<path_handle_interaction::PathHandleDrag>();
         app.init_resource::<path_gimbal_drag::PathGimbalDrag>();
         app.init_resource::<selection::SelectionState>();
+        stamp_selection::register(app);
         app.add_systems(Startup, crate::gimbal::configure_gimbal_gizmos);
         app.add_systems(
             Update,

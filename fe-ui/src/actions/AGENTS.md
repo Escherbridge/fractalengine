@@ -448,3 +448,12 @@ nonce/cache/form ownership checks. Unsupported NoAsset/SharedModel states block 
 advisorially; the database remains authoritative. MissingModel admits explicit nonempty Save,
 which may initialize local Portal metadata after the database proves exclusive live ownership.
 No URL draft is discarded merely because storage is unavailable, and selection performs no write.
+
+
+## Live stamp admission
+
+SelectStamp and context PromoteStamp carry a private scene/source origin rather than unchecked
+indices. The action dispatcher forwards those captures and atomic Apply drafts to the stamp
+selection controller, which rechecks live ownership/source/generation before the existing DB
+command is sent. The public legacy current-index API is separate; no actual GUI producer uses
+PromoteInstance. Make editable reveals the already selected, authoritatively bound durable node.

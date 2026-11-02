@@ -27,7 +27,7 @@ pub enum SelectionKind {
     PathVertex { track_id: String, idx: usize },
     /// A path segment `idx` spanning `points[idx] → points[idx + 1]`.
     PathSegment { track_id: String, idx: usize },
-    /// A materialized path-asset stamp entity (future: FR-2 stamp ops).
+    /// The selected materialized path-asset stamp entity.
     Stamp(Entity),
     /// A proposed terrain-edit overlay (future: FR-5 proposal editing).
     TerrainProposal { id: String },
@@ -127,17 +127,25 @@ pub(super) fn update_selection_state(
     manager: Res<NodeManager>,
     path_state: Res<PathEditorState>,
     mut selection: ResMut<SelectionState>,
+    instances: Query<&crate::verse_manager::PathAssetInstance>,
+    stamps: Option<Res<crate::actions::asset::StampInteractionState>>,
 ) {
     let node_selected = manager
         .selected
         .as_ref()
         .map(|s| (s.entity, s.node_id.as_str()));
-    let kind = project_selection(
+    let mut kind = project_selection(
         node_selected,
         path_state.editing_track_id.as_deref(),
         path_state.selected_point,
         path_state.selected_segment,
     );
+    if let SelectionKind::Node(entity)=kind {
+        if instances.contains(entity) || manager.selected.as_ref().is_some_and(|selected|
+            stamps.as_ref().is_some_and(|stamps|stamps.promoted_stamp_for_node(&selected.node_id).is_some())) {
+            kind=SelectionKind::Stamp(entity);
+        }
+    }
     if selection.kind != kind {
         selection.kind = kind;
     }

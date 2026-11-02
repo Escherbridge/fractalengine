@@ -25,6 +25,16 @@ use crate::navigation_manager::NavigationManager;
 // Petal-wide descriptor + points cache
 // ---------------------------------------------------------------------------
 
+/// Immutable inputs that actually produced a live stamp group.
+#[derive(Debug)]
+pub(crate) struct StampRenderSource {
+    pub descriptor: PathAssetDescriptor,
+    pub points: Vec<[f32;3]>,
+    pub world_scale: f32,
+}
+#[derive(Component,Clone,Debug)]
+pub(crate) struct StampSelectionSource(pub std::sync::Arc<StampRenderSource>);
+
 /// One track's cached stamp inputs: which petal it lives in, its stamp
 /// descriptor, its path points (petal-local), and a points fingerprint for
 /// cheap change detection. See AGENTS.md §path-asset-materialization.
@@ -33,6 +43,7 @@ pub(super) struct PathAssetCacheEntry {
     pub(super) descriptor: PathAssetDescriptor,
     pub(super) points: Vec<[f32; 3]>,
     pub(super) fingerprint: u64,
+    stored_properties: Option<serde_json::Value>,
 }
 
 /// Cache of `track_id → PathAssetCacheEntry`, fed by every `NodePropertiesLoaded`
@@ -44,14 +55,22 @@ pub(super) struct PathAssetCacheEntry {
 #[derive(Resource, Default)]
 pub struct PathAssetCache {
     entries: HashMap<String, PathAssetCacheEntry>,
+    selection_revision: u64,
 }
 
 impl PathAssetCache {
+    pub(crate) fn selection_revision(&self)->u64 {self.selection_revision}
     #[cfg(test)]
     pub(crate) fn cached_point_positions(&self, track_id: &str) -> Option<&[[f32; 3]]> {
         self.entries
             .get(track_id)
             .map(|entry| entry.points.as_slice())
+    }
+
+    /// Read the authoritative source and its current render inputs without granting mutation access.
+    pub(crate) fn stamp_selection_source(&self, track: &str, petal: &str) -> Option<(&serde_json::Value, &PathAssetDescriptor, &[[f32;3]])> {
+        let entry=self.entries.get(track).filter(|entry|entry.petal_id==petal)?;
+        Some((entry.stored_properties.as_ref()?, &entry.descriptor, &entry.points))
     }
 
     /// Cached entry for a track, if its properties carried a stampable path.
@@ -72,6 +91,8 @@ impl PathAssetCache {
         points: Vec<[f32; 3]>,
         fingerprint: u64,
     ) {
+        self.selection_revision=self.selection_revision.wrapping_add(1);
+        let stored_properties = self.entries.get(track_id).and_then(|entry|entry.stored_properties.clone());
         self.entries.insert(
             track_id.to_string(),
             PathAssetCacheEntry {
@@ -79,6 +100,7 @@ impl PathAssetCache {
                 descriptor,
                 points,
                 fingerprint,
+                stored_properties,
             },
         );
     }
@@ -125,16 +147,17 @@ impl PathAssetCache {
         );
         let fingerprint = points_fingerprint(&points);
         self.upsert(node_id, petal_id, descriptor, points, fingerprint);
+        if let Some(entry)=self.entries.get_mut(node_id) {entry.stored_properties=Some(properties.clone());}
     }
 
     /// Drop a track's cached entry (path_asset deleted / node removed).
     pub(super) fn invalidate(&mut self, track_id: &str) {
-        self.entries.remove(track_id);
+        if self.entries.remove(track_id).is_some() {self.selection_revision=self.selection_revision.wrapping_add(1);}
     }
 
     /// Drop everything (database reset).
     pub(super) fn clear(&mut self) {
-        self.entries.clear();
+        if !self.entries.is_empty() {self.selection_revision=self.selection_revision.wrapping_add(1);self.entries.clear();}
     }
 }
 
@@ -556,6 +579,9 @@ pub(super) fn materialize_path_assets(
         let mut positions: Vec<[f32; 3]> = Vec::with_capacity(stamped);
         let mut stamp_indices: Vec<u32> = Vec::with_capacity(stamped);
         let mut instances: Vec<StampInstanceData> = Vec::with_capacity(stamped);
+        let selection_source=StampSelectionSource(std::sync::Arc::new(StampRenderSource {
+            descriptor:entry.descriptor.clone(),points:entry.points.clone(),world_scale,
+        }));
         for i in keep {
             let (position, yaw) = samples[i];
             let transform = stamp_transform(
@@ -584,6 +610,7 @@ pub(super) fn materialize_path_assets(
                 &stamp_id,
                 transform,
                 &entry.descriptor.asset_path,
+                selection_source.clone(),
             );
         }
         render_index.tracks.insert(

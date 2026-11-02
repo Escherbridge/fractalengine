@@ -204,8 +204,10 @@ pub struct ToolPanelState {
     /// meters only — no `world_scale` in the buffer.
     pub stamp_arc_m: f32,
     pub(crate) stamp_edit_target: Option<fe_runtime::messages::StampOverrideEdit>,
+    pub(crate) stamp_selection_catalog: Option<crate::node_manager::StampSelectionCatalog>,
     pub(crate) stamp_save_pending: bool,
     pub(crate) stamp_can_edit: bool,
+    stamp_can_inspect: bool,
     stamp_saved_revision: u64,
     stamp_feedback: Option<String>,
 }
@@ -294,6 +296,7 @@ pub(crate) fn sync_stamp_editor(
 ) {
     state.stamp_save_pending = stamps.edit_pending();
     state.stamp_can_edit = role.role.is_some_and(|role| role.can_edit());
+    state.stamp_can_inspect = role.role.is_some_and(|role|role.can_view());
     state.stamp_feedback = stamps.edit_error().map(str::to_owned);
     let selected = stamps.selected();
     let same = state.stamp_edit_target.as_ref().is_some_and(|edit| {
@@ -349,7 +352,7 @@ pub(crate) fn sync_stamp_editor(
         .to_euler(bevy::math::EulerRot::YXZ)
         .0
         .to_degrees();
-    state.stamp_edit_index = stamp.stamp_index.min(u32::MAX as usize) as u32;
+    state.stamp_edit_index = stamp.stamp_index.saturating_add(1).min(u32::MAX as usize) as u32;
     state.stamp_edit_target = Some(fe_runtime::messages::StampOverrideEdit {
         node_id: node_id.into(),
         path_id: stamp.track_node_id.clone(),
@@ -575,6 +578,62 @@ fn stamp_numeric_field(
     }
 }
 
+/// Select only a current owned rendered stamp while path picks retain their priority.
+fn render_stamp_selector(
+    ui: &mut egui::Ui,
+    state: &mut ToolPanelState,
+    ui_mgr: &mut UiManager,
+    track_id: &str,
+) {
+    if let Some(catalog) = state
+        .stamp_selection_catalog
+        .as_ref()
+        .filter(|catalog| catalog.for_path(track_id))
+    {
+        if let Some(maximum) = catalog
+            .targets
+            .last()
+            .map(|target| target.index.saturating_add(1) as u32)
+        {
+            ui.label("While editing, ribbon and point picks select the path. Choose a rendered stamp here to select it explicitly.");
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Stamp number");
+                let minimum = crate::object_data::target_size(ui);
+                ui.add_sized(
+                    [minimum, minimum],
+                    egui::DragValue::new(&mut state.stamp_edit_index)
+                        .range(1..=maximum)
+                        .clamp_existing_to_range(false),
+                )
+                .named(ui, "Stamp number to select (one-based)");
+                let index = state
+                    .stamp_edit_index
+                    .checked_sub(1)
+                    .map(|index| index as usize);
+                let available = index.is_some_and(|index| {
+                    catalog.targets.iter().any(|target| target.index == index)
+                });
+                if ui
+                    .add_enabled(
+                        available && state.stamp_can_inspect,
+                        egui::Button::new("Select stamp")
+                            .min_size(egui::Vec2::splat(crate::object_data::target_size(ui))),
+                    )
+                    .named(ui, "Select the rendered stamp number")
+                    .on_disabled_hover_text(
+                        "Choose a currently rendered stamp number; Viewer access is required.",
+                    )
+                    .clicked()
+                {
+                    if let Some(origin) = index.and_then(|index| catalog.origin(index)) {
+                        ui_mgr.push_action(UiAction::SelectStamp { origin });
+                    }
+                }
+            });
+        }
+    }
+}
+
 /// Edits one viewport-selected stamp and sends one atomic save intent.
 fn render_stamp_editor(
     ui: &mut egui::Ui,
@@ -584,6 +643,7 @@ fn render_stamp_editor(
 ) {
     ui.strong("Selected stamp");
     ui.label("Use Select in the viewport to pick a stamp; its position stays on the path.");
+    render_stamp_selector(ui,state,ui_mgr,&track_id);
     if let Some(error) = &state.stamp_feedback {
         ui.colored_label(theme::STATUS_OFFLINE, error);
     }

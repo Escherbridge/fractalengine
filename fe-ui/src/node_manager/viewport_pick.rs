@@ -30,6 +30,7 @@ pub(super) fn handle_viewport_click(
     tool: Res<ToolState>,
     visibility: Res<VisibilityState>,
     mut arbiter: ResMut<ClickArbiter>,
+    mut stamps: super::stamp_selection::StampPickParams,
 ) {
     // Only act on a fresh left-press that reached the viewport (egui/rect gating
     // already applied by `resolve_pointer_frame`).
@@ -90,13 +91,9 @@ pub(super) fn handle_viewport_click(
         }
     }
 
-    // Route the select/deselect decision through the FR-2 dispatch table
-    // (no-bypass): a node hit resolves to `SelectNode`, an empty hit to
-    // `Deselect`, in every tool but Pen — and Pen never reaches here (its
-    // higher-priority `PathPlace`/`PathMarker` claim wins the frame first). A
-    // `Node`/`Empty` hit resolves selection-independently, so the projected
-    // kind is immaterial and `Empty` stands in.
+    // Preserve the existing priority tiers; classify owned stamps at the node tier.
     let hit = match best.as_ref() {
+        Some((entity, _, _)) if stamps.is_stamp(*entity) => HitTarget::Stamp(*entity),
         Some((entity, _, _)) => HitTarget::Node(*entity),
         None => HitTarget::Empty,
     };
@@ -106,6 +103,7 @@ pub(super) fn handle_viewport_click(
                 manager.select(entity, node_id);
             }
         }
+        Operation::SelectStamp(entity) => stamps.queue(entity, manager.selection_generation),
         Operation::Deselect => manager.deselect(),
         // The only other verbs a `Node`/`Empty` hit can produce here are Pen's
         // `PlacePathPoint` (unreachable — `PathPlace` claims the frame first)
@@ -253,6 +251,19 @@ mod tests {
         let down =
             || ClickArbiter::pressed_along(Ray3d::new(Vec3::new(5.0, 50.0, 0.0), Dir3::NEG_Y));
         let mut app = App::new();
+        let (stamp_tx, stamp_rx) = crossbeam::channel::unbounded();
+        app.add_message::<fe_runtime::messages::DbResult>()
+            .insert_resource(fe_runtime::app::DbCommandSender(stamp_tx))
+            .init_resource::<crate::gis::PathEditorState>()
+            .init_resource::<crate::verse_manager::PathAssetCache>()
+            .init_resource::<crate::verse_manager::VerseManager>()
+            .init_resource::<crate::terrain_map::PetalMapState>()
+            .init_resource::<crate::actions::asset::StampInteractionState>()
+            .init_resource::<crate::actions::UiManager>()
+            .init_resource::<crate::notice::NoticeClock>()
+            .init_resource::<crate::plugin::LocalUserRole>()
+            .init_resource::<crate::panels::tool_panel::ToolPanelState>();
+        super::super::stamp_selection::register(&mut app);
         app.insert_resource(NavigationManager {
             active_petal_id: Some("p1".into()),
             ..Default::default()
@@ -302,6 +313,503 @@ mod tests {
                 .as_ref()
                 .map(|s| s.node_id.as_str()),
             Some("t1")
+        );
+
+        use crate::verse_manager::{FractalEntry, NodeEntry, PetalEntry, VerseEntry};
+        use bevy_egui::egui;
+        use fe_runtime::messages::{DbCommand, DbResult};
+        app.insert_resource(crate::verse_manager::VerseManager::from_verses(vec![
+            VerseEntry {
+                id: "v".into(),
+                fractals: vec![FractalEntry {
+                    id: "f".into(),
+                    petals: vec![PetalEntry {
+                        id: "p1".into(),
+                        nodes: vec![
+                            NodeEntry {
+                                id: "t1".into(),
+                                ..Default::default()
+                            },
+                            NodeEntry {
+                                id: "n1".into(),
+                                ..Default::default()
+                            },
+                        ],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ]));
+        {
+            let mut nav = app.world_mut().resource_mut::<NavigationManager>();
+            nav.navigate_to_verse("v", "Verse");
+            nav.navigate_to_fractal("f", "Fractal");
+            nav.navigate_to_petal("p1");
+        }
+        let descriptor = serde_json::json!({"asset_path":"blob://cube.glb","spacing_mode":"fixed_count","spacing_value":0.0,"count":3,"tangent_align":true});
+        let properties = serde_json::json!({"gpx_points":[[0.0,0.0,0.0,0.0],[10.0,0.0,0.0,0.0]],"path_asset":descriptor});
+        app.world_mut()
+            .resource_mut::<crate::verse_manager::PathAssetCache>()
+            .note_properties("t1", Some("p1"), &properties);
+        {
+            let mut path = app
+                .world_mut()
+                .resource_mut::<crate::gis::PathEditorState>();
+            path.start_editing("t1".into());
+            path.points = crate::gis::decode_gpx_points(&properties["gpx_points"]);
+            path.edited_track_path_asset =
+                Some(fe_sdk::path_asset::PathAssetDescriptor::from_json(&descriptor).unwrap());
+        }
+        let stamp = app
+            .world_mut()
+            .spawn((
+                SpawnedNodeMarker {
+                    node_id: crate::verse_manager::stamp_marker_id("t1", 1),
+                    petal_id: "p1".into(),
+                },
+                crate::verse_manager::PathAssetInstance {
+                    source_track_id: "t1".into(),
+                    petal_id: "p1".into(),
+                },
+                crate::verse_manager::StampSelectionSource(std::sync::Arc::new(
+                    crate::verse_manager::StampRenderSource {
+                        descriptor: fe_sdk::path_asset::PathAssetDescriptor::from_json(&descriptor)
+                            .unwrap(),
+                        points: vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+                        world_scale: 1.0,
+                    },
+                )),
+                Transform::from_xyz(5.0, 0.0, 0.0),
+                GlobalTransform::from(Transform::from_xyz(5.0, 0.0, 0.0)),
+                Aabb::from_min_max(Vec3::splat(-2.0), Vec3::splat(2.0)),
+                Visibility::Inherited,
+            ))
+            .id();
+        let ordinary = app
+            .world_mut()
+            .spawn((
+                SpawnedNodeMarker {
+                    node_id: "n1".into(),
+                    petal_id: "p1".into(),
+                },
+                GlobalTransform::from(Transform::from_xyz(20.0, 0.0, 0.0)),
+                Aabb::from_min_max(Vec3::splat(-0.5), Vec3::splat(0.5)),
+            ))
+            .id();
+        app.add_systems(
+            Update,
+            super::super::path_segment_interaction::handle_path_segment_interaction
+                .before(handle_viewport_click),
+        );
+        app.world_mut()
+            .resource_mut::<crate::plugin::LocalUserRole>()
+            .role = Some(fe_database::RoleLevel::Viewer);
+        app.insert_resource(ClickArbiter::pressed_along(Ray3d::new(
+            Vec3::new(5.0, 50.0, 1.8),
+            Dir3::NEG_Y,
+        )));
+        app.update();
+        assert_eq!(
+            app.world().resource::<NodeManager>().selected_entity(),
+            Some(stamp),
+            "the real node-tier AABB pick selects the owned stamp entity"
+        );
+        assert_eq!(
+            app.world()
+                .resource::<crate::actions::asset::StampInteractionState>()
+                .selected()
+                .unwrap()
+                .stamp_index,
+            1
+        );
+        assert!(
+            stamp_rx.try_recv().is_err(),
+            "Viewer stamp selection cannot auto-promote or write"
+        );
+        app.insert_resource(ClickArbiter::pressed_along(Ray3d::new(
+            Vec3::new(20.0, 50.0, 0.0),
+            Dir3::NEG_Y,
+        )));
+        app.update();
+        assert_eq!(
+            app.world().resource::<NodeManager>().selected_entity(),
+            Some(ordinary)
+        );
+        assert!(app
+            .world()
+            .resource::<crate::actions::asset::StampInteractionState>()
+            .selected()
+            .is_none());
+        app.world_mut()
+            .resource_mut::<crate::actions::UiManager>()
+            .open_dialog(crate::dialogs::ActiveDialog::ContextMenu {
+                screen_pos: [20.0, 20.0],
+                world_pos: [5.0, 0.0, 0.0],
+                target: Some(crate::dialogs::ContextTarget {
+                    petal_id: Some("p1".into()),
+                    hit: super::super::HitTarget::Stamp(stamp),
+                    node_id: None,
+                    stamp: Some(("t1".into(), 1)),
+                }),
+                pending_delete: false,
+                descendant_count: None,
+            });
+        app.insert_resource(ClickArbiter::default());
+        app.update();
+        assert_eq!(
+            app.world().resource::<NodeManager>().selected_entity(),
+            Some(stamp),
+            "classified context stamp uses the same live adapter"
+        );
+        assert!(
+            stamp_rx.try_recv().is_err(),
+            "context Viewer inspection stays read-only"
+        );
+        app.world_mut()
+            .resource_mut::<crate::actions::UiManager>()
+            .close_dialog();
+        app.insert_resource(ClickArbiter::pressed_along(Ray3d::new(
+            Vec3::new(5.0, 50.0, 0.0),
+            Dir3::NEG_Y,
+        )));
+        app.update();
+        assert!(
+            app.world()
+                .resource::<ClickArbiter>()
+                .is_owner(ClickPriority::PathSegment),
+            "edited ribbon keeps F10 priority over the nearer cube"
+        );
+        assert!(app
+            .world()
+            .resource::<crate::actions::asset::StampInteractionState>()
+            .selected()
+            .is_none());
+        assert!(stamp_rx.try_recv().is_err());
+
+        // Register the real action dispatcher, not a direct stamp handler in the fixture.
+        app.add_message::<fe_webview::ipc::BrowserCommand>()
+            .add_message::<fe_webview::ipc::BrowserEvent>()
+            .init_resource::<crate::plugin::InspectorFormState>()
+            .init_resource::<crate::notice::NoticeClock>()
+            .init_resource::<crate::terrain_map::PendingHexonOps>()
+            .init_resource::<crate::asset_ops::PendingAssetOps>()
+            .init_resource::<crate::gis::GisPanelState>()
+            .init_resource::<crate::gpx_ops::PendingGpxOps>()
+            .init_resource::<crate::path_ops::PendingPathOps>()
+            .init_resource::<crate::undo::UndoState>()
+            .init_resource::<crate::terrain_proposal_state::ProposalEditState>()
+            .init_resource::<crate::actions::terrain_proposal::SculptToolState>()
+            .init_resource::<crate::actions::terrain_proposal::EarthworkNodeMap>()
+            .init_resource::<crate::actions::dimension_callout::DimensionCalloutMap>()
+            .init_resource::<crate::ui_shell::right_sidebar::RightSidebarState>()
+            .init_resource::<crate::settings::AppSettings>()
+            .init_resource::<crate::settings::PetalRenderOverride>()
+            .init_resource::<crate::terrain_map::TilesetDownloads>()
+            .add_systems(
+                Update,
+                crate::actions::process_ui_actions.before(handle_viewport_click),
+            );
+        app.world_mut()
+            .resource_mut::<crate::plugin::LocalUserRole>()
+            .role = Some(fe_database::RoleLevel::Editor);
+        app.insert_resource(ClickArbiter::default());
+        app.update();
+        // A queued capture refuses source reflow before the renderer replaces the old entity.
+        let stale = app
+            .world()
+            .resource::<crate::node_manager::StampSelectionCatalog>()
+            .origin(1)
+            .unwrap();
+        app.world_mut()
+            .resource_mut::<crate::actions::UiManager>()
+            .push_action(crate::actions::UiAction::SelectStamp {
+                origin: stale.clone(),
+            });
+        let mut changed = properties.clone();
+        changed["path_asset"]["count"] = serde_json::json!(2);
+        app.world_mut()
+            .resource_mut::<crate::verse_manager::PathAssetCache>()
+            .note_properties("t1", Some("p1"), &changed);
+        app.update();
+        assert!(
+            stamp_rx.try_recv().is_err(),
+            "source descriptor reflow refuses the queued old index"
+        );
+        assert!(
+            app.world()
+                .resource::<crate::node_manager::StampSelectionCatalog>()
+                .targets
+                .is_empty(),
+            "pre-restamp entities cannot be offered under new descriptor semantics"
+        );
+        app.world_mut()
+            .resource_mut::<crate::verse_manager::PathAssetCache>()
+            .note_properties("t1", Some("p1"), &properties);
+        app.update();
+        // A scope change also refuses an otherwise-live scene target.
+        let stale = app
+            .world()
+            .resource::<crate::node_manager::StampSelectionCatalog>()
+            .origin(1)
+            .unwrap();
+        app.world_mut()
+            .resource_mut::<crate::actions::UiManager>()
+            .push_action(crate::actions::UiAction::SelectStamp { origin: stale });
+        app.world_mut()
+            .resource_mut::<NavigationManager>()
+            .navigate_to_petal("different-petal");
+        app.update();
+        assert!(
+            stamp_rx.try_recv().is_err(),
+            "stale navigation cannot queue promotion"
+        );
+        app.world_mut()
+            .resource_mut::<NavigationManager>()
+            .navigate_to_petal("p1");
+        app.update();
+        assert!(
+            app.world()
+                .resource::<crate::actions::asset::StampInteractionState>()
+                .selected()
+                .is_none(),
+            "restoring a scope does not resurrect the old stamp selection"
+        );
+        let role_capture = app
+            .world()
+            .resource::<crate::node_manager::StampSelectionCatalog>()
+            .origin(1)
+            .unwrap();
+        app.world_mut()
+            .resource_mut::<crate::actions::UiManager>()
+            .push_action(crate::actions::UiAction::SelectStamp {
+                origin: role_capture,
+            });
+        app.world_mut()
+            .resource_mut::<crate::plugin::LocalUserRole>()
+            .role = Some(fe_database::RoleLevel::Viewer);
+        app.update();
+        assert!(
+            stamp_rx.try_recv().is_err(),
+            "Editor-to-Viewer queue race must not auto-promote"
+        );
+        app.world_mut()
+            .resource_mut::<crate::plugin::LocalUserRole>()
+            .role = Some(fe_database::RoleLevel::Editor);
+        let ctx = egui::Context::default();
+        let mut time = 0.0;
+        let native = |events: Vec<egui::Event>, time: &mut f64, app: &mut App| {
+            *time += 0.05;
+            let mut tools = app
+                .world_mut()
+                .remove_resource::<crate::panels::tool_panel::ToolPanelState>()
+                .unwrap();
+            let mut ui = app
+                .world_mut()
+                .remove_resource::<crate::actions::UiManager>()
+                .unwrap();
+            {
+                let world = app.world();
+                let path = world.resource::<crate::gis::PathEditorState>();
+                let hierarchy = world.resource::<crate::verse_manager::VerseManager>();
+                crate::panels::tool_panel::sync_stamp_editor(
+                    &mut tools,
+                    world.resource::<crate::actions::asset::StampInteractionState>(),
+                    path,
+                    world.resource::<NavigationManager>(),
+                    hierarchy,
+                    world.resource::<crate::plugin::LocalUserRole>(),
+                    1.0,
+                );
+                crate::ui_shell::layout_policy::begin_frame(&ctx, true);
+                let _ = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1000.0, 1500.0),
+                        )),
+                        time: Some(*time),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        crate::ui_shell::layout_policy::begin_ui_pass(ctx);
+                        egui::CentralPanel::default().show(ctx, |panel| {
+                            crate::panels::tool_panel::render_path_asset_section(
+                                panel, &mut tools, &mut ui, path, hierarchy,
+                            )
+                        });
+                    },
+                );
+            }
+            app.insert_resource(tools).insert_resource(ui);
+            crate::ui_shell::layout_policy::observations(&ctx)
+        };
+        native(vec![], &mut time, &mut app);
+        let picker = native(vec![], &mut time, &mut app);
+        assert_eq!(
+            app.world()
+                .resource::<crate::panels::tool_panel::ToolPanelState>()
+                .stamp_edit_index,
+            2,
+            "only actual rendered index1 is offered as Stamp2"
+        );
+        let at = picker.controls.last().unwrap().hit.center();
+        for pressed in [true, false] {
+            native(
+                vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                &mut time,
+                &mut app,
+            );
+        }
+        app.update();
+        let commands: Vec<_> = stamp_rx.try_iter().collect();
+        let [DbCommand::PromoteCheckedStamp {
+            capture,
+            correlation_id,
+        }] = commands.as_slice()
+        else {
+            panic!("native Select must queue one checked promotion: {commands:?}")
+        };
+        assert_eq!(capture.before_properties, properties);
+        assert_eq!(capture.instance_index, 1);
+        assert!(app
+            .world()
+            .resource::<crate::gis::PathEditorState>()
+            .selected_segment
+            .is_none());
+        let capture = capture.clone();
+        let promotion_request = correlation_id.clone();
+        let late_capture = capture.clone();
+        let late_request = promotion_request.clone();
+        app.world_mut().write_message(DbResult::CheckedStampPromoted {capture,node_id:"t1#inst-1".into(),
+            properties:serde_json::json!({"node_kind":"stamp","path_id":"t1","owning_path_id":"t1","instance_index":1}),newly_promoted:true,correlation_id:promotion_request});
+        app.update();
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<NodeManager>()
+                .selected
+                .as_ref()
+                .unwrap()
+                .node_id,
+            "t1#inst-1",
+            "only the authoritative receipt binds the durable address"
+        );
+        assert_eq!(
+            app.world().get::<SpawnedNodeMarker>(stamp).unwrap().node_id,
+            "t1::stamp::1",
+            "the live marker fence is preserved"
+        );
+        native(vec![], &mut time, &mut app);
+        assert!(
+            app.world()
+                .resource::<crate::panels::tool_panel::ToolPanelState>()
+                .stamp_edit_target
+                .is_some(),
+            "actual selection and receipt load the atomic editor"
+        );
+        assert!(
+            stamp_rx.try_recv().is_err(),
+            "idle receipt projection cannot re-promote"
+        );
+        let observed = native(vec![], &mut time, &mut app);
+        let x = observed.controls[observed.controls.len() - 8].hit.center();
+        for pressed in [true, false] {
+            native(
+                vec![
+                    egui::Event::PointerMoved(x),
+                    egui::Event::PointerButton {
+                        pos: x,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                &mut time,
+                &mut app,
+            );
+        }
+        native(
+            vec![
+                egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers {
+                        ctrl: true,
+                        command: true,
+                        ..Default::default()
+                    },
+                },
+                egui::Event::Text("2".into()),
+            ],
+            &mut time,
+            &mut app,
+        );
+        let observed = native(
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            &mut time,
+            &mut app,
+        );
+        let apply = observed.controls[observed.controls.len() - 3].hit.center();
+        for pressed in [true, false] {
+            native(
+                vec![
+                    egui::Event::PointerMoved(apply),
+                    egui::Event::PointerButton {
+                        pos: apply,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                &mut time,
+                &mut app,
+            );
+        }
+        app.update();
+        let commands: Vec<_> = stamp_rx.try_iter().collect();
+        assert!(matches!(commands.as_slice(),[DbCommand::CommitStampOverrides {edit,..}] if edit.node_id=="t1#inst-1" && edit.instance_index==1 && edit.scale==[2.0,1.0,1.0]),
+            "actual native Apply and production dispatcher emit one atomic stamp batch: {commands:?}");
+        app.insert_resource(ClickArbiter::pressed_along(Ray3d::new(
+            Vec3::new(20.0, 50.0, 0.0),
+            Dir3::NEG_Y,
+        )));
+        app.update();
+        app.world_mut().write_message(DbResult::CheckedStampPromoted {capture:late_capture,node_id:"t1#inst-1".into(),
+            properties:serde_json::json!({"node_kind":"stamp","path_id":"t1","owning_path_id":"t1","instance_index":1}),newly_promoted:false,correlation_id:late_request});
+        app.update();
+        assert_eq!(
+            app.world().resource::<NodeManager>().selected_entity(),
+            Some(ordinary)
+        );
+        assert!(
+            app.world()
+                .resource::<crate::actions::asset::StampInteractionState>()
+                .selected()
+                .is_none(),
+            "late promotion properties cannot reopen a stamp after another object was picked"
+        );
+        assert!(
+            stamp_rx.try_recv().is_err(),
+            "late receipts cannot resubmit or promote"
         );
     }
 

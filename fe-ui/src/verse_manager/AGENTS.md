@@ -484,3 +484,12 @@ The renderer uses fe_sdk::path_asset::sample_progresses, shared with checked GUI
 keeps rendered index existence identical to the DB validator across metric spacing and degenerate
 paths. Materialization budgets may omit a valid sampler index; GUI selection also requires its
 actual live owned scene entity.
+
+
+## Live stamp source proof
+
+Actual materialization shares one immutable descriptor/flattened-points/world-scale proof across
+its spawned stamp group. Selection compares this proof with the authoritative property cache and
+loaded editor context before admitting an entity. Cache updates preserve the last authoritative
+properties separately from live render edits; source revision changes gate catalog rebuilds. An
+old entity cannot be captured under a reflowed descriptor before the renderer replaces it.

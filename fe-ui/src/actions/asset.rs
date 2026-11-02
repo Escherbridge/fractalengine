@@ -74,10 +74,10 @@ pub(crate) struct StampOverride {
 // `render_context_menu` pub signatures — mirrors `SculptToolState`.
 #[derive(Resource, Default)]
 pub struct StampInteractionState {
-    /// The individually-selected stamp (viewport click), if any. Distinct from
-    /// `NodeManager.selected` and `PathEditorState.editing_track_id` (N-3): a
-    /// stamp selection is its own authority until promotion yields a node id.
+    /// Read-only stamp identity projected from NodeManager's validated live selection.
     selected: Option<StampRef>,
+    pub(crate) selection_origin: Option<crate::node_manager::StampSelectionOrigin>,
+    pub(crate) selection_promotion: Option<String>,
     loaded_properties: HashMap<StampRef, serde_json::Value>,
     pending_edit: Option<(String, fe_runtime::messages::StampOverrideEdit)>,
     saved_revision: u64,
@@ -97,6 +97,15 @@ pub struct StampInteractionState {
 }
 
 impl StampInteractionState {
+    pub(crate) fn clear_selection(&mut self) {
+        self.selected=None; self.selection_origin=None; self.pending_promotion=None;
+        self.selection_promotion=None;
+    }
+    pub(crate) fn select_live(&mut self, origin: crate::node_manager::StampSelectionOrigin) {
+        self.selected=Some(origin.stamp_ref());self.selection_origin=Some(origin);
+        self.pending_promotion=None;self.edit_error=None;
+    }
+    pub(crate) fn selection_error(&mut self, error: impl Into<String>) {self.edit_error=Some(error.into());}
     pub(crate) fn baseline_version_unknown(&self, stamp: &StampRef) -> bool {
         self.reconciled_baselines.contains(stamp)
     }
@@ -158,6 +167,16 @@ impl StampInteractionState {
     }
 
     /// The promoted node id for a stamp, once known.
+    pub(crate) fn promoted_stamp_for_node(&self,node_id:&str)->Option<&StampRef> {
+        let (stamp,_)=self.promoted.iter().find(|(_,id)|id.as_str()==node_id)?;
+        let properties=self.loaded_properties.get(stamp)?;
+        let canonical=node_id.strip_prefix(stamp.track_node_id.as_str()).and_then(|suffix|suffix.strip_prefix("#inst-"))
+            .and_then(|suffix|suffix.parse::<usize>().ok())==Some(stamp.stamp_index);
+        (canonical && properties["node_kind"]=="stamp" && properties["path_id"]==stamp.track_node_id
+            && properties["owning_path_id"]==stamp.track_node_id
+            && properties["instance_index"].as_u64()==Some(stamp.stamp_index as u64)).then_some(stamp)
+    }
+
     pub(crate) fn promoted_node_id(&self, stamp: &StampRef) -> Option<&str> {
         self.promoted.get(stamp).map(String::as_str)
     }
@@ -168,8 +187,8 @@ impl StampInteractionState {
         self.promoted.insert(stamp, node_id);
     }
 
-    /// Take the pending-promotion marker (the UI drains this to queue
-    /// `PromoteStamp`). `None` once consumed.
+    /// Legacy selection fixture seam; actual GUI promotion uses checked source captures.
+    #[cfg(test)]
     pub(crate) fn take_pending_promotion(&mut self) -> Option<StampRef> {
         self.pending_promotion.take()
     }
@@ -270,6 +289,7 @@ fn shift_ref(reference: Option<StampRef>, track: &str, deleted_index: usize) -> 
 /// (Q-2 ratified: promote per-stamp on select). The actual `PromoteInstance` is
 /// sent by the T1/T4 seam (`node::handle_promote_stamp`) — this handler holds no
 /// `DbCommandSender` by design (N-5: selection is a pure UI-state transition).
+#[cfg(test)]
 pub(crate) fn handle_select_stamp(
     stamp_state: &mut StampInteractionState,
     track_node_id: String,
