@@ -207,3 +207,7 @@ Negative, oversized, absent-memory, out-of-bounds and invalid UTF-8 inputs refus
 the entire import before any backend call. JSON-labelled arguments must parse;
 invalid JSON never becomes a string, empty filter or empty parameter map. Valid
 empty spans remain empty strings for the existing legitimate ABI semantics.
+
+## Terminal maintenance ownership
+
+`PluginHostService` retains the plugin runtime join. Host maintenance first revokes `PluginContexts` leases, then requests stop and joins the runtime while DB/results continue draining. Revocation is not rollback of an already-admitted commit; the final serial DB barrier remains necessary.

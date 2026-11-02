@@ -2223,3 +2223,7 @@ Table/Record casts (also nested literal object/array kinds) bypassing source
 rewriting. This deliberate security delta follows the semantics-preserving
 extraction above. Ordinary numeric less-than comparisons remain accepted; no
 new token/Owner exemption or broader API authority is introduced.
+
+## Terminal maintenance API ownership
+
+The GUI uses `spawn_api_service`, retaining its stop/join owner. This controlled host wraps its reader in command-write mode: IoT appends take the existing correlated DB-command path even when direct reads are available. Dropping the stopped API runtime then cannot abandon a direct database mutation outside the serial DB barrier. Existing `spawn_api_thread` deployments preserve their previous reader/append contract. Dev-token publication has a separate stoppable owner; its join precedes token-file invalidation.

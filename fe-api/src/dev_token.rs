@@ -135,19 +135,31 @@ pub struct DevTokenWriter {
 /// Spawn the writer: wait for the listener, refuse a non-loopback bind for
 /// good, then rewrite the file for every (coalesced) verse-set change.
 pub fn spawn_dev_token_writer(writer: DevTokenWriter) {
-    let spawned = std::thread::Builder::new()
-        .name("fe-dev-token".to_string())
-        .spawn(move || writer.run());
-    if let Err(error) = spawned {
+    if let Err(error) = spawn_dev_token_service(writer) {
         tracing::error!(%error, "could not start the dev-token writer; no token file will be written");
     }
 }
 
+/// Spawn a stoppable owner of dev-token publication.
+pub fn spawn_dev_token_service(writer: DevTokenWriter) -> std::io::Result<fe_runtime::service_lifecycle::OwnedService> {
+    use fe_runtime::service_lifecycle::{OwnedService, StopSignal};
+    let stop = StopSignal::default();
+    let worker_stop = stop.clone();
+    let spawned = std::thread::Builder::new()
+        .name("fe-dev-token".to_string())
+        .spawn(move || writer.run(worker_stop))?;
+    Ok(OwnedService::new("dev-token", stop, spawned))
+}
+
 impl DevTokenWriter {
-    fn run(self) {
-        let Ok(bound) = self.listening_rx.recv() else {
-            tracing::warn!("API never reported listening; no dev-token file written");
-            return;
+    fn run(self, stop: fe_runtime::service_lifecycle::StopSignal) {
+        let bound = loop {
+            if stop.is_requested() { return; }
+            match self.listening_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(bound) => break bound,
+                Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
+                Err(crossbeam::channel::RecvTimeoutError::Disconnected) => return,
+            }
         };
         if let Err(error) = loopback_api_base(bound) {
             tracing::error!(%error, "{DEV_TOKEN_OUT_ENV} ignored; nothing written");
@@ -166,7 +178,12 @@ impl DevTokenWriter {
         // One API client per process: the agent's uploads share one owner
         // bucket across rewrites (fe-identity/src/AGENTS.md §api-token).
         let client_did = fe_identity::new_client_did();
-        while let Ok(mut verse_ids) = self.verse_ids_rx.recv() {
+        while !stop.is_requested() {
+            let mut verse_ids = match self.verse_ids_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(ids) => ids,
+                Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
+                Err(crossbeam::channel::RecvTimeoutError::Disconnected) => break,
+            };
             while let Ok(newer) = self.verse_ids_rx.try_recv() {
                 verse_ids = newer;
             }

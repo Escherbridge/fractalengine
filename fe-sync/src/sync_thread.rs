@@ -766,10 +766,17 @@ pub fn spawn_sync_thread_with_transport(
             // bridge blocks while the sync thread is busy).
             let (async_cmd_tx, mut async_cmd_rx) =
                 tokio::sync::mpsc::channel::<SyncCommand>(256);
-            {
+            let forwarder_stop = fe_runtime::service_lifecycle::StopSignal::default();
+            let command_forwarder = {
                 let cmd_rx = cmd_rx;
+                let stop = forwarder_stop.clone();
                 std::thread::spawn(move || {
-                    while let Ok(cmd) = cmd_rx.recv() {
+                    while !stop.is_requested() {
+                        let cmd = match cmd_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                            Ok(cmd) => cmd,
+                            Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
+                            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => break,
+                        };
                         // blocking_send parks this bridge thread until the
                         // sync thread has capacity — never called from async
                         // context, which is exactly what blocking_send wants.
@@ -777,8 +784,8 @@ pub fn spawn_sync_thread_with_transport(
                             break;
                         }
                     }
-                });
-            }
+                })
+            };
 
             // Command loop (select! over commands + inbound replica rows +
             // inbound gossip compute traffic + home-relay status).
@@ -1146,6 +1153,13 @@ pub fn spawn_sync_thread_with_transport(
                         }
                     }
                 }
+            }
+
+            forwarder_stop.request();
+            async_cmd_rx.close();
+            drop(async_cmd_rx);
+            if command_forwarder.join().is_err() {
+                tracing::error!("Sync command forwarder panicked during shutdown");
             }
 
             // Close all open replicas before shutting down.
@@ -3459,6 +3473,10 @@ mod tests {
 
         cmd_tx.send(SyncCommand::Shutdown).unwrap();
         handle.join().expect("sync thread panicked");
+        assert!(matches!(
+            cmd_tx.try_send(SyncCommand::Ping),
+            Err(crossbeam::channel::TrySendError::Disconnected(_))
+        ), "the joined runtime must not leave a forwarder owning its receiver");
 
         // Drain any further RelayHealthChanged events (e.g. a P2P
         // stack-spawn failure in a sandboxed CI network) until the final

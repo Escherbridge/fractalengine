@@ -30,13 +30,17 @@ pub type Db = Surreal<LocalEngine>;
 /// # }
 /// ```
 #[derive(Clone)]
-pub struct ReadDb(Db);
+pub struct ReadDb(Db, bool);
 
 impl ReadDb {
     /// Wrap an existing connection as read-only.
     pub fn new(db: Db) -> Self {
-        Self(db)
+        Self(db, false)
     }
+
+    pub(crate) fn with_command_writes(&self) -> Self { Self(self.0.clone(), true) }
+
+    pub(crate) fn command_writes_only(&self) -> bool { self.1 }
 
     /// Run a SurrealQL statement — mirrors [`Db::query`] exactly. Still
     /// executes whatever SQL it is given, including a raw `CREATE`/`DELETE`

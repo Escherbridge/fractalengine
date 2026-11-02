@@ -1933,3 +1933,7 @@ history/readings/blob persistence passed separately.
 ## blob-store-root-permissions
 
 `FsBlobStore::new` creates or opens the root and already attempts to set Unix permissions to `0700`. Metadata and permission-write failures retain their existing best-effort behavior. This cleanup changes no permission handling, Windows ACLs, or directory initialization. The unsupported unsigned `NodeTransformed` status branch remains diagnostics only; signed row and canonical admission paths are unchanged.
+
+## Terminal maintenance forwarders
+
+Sync shutdown closes the async command receiver, requests the crossbeam forwarder to stop, and joins it before reporting completion. Sender clones cannot retain an orphan receiver. The distributed-query bridge also exposes an owned, stop-aware variant; bounded send retries observe shutdown. Legacy convenience callers retain their previous detached lifetime.

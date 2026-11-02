@@ -161,18 +161,34 @@ pub fn elevated_query_allowed_from_env() -> bool {
 /// Spawn a dedicated OS thread that owns a multi-threaded Tokio runtime and
 /// runs the axum API server until the process exits.
 pub fn spawn_api_thread(config: ApiConfig) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
+    spawn_api_service_inner(config, false).into_join_handle()
+}
+
+/// Spawn an owned API whose mutations use the serial database executor.
+pub fn spawn_api_service(config: ApiConfig) -> fe_runtime::service_lifecycle::OwnedService {
+    spawn_api_service_inner(config, true)
+}
+
+fn spawn_api_service_inner(mut config: ApiConfig, command_writes: bool) -> fe_runtime::service_lifecycle::OwnedService {
+    use fe_runtime::service_lifecycle::{OwnedService, StopSignal};
+    if command_writes {
+        config.api_db_reader = config.api_db_reader.as_ref().map(|db| Arc::new(db.with_command_writes()));
+    }
+    let stop = StopSignal::default();
+    let worker_stop = stop.clone();
+    let thread = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .expect("failed to build API tokio runtime");
 
-        rt.block_on(run_server(config));
-    })
+        rt.block_on(run_server(config, worker_stop));
+    });
+    OwnedService::new("api", stop, thread)
 }
 
-async fn run_server(config: ApiConfig) {
+async fn run_server(config: ApiConfig, stop: fe_runtime::service_lifecycle::StopSignal) {
     let revoked_jtis = Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
 
     let cors_origins = config.cors_origins.unwrap_or_else(|| {
@@ -241,7 +257,10 @@ async fn run_server(config: ApiConfig) {
         }
     }
 
-    axum::serve(listener, router)
-        .await
-        .expect("API server exited with error");
+    tokio::select! {
+        _ = stop.cancelled() => tracing::info!("API runtime stopping"),
+        result = async { axum::serve(listener, router).await } => {
+            if let Err(error) = result { tracing::error!(%error, "API server exited with error"); }
+        }
+    }
 }

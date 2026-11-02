@@ -1554,16 +1554,35 @@ pub fn bridge_distributed_queries(
     rx: crossbeam::channel::Receiver<DistributedQueryCall>,
     sync_cmd_tx: crate::messages::SyncCommandSender,
 ) {
-    std::thread::spawn(move || {
-        for call in rx {
-            if sync_cmd_tx
-                .send(crate::messages::SyncCommand::SubmitComputeTask { call })
-                .is_err()
-            {
-                break; // sync thread gone — shutdown, silent (§backpressure)
+    let _ = bridge_distributed_queries_owned(rx, sync_cmd_tx);
+}
+
+/// Spawn a stop-aware owner of the API-to-sync bridge.
+pub fn bridge_distributed_queries_owned(
+    rx: crossbeam::channel::Receiver<DistributedQueryCall>,
+    sync_cmd_tx: crate::messages::SyncCommandSender,
+) -> fe_runtime::service_lifecycle::OwnedService {
+    use fe_runtime::service_lifecycle::{OwnedService, StopSignal};
+    let stop = StopSignal::default();
+    let worker_stop = stop.clone();
+    let thread = std::thread::spawn(move || {
+        while !worker_stop.is_requested() {
+            let call = match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(call) => call,
+                Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
+                Err(crossbeam::channel::RecvTimeoutError::Disconnected) => break,
+            };
+            let mut command = crate::messages::SyncCommand::SubmitComputeTask { call };
+            while !worker_stop.is_requested() {
+                match sync_cmd_tx.send_timeout(command, std::time::Duration::from_millis(100)) {
+                    Ok(()) => break,
+                    Err(crossbeam::channel::SendTimeoutError::Timeout(pending)) => command = pending,
+                    Err(crossbeam::channel::SendTimeoutError::Disconnected(_)) => return,
+                }
             }
         }
     });
+    OwnedService::new("distributed-query", stop, thread)
 }
 
 #[cfg(test)]

@@ -99,7 +99,7 @@ pub async fn ingest_readings(
         .ok()
         .map(|parts| parts.verse_id);
 
-    match state.db_reader.as_ref() {
+    match state.db_reader.as_ref().filter(|db| !db.command_writes_only()) {
         // Append-only insert — safe off the DB thread (fe-database AGENTS.md
         // §iot-readings). The one call in this crate allowed through
         // `ReadDb::writable()` (fe-api/AGENTS.md §db-reader).

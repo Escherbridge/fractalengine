@@ -186,6 +186,9 @@ pub struct PluginCommandSender(pub Sender<PluginCommand>);
 #[derive(Resource)]
 pub struct PluginResultReceiver(pub std::sync::Arc<std::sync::Mutex<Receiver<PluginResult>>>);
 
+#[derive(Resource)]
+pub struct PluginHostService(pub std::sync::Mutex<Option<fe_runtime::service_lifecycle::OwnedService>>);
+
 // ---------------------------------------------------------------------------
 // Bevy plugin
 // ---------------------------------------------------------------------------
@@ -206,7 +209,9 @@ impl Plugin for PluginHostPlugin {
         let (result_tx, result_rx) = crossbeam::channel::bounded::<PluginResult>(256);
 
         // Spawn the plugin runtime thread (thread 7)
-        std::thread::Builder::new()
+        let stop = fe_runtime::service_lifecycle::StopSignal::default();
+        let worker_stop = stop.clone();
+        let thread = std::thread::Builder::new()
             .name("fe-plugin".into())
             .spawn(move || {
                 let rt = tokio::runtime::Builder::new_multi_thread()
@@ -218,11 +223,14 @@ impl Plugin for PluginHostPlugin {
 
                 rt.block_on(async move {
                     tracing::info!("Plugin host thread started");
-                    plugin_thread_loop(cmd_rx, result_tx,contexts).await;
+                    plugin_thread_loop(cmd_rx, result_tx,contexts,worker_stop).await;
                     tracing::info!("Plugin host thread stopped");
                 });
             })
             .expect("Failed to spawn plugin host thread");
+        app.insert_resource(PluginHostService(std::sync::Mutex::new(Some(
+            fe_runtime::service_lifecycle::OwnedService::new("plugin", stop, thread),
+        ))));
 
         // Register resources
         app.insert_resource(PluginRegistry::new());
@@ -239,9 +247,9 @@ impl Plugin for PluginHostPlugin {
 
 /// The plugin thread's main loop. Receives commands from Bevy and dispatches
 /// them, sending results back.
-async fn plugin_thread_loop(cmd_rx: Receiver<PluginCommand>, result_tx: Sender<PluginResult>,contexts:scene_host::PluginContexts) {
+async fn plugin_thread_loop(cmd_rx: Receiver<PluginCommand>, result_tx: Sender<PluginResult>,contexts:scene_host::PluginContexts,stop:fe_runtime::service_lifecycle::StopSignal) {
     loop {
-        if contexts.is_closed() {break;}
+        if contexts.is_closed() || stop.is_requested() {break;}
         match cmd_rx.recv_timeout(std::time::Duration::from_millis(100)) {
             Ok(cmd) => {
                 handle_plugin_command(cmd, &result_tx,&contexts);

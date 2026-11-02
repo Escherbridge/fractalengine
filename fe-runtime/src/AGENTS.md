@@ -920,3 +920,7 @@ NodeUrlSnapshot includes NodeUrlStorage: Ready, MissingModel, NoAsset or SharedM
 are facts from the same current Viewer-fenced read, not permission grants. MissingModel means
 an explicit first nonempty Save may initialize unique local Portal metadata; it does not imply a
 replicated node URL field. NoAsset/SharedModel explain why persistence is unsupported.
+
+## Terminal maintenance service ownership
+
+`service_lifecycle` supplies explicit stop signals and retained service joins. A stop request is not completion: callers poll and join actual threads while continuing to drain bounded result channels. Async cancellation registers its notification before testing the flag, avoiding a lost wakeup. Service ownership does not itself grant database reset authority.
