@@ -9,6 +9,9 @@ use bevy::prelude::{
     Children, Entity, GlobalTransform, Local, Query, Res, ResMut, Transform, Vec3,
 };
 use bevy_egui::egui;
+use std::collections::BTreeMap;
+
+use super::property_value::PropertyValueKind;
 
 use crate::accessibility::ResponseExt;
 
@@ -42,6 +45,7 @@ pub(crate) fn right_inspector(
     nav: &NavigationManager,
     asset_status: &crate::asset_ops::AssetDownloadStatus,
 ) {
+    sync_property_editor_scope(inspector, node_mgr, ui.ctx().input(|input| input.time));
     if node_mgr.selected_entity().is_some() {
         crate::ui_shell::layout_policy::trailing_row(ui, |ui| {
             if ui
@@ -204,7 +208,9 @@ fn inspector_entity_section(
             });
         }
         ui.add_space(4.0);
-    }).header_response.observed(ui);
+    })
+    .header_response
+    .observed(ui);
 }
 
 // ---------------------------------------------------------------------------
@@ -505,7 +511,9 @@ fn inspector_transform_section(
             ui_mgr.push_action(UiAction::ApplyNodeTransform);
         }
         ui.add_space(4.0);
-    }).header_response.observed(ui);
+    })
+    .header_response
+    .observed(ui);
 }
 
 /// The "Portal URLs" section: `Save` pushes `UiAction::SaveUrl` (commits
@@ -592,7 +600,9 @@ fn inspector_url_meta_section(
         }
 
         ui.add_space(4.0);
-    }).header_response.observed(ui);
+    })
+    .header_response
+    .observed(ui);
 }
 
 fn inspector_api_access_section(
@@ -1093,6 +1103,268 @@ const PROPERTY_TYPES: &[&str] = &[
 // Custom Properties section (key-value editor)
 // ---------------------------------------------------------------------------
 
+const PROPERTY_CONFIRM_SECONDS: f64 = 30.0;
+
+#[derive(Default)]
+pub(crate) struct PropertyEditorState {
+    node_id: Option<String>,
+    drafts: BTreeMap<String, PropertyDraft>,
+    add_error: Option<String>,
+    pending_add: Option<(String, PropertyWrite)>,
+}
+
+struct PropertyWrite {
+    value: serde_json::Value,
+    submitted_at: f64,
+}
+
+struct PropertyDraft {
+    kind: PropertyValueKind,
+    source: serde_json::Value,
+    raw: String,
+    original_raw: String,
+    error: Option<String>,
+    pending: Option<PropertyWrite>,
+}
+
+impl PropertyDraft {
+    fn new(value: &serde_json::Value) -> Self {
+        let raw = PropertyValueKind::format(value);
+        Self {
+            kind: PropertyValueKind::of(value),
+            source: value.clone(),
+            original_raw: raw.clone(),
+            raw,
+            error: None,
+            pending: None,
+        }
+    }
+
+    fn dirty(&self) -> bool {
+        self.raw != self.original_raw
+    }
+
+    fn prepare_save(&mut self, stored: &serde_json::Value, now: f64) -> Option<serde_json::Value> {
+        if self.pending.is_some() {
+            return None;
+        }
+        if stored != &self.source {
+            self.error = Some(
+                "The stored value changed. Cancel and reopen this editor to use the latest value."
+                    .into(),
+            );
+            return None;
+        }
+        match self.kind.parse(&self.raw) {
+            Err(error) => {
+                self.error = Some(error);
+                None
+            }
+            Ok(value) if &value == stored => {
+                self.original_raw = self.raw.clone();
+                self.error = None;
+                None
+            }
+            Ok(value) => {
+                self.pending = Some(PropertyWrite {
+                    value: value.clone(),
+                    submitted_at: now,
+                });
+                self.error = None;
+                Some(value)
+            }
+        }
+    }
+
+    fn reconcile(&mut self, stored: Option<&serde_json::Value>, now: f64) {
+        if let Some(pending) = &self.pending {
+            if stored == Some(&pending.value) {
+                self.source = pending.value.clone();
+                self.original_raw = self.raw.clone();
+                self.pending = None;
+                self.error = None;
+            } else if now - pending.submitted_at >= PROPERTY_CONFIRM_SECONDS {
+                self.pending = None;
+                self.error = Some("Save has not been confirmed. Your draft is kept; refresh stored values before retrying.".into());
+            }
+            return;
+        }
+        if let Some(stored) = stored {
+            if stored != &self.source {
+                if self.dirty() {
+                    self.error = Some("The stored value changed. Cancel and reopen this editor to use the latest value.".into());
+                } else {
+                    *self = Self::new(stored);
+                }
+            }
+        }
+    }
+}
+
+impl PropertyEditorState {
+    fn set_scope(&mut self, node_id: Option<&str>) -> bool {
+        if self.node_id.as_deref() == node_id {
+            return false;
+        }
+        *self = Self {
+            node_id: node_id.map(str::to_owned),
+            ..Default::default()
+        };
+        true
+    }
+
+    fn reconcile(&mut self, properties: Option<&serde_json::Value>, now: f64) -> bool {
+        let object = properties.and_then(serde_json::Value::as_object);
+        if let Some(object) = object {
+            self.drafts.retain(|key, _| object.contains_key(key));
+        }
+        for (key, draft) in &mut self.drafts {
+            draft.reconcile(object.and_then(|object| object.get(key)), now);
+        }
+        if let Some((key, pending)) = &self.pending_add {
+            if object.and_then(|object| object.get(key)) == Some(&pending.value) {
+                self.pending_add = None;
+                self.add_error = None;
+                return true;
+            }
+            if now - pending.submitted_at >= PROPERTY_CONFIRM_SECONDS {
+                self.pending_add = None;
+                self.add_error = Some("Add has not been confirmed. Your draft is kept; refresh stored values before retrying.".into());
+            }
+        }
+        false
+    }
+}
+
+fn sync_property_editor_scope(
+    inspector: &mut InspectorFormState,
+    node_mgr: &NodeManager,
+    now: f64,
+) {
+    let selected = node_mgr
+        .selected
+        .as_ref()
+        .map(|selection| selection.node_id.as_str());
+    if inspector.property_editor.set_scope(selected) {
+        inspector.prop_add_key_buf.clear();
+        inspector.prop_add_value_buf.clear();
+        inspector.prop_add_type_buf = "string".into();
+    }
+    let stored = (!inspector.node_properties_loading).then_some(&inspector.node_properties);
+    if inspector.property_editor.reconcile(stored, now) {
+        inspector.prop_add_key_buf.clear();
+        inspector.prop_add_value_buf.clear();
+    }
+}
+
+fn submit_new_property(
+    inspector: &mut InspectorFormState,
+    node_id: &str,
+    ui_mgr: &mut UiManager,
+    now: f64,
+) {
+    if inspector.node_properties_loading
+        || inspector.property_editor.pending_add.is_some()
+        || inspector.property_editor.node_id.as_deref() != Some(node_id)
+    {
+        return;
+    }
+    let key = inspector.prop_add_key_buf.trim();
+    let result = if key.is_empty() {
+        Err("Enter a property key.".to_owned())
+    } else if inspector.node_properties.get(key).is_some() {
+        Err(
+            "This property already exists. Use Edit on its card to preserve its stored type."
+                .to_owned(),
+        )
+    } else {
+        PropertyValueKind::from_selection(&inspector.prop_add_type_buf)
+            .ok_or_else(|| "Choose a supported property type.".to_owned())
+            .and_then(|kind| kind.parse(&inspector.prop_add_value_buf))
+    };
+    match result {
+        Err(error) => inspector.property_editor.add_error = Some(error),
+        Ok(value) => {
+            inspector.property_editor.pending_add = Some((
+                key.to_owned(),
+                PropertyWrite {
+                    value: value.clone(),
+                    submitted_at: now,
+                },
+            ));
+            inspector.property_editor.add_error = None;
+            ui_mgr.push_action(UiAction::SetNodeProperty {
+                node_id: node_id.to_owned(),
+                key: key.to_owned(),
+                value,
+            });
+        }
+    }
+}
+
+fn submit_property_edit(
+    inspector: &mut InspectorFormState,
+    node_id: &str,
+    key: &str,
+    ui_mgr: &mut UiManager,
+    now: f64,
+) {
+    if inspector.node_properties_loading
+        || inspector.property_editor.node_id.as_deref() != Some(node_id)
+    {
+        return;
+    }
+    let Some(stored) = inspector.node_properties.get(key) else {
+        return;
+    };
+    let Some(draft) = inspector.property_editor.drafts.get_mut(key) else {
+        return;
+    };
+    if let Some(value) = draft.prepare_save(stored, now) {
+        ui_mgr.push_action(UiAction::SetNodeProperty {
+            node_id: node_id.to_owned(),
+            key: key.to_owned(),
+            value,
+        });
+    }
+}
+
+fn property_value_editor(
+    ui: &mut egui::Ui,
+    raw: &mut String,
+    kind: PropertyValueKind,
+    name: impl std::fmt::Display,
+) -> egui::Response {
+    let height = crate::ui_shell::layout_policy::editor_height(ui.ctx()).min(180.0);
+    crate::ui_shell::layout_policy::scroll(
+        ui,
+        "Property value editor",
+        [false, true],
+        egui::ScrollArea::vertical()
+            .id_salt("property-value-scroll")
+            .max_height(height)
+            .auto_shrink([false, true]),
+        |ui| {
+            ui.add(
+                egui::TextEdit::multiline(raw)
+                    .id_salt("property-value")
+                    .desired_rows(
+                        if matches!(kind, PropertyValueKind::Object | PropertyValueKind::Array) {
+                            4
+                        } else {
+                            2
+                        },
+                    )
+                    .desired_width(ui.available_width())
+                    .font(egui::TextStyle::Monospace)
+                    .hint_text(kind.hint()),
+            )
+            .named(ui, name)
+        },
+    )
+    .inner
+}
+
 fn inspector_properties_section(
     ui: &mut egui::Ui,
     inspector: &mut InspectorFormState,
@@ -1106,169 +1378,264 @@ fn inspector_properties_section(
     )
     .default_open(true)
     .show(ui, |ui| {
-        ui.add_space(4.0);
-
-        let node_id = match node_mgr.selected.as_ref() {
-            Some(sel) => sel.node_id.clone(),
-            None => {
-                ui.label(
-                    egui::RichText::new("No node selected")
-                        .small()
-                        .color(theme::TEXT_MUTED),
-                );
-                return;
-            }
+        let Some(selection) = node_mgr.selected.as_ref() else {
+            ui.label("No node selected");
+            return;
         };
-
-        if inspector.node_properties_loading {
+        let node_id = &selection.node_id;
+        let now = ui.ctx().input(|input| input.time);
+        if ui
+            .button("Refresh stored values")
+            .named(ui, "Refresh selected node properties")
+            .clicked()
+        {
+            ui_mgr.push_action(UiAction::LoadNodeProperties {
+                node_id: node_id.clone(),
+            });
+        }
+        let loading = inspector.node_properties_loading;
+        if loading {
             ui.label(
-                egui::RichText::new("Loading...")
+                egui::RichText::new("Refreshing properties...")
                     .small()
                     .color(theme::TEXT_DIM),
             );
-            return;
-        }
-
-        // Display existing properties. Each value renders in a width-capped,
-        // read-only, copyable box (NOT a Grid cell — a Grid ignores
-        // set_max_width, which let a giant value blow the panel out). See
-        // AGENTS.md §inspector-units / §widgets.
-        let mut delete_key: Option<String> = None;
-        if let Some(obj) = inspector.node_properties.as_object() {
-            if obj.is_empty() {
-                ui.label(
-                    egui::RichText::new("No custom properties")
-                        .small()
-                        .color(theme::TEXT_MUTED),
-                );
-            } else {
-                for (key, value) in obj {
-                    let val_str = match value {
-                        serde_json::Value::String(s) => s.clone(),
-                        other => other.to_string(),
-                    };
-                    let display = crate::panels::widgets::elide(&val_str, PROP_VALUE_ELIDE_CHARS);
-                    let mut want_delete = false;
-                    crate::panels::widgets::copy_value_box(
-                        ui,
-                        ui_mgr,
-                        key,
-                        &display,
-                        &val_str,
-                        &format!("Copied {key}"),
-                        |ui| {
-                            ui.label(
-                                egui::RichText::new(key)
-                                    .small()
-                                    .strong()
-                                    .color(theme::TEXT_DIM),
-                            );
-                        },
-                        |ui| {
-                            if ui
-                                .add(
-                                    egui::Button::new(egui::RichText::new("\u{2715}").small())
-                                        .fill(theme::BG_DANGER)
-                                        .small(),
-                                )
-                                .named(ui, format_args!("Delete property {key}"))
-                                .on_hover_text("Delete property")
-                                .clicked()
-                            {
-                                want_delete = true;
-                            }
-                        },
-                    );
-                    if want_delete {
-                        delete_key = Some(key.clone());
-                    }
-                }
+            let has_draft = !inspector.prop_add_key_buf.is_empty()
+                || !inspector.prop_add_value_buf.is_empty()
+                || !inspector.property_editor.drafts.is_empty()
+                || inspector.property_editor.add_error.is_some()
+                || inspector.property_editor.pending_add.is_some();
+            if !has_draft
+                && inspector
+                    .node_properties
+                    .as_object()
+                    .is_none_or(|object| object.is_empty())
+            {
+                return;
             }
         }
-
+        let mut delete_key = None;
+        let mut save_key = None;
+        let mut cancel_key = None;
+        if let Some(object) = inspector.node_properties.as_object() {
+            if object.is_empty() {
+                ui.label("No custom properties");
+            }
+            for (key, value) in object {
+                ui.push_id((node_id, key), |ui| {
+                    egui::Frame::NONE
+                        .fill(theme::BG_BUTTON)
+                        .inner_margin(egui::Margin::symmetric(6, 6))
+                        .corner_radius(3.0)
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(key).strong().color(theme::TEXT_SECTION),
+                                )
+                                .wrap(),
+                            );
+                            ui.label(
+                                egui::RichText::new(PropertyValueKind::of(value).label())
+                                    .small()
+                                    .color(theme::TEXT_DIM),
+                            );
+                            let editing = inspector.property_editor.drafts.contains_key(key);
+                            let pending = inspector
+                                .property_editor
+                                .drafts
+                                .get(key)
+                                .is_some_and(|draft| draft.pending.is_some());
+                            if !editing {
+                                let display = PropertyValueKind::format(value);
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(crate::panels::widgets::elide(
+                                            &display,
+                                            PROP_VALUE_ELIDE_CHARS,
+                                        ))
+                                        .monospace()
+                                        .small(),
+                                    )
+                                    .wrap(),
+                                );
+                            }
+                            ui.horizontal_wrapped(|ui| {
+                                if ui
+                                    .small_button("Copy")
+                                    .named(ui, format_args!("Copy property {key}"))
+                                    .clicked()
+                                {
+                                    ui.ctx().copy_text(match value {
+                                        serde_json::Value::String(value) => value.clone(),
+                                        value => value.to_string(),
+                                    });
+                                    ui_mgr.show_toast(format!("Copied {key}"), now);
+                                }
+                                if !editing
+                                    && ui
+                                        .add_enabled(!loading, egui::Button::new("Edit").small())
+                                        .named(ui, format_args!("Edit property {key}"))
+                                        .clicked()
+                                {
+                                    inspector
+                                        .property_editor
+                                        .drafts
+                                        .insert(key.clone(), PropertyDraft::new(value));
+                                }
+                                if ui
+                                    .add_enabled(
+                                        !loading && !pending,
+                                        egui::Button::new("Delete").small(),
+                                    )
+                                    .named(ui, format_args!("Delete property {key}"))
+                                    .clicked()
+                                {
+                                    delete_key = Some(key.clone());
+                                }
+                            });
+                            if let Some(draft) = inspector.property_editor.drafts.get_mut(key) {
+                                ui.add_enabled_ui(!loading && draft.pending.is_none(), |ui| {
+                                    if property_value_editor(
+                                        ui,
+                                        &mut draft.raw,
+                                        draft.kind,
+                                        format_args!("Value of property {key}"),
+                                    )
+                                    .changed()
+                                    {
+                                        draft.error = None;
+                                    }
+                                });
+                                if let Some(error) = &draft.error {
+                                    ui.colored_label(theme::STATUS_OFFLINE, error);
+                                }
+                                if draft.pending.is_some() {
+                                    ui.label("Waiting for saved value...");
+                                } else if draft.dirty() {
+                                    ui.label(
+                                        egui::RichText::new("Unsaved changes")
+                                            .small()
+                                            .color(theme::TEXT_DIM),
+                                    );
+                                } else {
+                                    ui.label(
+                                        egui::RichText::new("Matches stored value")
+                                            .small()
+                                            .color(theme::TEXT_DIM),
+                                    );
+                                }
+                                ui.horizontal_wrapped(|ui| {
+                                    let can_save = !loading
+                                        && draft.pending.is_none()
+                                        && draft.dirty()
+                                        && value == &draft.source;
+                                    if ui
+                                        .add_enabled(
+                                            can_save,
+                                            egui::Button::new("Save").fill(theme::BG_SAVE),
+                                        )
+                                        .named(ui, format_args!("Save property {key}"))
+                                        .clicked()
+                                    {
+                                        save_key = Some(key.clone());
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            draft.pending.is_none(),
+                                            egui::Button::new("Cancel"),
+                                        )
+                                        .named(ui, format_args!("Cancel editing property {key}"))
+                                        .clicked()
+                                    {
+                                        cancel_key = Some(key.clone());
+                                    }
+                                });
+                            }
+                        });
+                });
+                ui.add_space(4.0);
+            }
+        }
+        if let Some(key) = cancel_key {
+            inspector.property_editor.drafts.remove(&key);
+        }
+        if let Some(key) = save_key {
+            submit_property_edit(inspector, node_id, &key, ui_mgr, now);
+        }
         if let Some(key) = delete_key {
             ui_mgr.push_action(UiAction::DeleteNodeProperty {
                 node_id: node_id.clone(),
                 key,
             });
         }
-
-        ui.add_space(6.0);
         ui.separator();
-        ui.add_space(4.0);
-
-        // Add property row
         ui.label(
             egui::RichText::new("Add Property")
-                .small()
-                .color(theme::TEXT_DIM),
+                .strong()
+                .color(theme::TEXT_SECTION),
         );
-        ui.add_space(2.0);
-
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut inspector.prop_add_key_buf)
-                    .hint_text("key")
-                    .desired_width(60.0),
-            )
-            .named(ui, "New property key");
-            ui.add(
-                egui::TextEdit::singleline(&mut inspector.prop_add_value_buf)
-                    .hint_text("value")
-                    .desired_width(60.0),
-            )
-            .named(ui, "New property value");
+        let pending = inspector.property_editor.pending_add.is_some();
+        ui.add_enabled_ui(!loading && !pending, |ui| {
+            let key_label = ui.label("Key");
+            let mut changed = ui
+                .add(
+                    egui::TextEdit::singleline(&mut inspector.prop_add_key_buf)
+                        .id_salt("new-property-key")
+                        .desired_width(ui.available_width()),
+                )
+                .labelled(ui, &key_label)
+                .changed();
+            ui.label("Type");
+            let mut type_changed = false;
             egui::ComboBox::from_id_salt("prop_type_combo")
                 .selected_text(&inspector.prop_add_type_buf)
-                .width(70.0)
+                .width(ui.available_width())
                 .show_ui(ui, |ui| {
-                    for &t in PROPERTY_TYPES {
-                        ui.selectable_value(&mut inspector.prop_add_type_buf, t.to_string(), t).observed(ui);
+                    for &kind in PROPERTY_TYPES {
+                        type_changed |= ui
+                            .selectable_value(
+                                &mut inspector.prop_add_type_buf,
+                                kind.to_owned(),
+                                kind,
+                            )
+                            .observed(ui)
+                            .changed();
                     }
                 })
                 .response
                 .named(ui, "New property value type");
+            changed |= type_changed;
+            let kind = PropertyValueKind::from_selection(&inspector.prop_add_type_buf)
+                .unwrap_or(PropertyValueKind::String);
+            ui.label("Value");
+            changed |= property_value_editor(
+                ui,
+                &mut inspector.prop_add_value_buf,
+                kind,
+                "New property value",
+            )
+            .changed();
+            if changed {
+                inspector.property_editor.add_error = None;
+            }
         });
-
-        ui.add_space(4.0);
-
-        let can_add = !inspector.prop_add_key_buf.trim().is_empty()
-            && !inspector.prop_add_value_buf.trim().is_empty();
-
-        let btn = egui::Button::new("Add")
-            .fill(if can_add {
-                theme::BG_SAVE
-            } else {
-                theme::BG_BUTTON
-            })
-            .min_size(egui::vec2(ui.available_width(), 24.0));
-
-        if ui.add_enabled(can_add, btn).observed(ui).clicked() {
-            let key = inspector.prop_add_key_buf.trim().to_string();
-            let raw = inspector.prop_add_value_buf.trim().to_string();
-            let value = match inspector.prop_add_type_buf.as_str() {
-                "number" => raw
-                    .parse::<f64>()
-                    .map(serde_json::Value::from)
-                    .unwrap_or_else(|_| serde_json::Value::String(raw.clone())),
-                "bool" => match raw.to_lowercase().as_str() {
-                    "true" | "1" | "yes" => serde_json::Value::Bool(true),
-                    "false" | "0" | "no" => serde_json::Value::Bool(false),
-                    _ => serde_json::Value::String(raw.clone()),
-                },
-                _ => serde_json::Value::String(raw.clone()),
-            };
-            ui_mgr.push_action(UiAction::SetNodeProperty {
-                node_id: node_id.clone(),
-                key,
-                value,
-            });
-            inspector.prop_add_key_buf.clear();
-            inspector.prop_add_value_buf.clear();
+        if let Some(error) = &inspector.property_editor.add_error {
+            ui.colored_label(theme::STATUS_OFFLINE, error);
         }
-
-        ui.add_space(4.0);
-    }).header_response.observed(ui);
+        if pending {
+            ui.label("Waiting for added property...");
+        }
+        let can_add = !loading && !pending && !inspector.prop_add_key_buf.trim().is_empty();
+        if ui
+            .add_enabled(can_add, egui::Button::new("Add").fill(theme::BG_SAVE))
+            .named(ui, "Add property")
+            .clicked()
+        {
+            submit_new_property(inspector, node_id, ui_mgr, now);
+        }
+    })
+    .header_response
+    .observed(ui);
 }
 
 // ---------------------------------------------------------------------------
@@ -1423,7 +1790,8 @@ fn inspector_schema_section(
                             &mut inspector.field_def_add_type_buf,
                             t.to_string(),
                             t,
-                        ).observed(ui);
+                        )
+                        .observed(ui);
                     }
                 })
                 .response
@@ -1471,7 +1839,9 @@ fn inspector_schema_section(
         }
 
         ui.add_space(4.0);
-    }).header_response.observed(ui);
+    })
+    .header_response
+    .observed(ui);
 }
 
 // ---------------------------------------------------------------------------
@@ -1485,11 +1855,279 @@ mod tests {
     const EPS: f32 = 1e-4;
 
     #[test]
-    fn radians_degrees_round_trip() {
+    fn inspector_transform_and_typed_property_editing_journey() {
         assert!((radians_to_degrees(std::f32::consts::FRAC_PI_2) - 90.0).abs() < EPS);
         assert!((degrees_to_radians(180.0) - std::f32::consts::PI).abs() < EPS);
         let r = 1.234_f32;
         assert!((degrees_to_radians(radians_to_degrees(r)) - r).abs() < EPS);
+
+        use serde_json::json;
+        let mut nodes = NodeManager::default();
+        nodes.select(Entity::from_bits(1), "node-1");
+        let mut inspector = InspectorFormState::default();
+        let mut ui_mgr = UiManager::default();
+        sync_property_editor_scope(&mut inspector, &nodes, 0.0);
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let db_sender = fe_runtime::app::DbCommandSender(tx);
+        let nested = json!({"labels": ["north", "south"], "sensor": {"active": true, "samples": [1, null, {"value": 2.5}]}});
+        for (key, selected_type, raw, expected) in [
+            (
+                "note",
+                "string",
+                "  exact text\nwith whitespace  ",
+                json!("  exact text\nwith whitespace  "),
+            ),
+            ("empty-note", "string", "", json!("")),
+            ("amount", "number", "  -1.5e2  ", json!(-150.0)),
+            ("counter", "number", "18446744073709551615", json!(u64::MAX)),
+            ("flag", "bool", " false ", json!(false)),
+            (
+                "config",
+                "object",
+                r#"{"labels":["north","south"],"sensor":{"active":true,"samples":[1,null,{"value":2.5}]}}"#,
+                nested.clone(),
+            ),
+            (
+                "series",
+                "array",
+                r#"[1,{"nested":[true,null,"text"]}]"#,
+                json!([1,{"nested":[true,null,"text"]}]),
+            ),
+            (
+                "address-label",
+                "address",
+                " exact address ",
+                json!(" exact address "),
+            ),
+        ] {
+            inspector.prop_add_key_buf = format!("  {key}  ");
+            inspector.prop_add_type_buf = selected_type.into();
+            inspector.prop_add_value_buf = raw.into();
+            let stored_before = inspector.node_properties.clone();
+            submit_new_property(&mut inspector, "node-1", &mut ui_mgr, 1.0);
+            assert_eq!(
+                inspector.node_properties, stored_before,
+                "queueing must not mutate stored data"
+            );
+            assert_eq!(
+                inspector.prop_add_value_buf, raw,
+                "retain the submitted draft until readback"
+            );
+            let actions = ui_mgr.drain_actions();
+            let [UiAction::SetNodeProperty {
+                node_id,
+                key: action_key,
+                value,
+            }] = actions.as_slice()
+            else {
+                panic!("a valid property must queue exactly one typed write")
+            };
+            assert_eq!(node_id, "node-1");
+            assert_eq!(action_key, key);
+            assert_eq!(value, &expected);
+            crate::actions::node_props::set(
+                &db_sender,
+                node_id.clone(),
+                action_key.clone(),
+                value.clone(),
+            );
+            let DbCommand::SetNodeProperty {
+                node_id,
+                key: command_key,
+                value: command_value,
+                correlation_id,
+            } = rx.try_recv().unwrap()
+            else {
+                panic!("the existing action handler must dispatch the property write")
+            };
+            assert_eq!(node_id, "node-1");
+            assert_eq!(command_key, key);
+            assert_eq!(command_value, expected);
+            assert!(
+                correlation_id.is_none(),
+                "GUI writes retain the None correlation contract"
+            );
+            sync_property_editor_scope(&mut inspector, &nodes, 2.0);
+            assert!(
+                inspector.property_editor.pending_add.is_some(),
+                "old cache is not a save confirmation"
+            );
+            inspector
+                .node_properties
+                .as_object_mut()
+                .unwrap()
+                .insert(key.into(), expected);
+            sync_property_editor_scope(&mut inspector, &nodes, 3.0);
+            assert!(inspector.property_editor.pending_add.is_none());
+            assert!(inspector.prop_add_key_buf.is_empty());
+            assert!(inspector.prop_add_value_buf.is_empty());
+        }
+        assert_eq!(
+            inspector.node_properties["counter"].as_u64(),
+            Some(u64::MAX)
+        );
+        let stored = inspector.node_properties.clone();
+        for (kind, invalid) in [
+            ("number", "NaN"),
+            ("number", "Inf"),
+            ("number", "-Infinity"),
+            ("number", "1e999"),
+            ("number", "01"),
+            ("number", r#""12""#),
+            ("bool", "yes"),
+            ("bool", "1"),
+            ("bool", "TRUE"),
+            ("object", "[]"),
+            ("object", "{\"unfinished\":"),
+            ("array", "{}"),
+            ("array", "[1,"),
+            ("unknown", "value"),
+        ] {
+            inspector.prop_add_key_buf = "invalid".into();
+            inspector.prop_add_type_buf = kind.into();
+            inspector.prop_add_value_buf = invalid.into();
+            submit_new_property(&mut inspector, "node-1", &mut ui_mgr, 4.0);
+            assert!(
+                ui_mgr.drain_actions().is_empty(),
+                "invalid input cannot queue a mutation: {kind} {invalid}"
+            );
+            assert!(rx.try_recv().is_err());
+            assert_eq!(inspector.node_properties, stored);
+            assert_eq!(inspector.prop_add_value_buf, invalid);
+            assert!(inspector.property_editor.add_error.is_some());
+            assert_eq!(nodes.selected.as_ref().unwrap().node_id, "node-1");
+        }
+        inspector.prop_add_key_buf = "config".into();
+        inspector.prop_add_type_buf = "string".into();
+        inspector.prop_add_value_buf = "do not replace the object".into();
+        submit_new_property(&mut inspector, "node-1", &mut ui_mgr, 5.0);
+        assert!(
+            ui_mgr.drain_actions().is_empty(),
+            "Add must not silently replace an existing typed property"
+        );
+        assert_eq!(inspector.node_properties, stored);
+
+        inspector
+            .property_editor
+            .drafts
+            .insert("config".into(), PropertyDraft::new(&nested));
+        let draft = inspector.property_editor.drafts.get_mut("config").unwrap();
+        assert_eq!(draft.kind, PropertyValueKind::Object);
+        assert!(!draft.dirty());
+        draft.raw = "[]".into();
+        submit_property_edit(&mut inspector, "node-1", "config", &mut ui_mgr, 10.0);
+        assert!(ui_mgr.drain_actions().is_empty());
+        let draft = &inspector.property_editor.drafts["config"];
+        assert_eq!(draft.raw, "[]");
+        assert!(draft.dirty() && draft.error.is_some());
+        assert_eq!(inspector.node_properties, stored);
+        let edited =
+            json!({"labels": ["west"], "sensor": {"active": false, "samples": [4, {"value": 8}]}});
+        let edited_raw = format!("  {}  ", edited);
+        inspector
+            .property_editor
+            .drafts
+            .get_mut("config")
+            .unwrap()
+            .raw = edited_raw.clone();
+        submit_property_edit(&mut inspector, "node-1", "config", &mut ui_mgr, 11.0);
+        let actions = ui_mgr.drain_actions();
+        assert!(
+            matches!(actions.as_slice(), [UiAction::SetNodeProperty { node_id, key, value }] if node_id == "node-1" && key == "config" && value == &edited)
+        );
+        assert_eq!(inspector.node_properties, stored);
+        submit_property_edit(&mut inspector, "node-1", "config", &mut ui_mgr, 11.1);
+        assert!(
+            ui_mgr.drain_actions().is_empty(),
+            "an awaiting save must not double-submit"
+        );
+        inspector.node_properties_loading = true;
+        sync_property_editor_scope(&mut inspector, &nodes, 12.0);
+        assert!(inspector.property_editor.drafts["config"].pending.is_some());
+        inspector.node_properties["config"] = edited.clone();
+        inspector.node_properties_loading = false;
+        sync_property_editor_scope(&mut inspector, &nodes, 13.0);
+        let draft = &inspector.property_editor.drafts["config"];
+        assert_eq!(draft.kind, PropertyValueKind::Object);
+        assert_eq!(draft.raw, edited_raw);
+        assert!(draft.pending.is_none() && !draft.dirty() && draft.error.is_none());
+
+        inspector
+            .property_editor
+            .drafts
+            .insert("flag".into(), PropertyDraft::new(&json!(false)));
+        inspector
+            .property_editor
+            .drafts
+            .get_mut("flag")
+            .unwrap()
+            .raw = "true".into();
+        submit_property_edit(&mut inspector, "node-1", "flag", &mut ui_mgr, 20.0);
+        assert_eq!(ui_mgr.drain_actions().len(), 1);
+        sync_property_editor_scope(&mut inspector, &nodes, 51.0);
+        let timed_out = &inspector.property_editor.drafts["flag"];
+        assert!(timed_out.pending.is_none() && timed_out.dirty() && timed_out.error.is_some());
+        assert_eq!(inspector.node_properties["flag"], json!(false));
+
+        inspector
+            .property_editor
+            .drafts
+            .get_mut("config")
+            .unwrap()
+            .raw = r#"{"local":"kept"}"#.into();
+        inspector.node_properties["config"] = json!({"remote": "changed"});
+        sync_property_editor_scope(&mut inspector, &nodes, 52.0);
+        submit_property_edit(&mut inspector, "node-1", "config", &mut ui_mgr, 52.1);
+        assert!(
+            ui_mgr.drain_actions().is_empty(),
+            "a changed stored value cannot be silently overwritten"
+        );
+        assert_eq!(
+            inspector.property_editor.drafts["config"].raw,
+            r#"{"local":"kept"}"#
+        );
+        assert!(inspector.property_editor.drafts["config"].error.is_some());
+        inspector.property_editor.drafts.remove("config");
+        assert_eq!(
+            inspector.node_properties["config"],
+            json!({"remote":"changed"})
+        );
+        inspector
+            .node_properties
+            .as_object_mut()
+            .unwrap()
+            .remove("flag");
+        sync_property_editor_scope(&mut inspector, &nodes, 53.0);
+        assert!(
+            !inspector.property_editor.drafts.contains_key("flag"),
+            "a deleted key must release its draft scope"
+        );
+        assert_eq!(
+            PropertyValueKind::Null.parse(" null ").unwrap(),
+            json!(null)
+        );
+        assert!(PropertyValueKind::Null.parse("false").is_err());
+
+        inspector.prop_add_key_buf = "scope-local".into();
+        inspector.prop_add_value_buf = "8".into();
+        inspector.prop_add_type_buf = "number".into();
+        submit_new_property(&mut inspector, "node-1", &mut ui_mgr, 54.0);
+        assert_eq!(ui_mgr.drain_actions().len(), 1);
+        nodes.select(Entity::from_bits(2), "node-2");
+        inspector.node_properties = json!({});
+        inspector.node_properties_loading = true;
+        sync_property_editor_scope(&mut inspector, &nodes, 55.0);
+        assert_eq!(nodes.selected.as_ref().unwrap().node_id, "node-2");
+        assert!(inspector.prop_add_key_buf.is_empty() && inspector.prop_add_value_buf.is_empty());
+        assert_eq!(inspector.prop_add_type_buf, "string");
+        assert!(inspector.property_editor.drafts.is_empty());
+        assert!(
+            inspector.property_editor.pending_add.is_none()
+                && inspector.property_editor.add_error.is_none()
+        );
+        nodes.deselect();
+        sync_property_editor_scope(&mut inspector, &nodes, 56.0);
+        assert!(inspector.property_editor.node_id.is_none());
     }
 
     #[test]

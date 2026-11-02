@@ -289,6 +289,7 @@ pub struct InspectorFormState {
     pub prop_add_key_buf: String,
     pub prop_add_value_buf: String,
     pub prop_add_type_buf: String,
+    pub(crate) property_editor: crate::panels::inspector::PropertyEditorState,
     // Annotation card state (gis.annotation.* reserved property editor)
     pub annotation_title_buf: String,
     pub annotation_body_buf: String,
@@ -332,6 +333,7 @@ impl Default for InspectorFormState {
             prop_add_key_buf: String::new(),
             prop_add_value_buf: String::new(),
             prop_add_type_buf: "string".into(),
+            property_editor: Default::default(),
             annotation_title_buf: String::new(),
             annotation_body_buf: String::new(),
             annotation_color_buf: String::new(),

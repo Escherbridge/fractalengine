@@ -366,3 +366,46 @@ they expose no cut/fill/net or TSV copy control. A matching later complete resul
 replaces that state without editing the footprint. Result adoption requires the
 latest correlation and matching current/state/result petal identities. Unbound
 or disabled terrain clears the selection report and rejects late replies.
+
+## Typed property values and local edit drafts
+
+`property_value::PropertyValueKind` is the Inspector's JSON parsing boundary.
+Strings preserve the exact input, including whitespace and empty strings.
+Numbers use JSON grammar and must have a finite numeric representation.
+Booleans accept only lowercase `true`/`false`, with surrounding whitespace
+ignored. Objects and arrays require the selected root shape and retain nested
+JSON. Existing null values remain null. The legacy datetime/geometry/reference/
+address selector entries remain string-backed labels; this parser does not
+claim format validation or backend field-definition enforcement for them.
+
+`InspectorFormState::property_editor` holds only form drafts, keyed by the
+NodeManager-derived node id and property key. It does not own selection or
+mutate the loaded property bag. The Inspector resets these drafts, Add buffers,
+type defaults and inline errors when its node scope changes or is cleared.
+Deleting a property clears its draft after authoritative readback removes it.
+An existing-property editor fixes its JSON kind from the stored value; a dirty
+draft cannot overwrite a newly changed stored value without reopening.
+
+Add/Save parse before queueing the existing `SetNodeProperty` UI action.
+Invalid input retains the draft and selection and produces an inline error.
+Adding a duplicate key is refused in favor of Edit. A submitted valid value
+remains visibly unconfirmed until the existing property-readback path contains
+that value; the UI never inserts a speculative value into `node_properties`.
+After 30 seconds without confirmation, the draft remains with an error and
+Refresh stored values can request the existing load action. Cancel discards
+only an unsent draft and is disabled while a write is awaiting confirmation.
+
+Property cards use wrapping action rows and width-bounded multiline value
+editors inside the shared layout-policy scroll seam. Nested JSON is formatted
+for editing without changing the parsed value. Each key, value, type and row
+action keeps its purpose/context name via `ResponseExt`. This slice does not
+add history, replay, charts, or field-definition enforcement.
+
+The existing Inspector transform test is extended as
+`inspector_transform_and_typed_property_editing_journey`: original transform
+assertions plus typed Add, invalid-input/no-write behavior, the actual GUI
+command's `correlation_id: None`, draft/readback confirmation, stale-value
+refusal, timeout, deletion and node-scope reset. Its readback is an explicit
+model simulation; it does not prove DB persistence, rendered hit targets or
+backend schema enforcement. Integrated compilation, execution and live UI
+readability/a11y verification remain required.
