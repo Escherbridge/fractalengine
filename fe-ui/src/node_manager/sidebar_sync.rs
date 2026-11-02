@@ -112,6 +112,116 @@ mod tests {
     fn a_visible_node_click_selects_it() {
         let (mut app, _) = app_with_selection();
         assert_eq!(sidebar_click(&mut app, "n1").as_deref(), Some("n1"));
+
+        app.world_mut()
+            .resource_mut::<NavigationManager>()
+            .navigate_to_petal("p2");
+        app.world_mut()
+            .resource_mut::<NodeManager>()
+            .request_select_after_navigation("later", "p2");
+        app.update();
+        assert!(app
+            .world()
+            .resource::<NodeManager>()
+            .pending_navigation_select
+            .is_some());
+        app.world_mut().spawn(SpawnedNodeMarker {
+            node_id: "later".into(),
+            petal_id: "p1".into(),
+        });
+        app.update();
+        assert!(
+            app.world().resource::<NodeManager>().selected.is_none(),
+            "same node id in another petal cannot win"
+        );
+        let arrived = app
+            .world_mut()
+            .spawn(SpawnedNodeMarker {
+                node_id: "later".into(),
+                petal_id: "p2".into(),
+            })
+            .id();
+        app.update();
+        assert_eq!(
+            app.world().resource::<NodeManager>().selected_entity(),
+            Some(arrived)
+        );
+        assert!(app
+            .world()
+            .resource::<NodeManager>()
+            .pending_navigation_select
+            .is_none());
+
+        app.world_mut()
+            .resource_mut::<NodeManager>()
+            .request_select_after_navigation("missing", "p2");
+        app.world_mut()
+            .resource_mut::<NavigationManager>()
+            .navigate_to_petal("p3");
+        app.update();
+        assert!(
+            app.world()
+                .resource::<NodeManager>()
+                .pending_navigation_select
+                .is_none(),
+            "leaving destination cancels delayed selection"
+        );
+
+        app.world_mut()
+            .resource_mut::<NodeManager>()
+            .request_select_after_navigation("missing", "p3");
+        app.world_mut()
+            .resource_mut::<NodeManager>()
+            .select(arrived, "explicit");
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<NodeManager>()
+                .selected
+                .as_ref()
+                .unwrap()
+                .node_id,
+            "explicit"
+        );
+        assert!(app
+            .world()
+            .resource::<NodeManager>()
+            .pending_navigation_select
+            .is_none());
+
+        app.world_mut()
+            .resource_mut::<NodeManager>()
+            .request_select_after_navigation("missing", "p3");
+        app.world_mut()
+            .resource_mut::<NavigationManager>()
+            .navigate_to_petal("p1");
+        assert_eq!(sidebar_click(&mut app, "n1").as_deref(), Some("n1"));
+        assert!(
+            app.world()
+                .resource::<NodeManager>()
+                .pending_navigation_select
+                .is_none(),
+            "an explicit sidebar choice wins"
+        );
+
+        app.world_mut()
+            .resource_mut::<NodeManager>()
+            .request_select_after_navigation("missing", "p1");
+        for _ in 0..120 {
+            app.update();
+        }
+        assert!(app
+            .world()
+            .resource::<NodeManager>()
+            .pending_navigation_select
+            .is_none());
+        assert!(app
+            .world()
+            .resource::<UiManager>()
+            .active_toast(0.0)
+            .unwrap()
+            .0
+            .contains("did not become available"));
     }
 
     #[test]

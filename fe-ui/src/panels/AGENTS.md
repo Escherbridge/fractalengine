@@ -446,9 +446,13 @@ compilation, execution and live UI readability/a11y verification remain required
 routes typed presentation commands. Menus never borrow the Inspector's current
 target. Rename and Options reuse Node Options or Entity Settings; Node Options
 retains its explicit subtree-delete confirmation. Parent branch deletion stays
-disabled with an explanation because no supported branch-delete command exists.
+disabled here pending review of the legacy DeleteEntity command: unlike the
+node tombstone path, its current dispatcher lacks a stored-role guard and
+transactional lifecycle coverage. Existing Entity Settings still owns that
+legacy action; this sidebar slice does not repair that backend gap.
 Copy ID copies the clicked ID. Editing controls are advisory-role-gated against
-the active verse; database handlers remain authoritative.
+the active verse. These checks are presentation only; the legacy parent
+RenameEntity/DeleteEntity authorization gap remains a campaign follow-up.
 
 The existing NavigationManager remains the hierarchy cursor and NodeManager
 remains the node-selection authority. A current hierarchy name is a no-op;

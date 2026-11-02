@@ -884,5 +884,93 @@ mod tests {
                 "{active} {visible} {flag}"
             );
         }
+
+        use crate::panels::tree_appearance::{format_hex, parse_hex, AppearanceDraft, EntryKind};
+        use crate::settings::{AppSettings, EntryAppearance, TreeIcon};
+        for rgb in [[0, 0, 0], [255, 255, 255], [0, 255, 128], [255, 0, 64]] {
+            assert_eq!(parse_hex(&format_hex(rgb)), Some(rgb));
+        }
+        for invalid in [
+            "", "#FFF", "FFFFFF", "#GG0000", "#1234567", "#é1234", " #123456",
+        ] {
+            assert_eq!(parse_hex(invalid), None, "{invalid}");
+        }
+        let mut settings = AppSettings::default();
+        settings.tree_appearance.insert(
+            EntryKind::Node.key("n1"),
+            EntryAppearance {
+                icon: TreeIcon::Star,
+                color: [20, 30, 40],
+            },
+        );
+        let draft = AppearanceDraft::new(EntryKind::Node, "n1", "Node", &settings);
+        let mut manager = crate::actions::UiManager::default();
+        manager.open_dialog(crate::dialogs::ActiveDialog::TreeAppearance { draft });
+        assert!(manager.any_dialog_open());
+        manager.close_dialog();
+        assert_eq!(
+            settings.tree_appearance[&EntryKind::Node.key("n1")].color,
+            [20, 30, 40],
+            "cancel does not mutate persisted preferences"
+        );
+        assert_ne!(
+            EntryKind::Node.key("same-id"),
+            EntryKind::Verse.key("same-id")
+        );
+
+        for width in [220.0, 320.0, 480.0] {
+            let ctx = bevy_egui::egui::Context::default();
+            let input = bevy_egui::egui::RawInput {
+                screen_rect: Some(bevy_egui::egui::Rect::from_min_size(
+                    bevy_egui::egui::Pos2::ZERO,
+                    bevy_egui::egui::vec2(width, 300.0),
+                )),
+                ..Default::default()
+            };
+            let mut response = None;
+            crate::ui_shell::layout_policy::begin_frame(&ctx, true);
+            let _ = ctx.run(input, |ctx| {
+                bevy_egui::egui::CentralPanel::default().show(ctx, |ui| {
+                    let (name, _) = crate::panels::tree_entry::row(
+                        ui,
+                        crate::panels::tree_entry::Target {
+                            kind: EntryKind::Node,
+                            id: "n1",
+                            name: "Long object name with meaningful suffix",
+                            verse_id: "v1",
+                            fractal_id: Some("f1"),
+                            url: None,
+                        },
+                        true,
+                        false,
+                        true,
+                        Some("v1"),
+                        &crate::plugin::LocalUserRole {
+                            role: Some(fe_database::RoleLevel::Owner),
+                        },
+                        &settings,
+                        &mut manager,
+                        |ui| {
+                            super::eye_button(
+                                ui,
+                                crate::visibility::glyph_for_bool(true),
+                                true,
+                                "Hide node",
+                                "Hide test node",
+                            )
+                        },
+                        |_| {},
+                    );
+                    response = Some(name);
+                });
+            });
+            let response = response.unwrap();
+            assert!(response.rect.width() >= 24.0 && response.rect.height() >= 24.0);
+            let observed = crate::ui_shell::layout_policy::observations(&ctx);
+            assert!(observed
+                .controls
+                .iter()
+                .any(|control| control.id == response.id.value() && control.hit.width() >= 24.0));
+        }
     }
 }

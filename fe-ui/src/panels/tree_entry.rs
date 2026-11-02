@@ -126,7 +126,7 @@ fn menu(ui: &mut egui::Ui, target: Target<'_>, can_edit: bool, command: &mut Opt
         }
     } else {
         ui.add_enabled(false, egui::Button::new("Delete…")).named(ui, format_args!("Delete {} {} unavailable", target.kind.label(), target.name))
-            .on_disabled_hover_text("Deleting a whole hierarchy branch is not supported yet. Individual nodes can be deleted from their options.");
+            .on_disabled_hover_text("Branch deletion needs the hierarchy safety review before it is exposed here. Individual nodes use the confirmed delete flow in Node Options.");
     }
 }
 

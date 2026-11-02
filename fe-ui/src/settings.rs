@@ -461,6 +461,22 @@ mod tests {
         let path = resolve_settings_path(Some(&isolated), Some(&normal)).unwrap();
         assert_eq!(path, isolated.join("config/settings.ron"));
         let edited = AppSettings {
+            tree_appearance: std::collections::BTreeMap::from([
+                (
+                    "verse:shared-id".into(),
+                    EntryAppearance {
+                        icon: TreeIcon::Star,
+                        color: [0, 255, 128],
+                    },
+                ),
+                (
+                    "node:shared-id".into(),
+                    EntryAppearance {
+                        icon: TreeIcon::Triangle,
+                        color: [255, 0, 64],
+                    },
+                ),
+            ]),
             render_distance: 750.0,
             entity_cap: 2_000,
             stamp_ceiling: 1_024,
