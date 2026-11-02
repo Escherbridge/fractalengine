@@ -31,6 +31,7 @@ pub struct EntityAccessState {
     read_required: bool,
     pub(crate) error: Option<&'static str>,
     role_drafts: BTreeMap<String, String>,
+    confirmed_request_id: String,
     api_open: bool,
     reveal_secret: bool,
 }
@@ -45,6 +46,7 @@ impl Default for EntityAccessState {
             read_required: true,
             error: None,
             role_drafts: BTreeMap::new(),
+            confirmed_request_id: String::new(),
             api_open: false,
             reveal_secret: false,
         }
@@ -56,7 +58,9 @@ impl EntityAccessState {
         self.queued_read = true;
         self.error = None;
     }
-    pub(crate) fn pending_work(&self)->bool {self.waiting() || self.queued_read}
+    pub(crate) fn pending_work(&self) -> bool {
+        self.waiting() || self.queued_read
+    }
     pub(crate) fn waiting(&self) -> bool {
         self.pending.is_some()
     }
@@ -257,6 +261,7 @@ pub(crate) fn apply(
             access.read_required = false;
             access.error = None;
             access.role_drafts.clear();
+            access.confirmed_request_id = id.to_owned();
             access.reveal_secret = false;
         }
         _ => {
@@ -375,7 +380,13 @@ pub(crate) fn token_controls(
             ui.add_enabled_ui(enabled, |ui| {
                 if crate::panels::widgets::confirm_button(
                     ui,
-                    ("revoke_token", &token.jti, &token.sub, &token.scope),
+                    (
+                        "revoke_token",
+                        &state.confirmed_request_id,
+                        &token.jti,
+                        &token.sub,
+                        &token.scope,
+                    ),
                     "Revoke token...",
                     "Confirm token revoke",
                     &format!("Revoke API token {}", token.jti),
@@ -392,11 +403,7 @@ pub(crate) fn token_controls(
     action
 }
 
-pub(crate) fn select_tab(
-    tab: &mut SettingsTab,
-    state: &mut EntityAccessState,
-    next: SettingsTab,
-) {
+pub(crate) fn select_tab(tab: &mut SettingsTab, state: &mut EntityAccessState, next: SettingsTab) {
     if *tab == SettingsTab::ApiAccess && next != SettingsTab::ApiAccess {
         state.leave_api();
     }

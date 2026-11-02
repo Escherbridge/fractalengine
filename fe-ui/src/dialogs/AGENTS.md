@@ -367,3 +367,5 @@ EntitySettings generates invites/API credentials through this typed owner, not l
 The unrendered InviteDialog variant is retired. Legacy invite completion never opens an invisible exclusive modal or retains its credential; it directs the user to scoped Access controls. Existing General details/draft readback remain authoritative. The dialog body has one bounded vertical viewport below the tabs.
 
 Legacy EntitySettings invite/JWT/list buffers are removed. Their producer census is empty after switching the renderer to EntityAccess. Uncorrelated legacy mint/invite completions retain no secret and cannot update the new target state; correlated Inspector replies retain their existing exact namespace/tab/target guards and API fallback behavior.
+
+Destructive/role confirmation salts include the exact successfully loaded Access request ID, in addition to peer/token values. Opening the same target again or refreshing its readback creates a new identity and disarms prior controls; the shared confirm widget does not otherwise scope its temporary state to the dialog. Backend tuple/authority fences remain independent of this UI confirmation boundary.
