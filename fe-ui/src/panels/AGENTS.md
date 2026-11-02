@@ -689,7 +689,8 @@ and copy icons reserve the shared minimum target height/width; ordinary labels
 are unchanged. Copies still use the egui output seam, including context-owned
 footer copies, so synthetic input never bypasses A8 suppression.
 
-## ?transform-snapping
+
+## transform-snapping
 
 transform_options renders the real Move/Rotate/Scale constraints from ToolState.snap: one axis, grid increment with current map units, angle increment, uniform/per-axis scale and scale increment. There are no Pivot, selection-filter or highlight-style promises. The descriptor keeps only real gesture instructions. The Options dispatcher passes its existing active-Petal scale and the same settings consumed by the gimbal; rendering never starts a transform or persists one.
 
@@ -699,3 +700,5 @@ transform_options renders the real Move/Rotate/Scale constraints from ToolState.
 Brush Options holds the live sculpt controls, explicit shape arm/cancel controls and polygon instructions/count/area/close. Circle/rectangle settings are locked while their captured placement is pending. Terrain Tools captures a proposal?s op/radius/heights, announces that captured op, and offers explicit cancellation; it no longer appends silently at the origin. Preview and placement use node_manager?s shared footprint helper. Volume report is a real section link.
 
 Pen Options reuses the existing PathQueryTracks/PathSelectTrack commands. Its picker filters cached rows against nodes actually present in the active Petal, and shows bounded named anchor selection with one-based indices and meter/world-unit labels. The complete Data > Paths editor remains available; corner editing and stamp controls reuse their existing implementations. Cached editing targets outside the active Petal are refused by this surface.
+
+Point/segment selections show a disabled object-constraint block with a direct explanation of the existing Pen/Data Paths snap authority; the controls do not pretend to change a different editor.

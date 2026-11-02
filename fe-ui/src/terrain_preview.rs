@@ -20,9 +20,9 @@ use crate::panels::toolbar::Tool;
 use crate::plugin::ToolState;
 use crate::terrain_map::PetalMapState;
 use crate::terrain_proposal_state::{ProposalEditState, ProposalOp};
-use crate::ui_shell::right_sidebar::RightSidebarState;
 #[cfg(test)]
 use crate::ui_shell::right_sidebar::RightSidebarSection;
+use crate::ui_shell::right_sidebar::RightSidebarState;
 
 /// World-unit snapshot [`BrushGesture::preview_snapshot`] hands back: the
 /// corridor footprint is already the same polygon a release would commit. No
@@ -70,7 +70,11 @@ fn proposal_op_snake(op: ProposalOp) -> &'static str {
 /// `(target_height, delta)` slots — mirrors fe-terrain's `EarthworkRegion::
 /// effective_delta`/`effective_strength` (Level/Smooth keep blend strength in
 /// the `delta` slot), so the preview integrates exactly what the commit bakes.
-fn region_record_preview_params(op: &str, target: Option<f32>, delta_slot: Option<f32>) -> (f32, f32, f32) {
+fn region_record_preview_params(
+    op: &str,
+    target: Option<f32>,
+    delta_slot: Option<f32>,
+) -> (f32, f32, f32) {
     let target = target.unwrap_or(0.0);
     if matches!(op, "level" | "smooth") {
         (target, 0.0, delta_slot.unwrap_or(1.0).clamp(0.0, 1.0))
@@ -82,10 +86,18 @@ fn region_record_preview_params(op: &str, target: Option<f32>, delta_slot: Optio
 /// The WORLD-unit footprint a shape-mode Apply would commit: the same
 /// `shape_apply_footprint` the Apply button submits (petal-local meters),
 /// converted exactly as `handle_shape_region` converts it (`meters_to_world`).
-pub(crate) fn shape_commit_footprint_world(sculpt: &SculptToolState, world_scale: f64) -> Vec<[f32; 2]> {
+pub(crate) fn shape_commit_footprint_world(
+    sculpt: &SculptToolState,
+    world_scale: f64,
+) -> Vec<[f32; 2]> {
     shape_apply_footprint(sculpt)
         .into_iter()
-        .map(|[x, z]| [meters_to_world(x, world_scale), meters_to_world(z, world_scale)])
+        .map(|[x, z]| {
+            [
+                meters_to_world(x, world_scale),
+                meters_to_world(z, world_scale),
+            ]
+        })
         .collect()
 }
 
@@ -101,17 +113,28 @@ fn sculpt_shape_draft(
     tool: &ToolState,
     petal_id: &str,
     world_scale: f64,
-    nav:&NavigationManager,
-    map:&PetalMapState,
+    nav: &NavigationManager,
+    map: &PetalMapState,
 ) -> Option<ProposalPreview> {
     if tool.active_tool != Tool::Brush || matches!(sculpt.shape_mode, SculptShapeMode::Brush) {
         return None;
     }
-    if let Some(draft)=tool.terrain.shape_preview(nav,map) {
-        let (target_m,delta_m,strength)=region_record_preview_params(&draft.op,draft.target_m,draft.delta_m);
-        return Some(ProposalPreview{petal_id:petal_id.into(),op:draft.op,footprint:draft.footprint_world,target_m,delta_m,strength,source:PreviewSource::SculptShape});
+    if let Some(draft) = tool.terrain.shape_preview(nav, map) {
+        let (target_m, delta_m, strength) =
+            region_record_preview_params(&draft.op, draft.target_m, draft.delta_m);
+        return Some(ProposalPreview {
+            petal_id: petal_id.into(),
+            op: draft.op,
+            footprint: draft.footprint_world,
+            target_m,
+            delta_m,
+            strength,
+            source: PreviewSource::SculptShape,
+        });
     }
-    if !tool.terrain.polygon_matches(nav,map) {return None;}
+    if !tool.terrain.polygon_matches(nav, map) {
+        return None;
+    }
     let footprint = shape_commit_footprint_world(sculpt, world_scale);
     if footprint.len() < 3 {
         return None;
@@ -139,9 +162,13 @@ fn brush_stroke_draft(
     world_scale: f64,
 ) -> Option<ProposalPreview> {
     let snap = brush.preview_snapshot()?;
-    let (target, delta_slot) =
-        brush_region_fields(&snap.op, snap.target_height_world, snap.delta_world, snap.strength)
-            .ok()?;
+    let (target, delta_slot) = brush_region_fields(
+        &snap.op,
+        snap.target_height_world,
+        snap.delta_world,
+        snap.strength,
+    )
+    .ok()?;
     let (target_world, delta_world, strength) =
         region_record_preview_params(&snap.op, target, delta_slot);
     Some(ProposalPreview {
@@ -156,9 +183,23 @@ fn brush_stroke_draft(
 }
 
 /// Preview the captured proposal at its hovered viewport position.
-fn palette_draft(tool:&ToolState,petal_id:&str,world_scale:f64,nav:&NavigationManager,map:&PetalMapState)->Option<ProposalPreview> {
-    let draft=tool.terrain.proposal_preview(nav,map,tool.active_tool)?;
-    Some(ProposalPreview{petal_id:petal_id.into(),op:proposal_op_snake(draft.op).into(),footprint:draft.footprint_world,target_m:world_to_meters(draft.target_world,world_scale),delta_m:world_to_meters(draft.delta_world,world_scale),strength:1.0,source:PreviewSource::PaletteOp})
+fn palette_draft(
+    tool: &ToolState,
+    petal_id: &str,
+    world_scale: f64,
+    nav: &NavigationManager,
+    map: &PetalMapState,
+) -> Option<ProposalPreview> {
+    let draft = tool.terrain.proposal_preview(nav, map, tool.active_tool)?;
+    Some(ProposalPreview {
+        petal_id: petal_id.into(),
+        op: proposal_op_snake(draft.op).into(),
+        footprint: draft.footprint_world,
+        target_m: world_to_meters(draft.target_world, world_scale),
+        delta_m: world_to_meters(draft.delta_world, world_scale),
+        strength: 1.0,
+        source: PreviewSource::PaletteOp,
+    })
 }
 
 /// Source (d): the selected committed proposal, for the readout only — shown
@@ -236,9 +277,20 @@ pub(crate) fn publish_proposal_preview(
     let world_scale = petal_map.world_scale;
 
     let draft = brush_stroke_draft(&brush, &petal_id, world_scale)
-        .or_else(|| sculpt_shape_draft(&sculpt, &tool_state, &petal_id, world_scale,&nav,&petal_map))
         .or_else(|| {
-            (!just_committed).then(||palette_draft(&tool_state,&petal_id,world_scale,&nav,&petal_map)).flatten()
+            sculpt_shape_draft(
+                &sculpt,
+                &tool_state,
+                &petal_id,
+                world_scale,
+                &nav,
+                &petal_map,
+            )
+        })
+        .or_else(|| {
+            (!just_committed)
+                .then(|| palette_draft(&tool_state, &petal_id, world_scale, &nav, &petal_map))
+                .flatten()
         })
         .or_else(|| selected_proposal_draft(&proposal_state, &petal_id, world_scale));
 
@@ -293,28 +345,63 @@ mod tests {
 
     fn arm_petal(app: &mut App, petal_id: &str) {
         {
-            let mut nav=app.world_mut().resource_mut::<NavigationManager>();
-            nav.active_verse_id=Some("v".into());nav.active_fractal_id=Some("f".into());nav.active_petal_id=Some(petal_id.into());
+            let mut nav = app.world_mut().resource_mut::<NavigationManager>();
+            nav.active_verse_id = Some("v".into());
+            nav.active_fractal_id = Some("f".into());
+            nav.active_petal_id = Some(petal_id.into());
         }
-        let mut map=app.world_mut().resource_mut::<PetalMapState>();
-        map.petal_id=Some(petal_id.into());map.loaded=true;map.terrain_json=Some(serde_json::json!({"enabled":true}));
+        let mut map = app.world_mut().resource_mut::<PetalMapState>();
+        map.petal_id = Some(petal_id.into());
+        map.loaded = true;
+        map.terrain_json = Some(serde_json::json!({"enabled":true}));
     }
 
-    fn arm_preview(app:&mut App,shape:bool) {
-        app.world_mut().resource_scope(|world,mut tool:Mut<ToolState>| {
-            let current=world.resource::<NavigationManager>();
-            let nav=NavigationManager{active_verse_id:current.active_verse_id.clone(),active_fractal_id:current.active_fractal_id.clone(),active_petal_id:current.active_petal_id.clone(),..Default::default()};
-            let map=world.resource::<PetalMapState>().clone();
-            let role=crate::plugin::LocalUserRole{role:Some(fe_database::RoleLevel::Editor)};
-            let active=tool.active_tool;
-            if shape {
-                assert!(tool.terrain.arm_shape(&nav,&map,&role,world.resource::<SculptToolState>(),active));
-            } else {
-                let panel=world.resource::<ToolPanelState>();
-                assert!(tool.terrain.arm_proposal(&nav,&map,&role,panel.terrain_tool_mode.to_proposal_op(),if panel.terrain_footprint_radius>0.0{panel.terrain_footprint_radius}else{5.0},panel.terrain_target_height,panel.terrain_delta,active));
-            }
-            tool.terrain.hover(Some([0.0,0.0]),&mut world.resource_mut::<SculptToolState>(),&map);
-        });
+    fn arm_preview(app: &mut App, shape: bool) {
+        app.world_mut()
+            .resource_scope(|world, mut tool: Mut<ToolState>| {
+                let current = world.resource::<NavigationManager>();
+                let nav = NavigationManager {
+                    active_verse_id: current.active_verse_id.clone(),
+                    active_fractal_id: current.active_fractal_id.clone(),
+                    active_petal_id: current.active_petal_id.clone(),
+                    ..Default::default()
+                };
+                let map = world.resource::<PetalMapState>().clone();
+                let role = crate::plugin::LocalUserRole {
+                    role: Some(fe_database::RoleLevel::Editor),
+                };
+                let active = tool.active_tool;
+                if shape {
+                    assert!(tool.terrain.arm_shape(
+                        &nav,
+                        &map,
+                        &role,
+                        world.resource::<SculptToolState>(),
+                        active
+                    ));
+                } else {
+                    let panel = world.resource::<ToolPanelState>();
+                    assert!(tool.terrain.arm_proposal(
+                        &nav,
+                        &map,
+                        &role,
+                        panel.terrain_tool_mode.to_proposal_op(),
+                        if panel.terrain_footprint_radius > 0.0 {
+                            panel.terrain_footprint_radius
+                        } else {
+                            5.0
+                        },
+                        panel.terrain_target_height,
+                        panel.terrain_delta,
+                        active
+                    ));
+                }
+                tool.terrain.hover(
+                    Some([0.0, 0.0]),
+                    &mut world.resource_mut::<SculptToolState>(),
+                    &map,
+                );
+            });
     }
 
     #[test]
@@ -330,7 +417,7 @@ mod tests {
             tool_panel.terrain_target_height = 5.0;
             tool_panel.terrain_delta = 2.0;
         }
-        arm_preview(&mut app,false);
+        arm_preview(&mut app, false);
         // Frame 1 settles the petal-entry baseline (the same
         // `Local<Option<String>>` "first frame initializes, doesn't act"
         // idiom `navigation_manager`'s own tests use); frame 2 is the one
@@ -380,7 +467,10 @@ mod tests {
         // 0.5) at full strength — previewing raw delta 1.0 would double it.
         let (target, delta_slot) = brush_region_fields("raise", None, Some(1.0), 0.5).unwrap();
         assert_eq!((target, delta_slot), (None, Some(0.5)));
-        assert_eq!(preview.delta_m, 0.5, "preview delta = the committed delta slot");
+        assert_eq!(
+            preview.delta_m, 0.5,
+            "preview delta = the committed delta slot"
+        );
         assert_eq!(preview.strength, 1.0, "Raise records bake at full strength");
     }
 
@@ -402,7 +492,7 @@ mod tests {
             sculpt.target_height = 4.0;
             sculpt.strength = 0.5;
         }
-        arm_preview(&mut app,true);
+        arm_preview(&mut app, true);
         app.update();
         app.update();
 
@@ -417,9 +507,15 @@ mod tests {
             .into_iter()
             .map(|[x, z]| [x * 2.0, z * 2.0])
             .collect();
-        assert_eq!(preview.footprint, committed_world, "world-unit footprint, as committed");
+        assert_eq!(
+            preview.footprint, committed_world,
+            "world-unit footprint, as committed"
+        );
         assert_eq!(preview.target_m, 4.0, "seam target stays meters");
-        assert_eq!(preview.strength, 1.0, "a committed shape region bakes at full strength");
+        assert_eq!(
+            preview.strength, 1.0,
+            "a committed shape region bakes at full strength"
+        );
     }
 
     #[test]
@@ -429,7 +525,7 @@ mod tests {
         app.world_mut()
             .resource_mut::<RightSidebarState>()
             .reveal(RightSidebarSection::TerrainTools);
-        arm_preview(&mut app,false);
+        arm_preview(&mut app, false);
         app.update();
         app.update();
         assert!(
@@ -452,7 +548,7 @@ mod tests {
         app.world_mut()
             .resource_mut::<RightSidebarState>()
             .reveal(RightSidebarSection::TerrainTools);
-        arm_preview(&mut app,false);
+        arm_preview(&mut app, false);
         app.update();
         assert!(app.world().get_resource::<ProposalPreview>().is_some());
         app.world_mut()
@@ -472,7 +568,7 @@ mod tests {
         app.world_mut()
             .resource_mut::<RightSidebarState>()
             .reveal(RightSidebarSection::TerrainTools);
-        arm_preview(&mut app,false);
+        arm_preview(&mut app, false);
         app.update();
         app.update();
         assert!(app.world().get_resource::<ProposalPreview>().is_some());

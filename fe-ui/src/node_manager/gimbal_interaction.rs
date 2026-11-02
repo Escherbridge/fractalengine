@@ -66,7 +66,14 @@ pub(super) fn update_hovered_axis(
         return;
     };
 
-    manager.hovered_axis = pick_axis_constrained(tool.active_tool, cursor, center_3d, camera, cam_tx, tool.snap.axis);
+    manager.hovered_axis = pick_axis_constrained(
+        tool.active_tool,
+        cursor,
+        center_3d,
+        camera,
+        cam_tx,
+        tool.snap.axis,
+    );
 }
 
 /// Shared axis picking logic for both hover and click. `pub(super)` so the FR-3
@@ -79,7 +86,14 @@ pub(super) fn pick_axis(
     camera: &Camera,
     cam_tx: &GlobalTransform,
 ) -> Option<GimbalAxis> {
-    pick_axis_constrained(tool, cursor, center_3d, camera, cam_tx, super::TransformAxisLock::Any)
+    pick_axis_constrained(
+        tool,
+        cursor,
+        center_3d,
+        camera,
+        cam_tx,
+        super::TransformAxisLock::Any,
+    )
 }
 
 fn pick_axis_constrained(
@@ -97,7 +111,9 @@ fn pick_axis_constrained(
     let mut best: Option<(GimbalAxis, f32)> = None;
 
     for axis in [GimbalAxis::X, GimbalAxis::Y, GimbalAxis::Z] {
-        if !axis_lock.allows(axis) { continue; }
+        if !axis_lock.allows(axis) {
+            continue;
+        }
         let dist = if tool == Tool::Rotate {
             // For rotation: check distance to the projected ring
             ring_screen_distance(cursor, center_3d, axis_vec(axis), camera, cam_tx)
@@ -223,7 +239,9 @@ pub(super) fn handle_gimbal_interaction(
     // Apply active drag
     if mouse_button.pressed(MouseButton::Left) {
         if let Some(ref drag) = sel.drag {
-            if !tool.snap.axis.allows(drag.axis) { return; }
+            if !tool.snap.axis.allows(drag.axis) {
+                return;
+            }
             let Some(cursor_pos) = cursor else { return };
             let Ok((mut transform, g_tx)) = transform_query.get_mut(entity) else {
                 return;
@@ -238,12 +256,28 @@ pub(super) fn handle_gimbal_interaction(
                         .length()
                         .max(0.5)
                         * 0.002;
-                    let world_scale=petal_map.as_ref().filter(|map|map.loaded).map_or(f64::NAN,|map|super::measure::measure_world_scale(map,nav.as_ref().and_then(|nav|nav.active_petal_id.as_deref())));
-                    transform.translation = tool.snap.move_position(drag.start_pos, drag.axis, movement * scale_factor, world_scale);
+                    let world_scale =
+                        petal_map
+                            .as_ref()
+                            .filter(|map| map.loaded)
+                            .map_or(f64::NAN, |map| {
+                                super::measure::measure_world_scale(
+                                    map,
+                                    nav.as_ref().and_then(|nav| nav.active_petal_id.as_deref()),
+                                )
+                            });
+                    transform.translation = tool.snap.move_position(
+                        drag.start_pos,
+                        drag.axis,
+                        movement * scale_factor,
+                        world_scale,
+                    );
                 }
                 Tool::Scale => {
                     let movement = (cursor_pos - drag.start_cursor).dot(drag.axis_screen_dir);
-                    transform.scale = tool.snap.scale_value(drag.start_scale, drag.axis, 1.0 + movement * 0.005);
+                    transform.scale =
+                        tool.snap
+                            .scale_value(drag.start_scale, drag.axis, 1.0 + movement * 0.005);
                 }
                 Tool::Rotate => {
                     // Use perpendicular screen direction for intuitive rotation:
@@ -251,7 +285,8 @@ pub(super) fn handle_gimbal_interaction(
                     let tangent = Vec2::new(-drag.axis_screen_dir.y, drag.axis_screen_dir.x);
                     let movement = (cursor_pos - drag.start_cursor).dot(tangent);
                     transform.rotation =
-                        Quat::from_axis_angle(axis_dir, tool.snap.rotation_angle(movement * 0.01)) * drag.start_rot;
+                        Quat::from_axis_angle(axis_dir, tool.snap.rotation_angle(movement * 0.01))
+                            * drag.start_rot;
                 }
                 // Pen is a path-drawing mode, not a transform gizmo — no drag.
                 Tool::Select | Tool::Pen | Tool::Brush | Tool::Measure => {}
@@ -273,7 +308,14 @@ pub(super) fn handle_gimbal_interaction(
             return;
         };
 
-        if let Some(axis) = pick_axis_constrained(tool.active_tool, cursor_pos, center_3d, camera, cam_tx, tool.snap.axis) {
+        if let Some(axis) = pick_axis_constrained(
+            tool.active_tool,
+            cursor_pos,
+            center_3d,
+            camera,
+            cam_tx,
+            tool.snap.axis,
+        ) {
             // Route the begin-drag decision through the FR-2 table (no-bypass):
             // an entity-backed selection begins an entity gimbal drag only in
             // the transform tools. The Select/Pen early-return above already

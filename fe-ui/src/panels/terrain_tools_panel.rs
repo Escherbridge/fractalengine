@@ -113,11 +113,11 @@ pub(crate) fn render_controls_and_emit(
     tool_panel: &mut ToolPanelState,
     _ui_mgr: &mut UiManager,
     world_scale: f64,
-    authoring:&mut crate::node_manager::TerrainAuthoringState,
-    active_tool:crate::panels::toolbar::Tool,
-    nav:&crate::navigation_manager::NavigationManager,
-    map:&crate::terrain_map::PetalMapState,
-    role:&crate::plugin::LocalUserRole,
+    authoring: &mut crate::node_manager::TerrainAuthoringState,
+    active_tool: crate::panels::toolbar::Tool,
+    nav: &crate::navigation_manager::NavigationManager,
+    map: &crate::terrain_map::PetalMapState,
+    role: &crate::plugin::LocalUserRole,
 ) {
     tool_panel.sanitize_numeric_state();
     render_world_scale_chip(ui, world_scale);
@@ -193,16 +193,52 @@ pub(crate) fn render_controls_and_emit(
     });
     ui.add_space(4.0);
 
-    let can_place=role.can_edit()&&map.loaded&&nav.active_verse_id.is_some()&&nav.active_fractal_id.is_some()&&nav.active_petal_id.as_deref().is_some_and(|id|crate::actions::terrain_proposal::petal_map_enabled(map,id));
-    if ui.add_enabled(can_place&&!authoring.is_active(),egui::Button::new(format!("Place {} proposal",tool_panel.terrain_tool_mode.label())))
-        .named(ui,"Arm terrain proposal placement").on_hover_text(PROPOSAL_ONLY_DISCLOSURE).clicked() {
-        authoring.arm_proposal(nav,map,role,tool_panel.terrain_tool_mode.to_proposal_op(),tool_panel.terrain_footprint_radius,tool_panel.terrain_target_height,tool_panel.terrain_delta,active_tool);
+    let can_place = role.can_edit()
+        && map.loaded
+        && nav.active_verse_id.is_some()
+        && nav.active_fractal_id.is_some()
+        && nav
+            .active_petal_id
+            .as_deref()
+            .is_some_and(|id| crate::actions::terrain_proposal::petal_map_enabled(map, id));
+    if ui
+        .add_enabled(
+            can_place && !authoring.is_active(),
+            egui::Button::new(format!(
+                "Place {} proposal",
+                tool_panel.terrain_tool_mode.label()
+            )),
+        )
+        .named(ui, "Arm terrain proposal placement")
+        .on_hover_text(PROPOSAL_ONLY_DISCLOSURE)
+        .clicked()
+    {
+        authoring.arm_proposal(
+            nav,
+            map,
+            role,
+            tool_panel.terrain_tool_mode.to_proposal_op(),
+            tool_panel.terrain_footprint_radius,
+            tool_panel.terrain_target_height,
+            tool_panel.terrain_delta,
+            active_tool,
+        );
     }
-    if let Some(op)=authoring.armed_proposal_op(){
-        ui.label(format!("Captured {op:?} proposal: click the viewport to place it. Escape cancels."));
-        if ui.button("Cancel placement").named(ui,"Cancel terrain proposal placement").clicked(){authoring.cancel();}
+    if let Some(op) = authoring.armed_proposal_op() {
+        ui.label(format!(
+            "Captured {op:?} proposal: click the viewport to place it. Escape cancels."
+        ));
+        if ui
+            .button("Cancel placement")
+            .named(ui, "Cancel terrain proposal placement")
+            .clicked()
+        {
+            authoring.cancel();
+        }
     }
-    if !can_place {ui.label("Editor access and an enabled, loaded map in the active Petal are required.");}
+    if !can_place {
+        ui.label("Editor access and an enabled, loaded map in the active Petal are required.");
+    }
     ui.add_space(2.0);
     ui.label(
         egui::RichText::new(PROPOSAL_ONLY_DISCLOSURE)
@@ -507,7 +543,9 @@ mod tests {
         assert!(scaled.contains("m³") && !scaled.contains("wu"), "{scaled}");
         let unscaled = preview_readout_text(&report(false));
         assert!(
-            !unscaled.contains("m³") && unscaled.contains("wu³") && unscaled.contains("no map scale"),
+            !unscaled.contains("m³")
+                && unscaled.contains("wu³")
+                && unscaled.contains("no map scale"),
             "{unscaled}"
         );
     }
