@@ -29,6 +29,10 @@ pub struct MockHostEnv {
     pub scene_changes: Vec<SceneChange>,
     /// In-memory backend implementing the `fe-sdk` storage + query traits.
     pub storage: MockStorage,
+    /// Batches that were applied completely, in commit order.
+    pub transactions: Vec<Vec<fe_sdk::plugin_host::PendingOp>>,
+    /// Optional full stored ancestry overrides for scope-denial journeys.
+    pub petal_scopes: HashMap<String, String>,
 }
 
 impl MockHostEnv {
@@ -40,6 +44,8 @@ impl MockHostEnv {
             spy: SpyRecorder::new(),
             scene_changes: Vec::new(),
             storage: MockStorage::new(),
+            transactions: Vec::new(),
+            petal_scopes: HashMap::new(),
         }
     }
 
@@ -72,6 +78,129 @@ impl MockHostEnv {
     /// Get accumulated scene changes.
     pub fn scene_changes(&self) -> &[SceneChange] {
         &self.scene_changes
+    }
+}
+
+impl fe_sdk::plugin_host::NodeReader for MockHostEnv {
+    fn petal_scope(&self, petal_id: &str) -> Result<String, String> {
+        Ok(self
+            .petal_scopes
+            .get(petal_id)
+            .cloned()
+            .unwrap_or_else(|| format!("VERSE#mock-FRACTAL#mock-PETAL#{petal_id}")))
+    }
+
+    fn get_node(&self, petal_id: &str, node_id: &str) -> Result<Option<NodeSnapshot>, String> {
+        Ok(self
+            .nodes
+            .get(node_id)
+            .filter(|node| node.petal_id == petal_id)
+            .cloned())
+    }
+
+    fn query_nodes(
+        &self,
+        petal_id: &str,
+        query: &fe_sdk::plugin_host::NodeQuery,
+    ) -> Result<Vec<NodeSnapshot>, String> {
+        query.validate()?;
+        let mut nodes: Vec<_> = self
+            .nodes
+            .values()
+            .filter(|node| node.petal_id == petal_id && query.matches(node))
+            .cloned()
+            .collect();
+        nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        nodes.truncate(query.limit);
+        Ok(nodes)
+    }
+}
+
+impl fe_sdk::plugin_host::TransactionSink for MockHostEnv {
+    fn commit(
+        &mut self,
+        petal_id: &str,
+        ops: &[fe_sdk::plugin_host::PendingOp],
+    ) -> Result<fe_sdk::plugin_host::TransactionReceipt, String> {
+        use fe_sdk::plugin_host::{json_property, PendingOp, TransactionReceipt};
+        fe_sdk::plugin_host::validate_transaction(ops)?;
+        let mut staged = self.clone();
+        let mut created_node_ids = Vec::new();
+        for op in ops {
+            match op {
+                PendingOp::SetProperty {
+                    node_id,
+                    key,
+                    value,
+                } => {
+                    let node = staged
+                        .nodes
+                        .get_mut(node_id)
+                        .filter(|node| node.petal_id == petal_id)
+                        .ok_or("node not found or not permitted")?;
+                    node.properties
+                        .insert(key.clone(), json_property(value.clone()));
+                    staged.properties.insert(
+                        (node_id.clone(), key.clone()),
+                        value
+                            .as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| value.to_string()),
+                    );
+                    staged.scene_changes.push(SceneChange::PropertyChanged {
+                        node_id: node_id.clone(),
+                        key: key.clone(),
+                        value: json_property(value.clone()),
+                    });
+                }
+                PendingOp::CreateNode {
+                    petal_id: target,
+                    name,
+                } => {
+                    if target != petal_id {
+                        return Err("node creation targets another petal".into());
+                    }
+                    let node_id = ulid::Ulid::new().to_string();
+                    staged.nodes.insert(
+                        node_id.clone(),
+                        NodeSnapshot {
+                            node_id: node_id.clone(),
+                            petal_id: target.clone(),
+                            name: name.clone(),
+                            position: [0.0; 3],
+                            rotation: [0.0, 0.0, 0.0, 1.0],
+                            scale: [1.0; 3],
+                            properties: HashMap::new(),
+                        },
+                    );
+                    staged.scene_changes.push(SceneChange::NodeAdded {
+                        node_id: node_id.clone(),
+                        petal_id: target.clone(),
+                        name: name.clone(),
+                    });
+                    created_node_ids.push(node_id);
+                }
+                PendingOp::DeleteNode { node_id } => {
+                    let node = staged
+                        .nodes
+                        .get(node_id)
+                        .filter(|node| node.petal_id == petal_id)
+                        .ok_or("node not found or not permitted")?;
+                    let _ = node;
+                    staged.nodes.remove(node_id);
+                    staged.properties.retain(|(id, _), _| id != node_id);
+                    staged.scene_changes.push(SceneChange::NodeRemoved {
+                        node_id: node_id.clone(),
+                    });
+                }
+            }
+        }
+        staged.transactions.push(ops.to_vec());
+        *self = staged;
+        Ok(TransactionReceipt {
+            op_count: ops.len(),
+            created_node_ids,
+        })
     }
 }
 

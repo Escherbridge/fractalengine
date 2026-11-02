@@ -49,121 +49,135 @@ impl RhaiTestRunner {
             }
         });
 
-        // ---- get_node(id: String) -> Map ----
-        {
-            let h = host.clone();
-            engine.register_fn("get_node", move |id: &str| -> Dynamic {
-                let mut host = h.lock().unwrap();
-                host.spy.get_node_calls.push(id.to_string());
-
-                if let Some(snapshot) = host.nodes.get(id) {
-                    snapshot_to_dynamic(snapshot)
-                } else {
-                    Dynamic::UNIT
-                }
-            });
-        }
-
-        // ---- set_property(node_id: String, key: String, value: String) ----
         {
             let h = host.clone();
             engine.register_fn(
-                "set_property",
-                move |node_id: &str, key: &str, value: &str| {
-                    let mut host = h.lock().unwrap();
-                    host.spy.set_property_calls.push((
-                        node_id.to_string(),
-                        key.to_string(),
-                        value.to_string(),
-                    ));
-                    host.properties
-                        .insert((node_id.to_string(), key.to_string()), value.to_string());
-                    host.scene_changes.push(SceneChange::PropertyChanged {
-                        node_id: node_id.to_string(),
-                        key: key.to_string(),
-                        value: PropertyValue::String(value.to_string()),
-                    });
-                },
-            );
-        }
-
-        // ---- set_property overload for Dynamic values ----
-        {
-            let h = host.clone();
-            engine.register_fn(
-                "set_property",
-                move |node_id: &str, key: &str, value: Dynamic| {
-                    let value_str = if let Ok(s) = value.clone().into_string() {
-                        s
-                    } else {
-                        format!("{value}")
+                "get_node",
+                move |id: &str| -> Result<Dynamic, Box<EvalAltResult>> {
+                    let mut host = h
+                        .lock()
+                        .map_err(|_| to_script_error("mock host lock poisoned"))?;
+                    host.spy.get_node_calls.push(id.into());
+                    let petal = host.nodes.get(id).map(|node| node.petal_id.clone());
+                    let node = match petal {
+                        Some(petal) => {
+                            fe_sdk::plugin_host::NodeReader::get_node(&*host, &petal, id)
+                                .map_err(to_script_error)?
+                        }
+                        None => None,
                     };
-                    let mut host = h.lock().unwrap();
-                    host.spy.set_property_calls.push((
-                        node_id.to_string(),
-                        key.to_string(),
-                        value_str.clone(),
-                    ));
-                    host.properties
-                        .insert((node_id.to_string(), key.to_string()), value_str.clone());
-                    host.scene_changes.push(SceneChange::PropertyChanged {
-                        node_id: node_id.to_string(),
-                        key: key.to_string(),
-                        value: PropertyValue::String(value_str),
-                    });
+                    Ok(node
+                        .as_ref()
+                        .map(snapshot_to_dynamic)
+                        .unwrap_or(Dynamic::UNIT))
                 },
             );
         }
-
-        // ---- create_node(petal_id: String, name: String) -> String ----
-        {
-            let h = host.clone();
-            engine.register_fn("create_node", move |petal_id: &str, name: &str| -> String {
-                let node_id = ulid::Ulid::new().to_string();
-                let mut host = h.lock().unwrap();
-                host.spy
-                    .create_node_calls
-                    .push((petal_id.to_string(), name.to_string()));
-
-                let snapshot = NodeSnapshot {
-                    node_id: node_id.clone(),
-                    petal_id: petal_id.to_string(),
-                    name: name.to_string(),
-                    position: [0.0, 0.0, 0.0],
-                    rotation: [0.0, 0.0, 0.0, 1.0],
-                    scale: [1.0, 1.0, 1.0],
-                    properties: HashMap::new(),
-                };
-                host.nodes.insert(node_id.clone(), snapshot);
-
-                host.scene_changes.push(SceneChange::NodeAdded {
-                    node_id: node_id.clone(),
-                    petal_id: petal_id.to_string(),
-                    name: name.to_string(),
-                });
-
-                node_id
-            });
-        }
-
-        // ---- query_nodes(petal_id: String, filter: String) -> Array ----
         {
             let h = host.clone();
             engine.register_fn(
                 "query_nodes",
-                move |petal_id: &str, filter: &str| -> rhai::Array {
-                    let mut host = h.lock().unwrap();
-                    host.spy
-                        .query_calls
-                        .push((petal_id.to_string(), filter.to_string()));
-
-                    let matching: Vec<Dynamic> = host
+                move |petal_id: &str, filter: &str| -> Result<rhai::Array, Box<EvalAltResult>> {
+                    let query =
+                        fe_sdk::plugin_host::NodeQuery::parse(filter).map_err(to_script_error)?;
+                    let mut host = h
+                        .lock()
+                        .map_err(|_| to_script_error("mock host lock poisoned"))?;
+                    host.spy.query_calls.push((petal_id.into(), filter.into()));
+                    Ok(
+                        fe_sdk::plugin_host::NodeReader::query_nodes(&*host, petal_id, &query)
+                            .map_err(to_script_error)?
+                            .iter()
+                            .map(snapshot_to_dynamic)
+                            .collect(),
+                    )
+                },
+            );
+        }
+        {
+            let h = host.clone();
+            engine.register_fn(
+                "set_property",
+                move |node_id: &str, key: &str, value: Dynamic| -> Result<(), Box<EvalAltResult>> {
+                    let value = dynamic_to_json(&value);
+                    let mut host = h
+                        .lock()
+                        .map_err(|_| to_script_error("mock host lock poisoned"))?;
+                    let petal = host
                         .nodes
-                        .values()
-                        .filter(|n| n.petal_id == petal_id)
-                        .map(snapshot_to_dynamic)
-                        .collect();
-                    matching
+                        .get(node_id)
+                        .ok_or_else(|| to_script_error("node not found"))?
+                        .petal_id
+                        .clone();
+                    fe_sdk::plugin_host::TransactionSink::commit(
+                        &mut *host,
+                        &petal,
+                        &[fe_sdk::plugin_host::PendingOp::SetProperty {
+                            node_id: node_id.into(),
+                            key: key.into(),
+                            value: value.clone(),
+                        }],
+                    )
+                    .map_err(to_script_error)?;
+                    host.spy.set_property_calls.push((
+                        node_id.into(),
+                        key.into(),
+                        value
+                            .as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| value.to_string()),
+                    ));
+                    Ok(())
+                },
+            );
+        }
+        {
+            let h = host.clone();
+            engine.register_fn(
+                "create_node",
+                move |petal_id: &str, name: &str| -> Result<String, Box<EvalAltResult>> {
+                    let mut host = h
+                        .lock()
+                        .map_err(|_| to_script_error("mock host lock poisoned"))?;
+                    let receipt = fe_sdk::plugin_host::TransactionSink::commit(
+                        &mut *host,
+                        petal_id,
+                        &[fe_sdk::plugin_host::PendingOp::CreateNode {
+                            petal_id: petal_id.into(),
+                            name: name.into(),
+                        }],
+                    )
+                    .map_err(to_script_error)?;
+                    host.spy
+                        .create_node_calls
+                        .push((petal_id.into(), name.into()));
+                    receipt
+                        .created_node_ids
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| to_script_error("creation has no ID"))
+                },
+            );
+        }
+        {
+            let h = host.clone();
+            engine.register_fn(
+                "commit_transaction",
+                move |petal_id: &str, encoded: &str| -> Result<Dynamic, Box<EvalAltResult>> {
+                    if encoded.len() > fe_sdk::plugin_host::MAX_HOST_BYTES {
+                        return Err(to_script_error("plugin transaction exceeds byte limit"));
+                    }
+                    let ops: Vec<fe_sdk::plugin_host::PendingOp> =
+                        serde_json::from_str(encoded).map_err(to_script_error)?;
+                    let mut host = h
+                        .lock()
+                        .map_err(|_| to_script_error("mock host lock poisoned"))?;
+                    let receipt =
+                        fe_sdk::plugin_host::TransactionSink::commit(&mut *host, petal_id, &ops)
+                            .map_err(to_script_error)?;
+                    Ok(json_to_dynamic(
+                        &serde_json::to_value(receipt).map_err(to_script_error)?,
+                    ))
                 },
             );
         }
@@ -316,25 +330,7 @@ impl RhaiTestRunner {
 
 /// Convert a [`NodeSnapshot`] into a Rhai [`Dynamic`] map.
 fn snapshot_to_dynamic(snapshot: &NodeSnapshot) -> Dynamic {
-    let mut map = Map::new();
-    map.insert("node_id".into(), Dynamic::from(snapshot.node_id.clone()));
-    map.insert("petal_id".into(), Dynamic::from(snapshot.petal_id.clone()));
-    map.insert("name".into(), Dynamic::from(snapshot.name.clone()));
-
-    // Properties as a nested map
-    let mut props = Map::new();
-    for (k, v) in &snapshot.properties {
-        let dyn_val = match v {
-            PropertyValue::String(s) => Dynamic::from(s.clone()),
-            PropertyValue::Number(n) => Dynamic::from(*n),
-            PropertyValue::Bool(b) => Dynamic::from(*b),
-            PropertyValue::Json(j) => Dynamic::from(j.to_string()),
-        };
-        props.insert(k.clone().into(), dyn_val);
-    }
-    map.insert("properties".into(), Dynamic::from(props));
-
-    Dynamic::from(map)
+    json_to_dynamic(&fe_sdk::plugin_host::snapshot_json(snapshot))
 }
 
 /// Wrap a storage/query error as a Rhai runtime error surfaced to the script.
@@ -474,7 +470,7 @@ mod tests {
         );
 
         let runner = RhaiTestRunner::new(host);
-        runner.eval_script(r#"let node = get_node("n1");"#).unwrap();
+        runner.eval_script(r#"let node = get_node("n1"); assert(node.name == "Test Node"); assert(node.position[0] == 0.0);"#).unwrap();
 
         let host = runner.host();
         assert!(host.spy().was_called("get_node"));
@@ -483,7 +479,19 @@ mod tests {
 
     #[test]
     fn set_property_records_and_stores() {
-        let host = MockHostEnv::new();
+        let mut host = MockHostEnv::new();
+        host.insert_node(
+            "n1",
+            NodeSnapshot {
+                node_id: "n1".into(),
+                petal_id: "p1".into(),
+                name: "one".into(),
+                position: [0.0; 3],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0; 3],
+                properties: HashMap::new(),
+            },
+        );
         let runner = RhaiTestRunner::new(host);
 
         runner
@@ -495,6 +503,16 @@ mod tests {
         assert_eq!(
             host.properties.get(&("n1".into(), "color".into())),
             Some(&"red".to_string())
+        );
+        assert_eq!(host.transactions.len(), 1);
+        runner.eval_script(r#"let receipt = commit_transaction("p1", `[{"SetProperty":{"node_id":"n1","key":"calibration","value":{"gain":2,"values":[1,2]}}},{"CreateNode":{"petal_id":"p1","name":"created"}}]`); assert(receipt.op_count == 2); assert(get_node("n1").properties.calibration.gain == 2);"#).unwrap();
+        let before = runner.host();
+        assert!(runner.eval_script(r#"commit_transaction("p1", `[{"SetProperty":{"node_id":"n1","key":"color","value":"wrong"}},{"DeleteNode":{"node_id":"absent"}}]`);"#).is_err());
+        let after = runner.host();
+        assert_eq!(before.transactions.len(), after.transactions.len());
+        assert_eq!(
+            before.properties, after.properties,
+            "failed batch must leave earlier writes unapplied"
         );
     }
 
@@ -552,6 +570,13 @@ mod tests {
         let host = runner.host();
         assert!(host.spy().was_called("query_nodes"));
         assert_eq!(host.spy().query_calls[0].0, "sensor_petal");
+        runner.eval_script(r#"let nodes = query_nodes("sensor_petal", `{"name":"Sensor 1","limit":1}`); assert(nodes.len() == 1); assert(nodes[0].name == "Sensor 1");"#).unwrap();
+        assert!(runner
+            .eval_script(r#"query_nodes("sensor_petal", `{"sql":"DELETE node"}`);"#)
+            .is_err());
+        assert!(runner
+            .eval_script(r#"query_nodes("sensor_petal", `{"limit":201}`);"#)
+            .is_err());
     }
 
     #[test]

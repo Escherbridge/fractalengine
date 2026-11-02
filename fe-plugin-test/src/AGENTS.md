@@ -57,3 +57,15 @@ The canonical compile-checked walkthrough lives as the doctest in `lib.rs`
 (kept there deliberately — `cargo test --doc` keeps it honest). Shape:
 fixture → `to_mock_host()` → `RhaiTestRunner::new(host)` → `eval_script(..)` →
 assert via `assertions::*` against `runner.host()`.
+
+
+## Shared scene host contracts
+
+MockHostEnv implements the SDK NodeReader and TransactionSink, keeping this crate
+engine-free. Its sink stages a clone, validates and applies every operation, then
+swaps it into place and records the committed batch. A failed operation leaves
+nodes, properties, scene changes and committed-batch records untouched. Node
+queries evaluate the same structured predicates and sort by node ID before
+limiting. The Rhai runner routes scene reads/writes through these contracts.
+This is an in-memory behavioral model, not evidence of production persistence
+or replication. SDK storage/query mocks remain separate backends.

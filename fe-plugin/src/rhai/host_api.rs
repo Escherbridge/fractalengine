@@ -9,82 +9,134 @@ use std::sync::{Arc, Mutex};
 use rhai::{Dynamic, Engine, Map};
 
 use crate::context::PluginContext;
-use crate::PluginCommand;
 
 /// Register all host API functions into a Rhai [`Engine`].
 ///
 /// The `ctx` is wrapped in `Arc<Mutex<>>` so the closures can share it.
 pub fn register_host_api(engine: &mut Engine, ctx: Arc<Mutex<PluginContext>>) {
-    // ---- get_node(id: String) -> Map ----
-    {
-        let ctx = ctx.clone();
-        engine.register_fn("get_node", move |id: &str| -> Dynamic {
-            let ctx = ctx.lock().unwrap();
-            let _ = ctx.send_command(PluginCommand::GetNode {
-                plugin_id: ctx.plugin_id().to_string(),
-                node_id: id.to_string(),
-            });
-            // In Phase 9A.1 we return a placeholder map. Phase 9A.2 will add
-            // a request-reply pattern through the command channel.
-            let mut map = Map::new();
-            map.insert("node_id".into(), Dynamic::from(id.to_string()));
-            map.insert("name".into(), Dynamic::from(String::new()));
-            map.insert("properties".into(), Dynamic::from(Map::new()));
-            Dynamic::from(map)
-        });
-    }
-
-    // ---- set_property(node_id: String, key: String, value: Dynamic) ----
     {
         let ctx = ctx.clone();
         engine.register_fn(
-            "set_property",
-            move |node_id: &str, key: &str, value: Dynamic| {
-                let ctx = ctx.lock().unwrap();
-                let json_value = dynamic_to_json(&value);
-                let _ = ctx.send_command(PluginCommand::SetProperty {
-                    plugin_id: ctx.plugin_id().to_string(),
-                    node_id: node_id.to_string(),
-                    key: key.to_string(),
-                    value: json_value,
-                });
+            "get_node",
+            move |id: &str| -> Result<Dynamic, Box<rhai::EvalAltResult>> {
+                let ctx = ctx
+                    .lock()
+                    .map_err(|_| script_error("plugin context lock poisoned"))?;
+                let node = ctx.get_node(id).map_err(script_error)?;
+                Ok(node
+                    .map(|node| {
+                        super::storage_api::json_to_dynamic(&fe_sdk::plugin_host::snapshot_json(
+                            &node,
+                        ))
+                    })
+                    .unwrap_or(Dynamic::UNIT))
             },
         );
     }
-
-    // ---- query_nodes(petal_id: String, filter: String) -> Array ----
     {
         let ctx = ctx.clone();
         engine.register_fn(
             "query_nodes",
-            move |petal_id: &str, _filter: &str| -> rhai::Array {
-                let ctx = ctx.lock().unwrap();
-                let _ = ctx.send_command(PluginCommand::QueryNodes {
-                    plugin_id: ctx.plugin_id().to_string(),
-                    petal_id: petal_id.to_string(),
-                });
-                // Placeholder: return empty array. Phase 9A.2 adds request-reply.
-                rhai::Array::new()
+            move |petal_id: &str, filter: &str| -> Result<rhai::Array, Box<rhai::EvalAltResult>> {
+                let query = fe_sdk::plugin_host::NodeQuery::parse(filter).map_err(script_error)?;
+                let ctx = ctx
+                    .lock()
+                    .map_err(|_| script_error("plugin context lock poisoned"))?;
+                let nodes = ctx.query_nodes(petal_id, &query).map_err(script_error)?;
+                Ok(nodes
+                    .iter()
+                    .map(|node| {
+                        super::storage_api::json_to_dynamic(&fe_sdk::plugin_host::snapshot_json(
+                            node,
+                        ))
+                    })
+                    .collect())
+            },
+        );
+    }
+    {
+        let ctx = ctx.clone();
+        engine.register_fn(
+            "set_property",
+            move |node_id: &str,
+                  key: &str,
+                  value: Dynamic|
+                  -> Result<(), Box<rhai::EvalAltResult>> {
+                let ctx = ctx
+                    .lock()
+                    .map_err(|_| script_error("plugin context lock poisoned"))?;
+                ctx.commit_ops(&[fe_sdk::plugin_host::PendingOp::SetProperty {
+                    node_id: node_id.into(),
+                    key: key.into(),
+                    value: dynamic_to_json(&value),
+                }])
+                .map_err(script_error)?;
+                Ok(())
+            },
+        );
+    }
+    {
+        let ctx = ctx.clone();
+        engine.register_fn(
+            "create_node",
+            move |petal_id: &str, name: &str| -> Result<String, Box<rhai::EvalAltResult>> {
+                let ctx = ctx
+                    .lock()
+                    .map_err(|_| script_error("plugin context lock poisoned"))?;
+                let receipt = ctx
+                    .commit_ops(&[fe_sdk::plugin_host::PendingOp::CreateNode {
+                        petal_id: petal_id.into(),
+                        name: name.into(),
+                    }])
+                    .map_err(script_error)?;
+                receipt
+                    .created_node_ids
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| script_error("committed creation has no node ID"))
+            },
+        );
+    }
+    {
+        let ctx = ctx.clone();
+        engine.register_fn(
+            "delete_node",
+            move |node_id: &str| -> Result<(), Box<rhai::EvalAltResult>> {
+                let ctx = ctx
+                    .lock()
+                    .map_err(|_| script_error("plugin context lock poisoned"))?;
+                ctx.commit_ops(&[fe_sdk::plugin_host::PendingOp::DeleteNode {
+                    node_id: node_id.into(),
+                }])
+                .map_err(script_error)?;
+                Ok(())
             },
         );
     }
 
-    // ---- create_node(petal_id: String, name: String) -> String ----
     {
         let ctx = ctx.clone();
-        engine.register_fn("create_node", move |petal_id: &str, name: &str| -> String {
-            let ctx = ctx.lock().unwrap();
-            let node_id = ulid::Ulid::new().to_string();
-            let _ = ctx.send_command(PluginCommand::CreateNode {
-                plugin_id: ctx.plugin_id().to_string(),
-                petal_id: petal_id.to_string(),
-                name: name.to_string(),
-                provisional_id: node_id.clone(),
-            });
-            node_id
-        });
+        engine.register_fn(
+            "commit_transaction",
+            move |petal_id: &str, encoded: &str| -> Result<Dynamic, Box<rhai::EvalAltResult>> {
+                if encoded.len() > fe_sdk::plugin_host::MAX_HOST_BYTES {
+                    return Err(script_error("plugin transaction exceeds byte limit"));
+                }
+                let ops: Vec<fe_sdk::plugin_host::PendingOp> =
+                    serde_json::from_str(encoded).map_err(script_error)?;
+                let ctx = ctx
+                    .lock()
+                    .map_err(|_| script_error("plugin context lock poisoned"))?;
+                if petal_id != ctx.petal_id() {
+                    return Err(script_error("plugin transaction targets another petal"));
+                }
+                let receipt = ctx.commit_ops(&ops).map_err(script_error)?;
+                Ok(super::storage_api::json_to_dynamic(
+                    &serde_json::to_value(receipt).map_err(script_error)?,
+                ))
+            },
+        );
     }
-
     // ---- Logging functions ----
     {
         let ctx_debug = ctx.clone();
@@ -143,4 +195,12 @@ pub(crate) fn dynamic_to_json(value: &Dynamic) -> serde_json::Value {
     } else {
         serde_json::Value::Null
     }
+}
+
+fn script_error(error: impl std::fmt::Display) -> Box<rhai::EvalAltResult> {
+    tracing::warn!(error=%error,"plugin scene host call failed");
+    Box::new(rhai::EvalAltResult::ErrorRuntime(
+        Dynamic::from(error.to_string()),
+        rhai::Position::NONE,
+    ))
 }

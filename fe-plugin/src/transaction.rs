@@ -1,33 +1,6 @@
-//! Plugin transaction — batches multiple operations into a single atomic commit.
-//!
-//! A [`PluginTransaction`] collects [`PendingOp`]s and sends them through the
-//! crossbeam channel on [`commit()`](PluginTransaction::commit). The host
-//! applies them to the DB thread with the originating plugin_id for attribution.
+//! Atomic plugin transactions; see src/AGENTS.md §scene-host.
 
-use crossbeam::channel::Sender;
-use serde::{Deserialize, Serialize};
-
-use crate::capability::CapabilityToken;
-use crate::PluginCommand;
-
-// ---------------------------------------------------------------------------
-// Pending operation
-// ---------------------------------------------------------------------------
-
-/// A single deferred operation within a plugin transaction.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum PendingOp {
-    /// Set a property on an existing node.
-    SetProperty {
-        node_id: String,
-        key: String,
-        value: serde_json::Value,
-    },
-    /// Create a new node in a petal.
-    CreateNode { petal_id: String, name: String },
-    /// Delete a node by ID.
-    DeleteNode { node_id: String },
-}
+pub use fe_sdk::plugin_host::PendingOp;
 
 // ---------------------------------------------------------------------------
 // Plugin transaction
@@ -38,24 +11,15 @@ pub enum PendingOp {
 /// Created via [`PluginContext::transaction()`](crate::context::PluginContext::transaction).
 #[derive(Debug)]
 pub struct PluginTransaction {
-    plugin_id: String,
-    #[allow(dead_code)]
-    scope: CapabilityToken,
+    context: crate::context::PluginContext,
     pending_ops: Vec<PendingOp>,
-    tx: Sender<PluginCommand>,
 }
 
 impl PluginTransaction {
-    pub(crate) fn new(
-        plugin_id: String,
-        scope: CapabilityToken,
-        tx: Sender<PluginCommand>,
-    ) -> Self {
+    pub(crate) fn new(context: crate::context::PluginContext) -> Self {
         Self {
-            plugin_id,
-            scope,
+            context,
             pending_ops: Vec::new(),
-            tx,
         }
     }
 
@@ -101,13 +65,10 @@ impl PluginTransaction {
         if count == 0 {
             return Ok(0);
         }
-        self.tx
-            .send(PluginCommand::CommitTransaction {
-                plugin_id: self.plugin_id,
-                ops: self.pending_ops,
-            })
-            .map_err(|_| CommitError::ChannelClosed)?;
-        Ok(count)
+        self.context
+            .commit_ops(&self.pending_ops)
+            .map(|receipt| receipt.op_count)
+            .map_err(CommitError::Rejected)
     }
 }
 
@@ -115,4 +76,6 @@ impl PluginTransaction {
 pub enum CommitError {
     #[error("Plugin command channel closed")]
     ChannelClosed,
+    #[error("Plugin transaction failed: {0}")]
+    Rejected(String),
 }

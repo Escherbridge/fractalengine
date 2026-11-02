@@ -144,3 +144,14 @@ check — fail closed, same `HostApiError::CapabilityDenied` — but the decisio
 and its log now come from the one engine every entry point shares. The
 `CapabilityManifest`/`CapabilityToken` types themselves are unchanged by
 design (spec: they were already the right shape).
+
+
+## Scene host
+
+PluginContext holds injected NodeReader and TransactionSink services from the
+shared SDK contracts. Empty contexts fail closed. Reads enforce the bound petal,
+stored full ancestry, token grants and property-key projection. Queries accept
+only the bounded NodeQuery vocabulary. Native and Rhai transaction calls return
+a sink receipt after persistence; a channel enqueue is not a committed write.
+The runtime channel adapter and production database wiring are separate consumers
+of this same boundary; do not restore placeholder reads or success acknowledgements.

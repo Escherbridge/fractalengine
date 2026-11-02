@@ -208,3 +208,13 @@ incompatible kinds fail. Required members must be declared. Outer properties
 remain optional; null needs permission. Limits: depth16, rule nodes256,
 encoded schema/property65536bytes. String length counts Unicode scalar values.
 Validation preserves JSON types. Device-format schema remains independent.
+
+
+## Plugin host
+
+`plugin_host` is the shared engine-free read/atomic-write contract. NodeQuery
+is an exact name/property predicate with a bounded limit, never SQL or code.
+PendingOp keeps the existing three operations. The sink must persist the whole
+batch before returning its receipt, or refuse before effects. The host validates
+64 operations/64 KiB, and readers return at most 200 nodes/64 KiB. Plain property
+JSON conversions preserve nested values and integer precision across script hosts.

@@ -26,6 +26,7 @@ use crate::transaction::PendingOp;
 
 pub use crate::host_env::{HostApiError, HostEnv};
 pub use fe_sdk::node::NodeSnapshot;
+pub use fe_sdk::plugin_host::{NodeReader, NodeQuery, TransactionSink, TransactionReceipt};
 pub use fe_sdk::property::{PropertyBag, PropertyValue};
 pub use fe_sdk::query::{ExtensionQueryApi, QueryError};
 pub use fe_sdk::scene::{SceneChange, SceneChangeBatch};
