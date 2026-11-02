@@ -1545,3 +1545,23 @@ The DB-result terrain bridge is ordered before the terrain plugin's
 latest forwarded configuration on the next Update rather than an older
 proposal list. This is a host scheduling boundary; UI and renderer do not gain
 a dependency on fe-terrain's configuration type.
+
+
+## Plugin scene bridge
+
+plugin_bridge installs the real PluginHostPlugin plus its SceneBackendFactory
+after core DB handles exist. A trusted host binds a manifest to an instance via
+PluginContexts::bind; Wasm managers receive that resource with with_contexts.
+The factory performs a typed DB scope handshake once and pins full ancestry,
+then injects bound NodeReader/TransactionSink implementations. Every read/write
+returns on its own embedded channel; it does not depend on a Bevy frame or share
+API pending requests. The DB resolves current local identity and rechecks role,
+capability and stored ancestry at use.
+
+The worker waits for a persisted receipt, with explicit enqueue refusal versus
+unknown commit outcome on transport timeout. Do not automatically retry the
+latter. Binding and callbacks belong on the plugin worker, not the render loop.
+No automatic package loading or new rule engine is implied by installing the
+host; missing manifest admission remains fail closed. This slice adds only a
+local workspace dependency on fe-plugin, requiring the integrated Cargo lock
+refresh by the sole builder.

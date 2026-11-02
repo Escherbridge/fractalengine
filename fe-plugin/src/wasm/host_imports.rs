@@ -8,7 +8,6 @@ use wasmtime::{AsContext, AsContextMut, Caller, Linker};
 
 use crate::wasm::PluginStoreData;
 use crate::LogLevel;
-use crate::PluginCommand;
 
 /// Register all host import functions into a wasmtime [`Linker`].
 ///
@@ -31,22 +30,17 @@ pub fn register_host_imports(
         "get_node",
         |mut caller: Caller<'_, PluginStoreData>, node_id_ptr: i32, node_id_len: i32| -> i32 {
             let node_id = read_string_from_memory(&mut caller, node_id_ptr, node_id_len);
-            let plugin_id = caller.data().ctx.plugin_id().to_string();
-            let tx = caller.data().ctx.tx.clone();
-
-            let _ = tx.send(PluginCommand::GetNode {
-                plugin_id: plugin_id.clone(),
-                node_id: node_id.clone(),
+            let result = caller.data().ctx.get_node(&node_id).and_then(|node| {
+                serde_json::to_string(&node.as_ref().map(fe_sdk::plugin_host::snapshot_json))
+                    .map_err(|error| error.to_string())
             });
-
-            // For now, return a placeholder JSON object. In a full implementation
-            // this would use a shared memory buffer with request-reply.
-            let result = serde_json::json!({
-                "node_id": node_id,
-                "name": "",
-                "properties": {}
-            });
-            write_string_to_memory(&mut caller, &result.to_string())
+            match result {
+                Ok(encoded) => write_string_to_memory(&mut caller, &encoded),
+                Err(error) => {
+                    tracing::warn!(%error,"WASM get_node failed");
+                    -1
+                }
+            }
         },
     )?;
 
@@ -64,18 +58,20 @@ pub fn register_host_imports(
             let node_id = read_string_from_memory(&mut caller, node_id_ptr, node_id_len);
             let key = read_string_from_memory(&mut caller, key_ptr, key_len);
             let value_str = read_string_from_memory(&mut caller, value_ptr, value_len);
-            let plugin_id = caller.data().ctx.plugin_id().to_string();
-            let tx = caller.data().ctx.tx.clone();
-
-            let value: serde_json::Value =
+            let value =
                 serde_json::from_str(&value_str).unwrap_or(serde_json::Value::String(value_str));
-
-            let _ = tx.send(PluginCommand::SetProperty {
-                plugin_id,
-                node_id,
-                key,
-                value,
-            });
+            if let Err(error) =
+                caller
+                    .data()
+                    .ctx
+                    .commit_ops(&[crate::transaction::PendingOp::SetProperty {
+                        node_id,
+                        key,
+                        value,
+                    }])
+            {
+                tracing::warn!(%error,"WASM set_property failed");
+            }
         },
     )?;
 
@@ -90,18 +86,25 @@ pub fn register_host_imports(
          filter_len: i32|
          -> i32 {
             let petal_id = read_string_from_memory(&mut caller, petal_id_ptr, petal_id_len);
-            let _filter = read_string_from_memory(&mut caller, filter_ptr, filter_len);
-            let plugin_id = caller.data().ctx.plugin_id().to_string();
-            let tx = caller.data().ctx.tx.clone();
-
-            let _ = tx.send(PluginCommand::QueryNodes {
-                plugin_id,
-                petal_id,
-            });
-
-            // Return empty JSON array for now
-            let result: serde_json::Value = serde_json::json!([]);
-            write_string_to_memory(&mut caller, &result.to_string())
+            let filter = read_string_from_memory(&mut caller, filter_ptr, filter_len);
+            let result = fe_sdk::plugin_host::NodeQuery::parse(&filter)
+                .and_then(|query| caller.data().ctx.query_nodes(&petal_id, &query))
+                .and_then(|nodes| {
+                    serde_json::to_string(
+                        &nodes
+                            .iter()
+                            .map(fe_sdk::plugin_host::snapshot_json)
+                            .collect::<Vec<_>>(),
+                    )
+                    .map_err(|error| error.to_string())
+                });
+            match result {
+                Ok(encoded) => write_string_to_memory(&mut caller, &encoded),
+                Err(error) => {
+                    tracing::warn!(%error,"WASM query_nodes failed");
+                    -1
+                }
+            }
         },
     )?;
 
@@ -117,19 +120,20 @@ pub fn register_host_imports(
          -> i32 {
             let petal_id = read_string_from_memory(&mut caller, petal_id_ptr, petal_id_len);
             let name = read_string_from_memory(&mut caller, name_ptr, name_len);
-            let plugin_id = caller.data().ctx.plugin_id().to_string();
-            let tx = caller.data().ctx.tx.clone();
-
-            let node_id = ulid::Ulid::new().to_string();
-
-            let _ = tx.send(PluginCommand::CreateNode {
-                plugin_id,
-                petal_id,
-                name,
-                provisional_id: node_id.clone(),
-            });
-
-            write_string_to_memory(&mut caller, &node_id)
+            let result = caller
+                .data()
+                .ctx
+                .commit_ops(&[crate::transaction::PendingOp::CreateNode { petal_id, name }]);
+            match result {
+                Ok(receipt) => match receipt.created_node_ids.first() {
+                    Some(id) => write_string_to_memory(&mut caller, id),
+                    None => -1,
+                },
+                Err(error) => {
+                    tracing::warn!(%error,"WASM create_node failed");
+                    -1
+                }
+            }
         },
     )?;
 
@@ -139,14 +143,13 @@ pub fn register_host_imports(
         "delete_node",
         |mut caller: Caller<'_, PluginStoreData>, node_id_ptr: i32, node_id_len: i32| {
             let node_id = read_string_from_memory(&mut caller, node_id_ptr, node_id_len);
-            let plugin_id = caller.data().ctx.plugin_id().to_string();
-            let tx = caller.data().ctx.tx.clone();
-
-            // Use a transaction to send the delete op
-            let _ = tx.send(PluginCommand::CommitTransaction {
-                plugin_id,
-                ops: vec![crate::transaction::PendingOp::DeleteNode { node_id }],
-            });
+            if let Err(error) = caller
+                .data()
+                .ctx
+                .commit_ops(&[crate::transaction::PendingOp::DeleteNode { node_id }])
+            {
+                tracing::warn!(%error,"WASM delete_node failed");
+            }
         },
     )?;
 
@@ -347,7 +350,6 @@ fn register_log_func(
         move |mut caller: Caller<'_, PluginStoreData>, msg_ptr: i32, msg_len: i32| {
             let msg = read_string_from_memory(&mut caller, msg_ptr, msg_len);
             let plugin_id = caller.data().ctx.plugin_id().to_string();
-            let tx = caller.data().ctx.tx.clone();
 
             match level {
                 LogLevel::Debug => tracing::debug!(plugin = %plugin_id, "{}", msg),
@@ -355,12 +357,6 @@ fn register_log_func(
                 LogLevel::Warn => tracing::warn!(plugin = %plugin_id, "{}", msg),
                 LogLevel::Error => tracing::error!(plugin = %plugin_id, "{}", msg),
             }
-
-            let _ = tx.send(PluginCommand::Log {
-                plugin_id,
-                level,
-                message: msg,
-            });
         },
     )?;
     Ok(())
@@ -371,12 +367,12 @@ fn register_log_func(
 /// Uses the memory export named "memory" (conventional for WASI/wasm modules).
 /// If the module doesn't export memory, returns an empty string.
 fn read_string_from_memory(caller: &mut Caller<'_, PluginStoreData>, ptr: i32, len: i32) -> String {
-    if ptr < 0 || len <= 0 {
+    if ptr < 0 || len <= 0 || len as usize > fe_sdk::plugin_host::MAX_HOST_BYTES {
         return String::new();
     }
 
-    let memory = match caller.get_export("memory") {
-        Some(mem) => mem.into_memory().unwrap(),
+    let memory = match caller.get_export("memory").and_then(|export|export.into_memory()) {
+        Some(memory) => memory,
         None => return String::new(),
     };
 
@@ -392,25 +388,22 @@ fn read_string_from_memory(caller: &mut Caller<'_, PluginStoreData>, ptr: i32, l
         return String::new();
     }
 
-    String::from_utf8_lossy(&data[ptr..ptr + len]).to_string()
+    String::from_utf8(data[ptr..ptr + len].to_vec()).unwrap_or_default()
 }
 
-/// Write a string into the guest's linear memory and return the pointer.
-///
-/// This is a simplified approach that writes to a pre-allocated buffer area.
-/// In production, this would use a proper allocator or shared buffer protocol.
+/// Write NUL-terminated UTF-8 to the fixed guest response buffer at offset zero.
 fn write_string_to_memory(caller: &mut Caller<'_, PluginStoreData>, value: &str) -> i32 {
     let bytes = value.as_bytes();
 
-    let memory = match caller.get_export("memory") {
-        Some(mem) => mem.into_memory().unwrap(),
+    let memory = match caller.get_export("memory").and_then(|export|export.into_memory()) {
+        Some(memory) => memory,
         None => return -1,
     };
 
     let data = memory.data_mut(caller.as_context_mut());
     let mem_len = data.len();
 
-    if bytes.len() > mem_len {
+    if bytes.len() >= mem_len || bytes.len()>fe_sdk::plugin_host::MAX_HOST_BYTES {
         tracing::warn!(
             "Host import write exceeds memory: bytes={}, mem_size={}",
             bytes.len(),
@@ -419,12 +412,8 @@ fn write_string_to_memory(caller: &mut Caller<'_, PluginStoreData>, value: &str)
         return -1;
     }
 
-    // Write to the beginning of memory (simplified — production would use an allocator)
-    let write_len = bytes.len().min(mem_len);
-    data[..write_len].copy_from_slice(&bytes[..write_len]);
-
-    // Store the length at a known offset so the guest can read it back
-    // For now, just return 0 as the pointer and the guest reads from there
+    data[..bytes.len()].copy_from_slice(bytes);
+    data[bytes.len()]=0;
     0
 }
 

@@ -162,7 +162,7 @@ pub trait NodeReader: Send {
 
 /// A host-supplied atomic writer, bound to trusted plugin admission and capability limits.
 pub trait TransactionSink: Send {
-    /// Persist all operations before returning; errors leave every operation unapplied.
+    /// Return only after atomic persistence; refusals have no effects and transport failures report an unknown outcome.
     fn commit(&mut self, petal_id: &str, ops: &[PendingOp]) -> Result<TransactionReceipt, String>;
 }
 

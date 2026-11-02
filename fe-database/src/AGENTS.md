@@ -1663,3 +1663,7 @@ scene, lifecycle, GUI materialization/cache and P2P row seams. PluginNodeRemoved
 is GUI-only and cannot claim an API NodeDeleted waiter. Replication remains the
 existing best-effort transport, not a guarantee of peer delivery or distributed
 transaction atomicity.
+
+Plugin schema capture is restricted to exact ancestor scopes, capped at 256
+enforced definitions per key. Expanded staged states/facts are capped at 2 MiB
+before effects, in addition to the 64 KiB input and per-snapshot bounds.

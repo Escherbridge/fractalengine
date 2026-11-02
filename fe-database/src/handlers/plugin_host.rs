@@ -285,13 +285,14 @@ pub(crate) async fn commit(
                     "plugin property capability denied"
                 );
                 if !rules.contains_key(key) {
-                    let snapshot = field_def::capture_property_rules(db, key).await?;
+                    let snapshot = field_def::capture_property_rules(db, &scope, key).await?;
                     let prefix = format!("plugin_rule_{index}");
                     let statement =
-                        field_def::PROPERTY_RULES_SQL.replace("$key", &format!("${prefix}_key"));
+                        field_def::PROPERTY_RULES_SQL.replace("$key", &format!("${prefix}_key")).replace("$scopes", &format!("${prefix}_scopes"));
                     guards.push(format!("IF ({statement}) != ${prefix}_snapshot {{ THROW 'plugin schema changed'; }}"));
                     bindings.extend([
                         (format!("{prefix}_key"), json!(key)),
+                        (format!("{prefix}_scopes"),json!(field_def::property_rule_scopes(&scope))),
                         (format!("{prefix}_snapshot"), json!(snapshot)),
                     ]);
                     rules.insert(key.clone(), snapshot);
@@ -332,7 +333,7 @@ pub(crate) async fn commit(
                 });
                 (
                     "plugin_tombstone",
-                    json!({"marker":{"hlc":0,"source_did":local_did,"tombstoned_at":chrono::Utc::now().to_rfc3339()}}),
+                    json!({"marker":{"hlc":u64::MAX,"source_did":local_did,"tombstoned_at":"9999-12-31T23:59:59.999999999Z"}}),
                     json!({}),
                 )
             }
@@ -359,6 +360,8 @@ pub(crate) async fn commit(
             ["parent_id","gpx_track_id","owning_path_id"].iter().all(|key|node.state["properties"].get(*key).and_then(Value::as_str)!=Some(deleted_id.as_str()))),
             "plugin batch introduces a dependent child of a deleted node");
     }
+    let expanded_bytes=serde_json::to_vec(&facts)?.len()+staged.values().map(|node|serde_json::to_vec(&node.state).map(|bytes|bytes.len())).collect::<Result<Vec<_>,_>>()?.iter().sum::<usize>();
+    anyhow::ensure!(expanded_bytes<=2*1024*1024,"expanded plugin batch exceeds 2 MiB");
     let entry = OpLogEntry {
         lamport_clock: 0,
         hlc_timestamp: String::new(),

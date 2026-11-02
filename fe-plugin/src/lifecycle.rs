@@ -6,7 +6,6 @@ use std::sync::Arc;
 use crossbeam::channel::Sender;
 
 use crate::capability::{CapabilityManifest, CapabilityToken};
-use crate::context::PluginContext;
 use crate::registry::{PluginRegistry, PluginState, PluginTier};
 use crate::wasm::aot::AotCache;
 use crate::wasm::fuel::FuelBudget;
@@ -49,6 +48,7 @@ pub struct PluginManager {
     installed: std::collections::HashMap<String, InstalledPlugin>,
     /// Command sender for plugin -> engine communication.
     cmd_tx: Sender<PluginCommand>,
+    contexts: crate::scene_host::PluginContexts,
 }
 
 impl PluginManager {
@@ -66,6 +66,7 @@ impl PluginManager {
             registry,
             installed: std::collections::HashMap::new(),
             cmd_tx,
+            contexts: crate::scene_host::PluginContexts::default(),
         })
     }
 
@@ -125,36 +126,10 @@ impl PluginManager {
         Ok(())
     }
 
-    /// Activate an installed plugin (state check only; use [`Self::activate_with_bytes`]).
-    pub async fn activate_plugin(
-        &mut self,
-        _plugin_id: &str,
-        _petal_id: &str,
-        _capabilities: &CapabilityManifest,
-        _fuel_budget: FuelBudget,
-    ) -> Result<(), LifecycleError> {
-        // Check the plugin is in Installed or Deactivated state
-        {
-            let reg = self.registry.lock().unwrap();
-            let state = reg
-                .get_state(_plugin_id)
-                .ok_or_else(|| LifecycleError::PluginNotFound(_plugin_id.to_string()))?;
-            if !matches!(
-                state,
-                PluginState::Installed | PluginState::Deactivated | PluginState::Degraded(_)
-            ) {
-                return Err(LifecycleError::InvalidState {
-                    plugin_id: _plugin_id.to_string(),
-                    state: format!("{:?}", state),
-                });
-            }
-        }
-
-        // This method is a placeholder. In practice, activate_with_bytes is used
-        // because wasm_bytes must come from plugin package storage.
-        Err(LifecycleError::NotImplemented(
-            "activate_plugin requires wasm_bytes from package storage".to_string(),
-        ))
+    /// Attach the same admitted instance registry installed by PluginHostPlugin.
+    pub fn with_contexts(mut self, contexts: crate::scene_host::PluginContexts) -> Self {
+        self.contexts = contexts;
+        self
     }
 
     /// Activate a plugin with the provided Wasm bytes.
@@ -168,6 +143,24 @@ impl PluginManager {
         capabilities: &CapabilityManifest,
         fuel_budget: FuelBudget,
     ) -> Result<(), LifecycleError> {
+        {
+            let registry = self
+                .registry
+                .lock()
+                .map_err(|_| LifecycleError::RegistryError("registry lock poisoned".into()))?;
+            let state = registry
+                .get_state(plugin_id)
+                .ok_or_else(|| LifecycleError::PluginNotFound(plugin_id.into()))?;
+            if !matches!(
+                state,
+                PluginState::Installed | PluginState::Deactivated | PluginState::Degraded(_)
+            ) {
+                return Err(LifecycleError::InvalidState {
+                    plugin_id: plugin_id.into(),
+                    state: format!("{state:?}"),
+                });
+            }
+        }
         // Load or compile from AOT cache
         let compiled = self
             .aot_cache
@@ -186,27 +179,41 @@ impl PluginManager {
 
         // Create plugin context
         let token = CapabilityToken::mint(plugin_id, capabilities);
-        let ctx = PluginContext::new(
-            plugin_id.to_string(),
-            petal_id.to_string(),
-            token,
-            self.cmd_tx.clone(),
-        );
+        let ctx = self
+            .contexts
+            .bind(
+                plugin_id.to_string(),
+                petal_id.to_string(),
+                token,
+                self.cmd_tx.clone(),
+            )
+            .map_err(LifecycleError::HostError)?;
 
         // Instantiate
-        let (mut store, instance) = self
-            .engine
-            .instantiate(&plugin, ctx, fuel_budget)
-            .await
-            .map_err(|e| LifecycleError::WasmError(e.to_string()))?;
+        let instantiated = self.engine.instantiate(&plugin, ctx, fuel_budget).await;
+        let (mut store, instance) = match instantiated {
+            Ok(instance) => instance,
+            Err(error) => {
+                self.contexts
+                    .unbind(plugin_id)
+                    .map_err(LifecycleError::HostError)?;
+                return Err(LifecycleError::WasmError(error.to_string()));
+            }
+        };
 
         // Try to call on_activate export
         if instance.get_func(&mut store, "on_activate").is_some() {
             tracing::debug!(plugin = %plugin_id, "Calling on_activate");
-            self.engine
+            if let Err(error) = self
+                .engine
                 .call_export(&mut store, &instance, "on_activate", &[], &mut [])
                 .await
-                .map_err(|e| LifecycleError::WasmError(e.to_string()))?;
+            {
+                self.contexts
+                    .unbind(plugin_id)
+                    .map_err(LifecycleError::HostError)?;
+                return Err(LifecycleError::WasmError(error.to_string()));
+            }
         }
 
         // Store the running instance
@@ -256,6 +263,9 @@ impl PluginManager {
 
         // Remove from installed map
         self.installed.remove(plugin_id);
+        self.contexts
+            .unbind(plugin_id)
+            .map_err(LifecycleError::HostError)?;
 
         // Update registry state
         {
@@ -296,6 +306,9 @@ impl PluginManager {
             self.installed.remove(plugin_id);
         }
 
+        self.contexts
+            .unbind(plugin_id)
+            .map_err(LifecycleError::HostError)?;
         // Remove from registry
         {
             let mut reg = self.registry.lock().unwrap();
@@ -374,8 +387,8 @@ pub enum LifecycleError {
     #[error("I/O error: {0}")]
     IoError(String),
 
-    #[error("Not yet implemented: {0}")]
-    NotImplemented(String),
+    #[error("Plugin host binding failed: {0}")]
+    HostError(String),
 }
 
 #[cfg(test)]

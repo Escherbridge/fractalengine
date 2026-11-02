@@ -155,3 +155,30 @@ only the bounded NodeQuery vocabulary. Native and Rhai transaction calls return
 a sink receipt after persistence; a channel enqueue is not a committed write.
 The runtime channel adapter and production database wiring are separate consumers
 of this same boundary; do not restore placeholder reads or success acknowledgements.
+
+
+### Production and command origins
+
+The GUI binary installs PluginHostPlugin with a DB-backed SceneBackendFactory.
+PluginContexts::bind is the trusted admission entry point for a reviewed manifest;
+PluginManager::with_contexts uses the same resource for activation. No filesystem
+plugin auto-loader or package-management UI is added by this library slice.
+The unused activate_plugin placeholder was removed; the real bytes activation
+path validates lifecycle state and injects services before running the callback.
+
+Every queued command is wrapped by its PluginContext with an opaque host-minted
+PluginSession. The runtime resolves that origin and rejects mismatched plugin
+labels, nested envelopes and unbound raw commands. Supplied plugin_id strings
+never select another instance's capabilities. Stop/uninstall revokes queued
+origins. Native/Rhai calls wait for the actual injected sink; the WASM read and
+write imports use that same context rather than fabricated data or receipts.
+WASM's existing core ABI has a fixed response buffer at offset zero, now NUL
+terminated; reads return -1 on failure and existing void writes warn on failure.
+This does not implement the aspirational component-model WIT ABI.
+
+A DB command that was not enqueued is a definite refusal. A timed-out/disconnected
+commit reply is explicitly an unknown outcome and must be reconciled before any
+retry; no count or successful receipt is invented. A local atomic commit does
+not guarantee peer replication delivery. The old arbitrary SELECT/KV HostEnv
+services remain independently injected; this scene bridge supplies no raw SQL
+or persistent KV bypass.

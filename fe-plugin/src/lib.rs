@@ -6,6 +6,7 @@ pub mod context;
 pub mod host_env;
 pub mod lifecycle;
 pub mod registry;
+pub mod scene_host;
 pub mod rhai;
 pub mod transaction;
 pub mod wasm;
@@ -37,8 +38,10 @@ pub use fe_sdk::storage::{ExtensionStorageApi, StorageError};
 // ---------------------------------------------------------------------------
 
 /// Commands sent from plugins to the engine host.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub enum PluginCommand {
+    /// A context-owned command envelope; scripts cannot select or mint its origin.
+    Bound {session:scene_host::PluginSession,command:Box<PluginCommand>},
     /// Commit a batch of operations from a plugin transaction.
     CommitTransaction {
         plugin_id: String,
@@ -54,7 +57,7 @@ pub enum PluginCommand {
         value: serde_json::Value,
     },
     /// Query nodes in a petal.
-    QueryNodes { plugin_id: String, petal_id: String },
+    QueryNodes { plugin_id: String, petal_id: String, filter:String },
     /// Create a new node.
     CreateNode {
         plugin_id: String,
@@ -83,7 +86,7 @@ pub enum LogLevel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PluginResult {
     /// Transaction was committed successfully.
-    TransactionCommitted { plugin_id: String, op_count: usize },
+    TransactionCommitted { plugin_id: String, op_count: usize, receipt:TransactionReceipt },
     /// A requested node snapshot.
     NodeSnapshot {
         plugin_id: String,
@@ -196,6 +199,8 @@ pub struct PluginHostPlugin;
 
 impl Plugin for PluginHostPlugin {
     fn build(&self, app: &mut App) {
+        let contexts=app.world().get_resource::<scene_host::PluginContexts>().cloned().unwrap_or_default();
+        app.insert_resource(contexts.clone());
         // Create crossbeam channels for plugin <-> engine comms
         let (cmd_tx, cmd_rx) = crossbeam::channel::bounded::<PluginCommand>(256);
         let (result_tx, result_rx) = crossbeam::channel::bounded::<PluginResult>(256);
@@ -213,7 +218,7 @@ impl Plugin for PluginHostPlugin {
 
                 rt.block_on(async move {
                     tracing::info!("Plugin host thread started");
-                    plugin_thread_loop(cmd_rx, result_tx).await;
+                    plugin_thread_loop(cmd_rx, result_tx,contexts).await;
                     tracing::info!("Plugin host thread stopped");
                 });
             })
@@ -233,11 +238,11 @@ impl Plugin for PluginHostPlugin {
 
 /// The plugin thread's main loop. Receives commands from Bevy and dispatches
 /// them, sending results back.
-async fn plugin_thread_loop(cmd_rx: Receiver<PluginCommand>, result_tx: Sender<PluginResult>) {
+async fn plugin_thread_loop(cmd_rx: Receiver<PluginCommand>, result_tx: Sender<PluginResult>,contexts:scene_host::PluginContexts) {
     loop {
         match cmd_rx.recv() {
             Ok(cmd) => {
-                handle_plugin_command(cmd, &result_tx);
+                handle_plugin_command(cmd, &result_tx,&contexts);
             }
             Err(_) => {
                 // Channel closed — Bevy is shutting down
@@ -249,102 +254,56 @@ async fn plugin_thread_loop(cmd_rx: Receiver<PluginCommand>, result_tx: Sender<P
 }
 
 /// Process a single plugin command and send the result.
-fn handle_plugin_command(cmd: PluginCommand, result_tx: &Sender<PluginResult>) {
-    match cmd {
-        PluginCommand::CommitTransaction { plugin_id, ops } => {
-            let op_count = ops.len();
-            tracing::debug!(
-                plugin = %plugin_id,
-                ops = op_count,
-                "Processing plugin transaction"
-            );
-            // In Phase 9A.1 we log the operations. Phase 9A.2 will forward
-            // them to the DB thread via DbCommand variants.
-            for op in &ops {
-                tracing::debug!(plugin = %plugin_id, op = ?op, "Pending op");
-            }
-            result_tx
-                .send(PluginResult::TransactionCommitted {
-                    plugin_id,
-                    op_count,
-                })
-                .ok();
+fn handle_plugin_command(cmd: PluginCommand,result_tx:&Sender<PluginResult>,contexts:&scene_host::PluginContexts) {
+    let resolved=match cmd {
+        PluginCommand::Bound {session,command}=>contexts.resolve(&session).map(|context|(context,*command)),
+        _=>Err("unbound plugin command refused".into()),
+    };
+    let result=match resolved {
+        Ok((context,command))=>{
+            let plugin_id=context.plugin_id().to_string();
+            execute_plugin_command(&context,command).unwrap_or_else(|message|Some(PluginResult::Error {plugin_id,message}))
         }
-        PluginCommand::GetNode { plugin_id, node_id } => {
-            tracing::debug!(plugin = %plugin_id, node = %node_id, "GetNode request");
-            // Placeholder: return empty data. Phase 9A.2 wires to EntityStore.
-            result_tx
-                .send(PluginResult::NodeSnapshot {
-                    plugin_id,
-                    node_id,
-                    data: serde_json::json!({}),
-                })
-                .ok();
-        }
-        PluginCommand::SetProperty {
-            plugin_id,
-            node_id,
-            key,
-            value,
-        } => {
-            tracing::debug!(
-                plugin = %plugin_id,
-                node = %node_id,
-                key = %key,
-                "SetProperty from plugin"
-            );
-            let _ = value;
-            result_tx
-                .send(PluginResult::TransactionCommitted {
-                    plugin_id,
-                    op_count: 1,
-                })
-                .ok();
-        }
-        PluginCommand::QueryNodes {
-            plugin_id,
-            petal_id,
-        } => {
-            tracing::debug!(plugin = %plugin_id, petal = %petal_id, "QueryNodes");
-            result_tx
-                .send(PluginResult::NodeSnapshot {
-                    plugin_id,
-                    node_id: String::new(),
-                    data: serde_json::json!([]),
-                })
-                .ok();
-        }
-        PluginCommand::CreateNode {
-            plugin_id,
-            petal_id,
-            name,
-            provisional_id,
-        } => {
-            tracing::debug!(
-                plugin = %plugin_id,
-                petal = %petal_id,
-                name = %name,
-                id = %provisional_id,
-                "CreateNode from plugin"
-            );
-            result_tx
-                .send(PluginResult::TransactionCommitted {
-                    plugin_id,
-                    op_count: 1,
-                })
-                .ok();
-        }
-        PluginCommand::Log {
-            plugin_id,
-            level,
-            message,
-        } => match level {
-            LogLevel::Debug => tracing::debug!(plugin = %plugin_id, "{}", message),
-            LogLevel::Info => tracing::info!(plugin = %plugin_id, "{}", message),
-            LogLevel::Warn => tracing::warn!(plugin = %plugin_id, "{}", message),
-            LogLevel::Error => tracing::error!(plugin = %plugin_id, "{}", message),
-        },
+        Err(message)=>Some(PluginResult::Error {plugin_id:"unbound".into(),message}),
+    };
+    if let Some(result)=result {
+        if let Err(error)=result_tx.send(result) {tracing::warn!(%error,"plugin result receiver closed");}
     }
+}
+
+fn execute_plugin_command(context:&PluginContext,command:PluginCommand)->Result<Option<PluginResult>,String> {
+    let claimed=match &command {
+        PluginCommand::CommitTransaction {plugin_id,..}|PluginCommand::GetNode {plugin_id,..}
+        |PluginCommand::SetProperty {plugin_id,..}|PluginCommand::QueryNodes {plugin_id,..}
+        |PluginCommand::CreateNode {plugin_id,..}|PluginCommand::Log {plugin_id,..}=>plugin_id,
+        PluginCommand::Bound {..}=>return Err("nested plugin origin envelope refused".into()),
+    };
+    if claimed!=context.plugin_id() {return Err("plugin command claims another instance".into());}
+    let plugin_id=context.plugin_id().to_string();
+    let receipt=match command {
+        PluginCommand::CommitTransaction {ops,..}=>context.commit_ops(&ops)?,
+        PluginCommand::SetProperty {node_id,key,value,..}=>context.commit_ops(&[PendingOp::SetProperty {node_id,key,value}])?,
+        PluginCommand::CreateNode {petal_id,name,..}=>context.commit_ops(&[PendingOp::CreateNode {petal_id,name}])?,
+        PluginCommand::GetNode {node_id,..}=>{
+            let node=context.get_node(&node_id)?;
+            return Ok(Some(PluginResult::NodeSnapshot {plugin_id,node_id,data:node.as_ref().map(fe_sdk::plugin_host::snapshot_json).unwrap_or(serde_json::Value::Null)}));
+        }
+        PluginCommand::QueryNodes {petal_id,filter,..}=>{
+            let nodes=context.query_nodes(&petal_id,&NodeQuery::parse(&filter)?)?;
+            return Ok(Some(PluginResult::NodeSnapshot {plugin_id,node_id:String::new(),data:serde_json::Value::Array(nodes.iter().map(fe_sdk::plugin_host::snapshot_json).collect())}));
+        }
+        PluginCommand::Log {level,message,..}=>{
+            match level {
+                LogLevel::Debug=>tracing::debug!(plugin=%plugin_id,"{}",message),
+                LogLevel::Info=>tracing::info!(plugin=%plugin_id,"{}",message),
+                LogLevel::Warn=>tracing::warn!(plugin=%plugin_id,"{}",message),
+                LogLevel::Error=>tracing::error!(plugin=%plugin_id,"{}",message),
+            }
+            return Ok(None);
+        }
+        PluginCommand::Bound {..}=>unreachable!(),
+    };
+    Ok(Some(PluginResult::TransactionCommitted {plugin_id,op_count:receipt.op_count,receipt}))
 }
 
 /// Bevy system: drain plugin results from the crossbeam channel each frame.
@@ -357,7 +316,7 @@ fn drain_plugin_results(receiver: Res<PluginResultReceiver>, mut registry: ResMu
         match &result {
             PluginResult::TransactionCommitted {
                 plugin_id,
-                op_count,
+                op_count, ..
             } => {
                 tracing::trace!(
                     plugin = %plugin_id,

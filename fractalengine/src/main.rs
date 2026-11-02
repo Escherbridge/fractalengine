@@ -15,6 +15,7 @@ use tracing_subscriber::EnvFilter;
 mod asset_bridge;
 mod gpx_bridge;
 mod input_bridge;
+mod plugin_bridge;
 mod panic_log;
 mod qa_a11y_timing;
 mod qa_debug_bridge;
@@ -478,6 +479,8 @@ fn main() {
         },
         window_chrome::primary_window(),
     );
+
+    plugin_bridge::install(&mut app);
 
     // GUI-only plugins (removed from fe-runtime so the headless relay can skip them)
     app.add_plugins(bevy_egui::EguiPlugin::default());

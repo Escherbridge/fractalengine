@@ -57,9 +57,7 @@ impl PluginTransaction {
         self.pending_ops.is_empty()
     }
 
-    /// Commit all pending operations by sending them through the command channel.
-    ///
-    /// Returns the number of operations committed.
+    /// Wait for the injected sink's persisted receipt and return its committed count.
     pub fn commit(self) -> Result<usize, CommitError> {
         let count = self.pending_ops.len();
         if count == 0 {
@@ -74,8 +72,6 @@ impl PluginTransaction {
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum CommitError {
-    #[error("Plugin command channel closed")]
-    ChannelClosed,
     #[error("Plugin transaction failed: {0}")]
     Rejected(String),
 }

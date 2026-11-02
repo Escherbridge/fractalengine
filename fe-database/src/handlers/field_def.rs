@@ -188,15 +188,23 @@ pub(crate) async fn validate_property_in_scope(
     key: &str,
     value: &serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
-    let rows = capture_property_rules(db,key).await?;
+    let rows = capture_property_rules(db,scope,key).await?;
     validate_captured_property_rules(scope,key,value,&rows)
 }
 
-pub(crate) const PROPERTY_RULES_SQL: &str = "SELECT field_def_id, scope, enforced_schema FROM field_def WHERE entity_type = 'node' AND key = $key AND enforced_schema != NONE ORDER BY field_def_id, scope";
+pub(crate) const PROPERTY_RULES_SQL: &str = "SELECT field_def_id, scope, enforced_schema FROM field_def WHERE entity_type = 'node' AND key = $key AND enforced_schema != NONE AND scope IN $scopes ORDER BY field_def_id, scope LIMIT 257";
 
-pub(crate) async fn capture_property_rules(db: &Db,key: &str) -> anyhow::Result<Vec<serde_json::Value>> {
-    let mut response=db.query(PROPERTY_RULES_SQL).bind(("key",key.to_string())).await?.check()?;
-    Ok(response.take(0)?)
+pub(crate) fn property_rule_scopes(scope:&str)->Vec<String> {
+    let mut scopes=vec![scope.to_string()];
+    while let Some(parent)=crate::parent_scope(scopes.last().unwrap()) {scopes.push(parent);}
+    scopes
+}
+
+pub(crate) async fn capture_property_rules(db: &Db,scope: &str,key: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+    let mut response=db.query(PROPERTY_RULES_SQL).bind(("key",key.to_string())).bind(("scopes",property_rule_scopes(scope))).await?.check()?;
+    let rows:Vec<serde_json::Value>=response.take(0)?;
+    anyhow::ensure!(rows.len()<=256,"more than 256 enforced definitions apply to one property");
+    Ok(rows)
 }
 
 /// Validate only the exact definition snapshot that a caller can fence at commit.

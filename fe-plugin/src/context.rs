@@ -21,6 +21,7 @@ use crate::PluginCommand;
 /// carries the binary-injected storage/query trait objects (empty by default).
 #[derive(Clone)]
 pub struct PluginContext {
+    pub(crate) session: crate::scene_host::PluginSession,
     /// The plugin's unique identifier.
     pub(crate) plugin_id: String,
     /// The petal scope this plugin instance is bound to.
@@ -44,6 +45,7 @@ impl PluginContext {
         tx: Sender<PluginCommand>,
     ) -> Self {
         Self {
+            session: crate::scene_host::PluginSession::mint(),
             plugin_id,
             petal_id,
             capabilities,
@@ -275,7 +277,10 @@ impl PluginContext {
         &self,
         cmd: PluginCommand,
     ) -> Result<(), crossbeam::channel::SendError<PluginCommand>> {
-        self.tx.send(cmd)
+        self.tx.send(PluginCommand::Bound {
+            session: self.session.clone(),
+            command: Box::new(cmd),
+        })
     }
 }
 
