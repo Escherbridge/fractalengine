@@ -438,3 +438,5 @@ An exact committed-asset read that is refused may retry once without that obsole
 asset expectation, still using the same actual Viewer-fenced node/model read. That
 read captures the node's current metadata atomically; it cannot write or impersonate
 the old model. A second refusal ends refresh with explicit reselect recovery.
+
+QA fixture URL previews test the original draft before trimming or URL parsing. Public URLs keep existing trim/production validation. Navigate commands retain raw strings until effect admission; browser events use the cheap shared preview because the backend already owns live navigation admission. URL acknowledgement ownership and local model persistence semantics are unchanged.

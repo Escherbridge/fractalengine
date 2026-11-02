@@ -1,7 +1,7 @@
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bevy::prelude::Message)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum BrowserCommand {
-    Navigate { url: url::Url },
+    Navigate { url: String },
     GoBack,
     GoForward,
     Reload,

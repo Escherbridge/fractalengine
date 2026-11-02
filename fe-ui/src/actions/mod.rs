@@ -1058,8 +1058,8 @@ pub(crate) fn process_ui_actions(
         };
         match action {
             UiAction::OpenPortal { url } => {
-                if let Some(parsed) = open_portal(&node_mgr, &mut ui_mgr, &url, now_secs) {
-                    browser_commands.write(BrowserCommand::Navigate { url: parsed });
+                if open_portal(&node_mgr, &mut ui_mgr, &url, now_secs).is_some() {
+                    browser_commands.write(BrowserCommand::Navigate { url });
                 }
             }
             UiAction::ClosePortal => {

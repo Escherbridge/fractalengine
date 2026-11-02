@@ -149,18 +149,15 @@ impl VisibleTabs {
 /// Wraps `crate::security::is_url_allowed` to work with raw `&str` inputs
 /// coming from editor fields and Bevy events.
 pub fn is_raw_url_allowed(raw: &str) -> bool {
-    match raw.parse::<Url>() {
-        Ok(url) => crate::security::is_url_allowed(&url),
-        Err(_) => false,
-    }
+    crate::security::embedded_preview_allowed(raw)
 }
 
 /// Attempt to emit a `BrowserCommand::Navigate` message if `url` is allowed.
 /// Returns `true` on success, `false` if blocked.
 fn emit_navigate_if_allowed(url: &str, commands: &mut MessageWriter<BrowserCommand>) -> bool {
     match url.parse::<Url>() {
-        Ok(parsed) if crate::security::is_url_allowed(&parsed) => {
-            commands.write(BrowserCommand::Navigate { url: parsed });
+        Ok(_) if crate::security::embedded_preview_allowed(url) => {
+            commands.write(BrowserCommand::Navigate { url: url.to_owned() });
             true
         }
         Ok(_) => {
@@ -300,7 +297,7 @@ pub fn url_editor_commit_system(
 ) {
     for event in saved_events.read() {
         // Validate the incoming URL before touching any state.
-        if !is_raw_url_allowed(&event.value) {
+        if !crate::security::embedded_allowed(&event.value) {
             warn!(
                 target: "petal_portal",
                 "UrlEditorSaved blocked — URL not allowed: {}",
@@ -323,9 +320,7 @@ pub fn url_editor_commit_system(
 
         // Navigate if this is the currently-active portal entity.
         if portal.entity == Some(event.entity) && event.field == UrlField::External {
-            if let Ok(parsed) = event.value.parse::<Url>() {
-                browser_commands.write(BrowserCommand::Navigate { url: parsed });
-            }
+            browser_commands.write(BrowserCommand::Navigate { url: event.value.clone() });
         }
     }
 }
@@ -482,7 +477,7 @@ mod tests {
         assert!(
             commands.iter().any(|c| matches!(
                 c,
-                BrowserCommand::Navigate { url } if url.host_str() == Some("example.com")
+                BrowserCommand::Navigate { url } if url.parse::<Url>().is_ok_and(|url| url.host_str() == Some("example.com"))
             )),
             "navigates to the model's URL: {commands:?}"
         );

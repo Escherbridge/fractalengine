@@ -141,3 +141,11 @@ under HTTP(S). This is literal URL validation, without DNS resolution or a DNS
 rebinding firewall claim. No QA private-origin exception is introduced. Existing
 policy tables extend canonical loopback, aliases, mapped private addresses and
 public boundary cases; source authoring is not execution evidence.
+
+## QA web navigation
+
+The shared raw admission functions live in `fe-runtime::portal_url`; production `is_url_allowed` remains the unchanged canonical literal-address policy. `BrowserCommand::Navigate` retains the original URL string through deserialization and dispatch so URL normalization cannot turn an alias into an admitted QA origin. UI previews do no process/listener work; persistence and actual command/backend navigation revalidate the same captured capability.
+
+A fixture session latches when a permitted fixture URL enters the backend, including history or in-page navigation. It stays latched while hidden and refuses all in-page destinations outside the two exact fixture pages. Only another explicit admitted Navigate command switches that session back to normal production browsing. On Windows the additional WebView2 NavigationStarting callback cancels first, checks IsRedirected and the live helper/port, then permits the exact nonredirect destination; fixture UrlChanged events are emitted only after this guard accepts. Guard-registration failure refuses backend creation for a fixture-enabled host. New windows are explicitly denied for fixture-enabled hosts. Hosts without a captured capability retain their existing callback/window behavior. External launching always retains production policy.
+
+The optional Windows direct webview2-com dependency matches the already-locked transitive0.38.2 version. Root must resolve the manifest-only dependency graph before a locked build. No browser execution or native callback verification is claimed by this source change.

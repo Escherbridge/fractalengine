@@ -297,6 +297,11 @@ mod tests {
 
     #[test]
     fn node_url_receipts_refresh_current_cache_and_preserve_drafts() {
+        let raw = "http://127.1:49152/web/one";
+        let command: fe_webview::ipc::BrowserCommand = serde_json::from_value(serde_json::json!({ "cmd": "navigate", "url": raw })).unwrap();
+        let fe_webview::ipc::BrowserCommand::Navigate { url } = command else { panic!("Navigate command"); };
+        assert_eq!(url, raw, "the command boundary must preserve alias spelling before policy validation");
+        assert!(!fe_runtime::portal_url::embedded_allowed(&url));
         let mut mgr = make_tree();
         mgr.update_node_url("node-1", Some("https://example.com".to_string()));
         let node = mgr.all_nodes().find(|n| n.id == "node-1").unwrap();

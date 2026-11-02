@@ -186,3 +186,5 @@ surrealdb-core3.0.5 source confirms string::len counts chars and string::slice a
 end; the existing parser handles IF as a projection expression. This is source/API inspection,
 not a query execution claim. Existing real-store URL journey adds Viewer/scope/asset refusals,
 raw legacy read, size refusal and model replacement with no operation-log writes.
+
+Portal URL writes use the runtime shared raw production/fixture policy at handler admission and again immediately before atomic commit. The fixture exception is host-captured and nonserialized; callers cannot grant it with request fields. Existing actual Editor, ancestry, unique model reference, CAS and readback checks remain mandatory.

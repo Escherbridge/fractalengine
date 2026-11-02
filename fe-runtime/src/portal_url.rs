@@ -58,3 +58,17 @@ pub fn is_url_allowed(url: &url::Url) -> bool {
         None => false,
     }
 }
+
+/// Pure preview for editor validation; effect admission uses `embedded_allowed`.
+pub fn embedded_preview_allowed(raw: &str) -> bool {
+    raw.parse::<url::Url>()
+        .is_ok_and(|url| is_url_allowed(&url))
+        || crate::qa_web::preview_allows(raw)
+}
+
+/// Shared persistence/navigation admission with live fixture ownership checks.
+pub fn embedded_allowed(raw: &str) -> bool {
+    raw.parse::<url::Url>()
+        .is_ok_and(|url| is_url_allowed(&url))
+        || crate::qa_web::allows(raw)
+}

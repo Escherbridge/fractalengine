@@ -240,7 +240,7 @@ fn dispatch_commands(
     for cmd in cmds {
         match cmd {
             BrowserCommand::Navigate { ref url } => {
-                if !security::is_url_allowed(url) {
+                if !security::embedded_allowed(url) {
                     bevy::log::warn!("Portal: Navigate blocked by security policy: {url}");
                     events.write(BrowserEvent::Error {
                         message: format!("URL blocked: {url}"),
@@ -248,7 +248,10 @@ fn dispatch_commands(
                     continue;
                 }
                 // Backend deduplicates — silently skip if already at this URL.
-                if let Err(e) = backend.navigate(url) {
+                let Ok(parsed) = url.parse() else {
+                    continue;
+                };
+                if let Err(e) = backend.navigate(&parsed) {
                     bevy::log::error!("Portal: navigate failed: {e}");
                     events.write(BrowserEvent::Error {
                         message: e.to_string(),

@@ -116,6 +116,10 @@ pub(crate) async fn update_node_url_handler(
             .is_none_or(|url| url.len() <= 8192 && !url.chars().any(char::is_control)),
         "Invalid URL length or control characters"
     );
+    anyhow::ensure!(
+        url.as_deref().is_none_or(fe_runtime::portal_url::embedded_allowed),
+        "Portal URL blocked by security policy or unavailable fixture helper"
+    );
     let access = super::entity::prepare_scope_permission(
         db,
         &scope,
@@ -180,6 +184,10 @@ pub(crate) async fn update_node_url_handler(
         payload: json!({"asset_id":asset,"external_url":url}),
         sig: "00".repeat(64),
     };
+    anyhow::ensure!(
+        url.as_deref().is_none_or(fe_runtime::portal_url::embedded_allowed),
+        "Portal fixture capability expired before commit"
+    );
     let (_, mut rows) =
         crate::op_log::commit_operation_atomic(db, entry, &statements, bindings).await?;
     let rows = rows.pop().unwrap_or_default();

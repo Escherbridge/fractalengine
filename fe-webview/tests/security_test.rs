@@ -42,6 +42,22 @@ fn test_127_blocked() {
             "canonical loopback: {raw}"
         );
     }
+    for raw in [
+        "http://127.0.0.1:49152/web/one",
+        "http://127.1:49152/web/one",
+        "http://2130706433:49152/web/one",
+        "http://user:password@127.0.0.1:49152/web/one",
+        "http://127.0.0.1:49152/web/%6fne",
+        "http://127.0.0.1:49152/web/one?next=https://example.com",
+        "http://127.0.0.1:49152/web/one#fragment",
+    ] {
+        assert!(!fe_runtime::portal_url::embedded_preview_allowed(raw));
+        assert!(!fe_runtime::portal_url::embedded_allowed(raw));
+        assert!(
+            !fe_runtime::qa_web::allows(raw),
+            "no host capability: {raw}"
+        );
+    }
 }
 
 #[test]
@@ -87,6 +103,8 @@ fn test_public_allowed() {
             is_url_allowed(&raw.parse().unwrap()),
             "public/default allowance: {raw}"
         );
+        assert!(fe_runtime::portal_url::embedded_preview_allowed(raw));
+        assert!(fe_runtime::portal_url::embedded_allowed(raw));
     }
 }
 

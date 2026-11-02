@@ -12,7 +12,7 @@ default = ["backend-tauri"]
 # Webview backends — only one should be active at a time.
 # If both are enabled, Servo takes priority.
 backend-servo = ["winit"]
-backend-tauri = ["tauri", "wry", "winit"]  # Tauri-powered webview
+backend-tauri = ["tauri", "wry", "winit", "dep:webview2-com"]  # Tauri-powered webview
 # Legacy alias — now maps to Tauri
 webview = ["backend-tauri"]
 # winit is needed for window geometry computation
@@ -36,3 +36,6 @@ fe-runtime = { path = "../fe-runtime" }
 
 [dev-dependencies]
 ulid = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+webview2-com = { version = "0.38.2", optional = true }

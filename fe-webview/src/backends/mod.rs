@@ -6,6 +6,9 @@ pub(crate) mod win32_popup;
 #[cfg(feature = "backend-tauri")]
 pub mod tauri;
 
+#[cfg(all(windows, feature = "backend-tauri"))]
+mod qa_navigation;
+
 pub mod stub;
 
 pub fn embedded_browsing_supported() -> bool {

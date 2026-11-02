@@ -66,6 +66,11 @@ pub fn preview_allows(raw: &str) -> bool {
         })
 }
 
+/// Whether this host captured a fixture capability, including a revoked one.
+pub fn captured() -> bool {
+    CAPABILITY.get().and_then(Option::as_ref).is_some()
+}
+
 /// Revalidate the retained helper and its exact listening socket before an effect.
 pub fn allows(raw: &str) -> bool {
     let Some(permit) = CAPABILITY.get().and_then(Option::as_ref) else {
@@ -140,6 +145,18 @@ impl Permit {
         ensure!(
             port >= 1024 && (30..=3600).contains(&lifetime),
             "fixture bounds rejected"
+        );
+        ensure!(
+            matches!(string(&config, "mode")?, "normal" | "slow" | "corrupt"),
+            "invalid fixture mode"
+        );
+        let archive_hash = string(&config, "archive_sha256")?;
+        ensure!(
+            archive_hash.len() == 64
+                && archive_hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "invalid fixture archive receipt"
         );
         let origin = format!("http://127.0.0.1:{port}");
         for receipt in [&record, &config, &ready] {

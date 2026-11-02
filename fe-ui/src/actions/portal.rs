@@ -39,7 +39,7 @@ pub(crate) fn receive_browser_event(
     }
     use fe_webview::ipc::BrowserEvent;
     match event {
-        BrowserEvent::UrlChanged { url } if fe_webview::security::is_url_allowed(url) => {
+        BrowserEvent::UrlChanged { url } if fe_webview::security::embedded_preview_allowed(url.as_str()) => {
             if let PortalState::Open {
                 current_url,
                 cached_hostname,
@@ -102,6 +102,9 @@ pub(crate) fn node_scope(
 
 /// Validate the shared Inspector and Node Options draft.
 pub(crate) fn validate_url(raw: &str) -> Result<Option<String>, String> {
+    if fe_runtime::qa_web::preview_allows(raw) {
+        return Ok(Some(raw.to_owned()));
+    }
     let raw = raw.trim();
     if raw.is_empty() {
         return Ok(None);

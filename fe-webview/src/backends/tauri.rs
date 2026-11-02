@@ -1,6 +1,6 @@
 //! Tauri-powered webview backend (WebView2 on Windows, WebKit on macOS/Linux). See `src/AGENTS.md`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use raw_window_handle::RawWindowHandle;
@@ -23,16 +23,28 @@ pub struct TauriBackend {
     alive: bool,
     /// Last URL we navigated to — skip duplicates to prevent feedback loops.
     current_url: Option<Url>,
+    fixture_session: Rc<Cell<bool>>,
     #[cfg(target_os = "windows")]
     popup_hwnd: isize,
 }
 
 /// Navigation-handler decision: validates via `security::is_url_allowed`, records
 /// `UrlChanged`/`Error` on `events`, returns whether to allow the navigation.
-fn decide_navigation(raw_url: &str, events: &Rc<RefCell<Vec<BackendEvent>>>) -> bool {
+fn decide_navigation(
+    raw_url: &str,
+    events: &Rc<RefCell<Vec<BackendEvent>>>,
+    fixture_session: bool,
+) -> bool {
+    let allowed = if fixture_session {
+        fe_runtime::qa_web::allows(raw_url)
+    } else {
+        crate::security::embedded_allowed(raw_url)
+    };
     match raw_url.parse::<Url>() {
-        Ok(parsed) if crate::security::is_url_allowed(&parsed) => {
-            events.borrow_mut().push(BackendEvent::UrlChanged(parsed));
+        Ok(parsed) if allowed => {
+            if !fe_runtime::qa_web::preview_allows(raw_url) {
+                events.borrow_mut().push(BackendEvent::UrlChanged(parsed));
+            }
             true
         }
         Ok(parsed) => {
@@ -71,6 +83,8 @@ impl WebViewBackend for TauriBackend {
         let events: Rc<RefCell<Vec<BackendEvent>>> = Rc::new(RefCell::new(Vec::new()));
         let nav_events = events.clone();
         let load_events = events.clone();
+        let fixture_session = Rc::new(Cell::new(false));
+        let nav_fixture_session = fixture_session.clone();
 
         // --- build wry WebView -------------------------------------------
 
@@ -83,7 +97,13 @@ impl WebViewBackend for TauriBackend {
             .with_visible(true)
             .with_autoplay(true)
             .with_initialization_script(trust_bar_js)
-            .with_navigation_handler(move |url: String| decide_navigation(&url, &nav_events))
+            .with_navigation_handler(move |url: String| {
+                let allowed = decide_navigation(&url, &nav_events, nav_fixture_session.get());
+                if allowed && fe_runtime::qa_web::preview_allows(&url) {
+                    nav_fixture_session.set(true);
+                }
+                allowed
+            })
             .with_on_page_load_handler(move |event, url| {
                 if matches!(event, PageLoadEvent::Finished) {
                     if let Ok(url) = url.parse() {
@@ -91,6 +111,10 @@ impl WebViewBackend for TauriBackend {
                     }
                 }
             });
+
+        if fe_runtime::qa_web::captured() {
+            builder = builder.with_new_window_req_handler(|_, _| wry::NewWindowResponse::Deny);
+        }
 
         #[cfg(target_os = "windows")]
         {
@@ -121,6 +145,15 @@ impl WebViewBackend for TauriBackend {
                 win32::destroy(popup_hwnd);
                 anyhow::anyhow!("TauriBackend: build_as_child failed: {e}")
             })?;
+            if fe_runtime::qa_web::captured() {
+                if let Err(error) =
+                    super::qa_navigation::install(&webview, fixture_session.clone(), events.clone())
+                {
+                    drop(webview);
+                    win32::destroy(popup_hwnd);
+                    return Err(error.context("could not install fixture redirect guard"));
+                }
+            }
 
             tracing::info!("TauriBackend: webview built OK — hiding popup until navigate()");
             win32::hide(popup_hwnd);
@@ -144,12 +177,19 @@ impl WebViewBackend for TauriBackend {
             visible: false,
             alive: true,
             current_url: None,
+            fixture_session,
             #[cfg(target_os = "windows")]
             popup_hwnd,
         })
     }
 
     fn navigate(&mut self, url: &Url) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            crate::security::embedded_allowed(url.as_str()),
+            "Navigation blocked by URL policy or unavailable fixture helper"
+        );
+        self.fixture_session
+            .set(fe_runtime::qa_web::preview_allows(url.as_str()));
         // Skip if we're already at this URL (prevents feedback loops from
         // the guard/flush command re-write in petal_portal).
         if self.current_url.as_ref() == Some(url) {
@@ -284,7 +324,7 @@ mod tests {
     #[test]
     fn decide_navigation_allows_public_https_and_emits_url_changed() {
         let events = fresh_events();
-        assert!(decide_navigation("https://example.com/", &events));
+        assert!(decide_navigation("https://example.com/", &events, false));
         let evts = events.borrow();
         assert_eq!(evts.len(), 1);
         assert!(matches!(
@@ -296,7 +336,11 @@ mod tests {
     #[test]
     fn decide_navigation_blocks_private_ip_and_emits_error() {
         let events = fresh_events();
-        assert!(!decide_navigation("http://192.168.1.1/admin", &events));
+        assert!(!decide_navigation(
+            "http://192.168.1.1/admin",
+            &events,
+            false
+        ));
         let evts = events.borrow();
         assert_eq!(evts.len(), 1);
         assert!(matches!(
@@ -308,16 +352,25 @@ mod tests {
     #[test]
     fn decide_navigation_blocks_localhost_and_emits_error() {
         let events = fresh_events();
-        assert!(!decide_navigation("http://localhost:8080/", &events));
+        assert!(!decide_navigation("http://localhost:8080/", &events, false));
         let evts = events.borrow();
         assert_eq!(evts.len(), 1);
         assert!(matches!(&evts[0], BackendEvent::Error(_)));
+        drop(evts);
+        assert!(
+            !decide_navigation("https://example.com/escape", &events, true),
+            "fixture session cannot escape to an otherwise public destination"
+        );
+        assert!(
+            !decide_navigation("http://127.0.0.1:49152/web/one", &events, true),
+            "fixture session requires live host capability"
+        );
     }
 
     #[test]
     fn decide_navigation_blocks_non_http_scheme_and_emits_error() {
         let events = fresh_events();
-        assert!(!decide_navigation("ftp://example.com/", &events));
+        assert!(!decide_navigation("ftp://example.com/", &events, false));
         let evts = events.borrow();
         assert_eq!(evts.len(), 1);
         assert!(matches!(&evts[0], BackendEvent::Error(_)));
@@ -326,7 +379,7 @@ mod tests {
     #[test]
     fn decide_navigation_blocks_unparseable_url_and_emits_error() {
         let events = fresh_events();
-        assert!(!decide_navigation("not a url at all", &events));
+        assert!(!decide_navigation("not a url at all", &events, false));
         let evts = events.borrow();
         assert_eq!(evts.len(), 1);
         assert!(matches!(
@@ -338,7 +391,7 @@ mod tests {
     #[test]
     fn decide_navigation_does_not_emit_url_changed_when_blocked() {
         let events = fresh_events();
-        decide_navigation("http://127.0.0.1/", &events);
+        decide_navigation("http://127.0.0.1/", &events, false);
         assert!(
             !events
                 .borrow()
