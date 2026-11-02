@@ -1232,6 +1232,23 @@ mod tests {
                 (EntityType::Fractal, "tree-fractal"),
                 (EntityType::Petal, "tree-petal"),
             ] {
+                let details =
+                    entity::get_entity_details_handler(&db, kind, id, "did:tree-user").await;
+                if role == "none" {
+                    details.expect_err("settings reads require current stored Viewer permission");
+                } else {
+                    let details = details.unwrap();
+                    assert_eq!(details.entity_type, kind);
+                    assert_eq!(details.entity_id, id);
+                    assert_eq!(details.verse_id, "tree-1");
+                    assert_eq!(details.role, role);
+                }
+            }
+            for (kind, id) in [
+                (EntityType::Verse, "tree-1"),
+                (EntityType::Fractal, "tree-fractal"),
+                (EntityType::Petal, "tree-petal"),
+            ] {
                 entity::rename_entity_handler(&db, kind, id, "forbidden", "did:tree-user")
                     .await
                     .expect_err("below Manager rename");
@@ -1415,11 +1432,12 @@ mod tests {
             fe_policy::RoleLevel::Manager,
             "a separate live resolver can observe temporary Manager"
         );
-        entity::require_snapshot_manager(
+        entity::require_snapshot_role(
             &captured_verse[0],
             &captured_roles,
             &captured_scopes,
             "did:tree-user",
+            fe_policy::RoleLevel::Manager,
         )
         .expect_err("captured Viewer must refuse even while a later live read sees Manager");
         db.query("UPDATE role:tree_local SET role='viewer'")
@@ -1427,11 +1445,12 @@ mod tests {
             .unwrap()
             .check()
             .unwrap();
-        entity::require_snapshot_manager(
+        entity::require_snapshot_role(
             &captured_verse[0],
             &captured_roles,
             &captured_scopes,
             "did:tree-user",
+            fe_policy::RoleLevel::Manager,
         )
         .expect_err("Viewer to Manager to Viewer cannot authorize the original snapshot");
         db.query("UPDATE role:tree_local SET role='manager'; DEFINE EVENT fail_hierarchy_cascade ON TABLE petal WHEN true THEN { THROW 'induced hierarchy failure' }").await.unwrap().check().unwrap();

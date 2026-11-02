@@ -4,7 +4,7 @@ use crate::accessibility::ResponseExt;
 
 use crate::actions::UiManager;
 use crate::atlas::DashboardState;
-use crate::dialogs::{ActiveDialog, CreateKind, EntitySettingsType, SettingsTab};
+use crate::dialogs::{ActiveDialog, CreateKind, EntitySettingsType};
 use crate::navigation_manager::NavigationManager;
 use crate::panels::toolbar;
 use crate::plugin::{LocalUserRole, ViewportCursorWorld};
@@ -265,34 +265,13 @@ pub fn viewport_verse_browser(
         }
 
         if gear_clicked {
-            ui_mgr.open_dialog(ActiveDialog::EntitySettings {
-                entity_type: EntitySettingsType::Verse,
-                entity_id: verse.id.clone(),
-                entity_name: verse.name.clone(),
-                parent_verse_id: verse.id.clone(),
-                parent_fractal_id: None,
-                active_tab: SettingsTab::General,
-                name_buf: verse.name.clone(),
-                default_access_buf: Some("viewer".to_string()),
-                description_buf: None,
-                peer_roles: vec![],
-                roles_loading: false,
-                invite_role_buf: "viewer".to_string(),
-                invite_expiry_buf: 24,
-                generated_invite_link: None,
-                pending_delete: false,
-                pending_claim_ownership: false,
-                api_tokens: vec![],
-                api_tokens_loading: false,
-                api_token_scope_buf: String::new(),
-                api_token_role_buf: "viewer".to_string(),
-                api_token_expiry_buf: 24,
-                api_token_client_buf: String::new(),
-                generated_api_token: None,
-                generated_api_token_client: None,
-                scoped_api_tokens: vec![],
-                scoped_tokens_loading: false,
-            });
+            ui_mgr.open_dialog(crate::dialogs::entity_details::dialog(
+                EntitySettingsType::Verse,
+                &verse.id,
+                &verse.name,
+                &verse.id,
+                None,
+            ));
         } else if card_clicked {
             nav.navigate_to_verse(verse.id.clone(), verse.name.clone());
         }
@@ -314,17 +293,19 @@ pub fn viewport_verse_browser(
     let new_rect = egui::Rect::from_min_size(egui::pos2(new_x, new_y), egui::vec2(card_w, card_h));
 
     ui.scope_builder(egui::UiBuilder::new().max_rect(new_rect), |ui| {
-        let resp = ui.add_sized(
-            [card_w, card_h],
-            egui::Button::new(
-                egui::RichText::new("+ New Verse")
-                    .size(13.0)
-                    .color(theme::TEXT_DIM),
+        let resp = ui
+            .add_sized(
+                [card_w, card_h],
+                egui::Button::new(
+                    egui::RichText::new("+ New Verse")
+                        .size(13.0)
+                        .color(theme::TEXT_DIM),
+                )
+                .fill(egui::Color32::TRANSPARENT)
+                .stroke(egui::Stroke::new(1.0_f32, theme::BG_BUTTON_ALT))
+                .corner_radius(6.0),
             )
-            .fill(egui::Color32::TRANSPARENT)
-            .stroke(egui::Stroke::new(1.0_f32, theme::BG_BUTTON_ALT))
-            .corner_radius(6.0),
-        ).observed(ui);
+            .observed(ui);
         if resp.clicked() {
             ui_mgr.open_dialog(ActiveDialog::CreateEntity {
                 kind: CreateKind::Verse,
@@ -520,34 +501,13 @@ pub fn viewport_fractal_browser(
             }
 
             if gear_clicked {
-                ui_mgr.open_dialog(ActiveDialog::EntitySettings {
-                    entity_type: EntitySettingsType::Fractal,
-                    entity_id: fractal.id.clone(),
-                    entity_name: fractal.name.clone(),
-                    parent_verse_id: verse.id.clone(),
-                    parent_fractal_id: None,
-                    active_tab: SettingsTab::General,
-                    name_buf: fractal.name.clone(),
-                    default_access_buf: Some("viewer".to_string()),
-                    description_buf: None,
-                    peer_roles: vec![],
-                    roles_loading: false,
-                    invite_role_buf: "viewer".to_string(),
-                    invite_expiry_buf: 24,
-                    generated_invite_link: None,
-                    pending_delete: false,
-                    pending_claim_ownership: false,
-                    api_tokens: vec![],
-                    api_tokens_loading: false,
-                    api_token_scope_buf: String::new(),
-                    api_token_role_buf: "viewer".to_string(),
-                    api_token_expiry_buf: 24,
-                    api_token_client_buf: String::new(),
-                    generated_api_token: None,
-                    generated_api_token_client: None,
-                    scoped_api_tokens: vec![],
-                    scoped_tokens_loading: false,
-                });
+                ui_mgr.open_dialog(crate::dialogs::entity_details::dialog(
+                    EntitySettingsType::Fractal,
+                    &fractal.id,
+                    &fractal.name,
+                    &verse.id,
+                    None,
+                ));
             } else if card_clicked {
                 nav.navigate_to_fractal_in_verse(
                     &verse.id,
@@ -575,17 +535,19 @@ pub fn viewport_fractal_browser(
             egui::Rect::from_min_size(egui::pos2(new_x, new_y), egui::vec2(card_w, card_h));
 
         ui.scope_builder(egui::UiBuilder::new().max_rect(new_rect), |ui| {
-            let resp = ui.add_sized(
-                [card_w, card_h],
-                egui::Button::new(
-                    egui::RichText::new("+ New Fractal")
-                        .size(13.0)
-                        .color(theme::TEXT_DIM),
+            let resp = ui
+                .add_sized(
+                    [card_w, card_h],
+                    egui::Button::new(
+                        egui::RichText::new("+ New Fractal")
+                            .size(13.0)
+                            .color(theme::TEXT_DIM),
+                    )
+                    .fill(egui::Color32::TRANSPARENT)
+                    .stroke(egui::Stroke::new(1.0_f32, theme::BG_BUTTON_ALT))
+                    .corner_radius(6.0),
                 )
-                .fill(egui::Color32::TRANSPARENT)
-                .stroke(egui::Stroke::new(1.0_f32, theme::BG_BUTTON_ALT))
-                .corner_radius(6.0),
-            ).observed(ui);
+                .observed(ui);
             if resp.clicked() {
                 ui_mgr.open_dialog(ActiveDialog::CreateEntity {
                     kind: CreateKind::Fractal,
@@ -750,34 +712,13 @@ pub fn viewport_petal_browser(
             }
 
             if gear_clicked {
-                ui_mgr.open_dialog(ActiveDialog::EntitySettings {
-                    entity_type: EntitySettingsType::Petal,
-                    entity_id: petal.id.clone(),
-                    entity_name: petal.name.clone(),
-                    parent_verse_id: nav.active_verse_id.clone().unwrap_or_default(),
-                    parent_fractal_id: nav.active_fractal_id.clone(),
-                    active_tab: SettingsTab::General,
-                    name_buf: petal.name.clone(),
-                    default_access_buf: Some("viewer".to_string()),
-                    description_buf: None,
-                    peer_roles: vec![],
-                    roles_loading: false,
-                    invite_role_buf: "viewer".to_string(),
-                    invite_expiry_buf: 24,
-                    generated_invite_link: None,
-                    pending_delete: false,
-                    pending_claim_ownership: false,
-                    api_tokens: vec![],
-                    api_tokens_loading: false,
-                    api_token_scope_buf: String::new(),
-                    api_token_role_buf: "viewer".to_string(),
-                    api_token_expiry_buf: 24,
-                    api_token_client_buf: String::new(),
-                    generated_api_token: None,
-                    generated_api_token_client: None,
-                    scoped_api_tokens: vec![],
-                    scoped_tokens_loading: false,
-                });
+                ui_mgr.open_dialog(crate::dialogs::entity_details::dialog(
+                    EntitySettingsType::Petal,
+                    &petal.id,
+                    &petal.name,
+                    nav.active_verse_id.as_deref().unwrap_or_default(),
+                    nav.active_fractal_id.as_deref(),
+                ));
             } else if card_clicked {
                 nav.navigate_to_petal_in_fractal(
                     &verse.id,
@@ -807,17 +748,19 @@ pub fn viewport_petal_browser(
             egui::Rect::from_min_size(egui::pos2(new_x, new_y), egui::vec2(card_w, card_h));
 
         ui.scope_builder(egui::UiBuilder::new().max_rect(new_rect), |ui| {
-            let resp = ui.add_sized(
-                [card_w, card_h],
-                egui::Button::new(
-                    egui::RichText::new("+ New Petal")
-                        .size(13.0)
-                        .color(theme::TEXT_DIM),
+            let resp = ui
+                .add_sized(
+                    [card_w, card_h],
+                    egui::Button::new(
+                        egui::RichText::new("+ New Petal")
+                            .size(13.0)
+                            .color(theme::TEXT_DIM),
+                    )
+                    .fill(egui::Color32::TRANSPARENT)
+                    .stroke(egui::Stroke::new(1.0_f32, theme::BG_BUTTON_ALT))
+                    .corner_radius(6.0),
                 )
-                .fill(egui::Color32::TRANSPARENT)
-                .stroke(egui::Stroke::new(1.0_f32, theme::BG_BUTTON_ALT))
-                .corner_radius(6.0),
-            ).observed(ui);
+                .observed(ui);
             if resp.clicked() {
                 ui_mgr.open_dialog(ActiveDialog::CreateEntity {
                     kind: CreateKind::Petal,

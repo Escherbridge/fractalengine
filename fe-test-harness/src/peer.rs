@@ -582,7 +582,8 @@ impl TestPeer {
                                 }
                             }
                         }
-                        Ok(DbCommand::RenameEntity { .. })
+                        Ok(DbCommand::GetEntityDetails { .. })
+                        | Ok(DbCommand::RenameEntity { .. })
                         | Ok(DbCommand::SetVerseDefaultAccess { .. })
                         | Ok(DbCommand::UpdateFractalDescription { .. })
                         | Ok(DbCommand::DeleteEntity { .. })

@@ -3,7 +3,7 @@
 use super::tree_appearance::{AppearanceDraft, EntryKind};
 use crate::accessibility::ResponseExt;
 use crate::actions::UiManager;
-use crate::dialogs::{ActiveDialog, EntitySettingsType, SettingsTab};
+use crate::dialogs::{ActiveDialog, EntitySettingsType};
 use crate::navigation_manager::NavigationManager;
 use crate::plugin::LocalUserRole;
 use crate::settings::AppSettings;
@@ -38,38 +38,17 @@ impl Target<'_> {
                 descendant_count: None,
             };
         }
-        ActiveDialog::EntitySettings {
-            entity_type: match self.kind {
+        crate::dialogs::entity_details::dialog(
+            match self.kind {
                 EntryKind::Verse => EntitySettingsType::Verse,
                 EntryKind::Fractal => EntitySettingsType::Fractal,
                 _ => EntitySettingsType::Petal,
             },
-            entity_id: self.id.into(),
-            entity_name: self.name.into(),
-            parent_verse_id: self.verse_id.into(),
-            parent_fractal_id: self.fractal_id.map(str::to_owned),
-            active_tab: SettingsTab::General,
-            name_buf: self.name.into(),
-            default_access_buf: None,
-            description_buf: None,
-            peer_roles: vec![],
-            roles_loading: false,
-            invite_role_buf: "viewer".into(),
-            invite_expiry_buf: 24,
-            generated_invite_link: None,
-            pending_delete: false,
-            pending_claim_ownership: false,
-            api_tokens: vec![],
-            api_tokens_loading: false,
-            api_token_scope_buf: String::new(),
-            api_token_role_buf: "viewer".into(),
-            api_token_expiry_buf: 24,
-            api_token_client_buf: String::new(),
-            generated_api_token: None,
-            generated_api_token_client: None,
-            scoped_api_tokens: vec![],
-            scoped_tokens_loading: false,
-        }
+            self.id,
+            self.name,
+            self.verse_id,
+            self.fractal_id,
+        )
     }
 }
 
@@ -115,24 +94,22 @@ fn menu(ui: &mut egui::Ui, target: Target<'_>, can_edit: bool, command: &mut Opt
             ui.close();
         }
     }
-    if target.kind == EntryKind::Node {
-        if ui
-            .add_enabled(can_edit, egui::Button::new("Delete…"))
-            .named(ui, format_args!("Delete node {}", target.name))
-            .on_hover_text("Open Node Options, then Delete Node and confirm the subtree deletion.")
-            .on_disabled_hover_text("Editor role in this entry's verse is required.")
-            .clicked()
-        {
-            *command = Some(Command::Options);
-            ui.close();
-        }
-    } else {
-        ui.add_enabled(false, egui::Button::new("Delete…"))
-            .named(
-                ui,
-                format_args!("Delete {} {} unavailable", target.kind.label(), target.name),
-            )
-            .on_disabled_hover_text("Deleting this branch is currently unavailable.");
+    if ui
+        .add_enabled(can_edit, egui::Button::new("Delete..."))
+        .named(
+            ui,
+            format_args!("Delete {} {}", target.kind.label(), target.name),
+        )
+        .on_hover_text(
+            "Open this entry's settings, then choose Delete and confirm removal of its contents.",
+        )
+        .on_disabled_hover_text(
+            "Enter this entry's scope with the required edit role before deleting it.",
+        )
+        .clicked()
+    {
+        *command = Some(Command::Options);
+        ui.close();
     }
 }
 

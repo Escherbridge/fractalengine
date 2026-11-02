@@ -192,34 +192,23 @@ mod tests {
     }
 
     fn entity_settings_dialog() -> ActiveDialog {
-        ActiveDialog::EntitySettings {
-            entity_type: EntitySettingsType::Verse,
-            entity_id: "v1".to_string(),
-            entity_name: "Verse".to_string(),
-            parent_verse_id: "v1".to_string(),
-            parent_fractal_id: None,
-            active_tab: SettingsTab::ApiAccess,
-            name_buf: "Verse".to_string(),
-            default_access_buf: Some("viewer".to_string()),
-            description_buf: None,
-            peer_roles: vec![],
-            roles_loading: false,
-            invite_role_buf: "viewer".to_string(),
-            invite_expiry_buf: 24,
-            generated_invite_link: None,
-            pending_delete: false,
-            pending_claim_ownership: false,
-            api_tokens: vec![],
-            api_tokens_loading: false,
-            api_token_scope_buf: "VERSE#v1".to_string(),
-            api_token_role_buf: "viewer".to_string(),
-            api_token_expiry_buf: 24,
-            api_token_client_buf: String::new(),
-            generated_api_token: None,
-            generated_api_token_client: None,
-            scoped_api_tokens: vec![],
-            scoped_tokens_loading: false,
+        let mut dialog = crate::dialogs::entity_details::dialog(
+            EntitySettingsType::Verse,
+            "v1",
+            "Verse",
+            "v1",
+            None,
+        );
+        if let ActiveDialog::EntitySettings {
+            active_tab,
+            api_token_scope_buf,
+            ..
+        } = &mut dialog
+        {
+            *active_tab = SettingsTab::ApiAccess;
+            *api_token_scope_buf = "VERSE#v1".into();
         }
+        dialog
     }
 
     #[test]

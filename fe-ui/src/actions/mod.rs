@@ -1922,39 +1922,202 @@ mod tests {
     #[test]
     fn active_dialog_entity_settings_opens_and_closes() {
         let mut mgr = UiManager::default();
-        mgr.open_dialog(ActiveDialog::EntitySettings {
-            entity_type: crate::dialogs::EntitySettingsType::Verse,
-            entity_id: "v1".to_string(),
-            entity_name: "Test Verse".to_string(),
-            parent_verse_id: "v1".to_string(),
-            parent_fractal_id: None,
-            active_tab: crate::dialogs::SettingsTab::General,
-            name_buf: "Test Verse".to_string(),
-            default_access_buf: Some("viewer".to_string()),
-            description_buf: None,
-            peer_roles: vec![],
-            roles_loading: false,
-            invite_role_buf: "viewer".to_string(),
-            invite_expiry_buf: 24,
-            generated_invite_link: None,
-            pending_delete: false,
-            pending_claim_ownership: false,
-            api_tokens: vec![],
-            api_tokens_loading: false,
-            api_token_scope_buf: String::new(),
-            api_token_role_buf: "viewer".to_string(),
-            api_token_expiry_buf: 24,
-            api_token_client_buf: String::new(),
-            generated_api_token: None,
-            generated_api_token_client: None,
-            scoped_api_tokens: vec![],
-            scoped_tokens_loading: false,
-        });
+        mgr.open_dialog(crate::dialogs::entity_details::dialog(
+            crate::dialogs::EntitySettingsType::Verse,
+            "v1",
+            "Test Verse",
+            "v1",
+            None,
+        ));
         assert!(mgr.any_dialog_open());
         assert!(matches!(
             mgr.active_dialog,
             ActiveDialog::EntitySettings { .. }
         ));
+        let (tx, rx) = crossbeam::channel::bounded(8);
+        let queue = |manager: &mut UiManager, now| {
+            crate::dialogs::entity_details::request_if_needed(manager, &tx, now);
+            match rx.try_recv().unwrap() {
+                DbCommand::GetEntityDetails {
+                    entity_type,
+                    entity_id,
+                    request_id,
+                } => (entity_type, entity_id, request_id),
+                other => panic!("expected target details read, got {other:?}"),
+            }
+        };
+        let (kind, id, request_id) = queue(&mut mgr, 1.0);
+        assert_eq!(kind, fe_runtime::messages::EntityType::Verse);
+        assert_eq!(id, "v1");
+        let mut stored = fe_runtime::messages::EntityDetails {
+            entity_type: kind,
+            entity_id: id.clone(),
+            verse_id: "v1".into(),
+            fractal_id: None,
+            scope: "VERSE#v1".into(),
+            name: "Persisted verse".into(),
+            default_access: Some("none".into()),
+            description: None,
+            role: "manager".into(),
+        };
+        crate::dialogs::entity_details::apply(
+            &mut mgr,
+            kind,
+            &id,
+            request_id + 1,
+            &Ok(stored.clone()),
+            1.1,
+        );
+        if let ActiveDialog::EntitySettings {
+            name_buf,
+            default_access_buf,
+            details,
+            ..
+        } = &mgr.active_dialog
+        {
+            assert!(
+                name_buf.is_empty() && default_access_buf.is_none() && details.loaded.is_none(),
+                "a wrong nonce cannot hydrate guessed defaults"
+            );
+        }
+        let mut foreign = stored.clone();
+        foreign.verse_id = "other".into();
+        crate::dialogs::entity_details::apply(&mut mgr, kind, &id, request_id, &Ok(foreign), 1.1);
+        if let ActiveDialog::EntitySettings { details, .. } = &mgr.active_dialog {
+            assert!(details.error.is_some() && details.loaded.is_none());
+        }
+        crate::dialogs::entity_details::refresh_target(&mut mgr, kind, &id);
+        let (_, _, next) = queue(&mut mgr, 1.2);
+        crate::dialogs::entity_details::apply(
+            &mut mgr,
+            kind,
+            &id,
+            request_id,
+            &Ok(stored.clone()),
+            1.25,
+        );
+        crate::dialogs::entity_details::apply(&mut mgr, kind, &id, next, &Ok(stored.clone()), 1.3);
+        if let ActiveDialog::EntitySettings {
+            name_buf,
+            default_access_buf,
+            details,
+            ..
+        } = &mut mgr.active_dialog
+        {
+            assert_eq!(name_buf.as_str(), "Persisted verse");
+            assert_eq!(default_access_buf.as_deref(), Some("none"));
+            assert!(details.can_write());
+            *name_buf = "My unsaved draft".into();
+        }
+        crate::dialogs::entity_details::refresh_target(&mut mgr, kind, &id);
+        let (_, _, refresh) = queue(&mut mgr, 2.0);
+        stored.name = "Changed elsewhere".into();
+        stored.default_access = Some("viewer".into());
+        crate::dialogs::entity_details::apply(
+            &mut mgr,
+            kind,
+            &id,
+            refresh,
+            &Ok(stored.clone()),
+            2.1,
+        );
+        if let ActiveDialog::EntitySettings {
+            name_buf,
+            default_access_buf,
+            description_buf,
+            details,
+            ..
+        } = &mut mgr.active_dialog
+        {
+            assert_eq!(name_buf.as_str(), "My unsaved draft");
+            assert_eq!(default_access_buf.as_deref(), Some("viewer"));
+            assert!(details.conflict && !details.can_write());
+            details.restore(name_buf, default_access_buf, description_buf);
+            assert_eq!(name_buf.as_str(), "Changed elsewhere");
+            assert!(details.can_write());
+        }
+        crate::dialogs::entity_details::refresh_target(&mut mgr, kind, &id);
+        let (_, _, failed) = queue(&mut mgr, 3.0);
+        crate::dialogs::entity_details::apply(
+            &mut mgr,
+            kind,
+            &id,
+            failed,
+            &Err("Viewer access was revoked".into()),
+            3.1,
+        );
+        if let ActiveDialog::EntitySettings {
+            name_buf, details, ..
+        } = &mgr.active_dialog
+        {
+            assert_eq!(name_buf.as_str(), "Changed elsewhere");
+            assert!(details.error.is_some() && !details.can_write());
+        }
+        mgr.open_dialog(crate::dialogs::entity_details::dialog(
+            crate::dialogs::EntitySettingsType::Fractal,
+            "f1",
+            "Cached label",
+            "v1",
+            None,
+        ));
+        crate::dialogs::entity_details::apply(
+            &mut mgr,
+            kind,
+            &id,
+            failed,
+            &Ok(stored.clone()),
+            4.0,
+        );
+        let (kind, id, fractal_request) = queue(&mut mgr, 5.0);
+        stored = fe_runtime::messages::EntityDetails {
+            entity_type: kind,
+            entity_id: id.clone(),
+            verse_id: "v1".into(),
+            fractal_id: None,
+            scope: "VERSE#v1-FRACTAL#f1".into(),
+            name: "Stored fractal".into(),
+            default_access: None,
+            description: Some("Stored description with \"quotes\" and\nnewlines".into()),
+            role: "manager".into(),
+        };
+        crate::dialogs::entity_details::apply(
+            &mut mgr,
+            kind,
+            &id,
+            fractal_request,
+            &Ok(stored.clone()),
+            5.1,
+        );
+        if let ActiveDialog::EntitySettings {
+            description_buf,
+            details,
+            ..
+        } = &mut mgr.active_dialog
+        {
+            assert_eq!(description_buf.as_deref(), stored.description.as_deref());
+            assert!(details.can_write());
+            *description_buf = Some("Retain this unsaved description".into());
+        }
+        crate::dialogs::entity_details::refresh_target(&mut mgr, kind, &id);
+        let (_, _, timed_out) = queue(&mut mgr, 6.0);
+        crate::dialogs::entity_details::request_if_needed(&mut mgr, &tx, 37.0);
+        crate::dialogs::entity_details::apply(&mut mgr, kind, &id, timed_out, &Ok(stored), 37.1);
+        if let ActiveDialog::EntitySettings {
+            description_buf,
+            details,
+            ..
+        } = &mgr.active_dialog
+        {
+            assert_eq!(
+                description_buf.as_deref(),
+                Some("Retain this unsaved description")
+            );
+            assert!(details.error.is_some() && !details.can_write());
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "a timed-out request never auto-retries indefinitely"
+        );
         mgr.close_dialog();
         assert!(!mgr.any_dialog_open());
     }

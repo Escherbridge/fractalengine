@@ -253,3 +253,39 @@ the shared error notice after releasing the dialog borrow. A failed delete send
 keeps its confirmation open. The database authorizes these hierarchy mutations
 at the actual stored target with Manager; the navigation role is not authority
 for a different target opened from the tree.
+
+## Authoritative hierarchy details
+
+entity_details::dialog is the single EntitySettings constructor for all viewport
+and tree openers. Editable name/access/description buffers start unhydrated;
+the cached tree name is only a title. The first render queues GetEntityDetails.
+The database resolves local identity and the target's actual stored ancestry,
+authorizes Viewer from a captured role snapshot, fences that snapshot in the
+read transaction, then returns bounded selected fields and the target role.
+A missing default-access value stays explicitly unset, never guessed public.
+A missing optional fractal description is an empty editable description.
+
+EntityDetailsState owns Queued/Loading/Ready/Failed request state, a monotonic
+process-local nonce and a 30-second deadline. Replies must match the nonce,
+outer/inner kind and ID, expected stored ancestry and canonical scope; obsolete,
+closed/reopened, foreign-target and timed-out replies cannot hydrate buffers.
+Refresh compares each draft field with its previous stored baseline. Clean
+fields update; dirty fields remain. A changed stored value behind a dirty draft
+marks a conflict and disables writes until the user discards that draft. An
+incoming value equal to the current draft is a confirmed match, not a conflict.
+Read failure retains buffers and blocks saves until a successful retry. A read
+refresh disarms any existing delete confirmation. Rename/access/description
+acknowledgements queue a new authoritative read for the matching open target.
+
+Dialog editing uses the role returned for this target, not a navigation role
+from another scope. Backend mutation checks remain authoritative. The guarded
+Claim Ownership recovery control remains available for private legacy orphan
+verses even if Viewer details admission fails. This does not bypass the existing
+never-shared/orphaned-creator checks. Existing Access/API result handlers retain
+their separate contracts; this read seam does not claim their requests gained
+new correlation fields.
+
+Existing journeys cover command/result target and nonce binding, real persisted
+private access and descriptions, dirty refresh/conflict/discard, read errors and
+timeout. No new test functions were introduced; integrated execution and live
+UI settings/readback verification remain required.

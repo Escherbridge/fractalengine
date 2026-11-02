@@ -3,6 +3,7 @@
 
 mod context_menu;
 mod create_entity;
+pub(crate) mod entity_details;
 mod entity_settings;
 mod gltf_import;
 mod hexon_manager;
@@ -180,6 +181,7 @@ pub enum ActiveDialog {
         parent_verse_id: String,
         /// Parent fractal ID (set when entity is a Petal).
         parent_fractal_id: Option<String>,
+        details: entity_details::EntityDetailsState,
         active_tab: SettingsTab,
         // General tab state
         name_buf: String,

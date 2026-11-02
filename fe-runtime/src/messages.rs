@@ -383,6 +383,21 @@ impl std::fmt::Display for EntityType {
     }
 }
 
+/// Viewer-authorized hierarchy settings read from one fenced transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntityDetails {
+    pub entity_type: EntityType,
+    pub entity_id: String,
+    pub verse_id: String,
+    /// The parent fractal for a petal; absent for verse/fractal settings.
+    pub fractal_id: Option<String>,
+    pub scope: String,
+    pub name: String,
+    pub default_access: Option<String>,
+    pub description: Option<String>,
+    pub role: String,
+}
+
 impl std::str::FromStr for EntityType {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -547,6 +562,12 @@ pub enum DbCommand {
         url: Option<String>,
     },
     // --- Entity Settings: General config ---
+    /// Read the local caller's current target settings; never an API waiter reply.
+    GetEntityDetails {
+        entity_type: EntityType,
+        entity_id: String,
+        request_id: u64,
+    },
     /// Rename a verse, fractal, or petal.
     RenameEntity {
         entity_type: EntityType,
@@ -1242,6 +1263,12 @@ pub enum DbResult {
         rooms: Vec<String>,
     },
     // --- Entity Settings results ---
+    EntityDetailsLoaded {
+        entity_type: EntityType,
+        entity_id: String,
+        request_id: u64,
+        details: Result<EntityDetails, String>,
+    },
     EntityRenamed {
         entity_type: EntityType,
         entity_id: String,

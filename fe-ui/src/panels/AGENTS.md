@@ -445,15 +445,16 @@ compilation, execution and live UI readability/a11y verification remain required
 `tree_entry::row` owns the shared fixed icon/name/visibility/menu layout and
 routes typed presentation commands. Menus never borrow the Inspector's current
 target. Rename and Options reuse Node Options or Entity Settings; Node Options
-retains its explicit subtree-delete confirmation. Parent branch deletion stays
-disabled here pending review of the legacy DeleteEntity command: unlike the
-node tombstone path, its current dispatcher lacks a stored-role guard and
-transactional lifecycle coverage. Existing Entity Settings still owns that
-legacy action; this sidebar slice does not repair that backend gap.
-Copy ID copies the clicked ID. Editing controls require the exact active scope for which LocalUserRole
-is resolved: nodes use their owning petal; hierarchy rows require that entry
-with no downstream scope. A child-scope Manager never enables ancestor edits. These checks are presentation only; the legacy parent
-RenameEntity/DeleteEntity authorization gap remains a campaign follow-up.
+retains its explicit subtree-delete confirmation. Parent Delete now routes to
+Entity Settings' existing two-step confirmation, backed by the reviewed stored-
+Manager authorization and atomic physical subtree cascade. It does not invent
+P2P tombstones or ordinary history coverage for structural deletion.
+Copy ID copies the clicked ID. Menu editing controls require the exact active
+scope for which LocalUserRole is resolved: nodes use their owning petal;
+hierarchy rows require that entry with no downstream scope. The opened dialog
+then obtains its own target-authorized stored details and role. Every viewport
+and tree opener uses the same entity_details factory; cached names are titles,
+not editable stored-value guesses.
 
 The existing NavigationManager remains the hierarchy cursor and NodeManager
 remains the node-selection authority. A current hierarchy name is a no-op;

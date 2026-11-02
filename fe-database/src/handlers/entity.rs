@@ -10,6 +10,8 @@ use crate::repo::Db;
 pub(crate) struct ParentMutation {
     guards: Vec<String>,
     bindings: Vec<(String, Value)>,
+    scope: String,
+    role: fe_policy::RoleLevel,
 }
 
 impl ParentMutation {
@@ -19,6 +21,15 @@ impl ParentMutation {
         statements: &[&str],
         bindings: Vec<(String, Value)>,
     ) -> anyhow::Result<()> {
+        self.execute(db, statements, bindings).await.map(|_| ())
+    }
+
+    async fn execute(
+        self,
+        db: &Db,
+        statements: &[&str],
+        bindings: Vec<(String, Value)>,
+    ) -> anyhow::Result<surrealdb::Response> {
         let mut script = String::from("BEGIN TRANSACTION;\n");
         for statement in self
             .guards
@@ -34,8 +45,7 @@ impl ParentMutation {
         for binding in self.bindings.into_iter().chain(bindings) {
             query = query.bind(binding);
         }
-        query.await?.check()?;
-        Ok(())
+        Ok(query.await?.check()?)
     }
 }
 
@@ -45,6 +55,23 @@ pub(crate) async fn prepare_parent_mutation(
     entity_type: EntityType,
     entity_id: &str,
     local_did: &str,
+) -> anyhow::Result<ParentMutation> {
+    prepare_parent_access(
+        db,
+        entity_type,
+        entity_id,
+        local_did,
+        fe_policy::RoleLevel::Manager,
+    )
+    .await
+}
+
+async fn prepare_parent_access(
+    db: &Db,
+    entity_type: EntityType,
+    entity_id: &str,
+    local_did: &str,
+    required: fe_policy::RoleLevel,
 ) -> anyhow::Result<ParentMutation> {
     let scope = match entity_type {
         EntityType::Verse => super::crud::resolve_verse_scope_handler(db, entity_id).await?,
@@ -75,7 +102,7 @@ pub(crate) async fn prepare_parent_mutation(
     let verse: Vec<Value> = snapshot.take(0)?;
     let roles: Vec<Value> = snapshot.take(1)?;
     anyhow::ensure!(verse.len() == 1, "hierarchy ancestry not found");
-    require_snapshot_manager(&verse[0], &roles, &scopes, local_did)?;
+    let role = require_snapshot_role(&verse[0], &roles, &scopes, local_did, required)?;
 
     let mut guards = vec![
         "IF (SELECT verse_id, created_by, default_access FROM verse WHERE verse_id = $entity_verse) != $entity_verse_snapshot { THROW 'hierarchy authority changed'; }".into(),
@@ -98,22 +125,34 @@ pub(crate) async fn prepare_parent_mutation(
         guards.push("IF array::len((SELECT VALUE petal_id FROM petal WHERE petal_id = $entity_petal AND fractal_id = $entity_fractal)) != 1 { THROW 'hierarchy ancestry changed'; }".into());
         bindings.push(("entity_petal".into(), json!(petal)));
     }
-    Ok(ParentMutation { guards, bindings })
+    Ok(ParentMutation {
+        guards,
+        bindings,
+        scope,
+        role,
+    })
 }
 
 /// Authorize precisely the captured values that the transaction will fence.
-pub(crate) fn require_snapshot_manager(
+pub(crate) fn require_snapshot_role(
     verse: &Value,
     roles: &[Value],
     scopes: &[String],
     local_did: &str,
-) -> anyhow::Result<()> {
+    required: fe_policy::RoleLevel,
+) -> anyhow::Result<fe_policy::RoleLevel> {
     let mut ordered_roles = Vec::with_capacity(scopes.len());
     for scope in scopes {
-        let mut at_scope = roles.iter().filter(|row| row["scope"].as_str() == Some(scope.as_str()));
+        let mut at_scope = roles
+            .iter()
+            .filter(|row| row["scope"].as_str() == Some(scope.as_str()));
         if let Some(row) = at_scope.next() {
             anyhow::ensure!(at_scope.next().is_none(), "ambiguous hierarchy authority");
-            ordered_roles.push(row["role"].as_str().ok_or_else(|| anyhow::anyhow!("invalid stored role"))?);
+            ordered_roles.push(
+                row["role"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("invalid stored role"))?,
+            );
         }
     }
     let role = crate::role_manager::resolve_role_snapshot(
@@ -122,9 +161,93 @@ pub(crate) fn require_snapshot_manager(
         verse["default_access"].as_str().unwrap_or("viewer"),
         ordered_roles,
     );
-    anyhow::ensure!(role.is_at_least(fe_policy::RoleLevel::Manager),
-        "Hierarchy mutation refused: stored role {role} is below Manager");
-    Ok(())
+    anyhow::ensure!(
+        role.is_at_least(required),
+        "Hierarchy access refused: stored role {role} is below {required}"
+    );
+    Ok(role)
+}
+
+/// Read settings only after fencing stored ancestry and Viewer authority.
+pub(crate) async fn get_entity_details_handler(
+    db: &Db,
+    entity_type: EntityType,
+    entity_id: &str,
+    local_did: &str,
+) -> anyhow::Result<fe_runtime::messages::EntityDetails> {
+    let prepared = prepare_parent_access(
+        db,
+        entity_type,
+        entity_id,
+        local_did,
+        fe_policy::RoleLevel::Viewer,
+    )
+    .await?;
+    let scope = prepared.scope.clone();
+    let role = prepared.role.to_string();
+    let parts = crate::parse_scope(&scope)?;
+    let result_index = prepared.guards.len();
+    let (table, id) = table_identity(entity_type);
+    let columns = match entity_type {
+        EntityType::Verse => "name, default_access",
+        EntityType::Fractal => "name, description",
+        EntityType::Petal => "name",
+    };
+    let mut response = prepared
+        .execute(
+            db,
+            &[&format!(
+                "SELECT {columns} FROM {table} WHERE {id} = $entity_target"
+            )],
+            vec![("entity_target".into(), json!(entity_id))],
+        )
+        .await?;
+    let rows: Vec<Value> = response.take(result_index)?;
+    anyhow::ensure!(
+        rows.len() == 1,
+        "hierarchy details target is missing or ambiguous"
+    );
+    let row = &rows[0];
+    let name = row["name"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("invalid stored hierarchy name"))?
+        .to_owned();
+    let optional_text = |key: &str| -> anyhow::Result<Option<String>> {
+        match row.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(value)) => {
+                anyhow::ensure!(
+                    value.len() <= 65_536,
+                    "stored hierarchy field exceeds editor limit"
+                );
+                Ok(Some(value.clone()))
+            }
+            Some(_) => anyhow::bail!("invalid stored hierarchy field"),
+        }
+    };
+    anyhow::ensure!(
+        name.len() <= 65_536,
+        "stored hierarchy name exceeds editor limit"
+    );
+    let default_access = optional_text("default_access")?;
+    anyhow::ensure!(
+        matches!(default_access.as_deref(), None | Some("viewer" | "none")),
+        "invalid stored default access setting"
+    );
+    Ok(fe_runtime::messages::EntityDetails {
+        entity_type,
+        entity_id: entity_id.into(),
+        verse_id: parts.verse_id,
+        fractal_id: match entity_type {
+            EntityType::Petal => parts.fractal_id,
+            _ => None,
+        },
+        scope,
+        name,
+        default_access,
+        description: optional_text("description")?,
+        role,
+    })
 }
 
 fn table_identity(entity_type: EntityType) -> (&'static str, &'static str) {

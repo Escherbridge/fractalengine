@@ -159,3 +159,10 @@ published under the returned ids. Every peer's anchor that another host may judg
 against is published too (scenario 12 publishes bob's and carol's, not only alice's). A scenario
 that never publishes a manifest leaves every fabric without an owner or `default_access`, and
 since W5s/R1 a publisher's blob gate then refuses every requester (scenario 16 publishes one).
+
+## GUI hierarchy details command
+
+The in-process peer model explicitly ignores GetEntityDetails alongside its
+existing unsupported GUI EntitySettings commands. Real details readback and
+Viewer admission journeys use the production fe-database dispatcher/handler;
+no fake peer read is counted as that evidence.

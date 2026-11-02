@@ -398,3 +398,11 @@ future custom pipeline.
 ## Property API delivery and UI hydration
 
 The dispatcher forwards correlated property replies before selected-node guards, then still runs the existing cache/Inspector handlers. Selection filters affect Inspector buffers, never the API acknowledgment. Unmatched and duplicate correlated replies have no fallback; the final dispatcher delivery skips replies already forwarded. The existing unselected-properties journey runs the actual Bevy dispatcher, proving both API delivery and untouched UI state.
+
+## Entity settings details adoption
+
+EntityDetailsLoaded routes to dialogs/entity_details::apply with NoticeClock.
+The active dialog's target, request nonce, canonical stored scope and ancestry
+must all match before any form buffer is hydrated. Matching rename, default-
+access and description acknowledgements request a fresh stored-details read;
+late acknowledgements for another open target do not change that form.

@@ -1609,3 +1609,18 @@ EntitySettings' navigation-scoped cached role is not authoritative for another
 tree target. The DB check is authoritative; target-specific dialog role UX is a
 separate UI task. Rename, description and delete channel failures are logged and
 shown through the shared notice surface; failed sends retain the delete dialog.
+
+## Fenced hierarchy details reads
+
+GetEntityDetails uses the same prepared ancestry/role snapshot as hierarchy
+mutations with a Viewer floor; Manager remains the floor for mutations and
+child creation. The shared pure snapshot resolver returns the captured role.
+Every ancestry/authority guard runs before the selected-field SELECT in one
+explicit transaction. SQL identifiers/projections come only from EntityType,
+and caller values stay bound. The DB thread supplies local_did; callers cannot
+assert an actor. The read retains missing default access as absent and returns
+only valid viewer/none values, optional description, actual name and scope.
+Fields are bounded at 64 KiB. Failure returns a correlated static unavailable
+message; detailed database errors remain in local logs. The response index is
+the number of preceding guard statements: pinned SurrealDB's executor does not
+return BEGIN, but does return COMMIT after the SELECT.

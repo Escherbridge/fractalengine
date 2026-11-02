@@ -34,10 +34,9 @@ pub fn render_entity_settings_dialog(
     ctx: &egui::Context,
     ui_mgr: &mut UiManager,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
-    // F6: gates the "Claim Ownership" section (Verse only) — see
-    // `dialogs/AGENTS.md` §claim-ownership.
-    local_role: &crate::plugin::LocalUserRole,
+    _local_role: &crate::plugin::LocalUserRole,
 ) {
+    super::entity_details::request_if_needed(ui_mgr, db_tx, ctx.input(|input| input.time));
     // Early-return guard: only render when EntitySettings is active.
     let ActiveDialog::EntitySettings {
         ref entity_type,
@@ -45,6 +44,7 @@ pub fn render_entity_settings_dialog(
         ref entity_name,
         ref parent_verse_id,
         ref parent_fractal_id,
+        ref mut details,
         ref mut active_tab,
         ref mut name_buf,
         ref mut default_access_buf,
@@ -78,6 +78,11 @@ pub fn render_entity_settings_dialog(
     };
     let title = format!("{} Settings — {}", type_label, entity_name);
     let current_tab = *active_tab;
+    let can_write = details.can_write();
+    let can_edit_draft = details
+        .loaded
+        .as_ref()
+        .is_some_and(|stored| fe_database::RoleLevel::from(stored.role.as_str()).can_manage());
 
     let mut close = false;
     let mut still_open = true;
@@ -98,6 +103,19 @@ pub fn render_entity_settings_dialog(
                 .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM)),
         )
         .show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if details.loading() { ui.spinner(); ui.label("Loading stored settings..."); }
+                if ui.button(if details.error.is_some() { "Retry loading settings" } else { "Refresh stored settings" }).named(ui, format_args!("Refresh settings for {entity_name}")).clicked() { details.refresh(); }
+                if details.loaded.is_some() && ui.button("Discard local draft").named(ui, format_args!("Discard settings draft for {entity_name}")).clicked() {
+                    details.restore(name_buf, default_access_buf, description_buf);
+                }
+            });
+            if let Some(error) = &details.error { ui.colored_label(theme::STATUS_OFFLINE, error); }
+            if details.conflict { ui.colored_label(theme::STATUS_OFFLINE, "Stored settings changed. Your draft is retained; discard it before saving a replacement."); }
+            if let Some(stored) = &details.loaded {
+                ui.label(format!("Stored role at this entry: {}", stored.role));
+                if !can_edit_draft { ui.label("Manager role at this entry is required to edit hierarchy settings."); }
+            }
             // Tab bar
             ui.horizontal(|ui| {
                 let gen_fill = if current_tab == SettingsTab::General {
@@ -121,7 +139,7 @@ pub fn render_entity_settings_dialog(
                     theme::BG_TAB_INACTIVE
                 };
                 if ui
-                    .add(
+                    .add_enabled(can_write,
                         egui::Button::new(egui::RichText::new("Access").color(theme::TEXT_BRIGHT))
                             .fill(acc_fill),
                     ).observed(ui)
@@ -136,7 +154,7 @@ pub fn render_entity_settings_dialog(
                     theme::BG_TAB_INACTIVE
                 };
                 if ui
-                    .add(
+                    .add_enabled(can_write,
                         egui::Button::new(egui::RichText::new("API").color(theme::TEXT_BRIGHT))
                             .fill(api_fill),
                     ).observed(ui)
@@ -164,8 +182,8 @@ pub fn render_entity_settings_dialog(
                     let name_label = ui.label(egui::RichText::new("Name").color(theme::TEXT_SECTION).strong());
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(name_buf).desired_width(300.0)).labelled(ui, &name_label);
-                        if ui.add(egui::Button::new("Rename").fill(theme::BG_SAVE)).observed(ui).clicked() {
+                        ui.add_enabled(can_edit_draft, egui::TextEdit::singleline(name_buf).desired_width(300.0)).labelled(ui, &name_label);
+                        if ui.add_enabled(can_write, egui::Button::new("Rename").fill(theme::BG_SAVE)).named(ui, format_args!("Rename {type_label} {entity_name}")).clicked() {
                             let new_name = name_buf.trim().to_string();
                             if !new_name.is_empty() {
                                 let etype = match entity_type {
@@ -194,6 +212,8 @@ pub fn render_entity_settings_dialog(
                                 .strong(),
                         );
                         ui.add_space(4.0);
+                        if let Some(stored) = &details.loaded { ui.label(format!("Stored default access: {}", stored.default_access.as_deref().unwrap_or("not set"))); }
+                        ui.add_enabled_ui(can_write, |ui| {
                         if let Some(ref mut da) = default_access_buf {
                             let mut is_viewer = da == "viewer";
                             if ui
@@ -201,26 +221,39 @@ pub fn render_entity_settings_dialog(
                                 .clicked()
                             {
                                 *da = "viewer".to_string();
-                                db_tx
-                                    .send(DbCommand::SetVerseDefaultAccess {
+                                if db_tx.send(DbCommand::SetVerseDefaultAccess {
                                         verse_id: entity_id.clone(),
                                         default_access: "viewer".to_string(),
-                                    })
-                                    .ok();
+                                    }).is_err() {
+                                    bevy::log::warn!("SetVerseDefaultAccess channel closed");
+                                    send_failure = Some("Default access could not be sent. The database is unavailable.");
+                                }
                             }
                             if ui
                                 .radio_value(&mut is_viewer, false, "Private (none) — explicit grants only").observed(ui)
                                 .clicked()
                             {
                                 *da = "none".to_string();
-                                db_tx
-                                    .send(DbCommand::SetVerseDefaultAccess {
+                                if db_tx.send(DbCommand::SetVerseDefaultAccess {
                                         verse_id: entity_id.clone(),
                                         default_access: "none".to_string(),
-                                    })
-                                    .ok();
+                                    }).is_err() {
+                                    bevy::log::warn!("SetVerseDefaultAccess channel closed");
+                                    send_failure = Some("Default access could not be sent. The database is unavailable.");
+                                }
                             }
-                        }
+                        } else if details.loaded.is_some() {
+                            ui.label("No default access is stored. Choose an explicit setting.");
+                            for (label, value) in [("Set public (viewer)", "viewer"), ("Set private (none)", "none")] {
+                                if ui.button(label).named(ui, format_args!("{label} for {entity_name}")).clicked() {
+                                    if db_tx.send(DbCommand::SetVerseDefaultAccess { verse_id: entity_id.clone(), default_access: value.into() }).is_err() {
+                                        bevy::log::warn!("SetVerseDefaultAccess channel closed");
+                                        send_failure = Some("Default access could not be sent. The database is unavailable.");
+                                    }
+                                }
+                            }
+                        } else { ui.label("Waiting for the stored default access setting."); }
+                        });
                     }
 
                     // --- Description (Fractal only) ---
@@ -231,14 +264,14 @@ pub fn render_entity_settings_dialog(
                         );
                         ui.add_space(4.0);
                         if let Some(ref mut desc) = description_buf {
-                            ui.add(
+                            ui.add_enabled(can_edit_draft,
                                 egui::TextEdit::multiline(desc)
                                     .desired_rows(3)
                                     .desired_width(f32::INFINITY),
                             )
                             .labelled(ui, &description_label);
                             if ui
-                                .add(egui::Button::new("Save Description").fill(theme::BG_SAVE)).observed(ui)
+                                .add_enabled(can_write, egui::Button::new("Save Description").fill(theme::BG_SAVE)).named(ui, format_args!("Save description for {entity_name}"))
                                 .clicked()
                             {
                                 if let Err(error) = db_tx.send(DbCommand::UpdateFractalDescription {
@@ -261,7 +294,7 @@ pub fn render_entity_settings_dialog(
                     // never a silent one. OF-4 stays dead: this is explicit,
                     // user-confirmed, never automatic.
                     if *entity_type == EntitySettingsType::Verse
-                        && local_role.role != Some(fe_database::RoleLevel::Owner)
+                        && !details.loaded.as_ref().is_some_and(|stored| fe_database::RoleLevel::from(stored.role.as_str()) == fe_database::RoleLevel::Owner)
                     {
                         ui.add_space(20.0);
                         ui.separator();
@@ -322,6 +355,7 @@ pub fn render_entity_settings_dialog(
                     ui.add_space(20.0);
                     ui.separator();
                     ui.add_space(8.0);
+                    ui.add_enabled_ui(can_write, |ui| {
                     if !*pending_delete {
                         if ui
                             .add(
@@ -368,8 +402,10 @@ pub fn render_entity_settings_dialog(
                             }
                         });
                     }
+                    });
                 }
                 SettingsTab::Access => {
+                    if !can_write { ui.disable(); }
                     ui.label(egui::RichText::new("Peer Access").color(theme::TEXT_SECTION).strong());
                     ui.add_space(8.0);
 
@@ -535,6 +571,7 @@ pub fn render_entity_settings_dialog(
                     }
                 }
                 SettingsTab::ApiAccess => {
+                    if !can_write { ui.disable(); }
                     ui.label(
                         egui::RichText::new("API Access Tokens").color(theme::TEXT_SECTION).strong(),
                     );

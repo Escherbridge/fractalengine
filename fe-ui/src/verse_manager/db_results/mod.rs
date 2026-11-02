@@ -265,17 +265,39 @@ pub(super) fn apply_db_results(
                 fractal_id,
                 name,
             } => hierarchy::handle_petal_created(id, fractal_id, name, &mut verse_mgr),
+            DbResult::EntityDetailsLoaded {
+                entity_type,
+                entity_id,
+                request_id,
+                details,
+            } => {
+                crate::dialogs::entity_details::apply(
+                    &mut ui_mgr,
+                    *entity_type,
+                    entity_id,
+                    *request_id,
+                    details,
+                    caches.time.elapsed_secs_f64(),
+                );
+            }
             DbResult::EntityRenamed {
                 entity_type,
                 entity_id,
                 new_name,
-            } => hierarchy::handle_entity_renamed(
-                entity_type,
-                entity_id,
-                new_name,
-                &mut verse_mgr,
-                &mut nav,
-            ),
+            } => {
+                hierarchy::handle_entity_renamed(
+                    entity_type,
+                    entity_id,
+                    new_name,
+                    &mut verse_mgr,
+                    &mut nav,
+                );
+                crate::dialogs::entity_details::refresh_target(
+                    &mut ui_mgr,
+                    *entity_type,
+                    entity_id,
+                );
+            }
             DbResult::EntityDeleted {
                 entity_type,
                 entity_id,
@@ -385,7 +407,14 @@ pub(super) fn apply_db_results(
             DbResult::VerseDefaultAccessSet {
                 verse_id,
                 default_access,
-            } => roles::handle_verse_default_access_set(verse_id, default_access),
+            } => {
+                roles::handle_verse_default_access_set(verse_id, default_access);
+                crate::dialogs::entity_details::refresh_target(
+                    &mut ui_mgr,
+                    fe_runtime::messages::EntityType::Verse,
+                    verse_id,
+                );
+            }
             DbResult::OrphanedVerseClaimed {
                 verse_id,
                 old_did,
@@ -425,7 +454,14 @@ pub(super) fn apply_db_results(
             DbResult::FractalDescriptionUpdated {
                 fractal_id,
                 description,
-            } => roles::handle_fractal_description_updated(fractal_id, description),
+            } => {
+                roles::handle_fractal_description_updated(fractal_id, description);
+                crate::dialogs::entity_details::refresh_target(
+                    &mut ui_mgr,
+                    fe_runtime::messages::EntityType::Fractal,
+                    fractal_id,
+                );
+            }
             DbResult::ApiTokenMinted {
                 token,
                 jti,

@@ -866,6 +866,81 @@ fn test_rename_entity_omits_node_scene_change() {
         DbResult::QueryResult { data, .. } => data[0]["fractal_id"].as_str().unwrap().to_string(),
         other => panic!("expected stored parent, got {other:?}"),
     };
+    let petal_details = match request(DbCommand::GetEntityDetails {
+        entity_type: EntityType::Petal,
+        entity_id: petal_id.clone(),
+        request_id: 41,
+    }) {
+        DbResult::EntityDetailsLoaded {
+            entity_type: EntityType::Petal,
+            entity_id,
+            request_id: 41,
+            details: Ok(details),
+        } => {
+            assert_eq!(entity_id, petal_id);
+            assert_eq!(details.entity_id, petal_id);
+            assert_eq!(details.fractal_id.as_deref(), Some(fractal_id.as_str()));
+            assert_eq!(details.name, "renamed-petal");
+            details
+        }
+        other => panic!("expected correlated stored petal details, got {other:?}"),
+    };
+    let description = "Rich schema group: \"quoted\", apostrophe's and\nnew lines";
+    assert!(matches!(
+        request(DbCommand::UpdateFractalDescription {
+            fractal_id: fractal_id.clone(),
+            description: description.into()
+        }),
+        DbResult::FractalDescriptionUpdated { .. }
+    ));
+    match request(DbCommand::GetEntityDetails {
+        entity_type: EntityType::Fractal,
+        entity_id: fractal_id.clone(),
+        request_id: 42,
+    }) {
+        DbResult::EntityDetailsLoaded {
+            entity_type: EntityType::Fractal,
+            request_id: 42,
+            details: Ok(details),
+            ..
+        } => {
+            assert_eq!(details.description.as_deref(), Some(description));
+            assert_eq!(details.verse_id, petal_details.verse_id);
+        }
+        other => panic!("expected stored fractal description, got {other:?}"),
+    }
+    assert!(matches!(
+        request(DbCommand::SetVerseDefaultAccess {
+            verse_id: petal_details.verse_id.clone(),
+            default_access: "none".into()
+        }),
+        DbResult::VerseDefaultAccessSet { .. }
+    ));
+    match request(DbCommand::GetEntityDetails {
+        entity_type: EntityType::Verse,
+        entity_id: petal_details.verse_id.clone(),
+        request_id: 43,
+    }) {
+        DbResult::EntityDetailsLoaded {
+            entity_type: EntityType::Verse,
+            request_id: 43,
+            details: Ok(details),
+            ..
+        } => assert_eq!(details.default_access.as_deref(), Some("none")),
+        other => panic!("expected authoritative private verse setting, got {other:?}"),
+    }
+    assert!(matches!(
+        request(DbCommand::GetEntityDetails {
+            entity_type: EntityType::Petal,
+            entity_id: "missing-entry".into(),
+            request_id: 44
+        }),
+        DbResult::EntityDetailsLoaded {
+            request_id: 44,
+            details: Err(_),
+            ..
+        }
+    ));
     let sibling = match request(DbCommand::CreatePetal {
         fractal_id,
         name: "surviving sibling".into(),

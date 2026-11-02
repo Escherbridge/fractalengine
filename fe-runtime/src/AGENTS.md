@@ -781,3 +781,11 @@ same JSON payloads. The enum remains non-deserializable from request bodies.
 API reply family. Its fresh `ui-*` request ID is consumed by the Inspector state. API measurement
 queries continue through their existing admitted query surfaces. Typed history replies retain their
 existing API families; native views claim only their own exact GUI request IDs.
+## Hierarchy details read messages
+
+GetEntityDetails/EntityDetailsLoaded are a GUI-local read family with a u64
+process-local request nonce, separate from API correlation IDs and reply kinds.
+The typed result echoes requested kind/id/nonce even on refusal, and its payload
+contains only Viewer-authorized stored target settings and ancestry. The GUI
+checks both outer and inner identities and the expected scope. No HTTP/MCP
+surface or API waiter can use this as a reply to an unrelated command.

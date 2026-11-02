@@ -876,6 +876,14 @@ pub fn spawn_db_thread_shared(
                             tracing::error!("UpdateNodeUrl failed for {node_id}: {e}");
                         }
                     }
+                    Ok(DbCommand::GetEntityDetails { entity_type, entity_id, request_id }) => {
+                        let details = handlers::entity::get_entity_details_handler(&db, entity_type, &entity_id, &local_did).await
+                            .map_err(|error| {
+                                tracing::warn!(%error, "GetEntityDetails refused or failed");
+                                "Settings are unavailable: this entry is missing, changed, or you no longer have Viewer access.".to_string()
+                            });
+                        send_result(&tx, DbResult::EntityDetailsLoaded { entity_type, entity_id, request_id, details });
+                    }
                     Ok(DbCommand::RenameEntity { entity_type, entity_id, new_name }) => {
                         match handlers::entity::rename_entity_handler(&db, entity_type, &entity_id, &new_name, &local_did).await {
                             Ok(()) => {
