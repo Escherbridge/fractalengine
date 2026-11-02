@@ -1,16 +1,18 @@
 ---
 type: QA Investigation
 title: Terrain report coverage and refresh gaps
-status: source-confirmed-runtime-reproduction-pending
+status: runtime-reproduced-open
 date: 2026-11-01
 scope: S7 fixture prerequisites
 ---
 
 # Report gaps retained for later hardening
 
-These are source-level findings from the S7 prerequisite investigation.
-They are not a new live QA verdict and do not claim that a particular run
-has reproduced them. Production terrain algorithms remain unchanged here.
+Pass05 reproduced these failures on stage74a817e-20261101165518420.
+Fresh one-region Raise2 and Lower1 operations persisted200fill and100cut,
+but their initial UI reports cached zero. A Radius5→5.01→5 refresh displayed
+the exact expected values. See `passes/05/verdict.md` and QA-0023.
+Production terrain algorithms remain unchanged in that evidence checkpoint.
 
 1. **Missing coverage can look like a measured zero.**
    `fe-terrain/src/sculpt/mod.rs::cut_fill_volume` adds volume only when

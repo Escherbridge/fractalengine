@@ -1,0 +1,266 @@
+[
+  {
+    "edge": "left",
+    "pixels_per_point": 2.0,
+    "source_derived_radius_points": 5,
+    "viewport_before": {
+      "h": 621.375,
+      "w": 864.0,
+      "x": 440.0,
+      "y": 80.0
+    },
+    "from": [
+      450.0,
+      240.0
+    ],
+    "to": [
+      454.0,
+      240.0
+    ],
+    "selection_before": {
+      "node_id": "01M6CRNS8NSSTWR21YTQKFFN10",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    "selection_after": {
+      "node_id": "01M6CRNS8NSSTWR21YTQKFFN10",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    "camera_before": {
+      "focus": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "yaw_deg": 45.28647994995117,
+      "pitch_deg": 26.56232452392578,
+      "distance": 5.0
+    },
+    "camera_after": {
+      "focus": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "yaw_deg": 45.28647994995117,
+      "pitch_deg": 26.56232452392578,
+      "distance": 5.0
+    },
+    "viewport_after": {
+      "h": 621.375,
+      "w": 864.0,
+      "x": 440.0,
+      "y": 80.0
+    },
+    "selection_preserved": true
+  },
+  {
+    "edge": "right",
+    "pixels_per_point": 2.0,
+    "source_derived_radius_points": 5,
+    "viewport_before": {
+      "h": 621.375,
+      "w": 864.0,
+      "x": 440.0,
+      "y": 80.0
+    },
+    "from": [
+      1294.0,
+      240.0
+    ],
+    "to": [
+      1290.0,
+      240.0
+    ],
+    "selection_before": {
+      "node_id": "01M6CRNS8NSSTWR21YTQKFFN10",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    "selection_after": {
+      "node_id": "01M6CRNS8NSSTWR21YTQKFFN10",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    "camera_before": {
+      "focus": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "yaw_deg": 45.28647994995117,
+      "pitch_deg": 26.56232452392578,
+      "distance": 5.0
+    },
+    "camera_after": {
+      "focus": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "yaw_deg": 45.28647994995117,
+      "pitch_deg": 26.56232452392578,
+      "distance": 5.0
+    },
+    "viewport_after": {
+      "h": 621.375,
+      "w": 864.0,
+      "x": 440.0,
+      "y": 80.0
+    },
+    "selection_preserved": true
+  },
+  {
+    "edge": "results",
+    "pixels_per_point": 2.0,
+    "source_derived_radius_points": 5,
+    "viewport_before": {
+      "h": 621.375,
+      "w": 864.0,
+      "x": 440.0,
+      "y": 80.0
+    },
+    "from": [
+      872.0,
+      691.375
+    ],
+    "to": [
+      872.0,
+      687.375
+    ],
+    "selection_before": {
+      "node_id": "01M6CRNS8NSSTWR21YTQKFFN10",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    "selection_after": {
+      "node_id": "01M6CRNS8NSSTWR21YTQKFFN10",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    "camera_before": {
+      "focus": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "yaw_deg": 45.28647994995117,
+      "pitch_deg": 26.56232452392578,
+      "distance": 5.0
+    },
+    "camera_after": {
+      "focus": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "yaw_deg": 45.28647994995117,
+      "pitch_deg": 26.56232452392578,
+      "distance": 5.0
+    },
+    "viewport_after": {
+      "h": 621.375,
+      "w": 864.0,
+      "x": 440.0,
+      "y": 80.0
+    },
+    "selection_preserved": true
+  }
+]
