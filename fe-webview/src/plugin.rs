@@ -192,12 +192,34 @@ fn dispatch_commands(
     mut events: bevy::prelude::MessageWriter<BrowserEvent>,
     tab_filter: bevy::prelude::Res<crate::petal_portal::TabVisibilityFilter>,
 ) {
-    let cmds: Vec<BrowserCommand> = reader.read().cloned().collect();
+    let cmds: Vec<BrowserCommand> = reader
+        .read()
+        .filter_map(|command| {
+            if let BrowserCommand::OpenExternal { url } = command {
+                match crate::backends::stub::open_in_system_browser(url.as_str()) {
+                    Ok(()) => {
+                        events.write(BrowserEvent::ExternalLaunchRequested);
+                    }
+                    Err(error) => {
+                        events.write(BrowserEvent::Error {
+                            message: format!("Could not request external browser: {error}"),
+                        });
+                    }
+                }
+                None
+            } else {
+                Some(command.clone())
+            }
+        })
+        .collect();
     if cmds.is_empty() {
         return;
     }
 
     let Some(mut res) = backend_res else {
+        events.write(BrowserEvent::Error {
+            message: "Embedded browser is not ready; choose Open externally or try again".into(),
+        });
         bevy::log::warn!(
             "Portal: received {} cmd(s) but WebViewBackendRes not available",
             cmds.len()
@@ -205,6 +227,9 @@ fn dispatch_commands(
         return;
     };
     let Some(backend) = res.backend.as_mut() else {
+        events.write(BrowserEvent::Error {
+            message: "Embedded browser is unavailable; choose Open externally".into(),
+        });
         bevy::log::warn!(
             "Portal: received {} cmd(s) but backend is None (init failed?)",
             cmds.len()
@@ -225,12 +250,35 @@ fn dispatch_commands(
                 // Backend deduplicates — silently skip if already at this URL.
                 if let Err(e) = backend.navigate(url) {
                     bevy::log::error!("Portal: navigate failed: {e}");
+                    events.write(BrowserEvent::Error {
+                        message: e.to_string(),
+                    });
                 }
             }
             BrowserCommand::GoBack => {
                 if let Err(e) = backend.go_back() {
                     bevy::log::error!("Portal: go_back failed: {e}");
+                    events.write(BrowserEvent::Error {
+                        message: e.to_string(),
+                    });
                 }
+            }
+            BrowserCommand::GoForward => {
+                if let Err(error) = backend.go_forward() {
+                    events.write(BrowserEvent::Error {
+                        message: error.to_string(),
+                    });
+                }
+            }
+            BrowserCommand::Reload => {
+                if let Err(error) = backend.reload() {
+                    events.write(BrowserEvent::Error {
+                        message: error.to_string(),
+                    });
+                }
+            }
+            BrowserCommand::OpenExternal { .. } => {
+                unreachable!("external commands are handled before backend access")
             }
             BrowserCommand::Close => {
                 bevy::log::info!("Portal: closing portal");
@@ -277,6 +325,9 @@ fn drain_backend_events(
             BackendEvent::LoadComplete => {
                 bevy::log::info!("Portal: page load complete");
                 events.write(BrowserEvent::LoadComplete);
+            }
+            BackendEvent::PageLoaded(url) => {
+                events.write(BrowserEvent::PageLoaded { url });
             }
             BackendEvent::Error(ref message) => {
                 bevy::log::error!("Portal: backend error: {message}");

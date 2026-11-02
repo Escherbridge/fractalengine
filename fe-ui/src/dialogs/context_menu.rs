@@ -208,6 +208,10 @@ pub(crate) fn verb_is_seam_gated(verb: Verb) -> bool {
     matches!(verb, Verb::CopyApi | Verb::Report)
 }
 
+fn verb_requires_edit(verb: Verb) -> bool {
+    !matches!(verb, Verb::CopyApi | Verb::Report | Verb::ReportVolume)
+}
+
 /// Map a verb acting on `node_id` to the `UiAction` it queues, when the verb is
 /// a node-scoped action this track owns (delete/duplicate/clear/copy-API/report/
 /// edit-properties). Verbs that are path/stamp/terrain-domain (owned by T2/T3)
@@ -271,10 +275,7 @@ pub(crate) fn point_verb_action(
             index,
             corner: next_corner_kind(current_corner),
         }),
-        Verb::DeletePoint => Some(UiAction::PathRemovePoint {
-            track_node_id: track_node_id.to_string(),
-            index,
-        }),
+        Verb::DeletePoint => None,
         _ => None,
     }
 }
@@ -325,6 +326,19 @@ fn close_stale_context_menu(ui_mgr: &mut UiManager, active_petal: Option<&str>) 
     stale
 }
 
+fn target_is_current(target: &ContextTarget, hierarchy: &VerseManager, path: &PathEditorState, petal: Option<&str>) -> bool {
+    if petal.is_none() || target.petal_id.as_deref() != petal { return false; }
+    let owning_node = target.node_id.as_deref().or_else(|| target.stamp.as_ref().map(|(track,_)| track.as_str()));
+    if owning_node.is_some_and(|id| hierarchy.petal_id_of(id) != petal) { return false; }
+    match target.hit {
+        HitTarget::PathVertex { idx } | HitTarget::PathHandle { idx, .. } => {
+            target.node_id.is_some() && path.editing_track_id == target.node_id && idx < path.points.len()
+        }
+        HitTarget::PathSegment { .. } => path.editing_track_id == target.node_id,
+        _ => true,
+    }
+}
+
 /// Ground-overlay delete routing (proposals aren't nodes — `DeleteNode`/cascade
 /// doesn't apply): a palette `TerrainProposal` → `TerrainProposalDelete`; an
 /// `EarthworkRegion` → `SculptDeleteRegion` (drops the record AND tombstones
@@ -365,7 +379,7 @@ fn render_labeled_verb_button(
     };
     let button =
         egui::Button::new(egui::RichText::new(label).color(color)).fill(egui::Color32::TRANSPARENT);
-    let resp = ui.add_enabled(enabled, button).named(ui, label);
+    let resp = ui.add_enabled(enabled, button.min_size(egui::vec2(0.0, 24.0))).named(ui, label);
     if enabled {
         resp.on_hover_text(tooltip).clicked()
     } else {
@@ -483,6 +497,8 @@ pub fn render_context_menu(
     path_state: &PathEditorState,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
     active_petal: Option<&str>,
+    nav: &crate::navigation_manager::NavigationManager,
+    local_role: &crate::plugin::LocalUserRole,
 ) {
     if close_stale_context_menu(ui_mgr, active_petal) {
         return;
@@ -505,6 +521,7 @@ pub fn render_context_menu(
 
     let area_response = egui::Area::new(egui::Id::new("viewport_context_menu"))
         .fixed_pos(pos)
+        .constrain_to(ctx.viewport_rect().shrink(4.0))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             egui::Frame::NONE
@@ -514,6 +531,7 @@ pub fn render_context_menu(
                 .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM))
                 .show(ui, |ui| {
                     ui.set_min_width(170.0);
+                    ui.set_max_width((ctx.viewport_rect().width() - 16.0).clamp(170.0, 340.0));
                     let Some(target) = target else {
                         // Classification pending (≤1 frame) — placeholder, not
                         // a possibly-wrong menu.
@@ -529,6 +547,7 @@ pub fn render_context_menu(
                             *descendant_count,
                             pending_delete,
                             &mut outcome,
+                            local_role.can_edit() && target_is_current(target, hierarchy, path_state, active_petal),
                         );
                     } else {
                         render_target_menu(
@@ -543,6 +562,8 @@ pub fn render_context_menu(
                             descendant_count,
                             &mut outcome,
                             active_petal,
+                            nav,
+                            local_role,
                         );
                     }
                 });
@@ -597,6 +618,8 @@ fn render_target_menu(
     descendant_count: &mut Option<usize>,
     outcome: &mut MenuOutcome,
     active_petal: Option<&str>,
+    nav: &crate::navigation_manager::NavigationManager,
+    local_role: &crate::plugin::LocalUserRole,
 ) {
     // Stamp payload + live promotion state (the promoted node id backs the
     // node-scoped verbs; it can land WHILE the menu is open — verbs light up).
@@ -632,7 +655,7 @@ fn render_target_menu(
                     .find(|n| n.id == *id)
                     .map(|n| n.name.clone())
                     .unwrap_or_else(|| id.clone());
-                ui.label(egui::RichText::new(name).small().color(theme::TEXT_DIM));
+                ui.add(egui::Label::new(egui::RichText::new(&name).small().color(theme::TEXT_DIM)).truncate()).on_hover_text(name);
                 ui.separator();
             }
         }
@@ -682,6 +705,14 @@ fn render_target_menu(
     }
 
     for verb in menu_for(&target.hit) {
+        if !target_is_current(target, hierarchy, path_state, active_petal) {
+            render_target_gated_verb_button(ui, verb, &target.hit, false, "This object changed or is no longer in the active Petal. Reopen its menu.");
+            continue;
+        }
+        if verb_requires_edit(verb) && !local_role.can_edit() {
+            crate::panels::widgets::role_gated(ui, false, "Editor access is required to edit this object", egui::Button::new(verb_label_for(verb, &target.hit)).min_size(egui::vec2(0.0,24.0)));
+            continue;
+        }
         match verb {
             // --- empty ground: creation ---
             Verb::CreateNode => {
@@ -820,7 +851,7 @@ fn render_target_menu(
                             track_node_id: stamp.track_node_id.clone(),
                         });
                         tool_panel.stamp_edit_index = stamp.stamp_index as u32;
-                        outcome.toast = Some("Stamp controls opened in the Tools panel");
+                        outcome.toast = Some("Stamp controls opened in Options");
                         outcome.close = true;
                     }
                 }
@@ -832,7 +863,6 @@ fn render_target_menu(
                         outcome.actions.push(UiAction::PathSelectTrack {
                             track_node_id: id.clone(),
                         });
-                        outcome.toast = Some("Path opened for editing (Tools panel)");
                         outcome.close = true;
                     }
                 }
@@ -858,6 +888,17 @@ fn render_target_menu(
                     .and_then(|idx| path_state.points.get(idx))
                     .map(|row| row.corner)
                     .unwrap_or_default();
+                if verb == Verb::DeletePoint {
+                    let Some(index) = anchor_index(&target.hit).filter(|index| *index < path_state.points.len()) else { continue };
+                    let route = crate::undo::PointEditOrigin::confirmation_key(path_state, nav);
+                    if crate::panels::widgets::confirm_button(ui, egui::Id::new(("context_remove_point", &track_id, index, route)), "Delete Point", "Confirm point removal", "Delete path point") {
+                        if let Some(origin) = crate::undo::PointEditOrigin::capture(path_state, nav) {
+                            outcome.actions.push(UiAction::PathRemovePoint { track_node_id: track_id, index, origin });
+                            outcome.close = true;
+                        }
+                    }
+                    continue;
+                }
                 if render_target_verb_button(ui, verb, &target.hit, true) {
                     if let Some(action) =
                         point_verb_action(verb, &target.hit, &track_id, current_corner)
@@ -893,6 +934,7 @@ fn render_delete_confirm(
     descendant_count: Option<usize>,
     pending_delete: &mut bool,
     outcome: &mut MenuOutcome,
+    can_edit: bool,
 ) {
     let node_backed = target.node_id.clone().or_else(|| {
         target
@@ -940,7 +982,7 @@ fn render_delete_confirm(
     ui.horizontal(|ui| {
         if ui
             .add_enabled(
-                !count_required || descendant_count.is_some(),
+                can_edit && (!count_required || descendant_count.is_some()),
                 egui::Button::new(
                     egui::RichText::new("Confirm Delete").color(egui::Color32::WHITE),
                 )
@@ -1220,6 +1262,11 @@ mod tests {
 
     #[test]
     fn only_egress_verbs_are_seam_gated() {
+        for hit in all_hit_targets() {
+            for verb in menu_for(&hit) {
+                assert_eq!(verb_requires_edit(verb), !matches!(verb, Verb::CopyApi | Verb::Report | Verb::ReportVolume));
+            }
+        }
         assert!(verb_is_seam_gated(Verb::CopyApi));
         assert!(verb_is_seam_gated(Verb::Report));
         assert!(!verb_is_seam_gated(Verb::ReportVolume));
@@ -1272,6 +1319,28 @@ mod tests {
             Verb::PromoteToNode,
         ] {
             assert!(!verb_is_seam_gated(v), "{v:?} must not be seam-gated");
+        }
+        let hierarchy = tree_with_node();
+        let mut nav = crate::navigation_manager::NavigationManager::default();
+        nav.navigate_to_petal_in_fractal("v1","V","f1","F","p1");
+        let role = crate::plugin::LocalUserRole { role: Some(fe_policy::RoleLevel::Viewer) };
+        let stamp = StampInteractionState::default();
+        let path = PathEditorState::default();
+        let mut tools = crate::panels::tool_panel::ToolPanelState::default();
+        let (tx,_rx) = crossbeam::channel::bounded(8);
+        for size in [egui::vec2(640.0,480.0),egui::vec2(1024.0,768.0),egui::vec2(1920.0,1080.0)] {
+            let ctx = egui::Context::default();
+            let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO,size);
+            let mut menu = UiManager::default();
+            menu.open_dialog(ActiveDialog::ContextMenu { screen_pos:[size.x-1.0,size.y-1.0], world_pos:[0.0;3],
+                target:Some(ContextTarget { petal_id:Some("p1".into()),hit:HitTarget::Node(entity(1)),node_id:Some("n1".into()),stamp:None }),pending_delete:false,descendant_count:None });
+            for _ in 0..3 {
+                let input = egui::RawInput { screen_rect:Some(viewport),..Default::default() };
+                let _ = ctx.run(input,|ctx| render_context_menu(ctx,&mut menu,&hierarchy,&stamp,&mut tools,&path,&tx,Some("p1"),&nav,&role));
+            }
+            let area = egui::containers::AreaState::load(&ctx,egui::Id::new("viewport_context_menu")).unwrap().rect();
+            assert!(viewport.contains_rect(area), "edge menu must remain inside actual viewport: {area:?}");
+            assert!(menu.drain_actions().is_empty(), "Viewer menu does not emit edits");
         }
     }
 
@@ -1445,10 +1514,7 @@ mod tests {
             side: HandleSide::In,
         };
         let action = point_verb_action(Verb::DeletePoint, &hit, "track-1", CornerKind::Corner);
-        assert!(matches!(
-            action,
-            Some(UiAction::PathRemovePoint { index: 4, .. })
-        ));
+        assert!(action.is_none(), "point removal requires a route-bound confirmation, never the immediate verb map");
     }
 
     #[test]
@@ -1532,7 +1598,7 @@ mod tests {
         ] {
             for verb in menu_for(&hit) {
                 assert!(
-                    point_verb_action(verb, &hit, track, CornerKind::Corner).is_some(),
+                    point_verb_action(verb, &hit, track, CornerKind::Corner).is_some() || verb == Verb::DeletePoint,
                     "{hit:?} verb {verb:?} has no routing"
                 );
             }

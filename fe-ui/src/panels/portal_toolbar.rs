@@ -20,63 +20,75 @@ pub(crate) fn right_portal_toolbar(ctx: &egui::Context, ui_mgr: &mut UiManager) 
                 .stroke(egui::Stroke::new(2.0_f32, theme::BG_BUTTON)),
         )
         .show(ctx, |ui| {
-            // Toolbar row: back, URL, close
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.add_space(6.0);
-
-                // Back button
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("\u{2190}").size(16.0), // ←
-                        )
-                        .fill(theme::BG_BUTTON)
-                        .min_size(egui::vec2(28.0, 24.0)),
-                    )
-                    .named(ui, "Go back in portal")
-                    .on_hover_text("Go back")
-                    .clicked()
-                {
-                    ui_mgr.push_action(UiAction::PortalGoBack);
-                }
-
-                ui.add_space(4.0);
-
-                // URL label (truncated hostname — pre-cached, no per-frame parse)
-                let display_url = ui_mgr.portal_hostname().to_string();
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(format!("\u{1F310} {display_url}"))
-                            .color(theme::TEXT_DIM)
-                            .size(12.0),
-                    )
-                    .truncate(),
-                );
-
-                // Close button (right-aligned)
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                let embedded = fe_webview::backends::embedded_browsing_supported();
+                for (label, name, action) in [
+                    ("Back", "Go back in portal", UiAction::PortalGoBack),
+                    ("Forward", "Go forward in portal", UiAction::PortalGoForward),
+                    ("Reload", "Reload portal", UiAction::PortalReload),
+                ] {
                     if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("\u{2715}").size(14.0), // ✕
-                            )
-                            .fill(egui::Color32::TRANSPARENT)
-                            .small(),
+                        .add_enabled(
+                            embedded,
+                            egui::Button::new(label).min_size(egui::vec2(28.0, 24.0)),
                         )
-                        .named(ui, "Close portal")
-                        .on_hover_text("Close portal")
+                        .named(ui, name)
+                        .on_disabled_hover_text(
+                            "Embedded browser navigation is unavailable in this build",
+                        )
+                        .on_hover_text(name)
                         .clicked()
                     {
-                        ui_mgr.push_action(UiAction::ClosePortal);
+                        ui_mgr.push_action(action);
                     }
-                });
+                }
+                if ui
+                    .add(egui::Button::new("Open externally").min_size(egui::vec2(28.0, 24.0)))
+                    .named(ui, "Open portal externally")
+                    .on_hover_text("Request this URL in your system browser")
+                    .clicked()
+                {
+                    ui_mgr.push_action(UiAction::PortalOpenExternal);
+                }
+                if ui
+                    .add(egui::Button::new("Close").min_size(egui::vec2(28.0, 24.0)))
+                    .named(ui, "Close portal")
+                    .clicked()
+                {
+                    ui_mgr.push_action(UiAction::ClosePortal);
+                }
             });
-
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(ui_mgr.portal_hostname()).color(theme::TEXT_DIM),
+                )
+                .truncate(),
+            )
+            .on_hover_text(ui_mgr.portal_url());
+            if ui_mgr.portal_feedback.loading {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Loading page...");
+                });
+            }
+            if let Some(error) = &ui_mgr.portal_feedback.error {
+                egui::ScrollArea::vertical()
+                    .id_salt("portal_error")
+                    .max_height(64.0)
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(error).color(theme::STATUS_OFFLINE),
+                            )
+                            .wrap(),
+                        );
+                    });
+            }
             ui.separator();
 
             // The rest of the panel is empty — the native webview renders over it.
+            ui_mgr.portal_content_rect = Some(ui.available_rect_before_wrap());
             ui.allocate_space(ui.available_size());
         });
 }

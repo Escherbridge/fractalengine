@@ -276,6 +276,38 @@ mod tests {
         mgr.update_node_url("node-1", None);
         let node = mgr.all_nodes().find(|n| n.id == "node-1").unwrap();
         assert!(node.webpage_url.is_none());
+        use crate::actions::{portal, UiManager};
+        let mut nav = crate::navigation_manager::NavigationManager::default();
+        nav.navigate_to_petal_in_fractal("verse-1", "V", "fractal-1", "F", "petal-1");
+        let mut nodes = crate::node_manager::NodeManager::default();
+        nodes.select(bevy::prelude::Entity::from_bits(1), "node-1");
+        let role = crate::plugin::LocalUserRole { role: Some(fe_policy::RoleLevel::Editor) };
+        let mut ui = UiManager::default();
+        let (tx, rx) = crossbeam::channel::bounded(8);
+        portal::save_url(&tx, &mut ui, &mgr, &nav, &nodes, &role, "node-1".into(), Some("https://example.com/saved".into()), 0.0);
+        assert!(ui.active_toast(0.0).unwrap().0.starts_with("Saving URL"));
+        assert!(mgr.all_nodes().find(|n| n.id == "node-1").unwrap().webpage_url.is_none());
+        let fe_runtime::messages::DbCommand::UpdateNodeUrl { node_id, url, request_id, expected_scope } = rx.try_recv().unwrap() else { panic!("URL request") };
+        let mut receipt = fe_runtime::messages::DbResult::NodeUrlUpdated { node_id, request_id, expected_scope, outcome: Ok(url) };
+        if let fe_runtime::messages::DbResult::NodeUrlUpdated { request_id, .. } = &mut receipt { request_id.push('x'); }
+        portal::finish_url_save(&mut ui, &mut mgr, &nav, &nodes, &receipt, 1.0);
+        assert!(ui.pending_url_save.is_some(), "foreign nonce cannot own confirmation");
+        if let fe_runtime::messages::DbResult::NodeUrlUpdated { request_id, .. } = &mut receipt { request_id.pop(); }
+        portal::finish_url_save(&mut ui, &mut mgr, &nav, &nodes, &receipt, 2.0);
+        assert!(ui.pending_url_save.is_none());
+        assert_eq!(mgr.all_nodes().find(|n| n.id == "node-1").unwrap().webpage_url.as_deref(), Some("https://example.com/saved"));
+        assert_eq!(ui.active_toast(2.0).unwrap().0, "URL saved");
+        for obsolete in ["selection", "scope", "timeout"] {
+            portal::save_url(&tx, &mut ui, &mgr, &nav, &nodes, &role, "node-1".into(), None, 3.0);
+            let fe_runtime::messages::DbCommand::UpdateNodeUrl { node_id, url, request_id, expected_scope } = rx.try_recv().unwrap() else { panic!("URL request") };
+            let receipt = fe_runtime::messages::DbResult::NodeUrlUpdated { node_id, request_id, expected_scope, outcome: Ok(url) };
+            if obsolete == "selection" { nodes.deselect(); }
+            if obsolete == "scope" { nav.navigate_to_petal("petal-2"); }
+            portal::finish_url_save(&mut ui, &mut mgr, &nav, &nodes, &receipt, if obsolete == "timeout" { 34.0 } else { 4.0 });
+            assert!(mgr.all_nodes().find(|n| n.id == "node-1").unwrap().webpage_url.is_some(), "obsolete ack cannot change the current tree");
+            nodes.select(bevy::prelude::Entity::from_bits(1), "node-1");
+            nav.navigate_to_petal("petal-1");
+        }
     }
 
     #[test]

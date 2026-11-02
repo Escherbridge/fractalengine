@@ -318,7 +318,7 @@ pub(super) fn classify_context_menu(
                     ContextTarget {
                         petal_id: None,
                         hit: HitTarget::PathHandle { idx, side },
-                        node_id: None,
+                        node_id: path_state.editing_track_id.clone(),
                         stamp: None,
                     },
                 );
@@ -336,7 +336,7 @@ pub(super) fn classify_context_menu(
                     ContextTarget {
                         petal_id: None,
                         hit: HitTarget::PathVertex { idx },
-                        node_id: None,
+                        node_id: path_state.editing_track_id.clone(),
                         stamp: None,
                     },
                 );

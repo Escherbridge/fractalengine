@@ -84,9 +84,11 @@ impl WebViewBackend for TauriBackend {
             .with_autoplay(true)
             .with_initialization_script(trust_bar_js)
             .with_navigation_handler(move |url: String| decide_navigation(&url, &nav_events))
-            .with_on_page_load_handler(move |event, _url| {
+            .with_on_page_load_handler(move |event, url| {
                 if matches!(event, PageLoadEvent::Finished) {
-                    load_events.borrow_mut().push(BackendEvent::LoadComplete);
+                    if let Ok(url) = url.parse() {
+                        load_events.borrow_mut().push(BackendEvent::PageLoaded(url));
+                    }
                 }
             });
 
@@ -168,6 +170,16 @@ impl WebViewBackend for TauriBackend {
         self.webview
             .evaluate_script("history.back()")
             .map_err(|e| anyhow::anyhow!("TauriBackend: go_back failed: {e}"))?;
+        Ok(())
+    }
+
+    fn go_forward(&mut self) -> anyhow::Result<()> {
+        self.webview.evaluate_script("history.forward()")?;
+        Ok(())
+    }
+
+    fn reload(&mut self) -> anyhow::Result<()> {
+        self.webview.evaluate_script("location.reload()")?;
         Ok(())
     }
 

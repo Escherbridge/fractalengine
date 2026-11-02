@@ -159,3 +159,13 @@ corner code 0/1/2 and smoothness 0..=1. Compact four-slot rows may gain canonica
 exact Undo can restore the original compact shape. Position moves still require untouched metadata.
 The existing receipt journey reorders a route after dispatch before readback and proves no write or
 projection; the real-store journey checks metadata inverse and rejects timestamp/multi-row rewrites.
+
+## Portal URL transaction
+
+transform::update_node_url_handler resolves stored scope and captures the DB identity's Editor
+authority. The ordinary atomic operation includes those authority/ancestry guards plus exact
+node asset/Petal/tombstone, model URL and exclusive live reference guards. One UPDATE RETURN
+AFTER sets or clears model.external_url; its row is decoded only after commit. Shared models and
+assetless nodes refuse, avoiding cross-object metadata writes or phantom success. No model-row
+replication reader exists here, so the receipt is local persistence only. Existing atomic rollback
+journey now includes URL set/clear, Viewer/scope/shared refusal and induced rollback, unexecuted.

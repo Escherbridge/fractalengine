@@ -447,3 +447,10 @@ failure, even if the selected node and scope have not changed.
 without moving an unmodified stamp. Metric slide overrides convert through sanitized world_scale
 inside stamp_transform before sampling the world-coordinate path. The same source path/Petal
 configuration contributes to the database's atomic save fence and meter bounds.
+
+## URL receipts
+
+NodeUrlUpdated belongs to UiManager's current URL request owner, before generic API delivery.
+Only a matching target/scope/nonce/selection within its deadline updates webpage_url and shows
+URL saved. Existing node URL journey now checks pre-ack immutability, foreign nonce, stale
+selection/scope and timeout. These source extensions are unexecuted until the integrated sweep.

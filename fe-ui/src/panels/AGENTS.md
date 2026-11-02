@@ -766,3 +766,9 @@ The original navigation/route capture is retained through pointer frames; route 
 the widget identity. Finalization emits one corner/handles patch and leaves authoritative points
 unchanged until a matching checked receipt projects them. Numeric smoothness text finalizes at
 Enter/blur. The existing native tool-options journey checks the actual Smooth button and one intent.
+
+## Portal toolbar bounds
+
+Portal navigation, explicit external launch and Close have named24-point controls. Loading and
+bounded error details occupy normal layout. The panel records its actual remaining content rect;
+the native overlay follows that rect rather than the legacy fixed36-point header estimate.

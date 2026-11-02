@@ -1,9 +1,6 @@
 use tracing::instrument;
 
-use fe_query::{Filter, QueryBuilder, UpdateBuilder};
-
 use crate::handlers::preconditions::require_node_exists;
-use crate::query_helpers::exec_query;
 use crate::repo::Db;
 use crate::types::{NodeId, OpLogEntry, OpType};
 
@@ -97,43 +94,104 @@ async fn reject_stamp_translate(db: &Db, node_id: &str, position: [f32; 3]) -> a
     Ok(())
 }
 
-/// Persist a portal URL change for a node's associated model.
-#[instrument(skip(db))]
+/// Commit an authorized local model URL write and return its stored row.
+#[instrument(skip(db, url, local_did))]
 pub(crate) async fn update_node_url_handler(
     db: &Db,
     node_id: &str,
     url: Option<String>,
-) -> anyhow::Result<()> {
-    // Step 1: look up the node's asset_id
-    let q = QueryBuilder::new()
-        .select(&["asset_id"])
-        .from("node")
-        .filter(Filter::eq("node_id", node_id))
-        .limit(1)
-        .build();
-    let mut res = exec_query(db, &q)
-        .await
-        .map_err(|e| anyhow::anyhow!("UpdateNodeUrl: asset lookup failed: {e}"))?;
-    let rows: Vec<serde_json::Value> = res.take(0).unwrap_or_default();
-    let asset_id = rows
-        .first()
-        .and_then(|r| r["asset_id"].as_str())
-        .ok_or_else(|| anyhow::anyhow!("UpdateNodeUrl: node {node_id} has no asset_id"))?
-        .to_string();
-
-    // Step 2: update the model's external_url
-    let uq = UpdateBuilder::update("model")
-        .set(
-            "external_url",
-            url.map(serde_json::Value::String)
-                .unwrap_or(serde_json::Value::Null),
-        )
-        .where_clause(Filter::eq("asset_id", asset_id.as_str()))
-        .build();
-    exec_query(db, &uq)
-        .await
-        .map_err(|e| anyhow::anyhow!("UpdateNodeUrl DB query failed: {e}"))?;
-    Ok(())
+    expected_scope: &str,
+    local_did: &str,
+) -> anyhow::Result<serde_json::Value> {
+    use serde_json::json;
+    let scope = super::crud::resolve_node_scope_handler(db, node_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Node is missing or unavailable"))?;
+    anyhow::ensure!(
+        scope == expected_scope,
+        "Node moved to another Petal; reload before saving"
+    );
+    anyhow::ensure!(
+        url.as_ref()
+            .is_none_or(|url| url.len() <= 8192 && !url.chars().any(char::is_control)),
+        "Invalid URL length or control characters"
+    );
+    let access = super::entity::prepare_scope_permission(
+        db,
+        &scope,
+        local_did,
+        fe_policy::RoleLevel::Editor,
+    )
+    .await?;
+    let parts = crate::parse_scope(&scope)?;
+    let petal = parts
+        .petal_id
+        .ok_or_else(|| anyhow::anyhow!("Missing Petal scope"))?;
+    let mut snapshot = db.query("SELECT node_id, petal_id, asset_id, tombstone FROM node WHERE node_id = $url_node; SELECT asset_id, petal_id, external_url FROM model WHERE asset_id IN (SELECT VALUE asset_id FROM node WHERE node_id = $url_node)")
+        .bind(("url_node", node_id.to_owned())).await?.check()?;
+    let nodes: Vec<serde_json::Value> = snapshot.take(0)?;
+    let models: Vec<serde_json::Value> = snapshot.take(1)?;
+    anyhow::ensure!(
+        nodes.len() == 1
+            && nodes[0]["petal_id"].as_str() == Some(petal.as_str())
+            && nodes[0]
+                .get("tombstone")
+                .is_none_or(serde_json::Value::is_null),
+        "Node is missing, removed, or moved"
+    );
+    let asset = nodes[0]["asset_id"]
+        .as_str()
+        .ok_or_else(|| {
+            anyhow::anyhow!("This node has no placed model; a Portal URL cannot be stored on it")
+        })?
+        .to_owned();
+    anyhow::ensure!(
+        models.len() == 1 && models[0]["petal_id"].as_str() == Some(petal.as_str()),
+        "Placed model is missing, shared, or in another Petal"
+    );
+    let (mut statements, mut bindings) = access.into_parts();
+    statements.extend([
+        "IF (SELECT node_id, petal_id, asset_id, tombstone FROM node WHERE node_id = $url_node) != $url_nodes { THROW 'URL node changed'; }".into(),
+        "IF (SELECT asset_id, petal_id, external_url FROM model WHERE asset_id = $url_asset) != $url_models { THROW 'URL model changed'; }".into(),
+        "IF (SELECT VALUE node_id FROM node WHERE asset_id = $url_asset AND tombstone = NONE) != [$url_node] { THROW 'URL model is shared; select an independent model'; }".into(),
+    ]);
+    bindings.extend([
+        ("url_node".into(), json!(node_id)),
+        ("url_nodes".into(), json!(nodes)),
+        ("url_asset".into(), json!(asset)),
+        ("url_models".into(), json!(models)),
+    ]);
+    statements.push(
+        if url.is_some() {
+            "UPDATE model SET external_url = $url_value WHERE asset_id = $url_asset RETURN AFTER"
+        } else {
+            "UPDATE model SET external_url = NONE WHERE asset_id = $url_asset RETURN AFTER"
+        }
+        .into(),
+    );
+    if let Some(url) = &url {
+        bindings.push(("url_value".into(), json!(url)));
+    }
+    let entry = OpLogEntry {
+        lamport_clock: 0,
+        hlc_timestamp: String::new(),
+        node_id: NodeId(node_id.to_owned()),
+        op_type: OpType::UpdateModelMeta,
+        payload: json!({"asset_id":asset,"external_url":url}),
+        sig: "00".repeat(64),
+    };
+    let (_, mut rows) =
+        crate::op_log::commit_operation_atomic(db, entry, &statements, bindings).await?;
+    let rows = rows.pop().unwrap_or_default();
+    let row = rows
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Committed URL has no readback; reload the object"))?;
+    anyhow::ensure!(
+        row.get("external_url").and_then(serde_json::Value::as_str) == url.as_deref(),
+        "Committed URL readback differs; reload the object"
+    );
+    Ok(row)
 }
 
 /// Internal local transform write compatibility entry.

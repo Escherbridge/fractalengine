@@ -1936,6 +1936,33 @@ mod tests {
         .unwrap()
         .check()
         .unwrap();
+        let url_db = probe_db().await;
+        url_db.query("CREATE verse CONTENT {verse_id:'url-v',name:'v',created_by:'did:qa',default_access:'viewer',created_at:'2026-11-01'}; CREATE fractal CONTENT {fractal_id:'url-f',verse_id:'url-v',owner_did:'did:qa',name:'f',created_at:'2026-11-01'}; CREATE petal CONTENT {petal_id:'url-p',fractal_id:'url-f',name:'p',node_id:'p',created_at:'2026-11-01'}; CREATE model CONTENT {asset_id:'url-a',petal_id:'url-p',transform:{}};")
+            .await.unwrap().check().unwrap();
+        let (url_node, _) = crate::handlers::node_history::create_object(&url_db, "url-p", "URL model", None, [0.0;3],vec![0.0;3],vec![1.0;3],serde_json::Map::new(),"did:qa").await.unwrap();
+        url_db.query("UPDATE node SET asset_id='url-a' WHERE node_id=$node").bind(("node",url_node.clone())).await.unwrap().check().unwrap();
+        let url_scope = crate::build_scope("url-v",Some("url-f"),Some("url-p"));
+        let initial_ops = op_log_count(&url_db).await;
+        let saved = crate::handlers::transform::update_node_url_handler(&url_db,&url_node,Some("https://example.com/confirmed".into()),&url_scope,"did:qa").await.unwrap();
+        assert_eq!(saved["external_url"],"https://example.com/confirmed");
+        assert_eq!(op_log_count(&url_db).await,initial_ops+1);
+        for (scope,actor) in [(url_scope.as_str(),"did:url-viewer"),("VERSE#foreign-FRACTAL#f-PETAL#p","did:qa")] {
+            assert!(crate::handlers::transform::update_node_url_handler(&url_db,&url_node,None,scope,actor).await.is_err());
+        }
+        assert_eq!(op_log_count(&url_db).await,initial_ops+1);
+        url_db.query("DEFINE EVENT refuse_url ON TABLE model WHEN $event='UPDATE' THEN { THROW 'induced URL failure'; }").await.unwrap().check().unwrap();
+        assert!(crate::handlers::transform::update_node_url_handler(&url_db,&url_node,None,&url_scope,"did:qa").await.is_err());
+        assert_eq!(op_log_count(&url_db).await,initial_ops+1,"failed URL transaction leaves no intention");
+        let stored:Vec<serde_json::Value> = url_db.query("SELECT external_url FROM model WHERE asset_id='url-a'").await.unwrap().take(0).unwrap();
+        assert_eq!(stored[0]["external_url"],"https://example.com/confirmed");
+        url_db.query("REMOVE EVENT refuse_url ON TABLE model").await.unwrap().check().unwrap();
+        let cleared = crate::handlers::transform::update_node_url_handler(&url_db,&url_node,None,&url_scope,"did:qa").await.unwrap();
+        assert!(cleared.get("external_url").is_none_or(serde_json::Value::is_null));
+        let (shared_node,_) = crate::handlers::node_history::create_object(&url_db,"url-p","shared",None,[0.0;3],vec![0.0;3],vec![1.0;3],serde_json::Map::new(),"did:qa").await.unwrap();
+        url_db.query("UPDATE node SET asset_id='url-a' WHERE node_id=$node").bind(("node",shared_node)).await.unwrap().check().unwrap();
+        let shared_ops = op_log_count(&url_db).await;
+        assert!(crate::handlers::transform::update_node_url_handler(&url_db,&url_node,Some("https://example.com/unsafe-shared".into()),&url_scope,"did:qa").await.is_err());
+        assert_eq!(op_log_count(&url_db).await,shared_ops,"shared model refuses before commit");
     }
 
     /// A fixed fake clock source for the override tests (a real test would

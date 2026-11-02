@@ -21,7 +21,7 @@ pub use entity_settings::render_entity_settings_dialog;
 pub use gltf_import::render_gltf_import_dialog;
 pub use hexon_manager::render_hexon_manager;
 pub use join::render_join_dialog;
-pub use node_options::{node_options_save_url, render_node_options_dialog};
+pub use node_options::render_node_options_dialog;
 pub use peer_debug::render_peer_debug_panel;
 pub use petal_manifest::render_petal_manifest;
 

@@ -343,7 +343,7 @@ pub fn gardener_console(
                     tree_appearance::render(ctx, ui_mgr, app_settings, hierarchy)
                 });
                 let _ = guarded(modal, "dialog_node_options", || {
-                    crate::dialogs::render_node_options_dialog(ctx, ui_mgr, hierarchy, db_tx)
+                    crate::dialogs::render_node_options_dialog(ctx, ui_mgr, hierarchy, db_tx, nav, local_role)
                 });
                 let _ = guarded(modal, "dialog_entity_settings", || {
                     crate::dialogs::render_entity_settings_dialog(ctx, ui_mgr, db_tx, local_role,known_peers,inspector.api_endpoint)
@@ -372,6 +372,8 @@ pub fn gardener_console(
                         &*path_state,
                         db_tx,
                         nav.active_petal_id.as_deref(),
+                        nav,
+                        local_role,
                     )
                 });
             }

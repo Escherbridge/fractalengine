@@ -96,18 +96,14 @@ condition chips.
   Options reveal itself) and toasts "Path open in Options" — previously it
   only loaded the track's points, so right-clicking a path and choosing
   "Edit Path" silently did nothing visible. The misleading "Tools panel"
-  toast strings at the `context_menu.rs` call site are a separate fix
+  toast strings at the `context_menu.rs` call site were removed
   (W4-S4) — see the DOC NOTE below.
 - **P-01 (Open Portal).** `OpenPortalOutcome::NoSelection` now shows an
   Advisory ("No node selected") and `InvalidUrl` now shows an Error ("Not a
   valid URL — include https://") instead of each being a silent/log-only
   no-op.
 
-**DOC NOTE** for `actions/portal.rs`'s owner (W4-S4, which owns that file):
-`OpenPortalOutcome::NoSelection`'s doc comment ("Matches original behavior:
-a silent no-op... flagged as a fragility rather than fixed here") is now
-stale — W1-S1 fixed it at the `process_ui_actions` call site (P-01); the
-comment should say the arm shows an Advisory now, or be removed.
+Context openers now use the same Options route and current-target role gates.
 
 ## First-class Brush producer
 
@@ -119,7 +115,7 @@ strength-weighted magnitude; Level and Smooth store strength compatibly in `delt
 - `mod.rs` — `UiAction` enum, `UiManager` resource (queue + portal + active
   dialog + severity-tagged notice queue, §notices), `process_ui_actions`
   dispatcher, `send_or_toast`.
-- `portal.rs` — portal open/close/go-back + `SaveUrl`. Pure decision
+- `portal.rs` — portal navigation/status + captured `SaveNodeUrl`. Pure decision
   functions (`compute_open_portal`, `should_auto_close`, `compute_save_url`)
   are unit-tested directly; see `fe-ui/src/AGENTS.md` §portal for the full
   save/open chain this drives.

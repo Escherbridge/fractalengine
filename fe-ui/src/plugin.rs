@@ -940,6 +940,7 @@ impl Plugin for GardenerConsolePlugin {
         // fe-webview's WebViewPlugin also registers this; calling add_message
         // twice is idempotent.
         app.add_message::<fe_webview::ipc::BrowserCommand>();
+        app.add_message::<fe_webview::ipc::BrowserEvent>();
         // T3 shared seam: fe-terrain's TerrainPlugin also registers this;
         // add_message twice is idempotent (same pattern as BrowserCommand).
         app.add_message::<fe_renderer::terrain_overlay::EarthworkVolumeReport>();
@@ -1236,6 +1237,14 @@ fn gardener_ui_system(
     p2p.portal_rect.y = insets.y;
     p2p.portal_rect.width = insets.width;
     p2p.portal_rect.height = insets.height;
+    if p2p.ui_mgr.portal_is_open() {
+        if let Some(content) = p2p.ui_mgr.portal_content_rect {
+            p2p.portal_rect.x = content.left();
+            p2p.portal_rect.y = content.top();
+            p2p.portal_rect.width = content.width().max(1.0);
+            p2p.portal_rect.height = content.height().max(1.0);
+        }
+    }
 
     // terrain_proposal_delta_viz S3 (FR-3): the live preview readout. A
     // standalone overlay rather than a widget spliced into

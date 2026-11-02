@@ -10,21 +10,14 @@ pub struct StubBackend {
 }
 
 impl StubBackend {
-    fn navigate_with(
-        &mut self,
-        url: &Url,
-        open: impl FnOnce(&str) -> anyhow::Result<()>,
-    ) -> anyhow::Result<()> {
+    fn refuse_navigation(&mut self, url: &Url) -> anyhow::Result<()> {
         let message = if !self.active {
             "Browser fallback has been closed".to_string()
         } else if !crate::security::is_url_allowed(url) {
             "URL blocked by browser security policy".to_string()
         } else {
-            match open(url.as_str()) {
-                Ok(()) => "Embedded browsing is unavailable; external browser launch requested"
-                    .to_string(),
-                Err(error) => format!("Could not launch the external browser: {error}"),
-            }
+            "Embedded browsing is unavailable; choose Open externally to request your browser"
+                .to_string()
         };
         self.pending_error = Some(message.clone());
         anyhow::bail!(message)
@@ -37,7 +30,7 @@ impl WebViewBackend for StubBackend {
         _geometry: WindowGeometry,
         _trust_bar_js: &str,
     ) -> anyhow::Result<Self> {
-        tracing::warn!("No webview backend compiled in; navigation uses the external browser, with no embedded portal");
+        tracing::warn!("No webview backend compiled in; embedded navigation is unavailable; external launch requires an explicit action");
         Ok(Self {
             active: true,
             pending_error: None,
@@ -45,7 +38,7 @@ impl WebViewBackend for StubBackend {
     }
 
     fn navigate(&mut self, url: &Url) -> anyhow::Result<()> {
-        self.navigate_with(url, open_in_system_browser)
+        self.refuse_navigation(url)
     }
 
     fn go_back(&mut self) -> anyhow::Result<()> {
@@ -82,7 +75,12 @@ impl WebViewBackend for StubBackend {
     }
 }
 
-fn open_in_system_browser(url: &str) -> anyhow::Result<()> {
+pub(crate) fn open_in_system_browser(url: &str) -> anyhow::Result<()> {
+    let parsed = Url::parse(url)?;
+    anyhow::ensure!(
+        crate::security::is_url_allowed(&parsed),
+        "URL blocked by browser security policy"
+    );
     #[cfg(target_os = "windows")]
     let mut command = std::process::Command::new("explorer.exe");
     #[cfg(target_os = "macos")]
@@ -121,33 +119,15 @@ mod tests {
         };
         let mut backend = StubBackend::create(&parent, geometry, "").unwrap();
         let url = Url::parse("https://example.com/portal?value=one&other=two").unwrap();
-        let mut launched = Vec::new();
-        let handoff = backend
-            .navigate_with(&url, |url| {
-                launched.push(url.to_owned());
-                Ok(())
-            })
-            .unwrap_err();
-        assert_eq!(launched, vec![url.as_str()]);
-        assert!(handoff
-            .to_string()
-            .contains("external browser launch requested"));
+        let refusal = backend.navigate(&url).unwrap_err();
+        assert!(refusal.to_string().contains("choose Open externally"));
+        assert!(!backend.is_alive());
         assert!(
-            !backend.is_alive(),
-            "an external launch never creates an embedded window"
-        );
-        assert!(
-            matches!(backend.drain_events().as_slice(),[BackendEvent::Error(message)] if message==&handoff.to_string())
+            matches!(backend.drain_events().as_slice(),[BackendEvent::Error(message)] if message == &refusal.to_string())
         );
         assert!(backend.drain_events().is_empty());
-        assert!(backend
-            .navigate_with(&url, |_| anyhow::bail!("launcher missing"))
-            .unwrap_err()
-            .to_string()
-            .contains("launcher missing"));
-        assert!(
-            matches!(backend.drain_events().as_slice(),[BackendEvent::Error(message)] if message.contains("Could not launch"))
-        );
+        assert!(backend.go_forward().is_err());
+        assert!(backend.reload().is_err());
         assert!(backend.go_back().is_err());
         assert!(backend.show().is_err());
         assert!(backend.hide().is_err());
@@ -157,16 +137,10 @@ mod tests {
             "unsupported positioning does not emit per-frame errors"
         );
         for blocked in ["file:///private", "https://127.0.0.1/private"] {
-            assert!(backend
-                .navigate_with(&Url::parse(blocked).unwrap(), |_| panic!(
-                    "blocked URL reached launcher"
-                ))
-                .is_err());
+            assert!(backend.navigate(&Url::parse(blocked).unwrap()).is_err());
         }
         backend.destroy();
         assert!(backend.drain_events().is_empty());
-        assert!(backend
-            .navigate_with(&url, |_| panic!("closed fallback reached launcher"))
-            .is_err());
+        assert!(backend.navigate(&url).is_err());
     }
 }

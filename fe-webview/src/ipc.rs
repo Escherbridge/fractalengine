@@ -3,6 +3,9 @@
 pub enum BrowserCommand {
     Navigate { url: url::Url },
     GoBack,
+    GoForward,
+    Reload,
+    OpenExternal { url: url::Url },
     Close,
     GetUrl,
     SwitchTab { tab: BrowserTab },
@@ -13,6 +16,8 @@ pub enum BrowserCommand {
 pub enum BrowserEvent {
     UrlChanged { url: url::Url },
     LoadComplete,
+    PageLoaded { url: url::Url },
+    ExternalLaunchRequested,
     Error { message: String },
     TabChanged { tab: BrowserTab },
 }

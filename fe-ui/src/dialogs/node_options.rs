@@ -24,6 +24,8 @@ pub fn render_node_options_dialog(
     ui_mgr: &mut UiManager,
     hierarchy: &mut VerseManager,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
+    nav: &crate::navigation_manager::NavigationManager,
+    local_role: &crate::plugin::LocalUserRole,
 ) {
     let ActiveDialog::NodeOptions {
         ref node_id,
@@ -45,7 +47,11 @@ pub fn render_node_options_dialog(
         .all_nodes()
         .find(|n| n.id == current_node_id)
         .map(|n| n.name.clone());
+    let current_url = hierarchy.all_nodes().find(|node| node.id == current_node_id).and_then(|node| node.webpage_url.clone());
 
+    let can_edit = local_role.can_edit()
+        && crate::actions::portal::node_scope(hierarchy, &current_node_id)
+            .is_some_and(|scope| nav.active_scope().as_ref() == Some(&scope));
     let mut close = false;
     // Verbs that touch `ui_mgr` are queued here and flushed after the window, so
     // they don't collide with the `active_dialog` borrow held by the destructure.
@@ -66,9 +72,15 @@ pub fn render_node_options_dialog(
                 .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM)),
         )
         .show(ctx, |ui| {
+            if !can_edit {
+                ui.label("Navigate to this object's Petal with Editor access to edit it.");
+            }
             let name_label = ui.label(egui::RichText::new("Name:").small().color(theme::TEXT_DIM));
-            ui.add(egui::TextEdit::singleline(node_name_buf).desired_width(f32::INFINITY))
-                .labelled(ui, &name_label);
+            ui.add_enabled(
+                can_edit,
+                egui::TextEdit::singleline(node_name_buf).desired_width(f32::INFINITY),
+            )
+            .labelled(ui, &name_label);
 
             ui.add_space(6.0);
             let url_label = ui.label(
@@ -76,7 +88,8 @@ pub fn render_node_options_dialog(
                     .small()
                     .color(theme::TEXT_DIM),
             );
-            ui.add(
+            ui.add_enabled(
+                can_edit,
                 egui::TextEdit::singleline(webpage_url_buf)
                     .hint_text("https://\u{2026}")
                     .desired_width(f32::INFINITY),
@@ -91,16 +104,28 @@ pub fn render_node_options_dialog(
                 .color(theme::TEXT_MUTED),
             );
 
+            let validated_url = crate::actions::portal::validate_url(webpage_url_buf);
+            if let Err(reason) = &validated_url {
+                ui.colored_label(theme::STATUS_OFFLINE, reason);
+            }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui
-                    .add(egui::Button::new("Save").fill(theme::BG_SAVE))
+                    .add_enabled(
+                        can_edit && validated_url.is_ok(),
+                        egui::Button::new("Save").fill(theme::BG_SAVE),
+                    )
                     .observed(ui)
                     .clicked()
                 {
-                    let url = webpage_url_buf.trim().to_string();
-                    let url_opt = if url.is_empty() { None } else { Some(url) };
-                    node_options_save_url(hierarchy, &current_node_id, url_opt, db_tx);
+                    if let Ok(url) = &validated_url {
+                        if *url != current_url {
+                            pending_actions.push(UiAction::SaveNodeUrl {
+                                node_id: current_node_id.clone(),
+                                url: url.clone(),
+                            });
+                        }
+                    }
                     // The Name field is the node-rename surface: a changed,
                     // non-empty name routes the T4 spine op (Editor+ enforced
                     // DB-side via CallerAuth::Local, N-5); the tree updates on
@@ -143,18 +168,26 @@ pub fn render_node_options_dialog(
                 // Duplicate — the T4 spine op (full row copy, " (copy)" name,
                 // +1m x/z, path-binding keys stripped); replies NodeCreated,
                 // which fe-ui already applies. No fake CreateNode copy.
-                if render_verb_button(ui, Verb::Duplicate, true) {
+                if ui
+                    .add_enabled_ui(can_edit, |ui| render_verb_button(ui, Verb::Duplicate, true))
+                    .inner
+                {
                     pending_actions.extend(verb_action(Verb::Duplicate, &current_node_id, false));
                     close = true;
                 }
 
-                if crate::panels::widgets::confirm_button(
-                    ui,
-                    confirmation.with("clear_properties"),
-                    "Clear Properties",
-                    "Confirm clear",
-                    "Clear node properties",
-                ) {
+                if ui
+                    .add_enabled_ui(can_edit, |ui| {
+                        crate::panels::widgets::confirm_button(
+                            ui,
+                            confirmation.with("clear_properties"),
+                            "Clear Properties",
+                            "Confirm clear",
+                            "Clear node properties",
+                        )
+                    })
+                    .inner
+                {
                     pending_actions.extend(verb_action(
                         Verb::ClearProperties,
                         &current_node_id,
@@ -188,7 +221,8 @@ pub fn render_node_options_dialog(
             ui.add_space(6.0);
             if !*pending_delete {
                 if ui
-                    .add(
+                    .add_enabled(
+                        can_edit,
                         egui::Button::new(
                             egui::RichText::new("Delete Node").color(egui::Color32::WHITE),
                         )
@@ -223,7 +257,7 @@ pub fn render_node_options_dialog(
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(
-                            descendant_count.is_some(),
+                            can_edit && descendant_count.is_some(),
                             egui::Button::new(
                                 egui::RichText::new("Confirm Delete").color(egui::Color32::WHITE),
                             )
@@ -278,24 +312,6 @@ pub(crate) fn rename_request(current_name: Option<&str>, name_buf: &str) -> Opti
         return None;
     }
     Some(trimmed.to_string())
-}
-
-pub fn node_options_save_url(
-    hierarchy: &mut VerseManager,
-    node_id: &str,
-    url: Option<String>,
-    db_tx: &crossbeam::channel::Sender<DbCommand>,
-) {
-    hierarchy.update_node_url(node_id, url.clone());
-    if db_tx
-        .send(DbCommand::UpdateNodeUrl {
-            node_id: node_id.to_string(),
-            url,
-        })
-        .is_err()
-    {
-        bevy::log::warn!("db_sender channel closed — UpdateNodeUrl (node options) not persisted");
-    }
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 //! Right inspector panel: entity/transform/URL/properties/schema/API-access
 //! tabs for the selected node. This is a browser-integration seam — the
-//! "Portal URLs" section here is where `UiAction::SaveUrl` and
+//! "Portal URLs" section here is where `UiAction::SaveNodeUrl` and
 //! `UiAction::OpenPortal` originate; see `fe-ui/src/AGENTS.md` §portal for
 //! the full save/open chain and its known fragilities.
 
@@ -608,7 +608,7 @@ fn inspector_transform_section(
     .observed(ui);
 }
 
-/// The "Portal URLs" section: `Save` pushes `UiAction::SaveUrl` (commits
+/// The "Portal URLs" section: `Save` pushes `UiAction::SaveNodeUrl` (commits
 /// `external_url`/`config_url` for the selected node); `Open Portal` pushes
 /// `UiAction::OpenPortal` with the current `external_url` text. See
 /// `fe-ui/src/AGENTS.md` §portal for the full chain from here to `DbCommand`.
@@ -693,7 +693,9 @@ fn inspector_url_meta_section(
             })
             .clicked()
         {
-            ui_mgr.push_action(UiAction::SaveUrl);
+            if let crate::actions::portal::SaveUrlOutcome::Persist { node_id, url } = &validation {
+                ui_mgr.push_action(UiAction::SaveNodeUrl { node_id: node_id.clone(), url: url.clone() });
+            }
         }
 
         ui.add_space(4.0);
@@ -3979,7 +3981,7 @@ mod tests {
             &polish_nodes,
             &mut notices,
         );
-        assert!(matches!(&notices.drain_actions()[..], [UiAction::SaveUrl]));
+        assert!(matches!(&notices.drain_actions()[..], [UiAction::SaveNodeUrl { .. }]));
         let scope = "VERSE#v#FRACTAL#f#PETAL#p";
         polish.set_active_tab(InspectorTab::ApiAccess);
         synchronize_token_target(&mut polish, Some("polish-node"), scope, true);

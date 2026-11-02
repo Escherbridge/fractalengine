@@ -139,6 +139,10 @@ pub(super) fn apply_db_results(
     let mesh_budget_exceeded = caches.mesh_budget.exceeded;
     let mut hierarchy_requested = false;
     for result in reader.read() {
+        if matches!(result, DbResult::NodeUrlUpdated { .. }) {
+            crate::actions::portal::finish_url_save(&mut ui_mgr, &mut verse_mgr, &nav, &node_mgr, result, caches.time.elapsed_secs_f64());
+            continue;
+        }
         crate::object_data::synchronize(
             &mut inspector.object_data,
             &node_mgr,

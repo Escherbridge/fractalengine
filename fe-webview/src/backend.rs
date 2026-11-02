@@ -16,6 +16,7 @@ pub struct WindowGeometry {
 pub enum BackendEvent {
     UrlChanged(Url),
     LoadComplete,
+    PageLoaded(Url),
     Error(String),
     /// The backend's window was closed externally (e.g. Alt+F4).
     WindowClosed,
@@ -51,6 +52,14 @@ pub trait WebViewBackend: 'static {
 
     /// Go back one page in history.
     fn go_back(&mut self) -> anyhow::Result<()>;
+
+    fn go_forward(&mut self) -> anyhow::Result<()> {
+        anyhow::bail!("Forward navigation is unavailable in this backend")
+    }
+
+    fn reload(&mut self) -> anyhow::Result<()> {
+        anyhow::bail!("Reload is unavailable in this backend")
+    }
 
     /// Show the backend's window.
     fn show(&mut self) -> anyhow::Result<()>;

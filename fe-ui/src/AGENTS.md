@@ -132,52 +132,30 @@ delegates to a small domain function in `portal.rs` / `node_props.rs` /
 dispatcher and lets the domain logic be unit-tested without a Bevy `App`
 where possible (see §portal).
 
-## §portal — the browser-integration seam
+## Portal URL ownership and backend feedback
 
-This is the highest-polish, most fragility-prone part of the crate: it's
-where inspector form state crosses into `fe-webview`'s `BrowserCommand`
-queue and the DB persistence layer. `actions::portal` intentionally splits
-each action into a **pure decision function** (`compute_open_portal`,
-`should_auto_close`, `compute_save_url`) that takes plain resource
-references and returns an outcome/tuple, with the actual `MessageWriter`/
-`Sender` I/O left in `process_ui_actions`. This makes the save/open/close
-semantics unit-testable with plain `#[test]` functions (no `MinimalPlugins`
-app needed) — see the `#[cfg(test)]` modules in `actions/portal.rs` and
-`portal/mod.rs`.
+Both Inspector and Node Options validate a trimmed draft through actions::portal::validate_url
+and queue one captured SaveNodeUrl payload. The dispatcher rechecks current Petal, actual tree
+node and advisory Editor access, then retains one ULID request owner with exact scope, target,
+selection and a30-second deadline. Sending shows Saving URL. The tree and success notice change
+only for its current NodeUrlUpdated receipt; unknown, duplicate, obsolete-selection, moved-scope
+and timed-out receipts cannot confirm a different draft. A failed send never changes the tree.
 
-**The complete save chain**, UI field → action → system → persistence:
+The DB uses its own local identity, captured Editor authority and stored ancestry in the SAME
+atomic op/model transaction. Node asset/Petal/tombstone, model URL and exclusive live reference
+are fenced before the write. Missing, assetless, shared or foreign-Petal models refuse honestly.
+The returned value comes from the committed UPDATE RETURN AFTER. This preserves the existing
+model.external_url storage contract: no per-node URL schema, URL history replay or unsupported
+model-row sync publication is implied.
 
-1. `InspectorFormState.external_url` is a plain text buffer, edited directly
-   by `panels::inspector::inspector_url_meta_section`. It is populated from
-   `VerseManager` (not the DB) whenever selection changes
-   (`node_manager::inspector_sync::sync_manager_to_inspector`).
-2. Clicking **Save** pushes `UiAction::SaveUrl` — a bare signal with **no
-   payload**. It does not carry `node_id` or the URL value; both are
-   re-read from `NodeManager`/`InspectorFormState` at drain time.
-3. `process_ui_actions` calls `actions::portal::compute_save_url(&node_mgr,
-   &inspector)`. If nothing is selected, this returns `None` and the save is
-   a **silent no-op** — no log, no toast. Whitespace-only URLs become
-   `None` (clears the field); non-empty URLs are **trimmed before persist**
-   (matching Node Options' save path, ux hardening batch 2026-07-17).
-4. On `Some((node_id, url))`: `verse_mgr.update_node_url(...)` updates the
-   in-memory tree immediately (optimistic local echo), then
-   `db_sender.send(DbCommand::UpdateNodeUrl { .. })` is fired at the DB
-   thread over an unbounded crossbeam channel. If the send fails, a single
-   `bevy::log::warn!` fires and **nothing else happens** — no retry, no
-   user-visible error, and the in-memory copy is already "saved" from the
-   UI's perspective regardless of DB outcome.
-5. Clicking **Open Portal** is a *separate* action (`UiAction::OpenPortal`)
-   that independently re-reads `inspector.external_url` — saving does not
-   automatically open the portal, and opening does not require a prior save.
-6. `compute_open_portal` mirrors the same "no selection ⇒ silent no-op"
-   shape: invalid URL syntax logs a warning, but a *valid* URL with nothing
-   selected does nothing at all (not even a log line).
-7. Every `Update` frame, before draining new actions, `should_auto_close`
-   checks whether the currently-open portal's `opened_for_entity` still
-   matches the live selection; if the selection changed or cleared, the
-   portal force-closes (`BrowserCommand::Close`) — by design (FR-2), but it
-   means selecting a *different* node while a portal is open silently kills
-   the webview with no confirmation.
+Open remains an explicit separate action. Tauri implements Back/Forward through history and
+Reload through location.reload using the existing pinned wry evaluate_script API. The toolbar
+shows backend errors and a loading indicator; only a URL-bound page-finished event can end that
+indicator, never an unbound legacy completion. The measured remaining panel rectangle places
+the native overlay below all toolbar/status controls. Selection changes close the portal with
+an advisory. Open externally is a separate validated system-browser launch request; a successful
+spawn says launch requested and cannot prove that a page loaded. Unsupported builds explain
+embedded browsing is unavailable and never auto-launch an external application.
 
 ## §inspector-transform — Position/Rotation/Scale write-back
 
@@ -281,25 +259,7 @@ worker):
    `UiManager::show_toast` is the natural next step, following the same
    shape as `HexonOpenStorageDir`'s OS-explorer reveal).
 
-**Fragilities worth a dedicated e2e pass** (flagged, not fixed here — out of
-scope for this decomposition task):
-- Two silent no-op paths (`SaveUrl` and `OpenPortal` with no selection) with
-  zero user feedback. If a user's click races a selection change by even one
-  frame, the save/open is dropped with no visible signal.
-- `UiAction::SaveUrl` carries no `node_id`/url payload — it trusts that
-  `NodeManager.selected` and `InspectorFormState.external_url` are still
-  valid at drain time, which is normally true (drain happens the same or
-  next frame) but is a latent footgun if that assumption ever breaks (e.g. a
-  future async dialog between click and drain).
-- Three copies of "the URL": `InspectorFormState.external_url` (form buffer),
-  `VerseManager`'s `NodeEntry.webpage_url` (in-memory tree), and the DB
-  column. Steps 2-4 write only the first two synchronously; the DB write is
-  fire-and-forget with no ack surfaced to the UI (`DbResult::NodePropertySet`
-  has an equivalent round-trip for custom properties, but `UpdateNodeUrl`
-  has no corresponding `DbResult` handled here to confirm the write landed).
-- URLs are trimmed before persist (`compute_save_url` stores the trimmed
-  buffer, matching Node Options' save path — ux hardening batch 2026-07-17),
-  so `"  https://x  "` is stored as `"https://x"`.
+Portal save and browser feedback now use the owned receipt contract documented above.
 
 ## §gis-query-ui — Annotation editor, GIS Query panel, Layer Manager
 

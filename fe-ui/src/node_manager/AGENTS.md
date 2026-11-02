@@ -938,3 +938,8 @@ Circle/rectangle and proposal buttons arm one captured placement; only a fresh v
 Freehand strokes now capture the same context at press, check it on hold/release, and wrap the existing batched payload in the sealed intent. No unscoped fallback is sent on a missing context. Preview producers independently recheck the scope, including the freehand accessor at producer use, so correctness does not depend on the gesture observer running first. The checked snapshot has world-unit footprint and heights from the same corridor/region construction as release; only a matching loaded map may convert those heights to meters. The existing preview journey changes scale, origin, tilesets, loading state and ancestry without a Brush consumer tick. A report?s drawn fallback is admitted only for a current active draft; stored proposal/region report priority is unchanged.
 
 The existing map-loading journey now drives the real Brush consumer through three polygon presses, pop/close, scoped dispatch validation, shape/proposal placement away from the origin, changed-parent/map/access refusal and Viewer no-write. Preview journeys explicitly arm and hover their typed placement. They remain authored, not executed. Terrain persistence still uses the existing whole-document merge/readback path; no distributed transaction or peer-delivery guarantee is claimed.
+
+## Context path identity
+
+Right-click path vertex and handle targets retain editing_track_id in ContextTarget.node_id.
+An open context menu therefore cannot follow a later track selection by reusing its point index.

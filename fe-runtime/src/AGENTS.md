@@ -890,3 +890,9 @@ Pinned Bevy 0.18.1 `bevy_internal/src/default_plugins.rs` includes LogPlugin in 
 `bevy_app/src/plugin_group.rs::PluginGroupBuilder::disable` prevents that plugin from building.
 The existing core-resource journey inspects configured plugin groups without initializing global
 subscribers or a native window, and checks that asset/window/winit/render plugins stay enabled.
+
+## Local Portal URL receipts
+
+UpdateNodeUrl carries an exact expected scope and ULID request ID. NodeUrlUpdated echoes both
+and returns the committed stored optional URL or a safe unconfirmed error. This is a local GUI
+receipt, with no REST/MCP producer or PendingApiRequests wildcard delivery.

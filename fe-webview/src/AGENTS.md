@@ -94,26 +94,17 @@ there is no webview-JS object mutation/query bridge at this seam.
 
 ## fallback-backend
 
-Backend selection remains Servo > Tauri > Stub. Stub construction warns once per
-instance that no webview backend is compiled in. The adapter can request an
-external browser launch, but owns no embedded window: is_alive is false and
-navigate reports an explicit unsupported-embedded result even when the launcher
-starts. A successful spawn proves only a launch request, never a loaded page.
-No UrlChanged or LoadComplete is emitted. The existing error event carries the
-handoff explanation or launch failure; only the latest pending error is retained.
+Stub and unfinished Servo report embedded browsing unsupported and never auto-launch a page.
+Their navigation/history/window operations cannot report success. The existing stub journey
+asserts refusal/no embedded events without launching any application.
 
-Back/show/hide/reposition return unsupported errors and do not control another
-application's window. Geometry calls do not warn or enqueue per-frame events.
-Destroy closes the adapter without closing an external browser. The original
-command-layer URL policy remains, and the fallback checks it again before the
-launcher. Windows uses explorer.exe with one URL argument instead of a command
-shell; macOS/Linux retain open/xdg-open. Spawn errors propagate and unsupported
-platforms refuse explicitly. No browser or process is launched by the amended
-existing journey: it injects a recording/failing launcher.
-
-The existing asset-path validator journeys in fe-runtime remain unchanged.
-There is no actual AppHandle-backed resolve_asset filesystem/symlink journey in
-this crate to claim as verification; its implementation is preserved verbatim.
+OpenExternal is handled independently of backend initialization, requires the same URL policy
+and explicitly invokes explorer.exe/open/xdg-open with one URL argument. A launch request
+produces ExternalLaunchRequested, never UrlChanged or LoadComplete. Tauri Forward and Reload
+use the existing pinned wry evaluate_script API with history.forward()/location.reload(). The
+page-finished callback supplies its URL as PageLoaded; old unbound completion remains compatible
+but cannot confirm the UI's current loading state. Missing/init-failed backends emit visible
+errors rather than leaving the UI silently waiting.
 
 ## §tests
 

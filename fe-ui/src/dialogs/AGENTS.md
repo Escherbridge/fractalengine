@@ -373,3 +373,17 @@ Destructive/role confirmation salts include the exact successfully loaded Access
 ### Access role confirmation generation
 
 Role assignment and revoke confirmation IDs include the exact successful Access readback request ID, matching targeted token revoke. A fresh readback therefore cannot inherit a four-second confirmation arm from an older snapshot, even when target, peer and draft are unchanged. The existing EntitySettings journey clicks the actual role buttons, refreshes through the controller without an intervening dismiss click, applies the new receipt, and verifies both controls return to their initial arm step.
+
+## Current context targets and URL saves
+
+Every context edit verb uses the shared advisory role gate and rechecks its owning active Petal,
+existing node/track and live path editor identity. Path vertex/handle classification retains its
+track ID. Point removal uses the shared timed confirmation salted by complete route content,
+track, index and navigation, then captures PointEditOrigin for checked dispatch/DB compare-and-swap.
+It has no immediate destructive verb-map action. The bounded menu is constrained to the viewport;
+long object names truncate with hover details. Existing node cascade confirmation remains intact.
+
+Node Options validates its URL through the same canonical validator as Inspector and queues
+SaveNodeUrl after the borrow window. It never mutates the manager optimistically. Rename and URL
+remain distinct transactions; the URL saved notice confirms only the URL transaction. Copy/report
+continue through egui output plus shared feedback, retaining A8 synthetic clipboard suppression.

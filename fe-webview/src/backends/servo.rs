@@ -26,34 +26,34 @@ impl WebViewBackend for ServoBackend {
     ) -> anyhow::Result<Self> {
         tracing::warn!(
             "ServoBackend::create called (stub) — geometry: x={} y={} w={} h={}. \
-             Servo embedding not yet implemented; URL will open in system browser.",
+             Servo embedding is unavailable; external launch requires an explicit action.",
             geometry.x,
             geometry.y,
             geometry.width,
             geometry.height
         );
-        anyhow::bail!("ServoBackend not yet implemented — URL opened in system browser as fallback")
+        anyhow::bail!("Servo embedding is unavailable; choose Open externally")
     }
 
     fn navigate(&mut self, url: &Url) -> anyhow::Result<()> {
         tracing::warn!("ServoBackend::navigate not yet implemented: {url}");
-        Ok(())
+        anyhow::bail!("Servo embedding is unavailable")
     }
 
     fn go_back(&mut self) -> anyhow::Result<()> {
-        Ok(())
+        anyhow::bail!("Servo embedding is unavailable")
     }
 
     fn show(&mut self) -> anyhow::Result<()> {
-        Ok(())
+        anyhow::bail!("Servo embedding is unavailable")
     }
 
     fn hide(&mut self) -> anyhow::Result<()> {
-        Ok(())
+        anyhow::bail!("Servo embedding is unavailable")
     }
 
     fn reposition(&mut self, _geometry: WindowGeometry) -> anyhow::Result<()> {
-        Ok(())
+        anyhow::bail!("Servo embedding is unavailable")
     }
 
     fn destroy(&mut self) {

@@ -46,8 +46,11 @@ pub enum UiAction {
     ClosePortal,
     /// Navigate back in portal history (replaces PortalPanelState.go_back).
     PortalGoBack,
+    PortalGoForward,
+    PortalReload,
+    PortalOpenExternal,
     /// Save URL for the selected node (replaces InspectorFormState.url_save_pending).
-    SaveUrl,
+    SaveNodeUrl { node_id: String, url: Option<String> },
     /// Apply the inspector's Position/Rotation/Scale text buffers to the
     /// selected node's `Transform`. See AGENTS.md §inspector-transform.
     ApplyNodeTransform,
@@ -554,6 +557,9 @@ pub struct UiManager {
     actions: Vec<UiAction>,
     /// Portal webview lifecycle.
     pub portal: PortalState,
+    pub(crate) pending_url_save: Option<portal::PendingUrlSave>,
+    pub(crate) portal_feedback: portal::PortalFeedback,
+    pub(crate) portal_content_rect: Option<bevy_egui::egui::Rect>,
     /// Sidebar open state — derived from portal/inspector each frame.
     pub sidebar_open: bool,
     /// Which floating dialog is currently open (at most one).
@@ -591,6 +597,9 @@ impl Default for UiManager {
             gltf_file_lease: None,
             actions: Vec::new(),
             portal: PortalState::Closed,
+            pending_url_save: None,
+            portal_feedback: portal::PortalFeedback::default(),
+            portal_content_rect: None,
             sidebar_open: true,
             active_dialog: ActiveDialog::None,
             notices: VecDeque::new(),
@@ -876,6 +885,7 @@ fn open_portal(
         portal::OpenPortalOutcome::Navigate(new_state, parsed) => {
             bevy::log::info!("Portal: forwarding Navigate for URL: {parsed}");
             ui_mgr.portal = new_state;
+            ui_mgr.portal_feedback = portal::PortalFeedback::opening();
             Some(parsed)
         }
         portal::OpenPortalOutcome::NoSelection => {
@@ -979,6 +989,7 @@ pub(crate) fn process_ui_actions(
     time: Res<crate::notice::NoticeClock>,
     gis: GisPathParams,
     tool_state: ToolStateParams,
+    mut browser_events: MessageReader<fe_webview::ipc::BrowserEvent>,
 ) {
     let GisPathParams {
         mut gis_panel,
@@ -1009,11 +1020,23 @@ pub(crate) fn process_ui_actions(
     }
     // `NoticeClock` is the clock egui renders notices against.
     let now_secs = time.elapsed_secs_f64();
+    for event in browser_events.read() {
+        portal::receive_browser_event(&mut ui_mgr, &node_mgr, event, now_secs);
+    }
+    if ui_mgr.pending_url_save.as_ref().is_some_and(|pending| {
+        now_secs - pending.started > 30.0
+            || nav.active_scope().as_deref() != Some(pending.scope.as_str())
+            || node_mgr.selected.as_ref().map(|selected| selected.node_id.as_str()) != pending.selection.as_deref()
+    }) {
+        ui_mgr.pending_url_save = None;
+        ui_mgr.show_advisory("URL save confirmation is no longer current; reload the object before retrying", now_secs);
+    }
 
     // Auto-close portal when the selected entity changes or is deselected.
     if portal::should_auto_close(&ui_mgr.portal, node_mgr.selected_entity()) {
         ui_mgr.portal = PortalState::Closed;
         browser_commands.write(BrowserCommand::Close);
+        ui_mgr.show_advisory("Portal closed because selection changed", now_secs);
     }
 
     let actions = ui_mgr.drain_actions();
@@ -1039,32 +1062,24 @@ pub(crate) fn process_ui_actions(
                 browser_commands.write(BrowserCommand::Close);
             }
             UiAction::PortalGoBack => {
-                browser_commands.write(BrowserCommand::GoBack);
+                if ui_mgr.portal_is_open() { browser_commands.write(BrowserCommand::GoBack); }
             }
-            UiAction::SaveUrl => {
-                // Every outcome is surfaced to the user (toast) — no silent
-                // drops; blocked URLs never reach the DB (see AGENTS.md §portal).
-                match portal::compute_save_url(&node_mgr, &inspector) {
-                    portal::SaveUrlOutcome::Persist { node_id, url } => {
-                        verse_mgr.update_node_url(&node_id, url.clone());
-                        if send_or_toast(
-                            &db_sender.0,
-                            fe_runtime::messages::DbCommand::UpdateNodeUrl { node_id, url },
-                            &mut ui_mgr,
-                            now_secs,
-                            "save the URL",
-                        ) {
-                            ui_mgr.show_toast("URL saved", now_secs);
-                        }
-                    }
-                    portal::SaveUrlOutcome::Blocked { reason } => {
-                        bevy::log::warn!("UiAction::SaveUrl rejected: {reason}");
-                        ui_mgr.show_error(format!("URL not saved — {reason}"), now_secs);
-                    }
-                    portal::SaveUrlOutcome::NoSelection => {
-                        ui_mgr.show_advisory("No node selected", now_secs);
-                    }
+            UiAction::PortalGoForward => {
+                if ui_mgr.portal_is_open() { browser_commands.write(BrowserCommand::GoForward); }
+            }
+            UiAction::PortalReload => {
+                if ui_mgr.portal_is_open() {
+                    ui_mgr.portal_feedback = portal::PortalFeedback::opening();
+                    browser_commands.write(BrowserCommand::Reload);
                 }
+            }
+            UiAction::PortalOpenExternal => {
+                if ui_mgr.portal_is_open() {
+                    if let Ok(url) = ui_mgr.portal_url().parse() { browser_commands.write(BrowserCommand::OpenExternal { url }); }
+                }
+            }
+            UiAction::SaveNodeUrl { node_id, url } => {
+                portal::save_url(&db_sender.0, &mut ui_mgr, &verse_mgr, &nav, &node_mgr, &local_role, node_id, url, now_secs);
             }
             UiAction::ApplyNodeTransform => {
                 if undo.is_pending() || node_mgr.gesture_active {ui_mgr.show_advisory("Finish the gesture or wait for the previous edit to save",now_secs);continue;}

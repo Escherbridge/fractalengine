@@ -607,6 +607,8 @@ pub enum DbCommand {
         node_id: String,
         /// `None` clears the URL.
         url: Option<String>,
+        request_id: String,
+        expected_scope: String,
     },
     // --- Entity Settings: General config ---
     /// Read the local caller's current target settings; never an API waiter reply.
@@ -1496,6 +1498,13 @@ pub enum DbResult {
     NodeRenamed {
         node_id: String,
         new_name: String,
+    },
+    /// Local URL write receipt after the authorized transaction commits.
+    NodeUrlUpdated {
+        node_id: String,
+        request_id: String,
+        expected_scope: String,
+        outcome: Result<Option<String>, String>,
     },
     /// Result of `CountNodeDescendants` — live descendants, root excluded.
     NodeDescendantCount {

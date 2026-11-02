@@ -8,6 +8,13 @@ pub mod tauri;
 
 pub mod stub;
 
+pub fn embedded_browsing_supported() -> bool {
+    cfg!(all(
+        feature = "backend-tauri",
+        not(feature = "backend-servo")
+    ))
+}
+
 // Type alias selects the active backend at compile time.
 
 #[cfg(feature = "backend-servo")]
