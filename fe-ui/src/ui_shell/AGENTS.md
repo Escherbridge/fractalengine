@@ -213,7 +213,9 @@ Only one write per draft may await readback. A newer finalized edit remains
 editable while the first write is pending and is submitted after that stored
 value arrives. An echo cannot replace a newer local draft. Clean drafts adopt
 external stored changes; target changes reset the form, including native
-widget IDs. Channel failure or 30 seconds without matching stored confirmation
+widget IDs. Dirty state records actual value edits separately from focus, so
+leaving an unchanged focused field cannot overwrite a newer stored value.
+Channel failure or 30 seconds without matching stored confirmation
 keeps the payload with an inline unconfirmed/error message and requires another
 edit to retry. This is value-readback confirmation through the existing GUI
 contracts, not a new request-correlation or backend authorization guarantee.

@@ -8,6 +8,7 @@ pub(super) struct SettingDraft<T> {
     pub value: T,
     stored: T,
     pending: Option<(T, f64)>,
+    dirty: bool,
     ready: bool,
     editing: bool,
     pointer_edit: bool,
@@ -24,6 +25,7 @@ impl<T: Copy + PartialEq + Send + Sync + 'static> SettingDraft<T> {
                 value: stored,
                 stored,
                 pending: None,
+                dirty: false,
                 ready: false,
                 editing: false,
                 pointer_edit: false,
@@ -44,15 +46,19 @@ impl<T: Copy + PartialEq + Send + Sync + 'static> SettingDraft<T> {
                 self.ready = false;
                 self.error = Some("Save is unconfirmed. Your draft is kept; edit again to retry.");
             }
-        } else if self.value == self.stored && !self.editing {
+        } else if !self.dirty && !self.editing {
             self.value = stored;
         }
         self.stored = stored;
+        if self.pending.is_none() && self.value == stored {
+            self.dirty = false;
+        }
     }
 
     pub fn observe(&mut self, ui: &egui::Ui, response: &egui::Response) {
         let pointer_down = ui.input(|input| input.pointer.any_down());
         if response.changed() {
+            self.dirty = true;
             self.ready = false;
             self.error = None;
             self.pointer_edit |= pointer_down;
@@ -93,12 +99,14 @@ impl<T: Copy + PartialEq + Send + Sync + 'static> SettingDraft<T> {
     }
 
     pub fn finish(&mut self) {
+        self.dirty = true;
         self.ready = true;
         self.error = None;
     }
 
     pub fn next_value(&self) -> Option<T> {
-        (self.ready && self.pending.is_none() && self.value != self.stored).then_some(self.value)
+        (self.ready && self.dirty && self.pending.is_none() && self.value != self.stored)
+            .then_some(self.value)
     }
 
     pub fn sent(&mut self, now: f64) {

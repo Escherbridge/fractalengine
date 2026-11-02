@@ -2011,6 +2011,77 @@ mod tests {
         );
 
         let observed = settings_frame(
+            false,
+            vec![],
+            &mut settings_time,
+            &confirmed,
+            &mut ts,
+            &mut override_state,
+        );
+        let at = observed.controls[0].rect.center();
+        for event in [
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ] {
+            settings_frame(
+                false,
+                vec![event],
+                &mut settings_time,
+                &confirmed,
+                &mut ts,
+                &mut override_state,
+            );
+        }
+        let confirmed = hierarchy_for(second + 500.0);
+        settings_frame(
+            false,
+            vec![],
+            &mut settings_time,
+            &confirmed,
+            &mut ts,
+            &mut override_state,
+        );
+        let outside = egui::pos2(800.0, 500.0);
+        for pressed in [true, false] {
+            settings_frame(
+                false,
+                vec![egui::Event::PointerButton {
+                    pos: outside,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                &mut settings_time,
+                &confirmed,
+                &mut ts,
+                &mut override_state,
+            );
+        }
+        settings_frame(
+            false,
+            vec![],
+            &mut settings_time,
+            &confirmed,
+            &mut ts,
+            &mut override_state,
+        );
+        assert!(
+            rx.is_empty(),
+            "merely focusing and leaving a clean field cannot overwrite a newer stored value"
+        );
+
+        let observed = settings_frame(
             true,
             vec![],
             &mut settings_time,
