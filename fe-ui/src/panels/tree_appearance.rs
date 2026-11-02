@@ -1,5 +1,6 @@
 //! Per-entry display preferences and appearance editor; see panels/AGENTS.md.
 
+use crate::ui_shell::layout_policy::WindowTargets;
 use bevy_egui::egui::{self, ecolor::Hsva};
 
 use crate::accessibility::ResponseExt;
@@ -254,7 +255,7 @@ pub(crate) fn render(
         .collapsible(false)
         .resizable(false)
         .default_width(460.0)
-        .show(ctx, |ui| {
+        .show_with_targets(ctx, |ui| {
             ui.spacing_mut().interact_size.y = 24.0_f32.max(20.0 / ctx.pixels_per_point());
             ui.label("Display preference on this device");
             ui.horizontal(|ui| {

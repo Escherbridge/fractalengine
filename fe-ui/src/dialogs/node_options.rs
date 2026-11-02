@@ -5,6 +5,7 @@
 //! track's verb machinery (`context_menu::{Verb, render_verb_button}`); see
 //! `dialogs/AGENTS.md` §context-menu for the verb→action map.
 
+use crate::ui_shell::layout_policy::WindowTargets;
 use bevy_egui::egui;
 
 use crate::accessibility::ResponseExt;
@@ -76,7 +77,7 @@ pub fn render_node_options_dialog(
                 .corner_radius(6.0)
                 .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM)),
         )
-        .show(ctx, |ui| {
+        .show_with_targets(ctx, |ui| {
             if !can_edit {
                 ui.label("Navigate to this object's Petal with Editor access to edit it.");
             }

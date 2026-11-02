@@ -5,6 +5,7 @@
 //! the Name field grabs focus on open, and Enter submits exactly like
 //! clicking Create.
 
+use crate::ui_shell::layout_policy::WindowTargets;
 use bevy_egui::egui;
 
 use crate::accessibility::ResponseExt;
@@ -58,7 +59,7 @@ pub fn render_create_dialog(
                 .corner_radius(6.0)
                 .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM)),
         )
-        .show(ctx, |ui| {
+        .show_with_targets(ctx, |ui| {
             let name_label = ui.label(egui::RichText::new("Name:").small().color(theme::TEXT_DIM));
             let name_resp = ui
                 .add(

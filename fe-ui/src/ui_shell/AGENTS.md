@@ -485,3 +485,24 @@ object_data and action helpers delegate to it. text_input applies that minimum t
 a native single-line TextEdit builder, leaving the caller's width, labels, enabled
 state and interaction lifecycle intact. It does not resize read-only text or change
 global icon/font density.
+
+## Native floating-window header targets
+
+Bounded windows finish with WindowTargets::show_with_targets. Pinned egui0.33.3
+Window::show captures area_content_ui and allocates TitleBar before running the
+scroll/body child; it later paints TitleBar against that captured area Ui.
+TitleBar::close_button_ui uses spacing.icon_width for its real square interaction
+rectangle, independently of interact_size. Window exposes no per-window style
+setter, so the adapter temporarily installs a theme-specific header style before
+native allocation. It restores/disarms that context scope before user contents
+run and sets the body child back to the original style. Native Close/collapse,
+dragging, IDs, open flags and pending guards remain egui's own operations.
+
+The header's parent Ui retains its captured style while the body and nested
+popups see the ordinary context. Deliberate style edits in the body persist;
+the guard does not restore over them afterward. Closed/collapsed/no-body and
+pre-body unwinding paths restore the exact original theme style through Drop.
+This is a synchronous primary-UI adapter, not a general cross-thread style scope.
+The existing import and shell layout journeys add real Close geometry/click,
+pending suppression, nested Popup style and no-body restoration assertions.
+They have not been run in the source-author lane.

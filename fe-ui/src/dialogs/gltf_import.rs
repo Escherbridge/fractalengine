@@ -1,5 +1,6 @@
 //! Native glTF import dialog; see dialogs/AGENTS.md.
 
+use crate::ui_shell::layout_policy::WindowTargets;
 use bevy_egui::egui;
 
 use crate::accessibility::ResponseExt;
@@ -102,7 +103,7 @@ pub fn render_gltf_import_dialog(
     if !importing {
         window = window.open(&mut still_open);
     }
-    window.show(ctx, |ui| {
+    window.show_with_targets(ctx, |ui| {
         ui.add_enabled_ui(!importing, |ui| {
             let path_label = ui.label(
                 egui::RichText::new("File Path:")
@@ -341,6 +342,7 @@ mod tests {
         for (physical_width, scale) in [(1024.0, 1.0), (640.0, 2.0)] {
             let ctx = egui::Context::default();
             ctx.set_pixels_per_point(scale);
+            ctx.enable_accesskit();
             ctx.style_mut(|style| {
                 style.text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(10.0));
             });
@@ -351,9 +353,11 @@ mod tests {
             let mut nav = NavigationManager::default();
             nav.navigate_to_petal_in_fractal("v", "Verse", "f", "Fractal", "p");
             let (tx, rx) = crossbeam::channel::unbounded();
+            let ordinary_icon_width = ctx.style().spacing.icon_width;
+            let mut close_bounds = None;
             for frame in 0..3 {
                 crate::ui_shell::layout_policy::begin_frame(&ctx, true);
-                let _ = ctx.run(egui::RawInput {
+                let output = ctx.run(egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO,
                         egui::vec2(physical_width / scale, 720.0 / scale))),
                     time: Some(frame as f64), ..Default::default()
@@ -361,6 +365,9 @@ mod tests {
                     crate::ui_shell::layout_policy::begin_ui_pass(ctx);
                     render_gltf_import_dialog(ctx, &mut manager, &nav, &tx, 1.0);
                 });
+                close_bounds = output.platform_output.accesskit_update.unwrap().nodes.iter()
+                    .find_map(|(_, node)| (node.label() == Some("Close window")).then(|| node.bounds()).flatten());
+                assert_eq!(ctx.style().spacing.icon_width, ordinary_icon_width);
             }
             let observations = crate::ui_shell::layout_policy::observations(&ctx);
             let fields: Vec<_> = observations.controls.iter().filter(|control| control.draggable).collect();
@@ -372,6 +379,35 @@ mod tests {
             }
             assert!(matches!(manager.active_dialog, ActiveDialog::GltfImport { .. }));
             assert!(rx.try_recv().is_err(), "drawing the form cannot import a blank path");
+            let close = close_bounds.expect("the nonpending native import window has its real close control");
+            assert!(close.width() >= 24.0 && close.height() >= 24.0);
+            let center = egui::pos2((close.x0 + close.x1) as f32 / 2.0, (close.y0 + close.y1) as f32 / 2.0);
+            for (frame, pressed) in [(3, true), (4, false)] {
+                let _ = ctx.run(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO,
+                        egui::vec2(physical_width / scale, 720.0 / scale))),
+                    time: Some(frame as f64),
+                    events: vec![egui::Event::PointerMoved(center), egui::Event::PointerButton {
+                        pos: center, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE,
+                    }], ..Default::default()
+                }, |ctx| render_gltf_import_dialog(ctx, &mut manager, &nav, &tx, 1.0));
+            }
+            assert!(matches!(manager.active_dialog, ActiveDialog::None), "native Close retains the normal cancel path");
+            assert!(rx.try_recv().is_err());
+            manager.open_dialog(ActiveDialog::GltfImport {
+                file_path_buf: "model.glb".into(), name_buf: "Model".into(), position: [0.0; 3],
+            });
+            manager.gltf_import_request.start(5.0);
+            let output = ctx.run(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO,
+                    egui::vec2(physical_width / scale, 720.0 / scale))),
+                time: Some(5.5), ..Default::default()
+            }, |ctx| render_gltf_import_dialog(ctx, &mut manager, &nav, &tx, 1.0));
+            assert!(!output.platform_output.accesskit_update.unwrap().nodes.iter()
+                .any(|(_, node)| node.label() == Some("Close window")), "pending import still withholds native Close");
+            assert!(manager.gltf_import_request.waiting_within(5.5, IMPORT_LOCK_TIMEOUT_SECONDS));
+            assert_eq!(ctx.style().spacing.icon_width, ordinary_icon_width);
+            assert!(rx.try_recv().is_err());
         }
 
         use crate::file_dialogs::{FileDialogProvider, FileDialogRequest, QaFileDialogs};

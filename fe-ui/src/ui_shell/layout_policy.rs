@@ -158,6 +158,62 @@ pub(crate) fn text_input<'a>(ui: &egui::Ui, text: &'a mut dyn egui::TextBuffer) 
     egui::TextEdit::singleline(text).min_size(egui::vec2(0.0, target_size(ui.ctx())))
 }
 
+/// Render a native window header with the shared interaction minimum.
+pub(crate) trait WindowTargets {
+    fn show_with_targets<R>(
+        self,
+        ctx: &egui::Context,
+        body: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> Option<egui::InnerResponse<Option<R>>>;
+}
+
+impl WindowTargets for egui::Window<'_> {
+    fn show_with_targets<R>(
+        self,
+        ctx: &egui::Context,
+        body: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> Option<egui::InnerResponse<Option<R>>> {
+        let mut header = HeaderStyleScope::new(ctx);
+        self.show(ctx, |ui| {
+            ui.set_style(header.restore());
+            body(ui)
+        })
+    }
+}
+
+struct HeaderStyleScope {
+    ctx: egui::Context,
+    theme: egui::Theme,
+    original: Option<std::sync::Arc<egui::Style>>,
+}
+
+impl HeaderStyleScope {
+    fn new(ctx: &egui::Context) -> Self {
+        let theme = ctx.theme();
+        let original = ctx.style_of(theme);
+        let mut header = (*original).clone();
+        let minimum = target_size(ctx);
+        header.spacing.icon_width = header.spacing.icon_width.max(minimum);
+        header.spacing.interact_size.y = header.spacing.interact_size.y.max(minimum);
+        ctx.set_style_of(theme, header);
+        Self { ctx: ctx.clone(), theme, original: Some(original) }
+    }
+
+    fn restore(&mut self) -> std::sync::Arc<egui::Style> {
+        let original = self.original.take().expect("window body runs at most once");
+        self.ctx.set_style_of(self.theme, original.clone());
+        original
+    }
+}
+
+impl Drop for HeaderStyleScope {
+    fn drop(&mut self) {
+        if self.original.is_some() {
+            self.restore();
+        }
+    }
+}
+
 pub fn bounded_window<'a>(
     ctx: &egui::Context,
     title: impl Into<egui::WidgetText>,

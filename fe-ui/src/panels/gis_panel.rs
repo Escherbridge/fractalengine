@@ -5,6 +5,7 @@
 //! (`layer_manager_card`, view mode). See `fe-ui/src/AGENTS.md`
 //! §gis-query-ui.
 
+use crate::ui_shell::layout_policy::WindowTargets;
 use bevy_egui::egui;
 
 use crate::accessibility::ResponseExt;
@@ -63,7 +64,7 @@ pub(crate) fn render_gis_panel(
                 .corner_radius(6.0)
                 .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM)),
         )
-        .show(ctx, |ui| {
+        .show_with_targets(ctx, |ui| {
             let Some(petal_id) = nav.active_petal_id.clone() else {
                 ui.label(
                     egui::RichText::new("Navigate to a petal to query its nodes.")

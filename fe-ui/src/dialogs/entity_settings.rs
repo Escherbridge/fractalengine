@@ -1,6 +1,7 @@
 //! Entity Settings dialog: General / Access / API Access tabs for Verse,
 //! Fractal, and Petal entities.
 
+use crate::ui_shell::layout_policy::WindowTargets;
 use bevy_egui::egui;
 
 use crate::accessibility::ResponseExt;
@@ -77,7 +78,7 @@ pub fn render_entity_settings_dialog(
                 .corner_radius(6.0)
                 .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM)),
         )
-        .show(ctx, |ui| {
+        .show_with_targets(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 if details.loading() { ui.spinner(); ui.label("Loading stored settings..."); }
                 if ui.button(if details.error.is_some() { "Retry loading settings" } else { "Refresh stored settings" }).named(ui, format_args!("Refresh settings for {entity_name}")).clicked() { details.refresh(); }

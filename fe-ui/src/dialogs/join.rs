@@ -8,6 +8,7 @@
 //! `VerseJoined`/`JoinVerseFailed` handlers `finish` the request — this file
 //! only `start`s it on send and `reset`s it on Cancel/close.
 
+use crate::ui_shell::layout_policy::WindowTargets;
 use bevy_egui::egui;
 
 use crate::accessibility::ResponseExt;
@@ -62,7 +63,7 @@ pub fn render_join_dialog(
     if !pending {
         window = window.open(&mut still_open);
     }
-    window.show(ctx, |ui| {
+    window.show_with_targets(ctx, |ui| {
         ui.label("Paste an invite string to join a verse:");
         ui.add_space(4.0);
 

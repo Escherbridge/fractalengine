@@ -1,5 +1,6 @@
 //! Peer debug overlay panel.
 
+use crate::ui_shell::layout_policy::WindowTargets;
 use bevy_egui::egui;
 
 use crate::accessibility::ResponseExt;
@@ -23,7 +24,7 @@ pub fn render_peer_debug_panel(
         .collapsible(true)
         .resizable(true)
         .default_width(300.0)
-        .show(ctx, |ui| {
+        .show_with_targets(ctx, |ui| {
             if let Some(status) = sync_status {
                 ui.label(format!(
                     "Online: {}",

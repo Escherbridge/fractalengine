@@ -251,11 +251,43 @@ mod tests {
                 );
             }
         }
+        use super::super::layout_policy::{self, WindowTargets};
+        let ctx = egui::Context::default();
+        let ordinary_icon_width = ctx.style().spacing.icon_width;
+        let mut body_seen = false;
+        let mut popup_seen = false;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            layout_policy::bounded_window(ctx, "Header target scope")
+                .show_with_targets(ctx, |ui| {
+                    body_seen = true;
+                    assert_eq!(ui.spacing().icon_width, ordinary_icon_width);
+                    assert_eq!(ctx.style().spacing.icon_width, ordinary_icon_width);
+                    egui::Popup::new(egui::Id::new("header_scope_popup"), ctx.clone(), ui.min_rect(), ui.layer_id())
+                        .show(|popup| {
+                            popup_seen = true;
+                            assert_eq!(popup.spacing().icon_width, ordinary_icon_width);
+                            popup.label("The nested popup retains ordinary body density");
+                        });
+                    ctx.style_mut(|style| style.spacing.icon_width = ordinary_icon_width + 1.0);
+                });
+            assert_eq!(ctx.style().spacing.icon_width, ordinary_icon_width + 1.0,
+                "intentional body context edits survive the header scope");
+            let before = ctx.style();
+            let mut closed = false;
+            assert!(layout_policy::bounded_window(ctx, "Already closed")
+                .open(&mut closed)
+                .show_with_targets(ctx, |_| panic!("a closed window cannot render its body"))
+                .is_none());
+            assert!(std::sync::Arc::ptr_eq(&ctx.style(), &before), "the no-body path restores its exact original style");
+        });
+        assert!(body_seen && popup_seen);
     }
 
     #[test]
     fn closed_intent_stays_closed() {
         let p = LeftSidebarPolicy::Manual;
         assert!(!left_visibility(p, false));
+
+
     }
 }

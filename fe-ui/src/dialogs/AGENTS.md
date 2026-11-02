@@ -406,3 +406,8 @@ interact_size.y alone does not enlarge these fields. The existing GLTF gate/file
 journey additionally renders the actual two inputs at compact and scaled widths
 and checks native response clipping and the no-command blank-path behavior.
 Those assertions are authored, not executed, until the final integrated sweep.
+
+Floating dialogs use WindowTargets::show_with_targets at the native Window show
+boundary; see ui_shell/AGENTS.md Native floating-window header targets. It keeps
+the normal open/pending/close lifecycle rather than adding a second close action
+or overlay. Data and Appearance use that same bounded-window adapter.

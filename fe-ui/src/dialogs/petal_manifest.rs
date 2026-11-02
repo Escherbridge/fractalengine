@@ -1,5 +1,6 @@
 //! Petal hexon manifest editor dialog.
 
+use crate::ui_shell::layout_policy::WindowTargets;
 use bevy_egui::egui;
 
 use crate::accessibility::ResponseExt;
@@ -57,7 +58,7 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager, nav: &
                 .corner_radius(6.0)
                 .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM)),
         )
-        .show(ctx, |ui| {
+        .show_with_targets(ctx, |ui| {
             if discard_requested {
                 ui.heading("Discard unsaved requirements?");
                 ui.label("Your draft has not been saved. Discard it or return to editing.");
