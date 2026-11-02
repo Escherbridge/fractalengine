@@ -1,0 +1,92 @@
+[
+  {
+    "path": "qa\\passes\\15\\rich-data\\20261101-191920-658\\rich-fleet-v1\\restart-verification-01\\00-preflight.json",
+    "sha256": "0df3492472d1d3480168f12d65e06881b4a449db43818b4e9a60ce86bcc92c1f",
+    "kind": "persistence"
+  },
+  {
+    "path": "qa\\passes\\15\\rich-data\\20261101-191920-658\\rich-fleet-v1\\restart-verification-01\\01-restart-state-and-blobs.json",
+    "sha256": "3c88b60f9bdfe76d4ce013cb5f60da5a5d90a87ecbb500b828e30e4e0e4459f6",
+    "kind": "persistence"
+  },
+  {
+    "path": "qa\\passes\\15\\rich-data\\20261101-191920-658\\rich-fleet-v1\\restart-verification-01\\02-movement-oracle.json",
+    "sha256": "6fc53c8df7424b47e47949c4e70458c67f7eb81f631b11e57ab8345288d73c97",
+    "kind": "persistence"
+  },
+  {
+    "path": "qa\\passes\\15\\rich-data\\20261101-191920-658\\rich-fleet-v1\\restart-verification-01\\03-alpha-paginated-history.json",
+    "sha256": "d753aebb95f853edf64bdd038b05599695a3861929484725b1d5e1d2cea1efc5",
+    "kind": "persistence"
+  },
+  {
+    "path": "qa\\passes\\15\\rich-data\\20261101-191920-658\\rich-fleet-v1\\restart-verification-01\\04-alpha-earlier-state.json",
+    "sha256": "98d8d614837c53047543e36ae194a2bad8b479578e5b51d4c0fbe5d9ee500dff",
+    "kind": "persistence"
+  },
+  {
+    "path": "qa\\passes\\15\\rich-data\\20261101-191920-658\\rich-fleet-v1\\restart-verification-01\\05-query-raw.json",
+    "sha256": "7fd5e79508dc9b54835ed00dfd05bc8b433a5d027bfe1e17de0605e06187ce29",
+    "kind": "persistence"
+  },
+  {
+    "path": "qa\\passes\\15\\rich-data\\20261101-191920-658\\rich-fleet-v1\\restart-verification-01\\06-query-calibrated.json",
+    "sha256": "c407cc10e7d0097e756b635573513cb373a5d052b8ba824f6b05bd3154d5ab17",
+    "kind": "persistence"
+  },
+  {
+    "path": "qa\\passes\\15\\rich-data\\20261101-191920-658\\rich-fleet-v1\\restart-verification-01\\07-aggregate-calibrated.json",
+    "sha256": "3e0e7f6aa0f70c9be60ab9a6a2f0325f8b7744c5a3022dff95649e255b1ca43c",
+    "kind": "persistence"
+  },
+  {
+    "path": "qa\\passes\\15\\rich-data\\20261101-191920-658\\rich-fleet-v1\\restart-verification-01\\08-distributed-calibrated.json",
+    "sha256": "90934825f198236a27b767d0cd629493646a4fbfe6ec803f8a864b3551519f8a",
+    "kind": "persistence"
+  },
+  {
+    "path": "qa\\passes\\15\\rich-data\\20261101-191920-658\\rich-fleet-v1\\restart-verification-01\\09-half-open-window.json",
+    "sha256": "40572047478a55e4fda9819c624a60c7e06c7c8159fa9acb8375b991532d94dc",
+    "kind": "persistence"
+  },
+  {
+    "path": "qa\\passes\\15\\rich-data\\20261101-191920-658\\rich-fleet-v1\\restart-verification-01\\10-latest-event-time.json",
+    "sha256": "cdcf82aef84ce3cb8db3384a02e98c7452e4a75074cc2e030a38d895a22ed4b9",
+    "kind": "persistence"
+  },
+  {
+    "path": "qa\\passes\\15\\rich-data\\20261101-191920-658\\rich-fleet-v1\\restart-verification-01\\context.json",
+    "sha256": "d07c30484c0b6fe9d22ac5b455f357bc4e8f362a2b8f23c4e3ddf006d04846ca",
+    "kind": "persistence"
+  },
+  {
+    "path": "qa\\passes\\15\\rich-data\\20261101-191920-658\\rich-fleet-v1\\restart-verification-01\\measurements.json",
+    "sha256": "bd38af1f40e8de95fb397eee6a7a89bee188646a5e0b56d2a153b96231252981",
+    "kind": "tool"
+  },
+  {
+    "path": "qa\\passes\\15\\rich-data\\20261101-191920-658\\rich-fleet-v1\\restart-verification-01\\measurements.csv",
+    "sha256": "2e8353bb60f5253a05029ac912819595fe1f456ce8785448c10d5d967298236c",
+    "kind": "tool"
+  },
+  {
+    "path": "qa\\passes\\15\\rich-data\\20261101-191920-658\\rich-fleet-v1\\restart-verification-01\\trajectory.csv",
+    "sha256": "382dd0aa6f78e970ec8745f2be2774999590d07f77fb08a3d76b088253f10622",
+    "kind": "tool"
+  },
+  {
+    "path": "qa\\passes\\15\\rich-data\\20261101-191920-658\\rich-fleet-v1\\restart-verification-01\\report.html",
+    "sha256": "fc32b23e52fb3a70c498958183b32fc55909385420e251e3c3e9abc07682c71a",
+    "kind": "tool"
+  },
+  {
+    "path": "qa\\passes\\15\\rich-data\\20261101-191920-658\\rich-fleet-v1\\restart-verification-01\\summary.json",
+    "sha256": "98bd487cd745e83064f29019c273478d6fc5a3900f1c9e16c15313142c6a2b8c",
+    "kind": "api"
+  },
+  {
+    "path": "qa\\passes\\15\\rich-data\\20261101-191920-658\\rich-fleet-v1\\restart-verification-01\\coverage-candidates.jsonl",
+    "sha256": "6499b3ee19f1bcc3a5c27c819321c92e97897ad1e8a6f0712e10e8ad33787794",
+    "kind": "tool"
+  }
+]

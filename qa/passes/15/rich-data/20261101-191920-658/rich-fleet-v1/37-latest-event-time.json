@@ -1,0 +1,509 @@
+{
+  "pass_id": "15",
+  "run_id": "20261101-191920-658",
+  "stage_commit": "3ca08544fb8754f73e1816690a951bccebca082c",
+  "stage_fingerprint": "EF03D136E27040F8F4AD4861E1A7AB19355AC1B2C9B58AD9A0B4D549A0A7C5CB",
+  "scenario_sha256": "d14893061bb5c929bd2256dfd706b3cd88586f402fa7bb3a04845096abffa8ef",
+  "verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+  "petal_id": "01M6EHNJH0AHNMK7MXQCTQRFM4",
+  "driver_sha256": "31c5b3656841873c204a033e8dab75eee6bb5664aad8cabf73a16b9e2235ff84",
+  "process_identity": {
+    "pid": 37120,
+    "start_ticks": "639292333603565876",
+    "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\3ca0854-20261102092152517\\fractalengine.exe"
+  },
+  "api_base": "http://127.0.0.1:8882",
+  "step_id": "latest-event-time",
+  "intent": {
+    "id": "latest-event-time",
+    "op": "query_metrics",
+    "metric": "temperature_calibrated",
+    "start_ms": 1793404800000,
+    "end_ms": 1793404830000,
+    "oracle": "calibrated-latest",
+    "kind": "latest",
+    "mode": "distributed",
+    "mcp_parity": true
+  },
+  "outcome": "PASS",
+  "result": {
+    "kind": "latest",
+    "metric": "temperature_calibrated",
+    "mode": "distributed",
+    "rows": [
+      {
+        "hlc_timestamp": 117547806053105664,
+        "id": "iot_reading:i3b7a4sllnpksfsh7ozb",
+        "metric": "temperature_calibrated",
+        "node_id": "01M6EHPHM16GAJJZVTG0APQ4WT",
+        "payload_id": "01M6EHPNN3XNR8M56HSBP22C02",
+        "petal_id": "01M6EHNJH0AHNMK7MXQCTQRFM4",
+        "reading_id": "01M6EHPNZC80VPR29YTDJ1DWXZ",
+        "recorded_at": "2026-10-31T00:00:20+00:00",
+        "recorded_at_ms": 1793404820000,
+        "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU",
+        "units": "C",
+        "value": 25.0
+      },
+      {
+        "hlc_timestamp": 117547806053105665,
+        "id": "iot_reading:rxolwfg4xfeeod1cemrv",
+        "metric": "temperature_calibrated",
+        "node_id": "01M6EHPHWFS268HYAWXNWQV6D2",
+        "payload_id": "01M6EHPNWWCJJWH5RC93QY7QKR",
+        "petal_id": "01M6EHNJH0AHNMK7MXQCTQRFM4",
+        "reading_id": "01M6EHPNZC03BCC80W5JAGTBK3",
+        "recorded_at": "2026-10-31T00:00:20+00:00",
+        "recorded_at_ms": 1793404820000,
+        "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU",
+        "units": "C",
+        "value": 11.0
+      }
+    ],
+    "distributed": {
+      "covered_shards": [
+        "01M6EHNJH0AHNMK7MXQCTQRFM4/01M6EHPHM16GAJJZVTG0APQ4WT/20757",
+        "01M6EHNJH0AHNMK7MXQCTQRFM4/01M6EHPHWFS268HYAWXNWQV6D2/20757"
+      ],
+      "missing_shards": [],
+      "answered_hosts": [
+        "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU"
+      ],
+      "missing_hosts": [],
+      "mode": "mirror",
+      "replication_factor": 1,
+      "truncated": false,
+      "incomplete_shards": [],
+      "missing_holders": [],
+      "rejected_answerers": [],
+      "unverified_answerers": []
+    }
+  },
+  "assertions": [
+    {
+      "name": "complete distributed missing_shards",
+      "actual": [],
+      "expected": [],
+      "passed": true
+    },
+    {
+      "name": "complete distributed missing_hosts",
+      "actual": [],
+      "expected": [],
+      "passed": true
+    },
+    {
+      "name": "complete distributed incomplete_shards",
+      "actual": [],
+      "expected": [],
+      "passed": true
+    },
+    {
+      "name": "complete distributed missing_holders",
+      "actual": [],
+      "expected": [],
+      "passed": true
+    },
+    {
+      "name": "complete distributed rejected_answerers",
+      "actual": [],
+      "expected": [],
+      "passed": true
+    },
+    {
+      "name": "complete distributed unverified_answerers",
+      "actual": [],
+      "expected": [],
+      "passed": true
+    },
+    {
+      "name": "distributed truncation",
+      "actual": false,
+      "expected": false,
+      "passed": true
+    },
+    {
+      "name": "complete distributed missing_shards",
+      "actual": [],
+      "expected": [],
+      "passed": true
+    },
+    {
+      "name": "complete distributed missing_hosts",
+      "actual": [],
+      "expected": [],
+      "passed": true
+    },
+    {
+      "name": "complete distributed incomplete_shards",
+      "actual": [],
+      "expected": [],
+      "passed": true
+    },
+    {
+      "name": "complete distributed missing_holders",
+      "actual": [],
+      "expected": [],
+      "passed": true
+    },
+    {
+      "name": "complete distributed rejected_answerers",
+      "actual": [],
+      "expected": [],
+      "passed": true
+    },
+    {
+      "name": "complete distributed unverified_answerers",
+      "actual": [],
+      "expected": [],
+      "passed": true
+    },
+    {
+      "name": "distributed truncation",
+      "actual": false,
+      "expected": false,
+      "passed": true
+    },
+    {
+      "name": "MCP timeseries rows",
+      "actual": [
+        {
+          "hlc_timestamp": 117547806053105664,
+          "id": "iot_reading:i3b7a4sllnpksfsh7ozb",
+          "metric": "temperature_calibrated",
+          "node_id": "01M6EHPHM16GAJJZVTG0APQ4WT",
+          "payload_id": "01M6EHPNN3XNR8M56HSBP22C02",
+          "petal_id": "01M6EHNJH0AHNMK7MXQCTQRFM4",
+          "reading_id": "01M6EHPNZC80VPR29YTDJ1DWXZ",
+          "recorded_at": "2026-10-31T00:00:20+00:00",
+          "recorded_at_ms": 1793404820000,
+          "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU",
+          "units": "C",
+          "value": 25.0
+        },
+        {
+          "hlc_timestamp": 117547806053105665,
+          "id": "iot_reading:rxolwfg4xfeeod1cemrv",
+          "metric": "temperature_calibrated",
+          "node_id": "01M6EHPHWFS268HYAWXNWQV6D2",
+          "payload_id": "01M6EHPNWWCJJWH5RC93QY7QKR",
+          "petal_id": "01M6EHNJH0AHNMK7MXQCTQRFM4",
+          "reading_id": "01M6EHPNZC03BCC80W5JAGTBK3",
+          "recorded_at": "2026-10-31T00:00:20+00:00",
+          "recorded_at_ms": 1793404820000,
+          "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU",
+          "units": "C",
+          "value": 11.0
+        }
+      ],
+      "expected": [
+        {
+          "hlc_timestamp": 117547806053105664,
+          "id": "iot_reading:i3b7a4sllnpksfsh7ozb",
+          "metric": "temperature_calibrated",
+          "node_id": "01M6EHPHM16GAJJZVTG0APQ4WT",
+          "payload_id": "01M6EHPNN3XNR8M56HSBP22C02",
+          "petal_id": "01M6EHNJH0AHNMK7MXQCTQRFM4",
+          "reading_id": "01M6EHPNZC80VPR29YTDJ1DWXZ",
+          "recorded_at": "2026-10-31T00:00:20+00:00",
+          "recorded_at_ms": 1793404820000,
+          "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU",
+          "units": "C",
+          "value": 25.0
+        },
+        {
+          "hlc_timestamp": 117547806053105665,
+          "id": "iot_reading:rxolwfg4xfeeod1cemrv",
+          "metric": "temperature_calibrated",
+          "node_id": "01M6EHPHWFS268HYAWXNWQV6D2",
+          "payload_id": "01M6EHPNWWCJJWH5RC93QY7QKR",
+          "petal_id": "01M6EHNJH0AHNMK7MXQCTQRFM4",
+          "reading_id": "01M6EHPNZC03BCC80W5JAGTBK3",
+          "recorded_at": "2026-10-31T00:00:20+00:00",
+          "recorded_at_ms": 1793404820000,
+          "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU",
+          "units": "C",
+          "value": 11.0
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "Alpha queried metric",
+      "actual": "temperature_calibrated",
+      "expected": "temperature_calibrated",
+      "passed": true
+    },
+    {
+      "name": "Beta queried metric",
+      "actual": "temperature_calibrated",
+      "expected": "temperature_calibrated",
+      "passed": true
+    },
+    {
+      "name": "Alpha chronological sensor times",
+      "actual": [
+        1793404820000
+      ],
+      "expected": [
+        1793404820000
+      ],
+      "passed": true
+    },
+    {
+      "name": "Alpha independently expected values",
+      "actual": [
+        25.0
+      ],
+      "expected": [
+        25
+      ],
+      "passed": true
+    },
+    {
+      "name": "Alpha per-anchor statistics",
+      "actual": {
+        "count": 1,
+        "min": 25.0,
+        "max": 25.0,
+        "mean": 25.0,
+        "sum": 25.0
+      },
+      "expected": {
+        "count": 1,
+        "min": 25,
+        "max": 25,
+        "mean": 25,
+        "sum": 25
+      },
+      "passed": true
+    },
+    {
+      "name": "Beta chronological sensor times",
+      "actual": [
+        1793404820000
+      ],
+      "expected": [
+        1793404820000
+      ],
+      "passed": true
+    },
+    {
+      "name": "Beta independently expected values",
+      "actual": [
+        11.0
+      ],
+      "expected": [
+        11
+      ],
+      "passed": true
+    },
+    {
+      "name": "Beta per-anchor statistics",
+      "actual": {
+        "count": 1,
+        "min": 11.0,
+        "max": 11.0,
+        "mean": 11.0,
+        "sum": 11.0
+      },
+      "expected": {
+        "count": 1,
+        "min": 11,
+        "max": 11,
+        "mean": 11,
+        "sum": 11
+      },
+      "passed": true
+    }
+  ],
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/api/v1/debug/logs?level=warn",
+      "request": null,
+      "status": 200,
+      "response_bytes": 952,
+      "response_sha256": "78ab8cf31fcefd98562fdba1f2fb126437ec5e9436b91b4fa97d081f3a745407",
+      "response": {
+        "data": {
+          "active_verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+          "entries": [
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 213,
+              "target": "fe_terrain::delta_viz"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 215,
+              "target": "fe_terrain::delta_viz"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 218,
+              "target": "fe_terrain::delta_viz"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 219,
+              "target": "fe_terrain::delta_viz"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 580,
+              "target": "fe_api::node_history"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 582,
+              "target": "fe_api::property_schema"
+            }
+          ],
+          "generation": 1,
+          "latest_seq": 585
+        },
+        "ok": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/query",
+      "request": {
+        "distributed": {
+          "kind": "latest_per_anchor",
+          "petal_id": "01M6EHNJH0AHNMK7MXQCTQRFM4",
+          "metric": "temperature_calibrated"
+        }
+      },
+      "status": 200,
+      "response_bytes": 1401,
+      "response_sha256": "da577c52e2a7ffb8f6a3112258568b14506f86e4dc4d3f910c83836d77417c6b",
+      "response": {
+        "ok": true,
+        "data": {
+          "data": [
+            {
+              "hlc_timestamp": 117547806053105664,
+              "id": "iot_reading:i3b7a4sllnpksfsh7ozb",
+              "metric": "temperature_calibrated",
+              "node_id": "01M6EHPHM16GAJJZVTG0APQ4WT",
+              "payload_id": "01M6EHPNN3XNR8M56HSBP22C02",
+              "petal_id": "01M6EHNJH0AHNMK7MXQCTQRFM4",
+              "reading_id": "01M6EHPNZC80VPR29YTDJ1DWXZ",
+              "recorded_at": "2026-10-31T00:00:20+00:00",
+              "recorded_at_ms": 1793404820000,
+              "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU",
+              "units": "C",
+              "value": 25.0
+            },
+            {
+              "hlc_timestamp": 117547806053105665,
+              "id": "iot_reading:rxolwfg4xfeeod1cemrv",
+              "metric": "temperature_calibrated",
+              "node_id": "01M6EHPHWFS268HYAWXNWQV6D2",
+              "payload_id": "01M6EHPNWWCJJWH5RC93QY7QKR",
+              "petal_id": "01M6EHNJH0AHNMK7MXQCTQRFM4",
+              "reading_id": "01M6EHPNZC03BCC80W5JAGTBK3",
+              "recorded_at": "2026-10-31T00:00:20+00:00",
+              "recorded_at_ms": 1793404820000,
+              "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU",
+              "units": "C",
+              "value": 11.0
+            }
+          ],
+          "crs": "PETAL-LOCAL:meters;origin=per-petal",
+          "distributed": {
+            "covered_shards": [
+              "01M6EHNJH0AHNMK7MXQCTQRFM4/01M6EHPHM16GAJJZVTG0APQ4WT/20757",
+              "01M6EHNJH0AHNMK7MXQCTQRFM4/01M6EHPHWFS268HYAWXNWQV6D2/20757"
+            ],
+            "missing_shards": [],
+            "answered_hosts": [
+              "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU"
+            ],
+            "missing_hosts": [],
+            "mode": "mirror",
+            "replication_factor": 1,
+            "truncated": false,
+            "incomplete_shards": [],
+            "missing_holders": [],
+            "rejected_answerers": [],
+            "unverified_answerers": []
+          }
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/mcp",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 19,
+        "method": "tools/call",
+        "params": {
+          "name": "query_timeseries",
+          "arguments": {
+            "kind": "latest_per_anchor",
+            "petal_id": "01M6EHNJH0AHNMK7MXQCTQRFM4",
+            "metric": "temperature_calibrated"
+          }
+        }
+      },
+      "status": 200,
+      "response_bytes": 1525,
+      "response_sha256": "eb452af201b3b159ab6d499e899b5d145be5ea9b5cdf964e11de1ea1a992b092",
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 19,
+        "result": {
+          "content": [
+            {
+              "text": "{\"error\":null,\"meta\":{\"answered_hosts\":[\"did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU\"],\"covered_shards\":[\"01M6EHNJH0AHNMK7MXQCTQRFM4/01M6EHPHM16GAJJZVTG0APQ4WT/20757\",\"01M6EHNJH0AHNMK7MXQCTQRFM4/01M6EHPHWFS268HYAWXNWQV6D2/20757\"],\"incomplete_shards\":[],\"missing_holders\":[],\"missing_hosts\":[],\"missing_shards\":[],\"mode\":\"mirror\",\"rejected_answerers\":[],\"replication_factor\":1,\"truncated\":false,\"unverified_answerers\":[]},\"rows\":[{\"hlc_timestamp\":117547806053105664,\"id\":\"iot_reading:i3b7a4sllnpksfsh7ozb\",\"metric\":\"temperature_calibrated\",\"node_id\":\"01M6EHPHM16GAJJZVTG0APQ4WT\",\"payload_id\":\"01M6EHPNN3XNR8M56HSBP22C02\",\"petal_id\":\"01M6EHNJH0AHNMK7MXQCTQRFM4\",\"reading_id\":\"01M6EHPNZC80VPR29YTDJ1DWXZ\",\"recorded_at\":\"2026-10-31T00:00:20+00:00\",\"recorded_at_ms\":1793404820000,\"source_did\":\"did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU\",\"units\":\"C\",\"value\":25.0},{\"hlc_timestamp\":117547806053105665,\"id\":\"iot_reading:rxolwfg4xfeeod1cemrv\",\"metric\":\"temperature_calibrated\",\"node_id\":\"01M6EHPHWFS268HYAWXNWQV6D2\",\"payload_id\":\"01M6EHPNWWCJJWH5RC93QY7QKR\",\"petal_id\":\"01M6EHNJH0AHNMK7MXQCTQRFM4\",\"reading_id\":\"01M6EHPNZC03BCC80W5JAGTBK3\",\"recorded_at\":\"2026-10-31T00:00:20+00:00\",\"recorded_at_ms\":1793404820000,\"source_did\":\"did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU\",\"units\":\"C\",\"value\":11.0}]}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/debug/logs?level=warn&since=585",
+      "request": null,
+      "status": 200,
+      "response_bytes": 112,
+      "response_sha256": "4206f05ae8b2d4f46a397be67eaee959907853330d991b18f07500f32c0ebd7a",
+      "response": {
+        "data": {
+          "active_verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+          "entries": [],
+          "generation": 1,
+          "latest_seq": 587
+        },
+        "ok": true
+      }
+    }
+  ],
+  "log_watermark": {
+    "generation": 1,
+    "seq": 585,
+    "latest_seq": 585
+  },
+  "log_end_watermark": {
+    "generation": 1,
+    "seq": 587,
+    "latest_seq": 587
+  },
+  "new_logs": [],
+  "log_generation_changed": false,
+  "log_retention_gap": false,
+  "log_retention_capacity": 2000,
+  "log_review_required": false
+}

@@ -1,0 +1,57 @@
+{
+  "checks": {
+    "nested_object_edit_saved": true,
+    "all_original_values_preserved_during_edit": true,
+    "confirmed_native_delete_restored_original_bag": true,
+    "compact_cancel_no_write": true,
+    "compact_confirm_cancel_24px_fully_inside_window": true,
+    "divider_resize_preserves_selection": true
+  },
+  "confirmation_controls": [
+    {
+      "bounds": {
+        "h": 24.0,
+        "w": 39.78125,
+        "x": 901.0,
+        "y": 487.0
+      },
+      "enabled": true,
+      "focused": false,
+      "hidden": false,
+      "id": "8654140116824538884",
+      "interactive": true,
+      "name": "Confirm Delete property 00_complex",
+      "parent": "11466297337583882001",
+      "role": "button",
+      "selected": null,
+      "toggled": null,
+      "value": null
+    },
+    {
+      "bounds": {
+        "h": 24.0,
+        "w": 34.28125,
+        "x": 948.78125,
+        "y": 487.0
+      },
+      "enabled": true,
+      "focused": false,
+      "hidden": false,
+      "id": "9574940172611848338",
+      "interactive": true,
+      "name": "Cancel Delete property 00_complex",
+      "parent": "11466297337583882001",
+      "role": "button",
+      "selected": null,
+      "toggled": null,
+      "value": null
+    }
+  ],
+  "disposable_property": "99_grid_actions",
+  "copy_route": "Native Copy reached the A8 suppression sink; actual host clipboard contents were never read or written. Exact output payload is a campaign-end journey assertion.",
+  "visuals": [
+    "grid-saved-object.png shows the pinned editor after horizontal action scrolling",
+    "grid-full-table.png shows all four columns and Edit/Copy/Delete on all original rows at1920 with widened Inspector"
+  ],
+  "limits": "Focused native workflow, not final full catalog coverage or all scaling. The original property bag is restored exactly."
+}

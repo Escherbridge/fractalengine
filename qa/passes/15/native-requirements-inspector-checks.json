@@ -1,0 +1,25 @@
+{
+  "checks": {
+    "requirements_authoritative_save": true,
+    "render_distance_unchanged": true,
+    "requirements_reopen_contains_saved_entry": true,
+    "requirements_clean_saved_cue": true,
+    "keep_editing_preserves_unapplied_draft": true,
+    "discard_and_restart_preserve_saved_document": true,
+    "invalid_url_preserved_with_disabled_save": true,
+    "invalid_url_open_disabled": true,
+    "invalid_url_no_persisted_change": true,
+    "actual_nondefault_listener": true,
+    "generated_password_value_is_absent": true,
+    "scoped_properties_curl_visible": true,
+    "generated_token_cleared_on_tab_leave": true,
+    "deselection_empty_state": true,
+    "no_jwt_in_retained_native_ui": true
+  },
+  "limits": [
+    "Native copy routes reached A8 suppression; host clipboard never read or written. Exact secret copy payload remains a campaign-end output-seam assertion.",
+    "Tab transition required a safe return-to-view scroll; locator refusal retained. Same-target programmatic-tab and late-reply journeys remain unexecuted.",
+    "Declaration is catalog metadata only; no install/fetch/gating claim."
+  ],
+  "independent_review": "pending"
+}
