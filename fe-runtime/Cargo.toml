@@ -21,3 +21,10 @@ bytes = { workspace = true }
 async-trait = "0.1"
 fe-identity = { path = "../fe-identity" }
 fe-sdk = { path = "../fe-sdk" }
+
+[dependencies.url]
+version = "2"
+features = ["serde"]
+
+[dependencies.ipnet]
+version = "2"

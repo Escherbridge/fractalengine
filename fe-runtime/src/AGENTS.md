@@ -901,3 +901,7 @@ ReadNodeUrl/NodeUrlRead form a local GUI current-read family with independent re
 NodeUrlSnapshot carries exact node/scope/optional asset and a bounded literal current URL.
 NodeUrlUpdated also returns its committed asset anchor so a later read can refuse a rebound
 node. Both GUI result families are consumed before PendingApiRequests fallback.
+
+## Portal URLs
+
+`portal_url` owns the production literal-address URL policy. `fe-webview::security` re-exports it so existing consumers retain the same API and decisions. Keeping this pure policy below both database and browser consumers prevents persistence and navigation from acquiring different URL rules.

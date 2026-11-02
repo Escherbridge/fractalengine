@@ -16,6 +16,7 @@ pub mod node_measurements;
 pub mod peer_registry;
 pub mod petal_requirements;
 pub mod plugin_host;
+pub mod portal_url;
 pub mod qa_debug;
 pub mod safe_id;
 pub mod scene_materials;
