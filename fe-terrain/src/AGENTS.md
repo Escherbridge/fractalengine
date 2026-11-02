@@ -1430,3 +1430,20 @@ equivalent trust"), so there is exactly one signature to check, not N.
 - **`TilesetInfo.verified`** (`registry.rs`) surfaces `InstalledTileset.
   verified` through `TilesetRegistry::list_tilesets`, so a future Hexon
   Manager UI can show an "unverified" badge without reaching into the store.
+
+## Selected report coverage and freshness
+
+The selected-volume responder retains only the latest request for the active,
+enabled petal. It streams a replacement result under that correlation when the
+assignment revision or resident `TerrainHeightField` changes. Unbinding and
+switching petals discard the retained request. An unchanged frame does no
+integration or report allocation. Host assignment producers run before
+`TerrainSystemSet::ApplyAssignments`; this prevents a DB-confirmed selection
+from being answered against the previous proposal configuration.
+
+`SelectionReport` counts the exact selected integration cell centers and finite
+base/proposed pairs using the integrator's `for_each_cell` lattice. Counts
+describe selected-lattice coverage, not tile download progress or the sampling
+support outside the selection used by smoothing. Complete-coverage integration
+is unchanged. The renderer seam exposes both counts; consumers must withhold
+numeric reports when coverage is incomplete, including empty lattices.

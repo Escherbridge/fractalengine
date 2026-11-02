@@ -1537,3 +1537,11 @@ NEEDS-WIRING: the QA launcher currently enables synthetic input unconditionally.
 A later launcher owner must add a recorded gate-off option and explicit timing
 opt-ins while preserving stage provenance, root isolation and process identity.
 The timing collector adds no HTTP endpoint and does not alter `launch.ps1`.
+
+## Terrain assignment ordering
+
+The DB-result terrain bridge is ordered before the terrain plugin's
+`ApplyAssignments` set. Reports requested from PostUpdate therefore see the
+latest forwarded configuration on the next Update rather than an older
+proposal list. This is a host scheduling boundary; UI and renderer do not gain
+a dependency on fe-terrain's configuration type.

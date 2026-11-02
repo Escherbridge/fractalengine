@@ -846,7 +846,8 @@ fn main() {
     app.add_systems(
         bevy::prelude::Update,
         (
-            terrain_bridge::bridge_petal_terrain,
+            terrain_bridge::bridge_petal_terrain
+                .before(fe_terrain::terrain_plugin::TerrainSystemSet::ApplyAssignments),
             terrain_bridge::drain_hexon_ops,
             terrain_bridge::drain_hexon_assemble_results,
             // Settings-section ruler toggles → fe-terrain RulerSettings.

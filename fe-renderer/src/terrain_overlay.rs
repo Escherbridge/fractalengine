@@ -232,6 +232,12 @@ pub struct VolumeReportRequest {
 pub struct VolumeReportResult {
     /// Correlation ID matching the originating [`VolumeReportRequest`].
     pub correlation_id: String,
+    /// Scope of the sampled surface.
+    pub petal_id: String,
+    /// Required cell centers on the selected integration lattice.
+    pub expected_samples: u64,
+    /// Cell centers with finite base and proposed samples.
+    pub sampled_pairs: u64,
     /// Total area of the footprint in m² (or world units if unscaled, NFR-4).
     pub area_m2: f64,
     /// Composite cut volume in m³ (or world units cubed if unscaled).
@@ -248,6 +254,13 @@ pub struct VolumeReportResult {
     pub has_overlap: bool,
     /// Scaled indicator: true if world_scale is finite and > 0.
     pub scaled: bool,
+}
+
+impl VolumeReportResult {
+    /// Whether every selected cell has a measured height pair.
+    pub fn is_complete(&self) -> bool {
+        self.expected_samples > 0 && self.sampled_pairs == self.expected_samples
+    }
 }
 
 /// One proposal or region in a volume report breakdown.

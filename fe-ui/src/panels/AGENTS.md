@@ -357,3 +357,12 @@ paint, no render fn) — its content moved to two consumers:
 
 All panel-rendering submodules are `pub(crate)` — nothing outside `fe-ui`
 should render sub-panels directly; go through `gardener_console`.
+
+## Selected report incomplete state
+
+Volume reports distinguish pending computation from incomplete terrain coverage.
+Incomplete results show unavailable text and actual sampled/required counts;
+they expose no cut/fill/net or TSV copy control. A matching later complete result
+replaces that state without editing the footprint. Result adoption requires the
+latest correlation and matching current/state/result petal identities. Unbound
+or disabled terrain clears the selection report and rejects late replies.

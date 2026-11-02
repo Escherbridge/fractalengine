@@ -50,6 +50,10 @@ pub struct VolumeItem {
 /// above is in raw scene units, never fabricated meters.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectionReport {
+    /// Required cell centers on the selected integration lattice.
+    pub expected_samples: u64,
+    /// Cell centers with finite base and proposed samples.
+    pub sampled_pairs: u64,
     pub area_m2: f64,
     /// Composite (combined-surface) cut volume clipped to the selection.
     pub cut_m3: f64,
@@ -124,6 +128,16 @@ pub fn selection_volume_report(
         Some(composite_proposed_height(&composite, h, x, z))
     };
     let total = cut_fill_volume(base, &composite_proposed, selection, step, world_scale);
+    let mut expected_samples = 0;
+    let mut sampled_pairs = 0;
+    for_each_cell(selection, step, |x, z| {
+        expected_samples += 1;
+        if base(x, z).is_some_and(f32::is_finite)
+            && composite_proposed(x, z).is_some_and(f32::is_finite)
+        {
+            sampled_pairs += 1;
+        }
+    });
 
     // -- geometric overlap pass: purely footprint containment, no heights --
     let item_count = proposals.len() + regions.len();
@@ -160,8 +174,12 @@ pub fn selection_volume_report(
     // -- per-item standalone, clipped to the selection via the no-op trick --
     let mut items = Vec::with_capacity(item_count);
     for (i, p) in proposals.iter().enumerate() {
-        let proposed =
-            |x: f32, z: f32| apply_proposal_over_base(base, p, &[[x, z]]).into_iter().next().flatten();
+        let proposed = |x: f32, z: f32| {
+            apply_proposal_over_base(base, p, &[[x, z]])
+                .into_iter()
+                .next()
+                .flatten()
+        };
         let cf = cut_fill_volume(base, &proposed, selection, step, world_scale);
         items.push(VolumeItem {
             id: p.id.clone(),
@@ -178,7 +196,14 @@ pub fn selection_volume_report(
             if !c.footprint.contains(x, z) {
                 return None;
             }
-            proposed_height(c.op, Some(base(x, z)?), c.target, c.delta, c.mean, c.strength)
+            proposed_height(
+                c.op,
+                Some(base(x, z)?),
+                c.target,
+                c.delta,
+                c.mean,
+                c.strength,
+            )
         };
         let cf = cut_fill_volume(base, &proposed, selection, step, world_scale);
         items.push(VolumeItem {
@@ -193,6 +218,8 @@ pub fn selection_volume_report(
     }
 
     SelectionReport {
+        expected_samples,
+        sampled_pairs,
         area_m2,
         cut_m3: total.cut_m3,
         fill_m3: total.fill_m3,
@@ -246,12 +273,37 @@ mod tests {
         let surface =
             |x: f32, z: f32| base(x, z).map(|b| composite_proposed_height(&prepared, b, x, z));
         let expected = cut_fill_volume(&base, &surface, &selection, step, 1.0);
-        assert_eq!((report.cut_m3, report.fill_m3), (expected.cut_m3, expected.fill_m3));
+        assert_eq!(
+            (report.cut_m3, report.fill_m3),
+            (expected.cut_m3, expected.fill_m3)
+        );
 
-        let item = report.items.iter().find(|i| i.id == "s").expect("smooth item");
+        let item = report
+            .items
+            .iter()
+            .find(|i| i.id == "s")
+            .expect("smooth item");
         let persisted = smooth.cut_fill(&base, step, 1.0);
-        assert_eq!((item.cut_m3, item.fill_m3), (persisted.cut_m3, persisted.fill_m3));
+        assert_eq!(
+            (item.cut_m3, item.fill_m3),
+            (persisted.cut_m3, persisted.fill_m3)
+        );
         assert!(report.overlap, "the raise overlaps the smooth region");
+        assert_eq!(report.expected_samples, 128 * 128);
+        assert_eq!(report.sampled_pairs, report.expected_samples);
+        let missing = selection_volume_report(&|_, _| None, &[], &regions, &selection, step, 1.0);
+        assert_eq!(missing.expected_samples, 128 * 128);
+        assert_eq!(missing.sampled_pairs, 0);
+        let partial = selection_volume_report(
+            &|x, _| (x < 5.0).then_some(0.0),
+            &[],
+            &regions,
+            &selection,
+            step,
+            1.0,
+        );
+        assert_eq!(partial.expected_samples, 128 * 128);
+        assert_eq!(partial.sampled_pairs, 128 * 64);
     }
 
     fn square(min: [f32; 2], max: [f32; 2]) -> Footprint {

@@ -254,3 +254,12 @@ independent of `is_using_pointer`, which only describes active widget interactio
 scroll areas. The renderer owns the region type, preserving fe-ui ? fe-renderer dependency direction.
 A standalone renderer without this optional resource keeps its existing behavior; UI initializes it to
 NOTHING until its first layout. Last completed layout is used by Update, before the next egui pass.
+
+## Selected report result contract
+
+`VolumeReportResult` identifies the petal as well as the selection correlation.
+`expected_samples` and `sampled_pairs` count the selected lattice's required
+cell centers and finite base/proposed pairs. `is_complete()` requires a nonempty
+lattice and all pairs; incomplete numeric fields are partial intermediates and
+must not be displayed or copied as measurements. The terrain responder may send
+updated coverage under the same correlation as resident heights change.

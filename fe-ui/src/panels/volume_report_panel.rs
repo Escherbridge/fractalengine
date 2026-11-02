@@ -188,6 +188,12 @@ pub fn sync_volume_report_request(
         state.clear();
         return;
     };
+    if !petal_map.terrain_json.as_ref().is_some_and(|terrain| {
+        terrain.get("enabled").and_then(serde_json::Value::as_bool) != Some(false)
+    }) {
+        state.clear();
+        return;
+    }
 
     let resolved = resolve_volume_selection(
         &proposal_state,
@@ -233,10 +239,14 @@ pub fn sync_volume_report_request(
 /// `terrain_preview::drain_preview_reports`' cross-petal drop).
 pub fn drain_volume_report_result(
     mut results: MessageReader<VolumeReportResult>,
+    nav: Res<NavigationManager>,
     mut state: ResMut<VolumeReportState>,
 ) {
     for result in results.read() {
-        if state.correlation_id.as_deref() == Some(result.correlation_id.as_str()) {
+        if state.correlation_id.as_deref() == Some(result.correlation_id.as_str())
+            && state.petal_id.as_deref() == Some(result.petal_id.as_str())
+            && nav.active_petal_id.as_deref() == Some(result.petal_id.as_str())
+        {
             state.result = Some(result.clone());
         }
     }
@@ -246,15 +256,16 @@ pub fn drain_volume_report_result(
 // Display selection (pure) — R-4: never falls back to an area×|delta| guess.
 // ---------------------------------------------------------------------------
 
-/// What the panel shows for the current state: nothing selected, a request
-/// in flight (no true figure yet), or the true figure. There is no fourth
-/// "approximate" variant — that is the R-4 regression this type guards
-/// against (see `selected_region_report_shows_true_cut_fill_not_area_times_delta`).
+/// Selection, pending, incomplete coverage, or a measured complete report.
 #[derive(Debug)]
 pub(crate) enum VolumeDisplay<'a> {
     Unselected,
     Pending {
         label: &'a str,
+    },
+    Incomplete {
+        label: &'a str,
+        result: &'a VolumeReportResult,
     },
     Ready {
         label: &'a str,
@@ -267,6 +278,7 @@ pub(crate) fn resolve_volume_display(state: &VolumeReportState) -> VolumeDisplay
         return VolumeDisplay::Unselected;
     };
     match &state.result {
+        Some(result) if !result.is_complete() => VolumeDisplay::Incomplete { label, result },
         Some(result) => VolumeDisplay::Ready { label, result },
         None => VolumeDisplay::Pending { label },
     }
@@ -356,6 +368,9 @@ pub(crate) fn nodes_in_footprint(petal: &PetalEntry, footprint: &[[f32; 2]]) -> 
 /// Totals + per-item rows + contained-node rows as tab-separated text (FR-9,
 /// BI-egress spirit). Pure.
 pub(crate) fn volume_report_to_tsv(result: &VolumeReportResult, nodes: &[NodeHit]) -> String {
+    if !result.is_complete() {
+        return String::new();
+    }
     let unit = volume_unit_suffix(result.scaled);
     let mut out = String::new();
     out.push_str("Volume report\n");
@@ -427,6 +442,16 @@ pub(crate) fn render_volume_report_body(
             );
             return;
         }
+        VolumeDisplay::Incomplete { label, result } => {
+            ui.label(egui::RichText::new(label).color(theme::TEXT_DIM));
+            ui.label("Volume unavailable: terrain coverage is incomplete.");
+            ui.label(format!(
+                "Sampled {} of {} required terrain points.",
+                result.sampled_pairs, result.expected_samples
+            ));
+            ui.label("The report updates when terrain becomes available.");
+            return;
+        }
         VolumeDisplay::Ready { label, result } => (label, result),
     };
 
@@ -437,6 +462,10 @@ pub(crate) fn render_volume_report_body(
     ui.label(format!("Cut: {:.2} {unit}\u{b3}", result.cut_m3));
     ui.label(format!("Fill: {:.2} {unit}\u{b3}", result.fill_m3));
     ui.label(format!("Net: {:.2} {unit}\u{b3}", result.net_m3));
+    ui.label(format!(
+        "Terrain samples: {}/{}",
+        result.sampled_pairs, result.expected_samples
+    ));
     ui.label(
         egui::RichText::new(format!(
             "Lattice step: {:.2} {unit} (integration tolerance)",
@@ -514,6 +543,9 @@ mod tests {
     fn sample_result(correlation_id: &str) -> VolumeReportResult {
         VolumeReportResult {
             correlation_id: correlation_id.to_string(),
+            petal_id: "p1".into(),
+            expected_samples: 100,
+            sampled_pairs: 100,
             area_m2: 100.0,
             cut_m3: 12.5,
             fill_m3: 0.0,
@@ -577,7 +609,9 @@ mod tests {
             "footprint": [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
         }]});
         let mut app = volume_app();
-        app.world_mut().resource_mut::<NavigationManager>().active_petal_id = Some("p1".into());
+        app.world_mut()
+            .resource_mut::<NavigationManager>()
+            .active_petal_id = Some("p1".into());
         app.update(); // petal-entry baseline frame
         app.world_mut().resource_mut::<PetalMapState>().terrain_json = Some(terrain.clone());
         app.world_mut().resource_mut::<ProposalEditState>().selected = Some("r1".into());
@@ -585,8 +619,16 @@ mod tests {
 
         let request = app.world().resource::<CapturedRequests>().0[0].clone();
         assert_eq!(request.petal_id, "p1");
-        assert_eq!(request.footprint.len(), 4, "the selected region's own footprint");
-        assert_eq!(shown_cut(&app), None, "pending until the true figure arrives — no estimate");
+        assert_eq!(
+            request.footprint.len(),
+            4,
+            "the selected region's own footprint"
+        );
+        assert_eq!(
+            shown_cut(&app),
+            None,
+            "pending until the true figure arrives — no estimate"
+        );
 
         // The integrator's answer is shown verbatim (12.5), never area×|delta|
         // (100 × 2 = 200); a reply for any other correlation is ignored.
@@ -594,6 +636,29 @@ mod tests {
         app.world_mut().write_message(answer.clone());
         app.update();
         assert_eq!(shown_cut(&app), Some(12.5));
+        let mut wrong_petal = answer.clone();
+        wrong_petal.petal_id = "other".into();
+        wrong_petal.cut_m3 = 777.0;
+        app.world_mut().write_message(wrong_petal);
+        app.update();
+        assert_eq!(shown_cut(&app), Some(12.5));
+        let mut incomplete = answer.clone();
+        incomplete.sampled_pairs = 0;
+        app.world_mut().write_message(incomplete.clone());
+        app.update();
+        assert_eq!(shown_cut(&app), None);
+        assert!(matches!(
+            resolve_volume_display(app.world().resource::<VolumeReportState>()),
+            VolumeDisplay::Incomplete { .. }
+        ));
+        assert!(volume_report_to_tsv(&incomplete, &[]).is_empty());
+        app.world_mut().write_message(answer.clone());
+        app.update();
+        assert_eq!(
+            shown_cut(&app),
+            Some(12.5),
+            "same-correlated residency update replaces incomplete result"
+        );
         answer.correlation_id = "stale".into();
         answer.cut_m3 = 999.0;
         app.world_mut().write_message(answer);
@@ -609,9 +674,39 @@ mod tests {
         });
         app.update();
         let requests = &app.world().resource::<CapturedRequests>().0;
-        assert_eq!(requests.len(), 2, "terrain reload re-requests the unchanged selection");
+        assert_eq!(
+            requests.len(),
+            2,
+            "terrain reload re-requests the unchanged selection"
+        );
         assert_ne!(requests[1].correlation_id, request.correlation_id);
-        assert_eq!(shown_cut(&app), None, "previous figure withdrawn until re-answered");
+        assert_eq!(
+            shown_cut(&app),
+            None,
+            "previous figure withdrawn until re-answered"
+        );
+        let latest_id = requests[1].correlation_id.clone();
+        app.world_mut()
+            .write_message(sample_result(&request.correlation_id));
+        app.update();
+        assert_eq!(
+            shown_cut(&app),
+            None,
+            "old config reply cannot claim the new request"
+        );
+        app.world_mut().write_message(sample_result(&latest_id));
+        app.update();
+        assert_eq!(shown_cut(&app), Some(12.5));
+        app.world_mut().resource_mut::<PetalMapState>().terrain_json = None;
+        app.world_mut().write_message(sample_result(&latest_id));
+        app.update();
+        assert!(
+            matches!(
+                resolve_volume_display(app.world().resource::<VolumeReportState>()),
+                VolumeDisplay::Unselected
+            ),
+            "unbinding withdraws the report and rejects late replies"
+        );
     }
 
     #[test]
@@ -700,7 +795,10 @@ mod tests {
         let tsv = volume_report_to_tsv(&result, &[]);
         assert!(tsv.contains("Cut\t12.500\twu\u{b3}"), "{tsv}");
         assert!(tsv.contains("Area\t100.000\twu\u{b2}"), "{tsv}");
-        assert!(!tsv.contains("\tm"), "unscaled rows must not claim meters:\n{tsv}");
+        assert!(
+            !tsv.contains("\tm"),
+            "unscaled rows must not claim meters:\n{tsv}"
+        );
         let scaled = volume_report_to_tsv(&sample_result("c1"), &[]);
         assert!(scaled.contains("Cut\t12.500\tm\u{b3}"), "{scaled}");
     }
@@ -717,11 +815,10 @@ mod tests {
         let resolved =
             resolve_volume_selection(&ProposalEditState::default(), None, &sculpt, true, 2.0)
                 .expect("a Rect draft resolves");
-        let expected: Vec<[f32; 2]> =
-            crate::panels::tool_options::shape_apply_footprint(&sculpt)
-                .into_iter()
-                .map(|[x, z]| [x * 2.0, z * 2.0])
-                .collect();
+        let expected: Vec<[f32; 2]> = crate::panels::tool_options::shape_apply_footprint(&sculpt)
+            .into_iter()
+            .map(|[x, z]| [x * 2.0, z * 2.0])
+            .collect();
         assert_eq!(resolved.footprint(), expected.as_slice());
     }
 

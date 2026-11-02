@@ -516,6 +516,12 @@ fn focus_reach(
 /// The main terrain rendering plugin; see `src/AGENTS.md` §terrain_plugin.
 pub struct TerrainPlugin;
 
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+/// Ordering boundary for host assignment producers.
+pub enum TerrainSystemSet {
+    ApplyAssignments,
+}
+
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TerrainLodConfig>()
@@ -549,7 +555,7 @@ impl Plugin for TerrainPlugin {
             .add_systems(
                 Update,
                 (
-                    apply_terrain_assignments,
+                    apply_terrain_assignments.in_set(TerrainSystemSet::ApplyAssignments),
                     update_terrain_lod,
                     fetch_and_spawn_terrain_chunks,
                     render_gpx_tracks,
@@ -2408,32 +2414,51 @@ fn sync_layer_visibility(
 // `src/AGENTS.md` §volume-report.
 // ---------------------------------------------------------------------------
 
-/// Answers every pending [`VolumeReportRequest`](fe_renderer::terrain_overlay::VolumeReportRequest)
-/// against the active petal: splits `config.proposals` into non-region
-/// proposals and `config_earthwork_regions` the SAME way the bake does (never
-/// double-counting a record that is both), then delegates to
-/// [`crate::volume_report::selection_volume_report`] at the shared
-/// [`EARTHWORK_LATTICE`] "full" resolution (one-shot reports are never
-/// subject to the FR-3 preview's coarse/full debounce). A request scoped to
-/// any OTHER petal is DROPPED, never answered — the request's own `petal_id`
-/// doubles as the staleness guard, since a petal switch moves
-/// `ActivePetalTerrain` out from under any request still in flight for the
-/// old one (S5 tripwire: never silently answer a stale selection with the
-/// WRONG petal's terrain). NEVER writes the DB or the height field
-/// (`Option<Res<_>>` — structurally read-only, NFR-1).
+/// Latest scoped selection and the last served terrain revision.
+#[derive(Default)]
+struct RetainedVolumeRequest {
+    request: Option<fe_renderer::terrain_overlay::VolumeReportRequest>,
+    revision: Option<u64>,
+}
+
+/// Refresh the current report on request, assignment or resident-height changes.
 fn answer_volume_report_requests(
     mut requests: MessageReader<fe_renderer::terrain_overlay::VolumeReportRequest>,
     active: Res<ActivePetalTerrain>,
     height_field: Option<Res<TerrainHeightField>>,
     mut results: MessageWriter<fe_renderer::terrain_overlay::VolumeReportResult>,
+    mut retained: Local<RetainedVolumeRequest>,
 ) {
+    let mut dirty = retained.revision != Some(active.revision)
+        || height_field
+            .as_ref()
+            .is_some_and(|field| field.is_changed());
+    if retained
+        .request
+        .as_ref()
+        .is_some_and(|request| active.petal_id.as_deref() != Some(request.petal_id.as_str()))
+        || !active.config.as_ref().is_some_and(|config| config.enabled)
+    {
+        retained.request = None;
+    }
+    retained.revision = Some(active.revision);
     for request in requests.read() {
-        if active.petal_id.as_deref() != Some(request.petal_id.as_str()) {
-            continue; // wrong/stale petal scope — drop (see doc above)
+        if active.petal_id.as_deref() == Some(request.petal_id.as_str())
+            && active.config.as_ref().is_some_and(|config| config.enabled)
+        {
+            retained.request = Some(request.clone());
+            dirty = true;
         }
-        let Some(config) = active.config.as_ref().filter(|c| c.enabled) else {
-            continue; // no terrain assigned/enabled for this petal — nothing to report
-        };
+    }
+    if !dirty {
+        return;
+    }
+    let Some(request) = retained.request.as_ref() else {
+        return;
+    };
+    let Some(config) = active.config.as_ref().filter(|config| config.enabled) else {
+        return;
+    };
 
         let selection = crate::sculpt::Footprint::Polygon {
             verts: request.footprint.clone(),
@@ -2442,55 +2467,57 @@ fn answer_volume_report_requests(
         let world_scale = config.effective_world_scale();
         let base = |x: f32, z: f32| height_field.as_ref().and_then(|f| f.height_at(x, z));
 
-        let proposals: Vec<crate::terrain_proposal::TerrainProposal> = config
-            .proposals
-            .iter()
-            .filter(|p| !p.is_earthwork_region())
-            .cloned()
-            .collect();
-        let regions = config_earthwork_regions(config);
+    let proposals: Vec<crate::terrain_proposal::TerrainProposal> = config
+        .proposals
+        .iter()
+        .filter(|p| !p.is_earthwork_region())
+        .cloned()
+        .collect();
+    let regions = config_earthwork_regions(config);
 
-        let report = crate::volume_report::selection_volume_report(
-            &base,
-            &proposals,
-            &regions,
-            &selection,
-            step,
-            world_scale,
-        );
+    let report = crate::volume_report::selection_volume_report(
+        &base,
+        &proposals,
+        &regions,
+        &selection,
+        step,
+        world_scale,
+    );
 
-        // Seam mapping (fe-renderer's `VolumeItem.kind` has no separate
-        // record-kind + op slot, unlike `volume_report::VolumeItem`): a plain
-        // proposal reports its op tag (e.g. "raise"); a baked region reports
-        // the record kind "earthwork_region" (its op is a bake detail, not
-        // identity). See `src/AGENTS.md` §volume-report.
-        let items = report
-            .items
-            .into_iter()
-            .map(|item| fe_renderer::terrain_overlay::VolumeItem {
-                id: item.id,
-                kind: match item.kind {
-                    crate::volume_report::VolumeItemKind::Proposal => item.op_snake.to_string(),
-                    crate::volume_report::VolumeItemKind::Region => "earthwork_region".to_string(),
-                },
-                cut_m3: item.cut_m3,
-                fill_m3: item.fill_m3,
-                overlap_area_m2: item.overlap_area_m2,
-            })
-            .collect();
+    // Seam mapping (fe-renderer's `VolumeItem.kind` has no separate
+    // record-kind + op slot, unlike `volume_report::VolumeItem`): a plain
+    // proposal reports its op tag (e.g. "raise"); a baked region reports
+    // the record kind "earthwork_region" (its op is a bake detail, not
+    // identity). See `src/AGENTS.md` §volume-report.
+    let items = report
+        .items
+        .into_iter()
+        .map(|item| fe_renderer::terrain_overlay::VolumeItem {
+            id: item.id,
+            kind: match item.kind {
+                crate::volume_report::VolumeItemKind::Proposal => item.op_snake.to_string(),
+                crate::volume_report::VolumeItemKind::Region => "earthwork_region".to_string(),
+            },
+            cut_m3: item.cut_m3,
+            fill_m3: item.fill_m3,
+            overlap_area_m2: item.overlap_area_m2,
+        })
+        .collect();
 
-        results.write(fe_renderer::terrain_overlay::VolumeReportResult {
-            correlation_id: request.correlation_id.clone(),
-            area_m2: report.area_m2,
-            cut_m3: report.cut_m3,
-            fill_m3: report.fill_m3,
-            net_m3: report.net_m3,
-            step_m: report.step_m as f32,
-            items,
-            has_overlap: report.overlap,
-            scaled: report.scaled,
-        });
-    }
+    results.write(fe_renderer::terrain_overlay::VolumeReportResult {
+        correlation_id: request.correlation_id.clone(),
+        petal_id: request.petal_id.clone(),
+        expected_samples: report.expected_samples,
+        sampled_pairs: report.sampled_pairs,
+        area_m2: report.area_m2,
+        cut_m3: report.cut_m3,
+        fill_m3: report.fill_m3,
+        net_m3: report.net_m3,
+        step_m: report.step_m as f32,
+        items,
+        has_overlap: report.overlap,
+        scaled: report.scaled,
+    });
 }
 
 #[cfg(test)]
@@ -3753,7 +3780,11 @@ mod tests {
         app.update();
 
         let results = &app.world().resource::<CapturedVolumeResults>().0;
-        assert_eq!(results.len(), 1, "exactly one reply for the matching request");
+        assert_eq!(
+            results.len(),
+            1,
+            "exactly one reply for the matching request"
+        );
         let result = &results[0];
         assert_eq!(
             result.correlation_id, "corr-1",
@@ -3772,6 +3803,85 @@ mod tests {
             "a plain palette proposal reports its op tag as kind"
         );
         assert!(!result.has_overlap, "a single item cannot overlap itself");
+        assert_eq!(result.expected_samples, 128 * 128);
+        assert_eq!(result.sampled_pairs, result.expected_samples);
+        assert!(result.is_complete());
+
+        app.world_mut().resource_mut::<TerrainHeightField>().clear();
+        app.update();
+        let missing = app
+            .world()
+            .resource::<CapturedVolumeResults>()
+            .0
+            .last()
+            .unwrap();
+        assert!(!missing.is_complete());
+        assert_eq!(missing.sampled_pairs, 0);
+        let count = app.world().resource::<CapturedVolumeResults>().0.len();
+        app.update();
+        assert_eq!(
+            app.world().resource::<CapturedVolumeResults>().0.len(),
+            count
+        );
+
+        app.world_mut()
+            .resource_mut::<TerrainHeightField>()
+            .insert((10, 0, 0), flat_tile(Vec3::ZERO, 5.0));
+        app.update();
+        let partial = app
+            .world()
+            .resource::<CapturedVolumeResults>()
+            .0
+            .last()
+            .unwrap();
+        assert!(!partial.is_complete());
+        assert!(partial.sampled_pairs > 0 && partial.sampled_pairs < partial.expected_samples);
+
+        app.world_mut()
+            .resource_mut::<TerrainHeightField>()
+            .insert((10, 0, 0), flat_tile(Vec3::ZERO, 20.0));
+        app.update();
+        let loaded = app
+            .world()
+            .resource::<CapturedVolumeResults>()
+            .0
+            .last()
+            .unwrap();
+        assert_eq!(loaded.correlation_id, "corr-1");
+        assert!(loaded.is_complete());
+        assert!((loaded.fill_m3 - 200.0).abs() < 0.001);
+        {
+            let mut active = app.world_mut().resource_mut::<ActivePetalTerrain>();
+            active.config.as_mut().unwrap().proposals[0].delta = Some(3.0);
+            active.revision += 1;
+        }
+        app.update();
+        let latest = app
+            .world()
+            .resource::<CapturedVolumeResults>()
+            .0
+            .last()
+            .unwrap();
+        assert_eq!(latest.correlation_id, "corr-1");
+        assert!((latest.fill_m3 - 300.0).abs() < 0.001);
+
+        app.world_mut().resource_mut::<ActivePetalTerrain>().config = None;
+        app.update();
+        let count = app.world().resource::<CapturedVolumeResults>().0.len();
+        {
+            let mut active = app.world_mut().resource_mut::<ActivePetalTerrain>();
+            active.config = Some(TerrainConfig {
+                enabled: true,
+                ..Default::default()
+            });
+            active.revision += 1;
+        }
+        app.update();
+        assert_eq!(
+            app.world().resource::<CapturedVolumeResults>().0.len(),
+            count,
+            "unbinding discards the retained request even if the same petal is rebound"
+        );
     }
 
     #[test]
