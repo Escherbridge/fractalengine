@@ -244,3 +244,12 @@ petal map"); "hexon" is reserved for the package/file format in
 publish/import contexts ("Install from file..." + `.hexon` filter). Internal
 identifiers (`hexon_id`, DTO names) unchanged (baked terminology decision,
 ux hardening batch 2026-07-17).
+
+
+## Hierarchy mutation errors
+
+EntitySettings rename, description and delete report channel failures through
+the shared error notice after releasing the dialog borrow. A failed delete send
+keeps its confirmation open. The database authorizes these hierarchy mutations
+at the actual stored target with Manager; the navigation role is not authority
+for a different target opened from the tree.

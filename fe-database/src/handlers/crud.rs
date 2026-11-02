@@ -91,6 +91,9 @@ pub(crate) async fn create_fractal_handler(
     local_did: &str,
 ) -> anyhow::Result<String> {
     crate::migration::mapping_inventory::record_bypass_for("CreateFractal");
+    let parent = super::entity::prepare_parent_mutation(
+        db, fe_runtime::messages::EntityType::Verse, verse_id, local_did,
+    ).await?;
     let fractal_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let fractal_row = Fractal {
@@ -104,7 +107,8 @@ pub(crate) async fn create_fractal_handler(
     };
     let row_json = serde_json::to_value(&fractal_row)?;
 
-    Repo::<Fractal>::create(db, &fractal_row).await?;
+    parent.commit(db, &["CREATE fractal CONTENT $entity_new_fractal"],
+        vec![("entity_new_fractal".into(), row_json.clone())]).await?;
 
     replicate_row(
         repl_tx,
@@ -133,30 +137,14 @@ pub(crate) async fn create_petal_handler(
     local_did: &str,
 ) -> anyhow::Result<String> {
     crate::migration::mapping_inventory::record_bypass_for("CreatePetal");
+    let parent = super::entity::prepare_parent_mutation(
+        db, fe_runtime::messages::EntityType::Fractal, fractal_id, local_did,
+    ).await?;
     let petal_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
-    let mut scope_result = db
-        .query("SELECT verse_id FROM fractal WHERE fractal_id = $fractal_id LIMIT 1")
-        .bind(("fractal_id", fractal_id.to_string()))
-        .await?
-        .check()
-        .map_err(|error| anyhow::anyhow!("CreatePetal parent lookup failed: {error}"))?;
-    let parent_rows: Vec<serde_json::Value> = scope_result
-        .take(0)
-        .map_err(|error| anyhow::anyhow!("CreatePetal parent result read failed: {error}"))?;
-    let verse_id = parent_rows
-        .first()
-        .and_then(|row| row.get("verse_id"))
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| {
-            anyhow::anyhow!("CreatePetal matched no fractal with fractal_id = {fractal_id}")
-        })?;
-    if Repo::<Verse>::find_by_id(db, verse_id).await?.is_none() {
-        anyhow::bail!("CreatePetal matched no verse with verse_id = {verse_id}");
-    }
     tracing::info!("Creating petal: {name} ({petal_id}) in fractal {fractal_id}");
     // Geometry fields need the explicit SurrealQL cast; see AGENTS.md §geometry-inserts.
-    db.query(
+    parent.commit(db, &[
         "CREATE petal CONTENT {
             petal_id: $petal_id,
             fractal_id: $fractal_id,
@@ -168,14 +156,14 @@ pub(crate) async fn create_petal_handler(
             },
             created_at: $now,
         }",
-    )
-    .bind(("petal_id", petal_id.clone()))
-    .bind(("fractal_id", fractal_id.to_string()))
-    .bind(("name", name.to_string()))
-    .bind(("node_id", local_did.to_string()))
-    .bind(("now", now.clone()))
-    .await?
-    .check()
+    ], vec![
+        ("petal_id".into(), serde_json::json!(petal_id)),
+        ("fractal_id".into(), serde_json::json!(fractal_id)),
+        ("name".into(), serde_json::json!(name)),
+        ("node_id".into(), serde_json::json!(local_did)),
+        ("now".into(), serde_json::json!(now)),
+    ])
+    .await
     .map_err(|e| anyhow::anyhow!("CREATE petal '{name}' failed: {e}"))?;
     // No implicit petal-owner role row (R7, T8): the creator keeps the role they already
     // resolve to from the enclosing scope — src/AGENTS.md §role-propagation.

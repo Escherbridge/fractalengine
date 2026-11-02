@@ -877,7 +877,7 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::RenameEntity { entity_type, entity_id, new_name }) => {
-                        match handlers::entity::rename_entity_handler(&db, entity_type, &entity_id, &new_name).await {
+                        match handlers::entity::rename_entity_handler(&db, entity_type, &entity_id, &new_name, &local_did).await {
                             Ok(()) => {
                                 // EntityType has no Node variant, so no node-scoped scene change exists.
                                 send_result(&tx, DbResult::EntityRenamed { entity_type, entity_id, new_name });
@@ -926,13 +926,13 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::UpdateFractalDescription { fractal_id, description }) => {
-                        match handlers::entity::update_fractal_description_handler(&db, &fractal_id, &description).await {
+                        match handlers::entity::update_fractal_description_handler(&db, &fractal_id, &description, &local_did).await {
                             Ok(()) => send_result(&tx, DbResult::FractalDescriptionUpdated { fractal_id, description }),
                             Err(e) => send_result(&tx, DbResult::Error(format!("{e}"))),
                         }
                     }
                     Ok(DbCommand::DeleteEntity { entity_type, entity_id }) => {
-                        match handlers::entity::delete_entity_handler(&db, entity_type, &entity_id).await {
+                        match handlers::entity::delete_entity_handler(&db, entity_type, &entity_id, &local_did).await {
                             Ok(()) => {
                                 // EntityType covers Verse/Fractal/Petal only (no Node variant).
                                 // Cascade deletes remove child nodes — clients should

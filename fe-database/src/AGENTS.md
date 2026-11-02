@@ -1581,3 +1581,30 @@ definition scope; GetFieldSchema requires Viewer. Both dedicated commands carry
 NodeAccessGrant, and API constructs Scoped from validated claims. Ordinary
 metadata-only legacy definition constructors stay compatible; active enforced
 definitions keep their earlier update/delete protections.
+
+
+## §hierarchy-mutations
+
+Hierarchy rename, description update and physical subtree deletion require
+Manager at the target's stored scope, using the DB thread's resolved local DID.
+CreateFractal and CreatePetal use the same preparation at the stored parent.
+`handlers/entity.rs::ParentMutation` snapshots the owner's/default-access inputs
+and the actor's exact ancestor role rows before checking the existing role
+resolver. Its transaction fences those inputs and every stored ancestry edge
+before any write. Missing, moved, ambiguous or no-longer-authorized targets fail
+without partial changes. SQL identifiers come only from the EntityType match;
+caller names and identifiers are bound parameters.
+
+The cascade executes all node, petal, fractal and existing verse cleanup in one
+SurrealDB BEGIN/COMMIT transaction. Membership links use exact IDs and SELECT
+VALUE subqueries. Verse role cleanup compares parsed verse IDs, so a similarly
+prefixed verse's roles survive. The old physical-delete boundary is retained:
+it does not publish P2P tombstones, emit per-node lifecycle events, delete retained
+node history, or claim ordinary replay coverage for structural deletion. Peers
+can retain old structure; subscribers must reload after structural changes.
+Existing role-grant statements and non-verse role cleanup are unchanged.
+
+EntitySettings' navigation-scoped cached role is not authoritative for another
+tree target. The DB check is authoritative; target-specific dialog role UX is a
+separate UI task. Rename, description and delete channel failures are logged and
+shown through the shared notice surface; failed sends retain the delete dialog.

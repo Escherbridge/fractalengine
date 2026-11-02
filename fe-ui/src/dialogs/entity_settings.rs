@@ -81,6 +81,7 @@ pub fn render_entity_settings_dialog(
 
     let mut close = false;
     let mut still_open = true;
+    let mut send_failure = None;
 
     crate::ui_shell::layout_policy::bounded_window(ctx, title)
         .open(&mut still_open)
@@ -172,13 +173,14 @@ pub fn render_entity_settings_dialog(
                                     EntitySettingsType::Fractal => EntityType::Fractal,
                                     EntitySettingsType::Petal => EntityType::Petal,
                                 };
-                                db_tx
-                                    .send(DbCommand::RenameEntity {
+                                if let Err(error) = db_tx.send(DbCommand::RenameEntity {
                                         entity_type: etype,
                                         entity_id: entity_id.clone(),
                                         new_name,
-                                    })
-                                    .ok();
+                                    }) {
+                                    bevy::log::warn!(%error, "RenameEntity channel closed");
+                                    send_failure = Some("Rename could not be sent. The database is unavailable.");
+                                }
                             }
                         }
                     });
@@ -239,12 +241,13 @@ pub fn render_entity_settings_dialog(
                                 .add(egui::Button::new("Save Description").fill(theme::BG_SAVE)).observed(ui)
                                 .clicked()
                             {
-                                db_tx
-                                    .send(DbCommand::UpdateFractalDescription {
+                                if let Err(error) = db_tx.send(DbCommand::UpdateFractalDescription {
                                         fractal_id: entity_id.clone(),
                                         description: desc.clone(),
-                                    })
-                                    .ok();
+                                    }) {
+                                    bevy::log::warn!(%error, "UpdateFractalDescription channel closed");
+                                    send_failure = Some("Description could not be saved. The database is unavailable.");
+                                }
                             }
                         }
                     }
@@ -349,13 +352,16 @@ pub fn render_entity_settings_dialog(
                                     EntitySettingsType::Fractal => EntityType::Fractal,
                                     EntitySettingsType::Petal => EntityType::Petal,
                                 };
-                                db_tx
-                                    .send(DbCommand::DeleteEntity {
+                                match db_tx.send(DbCommand::DeleteEntity {
                                         entity_type: etype,
                                         entity_id: entity_id.clone(),
-                                    })
-                                    .ok();
-                                close = true;
+                                    }) {
+                                    Ok(()) => close = true,
+                                    Err(error) => {
+                                        bevy::log::warn!(%error, "DeleteEntity channel closed");
+                                        send_failure = Some("Delete could not be sent. The database is unavailable.");
+                                    }
+                                }
                             }
                             if ui.add(egui::Button::new("Cancel").fill(theme::BG_BUTTON)).observed(ui).clicked() {
                                 *pending_delete = false;
@@ -949,6 +955,9 @@ pub fn render_entity_settings_dialog(
             }
         });
 
+    if let Some(message) = send_failure {
+        ui_mgr.show_error(message, ctx.input(|input| input.time));
+    }
     if !still_open || close {
         ui_mgr.close_dialog();
     }
