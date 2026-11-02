@@ -4,8 +4,8 @@ date: 2026-11-01
 status: in_progress
 source: ./handoff-20261101-qa-chain.md
 current_writer: /root
-current_slice: Reviewed core/native/tree/grid/terrain/keyboard/scroll integrated through c576aae; fresh production stage in progress; no app running
-parallel_code_worktrees: Plugin host independently reviewed with blockers; isolated dialog-safety author; code-only outside root Cargo owner
+current_slice: Reviewed scoped query, feedback, sidebar, terrain reports, restart catalog repair and Undo integrated through 60e5772; app stopped before integration; combined review and fresh stage pending
+parallel_code_worktrees: Inspector URL/API author; requirements persistence author; independent combined-source review; all code-only outside root Cargo owner
 ---
 
 # QA chain continuation
@@ -32,6 +32,47 @@ Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.
 - [ ] Push the finished goal, wait for CI success, verify release assets and publish tagged downloads/links.
 
 ## Current acceptance state
+
+### Authoritative continuation checkpoint — 2026-11-02
+
+This checkpoint supersedes the older slice descriptions below. They are retained
+as historical evidence, not the current ownership or acceptance status.
+
+- Latest evidence commit is `ea8c8e8`. Focused passes11–13 are retained with
+  failures, expected warnings and provenance. Pass13 completed all38 functional
+  rich-data checks: exact nested values, schema revisions, append ordering,
+  movement, per-object replay and local/distributed aggregates before restart.
+  Its coverage-ready flag remains false because deliberate invalid writes emitted
+  warnings; independent warning reconciliation is pending.
+- Same-build restart preserved object state/history, blobs and local measurements,
+  but distributed planning returned no shards twice. QA-0035 remains open until
+  the reviewed catalog repair is built and proves recovery without re-ingestion.
+  Old fixture IDs/counts remain authoritative; a new fresh scenario and same-new-
+  stage restart must subsequently pass the strict driver provenance contract.
+- Native Alpha replay-v3 and chronological calibrated chart/table were visually
+  checked. All four hierarchy levels saved distinct hex colors/icons, cancellation
+  preserved the original choice, and actual same-root restart retained all four.
+  Focused1280 grid cancel/edit checks passed; final1024/1920 and all-layout proof
+  remains pending. These focused passes do not count as full coverage convergence.
+- A known2.5×0.5×2.5 solid box with concrete metadata is present in PetalA. The
+  measured2.270m³ sampled overlap matches the independently decoded terrain datum
+  prediction2.2704029455780983. Actual runtime origin/bounds/probes and saved-region
+  report reachability still need verification using the newly integrated controls.
+- Root80424 and all seven freshly captured descendants were independently proven
+  absent before Rust integration; evidence is under `qa/passes/14`. No app or Cargo
+  is running at this checkpoint. Root remains sole build/live owner.
+- Reviewed stacks are integrated through `60e5772`: scoped desktop SELECT, notice/
+  status feedback, Groups/durable settings, saved terrain report/context controls,
+  selected-object terrain diagnostics, distributed catalog recovery and checked
+  transform/point Undo. Security and design reviews approved Undo after its three
+  concrete corrections. Combined source review, dependency lock refresh, build and
+  live acceptance remain pending. Inspector API/URL and requirements persistence
+  remain isolated authors; neither is claimed complete.
+- The decision ledger is `decisions/qa-chain-20261102.md`. The user authorized all
+  planned work and deferred product choices there. Mandatory fixes, full QA passes,
+  integrated tests, exact-SHA CI and downloadable tagged releases remain work.
+
+### Earlier checkpoints
 
 - User priority now includes complex typed object schemas, sequential data/creation/transform simulation and
   BOTH replayable object changes and charted appended measurements (explicit async answer). Track:
