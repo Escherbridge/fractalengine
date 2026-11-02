@@ -792,3 +792,16 @@ matches. This pending cue does not imply a browser navigation or URL write.
 Inspector displays the typed current storage explanation inline. Shared/assetless objects disable
 Save; missing unique local metadata explains first nonempty Save initialization and disables an
 empty clear. Draft preview/open remains available under the existing URL security policy.
+
+
+## Compact Paths and asset controls
+
+Visible Point/Corner/annotation numbers are one-based; callbacks retain the original zero-based
+indices. New-path, annotation, and asset-filter fields declare native 24-point targets with the
+shared 20-physical-pixel backstop. Track names are bounded, truncated native buttons with full hover
+text; Delete/Cancel/Confirm occupy a separate wrapping row. Point coordinates and actions occupy
+separate rows so compact Data windows retain the actual Annotate/height/confirmed Remove targets.
+The existing two-step track deletion, route-salted point confirmation, Editor gates, retained numeric
+drafts, and checked receipt projection are unchanged. Stamp Clear is an explicit native minimum
+button; the selected asset readout wraps before it rather than taking its hit area. Native journeys
+exercise real response rectangles/clips at compact widths and click the existing actions.

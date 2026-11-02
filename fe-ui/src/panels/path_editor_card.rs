@@ -125,15 +125,23 @@ fn render_track_list(
     );
     ui.add_space(4.0);
 
-    ui.horizontal(|ui| {
+    let minimum = egui::Vec2::splat(crate::object_data::target_size(ui));
+    ui.horizontal_wrapped(|ui| {
+        let input_width = ui.available_width().min(180.0).max(minimum.x) - 8.0;
         ui.add(
             egui::TextEdit::singleline(&mut path_state.new_track_name_buf)
                 .hint_text("New path name")
-                .desired_width(180.0),
+                .desired_width(input_width)
+                .min_size(minimum),
         )
         .named(ui, "New path name");
         if ui
-            .add_enabled(can_edit, egui::Button::new("New Path").fill(theme::BG_SAVE))
+            .add_enabled(
+                can_edit,
+                egui::Button::new("New Path")
+                    .fill(theme::BG_SAVE)
+                    .min_size(minimum),
+            )
             .observed(ui)
             .clicked()
         {
@@ -175,7 +183,9 @@ fn render_track_list(
             if ui
                 .add_enabled(
                     !path_state.tracks_pending,
-                    egui::Button::new(label).fill(theme::BG_BUTTON),
+                    egui::Button::new(label)
+                        .fill(theme::BG_BUTTON)
+                        .min_size(minimum),
                 )
                 .observed(ui)
                 .clicked()
@@ -222,77 +232,63 @@ fn render_track_list(
                     .corner_radius(2.0)
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            // FR-1: type glyph before the track name (recolored, small).
                             ui.label(
                                 egui::RichText::new(GLYPH_TRACK)
                                     .small()
                                     .color(theme::ICON_TRACK),
                             );
-                            let label = egui::RichText::new(
-                                row.annotation_title.as_deref().unwrap_or(&row.name),
-                            )
-                            .color(theme::TEXT_BRIGHT);
-                            let response = ui
-                                .add(egui::Label::new(label).sense(egui::Sense::click()))
-                                .button_named(
-                                    ui,
-                                    format_args!(
-                                        "Open path {}",
-                                        row.annotation_title.as_deref().unwrap_or(&row.name)
-                                    ),
-                                );
-                            if response.clicked() {
+                            let name = row.annotation_title.as_deref().unwrap_or(&row.name);
+                            if ui
+                                .add_sized(
+                                    [ui.available_width().max(minimum.x), minimum.y],
+                                    egui::Button::new(
+                                        egui::RichText::new(name).color(theme::TEXT_BRIGHT),
+                                    )
+                                    .truncate(),
+                                )
+                                .named(ui, format_args!("Open path {name}"))
+                                .on_hover_text(name)
+                                .clicked()
+                            {
                                 selected = Some(row.node_id.clone());
                             }
-                            let pending = path_state.pending_track_delete.as_deref()
-                                == Some(row.node_id.as_str());
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if pending {
-                                        if ui
-                                            .small_button("Cancel")
-                                            .named(
-                                                ui,
-                                                format_args!(
-                                                    "Cancel deletion of path {}",
-                                                    row.name
-                                                ),
-                                            )
-                                            .clicked()
-                                        {
-                                            cancel_delete = true;
-                                        }
-                                        if ui
-                                            .add_enabled(
-                                                can_edit,
-                                                egui::Button::new(
-                                                    egui::RichText::new("Confirm Delete")
-                                                        .small()
-                                                        .color(egui::Color32::WHITE),
-                                                )
-                                                .fill(theme::BG_DANGER),
-                                            )
-                                            .named(
-                                                ui,
-                                                format_args!(
-                                                    "Confirm deletion of path {}",
-                                                    row.name
-                                                ),
-                                            )
-                                            .clicked()
-                                        {
-                                            to_delete = Some(row.node_id.clone());
-                                        }
-                                    } else if ui
-                                        .add_enabled(can_edit, egui::Button::new("Delete").small())
-                                        .named(ui, format_args!("Delete path {}", row.name))
-                                        .clicked()
-                                    {
-                                        arm_delete = Some(row.node_id.clone());
-                                    }
-                                },
-                            );
+                        });
+                        let pending = path_state.pending_track_delete.as_deref()
+                            == Some(row.node_id.as_str());
+                        ui.horizontal_wrapped(|ui| {
+                            if pending {
+                                if ui
+                                    .add(egui::Button::new("Cancel").min_size(minimum))
+                                    .named(ui, format_args!("Cancel deletion of path {}", row.name))
+                                    .clicked()
+                                {
+                                    cancel_delete = true;
+                                }
+                                if ui
+                                    .add_enabled(
+                                        can_edit,
+                                        egui::Button::new("Confirm Delete")
+                                            .fill(theme::BG_DANGER)
+                                            .min_size(minimum),
+                                    )
+                                    .named(
+                                        ui,
+                                        format_args!("Confirm deletion of path {}", row.name),
+                                    )
+                                    .clicked()
+                                {
+                                    to_delete = Some(row.node_id.clone());
+                                }
+                            } else if ui
+                                .add_enabled(
+                                    can_edit,
+                                    egui::Button::new("Delete").min_size(minimum),
+                                )
+                                .named(ui, format_args!("Delete path {}", row.name))
+                                .clicked()
+                            {
+                                arm_delete = Some(row.node_id.clone());
+                            }
                         });
                     });
                 ui.add_space(1.0);
@@ -509,87 +505,92 @@ fn render_edit_view(
                     .inner_margin(egui::Margin::symmetric(6, 4))
                     .corner_radius(2.0)
                     .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            // FR-1: point glyph — filled when the point carries a GPX
-                            // timestamp, hollow when authored via the Pen (no time).
-                            let glyph = if point.time_seconds.is_some() {
-                                GLYPH_POINT
-                            } else {
-                                GLYPH_POINT_UNTIMED
-                            };
-                            ui.label(egui::RichText::new(glyph).small().color(theme::ICON_POINT));
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{}: ({:.1}, {:.1}, {:.1}) m",
-                                    i + 1,
-                                    crate::panels::widgets::world_to_meters(
-                                        point.position[0],
-                                        world_scale
-                                    ),
-                                    crate::panels::widgets::world_to_meters(
-                                        point.position[1],
-                                        world_scale
-                                    ),
-                                    crate::panels::widgets::world_to_meters(
-                                        point.position[2],
-                                        world_scale
-                                    )
-                                ))
-                                .color(theme::TEXT_BRIGHT),
-                            );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui
-                                        .add_enabled_ui(can_edit, |ui| {
-                                            crate::panels::widgets::confirm_button(
-                                                ui,
-                                                ("remove-point", track_id, route_key, i),
-                                                "Remove",
-                                                "Confirm",
-                                                format!("Remove point {}", i + 1),
-                                            )
-                                        })
-                                        .inner
-                                    {
-                                        to_remove = Some(i);
-                                    }
-                                    if ui
-                                        .add_enabled(
-                                            can_edit,
-                                            egui::Button::new("Annotate").small(),
+                        ui.vertical(|ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                // FR-1: point glyph — filled when the point carries a GPX
+                                // timestamp, hollow when authored via the Pen (no time).
+                                let glyph = if point.time_seconds.is_some() {
+                                    GLYPH_POINT
+                                } else {
+                                    GLYPH_POINT_UNTIMED
+                                };
+                                ui.label(
+                                    egui::RichText::new(glyph).small().color(theme::ICON_POINT),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{}: ({:.1}, {:.1}, {:.1}) m",
+                                        i + 1,
+                                        crate::panels::widgets::world_to_meters(
+                                            point.position[0],
+                                            world_scale
+                                        ),
+                                        crate::panels::widgets::world_to_meters(
+                                            point.position[1],
+                                            world_scale
+                                        ),
+                                        crate::panels::widgets::world_to_meters(
+                                            point.position[2],
+                                            world_scale
                                         )
-                                        .named(ui, format_args!("Annotate point {}", i + 1))
-                                        .clicked()
-                                    {
-                                        to_annotate = Some(i);
-                                    }
-                                    // Numeric height (Bevy Y) field for this point.
-                                    let id = ui.id().with(("point-height", track_id, route_key, i));
-                                    let stored = crate::panels::widgets::world_to_meters(
-                                        point.position[1],
+                                    ))
+                                    .color(theme::TEXT_BRIGHT),
+                                );
+                            });
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().interact_size.y =
+                                    crate::object_data::target_size(ui);
+                                if ui
+                                    .add_enabled_ui(can_edit, |ui| {
+                                        crate::panels::widgets::confirm_button(
+                                            ui,
+                                            ("remove-point", track_id, route_key, i),
+                                            "Remove",
+                                            "Confirm",
+                                            format!("Remove point {}", i + 1),
+                                        )
+                                    })
+                                    .inner
+                                {
+                                    to_remove = Some(i);
+                                }
+                                if ui
+                                    .add_enabled(
+                                        can_edit,
+                                        egui::Button::new("Annotate").min_size(egui::Vec2::splat(
+                                            crate::object_data::target_size(ui),
+                                        )),
+                                    )
+                                    .named(ui, format_args!("Annotate point {}", i + 1))
+                                    .clicked()
+                                {
+                                    to_annotate = Some(i);
+                                }
+                                // Numeric height (Bevy Y) field for this point.
+                                let id = ui.id().with(("point-height", track_id, route_key, i));
+                                let stored = crate::panels::widgets::world_to_meters(
+                                    point.position[1],
+                                    world_scale,
+                                );
+                                if let Some(meters) = point_height_editor(
+                                    ui,
+                                    id,
+                                    stored,
+                                    can_edit,
+                                    &format!("Point {} height in meters", i + 1),
+                                ) {
+                                    let new_y = crate::panels::widgets::meters_to_world(
+                                        meters,
                                         world_scale,
                                     );
-                                    if let Some(meters) = point_height_editor(
-                                        ui,
-                                        id,
-                                        stored,
-                                        can_edit,
-                                        &format!("Point {} height in meters", i + 1),
-                                    ) {
-                                        let new_y = crate::panels::widgets::meters_to_world(
-                                            meters,
-                                            world_scale,
-                                        );
-                                        if new_y.is_finite() {
-                                            to_move = Some((
-                                                i,
-                                                [point.position[0], new_y, point.position[2]],
-                                            ));
-                                        }
+                                    if new_y.is_finite() {
+                                        to_move = Some((
+                                            i,
+                                            [point.position[0], new_y, point.position[2]],
+                                        ));
                                     }
-                                },
-                            );
+                                }
+                            });
                         });
                     });
                 ui.add_space(1.0);
@@ -639,17 +640,21 @@ pub(crate) fn point_height_editor(
 ) -> Option<f32> {
     let mut draft =
         crate::ui_shell::setting_draft::SettingDraft::load(ui, id, "path-point-height", stored);
+    let target = crate::object_data::target_size(ui);
     let response = ui
-        .add_enabled(
-            editable,
-            egui::DragValue::new(&mut draft.value)
-                .update_while_editing(false)
-                .clamp_existing_to_range(false)
-                .speed(0.05)
-                .range(-1_000_000.0..=1_000_000.0)
-                .prefix("Y ")
-                .suffix(" m"),
-        )
+        .add_enabled_ui(editable, |ui| {
+            ui.add_sized(
+                [target, target],
+                egui::DragValue::new(&mut draft.value)
+                    .update_while_editing(false)
+                    .clamp_existing_to_range(false)
+                    .speed(0.05)
+                    .range(-1_000_000.0..=1_000_000.0)
+                    .prefix("Y ")
+                    .suffix(" m"),
+            )
+        })
+        .inner
         .named(ui, name);
     let intent_id = id.with("point-user-intent");
     let mut user_edit = ui
@@ -1043,7 +1048,7 @@ pub(crate) fn render_corner_settings(
         .corner_radius(3.0)
         .show(ui, |ui| {
             ui.label(
-                egui::RichText::new(format!("Corner settings — vertex {idx}"))
+                egui::RichText::new(format!("Corner settings \u{2014} point {}", idx + 1))
                     .strong()
                     .color(theme::TEXT_SECTION),
             );
@@ -1056,7 +1061,7 @@ pub(crate) fn render_corner_settings(
             ui.horizontal(|ui| {
                 for kind in [CornerKind::Corner, CornerKind::Smooth, CornerKind::Symmetric] {
                     if ui
-                        .selectable_label(row.corner == kind, kind.label()).named(ui, format_args!("Vertex {idx} corner kind: {}", kind.label()))
+                        .add(egui::Button::selectable(row.corner == kind, kind.label()).min_size(egui::Vec2::splat(crate::object_data::target_size(ui)))).named(ui, format_args!("Point {} corner kind: {}", idx + 1, kind.label()))
                         .clicked()
                     {
                         clicked_kind = Some(kind);
@@ -1087,7 +1092,7 @@ pub(crate) fn render_corner_settings(
                     // Seed from geometry truth when handles exist — the stored
                     // scalar may be stale (drag-created anchors).
                     let mut s = slider_seed(row.handle_in, row.handle_out, min_gap, row.smoothness);
-                    let resp = ui.add(egui::Slider::new(&mut s, 0.0..=1.0).step_by(0.01).update_while_editing(false)).named(ui, format_args!("Vertex {idx} smoothness"));
+                    let resp = ui.add(egui::Slider::new(&mut s, 0.0..=1.0).step_by(0.01).update_while_editing(false)).named(ui, format_args!("Point {} smoothness", idx + 1));
                     if resp.changed() {
                         // Live feedback every frame: derive collinear symmetric
                         // handles into the buffer; persist only on release below.
@@ -1135,7 +1140,7 @@ pub(crate) fn render_corner_settings(
                             .color(theme::TEXT_DIM),
                     );
                     let mut s = readback;
-                    ui.add_enabled(false, egui::Slider::new(&mut s, 0.0..=1.0)).named(ui, format_args!("Vertex {idx} smoothness (asymmetric handles)"));
+                    ui.add_enabled(false, egui::Slider::new(&mut s, 0.0..=1.0)).named(ui, format_args!("Point {} smoothness (asymmetric handles)", idx + 1));
                 });
                 let fmt_len = |h: Option<[f32; 3]>| {
                     h.map(|v| {
@@ -1171,6 +1176,7 @@ fn render_annotate_form(
     track_id: &str,
     index: usize,
 ) {
+    let minimum = egui::Vec2::splat(crate::object_data::target_size(ui));
     ui.add_space(6.0);
     egui::Frame::NONE
         .fill(theme::BG_PEER_ROW_EVEN)
@@ -1178,40 +1184,47 @@ fn render_annotate_form(
         .corner_radius(3.0)
         .show(ui, |ui| {
             ui.label(
-                egui::RichText::new(format!("Annotate point {index}"))
+                egui::RichText::new(format!("Annotate point {}", index + 1))
                     .strong()
                     .color(theme::TEXT_SECTION),
             );
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Title");
                 ui.add(
                     egui::TextEdit::singleline(&mut path_state.annotate_title_buf)
-                        .desired_width(200.0),
+                        .desired_width((ui.available_width() - 8.0).clamp(minimum.x, 200.0))
+                        .min_size(minimum),
                 )
                 .named(ui, "Point annotation title");
             });
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Body ");
                 ui.add(
                     egui::TextEdit::singleline(&mut path_state.annotate_body_buf)
-                        .desired_width(200.0),
+                        .desired_width((ui.available_width() - 8.0).clamp(minimum.x, 200.0))
+                        .min_size(minimum),
                 )
                 .named(ui, "Point annotation body");
             });
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Color");
                 ui.add(
                     egui::TextEdit::singleline(&mut path_state.annotate_color_buf)
                         .hint_text("#00ff00")
-                        .desired_width(120.0),
+                        .desired_width((ui.available_width() - 8.0).clamp(minimum.x, 120.0))
+                        .min_size(minimum),
                 )
                 .named(ui, "Point annotation color");
             });
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui
-                    .add(egui::Button::new("Save").fill(theme::BG_SAVE))
+                    .add(
+                        egui::Button::new("Save")
+                            .fill(theme::BG_SAVE)
+                            .min_size(minimum),
+                    )
                     .observed(ui)
                     .clicked()
                 {
@@ -1225,7 +1238,11 @@ fn render_annotate_form(
                     path_state.close_annotate_form();
                 }
                 if ui
-                    .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON))
+                    .add(
+                        egui::Button::new("Cancel")
+                            .fill(theme::BG_BUTTON)
+                            .min_size(minimum),
+                    )
                     .observed(ui)
                     .clicked()
                 {
@@ -1573,6 +1590,275 @@ mod tests {
             UiAction::PathSetAnchorHandles { index: 1, .. }
         ));
         assert!(state.points[1].handle_out.is_some(), "buffer echoed live");
+        let mut nav = crate::navigation_manager::NavigationManager::default();
+        nav.navigate_to_verse("v", "Verse");
+        nav.navigate_to_fractal("f", "Fractal");
+        nav.navigate_to_petal("p");
+        for width in [260.0, 360.0, 640.0] {
+            let ctx = egui::Context::default();
+            let mut time = 0.0;
+            let mut model = PathEditorState {
+                editing_track_id: state.editing_track_id.clone(),
+                points: state.points.clone(),
+                selected_point: state.selected_point,
+                ..Default::default()
+            };
+            model.tracks = vec![crate::gis::GisResultRow {
+                node_id: "track:1".into(),
+                name: "A long path name for compact controls ".repeat(5),
+                position: [0.0; 3],
+                annotation_title: None,
+                annotation_color: None,
+            }];
+            let mut manager = UiManager::default();
+            let frame = |mode: u8,
+                         editable: bool,
+                         events: Vec<egui::Event>,
+                         time: &mut f64,
+                         model: &mut PathEditorState,
+                         manager: &mut UiManager| {
+                *time += 0.05;
+                crate::ui_shell::layout_policy::begin_frame(&ctx, true);
+                let output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 1600.0),
+                        )),
+                        time: Some(*time),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        crate::ui_shell::layout_policy::begin_ui_pass(ctx);
+                        egui::CentralPanel::default().show(ctx, |ui| match mode {
+                            0 => render_track_list(ui, model, manager, "p", editable),
+                            1 => render_edit_view(
+                                ui,
+                                model,
+                                &PathEditStatus::default(),
+                                manager,
+                                &ViewportCursorWorld::default(),
+                                "track:1",
+                                "p",
+                                &nav,
+                                1.0,
+                                editable,
+                            ),
+                            2 => {
+                                render_corner_settings(ui, &model.points, 1);
+                            }
+                            _ => {
+                                render_annotate_form(ui, model, manager, "track:1", 1);
+                            }
+                        });
+                    },
+                );
+                (crate::ui_shell::layout_policy::observations(&ctx), output)
+            };
+            let click = |mode,
+                         editable,
+                         at: egui::Pos2,
+                         time: &mut f64,
+                         model: &mut PathEditorState,
+                         manager: &mut UiManager| {
+                for pressed in [true, false] {
+                    frame(
+                        mode,
+                        editable,
+                        vec![
+                            egui::Event::PointerMoved(at),
+                            egui::Event::PointerButton {
+                                pos: at,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ],
+                        time,
+                        model,
+                        manager,
+                    );
+                }
+            };
+            let geometry = |controls: &[crate::ui_shell::layout_policy::ControlObservation]| {
+                for control in controls {
+                    assert!(
+                        control.rect.width() >= 23.99 && control.rect.height() >= 23.99,
+                        "native target at width {width}: {:?}",
+                        control.rect
+                    );
+                    assert!(
+                        control.clip.expand(0.1).contains_rect(control.hit),
+                        "target must remain visible at width {width}: {:?} {:?}",
+                        control.hit,
+                        control.clip
+                    );
+                }
+            };
+            frame(0, true, vec![], &mut time, &mut model, &mut manager);
+            let (list, _) = frame(0, true, vec![], &mut time, &mut model, &mut manager);
+            assert_eq!(list.controls.len(), 5);
+            geometry(&list.controls);
+            click(
+                0,
+                true,
+                list.controls[3].hit.center(),
+                &mut time,
+                &mut model,
+                &mut manager,
+            );
+            assert!(
+                matches!(manager.drain_actions().as_slice(), [UiAction::PathSelectTrack { track_node_id }] if track_node_id == "track:1")
+            );
+            click(
+                0,
+                false,
+                list.controls[4].hit.center(),
+                &mut time,
+                &mut model,
+                &mut manager,
+            );
+            assert!(
+                model.pending_track_delete.is_none() && manager.drain_actions().is_empty(),
+                "Viewer cannot arm deletion"
+            );
+            click(
+                0,
+                true,
+                list.controls[4].hit.center(),
+                &mut time,
+                &mut model,
+                &mut manager,
+            );
+            assert_eq!(model.pending_track_delete.as_deref(), Some("track:1"));
+            let (armed, _) = frame(0, true, vec![], &mut time, &mut model, &mut manager);
+            geometry(&armed.controls);
+            assert!(
+                manager.drain_actions().is_empty(),
+                "arming Delete does not delete"
+            );
+            click(
+                0,
+                true,
+                armed.controls[4].hit.center(),
+                &mut time,
+                &mut model,
+                &mut manager,
+            );
+            assert!(
+                model.pending_track_delete.is_none() && manager.drain_actions().is_empty(),
+                "Cancel preserves the path"
+            );
+            let (list, _) = frame(0, true, vec![], &mut time, &mut model, &mut manager);
+            click(
+                0,
+                true,
+                list.controls[4].hit.center(),
+                &mut time,
+                &mut model,
+                &mut manager,
+            );
+            let (armed, _) = frame(0, true, vec![], &mut time, &mut model, &mut manager);
+            click(
+                0,
+                true,
+                armed.controls[5].hit.center(),
+                &mut time,
+                &mut model,
+                &mut manager,
+            );
+            assert!(
+                matches!(manager.drain_actions().as_slice(), [UiAction::PathDeleteTrack { track_node_id }] if track_node_id == "track:1"),
+                "only Confirm emits the original selected track identity"
+            );
+            let original = model.points.clone();
+            frame(1, true, vec![], &mut time, &mut model, &mut manager);
+            let (points, _) = frame(1, true, vec![], &mut time, &mut model, &mut manager);
+            let point_controls = &points.controls[points.controls.len() - 6..];
+            geometry(point_controls);
+            click(
+                1,
+                true,
+                point_controls[4].hit.center(),
+                &mut time,
+                &mut model,
+                &mut manager,
+            );
+            assert_eq!(
+                model.annotating_index,
+                Some(1),
+                "display Point 2 still opens exact internal index 1"
+            );
+            let (_, corner_output) = frame(2, true, vec![], &mut time, &mut model, &mut manager);
+            let painted = |output: &egui::FullOutput| {
+                output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| {
+                        if let egui::epaint::Shape::Text(text) = &shape.shape {
+                            Some(text.galley.job.text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            assert!(
+                painted(&corner_output).contains("point 2")
+                    && !painted(&corner_output).contains("vertex 1")
+            );
+            frame(3, true, vec![], &mut time, &mut model, &mut manager);
+            let (annotation, output) = frame(3, true, vec![], &mut time, &mut model, &mut manager);
+            assert!(painted(&output).contains("Annotate point 2"));
+            geometry(&annotation.controls);
+            click(
+                3,
+                true,
+                annotation.controls[3].hit.center(),
+                &mut time,
+                &mut model,
+                &mut manager,
+            );
+            assert!(
+                matches!(manager.drain_actions().as_slice(), [UiAction::PathAnnotatePoint { index: 1, track_node_id, .. }] if track_node_id == "track:1")
+            );
+            let (points, _) = frame(1, true, vec![], &mut time, &mut model, &mut manager);
+            let point_controls = &points.controls[points.controls.len() - 6..];
+            click(
+                1,
+                true,
+                point_controls[3].hit.center(),
+                &mut time,
+                &mut model,
+                &mut manager,
+            );
+            assert!(
+                manager.drain_actions().is_empty(),
+                "arming point removal does not write"
+            );
+            let (armed, _) = frame(1, true, vec![], &mut time, &mut model, &mut manager);
+            let confirmed_controls = &armed.controls[armed.controls.len() - 4..];
+            geometry(confirmed_controls);
+            click(
+                1,
+                true,
+                confirmed_controls[0].hit.center(),
+                &mut time,
+                &mut model,
+                &mut manager,
+            );
+            assert!(
+                matches!(manager.drain_actions().as_slice(), [UiAction::PathRemovePoint { index: 1, track_node_id, origin }]
+                if track_node_id == "track:1" && origin.matches(&model, &nav)),
+                "Point 2 removal retains internal index 1 and the exact checked route origin"
+            );
+            assert_eq!(
+                model.points, original,
+                "UI labels and form actions never replace authoritative point rows"
+            );
+        }
     }
 
     #[test]

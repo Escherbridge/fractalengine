@@ -660,6 +660,7 @@ fn track_display_name(path_state: &PathEditorState, track_id: &str) -> String {
 /// `state.selected_hexon_ref`; the emit path (`build_descriptor` + the Stamp
 /// button) is untouched. See `panels/AGENTS.md` §tool-panel.
 fn render_asset_picker(ui: &mut egui::Ui, state: &mut ToolPanelState, verse_mgr: &VerseManager) {
+    let minimum = egui::Vec2::splat(crate::object_data::target_size(ui));
     // Currently-selected asset readout (clone out first so the closure can
     // mutate `selected_hexon_ref` on Clear without a borrow conflict).
     let selected = state
@@ -669,20 +670,24 @@ fn render_asset_picker(ui: &mut egui::Ui, state: &mut ToolPanelState, verse_mgr:
     match selected {
         Some(sel) => {
             let mut clear = false;
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(
                     egui::RichText::new("Selected")
                         .small()
                         .color(theme::TEXT_DIM),
                 );
-                ui.label(
-                    egui::RichText::new(&sel)
-                        .small()
-                        .monospace()
-                        .color(theme::TEXT_BRIGHT),
-                );
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&sel)
+                            .small()
+                            .monospace()
+                            .color(theme::TEXT_BRIGHT),
+                    )
+                    .wrap(),
+                )
+                .on_hover_text(&sel);
                 if ui
-                    .small_button("\u{2715}")
+                    .add(egui::Button::new("\u{2715}").min_size(minimum))
                     .named(ui, "Clear selected stamp asset")
                     .on_hover_text("Clear selection")
                     .clicked()
@@ -715,11 +720,12 @@ fn render_asset_picker(ui: &mut egui::Ui, state: &mut ToolPanelState, verse_mgr:
             .color(theme::TEXT_MUTED),
         );
     } else {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new("Filter").small().color(theme::TEXT_DIM));
             ui.add(
                 egui::TextEdit::singleline(&mut state.asset_filter)
-                    .desired_width(180.0)
+                    .desired_width((ui.available_width() - 8.0).clamp(minimum.x, 180.0))
+                    .min_size(minimum)
                     .hint_text("name or path"),
             )
             .named(ui, "Filter stamp assets by name or path");
@@ -742,7 +748,10 @@ fn render_asset_picker(ui: &mut egui::Ui, state: &mut ToolPanelState, verse_mgr:
                     let selected =
                         state.selected_hexon_ref.as_deref() == Some(row.asset_path.as_str());
                     let resp = ui
-                        .selectable_label(selected, egui::RichText::new(&row.name).small())
+                        .add_sized(
+                            [ui.available_width().max(minimum.x), minimum.y],
+                            egui::Button::selectable(selected, &row.name).truncate(),
+                        )
                         .named(ui, format_args!("Select stamp asset {}", row.name))
                         .on_hover_text(&row.asset_path);
                     if resp.clicked() {
@@ -764,7 +773,12 @@ fn render_asset_picker(ui: &mut egui::Ui, state: &mut ToolPanelState, verse_mgr:
     .show(ui, |ui| {
         let mut asset_buf = state.selected_hexon_ref.clone().unwrap_or_default();
         if ui
-            .add(egui::TextEdit::singleline(&mut asset_buf).hint_text("blob://<hash>.glb"))
+            .add(
+                egui::TextEdit::singleline(&mut asset_buf)
+                    .hint_text("blob://<hash>.glb")
+                    .desired_width((ui.available_width() - 8.0).max(minimum.x))
+                    .min_size(minimum),
+            )
             .named(ui, "Stamp asset blob path")
             .changed()
         {
@@ -1135,6 +1149,71 @@ mod tests {
         assert_eq!(desc.spacing_value, 2.5);
         assert_eq!(desc.count, 7);
         assert!(desc.tangent_align);
+        for width in [260.0, 360.0, 640.0] {
+            let ctx = egui::Context::default();
+            let hierarchy = verse_with_nodes(&[("Tree", Some("blob://tree.glb"))]);
+            let mut controls = ToolPanelState {
+                selected_hexon_ref: Some("blob://a-very-long-selected-asset-name-".repeat(8)),
+                ..Default::default()
+            };
+            let mut time = 0.0;
+            let frame =
+                |events: Vec<egui::Event>, time: &mut f64, controls: &mut ToolPanelState| {
+                    *time += 0.05;
+                    crate::ui_shell::layout_policy::begin_frame(&ctx, true);
+                    let _ = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(width, 700.0),
+                            )),
+                            time: Some(*time),
+                            events,
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            crate::ui_shell::layout_policy::begin_ui_pass(ctx);
+                            egui::CentralPanel::default()
+                                .show(ctx, |ui| render_asset_picker(ui, controls, &hierarchy));
+                        },
+                    );
+                    crate::ui_shell::layout_policy::observations(&ctx)
+                };
+            frame(vec![], &mut time, &mut controls);
+            let observed = frame(vec![], &mut time, &mut controls);
+            // The actual Clear and filter responses precede installed asset rows.
+            for control in &observed.controls[..3] {
+                assert!(control.rect.width() >= 23.99 && control.rect.height() >= 23.99);
+                assert!(
+                    control.clip.expand(0.1).contains_rect(control.hit),
+                    "compact picker must keep Clear, filter and installed asset targets visible"
+                );
+            }
+            let clear = observed.controls[0].hit.center();
+            for pressed in [true, false] {
+                frame(
+                    vec![
+                        egui::Event::PointerMoved(clear),
+                        egui::Event::PointerButton {
+                            pos: clear,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                    &mut time,
+                    &mut controls,
+                );
+            }
+            assert!(
+                controls.selected_hexon_ref.is_none(),
+                "native Clear changes the selected asset draft"
+            );
+            assert!(
+                controls.drain_pending().is_empty(),
+                "clearing an asset selection cannot persist a stamp"
+            );
+        }
     }
 
     #[test]
