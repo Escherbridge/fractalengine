@@ -1452,3 +1452,23 @@ numeric reports when coverage is incomplete, including empty lattices.
 
 The terrain-to-renderer volume seam carries each item's actual operation and material instead of dropping them when the record is a baked region. These labels do not change the composite integrator or coverage/finite refusal.
 
+## Changed terrain space and placed objects
+
+`volume_report::changed_space_overlaps` shares the composite surface sampler with true cut/fill. For each existing
+integration cell it clips object XZ bounds against the cell/selection bounds and intersects the object's Y interval
+with the interval between pristine and combined proposed height. It therefore rejects objects above/below the
+changed volume and finds extents crossing the footprint when their origins are outside it. Numbers use the same
+world scale and disclose sampling tolerance. Flat rectangular box fixtures have analytical overlap4 cubic meters;
+curved/relief/irregular boundaries remain sampled estimates. Missing samples and invalid bounds remain unresolved.
+The retained report recomputes on scene-snapshot changes as well as terrain/height changes. Optional scene absence
+never invents a successful empty object-intersection report.
+
+## Changed terrain space and placed objects
+
+`volume_report::changed_space_overlaps` shares the composite surface sampler with true cut/fill. Each integration
+cell clips object XZ bounds against its cell/selection bounds and intersects object Y with the interval between
+pristine and combined proposed height. Above/below objects are rejected; crossing extents are found even with an
+outside origin. Volumes use the same world scale and disclosed sampling tolerance. Flat rectangular box fixtures
+have analytical overlap4 cubic meters; relief/irregular boundaries remain sampled estimates. Missing samples and
+invalid bounds remain unresolved. Scene changes invalidate retained reports alongside terrain/height changes.
+Optional scene absence never invents a successful empty object analysis.

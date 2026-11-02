@@ -510,3 +510,12 @@ shell task; this slice does not claim that rehoming is complete.
 
 The true-volume block is the primary report. Footprint-only geometry is secondary and never labels arbitrary proposals as earth. Selected standalone fill/cut/net and declared material precede combined terrain totals; TSV preserves operation/material with delimiter-safe text.
 
+## Changed-space intersections
+
+The Volume report shows selected standalone figures before combined terrain totals, then object impacts against
+the combined changed surface within that footprint. Object movement, mesh arrival, visibility and material changes
+advance a scene revision; a matching request cannot adopt old-revision object data. Unresolved geometry and omitted
+objects remain visible. GLB/rotated bounds are explicitly potential intersections; sampled overlap is not exact mesh
+volume. Select/open-properties returns a stable node ID through the current-Petal picker and reveals Inspector.
+Viewer access gates the report in the same UI pass. The old XZ-origin list remains only a bounded, explicitly
+non-intersection TSV section. All TSV names, kinds, operations and material fields escape tab/CR/LF delimiters.

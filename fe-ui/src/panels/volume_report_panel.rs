@@ -1,16 +1,4 @@
-//! terrain_proposal_delta_viz_20261025 S6 (FR-6/7/8, R-4): the "Volume
-//! report" block of the renamed Proposal/Volume report section
-//! (`ui_shell::right_sidebar`). Resolves the current selection (a committed
-//! palette proposal, a Brush-created earthwork region, or — when neither is
-//! explicitly selected — the live sculpt-shape draft, reusing the same
-//! `circle_footprint`/`rect_footprint`/`region_draft` sources
-//! `terrain_preview.rs` uses for FR-3's preview), round-trips it through
-//! fe-renderer's `VolumeReportRequest`/`VolumeReportResult` seam to
-//! fe-terrain's real composite integrator, and renders TRUE area/cut/fill/net
-//! + per-item breakdown + contained-node list + Copy-as-TSV. fe-ui never
-//! depends on fe-terrain (NFR-5) — every cross-crate type here is
-//! fe-renderer's seam, same idiom as `terrain_preview.rs`. See
-//! `panels/AGENTS.md` §volume-report.
+//! Selected terrain volume, material and changed-space object impacts; see panels/AGENTS.md.
 
 use bevy::prelude::*;
 use bevy_egui::egui;
@@ -138,9 +126,13 @@ pub struct VolumeReportState {
     correlation_id: Option<String>,
     result: Option<VolumeReportResult>,
     next_id: u64,
+    scene_revision: u64,
 }
 
 impl VolumeReportState {
+    pub(crate) fn has_selection(&self) -> bool {
+        self.selection_key.is_some()
+    }
     fn clear(&mut self) {
         self.display_label = None;
         self.selection_key = None;
@@ -169,6 +161,7 @@ pub fn sync_volume_report_request(
     mut state: ResMut<VolumeReportState>,
     mut requests: MessageWriter<VolumeReportRequest>,
     mut last_petal: Local<Option<String>>,
+    scene: Option<Res<fe_renderer::scene_analysis::SceneAnalysisSnapshot>>,
 ) {
     let active_petal = nav.active_petal_id.clone();
     // A confirmed terrain load for the active petal (any commit/delete/API
@@ -209,7 +202,9 @@ pub fn sync_volume_report_request(
 
     let key = resolved.key();
     let footprint = resolved.footprint().to_vec();
+    let scene_revision = scene.as_ref().map_or(0, |scene| scene.revision);
     let unchanged = !terrain_reloaded
+        && state.scene_revision == scene_revision
         && state.selection_key.as_deref() == Some(key.as_str())
         && state.footprint == footprint
         && state.petal_id.as_deref() == Some(petal_id.as_str());
@@ -225,6 +220,7 @@ pub fn sync_volume_report_request(
     state.petal_id = Some(petal_id.clone());
     state.correlation_id = Some(correlation_id.clone());
     state.result = None;
+    state.scene_revision = scene_revision;
     requests.write(VolumeReportRequest {
         correlation_id,
         petal_id,
@@ -246,6 +242,7 @@ pub fn drain_volume_report_result(
         if state.correlation_id.as_deref() == Some(result.correlation_id.as_str())
             && state.petal_id.as_deref() == Some(result.petal_id.as_str())
             && nav.active_petal_id.as_deref() == Some(result.petal_id.as_str())
+            && result.object_impacts.scene_revision == state.scene_revision
         {
             state.result = Some(result.clone());
         }
@@ -353,6 +350,7 @@ pub(crate) fn nodes_in_footprint(petal: &PetalEntry, footprint: &[[f32; 2]]) -> 
         .nodes
         .iter()
         .filter(|n| point_in_polygon([n.position[0], n.position[2]], footprint))
+        .take(fe_renderer::scene_analysis::SCENE_OBJECT_LIMIT)
         .map(|n| NodeHit {
             id: n.id.clone(),
             name: n.name.clone(),
@@ -395,10 +393,37 @@ pub(crate) fn volume_report_to_tsv(result: &VolumeReportResult, nodes: &[NodeHit
         ));
     }
     out.push('\n');
-    out.push_str("Node\tKind\n");
+    out.push_str("Node origin in footprint (up to 128; not intersections)\tKind\n");
     for node in nodes {
-        out.push_str(&format!("{}\t{}\n", node.name, node.kind));
+        out.push_str(&format!(
+            "{}\t{}\n",
+            tsv_cell(&node.name),
+            tsv_cell(node.kind)
+        ));
     }
+    out.push_str("\nObject\tNode ID\tMethod\tMaterial JSON\tOverlap estimate\tStatus\n");
+    for impact in &result.object_impacts.objects {
+        out.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\n",
+            tsv_cell(&impact.object.name),
+            tsv_cell(&impact.object.node_id),
+            impact_method(impact.object.geometry),
+            tsv_cell(&material_label(&impact.object)),
+            impact
+                .overlap_m3
+                .map_or_else(String::new, |volume| format!("{volume:.3}")),
+            if impact.overlap_m3.is_some() {
+                "sampled overlap"
+            } else {
+                "unresolved geometry"
+            }
+        ));
+    }
+    out.push_str(&format!(
+        "Object analysis available\t{}\nScene revision\t{}\nObjects checked\t{}\nObjects omitted\t{}\nNon-geometric objects excluded\t{}\n",
+        result.object_impacts.available, result.object_impacts.scene_revision, result.object_impacts.checked_objects,
+        result.object_impacts.omitted_objects, result.object_impacts.excluded_non_geometric
+    ));
     out
 }
 
@@ -406,20 +431,136 @@ fn tsv_cell(value: &str) -> String {
     value.replace(['\t', '\r', '\n'], " ")
 }
 
+fn short_text(value: &str) -> String {
+    let mut text: String = value.chars().take(256).collect();
+    if value.chars().nth(256).is_some() {
+        text.push('\u{2026}');
+    }
+    text
+}
+
+fn impact_method(geometry: fe_renderer::scene_analysis::ObjectGeometry) -> &'static str {
+    use fe_renderer::scene_analysis::ObjectGeometry;
+    match geometry {
+        ObjectGeometry::AxisAlignedSolidBox => "Solid box / sampled terrain",
+        ObjectGeometry::ConservativeWorldBounds => "Potential intersection / world bounds",
+        ObjectGeometry::Unavailable => "Geometry unavailable",
+    }
+}
+
+fn material_label(object: &fe_renderer::scene_analysis::SceneObjectBounds) -> String {
+    if !object.material_loaded {
+        "Loading / unavailable; open properties".into()
+    } else if object.material_truncated {
+        "Material exceeds preview limit; open properties".into()
+    } else {
+        object
+            .material_json
+            .clone()
+            .unwrap_or_else(|| "Not specified".into())
+    }
+}
+
+fn render_object_impacts(
+    ui: &mut egui::Ui,
+    report: &fe_renderer::scene_analysis::ObjectImpactReport,
+    unit: &str,
+    open_node: &mut Option<String>,
+) {
+    ui.separator();
+    ui.label(egui::RichText::new("Objects in changed terrain space").strong());
+    ui.label("Combined surface within the selected footprint");
+    if !report.available {
+        ui.label("Object analysis is waiting for a current scene snapshot.");
+        return;
+    }
+    let unresolved = report
+        .objects
+        .iter()
+        .filter(|impact| impact.overlap_m3.is_none())
+        .count();
+    let overlapping = report.objects.len() - unresolved;
+    ui.label(format!(
+        "{overlapping} overlaps / candidates; {} objects checked; {unresolved} unresolved",
+        report.checked_objects
+    ));
+    ui.label(
+        egui::RichText::new(format!(
+            "Scene snapshot {} — updates up to four times per second",
+            report.scene_revision
+        ))
+        .small()
+        .color(theme::TEXT_DIM),
+    );
+    ui.label(egui::RichText::new("GLB/world bounds are conservative candidates, not mesh-solid intersections. Volumes sample the changed vertical space; surface-only contact is not measured.").small().color(theme::TEXT_DIM));
+    if report.omitted_objects > 0 {
+        ui.colored_label(
+            theme::TEXT_MUTED,
+            format!(
+                "Partial scene: {} objects exceed the report limit.",
+                report.omitted_objects
+            ),
+        );
+    }
+    if report.excluded_non_geometric > 0 {
+        ui.label(format!(
+            "{} non-geometric data/placard nodes excluded",
+            report.excluded_non_geometric
+        ));
+    }
+    egui::ScrollArea::vertical()
+        .id_salt("terrain_object_impacts")
+        .max_height(280.0)
+        .show(ui, |ui| {
+            for impact in &report.objects {
+                ui.push_id(&impact.object.node_id, |ui| {
+                    render_object_impact_row(ui, impact, unit, open_node);
+                });
+            }
+        });
+}
+
+fn render_object_impact_row(
+    ui: &mut egui::Ui,
+    impact: &fe_renderer::scene_analysis::ObjectImpact,
+    unit: &str,
+    open_node: &mut Option<String>,
+) {
+    ui.add(egui::Label::new(egui::RichText::new(&impact.object.name).strong()).truncate())
+        .on_hover_text(&impact.object.node_id);
+    ui.label(impact_method(impact.object.geometry));
+    let material = material_label(&impact.object);
+    ui.add(egui::Label::new(format!("Material: {material}")).truncate())
+        .on_hover_text(material);
+    if let Some(volume) = impact.overlap_m3 {
+        ui.label(format!("Overlap estimate: {volume:.3} {unit}\u{b3}"));
+    } else {
+        ui.label("Intersection unresolved: load usable geometry.");
+    }
+    let can_select = impact.object.bounds.is_some() && impact.object.selectable;
+    let button = egui::Button::new("Select / open properties").min_size(egui::vec2(0.0, 24.0));
+    if ui.add_enabled(can_select, button)
+        .named(ui, format_args!("Open properties for impacted object {}", impact.object.name))
+        .on_disabled_hover_text("Show and load the object before selecting it; its stored material is shown when available.")
+        .clicked()
+    {
+        *open_node = Some(impact.object.node_id.clone());
+    }
+    ui.separator();
+}
+
 // ---------------------------------------------------------------------------
 // egui body
 // ---------------------------------------------------------------------------
 
-/// The "Volume report" block (D-DV-4/OD-4), hosted below
-/// `proposal_report_panel::render_report_body` in the same renamed section
-/// (`ui_shell::right_sidebar::render_proposal_report_section`). No
-/// window/chrome here — the caller supplies `section_chrome`.
+/// Primary measured terrain and object-impact report body.
 pub(crate) fn render_volume_report_body(
     ui: &mut egui::Ui,
     ui_mgr: &mut UiManager,
     state: &VolumeReportState,
     hierarchy: &VerseManager,
     active_petal: Option<&str>,
+    open_node: &mut Option<String>,
 ) {
     ui.add_space(6.0);
     ui.separator();
@@ -479,10 +620,9 @@ pub(crate) fn render_volume_report_body(
     {
         if let Some(item) = result.items.iter().find(|item| item.id == selected) {
             ui.label(egui::RichText::new(format!("Selected {}", item.operation)).strong());
-            ui.label(format!(
-                "Material: {}",
-                item.material.as_deref().unwrap_or("Not specified")
-            ));
+            let material = item.material.as_deref().unwrap_or("Not specified");
+            ui.add(egui::Label::new(format!("Material: {}", short_text(material))).truncate())
+                .on_hover_text(material.chars().take(4096).collect::<String>());
             ui.label(
                 egui::RichText::new(format!(
                     "Fill: {:.2} {unit}\u{b3}  ·  Cut: {:.2} {unit}\u{b3}",
@@ -530,11 +670,7 @@ pub(crate) fn render_volume_report_body(
             "per-item figures overlap — totals use the combined surface",
         );
     }
-
-    let nodes = active_petal
-        .and_then(|id| hierarchy.find_petal(id))
-        .map(|petal| nodes_in_footprint(petal, &state.footprint))
-        .unwrap_or_default();
+    render_object_impacts(ui, &result.object_impacts, unit, open_node);
 
     if !result.items.is_empty() {
         ui.add_space(6.0);
@@ -543,32 +679,26 @@ pub(crate) fn render_volume_report_body(
                 .strong()
                 .color(theme::TEXT_SECTION),
         );
-        for item in &result.items {
+        for item in result.items.iter().take(128) {
             let overlap = if item.overlap_area_m2 > 0.0 {
                 format!(", overlap {:.2} {unit}\u{b2}", item.overlap_area_m2)
             } else {
                 String::new()
             };
-            ui.label(format!(
-                "{} ({}; {}): cut {:.2} {unit}\u{b3}, fill {:.2} {unit}\u{b3}{overlap}",
-                item.id,
-                item.operation,
-                item.material.as_deref().unwrap_or("Not specified"),
-                item.cut_m3,
-                item.fill_m3
-            ));
+            ui.add(
+                egui::Label::new(format!(
+                    "{} ({}; {}): cut {:.2} {unit}\u{b3}, fill {:.2} {unit}\u{b3}{overlap}",
+                    short_text(&item.id),
+                    item.operation,
+                    short_text(item.material.as_deref().unwrap_or("Not specified")),
+                    item.cut_m3,
+                    item.fill_m3
+                ))
+                .wrap(),
+            );
         }
-    }
-
-    if !nodes.is_empty() {
-        ui.add_space(6.0);
-        ui.label(
-            egui::RichText::new(format!("Nodes inside ({})", nodes.len()))
-                .strong()
-                .color(theme::TEXT_SECTION),
-        );
-        for node in &nodes {
-            ui.label(format!("{} \u{2014} {}", node.name, node.kind));
+        if result.items.len() > 128 {
+            ui.label("First 128 terrain contributions shown; full breakdown is available in TSV.");
         }
     }
 
@@ -578,6 +708,10 @@ pub(crate) fn render_volume_report_body(
         .named(ui, "Copy volume report as TSV")
         .clicked()
     {
+        let nodes = active_petal
+            .and_then(|id| hierarchy.find_petal(id))
+            .map(|petal| nodes_in_footprint(petal, &state.footprint))
+            .unwrap_or_default();
         let tsv = volume_report_to_tsv(result, &nodes);
         ui.ctx().copy_text(tsv);
         let now = ui.ctx().input(|i| i.time);
@@ -603,6 +737,7 @@ mod tests {
             items: Vec::new(),
             has_overlap: false,
             scaled: true,
+            object_impacts: Default::default(),
         }
     }
 
@@ -792,6 +927,61 @@ mod tests {
             ),
             "unbinding withdraws the report and rejects late replies"
         );
+        app.insert_resource(fe_renderer::scene_analysis::SceneAnalysisSnapshot {
+            petal_id: Some("p1".into()),
+            revision: 1,
+            ..Default::default()
+        });
+        app.world_mut().resource_mut::<PetalMapState>().terrain_json =
+            Some(serde_json::json!({"proposals":[{
+                "id":"r1", "op":"raise", "material":"clay", "delta":2.0,
+                "footprint":[[0,0],[10,0],[10,10],[0,10]]
+            }]}));
+        app.update();
+        let first_scene_id = app
+            .world()
+            .resource::<CapturedRequests>()
+            .0
+            .last()
+            .unwrap()
+            .correlation_id
+            .clone();
+        let mut scene_answer = sample_result(&first_scene_id);
+        scene_answer.object_impacts.scene_revision = 1;
+        app.world_mut().write_message(scene_answer);
+        app.update();
+        assert_eq!(shown_cut(&app), Some(12.5));
+        app.world_mut()
+            .resource_mut::<fe_renderer::scene_analysis::SceneAnalysisSnapshot>()
+            .revision = 2;
+        app.update();
+        let moved_scene_id = app
+            .world()
+            .resource::<CapturedRequests>()
+            .0
+            .last()
+            .unwrap()
+            .correlation_id
+            .clone();
+        assert_ne!(
+            first_scene_id, moved_scene_id,
+            "object change invalidates an unchanged footprint"
+        );
+        assert_eq!(shown_cut(&app), None);
+        let mut stale_scene = sample_result(&moved_scene_id);
+        stale_scene.object_impacts.scene_revision = 1;
+        app.world_mut().write_message(stale_scene);
+        app.update();
+        assert_eq!(
+            shown_cut(&app),
+            None,
+            "matching request cannot adopt old geometry"
+        );
+        let mut current_scene = sample_result(&moved_scene_id);
+        current_scene.object_impacts.scene_revision = 2;
+        app.world_mut().write_message(current_scene);
+        app.update();
+        assert_eq!(shown_cut(&app), Some(12.5));
     }
 
     #[test]
@@ -936,11 +1126,35 @@ mod tests {
                 overlap_area_m2: 5.0,
             },
         ];
-        let nodes = vec![NodeHit {
-            id: "n1".into(),
-            name: "Rock".into(),
-            kind: "asset",
-        }];
+        let nodes = vec![
+            NodeHit {
+                id: "n1".into(),
+                name: "Rock".into(),
+                kind: "asset",
+            },
+            NodeHit {
+                id: "hostile".into(),
+                name: "Rock\tA\r\nB".into(),
+                kind: "asset",
+            },
+        ];
+        result.object_impacts.available = true;
+        result
+            .object_impacts
+            .objects
+            .push(fe_renderer::scene_analysis::ObjectImpact {
+                object: fe_renderer::scene_analysis::SceneObjectBounds {
+                    node_id: "structure-1".into(),
+                    name: "Footing\tA\r\nB".into(),
+                    bounds: Some([[-1.0, 0.5, -1.0], [1.0, 1.5, 1.0]]),
+                    geometry: fe_renderer::scene_analysis::ObjectGeometry::AxisAlignedSolidBox,
+                    selectable: true,
+                    material_json: Some("{\"name\":\"concrete\"}".into()),
+                    material_loaded: true,
+                    material_truncated: false,
+                },
+                overlap_m3: Some(4.0),
+            });
 
         let tsv = volume_report_to_tsv(&result, &nodes);
         assert!(tsv.contains("Cut\t12.500"), "totals present:\n{tsv}");
@@ -954,6 +1168,17 @@ mod tests {
             );
         }
         assert!(tsv.contains("Rock\tasset"), "node row missing:\n{tsv}");
+        assert!(tsv.contains("Rock A  B\tasset") && !tsv.contains("Rock\tA"));
+        assert!(
+            tsv.contains("Footing A  B\tstructure-1\tSolid box / sampled terrain")
+                && tsv.contains("4.000\tsampled overlap")
+        );
+        result.items[0].cut_m3 = -f64::MAX;
+        result.items[0].fill_m3 = f64::MAX;
+        assert!(
+            !result.is_complete() && volume_report_to_tsv(&result, &nodes).is_empty(),
+            "derived per-item net must remain finite"
+        );
     }
 
     // --- resolve_volume_selection: proposal beats a stale sculpt draft ---

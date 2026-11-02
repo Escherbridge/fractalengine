@@ -6,6 +6,7 @@ pub mod grid;
 pub mod ingester;
 pub mod instancing;
 pub mod loader;
+pub mod scene_analysis;
 pub mod terrain_height;
 pub mod terrain_overlay;
 pub mod viewport;

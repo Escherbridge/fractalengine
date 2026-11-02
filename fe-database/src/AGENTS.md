@@ -1626,3 +1626,10 @@ the number of preceding guard statements plus one: pinned SurrealDB emits a
 NONE result for BEGIN at index zero, then each guard, SELECT and COMMIT. The
 SDK retains those indexes. Existing production-dispatcher settings journeys
 assert the selected fields, so an empty guard result cannot count as readback.
+## Scene materials
+
+`handlers::scene_materials` is a bounded local Viewer read, not RawQuery. It checks expected scope against stored
+Petal ancestry, rejects globally ambiguous hierarchy/node IDs, authorizes Viewer, selects only material/primitive
+presence under exact live ancestors, then rechecks ancestry and role. Unknown/moved/foreign uniformly fail.
+At most64 IDs and4096 UTF-8 JSON bytes per preview return; oversize remains explicitly truncated/unavailable.
+This read changes no object, operation journal or history. Full editing uses the existing typed property flow.

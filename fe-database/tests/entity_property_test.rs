@@ -658,6 +658,76 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
         DbResult::Error(_)
     ));
 
+    let material =
+        serde_json::json!({"name":"concrete", "density_kg_m3":2400, "layers":["finish", "core"]});
+    db.cmd_tx
+        .send(DbCommand::ResolveNodeScope {
+            node_id: node_id.clone(),
+        })
+        .unwrap();
+    let material_scope = match db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap() {
+        DbResult::ScopeResolved { scope: Some(scope) } => scope,
+        other => panic!("material scope: {other:?}"),
+    };
+    set_property(&db, &node_id, "material", material.clone());
+    for (target, ids, accepted) in [
+        (
+            petal_id.clone(),
+            vec![node_id.clone(), historical.clone()],
+            true,
+        ),
+        ("wrong-petal".into(), vec![node_id.clone()], false),
+        (petal_id.clone(), vec!["absent-node".into()], false),
+        (petal_id.clone(), vec![node_id.clone(); 65], false),
+    ] {
+        db.cmd_tx
+            .send(DbCommand::ReadSceneMaterials {
+                petal_id: target,
+                expected_scope: material_scope.clone(),
+                node_ids: ids,
+                correlation_id: "scene-materials-journey".into(),
+            })
+            .unwrap();
+        match db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap() {
+            DbResult::SceneMaterialsLoaded {
+                materials,
+                correlation_id,
+            } if accepted => {
+                assert_eq!(correlation_id, "scene-materials-journey");
+                assert_eq!(materials.petal_id, petal_id);
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(
+                        materials.values[0].material_json.as_deref().unwrap()
+                    )
+                    .unwrap(),
+                    material
+                );
+                assert!(!materials.values[0].truncated);
+                assert!(materials.values[1].material_json.is_none());
+            }
+            DbResult::RequestFailed { correlation_id, .. } if !accepted => {
+                assert_eq!(correlation_id, "scene-materials-journey")
+            }
+            other => panic!("material projection result: {other:?}"),
+        }
+    }
+    set_property(
+        &db,
+        &node_id,
+        "material",
+        serde_json::json!("x".repeat(4097)),
+    );
+    db.cmd_tx
+        .send(DbCommand::ReadSceneMaterials {
+            petal_id: petal_id.clone(),
+            expected_scope: material_scope,
+            node_ids: vec![node_id.clone()],
+            correlation_id: "material-preview-bound".into(),
+        })
+        .unwrap();
+    assert!(
+        matches!(db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap(), DbResult::SceneMaterialsLoaded { materials, .. } if materials.values[0].truncated && materials.values[0].material_json.is_none())
+    );
     assert!(
         hierarchy_contains_node(&db, &node_id),
         "the live node is present before delete"

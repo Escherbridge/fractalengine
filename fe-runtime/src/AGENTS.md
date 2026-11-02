@@ -789,3 +789,10 @@ The typed result echoes requested kind/id/nonce even on refusal, and its payload
 contains only Viewer-authorized stored target settings and ancestry. The GUI
 checks both outer and inner identities and the expected scope. No HTTP/MCP
 surface or API waiter can use this as a reply to an unrelated command.
+
+## Scene material projection
+
+`ReadSceneMaterials`/`SceneMaterialsLoaded` are desktop-only and have no PendingApiRequests reply family.
+Requests bind expected canonical scope, Petal and1..64 distinct IDs; dispatcher supplies local identity. Replies
+preserve bounded JSON, explicit absent/truncated states and primitive presence only. Adoption binds nonce,
+complete requested ID set and current scope. No public generic property reader or material guess is added.

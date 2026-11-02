@@ -904,6 +904,25 @@ mod tests {
         let local_before = crate::handlers::node_history::snapshot(&db, legacy_id)
             .await
             .unwrap();
+        let local_petal = crate::parse_scope(&scope_a).unwrap().petal_id.unwrap();
+        assert!(crate::handlers::scene_materials::read(
+            &db,
+            &local_petal,
+            &scope_a,
+            &[legacy_id.to_owned()],
+            local_user
+        )
+        .await
+        .is_ok());
+        assert!(crate::handlers::scene_materials::read(
+            &db,
+            &local_petal,
+            &scope_a,
+            &[legacy_id.to_owned()],
+            "did:no-material-access"
+        )
+        .await
+        .is_err());
         let local_op_count = op_log_count(&db).await;
         let local_refusals = [
             crate::handlers::entity_property::set_entity_property_as(

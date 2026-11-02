@@ -15,6 +15,7 @@ pub mod node_measurements;
 pub mod peer_registry;
 pub mod qa_debug;
 pub mod safe_id;
+pub mod scene_materials;
 pub mod screenshot;
 pub mod shared_node;
 pub mod sim_control;

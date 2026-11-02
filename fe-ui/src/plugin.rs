@@ -765,6 +765,14 @@ impl Plugin for GardenerConsolePlugin {
         // S6: the Volume report's live selection/query + latest true-figures
         // answer. See `panels/volume_report_panel.rs`.
         app.init_resource::<crate::panels::volume_report_panel::VolumeReportState>();
+        app.init_resource::<fe_renderer::scene_analysis::SceneAnalysisSnapshot>();
+        app.init_resource::<crate::scene_analysis::SceneMaterialCache>();
+        app.add_systems(
+            PostUpdate,
+            crate::scene_analysis::collect
+                .after(bevy::transform::TransformSystems::Propagate)
+                .before(crate::panels::volume_report_panel::sync_volume_report_request),
+        );
         // ui_shell_architecture_20260724 (FR-4/5/6): area-manager state resources.
         app.init_resource::<crate::ui_shell::topbar::TopbarState>();
         app.init_resource::<crate::ui_shell::left_sidebar::LeftSidebarState>();

@@ -262,6 +262,7 @@ pub struct VolumeReportResult {
     pub has_overlap: bool,
     /// Scaled indicator: true if world_scale is finite and > 0.
     pub scaled: bool,
+    pub object_impacts: crate::scene_analysis::ObjectImpactReport,
 }
 
 impl VolumeReportResult {
@@ -272,10 +273,20 @@ impl VolumeReportResult {
             .all(f64::is_finite)
             && self.step_m.is_finite()
             && self.items.iter().all(|item| {
-                [item.cut_m3, item.fill_m3, item.overlap_area_m2]
-                    .into_iter()
-                    .all(f64::is_finite)
+                [
+                    item.cut_m3,
+                    item.fill_m3,
+                    item.overlap_area_m2,
+                    item.fill_m3 - item.cut_m3,
+                ]
+                .into_iter()
+                .all(f64::is_finite)
             })
+            && self
+                .object_impacts
+                .objects
+                .iter()
+                .all(|item| item.overlap_m3.is_none_or(f64::is_finite))
     }
 
     /// Whether every selected cell is measured and every result is finite.

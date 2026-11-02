@@ -1553,6 +1553,13 @@ pub fn spawn_db_thread_shared(
                         };
                         send_result(&tx, reply);
                     }
+                    Ok(DbCommand::ReadSceneMaterials { petal_id, expected_scope, node_ids, correlation_id }) => {
+                        let reply = match handlers::scene_materials::read(&db, &petal_id, &expected_scope, &node_ids, &local_did).await {
+                            Ok(materials) => DbResult::SceneMaterialsLoaded { materials, correlation_id },
+                            Err(error) => DbResult::RequestFailed { error: format!("Read scene materials failed: {error}"), correlation_id },
+                        };
+                        send_result(&tx, reply);
+                    }
                     Ok(DbCommand::ReadNodeHistory { node_id, after_version, limit, at_version, grant, correlation_id }) => {
                         let reply = handlers::node_history::read_reply(&db,&node_id,after_version,limit,at_version,&grant,&local_did,correlation_id).await;
                         send_result(&tx, reply);

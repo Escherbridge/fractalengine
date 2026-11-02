@@ -271,3 +271,10 @@ overflow; UI and TSV consumers share this guard.
 
 Volume items preserve persisted operation and material separately from their record kind. Selected-item standalone figures and combined-surface totals are distinct; material is never inferred from a render texture.
 
+## Scene analysis report seam
+
+`scene_analysis` carries at most128 active-Petal objects with stable identity, bounded engineering-material JSON,
+full subtree world bounds and an explicit geometry method. Axis-aligned first-party solid cubes are distinct from
+conservative GLB/rotated-object bounds. `ObjectImpactReport` carries positive changed-space volume overlaps and
+unresolved geometry, checked/omitted counts and the scene revision. It does not claim arbitrary closed-mesh
+intersection, surface-only contact or exact general solid volume. Material metadata never comes from PBR textures.

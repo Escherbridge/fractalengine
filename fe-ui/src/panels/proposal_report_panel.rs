@@ -1,23 +1,4 @@
-//! FR-6 (terrain_editor_overhaul_20260718): report for the currently selected
-//! terrain proposal — real-unit extent/area/slope/bearing.
-//! ui_shell_architecture Phase 4 folded the former floating window into
-//! `ui_shell::right_sidebar::render_proposal_report_section`;
-//! `render_report_body` is the pure-egui body it calls, with calm empty-state
-//! hints replacing the old window's "just don't render" early returns.
-//! NFR-4 (reporting honesty): when no map scale is set (`world_scale` unset
-//! or `<= 0`), reports WORLD UNITS with an explicit "no map scale" chip;
-//! never fabricates meters. Mirrors the `RulerPlugin`/
-//! `fe_terrain::ruler_plugin::draw_unscaled_chip` precedent.
-//! R-4 fix (terrain_proposal_delta_viz_20261025 S6): this body no longer
-//! shows ANY cut/fill volume figure (the old `area × |delta|` approximation
-//! and its multi-region "Earthwork totals" rollup are REMOVED, not
-//! relabeled) — true cut/fill now lives exclusively in
-//! `volume_report_panel::render_volume_report_body`, hosted in the same
-//! renamed "Volume report" section (`ui_shell::right_sidebar`). What stays
-//! here is unit-geometry only: extent/area/slope/bearing. `earthwork_regions_
-//! from_terrain` is `pub(crate)` because `volume_report_panel` reuses it to
-//! resolve a selected region's footprint by id. See `panels/AGENTS.md`
-//! §terrain-tools / §volume-report.
+//! Secondary footprint geometry for a selected proposal; see panels/AGENTS.md.
 
 use bevy_egui::egui;
 
@@ -144,10 +125,6 @@ pub(crate) fn render_report_body(
         ui.add_space(4.0);
         ui.colored_label(theme::TEXT_MUTED, "no map scale — showing world units");
     }
-    // R-4: the true cut/fill/net volume lives in the Volume report block
-    // below (`volume_report_panel::render_volume_report_body`), sourced from
-    // fe-terrain's real composite integrator — never the area×|delta|
-    // approximation this body used to show.
 }
 
 /// Pure geometry report for one proposal footprint. Kept free of egui/ECS so

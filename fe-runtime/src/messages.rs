@@ -875,6 +875,13 @@ pub enum DbCommand {
         grant: crate::node_history::NodeAccessGrant,
         correlation_id: String,
     },
+    /// Desktop-only material projection, checked as the local Viewer at DB use.
+    ReadSceneMaterials {
+        petal_id: String,
+        expected_scope: String,
+        node_ids: Vec<String>,
+        correlation_id: String,
+    },
     /// Delete a field definition by ID.
     DeleteFieldDef {
         field_def_id: String,
@@ -1186,6 +1193,10 @@ pub enum DbResult {
     },
     NodeMeasurementsLoaded {
         measurements: crate::node_measurements::NodeMeasurements,
+        correlation_id: String,
+    },
+    SceneMaterialsLoaded {
+        materials: crate::scene_materials::SceneMaterials,
         correlation_id: String,
     },
     VerseCreated {

@@ -1,14 +1,109 @@
-//! Pure selected-volume report math (spec FR-6/7/8, P2): true cut/fill for a
-//! selection footprint against the shared composite surface, plus a per-item
-//! standalone breakdown with overlap detection. Bevy-free, always compiled,
-//! read-only samplers (NFR-1); every volume comes from `sculpt::cut_fill_volume`
-//! (FR-5). See `src/AGENTS.md` §volume-report.
+//! Pure selected volumes and changed-space overlaps; see src/AGENTS.md.
 
 use crate::sculpt::{
-    composite_proposed_height, cut_fill_volume, for_each_cell, prepare_composite,
-    proposed_height, EarthworkRegion, Footprint,
+    composite_proposed_height, cut_fill_volume, for_each_cell, prepare_composite, proposed_height,
+    EarthworkRegion, Footprint,
 };
 use crate::terrain_proposal::{apply_proposal_over_base, point_in_polygon, TerrainProposal};
+
+/// Sample changed terrain space against bounded object prisms; see src/AGENTS.md.
+pub fn changed_space_overlaps(
+    base: &impl Fn(f32, f32) -> Option<f32>,
+    proposals: &[TerrainProposal],
+    regions: &[EarthworkRegion],
+    selection: &Footprint,
+    step: f32,
+    world_scale: f64,
+    boxes: &[[[f32; 3]; 2]],
+) -> Vec<Option<f64>> {
+    let composite = prepare_composite(regions, base);
+    let mut overlaps: Vec<Option<f64>> = boxes
+        .iter()
+        .map(|bounds| {
+            (bounds.iter().flatten().all(|value| value.is_finite())
+                && (0..3).all(|axis| bounds[0][axis] <= bounds[1][axis]))
+            .then_some(0.0)
+        })
+        .collect();
+    let Some((min_x, min_z, max_x, max_z)) = selection.bounds() else {
+        return vec![None; boxes.len()];
+    };
+    if !step.is_finite()
+        || step <= 0.0
+        || [min_x, min_z, max_x, max_z]
+            .into_iter()
+            .any(|value| !value.is_finite())
+    {
+        return vec![None; boxes.len()];
+    }
+    let scale = crate::scale::sanitize_world_scale(world_scale);
+    let half = f64::from(step) * 0.5;
+    let mut visited = false;
+    for_each_cell(selection, step, |x, z| {
+        visited = true;
+        let original = base(x, z).filter(|value| value.is_finite());
+        let changed =
+            combined_height(base, proposals, &composite, x, z).filter(|value| value.is_finite());
+        for (bounds, overlap) in boxes.iter().zip(&mut overlaps) {
+            let width = (f64::from(x) + half)
+                .min(f64::from(max_x))
+                .min(f64::from(bounds[1][0]))
+                - (f64::from(x) - half)
+                    .max(f64::from(min_x))
+                    .max(f64::from(bounds[0][0]));
+            let depth = (f64::from(z) + half)
+                .min(f64::from(max_z))
+                .min(f64::from(bounds[1][2]))
+                - (f64::from(z) - half)
+                    .max(f64::from(min_z))
+                    .max(f64::from(bounds[0][2]));
+            if width <= 0.0 || depth <= 0.0 || overlap.is_none() {
+                continue;
+            }
+            let (Some(original), Some(changed)) = (original, changed) else {
+                *overlap = None;
+                continue;
+            };
+            let bottom = f64::from(original.min(changed)).max(f64::from(bounds[0][1]));
+            let top = f64::from(original.max(changed)).min(f64::from(bounds[1][1]));
+            let contribution = width * depth * (top - bottom).max(0.0) / scale.powi(3);
+            if let Some(total) = overlap {
+                *total += contribution;
+                if !total.is_finite() {
+                    *overlap = None;
+                }
+            }
+        }
+    });
+    if visited {
+        overlaps
+    } else {
+        vec![None; boxes.len()]
+    }
+}
+
+fn combined_height(
+    base: &impl Fn(f32, f32) -> Option<f32>,
+    proposals: &[TerrainProposal],
+    regions: &[crate::sculpt::CompositeRegion],
+    x: f32,
+    z: f32,
+) -> Option<f32> {
+    let mut height = base(x, z)?;
+    for proposal in proposals {
+        if point_in_polygon([x, z], &proposal.footprint) {
+            let current = height;
+            if let Some(next) = apply_proposal_over_base(&|_, _| Some(current), proposal, &[[x, z]])
+                .into_iter()
+                .next()
+                .flatten()
+            {
+                height = next;
+            }
+        }
+    }
+    Some(composite_proposed_height(regions, height, x, z))
+}
 
 /// Which record kind a [`VolumeItem`] came from (fe-ui/S5 label proposals and
 /// baked regions differently; see `fe-renderer::terrain_overlay::VolumeItem::kind`).
@@ -111,22 +206,7 @@ pub fn selection_volume_report(
     };
 
     // -- composite total: one combined surface, record order (see doc above) --
-    let composite_proposed = |x: f32, z: f32| -> Option<f32> {
-        let mut h = base(x, z)?;
-        for p in proposals {
-            if point_in_polygon([x, z], &p.footprint) {
-                let current = h;
-                if let Some(next) = apply_proposal_over_base(&|_, _| Some(current), p, &[[x, z]])
-                    .into_iter()
-                    .next()
-                    .flatten()
-                {
-                    h = next;
-                }
-            }
-        }
-        Some(composite_proposed_height(&composite, h, x, z))
-    };
+    let composite_proposed = |x: f32, z: f32| combined_height(base, proposals, &composite, x, z);
     let total = cut_fill_volume(base, &composite_proposed, selection, step, world_scale);
     let mut expected_samples = 0;
     let mut sampled_pairs = 0;
@@ -348,7 +428,11 @@ mod tests {
         let selection = square([0.0, 0.0], [5.0, 10.0]);
         let report = selection_volume_report(&base, &[], &[region], &selection, 0.25, 1.0);
 
-        assert!((report.area_m2 - 50.0).abs() / 50.0 < 0.02, "area {}", report.area_m2);
+        assert!(
+            (report.area_m2 - 50.0).abs() / 50.0 < 0.02,
+            "area {}",
+            report.area_m2
+        );
         assert_eq!(report.items.len(), 1);
         assert!(
             (report.items[0].fill_m3 - 100.0).abs() / 100.0 < 0.03,
@@ -367,13 +451,16 @@ mod tests {
         let base = |_x: f32, _z: f32| Some(0.0);
         let selection = square([0.0, 0.0], [10.0, 10.0]);
         let proposal = raise_proposal("p1", rect_verts([0.0, 0.0], [10.0, 10.0]), 2.0);
-        let report =
-            selection_volume_report(&base, &[proposal], &[], &selection, 0.25, f64::NAN);
+        let report = selection_volume_report(&base, &[proposal], &[], &selection, 0.25, f64::NAN);
 
         assert!(!report.scaled, "bad scale must not claim meters");
         assert!(!report.items[0].cut_m3.is_nan() && !report.items[0].fill_m3.is_nan());
         // scale sanitizes to 1.0 -> raw scene units: 100 area * 2 rise = 200.
-        assert!((report.fill_m3 - 200.0).abs() / 200.0 < 0.03, "got {}", report.fill_m3);
+        assert!(
+            (report.fill_m3 - 200.0).abs() / 200.0 < 0.03,
+            "got {}",
+            report.fill_m3
+        );
     }
 
     #[test]
@@ -394,7 +481,10 @@ mod tests {
             disjoint.fill_m3
         );
         assert!((item_cut_sum - disjoint.cut_m3).abs() < 1.0);
-        assert!(!disjoint.overlap, "disjoint footprints must not flag overlap");
+        assert!(
+            !disjoint.overlap,
+            "disjoint footprints must not flag overlap"
+        );
         assert!(disjoint.items.iter().all(|i| i.overlap_area_m2 == 0.0));
 
         // Overlapping: both proposals cover the same 10x10 region.
@@ -423,8 +513,16 @@ mod tests {
         let report = selection_volume_report(&base, &[], &[region], &selection, 0.25, 0.1);
 
         assert!(report.scaled);
-        assert!((report.area_m2 - 10_000.0).abs() / 10_000.0 < 0.01, "area {}", report.area_m2);
-        assert!(report.cut_m3.abs() < 1.0, "flat level should have no cut, got {}", report.cut_m3);
+        assert!(
+            (report.area_m2 - 10_000.0).abs() / 10_000.0 < 0.01,
+            "area {}",
+            report.area_m2
+        );
+        assert!(
+            report.cut_m3.abs() < 1.0,
+            "flat level should have no cut, got {}",
+            report.cut_m3
+        );
         assert!(
             (report.fill_m3 - 200_000.0).abs() / 200_000.0 < 0.02,
             "fill {} not within 2% of analytic 200000",
@@ -432,5 +530,69 @@ mod tests {
         );
         assert!((report.net_m3 - report.fill_m3).abs() < 1e-6);
         assert!((report.items[0].fill_m3 - report.fill_m3).abs() < 1.0);
+        let raised = EarthworkRegion {
+            id: "raised".into(),
+            op: SculptOp::Raise,
+            footprint: rect_verts([-5.0, -5.0], [5.0, 5.0]),
+            material: "clay".into(),
+            target_height: None,
+            delta: Some(2.0),
+        };
+        let footprint = square([-5.0, -5.0], [5.0, 5.0]);
+        let boxes = [
+            [[-1.0, 0.5, -1.0], [1.0, 1.5, 1.0]],
+            [[-1.0, 3.0, -1.0], [1.0, 4.0, 1.0]],
+            [[4.0, 0.5, -1.0], [7.0, 1.5, 1.0]],
+            [[20.0, 0.5, -1.0], [22.0, 1.5, 1.0]],
+            [[f32::NAN, 0.5, -1.0], [1.0, 1.5, 1.0]],
+        ];
+        let overlaps = changed_space_overlaps(
+            &base,
+            &[],
+            std::slice::from_ref(&raised),
+            &footprint,
+            10.0 / 128.0,
+            1.0,
+            &boxes,
+        );
+        for (actual, expected) in overlaps[..4].iter().zip([4.0, 0.0, 2.0, 0.0]) {
+            assert!(
+                (actual.unwrap() - expected).abs() < 1e-9,
+                "changed-space overlap {actual:?} versus {expected}"
+            );
+        }
+        assert!(overlaps[4].is_none());
+        assert!(changed_space_overlaps(
+            &|_, _| None,
+            &[],
+            std::slice::from_ref(&raised),
+            &footprint,
+            10.0 / 128.0,
+            1.0,
+            &boxes
+        )[0]
+        .is_none());
+        let lower = EarthworkRegion {
+            op: SculptOp::Lower,
+            delta: Some(1.0),
+            ..raised.clone()
+        };
+        let buried = [[[-1.0, -0.75, -1.0], [1.0, -0.25, 1.0]]];
+        assert!(
+            (changed_space_overlaps(&base, &[], &[lower], &footprint, 10.0 / 128.0, 1.0, &buried)
+                [0]
+            .unwrap()
+                - 2.0)
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            (changed_space_overlaps(&base, &[], &[raised], &footprint, 10.0 / 128.0, 0.5, &boxes)
+                [0]
+            .unwrap()
+                - 32.0)
+                .abs()
+                < 1e-9
+        );
     }
 }

@@ -343,16 +343,31 @@ pub fn render_right_sidebar(
             proposal_state,
             petal_map.world_scale,
         ),
-        Some(RightSidebarSection::ProposalReport) => render_proposal_report_section(
-            ctx,
-            state,
-            proposal_state,
-            petal_map.world_scale,
-            ui_mgr,
-            hierarchy,
-            nav.active_petal_id.as_deref(),
-            volume_report,
-        ),
+        Some(RightSidebarSection::ProposalReport) => {
+            let open_node = render_proposal_report_section(
+                ctx,
+                state,
+                proposal_state,
+                petal_map.world_scale,
+                ui_mgr,
+                hierarchy,
+                nav.active_petal_id.as_deref(),
+                volume_report,
+                local_role.role.is_some_and(|role| role.can_view()),
+            );
+            if let Some(node_id) = open_node.filter(|node_id| {
+                crate::visibility::pickable(node_id, nav, visibility)
+                    && nav
+                        .active_petal_id
+                        .as_deref()
+                        .and_then(|id| hierarchy.find_petal(id))
+                        .is_some_and(|petal| petal.nodes.iter().any(|node| &node.id == node_id))
+            }) {
+                node_mgr.pending_sidebar_select = Some(node_id);
+                inspector_form.active_tab = crate::plugin::InspectorTab::Properties;
+                state.reveal(RightSidebarSection::Inspector);
+            }
+        }
         Some(RightSidebarSection::Settings) => render_settings_section(
             ctx,
             state,
@@ -555,16 +570,7 @@ fn render_terrain_tools_section(
     });
 }
 
-/// Proposal/Volume-report section — real-unit extent/area/slope/bearing for
-/// the selected terrain proposal (moved verbatim, Phase 4/FR-9, from the
-/// retired `proposal_report_panel::proposal_report_panel` floating window),
-/// PLUS the true cut/fill "Volume report" block (D-DV-4/OD-4,
-/// terrain_proposal_delta_viz_20261025 S6, R-4). `render_report_body` no
-/// longer computes or shows any volume figure — that now lives exclusively
-/// in `volume_report_panel::render_volume_report_body`, which this section
-/// hosts right below it. Both bodies supply their own calm empty-state hints
-/// in place of the old window's "just don't render" early returns
-/// (never-blank).
+/// Measured terrain/material/object report with optional footprint geometry.
 fn render_proposal_report_section(
     ctx: &egui::Context,
     state: &mut RightSidebarState,
@@ -574,14 +580,21 @@ fn render_proposal_report_section(
     hierarchy: &VerseManager,
     active_petal: Option<&str>,
     volume_report: &VolumeReportState,
-) {
+    can_view: bool,
+) -> Option<String> {
+    let mut open_node = None;
     section_chrome(ctx, state, RightSidebarSection::ProposalReport, |ui| {
+        if !can_view {
+            ui.label("Viewer access to this Petal is required to read its report.");
+            return;
+        }
         volume_report_panel::render_volume_report_body(
             ui,
             ui_mgr,
             volume_report,
             hierarchy,
             active_petal,
+            &mut open_node,
         );
         if proposal_state.selected.as_ref().is_some_and(|selected| {
             proposal_state
@@ -594,6 +607,7 @@ fn render_proposal_report_section(
             });
         }
     });
+    open_node
 }
 
 /// Settings section (FR-1, D-A10) — the former `ActiveDialog::Settings` floating

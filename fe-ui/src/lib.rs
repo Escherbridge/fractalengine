@@ -21,6 +21,7 @@ pub mod path_ops;
 pub mod plugin;
 pub mod portal;
 pub mod role_chip;
+pub(crate) mod scene_analysis;
 pub mod sculpt_cursor;
 pub mod settings;
 pub mod terrain_map;

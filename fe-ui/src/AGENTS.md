@@ -1320,3 +1320,20 @@ opaque RGB bytes. Absent entries use the hierarchy-kind default. Model types
 live in settings.rs; temporary drafts and drawing live under tree_appearance.
 These are local display preferences, not synced scene properties. Existing
 settings debounce, restart format and QA-root isolation own persistence.
+## Terrain object impacts
+
+`scene_analysis::collect` runs after transform propagation, only while a volume selection exists, at most four
+samples per second. It considers128 active-Petal tree entries; each physical subtree has a4096-entity traversal
+budget. Global bounds use the existing gimbal helper after finite-data checks. Missing/unloaded/nonresident,
+degenerate or over-budget geometry is unresolved; known assetless non-primitive placards are excluded. Hidden
+objects remain physical candidates but cannot be selected through the report until visible. Actual resident
+`PrimitiveNode` cubes with axis-aligned transforms use the solid-box method; a GLB carrying a primitive property
+cannot acquire that label. Other shapes/rotations remain conservative bounds. Names are bounded to256 characters.
+
+The material-only cache holds only current snapshot targets. A desktop-only64-ID projection binds the expected
+canonical scope and current Petal, and the DB authorizes the actual local Viewer before and after reading.
+Responses require the current nonce, scope, Petal and exact requested ID set. Scope change/revocation clears
+pending state; old replies cannot hydrate it. Material/primitive changes invalidate the projection, while identical
+property readbacks and transform-only commits do not cause needless material queries. Missing material is distinct
+from unavailable or over4096-byte material; raw JSON type is retained in bounded previews. Requests use a monotonic
+30-second deadline and bounded retry. No whole-property-bag cache or unscoped SQL is introduced.

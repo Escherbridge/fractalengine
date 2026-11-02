@@ -2427,10 +2427,12 @@ fn answer_volume_report_requests(
     mut requests: MessageReader<fe_renderer::terrain_overlay::VolumeReportRequest>,
     active: Res<ActivePetalTerrain>,
     height_field: Option<Res<TerrainHeightField>>,
+    scene: Option<Res<fe_renderer::scene_analysis::SceneAnalysisSnapshot>>,
     mut results: MessageWriter<fe_renderer::terrain_overlay::VolumeReportResult>,
     mut retained: Local<RetainedVolumeRequest>,
 ) {
     let mut dirty = retained.revision != Some(active.revision)
+        || scene.as_ref().is_some_and(|snapshot| snapshot.is_changed())
         || height_field
             .as_ref()
             .is_some_and(|field| field.is_changed());
@@ -2485,11 +2487,59 @@ fn answer_volume_report_requests(
         world_scale,
     );
 
-    // Seam mapping (fe-renderer's `VolumeItem.kind` has no separate
-    // record-kind + op slot, unlike `volume_report::VolumeItem`): a plain
-    // proposal reports its op tag (e.g. "raise"); a baked region reports
-    // the record kind "earthwork_region" (its op is a bake detail, not
-    // identity). See `src/AGENTS.md` §volume-report.
+    // Match scene geometry to this selected combined terrain surface.
+    let mut object_impacts = fe_renderer::scene_analysis::ObjectImpactReport::default();
+    object_impacts.scene_revision = scene.as_ref().map_or(0, |scene| scene.revision);
+    if let Some(scene) = scene
+        .as_ref()
+        .filter(|scene| scene.petal_id.as_deref() == Some(request.petal_id.as_str()))
+    {
+        object_impacts.scene_revision = scene.revision;
+        object_impacts.omitted_objects = scene.omitted_objects
+            + scene
+                .objects
+                .len()
+                .saturating_sub(fe_renderer::scene_analysis::SCENE_OBJECT_LIMIT);
+        object_impacts.excluded_non_geometric = scene.excluded_non_geometric;
+        object_impacts.available =
+            report.expected_samples > 0 && report.sampled_pairs == report.expected_samples;
+        if object_impacts.available {
+            let objects: Vec<_> = scene
+                .objects
+                .iter()
+                .take(fe_renderer::scene_analysis::SCENE_OBJECT_LIMIT)
+                .collect();
+            let boxes: Vec<_> = objects.iter().filter_map(|object| object.bounds).collect();
+            let overlaps = crate::volume_report::changed_space_overlaps(
+                &base,
+                &proposals,
+                &regions,
+                &selection,
+                step,
+                world_scale,
+                &boxes,
+            );
+            let mut overlaps = overlaps.into_iter();
+            for object in objects {
+                let overlap = if object.bounds.is_some() {
+                    overlaps.next().flatten()
+                } else {
+                    None
+                };
+                if overlap.is_some() {
+                    object_impacts.checked_objects += 1;
+                }
+                if overlap.is_none_or(|volume| volume > 0.0) {
+                    object_impacts
+                        .objects
+                        .push(fe_renderer::scene_analysis::ObjectImpact {
+                            object: object.clone(),
+                            overlap_m3: overlap,
+                        });
+                }
+            }
+        }
+    }
     let items = report
         .items
         .into_iter()
@@ -2520,6 +2570,7 @@ fn answer_volume_report_requests(
         items,
         has_overlap: report.overlap,
         scaled: report.scaled,
+        object_impacts,
     });
 }
 
