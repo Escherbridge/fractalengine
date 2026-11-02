@@ -189,3 +189,18 @@ existing workspace packages and their two lock edges; it also corrects condition
 confirmed-clear credential copy and excludes submitted invite_string from tracing.
 Those narrow root changes await separate review. The preliminary compile used the
 wrong profile and was interrupted; no success or test evidence is inferred from it.
+
+Independent review approved462f9a70's two existing-version dependency edges,
+conditional reset labels and invite tracing exclusion. Configured production
+compile3 then succeeded in2m27s without warnings through checked stamp DBb1ff72df.
+No test suite or new-stage live acceptance was run. Catalog followup3b9e2aca,
+nowmain2c713add, passed separate source review at audit07852fad:142families,
+1300IDs, all1183prior retained,1286mandatory,49MCP/103REST. Final fingerprint
+remains null and execution false; stamp/terminal-close reconciliation is pending.
+
+Source investigation found QA-0050: the current scoped-invite Join path returns
+VerseJoined without importing a Verse, role or namespace. Independent exploration
+also finds no cold secretless read-capability import/peer bootstrap on the ordinary
+open path. This is mandatory collaboration functionality work, with no runtime
+exploit or successful join claimed. Source transport/authority planning and actual
+two-owned-app acceptance remain required before FULL coverage.
