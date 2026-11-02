@@ -492,45 +492,7 @@ pub async fn place_asset_core(
     rotation: [f32; 3],
     scale: [f32; 3],
 ) -> Result<PlacedAsset, String> {
-    let reach = crate::assets::asset_reach(state, claims, &[asset_id.to_string()]).await;
-    if reach == crate::assets::AssetReach::Foreign {
-        tracing::warn!(
-            asset_id,
-            petal_id,
-            "place_asset refused: asset referenced only outside the caller's scope"
-        );
-        return Err(UNKNOWN_ASSET.to_string());
-    }
-    // CDL-SPEC10 A4 §device-ingest: a device-payload asset (declared-MIME
-    // opaque bytes, R5) protects the renderer by never becoming a `SceneRoot`
-    // — refused here, the one place both REST `create_node` and MCP
-    // `place_asset` funnel through, rather than duplicated at each caller.
-    let asset_row = crate::gis::run_select(
-        state,
-        "SELECT content_type FROM asset WHERE asset_id = $aid LIMIT 1",
-        vec![("aid".to_string(), serde_json::json!(asset_id))],
-    )
-    .await
-    .and_then(|rows| rows.first().cloned());
-    // A missing row (or a failed lookup) answers exactly like a foreign id: naming
-    // "not a GLB" here would tell a caller the id does not exist (existence oracle).
-    let Some(asset_row) = asset_row else {
-        tracing::warn!(asset_id, petal_id, "place_asset refused: no such asset");
-        return Err(UNKNOWN_ASSET.to_string());
-    };
-    let content_type = asset_row
-        .get("content_type")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-    if content_type.as_deref() != Some(GLB_CONTENT_TYPE) {
-        tracing::warn!(
-            asset_id,
-            petal_id,
-            content_type = ?content_type,
-            "place_asset refused: asset is not a GLB"
-        );
-        return Err(NOT_A_GLB_ASSET.to_string());
-    }
+    validate_scene_asset(state, claims, asset_id).await?;
     let correlation_id = ulid::Ulid::new().to_string();
     let cmd = DbCommand::CreateNodeWithAsset {
         petal_id: petal_id.to_string(),
@@ -775,4 +737,50 @@ mod tests {
         );
         assert_eq!(decode_base64_capped(&encoded, 64).map(|b| b.len()), Ok(40));
     }
+}
+
+/// Shared reach and GLB gate for ordinary object creation and placement.
+pub(crate) async fn validate_scene_asset(
+    state: &ApiState,
+    claims: &ApiClaims,
+    asset_id: &str,
+) -> Result<(), String> {
+    let reach = crate::assets::asset_reach(state, claims, &[asset_id.to_string()]).await;
+    if reach == crate::assets::AssetReach::Foreign {
+        tracing::warn!(
+            asset_id,
+            "place_asset refused: asset referenced only outside the caller's scope"
+        );
+        return Err(UNKNOWN_ASSET.to_string());
+    }
+    // CDL-SPEC10 A4 §device-ingest: a device-payload asset (declared-MIME
+    // opaque bytes, R5) protects the renderer by never becoming a `SceneRoot`
+    // — refused here, the one place both REST `create_node` and MCP
+    // `place_asset` funnel through, rather than duplicated at each caller.
+    let asset_row = crate::gis::run_select(
+        state,
+        "SELECT content_type FROM asset WHERE asset_id = $aid LIMIT 1",
+        vec![("aid".to_string(), serde_json::json!(asset_id))],
+    )
+    .await
+    .and_then(|rows| rows.first().cloned());
+    // A missing row (or a failed lookup) answers exactly like a foreign id: naming
+    // "not a GLB" here would tell a caller the id does not exist (existence oracle).
+    let Some(asset_row) = asset_row else {
+        tracing::warn!(asset_id, "place_asset refused: no such asset");
+        return Err(UNKNOWN_ASSET.to_string());
+    };
+    let content_type = asset_row
+        .get("content_type")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    if content_type.as_deref() != Some(GLB_CONTENT_TYPE) {
+        tracing::warn!(
+            asset_id,
+            content_type = ?content_type,
+            "place_asset refused: asset is not a GLB"
+        );
+        return Err(NOT_A_GLB_ASSET.to_string());
+    }
+    Ok(())
 }

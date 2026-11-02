@@ -25,6 +25,7 @@ pub mod input;
 pub mod iot;
 pub mod limits;
 pub mod mcp;
+pub mod node_history;
 pub mod operator_gate;
 pub mod property_schema;
 pub mod qa_debug;

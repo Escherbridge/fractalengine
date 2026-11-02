@@ -744,3 +744,17 @@ callers must continue to avoid logging secrets at their source.
 ## Correlated node properties
 
 Set/Get/DeleteNodeProperty and their three typed replies carry optional correlation IDs. GUI requests use None; every API origin, including background tracking writes with a dropped receiver, uses a fresh ID. The existing reply-family hub delivers only an exact correlation match and consumes closed waiters without shifting a reply. Database failures reuse correlated_failure and RequestFailed. This prevents both lost GUI-filtered acknowledgments and unrelated property results satisfying an API waiter.
+
+## §ordinary-object-history
+
+CreateObject/CommitNodeMutation reply NodeMutationCommitted; ReadNodeHistory replies
+NodeHistoryLoaded or NodeStateAtVersionLoaded according to at_version. SetFieldSchema
+uses QueryResult. All use RequestFailed on refusal and echo request IDs exactly.
+Typed snapshot/receipt/history DTOs live in node_history.rs. Historical preview
+results are distinct from current-state materializations and never apply to the
+live scene by themselves.
+CreateNode/NodeCreated now also participate in correlation extraction. The GUI-only NodeMaterialized birth
+for CreateObject has its own reply family with no pending command and a fresh ID: they still reach GUI consumers but
+cannot claim another request's pending waiter. The dedicated committed receipt is
+separate. NodeMutation is a bounded operation vocabulary; full transforms use Euler
+XYZ radians. History versions are per object and independent of transform edit_seq.

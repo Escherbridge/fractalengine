@@ -729,6 +729,8 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
         .await?
         .check()?;
     Repo::<NodeLog>::apply_schema(db).await?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_node_log_version ON TABLE node_log FIELDS node_id, row_version UNIQUE")
+        .await?.check()?;
     Repo::<IotReading>::apply_schema(db).await?;
     Repo::<DeviceFormat>::apply_schema(db).await?;
     Repo::<DevicePayload>::apply_schema(db).await?;

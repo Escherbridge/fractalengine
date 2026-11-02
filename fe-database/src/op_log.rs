@@ -507,6 +507,160 @@ mod tests {
         .expect_err("a caller binding may not shadow the log entry");
         assert!(refused.to_string().contains("reserved"), "{refused}");
         assert_eq!(op_log_count(&db).await, 0);
+
+        crate::schema::apply_all(&db).await.expect("journal schema");
+        db.query("CREATE verse CONTENT {verse_id:'history-verse',name:'v',created_by:'did:qa',created_at:'2026-11-01'};
+            CREATE fractal CONTENT {fractal_id:'history-fractal',verse_id:'history-verse',owner_did:'did:qa',name:'f',created_at:'2026-11-01'};
+            CREATE petal CONTENT {petal_id:'history-petal',fractal_id:'history-fractal',name:'p',node_id:'p',created_at:'2026-11-01'};")
+            .await.unwrap().check().unwrap();
+        let (node_id, _) = crate::handlers::node_history::create_object(
+            &db,
+            "history-petal",
+            "A",
+            None,
+            [0.0; 3],
+            vec![0.0; 3],
+            vec![1.0; 3],
+            serde_json::Map::new(),
+            "did:qa",
+        )
+        .await
+        .unwrap();
+        crate::handlers::entity_property::set_entity_property_as(
+            &db,
+            &node_id,
+            "calibration",
+            &serde_json::json!({"gain":2}),
+            "did:qa",
+        )
+        .await
+        .unwrap();
+        crate::handlers::transform::update_node_transform_as(
+            &db,
+            &node_id,
+            [3.0, 0.0, 4.0],
+            [0.0; 3],
+            [1.0; 3],
+            "did:qa",
+        )
+        .await
+        .unwrap();
+        crate::handlers::entity_property::set_entity_property_as(
+            &db,
+            &node_id,
+            "calibration",
+            &serde_json::json!({"gain":3}),
+            "did:qa",
+        )
+        .await
+        .unwrap();
+        crate::handlers::transform::update_node_transform_as(
+            &db,
+            &node_id,
+            [6.0, 0.0, 8.0],
+            [0.0; 3],
+            [1.0; 3],
+            "did:qa",
+        )
+        .await
+        .unwrap();
+        let before = crate::handlers::node_history::committed_receipt(&db, &node_id)
+            .await
+            .unwrap();
+        assert_eq!(before["history_version"], 5);
+        let before_count = op_log_count(&db).await;
+        db.query("DEFINE EVENT fail_journal ON TABLE node_log WHEN $event = 'CREATE' AND $after.row_version = 6 THEN { THROW 'induced journal failure'; }")
+            .await.unwrap().check().unwrap();
+        let error = crate::handlers::entity_property::set_entity_property_as(
+            &db,
+            &node_id,
+            "calibration",
+            &serde_json::json!({"gain":99}),
+            "did:qa",
+        )
+        .await
+        .expect_err("journal insert must roll back mutation");
+        assert!(
+            error.to_string().contains("induced journal failure"),
+            "{error}"
+        );
+        assert_eq!(
+            crate::handlers::node_history::committed_receipt(&db, &node_id)
+                .await
+                .unwrap(),
+            before
+        );
+        assert_eq!(
+            op_log_count(&db).await,
+            before_count,
+            "journal failure rolls back intention too"
+        );
+        let page = crate::handlers::node_history::read(&db, &node_id, 0, 200, None)
+            .await
+            .unwrap();
+        assert_eq!(page["entries"].as_array().unwrap().len(), 5);
+        assert_eq!(page["current_version"], 5);
+        let replay = crate::handlers::node_history::read(&db, &node_id, 0, 1, Some(3))
+            .await
+            .unwrap();
+        assert_eq!(replay["availability"], "available");
+        assert_eq!(replay["state"]["properties"]["calibration"]["gain"], 2);
+        assert_eq!(
+            replay["state"]["position"],
+            serde_json::json!([3.0, 0.0, 4.0])
+        );
+        db.query("REMOVE EVENT fail_journal ON TABLE node_log")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        crate::handlers::node_log::append_node_log(
+            &db,
+            &node_id,
+            "unsupported_legacy_write",
+            "did:qa",
+            &serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+        let gap = crate::handlers::node_history::read(&db, &node_id, 0, 1, Some(6))
+            .await
+            .unwrap();
+        assert_eq!(gap["availability"], "incomplete_interval");
+        assert!(gap.get("state").is_none());
+        crate::handlers::entity_property::set_entity_property_as(
+            &db,
+            &node_id,
+            "calibration",
+            &serde_json::json!({"gain":4}),
+            "did:qa",
+        )
+        .await
+        .unwrap();
+        let restarted_epoch = crate::handlers::node_history::read(&db, &node_id, 0, 1, Some(7))
+            .await
+            .unwrap();
+        assert_eq!(restarted_epoch["availability"], "available");
+        assert_eq!(restarted_epoch["baseline_version"], 7);
+        let legacy_id = "legacy-history-node";
+        db.query("CREATE node CONTENT {node_id:$id,petal_id:'history-petal',display_name:'legacy',position:<geometry<point>>[0.0,0.0],elevation:0.0,rotation:[0.0,0.0,0.0],scale:[1.0,1.0,1.0],interactive:false,created_at:'2026-11-01',properties:{}};
+            CREATE node_log CONTENT {log_id:'legacy-fact-99',node_id:$id,hlc_timestamp:1,op:'legacy_partial',source_did:'did:qa',payload:{},row_version:99,created_at:'2026-11-01'}")
+            .bind(("id",legacy_id)).await.unwrap().check().unwrap();
+        crate::handlers::entity_property::set_entity_property_as(
+            &db,
+            legacy_id,
+            "calibration",
+            &serde_json::json!({"gain":2}),
+            "did:qa",
+        )
+        .await
+        .unwrap();
+        let unavailable = crate::handlers::node_history::read(&db, legacy_id, 0, 1, Some(99))
+            .await
+            .unwrap();
+        assert_eq!(unavailable["coverage_start_version"], 100);
+        assert_eq!(unavailable["availability"], "before_coverage");
+        assert!(unavailable.get("state").is_none());
     }
 
     /// A fixed fake clock source for the override tests (a real test would

@@ -264,6 +264,32 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
         "f64 anchors must round-trip exactly"
     );
     assert_eq!(props["dimension.closed"], serde_json::json!(false));
+    let exact_integer = 9_007_199_254_740_993_i64;
+    set_property(
+        &db,
+        &node_id,
+        "precision",
+        serde_json::json!({"counter":exact_integer}),
+    );
+    assert_eq!(
+        get_properties(&db, &node_id)["precision"]["counter"].as_i64(),
+        Some(exact_integer)
+    );
+    db.cmd_tx
+        .send(DbCommand::SetNodeProperty {
+            node_id: node_id.clone(),
+            key: "precision".into(),
+            value: serde_json::json!({"counter":u64::MAX}),
+            correlation_id: Some("overflow-property".into()),
+        })
+        .unwrap();
+    assert!(
+        matches!(db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap(),DbResult::RequestFailed {error,..} if error.contains("signed 64-bit"))
+    );
+    assert_eq!(
+        get_properties(&db, &node_id)["precision"]["counter"].as_i64(),
+        Some(exact_integer)
+    );
 
     db.cmd_tx
         .send(DbCommand::ResolveNodeScope {
@@ -276,7 +302,7 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
     };
     db.cmd_tx
         .send(DbCommand::CreateFieldDef {
-            scope,
+            scope: scope.clone(),
             entity_type: "node".into(),
             key: "dimension.anchors".into(),
             value_type: "array".into(),
@@ -287,6 +313,50 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
         DbResult::FieldDefCreated { field_def_id, .. } => field_def_id,
         other => panic!("expected definition, got {other:?}"),
     };
+    db.cmd_tx
+        .send(DbCommand::CreateFieldDef {
+            scope: scope.clone(),
+            entity_type: "node".into(),
+            key: "precision".into(),
+            value_type: "object".into(),
+            default_val: Some(serde_json::json!({"counter":exact_integer})),
+        })
+        .unwrap();
+    assert!(matches!(
+        db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap(),
+        DbResult::FieldDefCreated { .. }
+    ));
+    db.cmd_tx
+        .send(DbCommand::ListFieldDefs {
+            scope: scope.clone(),
+        })
+        .unwrap();
+    match db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap() {
+        DbResult::FieldDefsListed { field_defs, .. } => assert_eq!(
+            field_defs
+                .iter()
+                .find(|f| f.key == "precision")
+                .unwrap()
+                .default_val
+                .as_ref()
+                .unwrap()["counter"]
+                .as_i64(),
+            Some(exact_integer)
+        ),
+        other => panic!("precision default readback: {other:?}"),
+    }
+    db.cmd_tx
+        .send(DbCommand::CreateFieldDef {
+            scope,
+            entity_type: "node".into(),
+            key: "overflow".into(),
+            value_type: "object".into(),
+            default_val: Some(serde_json::json!({"counter":u64::MAX})),
+        })
+        .unwrap();
+    assert!(
+        matches!(db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap(),DbResult::Error(error) if error.contains("signed 64-bit"))
+    );
     let descriptor = serde_json::json!({"version":1, "schema":{
         "type":"array", "minItems":2, "items":{"type":"array", "minItems":3,
             "maxItems":3, "items":{"type":"number"}}
@@ -366,6 +436,88 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
         db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap(),
         DbResult::Error(_)
     ));
+
+    let historical = create_node(&db, &petal_id, "Historical calibration", [0.0; 3]);
+    let calibration_v1 = serde_json::json!({"gain":2,"axes":["x","z"],"sensor":{"serial":"ALPHA-01","range":[-40,85]}});
+    set_property(&db, &historical, "calibration", calibration_v1.clone());
+    for (position, expected_version) in [([3.0, 0.0, 4.0], 3), ([6.0, 0.0, 8.0], 5)] {
+        db.cmd_tx
+            .send(DbCommand::CommitNodeMutation {
+                node_id: historical.clone(),
+                actor_did: "did:qa-editor".into(),
+                correlation_id: Some(format!("move-{expected_version}")),
+                mutation: fe_runtime::messages::NodeMutation::FullTransform {
+                    position,
+                    rotation: [0.0; 3],
+                    scale: [1.0; 3],
+                },
+            })
+            .unwrap();
+        match db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap() {
+            DbResult::NodeMutationCommitted { receipt, .. } => {
+                let data = [serde_json::to_value(receipt).unwrap()];
+                assert_eq!(data[0]["history_version"], expected_version);
+                assert_eq!(data[0]["state"]["position"], serde_json::json!(position));
+            }
+            other => panic!("committed transform: {other:?}"),
+        }
+        if expected_version == 3 {
+            let mut updated = calibration_v1.clone();
+            updated["gain"] = serde_json::json!(3);
+            set_property(&db, &historical, "calibration", updated);
+        }
+    }
+    for (after, expected, next) in [(1, vec![2, 3], Some(3)), (3, vec![4, 5], None)] {
+        db.cmd_tx
+            .send(DbCommand::ReadNodeHistory {
+                node_id: historical.clone(),
+                after_version: after,
+                limit: 2,
+                at_version: None,
+                correlation_id: Some(format!("page-{after}")),
+            })
+            .unwrap();
+        match db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap() {
+            DbResult::NodeHistoryLoaded { page, .. } => {
+                let data = [serde_json::to_value(page).unwrap()];
+                let versions: Vec<i64> = data[0]["entries"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|r| r["row_version"].as_i64().unwrap())
+                    .collect();
+                assert_eq!(versions, expected);
+                assert_eq!(data[0]["next_after_version"].as_i64(), next);
+                assert_eq!(data[0]["coverage_start_version"], 1);
+                assert_eq!(data[0]["current_state_verified"], true);
+            }
+            other => panic!("history page: {other:?}"),
+        }
+    }
+    for (version, gain, position) in [
+        (3, 2, [3.0, 0.0, 4.0]),
+        (4, 3, [3.0, 0.0, 4.0]),
+        (5, 3, [6.0, 0.0, 8.0]),
+    ] {
+        db.cmd_tx
+            .send(DbCommand::ReadNodeHistory {
+                node_id: historical.clone(),
+                after_version: 0,
+                limit: 1,
+                at_version: Some(version),
+                correlation_id: Some(format!("state-{version}")),
+            })
+            .unwrap();
+        match db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap() {
+            DbResult::NodeStateAtVersionLoaded { state, .. } => {
+                let data = [serde_json::to_value(state).unwrap()];
+                assert_eq!(data[0]["availability"], "available");
+                assert_eq!(data[0]["state"]["properties"]["calibration"]["gain"], gain);
+                assert_eq!(data[0]["state"]["position"], serde_json::json!(position));
+            }
+            other => panic!("historical state: {other:?}"),
+        }
+    }
     db.cmd_tx
         .send(DbCommand::UpdateFieldDef {
             field_def_id,

@@ -421,8 +421,9 @@ pub(super) fn place_asset(call: ToolCall<'_>) -> ToolFuture<'_> {
 pub(super) fn set_property(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
         let value = call.args.get("value").cloned().unwrap_or(Value::Null);
-        let dto = crate::rest::set_property_core(
+        let dto = crate::rest::set_property_as(
             call.state,
+            call.claims,
             str_arg(call.args, "node_id"),
             str_arg(call.args, "key").to_string(),
             value,
@@ -446,6 +447,66 @@ pub(super) fn get_field_schema(call: ToolCall<'_>) -> ToolFuture<'_> {
     })
 }
 
+pub(super) fn get_node_history(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let after = call
+            .args
+            .get("after_version")
+            .map(|v| v.as_i64().ok_or("invalid after_version"))
+            .transpose()?
+            .unwrap_or(0);
+        let limit = call
+            .args
+            .get("limit")
+            .map(|v| {
+                v.as_u64()
+                    .and_then(|v| usize::try_from(v).ok())
+                    .ok_or("invalid limit")
+            })
+            .transpose()?
+            .unwrap_or(100);
+        crate::node_history::read_core(
+            call.state,
+            str_arg(call.args, "node_id"),
+            after,
+            limit,
+            None,
+        )
+        .await
+    })
+}
+
+pub(super) fn read_node_at_version(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let at = call
+            .args
+            .get("at_version")
+            .and_then(Value::as_i64)
+            .ok_or("at_version required")?;
+        crate::node_history::read_core(call.state, str_arg(call.args, "node_id"), 0, 1, Some(at))
+            .await
+    })
+}
+
+pub(super) fn commit_node_mutation(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let mutation = serde_json::from_value(
+            call.args
+                .get("mutation")
+                .cloned()
+                .ok_or("mutation required")?,
+        )
+        .map_err(|e| format!("invalid mutation: {e}"))?;
+        crate::node_history::commit_core(
+            call.state,
+            call.claims,
+            str_arg(call.args, "node_id"),
+            mutation,
+        )
+        .await
+    })
+}
+
 pub(super) fn set_field_schema(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
         let descriptor = call
@@ -460,8 +521,9 @@ pub(super) fn set_field_schema(call: ToolCall<'_>) -> ToolFuture<'_> {
 
 pub(super) fn delete_property(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
-        let dto = crate::rest::delete_property_core(
+        let dto = crate::rest::delete_property_as(
             call.state,
+            call.claims,
             str_arg(call.args, "node_id"),
             str_arg(call.args, "key"),
         )
@@ -1282,6 +1344,18 @@ pub(super) mod schema {
 
     pub fn get_field_schema() -> Value {
         json!({"type":"object", "properties":{"field_def_id":{"type":"string"}}, "required":["field_def_id"]})
+    }
+
+    pub fn get_node_history() -> Value {
+        json!({"type":"object","properties":{"node_id":{"type":"string"},"after_version":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":200}},"required":["node_id"]})
+    }
+
+    pub fn read_node_at_version() -> Value {
+        json!({"type":"object","properties":{"node_id":{"type":"string"},"at_version":{"type":"integer","minimum":1}},"required":["node_id","at_version"]})
+    }
+
+    pub fn commit_node_mutation() -> Value {
+        json!({"type":"object","properties":{"node_id":{"type":"string"},"mutation":{"type":"object","description":"Tagged op: property_set {key,value}, property_deleted {key}, full_transform {position,rotation,scale}; rotation radians"}},"required":["node_id","mutation"]})
     }
 
     pub fn set_field_schema() -> Value {

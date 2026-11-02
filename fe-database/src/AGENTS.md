@@ -1490,3 +1490,47 @@ must validate replacement defaults; DeleteFieldDef refuses enforced definitions.
 The default column now accepts arbitrary JSON types; defaults remain suggestions.
 This contract covers ordinary property commands, not arbitrary operator SQL or
 replication. Those paths must not be represented as validated ordinary writes.
+
+## §node-history
+
+Ordinary empty/asset creation now atomically writes a complete `baseline` v1.
+Property set/delete and full transforms atomically commit the materialized node,
+legacy operation intention, and INSERT-only node_log facts through
+commit_operation_atomic_with. Their previous dispatcher best-effort append is
+removed. A unique (node_id,row_version) index protects per-object commit order;
+edit_seq remains transform confirmation metadata, independent of this order.
+This remains the ordinary local journal: canonical migration/signature machinery
+is unchanged and dormant. The sole serialized DB command writer remains required.
+
+Covered payloads carry journal_version1, retained resolved scope, typed operation
+data, full after_state and applicable field-definition revisions. Baselines store
+complete node-table state, with XYZ position normalized from the stored XZ point
+and elevation; external model/blob contents are not versioned by this journal.
+Before continuing coverage, the handler compares the current normalized row with
+the last covered after_state. A legacy fact or changed row starts a new baseline
+in the same mutation transaction. Legacy facts are retained as audit evidence;
+unsupported rows/gaps refuse replay, and later baselines do not fabricate the
+missing interval. Snapshot payloads are capped at65536 encoded bytes. Replay reads
+at most10000 facts in200-row batches; page limit1..200. API response byte caps also
+apply. Versions are per object, never a global time cut. created_at is server
+record time; HLC is ingest metadata, not measurement/effective time. This first
+contract accepts no client mutation effective-time override. Numeric readings
+retain their separate existing recorded_at event-time contract.
+
+ReadNodeHistory returns coverage metadata, immutable cursor pages, or a pure
+baseline+property/full-transform fold for one exact version. Availability is
+available/before_coverage/incomplete_interval/unsupported_operation/version_unavailable;
+unavailable replies omit state. Reads never mutate state or activate replay.
+CommitNodeMutation/CreateObject carry actor from the validated API principal;
+ordinary GUI dispatch uses local identity. New object GUI birth replies carry
+fresh unknown correlation IDs, so they cannot consume unrelated API create
+waiters; the committed QueryResult receipt has its own matching request ID.
+
+All ordinary property/default/schema writes reject unsigned integers above i64MAX
+before append, preventing silent storage rounding. Signed integers beyond2^53
+remain exact JSON integers. SDK numeric bound comparison is exact for integer
+pairs; mixed float/integer comparisons outside exact f64 precision refuse.
+Arbitrary elevated/replicated/import/clear/rename paths are not claimed as covered
+operations. Comparing row state detects an unjournaled interval before the next
+covered write; current_state_verified reports whether the latest fact matches the
+current row. Current state can differ while older committed versions remain valid.

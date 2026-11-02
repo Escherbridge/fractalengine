@@ -63,6 +63,9 @@ pub(crate) async fn set_core(
             correlation_id: echoed,
         })) if echoed == correlation_id => {
             tracing::warn!(%error, "field schema refused");
+            if error.contains("integer exceeds supported signed 64-bit storage range") {
+                return Err("integer exceeds supported signed 64-bit storage range".into());
+            }
             Err("schema revision refused; existing values, defaults and consecutive version must remain valid".into())
         }
         _ => Err("schema commit was not confirmed; read back before retrying".into()),

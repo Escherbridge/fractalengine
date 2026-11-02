@@ -647,7 +647,7 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::CreateNode { petal_id, name, position, correlation_id }) => {
-                        match handlers::crud::create_node_handler(&db, &petal_id, &name, position).await {
+                        match handlers::crud::create_node_as(&db, &petal_id, &name, position, &local_did).await {
                             Ok(id) => {
                                 if let Some(ref ect) = entity_change_tx {
                                     let _ = ect.send(fe_runtime::messages::SceneChange::NodeAdded {
@@ -663,13 +663,6 @@ pub fn spawn_db_thread_shared(
                                         },
                                     });
                                 }
-                                // Append to node_log (append-only)
-                                if let Err(e) = handlers::node_log::append_node_log(
-                                    &db, &id, "created", &local_did,
-                                    &serde_json::json!({"name": name, "position": position, "petal_id": petal_id}),
-                                ).await {
-                                    tracing::warn!("node_log append failed for {id}: {e}");
-                                }
                                 // FR-6: emit a NodeCreated lifecycle event carrying the stable address.
                                 if let Ok(Some(scope)) = handlers::crud::resolve_petal_scope_handler(&db, &petal_id).await {
                                     if let Some(uri) = lifecycle_uri(&scope, &id) {
@@ -680,7 +673,7 @@ pub fn spawn_db_thread_shared(
                                 }
                                 send_result(&tx, DbResult::NodeCreated { id, petal_id, name, has_asset: false, correlation_id, position });
                             }
-                            Err(e) => send_result(&tx, DbResult::Error(format!("Create node failed: {e}"))),
+                            Err(e) => send_result(&tx, handlers::correlated_failure(&correlation_id,format!("Create node failed: {e}"))),
                         }
                     }
                     Ok(DbCommand::ImportGltf { petal_id, name, file_path, position, file_lease }) => {
@@ -754,7 +747,7 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::CreateNodeWithAsset { petal_id, name, asset_id, position, rotation, scale, correlation_id }) => {
-                        match handlers::crud::create_node_with_asset_handler(&db, &petal_id, &name, &asset_id, position, rotation, scale).await {
+                        match handlers::crud::create_node_with_asset_as(&db, &petal_id, &name, &asset_id, position, rotation, scale, &local_did).await {
                             Ok((node_id, asset_path)) => {
                                 if let Some(ref ect) = entity_change_tx {
                                     let quat = bevy::math::Quat::from_euler(bevy::math::EulerRot::XYZ, rotation[0], rotation[1], rotation[2]);
@@ -771,12 +764,7 @@ pub fn spawn_db_thread_shared(
                                         },
                                     });
                                 }
-                                if let Err(e) = handlers::node_log::append_node_log(
-                                    &db, &node_id, "created", &local_did,
-                                    &serde_json::json!({"name": name, "position": position, "petal_id": petal_id, "asset_id": asset_id}),
-                                ).await {
-                                    tracing::warn!("node_log append failed for {node_id}: {e}");
-                                }
+
                                 if let Ok(Some(scope)) = handlers::crud::resolve_petal_scope_handler(&db, &petal_id).await {
                                     if let Some(uri) = lifecycle_uri(&scope, &node_id) {
                                         emit_lifecycle(&lifecycle_tx, fe_runtime::messages::LifecycleEvent::NodeCreated {
@@ -816,7 +804,7 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::UpdateNodeTransform { node_id, position, rotation, scale }) => {
-                        match handlers::transform::update_node_transform_handler(&db, &node_id, position, rotation, scale).await {
+                        match handlers::transform::update_node_transform_as(&db, &node_id, position, rotation, scale, &local_did).await {
                             Ok(()) => {
                                 if let Some(ref ect) = entity_change_tx {
                                     match handlers::crud::resolve_node_petal_id_handler(&db, &node_id).await {
@@ -833,12 +821,7 @@ pub fn spawn_db_thread_shared(
                                         Err(e) => tracing::warn!(node_id, "omitting transform scene change after petal lookup failure: {e}"),
                                     }
                                 }
-                                if let Err(e) = handlers::node_log::append_node_log(
-                                    &db, &node_id, "transform_update", &local_did,
-                                    &serde_json::json!({"position": position, "rotation": rotation, "scale": scale}),
-                                ).await {
-                                    tracing::warn!("node_log append failed for {node_id}: {e}");
-                                }
+
                             }
                             Err(e) => {
                                 tracing::error!("UpdateNodeTransform failed for {node_id}: {e}");
@@ -1074,7 +1057,7 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::SetNodeProperty { node_id, key, value , correlation_id }) => {
-                        match handlers::entity_property::set_entity_property_handler(&db, &node_id, &key, &value).await {
+                        match handlers::entity_property::set_entity_property_as(&db, &node_id, &key, &value, &local_did).await {
                             Ok(()) => {
                                 if let Some(ref ect) = entity_change_tx {
                                     match handlers::crud::resolve_node_petal_id_handler(&db, &node_id).await {
@@ -1090,12 +1073,7 @@ pub fn spawn_db_thread_shared(
                                         Err(e) => tracing::warn!(node_id, "omitting property scene change after petal lookup failure: {e}"),
                                     }
                                 }
-                                if let Err(e) = handlers::node_log::append_node_log(
-                                    &db, &node_id, "property_set", &local_did,
-                                    &serde_json::json!({"key": key, "value": value}),
-                                ).await {
-                                    tracing::warn!("node_log append failed for {node_id}: {e}");
-                                }
+
                                 send_result(&tx, DbResult::NodePropertySet { node_id, key , correlation_id });
                             }
                             Err(e) => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("Set node property failed: {e}"))),
@@ -1108,7 +1086,7 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::DeleteNodeProperty { node_id, key , correlation_id }) => {
-                        match handlers::entity_property::delete_entity_property_handler(&db, &node_id, &key).await {
+                        match handlers::entity_property::delete_entity_property_as(&db, &node_id, &key, &local_did).await {
                             Ok(()) => {
                                 if let Some(ref ect) = entity_change_tx {
                                     match handlers::crud::resolve_node_petal_id_handler(&db, &node_id).await {
@@ -1124,12 +1102,7 @@ pub fn spawn_db_thread_shared(
                                         Err(e) => tracing::warn!(node_id, "omitting property scene change after petal lookup failure: {e}"),
                                     }
                                 }
-                                if let Err(e) = handlers::node_log::append_node_log(
-                                    &db, &node_id, "property_deleted", &local_did,
-                                    &serde_json::json!({"key": key}),
-                                ).await {
-                                    tracing::warn!("node_log append failed for {node_id}: {e}");
-                                }
+
                                 send_result(&tx, DbResult::NodePropertyDeleted { node_id, key , correlation_id });
                             }
                             Err(e) => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("Delete node property failed: {e}"))),
@@ -1549,6 +1522,65 @@ pub fn spawn_db_thread_shared(
                             Err(e) => handlers::correlated_failure(&correlation_id, format!("Set field schema failed: {e}")),
                         };
                         send_result(&tx, reply);
+                    }
+                    Ok(DbCommand::ReadNodeHistory { node_id, after_version, limit, at_version, correlation_id }) => {
+                        let reply = handlers::node_history::read_reply(&db,&node_id,after_version,limit,at_version,correlation_id).await;
+                        send_result(&tx, reply);
+                    }
+                    Ok(DbCommand::CreateObject { petal_id, input, actor_did, correlation_id }) => {
+                        let outcome = handlers::node_history::create_object(&db, &petal_id, &input.name, input.asset_id.as_deref(), input.position,
+                            input.rotation.iter().map(|v|f64::from(*v)).collect(), input.scale.iter().map(|v|f64::from(*v)).collect(), input.properties, &actor_did).await;
+                        match outcome {
+                            Ok((node_id, asset_path)) => {
+                                if let Some(ref ect) = entity_change_tx {
+                                    let quat = bevy::math::Quat::from_euler(bevy::math::EulerRot::XYZ, input.rotation[0], input.rotation[1], input.rotation[2]);
+                                    if ect.send(fe_runtime::messages::SceneChange::NodeAdded { node: fe_runtime::messages::NodeDto {
+                                        node_id:node_id.clone(),petal_id:petal_id.clone(),name:input.name.clone(),position:input.position,
+                                        rotation:quat.to_array(),scale:input.scale,has_asset:input.asset_id.is_some(),asset_path:asset_path.clone(),
+                                    }}).is_err() { tracing::warn!(node_id,"created object scene-change receiver closed"); }
+                                }
+                                let reply = match handlers::node_history::receipt(&db,&node_id).await {
+                                    Ok(value) => {
+                                        match handlers::node_history::materialization(&value,asset_path) {
+                                            Ok(node) => send_result(&tx,DbResult::NodeMaterialized {node,correlation_id:ulid::Ulid::new().to_string()}),
+                                            Err(error) => tracing::warn!(node_id,"created object GUI materialization could not decode: {error}"),
+                                        }
+                                        DbResult::NodeMutationCommitted {receipt:value,correlation_id}
+                                    }
+                                    Err(error) => handlers::correlated_failure(&correlation_id,format!("Object created; receipt read failed: {error}")),
+                                };
+                                send_result(&tx,reply);
+                            }
+                            Err(error) => send_result(&tx,handlers::correlated_failure(&correlation_id,format!("Create object refused: {error}"))),
+                        }
+                    }
+                    Ok(DbCommand::CommitNodeMutation { node_id, mutation, actor_did, correlation_id }) => {
+                        use fe_runtime::messages::NodeMutation;
+                        let outcome = match &mutation {
+                            NodeMutation::PropertySet { key, value } => handlers::entity_property::set_entity_property_as(&db, &node_id, key, value, &actor_did).await,
+                            NodeMutation::PropertyDeleted { key } => handlers::entity_property::delete_entity_property_as(&db, &node_id, key, &actor_did).await,
+                            NodeMutation::FullTransform { position, rotation, scale } => handlers::transform::update_node_transform_as(&db, &node_id, *position, *rotation, *scale, &actor_did).await,
+                        };
+                        match outcome {
+                            Ok(()) => {
+                                if let Some(ref ect) = entity_change_tx {
+                                    if let Ok(Some(petal_id)) = handlers::crud::resolve_node_petal_id_handler(&db, &node_id).await {
+                                        let change = match &mutation {
+                                            NodeMutation::PropertySet { key, value } => fe_runtime::messages::SceneChange::PropertyChanged { node_id: node_id.clone(), petal_id, key: key.clone(), value: value.clone() },
+                                            NodeMutation::PropertyDeleted { key } => fe_runtime::messages::SceneChange::PropertyChanged { node_id: node_id.clone(), petal_id, key: key.clone(), value: serde_json::Value::Null },
+                                            NodeMutation::FullTransform { position, rotation, scale } => fe_runtime::messages::SceneChange::NodeTransform { node_id: node_id.clone(), petal_id, position: *position, rotation: *rotation, scale: *scale },
+                                        };
+                                        if ect.send(change).is_err() { tracing::warn!(node_id, "committed node scene-change receiver closed"); }
+                                    }
+                                }
+                                let reply = match handlers::node_history::receipt(&db, &node_id).await {
+                                    Ok(receipt) => DbResult::NodeMutationCommitted { receipt, correlation_id },
+                                    Err(error) => handlers::correlated_failure(&correlation_id, format!("Mutation committed; receipt read failed: {error}")),
+                                };
+                                send_result(&tx, reply);
+                            }
+                            Err(error) => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("Node mutation refused: {error}"))),
+                        }
                     }
                     Ok(DbCommand::DeleteFieldDef { field_def_id }) => {
                         match handlers::field_def::delete_field_def_handler(&db, &field_def_id).await {

@@ -182,6 +182,22 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         )
         // Node operations
         .route(
+            "/api/v1/petals/{petal_id}/objects",
+            post(crate::node_history::create),
+        )
+        .route(
+            "/api/v1/nodes/{node_id}/history",
+            get(crate::node_history::history),
+        )
+        .route(
+            "/api/v1/nodes/{node_id}/state",
+            get(crate::node_history::state_at),
+        )
+        .route(
+            "/api/v1/nodes/{node_id}/mutations",
+            post(crate::node_history::mutate),
+        )
+        .route(
             "/api/v1/nodes/{node_id}/transform",
             patch(crate::rest::update_transform).get(crate::rest::get_transform),
         )

@@ -3,6 +3,45 @@ use bevy::prelude::Message;
 /// Operation-owned input-file and ancestry handles retained through a read.
 pub type FileReadLease = std::sync::Arc<Vec<std::fs::File>>;
 
+/// Initial ordinary object state, validated before the atomic creation commit.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateObjectInput {
+    pub name: String,
+    pub asset_id: Option<String>,
+    #[serde(default)]
+    pub position: [f32; 3],
+    #[serde(default)]
+    pub rotation: [f32; 3],
+    #[serde(default = "unit_scale")]
+    pub scale: [f32; 3],
+    #[serde(default)]
+    pub properties: serde_json::Map<String, serde_json::Value>,
+}
+
+fn unit_scale() -> [f32; 3] {
+    [1.0; 3]
+}
+
+/// Supported ordinary object mutations with committed journal receipts.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NodeMutation {
+    /// Replace one literal outer property key.
+    PropertySet {
+        key: String,
+        value: serde_json::Value,
+    },
+    /// Remove one optional outer property.
+    PropertyDeleted { key: String },
+    /// Replace all transform components; rotation is Euler XYZ radians.
+    FullTransform {
+        position: [f32; 3],
+        rotation: [f32; 3],
+        scale: [f32; 3],
+    },
+}
+
 /// Re-exported so callers that depend on `fe-runtime` but not directly on
 /// `fe-sdk` (fe-sim, fe-api, fe-test-harness) can construct
 /// `InsertIotReadings`/`InsertDevicePayloads.source_class` without a new
@@ -774,6 +813,28 @@ pub enum DbCommand {
         descriptor: serde_json::Value,
         correlation_id: Option<String>,
     },
+    /// Committed actor-attributed ordinary mutation; API actor comes from the validated principal.
+    CommitNodeMutation {
+        node_id: String,
+        mutation: NodeMutation,
+        actor_did: String,
+        correlation_id: Option<String>,
+    },
+    /// Create initial properties and complete baseline in one committed transaction.
+    CreateObject {
+        petal_id: String,
+        input: CreateObjectInput,
+        actor_did: String,
+        correlation_id: Option<String>,
+    },
+    /// Durable bounded journal page or exact-version replay; not generic raw-table access.
+    ReadNodeHistory {
+        node_id: String,
+        after_version: i64,
+        limit: usize,
+        at_version: Option<i64>,
+        correlation_id: Option<String>,
+    },
     /// Delete a field definition by ID.
     DeleteFieldDef {
         field_def_id: String,
@@ -1063,6 +1124,26 @@ pub enum DbResult {
     Started,
     Stopped,
     Error(String),
+    /// GUI-only committed birth carrying full state; has no API request family.
+    NodeMaterialized {
+        node: CommittedNodeMaterialization,
+        correlation_id: String,
+    },
+    /// Confirmed current state after an ordinary object create/mutation.
+    NodeMutationCommitted {
+        receipt: crate::node_history::NodeMutationReceipt,
+        correlation_id: Option<String>,
+    },
+    /// Read-only immutable facts; never a live-state materialization.
+    NodeHistoryLoaded {
+        page: crate::node_history::NodeHistoryPage,
+        correlation_id: Option<String>,
+    },
+    /// Read-only version preview; never a live-state materialization.
+    NodeStateAtVersionLoaded {
+        state: crate::node_history::NodeStateAtVersion,
+        correlation_id: Option<String>,
+    },
     VerseCreated {
         id: String,
         name: String,
@@ -1625,6 +1706,17 @@ pub struct NodeDto {
     pub scale: [f32; 3],
     pub has_asset: bool,
     pub asset_path: Option<String>,
+}
+
+/// Authoritative ordinary object birth for scene/tree/property hydration.
+#[derive(Debug, Clone)]
+pub struct CommittedNodeMaterialization {
+    pub node: NodeDto,
+    /// Euler XYZ radians, matching the committed database transform.
+    pub rotation_euler: [f32; 3],
+    pub asset_id: Option<String>,
+    pub properties: serde_json::Value,
+    pub history_version: i64,
 }
 
 /// Describes a single change to the scene graph.

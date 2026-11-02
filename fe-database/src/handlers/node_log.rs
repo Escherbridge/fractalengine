@@ -27,12 +27,14 @@ pub(crate) async fn append_node_log(
     let mut rv_res = exec_query(db, &rv_q)
         .await
         .map_err(|e| anyhow::anyhow!("node_log row_version query failed: {e}"))?;
-    let rv_rows: Vec<serde_json::Value> = rv_res.take(0).unwrap_or_default();
-    let next_rv = rv_rows
+    let rv_rows: Vec<serde_json::Value> = rv_res.take(0)?;
+    let previous_rv = rv_rows
         .first()
         .and_then(|r| r["max_rv"].as_i64())
-        .unwrap_or(0)
-        + 1;
+        .unwrap_or(0);
+    let next_rv = previous_rv
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("node version exhausted"))?;
 
     let insert_q = InsertBuilder::insert_into("node_log")
         .values(serde_json::json!({

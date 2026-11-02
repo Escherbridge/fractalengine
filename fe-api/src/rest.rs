@@ -596,7 +596,7 @@ pub async fn set_node_property(
         ));
     }
 
-    match set_property_core(&state, &node_id, req.key, req.value).await {
+    match set_property_as(&state, &claims, &node_id, req.key, req.value).await {
         Ok(dto) => Json(ApiResponse::success(dto)),
         Err(e) => Json(ApiResponse::<PropertySetDto>::error(e)),
     }
@@ -657,6 +657,52 @@ pub(crate) async fn set_property_core(
     }
 }
 
+/// Actor-attributed property command for validated REST/MCP/WS principals.
+pub(crate) async fn set_property_as(
+    state: &crate::server::ApiState,
+    claims: &ApiClaims,
+    node_id: &str,
+    key: String,
+    value: serde_json::Value,
+) -> Result<PropertySetDto, String> {
+    crate::node_history::commit_core(
+        state,
+        claims,
+        node_id,
+        fe_runtime::messages::NodeMutation::PropertySet {
+            key: key.clone(),
+            value,
+        },
+    )
+    .await?;
+    Ok(PropertySetDto {
+        node_id: node_id.to_string(),
+        key,
+    })
+}
+
+/// Actor-attributed optional-property removal for validated principals.
+pub(crate) async fn delete_property_as(
+    state: &crate::server::ApiState,
+    claims: &ApiClaims,
+    node_id: &str,
+    key: &str,
+) -> Result<PropertySetDto, String> {
+    crate::node_history::commit_core(
+        state,
+        claims,
+        node_id,
+        fe_runtime::messages::NodeMutation::PropertyDeleted {
+            key: key.to_string(),
+        },
+    )
+    .await?;
+    Ok(PropertySetDto {
+        node_id: node_id.to_string(),
+        key: key.to_string(),
+    })
+}
+
 /// Property-read core shared by REST + MCP (caller has authorized).
 pub(crate) async fn get_properties_core(
     state: &crate::server::ApiState,
@@ -685,6 +731,7 @@ pub(crate) async fn get_properties_core(
 }
 
 /// Property-delete core shared by REST + MCP (caller has authorized).
+#[cfg(test)]
 pub(crate) async fn delete_property_core(
     state: &crate::server::ApiState,
     node_id: &str,
@@ -775,7 +822,7 @@ pub async fn delete_node_property(
         ));
     }
 
-    match delete_property_core(&state, &node_id, &key).await {
+    match delete_property_as(&state, &claims, &node_id, &key).await {
         Ok(dto) => Json(ApiResponse::success(dto)),
         Err(e) => Json(ApiResponse::<PropertySetDto>::error(e)),
     }

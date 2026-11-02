@@ -187,77 +187,26 @@ pub(crate) async fn create_petal_handler(
 // ---------------------------------------------------------------------------
 
 #[instrument(skip(db))]
-pub(crate) async fn create_node_handler(
+pub(crate) async fn create_node_as(
     db: &Db,
     petal_id: &str,
     name: &str,
     position: [f32; 3],
+    actor: &str,
 ) -> anyhow::Result<String> {
-    require_petal_scope(db, petal_id, "CreateNode").await?;
-
-    let node_id = ulid::Ulid::new().to_string();
-    let now = chrono::Utc::now().to_rfc3339();
-    tracing::info!("Creating node: {name} ({node_id}) in petal {petal_id}");
-    let entry = crate::types::OpLogEntry {
-        lamport_clock: 0,
-        node_id: crate::types::NodeId(node_id.clone()),
-        op_type: crate::types::OpType::NodeCreated,
-        payload: serde_json::json!({
-            "node_id": node_id.clone(),
-            "petal_id": petal_id,
-            "name": name,
-            "position": position,
-            "interactive": false,
-        }),
-        sig: "00".repeat(64),
-        hlc_timestamp: String::new(),
-    };
-    let materialized_node_id = node_id.clone();
-    let materialized_petal_id = petal_id.to_string();
-    let materialized_name = name.to_string();
-    // Geometry fields need the explicit SurrealQL cast; see AGENTS.md §geometry-inserts.
-    crate::op_log::commit_operation(db, entry, move |_| async move {
-        db.query(
-            "CREATE node CONTENT {
-            node_id: $node_id,
-            petal_id: $petal_id,
-            display_name: $name,
-            asset_id: NONE,
-            position: <geometry<point>> [$x, $z],
-            elevation: $y,
-            rotation: [0.0, 0.0, 0.0, 1.0],
-            scale: [1.0, 1.0, 1.0],
-            interactive: false,
-            created_at: $now,
-        }",
-        )
-        .bind(("node_id", materialized_node_id))
-        .bind(("petal_id", materialized_petal_id))
-        .bind(("name", materialized_name))
-        .bind(("x", position[0] as f64))
-        .bind(("z", position[2] as f64))
-        .bind(("y", position[1] as f64))
-        .bind(("now", now))
-        .await?
-        .check()
-        .map_err(|e| anyhow::anyhow!("CREATE empty node failed: {e}"))?;
-        Ok(())
-    })
-    .await?;
-
-    if let Err(e) = super::node_log::append_node_log(
+    let (id, _) = super::node_history::create_object(
         db,
-        &node_id,
-        "created",
-        "local",
-        &serde_json::json!({ "petal_id": petal_id, "name": name, "position": position }),
+        petal_id,
+        name,
+        None,
+        position,
+        vec![0.0, 0.0, 0.0, 1.0],
+        vec![1.0, 1.0, 1.0],
+        serde_json::Map::new(),
+        actor,
     )
-    .await
-    {
-        tracing::warn!("Failed to write node_log for created node {node_id}: {e}");
-    }
-
-    Ok(node_id)
+    .await?;
+    Ok(id)
 }
 
 /// Delete a node and cascade to its child waypoint rows.
@@ -550,7 +499,8 @@ pub(crate) async fn create_asset_handler(
 /// Returns `(node_id, asset_path)`; `rotation` is stored as Euler XYZ radians,
 /// exactly as `UpdateNodeTransform` writes it.
 #[instrument(skip(db))]
-pub(crate) async fn create_node_with_asset_handler(
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_node_with_asset_as(
     db: &Db,
     petal_id: &str,
     name: &str,
@@ -558,99 +508,24 @@ pub(crate) async fn create_node_with_asset_handler(
     position: [f32; 3],
     rotation: [f32; 3],
     scale: [f32; 3],
+    actor: &str,
 ) -> anyhow::Result<(String, String)> {
-    require_petal_scope(db, petal_id, "CreateNodeWithAsset").await?;
-
-    // An absent `asset` table means no assets exist (delete_node_handler precedent).
-    let lookup = db
-        .query("SELECT content_hash, content_type FROM asset WHERE asset_id = $aid LIMIT 1")
-        .bind(("aid", asset_id.to_string()))
-        .await?
-        .check();
-    let rows: Vec<serde_json::Value> = match lookup {
-        Ok(mut res) => res.take(0)?,
-        Err(e) if e.to_string().contains("does not exist") => Vec::new(),
-        Err(e) => anyhow::bail!("CreateNodeWithAsset asset lookup failed: {e}"),
-    };
-    let Some(asset_row) = rows.first() else {
-        anyhow::bail!("CreateNodeWithAsset matched no asset with asset_id = {asset_id}");
-    };
-    let Some(content_hash) = asset_row.get("content_hash").and_then(|v| v.as_str()) else {
-        anyhow::bail!("CreateNodeWithAsset asset {asset_id} has no blob content_hash");
-    };
-    // Only scene formats become a `SceneRoot`: an R5 device-payload asset
-    // (declared-MIME opaque bytes) is never handed to the AssetServer
-    // (`src/AGENTS.md` §device-payload; fe-api `place_asset_core` refuses
-    // first, this is the DB-thread authority behind it).
-    let ext = match asset_row.get("content_type").and_then(|v| v.as_str()) {
-        Some("model/gltf-binary") => "glb",
-        Some("model/gltf+json") => "gltf",
-        other => anyhow::bail!(
-            "CreateNodeWithAsset asset {asset_id} is not a scene asset (content_type {other:?})"
-        ),
-    };
-    let asset_path = format!("blob://{content_hash}.{ext}");
-
-    let node_id = ulid::Ulid::new().to_string();
-    let entry = crate::types::OpLogEntry {
-        lamport_clock: 0,
-        node_id: crate::types::NodeId(node_id.clone()),
-        op_type: crate::types::OpType::NodeCreated,
-        payload: serde_json::json!({
-            "node_id": node_id.clone(),
-            "petal_id": petal_id,
-            "name": name,
-            "position": position,
-            "rotation": rotation,
-            "scale": scale,
-            "asset_id": asset_id,
-            "interactive": true,
-        }),
-        sig: "00".repeat(64),
-        hlc_timestamp: String::new(),
-    };
-    let materialized_node_id = node_id.clone();
-    let materialized_petal_id = petal_id.to_string();
-    let materialized_name = name.to_string();
-    let materialized_asset_id = asset_id.to_string();
-    let rot: Vec<f64> = rotation.iter().map(|&v| v as f64).collect();
-    let sc: Vec<f64> = scale.iter().map(|&v| v as f64).collect();
-    let now = chrono::Utc::now().to_rfc3339();
-    // Geometry fields need the explicit SurrealQL cast; see AGENTS.md §geometry-inserts.
-    crate::op_log::commit_operation(db, entry, move |_| async move {
-        db.query(
-            "CREATE node CONTENT {
-            node_id: $node_id,
-            petal_id: $petal_id,
-            display_name: $name,
-            asset_id: $asset_id,
-            position: <geometry<point>> [$x, $z],
-            elevation: $y,
-            rotation: $rot,
-            scale: $sc,
-            interactive: true,
-            created_at: $now,
-        }",
-        )
-        .bind(("node_id", materialized_node_id))
-        .bind(("petal_id", materialized_petal_id))
-        .bind(("name", materialized_name))
-        .bind(("asset_id", materialized_asset_id))
-        .bind(("x", position[0] as f64))
-        .bind(("z", position[2] as f64))
-        .bind(("y", position[1] as f64))
-        .bind(("rot", rot))
-        .bind(("sc", sc))
-        .bind(("now", now))
-        .await?
-        .check()
-        .map_err(|e| anyhow::anyhow!("CREATE asset node failed: {e}"))?;
-        Ok(())
-    })
+    let (id, path) = super::node_history::create_object(
+        db,
+        petal_id,
+        name,
+        Some(asset_id),
+        position,
+        rotation.iter().map(|&v| v as f64).collect(),
+        scale.iter().map(|&v| v as f64).collect(),
+        serde_json::Map::new(),
+        actor,
+    )
     .await?;
-
-    tracing::info!("Placed asset {asset_id} as node {node_id} in petal {petal_id}");
-    Ok((node_id, asset_path))
+    Ok((
+        id,
+        path.ok_or_else(|| anyhow::anyhow!("scene asset path missing"))?,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -2416,4 +2291,33 @@ mod import_gltf_ktx2_guard_tests {
             .unwrap_or_default();
         assert!(nodes.is_empty(), "no node row on refusal");
     }
+}
+
+/// Local compatibility entry for seed and test callers.
+#[cfg(test)]
+pub(crate) async fn create_node_handler(
+    db: &Db,
+    petal_id: &str,
+    name: &str,
+    position: [f32; 3],
+) -> anyhow::Result<String> {
+    create_node_as(db, petal_id, name, position, "local").await
+}
+
+/// Local compatibility entry for existing asset-placement callers.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_node_with_asset_handler(
+    db: &Db,
+    petal_id: &str,
+    name: &str,
+    asset_id: &str,
+    position: [f32; 3],
+    rotation: [f32; 3],
+    scale: [f32; 3],
+) -> anyhow::Result<(String, String)> {
+    create_node_with_asset_as(
+        db, petal_id, name, asset_id, position, rotation, scale, "local",
+    )
+    .await
 }

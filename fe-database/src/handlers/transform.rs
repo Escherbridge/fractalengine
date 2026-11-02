@@ -3,21 +3,29 @@ use tracing::instrument;
 use fe_query::{Filter, QueryBuilder, UpdateBuilder};
 
 use crate::handlers::preconditions::require_node_exists;
-use crate::op_log::commit_operation;
 use crate::query_helpers::exec_query;
 use crate::repo::Db;
 use crate::types::{NodeId, OpLogEntry, OpType};
 
 /// Persist a transform change for a node (position/rotation/scale).
 #[instrument(skip(db))]
-pub(crate) async fn update_node_transform_handler(
+pub(crate) async fn update_node_transform_as(
     db: &Db,
     node_id: &str,
     position: [f32; 3],
     rotation: [f32; 3],
     scale: [f32; 3],
+    actor: &str,
 ) -> anyhow::Result<()> {
     require_node_exists(db, node_id, "UpdateNodeTransform").await?;
+    if position
+        .iter()
+        .chain(&rotation)
+        .chain(&scale)
+        .any(|v| !v.is_finite())
+    {
+        anyhow::bail!("transform components must be finite");
+    }
     reject_stamp_translate(db, node_id, position).await?;
 
     let payload = serde_json::json!({
@@ -35,38 +43,14 @@ pub(crate) async fn update_node_transform_handler(
         payload,
         sig: "00".repeat(64),
     };
-    commit_operation(db, entry, |_| async {
-        // Geometry casts are required for SCHEMAFULL node writes; see AGENTS.md §geometry-inserts.
-        let rot: Vec<f64> = rotation.iter().map(|&v| v as f64).collect();
-        let sc: Vec<f64> = scale.iter().map(|&v| v as f64).collect();
-        let mut result = db
-            .query(
-                "UPDATE node SET
-                position = <geometry<point>> [$x, $z],
-                elevation = $y,
-                rotation = $rot,
-                scale = $sc,
-                edit_seq = edit_seq + 1
-            WHERE node_id = $node_id",
-            )
-            .bind(("x", position[0] as f64))
-            .bind(("z", position[2] as f64))
-            .bind(("y", position[1] as f64))
-            .bind(("rot", rot))
-            .bind(("sc", sc))
-            .bind(("node_id", node_id.to_string()))
-            .await?
-            .check()
-            .map_err(|e| anyhow::anyhow!("UpdateNodeTransform DB query failed: {e}"))?;
-        let updated: Vec<serde_json::Value> = result
-            .take(0)
-            .map_err(|e| anyhow::anyhow!("UpdateNodeTransform result read failed: {e}"))?;
-        if updated.is_empty() {
-            anyhow::bail!("UpdateNodeTransform matched no node with node_id = {node_id}");
-        }
-        Ok(())
-    })
-    .await
+    let rot: Vec<f64> = rotation.iter().map(|&v| v as f64).collect();
+    let sc: Vec<f64> = scale.iter().map(|&v| v as f64).collect();
+    super::node_history::commit_mutation(db, entry,
+        vec!["UPDATE node SET position = <geometry<point>> [$x, $z], elevation = $y, rotation = $rot, scale = $sc, edit_seq = edit_seq + 1 WHERE node_id = $node_id".into()],
+        vec![("x".into(), serde_json::json!(position[0] as f64)), ("z".into(), serde_json::json!(position[2] as f64)), ("y".into(), serde_json::json!(position[1] as f64)),
+            ("rot".into(), serde_json::json!(rot)), ("sc".into(), serde_json::json!(sc)), ("node_id".into(), serde_json::json!(node_id))],
+        actor, "full_transform", serde_json::json!({"position":position,"rotation":rotation,"scale":scale}), serde_json::json!({})).await?;
+    Ok(())
 }
 
 /// Max per-axis drift treated as "position unchanged" for the stamp lock.

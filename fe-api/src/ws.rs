@@ -712,13 +712,13 @@ async fn handle_entity_command(
             key,
             value,
         } => {
-            let dto = crate::rest::set_property_core(state, &node_id, key, value)
+            let dto = crate::rest::set_property_as(state, claims, &node_id, key, value)
                 .await
                 .map_err(entity_command_failure)?;
             return Ok(serde_json::json!({"node_id": dto.node_id, "key": dto.key}));
         }
         Ec::DeleteNodeProperty { node_id, key } => {
-            let dto = crate::rest::delete_property_core(state, &node_id, &key)
+            let dto = crate::rest::delete_property_as(state, claims, &node_id, &key)
                 .await
                 .map_err(entity_command_failure)?;
             return Ok(serde_json::json!({"node_id": dto.node_id, "key": dto.key}));

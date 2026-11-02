@@ -26,6 +26,9 @@ pub(crate) async fn create_field_def_handler(
     default_val: Option<&serde_json::Value>,
     created_by: &str,
 ) -> anyhow::Result<String> {
+    if let Some(value) = default_val {
+        validate_json_numbers(value)?;
+    }
     let field_def_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -108,6 +111,9 @@ pub(crate) async fn update_field_def_handler(
     value_type: &str,
     default_val: Option<&serde_json::Value>,
 ) -> anyhow::Result<()> {
+    if let Some(value) = default_val {
+        validate_json_numbers(value)?;
+    }
     let row = get_field_def_handler(db, field_def_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("field definition not found"))?;
@@ -182,6 +188,7 @@ pub(crate) async fn validate_property_in_scope(
     key: &str,
     value: &serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
+    validate_json_numbers(value)?;
     let mut response = db.query("SELECT field_def_id, scope, enforced_schema FROM field_def WHERE entity_type = 'node' AND key = $key AND enforced_schema != NONE")
         .bind(("key", key.to_string())).await?.check()?;
     let rows: Vec<serde_json::Value> = response.take(0)?;
@@ -210,6 +217,7 @@ pub(crate) async fn set_field_schema_handler(
     field_def_id: &str,
     value: &serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
+    validate_json_numbers(value)?;
     let descriptor = parse_descriptor(value)?;
     let row = get_field_def_handler(db, field_def_id)
         .await?
@@ -276,4 +284,9 @@ async fn scoped_nodes(db: &Db, scope: &str) -> anyhow::Result<Vec<serde_json::Va
         );
     }
     Ok(rows)
+}
+
+/// Refuse unsigned integers that cannot be stored as exact signed integers.
+pub(crate) fn validate_json_numbers(value: &serde_json::Value) -> anyhow::Result<()> {
+    fe_sdk::property_schema::validate_persistable_numbers(value).map_err(anyhow::Error::msg)
 }

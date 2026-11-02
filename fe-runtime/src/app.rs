@@ -268,6 +268,7 @@ struct PendingEntry {
 fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
     match cmd {
         DbCommand::InsertIotReadings { correlation_id, .. }
+        | DbCommand::CreateNode { correlation_id, .. }
         | DbCommand::SetNodeProperty { correlation_id, .. }
         | DbCommand::GetNodeProperties { correlation_id, .. }
         | DbCommand::DeleteNodeProperty { correlation_id, .. }
@@ -288,7 +289,10 @@ fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
         | DbCommand::InsertDevicePayloads { correlation_id, .. }
         | DbCommand::ListDevicePayloads { correlation_id, .. }
         | DbCommand::RawQuery { correlation_id, .. }
-        | DbCommand::SetFieldSchema { correlation_id, .. } => correlation_id.as_deref(),
+        | DbCommand::SetFieldSchema { correlation_id, .. }
+        | DbCommand::CommitNodeMutation { correlation_id, .. }
+        | DbCommand::CreateObject { correlation_id, .. }
+        | DbCommand::ReadNodeHistory { correlation_id, .. } => correlation_id.as_deref(),
         DbCommand::ElevatedQuery { correlation_id, .. } => Some(correlation_id.as_str()),
         _ => None,
     }
@@ -297,8 +301,13 @@ fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
 /// The correlation id a reply echoes (mirror of [`correlation_of_command`]).
 fn correlation_of_result(result: &DbResult) -> Option<&str> {
     match result {
+        DbResult::NodeMaterialized { correlation_id, .. } => Some(correlation_id.as_str()),
         DbResult::IotReadingsInserted { correlation_id, .. }
+        | DbResult::NodeCreated { correlation_id, .. }
         | DbResult::NodePropertySet { correlation_id, .. }
+        | DbResult::NodeMutationCommitted { correlation_id, .. }
+        | DbResult::NodeHistoryLoaded { correlation_id, .. }
+        | DbResult::NodeStateAtVersionLoaded { correlation_id, .. }
         | DbResult::NodePropertiesLoaded { correlation_id, .. }
         | DbResult::NodePropertyDeleted { correlation_id, .. }
         | DbResult::IotReadingsRejected { correlation_id, .. }
@@ -332,6 +341,11 @@ fn correlation_of_result(result: &DbResult) -> Option<&str> {
 /// never name a kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ReplyKind {
+    /// GUI-only materialization events have no command/pending queue.
+    NodeMaterialized,
+    NodeMutationCommitted,
+    NodeHistoryLoaded,
+    NodeStateAtVersionLoaded,
     Pong,
     VerseCreated,
     FractalCreated,
@@ -409,6 +423,12 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
         UpdateFieldDef { .. } => ReplyKind::FieldDefUpdated,
         DeleteFieldDef { .. } => ReplyKind::FieldDefDeleted,
         RawQuery { .. } | SetFieldSchema { .. } => ReplyKind::QueryResult,
+        CommitNodeMutation { .. } | CreateObject { .. } => ReplyKind::NodeMutationCommitted,
+        ReadNodeHistory {
+            at_version: Some(_),
+            ..
+        } => ReplyKind::NodeStateAtVersionLoaded,
+        ReadNodeHistory { .. } => ReplyKind::NodeHistoryLoaded,
         ElevatedQuery { .. } => ReplyKind::ElevatedQuery,
         InsertIotReadings { .. } => ReplyKind::IotReadingsInserted,
         GetPetalTerrain {
@@ -440,6 +460,10 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
 fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
     use DbResult::*;
     Some(match result {
+        NodeMaterialized { .. } => ReplyKind::NodeMaterialized,
+        NodeMutationCommitted { .. } => ReplyKind::NodeMutationCommitted,
+        NodeHistoryLoaded { .. } => ReplyKind::NodeHistoryLoaded,
+        NodeStateAtVersionLoaded { .. } => ReplyKind::NodeStateAtVersionLoaded,
         Pong => ReplyKind::Pong,
         VerseCreated { .. } => ReplyKind::VerseCreated,
         FractalCreated { .. } => ReplyKind::FractalCreated,
@@ -1647,6 +1671,59 @@ mod tests {
             DbResult::NodeCreated { id, .. } => assert_eq!(id, "n2"),
             other => panic!("unexpected result: {other:?}"),
         }
+        let (legacy_tx, mut legacy_rx) = tokio::sync::oneshot::channel();
+        let (receipt_tx, mut receipt_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&create_node_cmd(), legacy_tx);
+        pending.enqueue_for(
+            &DbCommand::RawQuery {
+                sql: "SELECT 1".into(),
+                vars: std::collections::HashMap::new(),
+                correlation_id: Some("object-receipt".into()),
+            },
+            receipt_tx,
+        );
+        let mut birth = node_created("object-from-atomic-route");
+        if let DbResult::NodeCreated { correlation_id, .. } = &mut birth {
+            *correlation_id = Some("unsolicited-object-birth".into());
+        }
+        assert!(!pending.try_deliver(birth));
+        assert!(!pending.try_deliver(DbResult::NodeMaterialized {
+            node: crate::messages::CommittedNodeMaterialization {
+                node: crate::messages::NodeDto {
+                    node_id: "atomic-object".into(),
+                    petal_id: "p".into(),
+                    name: "full birth".into(),
+                    position: [1.0, 2.0, 3.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [2.0, 1.0, 0.5],
+                    has_asset: false,
+                    asset_path: None
+                },
+                rotation_euler: [0.0; 3],
+                asset_id: None,
+                properties: serde_json::json!({"nested":{"array":[1,true]}}),
+                history_version: 1,
+            },
+            correlation_id: "unknown-materialization".into(),
+        }));
+        assert!(
+            legacy_rx.try_recv().is_err(),
+            "GUI birth cannot consume legacy API create waiter"
+        );
+        assert!(
+            receipt_rx.try_recv().is_err(),
+            "birth is not a committed query receipt"
+        );
+        assert!(pending.try_deliver(DbResult::QueryResult {
+            data: vec![],
+            correlation_id: Some("object-receipt".into())
+        }));
+        assert!(matches!(
+            receipt_rx.try_recv(),
+            Ok(DbResult::QueryResult { .. })
+        ));
+        assert!(pending.try_deliver(node_created("n3")));
+        assert!(matches!(legacy_rx.try_recv(),Ok(DbResult::NodeCreated {id,..}) if id == "n3"));
     }
 
     /// `Error` is the DB thread's universal reply and carries no family — it

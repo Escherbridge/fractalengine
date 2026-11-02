@@ -45,7 +45,7 @@ use fractalengine_test_harness::api::ApiHarness;
 /// `ToolSeam::Screenshot` with `screenshot`), for 38; its folded-in
 /// `agent_input_surface_20261031` added `inject_input` (its own
 /// `ToolSeam::Input`), for 39 total.
-const EXPECTED_TOOLS: [&str; 46] = [
+const EXPECTED_TOOLS: [&str; 49] = [
     "get_hierarchy",
     "create_verse",
     "create_fractal",
@@ -54,6 +54,9 @@ const EXPECTED_TOOLS: [&str; 46] = [
     "update_transform",
     // Per-endpoint CRUD (endpoint_api_surface_20260725 FR-4)
     "read_node",
+    "get_node_history",
+    "read_node_at_version",
+    "commit_node_mutation",
     "node_address",
     "delete_node",
     "promote_instance",
@@ -298,6 +301,42 @@ fn handle_command(cmd: ApiCommand, model: &Arc<Mutex<Model>>, store: Option<&Blo
 
 fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) -> DbResult {
     match cmd {
+        DbCommand::CommitNodeMutation {
+            node_id,
+            mutation,
+            actor_did,
+            correlation_id,
+        } => {
+            m.log
+                .push(json!({"cmd":"CommitNodeMutation","node_id":node_id,"actor_did":actor_did}));
+            let Some(node) = m.node(&node_id) else {
+                return failed(correlation_id, "node missing".into());
+            };
+            match mutation {
+                fe_runtime::messages::NodeMutation::PropertySet { key, value } => {
+                    node.properties.insert(key, value);
+                }
+                fe_runtime::messages::NodeMutation::PropertyDeleted { key } => {
+                    node.properties.remove(&key);
+                }
+                fe_runtime::messages::NodeMutation::FullTransform {
+                    position,
+                    rotation,
+                    scale,
+                } => {
+                    node.position = position;
+                    node.rotation = rotation;
+                    node.scale = scale;
+                }
+            }
+            DbResult::NodeMutationCommitted {
+                receipt:serde_json::from_value(json!({"node_id":node_id,"history_version":1,"persist":"committed","state":{
+                    "node_id":node.id,"petal_id":node.petal_id,"display_name":node.name,"asset_id":node.asset_id,
+                    "position":node.position,"elevation":node.position[1],"rotation":node.rotation,"scale":node.scale,
+                    "properties":node.properties,"edit_seq":0,"interactive":node.asset_id.is_some(),"created_at":"emulator"
+                }})).unwrap(),correlation_id,
+            }
+        }
         DbCommand::CreateVerse { name } => {
             let id = ulid();
             m.log.push(json!({ "cmd": "CreateVerse", "name": name }));
@@ -2106,7 +2145,7 @@ async fn every_scoped_tool_rejects_a_foreign_scope_token() {
         );
     }
     // 23 + set_petal_render_distance (S6) + the four CDL-SPEC10 device tools.
-    assert_eq!(scoped, 30, "every non-Global/None row is scope-checked");
+    assert_eq!(scoped, 33, "every non-Global/None row is scope-checked");
     assert!(
         model.lock().unwrap().log.is_empty(),
         "no denied call may write"

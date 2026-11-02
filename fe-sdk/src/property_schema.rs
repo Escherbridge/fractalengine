@@ -10,6 +10,27 @@ pub const MAX_PROPERTY_BYTES: usize = 65_536;
 const MAX_DEPTH: usize = 16;
 const MAX_SCHEMA_NODES: usize = 256;
 
+/// Check the signed-integer storage boundary without changing JSON values.
+pub fn validate_persistable_numbers(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Number(number) if number.as_u64().is_some_and(|v| v > i64::MAX as u64) => {
+            return Err("integer exceeds supported signed 64-bit storage range".into());
+        }
+        Value::Object(object) => {
+            for child in object.values() {
+                validate_persistable_numbers(child)?;
+            }
+        }
+        Value::Array(array) => {
+            for child in array {
+                validate_persistable_numbers(child)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// The supported JSON value kinds in the property-schema vocabulary.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]

@@ -2144,3 +2144,41 @@ Updates dry-run existing values/defaults and require the next revision; no impli
 migration, automatic default insertion or outer required-field constraint. The
 correlated committed reply is independent of GUI selection. Legacy field-def
 constructors and metadata-only behavior remain compatible.
+
+## §node-history
+
+POST `/api/v1/petals/{p}/objects` accepts `{name,asset_id?,position?,rotation?,scale?,properties?:{...}}`.
+Transform defaults are zero position/Euler XYZ radians and unit scale. Initial
+properties are validated before one atomic create+baseline commit; optional
+asset_id uses the same scoped reach/GLB gate as place_asset. Without an asset this
+is a data-only node. No filesystem path is accepted. Existing create routes keep
+their constructors and reply forms.
+
+POST `/api/v1/nodes/{n}/mutations` accepts tagged `property_set {key,value}`,
+`property_deleted {key}`, or `full_transform {position,rotation,scale}`. Actor is
+the validated token subject, not a request field. Creation/mutation returns
+`{node_id,history_version,state,persist:"committed"}` inside ApiResponse; state is
+the authoritative normalized node-table snapshot (position XYZ). Existing
+property REST/MCP/WS DTOs stay compatible while using this attributed commit core.
+Existing async transform remains compatible; use mutations for a committed receipt.
+There is no effective-time override on this contract; commit order is authoritative.
+
+GET `/api/v1/nodes/{n}/history?after_version=0&limit=100` returns entries ordered by
+row_version, next_after_version (null at end), journal_version, current_version,
+coverage_start_version/time, supported_operations and current_state_verified.
+GET `/api/v1/nodes/{n}/state?at_version=N` adds availability, exact at_version,
+baseline_version and state only when replay is available. Legacy gaps are explicit.
+MCP get_node_history/read_node_at_version/commit_node_mutation share the same core.
+History reads require Viewer at current or retained stored node ancestry; writes
+require Editor at current ancestry. Foreign/unknown share the existing denial.
+The raw node_log table remains excluded from generic SQL. Page1..200 and response
+byte caps apply. Per-object versions do not imply a multi-object wall-time snapshot.
+
+The create route sends a typed NodeMaterialized GUI birth after commit, with a
+fresh unknown correlation ID and its own reply family. CommittedNodeMaterialization
+carries authoritative NodeDto quaternion/scale/asset_path, Euler rotation, asset_id,
+properties and history_version. The GUI adapter must hydrate this current-state
+materialization. NodeHistoryLoaded and NodeStateAtVersionLoaded remain read-only
+previews; the UI must never apply them as live state. The separate API receipt
+stays NodeMutationCommitted with its matching request ID. These shared typed DTOs
+live in fe-runtime::node_history; their serialized REST shapes above are unchanged.

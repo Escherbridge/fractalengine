@@ -69,6 +69,8 @@ pub enum ScopeRule {
     NodeArg(&'static str),
     /// Stored field-definition scope, resolved by id.
     FieldDefArg(&'static str),
+    /// Current or retained journal ancestry for scoped historical reads.
+    HistoryNodeArg(&'static str),
     /// `args[key]` is a verse id; its DB-resolved scope must be covered
     /// (CDL-SPEC10 A5 — `register_device_format`/`list_device_formats` are
     /// verse-scoped, like REST's `resolve_verse_scope` + `write_target_authorized`).
@@ -204,7 +206,7 @@ macro_rules! tool {
 }
 
 use HierarchyTarget::{Fractal, Petal, Verse};
-use ScopeRule::{FieldDefArg, Global, HierarchyArgs, NodeArg, PetalArg, VerseArg};
+use ScopeRule::{FieldDefArg, Global, HierarchyArgs, HistoryNodeArg, NodeArg, PetalArg, VerseArg};
 
 /// DEC-C14: the 20-name mcp_scene_primitives vocabulary + 9 shipped extras = 29.
 static TOOLS: &[ToolSpec] = &[
@@ -222,6 +224,12 @@ static TOOLS: &[ToolSpec] = &[
         "Update a node's position, rotation, and scale (persisted asynchronously, broadcast to live subscribers). Requires editor role + the node's scope."),
     tool!(read_node, Viewer, NodeArg("node_id"),
         "Read an object's full payload by node id (common fields + type-specific stamp/earthwork/path data). Tombstoned nodes read as not found. Requires viewer role + scope."),
+    tool!(get_node_history, Viewer, HistoryNodeArg("node_id"),
+        "Read a bounded durable object journal page with coverage metadata and per-object commit versions. Requires viewer role and current or retained object scope."),
+    tool!(read_node_at_version, Viewer, HistoryNodeArg("node_id"),
+        "Replay one exact object commit version, with explicit unavailable/incomplete coverage. Requires viewer role and current or retained object scope."),
+    tool!(commit_node_mutation, Editor, NodeArg("node_id"),
+        "Commit a typed property replacement/removal or full transform and return persisted state plus history_version. Requires editor role and object scope."),
     tool!(node_address, Viewer, NodeArg("node_id"),
         "Resolve a node id to its stable fe://verse/fractal/petal/node endpoint URI. Requires viewer role + scope."),
     tool!(delete_node, Editor, NodeArg("node_id"),
@@ -484,6 +492,13 @@ async fn authorize(
                 ClaimedAncestry::default(),
             )
         }
+        ScopeRule::HistoryNodeArg(key) => {
+            let id = id_arg(args, key, is_addressable_node_id)?;
+            (
+                crate::node_history::resolved_scope(state, id).await,
+                ClaimedAncestry::default(),
+            )
+        }
         ScopeRule::VerseArg(key) => {
             let verse_id = id_arg(args, key, is_valid_ulid)?;
             let scope = crate::rest::resolve_verse_scope(state, verse_id).await;
@@ -699,7 +714,8 @@ mod tests {
             if let ScopeRule::PetalArg(key)
             | ScopeRule::NodeArg(key)
             | ScopeRule::VerseArg(key)
-            | ScopeRule::FieldDefArg(key) = spec.scope_rule
+            | ScopeRule::FieldDefArg(key)
+            | ScopeRule::HistoryNodeArg(key) = spec.scope_rule
             {
                 assert!(
                     schema["required"]
@@ -712,7 +728,7 @@ mod tests {
         }
         assert_eq!(
             TOOLS.len(),
-            46,
+            49,
             "DEC-C14: 27 non-sim + 5 sim (p2p_asset_streaming S6 added set_petal_render_distance); \
              CDL-SPEC10 A5 added 4 R5 device tools (register/list_device_formats, \
              ingest/list_device_payloads); §screenshot added `screenshot`; \
