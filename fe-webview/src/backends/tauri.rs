@@ -561,7 +561,13 @@ mod tests {
                 let events = RefCell::new(vec![BackendEvent::UrlChanged(
                     "https://stale.example/".parse().unwrap(),
                 )]);
-                enforce(&attempt, &Cell::new(false), &unusable, &events);
+                enforce(
+                    &attempt,
+                    &Cell::new(false),
+                    &unusable,
+                    &events,
+                    &super::super::fixture_surface::NavigationClock::default(),
+                );
                 assert!(unusable.get());
                 let calls = attempt.calls.borrow();
                 assert_eq!(calls.first(), Some(&"cancel"));
@@ -570,6 +576,29 @@ mod tests {
                     matches!(&events.borrow()[..], [BackendEvent::Error(message)] if message == expected)
                 );
             }
+            let one = "https://example.com/web/one";
+            let two = "https://example.com/web/two";
+            let clock = super::super::fixture_surface::NavigationClock::default();
+            let attempt = Attempt {
+                metadata: Some((two.into(), false)),
+                fail_cancel: None,
+                fail_stop: false,
+                fail_close: false,
+                calls: RefCell::new(Vec::new()),
+            };
+            assert!(enforce(
+                &attempt,
+                &Cell::new(false),
+                &Cell::new(false),
+                &RefCell::new(Vec::new()),
+                &clock,
+            ));
+            assert_eq!(&attempt.calls.borrow()[..], &["cancel", "metadata", "allow"]);
+            assert_eq!(
+                clock.page_state(one, 0, one, true),
+                Some(super::super::fixture_surface::PageState::StartingSecond),
+                "the policy owner records the same metadata it actually admitted"
+            );
         }
     }
 
@@ -607,32 +636,56 @@ mod tests {
         );
         #[cfg(windows)]
         {
-            use super::super::fixture_surface::{page_identity_matches, png_dimensions};
+            use super::super::fixture_surface::{
+                page_state, png_dimensions, NavigationClock, PageState,
+            };
             use fe_runtime::qa_portal::MAX_PNG_BYTES;
             use windows::Win32::System::Com::STREAM_SEEK_SET;
             let one = "http://127.0.0.1:49152/web/one";
             let two = "http://127.0.0.1:49152/web/two";
-            assert!(page_identity_matches(one, 7, one, 7, false));
+            assert_eq!(page_state(one, 7, one, 7, None), Some(PageState::Original));
             assert!(
-                !page_identity_matches(one, 7, one, 8, false),
+                page_state(one, 7, one, 8, None).is_none(),
                 "same URL after reload is a different page generation"
             );
             assert!(
-                !page_identity_matches(one, 7, two, 8, false),
+                page_state(one, 7, two, 8, None).is_none(),
                 "capture cannot follow navigation"
             );
             assert!(
-                page_identity_matches(one, 7, two, 8, true),
+                page_state(one, 7, two, 8, Some(two)) == Some(PageState::SecondDocument),
                 "only the fixed second-link job admits its one expected navigation"
             );
-            assert!(!page_identity_matches(one, 7, two, 9, true));
-            assert!(!page_identity_matches(
-                one,
-                7,
-                "https://foreign.example/web/two",
-                8,
-                true
-            ));
+            assert!(page_state(one, 7, two, 9, Some(two)).is_none());
+            assert!(
+                page_state(one, 7, "https://foreign.example/web/two", 8, Some(two)).is_none()
+            );
+            let clock = NavigationClock::default();
+            assert_eq!(clock.page_state(one, 0, one, true), Some(PageState::Original));
+            clock.admit(two.into());
+            assert_eq!(
+                clock.page_state(one, 0, one, true),
+                Some(PageState::StartingSecond),
+                "NavigationStarting can precede the Source change and initial script callback"
+            );
+            assert!(clock.page_state(one, 0, one, false).is_none());
+            assert_eq!(
+                clock.page_state(one, 0, two, true),
+                Some(PageState::SecondDocument)
+            );
+            assert!(
+                clock.page_state(two, 0, two, true).is_none(),
+                "a same-page reload cannot prove a new second document"
+            );
+            clock.bump();
+            assert!(
+                clock.page_state(one, 0, two, true).is_none(),
+                "geometry/history invalidation cancels the admitted transition"
+            );
+            assert!(page_state(one, 7, one, 8, Some(one)).is_none());
+            assert!(
+                page_state(one, 7, two, 8, Some("https://foreign.example/web/two")).is_none()
+            );
             assert!(png_dimensions(b"\x89PNG\r\n\x1a\ntruncated native callback").is_none());
             let (stream, buffer) = super::super::fixture_stream::create();
             unsafe {

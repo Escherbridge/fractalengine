@@ -18,12 +18,38 @@ static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 #[derive(Default)]
 pub(super) struct NavigationClock {
     generation: Cell<u64>,
+    admitted_destination: RefCell<Option<String>>,
     refusals: Cell<u64>,
     last_refusal: RefCell<Option<String>>,
 }
 impl NavigationClock {
     pub(super) fn bump(&self) {
         self.generation.set(self.generation.get().wrapping_add(1));
+        self.admitted_destination.borrow_mut().take();
+    }
+    pub(super) fn admit(&self, raw: String) {
+        self.bump();
+        *self.admitted_destination.borrow_mut() = Some(raw);
+    }
+    pub(super) fn page_state(
+        &self,
+        initial: &str,
+        captured: u64,
+        current: &str,
+        allow_second: bool,
+    ) -> Option<PageState> {
+        let destination = self.admitted_destination.borrow();
+        page_state(
+            initial,
+            captured,
+            current,
+            self.generation.get(),
+            if allow_second {
+                destination.as_deref()
+            } else {
+                None
+            },
+        )
     }
     pub(super) fn refuse(&self, raw: String) {
         self.refusals.set(self.refusals.get().wrapping_add(1));
@@ -107,6 +133,12 @@ impl Surface {
             ));
         }
         let raw = live_source(webview, visible, unusable)?;
+        if matches!(command.operation, FixtureOp::ActivateSecondLink) && !raw.ends_with("/web/one") {
+            return Err(fixture::failure(
+                "portal_fixture_wrong_page",
+                "Second-link verification requires fixture page one",
+            ));
+        }
         if !command.is_current() {
             return Err(fixture::stale());
         }
@@ -152,11 +184,15 @@ impl Surface {
             return Some(Err(fixture::stale()));
         };
         let expected_third = format!("{origin}/web/three");
-        let same = page_identity_matches(&job.initial_url, job.generation, &raw, generation, false);
-        let second = is_second
-            && !same
-            && page_identity_matches(&job.initial_url, job.generation, &raw, generation, true);
-        if !same && !second {
+        if is_second && self.clock.refusals.get() != job.refusals {
+            return Some(Err(fixture::stale()));
+        }
+        let page = self
+            .clock
+            .page_state(&job.initial_url, job.generation, &raw, is_second);
+        let same = page == Some(PageState::Original);
+        let second = page == Some(PageState::SecondDocument);
+        if page.is_none() || (matches!(job.phase, Phase::SecondDocument) && !second) {
             return Some(Err(fixture::stale()));
         }
         match job.phase {
@@ -360,21 +396,35 @@ fn source(webview: &wry::WebView) -> Result<String, QaFailure> {
     Ok(raw)
 }
 
-pub(super) fn page_identity_matches(
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum PageState {
+    Original,
+    StartingSecond,
+    SecondDocument,
+}
+
+pub(super) fn page_state(
     initial: &str,
     captured: u64,
     current: &str,
     generation: u64,
-    allow_second: bool,
-) -> bool {
+    admitted_destination: Option<&str>,
+) -> Option<PageState> {
     if captured == generation && current == initial {
-        return true;
+        return Some(PageState::Original);
     }
-    allow_second
-        && generation == captured.wrapping_add(1)
-        && initial
-            .rsplit_once("/web/")
-            .is_some_and(|(origin, _)| current == format!("{origin}/web/two"))
+    let origin = initial.strip_suffix("/web/one")?;
+    let expected = format!("{origin}/web/two");
+    if generation != captured.wrapping_add(1) || admitted_destination != Some(expected.as_str()) {
+        return None;
+    }
+    if current == initial {
+        Some(PageState::StartingSecond)
+    } else if current == expected {
+        Some(PageState::SecondDocument)
+    } else {
+        None
+    }
 }
 
 fn live_source(webview: &wry::WebView, visible: bool, unusable: bool) -> Result<String, QaFailure> {

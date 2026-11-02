@@ -64,6 +64,7 @@ pub(super) fn enforce(
     fixture_session: &Cell<bool>,
     unusable: &Cell<bool>,
     events: &RefCell<Vec<BackendEvent>>,
+    clock: &super::fixture_surface::NavigationClock,
 ) -> bool {
     if unusable.get() {
         // Closing can reenter callbacks; the terminal transition already owns Stop/Close.
@@ -94,11 +95,13 @@ pub(super) fn enforce(
         if fixture_target {
             fixture_session.set(true);
         }
+        clock.admit(raw.clone());
         if let Ok(url) = raw.parse() {
             events.borrow_mut().push(BackendEvent::UrlChanged(url));
         }
         true
     } else {
+        clock.refuse(raw);
         events.borrow_mut().push(BackendEvent::Error(
             "Navigation refused: URL policy, fixture redirect, or unavailable helper".into(),
         ));
@@ -155,19 +158,13 @@ pub(super) fn install(
                     webview: &callback_native,
                     controller: &callback_controller,
                 };
-                let allowed = enforce(
+                enforce(
                     &attempt,
                     &fixture_session,
                     &callback_unusable,
                     &callback_events,
+                    &clock,
                 );
-                if allowed {
-                    clock.bump();
-                } else if !callback_unusable.get() {
-                    if let Ok((raw, _)) = attempt.metadata() {
-                        clock.refuse(raw);
-                    }
-                }
                 Ok(())
             })),
             &mut token,
