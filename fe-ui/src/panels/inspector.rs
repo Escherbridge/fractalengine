@@ -1494,7 +1494,7 @@ fn inspector_properties_section(
                                 }
                             });
                             if let Some(draft) = inspector.property_editor.drafts.get_mut(key) {
-                                ui.add_enabled_ui(!loading && draft.pending.is_none(), |ui| {
+                                ui.add_enabled_ui(draft.pending.is_none(), |ui| {
                                     if property_value_editor(
                                         ui,
                                         &mut draft.raw,
@@ -1575,7 +1575,7 @@ fn inspector_properties_section(
                 .color(theme::TEXT_SECTION),
         );
         let pending = inspector.property_editor.pending_add.is_some();
-        ui.add_enabled_ui(!loading && !pending, |ui| {
+        ui.add_enabled_ui(!pending, |ui| {
             let key_label = ui.label("New property key");
             let mut changed = ui
                 .add(
@@ -2064,10 +2064,23 @@ mod tests {
             .raw = "true".into();
         submit_property_edit(&mut inspector, "node-1", "flag", &mut ui_mgr, 20.0);
         assert_eq!(ui_mgr.drain_actions().len(), 1);
+        inspector.node_properties_loading = true;
         sync_property_editor_scope(&mut inspector, &nodes, 51.0);
         let timed_out = &inspector.property_editor.drafts["flag"];
         assert!(timed_out.pending.is_none() && timed_out.dirty() && timed_out.error.is_some());
         assert_eq!(inspector.node_properties["flag"], json!(false));
+        inspector
+            .property_editor
+            .drafts
+            .get_mut("flag")
+            .unwrap()
+            .raw = "false ".into();
+        submit_property_edit(&mut inspector, "node-1", "flag", &mut ui_mgr, 51.1);
+        assert!(
+            ui_mgr.drain_actions().is_empty(),
+            "an editable local draft cannot bypass a pending stored-value refresh"
+        );
+        inspector.node_properties_loading = false;
 
         inspector
             .property_editor

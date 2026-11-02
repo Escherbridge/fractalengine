@@ -392,7 +392,9 @@ Adding a duplicate key is refused in favor of Edit. A submitted valid value
 remains visibly unconfirmed until the existing property-readback path contains
 that value; the UI never inserts a speculative value into `node_properties`.
 After 30 seconds without confirmation, the draft remains with an error and
-Refresh stored values can request the existing load action. Cancel discards
+Refresh stored values can request the existing load action. Local payloads
+remain editable after the pending write expires, even if that refresh is
+still loading; Add/Save wait for loaded stored values. Cancel discards
 only an unsent draft and is disabled while a write is awaiting confirmation.
 
 Property cards use wrapping action rows and width-bounded multiline value
