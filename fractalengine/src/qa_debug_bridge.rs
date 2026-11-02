@@ -261,6 +261,7 @@ struct UiState<'w, 's> {
 fn dialog_title(dialog: &ActiveDialog) -> Option<&'static str> {
     match dialog {
         ActiveDialog::None => None,
+        ActiveDialog::TreeAppearance { .. } => Some("Tree appearance"),
         ActiveDialog::CreateEntity { .. } => Some("Create entity"),
         ActiveDialog::ContextMenu { .. } => Some("Context menu"),
         ActiveDialog::GltfImport { .. } => Some("Import GLTF"),
