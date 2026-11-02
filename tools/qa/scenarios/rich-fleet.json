@@ -1,0 +1,1178 @@
+{
+  "format": "fe-rich-data-v1",
+  "id": "rich-fleet-v1",
+  "description": "Real committed objects, version-pinned affine derivations, out-of-order measurements and explicit per-object replay. No automatic rule engine or global-time snapshot is implied.",
+  "step_timeout_seconds": 20,
+  "objects": {
+    "Alpha": {
+      "name": "Fleet Alpha",
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "properties": {
+        "qa_fixture": "rich-fleet-v1",
+        "schema_version": 1,
+        "metadata": {
+          "tags": [
+            "fleet",
+            "qa"
+          ],
+          "maintenance": {
+            "due": "2026-12-01",
+            "enabled": true
+          }
+        },
+        "disposable_note": {
+          "remove_me": true,
+          "values": [
+            1,
+            2,
+            3
+          ]
+        }
+      }
+    },
+    "Beta": {
+      "name": "Fleet Beta",
+      "position": [
+        10,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "properties": {
+        "qa_fixture": "rich-fleet-v1",
+        "schema_version": 1,
+        "metadata": {
+          "tags": [
+            "fleet",
+            "qa"
+          ],
+          "maintenance": {
+            "due": "2026-12-01",
+            "enabled": true
+          }
+        },
+        "calibration": {
+          "gain": 0.5,
+          "bias": -1,
+          "axes": [
+            "x",
+            "z"
+          ],
+          "sensor": {
+            "serial": "BETA-01",
+            "range": [
+              -40,
+              85
+            ]
+          }
+        }
+      }
+    },
+    "Gamma": {
+      "name": "Fleet Gamma",
+      "position": [
+        20,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "properties": {
+        "qa_fixture": "rich-fleet-v1",
+        "schema_version": 1,
+        "metadata": {
+          "tags": [
+            "fleet",
+            "qa"
+          ],
+          "maintenance": {
+            "due": "2026-12-01",
+            "enabled": true
+          }
+        },
+        "calibration": {
+          "gain": 1,
+          "bias": 0,
+          "axes": [
+            "x",
+            "z"
+          ],
+          "sensor": {
+            "serial": "GAMMA-01",
+            "range": [
+              -40,
+              85
+            ]
+          }
+        }
+      }
+    }
+  },
+  "schemas": {
+    "calibration-v1": {
+      "key": "calibration",
+      "value_type": "object",
+      "descriptor": {
+        "version": 1,
+        "schema": {
+          "type": "object",
+          "required": [
+            "gain",
+            "bias",
+            "axes",
+            "sensor"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "gain": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "bias": {
+              "type": "number",
+              "minimum": -100,
+              "maximum": 100
+            },
+            "axes": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 3,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "x",
+                  "y",
+                  "z"
+                ]
+              }
+            },
+            "sensor": {
+              "type": "object",
+              "required": [
+                "serial",
+                "range"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "serial": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                },
+                "range": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "items": {
+                    "type": "number"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "metadata-v1": {
+      "key": "metadata",
+      "value_type": "object",
+      "descriptor": {
+        "version": 1,
+        "schema": {
+          "type": "object",
+          "required": [
+            "tags",
+            "maintenance"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "tags": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 32
+              }
+            },
+            "maintenance": {
+              "type": "object",
+              "required": [
+                "due",
+                "enabled"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "due": {
+                  "type": "string",
+                  "minLength": 10,
+                  "maxLength": 10
+                },
+                "enabled": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "metadata-v2": {
+      "key": "metadata",
+      "value_type": "object",
+      "descriptor": {
+        "version": 2,
+        "schema": {
+          "type": "object",
+          "required": [
+            "tags",
+            "maintenance"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "tags": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 32
+              }
+            },
+            "maintenance": {
+              "type": "object",
+              "required": [
+                "due",
+                "enabled"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "due": {
+                  "type": "string",
+                  "minLength": 10,
+                  "maxLength": 10
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "last_service": {
+                  "type": "string",
+                  "minLength": 10,
+                  "maxLength": 10
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "metadata-v3-incompatible": {
+      "key": "metadata",
+      "value_type": "object",
+      "descriptor": {
+        "version": 3,
+        "schema": {
+          "type": "object",
+          "required": [
+            "tags",
+            "maintenance"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "tags": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 32
+              }
+            },
+            "maintenance": {
+              "type": "object",
+              "required": [
+                "due",
+                "enabled",
+                "last_service"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "due": {
+                  "type": "string",
+                  "minLength": 10,
+                  "maxLength": 10
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "last_service": {
+                  "type": "string",
+                  "minLength": 10,
+                  "maxLength": 10
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "oracles": {
+    "raw-full": {
+      "Alpha": {
+        "times_ms": [
+          1793404800000,
+          1793404810000,
+          1793404820000
+        ],
+        "values": [
+          10,
+          11,
+          12
+        ],
+        "stats": {
+          "count": 3,
+          "min": 10,
+          "max": 12,
+          "mean": 11,
+          "sum": 33
+        }
+      },
+      "Beta": {
+        "times_ms": [
+          1793404800000,
+          1793404810000,
+          1793404820000
+        ],
+        "values": [
+          20,
+          22,
+          24
+        ],
+        "stats": {
+          "count": 3,
+          "min": 20,
+          "max": 24,
+          "mean": 22,
+          "sum": 66
+        }
+      }
+    },
+    "calibrated-full": {
+      "Alpha": {
+        "times_ms": [
+          1793404800000,
+          1793404810000,
+          1793404820000
+        ],
+        "values": [
+          21,
+          23,
+          25
+        ],
+        "stats": {
+          "count": 3,
+          "min": 21,
+          "max": 25,
+          "mean": 23,
+          "sum": 69
+        }
+      },
+      "Beta": {
+        "times_ms": [
+          1793404800000,
+          1793404810000,
+          1793404820000
+        ],
+        "values": [
+          9,
+          10,
+          11
+        ],
+        "stats": {
+          "count": 3,
+          "min": 9,
+          "max": 11,
+          "mean": 10,
+          "sum": 30
+        }
+      }
+    },
+    "calibrated-half-open": {
+      "Alpha": {
+        "times_ms": [
+          1793404800000,
+          1793404810000
+        ],
+        "values": [
+          21,
+          23
+        ],
+        "stats": {
+          "count": 2,
+          "min": 21,
+          "max": 23,
+          "mean": 22,
+          "sum": 44
+        }
+      },
+      "Beta": {
+        "times_ms": [
+          1793404800000,
+          1793404810000
+        ],
+        "values": [
+          9,
+          10
+        ],
+        "stats": {
+          "count": 2,
+          "min": 9,
+          "max": 10,
+          "mean": 9.5,
+          "sum": 19
+        }
+      }
+    },
+    "calibrated-latest": {
+      "Alpha": {
+        "times_ms": [
+          1793404820000
+        ],
+        "values": [
+          25
+        ],
+        "stats": {
+          "count": 1,
+          "min": 25,
+          "max": 25,
+          "mean": 25,
+          "sum": 25
+        }
+      },
+      "Beta": {
+        "times_ms": [
+          1793404820000
+        ],
+        "values": [
+          11
+        ],
+        "stats": {
+          "count": 1,
+          "min": 11,
+          "max": 11,
+          "mean": 11,
+          "sum": 11
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "upload-scene",
+      "op": "upload_asset",
+      "asset": "cube",
+      "path": "fractalengine/assets/samples/info_panel.glb"
+    },
+    {
+      "id": "schema-calibration-v1",
+      "op": "install_schema",
+      "schema": "calibration-v1"
+    },
+    {
+      "id": "schema-metadata-v1",
+      "op": "install_schema",
+      "schema": "metadata-v1"
+    },
+    {
+      "id": "create-alpha",
+      "op": "create_object",
+      "object": "Alpha",
+      "asset": "cube",
+      "expect_version": 1
+    },
+    {
+      "id": "create-beta",
+      "op": "create_object",
+      "object": "Beta",
+      "asset": "cube",
+      "expect_version": 1
+    },
+    {
+      "id": "calibrate-alpha-v2",
+      "op": "set_property",
+      "object": "Alpha",
+      "key": "calibration",
+      "value": {
+        "gain": 2,
+        "bias": 1,
+        "axes": [
+          "x",
+          "z"
+        ],
+        "sensor": {
+          "serial": "ALPHA-01",
+          "range": [
+            -40,
+            85
+          ]
+        }
+      },
+      "expect_version": 2
+    },
+    {
+      "id": "move-alpha-v3",
+      "op": "transform",
+      "object": "Alpha",
+      "position": [
+        3,
+        0,
+        4
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "expect_version": 3
+    },
+    {
+      "id": "move-beta-v2",
+      "op": "transform",
+      "object": "Beta",
+      "position": [
+        10,
+        2,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "expect_version": 2
+    },
+    {
+      "id": "checkpoint-before-gamma",
+      "op": "checkpoint",
+      "expect": {
+        "Alpha": {
+          "position": [
+            3,
+            0,
+            4
+          ],
+          "properties": {
+            "calibration": {
+              "gain": 2,
+              "bias": 1,
+              "axes": [
+                "x",
+                "z"
+              ],
+              "sensor": {
+                "serial": "ALPHA-01",
+                "range": [
+                  -40,
+                  85
+                ]
+              }
+            },
+            "metadata": {
+              "tags": [
+                "fleet",
+                "qa"
+              ],
+              "maintenance": {
+                "due": "2026-12-01",
+                "enabled": true
+              }
+            },
+            "schema_version": 1
+          }
+        },
+        "Beta": {
+          "position": [
+            10,
+            2,
+            0
+          ],
+          "properties": {
+            "calibration": {
+              "gain": 0.5,
+              "bias": -1,
+              "axes": [
+                "x",
+                "z"
+              ],
+              "sensor": {
+                "serial": "BETA-01",
+                "range": [
+                  -40,
+                  85
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "raw-t0",
+      "op": "append_readings",
+      "metric": "temperature_raw",
+      "units": "C",
+      "recorded_at": "2026-10-31T00:00:00Z",
+      "values": {
+        "Alpha": 10,
+        "Beta": 20
+      }
+    },
+    {
+      "id": "derive-t0",
+      "op": "derive_metric",
+      "source_metric": "temperature_raw",
+      "target_metric": "temperature_calibrated",
+      "units": "C",
+      "start_ms": 1793404800000,
+      "end_ms": 1793404800001,
+      "calibration_versions": {
+        "Alpha": 2,
+        "Beta": 1
+      }
+    },
+    {
+      "id": "recalibrate-alpha-v4",
+      "op": "set_property",
+      "object": "Alpha",
+      "key": "calibration",
+      "value": {
+        "gain": 3,
+        "bias": 1,
+        "axes": [
+          "x",
+          "z"
+        ],
+        "sensor": {
+          "serial": "ALPHA-01",
+          "range": [
+            -40,
+            85
+          ]
+        }
+      },
+      "expect_version": 4
+    },
+    {
+      "id": "create-gamma",
+      "op": "create_object",
+      "object": "Gamma",
+      "asset": "cube",
+      "expect_version": 1
+    },
+    {
+      "id": "move-alpha-v5",
+      "op": "transform",
+      "object": "Alpha",
+      "position": [
+        6,
+        0,
+        8
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "expect_version": 5
+    },
+    {
+      "id": "move-beta-v3",
+      "op": "transform",
+      "object": "Beta",
+      "position": [
+        10,
+        2,
+        6
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "expect_version": 3
+    },
+    {
+      "id": "move-gamma-v2",
+      "op": "transform",
+      "object": "Gamma",
+      "position": [
+        20,
+        0,
+        4
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "expect_version": 2
+    },
+    {
+      "id": "raw-t2",
+      "op": "append_readings",
+      "metric": "temperature_raw",
+      "units": "C",
+      "recorded_at": "2026-10-31T00:00:20Z",
+      "values": {
+        "Alpha": 12,
+        "Beta": 24
+      }
+    },
+    {
+      "id": "derive-t2",
+      "op": "derive_metric",
+      "source_metric": "temperature_raw",
+      "target_metric": "temperature_calibrated",
+      "units": "C",
+      "start_ms": 1793404820000,
+      "end_ms": 1793404820001,
+      "calibration_versions": {
+        "Alpha": 2,
+        "Beta": 1
+      }
+    },
+    {
+      "id": "raw-t1-late",
+      "op": "append_readings",
+      "metric": "temperature_raw",
+      "units": "C",
+      "recorded_at": "2026-10-31T00:00:10Z",
+      "values": {
+        "Alpha": 11,
+        "Beta": 22
+      }
+    },
+    {
+      "id": "derive-t1-late",
+      "op": "derive_metric",
+      "source_metric": "temperature_raw",
+      "target_metric": "temperature_calibrated",
+      "units": "C",
+      "start_ms": 1793404810000,
+      "end_ms": 1793404810001,
+      "calibration_versions": {
+        "Alpha": 2,
+        "Beta": 1
+      }
+    },
+    {
+      "id": "rotate-scale-alpha-v6",
+      "op": "transform",
+      "object": "Alpha",
+      "position": [
+        6,
+        0,
+        8
+      ],
+      "rotation": [
+        0,
+        1.5707963267948966,
+        0
+      ],
+      "scale": [
+        2,
+        1,
+        0.5
+      ],
+      "expect_version": 6
+    },
+    {
+      "id": "schema-metadata-v2",
+      "op": "install_schema",
+      "schema": "metadata-v2"
+    },
+    {
+      "id": "metadata-alpha-v7",
+      "op": "set_property",
+      "object": "Alpha",
+      "key": "metadata",
+      "value": {
+        "tags": [
+          "fleet",
+          "qa"
+        ],
+        "maintenance": {
+          "due": "2026-12-01",
+          "enabled": true,
+          "last_service": "2026-10-31"
+        }
+      },
+      "expect_version": 7
+    },
+    {
+      "id": "schema-tag-alpha-v8",
+      "op": "set_property",
+      "object": "Alpha",
+      "key": "schema_version",
+      "value": 2,
+      "expect_version": 8
+    },
+    {
+      "id": "delete-alpha-note-v9",
+      "op": "delete_property",
+      "object": "Alpha",
+      "key": "disposable_note",
+      "expect_version": 9
+    },
+    {
+      "id": "reject-invalid-calibration",
+      "op": "reject_property",
+      "object": "Alpha",
+      "key": "calibration",
+      "value": {
+        "gain": "not-a-number",
+        "bias": 1,
+        "axes": [
+          "x",
+          "z"
+        ],
+        "sensor": {
+          "serial": "ALPHA-01",
+          "range": [
+            -40,
+            85
+          ]
+        }
+      },
+      "reason_contains": "gain"
+    },
+    {
+      "id": "reject-incompatible-schema",
+      "op": "reject_schema",
+      "schema": "metadata-v3-incompatible",
+      "reason_contains": "last_service"
+    },
+    {
+      "id": "checkpoint-final",
+      "op": "checkpoint",
+      "expect": {
+        "Alpha": {
+          "position": [
+            6,
+            0,
+            8
+          ],
+          "rotation": [
+            0,
+            1.5707963267948966,
+            0
+          ],
+          "scale": [
+            2,
+            1,
+            0.5
+          ],
+          "properties": {
+            "calibration": {
+              "gain": 3,
+              "bias": 1,
+              "axes": [
+                "x",
+                "z"
+              ],
+              "sensor": {
+                "serial": "ALPHA-01",
+                "range": [
+                  -40,
+                  85
+                ]
+              }
+            },
+            "metadata": {
+              "tags": [
+                "fleet",
+                "qa"
+              ],
+              "maintenance": {
+                "due": "2026-12-01",
+                "enabled": true,
+                "last_service": "2026-10-31"
+              }
+            },
+            "schema_version": 2
+          }
+        },
+        "Beta": {
+          "position": [
+            10,
+            2,
+            6
+          ],
+          "properties": {
+            "calibration": {
+              "gain": 0.5,
+              "bias": -1,
+              "axes": [
+                "x",
+                "z"
+              ],
+              "sensor": {
+                "serial": "BETA-01",
+                "range": [
+                  -40,
+                  85
+                ]
+              }
+            },
+            "metadata": {
+              "tags": [
+                "fleet",
+                "qa"
+              ],
+              "maintenance": {
+                "due": "2026-12-01",
+                "enabled": true
+              }
+            },
+            "schema_version": 1
+          }
+        },
+        "Gamma": {
+          "position": [
+            20,
+            0,
+            4
+          ],
+          "properties": {
+            "calibration": {
+              "gain": 1,
+              "bias": 0,
+              "axes": [
+                "x",
+                "z"
+              ],
+              "sensor": {
+                "serial": "GAMMA-01",
+                "range": [
+                  -40,
+                  85
+                ]
+              }
+            },
+            "metadata": {
+              "tags": [
+                "fleet",
+                "qa"
+              ],
+              "maintenance": {
+                "due": "2026-12-01",
+                "enabled": true
+              }
+            },
+            "schema_version": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "movement-oracle",
+      "op": "distances",
+      "expected_m": {
+        "Alpha": 10,
+        "Beta": 8,
+        "Gamma": 4
+      }
+    },
+    {
+      "id": "alpha-paginated-history",
+      "op": "history",
+      "object": "Alpha",
+      "after_version": 1,
+      "limit": 2,
+      "expect_versions": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "mcp_parity": true
+    },
+    {
+      "id": "alpha-earlier-state",
+      "op": "state_at",
+      "object": "Alpha",
+      "version": 3,
+      "expect": {
+        "position": [
+          3,
+          0,
+          4
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ],
+        "properties": {
+          "calibration": {
+            "gain": 2,
+            "bias": 1,
+            "axes": [
+              "x",
+              "z"
+            ],
+            "sensor": {
+              "serial": "ALPHA-01",
+              "range": [
+                -40,
+                85
+              ]
+            }
+          },
+          "metadata": {
+            "tags": [
+              "fleet",
+              "qa"
+            ],
+            "maintenance": {
+              "due": "2026-12-01",
+              "enabled": true
+            }
+          },
+          "schema_version": 1
+        }
+      },
+      "mcp_parity": true
+    },
+    {
+      "id": "query-raw",
+      "op": "query_metrics",
+      "metric": "temperature_raw",
+      "start_ms": 1793404800000,
+      "end_ms": 1793404830000,
+      "oracle": "raw-full",
+      "kind": "rows",
+      "mode": "local",
+      "mcp_parity": false
+    },
+    {
+      "id": "query-calibrated",
+      "op": "query_metrics",
+      "metric": "temperature_calibrated",
+      "start_ms": 1793404800000,
+      "end_ms": 1793404830000,
+      "oracle": "calibrated-full",
+      "kind": "rows",
+      "mode": "local",
+      "mcp_parity": false
+    },
+    {
+      "id": "aggregate-calibrated",
+      "op": "query_metrics",
+      "metric": "temperature_calibrated",
+      "start_ms": 1793404800000,
+      "end_ms": 1793404830000,
+      "oracle": "calibrated-full",
+      "kind": "aggregate",
+      "mode": "local",
+      "mcp_parity": false
+    },
+    {
+      "id": "distributed-calibrated",
+      "op": "query_metrics",
+      "metric": "temperature_calibrated",
+      "start_ms": 1793404800000,
+      "end_ms": 1793404830000,
+      "oracle": "calibrated-full",
+      "kind": "aggregate",
+      "mode": "distributed",
+      "mcp_parity": true
+    },
+    {
+      "id": "half-open-window",
+      "op": "query_metrics",
+      "metric": "temperature_calibrated",
+      "start_ms": 1793404800000,
+      "end_ms": 1793404820000,
+      "oracle": "calibrated-half-open",
+      "kind": "rows",
+      "mode": "local",
+      "mcp_parity": false
+    },
+    {
+      "id": "latest-event-time",
+      "op": "query_metrics",
+      "metric": "temperature_calibrated",
+      "start_ms": 1793404800000,
+      "end_ms": 1793404830000,
+      "oracle": "calibrated-latest",
+      "kind": "latest",
+      "mode": "distributed",
+      "mcp_parity": true
+    }
+  ]
+}

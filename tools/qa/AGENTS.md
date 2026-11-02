@@ -329,3 +329,24 @@ It flags changed generations or more than the source-derived2000 all-level
 ring entries as possible retention gaps. An empty warning delta with a gap is
 not proof of a quiet action. Capture these counters before stopping the app;
 they cannot be reconstructed from old warning-only output afterward.
+
+## §rich-data
+
+`scenarios/rich-fleet.json` is the editable rich-data intent and independent oracle set. Logical Alpha/Beta/Gamma
+names are mapped to actual returned object IDs. Schemas, initial objects and expected event-time arrays are data;
+the ordered steps describe explicit API operations. `rich_data_scenario.py` validates this intent before effects:
+bounded file/depth/array/step sizes, unique step IDs, declared references, finite XYZ/ranges/timeouts, UTC event
+timestamps, consecutive schema revisions and a fixed operation vocabulary. Unknown fields/operations are refused.
+The validator is structural, not a replacement for the authoritative bounded schema validator or a passing run.
+
+The scenario targets both committed ordinary-object history and appended measurements. Alpha's baseline v1,
+calibration v2 and transform v3 are distinct commits; later current calibration gain3 must not rewrite v3 gain2.
+Checkpoint version maps describe explicit per-object cuts, not a global wall-time snapshot. Measurement times are
+separate sensor event times, delivered T0/T2/T1. Affine derivation is an explicit driver action pinned to the actual
+historical calibration; no automatic rule engine, HLC override, canonical migration or plugin receipt is implied.
+
+The independent oracles require per-anchor calibrated values21/23/25 and9/10/11, means23/10, sums69/30 and stored
+three-dimensional travel10/8/4m. A fleet-only sum99 is insufficient because the raw values also sum99. Schema
+evolution is additive optional metadata, followed by a rejected incompatible revision. Definitions use the new
+bounded `{version,schema}` vocabulary, not unrestricted JSON Schema. Current source/receipt contracts must be
+reconciled before execution; unavailable committed/history APIs cannot fall back to queued legacy mutations.
