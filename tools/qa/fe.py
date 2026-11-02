@@ -732,13 +732,17 @@ def command_wait_for(run, args):
 def log_watermark(run, verse):
     try:
         snapshot = probe(run, "logs", verse, {"level":"warn"})
-        return snapshot.get("generation"), snapshot.get("latest_seq", 0)
+        generation, seq = snapshot.get("generation"), snapshot.get("latest_seq")
+        if type(generation) is not int or generation < 0 or type(seq) is not int or seq < 0:
+            raise Refused(0, "invalid_response", "log watermark must contain nonnegative integer counters")
+        return generation, seq
     except (Refused, NotRunning):
         return None
 
 
 def print_action_logs(run, verse, watermark):
     if watermark is None:
+        emit({"new_logs_unavailable":"initial log watermark was unavailable"})
         return
     try:
         generation, seq = watermark
@@ -746,7 +750,14 @@ def print_action_logs(run, verse, watermark):
         entries = snapshot.get("entries")
         if not isinstance(entries, list):
             raise Refused(0, "invalid_response", "logs entries must be an array")
-        emit({"new_logs":entries, "generation_changed":snapshot.get("generation") != generation})
+        after_generation, after_seq = snapshot.get("generation"), snapshot.get("latest_seq")
+        changed = after_generation != generation
+        delta = after_seq - seq if type(after_seq) is int else None
+        emit({"new_logs":entries, "generation_changed":changed,
+              "log_watermark":{"generation":generation,"seq":seq},
+              "log_after":{"generation":after_generation,"seq":after_seq},
+              "retention":{"possible_gap":changed or delta is None or delta < 0 or delta > 2000,
+                           "seq_delta":delta,"source_derived_capacity":2000}})
     except (Refused, NotRunning) as error:
         emit({"new_logs_unavailable":str(error)})
 

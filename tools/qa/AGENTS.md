@@ -323,3 +323,9 @@ Scrolling an off-clip menu item into view is a real prerequisite, even when
 AccessKit still reports its full bounds and hidden=false. Input results expose
 the chosen rectangle and whether geometry came from observed hit/clip data or
 an explicit bounds/window fallback with clipping unknown.
+
+Action log output retains the observed starting watermark and ending counters.
+It flags changed generations or more than the source-derived2000 all-level
+ring entries as possible retention gaps. An empty warning delta with a gap is
+not proof of a quiet action. Capture these counters before stopping the app;
+they cannot be reconstructed from old warning-only output afterward.
