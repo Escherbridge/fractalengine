@@ -1776,9 +1776,8 @@ mod tests {
         crate::handlers::entity_property::set_entity_property_as(&db,&undo_node,"gpx_points",&stamp_points,"did:qa").await.unwrap();
         let stamp_descriptor=serde_json::json!({"asset_path":"blob://fixture.glb","spacing_mode":"fixed_count","spacing_value":0.0,"count":3,"tangent_align":true});
         crate::handlers::entity_property::set_entity_property_as(&db,&undo_node,"path_asset",&stamp_descriptor,"did:qa").await.unwrap();
-        let stamp_bounds=serde_json::json!({"type":"Polygon","coordinates":[[[-10.0,-10.0],[10.0,-10.0],[10.0,10.0],[-10.0,10.0],[-10.0,-10.0]]]});
-        db.query("UPDATE petal SET terrain=NONE, description=NONE, hexon_manifest=NONE, visibility_groups=NONE, view_hidden=NONE, render_distance=NONE, bounds=<geometry<polygon>> $bounds WHERE petal_id='tree-other-petal'")
-            .bind(("bounds",stamp_bounds.clone())).await.unwrap().check().unwrap();
+        db.query("UPDATE petal SET terrain=NONE, description=NONE, hexon_manifest=NONE, visibility_groups=NONE, view_hidden=NONE, render_distance=NONE, bounds=<geometry<polygon>> {type:'Polygon',coordinates:[[[-10.0,-10.0],[10.0,-10.0],[10.0,10.0],[-10.0,10.0],[-10.0,-10.0]]]} WHERE petal_id='tree-other-petal'")
+            .await.unwrap().check().unwrap();
         let petal_rows: Vec<serde_json::Value> = db.query("SELECT *, terrain=NONE AS terrain_absent, description=NONE AS description_absent, visibility_groups=NONE AS groups_absent FROM petal WHERE petal_id='tree-other-petal'")
             .await.unwrap().check().unwrap().take(0).unwrap();
         assert_eq!(petal_rows[0]["terrain_absent"],true,"exercise actual Surreal NONE rather than a JSON null terrain");
@@ -1832,7 +1831,7 @@ mod tests {
                 "path"=>{db.query("UPDATE node SET petal_id='tree-other-petal' WHERE node_id=$id").bind(("id",undo_node.clone())).await.unwrap().check().unwrap();}
                 "descriptor"|"points"=>{db.query("UPDATE node SET properties=$properties WHERE node_id=$id").bind(("id",undo_node.clone())).bind(("properties",promotion_source.clone())).await.unwrap().check().unwrap();}
                 "terrain"=>{db.query("UPDATE petal SET terrain=NONE WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
-                "bounds"=>{db.query("UPDATE petal SET bounds=<geometry<polygon>> $bounds WHERE petal_id='tree-other-petal'").bind(("bounds",stamp_bounds.clone())).await.unwrap().check().unwrap();}
+                "bounds"=>{db.query("UPDATE petal SET bounds=<geometry<polygon>> {type:'Polygon',coordinates:[[[-10.0,-10.0],[10.0,-10.0],[10.0,10.0],[-10.0,10.0],[-10.0,-10.0]]]} WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
                 "metadata"=>{db.query("UPDATE petal SET view_hidden=NONE WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
                 "collision"=>{db.query("DELETE node WHERE node_id=$id").bind(("id",promotion_node.clone())).await.unwrap().check().unwrap();}
                 "schema"=>{db.query("DELETE field_def WHERE field_def_id='qa-promotion-schema'").await.unwrap().check().unwrap();}
@@ -1884,7 +1883,7 @@ mod tests {
                 "path"=>{db.query("UPDATE node SET petal_id='tree-other-petal' WHERE node_id=$id").bind(("id",undo_node.clone())).await.unwrap().check().unwrap();}
                 "row"=>{db.query("UPDATE node SET interactive=true WHERE node_id=$id").bind(("id",stamp_node.clone())).await.unwrap().check().unwrap();}
                 "terrain"=>{db.query("UPDATE petal SET terrain=NONE WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
-                "bounds"=>{db.query("UPDATE petal SET bounds=<geometry<polygon>> $bounds WHERE petal_id='tree-other-petal'").bind(("bounds",stamp_bounds.clone())).await.unwrap().check().unwrap();}
+                "bounds"=>{db.query("UPDATE petal SET bounds=<geometry<polygon>> {type:'Polygon',coordinates:[[[-10.0,-10.0],[10.0,-10.0],[10.0,10.0],[-10.0,10.0],[-10.0,-10.0]]]} WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
                 "metadata"=>{db.query("UPDATE petal SET view_hidden=NONE WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
                 "schema"=>{db.query("DELETE field_def WHERE field_def_id='qa-stamp-schema-race'").await.unwrap().check().unwrap();}
                 _=>{db.query("REMOVE EVENT fail_stamp_fact ON TABLE node_log").await.unwrap().check().unwrap();}
