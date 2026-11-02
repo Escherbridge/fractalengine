@@ -41,6 +41,20 @@
             2,
             3
           ]
+        },
+        "telemetry": {
+          "sequence": 9007199254740993,
+          "samples": [
+            null,
+            true,
+            {
+              "axes": [
+                "x",
+                "z"
+              ],
+              "offset": 0.125
+            }
+          ]
         }
       }
     },
@@ -1174,5 +1188,85 @@
       "mode": "distributed",
       "mcp_parity": true
     }
-  ]
+  ],
+  "coverage": {
+    "upload-scene": [
+      "F116.mcp-upload-asset"
+    ],
+    "schema-calibration-v1": [
+      "F129.schema-install-v1",
+      "F116.rest-put-api-v1-field-defs-by-id-field-def-id-schema",
+      "F116.rest-get-api-v1-field-defs-by-id-field-def-id-schema",
+      "F116.mcp-get-field-schema"
+    ],
+    "create-alpha": [
+      "F129.nested-typed-roundtrip",
+      "F129.exact-large-integer",
+      "F130.atomic-create-baseline",
+      "F116.rest-post-api-v1-petals-petal-id-objects"
+    ],
+    "calibrate-alpha-v2": [
+      "F130.committed-property-set",
+      "F116.rest-post-api-v1-nodes-node-id-mutations"
+    ],
+    "rotate-scale-alpha-v6": [
+      "F130.full-transform"
+    ],
+    "delete-alpha-note-v9": [
+      "F130.property-delete"
+    ],
+    "schema-metadata-v2": [
+      "F129.additive-schema-evolution"
+    ],
+    "reject-invalid-calibration": [
+      "F129.rejected-value-atomic"
+    ],
+    "reject-incompatible-schema": [
+      "F129.rejected-schema-atomic"
+    ],
+    "checkpoint-final": [
+      "F130.per-object-checkpoint-map"
+    ],
+    "movement-oracle": [
+      "F131.stored-xyz-distance"
+    ],
+    "alpha-paginated-history": [
+      "F130.paginated-history",
+      "F130.per-object-version-order",
+      "F116.rest-get-api-v1-nodes-node-id-history",
+      "F116.mcp-get-node-history"
+    ],
+    "alpha-earlier-state": [
+      "F130.earlier-replay",
+      "F130.current-state-unchanged",
+      "F116.rest-get-api-v1-nodes-node-id-state",
+      "F116.mcp-read-node-at-version"
+    ],
+    "derive-t1-late": [
+      "F129.schema-version-provenance",
+      "F131.pinned-affine-calibration",
+      "F131.payload-provenance-bytes"
+    ],
+    "query-raw": [
+      "F131.chronological-raw-six"
+    ],
+    "query-calibrated": [
+      "F131.derived-per-anchor-arrays"
+    ],
+    "aggregate-calibrated": [
+      "F131.per-anchor-statistics"
+    ],
+    "half-open-window": [
+      "F131.half-open-window"
+    ],
+    "latest-event-time": [
+      "F131.latest-event-time"
+    ],
+    "restart-state-and-blobs": [
+      "F132.same-root-current-state",
+      "F132.earlier-version-replay",
+      "F132.persisted-schemas",
+      "F132.renderable-and-provenance-assets"
+    ]
+  }
 }

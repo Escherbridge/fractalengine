@@ -4621,6 +4621,201 @@
       "id": "F128.missing-renderer",
       "family": "F128",
       "reachability": "U"
+    },
+    {
+      "id": "F129.schema-install-v1",
+      "family": "F129",
+      "reachability": "A"
+    },
+    {
+      "id": "F129.nested-typed-roundtrip",
+      "family": "F129",
+      "reachability": "A"
+    },
+    {
+      "id": "F129.exact-large-integer",
+      "family": "F129",
+      "reachability": "A"
+    },
+    {
+      "id": "F129.additive-schema-evolution",
+      "family": "F129",
+      "reachability": "A"
+    },
+    {
+      "id": "F129.rejected-value-atomic",
+      "family": "F129",
+      "reachability": "A"
+    },
+    {
+      "id": "F129.rejected-schema-atomic",
+      "family": "F129",
+      "reachability": "A"
+    },
+    {
+      "id": "F129.schema-version-provenance",
+      "family": "F129",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.atomic-create-baseline",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.committed-property-set",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.property-delete",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.full-transform",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.per-object-checkpoint-map",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.paginated-history",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.per-object-version-order",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.earlier-replay",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.current-state-unchanged",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F131.pinned-affine-calibration",
+      "family": "F131",
+      "reachability": "A"
+    },
+    {
+      "id": "F131.payload-provenance-bytes",
+      "family": "F131",
+      "reachability": "A"
+    },
+    {
+      "id": "F131.chronological-raw-six",
+      "family": "F131",
+      "reachability": "A"
+    },
+    {
+      "id": "F131.derived-per-anchor-arrays",
+      "family": "F131",
+      "reachability": "A"
+    },
+    {
+      "id": "F131.per-anchor-statistics",
+      "family": "F131",
+      "reachability": "A"
+    },
+    {
+      "id": "F131.half-open-window",
+      "family": "F131",
+      "reachability": "A"
+    },
+    {
+      "id": "F131.latest-event-time",
+      "family": "F131",
+      "reachability": "A"
+    },
+    {
+      "id": "F131.stored-xyz-distance",
+      "family": "F131",
+      "reachability": "A"
+    },
+    {
+      "id": "F132.same-root-current-state",
+      "family": "F132",
+      "reachability": "A"
+    },
+    {
+      "id": "F132.earlier-version-replay",
+      "family": "F132",
+      "reachability": "A"
+    },
+    {
+      "id": "F132.persisted-schemas",
+      "family": "F132",
+      "reachability": "A"
+    },
+    {
+      "id": "F132.renderable-and-provenance-assets",
+      "family": "F132",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-petals-petal-id-objects",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-nodes-node-id-mutations",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-nodes-node-id-history",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-nodes-node-id-state",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-field-defs-by-id-field-def-id-schema",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-put-api-v1-field-defs-by-id-field-def-id-schema",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-get-node-history",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-read-node-at-version",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-commit-node-mutation",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-get-field-schema",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.mcp-set-field-schema",
+      "family": "F116",
+      "reachability": "A"
     }
   ],
   "gold_tasks": {
@@ -4637,7 +4832,31 @@
       "F034.run-button",
       "F034.ctrl-enter",
       "F036.numeric-ascending",
-      "F038.select-current-row"
+      "F038.select-current-row",
+      "F129.schema-install-v1",
+      "F129.nested-typed-roundtrip",
+      "F129.exact-large-integer",
+      "F129.additive-schema-evolution",
+      "F129.rejected-value-atomic",
+      "F129.rejected-schema-atomic",
+      "F129.schema-version-provenance",
+      "F130.atomic-create-baseline",
+      "F130.committed-property-set",
+      "F130.property-delete",
+      "F130.full-transform",
+      "F130.per-object-checkpoint-map",
+      "F130.paginated-history",
+      "F130.per-object-version-order",
+      "F130.earlier-replay",
+      "F130.current-state-unchanged",
+      "F131.pinned-affine-calibration",
+      "F131.payload-provenance-bytes",
+      "F131.chronological-raw-six",
+      "F131.derived-per-anchor-arrays",
+      "F131.per-anchor-statistics",
+      "F131.half-open-window",
+      "F131.latest-event-time",
+      "F131.stored-xyz-distance"
     ],
     "G4": [
       "F054.raise-square-UI",
@@ -4679,7 +4898,11 @@
       "F117.durable-setting",
       "F117.durable-map",
       "F117.durable-asset",
-      "F117.no-duplicate-entities"
+      "F117.no-duplicate-entities",
+      "F132.same-root-current-state",
+      "F132.earlier-version-replay",
+      "F132.persisted-schemas",
+      "F132.renderable-and-provenance-assets"
     ],
     "G11": [
       "F120.install-valid",
@@ -6133,6 +6356,59 @@
       "sources": [
         "fe-ui/src/dialogs/mod.rs",
         "fe-ui/src/panels/mod.rs"
+      ]
+    },
+    {
+      "id": "F129",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "API: field schema GET/PUT and committed nested object values",
+      "expected": "Bounded schema install/evolution/rejection, exact nested values and signed64-bit integer roundtrip; schema revision provenance",
+      "requires_persistence": true,
+      "sources": [
+        "fe-api/src/property_schema.rs",
+        "fe-database/src/handlers/field_def.rs",
+        "fe-database/src/handlers/node_history.rs"
+      ]
+    },
+    {
+      "id": "F130",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "API: create object, commit mutation, history pages and state at explicit object version",
+      "expected": "Committed baseline and exact readbacks; property set/delete/full transform; paginated per-object history; old replay leaves current state unchanged",
+      "requires_persistence": true,
+      "sources": [
+        "fe-api/src/node_history.rs",
+        "fe-runtime/src/node_history.rs",
+        "fe-database/src/handlers/node_history.rs"
+      ]
+    },
+    {
+      "id": "F131",
+      "region": "R3",
+      "journey": "J03",
+      "entry": "API: explicit affine driver append and local/distributed metric queries",
+      "expected": "Six raw and six calibrated events; version-pinned gain/bias provenance; per-anchor arrays/statistics/windows/latest; stored XYZ travel",
+      "requires_persistence": true,
+      "sources": [
+        "fe-api/src/iot.rs",
+        "fe-api/src/timeseries_query.rs",
+        "tools/qa/rich_data.py",
+        "tools/qa/scenarios/rich-fleet.json"
+      ]
+    },
+    {
+      "id": "F132",
+      "region": "R10",
+      "journey": "J10",
+      "entry": "API verification after independently observed stop/relaunch of the exact same owned root",
+      "expected": "Current and earlier state hashes, schema revisions and uploaded GLB/provenance bytes survive same-root restart; OS/GUI proof remains F117",
+      "requires_persistence": true,
+      "sources": [
+        "fe-database/src/handlers/node_history.rs",
+        "fe-database/src/handlers/crud.rs",
+        "tools/qa/rich_data.py"
       ]
     }
   ]

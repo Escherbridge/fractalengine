@@ -597,3 +597,26 @@ routes retain their real auth/handshake semantics. An unavailable opt-in backend
 | POST | `/api/v1/sim/inject-fault` | `fe-api/src/server.rs::build_router` | `F116.rest-post-api-v1-sim-inject-fault` |
 | POST | `/mcp` | `fe-api/src/server.rs::build_router` | `F116.rest-post-mcp` |
 
+
+## Rich-data API follow-up (source branch `qa/rich-data-core`, frozen public contracts `1fe217f`)
+
+These six REST cases and five MCP tools extend the preparation inventory. Read-only source reconciliation is not execution evidence. Main must reconcile the integrated source fingerprint and new GUI producers before final acceptance. The existing API authorization/denial obligations remain mandatory in J09.
+
+| Method | Registered path | Producer | Checkpoint |
+|---|---|---|---|
+| POST | `/api/v1/petals/{petal_id}/objects` | `fe-api/src/server.rs::build_router` | `F116.rest-post-api-v1-petals-petal-id-objects` |
+| POST | `/api/v1/nodes/{node_id}/mutations` | `fe-api/src/server.rs::build_router` | `F116.rest-post-api-v1-nodes-node-id-mutations` |
+| GET | `/api/v1/nodes/{node_id}/history` | `fe-api/src/server.rs::build_router` | `F116.rest-get-api-v1-nodes-node-id-history` |
+| GET | `/api/v1/nodes/{node_id}/state` | `fe-api/src/server.rs::build_router` | `F116.rest-get-api-v1-nodes-node-id-state` |
+| GET | `/api/v1/field-defs/by-id/{field_def_id}/schema` | `fe-api/src/server.rs::build_router` | `F116.rest-get-api-v1-field-defs-by-id-field-def-id-schema` |
+| PUT | `/api/v1/field-defs/by-id/{field_def_id}/schema` | `fe-api/src/server.rs::build_router` | `F116.rest-put-api-v1-field-defs-by-id-field-def-id-schema` |
+
+| MCP tool | Required role | Scope resolver | Checkpoint |
+|---|---|---|---|
+| `get_node_history` | Viewer | `HistoryNodeArg("node_id")` | `F116.mcp-get-node-history` |
+| `read_node_at_version` | Viewer | `HistoryNodeArg("node_id")` | `F116.mcp-read-node-at-version` |
+| `commit_node_mutation` | Editor | `NodeArg("node_id")` | `F116.mcp-commit-node-mutation` |
+| `get_field_schema` | Viewer | `FieldDefArg("field_def_id")` | `F116.mcp-get-field-schema` |
+| `set_field_schema` | Manager | `FieldDefArg("field_def_id")` | `F116.mcp-set-field-schema` |
+
+`GET state` requires `at_version`; no current-version default. New-object creation has a committed baseline v1. History is ordered by each object's committed row version, with honest coverage metadata, not sensor event time or a global timestamp. `F129`–`F132` cover the distinct rich behavior; endpoint inventory does not substitute for those assertions.

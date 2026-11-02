@@ -9,7 +9,7 @@ execution_status: NOT_RUN
 
 # Feature catalog
 
-This is the source-grounded coverage contract, not a QA result. Its 128 capability families expand into the
+This is the source-grounded coverage contract, not a QA result. Its 132 capability families expand into the
 explicit checkpoints in [feature-checkpoints.json](feature-checkpoints.json). Each checkpoint has a stable ID,
 region, current reachability, entry, required outcome and source paths. The family table below links each set to
 one long region journey. Historical focused passes do not automatically cover these newly specified variants.
@@ -191,6 +191,14 @@ oracles live in the journey. All outcomes are NOT_RUN until the pass ledger supp
 | F126 / R11 / A | Plugin/Rhai/read/transaction execution<br>`plugin-read`, `plugin-transaction`, `rhai-execution` | no execution panel located, W6 library seam is not new GUI | API | [J11](scenarios/J11.md) |
 | F127 / R11 / U | Atlas model/room/tag editor resources/helper<br>`tag-input`, `tag-add`, `tag-remove`, `atlas-room`, `atlas-model` | no production renderer/opener for tag_input_ui found | TAG | [J11](scenarios/J11.md) |
 | F128 / R6 / U | ActiveDialog::InviteDialog variant<br>`enum-opener`, `missing-renderer` | result handler opens it but transient renderer has no branch | DIALOG, PM | [J06](scenarios/J06.md) |
+| F129 / R3 / A | Bounded nested schemas and typed values<br>`schema-install-v1`, `nested-typed-roundtrip`, `exact-large-integer`, `additive-schema-evolution`, `rejected-value-atomic`, `rejected-schema-atomic`, `schema-version-provenance` | Exact nested data/integer9007199254740993; rejected value/revision leaves schema/state/history unchanged | `fe-api/src/property_schema.rs`, `fe-database/src/handlers/field_def.rs`, `fe-database/src/handlers/node_history.rs` | [J03 rich follow-up](scenarios/J03-rich-data.md) |
+| F130 / R3 / A | Committed ordinary objects and replay<br>`atomic-create-baseline`, `committed-property-set`, `property-delete`, `full-transform`, `per-object-checkpoint-map`, `paginated-history`, `per-object-version-order`, `earlier-replay`, `current-state-unchanged` | Baselinev1; exact readbacks; paginated versions; Alpha v3 position3,0,4/gain2 survives current gain3/position6,0,8 | `fe-api/src/node_history.rs`, `fe-runtime/src/node_history.rs`, `fe-database/src/handlers/node_history.rs` | [J03 rich follow-up](scenarios/J03-rich-data.md) |
+| F131 / R3 / A | Explicit affine derivation and appended sensor events<br>`pinned-affine-calibration`, `payload-provenance-bytes`, `chronological-raw-six`, `derived-per-anchor-arrays`, `per-anchor-statistics`, `half-open-window`, `latest-event-time`, `stored-xyz-distance` | Six raw/six derived; A21/23/25, B9/10/11; means23/10, sums69/30; windows/latest and XYZ10/8/4m | `fe-api/src/iot.rs`, `fe-api/src/timeseries_query.rs`, `tools/qa/rich_data.py` | [J03 rich follow-up](scenarios/J03-rich-data.md) |
+| F132 / R10 / A | API verification after observed same-root restart<br>`same-root-current-state`, `earlier-version-replay`, `persisted-schemas`, `renderable-and-provenance-assets` | Exact current/old hashes, schemas and real GLB/provenance bytes; OS/GUI restart proof remains F117 | `fe-database/src/handlers/crud.rs`, `fe-database/src/handlers/node_history.rs`, `tools/qa/rich_data.py` | [J10](scenarios/J10.md), [rich follow-up](scenarios/J03-rich-data.md) |
+
+F129–F132 and eleven F116 additions follow frozen rich-data API contracts in `qa/rich-data-core` (`1fe217f`),
+pending main integration/fingerprint review. All are API-only. Source additions are not execution evidence or
+GUI routes. Refresh concrete GUI labels/variants after separately owned Properties/History/chart work integrates.
 
 ## Source aliases: source alias and render/dispatcher anchors
 

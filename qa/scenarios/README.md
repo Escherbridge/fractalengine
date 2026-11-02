@@ -7,6 +7,10 @@ execution_status: NOT_RUN
 
 # Region journeys
 
+[J03 rich-data](J03-rich-data.md) extends J03/J09/J10 with explicit object replay and appended measurement
+oracles. Its declarative runner produces current-pass API evidence and a safe offline actual-data report;
+it does not execute or pass the product GUI/OS acceptance work. See that supplement for prerequisites and CLI.
+
 The eleven J journeys own the current feature-variant denominator in [features.md](../features.md) and
 [feature-checkpoints.json](../feature-checkpoints.json). Their presence is a plan, not execution evidence.
 Every current GUI variant and mandatory API/OS case needs its own current-pass checkpoint record. Legacy S01–S10
