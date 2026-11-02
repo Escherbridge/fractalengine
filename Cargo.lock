@@ -5451,10 +5451,12 @@ dependencies = [
  "fe-identity",
  "fe-sdk",
  "hex",
+ "ipnet",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -5600,6 +5602,7 @@ dependencies = [
  "tracing",
  "ulid",
  "url",
+ "webview2-com",
  "winit",
  "wry 0.54.4",
 ]
