@@ -849,4 +849,75 @@ fn test_rename_entity_omits_node_scene_change() {
         }
         other => panic!("expected QueryResult, got {other:?}"),
     }
+
+    let request = |command: DbCommand| {
+        db.cmd_tx.send(command).unwrap();
+        db.res_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("hierarchy reply")
+    };
+    let mut vars = std::collections::HashMap::new();
+    vars.insert("pid".into(), serde_json::json!(petal_id));
+    let fractal_id = match request(DbCommand::RawQuery {
+        correlation_id: None,
+        sql: "SELECT fractal_id FROM petal WHERE petal_id = $pid".into(),
+        vars,
+    }) {
+        DbResult::QueryResult { data, .. } => data[0]["fractal_id"].as_str().unwrap().to_string(),
+        other => panic!("expected stored parent, got {other:?}"),
+    };
+    let sibling = match request(DbCommand::CreatePetal {
+        fractal_id,
+        name: "surviving sibling".into(),
+    }) {
+        DbResult::PetalCreated { id, .. } => id,
+        other => panic!("expected sibling creation, got {other:?}"),
+    };
+    let deleted_node = create_node(&db.cmd_tx, &db.res_rx, &petal_id);
+    let surviving_node = create_node(&db.cmd_tx, &db.res_rx, &sibling);
+    assert!(matches!(request(DbCommand::DeleteEntity {
+        entity_type:EntityType::Petal,entity_id:petal_id.clone(),
+    }),DbResult::EntityDeleted {entity_id,..} if entity_id==petal_id));
+    let mut vars = std::collections::HashMap::new();
+    vars.insert(
+        "ids".into(),
+        serde_json::json!([deleted_node, surviving_node.clone()]),
+    );
+    match request(DbCommand::RawQuery {
+        correlation_id: None,
+        sql: "SELECT node_id, petal_id FROM node WHERE node_id IN $ids".into(),
+        vars,
+    }) {
+        DbResult::QueryResult { data, .. } => {
+            assert_eq!(
+                data.len(),
+                1,
+                "only the exact target's descendants are removed"
+            );
+            assert_eq!(data[0]["node_id"], surviving_node);
+            assert_eq!(data[0]["petal_id"], sibling);
+        }
+        other => panic!("expected cascade readback, got {other:?}"),
+    }
+    assert!(
+        matches!(
+            request(DbCommand::DeleteEntity {
+                entity_type: EntityType::Petal,
+                entity_id: petal_id.clone(),
+            }),
+            DbResult::Error(_)
+        ),
+        "absent target must not acknowledge deletion"
+    );
+    assert!(
+        matches!(
+            request(DbCommand::RenameEntity {
+                entity_type: EntityType::Petal,
+                entity_id: petal_id,
+                new_name: "absent".into(),
+            }),
+            DbResult::Error(_)
+        ),
+        "absent target must not acknowledge rename"
+    );
 }

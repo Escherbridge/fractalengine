@@ -108,7 +108,7 @@ pub(crate) async fn create_fractal_handler(
     let row_json = serde_json::to_value(&fractal_row)?;
 
     parent.commit(db, &["CREATE fractal CONTENT $entity_new_fractal"],
-        vec![("entity_new_fractal".into(), row_json.clone())]).await?;
+        vec![("entity_new_fractal".into(), crate::repo::strip_json_nulls(row_json.clone()))]).await?;
 
     replicate_row(
         repl_tx,

@@ -97,10 +97,12 @@ pub(crate) async fn prepare_parent_mutation(
         ("entity_role_snapshot".into(), json!(roles)),
     ];
     if let Some(fractal) = parts.fractal_id {
+        guards.push("IF array::len((SELECT VALUE fractal_id FROM fractal WHERE fractal_id = $entity_fractal)) != 1 { THROW 'ambiguous hierarchy identity'; }".into());
         guards.push("IF array::len((SELECT VALUE fractal_id FROM fractal WHERE fractal_id = $entity_fractal AND verse_id = $entity_verse)) != 1 { THROW 'hierarchy ancestry changed'; }".into());
         bindings.push(("entity_fractal".into(), json!(fractal)));
     }
     if let Some(petal) = parts.petal_id {
+        guards.push("IF array::len((SELECT VALUE petal_id FROM petal WHERE petal_id = $entity_petal)) != 1 { THROW 'ambiguous hierarchy identity'; }".into());
         guards.push("IF array::len((SELECT VALUE petal_id FROM petal WHERE petal_id = $entity_petal AND fractal_id = $entity_fractal)) != 1 { THROW 'hierarchy ancestry changed'; }".into());
         bindings.push(("entity_petal".into(), json!(petal)));
     }
@@ -157,16 +159,22 @@ pub(crate) async fn delete_entity_handler(
         let prepared = prepare_parent_mutation(db, entity_type, entity_id, local_did).await?;
         let statements = match entity_type {
             EntityType::Verse => vec![
-                "DELETE node WHERE petal_id IN (SELECT VALUE petal_id FROM petal WHERE fractal_id IN (SELECT VALUE fractal_id FROM fractal WHERE verse_id = $entity_target))",
-                "DELETE petal WHERE fractal_id IN (SELECT VALUE fractal_id FROM fractal WHERE verse_id = $entity_target)",
-                "DELETE fractal WHERE verse_id = $entity_target",
+                "LET $entity_delete_fractals = (SELECT VALUE fractal_id FROM fractal WHERE verse_id = $entity_target)",
+                "IF array::len((SELECT VALUE fractal_id FROM fractal WHERE fractal_id IN $entity_delete_fractals)) != array::len(array::distinct($entity_delete_fractals)) { THROW 'ambiguous cascade identity'; }",
+                "LET $entity_delete_petals = (SELECT VALUE petal_id FROM petal WHERE fractal_id IN $entity_delete_fractals)",
+                "IF array::len((SELECT VALUE petal_id FROM petal WHERE petal_id IN $entity_delete_petals)) != array::len(array::distinct($entity_delete_petals)) { THROW 'ambiguous cascade identity'; }",
+                "DELETE node WHERE petal_id IN $entity_delete_petals",
+                "DELETE petal WHERE petal_id IN $entity_delete_petals",
+                "DELETE fractal WHERE fractal_id IN $entity_delete_fractals",
                 "DELETE role WHERE scope IN $entity_deleted_scopes",
                 "DELETE verse_member WHERE verse_id = $entity_target",
                 "DELETE verse WHERE verse_id = $entity_target",
             ],
             EntityType::Fractal => vec![
-                "DELETE node WHERE petal_id IN (SELECT VALUE petal_id FROM petal WHERE fractal_id = $entity_target)",
-                "DELETE petal WHERE fractal_id = $entity_target",
+                "LET $entity_delete_petals = (SELECT VALUE petal_id FROM petal WHERE fractal_id = $entity_target)",
+                "IF array::len((SELECT VALUE petal_id FROM petal WHERE petal_id IN $entity_delete_petals)) != array::len(array::distinct($entity_delete_petals)) { THROW 'ambiguous cascade identity'; }",
+                "DELETE node WHERE petal_id IN $entity_delete_petals",
+                "DELETE petal WHERE petal_id IN $entity_delete_petals",
                 "DELETE fractal WHERE fractal_id = $entity_target",
             ],
             EntityType::Petal => vec![

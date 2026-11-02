@@ -1194,6 +1194,255 @@ mod tests {
                 .unwrap()["history_version"],
             5
         );
+
+        // Hierarchy transactions use the same stored role resolver and preserve journal facts.
+        use crate::handlers::{crud, entity};
+        use fe_runtime::messages::EntityType;
+        let blob_store: crate::BlobStoreHandle =
+            std::sync::Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
+        db.query("CREATE verse CONTENT {verse_id:'tree-1',name:'one',created_by:'did:qa',created_at:'2026-11-01'};
+            CREATE verse CONTENT {verse_id:'tree-10',name:'ten',created_by:'did:qa',created_at:'2026-11-01'};
+            CREATE fractal CONTENT {fractal_id:'tree-fractal',verse_id:'tree-1',owner_did:'did:qa',name:'f',created_at:'2026-11-01'};
+            CREATE fractal CONTENT {fractal_id:'tree-other-fractal',verse_id:'tree-10',owner_did:'did:qa',name:'other',created_at:'2026-11-01'};
+            CREATE petal CONTENT {petal_id:'tree-petal',fractal_id:'tree-fractal',name:'p',node_id:'p',created_at:'2026-11-01'};
+            CREATE petal CONTENT {petal_id:'tree-other-petal',fractal_id:'tree-other-fractal',name:'other',node_id:'p',created_at:'2026-11-01'};
+            CREATE role:tree_local CONTENT {peer_did:'did:tree-user',scope:'VERSE#tree-1',role:'viewer'};
+            CREATE role:tree_prefix_other CONTENT {peer_did:'did:other',scope:'VERSE#tree-10',role:'viewer'};")
+            .await.unwrap().check().unwrap();
+        let tree_node = crud::create_node_as(&db, "tree-petal", "tree node", [0.0; 3], "did:qa")
+            .await
+            .unwrap();
+        let other_node =
+            crud::create_node_as(&db, "tree-other-petal", "other node", [0.0; 3], "did:qa")
+                .await
+                .unwrap();
+        let before_tree = crate::handlers::node_history::committed_receipt(&db, &tree_node)
+            .await
+            .unwrap();
+        let before_tree_ops = op_log_count(&db).await;
+        for role in ["none", "viewer", "editor"] {
+            db.query("UPDATE role:tree_local SET role=$role")
+                .bind(("role", role))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            for (kind, id) in [
+                (EntityType::Verse, "tree-1"),
+                (EntityType::Fractal, "tree-fractal"),
+                (EntityType::Petal, "tree-petal"),
+            ] {
+                entity::rename_entity_handler(&db, kind, id, "forbidden", "did:tree-user")
+                    .await
+                    .expect_err("below Manager rename");
+                entity::delete_entity_handler(&db, kind, id, "did:tree-user")
+                    .await
+                    .expect_err("below Manager cascade");
+            }
+            entity::update_fractal_description_handler(
+                &db,
+                "tree-fractal",
+                "forbidden",
+                "did:tree-user",
+            )
+            .await
+            .expect_err("below Manager description");
+            crud::create_fractal_handler(
+                &db,
+                &blob_store,
+                None,
+                "tree-1",
+                "forbidden",
+                "did:tree-user",
+            )
+            .await
+            .expect_err("below Manager child creation");
+            crud::create_petal_handler(&db, "tree-fractal", "forbidden", "did:tree-user")
+                .await
+                .expect_err("below Manager child creation");
+        }
+        assert_eq!(
+            crate::handlers::node_history::committed_receipt(&db, &tree_node)
+                .await
+                .unwrap(),
+            before_tree
+        );
+        assert_eq!(op_log_count(&db).await, before_tree_ops);
+        let mut unchanged = db.query("SELECT name FROM verse WHERE verse_id='tree-1'; SELECT name, description FROM fractal WHERE fractal_id='tree-fractal'; SELECT name FROM petal WHERE petal_id='tree-petal'").await.unwrap().check().unwrap();
+        assert_eq!(
+            unchanged.take::<Vec<serde_json::Value>>(0).unwrap()[0]["name"],
+            "one"
+        );
+        let unchanged_fractal: Vec<serde_json::Value> = unchanged.take(1).unwrap();
+        assert_eq!(unchanged_fractal[0]["name"], "f");
+        assert_ne!(unchanged_fractal[0]["description"], "forbidden");
+        assert_eq!(
+            unchanged.take::<Vec<serde_json::Value>>(2).unwrap()[0]["name"],
+            "p"
+        );
+
+        db.query("UPDATE role:tree_local SET role='manager'")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        entity::rename_entity_handler(
+            &db,
+            EntityType::Petal,
+            "tree-petal",
+            "managed",
+            "did:tree-user",
+        )
+        .await
+        .unwrap();
+        entity::update_fractal_description_handler(
+            &db,
+            "tree-fractal",
+            "managed description",
+            "did:tree-user",
+        )
+        .await
+        .unwrap();
+        let child_fractal = crud::create_fractal_handler(
+            &db,
+            &blob_store,
+            None,
+            "tree-1",
+            "managed child",
+            "did:tree-user",
+        )
+        .await
+        .unwrap();
+        let child_petal =
+            crud::create_petal_handler(&db, &child_fractal, "managed child", "did:tree-user")
+                .await
+                .unwrap();
+        entity::delete_entity_handler(&db, EntityType::Petal, &child_petal, "did:tree-user")
+            .await
+            .unwrap();
+        entity::delete_entity_handler(&db, EntityType::Fractal, &child_fractal, "did:tree-user")
+            .await
+            .unwrap();
+        entity::rename_entity_handler(
+            &db,
+            EntityType::Petal,
+            "missing-tree-petal",
+            "wrong",
+            "did:qa",
+        )
+        .await
+        .expect_err("missing target refuses");
+
+        db.query("CREATE petal:tree_duplicate CONTENT {petal_id:'tree-petal',fractal_id:'tree-other-fractal',name:'duplicate',node_id:'p',created_at:'2026-11-01'}").await.unwrap().check().unwrap();
+        entity::rename_entity_handler(
+            &db,
+            EntityType::Petal,
+            "tree-petal",
+            "ambiguous write",
+            "did:tree-user",
+        )
+        .await
+        .expect_err("duplicate target identity fails closed");
+        entity::delete_entity_handler(&db, EntityType::Verse, "tree-1", "did:tree-user")
+            .await
+            .expect_err("ambiguous descendant identity cannot cross a foreign subtree");
+        assert_eq!(
+            crate::handlers::node_history::committed_receipt(&db, &tree_node)
+                .await
+                .unwrap(),
+            before_tree
+        );
+        db.query("DELETE petal:tree_duplicate")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let prepared =
+            entity::prepare_parent_mutation(&db, EntityType::Petal, "tree-petal", "did:tree-user")
+                .await
+                .unwrap();
+        db.query("UPDATE petal SET fractal_id='tree-other-fractal' WHERE petal_id='tree-petal'")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        prepared
+            .commit(
+                &db,
+                &["UPDATE petal SET name='stale write' WHERE petal_id='tree-petal'"],
+                vec![],
+            )
+            .await
+            .expect_err("moved target refuses inside transaction");
+        db.query("UPDATE petal SET fractal_id='tree-fractal' WHERE petal_id='tree-petal'")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let prepared =
+            entity::prepare_parent_mutation(&db, EntityType::Petal, "tree-petal", "did:tree-user")
+                .await
+                .unwrap();
+        db.query("UPDATE role:tree_local SET role='viewer'")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        prepared
+            .commit(
+                &db,
+                &["UPDATE petal SET name='stale role write' WHERE petal_id='tree-petal'"],
+                vec![],
+            )
+            .await
+            .expect_err("revoked Manager refuses inside transaction");
+        db.query("UPDATE role:tree_local SET role='manager'; DEFINE EVENT fail_hierarchy_cascade ON TABLE petal WHEN true THEN { THROW 'induced hierarchy failure' }").await.unwrap().check().unwrap();
+        entity::delete_entity_handler(&db, EntityType::Verse, "tree-1", "did:tree-user")
+            .await
+            .expect_err("mid-cascade failure rolls back all descendants");
+        assert_eq!(
+            crate::handlers::node_history::committed_receipt(&db, &tree_node)
+                .await
+                .unwrap(),
+            before_tree
+        );
+        let mut rolled_back=db.query("SELECT name FROM petal WHERE petal_id='tree-petal'; SELECT verse_id FROM verse WHERE verse_id='tree-1'").await.unwrap().check().unwrap();
+        assert_eq!(
+            rolled_back.take::<Vec<serde_json::Value>>(0).unwrap()[0]["name"],
+            "managed"
+        );
+        assert_eq!(
+            rolled_back.take::<Vec<serde_json::Value>>(1).unwrap().len(),
+            1
+        );
+        db.query("REMOVE EVENT fail_hierarchy_cascade ON TABLE petal")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        entity::delete_entity_handler(&db, EntityType::Verse, "tree-1", "did:tree-user")
+            .await
+            .unwrap();
+        assert!(crate::handlers::node_history::snapshot(&db, &tree_node)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(crate::handlers::node_history::snapshot(&db, &other_node)
+            .await
+            .unwrap()
+            .is_some());
+        let mut exact=db.query("SELECT scope FROM role WHERE scope IN ['VERSE#tree-1','VERSE#tree-10']; SELECT verse_id FROM verse WHERE verse_id IN ['tree-1','tree-10']; SELECT * OMIT id FROM node_log WHERE node_id=$node").bind(("node",tree_node)).await.unwrap().check().unwrap();
+        let roles: Vec<serde_json::Value> = exact.take(0).unwrap();
+        assert_eq!(roles, vec![serde_json::json!({"scope":"VERSE#tree-10"})]);
+        assert_eq!(
+            exact.take::<Vec<serde_json::Value>>(1).unwrap(),
+            vec![serde_json::json!({"verse_id":"tree-10"})]
+        );
+        assert_eq!(
+            exact.take::<Vec<serde_json::Value>>(2).unwrap().len(),
+            1,
+            "structural deletion retains baseline facts without fabricating replay coverage"
+        );
     }
 
     /// A fixed fake clock source for the override tests (a real test would
