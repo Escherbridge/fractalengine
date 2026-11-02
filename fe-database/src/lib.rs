@@ -1435,12 +1435,6 @@ pub fn spawn_db_thread_shared(
                                             });
                                         }
                                     }
-                                    if let Err(e) = handlers::node_log::append_node_log(
-                                        &db, &node_id, "view_set", &local_did,
-                                        &serde_json::json!({"state": view.state, "groups": view.groups}),
-                                    ).await {
-                                        tracing::warn!("node_log append failed for {node_id}: {e}");
-                                    }
                                     DbResult::NodeViewSet {
                                         node_id,
                                         petal_id,
