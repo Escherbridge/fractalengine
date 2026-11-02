@@ -182,3 +182,10 @@ retry; no count or successful receipt is invented. A local atomic commit does
 not guarantee peer replication delivery. The old arbitrary SELECT/KV HostEnv
 services remain independently injected; this scene bridge supplies no raw SQL
 or persistent KV bypass.
+
+Opaque sessions share a revocation flag across direct context clones; unbind
+refuses both queued and later direct calls. Duplicate instance IDs cannot replace
+an admitted context. Scene host functions enforce grants at call time (the older
+storage/query registration gates remain unchanged). Rhai scene property conversion
+rejects non-finite/custom values and depth over 16 instead of silently storing
+null; explicit unit/null remains JSON null.

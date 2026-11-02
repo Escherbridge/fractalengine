@@ -3,15 +3,28 @@
 use crate::{capability::CapabilityToken, context::PluginContext, PluginCommand};
 use bevy::prelude::Resource;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// An opaque host-minted origin, never deserialized from plugin arguments.
 #[derive(Clone)]
-pub struct PluginSession(String);
+pub struct PluginSession {
+    id: String,
+    active: Arc<AtomicBool>,
+}
 
 impl PluginSession {
     pub(crate) fn mint() -> Self {
-        Self(ulid::Ulid::new().to_string())
+        Self {
+            id: ulid::Ulid::new().to_string(),
+            active: Arc::new(AtomicBool::new(true)),
+        }
+    }
+    pub(crate) fn is_active(&self) -> bool {
+        self.active.load(Ordering::Acquire)
+    }
+    fn revoke(&self) {
+        self.active.store(false, Ordering::Release);
     }
 }
 
@@ -56,10 +69,17 @@ impl PluginContexts {
         if let Some(factory) = &self.factory {
             context = factory.bind(context)?;
         }
-        self.contexts
+        let mut contexts = self
+            .contexts
             .lock()
-            .map_err(|_| "plugin context registry lock poisoned")?
-            .insert(context.session.0.clone(), context.clone());
+            .map_err(|_| "plugin context registry lock poisoned")?;
+        if contexts
+            .values()
+            .any(|existing| existing.plugin_id() == context.plugin_id())
+        {
+            return Err("plugin instance is already bound".into());
+        }
+        contexts.insert(context.session.id.clone(), context.clone());
         Ok(context)
     }
 
@@ -68,7 +88,14 @@ impl PluginContexts {
         self.contexts
             .lock()
             .map_err(|_| "plugin context registry lock poisoned")?
-            .retain(|_, context| context.plugin_id() != plugin_id);
+            .retain(|_, context| {
+                if context.plugin_id() == plugin_id {
+                    context.session.revoke();
+                    false
+                } else {
+                    true
+                }
+            });
         Ok(())
     }
 
@@ -76,7 +103,7 @@ impl PluginContexts {
         self.contexts
             .lock()
             .map_err(|_| "plugin context registry lock poisoned")?
-            .get(&session.0)
+            .get(&session.id)
             .cloned()
             .ok_or_else(|| "plugin origin is not admitted".into())
     }

@@ -287,12 +287,16 @@ pub(crate) async fn commit(
                 if !rules.contains_key(key) {
                     let snapshot = field_def::capture_property_rules(db, &scope, key).await?;
                     let prefix = format!("plugin_rule_{index}");
-                    let statement =
-                        field_def::PROPERTY_RULES_SQL.replace("$key", &format!("${prefix}_key")).replace("$scopes", &format!("${prefix}_scopes"));
+                    let statement = field_def::PROPERTY_RULES_SQL
+                        .replace("$key", &format!("${prefix}_key"))
+                        .replace("$scopes", &format!("${prefix}_scopes"));
                     guards.push(format!("IF ({statement}) != ${prefix}_snapshot {{ THROW 'plugin schema changed'; }}"));
                     bindings.extend([
                         (format!("{prefix}_key"), json!(key)),
-                        (format!("{prefix}_scopes"),json!(field_def::property_rule_scopes(&scope))),
+                        (
+                            format!("{prefix}_scopes"),
+                            json!(field_def::property_rule_scopes(&scope)),
+                        ),
                         (format!("{prefix}_snapshot"), json!(snapshot)),
                     ]);
                     rules.insert(key.clone(), snapshot);
@@ -354,14 +358,33 @@ pub(crate) async fn commit(
             facts.push((node_id.clone(), operation, version, payload));
         }
     }
-    for (deleted_id,deleted) in &staged {
-        if !deleted.deleted {continue;}
-        anyhow::ensure!(staged.iter().all(|(id,node)|id==deleted_id || node.deleted ||
-            ["parent_id","gpx_track_id","owning_path_id"].iter().all(|key|node.state["properties"].get(*key).and_then(Value::as_str)!=Some(deleted_id.as_str()))),
-            "plugin batch introduces a dependent child of a deleted node");
+    for (deleted_id, deleted) in &staged {
+        if !deleted.deleted {
+            continue;
+        }
+        anyhow::ensure!(
+            staged.iter().all(|(id, node)| id == deleted_id
+                || node.deleted
+                || ["parent_id", "gpx_track_id", "owning_path_id"]
+                    .iter()
+                    .all(
+                        |key| node.state["properties"].get(*key).and_then(Value::as_str)
+                            != Some(deleted_id.as_str())
+                    )),
+            "plugin batch introduces a dependent child of a deleted node"
+        );
     }
-    let expanded_bytes=serde_json::to_vec(&facts)?.len()+staged.values().map(|node|serde_json::to_vec(&node.state).map(|bytes|bytes.len())).collect::<Result<Vec<_>,_>>()?.iter().sum::<usize>();
-    anyhow::ensure!(expanded_bytes<=2*1024*1024,"expanded plugin batch exceeds 2 MiB");
+    let expanded_bytes = serde_json::to_vec(&facts)?.len()
+        + staged
+            .values()
+            .map(|node| serde_json::to_vec(&node.state).map(|bytes| bytes.len()))
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .sum::<usize>();
+    anyhow::ensure!(
+        expanded_bytes <= 2 * 1024 * 1024,
+        "expanded plugin batch exceeds 2 MiB"
+    );
     let entry = OpLogEntry {
         lamport_clock: 0,
         hlc_timestamp: String::new(),
@@ -384,7 +407,7 @@ pub(crate) async fn commit(
             }
         }
         for (index,(node_id,operation,version,payload)) in facts.iter_mut().enumerate() {
-            if operation=="plugin_tombstone" {let marker=staged[node_id].state["tombstone"].clone();payload["after_state"]["tombstone"]=marker.clone();payload["data"]["marker"]=marker;}
+            if operation=="plugin_tombstone" {let marker=staged.get(node_id.as_str()).unwrap().state["tombstone"].clone();payload["after_state"]["tombstone"]=marker.clone();payload["data"]["marker"]=marker;}
             let name=format!("plugin_fact_{index}");
             guards.push(format!("CREATE node_log CONTENT ${name}"));
             bindings.push((name,json!({"log_id":ulid::Ulid::new().to_string(),"node_id":node_id,"hlc_timestamp":hlc as i64,"op":operation,"source_did":local_did,

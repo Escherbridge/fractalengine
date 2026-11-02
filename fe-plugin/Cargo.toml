@@ -25,6 +25,7 @@ thiserror = { workspace = true }
 ulid = { workspace = true }
 
 [dev-dependencies]
+fe-plugin-test = { path = "../fe-plugin-test" }
 tokio = { workspace = true }
 tempfile = "3"
 wat = "1"

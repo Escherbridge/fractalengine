@@ -995,4 +995,107 @@ fn test_rename_entity_omits_node_scene_change() {
         ),
         "absent target must not acknowledge rename"
     );
+    // Real dispatcher replies use the embedded sender, alongside unsolicited GUI echoes.
+    use fe_runtime::plugin_host::{PluginAdmission, PluginRead, PluginReply};
+    use fe_sdk::plugin_host::PendingOp;
+    let admission = PluginAdmission::new(
+        "dispatcher-plugin".into(),
+        sibling.clone(),
+        vec![
+            fe_sdk::CAP_STORAGE_READ.into(),
+            fe_sdk::CAP_STORAGE_WRITE.into(),
+        ],
+        vec!["qa.*".into()],
+        vec![],
+        vec![],
+    )
+    .unwrap();
+    let (reply, rx) = crossbeam::channel::bounded(1);
+    db.cmd_tx
+        .send(DbCommand::PluginRead {
+            admission: admission.clone(),
+            request: PluginRead::PetalScope,
+            reply,
+        })
+        .unwrap();
+    let scope = match rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap() {
+        PluginReply::Scope(scope) => scope,
+        other => panic!("unexpected scope reply: {other:?}"),
+    };
+    let admission = admission.bind_scope(scope).unwrap();
+    let (reply, rx) = crossbeam::channel::bounded(1);
+    db.cmd_tx
+        .send(DbCommand::PluginCommit {
+            admission: admission.clone(),
+            ops: vec![
+                PendingOp::SetProperty {
+                    node_id: surviving_node.clone(),
+                    key: "qa.state".into(),
+                    value: serde_json::json!({"gain":3}),
+                },
+                PendingOp::CreateNode {
+                    petal_id: sibling.clone(),
+                    name: "from committed plugin".into(),
+                },
+            ],
+            reply,
+        })
+        .unwrap();
+    let created = match rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap() {
+        PluginReply::Committed(receipt) => {
+            assert_eq!(receipt.op_count, 2);
+            assert_eq!(receipt.created_node_ids.len(), 1);
+            receipt.created_node_ids[0].clone()
+        }
+        other => panic!("unexpected commit reply: {other:?}"),
+    };
+    let mut birth = false;
+    let mut properties = false;
+    while let Ok(result) = db.res_rx.try_recv() {
+        match result {
+            DbResult::NodeMaterialized {
+                node,
+                correlation_id,
+            } => {
+                assert_eq!(node.node.node_id, created);
+                assert!(correlation_id.starts_with("plugin-birth-"));
+                birth = true;
+            }
+            DbResult::NodePropertiesLoaded {
+                node_id,
+                properties: bag,
+                correlation_id,
+            } => {
+                assert_eq!(node_id, surviving_node);
+                assert_eq!(bag["qa.state"]["gain"], 3);
+                assert!(correlation_id.unwrap().starts_with("plugin-properties-"));
+                properties = true;
+            }
+            other => panic!("unexpected plugin echo: {other:?}"),
+        }
+    }
+    assert!(
+        birth && properties,
+        "GUI receives actual post-commit materialization and property data"
+    );
+    let (reply, rx) = crossbeam::channel::bounded(1);
+    db.cmd_tx
+        .send(DbCommand::PluginCommit {
+            admission,
+            ops: vec![PendingOp::DeleteNode {
+                node_id: created.clone(),
+            }],
+            reply,
+        })
+        .unwrap();
+    assert!(
+        matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap(),PluginReply::Committed(receipt) if receipt.op_count==1)
+    );
+    match db.res_rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+        DbResult::PluginNodeRemoved { node_id, petal_id } => {
+            assert_eq!(node_id, created);
+            assert_eq!(petal_id, sibling);
+        }
+        other => panic!("expected GUI-only committed removal, got {other:?}"),
+    }
 }

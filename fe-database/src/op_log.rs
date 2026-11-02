@@ -1519,6 +1519,261 @@ mod tests {
             1,
             "structural deletion retains baseline facts without fabricating replay coverage"
         );
+        // The production plugin bridge persists the entire batch with ordinary journal facts.
+        use fe_runtime::plugin_host::{PluginAdmission, PluginRead, PluginReply};
+        use fe_sdk::plugin_host::{NodeQuery, PendingOp};
+        let plugin_scope = crate::build_scope(
+            "tree-10",
+            Some("tree-other-fractal"),
+            Some("tree-other-petal"),
+        );
+        let admission = PluginAdmission::new(
+            "qa-plugin".into(),
+            "tree-other-petal".into(),
+            vec![
+                fe_sdk::CAP_STORAGE_READ.into(),
+                fe_sdk::CAP_STORAGE_WRITE.into(),
+                fe_sdk::CAP_QUERY_SELECT.into(),
+            ],
+            vec!["calibration".into()],
+            vec!["*".into()],
+            vec![plugin_scope.clone()],
+        )
+        .unwrap()
+        .bind_scope(plugin_scope.clone())
+        .unwrap();
+        let definition = crate::handlers::field_def::create_field_def_handler(
+            &db,
+            &plugin_scope,
+            "node",
+            "calibration",
+            "object",
+            None,
+            "did:qa",
+        )
+        .await
+        .unwrap();
+        crate::handlers::field_def::set_field_schema_handler(&db,&definition,&serde_json::json!({"version":1,"schema":{"type":"object","required":["gain"],"properties":{"gain":{"type":"integer","maximum":5}}}}),&NodeAccessGrant::Local,"did:qa").await.unwrap();
+        let victim =
+            crud::create_node_as(&db, "tree-other-petal", "plain victim", [0.0; 3], "did:qa")
+                .await
+                .unwrap();
+        let mixed = vec![
+            PendingOp::SetProperty {
+                node_id: other_node.clone(),
+                key: "calibration".into(),
+                value: serde_json::json!({"gain":2,"nested":{"values":[1,2]}}),
+            },
+            PendingOp::SetProperty {
+                node_id: other_node.clone(),
+                key: "calibration".into(),
+                value: serde_json::json!({"gain":3,"nested":{"values":[1,2,3]}}),
+            },
+            PendingOp::CreateNode {
+                petal_id: "tree-other-petal".into(),
+                name: "plugin-created".into(),
+            },
+            PendingOp::DeleteNode {
+                node_id: victim.clone(),
+            },
+        ];
+        let committed = crate::handlers::plugin_host::commit(&db, &admission, &mixed, "did:qa")
+            .await
+            .unwrap();
+        assert_eq!(committed.receipt.op_count, 4);
+        assert_eq!(committed.receipt.created_node_ids.len(), 1);
+        assert!(crate::handlers::node_history::snapshot(
+            &db,
+            &committed.receipt.created_node_ids[0]
+        )
+        .await
+        .unwrap()
+        .is_some());
+        let latest = crate::handlers::node_history::committed_receipt(&db, &other_node)
+            .await
+            .unwrap();
+        assert_eq!(latest["history_version"], 3);
+        assert_eq!(latest["state"]["properties"]["calibration"]["gain"], 3);
+        let replay = crate::handlers::node_history::read_granted(
+            &db,
+            &other_node,
+            0,
+            1,
+            Some(2),
+            &NodeAccessGrant::Local,
+            "did:qa",
+        )
+        .await
+        .unwrap();
+        assert_eq!(replay["state"]["properties"]["calibration"]["gain"], 2);
+        let removed = crate::handlers::node_history::snapshot(&db, &victim)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(removed["tombstone"]["source_did"], "did:qa");
+        assert!(removed["tombstone"]["hlc"].as_u64().unwrap() > 0);
+        let unsupported = crate::handlers::node_history::read_granted(
+            &db,
+            &victim,
+            0,
+            1,
+            Some(2),
+            &NodeAccessGrant::Local,
+            "did:qa",
+        )
+        .await
+        .unwrap();
+        assert_eq!(unsupported["availability"], "unsupported_operation");
+        assert!(unsupported.get("state").is_none());
+        match crate::handlers::plugin_host::read(
+            &db,
+            &admission,
+            PluginRead::Nodes(NodeQuery::parse(r#"{"name":"other node","limit":1}"#).unwrap()),
+            "did:qa",
+        )
+        .await
+        .unwrap()
+        {
+            PluginReply::Nodes(nodes) => {
+                assert_eq!(nodes.len(), 1);
+                assert_eq!(nodes[0].node_id, other_node);
+            }
+            other => panic!("unexpected plugin query reply: {other:?}"),
+        }
+        for id in [local_node.as_str(), "missing-plugin-node"] {
+            assert!(
+                matches!(
+                    crate::handlers::plugin_host::read(
+                        &db,
+                        &admission,
+                        PluginRead::Node(id.into()),
+                        "did:qa"
+                    )
+                    .await
+                    .unwrap(),
+                    PluginReply::Node(None)
+                ),
+                "foreign and absent node reads are uniform"
+            );
+        }
+        let before_plugin_ops = op_log_count(&db).await;
+        let invalid = vec![
+            PendingOp::SetProperty {
+                node_id: other_node.clone(),
+                key: "calibration".into(),
+                value: serde_json::json!({"gain":4}),
+            },
+            PendingOp::CreateNode {
+                petal_id: "tree-other-petal".into(),
+                name: "must not exist".into(),
+            },
+            PendingOp::SetProperty {
+                node_id: other_node.clone(),
+                key: "calibration".into(),
+                value: serde_json::json!({"gain":8}),
+            },
+        ];
+        crate::handlers::plugin_host::commit(&db, &admission, &invalid, "did:qa")
+            .await
+            .expect_err("an invalid later operation refuses the complete staged batch");
+        crate::handlers::plugin_host::commit(&db, &admission, &mixed[..1], "did:tree-viewer")
+            .await
+            .expect_err("local Viewer cannot write through a plugin");
+        let mut denied = mixed[..1].to_vec();
+        if let PendingOp::SetProperty { key, .. } = &mut denied[0] {
+            *key = "private".into();
+        }
+        crate::handlers::plugin_host::commit(&db, &admission, &denied, "did:qa")
+            .await
+            .expect_err("property capability is authoritative in the DB");
+        assert_eq!(op_log_count(&db).await, before_plugin_ops);
+        assert_eq!(
+            crate::handlers::node_history::committed_receipt(&db, &other_node)
+                .await
+                .unwrap(),
+            latest
+        );
+        let before_nodes: Vec<serde_json::Value> = db
+            .query("SELECT node_id FROM node WHERE petal_id='tree-other-petal' ORDER BY node_id")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        db.query("DEFINE EVENT fail_plugin_fact ON TABLE node_log WHEN $after.payload.plugin_id='qa-plugin' THEN {THROW 'induced plugin journal failure'}").await.unwrap().check().unwrap();
+        crate::handlers::plugin_host::commit(&db, &admission, &invalid[..2], "did:qa")
+            .await
+            .expect_err("journal failure rolls materializations and batch intention back together");
+        db.query("REMOVE EVENT fail_plugin_fact ON TABLE node_log")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        assert_eq!(op_log_count(&db).await, before_plugin_ops);
+        assert_eq!(
+            crate::handlers::node_history::committed_receipt(&db, &other_node)
+                .await
+                .unwrap(),
+            latest
+        );
+        let after_nodes: Vec<serde_json::Value> = db
+            .query("SELECT node_id FROM node WHERE petal_id='tree-other-petal' ORDER BY node_id")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(after_nodes, before_nodes);
+        let target = committed.receipt.created_node_ids[0].clone();
+        let orphaning = vec![
+            PendingOp::DeleteNode {
+                node_id: target.clone(),
+            },
+            PendingOp::SetProperty {
+                node_id: other_node.clone(),
+                key: "parent_id".into(),
+                value: serde_json::json!(target),
+            },
+        ];
+        let broad = PluginAdmission::new(
+            "qa-plugin-broad".into(),
+            "tree-other-petal".into(),
+            vec![
+                fe_sdk::CAP_STORAGE_READ.into(),
+                fe_sdk::CAP_STORAGE_WRITE.into(),
+            ],
+            vec![],
+            vec![],
+            vec![],
+        )
+        .unwrap()
+        .bind_scope(plugin_scope.clone())
+        .unwrap();
+        crate::handlers::plugin_host::commit(&db, &broad, &orphaning, "did:qa")
+            .await
+            .expect_err("staged dependencies cannot bypass the plain-delete contract");
+        assert_eq!(op_log_count(&db).await, before_plugin_ops);
+        db.query("UPDATE petal SET fractal_id='history-fractal' WHERE petal_id='tree-other-petal'")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        crate::handlers::plugin_host::commit(&db, &admission, &mixed[..1], "did:qa")
+            .await
+            .expect_err("queued plugin admission cannot follow a petal reparent");
+        crate::handlers::plugin_host::read(
+            &db,
+            &admission,
+            PluginRead::Node(other_node.clone()),
+            "did:qa",
+        )
+        .await
+        .expect_err("read admission also remains pinned");
+        db.query(
+            "UPDATE petal SET fractal_id='tree-other-fractal' WHERE petal_id='tree-other-petal'",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
     }
 
     /// A fixed fake clock source for the override tests (a real test would

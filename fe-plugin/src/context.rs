@@ -80,6 +80,9 @@ impl PluginContext {
     }
 
     fn require_capability(&self, capability: &str) -> Result<(), String> {
+        if !self.session.is_active() {
+            return Err("plugin instance is no longer admitted".into());
+        }
         if self.capabilities.plugin_id != self.plugin_id
             || !self.capabilities.has_capability(capability)
         {
