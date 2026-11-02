@@ -3761,6 +3761,304 @@ mod tests {
         assert!(
             polish.api_token_request.pending.is_none() && polish.api_token_request.error.is_some()
         );
+
+        for width in [260.0, 320.0, 640.0] {
+            use crate::ui_shell::right_sidebar::{
+                section_chrome, RightSidebarSection, RightSidebarState, ALL_SECTIONS,
+            };
+            let navigation_ctx = egui::Context::default();
+            layout_policy::apply_style(&navigation_ctx);
+            navigation_ctx.data_mut(|data| {
+                data.insert_persisted(
+                    egui::Id::new("right_section"),
+                    egui::containers::panel::PanelState {
+                        rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 760.0)),
+                    },
+                );
+            });
+            let mut navigation_time = 500.0;
+            let mut form = InspectorFormState::default();
+            form.set_active_tab(InspectorTab::ApiAccess);
+            let mut selected = NodeManager::default();
+            selected.select(Entity::from_bits(1), "node-1");
+            let mut shell = RightSidebarState::default();
+            shell.reveal(RightSidebarSection::Inspector);
+            let mut feedback = UiManager::default();
+            let (navigation_tx, navigation_rx) = crossbeam::channel::unbounded();
+            let navigation_frame = |events: Vec<egui::Event>,
+                                    form: &mut InspectorFormState,
+                                    selected: &mut NodeManager,
+                                    shell: &mut RightSidebarState,
+                                    feedback: &mut UiManager,
+                                    time: &mut f64| {
+                *time += 0.05;
+                layout_policy::begin_frame(&navigation_ctx, true);
+                let output = navigation_ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width + 900.0, 760.0),
+                        )),
+                        time: Some(*time),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        layout_policy::begin_ui_pass(ctx);
+                        egui::TopBottomPanel::top("navigation-test-top")
+                            .exact_height(40.0)
+                            .show(ctx, |ui| {
+                                ui.label("Application header");
+                            });
+                        section_chrome(ctx, shell, RightSidebarSection::Inspector, |ui| {
+                            right_inspector(
+                                ui,
+                                form,
+                                selected,
+                                &tree,
+                                feedback,
+                                &owner,
+                                &navigation_tx,
+                                &nav,
+                                &AssetDownloadStatus::default(),
+                            );
+                        });
+                    },
+                );
+                (output, layout_policy::observations(&navigation_ctx))
+            };
+            navigation_frame(
+                vec![],
+                &mut form,
+                &mut selected,
+                &mut shell,
+                &mut feedback,
+                &mut navigation_time,
+            );
+            let token = "private-long-token-fixture".repeat(150);
+            let client = "did:key:zPublicClientFixture";
+            form.api_endpoint = Some("127.0.0.1:8882".parse().unwrap());
+            form.generated_api_token = Some(token.clone());
+            form.generated_api_token_client = Some(client.into());
+            form.query_sql_buf = "SELECT * FROM node LIMIT 7".into();
+            form.prop_add_key_buf = "retained-property-draft".into();
+            form.api_tokens = (0..24)
+                .map(|index| crate::dialogs::ApiTokenEntry {
+                    jti: format!("navigation-token-{index}"),
+                    scope: build_nav_scope(&nav),
+                    max_role: "viewer".into(),
+                    label: Some(format!("Public token {index}")),
+                    created_at: "2026-11-02T00:00:00Z".into(),
+                    expires_at: "2026-12-02T00:00:00Z".into(),
+                    revoked: false,
+                    sub: "public-issuer".into(),
+                    client: Some(client.into()),
+                })
+                .collect();
+            form.api_tokens_total = 24;
+            let (masked, initial) = navigation_frame(
+                vec![],
+                &mut form,
+                &mut selected,
+                &mut shell,
+                &mut feedback,
+                &mut navigation_time,
+            );
+            assert!(!painted(&masked).contains("private-long-token-fixture"));
+            let body = initial
+                .scrolls
+                .iter()
+                .find(|scroll| scroll.label == "Inspector")
+                .unwrap();
+            assert_eq!(body.axes, [false, true]);
+            assert_eq!(
+                initial
+                    .scrolls
+                    .iter()
+                    .filter(|scroll| scroll.label == "Inspector")
+                    .count(),
+                1
+            );
+            assert!(
+                body.content_size.y > body.viewport.height(),
+                "the fixture must actually scroll"
+            );
+            let panel = egui::containers::panel::PanelState::load(
+                &navigation_ctx,
+                egui::Id::new("right_section"),
+            )
+            .unwrap();
+            assert!((panel.rect.width() - width).abs() < 0.5);
+
+            // Actual response order: section rail, Deselect, tabs, API controls.
+            let header_controls = ALL_SECTIONS.len() + 5;
+            let tabs: [_; 4] = std::array::from_fn(|index| {
+                initial.controls[ALL_SECTIONS.len() + 1 + index].clone()
+            });
+            for tab in &tabs {
+                let visible = tab.rect.intersect(tab.hit).intersect(tab.clip);
+                assert!((visible.width() - tab.rect.width()).abs() < 0.5);
+                assert!((visible.height() - tab.rect.height()).abs() < 0.5);
+                assert!(tab.rect.bottom() <= body.viewport.top());
+            }
+            let preview = &initial.controls[header_controls + 9];
+            assert!(
+                preview.rect.height() < 40.0,
+                "long tokens must remain one native line"
+            );
+            for offset in [7, 8, 9, 10, 11, 12] {
+                let control = &initial.controls[header_controls + offset];
+                let visible = control.rect.intersect(control.hit).intersect(control.clip);
+                assert!((visible.width() - control.rect.width()).abs() < 0.5);
+                assert!((visible.height() - control.rect.height()).abs() < 0.5);
+                if offset != 9 {
+                    assert!(control.rect.width() >= 24.0 && control.rect.height() >= 24.0);
+                    assert!(visible.width() * navigation_ctx.pixels_per_point() >= 20.0);
+                    assert!(visible.height() * navigation_ctx.pixels_per_point() >= 20.0);
+                }
+            }
+            let navigation_click = |point: egui::Pos2,
+                                    form: &mut InspectorFormState,
+                                    selected: &mut NodeManager,
+                                    shell: &mut RightSidebarState,
+                                    feedback: &mut UiManager,
+                                    time: &mut f64| {
+                navigation_frame(
+                    vec![egui::Event::PointerMoved(point)],
+                    form,
+                    selected,
+                    shell,
+                    feedback,
+                    time,
+                );
+                let mut result = None;
+                for pressed in [true, false] {
+                    result = Some(navigation_frame(
+                        vec![egui::Event::PointerButton {
+                            pos: point,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        }],
+                        form,
+                        selected,
+                        shell,
+                        feedback,
+                        time,
+                    ));
+                }
+                result.unwrap()
+            };
+            for (offset, expected) in [
+                (10, client.to_owned()),
+                (11, token.clone()),
+                (
+                    12,
+                    node_properties_curl(form.api_endpoint.unwrap(), "node-1", &token).unwrap(),
+                ),
+            ] {
+                let (copied, _) = navigation_click(
+                    initial.controls[header_controls + offset].rect.center(),
+                    &mut form,
+                    &mut selected,
+                    &mut shell,
+                    &mut feedback,
+                    &mut navigation_time,
+                );
+                assert!(copied.platform_output.commands.iter().any(|command|
+                    matches!(command, egui::OutputCommand::CopyText(text) if text == &expected)));
+            }
+            let (_, mut scrolled) = navigation_frame(
+                vec![
+                    egui::Event::PointerMoved(body.viewport.center()),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, -1600.0),
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                &mut form,
+                &mut selected,
+                &mut shell,
+                &mut feedback,
+                &mut navigation_time,
+            );
+            for _ in 0..4 {
+                (_, scrolled) = navigation_frame(
+                    vec![],
+                    &mut form,
+                    &mut selected,
+                    &mut shell,
+                    &mut feedback,
+                    &mut navigation_time,
+                );
+            }
+            assert!(
+                scrolled
+                    .scrolls
+                    .iter()
+                    .find(|scroll| scroll.label == "Inspector")
+                    .unwrap()
+                    .offset
+                    .y
+                    > 0.0
+            );
+            for tab in &tabs {
+                let current = scrolled
+                    .controls
+                    .iter()
+                    .find(|control| control.id == tab.id)
+                    .unwrap();
+                assert_eq!(
+                    current.rect, tab.rect,
+                    "body scroll must not move tab navigation"
+                );
+                assert_eq!(
+                    current.rect.intersect(current.hit).intersect(current.clip),
+                    current.rect
+                );
+            }
+            for (index, expected) in [(0, InspectorTab::Properties), (1, InspectorTab::ApiAccess)] {
+                let (_, changed) = navigation_click(
+                    tabs[index].rect.center(),
+                    &mut form,
+                    &mut selected,
+                    &mut shell,
+                    &mut feedback,
+                    &mut navigation_time,
+                );
+                assert_eq!(
+                    form.active_tab(),
+                    expected,
+                    "visible native tab must accept the actual pointer click"
+                );
+                assert!(
+                    form.generated_api_token.is_none() && form.generated_api_token_client.is_none()
+                );
+                for tab in &tabs {
+                    let current = changed
+                        .controls
+                        .iter()
+                        .find(|control| control.id == tab.id)
+                        .unwrap();
+                    assert_eq!(
+                        current.rect, tab.rect,
+                        "tab switches must retain fixed navigation geometry"
+                    );
+                    assert_eq!(
+                        current.rect.intersect(current.hit).intersect(current.clip),
+                        current.rect
+                    );
+                }
+            }
+            assert_eq!(form.query_sql_buf, "SELECT * FROM node LIMIT 7");
+            assert_eq!(form.prop_add_key_buf, "retained-property-draft");
+            assert_eq!(selected.selected.as_ref().unwrap().node_id, "node-1");
+            assert!(navigation_rx
+                .try_iter()
+                .all(|command| matches!(command, DbCommand::ListApiTokensByScope { .. })));
+            assert!(feedback.drain_actions().is_empty());
+        }
     }
 
     #[test]

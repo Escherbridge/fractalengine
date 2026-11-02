@@ -390,6 +390,15 @@ backstop; client Copy is allocated before its clipped public DID. Clipboard
 payloads still come from the stored token/client and full curl formatter, never
 the clipped preview. This layout change does not establish the sole cause of
 the retained QA15 scroll refusal or replace integrated pointer/A8 verification.
+The existing Inspector journey renders the actual sidebar chrome at 260/320/640
+points with a long token and a genuinely scrolling token list. It checks complete
+native tab/action rectangles against hit and clip rectangles, bounded preview
+height, exact client/token/curl clipboard payloads, then wheel-scrolls the body
+and clicks Properties and API at their fixed header positions. Selection, Query
+text and the Add Property draft remain intact; leaving API clears its secret.
+Only the known native SidePanel state seeds the requested test width; widget
+facts and tab IDs come from same-pass observed responses. These new assertions
+are authored source coverage and remain unexecuted in this lane.
 
 `InspectorTokenRequest` binds one mint to the current selected node and scope,
 a process-unique nonce, requested role/client and a monotonic 30-second timeout.

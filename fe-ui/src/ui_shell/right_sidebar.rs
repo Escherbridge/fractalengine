@@ -1591,11 +1591,7 @@ fn render_groups_controls(
     .on_disabled_hover_text("Editor access to this petal is required to change Groups.");
 }
 
-/// Shared SidePanel chrome (header + rail + separator + scrollable, padded
-/// body) — the seam EVERY section fn renders through, Inspector included
-/// (D10). That "every" is load-bearing: the rail lives in here, so a section
-/// that opts out (as the Inspector used to) makes the whole rail invisible in
-/// the resting state.
+/// Fixed section title/rail and body scroll boundary; see ui_shell/AGENTS.md.
 pub(crate) fn section_chrome(
     ctx: &egui::Context,
     state: &mut RightSidebarState,
