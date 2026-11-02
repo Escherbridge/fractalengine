@@ -174,6 +174,70 @@ mod tests {
         // Tamper with the verse name
         invite.verse_name = "Evil Verse".to_string();
         assert!(!invite.verify(&kp.verifying_key()));
+
+        use crate::join_invite::{JoinInvitation, JoinManifest, JoinRole, JOIN_PREFIX};
+        let recipient = NodeKeypair::generate().to_did_key();
+        let manifest = JoinManifest {
+            verse_id: "addressed-verse".into(),
+            name: "Addressed".into(),
+            created_by: kp.to_did_key(),
+            created_at: "2026-11-02T00:00:00Z".into(),
+            namespace_id: "ab".repeat(32),
+            default_access: "none".into(),
+            ts_mode: "mirror".into(),
+            ts_replication_factor: 1,
+            ts_bucket_width_ms: 86_400_000,
+        };
+        // Envelope-only fixtures cannot satisfy native ticket admission.
+        for role in [JoinRole::Viewer, JoinRole::Editor, JoinRole::Manager] {
+            let addressed = JoinInvitation::issue_owner(
+                &kp,
+                recipient.clone(),
+                "VERSE#addressed-verse".into(),
+                role,
+                manifest.clone(),
+                "doc-envelope-only-fixture".into(),
+                100,
+                3600,
+            )
+            .unwrap();
+            let link = addressed.to_link().unwrap();
+            let verified = JoinInvitation::parse_owner(&link, &recipient, 101).unwrap();
+            assert_eq!(verified.role(), role);
+            assert_eq!(verified.manifest(), &manifest);
+            assert!(!format!("{verified:?}").contains(verified.ticket()));
+            assert!(JoinInvitation::parse_owner(&link, &kp.to_did_key(), 101).is_err());
+            assert!(JoinInvitation::parse_owner(&link, &recipient, 3700).is_err());
+            for field in [
+                "recipient_did",
+                "scope",
+                "ticket",
+                "nonce",
+                "issuer_did",
+                "manifest",
+            ] {
+                let bytes = URL_SAFE_NO_PAD
+                    .decode(link.strip_prefix(JOIN_PREFIX).unwrap())
+                    .unwrap();
+                let mut altered: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                altered[field] = serde_json::json!("changed");
+                let altered = format!(
+                    "{JOIN_PREFIX}{}",
+                    URL_SAFE_NO_PAD.encode(serde_json::to_vec(&altered).unwrap())
+                );
+                assert!(
+                    JoinInvitation::parse_owner(&altered, &recipient, 101).is_err(),
+                    "{field}"
+                );
+            }
+            assert!(JoinInvitation::parse_owner(
+                &link.replacen("/v1/", "/v2/", 1),
+                &recipient,
+                101
+            )
+            .is_err());
+            assert!(JoinInvitation::parse_owner(&(link.clone() + "="), &recipient, 101).is_err());
+        }
     }
 
     /// T10: the owner pin is inside the signed bytes — swapping the owner (or

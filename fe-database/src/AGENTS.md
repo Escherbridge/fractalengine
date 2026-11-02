@@ -1804,3 +1804,22 @@ Terminal reset recognizes this private metadata table separately from DEVELOPMEN
 A pre-reset legacy JTI remains compatible until the first reset, with its stored revoked flag still enforced. After reset, old generationless and earlier-generation JWTs are refused, including unpersisted Owner/dev credentials. Current-generation unknown JTIs remain allowed because dev credentials intentionally have no api_token record. Existing string storage, exact tuple comparisons and the Access 256-byte bound already accept the longer JTI; there is no workspace JTI-specific 26-character parser. Other object/ULID grammar is unchanged. Low-level identity example and harness mints are legacy-compatible signers, not production generation authorities.
 
 Existing real-store shared-handle and schema reset journeys now assert persisted ordinary revocation after reopen, generation preservation on ordinary restart/refusal/schema reapplication, terminal rotation, old Owner retirement under the same verifying key, and a fresh DB-thread mint. These are authored source assertions until the integrated sweep.
+
+
+## Join invitations
+
+`join_invite` defines the versioned Owner-issued, recipient-DID-bound envelope.
+Fixed-order, domain-separated signed bytes include the exact owner manifest,
+scope, role, times, nonce and opaque native document ticket. Parsing is bounded
+and rejects unknown fields, noncanonical identities/encoding and unsupported
+versions without legacy fallback. Signature verification does not import a
+document or prove a live peer: native ticket capability, addressing and expiry
+are independently rechecked by sync admission before effects.
+
+The first producer supports Owner issuers; Manager issuers require a separately
+verified owner-rooted delegation chain. An addressed envelope does not encrypt or
+make its enclosed bearer document ticket nontransferable. Envelope expiry bounds
+acceptance, not the lifetime of a copied transport capability. Whole-Verse read
+access is not subtree confidentiality, and role revocation does not erase bytes
+or capabilities already received. Cross-store admission is explicitly staged;
+parsing or local row creation alone must never produce joined readiness.

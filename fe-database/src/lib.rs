@@ -62,6 +62,7 @@ pub mod atlas;
 pub mod canon_log;
 pub mod handlers;
 pub mod invite;
+pub mod join_invite;
 pub mod merge;
 pub mod migration;
 pub mod model_url_meta;
