@@ -188,14 +188,50 @@ Design decisions:
   `verse.timeseries` in), writes via
   `DbCommand::SetVerseTimeseriesSettings`, and displays only the
   authoritative `DbResult::VerseTimeseriesSettingsSet` echo — the surface
-  never shows an optimistic guess (same read-back rule as the petal-map
-  surface). The R slider is live-echo, not committed-buffer, so it tracks the
-  echo exactly.
+  does not mutate that mirror while editing. The scoped form draft described
+  below keeps an interaction visible until its stored echo arrives.
 - **Bundled, not a 17th param.** `apply_db_results` was already at Bevy's
   16-`SystemParam` ceiling; the state rides inside the `DescriptorCaches`
   bundle (see `fe-ui/src/verse_manager/AGENTS.md`).
 - `MAX_REPLICATION_FACTOR = 16` is a UI bound (a slider needs a finite range);
   the fabric itself only clamps R to the reachable peers.
+
+## Durable settings interaction commits
+
+`setting_draft::SettingDraft` is a small form adapter shared by the durable
+petal render distance and the verse's whole timeseries configuration. It owns
+only UI drafts, keyed to the current target; it never writes hierarchy or
+timeseries mirrors. Numeric widgets use native `update_while_editing(false)`
+so partial text is not persisted. Pointer drag release, numeric focus loss or
+Enter, and slider keyboard key release finalize one interaction. Mode and
+bucket preset clicks finalize immediately. Session overrides remain immediate
+and local. The old manifest precedence tooltip is replaced by the actual
+shared-petal/session precedence.
+
+Only one write per draft may await readback. A newer finalized edit remains
+editable while the first write is pending and is submitted after that stored
+value arrives. An echo cannot replace a newer local draft. Clean drafts adopt
+external stored changes; target changes reset the form, including native
+widget IDs. Channel failure or 30 seconds without matching stored confirmation
+keeps the payload with an inline unconfirmed/error message and requires another
+edit to retry. This is value-readback confirmation through the existing GUI
+contracts, not a new request-correlation or backend authorization guarantee.
+
+## Groups mutation controls
+
+The Groups renderer receives the active `LocalUserRole`. Every mutation is
+disabled for unresolved/Viewer roles with an Editor explanation; backend
+authorization remains authoritative. Selected-node membership controls receive
+only a node belonging to the active petal. Group form/confirmation identities
+include petal and group IDs. Rename commits on Enter, Escape discards, and an
+unsubmitted focus loss also discards. Delete uses the shared two-step helper;
+canceling it changes no registry or membership. Registry and membership caps
+have disabled reasons, and a full registry has visible limit copy.
+
+The existing sidebar render journey is extended rather than adding test
+functions. Source parsing is not execution or persistence evidence; integrated
+compilation, the final test sweep, and live role/interaction/readback checks
+remain required.
 
 ## §window-chrome (frameless window, 2026-10-31)
 

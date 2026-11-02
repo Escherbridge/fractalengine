@@ -404,7 +404,17 @@ pub fn render_right_sidebar(
             ui_mgr,
             visibility,
             nav.active_petal_id.as_deref(),
-            node_mgr.selected.as_ref().map(|s| s.node_id.as_str()),
+            node_mgr
+                .selected
+                .as_ref()
+                .map(|s| s.node_id.as_str())
+                .filter(|id| {
+                    nav.active_petal_id
+                        .as_deref()
+                        .and_then(|petal| hierarchy.find_petal(petal))
+                        .is_some_and(|petal| petal.nodes.iter().any(|node| node.id == *id))
+                }),
+            local_role,
         ),
         None => {} // unreachable: portal short-circuited above
     }
@@ -651,7 +661,7 @@ fn render_settings_section(
                     .suffix(" wu"),
             ).labelled(ui, label)
             .on_hover_text(
-                "Global residency horizon (0 stops spawning); a petal manifest's render distance overrides it for that petal",
+                "Global residency horizon (0 stops spawning); this petal's shared setting and the session override take precedence",
             );
         });
         ui.label(
@@ -776,43 +786,49 @@ fn render_petal_render_distance_controls(
         return;
     };
 
+    let draft_id = ui.id().with("petal-render-distance-draft");
+    let mut draft = super::setting_draft::SettingDraft::load(
+        ui,
+        draft_id,
+        petal_id,
+        petal.render_distance.unwrap_or(0.0),
+    );
+    let editable = local_role.can_edit();
     ui.add_space(4.0);
+    ui.push_id(("petal-distance", petal_id), |ui| {
     settings_row(ui, "This petal (shared)", |ui, label| {
-        let mut value = petal.render_distance.unwrap_or(0.0);
-        let editable = local_role.can_edit();
-        ui.add_enabled_ui(editable, |ui| {
-            if ui
-                .add(
-                    egui::DragValue::new(&mut value)
-                        .speed(1.0)
-                        .range(0.0..=crate::settings::RENDER_DISTANCE_MAX)
-                        .suffix(" wu"),
-                )
-                .labelled(ui, label)
-                .on_hover_text(if editable {
-                    "Durable per-petal override (replicates to peers); 0 clears it (inherit global)"
-                } else {
-                    "Editor+ required to change this petal's shared render distance"
-                })
-                .changed()
-            {
-                let render_distance = (value > 0.0).then_some(value);
-                if db_tx
-                    .send(DbCommand::SetPetalRenderDistance {
-                        petal_id: petal_id.to_string(),
-                        render_distance,
-                        auth: CallerAuth::Local,
-                        correlation_id: None,
-                    })
-                    .is_err()
-                {
-                    bevy::log::warn!(
-                        "db_tx channel closed — SetPetalRenderDistance dropped for {petal_id}"
-                    );
-                }
-            }
-        });
+        let response = ui.add_enabled(
+            editable,
+            egui::DragValue::new(&mut draft.value)
+                .speed(1.0)
+                .range(0.0..=crate::settings::RENDER_DISTANCE_MAX)
+                .update_while_editing(false)
+                .suffix(" wu"),
+        ).labelled(ui, label)
+        .on_hover_text("Durable per-petal override; 0 inherits the global value. Saved after the interaction finishes.")
+        .on_disabled_hover_text("Editor access to this petal is required to change its shared render distance.");
+        draft.observe(ui, &response);
     });
+    });
+    if let Some(value) = draft.next_value().filter(|_| editable) {
+        if db_tx
+            .send(DbCommand::SetPetalRenderDistance {
+                petal_id: petal_id.to_owned(),
+                render_distance: (value > 0.0).then_some(value),
+                auth: CallerAuth::Local,
+                correlation_id: None,
+            })
+            .is_ok()
+        {
+            draft.sent(ui.input(|input| input.time));
+        } else {
+            bevy::log::warn!(
+                "db_tx channel closed ? SetPetalRenderDistance dropped for {petal_id}"
+            );
+            draft.failed();
+        }
+    }
+    draft.store(ui, draft_id);
     settings_row(ui, "Session override", |ui, label| {
         let mut value = render_override.for_petal(petal_id).unwrap_or(0.0);
         if ui
@@ -966,35 +982,21 @@ fn render_timeseries_fabric_controls(
         return;
     };
 
-    let current = ts_settings.settings_for(verse_id);
-
-    let send = |mode: fe_runtime::timeseries::TimeseriesMode, r: u32, bucket_ms: u64| {
-        if db_tx
-            .send(DbCommand::SetVerseTimeseriesSettings {
-                verse_id: verse_id.to_string(),
-                mode: mode.as_str().to_string(),
-                replication_factor: r,
-                bucket_width_ms: bucket_ms,
-            })
-            .is_err()
-        {
-            bevy::log::warn!(
-                "db_tx channel closed — timeseries settings change dropped for verse {verse_id}"
-            );
-        }
-    };
-
-    // Mode picker (radio per mode). The label names the placement contract so
-    // the user knows what each mode does without a doc.
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Mode").small().color(theme::TEXT_DIM));
-    });
+    let draft_id = ui.id().with("timeseries-settings-draft");
+    let mut draft = super::setting_draft::SettingDraft::load(
+        ui,
+        draft_id,
+        verse_id,
+        ts_settings.settings_for(verse_id),
+    );
+    ui.push_id(("timeseries-settings", verse_id), |ui| {
+    ui.label(egui::RichText::new("Mode").small().color(theme::TEXT_DIM));
     for mode in [
         fe_runtime::timeseries::TimeseriesMode::Mirror,
         fe_runtime::timeseries::TimeseriesMode::Sharded,
         fe_runtime::timeseries::TimeseriesMode::Balanced,
     ] {
-        let selected = current.mode == mode;
+        let selected = draft.value.mode == mode;
         if ui
             .radio(selected, tss::mode_label(mode))
             .observed(ui)
@@ -1002,83 +1004,67 @@ fn render_timeseries_fabric_controls(
             .clicked()
             && !selected
         {
-            // Mode change keeps R and the bucket width as-is; R is clamped by
-            // the planner for modes that do not use it.
-            send(mode, current.replication_factor, current.bucket_width_ms);
+            draft.value.mode = mode;
+            draft.finish();
         }
     }
-
     ui.add_space(4.0);
-    // Durability slider R — meaningful only in `balanced` (sharded is R=1,
-    // mirror ignores R). Disabled with an explanatory hint elsewhere.
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("Durability (R)")
-                .small()
-                .color(theme::TEXT_DIM),
-        );
-        let enabled = tss::replication_slider_enabled(current.mode);
-        let mut r = tss::clamp_replication_factor(current.replication_factor);
-        let response = ui.add_enabled(
-            enabled,
-            egui::Slider::new(&mut r, 1..=tss::MAX_REPLICATION_FACTOR)
-                .integer()
-                .suffix(" peers/shard"),
-        ).named(ui, "Timeseries durability replication factor");
-        if enabled {
-            if response
-                .on_hover_text(
-                    "Replication factor for balanced mode. R is a request: placement clamps it to the peers a shard can actually reach.",
-                )
-                .changed()
-            {
-                send(current.mode, r, current.bucket_width_ms);
-            }
-        } else {
-            response.on_disabled_hover_text(
-                "R applies to balanced mode only (sharded = one host, mirror = all).",
-            );
-        }
+    settings_row(ui, "Durability (R)", |ui, label| {
+        let enabled = tss::replication_slider_enabled(draft.value.mode);
+        let response = ui.add_enabled(enabled,
+            egui::Slider::new(&mut draft.value.replication_factor, 1..=tss::MAX_REPLICATION_FACTOR)
+                .integer().update_while_editing(false).suffix(" peers/shard"),
+        ).labelled_by(label.id).named(ui, "Timeseries durability replication factor")
+        .on_hover_text("Replication factor for balanced mode. Saved after release or keyboard/text finalization; placement clamps it to reachable peers.")
+        .on_disabled_hover_text("R applies to balanced mode only (sharded = one host, mirror = all).");
+        draft.observe(ui, &response);
     });
-
     ui.add_space(4.0);
-    // Shard bucket width (ms) — epoch-aligned; a reading maps to one shard by
-    // (anchor, recorded_at_ms / width). Presets beside a numeric field.
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("Bucket width")
-                .small()
-                .color(theme::TEXT_DIM),
-        );
-        let mut buf_u64 = ts_settings.bucket_width_buffer(verse_id);
-        if ui
+    settings_row(ui, "Bucket width", |ui, label| {
+        let response = ui
             .add(
-                egui::DragValue::new(&mut buf_u64)
+                egui::DragValue::new(&mut draft.value.bucket_width_ms)
                     .speed(60_000.0)
                     .range(1..=u64::MAX)
+                    .update_while_editing(false)
                     .suffix(" ms"),
             )
+            .labelled_by(label.id)
             .named(ui, "Timeseries bucket width in milliseconds")
-            .on_hover_text("Shard time-bucket width in milliseconds (epoch-aligned)")
-            .changed()
-        {
-            ts_settings.set_bucket_width_buffer(verse_id, buf_u64);
-            send(
-                current.mode,
-                current.replication_factor,
-                ts_settings.bucket_width_to_commit(),
+            .on_hover_text(
+                "Shard time-bucket width in milliseconds; saved after the interaction finishes.",
             );
-        }
+        draft.observe(ui, &response);
     });
     ui.horizontal_wrapped(|ui| {
         for (ms, label) in tss::BUCKET_WIDTH_PRESETS {
-            let selected = current.bucket_width_ms == ms;
+            let selected = draft.value.bucket_width_ms == ms;
             if ui.selectable_label(selected, label).observed(ui).clicked() && !selected {
-                ts_settings.set_bucket_width_buffer(verse_id, ms);
-                send(current.mode, current.replication_factor, ms);
+                draft.value.bucket_width_ms = ms;
+                draft.finish();
             }
         }
     });
+    });
+    if let Some(value) = draft.next_value() {
+        if db_tx
+            .send(DbCommand::SetVerseTimeseriesSettings {
+                verse_id: verse_id.to_owned(),
+                mode: value.mode.as_str().to_owned(),
+                replication_factor: value.replication_factor,
+                bucket_width_ms: value.bucket_width_ms,
+            })
+            .is_ok()
+        {
+            draft.sent(ui.input(|input| input.time));
+        } else {
+            bevy::log::warn!(
+                "db_tx channel closed ? timeseries settings change dropped for verse {verse_id}"
+            );
+            draft.failed();
+        }
+    }
+    draft.store(ui, draft_id);
     ui.add_space(2.0);
     ui.label(
         egui::RichText::new(
@@ -1208,6 +1194,7 @@ fn render_groups_section(
     visibility: &VisibilityState,
     active_petal_id: Option<&str>,
     selected_node_id: Option<&str>,
+    local_role: &LocalUserRole,
 ) {
     section_chrome(ctx, state, RightSidebarSection::Groups, |ui| {
         let Some(petal_id) = active_petal_id else {
@@ -1219,8 +1206,33 @@ fn render_groups_section(
             );
             return;
         };
+        render_groups_controls(
+            ui,
+            ui_mgr,
+            visibility,
+            petal_id,
+            selected_node_id,
+            local_role,
+        );
+    });
+}
+
+fn render_groups_controls(
+    ui: &mut egui::Ui,
+    ui_mgr: &mut UiManager,
+    visibility: &VisibilityState,
+    petal_id: &str,
+    selected_node_id: Option<&str>,
+    local_role: &LocalUserRole,
+) {
+    let editable = local_role.can_edit();
+    if !editable {
+        ui.label("Editor access to this petal is required to change Groups.");
+    }
+    ui.add_enabled_ui(editable, |ui| {
         let groups = visibility.groups();
         let push_registry = |ui_mgr: &mut UiManager, next: Vec<crate::visibility::Group>| {
+            if !editable { return; }
             ui_mgr.push_action(UiAction::SetGroupRegistry {
                 petal_id: petal_id.to_string(),
                 groups: next,
@@ -1228,7 +1240,7 @@ fn render_groups_section(
         };
 
         // Create.
-        let new_name_id = egui::Id::new("groups_section_new_name");
+        let new_name_id = egui::Id::new(("groups_section_new_name", petal_id));
         let mut new_name: String = ui.data(|d| d.get_temp(new_name_id)).unwrap_or_default();
         ui.horizontal(|ui| {
             let edit = ui
@@ -1245,13 +1257,19 @@ fn render_groups_section(
             let clicked = ui
                 .add_enabled(can_add, egui::Button::new("Add group"))
                 .observed(ui)
+                .on_disabled_hover_text(if groups.len() >= MAX_VISIBILITY_GROUPS {
+                    format!("This petal already has the maximum {MAX_VISIBILITY_GROUPS} Groups.")
+                } else { "Enter a Group name first.".to_owned() })
                 .clicked();
-            if can_add && (clicked || submitted) {
+            if editable && can_add && (clicked || submitted) {
                 push_registry(ui_mgr, group_ops::with_group_added(groups, &new_name));
                 new_name.clear();
             }
         });
         ui.data_mut(|d| d.insert_temp(new_name_id, new_name));
+        if groups.len() >= MAX_VISIBILITY_GROUPS {
+            ui.label(format!("Group limit reached: {MAX_VISIBILITY_GROUPS} per petal. Remove a Group before adding another."));
+        }
         ui.add_space(6.0);
 
         if groups.is_empty() {
@@ -1269,6 +1287,7 @@ fn render_groups_section(
             selected_node_id.filter(|id| crate::verse_manager::parse_stamp_marker_id(id).is_none());
         let selected_groups = selected_node_id.map(|id| visibility.node_groups(id));
         for (index, group) in groups.iter().enumerate() {
+            ui.push_id((petal_id, &group.id), |ui| {
             ui.separator();
             ui.horizontal(|ui| {
                 let mut visible = group.visible;
@@ -1283,8 +1302,7 @@ fn render_groups_section(
                         group_ops::with_group_visible(groups, &group.id, visible),
                     );
                 }
-                // Rename: edit a per-group buffer, commit on focus loss.
-                let buffer_id = egui::Id::new(("groups_section_rename", group.id.as_str()));
+                let buffer_id = egui::Id::new(("groups_section_rename", petal_id, group.id.as_str()));
                 let mut name: String = ui
                     .data(|d| d.get_temp(buffer_id))
                     .unwrap_or_else(|| group.name.clone());
@@ -1295,7 +1313,12 @@ fn render_groups_section(
                             .desired_width(120.0),
                     )
                     .named(ui, format_args!("Rename visibility group {}", group.name));
-                if edit.lost_focus() {
+                let escaped = (edit.has_focus() || edit.lost_focus()) && ui.input(|input| input.key_pressed(egui::Key::Escape));
+                let submitted = edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                if escaped {
+                    edit.surrender_focus();
+                    ui.data_mut(|d| d.remove::<String>(buffer_id));
+                } else if submitted {
                     let trimmed = name.trim();
                     if !trimmed.is_empty() && trimmed != group.name {
                         push_registry(
@@ -1306,6 +1329,8 @@ fn render_groups_section(
                     ui.data_mut(|d| d.remove::<String>(buffer_id));
                 } else if edit.has_focus() {
                     ui.data_mut(|d| d.insert_temp(buffer_id, name));
+                } else {
+                    ui.data_mut(|d| d.remove::<String>(buffer_id));
                 }
                 if ui
                     .add_enabled(index > 0, egui::Button::new("\u{25B2}").small())
@@ -1329,12 +1354,7 @@ fn render_groups_section(
                 {
                     push_registry(ui_mgr, group_ops::with_group_moved(groups, index, 1));
                 }
-                if ui
-                    .add(egui::Button::new("Delete").small())
-                    .named(ui, format_args!("Delete visibility group {}", group.name))
-                    .on_hover_text("Delete the Group (its members are not deleted)")
-                    .clicked()
-                {
+                if crate::panels::widgets::confirm_button(ui, ("delete-group", petal_id, &group.id), "Delete", "Confirm delete", format_args!("Delete visibility group {}", group.name)) {
                     push_registry(ui_mgr, group_ops::with_group_removed(groups, &group.id));
                 }
             });
@@ -1361,9 +1381,10 @@ fn render_groups_section(
                 if ui
                     .add_enabled(can_join, egui::Button::new(label).small())
                     .named(ui, format_args!("{label}: {}", group.name))
+                    .on_disabled_hover_text(format!("A node can belong to at most {MAX_VIEW_GROUPS} Groups."))
                     .clicked()
                 {
-                    if let Some(next) = group_ops::membership_with(current, &group.id, !member) {
+                    if let Some(next) = group_ops::membership_with(current, &group.id, !member).filter(|_| editable) {
                         ui_mgr.push_action(UiAction::SetNodeGroups {
                             node_id: node_id.to_string(),
                             groups: next,
@@ -1371,8 +1392,9 @@ fn render_groups_section(
                     }
                 }
             }
+            });
         }
-    });
+    }).response.on_disabled_hover_text("Editor access to this petal is required to change Groups.");
 }
 
 /// Shared SidePanel chrome (header + rail + separator + scrollable, padded
