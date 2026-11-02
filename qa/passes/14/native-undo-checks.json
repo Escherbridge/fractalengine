@@ -1,0 +1,100 @@
+{
+  "checks": [
+    {
+      "step": "undo-after-edit",
+      "expected_x": 15,
+      "expected_version": 6,
+      "stored_position_matches": true,
+      "stored_version_matches": true,
+      "ecs_position_matches": true,
+      "rotation_scale_preserved": true
+    },
+    {
+      "step": "undo-after-undo",
+      "expected_x": 12,
+      "expected_version": 7,
+      "stored_position_matches": true,
+      "stored_version_matches": true,
+      "ecs_position_matches": true,
+      "rotation_scale_preserved": true
+    },
+    {
+      "step": "undo-after-redo",
+      "expected_x": 15,
+      "expected_version": 8,
+      "stored_position_matches": true,
+      "stored_version_matches": true,
+      "ecs_position_matches": true,
+      "rotation_scale_preserved": true
+    },
+    {
+      "step": "undo-two-edits",
+      "expected_x": 18,
+      "expected_version": 9,
+      "stored_position_matches": true,
+      "stored_version_matches": true,
+      "ecs_position_matches": true,
+      "rotation_scale_preserved": true
+    },
+    {
+      "step": "undo-B",
+      "expected_x": 15,
+      "expected_version": 10,
+      "stored_position_matches": true,
+      "stored_version_matches": true,
+      "ecs_position_matches": true,
+      "rotation_scale_preserved": true
+    },
+    {
+      "step": "undo-A",
+      "expected_x": 12,
+      "expected_version": 11,
+      "stored_position_matches": true,
+      "stored_version_matches": true,
+      "ecs_position_matches": true,
+      "rotation_scale_preserved": true
+    },
+    {
+      "step": "redo-A",
+      "expected_x": 15,
+      "expected_version": 12,
+      "stored_position_matches": true,
+      "stored_version_matches": true,
+      "ecs_position_matches": true,
+      "rotation_scale_preserved": true
+    },
+    {
+      "step": "redo-B",
+      "expected_x": 18,
+      "expected_version": 13,
+      "stored_position_matches": true,
+      "stored_version_matches": true,
+      "ecs_position_matches": true,
+      "rotation_scale_preserved": true
+    },
+    {
+      "step": "restore-B",
+      "expected_x": 15,
+      "expected_version": 14,
+      "stored_position_matches": true,
+      "stored_version_matches": true,
+      "ecs_position_matches": true,
+      "rotation_scale_preserved": true
+    },
+    {
+      "step": "restore-A",
+      "expected_x": 12,
+      "expected_version": 15,
+      "stored_position_matches": true,
+      "stored_version_matches": true,
+      "ecs_position_matches": true,
+      "rotation_scale_preserved": true
+    }
+  ],
+  "two_edits_two_undos_two_redos_passed": true,
+  "fixture_transform_restored": true,
+  "fixture_properties_preserved": true,
+  "history_appended_not_rewritten": true,
+  "legacy_baseline_note": "Before was currentv4 with unavailable scope intervals. First checked edit atomically added supported baselinev5 plus transformv6; this is not a duplicate edit. Older unavailable facts remain explicit.",
+  "limits": "Focused Inspector full-transform proof; path moves, peer conflicts, revocation, pending receipt recovery and final all-layout suite remain unexecuted."
+}

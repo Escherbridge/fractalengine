@@ -1,0 +1,10 @@
+{
+  "kind": "scratch-driver-error",
+  "operation": [
+    "layout-check"
+  ],
+  "error": "ModuleNotFoundError: layout_check",
+  "source": "scratch helper imported fe.py without adding tools/qa to sys.path",
+  "product_request_sent": false,
+  "correction": "add tools/qa to helper module search path; public CLI unchanged"
+}

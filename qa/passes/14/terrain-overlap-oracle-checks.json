@@ -1,0 +1,25 @@
+{
+  "checks": {
+    "selected_solid_box": true,
+    "original_box_volume_3p125": true,
+    "all_five_pristine_probes_agree": true,
+    "grounded_tile_mean_matches_independent_packet": true,
+    "expected_sampled_overlap": true,
+    "display_rounding_matches": true,
+    "epoch_limitation_retained": true
+  },
+  "full_solid_box_volume_m3": 3.125,
+  "base_height": -0.13673552870750427,
+  "raise_delta_m": 0.5,
+  "changed_interval_y": [
+    -0.13673552870750427,
+    0.3632644712924957
+  ],
+  "expected_overlap_m3": 2.2704029455780983,
+  "report_display_m3": "2.270",
+  "material": {
+    "density_kg_m3": 2400,
+    "name": "QA concrete"
+  },
+  "limits": "Five request-time pristine probes; terrain source has no assignment stamp. Available does not establish a replay of the historical report epoch. Static fixture had no intervening edits in the retained action trace."
+}
