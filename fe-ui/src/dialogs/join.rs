@@ -69,8 +69,9 @@ pub fn render_join_dialog(
 
         ui.add_enabled(
             !pending,
-            egui::TextEdit::multiline(invite_buf)
-                .desired_rows(3)
+            egui::TextEdit::singleline(invite_buf)
+                .password(true)
+                .char_limit(64 * 1024)
                 .desired_width(f32::INFINITY)
                 .hint_text("Paste invite string here...")
                 .font(egui::TextStyle::Monospace),
@@ -86,7 +87,8 @@ pub fn render_join_dialog(
         ui.horizontal(|ui| {
             let can_join = !pending && !invite_buf.trim().is_empty();
             if ui
-                .add_enabled(can_join, egui::Button::new("Join")).observed(ui)
+                .add_enabled(can_join, egui::Button::new("Join"))
+                .observed(ui)
                 .clicked()
             {
                 invite_to_send = Some(invite_buf.trim().to_string());
@@ -96,7 +98,8 @@ pub fn render_join_dialog(
                 ui.label("Joining\u{2026}");
             }
             if ui
-                .add_enabled(!pending, egui::Button::new("Cancel")).observed(ui)
+                .add_enabled(!pending, egui::Button::new("Cancel"))
+                .observed(ui)
                 .clicked()
             {
                 close = true;

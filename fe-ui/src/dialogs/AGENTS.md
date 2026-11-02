@@ -411,3 +411,11 @@ Floating dialogs use WindowTargets::show_with_targets at the native Window show
 boundary; see ui_shell/AGENTS.md Native floating-window header targets. It keeps
 the normal open/pending/close lifecycle rather than adding a second close action
 or overlay. Data and Appearance use that same bounded-window adapter.
+
+
+## Addressed invitation credential boundary
+
+Join input uses a masked single-line editor with a bounded buffer. ActiveDialog diagnostics
+expose only the variant name, excluding invitation drafts and retained access credentials.
+Invitation workflow commands and replies use redacted credential wrappers; channel failures
+must never format their payload. The native QA clipboard suppression remains authoritative.

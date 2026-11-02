@@ -3,8 +3,8 @@
 
 mod context_menu;
 mod create_entity;
-pub(crate) mod entity_details;
 pub(crate) mod entity_access;
+pub(crate) mod entity_details;
 mod entity_settings;
 mod gltf_import;
 mod hexon_manager;
@@ -101,7 +101,7 @@ pub struct ContextTarget {
 /// to prompt against, per the precedent at
 /// `fe-api/src/canonical_ws/handler.rs::PinnedSessionStatus`.
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub enum ActiveDialog {
     #[default]
     None,
@@ -194,6 +194,25 @@ pub enum ActiveDialog {
         /// Ed25519 `did:key` to mint for; blank mints a fresh client (W6-7b).
         api_token_client_buf: String,
     },
+}
+
+impl std::fmt::Debug for ActiveDialog {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::None => "None",
+            Self::TreeAppearance { .. } => "TreeAppearance",
+            Self::CreateEntity { .. } => "CreateEntity",
+            Self::ContextMenu { .. } => "ContextMenu",
+            Self::GltfImport { .. } => "GltfImport",
+            Self::NodeOptions { .. } => "NodeOptions",
+            Self::JoinDialog { .. } => "JoinDialog",
+            Self::PeerDebug => "PeerDebug",
+            Self::HexonManager { .. } => "HexonManager",
+            Self::PetalManifest { .. } => "PetalManifest",
+            Self::EntitySettings { .. } => "EntitySettings",
+        };
+        f.debug_struct(name).finish_non_exhaustive()
+    }
 }
 
 #[cfg(test)]
