@@ -943,3 +943,5 @@ The existing map-loading journey now drives the real Brush consumer through thre
 
 Right-click path vertex and handle targets retain editing_track_id in ContextTarget.node_id.
 An open context menu therefore cannot follow a later track selection by reusing its point index.
+
+Vertex/handle context classification also captures the complete PointEditOrigin at that moment. Rendering never recaptures a refreshed route for an old index.

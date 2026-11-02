@@ -407,3 +407,5 @@ toggle rules, including derived handles where required. It reserves one combined
 without changing editor rows. The same full route and navigation survive the asynchronous stored
 read; changed order or metadata refuses before any write. Ordinary Pen corner/smoothness controls
 produce one combined typed intent rather than separate corner/handle writes competing for Undo.
+
+ContextSetAnchorCorner is the viewport-menu-only origin-bearing corner intent. It checks the original route, active node/Petal, advisory Editor access and point index before the ordinary path edit. Other path-editor producers keep their existing action shape.

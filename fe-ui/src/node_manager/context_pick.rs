@@ -312,6 +312,7 @@ pub(super) fn classify_context_menu(
                     .iter()
                     .map(|(g, m)| ((m.index, m.side), g.translation())),
             ) {
+                ui_mgr.context_point_origin = crate::undo::PointEditOrigin::capture(&path_state, &nav);
                 write_target(
                     &mut ui_mgr,
                     active_petal,
@@ -330,6 +331,7 @@ pub(super) fn classify_context_menu(
                 PICK_RADIUS,
                 vertex_query.iter().map(|(g, m)| (m.index, g.translation())),
             ) {
+                ui_mgr.context_point_origin = crate::undo::PointEditOrigin::capture(&path_state, &nav);
                 write_target(
                     &mut ui_mgr,
                     active_petal,

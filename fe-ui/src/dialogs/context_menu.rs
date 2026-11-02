@@ -326,13 +326,14 @@ fn close_stale_context_menu(ui_mgr: &mut UiManager, active_petal: Option<&str>) 
     stale
 }
 
-fn target_is_current(target: &ContextTarget, hierarchy: &VerseManager, path: &PathEditorState, petal: Option<&str>) -> bool {
+fn target_is_current(target: &ContextTarget, hierarchy: &VerseManager, path: &PathEditorState, petal: Option<&str>, point_origin: Option<&crate::undo::PointEditOrigin>, nav: &crate::navigation_manager::NavigationManager) -> bool {
     if petal.is_none() || target.petal_id.as_deref() != petal { return false; }
     let owning_node = target.node_id.as_deref().or_else(|| target.stamp.as_ref().map(|(track,_)| track.as_str()));
     if owning_node.is_some_and(|id| hierarchy.petal_id_of(id) != petal) { return false; }
     match target.hit {
         HitTarget::PathVertex { idx } | HitTarget::PathHandle { idx, .. } => {
             target.node_id.is_some() && path.editing_track_id == target.node_id && idx < path.points.len()
+                && point_origin.is_some_and(|origin| origin.matches(path, nav))
         }
         HitTarget::PathSegment { .. } => path.editing_track_id == target.node_id,
         _ => true,
@@ -503,6 +504,7 @@ pub fn render_context_menu(
     if close_stale_context_menu(ui_mgr, active_petal) {
         return;
     }
+    let point_origin = ui_mgr.context_point_origin.as_ref();
     let ActiveDialog::ContextMenu {
         ref screen_pos,
         ref world_pos,
@@ -547,7 +549,7 @@ pub fn render_context_menu(
                             *descendant_count,
                             pending_delete,
                             &mut outcome,
-                            local_role.can_edit() && target_is_current(target, hierarchy, path_state, active_petal),
+                            local_role.can_edit() && target_is_current(target, hierarchy, path_state, active_petal, point_origin, nav),
                         );
                     } else {
                         render_target_menu(
@@ -564,6 +566,7 @@ pub fn render_context_menu(
                             active_petal,
                             nav,
                             local_role,
+                            point_origin,
                         );
                     }
                 });
@@ -620,6 +623,7 @@ fn render_target_menu(
     active_petal: Option<&str>,
     nav: &crate::navigation_manager::NavigationManager,
     local_role: &crate::plugin::LocalUserRole,
+    point_origin: Option<&crate::undo::PointEditOrigin>,
 ) {
     // Stamp payload + live promotion state (the promoted node id backs the
     // node-scoped verbs; it can land WHILE the menu is open — verbs light up).
@@ -705,7 +709,7 @@ fn render_target_menu(
     }
 
     for verb in menu_for(&target.hit) {
-        if !target_is_current(target, hierarchy, path_state, active_petal) {
+        if !target_is_current(target, hierarchy, path_state, active_petal, point_origin, nav) {
             render_target_gated_verb_button(ui, verb, &target.hit, false, "This object changed or is no longer in the active Petal. Reopen its menu.");
             continue;
         }
@@ -892,18 +896,16 @@ fn render_target_menu(
                     let Some(index) = anchor_index(&target.hit).filter(|index| *index < path_state.points.len()) else { continue };
                     let route = crate::undo::PointEditOrigin::confirmation_key(path_state, nav);
                     if crate::panels::widgets::confirm_button(ui, egui::Id::new(("context_remove_point", &track_id, index, route)), "Delete Point", "Confirm point removal", "Delete path point") {
-                        if let Some(origin) = crate::undo::PointEditOrigin::capture(path_state, nav) {
-                            outcome.actions.push(UiAction::PathRemovePoint { track_node_id: track_id, index, origin });
+                        if let Some(origin) = point_origin.filter(|origin| origin.matches(path_state, nav)) {
+                            outcome.actions.push(UiAction::PathRemovePoint { track_node_id: track_id, index, origin: origin.clone() });
                             outcome.close = true;
                         }
                     }
                     continue;
                 }
                 if render_target_verb_button(ui, verb, &target.hit, true) {
-                    if let Some(action) =
-                        point_verb_action(verb, &target.hit, &track_id, current_corner)
-                    {
-                        outcome.actions.push(action);
+                    if let (Some(UiAction::PathSetAnchorCorner { track_node_id, index, corner }), Some(origin)) = (point_verb_action(verb, &target.hit, &track_id, current_corner), point_origin.filter(|origin| origin.matches(path_state, nav))) {
+                        outcome.actions.push(UiAction::ContextSetAnchorCorner { track_node_id, index, corner, origin: origin.clone() });
                     }
                     outcome.close = true;
                 }
@@ -1341,6 +1343,39 @@ mod tests {
             let area = egui::containers::AreaState::load(&ctx,egui::Id::new("viewport_context_menu")).unwrap().rect();
             assert!(viewport.contains_rect(area), "edge menu must remain inside actual viewport: {area:?}");
             assert!(menu.drain_actions().is_empty(), "Viewer menu does not emit edits");
+        }
+        let editor = crate::plugin::LocalUserRole { role: Some(fe_policy::RoleLevel::Editor) };
+        for change in ["reorder", "change"] {
+            let mut path = PathEditorState { editing_track_id:Some("n1".into()), points:vec![
+                crate::gis::PathPointRow { position:[1.0,0.0,0.0],..Default::default() },
+                crate::gis::PathPointRow { position:[2.0,0.0,0.0],..Default::default() },
+            ],..Default::default() };
+            let mut menu = UiManager::default();
+            menu.open_dialog(ActiveDialog::ContextMenu { screen_pos:[40.0,40.0],world_pos:[0.0;3],target:Some(ContextTarget {
+                petal_id:Some("p1".into()),hit:HitTarget::PathVertex { idx:0 },node_id:Some("n1".into()),stamp:None,
+            }),pending_delete:false,descendant_count:None });
+            menu.context_point_origin = crate::undo::PointEditOrigin::capture(&path,&nav);
+            let ctx = egui::Context::default();
+            let mut render = |events, path:&PathEditorState, menu:&mut UiManager| {
+                crate::ui_shell::layout_policy::begin_frame(&ctx,true);
+                let _ = ctx.run(egui::RawInput { screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(640.0,480.0))), events,..Default::default() },|ctx| {
+                    crate::ui_shell::layout_policy::begin_ui_pass(ctx);
+                    render_context_menu(ctx,menu,&hierarchy,&stamp,&mut tools,path,&tx,Some("p1"),&nav,&editor);
+                });
+                crate::ui_shell::layout_policy::observations(&ctx)
+            };
+            render(Vec::new(),&path,&mut menu);
+            let observed = render(Vec::new(),&path,&mut menu);
+            assert_eq!(observed.controls.len(),2,"actual point verb controls");
+            let points:Vec<_> = observed.controls.iter().map(|control|control.rect.center()).collect();
+            if change == "reorder" { path.points.swap(0,1); } else { path.points[0].position[0]=99.0; }
+            for point in points {
+                render(vec![egui::Event::PointerMoved(point)],&path,&mut menu);
+                for pressed in [true,false] {
+                    render(vec![egui::Event::PointerButton { pos:point,button:egui::PointerButton::Primary,pressed,modifiers:egui::Modifiers::NONE }],&path,&mut menu);
+                }
+                assert!(menu.drain_actions().is_empty(),"{change} before the first click cannot mutate the point now at this index");
+            }
         }
     }
 

@@ -206,6 +206,12 @@ pub enum UiAction {
         index: usize,
         corner: crate::gis::CornerKind,
     },
+    ContextSetAnchorCorner {
+        track_node_id: String,
+        index: usize,
+        corner: crate::gis::CornerKind,
+        origin: crate::undo::PointEditOrigin,
+    },
     /// Remove the point at `index` from a track's point list.
     PathRemovePoint {
         track_node_id: String,
@@ -560,6 +566,7 @@ pub struct UiManager {
     pub(crate) pending_url_save: Option<portal::PendingUrlSave>,
     pub(crate) portal_feedback: portal::PortalFeedback,
     pub(crate) portal_content_rect: Option<bevy_egui::egui::Rect>,
+    pub(crate) context_point_origin: Option<crate::undo::PointEditOrigin>,
     /// Sidebar open state — derived from portal/inspector each frame.
     pub sidebar_open: bool,
     /// Which floating dialog is currently open (at most one).
@@ -600,6 +607,7 @@ impl Default for UiManager {
             pending_url_save: None,
             portal_feedback: portal::PortalFeedback::default(),
             portal_content_rect: None,
+            context_point_origin: None,
             sidebar_open: true,
             active_dialog: ActiveDialog::None,
             notices: VecDeque::new(),
@@ -661,6 +669,7 @@ impl UiManager {
     }
 
     fn replace_dialog(&mut self, dialog: ActiveDialog) {
+        self.context_point_origin = None;
         self.gltf_file_lease = None;
         self.active_dialog = dialog;
     }
@@ -1313,6 +1322,17 @@ pub(crate) fn process_ui_actions(
                 match path::queue_checked_metadata(&mut undo,&nav,&verse_mgr,&mut path_ops,&path_state,track_node_id,index,corner,handles,&origin) {
                     Ok(Some(_))=>ui_mgr.show_toast("Saving anchor metadata...",now_secs),Ok(None)=>{},Err(error)=>ui_mgr.show_advisory(error,now_secs),
                 }
+            }
+            UiAction::ContextSetAnchorCorner { track_node_id, index, corner, origin } => {
+                if !origin.matches(&path_state, &nav) || !local_role.can_edit()
+                    || path_state.editing_track_id.as_deref() != Some(track_node_id.as_str())
+                    || path_state.points.get(index).is_none()
+                    || nav.active_scope().is_none()
+                    || !verse_mgr.find_petal(nav.active_petal_id.as_deref().unwrap_or_default()).is_some_and(|petal| petal.nodes.iter().any(|node| node.id == track_node_id)) {
+                    ui_mgr.show_advisory("Path changed since this menu opened; reopen its menu before editing", now_secs);
+                    continue;
+                }
+                path::set_anchor_corner(&mut path_ops, &mut path_state, track_node_id, index, corner);
             }
             UiAction::PathSetAnchorCorner {track_node_id,index,corner} => {
                 if !active_path_edit_allowed(&local_role,&nav,&verse_mgr,&path_state,&track_node_id) {ui_mgr.show_advisory("Editor access is unavailable or path changed",now_secs);continue;}
