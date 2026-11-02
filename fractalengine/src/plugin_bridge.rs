@@ -21,6 +21,7 @@ impl DbSceneBackend {
         read: Option<PluginRead>,
         ops: &[fe_plugin::transaction::PendingOp],
     ) -> Result<PluginReply, String> {
+        self.admission.require_active()?;
         let (reply, receiver) = crossbeam::channel::bounded(1);
         let is_write = read.is_none();
         let command = match read {
@@ -38,7 +39,7 @@ impl DbSceneBackend {
         self.sender
             .send_timeout(command, Duration::from_secs(1))
             .map_err(|_| "plugin DB command was not enqueued".to_string())?;
-        receiver
+        let response = receiver
             .recv_timeout(Duration::from_secs(15))
             .map_err(|_| {
                 if is_write {
@@ -46,7 +47,11 @@ impl DbSceneBackend {
                 } else {
                     "plugin DB read reply timed out or disconnected".to_string()
                 }
-            })?
+            })??;
+        if !is_write {
+            self.admission.require_active()?;
+        }
+        Ok(response)
     }
 
     fn require_petal(&self, petal_id: &str) -> Result<(), String> {
@@ -110,7 +115,8 @@ impl SceneBackendFactory for DbSceneFactory {
             token.property_scope.clone(),
             token.verse_scope.clone(),
             token.petal_scope.clone(),
-        )?;
+        )?
+        .with_lease(context.revocation_lease());
         let mut backend = DbSceneBackend {
             sender: self.0.clone(),
             admission,

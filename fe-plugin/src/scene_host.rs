@@ -10,21 +10,24 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone)]
 pub struct PluginSession {
     id: String,
-    active: Arc<AtomicBool>,
+    lease: fe_sdk::plugin_host::PluginLease,
 }
 
 impl PluginSession {
     pub(crate) fn mint() -> Self {
         Self {
             id: ulid::Ulid::new().to_string(),
-            active: Arc::new(AtomicBool::new(true)),
+            lease: fe_sdk::plugin_host::PluginLease::default(),
         }
     }
     pub(crate) fn is_active(&self) -> bool {
-        self.active.load(Ordering::Acquire)
+        self.lease.require_active().is_ok()
+    }
+    pub(crate) fn lease(&self) -> fe_sdk::plugin_host::PluginLease {
+        self.lease.clone()
     }
     fn revoke(&self) {
-        self.active.store(false, Ordering::Release);
+        self.lease.revoke();
     }
 }
 

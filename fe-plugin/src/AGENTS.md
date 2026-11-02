@@ -194,3 +194,16 @@ AppExit shuts the instance registry, revokes all direct clones, and prevents new
 bindings. The command worker polls shutdown at a bounded interval rather than
 relying on channel disconnection: admitted contexts themselves hold senders.
 This breaks the active-context sender/worker lifetime cycle on application exit.
+
+
+The session's shared PluginLease also travels through production DB admissions,
+so stopping an instance refuses queued work not yet admitted to commit. A commit
+already handed to the atomic transaction helper may finish and returns its true
+receipt. Reads check revocation before returning payloads. Full result queues use
+100 ms send retries with shutdown checks, so backpressure cannot pin worker exit.
+
+Every WASM string argument decodes through a fallible, bounded UTF-8 span read.
+Negative, oversized, absent-memory, out-of-bounds and invalid UTF-8 inputs refuse
+the entire import before any backend call. JSON-labelled arguments must parse;
+invalid JSON never becomes a string, empty filter or empty parameter map. Valid
+empty spans remain empty strings for the existing legitimate ABI semantics.

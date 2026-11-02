@@ -250,6 +250,40 @@ mod tests {
             result_rx.recv().unwrap(),
             PluginResult::Error { .. }
         ));
+        let queue_contexts = PluginContexts::default();
+        let (full_results, full_receiver) = crossbeam::channel::bounded(1);
+        full_results
+            .send(PluginResult::Error {
+                plugin_id: "filled".into(),
+                message: "filled".into(),
+            })
+            .unwrap();
+        let worker_contexts = queue_contexts.clone();
+        let (entered, entering) = crossbeam::channel::bounded(1);
+        let (done, finished) = crossbeam::channel::bounded(1);
+        let worker = std::thread::spawn(move || {
+            entered.send(()).unwrap();
+            crate::handle_plugin_command(
+                PluginCommand::GetNode {
+                    plugin_id: "unbound".into(),
+                    node_id: "n1".into(),
+                },
+                &full_results,
+                &worker_contexts,
+            );
+            done.send(()).unwrap();
+        });
+        entering.recv().unwrap();
+        queue_contexts.shutdown().unwrap();
+        finished
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("a full result queue must not block shutdown");
+        worker.join().unwrap();
+        assert_eq!(
+            full_receiver.len(),
+            1,
+            "shutdown need not discard the existing result"
+        );
         contexts.shutdown().unwrap();
         assert!(
             _other.get_node("n1").is_err(),

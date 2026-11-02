@@ -805,3 +805,11 @@ deserializer. PluginRead/PluginCommit use a per-request embedded typed sender,
 matching the existing direct request/reply pattern. They do not enter the API
 pending-family map. PluginNodeRemoved is an unsolicited GUI-only result with no
 request family. The DB always resolves local identity itself.
+
+
+PluginAdmission carries the originating context's PluginLease into each queued
+request. Revocation is checked at DB use, after permission preparation, before
+atomic commit admission, and before returning read data. The last active check
+before invoking the atomic commit helper is the commit admission boundary: an
+already admitted transaction may commit after revocation. Its persisted receipt
+must still be returned; revocation is not a rollback or a retry instruction.

@@ -13,6 +13,7 @@ pub struct PluginAdmission {
     verse_scope: Vec<String>,
     petal_scope: Vec<String>,
     scope: Option<String>,
+    lease: fe_sdk::plugin_host::PluginLease,
 }
 
 impl PluginAdmission {
@@ -46,8 +47,19 @@ impl PluginAdmission {
             verse_scope,
             petal_scope,
             scope: None,
+            lease: fe_sdk::plugin_host::PluginLease::default(),
         })
     }
+    /// Attach the admitted context's shared lease before sending DB requests.
+    pub fn with_lease(mut self, lease: fe_sdk::plugin_host::PluginLease) -> Self {
+        self.lease = lease;
+        self
+    }
+    /// Check revocation at DB use and before releasing read payloads.
+    pub fn require_active(&self) -> Result<(), String> {
+        self.lease.require_active()
+    }
+
     /// Admitted plugin identity, for attribution rather than user-supplied authority.
     pub fn plugin_id(&self) -> &str {
         &self.plugin_id

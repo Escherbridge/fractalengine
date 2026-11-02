@@ -1565,3 +1565,9 @@ No automatic package loading or new rule engine is implied by installing the
 host; missing manifest admission remains fail closed. This slice adds only a
 local workspace dependency on fe-plugin, requiring the integrated Cargo lock
 refresh by the sole builder.
+
+
+The scene factory attaches the actual context's shared PluginLease before its
+scope handshake. Requests keep that lease through the DB queue, and the adapter
+checks it again before delivering read payloads. Already admitted commits retain
+their actual receipt after revocation; transport loss remains an unknown outcome.

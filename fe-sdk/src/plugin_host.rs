@@ -12,6 +12,33 @@ pub const MAX_HOST_BYTES: usize = 65_536;
 /// Maximum nodes returned by one structured query.
 pub const MAX_NODE_QUERY_ROWS: usize = 200;
 
+/// Shared host-only revocation lease; never reconstructed from guest input.
+#[derive(Debug, Clone)]
+pub struct PluginLease(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Default for PluginLease {
+    fn default() -> Self {
+        Self(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            true,
+        )))
+    }
+}
+
+impl PluginLease {
+    /// Refuse work that has not crossed the backend commit admission boundary.
+    pub fn revoke(&self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
+    /// Check the same flag across queued requests and direct contexts.
+    pub fn require_active(&self) -> Result<(), String> {
+        if self.0.load(std::sync::atomic::Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err("plugin instance is no longer admitted".into())
+        }
+    }
+}
+
 /// One deferred operation; the sink commits the entire list or changes nothing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PendingOp {

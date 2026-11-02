@@ -62,6 +62,11 @@ impl PluginContext {
         self
     }
 
+    /// Carry the same host-only revocation lease into queued backend requests.
+    pub fn revocation_lease(&self) -> fe_sdk::plugin_host::PluginLease {
+        self.session.lease()
+    }
+
     /// The host-injected storage/query services for this plugin.
     pub fn host(&self) -> &HostEnv {
         &self.host

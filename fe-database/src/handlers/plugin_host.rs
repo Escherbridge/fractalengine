@@ -10,6 +10,8 @@ use fe_sdk::plugin_host::{PendingOp, TransactionReceipt, MAX_HOST_BYTES};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 
+const PLUGIN_QUERY_CANDIDATES: usize = 1024;
+
 async fn authorize_as(
     db: &Db,
     admission: &PluginAdmission,
@@ -18,6 +20,7 @@ async fn authorize_as(
     capability: &str,
     handshake: bool,
 ) -> anyhow::Result<(String, entity::ParentMutation)> {
+    admission.require_active().map_err(anyhow::Error::msg)?;
     anyhow::ensure!(admission.allows(capability), "plugin capability denied");
     let scope =
         super::preconditions::require_petal_scope(db, admission.petal_id(), "PluginHost").await?;
@@ -36,6 +39,7 @@ async fn authorize_as(
         "plugin admitted ancestry changed"
     );
     let permission = entity::prepare_scope_permission(db, &scope, local_did, floor).await?;
+    admission.require_active().map_err(anyhow::Error::msg)?;
     Ok((scope, permission))
 }
 
@@ -84,6 +88,7 @@ pub(crate) async fn read(
         authorize_as(db, admission, local_did, floor, capability, handshake).await?;
     if matches!(request, PluginRead::PetalScope) {
         permission.commit(db, &[], vec![]).await?;
+        admission.require_active().map_err(anyhow::Error::msg)?;
         return Ok(PluginReply::Scope(scope));
     }
     let (mut guards, mut bindings) = permission.into_parts();
@@ -105,7 +110,7 @@ pub(crate) async fn read(
             );
             query.validate().map_err(anyhow::Error::msg)?;
             if let Some(name) = &query.name {
-                sql.push_str(" AND display_name=$plugin_read_name");
+                sql.push_str(" AND (display_name=$plugin_read_name OR ($plugin_read_name='' AND display_name=NONE))");
                 bindings.push(("plugin_read_name".into(), json!(name)));
             }
             if let Some(property) = &query.property {
@@ -113,14 +118,9 @@ pub(crate) async fn read(
                     admission.allows_property(&property.key),
                     "plugin property capability denied"
                 );
-                sql.push_str(" AND properties[$plugin_read_key]=$plugin_read_value");
-                bindings.extend([
-                    ("plugin_read_key".into(), json!(property.key)),
-                    ("plugin_read_value".into(), property.value.clone()),
-                ]);
             }
             sql.push_str(" ORDER BY node_id LIMIT $plugin_read_limit");
-            bindings.push(("plugin_read_limit".into(), json!(query.limit)));
+            bindings.push(("plugin_read_limit".into(), json!(PLUGIN_QUERY_CANDIDATES + 1)));
         }
         PluginRead::PetalScope => unreachable!(),
     }
@@ -136,10 +136,22 @@ pub(crate) async fn read(
     let mut response = query.await?.check()?;
     let rows: Vec<Value> = response.take(result_slot)?;
     anyhow::ensure!(!is_single || rows.len() <= 1, "ambiguous node identity");
-    let nodes: Vec<_> = rows
+    anyhow::ensure!(
+        is_single || rows.len() <= PLUGIN_QUERY_CANDIDATES,
+        "plugin query candidate bound exceeded; narrow the name or petal"
+    );
+    anyhow::ensure!(
+        serde_json::to_vec(&rows)?.len() <= 2 * 1024 * 1024,
+        "plugin query candidates exceed 2 MiB"
+    );
+    let mut nodes: Vec<_> = rows
         .into_iter()
         .map(|row| snapshot_for_plugin(row, admission))
         .collect::<anyhow::Result<_>>()?;
+    if let PluginRead::Nodes(query) = &request {
+        nodes.retain(|node| query.matches(node));
+        nodes.truncate(query.limit);
+    }
     anyhow::ensure!(
         serde_json::to_vec(&nodes)?.len() <= MAX_HOST_BYTES,
         "plugin read exceeds 65536 bytes"
@@ -153,6 +165,7 @@ pub(crate) async fn read(
         false,
     )
     .await?;
+    admission.require_active().map_err(anyhow::Error::msg)?;
     Ok(if is_single {
         PluginReply::Node(nodes.into_iter().next())
     } else {
@@ -168,6 +181,7 @@ struct StagedNode {
 }
 
 /// Post-commit effects consumed by the ordinary DB dispatcher bridges.
+#[derive(Debug)]
 pub(crate) struct BatchOutcome {
     pub receipt: TransactionReceipt,
     pub scope: String,
@@ -192,6 +206,7 @@ pub(crate) async fn commit(
     )
     .await?;
     if ops.is_empty() {
+        admission.require_active().map_err(anyhow::Error::msg)?;
         permission.commit(db, &[], vec![]).await?;
         return Ok(BatchOutcome {
             receipt: TransactionReceipt {
@@ -393,6 +408,7 @@ pub(crate) async fn commit(
         payload: json!({"plugin_id":admission.plugin_id(),"petal_id":admission.petal_id(),"scope":scope,"source_did":local_did,"ops":ops}),
         sig: "00".repeat(64),
     };
+    admission.require_active().map_err(anyhow::Error::msg)?;
     crate::op_log::commit_operation_atomic_with(db,entry,|hlc| {
         for (index,(id,node)) in staged.iter_mut().enumerate() {
             let name=format!("plugin_write_{index}");

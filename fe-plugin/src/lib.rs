@@ -276,7 +276,17 @@ fn handle_plugin_command(cmd: PluginCommand,result_tx:&Sender<PluginResult>,cont
         Err(message)=>Some(PluginResult::Error {plugin_id:"unbound".into(),message}),
     };
     if let Some(result)=result {
-        if let Err(error)=result_tx.send(result) {tracing::warn!(%error,"plugin result receiver closed");}
+        let mut pending = result;
+        while !contexts.is_closed() {
+            match result_tx.send_timeout(pending, std::time::Duration::from_millis(100)) {
+                Ok(()) => break,
+                Err(crossbeam::channel::SendTimeoutError::Timeout(result)) => pending = result,
+                Err(crossbeam::channel::SendTimeoutError::Disconnected(_)) => {
+                    tracing::warn!("plugin result receiver closed");
+                    break;
+                }
+            }
+        }
     }
 }
 

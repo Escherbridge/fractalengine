@@ -218,3 +218,7 @@ PendingOp keeps the existing three operations. The sink must persist the whole
 batch before returning its receipt, or refuse before effects. The host validates
 64 operations/64 KiB, and readers return at most 200 nodes/64 KiB. Plain property
 JSON conversions preserve nested values and integer precision across script hosts.
+
+
+PluginLease is a nonserialized shared revocation flag minted by the trusted host.
+Contexts and queued admissions clone the same lease; cloning never renews it.

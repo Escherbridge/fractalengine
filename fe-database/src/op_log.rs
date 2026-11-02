@@ -1656,6 +1656,58 @@ mod tests {
                 "foreign and absent node reads are uniform"
             );
         }
+        db.query("CREATE node CONTENT {node_id:'plugin-query-a-float',petal_id:'tree-other-petal',display_name:'exact-numeric',position:<geometry<point>> [0.0,0.0],rotation:[0.0,0.0,0.0],scale:[1.0,1.0,1.0],created_at:'2026-11-01',properties:{calibration:1.0}}; CREATE node CONTENT {node_id:'plugin-query-b-int',petal_id:'tree-other-petal',display_name:'exact-numeric',position:<geometry<point>> [0.0,0.0],rotation:[0.0,0.0,0.0],scale:[1.0,1.0,1.0],created_at:'2026-11-01',properties:{calibration:1}};").await.unwrap().check().unwrap();
+        let exact = NodeQuery::parse(
+            r#"{"name":"exact-numeric","property":{"key":"calibration","value":1},"limit":1}"#,
+        )
+        .unwrap();
+        match crate::handlers::plugin_host::read(
+            &db,
+            &admission,
+            PluginRead::Nodes(exact.clone()),
+            "did:qa",
+        )
+        .await
+        .unwrap()
+        {
+            PluginReply::Nodes(nodes) => {
+                assert_eq!(nodes.len(), 1);
+                assert_eq!(nodes[0].node_id, "plugin-query-b-int");
+                assert!(exact.matches(&nodes[0]));
+            }
+            other => panic!("unexpected numeric query reply {other:?}"),
+        }
+        db.query("DELETE node WHERE node_id IN ['plugin-query-a-float','plugin-query-b-int']")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let lease = fe_sdk::plugin_host::PluginLease::default();
+        let revoked = admission.clone().with_lease(lease.clone());
+        // This models a request cloned/enqueued before instance removal but used afterward.
+        lease.revoke();
+        let before_revoked = op_log_count(&db).await;
+        crate::handlers::plugin_host::read(
+            &db,
+            &revoked,
+            PluginRead::Node(other_node.clone()),
+            "did:qa",
+        )
+        .await
+        .expect_err("queued read loses its revoked lease");
+        crate::handlers::plugin_host::read(&db, &revoked, PluginRead::PetalScope, "did:qa")
+            .await
+            .expect_err("scope handshake loses its revoked lease");
+        crate::handlers::plugin_host::commit(&db, &revoked, &mixed[..1], "did:qa")
+            .await
+            .expect_err("queued commit loses its revoked lease");
+        assert_eq!(op_log_count(&db).await, before_revoked);
+        assert_eq!(
+            crate::handlers::node_history::committed_receipt(&db, &other_node)
+                .await
+                .unwrap(),
+            latest
+        );
         let before_plugin_ops = op_log_count(&db).await;
         let invalid = vec![
             PendingOp::SetProperty {
