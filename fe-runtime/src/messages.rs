@@ -594,6 +594,12 @@ pub enum DbCommand {
     ResetDatabase,
     /// Correlated local development reset; host admission is captured outside the command.
     ResetDevelopmentDatabase { request_id: String },
+    /// One host-proven terminal reset; always exits the database worker afterward.
+    TerminalDevelopmentReset {
+        request_id: String,
+        confirmation: String,
+        proof: crate::maintenance::QuiescenceProof,
+    },
     /// Persist a transform change for a node (position/rotation/scale).
     UpdateNodeTransform {
         node_id: String,
@@ -1369,6 +1375,7 @@ pub enum DbResult {
     },
     /// Exact local reset outcome; a failed seed can follow a committed clear.
     DevelopmentDatabaseReset { request_id: String, cleared: bool, error: Option<String> },
+    TerminalDevelopmentReset { request_id: String, cleared: bool, error: Option<String> },
     // --- Entity Settings results ---
     EntityDetailsLoaded {
         entity_type: EntityType,

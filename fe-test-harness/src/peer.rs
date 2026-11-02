@@ -468,6 +468,11 @@ impl TestPeer {
                                 tracing::warn!("DB result channel closed during refused development reset");
                             }
                         }
+                        Ok(DbCommand::TerminalDevelopmentReset { request_id, .. }) => {
+                            if db_result_tx.send(DbResult::TerminalDevelopmentReset { request_id, cleared: false, error: Some("Terminal reset is unavailable in a running test peer".into()) }).is_err() {
+                                tracing::warn!("DB result channel closed during refused terminal reset");
+                            }
+                        }
                         Ok(DbCommand::UpdateNodeTransform { .. }) => {
                             // Not implemented in test harness.
                         }

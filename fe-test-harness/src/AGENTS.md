@@ -175,3 +175,7 @@ no fake peer read is counted as that evidence.
 The simplified peer model explicitly refuses ReadNodeUrl with a typed unavailable reply. It
 does not own the desktop placed-model URL reader and never fabricates a successful URL snapshot.
 Production DB authorization/read tests belong to fe-database's existing real-store journey.
+
+## Terminal reset peer refusal
+
+The running TestPeer does not own the desktop service supervisor. It explicitly refuses the terminal-reset command with its dedicated correlated result and leaves its data unchanged. Real terminal worker exit/readback proof is in fe-database shared_handle_test, not the peer's legacy clear scaffold.

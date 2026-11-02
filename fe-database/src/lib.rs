@@ -833,6 +833,22 @@ pub fn spawn_db_thread_shared(
                             Err(e) => send_result(&tx, DbResult::JoinVerseFailed { error: format!("Join verse failed: {e}") }),
                         }
                     }
+                    Ok(DbCommand::TerminalDevelopmentReset { request_id, confirmation, proof }) => {
+                        let permit = if confirmation == "RESET" {
+                            development_reset_permit.after_quiescence(&proof)
+                        } else {
+                            Err(anyhow::anyhow!("Terminal reset requires exact RESET confirmation"))
+                        };
+                        let (cleared, error) = match permit {
+                            Ok(permit) => {
+                                let outcome = handlers::admin::reset_database_handler(&db, &blob_store, &local_did, &permit).await;
+                                (outcome.cleared, outcome.seed.err().map(|error| error.to_string()))
+                            }
+                            Err(error) => (false, Some(error.to_string())),
+                        };
+                        send_result(&tx, DbResult::TerminalDevelopmentReset { request_id, cleared, error });
+                        break;
+                    }
                     Ok(command @ (DbCommand::ResetDatabase | DbCommand::ResetDevelopmentDatabase { .. })) => {
                         let request_id = match command {
                             DbCommand::ResetDevelopmentDatabase { request_id } => Some(request_id),

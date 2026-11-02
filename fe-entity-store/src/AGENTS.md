@@ -135,3 +135,7 @@ Lifecycle *events* (create/promote/delete/reflow) are the canonical
 crate stays fe-runtime-free and returns plain outcomes
 (`TombstoneOutcome`, `(NodeAddress, bool)`) that the DB thread maps to events
 and forwards via `fe_sync::LifecycleForwarder` (FR-6).
+
+## Terminal cache invalidation
+
+`clear_for_terminal_reset` requires exclusive mutable ownership and recreates all five indexes while retaining the configured node-log cap. The desktop obtains that ownership through Arc::get_mut only after API and bridge joins; clearing one snapshot map while readers still hold Arcs cannot substitute for the barrier. The existing tombstone/promotion journey verifies every index is empty afterward.

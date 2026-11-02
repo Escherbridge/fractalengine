@@ -11,6 +11,7 @@ pub mod entity_access;
 pub mod input;
 pub mod ktx2_guard;
 pub mod messages;
+pub mod maintenance;
 pub mod node_history;
 pub mod node_measurements;
 pub mod peer_registry;

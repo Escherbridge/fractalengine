@@ -1785,3 +1785,9 @@ The RevokeApiToken constructor census found GUI EntitySettings/Inspector and tes
 ## seed-petal
 
 `queries::create_petal` is the seed-only constructor used by `handlers/seed.rs` to create the Genesis Petal before attaching its stored Fractal ancestry. It retains the caller argument for compatibility but does not infer ordinary interactive creation authority from that argument. Normal hierarchy creation uses the checked target handler; do not expose this bootstrap helper as an alternate authorized mutation route. The unused explicit-only `get_scope_members` helper has been removed; current Access reads retain their stored target, inherited and converged-role readback contract.
+
+## Terminal development reset barrier
+
+Legacy reset commands retain their live-host refusal. TerminalDevelopmentReset is a host-only, nonserialized command carrying single-use quiescence proof and exact RESET confirmation. The DB worker retains its startup developer capability and repeats the existing actual global Owner, allowlisted inventory and transaction snapshot checks. It emits only TerminalDevelopmentReset, then exits the command loop on either refusal or completion. It never emits legacy DatabaseReset/LoadHierarchy and never executes a queued post-barrier mutation. Clear-plus-seed failure remains distinguishable from refusal before clear.
+
+The existing shared-reader exit journey now drives a real bounded worker through prior writes, a full result channel, final reset/seed, an already-queued late write, actual join, retained-reader failure, same-path reopen and consumed-proof refusal. Named fake service owners exercise the proof boundary in that isolated test; real desktop service shutdown remains a separate live acceptance gate.

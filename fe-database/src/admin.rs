@@ -23,6 +23,11 @@ impl DevelopmentResetPermit {
 
     pub fn is_runtime_ready(&self) -> bool { self.runtime_ready }
 
+    pub(crate) fn after_quiescence(&self, proof: &fe_runtime::maintenance::QuiescenceProof) -> anyhow::Result<Self> {
+        anyhow::ensure!(proof.consume(), "Terminal reset proof was already consumed");
+        Ok(Self { enabled: self.enabled, runtime_ready: true })
+    }
+
 }
 
 /// A host-admitted immutable reset intention fenced again at commit.

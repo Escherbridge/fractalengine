@@ -201,6 +201,11 @@ pub struct EntityStore {
 }
 
 impl EntityStore {
+    /// Clear every index while the host owns the store exclusively.
+    pub fn clear_for_terminal_reset(&mut self) {
+        *self = Self::with_node_log_cap(self.node_log_cap);
+    }
+
     pub fn new() -> Self {
         Self::with_node_log_cap(DEFAULT_NODE_LOG_CAP)
     }
@@ -1407,7 +1412,7 @@ mod lifecycle_tests {
 
     #[test]
     fn tombstoned_instance_is_not_re_promoted() {
-        let store = EntityStore::new();
+        let mut store = EntityStore::new();
         store
             .promote_instance("path-A", 7, "p1", SCOPE, 1 << 16, "")
             .unwrap();
@@ -1417,5 +1422,14 @@ mod lifecycle_tests {
             .unwrap();
         assert!(!promoted, "a deleted instance stays deleted (merge-safe)");
         assert_eq!(store.node_count(), 0);
+        let cap = store.node_log_cap();
+        assert!(!store.tombstones.pin().is_empty());
+        store.clear_for_terminal_reset();
+        assert!(store.nodes.pin().is_empty());
+        assert!(store.petal_index.pin().is_empty());
+        assert!(store.tombstones.pin().is_empty());
+        assert!(store.children.pin().is_empty());
+        assert!(store.owning_paths.pin().is_empty());
+        assert_eq!(store.node_log_cap(), cap);
     }
 }

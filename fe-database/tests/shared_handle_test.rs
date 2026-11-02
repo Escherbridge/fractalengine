@@ -20,6 +20,10 @@ struct Spawned {
 }
 
 fn spawn_on(dir: &Path) -> Spawned {
+    spawn_on_with_identity(dir, None)
+}
+
+fn spawn_on_with_identity(dir: &Path, identity: Option<fe_identity::NodeKeypair>) -> Spawned {
     let (cmd_tx, cmd_rx) = crossbeam::channel::bounded::<DbCommand>(64);
     let (res_tx, res_rx) = crossbeam::channel::bounded::<DbResult>(64);
     let blob_store: BlobStoreHandle = Arc::new(MockBlobStore::new());
@@ -29,7 +33,7 @@ fn spawn_on(dir: &Path) -> Spawned {
         res_tx,
         blob_store,
         None,
-        None,
+        identity,
         None,
         None,
         Some(db_path),
@@ -133,4 +137,75 @@ fn shared_reader_errors_instead_of_hanging_after_db_thread_exit() {
         outcome.is_err(),
         "reader must error once the DB thread is gone, got {outcome:?}"
     );
+
+    let identity = fe_identity::NodeKeypair::generate();
+    let terminal = spawn_on_with_identity(dir.path(), Some(identity.clone()));
+    terminal.cmd_tx.send(DbCommand::CreateVerse { name: "before-terminal".into() }).unwrap();
+    assert!(matches!(terminal.res_rx.recv_timeout(TIMEOUT).unwrap(), DbResult::VerseCreated { .. }));
+    let reader = terminal.db_thread.shared_db.clone();
+    let jobs = fe_runtime::maintenance::HostJobs::default();
+    jobs.freeze().unwrap();
+    let mut services: Vec<_> = ["api", "sync", "network", "plugin", "replication", "distributed-query", "scene-bridge", "transform-bridge", "listener-fanout"]
+        .into_iter().map(|name| fe_runtime::service_lifecycle::OwnedService::spawn(name, |stop| {
+            while !stop.is_requested() { std::thread::sleep(Duration::from_millis(1)); }
+        })).collect();
+    assert!(fe_runtime::maintenance::QuiescenceProof::after_joined(&mut services, &jobs).is_err(), "a running service cannot issue reset proof");
+    for service in &services { service.request_stop(); }
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let proof = loop {
+        if let Some(proof) = fe_runtime::maintenance::QuiescenceProof::after_joined(&mut services, &jobs).unwrap() { break proof; }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let replay = proof.clone();
+    for _ in 0..65 { terminal.cmd_tx.send(DbCommand::Ping).unwrap(); }
+    terminal.cmd_tx.send(DbCommand::TerminalDevelopmentReset {
+        request_id: "real-worker-reset".into(), confirmation: "RESET".into(), proof,
+    }).unwrap();
+    terminal.cmd_tx.send(DbCommand::CreateVerse { name: "late-after-terminal".into() }).unwrap();
+    let mut observed = false;
+    let mut drained = 0;
+    loop {
+        match terminal.res_rx.recv_timeout(TIMEOUT).unwrap() {
+            DbResult::Pong => drained += 1,
+            DbResult::TerminalDevelopmentReset { request_id, cleared, error } => {
+                assert_eq!(request_id, "real-worker-reset");
+                assert!(cleared, "{error:?}");
+                assert!(error.is_none(), "{error:?}");
+                assert!(!observed, "one terminal receipt only");
+                observed = true;
+            }
+            DbResult::Stopped => break,
+            DbResult::DatabaseReset { .. } => panic!("terminal reset must not emit the reload-producing legacy result"),
+            other => panic!("unexpected post-barrier result: {other:?}"),
+        }
+    }
+    assert!(observed);
+    assert_eq!(drained, 65, "draining bounded results must let the final DB barrier run");
+    terminal.db_thread.join_handle.join().expect("terminal DB worker joins");
+    assert!(terminal.cmd_tx.send(DbCommand::Ping).is_err());
+    assert!(read_verse_on_foreign_runtime(reader, "any".into()).is_err());
+    drop(terminal.db_thread.shared_db);
+
+    let reopened = spawn_on_with_identity(dir.path(), Some(identity));
+    reopened.cmd_tx.send(DbCommand::LoadHierarchy).unwrap();
+    match reopened.res_rx.recv_timeout(TIMEOUT).unwrap() {
+        DbResult::HierarchyLoaded { verses } => {
+            assert!(!verses.is_empty(), "default seed is durable after reopen");
+            assert!(verses.iter().all(|verse| verse.name != "before-terminal" && verse.name != "late-after-terminal"));
+        }
+        other => panic!("expected reopened hierarchy, got {other:?}"),
+    }
+    reopened.cmd_tx.send(DbCommand::TerminalDevelopmentReset {
+        request_id: "replayed-proof".into(), confirmation: "RESET".into(), proof: replay,
+    }).unwrap();
+    match reopened.res_rx.recv_timeout(TIMEOUT).unwrap() {
+        DbResult::TerminalDevelopmentReset { cleared, error, .. } => {
+            assert!(!cleared);
+            assert!(error.unwrap().contains("already consumed"));
+        }
+        other => panic!("expected refused proof replay, got {other:?}"),
+    }
+    assert!(matches!(reopened.res_rx.recv_timeout(TIMEOUT).unwrap(), DbResult::Stopped));
+    reopened.db_thread.join_handle.join().unwrap();
 }

@@ -924,3 +924,7 @@ replicated node URL field. NoAsset/SharedModel explain why persistence is unsupp
 ## Terminal maintenance service ownership
 
 `service_lifecycle` supplies explicit stop signals and retained service joins. A stop request is not completion: callers poll and join actual threads while continuing to drain bounded result channels. Async cancellation registers its notification before testing the flag, avoiding a lost wakeup. Service ownership does not itself grant database reset authority.
+
+The terminal reset proof is nonserializable, clone-safe and single-use. It is issued only after each required owned service reports an actual successful join and the frozen finite-job registry reaches zero. Panic and poisoned-state failures remain sticky. Registration is a trusted host responsibility, not request data. The DB worker consumes the proof once, verifies exact RESET and its captured developer gate, repeats global Owner/table-snapshot admission, emits only the dedicated terminal receipt and exits without processing later commands.
+
+The GUI installs the finite-job registry once before producer startup. A job lease covers the complete mutation/publish closure and all runtime teardown inside it; freeze closes admission under the same lock as the active count. Existing non-GUI callers retain their untracked lifetime. A zero active count is distinct from the named service join list and is reported separately.
