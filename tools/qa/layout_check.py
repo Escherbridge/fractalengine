@@ -59,6 +59,7 @@ def analyze(tree, state):
         reachable_scroll = False
         blocked_clip = False
         local_control_clip = False
+        inherited_path_unresolved = False
         if facts:
             for axis, size, start in [(0,"w","x"),(1,"h","y")]:
                 if not outside(facts["rect"], facts["clip"], axis):
@@ -77,7 +78,7 @@ def analyze(tree, state):
                     local_control_clip = True
                     blocked_clip = True
         effective = dict(bounds)
-        for scroll in ancestors:
+        for index, scroll in enumerate(ancestors):
             for axis, size in [(0,"w"),(1,"h")]:
                 if outside(effective,scroll["clip"],axis):
                     if scroll.get("axes",[False,True])[axis] and scroll["content_size"][axis] > scroll["viewport"][size] + 1:
@@ -86,10 +87,16 @@ def analyze(tree, state):
                         end = min(effective[start] + effective[size],scroll["clip"][start] + scroll["clip"][size])
                         effective[start] = max(effective[start],scroll["clip"][start])
                         effective[size] = max(0,end-effective[start])
+                    elif any(outer.get("axes", [False, True])[axis] and outer["content_size"][axis] > outer["viewport"][size] + 1 for outer in ancestors[index + 1:]):
+                        # An inherited parent scissor may move into reach; do not certify an unmeasured path.
+                        inherited_path_unresolved = True
                     else:
                         blocked_clip = True
         if blocked_clip:
             violations.append(dict(entry,reason="clipped_without_scroll_range",clip_source="control" if local_control_clip else "scroll"))
+            continue
+        if inherited_path_unresolved:
+            unknown.append(dict(entry,reason="inherited_scroll_clip_path_unresolved"))
             continue
         if reachable_scroll:
             intentional.append(dict(entry,reason="scroll_content"))

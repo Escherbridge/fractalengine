@@ -580,3 +580,10 @@ prove a local control scissor stricter than the lower bound (armed Cancel),
 while their own visibility/range interpretation remains explicitly unknown.
 Different observed control/scroll layers also remain unknown and cannot lend
 scroll range to each other. Actual locator hit/clip intersection is unchanged.
+
+An inner area's clip can inherit an outer scroll scissor on an axis where the
+inner area has no range. If an exact outer ancestor has range, that offscreen
+case is `inherited_scroll_clip_path_unresolved`, not a clipping violation or
+intentional-scroll PASS. The checker has not measured which inherited scissor
+moves relative to all nested local allocations. Actual local control scissors
+remain violations and current-offset locator hit/clip refusal is unchanged.
