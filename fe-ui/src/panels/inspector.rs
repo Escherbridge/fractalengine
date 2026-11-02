@@ -1576,7 +1576,7 @@ fn inspector_properties_section(
         );
         let pending = inspector.property_editor.pending_add.is_some();
         ui.add_enabled_ui(!loading && !pending, |ui| {
-            let key_label = ui.label("Key");
+            let key_label = ui.label("New property key");
             let mut changed = ui
                 .add(
                     egui::TextEdit::singleline(&mut inspector.prop_add_key_buf)
