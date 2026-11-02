@@ -369,3 +369,7 @@ The unrendered InviteDialog variant is retired. Legacy invite completion never o
 Legacy EntitySettings invite/JWT/list buffers are removed. Their producer census is empty after switching the renderer to EntityAccess. Uncorrelated legacy mint/invite completions retain no secret and cannot update the new target state; correlated Inspector replies retain their existing exact namespace/tab/target guards and API fallback behavior.
 
 Destructive/role confirmation salts include the exact successfully loaded Access request ID, in addition to peer/token values. Opening the same target again or refreshing its readback creates a new identity and disarms prior controls; the shared confirm widget does not otherwise scope its temporary state to the dialog. Backend tuple/authority fences remain independent of this UI confirmation boundary.
+
+### Access role confirmation generation
+
+Role assignment and revoke confirmation IDs include the exact successful Access readback request ID, matching targeted token revoke. A fresh readback therefore cannot inherit a four-second confirmation arm from an older snapshot, even when target, peer and draft are unchanged. The existing EntitySettings journey clicks the actual role buttons, refreshes through the controller without an intervening dismiss click, applies the new receipt, and verifies both controls return to their initial arm step.

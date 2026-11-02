@@ -2175,6 +2175,7 @@ mod tests {
         if let ActiveDialog::EntitySettings {access,..}=&mgr.active_dialog {assert!(access.snapshot.is_none()&&access.waiting());}
         crate::dialogs::entity_access::apply(&mut mgr,&target,&read_id,&Ok(snapshot.clone()));
         assert!(!mgr.target_access_pending());
+        crate::dialogs::entity_access::role_confirmation_refresh_journey(&mut mgr,&tx,&rx,&target,&snapshot);
         crate::dialogs::entity_access::submit(&mut mgr,Access::Revoke {peer_did:"did:key:known-peer".into()},&tx);
         let DbCommand::EntityAccess {request_id:change_id,..}=rx.try_recv().unwrap() else{unreachable!()};
         crate::dialogs::entity_access::apply(&mut mgr,&target,&change_id,&Err("unconfirmed write".into()));

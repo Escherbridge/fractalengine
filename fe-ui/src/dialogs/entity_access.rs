@@ -319,13 +319,13 @@ pub(crate) fn role_controls(
                 }).response.named(ui,format_args!("Role to assign for {did}"));
                 let grantable=matches!(draft.as_str(),"viewer"|"editor"|"manager") || (owner && draft=="none");
                 ui.add_enabled_ui(grantable,|ui| {
-                    if crate::panels::widgets::confirm_button(ui,("assign_role",did,draft.as_str()),"Save role...","Confirm role change",&format!("Assign role {draft} to {did}")) {
+                    if crate::panels::widgets::confirm_button(ui,("assign_role",&state.confirmed_request_id,did,draft.as_str()),"Save role...","Confirm role change",&format!("Assign role {draft} to {did}")) {
                         action=Some(EntityAccessAction::Assign {peer_did:did.clone(),role:draft.clone()});
                     }
                 });
                 let revoke_label=if owner {"Block access here..."}else{"Revoke my grant..."};
                 if owner {ui.label("Owner revocation blocks this scope. Other grants may still provide access elsewhere.");}
-                if crate::panels::widgets::confirm_button(ui,("revoke_role",did),revoke_label,"Confirm revoke",&format!("Revoke role grant for {did}")) {
+                if crate::panels::widgets::confirm_button(ui,("revoke_role",&state.confirmed_request_id,did),revoke_label,"Confirm revoke",&format!("Revoke role grant for {did}")) {
                     action=Some(EntityAccessAction::Revoke {peer_did:did.clone()});
                 }
             });
@@ -598,4 +598,131 @@ pub(crate) fn api_controls(
         }
     }
     (action, copied)
+}
+
+#[cfg(test)]
+pub(crate) fn role_confirmation_refresh_journey(
+    manager: &mut UiManager,
+    sender: &crossbeam::channel::Sender<DbCommand>,
+    receiver: &crossbeam::channel::Receiver<DbCommand>,
+    target: &EntityAccessTarget,
+    snapshot: &EntityAccessSnapshot,
+) {
+    let ctx = egui::Context::default();
+    let mut time = 0.0;
+    let mut frame = |manager: &mut UiManager, events: Vec<egui::Event>| {
+        time += 0.05;
+        let mut action = None;
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    if let ActiveDialog::EntitySettings { access, .. } = &mut manager.active_dialog
+                    {
+                        action = role_controls(ui, access, None);
+                    }
+                });
+            },
+        );
+        assert!(
+            action.is_none(),
+            "An arm from an older readback must never confirm a role mutation"
+        );
+        let mut texts = Vec::new();
+        let mut shapes: Vec<_> = output.shapes.iter().map(|shape| &shape.shape).collect();
+        while let Some(shape) = shapes.pop() {
+            match shape {
+                egui::Shape::Text(text) => texts.push((
+                    text.galley.job.text.clone(),
+                    egui::Rect::from_min_size(text.pos, text.galley.size()).center(),
+                )),
+                egui::Shape::Vec(children) => shapes.extend(children.iter()),
+                _ => {}
+            }
+        }
+        texts
+    };
+    for (label, confirm) in [
+        ("Save role...", "Confirm role change"),
+        ("Block access here...", "Confirm revoke"),
+    ] {
+        frame(manager, vec![]);
+        let labels = frame(manager, vec![]);
+        let point = labels
+            .iter()
+            .find(|(text, _)| text == label)
+            .expect("Unarmed role button is painted")
+            .1;
+        for pressed in [true, false] {
+            frame(
+                manager,
+                vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert!(
+            frame(manager, vec![])
+                .iter()
+                .any(|(text, _)| text == confirm),
+            "Actual role button is armed before readback changes"
+        );
+        if let ActiveDialog::EntitySettings { access, .. } = &mut manager.active_dialog {
+            access.refresh();
+        }
+        service(manager, sender, None);
+        let DbCommand::EntityAccess {
+            request_id,
+            action: EntityAccessAction::Load { .. },
+            ..
+        } = receiver
+            .try_recv()
+            .expect("Refresh queues one authoritative read")
+        else {
+            panic!("Refresh cannot mutate")
+        };
+        apply(manager, target, &request_id, &Ok(snapshot.clone()));
+        let labels = frame(manager, vec![]);
+        assert!(
+            labels.iter().all(|(text, _)| text != confirm),
+            "A new readback disarms the prior role confirmation"
+        );
+        let point = labels
+            .iter()
+            .find(|(text, _)| text == label)
+            .expect("New readback restores the unarmed role button")
+            .1;
+        for pressed in [true, false] {
+            frame(
+                manager,
+                vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert!(
+            receiver.try_recv().is_err(),
+            "Rearming after refresh emits no mutation"
+        );
+    }
 }
