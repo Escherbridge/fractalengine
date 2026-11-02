@@ -13,7 +13,9 @@ use super::context_menu::{render_verb_button, verb_action, Verb};
 use super::ActiveDialog;
 use crate::actions::{UiAction, UiManager};
 use crate::theme;
-use crate::ui_shell::modal::cascade_confirm_message;
+use crate::ui_shell::modal::{
+    cascade_confirm_message, close_confirmation_scope, confirmation_scope,
+};
 use crate::verse_manager::VerseManager;
 use fe_runtime::messages::{CallerAuth, DbCommand};
 
@@ -35,6 +37,7 @@ pub fn render_node_options_dialog(
     };
 
     let current_node_id = node_id.clone();
+    let confirmation = confirmation_scope(ctx, "node_options", &current_node_id);
 
     // Current display name, for the Save-time rename diff (a read-only walk
     // before the mutable-borrow window closure).
@@ -91,7 +94,8 @@ pub fn render_node_options_dialog(
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui
-                    .add(egui::Button::new("Save").fill(theme::BG_SAVE)).observed(ui)
+                    .add(egui::Button::new("Save").fill(theme::BG_SAVE))
+                    .observed(ui)
                     .clicked()
                 {
                     let url = webpage_url_buf.trim().to_string();
@@ -118,7 +122,8 @@ pub fn render_node_options_dialog(
                     close = true;
                 }
                 if ui
-                    .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON)).observed(ui)
+                    .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON))
+                    .observed(ui)
                     .clicked()
                 {
                     close = true;
@@ -143,9 +148,13 @@ pub fn render_node_options_dialog(
                     close = true;
                 }
 
-                // Clear properties — the husk distinction: keeps the node. Verb
-                // → action goes through the shared, documented `verb_action` map.
-                if render_verb_button(ui, Verb::ClearProperties, true) {
+                if crate::panels::widgets::confirm_button(
+                    ui,
+                    confirmation.with("clear_properties"),
+                    "Clear Properties",
+                    "Confirm clear",
+                    "Clear node properties",
+                ) {
                     pending_actions.extend(verb_action(
                         Verb::ClearProperties,
                         &current_node_id,
@@ -184,10 +193,9 @@ pub fn render_node_options_dialog(
                             egui::RichText::new("Delete Node").color(egui::Color32::WHITE),
                         )
                         .fill(theme::BG_DANGER),
-                    ).observed(ui)
-                    .on_hover_text(
-                        "Delete this node (sync-safe tombstone). Cascades to child nodes.",
                     )
+                    .observed(ui)
+                    .on_hover_text("Delete this node and its children. This cannot be undone.")
                     .clicked()
                 {
                     // Arm the confirm and fetch the authoritative subtree size
@@ -209,29 +217,33 @@ pub fn render_node_options_dialog(
                 // Q-2: always confirm, with the live descendant count once the
                 // NodeDescendantCount result lands (db_results stashes it here).
                 ui.label(
-                    egui::RichText::new(cascade_confirm_message(descendant_count.unwrap_or(0)))
+                    egui::RichText::new(cascade_confirm_message(*descendant_count))
                         .color(theme::STATUS_OFFLINE),
                 );
                 ui.horizontal(|ui| {
                     if ui
-                        .add(
+                        .add_enabled(
+                            descendant_count.is_some(),
                             egui::Button::new(
                                 egui::RichText::new("Confirm Delete").color(egui::Color32::WHITE),
                             )
                             .fill(theme::BG_DANGER),
-                        ).observed(ui)
+                        )
+                        .observed(ui)
                         .clicked()
                     {
                         // Real remove-a-node path (fixes the husk bug): route
                         // through the tombstone-cascade handler, not a raw drop.
-                        pending_actions.push(UiAction::DeleteNode {
-                            node_id: current_node_id.clone(),
-                            cascade: true,
-                        });
-                        close = true;
+                        if let Some(action) =
+                            confirmed_node_delete(&current_node_id, *descendant_count)
+                        {
+                            pending_actions.push(action);
+                            close = true;
+                        }
                     }
                     if ui
-                        .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON)).observed(ui)
+                        .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON))
+                        .observed(ui)
                         .clicked()
                     {
                         *pending_delete = false;
@@ -241,11 +253,20 @@ pub fn render_node_options_dialog(
         });
 
     if !still_open || close {
+        close_confirmation_scope(ctx, "node_options");
         ui_mgr.close_dialog();
     }
     for action in pending_actions {
         ui_mgr.push_action(action);
     }
+}
+
+/// No node deletion is emitted before the authoritative count arrives.
+fn confirmed_node_delete(node_id: &str, count: Option<usize>) -> Option<UiAction> {
+    count.map(|_| UiAction::DeleteNode {
+        node_id: node_id.to_owned(),
+        cascade: true,
+    })
 }
 
 /// The rename to persist on Save, if any: the trimmed buffer when it is
@@ -283,6 +304,20 @@ mod tests {
 
     #[test]
     fn rename_request_fires_only_on_a_real_change() {
+        assert!(confirmed_node_delete("node-a", None).is_none());
+        for count in [0, 1, 7] {
+            assert!(
+                matches!(confirmed_node_delete("node-a", Some(count)), Some(UiAction::DeleteNode { node_id, cascade: true }) if node_id == "node-a")
+            );
+        }
+        let ctx = egui::Context::default();
+        let first = confirmation_scope(&ctx, "node_options", "node-a");
+        let second = confirmation_scope(&ctx, "node_options", "node-b");
+        assert_ne!(
+            first.with("clear_properties"),
+            second.with("clear_properties")
+        );
+
         assert_eq!(rename_request(Some("Old"), "New"), Some("New".to_string()));
         assert_eq!(
             rename_request(Some("Old"), "  New  "),

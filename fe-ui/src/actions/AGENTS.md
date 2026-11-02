@@ -339,3 +339,11 @@ a committed brush stroke becomes an earthwork region node.
   (`viewport_labels.rs`'s pattern), which lives in `plugin.rs` and is outside
   this slice's file ownership; `callout_display_name` already computes the
   equivalent string for the node's display `name` at save time.
+
+
+Petal requirements Save is currently unsupported: manifest_save rejects the
+legacy action and the dispatcher shows a shared error notice. The old handler
+only wrote residency distance and could overwrite it with an unshown default;
+it did not persist requirements. No write is sent now. Settings remains the
+render-distance authority, and the manifest data type stays compatible until
+a reviewed scoped requirements persistence/readback contract is implemented.

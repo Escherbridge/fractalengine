@@ -337,3 +337,10 @@ in the pinned registry source. `begin` sets the actual child's clip per axis,
 size after content layout. The existing headless layout journey now retains
 fully visible lower rows, parent-hidden rows and a stricter Cancel scissor as
 separate telemetry cases; execution and fresh live checker proof are pending.
+
+
+Dialog confirmation scopes in modal.rs are temporary UI identity, separate
+from shell quarantine and domain selection. One per-dialog counter gives each
+new target/lifetime a distinct confirmation salt. Explicit close and a missed
+render frame disarm the prior lifetime. DirtyClose is the common decision for
+requirements Close/X and explicit discard; it never writes or clears a draft.

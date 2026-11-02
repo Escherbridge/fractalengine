@@ -34,6 +34,9 @@ use crate::portal::PortalState;
 use crate::terrain_map::{InstalledTilesetDto, PendingHexonOps, PetalManifest, PetalMapState};
 use crate::terrain_proposal_state::{ProposalEditState, ProposalOp};
 
+pub(crate) const MANIFEST_SAVE_UNAVAILABLE: &str =
+    "Saving petal requirements is not available in this build. Copy the JSON to keep your draft.";
+
 /// Actions queued by the egui render pass, drained by a single Update system.
 /// Replaces scattered one-frame signal fields.
 #[derive(Debug, Clone)]
@@ -920,7 +923,7 @@ pub(crate) struct ToolStateParams<'w> {
     visibility: ResMut<'w, crate::visibility::VisibilityState>,
     /// `UiAction::SetAppOverlay`'s target (ruler overlay rows, VIS-PH5).
     app_settings: ResMut<'w, crate::settings::AppSettings>,
-    /// `UiAction::PetalManifestSave`'s target (session render-distance override).
+    /// Session-only `UiAction::PetalSetRenderOverride` target.
     render_override: ResMut<'w, crate::settings::PetalRenderOverride>,
     /// `UiAction::HexonStartDownload`/`HexonCancelDownload`'s target (S4:
     /// moved out of `ActiveDialog::HexonManager` — bundled here for the same
@@ -1108,7 +1111,9 @@ pub(crate) fn process_ui_actions(
                 );
             }
             UiAction::PetalManifestSave { petal_id, manifest } => {
-                hexon::manifest_save(&db_sender, petal_id, manifest);
+                if let Err(reason) = hexon::manifest_save(petal_id, manifest) {
+                    ui_mgr.show_error(reason, time.elapsed_secs_f64());
+                }
             }
             UiAction::PetalSetRenderOverride {
                 petal_id,

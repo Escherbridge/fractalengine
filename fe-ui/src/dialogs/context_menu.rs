@@ -860,13 +860,16 @@ fn render_delete_confirm(
             .map(str::to_string)
     });
     let proposal_delete = proposal_delete_action(&target.hit);
+    let count_required = target.stamp.is_none()
+        && proposal_delete.is_none()
+        && !matches!(target.hit, HitTarget::PathSegment { .. });
     let message = if target.stamp.is_some() {
-        "Delete this stamp? Its node is tombstoned and the path re-flows the \
+        "Delete this stamp? It is removed and the path re-flows the \
          remaining stamps. This cannot be undone."
             .to_string()
     } else if matches!(target.hit, HitTarget::EarthworkRegion { .. }) {
         "Delete this earthwork region? Its baked terrain contribution is \
-         reverted and its node is tombstoned. This cannot be undone."
+         reverted and its node is removed. This cannot be undone."
             .to_string()
     } else if proposal_delete.is_some() {
         "Delete this terrain proposal? Its proposed overlay is removed. \
@@ -884,12 +887,13 @@ fn render_delete_confirm(
         };
         track_delete_confirm_message(point_count)
     } else {
-        crate::ui_shell::modal::cascade_confirm_message(descendant_count.unwrap_or(0))
+        crate::ui_shell::modal::cascade_confirm_message(descendant_count)
     };
     ui.label(egui::RichText::new(message).color(theme::STATUS_OFFLINE));
     ui.horizontal(|ui| {
         if ui
-            .add(
+            .add_enabled(
+                !count_required || descendant_count.is_some(),
                 egui::Button::new(
                     egui::RichText::new("Confirm Delete").color(egui::Color32::WHITE),
                 )

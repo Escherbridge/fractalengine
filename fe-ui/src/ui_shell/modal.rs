@@ -25,6 +25,7 @@
 use std::collections::HashSet;
 
 use bevy::prelude::Resource;
+use bevy_egui::egui;
 
 /// Session-scoped modal-manager state. DEFINED here; `init_resource` registration
 /// in `plugin.rs` is deferred to S3b (see report).
@@ -191,19 +192,77 @@ pub const fn should_show_tooltip(hovered: bool, has_help: bool) -> bool {
     hovered && has_help
 }
 
-/// The confirm prompt for a cascade (parent) delete (contextual_controls FR-2,
-/// Q-2 ratified: always confirm, show the descendant count). Pure so the copy is
-/// testable. `descendant_count == 0` (unknown/none, when the UI can't resolve
-/// the subtree size locally) still warns that children are removed — never a
-/// silent cascade. Singular/plural is handled for a calm, exact message.
+#[derive(Clone)]
+struct ConfirmationSession {
+    target: String,
+    generation: u64,
+    seen_frame: u64,
+}
+
+/// A confirmation scope bound to one target and one continuous dialog lifetime.
+pub(crate) fn confirmation_scope(ctx: &egui::Context, dialog: &str, target: &str) -> egui::Id {
+    let key = egui::Id::new(("dialog_confirmation_session", dialog));
+    let frame = ctx.cumulative_frame_nr();
+    ctx.data_mut(|data| {
+        let previous = data.get_temp::<ConfirmationSession>(key);
+        let new_lifetime = previous.as_ref().is_none_or(|state| {
+            state.target != target || frame.saturating_sub(state.seen_frame) > 1
+        });
+        let mut state = if new_lifetime {
+            let generation_key = key.with("generation");
+            let generation = data
+                .get_temp::<u64>(generation_key)
+                .unwrap_or(0)
+                .wrapping_add(1);
+            data.insert_temp(generation_key, generation);
+            ConfirmationSession {
+                target: target.to_owned(),
+                generation,
+                seen_frame: frame,
+            }
+        } else {
+            previous.unwrap()
+        };
+        state.seen_frame = frame;
+        let scope = key.with((&state.target, state.generation));
+        data.insert_temp(key, state);
+        scope
+    })
+}
+
+/// Forget a closed dialog's confirmation lifetime.
+pub(crate) fn close_confirmation_scope(ctx: &egui::Context, dialog: &str) {
+    ctx.data_mut(|data| {
+        data.remove::<ConfirmationSession>(egui::Id::new(("dialog_confirmation_session", dialog)))
+    });
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DirtyClose {
+    KeepOpen,
+    AskDiscard,
+    Close,
+}
+
+/// Both explicit Close and window X use the same dirty-draft decision.
+pub(crate) fn dirty_close(dirty: bool, requested: bool, discard_confirmed: bool) -> DirtyClose {
+    if discard_confirmed || (requested && !dirty) {
+        DirtyClose::Close
+    } else if requested {
+        DirtyClose::AskDiscard
+    } else {
+        DirtyClose::KeepOpen
+    }
+}
+
+/// Pending, leaf and counted cascade confirmation copy.
 #[must_use]
-pub fn cascade_confirm_message(descendant_count: usize) -> String {
+pub fn cascade_confirm_message(descendant_count: Option<usize>) -> String {
     match descendant_count {
-        0 => "Delete this node and all of its child nodes? This also removes any \
-              children and cannot be undone."
-            .to_string(),
-        1 => "Delete this node and its 1 child node? This cannot be undone.".to_string(),
-        n => format!("Delete this node and its {n} child nodes? This cannot be undone."),
+        None => "Counting children\u{2026}".to_string(),
+        Some(0) => "Delete this node? This cannot be undone.".to_string(),
+        Some(1) => "Delete this node and its 1 child node? This cannot be undone.".to_string(),
+        Some(n) => format!("Delete this node and its {n} child nodes? This cannot be undone."),
     }
 }
 
@@ -377,19 +436,39 @@ mod tests {
 
     #[test]
     fn cascade_confirm_message_is_count_aware_and_never_silent() {
-        // Always names the cascade + is undoable-safe wording (Q-2 confirm).
-        assert!(cascade_confirm_message(0).contains("child nodes"));
+        assert_eq!(dirty_close(true, true, false), DirtyClose::AskDiscard);
+        assert_eq!(dirty_close(true, false, false), DirtyClose::KeepOpen);
+        assert_eq!(dirty_close(true, false, true), DirtyClose::Close);
+        assert_eq!(dirty_close(false, true, false), DirtyClose::Close);
+        let ctx = egui::Context::default();
+        let node_a = confirmation_scope(&ctx, "node_options", "a");
+        assert_eq!(node_a, confirmation_scope(&ctx, "node_options", "a"));
+        assert_ne!(node_a, confirmation_scope(&ctx, "node_options", "b"));
+        let reopened = confirmation_scope(&ctx, "node_options", "a");
+        assert_ne!(
+            node_a, reopened,
+            "returning to a prior target cannot reuse an armed confirm"
+        );
+        close_confirmation_scope(&ctx, "node_options");
+        assert_ne!(reopened, confirmation_scope(&ctx, "node_options", "a"));
+        assert_ne!(node_a, confirmation_scope(&ctx, "manifest", "a"));
+
+        assert_eq!(cascade_confirm_message(None), "Counting children\u{2026}");
         assert_eq!(
-            cascade_confirm_message(1),
+            cascade_confirm_message(Some(0)),
+            "Delete this node? This cannot be undone."
+        );
+        assert_eq!(
+            cascade_confirm_message(Some(1)),
             "Delete this node and its 1 child node? This cannot be undone."
         );
         assert_eq!(
-            cascade_confirm_message(3),
+            cascade_confirm_message(Some(3)),
             "Delete this node and its 3 child nodes? This cannot be undone."
         );
         // Every variant warns it cannot be undone / removes children.
         for n in [0usize, 1, 2, 7] {
-            let m = cascade_confirm_message(n);
+            let m = cascade_confirm_message(Some(n));
             assert!(m.contains("cannot be undone") || m.contains("removes any children"));
         }
     }

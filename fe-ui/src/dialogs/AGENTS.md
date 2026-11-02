@@ -145,8 +145,8 @@ confirm on cascade). The descendant count is authoritative end-to-end: arming
 the confirm sends `DbCommand::CountNodeDescendants`; the
 `DbResult::NodeDescendantCount` arm stashes it into the open dialog's
 `descendant_count` field (Node Options or the context menu — stale/mismatched
-results are dropped); the generic `cascade_confirm_message(0)` copy shows until
-the count lands.
+results are dropped). Pending counts show Counting children; Confirm Delete is
+disabled until Some(count), including Some(0) for an actual leaf.
 
 Node Options is also the node RENAME surface: its Name field diff
 (`node_options::rename_request`, pure) sends `DbCommand::RenameNode { auth:
@@ -289,3 +289,35 @@ Existing journeys cover command/result target and nonce binding, real persisted
 private access and descriptions, dirty refresh/conflict/discard, read errors and
 timeout. No new test functions were introduced; integrated execution and live
 UI settings/readback verification remain required.
+
+## Target-bound destructive confirmations and requirements drafts
+
+Node Options uses the shared confirm_button for Clear Properties. Its salt is
+bound to a target-specific dialog generation; changing targets, closing or a
+render-frame gap starts another generation, so an armed state cannot carry to
+another object or reopened window. The existing count-aware delete path now
+accepts Option<usize>: None is pending, Some(0) is a leaf, Some(N) names the
+count. Node confirmation is disabled while pending and the emitted action is
+also guarded. Context menus use the same pending-count rule for plain nodes;
+stamps, proposals and whole-track verbs retain their distinct confirmation
+semantics. This is UI safety; the existing backend remains the authority.
+
+Petal Manifest is explicitly a local requirements draft in this build. Both
+Close and title-X ask to discard a dirty draft; Keep editing preserves all
+buffers, and explicit Discard closes without a write. The duplicate render-distance control is removed while its existing data fields remain compatible.
+Save is disabled with an explanation, and Copy JSON reports copy success
+without clearing dirty or claiming persistence. Existing/unknown hexon IDs are
+kept. Supplied installed IDs become selectable choices; unavailable lists use
+an explicitly labeled manual path and unknown availability, not an invented
+installed/missing result. Requirements JSON is not described as JSON Schema.
+
+W6 persistence requirement: the database schema has petal.hexon_manifest, but
+there is no Get/Set manifest command/result, scoped authoritative readback,
+load/apply UI lifecycle or requirements replication route. manifest_open still
+constructs a default draft and supplies no installed-ID catalog. Before Save
+can return, add reviewed target-scoped authorization, complete requirements
+validation preserving unknown references, transactional storage/readback with
+correlation and failure/conflict handling, real catalog feeding, and P2P
+replication/hydration. Keep residency distance owned by Settings; requirements
+Save must not write its hidden legacy render_distance field. The legacy save
+action is rejected with a shared error notice and has no DB sender.
