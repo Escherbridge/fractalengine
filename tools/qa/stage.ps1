@@ -49,6 +49,8 @@ try {
         Write-QaLog "cargo build failed with exit code $exitCode"
         exit $exitCode
     }
+    & cargo build -p fe-format --example seal_hexon -j $Jobs
+    if ($LASTEXITCODE -ne 0) { throw "QA archive sealer build failed: $LASTEXITCODE" }
 } finally {
     Pop-Location
 }
@@ -77,6 +79,9 @@ if (Test-Path $hexonInstallerSrc) {
 $terrainBuilderSrc = Join-Path $QaRepoRoot 'target/debug/examples/build_qa_terrain.exe'
 if (-not (Test-Path -LiteralPath $terrainBuilderSrc)) { throw 'Offline QA terrain helper is missing after build' }
 Copy-Item -LiteralPath $terrainBuilderSrc -Destination (Join-Path $stageDir 'build_qa_terrain.exe')
+$sealerSrc = Join-Path $QaRepoRoot 'target/debug/examples/seal_hexon.exe'
+if (-not (Test-Path -LiteralPath $sealerSrc)) { throw 'QA archive sealer is missing after build' }
+Copy-Item -LiteralPath $sealerSrc -Destination (Join-Path $stageDir 'seal_hexon.exe')
 
 $manifest = @{
     kind = 'fractalengine-qa-stage-v1'
@@ -85,6 +90,7 @@ $manifest = @{
     source_fingerprint = $sourceFingerprint
     built_at = (Get-Date).ToUniversalTime().ToString('o')
     exe_sha256 = (Get-FileHash -LiteralPath (Join-Path $stageDir 'fractalengine.exe') -Algorithm SHA256).Hash
+    seal_hexon_sha256 = (Get-FileHash -LiteralPath (Join-Path $stageDir 'seal_hexon.exe') -Algorithm SHA256).Hash
 }
 if ((Get-QaSourceFingerprint) -ne $sourceFingerprint) { throw 'Build inputs changed while staging; rerun stage.ps1' }
 $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $stageDir 'stage.json') -Encoding UTF8

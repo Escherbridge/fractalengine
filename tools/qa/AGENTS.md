@@ -597,3 +597,119 @@ case is `inherited_scroll_clip_path_unresolved`, not a clipping violation or
 intentional-scroll PASS. The checker has not measured which inherited scissor
 moves relative to all nested local allocations. Actual local control scissors
 remain violations and current-offset locator hit/clip refusal is unchanged.
+
+## Controlled WEB and registry fixtures
+
+`fixtures.ps1 -Action Start -Run <explicit-owned-run> -Port 8890` owns a bounded
+Python standard-library server on exactly `127.0.0.1`. It reuses `_lib.ps1`'s
+path confinement, exclusive lifecycle lease, retained process handles and exact
+PID/start-ticks/executable cleanup. Start requires the app's recorded lifetime
+to be running, the generated run-local `terrain-fixture/source.hexon`, and a
+stage containing a hash-verified `seal_hexon.exe`. The stage builds that existing
+fe-format example serially after the other helpers and records its SHA256.
+Older stages remain valid for ordinary app launch but cannot start this fixture.
+
+Preparation creates a unique `<run>/controlled-fixtures/<instance>/`. It signs
+the small existing analytical TerrainTileset through production `seal_hexon`,
+which verifies `RequireSealed` with a publisher pin before returning. A fresh
+32-byte signing seed enters only that child's environment, never its argv, the
+parent environment, a file, or a log. The random publisher intentionally differs
+between starts; keep the same frozen archive when byte-for-byte restart evidence
+is required. The analytical terrain's original descriptor continues to describe
+the unsigned source, while `controlled-fixtures.json` records the sealed SHA256
+and verified stage helper provenance. The server parses bounded ZIP members,
+checks the frozen SHA256 receipt, and serves raw stored manifest/header text;
+it does not implement a replacement signature or BLAKE3 verifier. Production
+consumers still enforce the actual seal and signed BLAKE3 member roots.
+
+The server never serves a filesystem directory, executes request code, accepts
+uploads, follows redirects, or logs request paths/headers. Authorization-bearing
+requests are refused; this public loopback fixture never needs an app token.
+Only an exact Host header for its origin is accepted. Reparse paths, privileged
+ports, the owned API port and ambiguous prior ownership records are refused.
+The listener uses Windows exclusive-address binding, so an occupied port fails
+without taking over another service. It has a maximum of 2,000 requests, a
+30–3,600-second lifetime (default 900), 2-second socket reads and an 8 MiB archive
+budget; no blind mutation retries occur. Run-local stdout/stderr contain no
+tokens, signing seeds or HTTP request data.
+
+`/web/one` links to `/web/two` and `/web/three`. The three static pages have
+distinct visible titles, no scripts/resources/forms and no-store headers. This
+provides a deterministic two-link history fixture. Canonical Portal policy
+currently refuses loopback URLs. Starting a server does not override that rule
+or prove embedded loading. WEB remains BLOCKED until a separately reviewed,
+strictly QA-only exact-origin allowance exists at every save/navigation boundary;
+do not use DNS aliases, remapping or a broad localhost exception to bypass it.
+
+The HTTP registry implements the existing search, manifest, entries, `/meta`,
+monolithic `/chunk/0`, member and full-download read routes. Its HeaderDoc keeps
+raw UTF-8 member text and the real signed manifest; query filtering matches the
+production client's q/tags/type contract. Binary routes use attachment/nosniff
+headers. Unknown URIs/members are 404. `-Mode slow` sends 512-byte binary pieces
+with a 250ms pause for bounded progress observation. `-Mode corrupt` retains
+the real header but changes one actual tile member in a valid ZIP, so the
+production signed digest check must fail. It is an intentional integrity failure
+fixture, never a different successful package. Stop and start a new instance
+explicitly to change mode; there is no unaudited mutable HTTP control route.
+
+Set the app's Registry URL through Settings → Network to the recorded `origin`,
+then use the recorded `registry_uri` in Install from registry. The same analytical
+ID may already be installed on the source host: use the pair's unseeded second
+host or a disposable remove/reinstall branch. This HTTP route does not populate
+Maps Available. Available comes from `PeerTilesetAdvertisement`, and its Download/
+Cancel routes drive P2P `TilesetTransfer`. A slow HTTP registry response cannot
+certify P2P cancellation. Use a real joined peer with seeding enabled, a verified
+sealed P2P archive, and a separately controlled transfer interval for those cases;
+record BLOCKED if the tiny transfer finishes before Cancel can be exercised.
+
+Always stop fixtures explicitly before app cleanup:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/qa/fixtures.ps1 -Action Start -Run $qaHostA -Port 8890 -Mode normal
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/qa/fixtures.ps1 -Action Stop -Run $qaHostA
+```
+
+Start/Stop require the same owner execution context as launch; never weaken run
+token ACLs. The root app may already be gone when Stop is called; the fixture's
+separate retained identity is still used. Expiry never certifies cleanup: retain
+and independently check its exact identity. Per-instance evidence is preserved.
+
+## Two-root sharing orchestration
+
+`pair.ps1 -Action Start -Stage <immutable-stage-name> -OwnerPort 8882 -ViewerPort 8883`
+calls the existing launcher serially: Owner gets BASIC and the second identity
+gets `none`. The second launch pins the first's stage. Both fresh roots, distinct
+API ports, source fingerprints, executable hashes and process/descendant identities
+are saved in `<owner-run>/pair.json`. Run-local identity-file SHA256 values are
+compared only in memory and discarded. Public issuer DIDs are extracted from
+the protected, already bootstrapped Owner credentials and must differ too; token
+strings and private key bytes are never emitted or stored in pair artifacts.
+This does not independently verify JWT signatures; the existing authenticated
+launcher handshake supplies that trust boundary. The actual UI Join/RBAC/replica
+outcomes still require the real second identity, never a different bearer token
+in the first GUI. Both roots initially own separate Genesis scopes; the name
+"Viewer" describes its intended role in the Owner's shared verse after joining.
+
+The launcher deliberately disables relays. A direct local peer connection must
+be observed after real GUI invite generation/join; no global network settings,
+public services or external recipients are touched. No invite transfer seam is
+added here: synthetic Copy remains suppressed, and absence of a safe explicitly
+owned in-memory invite transfer keeps that checkpoint BLOCKED. Do not read the
+host clipboard or persist an invite to manufacture success.
+
+Every command remains bound to the explicit owner/viewer paths in pair.json;
+`.qa/current` will point to the second launch and is never used by pair Info/Stop.
+`pair.ps1 -Action Info -OwnerRun <explicit-owner>` prints credential-free ownership
+metadata. `-Action Stop` validates both current records before attempting either
+stop, then reuses exact children-first cleanup for both even if one stop fails.
+It refuses changed/restarted lifetimes. After deliberately stopping/restarting a
+peer for disconnect/reconnect coverage, use the existing `restart.ps1 -Run` and
+`stop.ps1 -Run` separately and keep those new lifetime records; the old pair
+record is retained as historical evidence, never silently refreshed. Process-name
+kills, database copies, real user stores and keystore calls are outside this flow.
+
+If startup of the second host or identity validation fails, the wrapper attempts
+cleanup of every successfully launched root and reports all cleanup failures.
+Existing stop limitations still apply after a root crash: recorded descendants
+are checked, but children born after the last snapshot cannot be proven absent.
+Fixture servers have separate ownership records and must be stopped first.
