@@ -327,4 +327,4 @@ Developer Settings now owns terminal Reset (F086); only a disposable owned store
 
 Pending source reconciliation: `["P2P QA-0050 repair remains isolated and is not part of this audited source. Actual two-root invite/join/role/replica and P2P transfer acceptance remains required; no completed collaboration is inferred."]`.
 
-Additional live acceptance obligations: `["Terminal watcher live retained-handle/timeout/nonzero-exit/writer-release refusal experiments remain mandatory root-owned acceptance. Synthetic F143 validator cases provide zero application coverage and cannot replace actual F080.confirm-close GUI/lifecycle/native-exit proof."]`.
+Additional live acceptance obligations: `["F143.watch-nonzero-exit-refused and F143.watch-writer-drain-refused require actual root-owned native refusal experiments. Synthetic F143 validator cases provide zero application coverage and cannot replace those outcomes or actual F080.confirm-close GUI/lifecycle/native-exit proof."]`.

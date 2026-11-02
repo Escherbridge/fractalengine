@@ -6,7 +6,7 @@
     "P2P QA-0050 repair remains isolated and is not part of this audited source. Actual two-root invite/join/role/replica and P2P transfer acceptance remains required; no completed collaboration is inferred."
   ],
   "source_acceptance_obligations": [
-    "Terminal watcher live retained-handle/timeout/nonzero-exit/writer-release refusal experiments remain mandatory root-owned acceptance. Synthetic F143 validator cases provide zero application coverage and cannot replace actual F080.confirm-close GUI/lifecycle/native-exit proof."
+    "F143.watch-nonzero-exit-refused and F143.watch-writer-drain-refused require actual root-owned native refusal experiments. Synthetic F143 validator cases provide zero application coverage and cannot replace those outcomes or actual F080.confirm-close GUI/lifecycle/native-exit proof."
   ],
   "limits": "Lexical producer candidates, excluding literal cfg(test) items while preserving line numbers. Helpers/named wrappers can repeat one control; conditional production openers require manual reconciliation. Not a Rust parser, live-tree census or proof of execution.",
   "source_sha256": {
