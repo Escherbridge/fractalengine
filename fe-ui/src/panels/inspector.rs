@@ -16,6 +16,7 @@ use super::property_value::PropertyValueKind;
 use crate::accessibility::ResponseExt;
 
 use crate::actions::{UiAction, UiManager};
+use crate::asset_ops::AssetDownloadStatus;
 use crate::navigation_manager::NavigationManager;
 use crate::node_manager::NodeManager;
 use crate::panels::widgets::{meters_to_world, world_to_meters};
