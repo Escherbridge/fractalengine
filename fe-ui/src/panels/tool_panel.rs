@@ -520,6 +520,61 @@ fn render_pending_stamp_save(ui: &mut egui::Ui, state: &ToolPanelState, ui_mgr: 
     }
 }
 
+/// Accept numeric stamp changes only after input intent, including retained text finalization.
+fn stamp_numeric_field(
+    ui: &mut egui::Ui,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    speed: f64,
+    prefix: &str,
+    suffix: &str,
+    name: &str,
+) -> bool {
+    let was_focused = ui.memory(|memory| memory.has_focus(ui.next_auto_id()));
+    let input_edit = ui.input(|input| {
+        input.events.iter().any(|event| match event {
+            egui::Event::Text(_) | egui::Event::Paste(_) | egui::Event::Cut => true,
+            egui::Event::Key {
+                key, pressed: true, ..
+            } => matches!(
+                key,
+                egui::Key::Backspace
+                    | egui::Key::Delete
+                    | egui::Key::ArrowUp
+                    | egui::Key::ArrowDown
+            ),
+            _ => false,
+        })
+    });
+    let mut draft = *value;
+    let response = ui
+        .add(
+            egui::DragValue::new(&mut draft)
+                .range(range)
+                .clamp_existing_to_range(false)
+                .speed(speed)
+                .prefix(prefix)
+                .suffix(suffix),
+        )
+        .named(ui, name);
+    let intent_key = response.id.with("stamp-numeric-user-intent");
+    let intent = ui.data(|data| data.get_temp::<bool>(intent_key).unwrap_or(false))
+        || response.dragged()
+        || ((was_focused || response.has_focus()) && input_edit);
+    ui.data_mut(|data| {
+        data.insert_temp(
+            intent_key,
+            intent && !response.lost_focus() && !response.drag_stopped(),
+        )
+    });
+    if response.changed() && intent {
+        *value = draft;
+        true
+    } else {
+        false
+    }
+}
+
 /// Edits one viewport-selected stamp and sends one atomic save intent.
 fn render_stamp_editor(
     ui: &mut egui::Ui,
@@ -541,33 +596,50 @@ fn render_stamp_editor(
         return;
     };
     ui.label(format!("Stamp {}", edit.instance_index + 1));
-    ui.add_enabled_ui(state.stamp_can_edit && !state.stamp_save_pending,|ui| {
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Scale");
-            for (axis,value) in ["X","Y","Z"].into_iter().zip(&mut edit.scale) {
-                ui.add(egui::DragValue::new(value).range(0.01..=MAX_SCALE_INPUT).speed(0.05).prefix(format!("{axis} ")))
-                    .named(ui,format_args!("Selected stamp {axis} scale multiplier"));
+    let editor_id = egui::Id::new(("selected-stamp", &edit.node_id, state.stamp_saved_revision));
+    ui.push_id(editor_id, |ui| {
+        ui.add_enabled_ui(state.stamp_can_edit && !state.stamp_save_pending, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Scale");
+                for (axis, value) in ["X", "Y", "Z"].into_iter().zip(&mut edit.scale) {
+                    stamp_numeric_field(
+                        ui, value, 0.01..=MAX_SCALE_INPUT, 0.05,
+                        &format!("{axis} "), "", &format!("Selected stamp {axis} scale multiplier"),
+                    );
+                }
+            });
+            if stamp_numeric_field(
+                ui, &mut state.stamp_yaw_deg, -MAX_ANGLE_INPUT_DEG..=MAX_ANGLE_INPUT_DEG,
+                1.0, "", " deg", "Selected stamp yaw in degrees",
+            ) {
+                edit.rotation = yaw_to_quat(state.stamp_yaw_deg.to_radians());
             }
-        });
-        if ui.add(egui::DragValue::new(&mut state.stamp_yaw_deg).range(-MAX_ANGLE_INPUT_DEG..=MAX_ANGLE_INPUT_DEG).speed(1.0).suffix(" deg"))
-            .named(ui,"Selected stamp yaw in degrees").changed() {
-            edit.rotation=yaw_to_quat(state.stamp_yaw_deg.to_radians());
-        }
-        ui.add(egui::DragValue::new(&mut edit.arc_m).range(0.0..=MAX_DISTANCE_INPUT).speed(0.1).suffix(" m"))
-            .named(ui,"Selected stamp distance along path in meters");
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Apply").named(ui,"Apply all stamp changes").clicked() {
-                ui_mgr.push_action(UiAction::ApplyStampOverrides {edit:edit.clone()});
+            stamp_numeric_field(
+                ui, &mut edit.arc_m, 0.0..=MAX_DISTANCE_INPUT, 0.1,
+                "", " m", "Selected stamp distance along path in meters",
+            );
+            let invalid = crate::actions::asset::stamp_draft_error(edit);
+            if let Some(reason) = invalid {
+                ui.colored_label(theme::STATUS_OFFLINE, reason);
             }
-            if ui.button("Reload stored values").named(ui,"Reload selected stamp values").clicked() {
-                ui_mgr.push_action(UiAction::DownloadStampProperties {node_id:edit.node_id.clone()});
-            }
-            if ui.button("Make editable node").named(ui,"Inspect selected editable stamp node")
-                .on_hover_text("Picking a stamp makes it an addressable node. Inspect its properties; its position remains path-derived.").clicked() {
-                ui_mgr.push_action(UiAction::InspectStampNode {node_id:edit.node_id.clone()});
-            }
-        });
-    }).response.on_disabled_hover_text("Editor access is required; wait for any current save receipt");
+            ui.horizontal_wrapped(|ui| {
+                if ui.add_enabled(invalid.is_none(), egui::Button::new("Apply"))
+                    .named(ui, "Apply all stamp changes").clicked() {
+                    ui_mgr.push_action(UiAction::ApplyStampOverrides { edit: edit.clone() });
+                }
+                if ui.button("Reload stored values")
+                    .named(ui, "Reload selected stamp values").clicked() {
+                    ui_mgr.push_action(UiAction::DownloadStampProperties { node_id: edit.node_id.clone() });
+                }
+                if ui.button("Make editable node")
+                    .named(ui, "Inspect selected editable stamp node")
+                    .on_hover_text("Picking a stamp makes it an addressable node. Inspect its properties; its position remains path-derived.")
+                    .clicked() {
+                    ui_mgr.push_action(UiAction::InspectStampNode { node_id: edit.node_id.clone() });
+                }
+            });
+        }).response.on_disabled_hover_text("Editor access is required; wait for any current save receipt");
+    });
 }
 
 /// Resolve an edited track's display name from the Paths-tab track list,

@@ -746,6 +746,11 @@ preserves the sampled location, nonuniform axes and any untouched full rotation 
 Slide values are real meters. Materialization converts them to world coordinates exactly once
 at its sampler boundary. The native controls remain backed by actual stamp selection, properties
 and atomic receipts, with an explicit pending check and stored-value reload.
+Existing scale axes and slide values are displayed exactly, without range repair on render.
+A retained per-control input-intent flag also rejects focus/blur-only text-finalization clamps.
+Invalid numeric drafts keep Apply disabled with an inline reason; action admission repeats
+finite/range/quaternion validation. Users must explicitly correct legacy out-of-range fields,
+and the captured full properties baseline remains unchanged for the authoritative CAS.
 
 ## Numeric point-height finalization
 

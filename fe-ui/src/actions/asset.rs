@@ -287,6 +287,35 @@ pub(crate) fn handle_select_stamp(
     stamp_state.selected = Some(stamp);
 }
 
+/// Report invalid stamp draft values without repairing stored data.
+pub(crate) fn stamp_draft_error(
+    edit: &fe_runtime::messages::StampOverrideEdit,
+) -> Option<&'static str> {
+    if !edit
+        .scale
+        .iter()
+        .all(|value| value.is_finite() && (0.01..=10_000.0).contains(value))
+    {
+        return Some("Scale X, Y and Z must each be finite and between 0.01 and 10000. Correct the draft before applying.");
+    }
+    if !edit.rotation.iter().all(|value| value.is_finite())
+        || (edit
+            .rotation
+            .iter()
+            .map(|value| f64::from(*value).powi(2))
+            .sum::<f64>()
+            - 1.0)
+            .abs()
+            > 0.0001
+    {
+        return Some("Rotation must be a finite unit quaternion. Edit yaw or reload valid stored values before applying.");
+    }
+    if !edit.arc_m.is_finite() || !(0.0..=1_000_000.0).contains(&edit.arc_m) {
+        return Some("Distance along the path must be finite and between 0 and 1000000 meters. Correct the draft before applying.");
+    }
+    None
+}
+
 /// Queue one typed batch without changing the live stamp cache.
 pub(crate) fn apply_overrides(
     db: &DbCommandSender,
@@ -296,6 +325,9 @@ pub(crate) fn apply_overrides(
     path: &crate::gis::PathEditorState,
     role: &crate::plugin::LocalUserRole,
 ) -> Result<(), String> {
+    if let Some(reason) = stamp_draft_error(&edit) {
+        return Err(reason.into());
+    }
     let stamp = StampRef::new(edit.path_id.clone(), edit.instance_index);
     if state.edit_pending() {
         return Err("Wait for the current stamp save receipt".into());
@@ -1061,6 +1093,245 @@ mod tests {
                 bevy::math::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)
             ) < 0.0001
         );
+        // The native editor must preserve legacy values until their own explicit edit.
+        let mut legacy = props.clone();
+        legacy["stamp.override.scale"] = serde_json::json!([1.5, 20_000.0, 1.5]);
+        legacy["stamp.override.arc_m"] = serde_json::json!(2_000_000.0);
+        hydrate_promoted_stamp("path-1#inst-3", &legacy, &mut reopened);
+        let mut controls = crate::panels::tool_panel::ToolPanelState::default();
+        let hierarchy = crate::verse_manager::VerseManager::default();
+        crate::panels::tool_panel::sync_stamp_editor(
+            &mut controls,
+            &reopened,
+            &path,
+            &nav,
+            &hierarchy,
+            &role,
+            1.0,
+        );
+        let baseline = controls.stamp_edit_target.as_ref().unwrap().clone();
+        let ctx = egui::Context::default();
+        let mut time = 0.0;
+        let frame = |events: Vec<egui::Event>,
+                     time: &mut f64,
+                     controls: &mut crate::panels::tool_panel::ToolPanelState,
+                     ui: &mut crate::actions::UiManager| {
+            *time += 0.05;
+            crate::ui_shell::layout_policy::begin_frame(&ctx, true);
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1100.0, 1000.0),
+                    )),
+                    time: Some(*time),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    crate::ui_shell::layout_policy::begin_ui_pass(ctx);
+                    egui::CentralPanel::default().show(ctx, |panel| {
+                        crate::panels::tool_panel::render_path_asset_section(
+                            panel, controls, ui, &path, &hierarchy,
+                        );
+                    });
+                },
+            );
+            let observed = crate::ui_shell::layout_policy::observations(&ctx);
+            observed.controls[observed.controls.len() - 8..].to_vec()
+        };
+        let edit_number = |index: usize,
+                           text: &str,
+                           time: &mut f64,
+                           controls: &mut crate::panels::tool_panel::ToolPanelState,
+                           ui: &mut crate::actions::UiManager| {
+            let observed = frame(vec![], time, controls, ui);
+            let at = observed[index].hit.center();
+            for pressed in [true, false] {
+                frame(
+                    vec![
+                        egui::Event::PointerMoved(at),
+                        egui::Event::PointerButton {
+                            pos: at,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                    time,
+                    controls,
+                    ui,
+                );
+            }
+            let select_all = egui::Modifiers {
+                ctrl: true,
+                command: true,
+                ..Default::default()
+            };
+            frame(
+                vec![
+                    egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: select_all,
+                    },
+                    egui::Event::Text(text.into()),
+                ],
+                time,
+                controls,
+                ui,
+            );
+            frame(
+                vec![egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                time,
+                controls,
+                ui,
+            )
+        };
+        for _ in 0..3 {
+            frame(vec![], &mut time, &mut controls, &mut ui);
+        }
+        assert_eq!(
+            controls.stamp_edit_target.as_ref().unwrap().scale,
+            baseline.scale
+        );
+        assert_eq!(
+            controls.stamp_edit_target.as_ref().unwrap().arc_m,
+            baseline.arc_m
+        );
+        assert!(
+            ui.drain_actions().is_empty() && rx.try_recv().is_err(),
+            "opening legacy values cannot write"
+        );
+        // Focusing Y and then X without typing cannot count as a conscious range repair.
+        for index in [1, 0] {
+            let observed = frame(vec![], &mut time, &mut controls, &mut ui);
+            let at = observed[index].hit.center();
+            for pressed in [true, false] {
+                frame(
+                    vec![
+                        egui::Event::PointerMoved(at),
+                        egui::Event::PointerButton {
+                            pos: at,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                    &mut time,
+                    &mut controls,
+                    &mut ui,
+                );
+            }
+        }
+        assert_eq!(
+            controls.stamp_edit_target.as_ref().unwrap().scale,
+            baseline.scale,
+            "focus/blur cannot accept egui's implicit text-finalization clamp"
+        );
+        let observed = edit_number(0, "2.25", &mut time, &mut controls, &mut ui);
+        let draft = controls.stamp_edit_target.as_ref().unwrap();
+        assert_eq!(
+            draft.scale,
+            [2.25, 20_000.0, 1.5],
+            "editing X preserves untouched Y and Z exactly"
+        );
+        assert_eq!(
+            draft.arc_m, 2_000_000.0,
+            "editing X cannot clamp untouched slide"
+        );
+        assert_eq!(draft.rotation, baseline.rotation);
+        assert_eq!(draft.before_properties, legacy);
+        assert!(
+            stamp_draft_error(draft).is_some(),
+            "invalid legacy fields keep Apply disabled with an inline reason"
+        );
+        let at = observed[5].hit.center();
+        for pressed in [true, false] {
+            frame(
+                vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                &mut time,
+                &mut controls,
+                &mut ui,
+            );
+        }
+        assert!(ui.drain_actions().is_empty());
+        assert!(apply_overrides(
+            &sender,
+            &mut reopened,
+            controls.stamp_edit_target.as_ref().unwrap().clone(),
+            &nav,
+            &path,
+            &role
+        )
+        .is_err());
+        assert!(
+            rx.try_recv().is_err() && !reopened.edit_pending(),
+            "invalid drafts cannot queue hidden writes"
+        );
+        edit_number(1, "3.5", &mut time, &mut controls, &mut ui);
+        assert!(
+            stamp_draft_error(controls.stamp_edit_target.as_ref().unwrap())
+                .unwrap()
+                .starts_with("Distance"),
+            "correcting Y still requires an explicit slide correction"
+        );
+        let observed = edit_number(4, "6.25", &mut time, &mut controls, &mut ui);
+        assert!(
+            stamp_draft_error(controls.stamp_edit_target.as_ref().unwrap()).is_none(),
+            "explicit corrections enable Apply"
+        );
+        let at = observed[5].hit.center();
+        for pressed in [true, false] {
+            frame(
+                vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                &mut time,
+                &mut controls,
+                &mut ui,
+            );
+        }
+        let actions = ui.drain_actions();
+        let [crate::actions::UiAction::ApplyStampOverrides { edit }] = actions.as_slice() else {
+            panic!("one explicit Apply intent required after corrections")
+        };
+        let edit = edit.clone();
+        assert_eq!(edit.scale, [2.25, 3.5, 1.5]);
+        assert_eq!(edit.arc_m, 6.25);
+        assert_eq!(edit.rotation, baseline.rotation);
+        assert_eq!(
+            edit.before_properties, legacy,
+            "the full raw CAS baseline is never repaired"
+        );
+        apply_overrides(&sender, &mut reopened, edit.clone(), &nav, &path, &role).unwrap();
+        assert!(
+            matches!(rx.try_recv(), Ok(DbCommand::CommitStampOverrides { edit: queued, .. })
+            if queued.scale == edit.scale && queued.arc_m == edit.arc_m && queued.before_properties == legacy)
+        );
+        assert!(rx.try_recv().is_err());
         hydrate_promoted_stamp(
             "path-1#inst-3",
             &serde_json::json!({"node_kind":"ordinary"}),
