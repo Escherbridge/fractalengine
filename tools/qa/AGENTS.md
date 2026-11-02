@@ -205,6 +205,9 @@ owned run; without it `.qa/current` remains the convenience pointer. Run/token
 files and object-shaped API envelopes use one boundary decoder. Arrays, null
 data and malformed JSON produce typed refusals rather than AttributeError.
 The API origin must be loopback HTTP before any bearer token is sent.
+Authenticated requests use one direct urllib opener with proxies disabled and every redirect refused before
+following a Location. `redirect_refused` preserves that loopback boundary without forwarding Authorization or
+silently converting a mutation to a redirected GET. The rich-data driver reuses this same transport.
 
 `ui [--find TEXT] [--role ROLE] [--interactive]` reads the primary-window tree.
 `click --name TEXT [--role ROLE] [--nth N]` clicks its physical rectangle centre;

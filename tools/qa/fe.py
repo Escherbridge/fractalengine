@@ -70,6 +70,23 @@ class NotRunning(Exception):
     """No QA run recorded, or the recorded app's API does not answer."""
 
 
+class RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Keep authenticated QA requests on their validated loopback origin."""
+
+    def http_error_302(self, request, response, code, message, headers):
+        raise Refused(code, "redirect_refused", "QA API redirects are refused")
+
+    http_error_300 = http_error_302
+    http_error_301 = http_error_302
+    http_error_303 = http_error_302
+    http_error_305 = http_error_302
+    http_error_307 = http_error_302
+    http_error_308 = http_error_302
+
+
+HTTP_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), RefuseRedirects())
+
+
 # --------------------------------------------------------------------------
 # Run discovery
 # --------------------------------------------------------------------------
@@ -154,7 +171,7 @@ def http(run, method, path, token=None, body=None, timeout=40.0):
         headers["Content-Type"] = "application/json"
     request = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with HTTP_OPENER.open(request, timeout=timeout) as response:
             return response.status, dict(response.headers), response.read()
     except urllib.error.HTTPError as error:
         return error.code, dict(error.headers or {}), error.read()
