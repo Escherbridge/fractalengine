@@ -54,6 +54,7 @@ pub(crate) fn left_sidebar(
                 |ui| {
                     ui.set_min_width(220.0);
                     ui.spacing_mut().indent = 12.0;
+                    ui.spacing_mut().interact_size.y = 24.0_f32.max(20.0 / ctx.pixels_per_point());
                     ui.add_space(4.0);
                     render_verse_tree(
                         ui,
@@ -101,7 +102,11 @@ fn sidebar_verse_header(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(8.0);
             if ui
-                .add(egui::Button::new("+").fill(theme::BG_BUTTON_ALT).small())
+                .add(
+                    egui::Button::new("+")
+                        .fill(theme::BG_BUTTON_ALT)
+                        .min_size(egui::vec2(24.0, 24.0)),
+                )
                 .named(ui, "Create new verse")
                 .on_hover_text("Create new Verse")
                 .clicked()
@@ -114,8 +119,12 @@ fn sidebar_verse_header(
             }
             // Phase F: Join Verse button
             if ui
-                .add(egui::Button::new("Join").fill(theme::BG_BUTTON).small())
-                .observed(ui)
+                .add(
+                    egui::Button::new("Join")
+                        .fill(theme::BG_BUTTON)
+                        .min_size(egui::vec2(0.0, 24.0)),
+                )
+                .named(ui, "Join verse by invite")
                 .on_hover_text("Join a verse by invite")
                 .clicked()
             {
@@ -485,13 +494,17 @@ fn render_petals(
                     local_role.can_edit() && nav.active_verse_id.as_deref() == Some(verse_id),
                 );
                 if ui
-                    .add(
+                    .add_enabled(
+                        local_role.can_manage() && nav.active_verse_id.as_deref() == Some(verse_id),
                         egui::Button::new(egui::RichText::new("Petal requirements").small())
                             .fill(theme::BG_BUTTON)
-                            .small(),
+                            .min_size(egui::vec2(0.0, 24.0)),
                     )
-                    .observed(ui)
+                    .named(ui, format_args!("Petal requirements for {petal_name}"))
                     .on_hover_text("Edit this petal's map and hexon requirements")
+                    .on_disabled_hover_text(
+                        "Manager role in this verse is required to edit petal requirements.",
+                    )
                     .clicked()
                 {
                     ui_mgr.push_action(UiAction::PetalManifestOpen {

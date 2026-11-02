@@ -255,6 +255,7 @@ pub(crate) fn render(
         .resizable(false)
         .default_width(460.0)
         .show(ctx, |ui| {
+            ui.spacing_mut().interact_size.y = 24.0_f32.max(20.0 / ctx.pixels_per_point());
             ui.label("Display preference on this device");
             ui.horizontal(|ui| {
                 let (rect, _) =
