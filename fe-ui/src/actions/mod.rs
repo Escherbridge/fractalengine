@@ -626,6 +626,11 @@ impl Default for UiManager {
 }
 
 impl UiManager {
+    pub fn clear_for_terminal_reset(&mut self) {
+        let file_dialogs = self.file_dialogs.clone();
+        *self = Self { file_dialogs, ..Self::default() };
+    }
+
     pub fn push_action(&mut self, action: UiAction) {
         self.actions.push(action);
     }

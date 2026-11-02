@@ -25,6 +25,7 @@ mod qa_dev_token;
 mod qa_log;
 mod screenshot_bridge;
 mod terrain_bridge;
+mod terminal_reset;
 mod vision_bridge;
 mod window_chrome;
 
@@ -122,9 +123,12 @@ fn main() {
     let (app_settings, settings_path) = fe_ui::settings::load_startup_settings();
     fe_sync::relay_config::set_settings_relay_spec(app_settings.relay.clone());
 
+    let maintenance_jobs = fe_runtime::maintenance::HostJobs::install().expect("one host job owner");
+    let mut maintenance_services = Vec::new();
     let ch = ChannelHandles::new();
 
-    let _net_thread = fe_network::spawn_network_thread(ch.net_cmd_rx, ch.net_evt_tx);
+    let net_thread = fe_network::spawn_network_thread(ch.net_cmd_rx, ch.net_evt_tx);
+    maintenance_services.push(fe_runtime::service_lifecycle::OwnedService::new("network", Default::default(), net_thread));
 
     // P2P Mycelium Phase A+B: local content-addressed blob store, shared with
     // the DB thread and the Bevy blob:// asset source.
@@ -246,6 +250,7 @@ fn main() {
     // Opt-in agent-QA token file (src/AGENTS.md §qa-dev-token): unset = None,
     // and nothing below changes behaviour.
     let dev_token_out = fe_api::dev_token::dev_token_out_from_env();
+    let maintenance_token_path = dev_token_out.clone();
     let dev_token_keypair = dev_token_out.as_ref().map(|_| {
         fe_identity::NodeKeypair::from_bytes(&node_kp.seed_bytes())
             .expect("recreate keypair from seed")
@@ -275,7 +280,7 @@ fn main() {
     // The DB thread is the store's only opener; `shared_db` is a clone of its
     // handle for the API reader. See AGENTS.md §entity-store-analytics.
     let fe_database::DbThread {
-        join_handle: _db_thread,
+        join_handle: db_thread,
         shared_db,
     } = match fe_database::spawn_db_thread_shared(
         ch.db_cmd_rx,
@@ -390,7 +395,7 @@ fn main() {
         "Starting sync thread"
     );
 
-    let _sync_thread = fe_sync::spawn_sync_thread(
+    let sync_thread = fe_sync::spawn_sync_thread(
         iroh_secret,
         blob_store.clone(),
         sync_cmd_rx,
@@ -404,6 +409,8 @@ fn main() {
         None,
     );
 
+    maintenance_services.push(fe_runtime::service_lifecycle::OwnedService::new("sync", Default::default(), sync_thread));
+
     // M2/F7 (A17): API→sync distributed-query bridge. The API thread's
     // distributed surfaces send `DistributedQueryCall`s; this bridge forwards
     // each one into `SyncCommand::SubmitComputeTask` on the sync thread
@@ -412,19 +419,24 @@ fn main() {
     // §backpressure's Disconnected-is-silent rule).
     let (distributed_call_tx, distributed_call_rx) =
         crossbeam::channel::bounded::<fe_runtime::distributed_query::DistributedQueryCall>(64);
-    fe_sync::distributed_query::bridge_distributed_queries(
+    maintenance_services.push(fe_sync::distributed_query::bridge_distributed_queries_owned(
         distributed_call_rx,
         sync_cmd_tx.clone(),
-    );
+    ));
 
     // Phase E: bridge replication events from DB thread to sync thread.
     // try_send + drop counter so a stalled sync thread never blocks this hop
     // (see fe-database/src/AGENTS.md §replication-backpressure).
     {
         let sync_tx_for_repl = sync_cmd_tx.clone();
-        std::thread::spawn(move || {
+        maintenance_services.push(fe_runtime::service_lifecycle::OwnedService::spawn("replication", move |stop| {
             let mut dropped: u64 = 0;
-            while let Ok(evt) = repl_rx.recv() {
+            while !stop.is_requested() {
+                let evt = match repl_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                    Ok(event) => event,
+                    Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
+                    Err(crossbeam::channel::RecvTimeoutError::Disconnected) => break,
+                };
                 match sync_tx_for_repl.try_send(fe_sync::SyncCommand::WriteRowEntry {
                     verse_id: evt.verse_id,
                     table: evt.table,
@@ -442,7 +454,7 @@ fn main() {
                     Err(crossbeam::channel::TrySendError::Disconnected(_)) => break,
                 }
             }
-        });
+        }));
     }
 
     // Wire the on_miss callback: when BlobAssetReader can't find a blob
@@ -548,7 +560,7 @@ fn main() {
         crossbeam::channel::bounded::<fe_runtime::messages::SceneChange>(256);
     {
         let mut entity_change_rx = entity_change_tx.subscribe();
-        std::thread::spawn(move || {
+        maintenance_services.push(fe_runtime::service_lifecycle::OwnedService::spawn("scene-bridge", move |stop| {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -556,7 +568,7 @@ fn main() {
             rt.block_on(async move {
                 tracing::info!("Scene change bridge started — feeding EntityStore");
                 loop {
-                    match entity_change_rx.recv().await {
+                    match tokio::select! { _ = stop.cancelled() => break, event = entity_change_rx.recv() => event } {
                         Ok(change) => match scene_change_tx_bevy.try_send(change) {
                             Ok(()) => {}
                             Err(crossbeam::channel::TrySendError::Full(_)) => {
@@ -571,7 +583,7 @@ fn main() {
                     }
                 }
             });
-        });
+        }));
     }
 
     // The dev-token writer resolves the local role per verse on its own clone.
@@ -583,8 +595,16 @@ fn main() {
     let notify_dev = dev_token_out.is_some();
     let notify_controls = qa_dialogs.is_some();
     {
-        std::thread::spawn(move || {
-            if let Ok(bound) = api_listening_rx.recv() {
+        maintenance_services.push(fe_runtime::service_lifecycle::OwnedService::spawn("listener-fanout", move |stop| {
+            let bound = loop {
+                if stop.is_requested() { return; }
+                match api_listening_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                    Ok(bound) => break bound,
+                    Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
+                    Err(crossbeam::channel::RecvTimeoutError::Disconnected) => return,
+                }
+            };
+            {
                 if ui_listening_tx.send(bound).is_err() {
                     tracing::warn!("UI listener notification was dropped");
                 }
@@ -595,7 +615,7 @@ fn main() {
                     tracing::warn!("QA-control listener notification was dropped");
                 }
             }
-        });
+        }));
     }
     api_endpoint::install(&mut app, ui_listening_rx);
 
@@ -659,7 +679,7 @@ fn main() {
         }
     }
 
-    let _api_thread = fe_api::spawn_api_thread(fe_api::ApiConfig {
+    maintenance_services.push(fe_api::spawn_api_service(fe_api::ApiConfig {
         bind_addr: format!("127.0.0.1:{qa_api_port}"),
         api_cmd_tx: api_cmd_tx.clone(),
         transform_broadcast_tx: transform_broadcast_tx.clone(),
@@ -700,20 +720,23 @@ fn main() {
         // here; loud WARN when on) — fe-api/AGENTS.md §agent-input-surface.
         input: fe_api::input::InputSurface::new(qa_enabled, Some(input_tx)).with_qa_debug(qa_tx),
         listening_tx: Some(api_listening_tx),
-    });
+    }));
 
     // Agent QA: write loopback-only API tokens for every local verse once the
     // API is listening, and rewrite on verse-set changes (src/AGENTS.md §qa-dev-token).
     if let (Some(path), Some(db), Some(keypair)) = (dev_token_out, dev_token_db, dev_token_keypair)
     {
         let (verse_ids_tx, verse_ids_rx) = crossbeam::channel::unbounded();
-        fe_api::dev_token::spawn_dev_token_writer(fe_api::dev_token::DevTokenWriter {
+        match fe_api::dev_token::spawn_dev_token_service(fe_api::dev_token::DevTokenWriter {
             path,
             db,
             keypair,
             listening_rx: dev_listening_rx,
             verse_ids_rx,
-        });
+        }) {
+            Ok(service) => maintenance_services.push(service),
+            Err(error) => tracing::error!(%error, "dev-token service could not start"),
+        }
         qa_dev_token::install(&mut app, verse_ids_tx);
     }
 
@@ -764,7 +787,7 @@ fn main() {
         crossbeam::channel::bounded::<fe_runtime::messages::TransformUpdate>(256);
     {
         let mut rx = transform_broadcast_tx.subscribe();
-        std::thread::spawn(move || {
+        maintenance_services.push(fe_runtime::service_lifecycle::OwnedService::spawn("transform-bridge", move |stop| {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -772,7 +795,7 @@ fn main() {
             rt.block_on(async move {
                 tracing::info!("Transform bridge started — listening for broadcasts");
                 loop {
-                    match rx.recv().await {
+                    match tokio::select! { _ = stop.cancelled() => break, event = rx.recv() => event } {
                         Ok(update) => {
                             tracing::debug!(
                                 "Bridge recv: node={} pos=[{:.2},{:.2},{:.2}]",
@@ -797,7 +820,7 @@ fn main() {
                     }
                 }
             });
-        });
+        }));
     }
     app.insert_resource(fe_runtime::app::InboundTransformReceiver(inbound_rx));
 
@@ -925,6 +948,7 @@ fn main() {
     app.add_plugins(fe_webview::plugin::WebViewPlugin);
     app.add_plugins(fe_webview::petal_portal::PetalPortalPlugin);
 
+    terminal_reset::install(&mut app, maintenance_services, maintenance_jobs, db_thread, maintenance_token_path, qa_root);
     app.run();
 }
 

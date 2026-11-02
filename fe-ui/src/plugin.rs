@@ -829,7 +829,7 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<MeshInstanceBudget>();
         // Mesh-instance watchdog runs in Last so its gate lands before the
         // next frame's spawners (see AGENTS.md §mesh-budget).
-        app.add_systems(Last, mesh_instance_watchdog);
+        app.add_systems(Last, mesh_instance_watchdog.run_if(fe_runtime::maintenance::editor_running));
         // D-74 B3 + readout: GPU pressure (render world writes, ledger reads) and
         // the host-mirrored tile counters; idempotent with fe-runtime's
         // Diag15MPlugin / the main binary (AGENTS.md §residency-ledger).
@@ -886,6 +886,7 @@ impl Plugin for GardenerConsolePlugin {
         app.add_systems(
             PostUpdate,
             crate::scene_analysis::collect
+                .run_if(fe_runtime::maintenance::editor_running)
                 .after(bevy::transform::TransformSystems::Propagate)
                 .before(crate::panels::volume_report_panel::sync_volume_report_request),
         );
@@ -962,7 +963,7 @@ impl Plugin for GardenerConsolePlugin {
                 crate::terrain_preview::publish_proposal_preview,
                 crate::terrain_preview::drain_preview_reports
                     .after(crate::terrain_preview::publish_proposal_preview),
-            ),
+            ).run_if(fe_runtime::maintenance::editor_running),
         );
         // S6 (FR-6/7): request/answer seam for the Volume report. S5
         // (fe-terrain) also registers these messages — add_message twice is
@@ -975,7 +976,7 @@ impl Plugin for GardenerConsolePlugin {
                 crate::panels::volume_report_panel::sync_volume_report_request,
                 crate::panels::volume_report_panel::drain_volume_report_result
                     .after(crate::panels::volume_report_panel::sync_volume_report_request),
-            ),
+            ).run_if(fe_runtime::maintenance::editor_running),
         );
         app.add_systems(EguiPrimaryContextPass, gardener_ui_system);
         // The title bar's window request (move/resize/min/max/close) applies
@@ -983,6 +984,7 @@ impl Plugin for GardenerConsolePlugin {
         app.add_systems(
             PostUpdate,
             crate::ui_shell::topbar::apply_window_chrome
+                .run_if(fe_runtime::maintenance::editor_running)
                 .in_set(crate::ui_shell::topbar::WindowChromeApply)
                 .after(bevy_egui::EguiPostUpdateSet::PostProcessOutput),
         );

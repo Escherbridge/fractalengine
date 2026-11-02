@@ -221,6 +221,8 @@ impl GestureParams<'_, '_> {
 }
 
 impl NodeManager {
+    pub fn clear_for_terminal_reset(&mut self) { *self = Self::default(); }
+
     /// Select after the destination petal materializes, within a bounded frame budget.
     pub fn request_select_after_navigation(&mut self, node_id: &str, petal_id: &str) {
         self.deselect();

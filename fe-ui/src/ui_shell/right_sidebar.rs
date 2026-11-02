@@ -880,7 +880,7 @@ fn render_development_reset(
     ui: &mut egui::Ui,
     session: &mut crate::settings::SettingsSession,
     nav: &NavigationManager,
-    db_tx: &crossbeam::channel::Sender<DbCommand>,
+    _db_tx: &crossbeam::channel::Sender<DbCommand>,
     topbar: &mut super::topbar::TopbarState,
 ) {
     use crate::settings::DatabaseResetState;
@@ -890,6 +890,8 @@ fn render_development_reset(
     settings_heading(ui, "Danger zone");
     ui.label("Reset the local database, including object data, history and API token records. This node must own every stored Verse.");
     ui.label("Identity, local preferences and cached blob files are retained. Shared peers are not erased.");
+        ui.label("Active API sessions stop for this process. Erasing token records does not revoke previously signed credentials.");
+    ui.label("This stops API, synchronization and plugins for this process. Close and reopen manually afterward.");
     match &session.reset {
         DatabaseResetState::Awaiting { .. } => { ui.label("Reset pending. Do not repeat this request."); return; }
         DatabaseResetState::Unconfirmed { .. } => { ui.label("Reset outcome unconfirmed. Waiting for the original reply; no retry has been sent."); return; }
@@ -903,9 +905,9 @@ fn render_development_reset(
         }
         DatabaseResetState::Ready => {}
     }
-    let ready = session.reset_runtime_ready();
+    let ready = session.terminal_reset_available();
     if !ready {
-        ui.label("Reset is unavailable while API and synchronization writers are running. Close the app for isolated developer maintenance.");
+        ui.label("The terminal maintenance host is unavailable. No reset will be attempted.");
     }
     let scope = super::modal::confirmation_scope(ui.ctx(), "development-reset", nav.active_scope().as_deref().unwrap_or("no-active-verse"));
     if session.reset_confirmation_scope != Some(scope.value()) {
@@ -915,7 +917,7 @@ fn render_development_reset(
     }
     ui.add_enabled_ui(ready, |ui| {
         ui.label("Type RESET to confirm");
-        let response = ui.add(egui::TextEdit::singleline(&mut session.reset_confirmation)).named(ui, "Database reset confirmation");
+        let response = ui.add(egui::TextEdit::singleline(&mut session.reset_confirmation).min_size(egui::vec2(160.0, 26.0))).named(ui, "Database reset confirmation");
         if response.changed() { session.reset_confirmation_revision = session.reset_confirmation_revision.wrapping_add(1); }
         let typed = session.reset_confirmation == "RESET";
         let confirmed = ui.add_enabled_ui(typed, |ui| {
@@ -923,11 +925,12 @@ fn render_development_reset(
         }).inner;
         if confirmed && ready && typed {
             let request_id = format!("ui-reset-{}", ulid::Ulid::new());
-            if db_tx.send(DbCommand::ResetDevelopmentDatabase { request_id: request_id.clone() }).is_ok() {
-                session.reset = DatabaseResetState::Awaiting { request_id, sent_at: ui.input(|input| input.time) };
-            } else {
-                bevy::log::warn!("DB command channel closed during local reset request");
-                session.reset = DatabaseResetState::Finished { cleared: false, error: Some("Reset request was not sent: database connection unavailable".into()) };
+            match session.request_terminal_reset(request_id.clone(), session.reset_confirmation.clone()) {
+                Ok(()) => session.reset = DatabaseResetState::Awaiting { request_id, sent_at: ui.input(|input| input.time) },
+                Err(error) => {
+                    bevy::log::warn!(%error, "Terminal reset request was not admitted");
+                    session.reset = DatabaseResetState::Finished { cleared: false, error: Some(error.into()) };
+                }
             }
             session.reset_confirmation.clear();
         }

@@ -23,6 +23,13 @@ use fe_ui::plugin::{
 use fe_ui::settings::AppSettings;
 use fe_ui::terrain_map::{DownloadProgress, DownloadStatus, TilesetDownloads};
 
+pub(crate) fn discard_terminal_state(world: &mut World) {
+    world.remove_resource::<InstallMetaVerdicts>();
+    world.remove_resource::<StreamedMetaVerdicts>();
+    world.insert_resource(StreamedTilesetState::default());
+    world.insert_resource(KnownTilesetPublishers::default());
+}
+
 /// New proposal ghosts the mesh-instance budget can absorb: none once the
 /// watchdog has tripped, else the headroom under the ceiling (capped).
 pub fn proposal_overlay_allowance(exceeded: bool, ceiling: usize, last_count: usize) -> usize {
@@ -267,7 +274,7 @@ pub fn spawn_bundle_and_publish(
     sync_tx: fe_sync::SyncCommandSender,
     tileset_id: String,
 ) {
-    std::thread::spawn(move || {
+    fe_runtime::maintenance::spawn_job(move || {
         match fe_terrain::tiles::bundle_for_seeding(registry.store(), &tileset_id) {
             Ok((index_path, bundle_paths)) => {
                 if let Err(e) = sync_tx.send(fe_sync::SyncCommand::PublishTileset {
@@ -304,9 +311,11 @@ impl HexonMutationWorker {
             None => job,
         };
         let (tx, rx) = crossbeam::channel::unbounded::<HexonMutationJob>();
+        let Some(lease) = fe_runtime::maintenance::begin_job() else { return; };
         let spawned = std::thread::Builder::new()
             .name("hexon-store-mutations".to_string())
             .spawn(move || {
+                let _lease = lease;
                 for job in rx {
                     job();
                 }
@@ -365,7 +374,7 @@ pub fn drain_hexon_ops(
                     continue;
                 };
                 let reg_for_task = registry.0.clone();
-                std::thread::spawn(move || {
+                fe_runtime::maintenance::spawn_job(move || {
                     let outcome = std::fs::read(&path)
                         .map_err(|e| format!("could not read hexon file {}: {e}", path.display()))
                         .and_then(|bytes| reg_for_task.install(&bytes).map_err(|e| e.to_string()));
@@ -456,7 +465,7 @@ pub fn drain_hexon_ops(
                     continue;
                 };
                 let reg_for_task = registry.0.clone();
-                std::thread::spawn(move || {
+                fe_runtime::maintenance::spawn_job(move || {
                     let outcome = assemble_and_install(
                         &reg_for_task,
                         &tileset_id,
@@ -527,7 +536,7 @@ pub fn drain_hexon_ops(
                     std::env::var(HEXON_REGISTRY_TOKEN_ENV_VAR).ok().as_deref(),
                 );
                 let reg_for_task = registry.0.clone();
-                std::thread::spawn(move || {
+                fe_runtime::maintenance::spawn_job(move || {
                     install_from_registry(&reg_for_task, &registry_url, &uri, token, &tx);
                 });
             }
@@ -1528,7 +1537,7 @@ pub fn drive_streamed_tilesets(
                         // Off the main thread: the installed pin opens the
                         // store's archive and the header check hashes every
                         // header member.
-                        std::thread::spawn(move || {
+                        fe_runtime::maintenance::spawn_job(move || {
                             // Pin precedence (S8 + RP-4b): installed, then
                             // petal-authored, then TOFU, then the ad hint.
                             let (pin, pin_source) = resolve_publisher_pin(
@@ -1611,7 +1620,7 @@ pub fn drive_streamed_tilesets(
                         .meta_verifying
                         .insert(tileset_id.clone(), std::time::Instant::now());
                     let tileset_id_for_thread = tileset_id.clone();
-                    std::thread::spawn(move || {
+                    fe_runtime::maintenance::spawn_job(move || {
                         let (pin, pin_source) = resolve_publisher_pin(
                             registry.and_then(|r| {
                                 r.store().installed_publisher(&tileset_id_for_thread)
@@ -1658,7 +1667,7 @@ pub fn drive_streamed_tilesets(
                         .as_ref()
                         .and_then(|c| c.streamed_bundle_check(&tileset_id, chunk_seq));
                     state.decoding.insert(key);
-                    std::thread::spawn(move || {
+                    fe_runtime::maintenance::spawn_job(move || {
                         // S8b: peer bytes — size-capped before the read and
                         // decoded under the streamed-bundle zip-bomb budget,
                         // only after they match their index digest / seal.

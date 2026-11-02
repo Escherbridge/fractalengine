@@ -118,6 +118,8 @@ pub struct VerseManager {
 }
 
 impl VerseManager {
+    pub fn clear_for_terminal_reset(&mut self) { *self = Self::default(); }
+
     /// Build a manager from a verse tree with the node index pre-populated.
     pub fn from_verses(verses: Vec<VerseEntry>) -> Self {
         let mut mgr = Self {

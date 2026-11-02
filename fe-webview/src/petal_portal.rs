@@ -356,7 +356,7 @@ impl Plugin for PetalPortalPlugin {
             ),
         );
 
-        app.add_systems(PostUpdate, position_overlay_system);
+        app.add_systems(PostUpdate, position_overlay_system.run_if(fe_runtime::maintenance::editor_running));
     }
 }
 

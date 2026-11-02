@@ -1658,3 +1658,15 @@ starting settings, identity, database, network and sync services. Its runtime Ap
 choose `LoggingOwnership::External` and confirmed window close. The runtime then omits Bevy's
 LogPlugin while retaining the rest of DefaultPlugins, so startup and in-app events use one process
 subscriber and QA capture remains installed. See `fe-runtime/src/AGENTS.md` Logging ownership.
+
+## ?terminal-reset
+
+`terminal_reset` owns the desktop maintenance state machine. A typed, confirmed local request transitions monotonically from Running to Quiescing, then Clearing and a terminal result. At the next First boundary the host replaces Update and EguiPrimaryContextPass with terminal-only work. This drops editor system locals, stops ordinary mutations and all stale result projections together, and retains Bevy input/render/PostUpdate/Last cleanup. PostUpdate report/portal helpers explicitly stop through TerminalMode. The maintenance renderer covers the prior scene and offers Close/manual reopen; there is no helper relaunch or partial service restart.
+
+The supervisor retains API/network/sync/plugin and bridge stop/join ownership. The controlled API routes its sole direct append exception through the serial DB executor. It revokes plugin origins, stops credential publication, joins services, waits for finite terrain jobs, invalidates the dev-token file, and requires unique EntityStore Arc ownership before issuing reset proof. Failed ownership, shutdown, jobs, or deadlines prevent a clear. While waiting, bounded terminal drains discard old DB/network/sync/lifecycle/API/plugin/scene events so blocking result sends cannot deadlock joins or repopulate cleared state. API request owners are dropped rather than receiving invented success.
+
+The final DB command is FIFO behind prior work and is the worker's last operation. Its receipt does not trigger LoadHierarchy or replica reopening. Success requires both the matching committed result and the actual DB thread join; delayed/lost results remain unconfirmed with no retry. A late matching receipt may clarify the stored outcome while the process stays terminal. HLC is process-global, so only a full manual reopen may start writers again. No identity, package, blob, or P2P file tree is removed.
+
+Opt-in QA hosts emit credential-free, create-new phase receipts beneath the already captured run root. Receipts include the request, process ID, joined service names, remaining job count and DB result/join facts. They do not resurrect the stopped API. Capture the terminal UI through an already admitted capture before freeze, retain exact process ownership, and inspect the actual disposable store after close/reopen. This source contract is not executed reset acceptance.
+
+API session shutdown and dev-token file invalidation do not assert cryptographic revocation of previously signed JWTs after a later process starts. Identity/signing keys are retained. Persistent revocation and post-reset credential validity remain a separate mandatory authentication lifecycle acceptance gate; do not label token-row deletion as token revocation.

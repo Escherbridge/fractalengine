@@ -2,6 +2,7 @@ use crate::backend::{BackendEvent, WebViewBackend, WindowGeometry};
 use crate::backends::ActiveBackend;
 use crate::ipc::{BrowserCommand, BrowserEvent};
 use crate::security;
+use bevy::prelude::IntoScheduleConfigs;
 
 /// Trust-bar JavaScript injected into every webview at construction.
 ///
@@ -24,7 +25,7 @@ impl bevy::prelude::Plugin for WebViewPlugin {
         app.add_systems(bevy::prelude::Update, init_backend);
         app.add_systems(bevy::prelude::Update, dispatch_commands);
         app.add_systems(bevy::prelude::Update, drain_backend_events);
-        app.add_systems(bevy::prelude::PostUpdate, sync_portal_position);
+        app.add_systems(bevy::prelude::PostUpdate, sync_portal_position.run_if(fe_runtime::maintenance::editor_running));
     }
 }
 

@@ -1410,3 +1410,9 @@ layer. Data supplies its own point instructions and the topbar Help remains avai
 only skips the noninteractive hint Area; viewport picking, gesture admission, keyboard capture,
 selection, and navigation use their existing paths. The existing native viewport journey paints
 Pen help without an obstruction and checks its absence with Data, a dialog, and an egui modal.
+
+## ?terminal-maintenance
+
+Settings exposes terminal reset only when its trusted startup developer capability and the binary's request sender exist. Exact RESET plus the existing confirmation queues one local host request; it never supplies runtime readiness or sends the legacy reset command. The host stops producers before admitting the final DB operation.
+
+`maintenance::clear_read_models` calls the navigation/node/tree/UI managers' reset methods and replaces form, history, query, token, path/stamp, proposal, download and residency buffers. This happens only after ordinary editor schedules have been removed. Old replies are drained without projection; no hierarchy reload or scene respawn occurs. Preferences and the guarded file-dialog provider are retained. The standalone terminal renderer owns subsequent Close/manual reopen behavior.

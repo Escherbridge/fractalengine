@@ -319,6 +319,7 @@ pub struct SettingsSession {
     pub(crate) reset_confirmation_scope: Option<u64>,
     pub(crate) reset_confirmation_revision: u64,
     reset_permit: fe_database::admin::DevelopmentResetPermit,
+    reset_host: Option<fe_runtime::maintenance::ResetRequestSender>,
 }
 
 #[derive(Debug, Default)]
@@ -338,6 +339,7 @@ impl Default for SettingsSession {
             reset: DatabaseResetState::Ready, reset_confirmation: String::new(),
             reset_confirmation_scope: None, reset_confirmation_revision: 0,
             reset_permit: fe_database::admin::DevelopmentResetPermit::capture(),
+            reset_host: None,
         }
     }
 }
@@ -345,7 +347,18 @@ impl Default for SettingsSession {
 impl SettingsSession {
     pub fn developer_tools_enabled(&self) -> bool { self.reset_permit.is_enabled() }
 
-    pub fn reset_runtime_ready(&self) -> bool { self.reset_permit.is_runtime_ready() }
+    pub fn terminal_reset_available(&self) -> bool { self.reset_host.is_some() }
+
+    pub fn install_reset_host(&mut self, sender: fe_runtime::maintenance::ResetRequestSender) {
+        self.reset_host = Some(sender);
+    }
+
+    pub(crate) fn request_terminal_reset(&self, request_id: String, confirmation: String) -> Result<(), &'static str> {
+        if !self.developer_tools_enabled() || confirmation != "RESET" { return Err("Reset confirmation is unavailable"); }
+        self.reset_host.as_ref().ok_or("Terminal reset host is unavailable")?.0
+            .try_send(fe_runtime::maintenance::ResetRequest { request_id, confirmation })
+            .map_err(|_| "Terminal reset request was not admitted")
+    }
 
     pub fn needs_restart(&self, settings: &AppSettings) -> bool {
         self.startup_relay.as_ref().is_some_and(|relay| relay != &settings.relay)
@@ -933,6 +946,36 @@ mod tests {
         app.world_mut().write_message(fe_runtime::messages::DbResult::DevelopmentDatabaseReset { request_id: "owned-reset".into(), cleared: true, error: Some("Local database cleared, default content unavailable".into()) });
         app.update();
         assert!(matches!(app.world().resource::<SettingsSession>().reset, DatabaseResetState::Finished { cleared: true, error: Some(_) }));
+
+        let (reset_tx, reset_rx) = crossbeam::channel::bounded(1);
+        assert!(!app.world().resource::<SettingsSession>().terminal_reset_available());
+        app.world_mut().resource_mut::<SettingsSession>().install_reset_host(fe_runtime::maintenance::ResetRequestSender(reset_tx));
+        assert!(app.world().resource::<SettingsSession>().terminal_reset_available());
+        let request_id = format!("ui-reset-{}", ulid::Ulid::new());
+        assert!(app.world().resource::<SettingsSession>().request_terminal_reset(request_id.clone(), "reset".into()).is_err());
+        assert!(reset_rx.try_recv().is_err());
+        app.world().resource::<SettingsSession>().request_terminal_reset(request_id.clone(), "RESET".into()).unwrap();
+        assert!(app.world().resource::<SettingsSession>().request_terminal_reset("second".into(), "RESET".into()).is_err(), "one bounded terminal request only");
+        let admitted = reset_rx.try_recv().unwrap();
+        assert_eq!(admitted.request_id, request_id);
+        assert_eq!(admitted.confirmation, "RESET");
+        app.init_resource::<crate::verse_manager::VerseManager>()
+            .init_resource::<crate::plugin::InspectorFormState>();
+        app.world_mut().resource_mut::<crate::navigation_manager::NavigationManager>().navigate_to_verse("old", "Old");
+        app.world_mut().resource_mut::<crate::verse_manager::VerseManager>().verses.push(crate::verse_manager::VerseEntry { id: "old".into(), name: "Old".into(), ..Default::default() });
+        {
+            let mut inspector = app.world_mut().resource_mut::<crate::plugin::InspectorFormState>();
+            inspector.generated_api_token = Some("old-secret-sentinel".into());
+            inspector.query_sql_buf = "SELECT old FROM node".into();
+            inspector.node_properties = serde_json::json!({ "old": true });
+        }
+        crate::maintenance::clear_read_models(app.world_mut());
+        assert!(app.world().resource::<crate::navigation_manager::NavigationManager>().active_verse_id.is_none());
+        assert!(app.world().resource::<crate::verse_manager::VerseManager>().verses.is_empty());
+        let inspector = app.world().resource::<crate::plugin::InspectorFormState>();
+        assert!(inspector.generated_api_token.is_none());
+        assert!(inspector.query_sql_buf.is_empty());
+        assert_eq!(inspector.node_properties, crate::plugin::InspectorFormState::default().node_properties);
     }
 
     #[test]
