@@ -38,7 +38,9 @@ pub(crate) async fn read(
     let mut response = db.query(format!("SELECT metric, units FROM iot_reading WHERE {ancestry} GROUP BY metric, units ORDER BY metric, units LIMIT {}", SERIES_LIMIT + 1))
         .bind(("node", node_id.to_owned())).bind(("petal", petal_id.to_owned()))
         .bind(("fractal", fractal.clone())).bind(("verse", parts.verse_id.clone())).await?.check()?;
-    let mut available_series: Vec<MeasurementSeries> = response.take(0)?;
+    let rows: Vec<serde_json::Value> = response.take(0)?;
+    let mut available_series: Vec<MeasurementSeries> =
+        serde_json::from_value(serde_json::Value::Array(rows))?;
     let series_truncated = available_series.len() > SERIES_LIMIT;
     available_series.truncate(SERIES_LIMIT);
     if available_series
@@ -59,7 +61,8 @@ pub(crate) async fn read(
             .bind(("fractal", fractal)).bind(("verse", parts.verse_id))
             .bind(("metric", series.metric.clone())).bind(("units", series.units.clone()))
             .bind(("cap", limit + 1)).await?.check()?;
-        points = response.take::<Vec<MeasurementPoint>>(0)?;
+        let rows: Vec<serde_json::Value> = response.take(0)?;
+        points = serde_json::from_value::<Vec<MeasurementPoint>>(serde_json::Value::Array(rows))?;
         if points.iter().any(|point| !point.value.is_finite()) {
             anyhow::bail!("stored measurement contains a nonfinite value");
         }
