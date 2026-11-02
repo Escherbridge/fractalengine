@@ -1,5 +1,5 @@
 //! SurrealQL query submission action, plus the GUI query-id minting shared by
-//! every GUI `RawQuery` sender (fe-ui/src/AGENTS.md §gis-query-ui).
+//! every GUI scoped-query sender (fe-ui/src/AGENTS.md §gis-query-ui).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -10,7 +10,7 @@ use crate::plugin::InspectorFormState;
 
 static NEXT_UI_QUERY_ID: AtomicU64 = AtomicU64::new(1);
 
-/// A fresh GUI `RawQuery` correlation id, `ui-{kind}-{n}` — the hyphens mean
+/// A fresh GUI query correlation id, `ui-{kind}-{n}` — the hyphens mean
 /// it can never collide with an API ULID.
 pub(crate) fn next_ui_query_id(kind: &str) -> String {
     format!(
@@ -20,13 +20,28 @@ pub(crate) fn next_ui_query_id(kind: &str) -> String {
 }
 
 /// Send the Query tab's SQL; its reply is claimed by `query_request_id`.
-pub(crate) fn submit(db_sender: &DbCommandSender, inspector: &mut InspectorFormState, sql: String, scope: String) {
+pub(crate) fn submit(
+    db_sender: &DbCommandSender,
+    inspector: &mut InspectorFormState,
+    sql: String,
+    scope: String,
+) {
     let request_id = next_ui_query_id("query");
-    inspector.query_results.begin(request_id.clone(), scope);
+    inspector
+        .query_results
+        .begin(request_id.clone(), scope.clone());
+    let petal = fe_database::parse_scope(&scope)
+        .ok()
+        .and_then(|scope| scope.petal_id);
+    let Some(petal) = petal else {
+        inspector.query_results.fail("Open a petal to query it");
+        return;
+    };
     if db_sender
         .0
-        .send(DbCommand::RawQuery {
-            correlation_id: Some(request_id),
+        .send(DbCommand::ScopedQuery {
+            correlation_id: request_id,
+            petal_scope: vec![petal],
             sql,
             vars: std::collections::HashMap::new(),
         })
@@ -34,7 +49,7 @@ pub(crate) fn submit(db_sender: &DbCommandSender, inspector: &mut InspectorFormS
     {
         // No reply will ever claim this tab: end the spinner here.
         inspector.query_results.fail("DB channel closed");
-        bevy::log::warn!("db_sender channel closed — RawQuery not dispatched");
+        bevy::log::warn!("db_sender channel closed — ScopedQuery not dispatched");
     }
 }
 
@@ -50,7 +65,7 @@ mod tests {
         assert!(first.starts_with("ui-gis-"), "{first}");
     }
 
-    /// The Query tab's sent `RawQuery` carries the id its reply is claimed by;
+    /// The Query tab's sent `ScopedQuery` carries the id its reply is claimed by;
     /// a dead DB channel ends the tab's spinner instead of leaving it stuck.
     #[test]
     fn submit_stores_its_claim_id_and_a_dead_channel_ends_loading() {
@@ -61,18 +76,51 @@ mod tests {
         let (tx, rx) = crossbeam::channel::bounded(4);
         let sender = DbCommandSender(tx);
         let mut inspector = InspectorFormState::default();
-        super::submit(&sender, &mut inspector, "SELECT * FROM node".to_string(), "VERSE#v".to_string());
+        super::submit(
+            &sender,
+            &mut inspector,
+            "SELECT * FROM node".to_string(),
+            "VERSE#v-FRACTAL#f-PETAL#p".to_string(),
+        );
         match rx.try_recv() {
-            Ok(DbCommand::RawQuery { correlation_id, .. }) => {
-                assert!(correlation_id.is_some());
-                assert_eq!(correlation_id, inspector.query_results.request_id);
+            Ok(DbCommand::ScopedQuery {
+                correlation_id,
+                petal_scope,
+                ..
+            }) => {
+                assert_eq!(petal_scope, vec!["p"]);
+                assert_eq!(Some(correlation_id), inspector.query_results.request_id);
             }
-            other => panic!("expected a correlated RawQuery, got {other:?}"),
+            other => panic!("expected a correlated ScopedQuery, got {other:?}"),
         }
-        assert!(inspector.query_results.pending(), "still awaiting its reply");
+        assert!(
+            inspector.query_results.pending(),
+            "still awaiting its reply"
+        );
+
+        super::submit(
+            &sender,
+            &mut inspector,
+            "SELECT * FROM node".into(),
+            "VERSE#v".into(),
+        );
+        assert!(!inspector.query_results.pending());
+        assert_eq!(
+            inspector.query_results.error.as_deref(),
+            Some("Open a petal to query it")
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "no-petal requests never enter the DB queue"
+        );
 
         drop(rx);
-        super::submit(&sender, &mut inspector, "SELECT * FROM node".to_string(), "VERSE#v".to_string());
+        super::submit(
+            &sender,
+            &mut inspector,
+            "SELECT * FROM node".to_string(),
+            "VERSE#v-FRACTAL#f-PETAL#p".to_string(),
+        );
         assert!(!inspector.query_results.pending());
         assert!(inspector.query_results.request_id.is_none());
         assert_eq!(

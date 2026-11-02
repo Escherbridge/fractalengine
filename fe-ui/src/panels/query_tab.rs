@@ -13,6 +13,7 @@ use crate::node_manager::NodeManager;
 use crate::panels::widgets::clipped_value;
 use crate::plugin::InspectorFormState;
 use crate::theme;
+use crate::verse_manager::VerseManager;
 
 /// Reasonable minimum rows for the SQL editor regardless of panel height.
 const QUERY_EDITOR_MIN_ROWS: usize = 4;
@@ -35,6 +36,9 @@ fn sql_literal(s: &str) -> String {
 /// templates only when something is selected.
 fn query_templates(nav: &NavigationManager, node_mgr: &NodeManager) -> Vec<(&'static str, String)> {
     let mut templates = Vec::new();
+    if nav.active_petal_id.is_none() {
+        return templates;
+    }
     if let Some(sel) = node_mgr.selected.as_ref() {
         let id = sql_literal(&sel.node_id);
         templates.push((
@@ -54,10 +58,7 @@ fn query_templates(nav: &NavigationManager, node_mgr: &NodeManager) -> Vec<(&'st
                 sql_literal(petal_id)
             ),
         )),
-        None => templates.push((
-            "All nodes (no petal scope)",
-            "SELECT * FROM node LIMIT 50".to_string(),
-        )),
+        None => {}
     }
     templates
 }
@@ -69,6 +70,7 @@ pub(crate) fn inspector_query_section(
     inspector: &mut InspectorFormState,
     nav: &NavigationManager,
     node_mgr: &NodeManager,
+    hierarchy: &VerseManager,
     ui_mgr: &mut UiManager,
 ) {
     egui::Frame::NONE
@@ -83,28 +85,26 @@ pub(crate) fn inspector_query_section(
             );
             ui.add_space(4.0);
 
-            // Nav scope string (verse/fractal/petal) threaded into the action
-            // payload for forward compatibility; `RawQuery` ignores it today
-            // (see the hint row below).
             let scope = super::inspector::build_nav_scope(nav);
-
-            // F3 addendum: `actions::query::submit` sends the query UNSCOPED
-            // (`scope` is dropped at `actions/query.rs` call site) — this row
-            // only says which templates below are offered, it is not an
-            // enforced filter. Say that plainly rather than implying a guardrail.
+            let petal = nav
+                .active_petal_id
+                .as_deref()
+                .and_then(|id| hierarchy.find_petal(id));
+            let scoped = petal.is_some()
+                && fe_database::parse_scope(&scope)
+                    .ok()
+                    .is_some_and(|scope| scope.petal_id.is_some());
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new("Templates scoped to:")
+                    egui::RichText::new("Query petal:")
                         .small()
                         .color(theme::TEXT_DIM),
                 );
-                clipped_value(
-                    ui,
-                    nav.active_petal_id
-                        .as_deref()
-                        .unwrap_or("none \u{2014} navigate to a petal"),
-                    theme::TEXT_SECTION,
-                );
+                if let Some(petal) = petal {
+                    clipped_value(ui, &petal.name, theme::TEXT_SECTION).on_hover_text(&petal.id);
+                } else {
+                    ui.label("Open a petal to query it");
+                }
             });
             ui.add_space(4.0);
 
@@ -149,8 +149,8 @@ pub(crate) fn inspector_query_section(
                             .desired_rows(QUERY_EDITOR_MIN_ROWS)
                             .desired_width(ui.available_width())
                             .hint_text(
-                                "Tables: node, petal, fractal, verse, asset, iot_reading\n\
-                         e.g. SELECT * FROM node WHERE petal_id = '...'",
+                                "Petal tables: node, iot_reading, device_payload, petal, room, model, crate_registry\n\
+                         e.g. SELECT * FROM node",
                             ),
                     )
                     .named(ui, "SQL query")
@@ -161,8 +161,9 @@ pub(crate) fn inspector_query_section(
             ui.add_space(6.0);
 
             // Submit button
-            let can_submit =
-                !inspector.query_sql_buf.trim().is_empty() && !inspector.query_results.pending();
+            let can_submit = scoped
+                && !inspector.query_sql_buf.trim().is_empty()
+                && !inspector.query_results.pending();
             ui.horizontal(|ui| {
                 let btn = egui::Button::new(if inspector.query_results.pending() {
                     "Running..."
@@ -177,7 +178,7 @@ pub(crate) fn inspector_query_section(
                 let submit = ui.add_enabled(can_submit, btn).named(ui, "Run Query");
                 let submit_clicked = submit.clicked();
                 let ctrl_enter = response.has_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.ctrl);
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
 
                 if (submit_clicked || ctrl_enter) && can_submit {
                     ui_mgr.push_action(UiAction::SubmitQuery {
@@ -224,13 +225,11 @@ mod tests {
     }
 
     #[test]
-    fn templates_always_offer_a_scope_option_even_with_nothing_selected() {
+    fn templates_require_an_open_petal() {
         let nav = NavigationManager::default();
         let node_mgr = NodeManager::default();
         let templates = query_templates(&nav, &node_mgr);
-        assert_eq!(templates.len(), 1);
-        assert_eq!(templates[0].0, "All nodes (no petal scope)");
-        assert_eq!(templates[0].1, "SELECT * FROM node LIMIT 50");
+        assert!(templates.is_empty());
     }
 
     #[test]

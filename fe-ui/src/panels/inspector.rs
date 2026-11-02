@@ -165,7 +165,9 @@ pub(crate) fn right_inspector(
         }
         InspectorTab::Query => {
             ui.add_space(4.0);
-            crate::panels::query_tab::inspector_query_section(ui, inspector, nav, node_mgr, ui_mgr);
+            crate::panels::query_tab::inspector_query_section(
+                ui, inspector, nav, node_mgr, hierarchy, ui_mgr,
+            );
         }
         InspectorTab::Data => {
             crate::object_data::render(ui, &mut inspector.object_data, local_role, db_tx, ui_mgr);

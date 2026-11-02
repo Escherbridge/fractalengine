@@ -1,5 +1,5 @@
 //! GIS query + layer-manager action handling: submits the SurrealQL built by
-//! `crate::gis::query` over `DbCommand::RawQuery`, and round-trips terrain
+//! `crate::gis::query` over `DbCommand::ScopedQuery`, and round-trips terrain
 //! layer edits via the existing `SetPetalTerrain` flow (mirrors
 //! `actions::hexon::set_petal_map_scale`'s "mutate one field, round-trip"
 //! idiom — see `fe-ui/src/AGENTS.md` §gis-query-ui).
@@ -14,6 +14,7 @@ fn submit_query(
     db_sender: &DbCommandSender,
     gis_state: &mut GisPanelState,
     sql: String,
+    petal_id: String,
     vars: std::collections::HashMap<String, serde_json::Value>,
 ) {
     let request_id = crate::actions::query::next_ui_query_id("gis");
@@ -22,14 +23,15 @@ fn submit_query(
     gis_state.last_error = None;
     if db_sender
         .0
-        .send(DbCommand::RawQuery {
+        .send(DbCommand::ScopedQuery {
             sql,
             vars,
-            correlation_id: Some(request_id),
+            correlation_id: request_id,
+            petal_scope: vec![petal_id],
         })
         .is_err()
     {
-        bevy::log::warn!("db_sender channel closed — GIS RawQuery not dispatched");
+        bevy::log::warn!("db_sender channel closed — GIS ScopedQuery not dispatched");
         gis_state.query_pending = false;
         gis_state.query_request_id = None;
         gis_state.last_error = Some("DB channel closed".to_string());
@@ -43,7 +45,7 @@ pub(crate) fn query_annotated(
     petal_id: String,
 ) {
     let (sql, vars) = gis::annotation_query(&petal_id);
-    submit_query(db_sender, gis_state, sql, vars);
+    submit_query(db_sender, gis_state, sql, petal_id, vars);
 }
 
 /// Runs the property key/value filter query for `petal_id`.
@@ -55,7 +57,7 @@ pub(crate) fn query_property_filter(
     value: serde_json::Value,
 ) {
     let (sql, vars) = gis::property_filter_query(&petal_id, &key, value);
-    submit_query(db_sender, gis_state, sql, vars);
+    submit_query(db_sender, gis_state, sql, petal_id, vars);
 }
 
 /// Toggles a single terrain layer's visibility/opacity on the active petal's

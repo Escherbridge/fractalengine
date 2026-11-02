@@ -519,3 +519,11 @@ objects remain visible. GLB/rotated bounds are explicitly potential intersection
 volume. Select/open-properties returns a stable node ID through the current-Petal picker and reveals Inspector.
 Viewer access gates the report in the same UI pass. The old XZ-origin list remains only a bounded, explicitly
 non-intersection TSV section. All TSV names, kinds, operations and material fields escape tab/CR/LF delimiters.
+
+
+Query tab requires an open petal for Run and Ctrl/Cmd+Enter, labels the petal
+by name and offers its full ID on hover. There is no unscoped template fallback.
+The existing captured scope/request ID travels through ScopedQuery; stored DB
+Viewer authority and source substitution are the actual guard. Results
+correlation/invalidation and current-petal selection are unchanged. The hint
+lists only petal-filtered desktop sources.

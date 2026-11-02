@@ -1,7 +1,7 @@
 //! Path-editor action handling: pure decision helpers + queueing into
 //! `PendingPathOps`. fe-ui does no persistence I/O — the main binary's GPX
 //! bridge drains the queue. Mirrors `actions::gpx`'s queue-for-main-binary
-//! pattern and `actions::gis`'s `RawQuery` submission for track listing.
+//! pattern and `actions::gis`'s scoped-query submission for track listing.
 //! See `fe-ui/src/AGENTS.md` §path-editor.
 
 use fe_runtime::app::DbCommandSender;
@@ -26,14 +26,15 @@ pub(crate) fn query_tracks(
     path_state.last_error = None;
     if db_sender
         .0
-        .send(DbCommand::RawQuery {
+        .send(DbCommand::ScopedQuery {
             sql,
             vars,
-            correlation_id: Some(request_id),
+            correlation_id: request_id,
+            petal_scope: vec![petal_id],
         })
         .is_err()
     {
-        bevy::log::warn!("db_sender channel closed — Paths RawQuery not dispatched");
+        bevy::log::warn!("db_sender channel closed — Paths ScopedQuery not dispatched");
         path_state.tracks_pending = false;
         path_state.tracks_request_id = None;
         path_state.last_error = Some("DB channel closed".to_string());

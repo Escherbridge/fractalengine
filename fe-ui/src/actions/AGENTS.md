@@ -347,3 +347,11 @@ only wrote residency distance and could overwrite it with an unshown default;
 it did not persist requirements. No write is sent now. Settings remains the
 render-distance authority, and the manifest data type stays compatible until
 a reviewed scoped requirements persistence/readback contract is implemented.
+
+Desktop query submission uses ScopedQuery for user SQL, generated GIS
+annotation/property reads and generated Paths listings. Each retains its own
+existing request ID/buffer. Query tab extracts one requested petal from the
+captured navigation scope; no petal fails locally without sending. Stored DB
+ancestry/Viewer authorization is independent of UI scope/role hints. Dead
+transport ends the correct pending buffer. Trusted programmatic API/report
+queries remain unchanged.
