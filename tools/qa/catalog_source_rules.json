@@ -11,9 +11,6 @@
     "PortalGoBack": [
       "F025"
     ],
-    "SaveUrl": [
-      "F024"
-    ],
     "ApplyNodeTransform": [
       "F018"
     ],
@@ -403,6 +400,10 @@
     ],
     "fe-ui/src/gis/layers.rs": [
       "F060"
+    ],
+    "fractalengine/src/terminal_reset/presentation.rs": [
+      "F086",
+      "F089"
     ]
   },
   "action_notes": {
@@ -410,7 +411,7 @@
     "RenameNode": "Semantic rename also routes directly through Node Options/Entity Details; absence of a UiAction constructor does not retire rename.",
     "PathMovePointUntracked": "Internal legacy adapter, not a new standalone GUI control.",
     "PetalSetRenderOverride": "Legacy action enum has no current render/gesture producer; the Settings session-override surface owns F061 through its current resource path. No separate GUI action is claimed.",
-    "SelectStamp": "Legacy adapter has no current render/gesture constructor; current viewport stamp selection and Inspector targets are covered by F075/F138.",
+    "SelectStamp": "Legacy adapter has no current render/gesture constructor in this audited snapshot. F075/F138 selection remains a mandatory GUI outcome, blocked by QA-0047 until the pending scene-bound selection correction is integrated and reconciled; no successful current producer is inferred.",
     "SetStampScale": "Legacy per-field adapter has no current render constructor; actual selected-stamp scale uses atomic ApplyStampOverrides (F138).",
     "SetStampRotation": "Legacy per-field adapter has no current render constructor; actual yaw/quaternion-preserving editor uses atomic ApplyStampOverrides (F138).",
     "SlideStampAlongPath": "Legacy per-field adapter has no current render constructor; current metric slide uses atomic ApplyStampOverrides (F138)."

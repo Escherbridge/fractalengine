@@ -1,7 +1,11 @@
 {
   "type": "FeatureSourceCensus",
-  "audited_source_commit": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+  "audited_source_commit": "07852fadc0b7e5eedfca0429566cb45ec27675d3",
   "execution_evidence": false,
+  "pending_source_reconciliation": [
+    "Stamp selection/checked promotion is not integrated in this audited snapshot. F075/F138 remain mandatory GUI outcomes, blocked by QA-0047; no successful producer or execution is inferred.",
+    "Terminal-close retained-handle evidence correction is not integrated. F080.confirm-close remains mandatory; ordinary post-exit stdout end is unsupported."
+  ],
   "limits": "Lexical producer candidates, excluding literal cfg(test) items while preserving line numbers. Helpers/named wrappers can repeat one control; conditional production openers require manual reconciliation. Not a Rust parser, live-tree census or proof of execution.",
   "source_sha256": {
     "fe-ui/src/accessibility.rs": "78141f8b97285d60b5cc69619d428ea4c41ef4d928a22fe3ff5f23ea29730000",
@@ -10,7 +14,7 @@
     "fe-ui/src/actions/gis.rs": "bc48c128054407a11cd39b2018116473c648fbb029c032a7ec8bb755766c63f1",
     "fe-ui/src/actions/gpx.rs": "a53c5f66f97b019bdf79ddaa8bbd73ae16b34ff47f91a28ecaf1d96653159778",
     "fe-ui/src/actions/hexon.rs": "ee536722f9abd22aa78b7f49452d4af88972b20ebe14c0c207aa9b5a0141508b",
-    "fe-ui/src/actions/mod.rs": "15a36b39418bb34760314193c1873e98d663b2025c8a9d0833d6a795666c928e",
+    "fe-ui/src/actions/mod.rs": "4628246aa37f313a3cea42ce98faa6c68b33e0137413e0b3098055fc2a9c0767",
     "fe-ui/src/actions/node.rs": "d2219d54c292289c350b32d05a2eda7b77f5b232503520a5080f0760de3088ec",
     "fe-ui/src/actions/node_props.rs": "f0990030a25cf334fe38d7693bb7ec672976557920cf7e6127742d48c477f9d6",
     "fe-ui/src/actions/path.rs": "698e0430056bc078045a741c7dc970b3b3f45050d18ea6e13f7dcf640dd4ddb9",
@@ -18,7 +22,7 @@
     "fe-ui/src/actions/query.rs": "9c8e072a7a5b878508fadf58e2d002e9709089197de42d9003634cbd7c46b11f",
     "fe-ui/src/actions/terrain_proposal.rs": "df482ad4cd236536487abd069aa84cb5fac0dde300f13e3ae992f86a8e7c4695",
     "fe-ui/src/actions/transform.rs": "fb73ffc1183e37394090615c225b69ff9a94d954b75ab9c854e804e9dd98dcd9",
-    "fe-ui/src/actions/url_read_model.rs": "47c31457f6feff3cd6d20fbe519cca5f5a659becb9590f488eae1a78f391660d",
+    "fe-ui/src/actions/url_read_model.rs": "3b4cbb9665a56aaf4e150e3e88b60a4b42c3362887f7fa8eb6fde9377f25d25d",
     "fe-ui/src/asset_ops.rs": "86b47bb1d36b26203bb349272a273f6699838fc67877969dfaafaf0fbdcb47d8",
     "fe-ui/src/atlas/dashboard.rs": "269a9f8517e825acfb2650d4bd4a019fbc9faacd8301516bac6d7f0755c49ef0",
     "fe-ui/src/atlas/mod.rs": "ec0e7cbb8d47a394e5a6007891d4062a534b8b49bafe4fc3c6071c1858c11239",
@@ -37,7 +41,7 @@
     "fe-ui/src/dialogs/hexon_manager.rs": "1adfb31eb85c0ae2edcca11947f4328a10036c6651fdb2a28aa080467d3722e9",
     "fe-ui/src/dialogs/join.rs": "0c13a46d30180f245a86acd7094f4096772e541d0cb553e10fcd9ca912c665e5",
     "fe-ui/src/dialogs/mod.rs": "4dca1578b718e52090440e40913eae9be911fd526bb0aa503f34ff2c733147b6",
-    "fe-ui/src/dialogs/node_options.rs": "09a594195b6d4674911e70919e3bf5f2c5a990a1d9d4d43040c4714e9b2a3e40",
+    "fe-ui/src/dialogs/node_options.rs": "de63ce278a8767effb8a3cb278b5c877fc4c9c0699c5ae459e137519f67fd287",
     "fe-ui/src/dialogs/peer_debug.rs": "e8ebc00be78414360858d64205d862549b88c56b2a69dbacf187ab93d26efc56",
     "fe-ui/src/dialogs/petal_manifest.rs": "48e6fe1ab188982948ed5786566f827e2dbc5330d4b9d27704042cfa44b4fb28",
     "fe-ui/src/dialogs/requirements_state.rs": "e9afff2a0253de8ec7d5d90a8fc10cecdf5e18eefe3c9d5bc05ce40fc7efa3b8",
@@ -49,7 +53,8 @@
     "fe-ui/src/gis/mod.rs": "fb8b5c405679ae62b895fcabdb523e8f19e1d49bd71f7c66783f0e608152d183",
     "fe-ui/src/gis/query.rs": "bbcf2e6f1e34df3a616929ee86e157b090cb8f3bbc38b756af3c1eacc14a9eec",
     "fe-ui/src/gpx_ops.rs": "1d51643c3aac8075786526059ca22b0951da0ac322f09732dc4383f9c668ec5d",
-    "fe-ui/src/lib.rs": "72019ac3c4e6aec9850b71f0f99faf8e748ace64bacd56c52f60e83ec7363f9b",
+    "fe-ui/src/lib.rs": "667a2b29a40e4ea60bf0a0d66e219cf720edcacc8eb83871d25d8b84fd7c9a7a",
+    "fe-ui/src/maintenance.rs": "1ef1e9b338d53a22d0b572182e20ec2022004f0ba3bd5e15018e88a7f8575d32",
     "fe-ui/src/navigation_manager.rs": "bdc4d365b99a8a82a79796910c955fd77372d970f82cdd6fd65a0e1096fd4777",
     "fe-ui/src/node_manager/billboard.rs": "dfba8588aa5138a5a20fb13f5da34e3352b4675f77fe61c4789e2851ea9a978d",
     "fe-ui/src/node_manager/brush_interaction.rs": "053315c69a4e9d23f3ae9d48ff08313f57fe3db998158dc5bf64464586fdf5d1",
@@ -59,7 +64,7 @@
     "fe-ui/src/node_manager/gimbal_interaction.rs": "5835bf43525c1983a3ee1d164233b0bff5ac071a79b8b5d75b0631aaf90aaf57",
     "fe-ui/src/node_manager/inspector_sync.rs": "83d9301b235f053f042a42e6a3b65f5ea9546e9b0d5d7047f8452cd069aa8354",
     "fe-ui/src/node_manager/measure.rs": "8b8a841e8fe920a5b7246a0d9bedb9f0e1428472261697539e2005cdd9b391b6",
-    "fe-ui/src/node_manager/mod.rs": "9d4c8713878dafe52e65c40dbc7ba1098b03abe3f604c1444c609245d21c3f4c",
+    "fe-ui/src/node_manager/mod.rs": "6e1c3e3b9070907ba0275ca8646f9954e601b590019bede506b2986850ec816d",
     "fe-ui/src/node_manager/path_gimbal_drag.rs": "b84aa43661e966d8d9af1015624df400eb8b7ebcb41d38265940b04eed91b52c",
     "fe-ui/src/node_manager/path_handle_interaction.rs": "f23cfa21b25e5f86215b2c2d2ae1a9fc909908559eff9d5683c5ff4ac39e394b",
     "fe-ui/src/node_manager/path_point_interaction.rs": "2d3db44d1c98c432eac1db7be032fbe0abb24cacb3ddf924c2ee22926cc877e1",
@@ -83,10 +88,10 @@
     "fe-ui/src/panels/egress_card.rs": "e6495a1be38b821aa34f67b514e3f3446b834f03e69fa7f261765d7f6fc0b49e",
     "fe-ui/src/panels/gis_panel.rs": "21a3805c9462ee0021415fbcaab130ceab499b070199d1613c13c97f35c191cc",
     "fe-ui/src/panels/gpx_import_card.rs": "84a446a83e8deb097ac07b86ba44f5c2d31740e23e3aacb40dfc0db369e2a8bb",
-    "fe-ui/src/panels/inspector.rs": "76f751b36f603ca70fdb74d385e676dba12af0cf852e3043bb07827e075566d5",
+    "fe-ui/src/panels/inspector.rs": "256972413d72dd32830ca3bf499e77a9898cf346cb619e0c8d752af5745f58a7",
     "fe-ui/src/panels/layer_manager_card.rs": "c9db50e981d0791f3ba306cc726960718448f6b6c61deda87591e726f07f31a6",
-    "fe-ui/src/panels/mod.rs": "75b7f8609db68573e8d3828a3113ca2c848264d6f01fa06603c477456143e8fb",
-    "fe-ui/src/panels/path_editor_card.rs": "2290a9931444a23d7a90b7b81aabd7a8717b4179cc5b144570a805910ab177ea",
+    "fe-ui/src/panels/mod.rs": "e1a15053de5c875595a50b3171071a6f8dec26e94e22bdead38760fda2ed95e8",
+    "fe-ui/src/panels/path_editor_card.rs": "d4f15f276b86e4fbd9dda003f146488e2629f626346c6988cdd9d0ad22e3416f",
     "fe-ui/src/panels/portal_toolbar.rs": "e69ff939ad08883ec147650c9479d0cbd7859a1ad028d041a6672c016de19ab2",
     "fe-ui/src/panels/property_grid.rs": "764933f1e9d58b3c0f5e0392ec89ce90c96d04ce0c6c75ed64ce9ded344a6dc8",
     "fe-ui/src/panels/property_value.rs": "712e91b376c2c0419a902eb4a29e6b58aed40434ba10cde9ff57fe14243c3d69",
@@ -97,7 +102,7 @@
     "fe-ui/src/panels/terrain_tools_panel.rs": "2265ca89ae2b4e69bb0887d781761516436eb742368e36f0121e8a291c05bb0c",
     "fe-ui/src/panels/tool_inspector.rs": "2959958c1f0d7f2e5ef48f3f48877f622f98cbf3d55f9514d9b81690d797da28",
     "fe-ui/src/panels/tool_options.rs": "f6ef988a44c2ac995a63d26d185172502716b54a22f2e87def2f0043d6e63ca1",
-    "fe-ui/src/panels/tool_panel.rs": "23b76680cecca838f39d1606a3e93c7c84faa8557d48d7c9727ad89b5c8f3bd4",
+    "fe-ui/src/panels/tool_panel.rs": "ba5bf0240742224458fafa4bf80ca876b3c41722326c511f47f88de343fee6da",
     "fe-ui/src/panels/toolbar.rs": "071bc2ddd3d7731b7af40ab2720f59bdd64527d435dd4bfd3d7acc88531a7a6f",
     "fe-ui/src/panels/transform_options.rs": "3e3be5063e6e52578dce2167175fde99f9e6f93912b87fd74129c1a9d2bba209",
     "fe-ui/src/panels/tree_appearance.rs": "7fc94339786771ae299429896a0124cb37a767a2b55ba89a4e027b489644ef9c",
@@ -105,12 +110,12 @@
     "fe-ui/src/panels/volume_report_panel.rs": "9fd7324b444eaae5c68fb0910ee16c7bb1d1d2194b0d5c1cd07f585afcafb6ea",
     "fe-ui/src/panels/widgets.rs": "fbd4082ae9922bb84c2ebbb03f9ff4053bd2ad3b5c3885c3c2b0bd37d534db5d",
     "fe-ui/src/path_ops.rs": "f8ae588b8fe1eacda1aef37852075355b6bb90a9631189f6456e5c244c755e46",
-    "fe-ui/src/plugin.rs": "f60244bed7fa618e05005ebe6a24b3f9e4033ecdde475076b34493ac2db105f5",
+    "fe-ui/src/plugin.rs": "06be3f91085d6613bc04c95e56f39845e3b791e724fa6bad571e007481241e6c",
     "fe-ui/src/portal/mod.rs": "f98508047289fa6454428e464df71b4aaf5ca8937ddfc70a88aae85ef20d0a04",
     "fe-ui/src/role_chip.rs": "b269965e7008c1cda1cd7949deb0af08d8de6e67002d089d5a5b7990dbc50496",
     "fe-ui/src/scene_analysis.rs": "f14b63ed1c9ca5968802435192f2f8ec3d756431b3d8de7fa3ac3c12732755e8",
     "fe-ui/src/sculpt_cursor.rs": "110612b1e7df1ebf4d6b003d23e157ea9677201c59cdadd728bd08d7a2c44ed7",
-    "fe-ui/src/settings.rs": "c4dba349b0e447f2c3d16141e6d8b361782f2d17456708f1be79a758fb6d2ca2",
+    "fe-ui/src/settings.rs": "d20d34774b9f1d0409e07074ebcececbaf316e5ded01f443cfe83d7d5bdd3afa",
     "fe-ui/src/terrain_map/dto.rs": "b82f1342570b96997c4581e56e0556db2d23f7645b4c5e27a9a9b0959b1e92ad",
     "fe-ui/src/terrain_map/events.rs": "69c17062ba6ae5c6019982556d04b9815d990ac985e9f5e578ae14e54cf8cad0",
     "fe-ui/src/terrain_map/manifest.rs": "5ceea594500cedc2efa3d0b8879bdf35cd77122f2f34507205586dbe1a2580f1",
@@ -124,11 +129,11 @@
     "fe-ui/src/ui_shell/mod.rs": "72152ac0c6ea27cffea083a5630b1d630dfb69bedb7d93a28cf6ab53b98e61cb",
     "fe-ui/src/ui_shell/modal.rs": "baff8d283abc83efc5121330a7645fe4a5846d5956c46f4d015157f70dd78c38",
     "fe-ui/src/ui_shell/results_dock.rs": "1ff7e893cfc7a81dff1b141a6ebabd70a9533cdff9e683d716fd718a4b4e5e5d",
-    "fe-ui/src/ui_shell/right_sidebar.rs": "3a3c590301d7defe9ce66eb90df3acabb6d806d0701207a85f6c25cdcc92a1ae",
+    "fe-ui/src/ui_shell/right_sidebar.rs": "061571e3e37e581b3e68c884e196651f56543adf63e200664d21d58dff7d4d29",
     "fe-ui/src/ui_shell/setting_draft.rs": "701ce7c010dc82ea2e1d23f8c98e90dae5ad12cbcd421521bc6bb619d9b90e2c",
     "fe-ui/src/ui_shell/topbar.rs": "6067de453c38b2fe0ef8550a294c1067dcd90838e0368afbe9cba8ef9d7bbe52",
     "fe-ui/src/undo.rs": "a8e6716d67c2ea2f97e21904f966b7c758f010db81c75159f9b57b62f98a5179",
-    "fe-ui/src/verse_manager/db_results/committed.rs": "09509d0656785b2f9a8294e2cb0c25212d24fd3921aa886715c4db58c8c330f7",
+    "fe-ui/src/verse_manager/db_results/committed.rs": "809fd7e336804973754c70928a05789ce26c3c6e5ccaa4f25cab64c5583e2259",
     "fe-ui/src/verse_manager/db_results/fields.rs": "0552638eaa43e1f06b35abbeb94568bec907bfa58d41acdaa78f9b53591a7fe0",
     "fe-ui/src/verse_manager/db_results/hierarchy.rs": "1cb67315942e2ada573ecf8288ab8fe1bff4d7a29d006ef564a157e4c071aa97",
     "fe-ui/src/verse_manager/db_results/mod.rs": "21acd0d7f68c9fd65aee2e3cc947e0f5cf9725b4900fc0c1b744a26e93b6d6e5",
@@ -139,8 +144,8 @@
     "fe-ui/src/verse_manager/db_results/terrain.rs": "ded3a8b374b9e25743be42ea2694bc23987beb6191ca20fa3c06d2544c2620ef",
     "fe-ui/src/verse_manager/db_results/tokens.rs": "291045223614fe71510cc471f0239ac01f03bfeb7b220131ffc9a7e7ef5eeb13",
     "fe-ui/src/verse_manager/lifecycle_events.rs": "c8ecbcd255a99a28f39982266d6549d49ea324dd3c20bfebf4bed7a505791058",
-    "fe-ui/src/verse_manager/mod.rs": "61ecf952a02da2be928530db846f73bfeec104749d1f1274e0c7a0a70d1fd571",
-    "fe-ui/src/verse_manager/node_index.rs": "01cd30e35b61d42a26002833b90df95781874d688df55461a4915e49c56422be",
+    "fe-ui/src/verse_manager/mod.rs": "bb127a14a00d851d98db57ac138a763fcfbfaa4807582714fcf1096d3c3f48b0",
+    "fe-ui/src/verse_manager/node_index.rs": "3a74fce4fd049288bb0f0a3453f71d4062658e0fbdea7a5432dda6254fe1e978",
     "fe-ui/src/verse_manager/path_asset_materialize.rs": "8439a7cddfda1db52042a10d29d1aa915fd1ea0adb4e227fc346eb757257b5e5",
     "fe-ui/src/verse_manager/path_asset_reconcile.rs": "5c69f8ac02a60c414f74b7999f468e50ba0c8eed0983bb8e8c29a0ab1e2f54aa",
     "fe-ui/src/verse_manager/petal_respawn.rs": "e43612fc3b0bc6af6a794773e74fd8d59ef08888570b5499214027f245503dad",
@@ -148,22 +153,22 @@
     "fe-ui/src/verse_manager/primitive_reconcile.rs": "01f75458ddac13d864075b94187c551a426d2ae8fd96432e11086ae9fe30432c",
     "fe-ui/src/verse_manager/residency_ledger.rs": "4c26486acc753168c1856991405b3ccb09a187f2d6c2017b05e0c96acc66f606",
     "fe-ui/src/verse_manager/spawn.rs": "4475d239690131edf34d35c1e5a3c18ea366bcf210be36b462092adcf706d98b",
-    "fe-ui/src/viewport.rs": "49e433ca85f4c9e4150fdc04de4924938f32890b83186339a76787100f604d38",
+    "fe-ui/src/viewport.rs": "63a84daaf595dcc4045a2e30873f6a716cfa6865a6347cff81f1eb57e199c355",
     "fe-ui/src/viewport_labels.rs": "c16f540e08fe6d20d95055a1bb09f5136bcb6054230636a225d2b09edc5db4b1",
     "fe-ui/src/visibility/cache.rs": "08c7d2a6e8722b117342fe3d591e050ec427d9be3f5e95af15a8e6786a57f92f",
     "fe-ui/src/visibility/groups.rs": "d015b4b34094c323bd424332e6d85658b029cdd332fedf729d09dd7a04c028d1",
     "fe-ui/src/visibility/mod.rs": "a38e1598d13f41b01ba04af221fe775c78a217d9fe774a2bd84578098f6218d0",
     "fe-ui/src/visibility/resolve.rs": "f3c3063c3fe274b848477c0afd245d5bf481de668b8d9484856364e2244f3508",
     "fe-api/src/assets.rs": "37fdef92b894ce54d4f072ab72a5b385da5b5ee903c29e0b8b967ffc7ce7f4df",
-    "fe-api/src/auth.rs": "4ae197cd81ab685d7a6ca7e0069e3115b116ec01a53d79e64cdd4e72c7d75e01",
+    "fe-api/src/auth.rs": "7072ccefb20ee46dc62681728640f664304851d641d7ea7dac52be1e57143ff0",
     "fe-api/src/bridge_client.rs": "249548d3439c0b4d9b3802c02cc72a1f28f77314be4250652973bc5ac378801f",
     "fe-api/src/canonical_ws/handler.rs": "6d00aaf2133103eb4d929be1bc5b6dae69b056c1237bedae81576289cb922397",
     "fe-api/src/canonical_ws/mod.rs": "795f21bcd2c211586a62f27055ba43cad198b51e2324022bd27d0622ced6d0f8",
     "fe-api/src/canonical_ws/router.rs": "76a194a61eb8a3979dfb29b1e443438f3f7b9abd4e314fc838bcb3aff8809b37",
     "fe-api/src/canonical_ws/state.rs": "1f19d4c3d256543de8054d9c028beefd75f5e30555f8f62fc0840b4e84779e25",
     "fe-api/src/crs.rs": "efa24b0d225264e6ae47a4eca09f6f50835cb64a268ba12d61312150d274007d",
-    "fe-api/src/db_reader.rs": "119e6297b29b6428d5b37c140aa38d69669083b7e89e2b89cf1e0ee7584b2d46",
-    "fe-api/src/dev_token.rs": "53f6df209748e7347f3be41351f7bfa1d839a6d9e370517eee987eee0611a779",
+    "fe-api/src/db_reader.rs": "62b707624b5d683eac80161087ebdb4013ac20cff8c5ace97ac29e8b92ad9112",
+    "fe-api/src/dev_token.rs": "e56ab1918240297d7047286ed362c61d8b63b5f46eaca99ffad394c1524efff4",
     "fe-api/src/device.rs": "e8b33659543bf341d7462225887fe6af711566b793e8738a8dd96f44be03462d",
     "fe-api/src/endpoint.rs": "dbfe3a4a38a82aa46b2d4d85c98d6a601e6b247bf8cdf37ab79ade2fce65f792",
     "fe-api/src/entity_store_bridge.rs": "cac54480668ad2d5c0a1758017a657523c454d99c7a177340964e8c8c48655a0",
@@ -172,9 +177,9 @@
     "fe-api/src/gis.rs": "ea69d1a418ca149bed0d2b1371aeece11149749b7f5bb28c7200b26e63d3e1d9",
     "fe-api/src/gpx.rs": "e0c40bc4be0a1052dabe74e8a4c733b7f6b84c49652fa0e90abc4b17f483178b",
     "fe-api/src/hexon.rs": "8838a955192fae2f20c8182cdbcc452737f91de06729b9ffb6de6c5185187615",
-    "fe-api/src/input.rs": "ed05b4bed007a6f45dd651262dfa92f53627cbdd008ae997ac0733e4ade91a16",
-    "fe-api/src/iot.rs": "ab07b942004608b0c5fe4c9f4be9c352c6a68857afed1f11cf71bd817f07f291",
-    "fe-api/src/lib.rs": "e9687a34a6a1de2b8dc5dca303d6ce66ca573fea7d865d0f73c27b13182bc045",
+    "fe-api/src/input.rs": "152cd02397b49cd5685c3231f4f1774d12592880ebc934643e57b25997c15055",
+    "fe-api/src/iot.rs": "80022ac7a92fd404e1177972b9a92f5a2077f3500761d6e65366b2e02b6ec35d",
+    "fe-api/src/lib.rs": "cd54f5e3f7692cd8b47bf261928f7d45bac007f145dd82d20eeafad086e0d165",
     "fe-api/src/limits.rs": "6dc5174fce15f7ec89ac7b04597c158cc092a48fbd0f479a8fe7b3ae080f761f",
     "fe-api/src/mcp/mod.rs": "9603afe210cfa71a334ac0c1f0e5622aaa3a924f7a0f7dad9e7a3748811c24f3",
     "fe-api/src/mcp/tools.rs": "09081cb0622342787b73807205c209cc3f8f51f6b5ce3a4ed32e5581c3939ffb",
@@ -182,11 +187,12 @@
     "fe-api/src/operator_gate.rs": "6b880c02e68bd6a5b733ceccb4ffaf8dd6721352d57fa45819d75e30c2972eec",
     "fe-api/src/property_schema.rs": "cf794f4a58781a5fafdba22d125226105bd67a37a2af21023aa4077d8059d65c",
     "fe-api/src/qa_debug.rs": "770bebf6b4af95d5e739fab3793db2db0493a1ee04968c58b9b7991a140e5c6d",
+    "fe-api/src/qa_portal.rs": "185972d6c97a1d58cd6cd80e5f86696b6779adee6b277b1e6860d947ff923fdd",
     "fe-api/src/query_guard.rs": "3688b1f6da09c046e7f187b3c8a813daa58f140226d8bec6ba52820de73a8bdc",
     "fe-api/src/render_distance.rs": "bf9760d3e57b696489c729030fae2c03af354171552132523738a15867865648",
     "fe-api/src/rest.rs": "e8ac404dad88c9829dbb84185597f54d1a162523077dd8f2ff06493e56b2a3e8",
     "fe-api/src/screenshot.rs": "6d9a9d8fdd87fa034a9f86e171aa74e2b9dd03a1e0233b17b22c2f08d010c8fb",
-    "fe-api/src/server.rs": "d0e3bce749388d3fe6d4564531f13ae1490484e22ecff95f3f343dfad9b9d9ff",
+    "fe-api/src/server.rs": "c22bb20d43852b1d3afa84aae8ee7cea805b8f0d71909ec17fe019f1bc813cdd",
     "fe-api/src/share.rs": "eef5a7c622fb64bbbbbf8b9a796eb187aa1c8a0a14397cdc3639777071768a96",
     "fe-api/src/sim.rs": "035f9c155c208ec124ffe30f3f711246638a14e573be10d4ed4cad1fda07b6fc",
     "fe-api/src/terrain.rs": "9c066b47a0f8096021fa95d0a4c42c30657859d5d543aea175a1ea46a4d9f1a7",
@@ -195,21 +201,22 @@
     "fe-api/src/upload.rs": "7c94916490b4cd15a0b0205b9b79ccc4acefc4bfa4769869c065c4753968bb30",
     "fe-api/src/visibility.rs": "d2eef41008ea91aec7948011556d2441e49c3a0290c96d07e0ccfb190d7919a3",
     "fe-api/src/vision.rs": "c14ffc19defac5f81f68d8f4a8e963ab26477b4eeac0c345e3a81514674bb549",
-    "fe-api/src/ws.rs": "e107f15997fc9ec58102f0a6060d13a60718224ab667ab00a41c00a3604b2dce",
+    "fe-api/src/ws.rs": "190386396154a7dd6057c3fa30296a6a8a1fb1e0ad84016795cec61554934e70",
     "fe-runtime/src/app.rs": "527554981f4d514e3a94b3d9514fff1643a21502fa4e82b30c5fe11a688b0bfa",
     "fe-runtime/src/asset_gc.rs": "2f7175843e1c8bdbe96862f92831ed77741274cf58ed77c89eb85a174a38cb84",
     "fe-runtime/src/bevy_blob_reader.rs": "3a623ea9a314c69acc99c0a3dbd066abc6fe43eb6d2bc5eb971ddb6fab367e04",
     "fe-runtime/src/blob_store.rs": "05875aae7d10d25807e33f8062b83a75fa1c9554370aaad93ac725f20accb608",
     "fe-runtime/src/blob_transport.rs": "106f85d3f3c168544b9bffda1d7afc9d5e34ee6259c0ece6439a08ff73955533",
-    "fe-runtime/src/bridge.rs": "5100c039c95b9a890c73f08f288336ec48c30a1b6696c85639c0954174ccc276",
+    "fe-runtime/src/bridge.rs": "5a3e853b8e3303da1cdc36f23e9b47c6bb8978261e505ead655bfde7d816f4b9",
     "fe-runtime/src/channels.rs": "12f119e337222729c615f2896e8a89a57590ed984f547689658a2d79aa9701bc",
     "fe-runtime/src/diag15m.rs": "4a6093cf70e8c8e03d7ff7852bce838ca5f9fcb790d392e1a6dd2e941bd14bc8",
     "fe-runtime/src/distributed_query.rs": "a3b1c62a77a5c41c7987af5d5806cef7b546b82df8b65b017f5d042b3fb5e4b8",
     "fe-runtime/src/entity_access.rs": "5038b4acda40fb0cb4dbd3bf5e0fbab018de71ba19cbe8206fdf196ba40a6df6",
     "fe-runtime/src/input.rs": "73c0d27b4e6bfd6222746e3aae628132259fa60730bb10a5aec2ab6df525f271",
     "fe-runtime/src/ktx2_guard.rs": "aaa743d38617dca706b078fbe471c3f99a99851dce6d369f08154b461095d67f",
-    "fe-runtime/src/lib.rs": "7210eb64fef12285dbd7706ff11e79305b4f8c60d1b5574bb79e08aab8912107",
-    "fe-runtime/src/messages.rs": "7e372c8475cdcf28c357b343f3b17768b547143c2aee933544e87c14e28579af",
+    "fe-runtime/src/lib.rs": "ac74d9d8a9ca7afbe5e6810f69b933775a7b33649a06947bc487fab0bc5d6d1e",
+    "fe-runtime/src/maintenance.rs": "73b365367e60ff7aedbd3c8efd59c4baedf0801495b5b6ee5b686a885db4c195",
+    "fe-runtime/src/messages.rs": "4bc6970980a3623704fb32ca2e513b431566791b4b5547c249270050745ecdcb",
     "fe-runtime/src/node_history.rs": "d0396dde8f39e6258093d242071efe6632ea9952fd2c612e07a58b9cc9b71b87",
     "fe-runtime/src/node_measurements.rs": "038e2297852bf2c3e293bc05c406f56c8d0971d47d160966aabcb6671eafa759",
     "fe-runtime/src/peer_registry.rs": "a214957f46e98d80478ac61f9b53de32459abf0d99b56f3a677ac0ccef1e3049",
@@ -217,12 +224,14 @@
     "fe-runtime/src/plugin_host.rs": "22e351ea4ef8d19bbec64d14ce71b731af3671316178b46091456e66173545f6",
     "fe-runtime/src/portal_url.rs": "980a120d0e3d6faa76e27a7e06f52226c2f88d0866b1cfbdd6a37c4d62d1afd6",
     "fe-runtime/src/qa_debug.rs": "69a155821b4448389ce23b8abb0a39487e191bf6cac229669435dfae80269ec5",
+    "fe-runtime/src/qa_portal.rs": "1ae81dca8dfd6686eac7b528149eb1e81e1975074bf4737044920559b5fd2157",
     "fe-runtime/src/qa_web/unsupported.rs": "723a29dffd30348ba79a46f9d1309a3e78ef9c7ecd84076ea0fc9dd859d1a3fb",
     "fe-runtime/src/qa_web/windows.rs": "9fd1d3344fa88691c57b9f7eae9a4ba6c306d4c013e73d466741ea68dba8510e",
     "fe-runtime/src/qa_web.rs": "4e02de9acc6ed8b0a6ff7a06310390e14c567b79324137edafdbb3c8c5081dac",
     "fe-runtime/src/safe_id.rs": "b610899fcda9eb233c42fa34123845cf55d9f881783fbc5d3d840126f4e3b102",
     "fe-runtime/src/scene_materials.rs": "0a8dec1e316ab05998baa9e46e97238dccbeed73ee3fddec8c2bd168b718346e",
     "fe-runtime/src/screenshot.rs": "dbfe2447bc197cdc07bbd2c5896bd0ccfc2135c9ad43fe65a0f4c76e8499e494",
+    "fe-runtime/src/service_lifecycle.rs": "ab9727da3ca305fea9e6c42c352af0eae855f996f9e58bf35abbdf82a1bba9ba",
     "fe-runtime/src/shared_node.rs": "0ed5762025cf9d59e1159f3e47940f0639d1783a9f821a304429a31404b1b3db",
     "fe-runtime/src/sim_control.rs": "c9aa96d7d0471de6cc43eda1e7d0c835d1180f76b8b3c1cfa97c1542541b7862",
     "fe-runtime/src/timeseries.rs": "1fc56c48a94781b6c8f21362a07519dd65567e3586793a6066d0a6f8dbf4acd5",
@@ -231,7 +240,7 @@
     "fe-plugin/src/capability.rs": "96a2abf757c3035e32cad39b374ac6346d87495beac7c54417c0865691b6d740",
     "fe-plugin/src/context.rs": "dc27c65edb99d6c7a82edfaaa2bfa4bb32bf33656e405d8b4d8f3967aa124064",
     "fe-plugin/src/host_env.rs": "0c326f217caa595c3ebb758c5923c6d74119e67d1a94f9d2355ea885cefb7c8d",
-    "fe-plugin/src/lib.rs": "8a926878f78c7b3a1f58f34c90d78313f99322499ed63705e6477a018c11db79",
+    "fe-plugin/src/lib.rs": "ac0156105661c0b244ace34a7f260a68bc57a77251add62bf9bfa72c6f335189",
     "fe-plugin/src/lifecycle.rs": "37e5628fb6c19be2562670945c8a9f50decd12ccc7e15d9e933f954bb5fa133c",
     "fe-plugin/src/registry.rs": "77bb74405e1e6dcd6c98880ffec2561e1b6fd62c853d14b5c48a932d4b7a37a8",
     "fe-plugin/src/rhai/host_api.rs": "e4ea68d19493ab6319d6a77a8cbab30c6ce31d0cd3fdb8f309f08682bfac1ae5",
@@ -244,34 +253,40 @@
     "fe-plugin/src/wasm/fuel.rs": "7ccfe0cd22c05e5370278a0ab759ab623a21b05b25f32cae2ccc0791d5f2f328",
     "fe-plugin/src/wasm/host_imports.rs": "fe0dcc66d09e0d718f30dd21b314acbf2c9f148db5adb0da80fad3eb18c14f9e",
     "fe-plugin/src/wasm/mod.rs": "0545abce655febf3b50c9344e6af6339a24f21b6b69f2606e2f5511f7d34667a",
-    "fe-webview/src/backend.rs": "17c45f1faace9e459b2c2b3e1fde2b7b4aba25e18a0ecef502fc8f30eb173b27",
-    "fe-webview/src/backends/mod.rs": "b71691e32fad90673570d2df2a4bfd94f95bf7b1d72c9cd8190d549965c94bd7",
-    "fe-webview/src/backends/qa_navigation.rs": "2858ef103dc467d6e0eb12b3bd73516246c51f049ac431d78b5ea42cafa99174",
+    "fe-webview/src/backend.rs": "a70119a2fbaf562c22cc74ec5f9da93dbe9e8826ba7e1d02a5d5375cca6ac187",
+    "fe-webview/src/backends/fixture_stream.rs": "76e95bd9837d649e5ee83b45d0139a547826a4a8999b924ad6c3b16426c9506a",
+    "fe-webview/src/backends/fixture_surface.rs": "b6d9e66e0126b273a8dfaabe86215e0292a04f5306c79d0890799de1ac639102",
+    "fe-webview/src/backends/mod.rs": "4ce11eebd1521ac87b4e954f6317c700b79d9a8df81d8c9af2eaf8ab63894a00",
+    "fe-webview/src/backends/qa_navigation.rs": "d744e48aaf21714ad03fc091f37978cbf17a92d0ec9706ab6fa0f1003c7b475c",
     "fe-webview/src/backends/servo.rs": "b316b569826ccd42fe7572749b4995281ff151379fbe0ea2481e57352d0be9f5",
     "fe-webview/src/backends/stub.rs": "0c4a8c01275f932598148a77fd27dc83a56fad91248c57bf7413a3a1c84f91d7",
-    "fe-webview/src/backends/tauri.rs": "f12e0b1307825ef8aecaf17508347569acaaed865d62dcc58e9207145d459024",
-    "fe-webview/src/backends/win32_popup.rs": "0490d69eecc4547cc6337eebbc3e0c55a1a21845e1c75de47fe96a9296a8380d",
+    "fe-webview/src/backends/tauri.rs": "5fa1cc6e6333f5c17bf2f114024d451b093774f0c46a82204f61deece63f643f",
+    "fe-webview/src/backends/win32_popup.rs": "8ecece57b1878309184bcd665443db5abc3f1a953035e29db1f536d39ff2ab28",
     "fe-webview/src/ipc.rs": "3201617ff3dd858602f74d3adec8e1d2fc30160fce44f6b6ef7bb9337a21cd19",
     "fe-webview/src/lib.rs": "ba31b522148a9e41908d36c63e6073e52c7eb3f510e665416ddbe0ccfdfabccd",
     "fe-webview/src/overlay.rs": "de41173c74520a6ed52d7d282684d8cabe372d075e8c1c3d37dab7a16fbdb22f",
-    "fe-webview/src/petal_portal.rs": "8d268937ead59d5bbc172ad714f50578c5aebb09ea4bba611bc89e0651fa66e6",
-    "fe-webview/src/plugin.rs": "500e51bae15ad0977421a2db7ffccc9f808eef7fcd33a6b75667e5d1f90615f2",
+    "fe-webview/src/petal_portal.rs": "3154e0db551e662aca3c5fbd651b3c0911167db579b6fa646a2aa28ab1eb6fc6",
+    "fe-webview/src/plugin.rs": "9cc72177f204a93424f248434d2d504e62642d3d5b33d1536f027cf41770e136",
     "fe-webview/src/security.rs": "a4864345fad6750d802d379a6a037b36d17b434b0aad9a29c8e0da446c63c4a5",
     "fe-webview/src/tauri_commands.rs": "f8a7a2e93fc49df67246fcdbd98a0e22b49d8a41a7246391c7c829a441f521d4",
     "fractalengine/src/api_endpoint.rs": "0bf67c03bb07f60070bbfc007a3c88f8f8245fbaf6bd86057f383993aa1985a3",
     "fractalengine/src/asset_bridge.rs": "454842b3a61b30dbdb1d3e1660a34f5bbedd23cfb8c981b58fb8417a93860d51",
     "fractalengine/src/gpx_bridge.rs": "dede32cca72430fd8da141cc89b906b10fb8073d075b56bb6d073befc436e3ae",
     "fractalengine/src/input_bridge.rs": "07c6b70cfc510d7bf6e6152b1432c458d2e148dca4b60fa4b6f27c6e772da866",
-    "fractalengine/src/main.rs": "3ef915a9951696a043fe773c165ee8d90ea0d1560a89d4eaaebd292835ce00fe",
+    "fractalengine/src/main.rs": "9d2d476cc1230865ba7297190c5f9bbbb86f9a43e8fc249b8cc065264ad5de4e",
     "fractalengine/src/panic_log.rs": "f039a9398f86d2ee2a4526410b16deb7f521b5a80aa3afc80f168ad3db05d090",
     "fractalengine/src/plugin_bridge.rs": "2a698e5fdad8f47b3b9406e42f453e6ab636be0f097150ae4e9e3a6ebaa55109",
     "fractalengine/src/qa_a11y_timing.rs": "844bd60110a989b933f27f5a06d90e6a0cf56b012f316caae909f59c4100b6bd",
     "fractalengine/src/qa_debug_bridge.rs": "086d82f8c84f3919fd427f3ce6addc2cabac4daca7c10403a11b7617c592e5f3",
     "fractalengine/src/qa_dev_token.rs": "61e258fcd6eb53ce9844d5b0079f574f591c191e796e19ec1f5b155b02cd0837",
     "fractalengine/src/qa_log.rs": "e82351664198efd5be7dd0fb753e9eee20a278b8ffb6c8d31930210396615fcc",
+    "fractalengine/src/qa_portal_bridge.rs": "67cbeb36c4a034640d8737098c618b23bebd7a9639a3a7c7ebe366c727ea28c0",
     "fractalengine/src/screenshot_bridge.rs": "38180dda2d0b539f52a02e0a9fc4608ada47ddb06d2612c293656e5988543e30",
-    "fractalengine/src/terrain_bridge.rs": "769568cfc66dd2d1ed211819a92ebd31751cfa7442453eef7119a73e7b34e3f8",
-    "fractalengine/src/vision_bridge.rs": "ec8a11cf9563f7d0cd3c95efd4a2223c3bb9ae334b66c08b336a32d213321b01",
+    "fractalengine/src/terminal_reset/mod.rs": "af2eed1105d1baac182ca91002e5ff6bdbc9e76c41cf3e193cae124896b2bf81",
+    "fractalengine/src/terminal_reset/observation.rs": "ca338cd10ad22828f72c027e25e3e92cad6e99785e830de73305ccac46795b58",
+    "fractalengine/src/terminal_reset/presentation.rs": "e75fc84a9cdce13ae2412085d94adff0165705db54b6bfcc280d04a750b1fa8f",
+    "fractalengine/src/terrain_bridge.rs": "78731564660cd111e8984c16a9587bd06c962225e00763e411f309ca224296af",
+    "fractalengine/src/vision_bridge.rs": "f4fa8f203a0811ea9f5358f0525113c76e88c9d557271c49f178c2cdd9e81fe4",
     "fractalengine/src/window_chrome.rs": "817f283a1ec2e26747aa48cf66db0c87b2995b2ce670b438cc3ed3b9bfbecf78"
   },
   "actions": [
@@ -284,7 +299,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/inspector.rs",
-          "line": 707,
+          "line": 717,
           "families": [
             "F018",
             "F024",
@@ -390,7 +405,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/dialogs/node_options.rs",
-          "line": 123,
+          "line": 138,
           "families": [
             "F012",
             "F013",
@@ -402,7 +417,7 @@
         },
         {
           "source": "fe-ui/src/panels/inspector.rs",
-          "line": 691,
+          "line": 701,
           "families": [
             "F018",
             "F024",
@@ -508,7 +523,7 @@
         },
         {
           "source": "fe-ui/src/panels/inspector.rs",
-          "line": 1976,
+          "line": 1986,
           "families": [
             "F018",
             "F024",
@@ -542,7 +557,7 @@
         },
         {
           "source": "fe-ui/src/panels/inspector.rs",
-          "line": 1599,
+          "line": 1609,
           "families": [
             "F018",
             "F024",
@@ -559,7 +574,7 @@
         },
         {
           "source": "fe-ui/src/panels/inspector.rs",
-          "line": 1627,
+          "line": 1637,
           "families": [
             "F018",
             "F024",
@@ -593,7 +608,7 @@
         },
         {
           "source": "fe-ui/src/panels/inspector.rs",
-          "line": 2009,
+          "line": 2019,
           "families": [
             "F018",
             "F024",
@@ -742,7 +757,7 @@
         },
         {
           "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-          "line": 1305,
+          "line": 1308,
           "families": [
             "F010",
             "F011",
@@ -914,8 +929,7 @@
             "F006",
             "F007",
             "F008",
-            "F015",
-            "F086"
+            "F015"
           ]
         }
       ],
@@ -1074,7 +1088,7 @@
         },
         {
           "source": "fe-ui/src/panels/path_editor_card.rs",
-          "line": 183,
+          "line": 193,
           "families": [
             "F063",
             "F069",
@@ -1087,7 +1101,7 @@
         },
         {
           "source": "fe-ui/src/panels/path_editor_card.rs",
-          "line": 339,
+          "line": 335,
           "families": [
             "F063",
             "F069",
@@ -1153,7 +1167,7 @@
         },
         {
           "source": "fe-ui/src/panels/path_editor_card.rs",
-          "line": 310,
+          "line": 306,
           "families": [
             "F063",
             "F069",
@@ -1197,7 +1211,7 @@
         },
         {
           "source": "fe-ui/src/panels/path_editor_card.rs",
-          "line": 151,
+          "line": 159,
           "families": [
             "F063",
             "F069",
@@ -1220,7 +1234,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/path_editor_card.rs",
-          "line": 316,
+          "line": 312,
           "families": [
             "F063",
             "F069",
@@ -1407,7 +1421,7 @@
         },
         {
           "source": "fe-ui/src/panels/path_editor_card.rs",
-          "line": 601,
+          "line": 602,
           "families": [
             "F063",
             "F069",
@@ -1466,7 +1480,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/path_editor_card.rs",
-          "line": 612,
+          "line": 613,
           "families": [
             "F063",
             "F069",
@@ -1504,7 +1518,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/path_editor_card.rs",
-          "line": 1218,
+          "line": 1231,
           "families": [
             "F063",
             "F069",
@@ -1526,7 +1540,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/path_editor_card.rs",
-          "line": 368,
+          "line": 364,
           "families": [
             "F063",
             "F069",
@@ -1548,7 +1562,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/path_editor_card.rs",
-          "line": 384,
+          "line": 380,
           "families": [
             "F063",
             "F069",
@@ -1592,7 +1606,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/tool_panel.rs",
-          "line": 931,
+          "line": 945,
           "families": [
             "F066",
             "F067",
@@ -1614,7 +1628,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/tool_panel.rs",
-          "line": 992,
+          "line": 1006,
           "families": [
             "F066",
             "F067",
@@ -1627,7 +1641,7 @@
         },
         {
           "source": "fe-ui/src/panels/tool_panel.rs",
-          "line": 1005,
+          "line": 1019,
           "families": [
             "F066",
             "F067",
@@ -1640,7 +1654,7 @@
         },
         {
           "source": "fe-ui/src/panels/tool_panel.rs",
-          "line": 1018,
+          "line": 1032,
           "families": [
             "F066",
             "F067",
@@ -1799,7 +1813,7 @@
         "F075"
       ],
       "render_or_gesture_references": [],
-      "note": "Legacy adapter has no current render/gesture constructor; current viewport stamp selection and Inspector targets are covered by F075/F138."
+      "note": "Legacy adapter has no current render/gesture constructor in this audited snapshot. F075/F138 selection remains a mandatory GUI outcome, blocked by QA-0047 until the pending scene-bound selection correction is integrated and reconciled; no successful current producer is inferred."
     },
     {
       "action": "InspectStampNode",
@@ -2054,7 +2068,7 @@
         },
         {
           "source": "fe-ui/src/dialogs/node_options.rs",
-          "line": 300,
+          "line": 315,
           "families": [
             "F012",
             "F013",
@@ -2220,8 +2234,7 @@
             "F006",
             "F007",
             "F008",
-            "F015",
-            "F086"
+            "F015"
           ]
         },
         {
@@ -2236,8 +2249,7 @@
             "F006",
             "F007",
             "F008",
-            "F015",
-            "F086"
+            "F015"
           ]
         },
         {
@@ -2287,8 +2299,7 @@
             "F006",
             "F007",
             "F008",
-            "F015",
-            "F086"
+            "F015"
           ]
         },
         {
@@ -2329,13 +2340,12 @@
             "F006",
             "F007",
             "F008",
-            "F015",
-            "F086"
+            "F015"
           ]
         },
         {
           "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-          "line": 1425,
+          "line": 1428,
           "families": [
             "F010",
             "F011",
@@ -2369,8 +2379,7 @@
             "F006",
             "F007",
             "F008",
-            "F015",
-            "F086"
+            "F015"
           ]
         },
         {
@@ -2389,7 +2398,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-          "line": 1599,
+          "line": 1602,
           "families": [
             "F010",
             "F011",
@@ -3874,7 +3883,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/node_options.rs",
-      "line": 79,
+      "line": 84,
       "families": [
         "F012",
         "F013",
@@ -3887,7 +3896,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/node_options.rs",
-      "line": 81,
+      "line": 86,
       "families": [
         "F012",
         "F013",
@@ -3900,7 +3909,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/node_options.rs",
-      "line": 91,
+      "line": 96,
       "families": [
         "F012",
         "F013",
@@ -3913,7 +3922,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/node_options.rs",
-      "line": 93,
+      "line": 98,
       "families": [
         "F012",
         "F013",
@@ -3926,7 +3935,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/node_options.rs",
-      "line": 114,
+      "line": 129,
       "families": [
         "F012",
         "F013",
@@ -3939,7 +3948,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/node_options.rs",
-      "line": 116,
+      "line": 131,
       "families": [
         "F012",
         "F013",
@@ -3952,7 +3961,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/node_options.rs",
-      "line": 150,
+      "line": 165,
       "families": [
         "F012",
         "F013",
@@ -3965,7 +3974,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/node_options.rs",
-      "line": 181,
+      "line": 196,
       "families": [
         "F012",
         "F013",
@@ -3978,7 +3987,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/node_options.rs",
-      "line": 224,
+      "line": 239,
       "families": [
         "F012",
         "F013",
@@ -3991,7 +4000,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/node_options.rs",
-      "line": 226,
+      "line": 241,
       "families": [
         "F012",
         "F013",
@@ -4004,7 +4013,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/node_options.rs",
-      "line": 259,
+      "line": 274,
       "families": [
         "F012",
         "F013",
@@ -4017,7 +4026,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/node_options.rs",
-      "line": 261,
+      "line": 276,
       "families": [
         "F012",
         "F013",
@@ -4030,7 +4039,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/node_options.rs",
-      "line": 279,
+      "line": 294,
       "families": [
         "F012",
         "F013",
@@ -5226,7 +5235,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 626,
+      "line": 627,
       "families": [
         "F018",
         "F024",
@@ -5244,7 +5253,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 641,
+      "line": 642,
       "families": [
         "F018",
         "F024",
@@ -5262,7 +5271,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 643,
+      "line": 644,
       "families": [
         "F018",
         "F024",
@@ -5280,7 +5289,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 648,
+      "line": 649,
       "families": [
         "F018",
         "F024",
@@ -5298,7 +5307,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 674,
+      "line": 682,
       "families": [
         "F018",
         "F024",
@@ -5316,7 +5325,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 676,
+      "line": 684,
       "families": [
         "F018",
         "F024",
@@ -5334,7 +5343,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 680,
+      "line": 688,
       "families": [
         "F018",
         "F024",
@@ -5352,7 +5361,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 698,
+      "line": 708,
       "families": [
         "F018",
         "F024",
@@ -5370,7 +5379,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 705,
+      "line": 715,
       "families": [
         "F018",
         "F024",
@@ -5388,7 +5397,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 982,
+      "line": 992,
       "families": [
         "F018",
         "F024",
@@ -5406,7 +5415,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1043,
+      "line": 1053,
       "families": [
         "F018",
         "F024",
@@ -5424,7 +5433,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1047,
+      "line": 1057,
       "families": [
         "F018",
         "F024",
@@ -5442,7 +5451,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1048,
+      "line": 1058,
       "families": [
         "F018",
         "F024",
@@ -5460,7 +5469,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1049,
+      "line": 1059,
       "families": [
         "F018",
         "F024",
@@ -5478,7 +5487,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1050,
+      "line": 1060,
       "families": [
         "F018",
         "F024",
@@ -5496,7 +5505,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1054,
+      "line": 1064,
       "families": [
         "F018",
         "F024",
@@ -5514,7 +5523,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1064,
+      "line": 1074,
       "families": [
         "F018",
         "F024",
@@ -5532,7 +5541,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1065,
+      "line": 1075,
       "families": [
         "F018",
         "F024",
@@ -5550,7 +5559,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1066,
+      "line": 1076,
       "families": [
         "F018",
         "F024",
@@ -5568,7 +5577,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1067,
+      "line": 1077,
       "families": [
         "F018",
         "F024",
@@ -5586,7 +5595,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1068,
+      "line": 1078,
       "families": [
         "F018",
         "F024",
@@ -5604,7 +5613,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1084,
+      "line": 1094,
       "families": [
         "F018",
         "F024",
@@ -5622,7 +5631,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1085,
+      "line": 1095,
       "families": [
         "F018",
         "F024",
@@ -5640,7 +5649,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1090,
+      "line": 1100,
       "families": [
         "F018",
         "F024",
@@ -5658,7 +5667,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1108,
+      "line": 1118,
       "families": [
         "F018",
         "F024",
@@ -5676,7 +5685,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1110,
+      "line": 1120,
       "families": [
         "F018",
         "F024",
@@ -5694,7 +5703,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1137,
+      "line": 1147,
       "families": [
         "F018",
         "F024",
@@ -5712,7 +5721,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1147,
+      "line": 1157,
       "families": [
         "F018",
         "F024",
@@ -5730,7 +5739,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1151,
+      "line": 1161,
       "families": [
         "F018",
         "F024",
@@ -5748,7 +5757,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1157,
+      "line": 1167,
       "families": [
         "F018",
         "F024",
@@ -5766,7 +5775,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1166,
+      "line": 1176,
       "families": [
         "F018",
         "F024",
@@ -5784,7 +5793,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1183,
+      "line": 1193,
       "families": [
         "F018",
         "F024",
@@ -5802,7 +5811,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1206,
+      "line": 1216,
       "families": [
         "F018",
         "F024",
@@ -5820,7 +5829,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1239,
+      "line": 1249,
       "families": [
         "F018",
         "F024",
@@ -5835,96 +5844,6 @@
         "F137"
       ],
       "candidate": "egui::CollapsingHeader::new("
-    },
-    {
-      "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1295,
-      "families": [
-        "F018",
-        "F024",
-        "F029",
-        "F030",
-        "F031",
-        "F100",
-        "F101",
-        "F134",
-        "F135",
-        "F136",
-        "F137"
-      ],
-      "candidate": "if ui.add(egui::Button::new(\"Cancel\").fill(theme::BG_BUTTON).min_size(minimum).truncate())"
-    },
-    {
-      "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1296,
-      "families": [
-        "F018",
-        "F024",
-        "F029",
-        "F030",
-        "F031",
-        "F100",
-        "F101",
-        "F134",
-        "F135",
-        "F136",
-        "F137"
-      ],
-      "candidate": ".named(ui, format_args!(\"Cancel API token revocation for scope {}\", tok.scope)).clicked() {"
-    },
-    {
-      "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1299,
-      "families": [
-        "F018",
-        "F024",
-        "F029",
-        "F030",
-        "F031",
-        "F100",
-        "F101",
-        "F134",
-        "F135",
-        "F136",
-        "F137"
-      ],
-      "candidate": "if ui.add(egui::Button::new(\"Confirm Revoke\").fill(theme::BG_DANGER).min_size(minimum).truncate())"
-    },
-    {
-      "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1300,
-      "families": [
-        "F018",
-        "F024",
-        "F029",
-        "F030",
-        "F031",
-        "F100",
-        "F101",
-        "F134",
-        "F135",
-        "F136",
-        "F137"
-      ],
-      "candidate": ".named(ui, format_args!(\"Confirm API token revocation for scope {}\", tok.scope)).clicked() {"
-    },
-    {
-      "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1304,
-      "families": [
-        "F018",
-        "F024",
-        "F029",
-        "F030",
-        "F031",
-        "F100",
-        "F101",
-        "F134",
-        "F135",
-        "F136",
-        "F137"
-      ],
-      "candidate": "} else if ui.add(egui::Button::new(\"Revoke\").fill(theme::BG_DANGER).min_size(minimum).truncate())"
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
@@ -5942,11 +5861,11 @@
         "F136",
         "F137"
       ],
-      "candidate": ".named(ui, format_args!(\"Revoke API token for scope {}\", tok.scope)).clicked() {"
+      "candidate": "if ui.add(egui::Button::new(\"Cancel\").fill(theme::BG_BUTTON).min_size(minimum).truncate())"
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1343,
+      "line": 1306,
       "families": [
         "F018",
         "F024",
@@ -5960,7 +5879,79 @@
         "F136",
         "F137"
       ],
-      "candidate": "if ui.add_enabled(can_prev, egui::Button::new(\"\\u{25C0}\").fill(theme::BG_BUTTON).min_size(minimum)).named(ui, \"Previous API token page\").clicked() {"
+      "candidate": ".named(ui, format_args!(\"Cancel API token revocation for scope {}\", tok.scope)).clicked() {"
+    },
+    {
+      "source": "fe-ui/src/panels/inspector.rs",
+      "line": 1309,
+      "families": [
+        "F018",
+        "F024",
+        "F029",
+        "F030",
+        "F031",
+        "F100",
+        "F101",
+        "F134",
+        "F135",
+        "F136",
+        "F137"
+      ],
+      "candidate": "if ui.add(egui::Button::new(\"Confirm Revoke\").fill(theme::BG_DANGER).min_size(minimum).truncate())"
+    },
+    {
+      "source": "fe-ui/src/panels/inspector.rs",
+      "line": 1310,
+      "families": [
+        "F018",
+        "F024",
+        "F029",
+        "F030",
+        "F031",
+        "F100",
+        "F101",
+        "F134",
+        "F135",
+        "F136",
+        "F137"
+      ],
+      "candidate": ".named(ui, format_args!(\"Confirm API token revocation for scope {}\", tok.scope)).clicked() {"
+    },
+    {
+      "source": "fe-ui/src/panels/inspector.rs",
+      "line": 1314,
+      "families": [
+        "F018",
+        "F024",
+        "F029",
+        "F030",
+        "F031",
+        "F100",
+        "F101",
+        "F134",
+        "F135",
+        "F136",
+        "F137"
+      ],
+      "candidate": "} else if ui.add(egui::Button::new(\"Revoke\").fill(theme::BG_DANGER).min_size(minimum).truncate())"
+    },
+    {
+      "source": "fe-ui/src/panels/inspector.rs",
+      "line": 1315,
+      "families": [
+        "F018",
+        "F024",
+        "F029",
+        "F030",
+        "F031",
+        "F100",
+        "F101",
+        "F134",
+        "F135",
+        "F136",
+        "F137"
+      ],
+      "candidate": ".named(ui, format_args!(\"Revoke API token for scope {}\", tok.scope)).clicked() {"
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
@@ -5978,11 +5969,29 @@
         "F136",
         "F137"
       ],
+      "candidate": "if ui.add_enabled(can_prev, egui::Button::new(\"\\u{25C0}\").fill(theme::BG_BUTTON).min_size(minimum)).named(ui, \"Previous API token page\").clicked() {"
+    },
+    {
+      "source": "fe-ui/src/panels/inspector.rs",
+      "line": 1363,
+      "families": [
+        "F018",
+        "F024",
+        "F029",
+        "F030",
+        "F031",
+        "F100",
+        "F101",
+        "F134",
+        "F135",
+        "F136",
+        "F137"
+      ],
       "candidate": "if ui.add_enabled(can_next, egui::Button::new(\"\\u{25B6}\").fill(theme::BG_BUTTON).min_size(minimum)).named(ui, \"Next API token page\").clicked() {"
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1357,
+      "line": 1367,
       "families": [
         "F018",
         "F024",
@@ -6000,7 +6009,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1652,
+      "line": 1662,
       "families": [
         "F018",
         "F024",
@@ -6018,7 +6027,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1665,
+      "line": 1675,
       "families": [
         "F018",
         "F024",
@@ -6036,7 +6045,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1785,
+      "line": 1795,
       "families": [
         "F018",
         "F024",
@@ -6054,7 +6063,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1787,
+      "line": 1797,
       "families": [
         "F018",
         "F024",
@@ -6072,7 +6081,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1791,
+      "line": 1801,
       "families": [
         "F018",
         "F024",
@@ -6090,7 +6099,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1820,
+      "line": 1830,
       "families": [
         "F018",
         "F024",
@@ -6108,7 +6117,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1822,
+      "line": 1832,
       "families": [
         "F018",
         "F024",
@@ -6126,7 +6135,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1824,
+      "line": 1834,
       "families": [
         "F018",
         "F024",
@@ -6144,7 +6153,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1834,
+      "line": 1844,
       "families": [
         "F018",
         "F024",
@@ -6162,7 +6171,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1835,
+      "line": 1845,
       "families": [
         "F018",
         "F024",
@@ -6180,7 +6189,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1845,
+      "line": 1855,
       "families": [
         "F018",
         "F024",
@@ -6198,7 +6207,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1928,
+      "line": 1938,
       "families": [
         "F018",
         "F024",
@@ -6213,42 +6222,6 @@
         "F137"
       ],
       "candidate": ".add_enabled("
-    },
-    {
-      "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1930,
-      "families": [
-        "F018",
-        "F024",
-        "F029",
-        "F030",
-        "F031",
-        "F100",
-        "F101",
-        "F134",
-        "F135",
-        "F136",
-        "F137"
-      ],
-      "candidate": "egui::Button::new(\"Save\")"
-    },
-    {
-      "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1934,
-      "families": [
-        "F018",
-        "F024",
-        "F029",
-        "F030",
-        "F031",
-        "F100",
-        "F101",
-        "F134",
-        "F135",
-        "F136",
-        "F137"
-      ],
-      "candidate": ".named(ui, format_args!(\"Save property {key}\"))"
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
@@ -6266,25 +6239,7 @@
         "F136",
         "F137"
       ],
-      "candidate": ".add_enabled("
-    },
-    {
-      "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1942,
-      "families": [
-        "F018",
-        "F024",
-        "F029",
-        "F030",
-        "F031",
-        "F100",
-        "F101",
-        "F134",
-        "F135",
-        "F136",
-        "F137"
-      ],
-      "candidate": "egui::Button::new(\"Cancel\").min_size(egui::Vec2::splat(target)),"
+      "candidate": "egui::Button::new(\"Save\")"
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
@@ -6302,11 +6257,65 @@
         "F136",
         "F137"
       ],
+      "candidate": ".named(ui, format_args!(\"Save property {key}\"))"
+    },
+    {
+      "source": "fe-ui/src/panels/inspector.rs",
+      "line": 1950,
+      "families": [
+        "F018",
+        "F024",
+        "F029",
+        "F030",
+        "F031",
+        "F100",
+        "F101",
+        "F134",
+        "F135",
+        "F136",
+        "F137"
+      ],
+      "candidate": ".add_enabled("
+    },
+    {
+      "source": "fe-ui/src/panels/inspector.rs",
+      "line": 1952,
+      "families": [
+        "F018",
+        "F024",
+        "F029",
+        "F030",
+        "F031",
+        "F100",
+        "F101",
+        "F134",
+        "F135",
+        "F136",
+        "F137"
+      ],
+      "candidate": "egui::Button::new(\"Cancel\").min_size(egui::Vec2::splat(target)),"
+    },
+    {
+      "source": "fe-ui/src/panels/inspector.rs",
+      "line": 1954,
+      "families": [
+        "F018",
+        "F024",
+        "F029",
+        "F030",
+        "F031",
+        "F100",
+        "F101",
+        "F134",
+        "F135",
+        "F136",
+        "F137"
+      ],
       "candidate": ".named(ui, format_args!(\"Cancel editing property {key}\"))"
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1958,
+      "line": 1968,
       "families": [
         "F018",
         "F024",
@@ -6324,7 +6333,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1972,
+      "line": 1982,
       "families": [
         "F018",
         "F024",
@@ -6342,7 +6351,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 1973,
+      "line": 1983,
       "families": [
         "F018",
         "F024",
@@ -6360,7 +6369,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 2025,
+      "line": 2035,
       "families": [
         "F018",
         "F024",
@@ -6378,7 +6387,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 2033,
+      "line": 2043,
       "families": [
         "F018",
         "F024",
@@ -6396,7 +6405,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 2039,
+      "line": 2049,
       "families": [
         "F018",
         "F024",
@@ -6414,7 +6423,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 2049,
+      "line": 2059,
       "families": [
         "F018",
         "F024",
@@ -6432,7 +6441,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 2073,
+      "line": 2083,
       "families": [
         "F018",
         "F024",
@@ -6450,7 +6459,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 2074,
+      "line": 2084,
       "families": [
         "F018",
         "F024",
@@ -6468,7 +6477,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 2101,
+      "line": 2111,
       "families": [
         "F018",
         "F024",
@@ -6486,7 +6495,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 2182,
+      "line": 2192,
       "families": [
         "F018",
         "F024",
@@ -6504,7 +6513,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 2228,
+      "line": 2238,
       "families": [
         "F018",
         "F024",
@@ -6522,7 +6531,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 2232,
+      "line": 2242,
       "families": [
         "F018",
         "F024",
@@ -6540,7 +6549,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 2233,
+      "line": 2243,
       "families": [
         "F018",
         "F024",
@@ -6558,7 +6567,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 2238,
+      "line": 2248,
       "families": [
         "F018",
         "F024",
@@ -6576,7 +6585,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 2247,
+      "line": 2257,
       "families": [
         "F018",
         "F024",
@@ -6594,7 +6603,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 2253,
+      "line": 2263,
       "families": [
         "F018",
         "F024",
@@ -6612,7 +6621,7 @@
     },
     {
       "source": "fe-ui/src/panels/inspector.rs",
-      "line": 2261,
+      "line": 2271,
       "families": [
         "F018",
         "F024",
@@ -6662,31 +6671,34 @@
     },
     {
       "source": "fe-ui/src/panels/mod.rs",
-      "line": 449,
+      "line": 450,
       "families": [
-        "F087"
+        "F087",
+        "F089"
       ],
       "candidate": ".named(ui, format_args!(\"Notice: {}\", notice.text));"
     },
     {
       "source": "fe-ui/src/panels/mod.rs",
-      "line": 454,
+      "line": 455,
       "families": [
-        "F087"
+        "F087",
+        "F089"
       ],
       "candidate": ".add(egui::Button::new(\"Dismiss\").fill(crate::theme::BG_PRIMARY))"
     },
     {
       "source": "fe-ui/src/panels/mod.rs",
-      "line": 455,
+      "line": 456,
       "families": [
-        "F087"
+        "F087",
+        "F089"
       ],
       "candidate": ".named(ui, format_args!(\"Dismiss notice {id}\"))"
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 130,
+      "line": 132,
       "families": [
         "F063",
         "F069",
@@ -6700,7 +6712,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 134,
+      "line": 137,
       "families": [
         "F063",
         "F069",
@@ -6714,21 +6726,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 136,
-      "families": [
-        "F063",
-        "F069",
-        "F070",
-        "F071",
-        "F072",
-        "F078",
-        "F139"
-      ],
-      "candidate": ".add_enabled(can_edit, egui::Button::new(\"New Path\").fill(theme::BG_SAVE))"
-    },
-    {
-      "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 176,
+      "line": 139,
       "families": [
         "F063",
         "F069",
@@ -6742,7 +6740,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 178,
+      "line": 141,
       "families": [
         "F063",
         "F069",
@@ -6752,53 +6750,11 @@
         "F078",
         "F139"
       ],
-      "candidate": "egui::Button::new(label).fill(theme::BG_BUTTON),"
+      "candidate": "egui::Button::new(\"New Path\")"
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 237,
-      "families": [
-        "F063",
-        "F069",
-        "F070",
-        "F071",
-        "F072",
-        "F078",
-        "F139"
-      ],
-      "candidate": ".button_named("
-    },
-    {
-      "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 254,
-      "families": [
-        "F063",
-        "F069",
-        "F070",
-        "F071",
-        "F072",
-        "F078",
-        "F139"
-      ],
-      "candidate": ".small_button(\"Cancel\")"
-    },
-    {
-      "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 255,
-      "families": [
-        "F063",
-        "F069",
-        "F070",
-        "F071",
-        "F072",
-        "F078",
-        "F139"
-      ],
-      "candidate": ".named("
-    },
-    {
-      "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 267,
+      "line": 184,
       "families": [
         "F063",
         "F069",
@@ -6812,7 +6768,21 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 269,
+      "line": 186,
+      "families": [
+        "F063",
+        "F069",
+        "F070",
+        "F071",
+        "F072",
+        "F078",
+        "F139"
+      ],
+      "candidate": "egui::Button::new(label)"
+    },
+    {
+      "source": "fe-ui/src/panels/path_editor_card.rs",
+      "line": 244,
       "families": [
         "F063",
         "F069",
@@ -6826,7 +6796,77 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 276,
+      "line": 249,
+      "families": [
+        "F063",
+        "F069",
+        "F070",
+        "F071",
+        "F072",
+        "F078",
+        "F139"
+      ],
+      "candidate": ".named(ui, format_args!(\"Open path {name}\"))"
+    },
+    {
+      "source": "fe-ui/src/panels/path_editor_card.rs",
+      "line": 261,
+      "families": [
+        "F063",
+        "F069",
+        "F070",
+        "F071",
+        "F072",
+        "F078",
+        "F139"
+      ],
+      "candidate": ".add(egui::Button::new(\"Cancel\").min_size(minimum))"
+    },
+    {
+      "source": "fe-ui/src/panels/path_editor_card.rs",
+      "line": 262,
+      "families": [
+        "F063",
+        "F069",
+        "F070",
+        "F071",
+        "F072",
+        "F078",
+        "F139"
+      ],
+      "candidate": ".named(ui, format_args!(\"Cancel deletion of path {}\", row.name))"
+    },
+    {
+      "source": "fe-ui/src/panels/path_editor_card.rs",
+      "line": 268,
+      "families": [
+        "F063",
+        "F069",
+        "F070",
+        "F071",
+        "F072",
+        "F078",
+        "F139"
+      ],
+      "candidate": ".add_enabled("
+    },
+    {
+      "source": "fe-ui/src/panels/path_editor_card.rs",
+      "line": 270,
+      "families": [
+        "F063",
+        "F069",
+        "F070",
+        "F071",
+        "F072",
+        "F078",
+        "F139"
+      ],
+      "candidate": "egui::Button::new(\"Confirm Delete\")"
+    },
+    {
+      "source": "fe-ui/src/panels/path_editor_card.rs",
+      "line": 274,
       "families": [
         "F063",
         "F069",
@@ -6840,7 +6880,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 288,
+      "line": 283,
       "families": [
         "F063",
         "F069",
@@ -6850,11 +6890,25 @@
         "F078",
         "F139"
       ],
-      "candidate": ".add_enabled(can_edit, egui::Button::new(\"Delete\").small())"
+      "candidate": ".add_enabled("
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 289,
+      "line": 285,
+      "families": [
+        "F063",
+        "F069",
+        "F070",
+        "F071",
+        "F072",
+        "F078",
+        "F139"
+      ],
+      "candidate": "egui::Button::new(\"Delete\").min_size(minimum),"
+    },
+    {
+      "source": "fe-ui/src/panels/path_editor_card.rs",
+      "line": 287,
       "families": [
         "F063",
         "F069",
@@ -6868,7 +6922,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 337,
+      "line": 333,
       "families": [
         "F063",
         "F069",
@@ -6882,7 +6936,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 364,
+      "line": 360,
       "families": [
         "F063",
         "F069",
@@ -6934,11 +6988,11 @@
         "F078",
         "F139"
       ],
-      "candidate": "egui::Button::new(\"Annotate\").small(),"
+      "candidate": "egui::Button::new(\"Annotate\").min_size(egui::Vec2::splat("
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 562,
+      "line": 564,
       "families": [
         "F063",
         "F069",
@@ -6952,21 +7006,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 643,
-      "families": [
-        "F063",
-        "F069",
-        "F070",
-        "F071",
-        "F072",
-        "F078",
-        "F139"
-      ],
-      "candidate": ".add_enabled("
-    },
-    {
-      "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 645,
+      "line": 648,
       "families": [
         "F063",
         "F069",
@@ -6980,7 +7020,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 653,
+      "line": 658,
       "families": [
         "F063",
         "F069",
@@ -6994,7 +7034,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 753,
+      "line": 758,
       "families": [
         "F063",
         "F069",
@@ -7008,7 +7048,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 782,
+      "line": 787,
       "families": [
         "F063",
         "F069",
@@ -7022,7 +7062,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 783,
+      "line": 788,
       "families": [
         "F063",
         "F069",
@@ -7036,7 +7076,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 800,
+      "line": 805,
       "families": [
         "F063",
         "F069",
@@ -7050,7 +7090,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 801,
+      "line": 806,
       "families": [
         "F063",
         "F069",
@@ -7064,7 +7104,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 812,
+      "line": 817,
       "families": [
         "F063",
         "F069",
@@ -7078,7 +7118,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 834,
+      "line": 839,
       "families": [
         "F063",
         "F069",
@@ -7092,7 +7132,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 873,
+      "line": 878,
       "families": [
         "F063",
         "F069",
@@ -7106,7 +7146,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 874,
+      "line": 879,
       "families": [
         "F063",
         "F069",
@@ -7120,7 +7160,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 879,
+      "line": 884,
       "families": [
         "F063",
         "F069",
@@ -7134,7 +7174,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 883,
+      "line": 888,
       "families": [
         "F063",
         "F069",
@@ -7148,7 +7188,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 888,
+      "line": 893,
       "families": [
         "F063",
         "F069",
@@ -7162,7 +7202,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 892,
+      "line": 897,
       "families": [
         "F063",
         "F069",
@@ -7176,7 +7216,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 1059,
+      "line": 1064,
       "families": [
         "F063",
         "F069",
@@ -7186,11 +7226,11 @@
         "F078",
         "F139"
       ],
-      "candidate": ".selectable_label(row.corner == kind, kind.label()).named(ui, format_args!(\"Vertex {idx} corner kind: {}\", kind.label()))"
+      "candidate": ".add(egui::Button::selectable(row.corner == kind, kind.label()).min_size(egui::Vec2::splat(crate::object_data::target_size(ui)))).named(ui, format_args!(\"Point {} corner kind: {}\", idx + 1, kind.label()))"
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 1090,
+      "line": 1095,
       "families": [
         "F063",
         "F069",
@@ -7200,11 +7240,11 @@
         "F078",
         "F139"
       ],
-      "candidate": "let resp = ui.add(egui::Slider::new(&mut s, 0.0..=1.0).step_by(0.01).update_while_editing(false)).named(ui, format_args!(\"Vertex {idx} smoothness\"));"
+      "candidate": "let resp = ui.add(egui::Slider::new(&mut s, 0.0..=1.0).step_by(0.01).update_while_editing(false)).named(ui, format_args!(\"Point {} smoothness\", idx + 1));"
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 1138,
+      "line": 1143,
       "families": [
         "F063",
         "F069",
@@ -7214,11 +7254,11 @@
         "F078",
         "F139"
       ],
-      "candidate": "ui.add_enabled(false, egui::Slider::new(&mut s, 0.0..=1.0)).named(ui, format_args!(\"Vertex {idx} smoothness (asymmetric handles)\"));"
+      "candidate": "ui.add_enabled(false, egui::Slider::new(&mut s, 0.0..=1.0)).named(ui, format_args!(\"Point {} smoothness (asymmetric handles)\", idx + 1));"
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 1189,
+      "line": 1195,
       "families": [
         "F063",
         "F069",
@@ -7232,7 +7272,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 1192,
+      "line": 1199,
       "families": [
         "F063",
         "F069",
@@ -7246,7 +7286,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 1197,
+      "line": 1204,
       "families": [
         "F063",
         "F069",
@@ -7260,7 +7300,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 1200,
+      "line": 1208,
       "families": [
         "F063",
         "F069",
@@ -7274,7 +7314,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 1205,
+      "line": 1213,
       "families": [
         "F063",
         "F069",
@@ -7288,7 +7328,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 1209,
+      "line": 1218,
       "families": [
         "F063",
         "F069",
@@ -7302,7 +7342,7 @@
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 1214,
+      "line": 1224,
       "families": [
         "F063",
         "F069",
@@ -7312,11 +7352,11 @@
         "F078",
         "F139"
       ],
-      "candidate": ".add(egui::Button::new(\"Save\").fill(theme::BG_SAVE))"
+      "candidate": "egui::Button::new(\"Save\")"
     },
     {
       "source": "fe-ui/src/panels/path_editor_card.rs",
-      "line": 1228,
+      "line": 1242,
       "families": [
         "F063",
         "F069",
@@ -7326,7 +7366,7 @@
         "F078",
         "F139"
       ],
-      "candidate": ".add(egui::Button::new(\"Cancel\").fill(theme::BG_BUTTON))"
+      "candidate": "egui::Button::new(\"Cancel\")"
     },
     {
       "source": "fe-ui/src/panels/portal_toolbar.rs",
@@ -7441,8 +7481,7 @@
         "F006",
         "F007",
         "F008",
-        "F015",
-        "F086"
+        "F015"
       ],
       "candidate": "egui::Button::new(\"+\")"
     },
@@ -7458,8 +7497,7 @@
         "F006",
         "F007",
         "F008",
-        "F015",
-        "F086"
+        "F015"
       ],
       "candidate": ".named(ui, \"Create new verse\")"
     },
@@ -7475,8 +7513,7 @@
         "F006",
         "F007",
         "F008",
-        "F015",
-        "F086"
+        "F015"
       ],
       "candidate": "egui::Button::new(\"Join\")"
     },
@@ -7492,8 +7529,7 @@
         "F006",
         "F007",
         "F008",
-        "F015",
-        "F086"
+        "F015"
       ],
       "candidate": ".named(ui, \"Join verse by invite\")"
     },
@@ -7509,8 +7545,7 @@
         "F006",
         "F007",
         "F008",
-        "F015",
-        "F086"
+        "F015"
       ],
       "candidate": "let btn = egui::Button::new("
     },
@@ -7526,8 +7561,7 @@
         "F006",
         "F007",
         "F008",
-        "F015",
-        "F086"
+        "F015"
       ],
       "candidate": "ui.add_enabled(enabled, btn)"
     },
@@ -7543,8 +7577,7 @@
         "F006",
         "F007",
         "F008",
-        "F015",
-        "F086"
+        "F015"
       ],
       "candidate": ".named(ui, name)"
     },
@@ -7560,8 +7593,7 @@
         "F006",
         "F007",
         "F008",
-        "F015",
-        "F086"
+        "F015"
       ],
       "candidate": "toggle_response.named(ui, format_args!(\"Expand or collapse verse {verse_name}\"));"
     },
@@ -7577,8 +7609,7 @@
         "F006",
         "F007",
         "F008",
-        "F015",
-        "F086"
+        "F015"
       ],
       "candidate": "toggle_response.named("
     },
@@ -7594,8 +7625,7 @@
         "F006",
         "F007",
         "F008",
-        "F015",
-        "F086"
+        "F015"
       ],
       "candidate": ".add_enabled("
     },
@@ -7611,8 +7641,7 @@
         "F006",
         "F007",
         "F008",
-        "F015",
-        "F086"
+        "F015"
       ],
       "candidate": "egui::Button::new(egui::RichText::new(\"Petal requirements\").small())"
     },
@@ -7628,8 +7657,7 @@
         "F006",
         "F007",
         "F008",
-        "F015",
-        "F086"
+        "F015"
       ],
       "candidate": ".named(ui, format_args!(\"Petal requirements for {petal_name}\"))"
     },
@@ -7645,8 +7673,7 @@
         "F006",
         "F007",
         "F008",
-        "F015",
-        "F086"
+        "F015"
       ],
       "candidate": "toggle_response.named(ui, format_args!(\"Expand or collapse petal {petal_name}\"));"
     },
@@ -7662,8 +7689,7 @@
         "F006",
         "F007",
         "F008",
-        "F015",
-        "F086"
+        "F015"
       ],
       "candidate": ".button(label)"
     },
@@ -7679,8 +7705,7 @@
         "F006",
         "F007",
         "F008",
-        "F015",
-        "F086"
+        "F015"
       ],
       "candidate": ".named(ui, format_args!(\"{label}: node {node_name}\"))"
     },
@@ -7696,8 +7721,7 @@
         "F006",
         "F007",
         "F008",
-        "F015",
-        "F086"
+        "F015"
       ],
       "candidate": ".add_enabled("
     },
@@ -7713,8 +7737,7 @@
         "F006",
         "F007",
         "F008",
-        "F015",
-        "F086"
+        "F015"
       ],
       "candidate": "egui::Button::new(tooltip)"
     },
@@ -7730,8 +7753,7 @@
         "F006",
         "F007",
         "F008",
-        "F015",
-        "F086"
+        "F015"
       ],
       "candidate": ".named(ui, tooltip)"
     },
@@ -7747,8 +7769,7 @@
         "F006",
         "F007",
         "F008",
-        "F015",
-        "F086"
+        "F015"
       ],
       "candidate": "egui::CollapsingHeader::new("
     },
@@ -7764,8 +7785,7 @@
         "F006",
         "F007",
         "F008",
-        "F015",
-        "F086"
+        "F015"
       ],
       "candidate": ".add(egui::Button::new(\"Manage Groups\u2026\").small())"
     },
@@ -8692,7 +8712,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 685,
+      "line": 690,
       "families": [
         "F066",
         "F067",
@@ -8702,11 +8722,11 @@
         "F075",
         "F138"
       ],
-      "candidate": ".small_button(\"\\u{2715}\")"
+      "candidate": ".add(egui::Button::new(\"\\u{2715}\").min_size(minimum))"
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 686,
+      "line": 691,
       "families": [
         "F066",
         "F067",
@@ -8720,7 +8740,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 721,
+      "line": 726,
       "families": [
         "F066",
         "F067",
@@ -8734,7 +8754,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 725,
+      "line": 731,
       "families": [
         "F066",
         "F067",
@@ -8748,7 +8768,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 745,
+      "line": 753,
       "families": [
         "F066",
         "F067",
@@ -8758,11 +8778,11 @@
         "F075",
         "F138"
       ],
-      "candidate": ".selectable_label(selected, egui::RichText::new(&row.name).small())"
+      "candidate": "egui::Button::selectable(selected, &row.name).truncate(),"
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 746,
+      "line": 755,
       "families": [
         "F066",
         "F067",
@@ -8776,7 +8796,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 758,
+      "line": 767,
       "families": [
         "F066",
         "F067",
@@ -8790,7 +8810,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 767,
+      "line": 777,
       "families": [
         "F066",
         "F067",
@@ -8800,11 +8820,11 @@
         "F075",
         "F138"
       ],
-      "candidate": ".add(egui::TextEdit::singleline(&mut asset_buf).hint_text(\"blob://<hash>.glb\"))"
+      "candidate": "egui::TextEdit::singleline(&mut asset_buf)"
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 768,
+      "line": 782,
       "families": [
         "F066",
         "F067",
@@ -8818,48 +8838,6 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 826,
-      "families": [
-        "F066",
-        "F067",
-        "F068",
-        "F073",
-        "F074",
-        "F075",
-        "F138"
-      ],
-      "candidate": "ui.selectable_value("
-    },
-    {
-      "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 831,
-      "families": [
-        "F066",
-        "F067",
-        "F068",
-        "F073",
-        "F074",
-        "F075",
-        "F138"
-      ],
-      "candidate": ".named("
-    },
-    {
-      "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 835,
-      "families": [
-        "F066",
-        "F067",
-        "F068",
-        "F073",
-        "F074",
-        "F075",
-        "F138"
-      ],
-      "candidate": "ui.selectable_value("
-    },
-    {
-      "source": "fe-ui/src/panels/tool_panel.rs",
       "line": 840,
       "families": [
         "F066",
@@ -8870,11 +8848,11 @@
         "F075",
         "F138"
       ],
-      "candidate": ".named("
+      "candidate": "ui.selectable_value("
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 844,
+      "line": 845,
       "families": [
         "F066",
         "F067",
@@ -8884,7 +8862,7 @@
         "F075",
         "F138"
       ],
-      "candidate": "ui.selectable_value("
+      "candidate": ".named("
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
@@ -8898,25 +8876,11 @@
         "F075",
         "F138"
       ],
-      "candidate": ".named("
-    },
-    {
-      "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 864,
-      "families": [
-        "F066",
-        "F067",
-        "F068",
-        "F073",
-        "F074",
-        "F075",
-        "F138"
-      ],
       "candidate": "ui.selectable_value("
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 869,
+      "line": 854,
       "families": [
         "F066",
         "F067",
@@ -8930,7 +8894,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 873,
+      "line": 858,
       "families": [
         "F066",
         "F067",
@@ -8941,6 +8905,20 @@
         "F138"
       ],
       "candidate": "ui.selectable_value("
+    },
+    {
+      "source": "fe-ui/src/panels/tool_panel.rs",
+      "line": 863,
+      "families": [
+        "F066",
+        "F067",
+        "F068",
+        "F073",
+        "F074",
+        "F075",
+        "F138"
+      ],
+      "candidate": ".named("
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
@@ -8954,11 +8932,11 @@
         "F075",
         "F138"
       ],
-      "candidate": ".named("
+      "candidate": "ui.selectable_value("
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 882,
+      "line": 883,
       "families": [
         "F066",
         "F067",
@@ -8968,7 +8946,7 @@
         "F075",
         "F138"
       ],
-      "candidate": "ui.selectable_value("
+      "candidate": ".named("
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
@@ -8982,7 +8960,35 @@
         "F075",
         "F138"
       ],
+      "candidate": "ui.selectable_value("
+    },
+    {
+      "source": "fe-ui/src/panels/tool_panel.rs",
+      "line": 892,
+      "families": [
+        "F066",
+        "F067",
+        "F068",
+        "F073",
+        "F074",
+        "F075",
+        "F138"
+      ],
       "candidate": ".named("
+    },
+    {
+      "source": "fe-ui/src/panels/tool_panel.rs",
+      "line": 896,
+      "families": [
+        "F066",
+        "F067",
+        "F068",
+        "F073",
+        "F074",
+        "F075",
+        "F138"
+      ],
+      "candidate": "ui.selectable_value("
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
@@ -8996,11 +9002,25 @@
         "F075",
         "F138"
       ],
+      "candidate": ".named("
+    },
+    {
+      "source": "fe-ui/src/panels/tool_panel.rs",
+      "line": 915,
+      "families": [
+        "F066",
+        "F067",
+        "F068",
+        "F073",
+        "F074",
+        "F075",
+        "F138"
+      ],
       "candidate": "ui.add(egui::Slider::new(&mut state.pen_tension, 0.0..=1.0).show_value(false))"
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 902,
+      "line": 916,
       "families": [
         "F066",
         "F067",
@@ -9014,7 +9034,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 913,
+      "line": 927,
       "families": [
         "F066",
         "F067",
@@ -9028,7 +9048,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 914,
+      "line": 928,
       "families": [
         "F066",
         "F067",
@@ -9042,7 +9062,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 923,
+      "line": 937,
       "families": [
         "F066",
         "F067",
@@ -9056,7 +9076,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 925,
+      "line": 939,
       "families": [
         "F066",
         "F067",
@@ -9070,7 +9090,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 947,
+      "line": 961,
       "families": [
         "F066",
         "F067",
@@ -9084,7 +9104,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 951,
+      "line": 965,
       "families": [
         "F066",
         "F067",
@@ -9098,7 +9118,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 958,
+      "line": 972,
       "families": [
         "F066",
         "F067",
@@ -9112,7 +9132,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 962,
+      "line": 976,
       "families": [
         "F066",
         "F067",
@@ -9126,7 +9146,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 972,
+      "line": 986,
       "families": [
         "F066",
         "F067",
@@ -9140,7 +9160,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 973,
+      "line": 987,
       "families": [
         "F066",
         "F067",
@@ -9154,7 +9174,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 981,
+      "line": 995,
       "families": [
         "F066",
         "F067",
@@ -9168,7 +9188,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 995,
+      "line": 1009,
       "families": [
         "F066",
         "F067",
@@ -9182,7 +9202,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 1008,
+      "line": 1022,
       "families": [
         "F066",
         "F067",
@@ -10100,7 +10120,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 900,
+      "line": 902,
       "families": [
         "F010",
         "F011",
@@ -10116,7 +10136,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 901,
+      "line": 903,
       "families": [
         "F010",
         "F011",
@@ -10132,7 +10152,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 918,
+      "line": 920,
       "families": [
         "F010",
         "F011",
@@ -10144,11 +10164,11 @@
         "F085",
         "F086"
       ],
-      "candidate": "let response = ui.add(egui::TextEdit::singleline(&mut session.reset_confirmation)).named(ui, \"Database reset confirmation\");"
+      "candidate": "let response = ui.add(egui::TextEdit::singleline(&mut session.reset_confirmation).min_size(egui::vec2(160.0, 26.0))).named(ui, \"Database reset confirmation\");"
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 922,
+      "line": 924,
       "families": [
         "F010",
         "F011",
@@ -10164,7 +10184,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 971,
+      "line": 974,
       "families": [
         "F010",
         "F011",
@@ -10180,7 +10200,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 973,
+      "line": 976,
       "families": [
         "F010",
         "F011",
@@ -10196,7 +10216,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1011,
+      "line": 1014,
       "families": [
         "F010",
         "F011",
@@ -10212,7 +10232,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1056,
+      "line": 1059,
       "families": [
         "F010",
         "F011",
@@ -10228,7 +10248,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1066,
+      "line": 1069,
       "families": [
         "F010",
         "F011",
@@ -10244,7 +10264,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1081,
+      "line": 1084,
       "families": [
         "F010",
         "F011",
@@ -10260,7 +10280,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1121,
+      "line": 1124,
       "families": [
         "F010",
         "F011",
@@ -10276,7 +10296,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1189,
+      "line": 1192,
       "families": [
         "F010",
         "F011",
@@ -10292,7 +10312,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1191,
+      "line": 1194,
       "families": [
         "F010",
         "F011",
@@ -10308,7 +10328,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1201,
+      "line": 1204,
       "families": [
         "F010",
         "F011",
@@ -10324,7 +10344,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1214,
+      "line": 1217,
       "families": [
         "F010",
         "F011",
@@ -10340,7 +10360,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1222,
+      "line": 1225,
       "families": [
         "F010",
         "F011",
@@ -10356,7 +10376,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1229,
+      "line": 1232,
       "families": [
         "F010",
         "F011",
@@ -10372,7 +10392,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1437,
+      "line": 1440,
       "families": [
         "F010",
         "F011",
@@ -10388,7 +10408,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1442,
+      "line": 1445,
       "families": [
         "F010",
         "F011",
@@ -10404,7 +10424,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1447,
+      "line": 1450,
       "families": [
         "F010",
         "F011",
@@ -10420,7 +10440,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1491,
+      "line": 1494,
       "families": [
         "F010",
         "F011",
@@ -10436,7 +10456,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1492,
+      "line": 1495,
       "families": [
         "F010",
         "F011",
@@ -10452,7 +10472,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1508,
+      "line": 1511,
       "families": [
         "F010",
         "F011",
@@ -10468,7 +10488,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1512,
+      "line": 1515,
       "families": [
         "F010",
         "F011",
@@ -10484,7 +10504,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1535,
+      "line": 1538,
       "families": [
         "F010",
         "F011",
@@ -10500,7 +10520,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1536,
+      "line": 1539,
       "families": [
         "F010",
         "F011",
@@ -10516,7 +10536,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1543,
+      "line": 1546,
       "families": [
         "F010",
         "F011",
@@ -10532,7 +10552,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1545,
+      "line": 1548,
       "families": [
         "F010",
         "F011",
@@ -10548,7 +10568,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1547,
+      "line": 1550,
       "families": [
         "F010",
         "F011",
@@ -10564,7 +10584,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1556,
+      "line": 1559,
       "families": [
         "F010",
         "F011",
@@ -10580,7 +10600,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1587,
+      "line": 1590,
       "families": [
         "F010",
         "F011",
@@ -10596,7 +10616,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1588,
+      "line": 1591,
       "families": [
         "F010",
         "F011",
@@ -10612,7 +10632,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1691,
+      "line": 1694,
       "families": [
         "F010",
         "F011",
@@ -10628,7 +10648,7 @@
     },
     {
       "source": "fe-ui/src/ui_shell/right_sidebar.rs",
-      "line": 1697,
+      "line": 1700,
       "families": [
         "F010",
         "F011",
@@ -10938,53 +10958,36 @@
     },
     {
       "source": "fe-ui/src/viewport.rs",
-      "line": 86,
+      "line": 89,
       "families": [
         "F001",
         "F005",
+        "F089",
         "F093"
       ],
       "candidate": ".add_sized([52.0, 26.0], egui::Button::new(\"Back\"))"
     },
     {
       "source": "fe-ui/src/viewport.rs",
-      "line": 87,
+      "line": 90,
       "families": [
         "F001",
         "F005",
+        "F089",
         "F093"
       ],
       "candidate": ".named(ui, \"Back to petal list\")"
     },
     {
       "source": "fe-ui/src/viewport.rs",
-      "line": 170,
+      "line": 178,
       "families": [
         "F001",
         "F005",
+        "F089",
         "F093"
       ],
       "candidate": "if show_join && ui.add_sized([120.0,26.0],egui::Button::new(\"Join a verse...\")).named(ui,\"Join a verse from browser\").clicked(){action=Some(BrowserAction::Join);}"
-    },
-    {
-      "source": "fe-ui/src/viewport.rs",
-      "line": 183,
-      "families": [
-        "F001",
-        "F005",
-        "F093"
-      ],
-      "candidate": "if ui.add_sized([name_width,28.0],egui::Button::new(card.name).truncate()).named(ui,format_args!(\"Open {} {}\",card.kind_name(),card.name)).on_hover_text(format!(\"{}\\n{}\",card.name,card.id)).clicked(){action=Some(BrowserA"
-    },
-    {
-      "source": "fe-ui/src/viewport.rs",
-      "line": 184,
-      "families": [
-        "F001",
-        "F005",
-        "F093"
-      ],
-      "candidate": "if ui.add_sized([26.0,28.0],egui::Button::new(\"...\")).named(ui,format_args!(\"Options for {} {}\",card.kind_name(),card.name)).on_hover_text(\"View stored settings, access and ownership options\").clicked(){action=Some(Brows"
     },
     {
       "source": "fe-ui/src/viewport.rs",
@@ -10992,29 +10995,63 @@
       "families": [
         "F001",
         "F005",
+        "F089",
+        "F093"
+      ],
+      "candidate": "if ui.add_sized([name_width,28.0],egui::Button::new(card.name).truncate()).named(ui,format_args!(\"Open {} {}\",card.kind_name(),card.name)).on_hover_text(format!(\"{}\\n{}\",card.name,card.id)).clicked(){action=Some(BrowserA"
+    },
+    {
+      "source": "fe-ui/src/viewport.rs",
+      "line": 192,
+      "families": [
+        "F001",
+        "F005",
+        "F089",
+        "F093"
+      ],
+      "candidate": "if ui.add_sized([26.0,28.0],egui::Button::new(\"...\")).named(ui,format_args!(\"Options for {} {}\",card.kind_name(),card.name)).on_hover_text(\"View stored settings, access and ownership options\").clicked(){action=Some(Brows"
+    },
+    {
+      "source": "fe-ui/src/viewport.rs",
+      "line": 199,
+      "families": [
+        "F001",
+        "F005",
+        "F089",
         "F093"
       ],
       "candidate": "let response=ui.add_enabled(can_create,egui::Button::new(new_label).min_size(egui::vec2(card_width,72.0))).named(ui,new_label).on_disabled_hover_text(\"Manager role at the current entry is required to create a child.\");"
     },
     {
       "source": "fe-ui/src/viewport.rs",
-      "line": 222,
+      "line": 230,
       "families": [
         "F001",
         "F005",
+        "F089",
         "F093"
       ],
       "candidate": "egui::Button::new(name).truncate(),"
     },
     {
       "source": "fe-ui/src/viewport.rs",
-      "line": 224,
+      "line": 232,
       "families": [
         "F001",
         "F005",
+        "F089",
         "F093"
       ],
       "candidate": ".named(ui, label)"
+    },
+    {
+      "source": "fractalengine/src/terminal_reset/presentation.rs",
+      "line": 24,
+      "families": [
+        "F086",
+        "F089"
+      ],
+      "candidate": "} else if ui.add_sized([220.0, 32.0], egui::Button::new(\"Close FractalEngine\")).named(ui, \"Close after terminal database maintenance\").clicked() {"
     }
   ],
   "mcp_tools": [
@@ -11876,241 +11913,262 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/debug/portal-fixture/observe",
+      "checkpoint": "F116.rest-get-api-v1-debug-portal-fixture-observe",
+      "source": "fe-api/src/server.rs",
+      "line": 351
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/debug/portal-fixture/action",
+      "checkpoint": "F116.rest-post-api-v1-debug-portal-fixture-action",
+      "source": "fe-api/src/server.rs",
+      "line": 352
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/debug/portal-fixture/capture",
+      "checkpoint": "F116.rest-post-api-v1-debug-portal-fixture-capture",
+      "source": "fe-api/src/server.rs",
+      "line": 353
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/debug/logs",
       "checkpoint": "F116.rest-get-api-v1-debug-logs",
       "source": "fe-api/src/server.rs",
-      "line": 351
+      "line": 354
     },
     {
       "method": "POST",
       "path": "/api/v1/debug/dialog-answers",
       "checkpoint": "F116.rest-post-api-v1-debug-dialog-answers",
       "source": "fe-api/src/server.rs",
-      "line": 352
+      "line": 355
     },
     {
       "method": "POST",
       "path": "/api/v1/debug/window",
       "checkpoint": "F116.rest-post-api-v1-debug-window",
       "source": "fe-api/src/server.rs",
-      "line": 357
+      "line": 360
     },
     {
       "method": "POST",
       "path": "/api/v1/query",
       "checkpoint": "F116.rest-post-api-v1-query",
       "source": "fe-api/src/server.rs",
-      "line": 362
+      "line": 365
     },
     {
       "method": "POST",
       "path": "/api/v1/query/elevated",
       "checkpoint": "F116.rest-post-api-v1-query-elevated",
       "source": "fe-api/src/server.rs",
-      "line": 363
+      "line": 366
     },
     {
       "method": "GET",
       "path": "/api/v1/petals/{petal_id}/export.parquet",
       "checkpoint": "F116.rest-get-api-v1-petals-petal-id-export-parquet",
       "source": "fe-api/src/server.rs",
-      "line": 368
+      "line": 371
     },
     {
       "method": "GET",
       "path": "/api/v1/petals/{petal_id}/export.csv",
       "checkpoint": "F116.rest-get-api-v1-petals-petal-id-export-csv",
       "source": "fe-api/src/server.rs",
-      "line": 372
+      "line": 375
     },
     {
       "method": "POST",
       "path": "/api/v1/petals/{petal_id}/iot/readings",
       "checkpoint": "F116.rest-post-api-v1-petals-petal-id-iot-readings",
       "source": "fe-api/src/server.rs",
-      "line": 377
+      "line": 380
     },
     {
       "method": "POST",
       "path": "/api/v1/verses/{verse_id}/device-formats",
       "checkpoint": "F116.rest-post-api-v1-verses-verse-id-device-formats",
       "source": "fe-api/src/server.rs",
-      "line": 382
+      "line": 385
     },
     {
       "method": "GET",
       "path": "/api/v1/verses/{verse_id}/device-formats",
       "checkpoint": "F116.rest-get-api-v1-verses-verse-id-device-formats",
       "source": "fe-api/src/server.rs",
-      "line": 382
+      "line": 385
     },
     {
       "method": "POST",
       "path": "/api/v1/petals/{petal_id}/iot/payloads",
       "checkpoint": "F116.rest-post-api-v1-petals-petal-id-iot-payloads",
       "source": "fe-api/src/server.rs",
-      "line": 386
+      "line": 389
     },
     {
       "method": "GET",
       "path": "/api/v1/petals/{petal_id}/iot/payloads",
       "checkpoint": "F116.rest-get-api-v1-petals-petal-id-iot-payloads",
       "source": "fe-api/src/server.rs",
-      "line": 386
+      "line": 389
     },
     {
       "method": "POST",
       "path": "/api/v1/query/share",
       "checkpoint": "F116.rest-post-api-v1-query-share",
       "source": "fe-api/src/server.rs",
-      "line": 395
+      "line": 398
     },
     {
       "method": "POST",
       "path": "/api/v1/analytics/query",
       "checkpoint": "F116.rest-post-api-v1-analytics-query",
       "source": "fe-api/src/server.rs",
-      "line": 397
+      "line": 400
     },
     {
       "method": "POST",
       "path": "/api/v1/hexons/tilesets/install",
       "checkpoint": "F116.rest-post-api-v1-hexons-tilesets-install",
       "source": "fe-api/src/server.rs",
-      "line": 402
+      "line": 405
     },
     {
       "method": "DELETE",
       "path": "/api/v1/hexons/tilesets/{hexon_id}",
       "checkpoint": "F116.rest-delete-api-v1-hexons-tilesets-hexon-id",
       "source": "fe-api/src/server.rs",
-      "line": 408
+      "line": 411
     },
     {
       "method": "PATCH",
       "path": "/api/v1/hexons/tilesets/{hexon_id}/seeding",
       "checkpoint": "F116.rest-patch-api-v1-hexons-tilesets-hexon-id-seeding",
       "source": "fe-api/src/server.rs",
-      "line": 412
+      "line": 415
     },
     {
       "method": "GET",
       "path": "/api/v1/hexons/tilesets",
       "checkpoint": "F116.rest-get-api-v1-hexons-tilesets",
       "source": "fe-api/src/server.rs",
-      "line": 416
+      "line": 419
     },
     {
       "method": "GET",
       "path": "/api/v1/hexons/storage",
       "checkpoint": "F116.rest-get-api-v1-hexons-storage",
       "source": "fe-api/src/server.rs",
-      "line": 420
+      "line": 423
     },
     {
       "method": "POST",
       "path": "/api/v1/crates/publish",
       "checkpoint": "F116.rest-post-api-v1-crates-publish",
       "source": "fe-api/src/server.rs",
-      "line": 425
+      "line": 428
     },
     {
       "method": "POST",
       "path": "/api/v1/crates/{hexon_uri}/install",
       "checkpoint": "F116.rest-post-api-v1-crates-hexon-uri-install",
       "source": "fe-api/src/server.rs",
-      "line": 426
+      "line": 429
     },
     {
       "method": "DELETE",
       "path": "/api/v1/crates/{hexon_uri}/uninstall",
       "checkpoint": "F116.rest-delete-api-v1-crates-hexon-uri-uninstall",
       "source": "fe-api/src/server.rs",
-      "line": 430
+      "line": 433
     },
     {
       "method": "GET",
       "path": "/api/v1/crates/search",
       "checkpoint": "F116.rest-get-api-v1-crates-search",
       "source": "fe-api/src/server.rs",
-      "line": 434
+      "line": 437
     },
     {
       "method": "GET",
       "path": "/api/v1/crates/installed",
       "checkpoint": "F116.rest-get-api-v1-crates-installed",
       "source": "fe-api/src/server.rs",
-      "line": 435
+      "line": 438
     },
     {
       "method": "GET",
       "path": "/api/v1/crates/{hexon_uri}",
       "checkpoint": "F116.rest-get-api-v1-crates-hexon-uri",
       "source": "fe-api/src/server.rs",
-      "line": 439
+      "line": 442
     },
     {
       "method": "GET",
       "path": "/api/v1/crates/{hexon_uri}/entries",
       "checkpoint": "F116.rest-get-api-v1-crates-hexon-uri-entries",
       "source": "fe-api/src/server.rs",
-      "line": 443
+      "line": 446
     },
     {
       "method": "GET",
       "path": "/api/v1/crates/{hexon_uri}/entries/{entry_id}/asset",
       "checkpoint": "F116.rest-get-api-v1-crates-hexon-uri-entries-entry-id-asset",
       "source": "fe-api/src/server.rs",
-      "line": 447
+      "line": 450
     },
     {
       "method": "GET",
       "path": "/api/v1/crates/available",
       "checkpoint": "F116.rest-get-api-v1-crates-available",
       "source": "fe-api/src/server.rs",
-      "line": 451
+      "line": 454
     },
     {
       "method": "POST",
       "path": "/api/v1/sim/start",
       "checkpoint": "F116.rest-post-api-v1-sim-start",
       "source": "fe-api/src/server.rs",
-      "line": 456
+      "line": 459
     },
     {
       "method": "POST",
       "path": "/api/v1/sim/stop",
       "checkpoint": "F116.rest-post-api-v1-sim-stop",
       "source": "fe-api/src/server.rs",
-      "line": 457
+      "line": 460
     },
     {
       "method": "GET",
       "path": "/api/v1/sim/status",
       "checkpoint": "F116.rest-get-api-v1-sim-status",
       "source": "fe-api/src/server.rs",
-      "line": 458
+      "line": 461
     },
     {
       "method": "POST",
       "path": "/api/v1/sim/step",
       "checkpoint": "F116.rest-post-api-v1-sim-step",
       "source": "fe-api/src/server.rs",
-      "line": 459
+      "line": 462
     },
     {
       "method": "POST",
       "path": "/api/v1/sim/inject-fault",
       "checkpoint": "F116.rest-post-api-v1-sim-inject-fault",
       "source": "fe-api/src/server.rs",
-      "line": 460
+      "line": 463
     },
     {
       "method": "POST",
       "path": "/mcp",
       "checkpoint": "F116.rest-post-mcp",
       "source": "fe-api/src/server.rs",
-      "line": 466
+      "line": 469
     }
   ],
   "unmapped": {

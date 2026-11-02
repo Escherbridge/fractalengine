@@ -1,6 +1,6 @@
 {
   "type": "FeatureCheckpointCatalog",
-  "catalog_source_commit": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
+  "catalog_source_commit": "07852fadc0b7e5eedfca0429566cb45ec27675d3",
   "catalog_source_fingerprint": null,
   "snapshot_date": "2026-11-02",
   "execution_evidence": false,
@@ -2550,22 +2550,22 @@
     {
       "id": "F086.reset-open",
       "family": "F086",
-      "reachability": "U"
+      "reachability": "Y"
     },
     {
       "id": "F086.reset-cancel",
       "family": "F086",
-      "reachability": "U"
+      "reachability": "Y"
     },
     {
       "id": "F086.reset-confirm",
       "family": "F086",
-      "reachability": "U"
+      "reachability": "Y"
     },
     {
       "id": "F086.isolated-data-gone",
       "family": "F086",
-      "reachability": "U"
+      "reachability": "Y"
     },
     {
       "id": "F087.info",
@@ -5926,6 +5926,591 @@
       "id": "F140.bounded-stack",
       "family": "F140",
       "reachability": "Y"
+    },
+    {
+      "id": "F024.storage-ready",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.storage-missing-model",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.storage-no-asset",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.storage-shared-model",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.first-explicit-save-initializes",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.selection-does-not-initialize",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.absent-clear-refused",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.initialization-preserves-object-history",
+      "family": "F024",
+      "reachability": "Y"
+    },
+    {
+      "id": "F024.initialization-new-reference-refused",
+      "family": "F024",
+      "reachability": "A"
+    },
+    {
+      "id": "F024.initialization-reparent-refused",
+      "family": "F024",
+      "reachability": "A"
+    },
+    {
+      "id": "F063.new-path-native-minimum",
+      "family": "F063",
+      "reachability": "Y"
+    },
+    {
+      "id": "F063.compact-track-actions-wrap",
+      "family": "F063",
+      "reachability": "Y"
+    },
+    {
+      "id": "F067.selected-point-one-based-label",
+      "family": "F067",
+      "reachability": "Y"
+    },
+    {
+      "id": "F069.point-number-target-identity",
+      "family": "F069",
+      "reachability": "Y"
+    },
+    {
+      "id": "F069.compact-point-action-targets",
+      "family": "F069",
+      "reachability": "Y"
+    },
+    {
+      "id": "F073.filter-native-minimum",
+      "family": "F073",
+      "reachability": "Y"
+    },
+    {
+      "id": "F073.clear-native-minimum",
+      "family": "F073",
+      "reachability": "Y"
+    },
+    {
+      "id": "F073.manual-uri-native-minimum",
+      "family": "F073",
+      "reachability": "Y"
+    },
+    {
+      "id": "F089.floating-data-help-yields",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F089.dialog-help-yields",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F089.modal-help-yields",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F089.unobstructed-help-visible",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F086.exact-confirmation",
+      "family": "F086",
+      "reachability": "Y"
+    },
+    {
+      "id": "F086.developer-hidden",
+      "family": "F086",
+      "reachability": "Y"
+    },
+    {
+      "id": "F086.host-unavailable-disabled",
+      "family": "F086",
+      "reachability": "Y"
+    },
+    {
+      "id": "F086.scope-copy",
+      "family": "F086",
+      "reachability": "Y"
+    },
+    {
+      "id": "F086.navigation-disarms-confirmation",
+      "family": "F086",
+      "reachability": "Y"
+    },
+    {
+      "id": "F086.quiescing-visible",
+      "family": "F086",
+      "reachability": "Y"
+    },
+    {
+      "id": "F086.terminal-no-editor",
+      "family": "F086",
+      "reachability": "Y"
+    },
+    {
+      "id": "F086.manual-close",
+      "family": "F086",
+      "reachability": "Y"
+    },
+    {
+      "id": "F086.manual-reopen",
+      "family": "F086",
+      "reachability": "Y"
+    },
+    {
+      "id": "F086.retained-identity-preferences-blobs",
+      "family": "F086",
+      "reachability": "Y"
+    },
+    {
+      "id": "F086.global-ownership-refused",
+      "family": "F086",
+      "reachability": "A"
+    },
+    {
+      "id": "F086.unknown-table-refused",
+      "family": "F086",
+      "reachability": "A"
+    },
+    {
+      "id": "F086.writer-join-required",
+      "family": "F086",
+      "reachability": "A"
+    },
+    {
+      "id": "F086.pending-result-backpressure",
+      "family": "F086",
+      "reachability": "A"
+    },
+    {
+      "id": "F086.finite-jobs-drain",
+      "family": "F086",
+      "reachability": "A"
+    },
+    {
+      "id": "F086.failed-join-no-clear",
+      "family": "F086",
+      "reachability": "A"
+    },
+    {
+      "id": "F086.db-join-and-receipt-required",
+      "family": "F086",
+      "reachability": "A"
+    },
+    {
+      "id": "F086.late-mutation-discarded",
+      "family": "F086",
+      "reachability": "A"
+    },
+    {
+      "id": "F086.stale-read-models-cleared",
+      "family": "F086",
+      "reachability": "A"
+    },
+    {
+      "id": "F086.dev-token-file-invalidated",
+      "family": "F086",
+      "reachability": "A"
+    },
+    {
+      "id": "F086.no-automatic-reconnect",
+      "family": "F086",
+      "reachability": "A"
+    },
+    {
+      "id": "F086.atomic-reset-generation",
+      "family": "F086",
+      "reachability": "A"
+    },
+    {
+      "id": "F086.seed-failure-honest",
+      "family": "F086",
+      "reachability": "A"
+    },
+    {
+      "id": "F086.outcome-unconfirmed-no-retry",
+      "family": "F086",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.observe-one",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.observe-two",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.second-link",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.third-link-refused",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.page-one-png",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.page-two-png",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.native-back-observe",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.native-forward-observe",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.native-reload-observe",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.close-refuses",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.default-off",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.non-owner",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.foreign-scope",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.helper-missing",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.helper-dead",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.helper-expired",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.selected-object-changed",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.page-generation-changed",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.popup-replaced",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.request-timeout",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.revoked-during-completion",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.expired-during-completion",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.observe-query-refused",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.action-unknown-fields-refused",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.action-nonlink-operation-refused",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.capture-query-refused",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.capture-body-refused",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.queue-busy",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.byte-dimension-hash",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.output-png-collision-refused",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.output-receipt-collision-refused",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.output-missing-parent-refused",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.output-ads-refused",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.output-device-refused",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.output-drive-relative-refused",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.output-dot-space-refused",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.output-control-refused",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.output-traversal-refused",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.output-unc-extended-refused",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.output-junction-refused",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.output-parent-replacement-refused",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.rest-persisted-revoke",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.rest-restart-revoke",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.rest-pre-reset-owner-denied",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.rest-fresh-generation-allowed",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.rest-current-generation-dev-allowed",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.rest-invalid-generation-denied",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.rest-missing-authority-unavailable",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.rest-malformed-authority-unavailable",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.rest-database-query-unavailable",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.rest-duplicate-token-denied",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.rest-token-subject-mismatch-denied",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.rest-expiry-after-await",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.rest-feed-lag-durable-recovery",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.rest-feed-closed-durable-recovery",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.standalone-feed-loss-denied",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.standalone-final-read-feed-loss-denied",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.ws-initial-revoked-denied",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.ws-idle-revocation-closes",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.ws-incoming-revocation-denied",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.ws-broadcast-egress-denied",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.ws-debounce-drops-revoked",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.ws-restart-revoked-denied",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.ws-pre-reset-denied",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.mint-reset-race-refused",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.dev-publication-reset-race-refused",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.configured-db-no-standalone-downgrade",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F142.no-secret-disclosure",
+      "family": "F142",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-debug-portal-fixture-observe",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-debug-portal-fixture-action",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-debug-portal-fixture-capture",
+      "family": "F116",
+      "reachability": "A"
     }
   ],
   "gold_tasks": {
@@ -5996,7 +6581,9 @@
       "F028.point-selection-guidance",
       "F028.text-focus-no-shortcut",
       "F028.no-pivot-promise",
-      "F140.bounded-stack"
+      "F140.bounded-stack",
+      "F024.first-explicit-save-initializes",
+      "F024.initialization-preserves-object-history"
     ],
     "G3": [
       "F034.run-button",
@@ -6130,13 +6717,21 @@
       "F139.context-preclick-owner",
       "F139.route-reorder-refused",
       "F139.nav-refused",
-      "F139.atomic-failure-no-projection"
+      "F139.atomic-failure-no-projection",
+      "F067.selected-point-one-based-label",
+      "F069.point-number-target-identity",
+      "F069.compact-point-action-targets"
     ],
     "G6": [
       "F079.maximize",
       "F079.restore",
       "F080.cancel-close",
-      "F080.confirm-close"
+      "F080.confirm-close",
+      "F086.reset-open",
+      "F086.reset-cancel",
+      "F086.reset-confirm",
+      "F086.isolated-data-gone",
+      "F086.manual-reopen"
     ],
     "G7": [
       "F098.generate",
@@ -6162,7 +6757,15 @@
       "F112.rest-mcp-parity",
       "F113.synthetic-copy-text",
       "F114.owned-hwnd-uia",
-      "F115.frame-sample-summary"
+      "F115.frame-sample-summary",
+      "F141.observe-one",
+      "F141.second-link",
+      "F141.third-link-refused",
+      "F141.page-one-png",
+      "F142.rest-restart-revoke",
+      "F142.ws-idle-revocation-closes",
+      "F142.rest-pre-reset-owner-denied",
+      "F142.rest-fresh-generation-allowed"
     ],
     "G10": [
       "F117.same-root-restart",
@@ -6459,14 +7062,16 @@
       "region": "R2",
       "journey": "J02",
       "entry": "Inspector Save Portal URL / Open Portal and Node Options URL Save; unsupported Config URL explanation",
-      "expected": "Typed exact-node current read hydrates clean drafts; pending/failed/conflicting save is not Saved; canonical production URL policy; no Config URL editor/write exists",
+      "expected": "Current Viewer-fenced read reports Ready/MissingModel/NoAsset/SharedModel; first explicit nonempty Save may create unique local metadata under atomic Editor/ancestry/asset/reference fences, with stored TRS and no Node/Asset/history mutation; no selection writes or replication promise",
       "requires_persistence": true,
       "sources": [
         "fe-ui/src/panels/inspector.rs",
         "fe-ui/src/dialogs/node_options.rs",
         "fe-ui/src/actions/portal.rs",
         "fe-ui/src/actions/url_read_model.rs",
-        "fe-runtime/src/portal_url.rs"
+        "fe-runtime/src/portal_url.rs",
+        "fe-database/src/handlers/transform.rs",
+        "fe-ui/src/verse_manager/node_index.rs"
       ]
     },
     {
@@ -6481,7 +7086,9 @@
         "fe-ui/src/actions/portal.rs",
         "fe-runtime/src/qa_web.rs",
         "fe-runtime/src/portal_url.rs",
-        "fe-webview/src/plugin.rs"
+        "fe-webview/src/plugin.rs",
+        "fe-webview/src/backends/fixture_surface.rs",
+        "fractalengine/src/qa_portal_bridge.rs"
       ]
     },
     {
@@ -7170,12 +7777,17 @@
       "id": "F086",
       "region": "R6",
       "journey": "J06",
-      "entry": "Retired sidebar Reset Database route; terminal reset is a separate unintegrated shell task",
-      "expected": "No Reset renderer/action in audited main; preserve IDs as exclusions until a reviewed isolated terminal route is integrated",
+      "entry": "Settings Danger zone / Database reset confirmation / Reset local database / terminal maintenance Close",
+      "expected": "Trusted startup gate, exact RESET and actual global ownership; stop/join every writer before the serial atomic clear, require matching DB result plus join, remain terminal and manually reopen; never reset the retained campaign store",
       "requires_persistence": true,
       "sources": [
-        "fe-ui/src/panels/sidebar.rs",
-        "fe-ui/src/ui_shell/right_sidebar.rs"
+        "fe-ui/src/ui_shell/right_sidebar.rs",
+        "fe-ui/src/settings.rs",
+        "fe-ui/src/maintenance.rs",
+        "fractalengine/src/terminal_reset/mod.rs",
+        "fractalengine/src/terminal_reset/presentation.rs",
+        "fe-runtime/src/maintenance.rs",
+        "fe-database/src/admin.rs"
       ]
     },
     {
@@ -7209,7 +7821,9 @@
       "expected": "real hit/clip/text provenance, >=45% viewport, unknowns counted",
       "requires_persistence": false,
       "sources": [
-        "fe-ui/src/ui_shell/layout_policy.rs"
+        "fe-ui/src/ui_shell/layout_policy.rs",
+        "fe-ui/src/viewport.rs",
+        "fe-ui/src/panels/mod.rs"
       ]
     },
     {
@@ -7821,6 +8435,39 @@
         "fe-ui/src/node_manager/transform_broadcast.rs",
         "fe-ui/src/path_ops.rs"
       ]
+    },
+    {
+      "id": "F141",
+      "region": "R9",
+      "journey": "J09",
+      "entry": "Fixed owned native Portal fixture observe / second-link / refused-third-link / CapturePreview and confined output client",
+      "expected": "Actual fixed DOM and native pixels match exact popup/page/scope/helper lifetime; default-off Owner gate and current credentials rechecked at completion; exclusive confined image+receipt output, no arbitrary browser automation",
+      "requires_persistence": false,
+      "sources": [
+        "fe-api/src/qa_portal.rs",
+        "fe-runtime/src/qa_portal.rs",
+        "fractalengine/src/qa_portal_bridge.rs",
+        "fe-webview/src/backends/fixture_surface.rs",
+        "fe-webview/src/backends/fixture_stream.rs",
+        "tools/qa/fe.py"
+      ]
+    },
+    {
+      "id": "F142",
+      "region": "R9",
+      "journey": "J09",
+      "entry": "Durable REST/legacy WebSocket credential validation across revoke, expiry, API restart and terminal reset",
+      "expected": "Configured stores never downgrade on authority failure; exact persisted revoke and generation are checked per use and after awaits, WS invalidation drops pending work, old Owner credentials fail after reset while fresh same-key bootstrap works",
+      "requires_persistence": true,
+      "sources": [
+        "fe-api/src/auth.rs",
+        "fe-api/src/ws.rs",
+        "fe-api/src/lib.rs",
+        "fe-api/src/dev_token.rs",
+        "fe-database/src/api_auth.rs",
+        "fe-database/src/handlers/api_token.rs",
+        "fe-database/src/admin.rs"
+      ]
     }
   ],
   "checkpoint_notes": {
@@ -7889,20 +8536,20 @@
       "reason": "Integrated transform constraints and focus/delete/Undo shortcuts; exact supported Undo operations are enumerated in F140."
     },
     "F086.reset-open": {
-      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
-      "reason": "Sidebar Reset Database was removed. Main has no replacement renderer; a separate isolated terminal-reset branch is not current GUI reachability. Do not execute or report PASS."
+      "audited_snapshot": "07852fadc0b7e5eedfca0429566cb45ec27675d3",
+      "reason": "The old sidebar route remains retired, but the integrated developer-only Settings Danger zone now supplies a typed exact-RESET terminal host path. This stable semantic ID is mandatory again; source presence is not execution."
     },
     "F086.reset-cancel": {
-      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
-      "reason": "Sidebar Reset Database was removed. Main has no replacement renderer; a separate isolated terminal-reset branch is not current GUI reachability. Do not execute or report PASS."
+      "audited_snapshot": "07852fadc0b7e5eedfca0429566cb45ec27675d3",
+      "reason": "The old sidebar route remains retired, but the integrated developer-only Settings Danger zone now supplies a typed exact-RESET terminal host path. This stable semantic ID is mandatory again; source presence is not execution."
     },
     "F086.reset-confirm": {
-      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
-      "reason": "Sidebar Reset Database was removed. Main has no replacement renderer; a separate isolated terminal-reset branch is not current GUI reachability. Do not execute or report PASS."
+      "audited_snapshot": "07852fadc0b7e5eedfca0429566cb45ec27675d3",
+      "reason": "The old sidebar route remains retired, but the integrated developer-only Settings Danger zone now supplies a typed exact-RESET terminal host path. This stable semantic ID is mandatory again; source presence is not execution."
     },
     "F086.isolated-data-gone": {
-      "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
-      "reason": "Sidebar Reset Database was removed. Main has no replacement renderer; a separate isolated terminal-reset branch is not current GUI reachability. Do not execute or report PASS."
+      "audited_snapshot": "07852fadc0b7e5eedfca0429566cb45ec27675d3",
+      "reason": "The old sidebar route remains retired, but the integrated developer-only Settings Danger zone now supplies a typed exact-RESET terminal host path. This stable semantic ID is mandatory again; source presence is not execution."
     },
     "F092.shortcut-help": {
       "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
@@ -7989,5 +8636,9 @@
       "reason": "Atlas model/room/tag helper has no established production opener. Shared visibility radios used by Entity Options belong to F094; this helper presence is not another GUI route."
     }
   },
-  "audited_source_commit": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9"
+  "audited_source_commit": "07852fadc0b7e5eedfca0429566cb45ec27675d3",
+  "pending_source_reconciliation": [
+    "Stamp selection/checked promotion is not integrated in this audited snapshot. F075/F138 remain mandatory GUI outcomes, blocked by QA-0047; no successful producer or execution is inferred.",
+    "Terminal-close retained-handle evidence correction is not integrated. F080.confirm-close remains mandatory; ordinary post-exit stdout end is unsupported."
+  ]
 }

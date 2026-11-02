@@ -79,6 +79,9 @@ def census(root, snapshot):
     opening=action_source.index("{",action_source.index("pub enum UiAction"))
     body,_=balanced(action_source,opening,"{","}")
     variants=re.findall(r"^    ([A-Z]\w*)\s*(?:\{|\(|,)",body,re.M)
+    unknown_actions=set(rules["actions"])-set(variants)
+    if unknown_actions:
+        raise ValueError("unknown action ownership keys: "+", ".join(sorted(unknown_actions)))
     for variant in variants:
         refs=[]
         for source,text in texts.items():
@@ -96,7 +99,7 @@ def census(root, snapshot):
                         "note":rules["action_notes"].get(variant,"")})
     controls=[]
     for source,text in texts.items():
-        if not source.startswith("fe-ui/src/"):
+        if not (source.startswith("fe-ui/src/") or source=="fractalengine/src/terminal_reset/presentation.rs"):
             continue
         for number,line in enumerate(text.splitlines(),1):
             if line.lstrip().startswith("//") or not CONTROL.search(line):
@@ -123,6 +126,7 @@ def census(root, snapshot):
     missing={"tools":[item["checkpoint"] for item in tools if item["checkpoint"] not in {c["id"] for c in catalog["checkpoints"]}],
              "routes":[item["checkpoint"] for item in routes if item["checkpoint"] not in {c["id"] for c in catalog["checkpoints"]}]}
     return {"type":"FeatureSourceCensus","audited_source_commit":snapshot,"execution_evidence":False,
+            "pending_source_reconciliation":catalog.get("pending_source_reconciliation",[]),
             "limits":"Lexical producer candidates, excluding literal cfg(test) items while preserving line numbers. Helpers/named wrappers can repeat one control; conditional production openers require manual reconciliation. Not a Rust parser, live-tree census or proof of execution.",
             "source_sha256":{source:hashlib.sha256(text.encode()).hexdigest() for source,text in texts.items()},
             "actions":actions,"control_candidates":controls,"mcp_tools":tools,"rest_cases":routes,"unmapped":unmapped,"missing_checkpoint_ids":missing}
@@ -151,7 +155,8 @@ def render(data):
         lines.append("| %s | `%s` | `%s` | `%s:%s` |"%(item["method"],item["path"],item["checkpoint"],item["source"],item["line"]))
     lines += ["","## Reconciliation limits and explicit gaps","", "Unmapped producer summary: `"+json.dumps(data["unmapped"],sort_keys=True)+"`.","",
               "Missing endpoint checkpoint summary: `"+json.dumps(data["missing_checkpoint_ids"],sort_keys=True)+"`.","",
-              "Reset Database has no current main renderer. Config URL has an explicit unsupported Inspector explanation and no editor/save route. The old InviteDialog enum/opener is retired. Petal Requirements persists a bounded declaration; it does not install content, gate scenes or implement fallback. PluginHost is a library/runtime injection seam with no plugin-management GUI. Controlled WEB capabilities are exact owned-run live-listener permits, not a production loopback-policy bypass. See the owning journeys for the current acceptance obligations."]
+              "Developer Settings now owns terminal Reset (F086); only a disposable owned store may exercise it. Config URL has an explicit unsupported Inspector explanation and no editor/save route. The old InviteDialog enum/opener is retired. Petal Requirements is declaration-only. PluginHost has no plugin-management GUI. Native Portal fixture evidence (F141) is separate from GUI browsing (F025). Durable REST/legacy WebSocket auth (F142) requires actual lifecycle outcomes, not schema presence.","",
+              "Pending source reconciliation: `"+json.dumps(data.get("pending_source_reconciliation",[]))+"`."]
     return "\n".join(lines)+"\n"
 
 
@@ -161,6 +166,8 @@ def write_catalog_views(root):
     counts=Counter(item["reachability"] for item in catalog["checkpoints"])
     path=root/"qa/features.md"
     prefix,body=path.read_text(encoding="utf-8").split("## Capabilities and mandatory variants",1)
+    prefix=re.sub(r"(?m)^source_commit: .*", "source_commit: "+snapshot, prefix)
+    prefix=re.sub(r"Its \d+ capability families",f"Its {len(catalog['families'])} capability families",prefix)
     prefix=re.sub(r"Audited source `[^`]+` has [^.]+stable checkpoints: [^.]+\.",
                   f"Audited source `{snapshot}` has {len(catalog['families'])} families and {len(catalog['checkpoints'])} stable checkpoints: GUI{counts['Y']}, API/library{counts['A']}, OS{counts['O']}, planned{counts['P']}, unreachable/retired{counts['U']}.",prefix)
     suffix=body.split("## Source reconciliation and exclusions",1)[1]
