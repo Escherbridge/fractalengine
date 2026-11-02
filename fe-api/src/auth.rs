@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use axum::extract::State;
 use axum::http::{Request, StatusCode};
@@ -90,6 +90,20 @@ fn require_unexpired(claims: &ApiClaims) -> Result<(), StatusCode> {
     Ok(())
 }
 
+fn require_revocation_hints(
+    revoked: &HashSet<String>,
+    jti: &str,
+    has_durable_reader: bool,
+) -> Result<(), StatusCode> {
+    if revoked.contains(jti) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    if !has_durable_reader && revoked.contains(FEED_UNAVAILABLE) {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    Ok(())
+}
+
 /// Revalidate a verified credential before a protected action or async response.
 pub async fn require_current_credential(
     state: &crate::server::ApiState,
@@ -101,12 +115,7 @@ pub async fn require_current_credential(
     }
     {
         let revoked = state.revoked_jtis.read().await;
-        if revoked.contains(&claims.jti) {
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-        if state.db_reader.is_none() && revoked.contains(FEED_UNAVAILABLE) {
-            return Err(StatusCode::SERVICE_UNAVAILABLE);
-        }
+        require_revocation_hints(&revoked, &claims.jti, state.db_reader.is_some())?;
     }
     if let Some(rows) = durable_snapshot(state, &claims.jti).await? {
         let generation = fe_database::api_auth::generation_from_rows(&rows)
@@ -125,8 +134,9 @@ pub async fn require_current_credential(
             }
         }
     }
-    if state.revoked_jtis.read().await.contains(&claims.jti) {
-        return Err(StatusCode::UNAUTHORIZED);
+    {
+        let revoked = state.revoked_jtis.read().await;
+        require_revocation_hints(&revoked, &claims.jti, state.db_reader.is_some())?;
     }
     require_unexpired(claims)
 }

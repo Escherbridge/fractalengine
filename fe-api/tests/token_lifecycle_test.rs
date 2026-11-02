@@ -357,7 +357,52 @@ async fn short_ttl_token_authenticates_then_expires_live() {
     let (notifications, receiver) = tokio::sync::broadcast::channel(1);
     notifications.send("lost-one".into()).unwrap();
     notifications.send("lost-two".into()).unwrap();
-    fe_api::auth::listen_for_revocations(standalone.state.clone(), receiver).await;
+    let held_authority = standalone.state.revoked_jtis.write().await;
+    let pending_admission = fe_api::auth::authenticate(&standalone.state, &standalone_token);
+    tokio::pin!(pending_admission);
+    std::future::poll_fn(
+        |context| match std::future::Future::poll(pending_admission.as_mut(), context) {
+            std::task::Poll::Pending => std::task::Poll::Ready(()),
+            std::task::Poll::Ready(result) => {
+                panic!("Initial authority read must wait on the held lock: {result:?}")
+            }
+        },
+    )
+    .await;
+    let pending_feed_loss =
+        fe_api::auth::listen_for_revocations(standalone.state.clone(), receiver);
+    tokio::pin!(pending_feed_loss);
+    std::future::poll_fn(
+        |context| match std::future::Future::poll(pending_feed_loss.as_mut(), context) {
+            std::task::Poll::Pending => std::task::Poll::Ready(()),
+            std::task::Poll::Ready(()) => {
+                panic!("Feed-loss write must queue behind the initial authority read")
+            }
+        },
+    )
+    .await;
+    drop(held_authority);
+    // Tokio's FIFO lock places this final read behind the queued feed-loss writer.
+    std::future::poll_fn(
+        |context| match std::future::Future::poll(pending_admission.as_mut(), context) {
+            std::task::Poll::Pending => std::task::Poll::Ready(()),
+            std::task::Poll::Ready(result) => {
+                panic!("Final authority read must wait for feed-loss publication: {result:?}")
+            }
+        },
+    )
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), pending_feed_loss)
+        .await
+        .expect("queued feed-loss listener completes");
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(5), pending_admission)
+            .await
+            .unwrap()
+            .unwrap_err(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Feed loss while waiting for the final authority read must deny standalone admission"
+    );
     assert_eq!(
         fe_api::auth::authenticate(&standalone.state, &standalone_token)
             .await
