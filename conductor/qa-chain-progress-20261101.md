@@ -4,8 +4,8 @@ date: 2026-11-01
 status: in_progress
 source: ./handoff-20261101-qa-chain.md
 current_writer: /root
-current_slice: Pass15 independently reviewed; rich38 plus same-stage restart11 passed; all reviewed scope/Access/chrome/Inspector/terrain stacks integrated through f57867ef; no app; next stage build pending
-parallel_code_worktrees: Portal/context corrections, Paths/Data corrections, controlled-fixture deadline corrections; all code-only outside root Cargo owner
+current_slice: Pass16 focused complete and exact processes stopped; reviewed Inspector, fixture discovery, W5 cleanup and full Path stack integrated through df6293ee; Portal read-model correction pending review; WEB source-ready; terminal reset authoring
+parallel_code_worktrees: Portal read-model correction, terminal reset lifecycle; logger ownership source review
 ---
 
 # QA chain continuation
@@ -33,7 +33,45 @@ Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.
 
 ## Current acceptance state
 
-### Latest checkpoint — pass15 and integrated source f57867ef
+### Latest checkpoint - pass16 focused and integrated source df6293ee
+
+- Stage452e5670 built successfully with sealed helper. Owned root2516 resumed the
+  preserved dataset without reseeding. All eight freshly captured identities are
+  absent after cleanup; every normal/corrupt/slow fixture instance is also absent.
+- Actual GUI normal SELECT returned6rows. TABLE cast, nested RECORD cast, dynamic
+  table constructor and ML syntax each refused with zero rows and cleared pending.
+  At1024x640 the API body moved331px while all four tabs stayed at y154/h24; leaving
+  and returning cleared the generated secret. Scoped invite generation, API mint,
+  Cancel retention and explicit confirmed Revoke executed. Both disposable tokens
+  are removed. Four-second confirmation expiry/refusals remain in raw evidence.
+- Tree/chrome/API-copy target improvements are live. Remaining transform/URL/DID/
+  paging/Revoke targets were reproduced; reviewed correction19de3155 is now main
+  a8d9ed78, requiring next-stage live validation. Stable-window ellipsis opened its
+  full menu; earlier transient attempts are not a reproduced menu defect.
+- Owned normal and corrupt fixtures each passed15route/refusal checks and closed
+  trickled headers in2.187s. Sealed normal archive bytes match the helper receipt;
+  corrupt download retains its signed manifest but changes one terrain member.
+  A near-expiry slow response ended8192/20095bytes. HTTP client close is not P2P
+  cancellation. Earlier wrong/expired/too-small fixture oracles are documented.
+- Default Python discovery joined two installed paths. Source-reviewed repair8f018100
+  is main81fe07c8; explicit interpreter worked. W5 stale scaffold cleanupa5b431ee
+  is main12c4795e. Full Path stack including checked Corner and legacy stamp draft
+  preservation is integrated throughdf6293ee; combined-source seam review pending.
+- Twelve startup warning/error lines remain explicit, including a duplicate global
+  logger ERROR. Ownership fixd9440e39 is awaiting review. No clean-log/full-catalog/
+  convergence claim is made. QA16 verdict has19focused derived checks and no JWTs
+  in saved JSON; independent evidence review remains pending.
+- Security approved the final WEB capability stack through296d7ab9 under its bounded
+  trusted-fixture contract. Sole native handler/cancel-first removes the previous
+  HIGH provisional-allow gap. All-native-abort failure reports cancellation
+  unconfirmed; no general firewall claim. Lock resolution/build/live remain.
+- Portal review found committed URL cache stale after selection/timeout; correction
+  separates typed authoritative readback from form ownership and is still authoring.
+  Safe terminal reset now has a source-grounded service shutdown map and an isolated
+  implementation lane. Full QA/UX/catalog/tests/exact-SHA CI/tagged releases remain.
+
+
+### Previous checkpoint - pass15 and integrated source f57867ef
 
 - Independent evidence review supports all38 fresh rich-data functional checks
   and all11 strict same-stage restart checks. Same stage/fingerprint/driver and

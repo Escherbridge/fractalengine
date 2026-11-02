@@ -73,3 +73,33 @@ absent on Gamma. Before/after state/history/schema remain unchanged. All38 origi
 receipts passed with no generation/retention gap. Original artifacts, hashes and
 coverage_ready=false remain unchanged. This review closes only those warning
 classifications, not the campaign's clean full-pass gate.
+
+
+## Pass15 qualification and pass16 source continuation
+
+Independent pass15 reassessment withdrew only the scratch durable-URL equality
+claim: node.webpage_url is unused; actual storage is model.external_url. Original
+raw probes remain intact, with explicit correction and reviewed warning/A8 ledger.
+
+Security review approved Path/Data throughc7dbd24a and Portal throughd5443024.
+Separate design review then found two MEDs: automatic legacy stamp clamping and
+obsolete URL receipt dropping committed manager hydration. Path60cb4c18 closes
+clamping with retained input intent, selection/revision widget identity and shared
+finite/range validation; design reviewer approved the correction. Portal hydration
+is being corrected separately and has not been integrated.
+
+Design review approved Inspector19de3155: selection/Editor guards, responsive native
+24-point targets and separate token metadata/action rows. Security approved narrow
+fixture discovery8f018100 and low-risk W5 cleanupa5b431ee. No tests were executed.
+
+WEB security review rejectedc5a70903 for provisional Wry allowance plus fallible
+native cancellation. Final296d7ab9 removes the dual-handler ordering dependency and
+uses one native cancel-first owner with synchronous Stop/Close and terminal backend
+failure. Independent review approved the complete source under its fixed trusted
+fixture contract; cancellation+Stop+Close all failing remains explicitly unconfirmed.
+This is not guaranteed transport prevention under every native-platform failure.
+Lock resolution, compile and native journey execution are still required.
+
+Pass16 focused runtime artifacts and a truthful limitations list are in
+qa/passes/16/verdict.json. Independent evidence review and combined-source checks
+remain pending; this record does not approve full coverage, convergence or release.

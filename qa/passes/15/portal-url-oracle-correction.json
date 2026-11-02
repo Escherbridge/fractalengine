@@ -8,5 +8,5 @@
   "supported_native_claim": "The invalid javascript draft was retained, Save and Open were disabled, and the retained input trace contains no Save/Open action.",
   "durable_model_comparison": "not captured in this pass",
   "next_validation": "Capture actual model.external_url through the authorized model/node association before and after invalid-draft and valid acknowledged set/clear checks.",
-  "independent_reassessment": "pending"
+  "independent_reassessment": "qa14_evidence_verifier independently confirmed the limitation; prior durable URL claim withdrawn, disabled/no-submit native claim retained"
 }

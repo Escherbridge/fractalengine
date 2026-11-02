@@ -1,0 +1,2 @@
+{"generation_changed": false, "log_after": {"generation": 1, "seq": 824}, "log_watermark": {"generation": 1, "seq": 824}, "new_logs": [], "retention": {"possible_gap": false, "seq_delta": 0, "source_derived_capacity": 2000}}
+{"code": "locator_not_found", "message": "no enabled visible widget named Confirm Revoke API token 01M6ESEB1FY5MY45FNMS57HWTR", "refused": true, "status": 0}
