@@ -1,0 +1,2 @@
+{"commands": [{"kind": "text_entry", "text": "https://example.com/qa18-initial"}], "outcome": {"commands_applied": 1, "ok": true, "wait_frames_used": 5}, "token_verse": "01M6D0VZ11XK62MXZ61HENTBTD"}
+{"generation_changed": false, "log_after": {"generation": 1, "seq": 782}, "log_watermark": {"generation": 1, "seq": 780}, "new_logs": [], "retention": {"possible_gap": false, "seq_delta": 2, "source_derived_capacity": 2000}}

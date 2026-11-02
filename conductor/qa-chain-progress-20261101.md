@@ -4,8 +4,8 @@ date: 2026-11-01
 status: in_progress
 source: ./handoff-20261101-qa-chain.md
 current_writer: /root
-current_slice: Pass17 focused independently approved and stopped; reviewed Portal, Path UI, Reset/Auth, native WEB and coverage stacks integrated; first new compile found missing direct bin dependencies now corrected; stamp GUI and close watcher authoring
-parallel_code_worktrees: Stamp selection GUI; terminal-close watcher; current-source catalog reconciliation
+current_slice: QA18/19 stopped and focused evidence independently approved; combined source through e562696b approved; next stage20 replay of map, creation, forms and native navigation repairs
+parallel_code_worktrees: P2P invite coordination and ownership, isolated code only
 ---
 
 # QA chain continuation
@@ -33,7 +33,34 @@ Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.
 
 ## Current acceptance state
 
-### Latest checkpoint - pass17 focused and integrated source 7f51de19
+### Latest checkpoint - QA18/19 stopped and integrated source e562696b
+
+- QA18 and QA19 used sealed stage84ca20af with the retained dataset and no reseed.
+  All recorded app identities and the exact owned web helper are absent. No app
+  or Cargo is running. Derived evidence in qa/passes/18 and19 is independently
+  approved for focused claims; full coverage, convergence and tests remain false.
+- Actual native GLB import, first explicit Portal Save, reselect and Clear worked.
+  The same local Model retained exact node TRS, and complete node/history responses
+  were unchanged. The fresh object's history had two unscoped creation facts and
+  unavailable replay (QA-0051); this is a current defect, not a legacy exception.
+- Point2 labels, Path control targets and floating-Data help ownership have focused
+  positive evidence. Three retained stamps rendered, and actual selection now
+  reached promotion, which refused an unchanged native map. No stamp Apply success.
+- QA19 loaded the real native fixture page one and captured its396x589 PNG.
+  The actual second-link attempt terminally disabled the browser (QA-0053).
+  Fifteen output-path preflight refusals preserved retained outputs; these do not
+  establish healthy native capture, junction/race, history or second-page success.
+- Independently source-reviewed map fences, complete atomic creation/baseline,
+  native request ownership, nonblocking admission, startup navigation, form target
+  policy and expected native navigation are integrated. Combined integration review
+  approved source through e562696b. New stage20 must replay the failures and check initial nonidentity TRS
+  (QA-0052); source review alone supplies no runtime acceptance.
+- P2P recipient-bound issuance/import/Join remains isolated and incomplete. Cleanup
+  re-review, a one-use owned-run QA bridge, Manager issuance and actual paired-app
+  acceptance remain mandatory. Full catalog, UX audits, final integrated sweep,
+  exact-SHA CI and downloadable tagged releases are still required.
+
+### Previous checkpoint - pass17 focused and integrated source 7f51de19
 
 - Stage7f51de19 built successfully and resumed the retained dataset without reseeding.
   Root85348 and seven freshly captured descendants are absent. No app or Cargo

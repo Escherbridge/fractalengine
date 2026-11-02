@@ -293,6 +293,3 @@ real-store journey asserts these distinctions, absent terrain/default metadata p
 bounds, and intervening terrain, bounds and optional metadata changes for both prepare/use paths.
 The terrain race keeps world_scale=1, proving the fence protects the full map rather than scale
 alone. These journey extensions are authored source; root owns execution and independent review.
-
-
-

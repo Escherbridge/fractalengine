@@ -1,0 +1,2 @@
+{"generation_changed": false, "log_after": {"generation": 1, "seq": 1028}, "log_watermark": {"generation": 1, "seq": 1025}, "new_logs": [], "retention": {"possible_gap": false, "seq_delta": 3, "source_derived_capacity": 2000}}
+{"code": "scroll_out_of_range", "message": "`commands[1]` scroll (0, -1100) exceeds \u00b11000 lines", "refused": true, "status": 422}

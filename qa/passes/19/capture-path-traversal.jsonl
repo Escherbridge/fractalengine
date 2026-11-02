@@ -1,0 +1,2 @@
+{"generation_changed": false, "log_after": {"generation": 1, "seq": 950}, "log_watermark": {"generation": 1, "seq": 950}, "new_logs": [], "retention": {"possible_gap": false, "seq_delta": 0, "source_derived_capacity": 2000}}
+{"code": "capture_path_refused", "message": "native Portal output contains an unsafe Windows path component", "refused": true, "status": 0}

@@ -1,0 +1,794 @@
+{
+  "schema": "fe-qa-focused-verdict-v1",
+  "pass": 18,
+  "generated_at": "2026-11-02T23:10:39.498386+00:00",
+  "independent_review": "approved_focused_by_qa18_19_evidence_verifier",
+  "verdict": "focused_checks_with_open_defects",
+  "scope": "offline derivation from retained artifacts; no new application, process, network, build, or test execution",
+  "stage_manifest": {
+    "built_at": "2026-11-02T21:40:48.7946396Z",
+    "exe_sha256": "E954F08CD42C91CC1FC3418E23B03D054AB229F9FC1BD56760DA81A72F603D32",
+    "source_dirty": true,
+    "kind": "fractalengine-qa-stage-v1",
+    "source_fingerprint": "25193243223FFEEC26F146C050BEF21212888BDE21855010EB2DA357810061BD",
+    "source_commit": "84ca20af4a47951cf9dbd22d457526a0840291e6",
+    "seal_hexon_sha256": "8C48A67227641B4E233AC5A7F2BFA840E4E8B3B754E42B3AFC08668AC5E43DBA"
+  },
+  "process_identity_from_retained_metadata": {
+    "pid": 66148,
+    "start_ticks": "639292524900117813",
+    "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\84ca20af-20261102144048400\\fractalengine.exe"
+  },
+  "metadata_consistency": {
+    "stage_manifests_equal": true,
+    "restart_and_lifetime_root_identity_equal": true,
+    "launch_source_match_attestation_retained": true,
+    "source_match_independently_recomputed_in_this_derivation": false,
+    "current_executable_hash_independently_recomputed": false
+  },
+  "full_catalog_coverage": false,
+  "convergence_claim": false,
+  "integrated_tests_executed": false,
+  "clipboard_accessed": false,
+  "secret_scan": {
+    "scope": "all original .json and .jsonl files in this pass directory; excludes source stdout/stderr",
+    "pattern": "JWT-like three-segment tokens beginning eyJ",
+    "files_scanned": 89,
+    "records_parsed": 129,
+    "matches": 0,
+    "token_values_emitted": false
+  },
+  "evidence_inputs": [
+    {
+      "file": "after-integration-restart.json",
+      "bytes": 4323,
+      "sha256": "ee11c5970e1f77d5cb70f7c7083a0936f4b7a653b8794458ac0cc67d7608dfe5"
+    },
+    {
+      "file": "browse-unique-model.jsonl",
+      "bytes": 620,
+      "sha256": "b1986661c3f4f655585905a86e14e12fe2ccd7f5e4704919f07c07f1851cbca9"
+    },
+    {
+      "file": "clear-portal-draft.jsonl",
+      "bytes": 401,
+      "sha256": "295a7bdc3eba5d967c39282b15ee94c1b2941e9640a97368fc2345db65ac19d6"
+    },
+    {
+      "file": "cleared-history.jsonl",
+      "bytes": 805,
+      "sha256": "7510dcb73570679981a4fc0cf61eb50b2685027a988d21ccad220115d83b81bb"
+    },
+    {
+      "file": "cleared-model.jsonl",
+      "bytes": 377,
+      "sha256": "2acfe8d963e9ab789fbba37ac67d5e784c952ea6b7bf6c2ad54d18881e09af50"
+    },
+    {
+      "file": "cleared-node.jsonl",
+      "bytes": 745,
+      "sha256": "6112f9224b5ac3957add6314e4867c4895ffd9c8e7ac40b3158ead7aadaabc0c"
+    },
+    {
+      "file": "close-data-for-stamp-selection.jsonl",
+      "bytes": 636,
+      "sha256": "0bfe075974d593245528cafb0c99506eae5108640fbe99df360a636140814230"
+    },
+    {
+      "file": "close-node-context.jsonl",
+      "bytes": 398,
+      "sha256": "71a5ce4cce2ebc529442c6334abe032aa420eeee38ecb3498a46e428dbe2fe8a"
+    },
+    {
+      "file": "close-petal-menu.jsonl",
+      "bytes": 398,
+      "sha256": "2ac45e056eae75d5638bed122c8543188d1ad55e395c3921cea7897eeb55fd03"
+    },
+    {
+      "file": "cube1-storage-ui.jsonl",
+      "bytes": 152446,
+      "sha256": "fd69b8706c88b8eb76a94d49208ab783641b7f9f7e50fe3a9c29714a8e6fe7f3"
+    },
+    {
+      "file": "cube1-warnings.jsonl",
+      "bytes": 102,
+      "sha256": "08dc4a1cc73ed172819e244d2a7cb6abebe50670fc2f5ee58ebf42ed448316b1"
+    },
+    {
+      "file": "data-paths-tab.jsonl",
+      "bytes": 631,
+      "sha256": "b9c78c60f824bbaccfbd086c1ed29b59d95421df8de61bc201d463d16db13450"
+    },
+    {
+      "file": "data-scroll-to-points.jsonl",
+      "bytes": 455,
+      "sha256": "aa4cd35fd8da6f68690213604b33a1a45b36d11c5f15bbd72946c3321fa0fc21"
+    },
+    {
+      "file": "empty-ground-context-ui.jsonl",
+      "bytes": 153879,
+      "sha256": "bc50d1e4eca2585c9f27454bed2f214f6b17fe99bf6fd6bbacc70017650085b7"
+    },
+    {
+      "file": "empty-ground-context.jsonl",
+      "bytes": 428,
+      "sha256": "c7c68e899fb789b75a636b64c45473503420aa7c7b93be0fc7875d33e6de0ddf"
+    },
+    {
+      "file": "end-cleanup-identities.json",
+      "bytes": 2772,
+      "sha256": "c563eee7113c52f435b7519f6c8c43e82c627c6419e090b1683db2b9dff9442f"
+    },
+    {
+      "file": "end-state.jsonl",
+      "bytes": 1119,
+      "sha256": "07286929757f40d0e32970c5830e7ca340605deae357a349a8e6c8f35b02d0b1"
+    },
+    {
+      "file": "end-warnings.jsonl",
+      "bytes": 693,
+      "sha256": "97401acb51ba184b6149c443ae7e50dd8293927014b4afe42cad8f17cf989f37"
+    },
+    {
+      "file": "finalize-stamp-number2.jsonl",
+      "bytes": 399,
+      "sha256": "856d8a0211e85340adafa19e6eb8d94b2721a75b9780c8cbdf4dc7896c93120a"
+    },
+    {
+      "file": "first-portal-save-ui.jsonl",
+      "bytes": 129190,
+      "sha256": "48ada728b3c60d0d384b7cde63e83e9e3734321abc617c20eba059aba1e848fb"
+    },
+    {
+      "file": "first-save-history.jsonl",
+      "bytes": 805,
+      "sha256": "7510dcb73570679981a4fc0cf61eb50b2685027a988d21ccad220115d83b81bb"
+    },
+    {
+      "file": "first-save-model.jsonl",
+      "bytes": 427,
+      "sha256": "33ae7213f4966411bc6c3b7c5c260fb3d956bed7b0e35ac4e8cd482e219f8855"
+    },
+    {
+      "file": "first-save-node.jsonl",
+      "bytes": 745,
+      "sha256": "6112f9224b5ac3957add6314e4867c4895ffd9c8e7ac40b3158ead7aadaabc0c"
+    },
+    {
+      "file": "focus-clear-portal.jsonl",
+      "bytes": 626,
+      "sha256": "424e118dcb8648075cea23a7b847268b4333333b2943d1488e5ea56aa92812a7"
+    },
+    {
+      "file": "focus-portal-url.jsonl",
+      "bytes": 626,
+      "sha256": "abeddb476f453275d5deeb02e890779166ffc9a4e98f66553de591e1f6c88d46"
+    },
+    {
+      "file": "focus-stamp-number.jsonl",
+      "bytes": 729,
+      "sha256": "074c10833cc9845f153db020a5d1ff3e95988fb842619fd06eb3b7267f7f5ccf"
+    },
+    {
+      "file": "focus-unique-model-name.jsonl",
+      "bytes": 627,
+      "sha256": "3c29fd3f35b1b82e07f682df5295344f07a08f762071a24c03e819cefef8f892"
+    },
+    {
+      "file": "ground-context-ui.jsonl",
+      "bytes": 157110,
+      "sha256": "ad3ef34fc0f4171c24cf65144d801df4f83910e7cde2c7021c1cd75d3ac78619"
+    },
+    {
+      "file": "ground-context.jsonl",
+      "bytes": 428,
+      "sha256": "739d866e81aa05ee5d2771de165bfb369a7015d647cfd11360231cb5da0ee36f"
+    },
+    {
+      "file": "hierarchy-scroll-to-paths-bounded.jsonl",
+      "bytes": 455,
+      "sha256": "b12150d5e9b77e5abb3b453bf44cee7b18dfdd63a57d033fc174ee4c86ac436a"
+    },
+    {
+      "file": "hierarchy-scroll-to-paths.jsonl",
+      "bytes": 364,
+      "sha256": "4b6a233be37ed94f23e703efe63bdefc578959d1c654d20f276822e93e5794cd"
+    },
+    {
+      "file": "import-unique-model.jsonl",
+      "bytes": 625,
+      "sha256": "a06120e835efaa0e6ee48ef5a587ffef1a487ad234a06d2b8ccc03d6ba7dba5d"
+    },
+    {
+      "file": "initial-state.jsonl",
+      "bytes": 1118,
+      "sha256": "235e18968f4c379183ec7e103aa9917507cd7ae706977b0456bc97ec9cdfa35d"
+    },
+    {
+      "file": "initial-ui.jsonl",
+      "bytes": 104107,
+      "sha256": "253b15e39ec523401b7569eb6b82df01185b25b3ecdba8c6bbaae4a903e51cfc"
+    },
+    {
+      "file": "initial-warnings.jsonl",
+      "bytes": 692,
+      "sha256": "0cad8bdc8370e9039de855eced4e360800fe1b8dd81e5ef3c7debabb5cceefac"
+    },
+    {
+      "file": "name-unique-model.jsonl",
+      "bytes": 406,
+      "sha256": "8cc98f9d3b493d3ed5dc1f1ed08a933254481a327b7d0ca5f0c008169e5a874f"
+    },
+    {
+      "file": "open-data.jsonl",
+      "bytes": 635,
+      "sha256": "7715132cd87271ab241ee9630b003ac63547b8e52152b7a93ece76c73afb6428"
+    },
+    {
+      "file": "open-paths-petal.jsonl",
+      "bytes": 635,
+      "sha256": "4cde44477876f5cd96a4ce10f0ae23e8230541511b46d65d0398e7f3de6c415a"
+    },
+    {
+      "file": "open-retained-path.jsonl",
+      "bytes": 634,
+      "sha256": "2b641c953facb9c2a534722b1f8f10d76a1dc35fd83608910c6af1b83c3cbc37"
+    },
+    {
+      "file": "open-unique-import.jsonl",
+      "bytes": 632,
+      "sha256": "cc89715c8584548e4e6c1718423c701a500eba755fa2d6b52fb05dc06fdc0211"
+    },
+    {
+      "file": "options-scroll-to-corner.jsonl",
+      "bytes": 456,
+      "sha256": "7ff61b8fcd10953d5b7a8020a852259132c548bc153833332346bc48eae29879"
+    },
+    {
+      "file": "overview-shot.jsonl",
+      "bytes": 884,
+      "sha256": "b2794b73471ca16e14c9064a548a9812cdc0693abefa300ea08286c47598156d"
+    },
+    {
+      "file": "path-data-ui.jsonl",
+      "bytes": 115938,
+      "sha256": "ec87f147f10a4f236820bd4a1f131f16da07190192244ead9c03e51c35e60e26"
+    },
+    {
+      "file": "paths-petal-locator-ui.jsonl",
+      "bytes": 129151,
+      "sha256": "2b703dabde30f4fdb06484bdb822c7fc4aced0ecb4506b817d4cc7c8a5f2e114"
+    },
+    {
+      "file": "paths-tab-ui.jsonl",
+      "bytes": 115234,
+      "sha256": "a60df983dcd948f994a20a5a88651b30017daa9a405bafe2ef2d132deb9ae4b5"
+    },
+    {
+      "file": "petal-a-menu-ui.jsonl",
+      "bytes": 155996,
+      "sha256": "2c9b579c0473b439652848ef603e75ea7f3e6717dffec4dcf010ddc4d2f9f8da"
+    },
+    {
+      "file": "petal-a-menu.jsonl",
+      "bytes": 640,
+      "sha256": "1e16364b2620aa436ec84fe3de235c4d5d073ef8de9e62b392c15a105c7cef25"
+    },
+    {
+      "file": "point2-current-ui.jsonl",
+      "bytes": 162284,
+      "sha256": "e1c02c1a0a2bb5c5db7a6f1431f5c1632e12286f5398a22b97b79fb5be5dcbc1"
+    },
+    {
+      "file": "point2-data-shot.jsonl",
+      "bytes": 766,
+      "sha256": "67e5d5bb6eaefdb9c96e190305fc6efe58923d8cbd38475d4602b39640cb36cc"
+    },
+    {
+      "file": "portal-asset-before.jsonl",
+      "bytes": 82,
+      "sha256": "df71bba67437d6249f40512056eecca5391c89465d7225cff642f9cf48d41cc6"
+    },
+    {
+      "file": "portal-history-before.jsonl",
+      "bytes": 805,
+      "sha256": "7510dcb73570679981a4fc0cf61eb50b2685027a988d21ccad220115d83b81bb"
+    },
+    {
+      "file": "portal-model-before-valid-vars.jsonl",
+      "bytes": 89,
+      "sha256": "78dec018fc934e3d13ad9accb32ac2d2f37e520b12d93e7658b2fcc9391eeff6"
+    },
+    {
+      "file": "portal-model-before.jsonl",
+      "bytes": 99,
+      "sha256": "f3474c79c3c050413615f283520eb138d8575c9d8e80ccd42e31a250b05e854f"
+    },
+    {
+      "file": "portal-node-before.jsonl",
+      "bytes": 745,
+      "sha256": "6112f9224b5ac3957add6314e4867c4895ffd9c8e7ac40b3158ead7aadaabc0c"
+    },
+    {
+      "file": "portal-rehydrated-ui.jsonl",
+      "bytes": 129182,
+      "sha256": "8d2e3cdb2afbdf207407b6b0ff7d0ed2bebab86da60ee3322fb9d1313cb3c9e5"
+    },
+    {
+      "file": "portal-reselect.jsonl",
+      "bytes": 634,
+      "sha256": "c967fffe33926ad8ae2fff5deb8ec72b44cef2f8bad926de41474f0c6c70a3a5"
+    },
+    {
+      "file": "portal-scroll.jsonl",
+      "bytes": 454,
+      "sha256": "5b474cfa4d6d481a7b3e8ebe9a1b2a169a405f21f494096df0d8bf728c1aa164"
+    },
+    {
+      "file": "portal-switch-away.jsonl",
+      "bytes": 629,
+      "sha256": "82946d40e62a0b1a42a043dc1d370cfb246e975d6a49a6785c89cceb00aecc7f"
+    },
+    {
+      "file": "portal-visible-ui.jsonl",
+      "bytes": 129697,
+      "sha256": "ecb43ad69bd583baf30ec13cefc79bec2c1bf07506e8c28e477c1d6c9e6c1545"
+    },
+    {
+      "file": "pre-end-identities.json",
+      "bytes": 1628,
+      "sha256": "1b6a03d44c4ff8550cabf7d8bc4fb2deac5bf8819333fd579f6487268acf8647"
+    },
+    {
+      "file": "queue-unique-model-file.jsonl",
+      "bytes": 241,
+      "sha256": "f9cf722e64935c2f890b16f0caa0a7f5abe99a7fffb59563b427ae78f6b1a5a4"
+    },
+    {
+      "file": "retained-path-editor-ui.jsonl",
+      "bytes": 157628,
+      "sha256": "0bc0e37ee173b6e420976590ba6702a8658b9ebaf6a12c63038d7f1949e58ba7"
+    },
+    {
+      "file": "retained-stamps-shot.jsonl",
+      "bytes": 754,
+      "sha256": "d6db99986d6f720972d5ceb36f220dd24a38972b999a5763f62da9204e089ffc"
+    },
+    {
+      "file": "run-lifetime-public.json",
+      "bytes": 1276,
+      "sha256": "36c379e7bda2295ca2bcf9c495a77716d43405a0967cd84bdfd1824ef14042b7"
+    },
+    {
+      "file": "save-clear-portal.jsonl",
+      "bytes": 795,
+      "sha256": "413e251e2e40f793718b511a8d49dbe9819c6761b67a06e5f1cb3db1f9a8aa9e"
+    },
+    {
+      "file": "save-first-portal-url.jsonl",
+      "bytes": 628,
+      "sha256": "ece788a23480f5bf8568bb8103d04ad2cad565d9bc28c10b0ef7c7b72b819b0f"
+    },
+    {
+      "file": "select-clear-portal.jsonl",
+      "bytes": 441,
+      "sha256": "f5680f4bc67233e68211892c1acba6879efbd7adf9f38cde5bb17ea130e4e6da"
+    },
+    {
+      "file": "select-cube1.jsonl",
+      "bytes": 629,
+      "sha256": "a93a3a96bb2c4a638dafaaa6231640eb0509497e2ecf4456acb13fd1e0cd2515"
+    },
+    {
+      "file": "select-path-point2.jsonl",
+      "bytes": 644,
+      "sha256": "73c0848df40165a5b5a99340df0cd9a33cc261de0227e9f0490d0f62ca494bf2"
+    },
+    {
+      "file": "select-portal-url.jsonl",
+      "bytes": 441,
+      "sha256": "037bd90f3fb1561a51b3226dfa3893e90dc090517ba52324bd907a9643ebfab8"
+    },
+    {
+      "file": "select-rendered-stamp2.jsonl",
+      "bytes": 658,
+      "sha256": "2c7c71c03777a78a46ae9e0023b6bbd473006b780f757d2e6c4a2aa74547d925"
+    },
+    {
+      "file": "select-stamp-number-draft.jsonl",
+      "bytes": 443,
+      "sha256": "4ab0d21d4fbcbc5aab61ee5e81739769c29debf61905865f358cb931f233797a"
+    },
+    {
+      "file": "select-unique-model-name.jsonl",
+      "bytes": 441,
+      "sha256": "60bb03b09915069f95b768642a83b9f510f8ab901b28c1d766f85ac2f6ed80d6"
+    },
+    {
+      "file": "select-unique-portal.jsonl",
+      "bytes": 634,
+      "sha256": "1a57a28cd99516da11d1b0aaabb1ed2412411bbadc46007e4849c949f89b9b26"
+    },
+    {
+      "file": "selected-stamp2-state.jsonl",
+      "bytes": 1119,
+      "sha256": "f7863ddbc049ac6b7b23f45ed86d073721fc9cf9ca2230ad0e0157dfd8ba8a00"
+    },
+    {
+      "file": "selected-stamp2-ui.jsonl",
+      "bytes": 130999,
+      "sha256": "81435b480420623722735820d64734b5598d0f16046fd70adc1bbed2b33b1808"
+    },
+    {
+      "file": "stage-manifest.json",
+      "bytes": 475,
+      "sha256": "14fa35a2942e6a8fc9281d5d6933adb6ba7c1d689cc89b61204084c1daac61c1"
+    },
+    {
+      "file": "stamp-refusal-node-rows.jsonl",
+      "bytes": 560,
+      "sha256": "a56c170b52029d9542619dce932809b2386106d01d8e19f9e0ad4257399ed1d7"
+    },
+    {
+      "file": "stamp-refusal-persisted-nodes.jsonl",
+      "bytes": 125,
+      "sha256": "8848e5ca0ad61a2a4b54b85f6adf171acd6bfd3fb859ebc059e62aba61033b7f"
+    },
+    {
+      "file": "stamp-refusal-petal-row.jsonl",
+      "bytes": 492,
+      "sha256": "09816f04d6709fbff1de8863b9a1703731b1655919594c6c954f6b9e9388034b"
+    },
+    {
+      "file": "stamp-selection-warnings.jsonl",
+      "bytes": 103,
+      "sha256": "a01deca330245c81aa3a228601a9d18bf0e66256efebcaff0a2f095bd5cfb2a4"
+    },
+    {
+      "file": "stamp-selector-ui.jsonl",
+      "bytes": 134558,
+      "sha256": "3bfa430def96b4a263422db242d09e57e7416f31880d7427dc2a8ef38a99df46"
+    },
+    {
+      "file": "type-first-portal-url.jsonl",
+      "bytes": 426,
+      "sha256": "9a877ed7381b4a9da8a9b4b9bc20a8b6982b5bbdbe6099f209b8570715ab57c6"
+    },
+    {
+      "file": "type-stamp-number2.jsonl",
+      "bytes": 397,
+      "sha256": "1e14e7a9996f1892a10b13ea19d21604952445bcffa43787371652ff14b74c71"
+    },
+    {
+      "file": "unique-import-result-ui.jsonl",
+      "bytes": 154223,
+      "sha256": "67959bebea915eb016820bc630e9da3605d62c0d1036d41e68a79f9ec780b4fa"
+    },
+    {
+      "file": "unique-import-state.jsonl",
+      "bytes": 1257,
+      "sha256": "bd29a3223940ab29b6dc1eaabc5d95178f18b1387b6fd510cd7d18b23cb4d322"
+    },
+    {
+      "file": "unique-import-ui.jsonl",
+      "bytes": 159387,
+      "sha256": "444ca41a02e2e1261ec25688b0e05630f7cfbb61dcb019721f2a4f9abe40a795"
+    },
+    {
+      "file": "unique-portal-metadata-ui.jsonl",
+      "bytes": 129715,
+      "sha256": "6c5064a0d0584de0e3be7100273182df7c93e12ede23689d4911469744fa451c"
+    },
+    {
+      "file": "unique-portal-state.jsonl",
+      "bytes": 1284,
+      "sha256": "28f59ce52bb26e9c3019e0fdcddb7a74f2a7618fb51a23b86a8ab4d4bff72481"
+    }
+  ],
+  "log_review": "startup-and-live-log-review.json",
+  "runtime_log_counts": {
+    "WARN": 11,
+    "ERROR": 0
+  },
+  "clean_log_claim": false,
+  "checks": {
+    "portal_metadata": {
+      "imported_node_id": "01M6F3SMGP4PX18QW85M1Y9WDZ",
+      "asset_id": "01M6F3SMGJWCNPKAD3EJGHW658",
+      "display_name": "QA Portal 18",
+      "shared_asset_explanation_present": true,
+      "shared_asset_save_disabled": true,
+      "model_row_count_before_save": 0,
+      "model_row_count_after_save": 1,
+      "model_id_after_save_and_clear": "model:hzmrbt00jg5zip2nq8em",
+      "initial_url": "https://example.com/qa18-initial",
+      "reselected_field_equals_stored_url": true,
+      "cleared_external_url_field_absent": true,
+      "complete_node_response_equal_before_after_save_after_clear": true,
+      "complete_history_response_equal_before_after_save_after_clear": true,
+      "model_transform_equals_imported_node_trs": true,
+      "imported_node_trs": {
+        "position": {
+          "coordinates": [
+            -10.013128280639648,
+            9.081923484802246
+          ],
+          "type": "Point"
+        },
+        "elevation": 0.0,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "raw_node_response_sha256": [
+        "6112f9224b5ac3957add6314e4867c4895ffd9c8e7ac40b3158ead7aadaabc0c",
+        "6112f9224b5ac3957add6314e4867c4895ffd9c8e7ac40b3158ead7aadaabc0c",
+        "6112f9224b5ac3957add6314e4867c4895ffd9c8e7ac40b3158ead7aadaabc0c"
+      ],
+      "raw_history_response_sha256": [
+        "7510dcb73570679981a4fc0cf61eb50b2685027a988d21ccad220115d83b81bb",
+        "7510dcb73570679981a4fc0cf61eb50b2685027a988d21ccad220115d83b81bb",
+        "7510dcb73570679981a4fc0cf61eb50b2685027a988d21ccad220115d83b81bb"
+      ],
+      "asset_metadata_independently_verified": false
+    },
+    "fresh_import_history": {
+      "current_version": 2,
+      "coverage_start_version": null,
+      "current_state_verified": false,
+      "entry_count": 2,
+      "availability_counts": {
+        "unavailable_scope": 2
+      },
+      "result": "defect: fresh ordinary import has unavailable history; no replay acceptance"
+    },
+    "path_controls": {
+      "path_node_id": "01M6EWYT81M0RT4JTTEYN09D5Z",
+      "stored_point_count": 4,
+      "stored_properties": {
+        "gis.track.name": "Path 1",
+        "gpx_points": [
+          [
+            -5.0,
+            0.0,
+            -3.0,
+            0.0
+          ],
+          [
+            5.0,
+            0.0,
+            -3.0,
+            0.0,
+            -0.857492983341217,
+            -0.0,
+            -0.5144957900047302,
+            0.857492983341217,
+            0.0,
+            0.5144957900047302,
+            1.0,
+            0.5
+          ],
+          [
+            5.0,
+            0.0,
+            3.0,
+            0.0
+          ],
+          [
+            -5.0,
+            0.0,
+            3.0,
+            0.0
+          ]
+        ],
+        "gpx_type": "track",
+        "path_asset": {
+          "asset_path": "blob://fc0c7d7c98743c1053b9d83967eb05e759d40ad5d45911ef7a1052f0526d2a1d.glb",
+          "count": 3,
+          "spacing_mode": "fixed_count",
+          "spacing_value": 1.0,
+          "tangent_align": false
+        }
+      },
+      "point2_heading_present": true,
+      "corner_buttons": [
+        {
+          "name": "Point 2 corner kind: Corner",
+          "height": 25.0
+        },
+        {
+          "name": "Point 2 corner kind: Smooth",
+          "height": 25.0
+        },
+        {
+          "name": "Point 2 corner kind: Symmetric",
+          "height": 25.0
+        }
+      ],
+      "path_open_delete_controls": [
+        {
+          "name": "Open path Path 1",
+          "height": 25.0
+        },
+        {
+          "name": "Delete path Path 1",
+          "height": 25.0
+        }
+      ],
+      "all_point_rows_reached": false,
+      "numeric_stamp_endpoint_tangent_or_scale_acceptance": false,
+      "point2_actual_heading": "Corner settings — point 2",
+      "smoothness_control": [
+        {
+          "name": "Point 2 smoothness",
+          "role": "slider",
+          "height": 24.0
+        }
+      ],
+      "new_path_controls": [
+        {
+          "name": "New path name",
+          "role": "textinput",
+          "height": 24.0
+        },
+        {
+          "name": "New Path",
+          "role": "button",
+          "height": 25.0
+        }
+      ]
+    },
+    "stamp_selection": {
+      "result": "failed_guarded_promotion",
+      "actual_ui_refusal": "Stamp selection promotion refused: An error occurred: stamp map changed during promotion",
+      "selection_is_null": true,
+      "persisted_node_row_count": 1,
+      "persisted_node_ids": [
+        "01M6EWYT81M0RT4JTTEYN09D5Z"
+      ],
+      "atomic_apply_accepted": false,
+      "editor_success": false,
+      "source_fix_acceptance_in_this_stage": false
+    },
+    "import_form_targets": [
+      {
+        "name": "File Path:",
+        "height": 19.0
+      },
+      {
+        "name": "Display Name:",
+        "height": 19.0
+      }
+    ]
+  },
+  "retained_failed_attempts": {
+    "hierarchy-scroll-to-paths.jsonl": [
+      {
+        "code": "scroll_out_of_range",
+        "status": 422,
+        "refused": true
+      }
+    ],
+    "portal-model-before.jsonl": {
+      "ok": false,
+      "classification": "scoped query rejected"
+    },
+    "portal-asset-before.jsonl": {
+      "ok": false,
+      "classification": "scoped query rejected"
+    },
+    "stamp-refusal-persisted-nodes.jsonl": [
+      {
+        "code": "http_400",
+        "status": 400,
+        "refused": true
+      }
+    ]
+  },
+  "screenshots": [
+    {
+      "record": "overview-shot.jsonl",
+      "path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\shots\\144552-893-qa18-overview.png",
+      "bytes": 763754,
+      "sha256": "8e26f144a698445c3e3ef9e8434991360059223747b73bd432b72442372d547b",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "record": "save-clear-portal.jsonl",
+      "path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\shots\\150213-983-qa18-portal-clear-after.png",
+      "bytes": 605267,
+      "sha256": "dcba6a2e6dd78e18f81ade5f4c802ddebdb695f9c62fba69bcc936a8828ff635",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "record": "point2-data-shot.jsonl",
+      "path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\shots\\151021-371-qa18-point2-data.png",
+      "bytes": 246869,
+      "sha256": "a782db85550dd38d1bb4167575811fc74becc3c1c0984b113e2878a94123b91f",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "record": "retained-stamps-shot.jsonl",
+      "path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\shots\\151210-941-qa18-retained-stamps.png",
+      "bytes": 505609,
+      "sha256": "1014a98ff36065fe06af424573ec19189e86b58bd62dec2240fa516fc8dd7c43",
+      "width": 1280,
+      "height": 720
+    }
+  ],
+  "visual_observations": {
+    "inspected_by_evidence_author": [
+      "save-clear-portal.jsonl",
+      "point2-data-shot.jsonl",
+      "retained-stamps-shot.jsonl"
+    ],
+    "portal_clear": "URL saved toast, empty URL field, disabled Open Portal, and red imported GLB visible",
+    "point2_data": "Data panel owns visible Pen instructions without global viewport hint overlapping that panel; only Point 1 action row visible",
+    "retained_stamps": "three red cubes visible around the retained path; visual count does not establish numeric instance geometry"
+  },
+  "cleanup": {
+    "record": "end-cleanup-identities.json",
+    "count": 8,
+    "all_captured_identities_absent": true,
+    "identities": [
+      {
+        "pid": 66148,
+        "start_ticks": "639292524900117813",
+        "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\84ca20af-20261102144048400\\fractalengine.exe"
+      },
+      {
+        "pid": 80424,
+        "start_ticks": "639292524900684792",
+        "exe_path": "C:\\Windows\\system32\\conhost.exe"
+      },
+      {
+        "pid": 61348,
+        "start_ticks": "639292524941279833",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      },
+      {
+        "pid": 39884,
+        "start_ticks": "639292524941858214",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      },
+      {
+        "pid": 57372,
+        "start_ticks": "639292524944138068",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      },
+      {
+        "pid": 73416,
+        "start_ticks": "639292524944140146",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      },
+      {
+        "pid": 87600,
+        "start_ticks": "639292524944439780",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      },
+      {
+        "pid": 29024,
+        "start_ticks": "639292524945389081",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      }
+    ]
+  },
+  "limitations": [
+    "This stage predates queued creation-history, complete-transform, forms, stamp-map, and native navigation repairs.",
+    "History equality proves save/clear did not alter the retained unavailable response; it does not prove replay coverage.",
+    "Asset table query was refused; independent asset metadata verification is unavailable.",
+    "Stored path properties and three visible cubes do not prove numeric endpoint, tangent, rotation, or scale behavior.",
+    "Stamp selection refused promotion; no persisted stamp edit or atomic Apply acceptance is claimed."
+  ]
+}

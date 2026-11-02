@@ -1,0 +1,584 @@
+{
+  "schema": "fe-qa-focused-verdict-v1",
+  "pass": 19,
+  "generated_at": "2026-11-02T23:10:39.498386+00:00",
+  "independent_review": "approved_focused_by_qa18_19_evidence_verifier",
+  "verdict": "focused_checks_with_open_defects",
+  "scope": "offline derivation from retained artifacts; no new application, process, network, build, or test execution",
+  "stage_manifest": {
+    "built_at": "2026-11-02T21:40:48.7946396Z",
+    "exe_sha256": "E954F08CD42C91CC1FC3418E23B03D054AB229F9FC1BD56760DA81A72F603D32",
+    "source_dirty": true,
+    "kind": "fractalengine-qa-stage-v1",
+    "source_fingerprint": "25193243223FFEEC26F146C050BEF21212888BDE21855010EB2DA357810061BD",
+    "source_commit": "84ca20af4a47951cf9dbd22d457526a0840291e6",
+    "seal_hexon_sha256": "8C48A67227641B4E233AC5A7F2BFA840E4E8B3B754E42B3AFC08668AC5E43DBA"
+  },
+  "process_identity_from_retained_metadata": {
+    "pid": 49360,
+    "start_ticks": "639292556676424452",
+    "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\84ca20af-20261102144048400\\fractalengine.exe"
+  },
+  "metadata_consistency": {
+    "stage_manifests_equal": true,
+    "restart_and_lifetime_root_identity_equal": true,
+    "launch_source_match_attestation_retained": true,
+    "source_match_independently_recomputed_in_this_derivation": false,
+    "current_executable_hash_independently_recomputed": false
+  },
+  "full_catalog_coverage": false,
+  "convergence_claim": false,
+  "integrated_tests_executed": false,
+  "clipboard_accessed": false,
+  "secret_scan": {
+    "scope": "all original .json and .jsonl files in this pass directory; excludes source stdout/stderr",
+    "pattern": "JWT-like three-segment tokens beginning eyJ",
+    "files_scanned": 42,
+    "records_parsed": 68,
+    "matches": 0,
+    "token_values_emitted": false
+  },
+  "evidence_inputs": [
+    {
+      "file": "after-permit-restart.json",
+      "bytes": 4323,
+      "sha256": "fad7b99af83fe3e2fa63cf4fcab9fdc25c6e95e8b8aa45c59c28d0bfe294cb60"
+    },
+    {
+      "file": "capture-path-ads.jsonl",
+      "bytes": 367,
+      "sha256": "73d4374d816d133d51f3b692f2a68c5e33e6c86047cba52685e6d446c215087f"
+    },
+    {
+      "file": "capture-path-com.jsonl",
+      "bytes": 367,
+      "sha256": "48bb83e67f8c56bec75fcb691b0893cd22bcd1cee93b9781e5c36754d16a17b1"
+    },
+    {
+      "file": "capture-path-control-character.jsonl",
+      "bytes": 367,
+      "sha256": "48bb83e67f8c56bec75fcb691b0893cd22bcd1cee93b9781e5c36754d16a17b1"
+    },
+    {
+      "file": "capture-path-drive-relative.jsonl",
+      "bytes": 369,
+      "sha256": "ec0ecaa3590ba54d333c597384d9367a83909686b5cfd4a8ed886357a48dad6d"
+    },
+    {
+      "file": "capture-path-existing-image.jsonl",
+      "bytes": 360,
+      "sha256": "bf0ba8218fb952e6cc95dfeff9317b29612e67bde4b7d188c6baed776a76c9dd"
+    },
+    {
+      "file": "capture-path-existing-receipt.jsonl",
+      "bytes": 360,
+      "sha256": "bf0ba8218fb952e6cc95dfeff9317b29612e67bde4b7d188c6baed776a76c9dd"
+    },
+    {
+      "file": "capture-path-extended-path.jsonl",
+      "bytes": 369,
+      "sha256": "bce9f8581e1bef5cf9a22d45bd28661824cadc3d88c0caee99941e8e2bf2f81d"
+    },
+    {
+      "file": "capture-path-lpt-superscript.jsonl",
+      "bytes": 367,
+      "sha256": "48bb83e67f8c56bec75fcb691b0893cd22bcd1cee93b9781e5c36754d16a17b1"
+    },
+    {
+      "file": "capture-path-missing-parent.jsonl",
+      "bytes": 368,
+      "sha256": "413609c7b0374f8a1fb36e55bc2798c9ee13cec6a72f5c389fe157bd35349cae"
+    },
+    {
+      "file": "capture-path-negatives.json",
+      "bytes": 3285,
+      "sha256": "2c2b51097bd880ea2e82a196c0454562e36a25986d4ad73a9ea3d720105a421b"
+    },
+    {
+      "file": "capture-path-nul-space.jsonl",
+      "bytes": 367,
+      "sha256": "73d4374d816d133d51f3b692f2a68c5e33e6c86047cba52685e6d446c215087f"
+    },
+    {
+      "file": "capture-path-nul.jsonl",
+      "bytes": 367,
+      "sha256": "73d4374d816d133d51f3b692f2a68c5e33e6c86047cba52685e6d446c215087f"
+    },
+    {
+      "file": "capture-path-trailing-dot.jsonl",
+      "bytes": 367,
+      "sha256": "48bb83e67f8c56bec75fcb691b0893cd22bcd1cee93b9781e5c36754d16a17b1"
+    },
+    {
+      "file": "capture-path-trailing-space.jsonl",
+      "bytes": 367,
+      "sha256": "48bb83e67f8c56bec75fcb691b0893cd22bcd1cee93b9781e5c36754d16a17b1"
+    },
+    {
+      "file": "capture-path-traversal.jsonl",
+      "bytes": 367,
+      "sha256": "988ce59473875f76e4ba2d693df8ca52cbbdd88cf2e0574d0dd6c340e5a88e86"
+    },
+    {
+      "file": "capture-path-unc.jsonl",
+      "bytes": 369,
+      "sha256": "bce9f8581e1bef5cf9a22d45bd28661824cadc3d88c0caee99941e8e2bf2f81d"
+    },
+    {
+      "file": "controlled-fixtures-public.json",
+      "bytes": 2207,
+      "sha256": "af48ba1776889b184da5d279cecb1e6b37f56a9737acb633e3bce8f70e41f283"
+    },
+    {
+      "file": "end-all-recorded-identities.json",
+      "bytes": 2772,
+      "sha256": "7ee20f85c670d7942de749c85062f6dc54c0f94f0f0b83bbacc09bc70f66152f"
+    },
+    {
+      "file": "end-cleanup-identities.json",
+      "bytes": 678,
+      "sha256": "db37745bf78432dae0f684d27e9b8658c6009136960cad81e35f4b685cf82d1e"
+    },
+    {
+      "file": "end-fixture-cleanup-identities.json",
+      "bytes": 590,
+      "sha256": "e40cc7d34c061b52e344d3cd94832b891e64101f7c9ea186bb9c012864c4cb02"
+    },
+    {
+      "file": "end-state.jsonl",
+      "bytes": 1266,
+      "sha256": "918670304ebac38436f00d4d7fdbbf65a5e42692cf193906dbcbfc6b36150ff5"
+    },
+    {
+      "file": "end-ui.jsonl",
+      "bytes": 101348,
+      "sha256": "91a8e1f2e8caa1ec58896a0a4c442a5750a0576073193eb1751c7d19b67cb5de"
+    },
+    {
+      "file": "end-warnings.jsonl",
+      "bytes": 839,
+      "sha256": "1a235ffd73edf078c7e715baf7c907e67afd72d65a77ebc5afe05c67f28cce88"
+    },
+    {
+      "file": "focus-fixture-url.jsonl",
+      "bytes": 626,
+      "sha256": "db914c5679701520cd36fd2cda5aaa4f33fcbf71e62a46f677e8428807b226dc"
+    },
+    {
+      "file": "initial-state.jsonl",
+      "bytes": 1118,
+      "sha256": "9f6a36d3008e195406654c0b9e1cc422740f3fb0a0050db18054eedc39647451"
+    },
+    {
+      "file": "initial-ui.jsonl",
+      "bytes": 105912,
+      "sha256": "6ddab4e455a189a411b9345e517128024a5b22bdd3f2ff2ced099dd54854dc6b"
+    },
+    {
+      "file": "initial-warnings.jsonl",
+      "bytes": 692,
+      "sha256": "5b0f3b1dd52a38e44790c74485b112a932c00a185d39afb1bc7ea63cb21bf82b"
+    },
+    {
+      "file": "native-page-one-capture.jsonl",
+      "bytes": 1057,
+      "sha256": "fb1ca362cfb248b9c1c775d143ce39f2ef3022d31641e79ebddb70c61832cd9f"
+    },
+    {
+      "file": "native-page-one-observe.jsonl",
+      "bytes": 749,
+      "sha256": "22c71339fd87331792109bae6117299c6ca128d8bd9e4245a0aadb857856afd3"
+    },
+    {
+      "file": "native-page-two-capture.jsonl",
+      "bytes": 359,
+      "sha256": "db1a4246129e77f351ce3c4ca21adbfd36f4e98f9feb765b8ac1e17ba760acb0"
+    },
+    {
+      "file": "native-second-link.jsonl",
+      "bytes": 508,
+      "sha256": "83badb2bd51da3a29224a788910c58a10b430d854589aa50d19a275ea504ede0"
+    },
+    {
+      "file": "open-native-portal.jsonl",
+      "bytes": 638,
+      "sha256": "acd926038968814515f05ff137ad061c89fc941af46f3adfc507bbe0d1caecc0"
+    },
+    {
+      "file": "pre-end-fixture-identities.json",
+      "bytes": 304,
+      "sha256": "1a5a4afb2dfec77e2748d4d0a4479e7fbd95e02d8fa83e1973f6afdcbcfd9561"
+    },
+    {
+      "file": "pre-end-identities.json",
+      "bytes": 392,
+      "sha256": "bf6696db357dfb3987da6a2d56ccae22e41e503b3d960d9495c2114318f4bcdf"
+    },
+    {
+      "file": "run-lifetime-public.json",
+      "bytes": 1276,
+      "sha256": "d40866d7fca90700a17d7036b3a2f20e8b9190ff5c63372c06980601ec7e247b"
+    },
+    {
+      "file": "save-fixture-url.jsonl",
+      "bytes": 628,
+      "sha256": "579a0788f9f4b75230696f4de25119ddc735bdf2a4fe9451395652738071bf6f"
+    },
+    {
+      "file": "scroll-to-portal.jsonl",
+      "bytes": 454,
+      "sha256": "bc67073ce9ce48740e075d465912399328ba8388b05538936b153b7c6c9b0ead"
+    },
+    {
+      "file": "select-fixture-url.jsonl",
+      "bytes": 441,
+      "sha256": "aa9b1027e3318fb94d81066810f0e6984bb919b2005803d61e7a0920526dd93a"
+    },
+    {
+      "file": "select-portal-node.jsonl",
+      "bytes": 634,
+      "sha256": "d72af098cf8310c6679b8c906fae641b2c021c7c251fb4cd85a3cc4c9f1492f8"
+    },
+    {
+      "file": "stage-manifest.json",
+      "bytes": 475,
+      "sha256": "14fa35a2942e6a8fc9281d5d6933adb6ba7c1d689cc89b61204084c1daac61c1"
+    },
+    {
+      "file": "type-fixture-url.jsonl",
+      "bytes": 423,
+      "sha256": "56627dac20002535d5d8862f46d63b776a00a327ec788375f2f9bf3e6ed96c25"
+    }
+  ],
+  "log_review": "startup-and-live-log-review.json",
+  "runtime_log_counts": {
+    "WARN": 11,
+    "ERROR": 1
+  },
+  "clean_log_claim": false,
+  "checks": {
+    "native_page_one": {
+      "observe_matches_capture_observation": true,
+      "observation": {
+        "heading": "QA Portal one",
+        "invoked": false,
+        "page": "one",
+        "ready": true,
+        "second_link": "/web/two",
+        "third_link": "/web/three",
+        "title": "QA Portal one"
+      },
+      "popup_session": 1,
+      "page_generation": 5,
+      "scope": "VERSE#01M6D0VZ11XK62MXZ61HENTBTD-FRACTAL#01M6D0VZG5ZN7XZMTXE8PWF1YT-PETAL#01M6D0VZJ6383Q4HNNET8RSEYF",
+      "url": "http://127.0.0.1:8890/web/one",
+      "capture_source": "owned_webview2_capture_preview",
+      "image_bytes_dimensions_and_hash_match_native_receipt": true,
+      "companion_receipt_sha256": "8672c2fdec0d292d5fa360ef001705a5c1fe2572c116afb290ff0b09a83a1707",
+      "independent_persisted_model_url_read_after_save": false
+    },
+    "native_navigation": {
+      "second_link": [
+        {
+          "code": "portal_fixture_changed",
+          "status": 409,
+          "refused": true
+        }
+      ],
+      "page_two_capture": [
+        {
+          "code": "portal_fixture_unavailable",
+          "status": 409,
+          "refused": true
+        }
+      ],
+      "page_two_success": false,
+      "third_page_success": false,
+      "back_forward_reload_success": false,
+      "terminal_error_present_in_complete_stdout": true,
+      "source_repair_acceptance_in_this_stage": false
+    },
+    "capture_path_negatives": {
+      "scope": "actual client output-path preflight; no native capture invoked for rejected paths",
+      "native_backend_available_during_cases": false,
+      "case_count": 15,
+      "actual_refusals_verified": [
+        {
+          "case": "existing-image",
+          "artifact": "capture-path-existing-image.jsonl",
+          "actual_refusal": {
+            "code": "capture_path_refused",
+            "status": 0,
+            "refused": true
+          },
+          "recorded_client_exit": 2
+        },
+        {
+          "case": "existing-receipt",
+          "artifact": "capture-path-existing-receipt.jsonl",
+          "actual_refusal": {
+            "code": "capture_path_refused",
+            "status": 0,
+            "refused": true
+          },
+          "recorded_client_exit": 2
+        },
+        {
+          "case": "ads",
+          "artifact": "capture-path-ads.jsonl",
+          "actual_refusal": {
+            "code": "capture_path_refused",
+            "status": 0,
+            "refused": true
+          },
+          "recorded_client_exit": 2
+        },
+        {
+          "case": "nul",
+          "artifact": "capture-path-nul.jsonl",
+          "actual_refusal": {
+            "code": "capture_path_refused",
+            "status": 0,
+            "refused": true
+          },
+          "recorded_client_exit": 2
+        },
+        {
+          "case": "nul-space",
+          "artifact": "capture-path-nul-space.jsonl",
+          "actual_refusal": {
+            "code": "capture_path_refused",
+            "status": 0,
+            "refused": true
+          },
+          "recorded_client_exit": 2
+        },
+        {
+          "case": "com",
+          "artifact": "capture-path-com.jsonl",
+          "actual_refusal": {
+            "code": "capture_path_refused",
+            "status": 0,
+            "refused": true
+          },
+          "recorded_client_exit": 2
+        },
+        {
+          "case": "lpt-superscript",
+          "artifact": "capture-path-lpt-superscript.jsonl",
+          "actual_refusal": {
+            "code": "capture_path_refused",
+            "status": 0,
+            "refused": true
+          },
+          "recorded_client_exit": 2
+        },
+        {
+          "case": "drive-relative",
+          "artifact": "capture-path-drive-relative.jsonl",
+          "actual_refusal": {
+            "code": "capture_path_refused",
+            "status": 0,
+            "refused": true
+          },
+          "recorded_client_exit": 2
+        },
+        {
+          "case": "trailing-dot",
+          "artifact": "capture-path-trailing-dot.jsonl",
+          "actual_refusal": {
+            "code": "capture_path_refused",
+            "status": 0,
+            "refused": true
+          },
+          "recorded_client_exit": 2
+        },
+        {
+          "case": "trailing-space",
+          "artifact": "capture-path-trailing-space.jsonl",
+          "actual_refusal": {
+            "code": "capture_path_refused",
+            "status": 0,
+            "refused": true
+          },
+          "recorded_client_exit": 2
+        },
+        {
+          "case": "control-character",
+          "artifact": "capture-path-control-character.jsonl",
+          "actual_refusal": {
+            "code": "capture_path_refused",
+            "status": 0,
+            "refused": true
+          },
+          "recorded_client_exit": 2
+        },
+        {
+          "case": "missing-parent",
+          "artifact": "capture-path-missing-parent.jsonl",
+          "actual_refusal": {
+            "code": "capture_path_refused",
+            "status": 0,
+            "refused": true
+          },
+          "recorded_client_exit": 2
+        },
+        {
+          "case": "traversal",
+          "artifact": "capture-path-traversal.jsonl",
+          "actual_refusal": {
+            "code": "capture_path_refused",
+            "status": 0,
+            "refused": true
+          },
+          "recorded_client_exit": 2
+        },
+        {
+          "case": "unc",
+          "artifact": "capture-path-unc.jsonl",
+          "actual_refusal": {
+            "code": "capture_path_refused",
+            "status": 0,
+            "refused": true
+          },
+          "recorded_client_exit": 2
+        },
+        {
+          "case": "extended-path",
+          "artifact": "capture-path-extended-path.jsonl",
+          "actual_refusal": {
+            "code": "capture_path_refused",
+            "status": 0,
+            "refused": true
+          },
+          "recorded_client_exit": 2
+        }
+      ],
+      "current_original_png_and_receipt_hashes_equal_recorded_baseline": true,
+      "current_sentinel_equals_expected_bytes": true,
+      "sentinel_sha256": "b3536f151458693f90759f358980ea523cffe50276ea7e15fe6d9cf41bd9ddeb",
+      "collision_png_currently_absent": true,
+      "recorded_pre_post_checks": {
+        "original_png_and_receipt_unchanged": true,
+        "receipt_sentinel_unchanged": true,
+        "collision_png_not_created": true,
+        "missing_parent_not_created": true,
+        "directory_names_unchanged": true
+      },
+      "pre_negative_directory_inventory_independently_reconstructed": false,
+      "native_capture_for_rejected_paths": false,
+      "junction_reparse_race_or_writer_replacement_acceptance": false
+    }
+  },
+  "screenshots": [
+    {
+      "record": "native-page-one-capture.jsonl",
+      "path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\shots\\qa19-native-one.png",
+      "bytes": 7344,
+      "sha256": "23e9e016402efefdc6ba8f46d20de0d03d84ba0e882ae8690eb0b4718569d7cb",
+      "width": 396,
+      "height": 589
+    }
+  ],
+  "visual_observations": {
+    "inspected_by_evidence_author": [
+      "native-page-one-capture.jsonl"
+    ],
+    "native_page_one": "Native PNG shows QA Portal one heading and Second fixture page / Third fixture page anchors on a white page."
+  },
+  "cleanup": {
+    "final_app": {
+      "record": "end-cleanup-identities.json",
+      "count": 2,
+      "all_captured_identities_absent": true,
+      "identities": [
+        {
+          "pid": 49360,
+          "start_ticks": "639292556676424452",
+          "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\84ca20af-20261102144048400\\fractalengine.exe"
+        },
+        {
+          "pid": 59208,
+          "start_ticks": "639292556676994854",
+          "exe_path": "C:\\Windows\\system32\\conhost.exe"
+        }
+      ]
+    },
+    "all_recorded_app": {
+      "record": "end-all-recorded-identities.json",
+      "count": 8,
+      "all_captured_identities_absent": true,
+      "identities": [
+        {
+          "pid": 49360,
+          "start_ticks": "639292556676424452",
+          "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\84ca20af-20261102144048400\\fractalengine.exe"
+        },
+        {
+          "pid": 59208,
+          "start_ticks": "639292556676994854",
+          "exe_path": "C:\\Windows\\system32\\conhost.exe"
+        },
+        {
+          "pid": 53500,
+          "start_ticks": "639292556711634764",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        },
+        {
+          "pid": 84596,
+          "start_ticks": "639292556712052958",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        },
+        {
+          "pid": 86064,
+          "start_ticks": "639292556713569025",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        },
+        {
+          "pid": 90436,
+          "start_ticks": "639292556713597982",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        },
+        {
+          "pid": 90704,
+          "start_ticks": "639292556714031472",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        },
+        {
+          "pid": 89584,
+          "start_ticks": "639292556715154228",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        }
+      ]
+    },
+    "fixture": {
+      "record": "end-fixture-cleanup-identities.json",
+      "count": 2,
+      "all_captured_identities_absent": true,
+      "identities": [
+        {
+          "pid": 90316,
+          "start_ticks": "639292555401230439",
+          "exe_path": "C:\\Program Files\\Python312\\python.exe"
+        },
+        {
+          "pid": 90320,
+          "start_ticks": "639292555401822852",
+          "exe_path": "C:\\Windows\\system32\\conhost.exe"
+        }
+      ]
+    }
+  },
+  "fixture_identity_from_retained_metadata": {
+    "pid": 90316,
+    "start_ticks": "639292555401230439",
+    "exe_path": "C:\\Program Files\\Python312\\python.exe"
+  },
+  "limitations": [
+    "The successful first native page does not establish second/third-page, back, forward, or reload acceptance.",
+    "The native backend terminally disabled during the second-link attempt; the runtime error prevents a clean-log claim.",
+    "Negative output path cases establish actual client preflight refusal only; the native backend was unavailable.",
+    "Current hash and sentinel checks corroborate retained pre/post comparison metadata; original directory inventory was not independently reconstructed.",
+    "No independent persisted-model API read followed the QA19 fixture URL Save."
+  ]
+}

@@ -1,0 +1,124 @@
+{
+  "scope": "actual client output-path preflight; no native capture invoked for rejected paths",
+  "native_backend_available_during_cases": false,
+  "results": [
+    {
+      "case": "existing-image",
+      "artifact": "capture-path-existing-image.jsonl",
+      "exit": 2,
+      "code": "capture_path_refused",
+      "passed": true
+    },
+    {
+      "case": "existing-receipt",
+      "artifact": "capture-path-existing-receipt.jsonl",
+      "exit": 2,
+      "code": "capture_path_refused",
+      "passed": true
+    },
+    {
+      "case": "ads",
+      "artifact": "capture-path-ads.jsonl",
+      "exit": 2,
+      "code": "capture_path_refused",
+      "passed": true
+    },
+    {
+      "case": "nul",
+      "artifact": "capture-path-nul.jsonl",
+      "exit": 2,
+      "code": "capture_path_refused",
+      "passed": true
+    },
+    {
+      "case": "nul-space",
+      "artifact": "capture-path-nul-space.jsonl",
+      "exit": 2,
+      "code": "capture_path_refused",
+      "passed": true
+    },
+    {
+      "case": "com",
+      "artifact": "capture-path-com.jsonl",
+      "exit": 2,
+      "code": "capture_path_refused",
+      "passed": true
+    },
+    {
+      "case": "lpt-superscript",
+      "artifact": "capture-path-lpt-superscript.jsonl",
+      "exit": 2,
+      "code": "capture_path_refused",
+      "passed": true
+    },
+    {
+      "case": "drive-relative",
+      "artifact": "capture-path-drive-relative.jsonl",
+      "exit": 2,
+      "code": "capture_path_refused",
+      "passed": true
+    },
+    {
+      "case": "trailing-dot",
+      "artifact": "capture-path-trailing-dot.jsonl",
+      "exit": 2,
+      "code": "capture_path_refused",
+      "passed": true
+    },
+    {
+      "case": "trailing-space",
+      "artifact": "capture-path-trailing-space.jsonl",
+      "exit": 2,
+      "code": "capture_path_refused",
+      "passed": true
+    },
+    {
+      "case": "control-character",
+      "artifact": "capture-path-control-character.jsonl",
+      "exit": 2,
+      "code": "capture_path_refused",
+      "passed": true
+    },
+    {
+      "case": "missing-parent",
+      "artifact": "capture-path-missing-parent.jsonl",
+      "exit": 2,
+      "code": "capture_path_refused",
+      "passed": true
+    },
+    {
+      "case": "traversal",
+      "artifact": "capture-path-traversal.jsonl",
+      "exit": 2,
+      "code": "capture_path_refused",
+      "passed": true
+    },
+    {
+      "case": "unc",
+      "artifact": "capture-path-unc.jsonl",
+      "exit": 2,
+      "code": "capture_path_refused",
+      "passed": true
+    },
+    {
+      "case": "extended-path",
+      "artifact": "capture-path-extended-path.jsonl",
+      "exit": 2,
+      "code": "capture_path_refused",
+      "passed": true
+    }
+  ],
+  "checks": {
+    "original_png_and_receipt_unchanged": true,
+    "receipt_sentinel_unchanged": true,
+    "collision_png_not_created": true,
+    "missing_parent_not_created": true,
+    "directory_names_unchanged": true
+  },
+  "original_hashes": [
+    "23e9e016402efefdc6ba8f46d20de0d03d84ba0e882ae8690eb0b4718569d7cb",
+    "8672c2fdec0d292d5fa360ef001705a5c1fe2572c116afb290ff0b09a83a1707"
+  ],
+  "all_passed": true,
+  "full_application_coverage": false
+}

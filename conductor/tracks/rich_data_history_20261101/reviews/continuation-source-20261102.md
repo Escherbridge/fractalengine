@@ -204,3 +204,67 @@ also finds no cold secretless read-capability import/peer bootstrap on the ordin
 open path. This is mandatory collaboration functionality work, with no runtime
 exploit or successful join claimed. Source transport/authority planning and actual
 two-owned-app acceptance remain required before FULL coverage.
+
+## QA18/19 integration checkpoint
+
+Mainb32195fa integrates terminal-close supervision. Checked stamp selection is
+b9271afe/e7e69c19, with84ca20af registering its reset resources and extending the
+existing App journey. Catalog5f374efc/26e0a2fd records143families/1375IDs,
+1361mandatory at audited84ca20af; fingerprint remains null and execution false.
+
+The sealed84ca20af production stage built in240.5seconds including helpers and
+sealing. It emitted one unused test-only StampRenderSource export warning. QA18
+and19 ran this exact stage against the retained world. Derived evidence review is
+pending; neither run is FULL, convergence, or integrated-test acceptance.
+
+Separate source reviewers approved the following frozen stacks before integration:
+
+- Mapf028/e9 is main0bccfdb9/f825c309. Complete native Petal row bytes, including
+  NONE/geometry/metadata, are captured and checked by promotion and Apply. Existing
+  regression geometry uses pinned-engine-compatible fixed literal SQL.
+- Creatione7eb/0df/9fb/935 is main5f1f5fcd/7fa38240/d310fe9c/7c25b859.
+  Initial creation is one scoped atomic baseline/operation transaction; committed
+  TRS/properties/version use manager materialization. Native completion is bound to
+  exact captured scope, dialog and nonce. Full queues never block the UI; unknown
+  completion cannot silently authorize another import.
+- Shared startup-nav5689 and receipt hydrationb306 are main77d71312/9a9ebd13.
+  Explicit navigation/Back suppress startup auto-selection without inventing an
+  intent transition during read-only hydration suppression.
+- Formsd2/cac is mainca28d1fe/edebf4e8. Shared text-input minimums cover remaining
+  native forms; scoped header geometry restores Context style before user content,
+  retains intended body style, and handles no-body restoration.
+- Nativec569 is main712c0e20. Only exact admitted page-one-to-two navigation may
+  retain intermediate old Source for one generation. Actual page-two Source plus
+  fresh fixed DOM observation remains required; all unrelated invalidations abort.
+
+Root resolved additive directory-guide conflicts while preserving both contracts.
+The GLTF existing journey merge retains both bounded queue admission and scaled
+geometry checks. Maine562696b updates that merged fixture to the typed request
+owner/time API and makes the test-only stamp export conditional. Combined-source
+review of these integration seams is pending; no tests have run.
+
+QA18 exposed duplicate unscoped native creation facts (QA-0051), and source followup
+found initial nonidentity transform loss (QA-0052). QA19's second-link terminal
+failure is QA-0053. Integrated source fixes await a fresh-stage replay; old retained
+history and failed attempts remain unchanged. P2P QA-0050 is still open in its
+isolated checkout; no paired-app or credential transfer execution is claimed.
+
+Independent combined review approved main source throughe562696b, including typed
+request ownership, complete creation/materialization, both startup latch branches,
+scoped UI style restoration, native-row map fences and expected native navigation.
+It approved the merged owner/time fixture and conditional test export. One trailing
+documentation blank line was removed. No compilation or test execution is implied.
+
+Independent evidence review approved QA18/19's bounded claims after correcting only
+the derived Point2 heading's UTF-8 encoding. All131 input hashes,129/68 JSON records,
+all retained log-line hashes and five PNG hashes/dimensions reproduce. QA18 has
+11WARN/0ERROR; QA19 has11WARN/1ERROR. Full node/history save-clear equality and local
+Model URL/TRS readbacks reproduce. Native page-one receipt and15 actual client path
+refusals reproduce. Exact cleanup is supported by retained records, with no fresh
+process inspection. Open defects, unavailable replay, failed stamp promotion,
+terminal second-link failure, and all FULL/test/convergence limits remain explicit.
+
+P2P re-review closes startup/transient-cursor lease issues but finds a remaining
+MED: Cancel/timeout after Join replaces an already-current Verse replica can close
+it while normal lifecycle sees unchanged cursor and never reopens. Isolated repair
+is assigned; the invite stack remains unintegrated and functionally incomplete.
