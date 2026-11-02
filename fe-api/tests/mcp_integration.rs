@@ -119,6 +119,7 @@ struct Model {
     /// asset_id -> content_type, as `CreateAsset` writes it (place_asset's GLB gate reads it).
     asset_types: HashMap<String, String>,
     terrain: HashMap<String, serde_json::Value>, // petal_id -> stored terrain
+    field_defs: HashMap<String, String>,         // id -> stored scope
     log: Vec<serde_json::Value>,
 }
 
@@ -626,6 +627,18 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
             vars,
             correlation_id,
         } => {
+            if sql.starts_with("SELECT scope FROM field_def") {
+                let data = vars
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|id| m.field_defs.get(id))
+                    .map(|scope| vec![json!({"scope":scope})])
+                    .unwrap_or_default();
+                return DbResult::QueryResult {
+                    data,
+                    correlation_id,
+                };
+            }
             m.log.push(json!({ "cmd": "RawQuery", "sql": sql }));
             // assets.rs::asset_reach: ownership columns of $asset_ids.
             if let Some(ids) = vars.get("asset_ids").and_then(|v| v.as_array()) {
@@ -2051,6 +2064,12 @@ async fn every_scoped_tool_rejects_a_foreign_scope_token() {
     let Emu { state, model, .. } = emu(true);
     let home = seed_chain(&model, "home");
     let foreign = seed_chain(&model, "foreign");
+    let foreign_field_def = ulid();
+    model
+        .lock()
+        .unwrap()
+        .field_defs
+        .insert(foreign_field_def.clone(), foreign.verse_scope());
     let mut scoped = 0;
     for spec in tool_specs() {
         if matches!(spec.scope_rule, ScopeRule::None | ScopeRule::Global) {
@@ -2075,7 +2094,7 @@ async fn every_scoped_tool_rejects_a_foreign_scope_token() {
             }),
             _ => json!({
                 "petal_id": foreign.petal, "node_id": foreign.node,
-                "fractal_id": foreign.fractal, "verse_id": foreign.verse, "field_def_id": foreign.node,
+                "fractal_id": foreign.fractal, "verse_id": foreign.verse, "field_def_id": foreign_field_def,
             }),
         };
         let resp = call_tool(&state, &c, spec.name, args).await;
