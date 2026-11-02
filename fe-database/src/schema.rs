@@ -424,7 +424,7 @@ define_table! {
         entity_type:  String                    => "TYPE string",
         key:          String                    => "TYPE string",
         value_type:   String                    => "TYPE string",
-        default_val:  Option<serde_json::Value> => "TYPE any FLEXIBLE",
+        default_val:  Option<serde_json::Value> => "TYPE option<null | bool | number | string | array | object> FLEXIBLE",
         #[serde(default, skip_serializing_if = "Option::is_none")]
         enforced_schema: Option<serde_json::Value> => "TYPE option<object> FLEXIBLE",
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -725,7 +725,7 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("edit_seq backfill: {e}"))?;
     Repo::<Asset>::apply_schema(db).await?;
     Repo::<FieldDef>::apply_schema(db).await?;
-    db.query("DEFINE FIELD OVERWRITE default_val ON TABLE field_def TYPE any FLEXIBLE")
+    db.query("DEFINE FIELD OVERWRITE default_val ON TABLE field_def TYPE option<null | bool | number | string | array | object> FLEXIBLE")
         .await?
         .check()?;
     Repo::<NodeLog>::apply_schema(db).await?;
