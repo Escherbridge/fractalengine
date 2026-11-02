@@ -1571,3 +1571,38 @@ The scene factory attaches the actual context's shared PluginLease before its
 scope handshake. Requests keep that lease through the DB queue, and the adapter
 checks it again before delivering read payloads. Already admitted commits retain
 their actual receipt after revocation; transport loss remains an unknown outcome.
+
+
+## §qa-report-diagnostic
+
+The existing argument-free Owner/input-opt-in ui-state projection includes one
+terrain_diagnostic object. Existing ViewScope and same-frame navigation checks
+run before projection. Diagnostic selection additionally requires its entity
+marker, node ID and active verse/fractal/petal tree membership; there is no
+all-object fallback or caller-supplied node/coordinate input.
+
+Only that node's matching SceneAnalysisSnapshot bounds/classification/revision
+are exposed, without its name or material JSON. Finite ordered positive AABB
+extents are required. The matching ActivePetalTerrain contributes assignment
+revision, enabled state and effective world scale. Runtime origin is read from
+ActiveTileSource.projection, which grounding can elevate independently of the
+stored configuration. Its horizontal origin must equal the active config;
+grounding elevation may differ. Missing, mismatched, ambiguous or invalid inputs return
+explicit unavailable/stale reasons, without another petal's IDs or geometry.
+
+With valid scoped inputs there are exactly five pristine height_at reads: AABB
+XZ center and four XZ corners, in world units. Each has a finite base_height or
+null with missing/nonfinite status. Partial coverage is incomplete, never an
+invented zero. No baked/composite proposal sampling, terrain mutation, forced
+residency, registry access, arbitrary queries or additional transport is added.
+
+sampled_at_frame labels the service-time projection. SceneAnalysisSnapshot is
+throttled and exposes no source-update frame; the height field exposes no unique
+residency revision. Assignment revision is not a height-field epoch. terrain_epoch_verified is
+explicitly false even when all five samples are finite; available describes
+measurement availability, not verified resource epochs or fresh report inputs.
+This is not
+a replay of any earlier report; pair with scene revision and stable assignment/
+origin during live verification, preserving temporal uncertainty explicitly.
+The existing grounded-camera journey carries diagnostic boundary cases; its
+execution and the live overlap oracle remain pending the integrated sweep/stage.

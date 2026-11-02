@@ -239,6 +239,142 @@ pub(crate) fn flatten(update: &ak::TreeUpdate, filter: &TreeFilter) -> Vec<Value
 }
 
 #[derive(SystemParam)]
+struct UiDiagnostics<'w> {
+    clock: Res<'w, Time<Real>>,
+    lock: Option<Res<'w, fe_renderer::camera::CameraCaptureLock>>,
+    scene: Option<Res<'w, fe_renderer::scene_analysis::SceneAnalysisSnapshot>>,
+    terrain: Option<Res<'w, fe_terrain::petal_binding::ActivePetalTerrain>>,
+    source: Option<Res<'w, fe_terrain::petal_binding::ActiveTileSource>>,
+    heights: Option<Res<'w, fe_renderer::terrain_height::TerrainHeightField>>,
+}
+
+/// Selected-only request-time report inputs; see AGENTS.md §qa-report-diagnostic.
+pub(super) fn selected_terrain_diagnostic(
+    node_id: Option<&str>,
+    petal_id: Option<&str>,
+    scene: Option<&fe_renderer::scene_analysis::SceneAnalysisSnapshot>,
+    terrain: Option<&fe_terrain::petal_binding::ActivePetalTerrain>,
+    source: Option<&fe_terrain::petal_binding::ActiveTileSource>,
+    heights: Option<&fe_renderer::terrain_height::TerrainHeightField>,
+    frame: u32,
+) -> Value {
+    let unavailable = |status: &str, reason: &str| {
+        json!({
+            "status":status,"reason":reason,"sampled_at_frame":frame,
+            "temporal_scope":"request_time_only_not_a_report_replay"
+        })
+    };
+    let Some((node_id, petal_id)) = node_id.zip(petal_id) else {
+        return unavailable("unavailable", "selection_unavailable");
+    };
+    let Some(scene) = scene else {
+        return unavailable("unavailable", "scene_snapshot_unavailable");
+    };
+    if scene.petal_id.as_deref() != Some(petal_id) {
+        return unavailable("stale", "scene_petal_mismatch");
+    }
+    if scene.objects.len() > fe_renderer::scene_analysis::SCENE_OBJECT_LIMIT {
+        return unavailable("unavailable", "scene_snapshot_exceeds_bound");
+    }
+    let mut objects = scene
+        .objects
+        .iter()
+        .filter(|object| object.node_id == node_id);
+    let Some(object) = objects.next() else {
+        return unavailable("unavailable", "selected_object_missing_or_omitted");
+    };
+    if objects.next().is_some() {
+        return unavailable("unavailable", "selected_object_ambiguous");
+    }
+    let geometry = match object.geometry {
+        fe_renderer::scene_analysis::ObjectGeometry::AxisAlignedSolidBox => {
+            "axis_aligned_solid_box"
+        }
+        fe_renderer::scene_analysis::ObjectGeometry::ConservativeWorldBounds => {
+            "conservative_world_bounds"
+        }
+        fe_renderer::scene_analysis::ObjectGeometry::Unavailable => {
+            return unavailable("unavailable", "selected_geometry_unavailable");
+        }
+    };
+    let Some([min, max]) = object.bounds else {
+        return unavailable("unavailable", "selected_bounds_unavailable");
+    };
+    if (0..3).any(|axis| {
+        !min[axis].is_finite()
+            || !max[axis].is_finite()
+            || !(max[axis] - min[axis]).is_finite()
+            || max[axis] <= min[axis]
+    }) {
+        return unavailable("unavailable", "selected_bounds_invalid");
+    }
+    let Some(terrain) = terrain else {
+        return unavailable("unavailable", "terrain_assignment_unavailable");
+    };
+    if terrain.petal_id.as_deref() != Some(petal_id) {
+        return unavailable("stale", "terrain_petal_mismatch");
+    }
+    let Some(config) = terrain.config.as_ref() else {
+        return unavailable("unavailable", "terrain_unbound");
+    };
+    if !config.enabled {
+        return unavailable("unavailable", "terrain_disabled");
+    }
+    let Some(origin) = source.and_then(|source| source.projection.as_ref()) else {
+        return unavailable("unavailable", "runtime_projection_unavailable");
+    };
+    let scale = config.effective_world_scale();
+    if !config.origin.origin_lat.is_finite()
+        || !config.origin.origin_lon.is_finite()
+        || !origin.origin_lat.is_finite()
+        || !origin.origin_lon.is_finite()
+        || !origin.origin_ele.is_finite()
+        || !scale.is_finite()
+        || scale <= 0.0
+        || !(-90.0..=90.0).contains(&origin.origin_lat)
+        || !(-180.0..=180.0).contains(&origin.origin_lon)
+    {
+        return unavailable("unavailable", "runtime_terrain_metadata_invalid");
+    }
+    if origin.origin_lat != config.origin.origin_lat
+        || origin.origin_lon != config.origin.origin_lon
+    {
+        return unavailable("stale", "runtime_projection_horizontal_origin_mismatch");
+    }
+    let center = |axis: usize| ((f64::from(min[axis]) + f64::from(max[axis])) * 0.5) as f32;
+    let points = [
+        ("center", [center(0), center(2)]),
+        ("min_x_min_z", [min[0], min[2]]),
+        ("min_x_max_z", [min[0], max[2]]),
+        ("max_x_min_z", [max[0], min[2]]),
+        ("max_x_max_z", [max[0], max[2]]),
+    ];
+    let mut complete = true;
+    let probes = points.map(|(point, xz)| {
+        let (height, status) = match heights.and_then(|field| field.height_at(xz[0], xz[1])) {
+            Some(height) if height.is_finite() => (Some(height), "finite"),
+            Some(_) => (None, "nonfinite"),
+            None => (None, "missing"),
+        };
+        complete &= status == "finite";
+        json!({"point":point,"xz":xz,"base_height":height,"status":status})
+    });
+    json!({"status":if complete {"available"} else {"incomplete"},
+        "reason":if complete {None} else {Some(if heights.is_none() {"height_field_unavailable"} else {"pristine_samples_missing_or_nonfinite"})},
+        "sampled_at_frame":frame,"temporal_scope":"request_time_only_not_a_report_replay",
+        "node_id":node_id,"petal_id":petal_id,"scene_revision":scene.revision,
+        "scene_snapshot_freshness":"throttled_source_update_frame_unavailable",
+        "terrain_assignment_revision":terrain.revision,"terrain_enabled":config.enabled,
+        "terrain_epoch_verified":false,
+        "terrain_epoch_limitation":"projection_and_height_field_have_no_assignment_stamp",
+        "world_aabb":{"min":min,"max":max,"source":"SceneAnalysisSnapshot"},"geometry":geometry,
+        "coordinate_space":"world_units","world_scale":scale,
+        "runtime_origin_source":"ActiveTileSource.projection",
+        "runtime_origin":{"lat":origin.origin_lat,"lon":origin.origin_lon,"elevation_m":origin.origin_ele},
+        "height_source":"pristine_resident_height_field","probes":probes})
+}
+
+#[derive(SystemParam)]
 struct UiState<'w, 's> {
     topbar: ResMut<'w, fe_ui::ui_shell::topbar::TopbarState>,
     nav: Res<'w, NavigationManager>,
@@ -254,8 +390,7 @@ struct UiState<'w, 's> {
     gpx: Res<'w, fe_ui::gpx_ops::PendingGpxOps>,
     path: Res<'w, fe_ui::path_ops::PendingPathOps>,
     gis: Res<'w, fe_ui::gis::GisPanelState>,
-    clock: Res<'w, Time<Real>>,
-    lock: Option<Res<'w, fe_renderer::camera::CameraCaptureLock>>,
+    diagnostic: UiDiagnostics<'w>,
 }
 
 fn dialog_title(dialog: &ActiveDialog) -> Option<&'static str> {
@@ -280,9 +415,20 @@ impl UiState<'_, '_> {
         let selection = self.nodes.selected.as_ref().and_then(|selected| {
             let (transform, marker) = self.transforms.get(selected.entity).ok()?;
             let petal = self.nav.active_petal_id.as_deref()?;
-            let in_verse = self.verses.verses.iter().filter(|v| Some(v.id.as_str()) == self.nav.active_verse_id.as_deref()).flat_map(|v| &v.fractals).filter(|f| Some(f.id.as_str()) == self.nav.active_fractal_id.as_deref()).flat_map(|f| &f.petals).any(|p| p.id == petal);
+            let in_verse = self.verses.verses.iter().filter(|v| Some(v.id.as_str()) == self.nav.active_verse_id.as_deref()).flat_map(|v| &v.fractals).filter(|f| Some(f.id.as_str()) == self.nav.active_fractal_id.as_deref()).flat_map(|f| &f.petals).any(|p| p.id == petal && p.nodes.iter().any(|node| node.id == selected.node_id));
             (marker.petal_id == petal && marker.node_id == selected.node_id && in_verse).then(|| json!({"node_id":selected.node_id,"transform":{"position":transform.translation.to_array(),"rotation":transform.rotation.to_array(),"scale":transform.scale.to_array()}}))
         });
+        let terrain_diagnostic = selected_terrain_diagnostic(
+            selection
+                .as_ref()
+                .and_then(|selection| selection["node_id"].as_str()),
+            self.nav.active_petal_id.as_deref(),
+            self.diagnostic.scene.as_deref(),
+            self.diagnostic.terrain.as_deref(),
+            self.diagnostic.source.as_deref(),
+            self.diagnostic.heights.as_deref(),
+            frame,
+        );
         let section = active_section(
             &self.right,
             selection.is_some(),
@@ -304,13 +450,13 @@ impl UiState<'_, '_> {
             + self.path.0.len()
             + usize::from(self.ui.join_request.pending)
             + usize::from(self.ui.gltf_import_request.pending);
-        let notice = self.ui.active_notice(self.clock.elapsed_secs_f64()).map(|(n, _)| json!({"id":n.id,"severity":format!("{:?}",n.severity).to_ascii_lowercase(),"text":redact(&n.text)}));
+        let notice = self.ui.active_notice(self.diagnostic.clock.elapsed_secs_f64()).map(|(n, _)| json!({"id":n.id,"severity":format!("{:?}",n.severity).to_ascii_lowercase(),"text":redact(&n.text)}));
         json!({"frame":frame,"coordinate_space":"physical_pixels","pixels_per_point":ppp,
             "navigation":{"verse_id":self.nav.active_verse_id,"verse_name":redact(&self.nav.active_verse_name),"fractal_id":self.nav.active_fractal_id,"fractal_name":redact(&self.nav.active_fractal_name),"petal_id":self.nav.active_petal_id,"petal_name":self.nav.active_petal_id.as_ref().and_then(|id| self.verses.find_petal(id)).map(|p| redact(&p.name))},
-            "selection":selection,"active_tool":format!("{:?}",self.tool.active_tool).to_ascii_lowercase(),"open_windows":windows,"active_section":section.map(|s| s.slug()),
+            "selection":selection,"terrain_diagnostic":terrain_diagnostic,"active_tool":format!("{:?}",self.tool.active_tool).to_ascii_lowercase(),"open_windows":windows,"active_section":section.map(|s| s.slug()),
             "viewport":{"x":viewport.min.x*ppp,"y":viewport.min.y*ppp,"w":viewport.width()*ppp,"h":viewport.height()*ppp},
             "notice":notice,"status":self.ui.conditions().map(|(key,text)| json!({"key":key,"text":redact(text)})).collect::<Vec<_>>(),
-            "pending":{"ui_known":pending,"db":null,"sync":null},"settled":!self.nodes.gesture_active && self.lock.is_none() && pending==0,
+            "pending":{"ui_known":pending,"db":null,"sync":null},"settled":!self.nodes.gesture_active && self.diagnostic.lock.is_none() && pending==0,
             "settled_definition":"no active UI gesture, capture lock or exposed pending UI operations; DB/sync and terrain completion unknown"})
     }
 }

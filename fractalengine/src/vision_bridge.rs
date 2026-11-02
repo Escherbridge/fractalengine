@@ -2607,6 +2607,221 @@ mod tests {
         let (transform, _, _) = h.main_state();
         assert!((state.pose.position[0] as f32 - transform.translation.x).abs() < 1e-5);
         assert!(state.pose.geo.is_some(), "position reads back as lat/lon");
+
+        use fe_renderer::scene_analysis::{
+            ObjectGeometry, SceneAnalysisSnapshot, SceneObjectBounds,
+        };
+        use fe_renderer::terrain_height::{HeightTile, TerrainHeightField};
+        let diagnostic = crate::qa_debug_bridge::selected_terrain_diagnostic;
+        let world = h.app.world();
+        let active = world.resource::<ActivePetalTerrain>();
+        let source = world.resource::<ActiveTileSource>();
+        let mut scene = SceneAnalysisSnapshot {
+            petal_id: Some("p".into()),
+            revision: 17,
+            objects: vec![SceneObjectBounds {
+                node_id: "selected".into(),
+                name: "unexported object name".into(),
+                bounds: Some([[-1.25, 0.2, -1.25], [1.25, 1.2, 1.25]]),
+                geometry: ObjectGeometry::AxisAlignedSolidBox,
+                selectable: true,
+                material_json: Some("unexported material bag".into()),
+                material_loaded: true,
+                material_truncated: false,
+            }],
+            ..Default::default()
+        };
+        let mut heights = TerrainHeightField::default();
+        heights.insert(
+            (1, 0, 0),
+            HeightTile {
+                anchor: Vec3::new(-10.0, -0.13673553, -10.0),
+                tile_size: 20.0,
+                grid: vec![0.0; 4],
+                width: 2,
+                height: 2,
+            },
+        );
+        let result = diagnostic(
+            Some("selected"),
+            Some("p"),
+            Some(&scene),
+            Some(active),
+            Some(source),
+            Some(&heights),
+            123,
+        );
+        assert_eq!(result["status"], "available");
+        assert_eq!(result["scene_revision"], 17);
+        assert_eq!(result["terrain_assignment_revision"], active.revision);
+        assert_eq!(result["terrain_epoch_verified"], false);
+        assert_eq!(result["sampled_at_frame"], 123);
+        assert_eq!(
+            result["runtime_origin"]["elevation_m"], 312.5,
+            "runtime projection wins over persisted zero"
+        );
+        assert_eq!(
+            result["world_aabb"]["min"],
+            serde_json::json!([-1.25, 0.2f32, -1.25])
+        );
+        assert_eq!(result["geometry"], "axis_aligned_solid_box");
+        let probes = result["probes"].as_array().unwrap();
+        assert_eq!(probes.len(), 5);
+        assert_eq!(probes[0]["xz"], serde_json::json!([0.0, 0.0]));
+        for (probe, expected) in
+            probes[1..]
+                .iter()
+                .zip([[-1.25, -1.25], [-1.25, 1.25], [1.25, -1.25], [1.25, 1.25]])
+        {
+            assert_eq!(probe["xz"], serde_json::json!(expected));
+        }
+        for probe in probes {
+            assert_eq!(probe["status"], "finite");
+            assert!((probe["base_height"].as_f64().unwrap() + 0.13673553).abs() < 1e-7);
+        }
+        assert!(!result.to_string().contains("unexported"));
+        assert_eq!(
+            result["temporal_scope"],
+            "request_time_only_not_a_report_replay"
+        );
+        for node in [None, Some("not-the-selection")] {
+            let refused = diagnostic(
+                node,
+                Some("p"),
+                Some(&scene),
+                Some(active),
+                Some(source),
+                Some(&heights),
+                124,
+            );
+            assert_eq!(refused["status"], "unavailable");
+            assert!(refused.get("probes").is_none());
+        }
+        scene.petal_id = Some("foreign".into());
+        let stale = diagnostic(
+            Some("selected"),
+            Some("p"),
+            Some(&scene),
+            Some(active),
+            Some(source),
+            Some(&heights),
+            124,
+        );
+        assert_eq!(stale["reason"], "scene_petal_mismatch");
+        assert_eq!(stale["status"], "stale");
+        assert!(stale.get("world_aabb").is_none());
+        scene.petal_id = Some("p".into());
+        let foreign = ActivePetalTerrain {
+            petal_id: Some("foreign".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            diagnostic(
+                Some("selected"),
+                Some("p"),
+                Some(&scene),
+                Some(&foreign),
+                Some(source),
+                Some(&heights),
+                124
+            )["reason"],
+            "terrain_petal_mismatch"
+        );
+        let empty_heights = TerrainHeightField::default();
+        for unavailable_heights in [None, Some(&empty_heights)] {
+            let missing = diagnostic(
+                Some("selected"),
+                Some("p"),
+                Some(&scene),
+                Some(active),
+                Some(source),
+                unavailable_heights,
+                125,
+            );
+            assert_eq!(missing["status"], "incomplete");
+            assert_eq!(missing["probes"].as_array().unwrap().len(), 5);
+            for probe in missing["probes"].as_array().unwrap() {
+                assert_eq!(probe["status"], "missing");
+                assert!(probe["base_height"].is_null());
+            }
+        }
+        heights.insert(
+            (1, 0, 0),
+            HeightTile {
+                anchor: Vec3::new(-10.0, 0.0, -10.0),
+                tile_size: 20.0,
+                grid: vec![f32::NAN; 4],
+                width: 2,
+                height: 2,
+            },
+        );
+        let invalid_samples = diagnostic(
+            Some("selected"),
+            Some("p"),
+            Some(&scene),
+            Some(active),
+            Some(source),
+            Some(&heights),
+            126,
+        );
+        assert_eq!(invalid_samples["status"], "incomplete");
+        for probe in invalid_samples["probes"].as_array().unwrap() {
+            assert_eq!(probe["status"], "nonfinite");
+            assert!(probe["base_height"].is_null());
+        }
+        assert_eq!(
+            diagnostic(
+                Some("selected"),
+                Some("p"),
+                Some(&scene),
+                Some(active),
+                None,
+                Some(&heights),
+                126
+            )["reason"],
+            "runtime_projection_unavailable"
+        );
+        let wrong_projection = ActiveTileSource {
+            projection: Some(GeoProjection::new(48.0, -121.5, 312.5)),
+            ..Default::default()
+        };
+        let stale_projection = diagnostic(
+            Some("selected"),
+            Some("p"),
+            Some(&scene),
+            Some(active),
+            Some(&wrong_projection),
+            Some(&heights),
+            126,
+        );
+        assert_eq!(stale_projection["status"], "stale");
+        assert!(stale_projection.get("runtime_origin").is_none());
+        scene.objects[0].bounds.as_mut().unwrap()[1][0] = -1.25;
+        assert_eq!(
+            diagnostic(
+                Some("selected"),
+                Some("p"),
+                Some(&scene),
+                Some(active),
+                Some(source),
+                Some(&heights),
+                127
+            )["reason"],
+            "selected_bounds_invalid"
+        );
+        scene.objects[0].bounds = Some([[0.0; 3], [f32::INFINITY; 3]]);
+        assert_eq!(
+            diagnostic(
+                Some("selected"),
+                Some("p"),
+                Some(&scene),
+                Some(active),
+                Some(source),
+                Some(&heights),
+                127
+            )["reason"],
+            "selected_bounds_invalid"
+        );
     }
 
     #[test]
