@@ -76,10 +76,10 @@ pub struct PropertySchema {
     pub max_length: Option<usize>,
     /// Inclusive numeric minimum.
     #[serde(default)]
-    pub minimum: Option<f64>,
+    pub minimum: Option<serde_json::Number>,
     /// Inclusive numeric maximum.
     #[serde(default)]
-    pub maximum: Option<f64>,
+    pub maximum: Option<serde_json::Number>,
     /// Allowed values, compared with exact JSON types.
     #[serde(default, rename = "enum")]
     pub choices: Option<Vec<Value>>,
@@ -93,6 +93,7 @@ impl EnforcedPropertySchema {
     /// Parse and check a descriptor, rejecting unsupported or inconsistent rules.
     pub fn parse(value: &Value) -> Result<Self, String> {
         check_size(value)?;
+        reject_null_constraints(&value["schema"])?;
         let descriptor: Self = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
         if descriptor.version == 0 {
             return Err("schema version must start at one".into());
@@ -108,6 +109,74 @@ impl EnforcedPropertySchema {
         check_value_depth(value, 0)?;
         self.schema.validate_at(value, "$", 0)
     }
+}
+
+fn reject_null_constraints(rule: &Value) -> Result<(), String> {
+    for key in [
+        "items",
+        "minItems",
+        "maxItems",
+        "minLength",
+        "maxLength",
+        "minimum",
+        "maximum",
+        "enum",
+    ] {
+        if rule.get(key).is_some_and(Value::is_null) {
+            return Err(format!("schema constraint {key} cannot be null"));
+        }
+    }
+    if let Some(properties) = rule.get("properties").and_then(Value::as_object) {
+        for child in properties.values() {
+            reject_null_constraints(child)?;
+        }
+    }
+    if let Some(items) = rule.get("items") {
+        reject_null_constraints(items)?;
+    }
+    Ok(())
+}
+
+fn compare_numbers(
+    a: &serde_json::Number,
+    b: &serde_json::Number,
+) -> Result<std::cmp::Ordering, String> {
+    use std::cmp::Ordering;
+    if let (Some(a), Some(b)) = (a.as_i64(), b.as_i64()) {
+        return Ok(a.cmp(&b));
+    }
+    if let (Some(a), Some(b)) = (a.as_u64(), b.as_u64()) {
+        return Ok(a.cmp(&b));
+    }
+    if let (Some(a), Some(b)) = (a.as_i64(), b.as_u64()) {
+        return Ok(if a < 0 {
+            Ordering::Less
+        } else {
+            (a as u64).cmp(&b)
+        });
+    }
+    if let (Some(a), Some(b)) = (a.as_u64(), b.as_i64()) {
+        return Ok(if b < 0 {
+            Ordering::Greater
+        } else {
+            a.cmp(&(b as u64))
+        });
+    }
+    // Mixed integer/float comparisons refuse values outside exact f64 integer precision.
+    for number in [a, b] {
+        if (number.is_i64() || number.is_u64())
+            && number
+                .as_f64()
+                .is_some_and(|n| n.abs() >= 9_007_199_254_740_992.0)
+        {
+            return Err(
+                "mixed integer/float bound comparison exceeds exact numeric precision".into(),
+            );
+        }
+    }
+    a.as_f64()
+        .and_then(|a| b.as_f64().and_then(|b| a.partial_cmp(&b)))
+        .ok_or_else(|| "non-finite numeric bound".into())
 }
 
 fn check_value_depth(value: &Value, depth: usize) -> Result<(), String> {
@@ -175,7 +244,13 @@ impl PropertySchema {
                 .min_length
                 .zip(self.max_length)
                 .is_some_and(|(a, b)| a > b)
-            || self.minimum.zip(self.maximum).is_some_and(|(a, b)| a > b)
+            || self
+                .minimum
+                .as_ref()
+                .zip(self.maximum.as_ref())
+                .map(|(a, b)| compare_numbers(a, b))
+                .transpose()?
+                .is_some_and(|order| order.is_gt())
         {
             return Err("minimum constraint exceeds maximum".into());
         }
@@ -256,9 +331,19 @@ impl PropertySchema {
                 path,
             )?;
         }
-        if let Some(number) = value.as_f64() {
-            if self.minimum.is_some_and(|min| number < min)
-                || self.maximum.is_some_and(|max| number > max)
+        if let Some(number) = value.as_number() {
+            if self
+                .minimum
+                .as_ref()
+                .map(|min| compare_numbers(number, min))
+                .transpose()?
+                .is_some_and(|order| order.is_lt())
+                || self
+                    .maximum
+                    .as_ref()
+                    .map(|max| compare_numbers(number, max))
+                    .transpose()?
+                    .is_some_and(|order| order.is_gt())
             {
                 return Err(format!("{path}: number is outside bounds"));
             }

@@ -292,6 +292,20 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
             "maxItems":3, "items":{"type":"number"}}
     }});
     let parsed = fe_sdk::property_schema::EnforcedPropertySchema::parse(&descriptor).unwrap();
+    let exact_bound = fe_sdk::property_schema::EnforcedPropertySchema::parse(
+        &serde_json::json!({"version":1,"schema":{"type":"integer","maximum":9007199254740992_u64}})).unwrap();
+    assert!(exact_bound
+        .validate(&serde_json::json!(9007199254740993_u64))
+        .is_err());
+    for schema in [
+        serde_json::json!({"type":"string","items":null}),
+        serde_json::json!({"type":"number","maximum":null}),
+    ] {
+        assert!(fe_sdk::property_schema::EnforcedPropertySchema::parse(
+            &serde_json::json!({"version":1,"schema":schema})
+        )
+        .is_err());
+    }
     assert!(parsed.validate(&anchors).is_ok());
     assert!(parsed
         .validate(&serde_json::json!("[[0,0,0],[3,0,4]]"))
