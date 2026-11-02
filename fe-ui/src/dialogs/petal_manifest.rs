@@ -5,14 +5,15 @@ use bevy_egui::egui;
 use crate::accessibility::ResponseExt;
 
 use super::ActiveDialog;
-use crate::actions::{UiManager, MANIFEST_SAVE_UNAVAILABLE};
+use crate::actions::{UiManager, UiAction};
 use crate::terrain_map::manifest::ManifestHexonEntry;
 use crate::theme;
 use crate::ui_shell::modal::{
     close_confirmation_scope, confirmation_scope, dirty_close, DirtyClose,
 };
 
-pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
+pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager, nav: &crate::navigation_manager::NavigationManager, db: &crossbeam::channel::Sender<fe_runtime::messages::DbCommand>) {
+    super::requirements_state::request_if_needed(ui_mgr, nav, db, ctx.input(|i|i.time));
     let ActiveDialog::PetalManifest {
         ref petal_id,
         ref petal_name,
@@ -21,6 +22,7 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
         ref mut add_hexon_id_buf,
         ref mut add_hexon_type_buf,
         ref mut dirty,
+        ref mut requirements_state,
         ..
     } = ui_mgr.active_dialog
     else {
@@ -28,6 +30,8 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
     };
 
     let current_petal_id = petal_id.clone();
+    let mut save = None;
+    let mut review = None;
     let mut close = false;
     let mut still_open = true;
     let scope = confirmation_scope(ctx, "petal_manifest", &current_petal_id);
@@ -65,14 +69,33 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
             }
 
             ui.label(
-                egui::RichText::new("Hexon requirements for this petal. Nodes referencing missing hexons will show a fallback sign.")
+                egui::RichText::new("Declare content dependencies for this Petal. This list does not install content or change scene visibility.")
                     .small()
                     .color(theme::TEXT_MUTED),
             );
             ui.add_space(8.0);
 
-            ui.label(egui::RichText::new("Local draft only. Saved requirements are not loaded here.").small().color(theme::TEXT_MUTED));
-            ui.label(egui::RichText::new(MANIFEST_SAVE_UNAVAILABLE).small().color(theme::TEXT_MUTED));
+            ui.label(requirements_state.status());
+            if *dirty {ui.label("Unsaved draft changes.");}
+            if let Some(error) = &requirements_state.error { ui.colored_label(theme::STATUS_OFFLINE, error); }
+            if requirements_state.error.is_some() && ui.button("Reload saved data (keep draft)").observed(ui).clicked() { requirements_state.refresh(); }
+            if requirements_state.needs_review {
+                ui.label("Saved data differs from your retained draft. Review it before saving.");
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Use saved declaration").observed(ui).clicked() { review=Some(true); }
+                    if ui.button("Keep my draft against loaded data").observed(ui).clicked() { review=Some(false); }
+                });
+            }
+            if !requirements_state.editable() {
+                if ui.button("Copy retained draft JSON").observed(ui).clicked() {
+                    match serde_json::to_string_pretty(&*manifest) {
+                        Ok(json)=>{ui.ctx().copy_text(json);copied_json=true;},
+                        Err(_)=>copy_failed=true,
+                    }
+                }
+                if ui.button("Close").observed(ui).clicked() { close=true; }
+                return;
+            }
             ui.label(egui::RichText::new("Render distance is configured in Settings.").small().color(theme::TEXT_DIM));
             ui.add_space(12.0);
             ui.separator();
@@ -170,7 +193,7 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
             ctx.data_mut(|data| data.insert_temp(scope.with("manual_id"), manual));
             ui.horizontal_wrapped(|ui| {
                 ui.label("Type:");
-                const TYPES: [&str; 12] = ["Scene", "Model", "Material", "Skybox", "Terrain", "TerrainTileset", "GpxCollection", "Surface", "Sound", "VisualLayer", "Theme", "Bundle"];
+                const TYPES: [&str;12] = fe_runtime::petal_requirements::HEXON_TYPES;
                 egui::ComboBox::from_id_salt(scope.with("hexon_type"))
                     .selected_text(if add_hexon_type_buf.is_empty() { "Choose type" } else { add_hexon_type_buf.as_str() })
                     .show_ui(ui, |ui| {
@@ -179,11 +202,12 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
                         }
                     }).response.named(ui, "Hexon type to add");
                 let duplicate = manifest.hexons.iter().any(|entry| entry.hexon_id == add_hexon_id_buf.trim());
-                let can_add = !add_hexon_id_buf.trim().is_empty() && !duplicate && TYPES.contains(&add_hexon_type_buf.as_str());
+                let can_add = manifest.hexons.len() < 256 && fe_runtime::safe_id::is_safe_path_id(add_hexon_id_buf.trim()) && !duplicate && TYPES.contains(&add_hexon_type_buf.as_str());
                 if ui.add_enabled(can_add, egui::Button::new("Add").fill(theme::BG_SAVE)).observed(ui)
                     .on_disabled_hover_text("Choose an ID and type; an existing requirement cannot be added twice.").clicked() {
                     manifest.hexons.push(ManifestHexonEntry { hexon_id: add_hexon_id_buf.trim().to_string(), hexon_type: add_hexon_type_buf.clone(), required: true });
                     add_hexon_id_buf.clear();
+                    add_hexon_type_buf.clear();
                     *dirty = true;
                 }
             });
@@ -221,7 +245,11 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
             // --- Save / Close ---
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                ui.add_enabled(false, egui::Button::new("Save").fill(theme::BG_SAVE)).observed(ui).on_disabled_hover_text(MANIFEST_SAVE_UNAVAILABLE);
+                let valid = manifest.validate().is_ok();
+                if ui.add_enabled(*dirty && valid && add_hexon_id_buf.is_empty() && add_hexon_type_buf.is_empty() && requirements_state.can_save(), egui::Button::new("Save").fill(theme::BG_SAVE)).named(ui,"Save petal requirements").on_disabled_hover_text("Load saved data, use Manager access and apply valid Add fields before saving.").clicked() {
+                    save=Some(manifest.clone());
+                }
+                if !valid { ui.label("Requirements contain an invalid or duplicate ID or unsupported type."); }
                 if ui.button("Copy JSON").named(ui, "Copy petal requirements JSON").clicked() {
                     match serde_json::to_string_pretty(&*manifest) {
                         Ok(json) => { ui.ctx().copy_text(json); copied_json = true; }
@@ -246,6 +274,10 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
     if decision == DirtyClose::Close {
         close_confirmation_scope(ctx, "petal_manifest");
         ui_mgr.close_dialog();
+    }
+    if let Some(use_saved)=review {super::requirements_state::review(ui_mgr,use_saved);}
+    if let Some(manifest)=save {
+        ui_mgr.push_action(UiAction::PetalManifestSave {petal_id:current_petal_id,manifest});
     }
     if copied_json {
         ui_mgr.show_toast(

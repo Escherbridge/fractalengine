@@ -671,7 +671,7 @@ pub fn spawn_db_thread_shared(
                     Ok(DbCommand::CreatePetal { fractal_id, name }) => {
                         match handlers::crud::create_petal_handler(&db, &fractal_id, &name, &local_did).await {
                             Ok(id) => {
-                                if let Err(error) = handlers::local_catalog::publish_created_petal(
+                                if let Err(error) = handlers::local_catalog::publish_petal(
                                     &db, &blob_store, repl_tx.as_ref(), &local_did, &id,
                                 ).await {
                                     tracing::warn!(petal_id = %id, "committed Petal catalog publish failed: {error:#}");
@@ -1511,7 +1511,7 @@ pub fn spawn_db_thread_shared(
                     Ok(DbCommand::SetPetalRequirements { expected, requirements, correlation_id }) => {
                         let result=match handlers::petal_requirements::set(&db,&local_did,&expected,&requirements).await {
                             Ok(snapshot)=> {
-                                if let Err(error)=handlers::local_catalog::publish_created_petal(&db,&blob_store,repl_tx.as_ref(),&local_did,&snapshot.petal_id).await {
+                                if let Err(error)=handlers::local_catalog::publish_petal(&db,&blob_store,repl_tx.as_ref(),&local_did,&snapshot.petal_id).await {
                                     tracing::warn!(%error,"Requirements committed; catalog publication deferred until replica recovery");
                                 }
                                 DbResult::PetalRequirementsLoaded {snapshot,correlation_id}

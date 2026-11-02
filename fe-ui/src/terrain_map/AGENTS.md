@@ -85,3 +85,9 @@ petal terrain JSON and is parsed back in `db_results` on `PetalTerrainLoaded`.
 `InstalledTilesetDto`, `PendingHexonOps`, `HexonOp`, `StorageInfoDto`, and
 `PetalMapState` are re-exported at `fe_ui::plugin::*` for `fractalengine`
 compat — see root `AGENTS.md` §compat.
+
+PetalManifest is a compatibility alias for fe-runtime's PetalRequirements. The
+UI and DB share bounded declaration validation. Old serialized residency/fallback
+metadata is decoded and preserved by the common document helper, not edited or
+activated here. The requirements dialog roundtrips petal.hexon_manifest through
+local correlated DB commands; it does not drive render-distance or auto-fetch.

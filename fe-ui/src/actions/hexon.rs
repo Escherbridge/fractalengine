@@ -274,14 +274,6 @@ fn clamp_to_bounds(scale: f64, bounds: Option<[f64; 2]>) -> f64 {
     }
 }
 
-/// Reject legacy save actions until scoped requirements persistence exists.
-pub(crate) fn manifest_save(
-    _petal_id: String,
-    _manifest: PetalManifest,
-) -> Result<(), &'static str> {
-    Err(super::MANIFEST_SAVE_UNAVAILABLE)
-}
-
 /// Sets (or clears) the session-only residency override for `petal_id` — a
 /// local-only knob for a viewer on a weak machine, never persisted, cleared
 /// on petal change (`clear_petal_render_override_on_nav_change`). Beats both
@@ -298,7 +290,7 @@ pub(crate) fn set_render_override(
     };
 }
 
-pub(crate) fn manifest_open(ui_mgr: &mut UiManager, petal_id: String, petal_name: String) {
+pub(crate) fn manifest_open(ui_mgr: &mut UiManager, petal_id: String, petal_name: String, scope: Option<String>) {
     bevy::log::info!("PetalManifest: open dialog for petal {petal_id} ({petal_name})");
     ui_mgr.active_dialog = ActiveDialog::PetalManifest {
         petal_id,
@@ -307,7 +299,7 @@ pub(crate) fn manifest_open(ui_mgr: &mut UiManager, petal_id: String, petal_name
         available_hexon_ids: Vec::new(),
         add_hexon_id_buf: String::new(),
         add_hexon_type_buf: String::new(),
-        render_distance_buf: "500".to_string(),
+        requirements_state: crate::dialogs::requirements_state::RequirementsState::new(scope),
         dirty: false,
     };
 }
@@ -317,19 +309,150 @@ mod tests {
     use super::*;
 
     #[test]
-    fn manifest_save_refuses_unsupported_persistence() {
-        let manifest = PetalManifest {
-            render_distance: 1234.0,
-            ..Default::default()
-        };
-        assert_eq!(
-            manifest_save("petal-1".to_string(), manifest),
-            Err(super::super::MANIFEST_SAVE_UNAVAILABLE)
-        );
+    fn manifest_save_requires_fenced_load_and_exact_readback() {
+        use crate::dialogs::requirements_state as state;
+        use crate::navigation_manager::NavigationManager;
+        use fe_runtime::petal_requirements::PetalRequirementsSnapshot;
+        let mut nav = NavigationManager::default();
+        nav.navigate_to_verse("v1", "V");
+        nav.navigate_to_fractal("f1", "F");
+        nav.navigate_to_petal("p1");
         let mut ui = UiManager::default();
-        manifest_open(&mut ui, "petal-1".into(), "Petal one".into());
+        let (tx, rx) = crossbeam::channel::unbounded();
+        manifest_open(&mut ui, "p1".into(), "P".into(), nav.active_scope());
+        state::request_if_needed(&mut ui, &nav, &tx, 0.0);
+        let DbCommand::GetPetalRequirements {
+            correlation_id: load,
+            ..
+        } = rx.recv().unwrap()
+        else {
+            panic!("fenced read required")
+        };
+        let initial = PetalRequirementsSnapshot {
+            petal_id: "p1".into(),
+            scope: nav.active_scope().unwrap(),
+            requirements: PetalManifest::default(),
+            document: None,
+            can_manage: true,
+        };
+        state::apply(&mut ui, &nav, "unrelated", Ok(&initial));
+        assert!(state::save(&mut ui, &nav, &tx, "p1", PetalManifest::default(), 0.1).is_err());
+        state::apply(&mut ui, &nav, &load, Ok(&initial));
+        let mut draft = PetalManifest::default();
+        draft.hexons.push(crate::terrain_map::ManifestHexonEntry {
+            hexon_id: "model-v1".into(),
+            hexon_type: "Model".into(),
+            required: true,
+        });
+        if let ActiveDialog::PetalManifest {
+            manifest, dirty, ..
+        } = &mut ui.active_dialog
+        {
+            *manifest = draft.clone();
+            *dirty = true;
+        }
+        state::save(&mut ui, &nav, &tx, "p1", draft.clone(), 1.0).unwrap();
+        let DbCommand::SetPetalRequirements {
+            expected,
+            correlation_id: save,
+            ..
+        } = rx.recv().unwrap()
+        else {
+            panic!("only one checked save")
+        };
+        assert_eq!(expected, initial);
+        let mut newer = draft.clone();
+        newer.hexons[0].required = false;
+        if let ActiveDialog::PetalManifest { manifest, .. } = &mut ui.active_dialog {
+            *manifest = newer.clone();
+        }
+        let saved = PetalRequirementsSnapshot {
+            requirements: draft.clone(),
+            document: Some(draft.update_document(None).unwrap()),
+            ..initial.clone()
+        };
+        state::apply(&mut ui, &nav, &save, Ok(&saved));
         assert!(
-            matches!(ui.active_dialog, ActiveDialog::PetalManifest { ref petal_id, dirty: false, .. } if petal_id == "petal-1")
+            matches!(&ui.active_dialog,ActiveDialog::PetalManifest {manifest,dirty:true,..} if manifest==&newer),
+            "late save keeps newer draft"
         );
+        state::save(&mut ui, &nav, &tx, "p1", newer.clone(), 2.0).unwrap();
+        let DbCommand::SetPetalRequirements {
+            correlation_id: timed_out,
+            ..
+        } = rx.recv().unwrap()
+        else {
+            panic!()
+        };
+        state::request_if_needed(&mut ui, &nav, &tx, 33.0);
+        assert!(
+            state::save(&mut ui, &nav, &tx, "p1", newer.clone(), 33.1).is_err(),
+            "timeout never blindly retries write"
+        );
+        state::apply(&mut ui, &nav, &timed_out, Ok(&saved));
+        assert!(rx.try_recv().is_err());
+        if let ActiveDialog::PetalManifest {
+            requirements_state, ..
+        } = &mut ui.active_dialog
+        {
+            requirements_state.refresh();
+        }
+        state::request_if_needed(&mut ui, &nav, &tx, 34.0);
+        let DbCommand::GetPetalRequirements {
+            correlation_id: reload,
+            ..
+        } = rx.recv().unwrap()
+        else {
+            panic!("recovery is a read")
+        };
+        state::apply(&mut ui, &nav, &reload, Ok(&saved));
+        assert!(
+            state::save(&mut ui, &nav, &tx, "p1", newer.clone(), 34.1).is_err(),
+            "loaded differing data requires explicit review"
+        );
+        state::review(&mut ui, false);
+        state::save(&mut ui, &nav, &tx, "p1", newer.clone(), 34.2).unwrap();
+        let DbCommand::SetPetalRequirements {
+            correlation_id: foreign_reply,
+            ..
+        } = rx.recv().unwrap()
+        else {
+            panic!()
+        };
+        let wrong = PetalRequirementsSnapshot {
+            petal_id: "other".into(),
+            ..saved.clone()
+        };
+        state::apply(&mut ui, &nav, &foreign_reply, Ok(&wrong));
+        assert!(state::save(&mut ui, &nav, &tx, "p1", newer.clone(), 34.3).is_err());
+        manifest_open(&mut ui, "p1".into(), "P".into(), nav.active_scope());
+        state::request_if_needed(&mut ui, &nav, &tx, 35.0);
+        let DbCommand::GetPetalRequirements {
+            correlation_id: fresh,
+            ..
+        } = rx.recv().unwrap()
+        else {
+            panic!()
+        };
+        assert_ne!(
+            fresh, load,
+            "reopened draft has restart-unique request identity"
+        );
+        state::apply(&mut ui, &nav, &load, Ok(&saved));
+        state::apply(&mut ui, &nav, &fresh, Ok(&initial));
+        if let ActiveDialog::PetalManifest {
+            manifest, dirty, ..
+        } = &mut ui.active_dialog
+        {
+            *manifest = draft.clone();
+            *dirty = true;
+        }
+        nav.navigate_to_petal("p2");
+        assert!(
+            state::save(&mut ui, &nav, &tx, "p1", draft, 36.0).is_err(),
+            "navigation is rechecked at action use"
+        );
+        assert!(rx.try_recv().is_err());
     }
+
 }

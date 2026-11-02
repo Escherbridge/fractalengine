@@ -265,6 +265,9 @@ pub(super) fn apply_db_results(
                 fractal_id,
                 name,
             } => hierarchy::handle_petal_created(id, fractal_id, name, &mut verse_mgr),
+            DbResult::PetalRequirementsLoaded {snapshot,correlation_id} => {
+                crate::dialogs::requirements_state::apply(&mut ui_mgr,&nav,correlation_id,Ok(snapshot));
+            }
             DbResult::EntityDetailsLoaded {
                 entity_type,
                 entity_id,
@@ -590,6 +593,7 @@ pub(super) fn apply_db_results(
                 error,
                 correlation_id,
             } => {
+                crate::dialogs::requirements_state::apply(&mut ui_mgr,&nav,correlation_id,Err(error));
                 if let Some(toast) =
                     crate::visibility::cache::view_write_failure_toast(correlation_id, error)
                         .or_else(|| {

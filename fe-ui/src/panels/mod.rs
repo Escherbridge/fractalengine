@@ -351,7 +351,7 @@ pub fn gardener_console(
                 // section now (`ui_shell::right_sidebar::render_maps_section`),
                 // not a floating dialog — removed from the transient family here.
                 let _ = guarded(modal, "dialog_petal_manifest", || {
-                    crate::dialogs::render_petal_manifest(ctx, ui_mgr)
+                    crate::dialogs::render_petal_manifest(ctx, ui_mgr, nav, db_tx)
                 });
                 // FR-1 (shell_ux_sidebar): application Settings is a right-sidebar
                 // section now (`render_settings_section`), not a floating window —

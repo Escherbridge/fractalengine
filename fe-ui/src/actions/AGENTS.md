@@ -341,12 +341,12 @@ a committed brush stroke becomes an earthwork region node.
   equivalent string for the node's display `name` at save time.
 
 
-Petal requirements Save is currently unsupported: manifest_save rejects the
-legacy action and the dispatcher shows a shared error notice. The old handler
-only wrote residency distance and could overwrite it with an unshown default;
-it did not persist requirements. No write is sent now. Settings remains the
-render-distance authority, and the manifest data type stays compatible until
-a reviewed scoped requirements persistence/readback contract is implemented.
+Petal requirements actions now use dialogs/requirements_state.rs. Opening captures
+the active scope; the dialog performs a correlated authorized read before Save.
+The single action handler rechecks current navigation, exact dialog/draft and
+loaded baseline, then queues one typed Set. DB stored Manager authority is
+independent of the UI role hint. Render distance remains a separate Settings
+column; no declaration save changes it.
 
 Desktop query submission uses ScopedQuery for user SQL, generated GIS
 annotation/property reads and generated Paths listings. Each retains its own

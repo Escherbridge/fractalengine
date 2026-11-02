@@ -34,9 +34,6 @@ use crate::portal::PortalState;
 use crate::terrain_map::{InstalledTilesetDto, PendingHexonOps, PetalManifest, PetalMapState};
 use crate::terrain_proposal_state::{ProposalEditState, ProposalOp};
 
-pub(crate) const MANIFEST_SAVE_UNAVAILABLE: &str =
-    "Saving petal requirements is not available in this build. Copy the JSON to keep your draft.";
-
 /// Actions queued by the egui render pass, drained by a single Update system.
 /// Replaces scattered one-frame signal fields.
 #[derive(Debug, Clone)]
@@ -1123,7 +1120,7 @@ pub(crate) fn process_ui_actions(
                 );
             }
             UiAction::PetalManifestSave { petal_id, manifest } => {
-                if let Err(reason) = hexon::manifest_save(petal_id, manifest) {
+                if let Err(reason) = crate::dialogs::requirements_state::save(&mut ui_mgr, &nav, &db_sender.0, &petal_id, manifest, time.elapsed_secs_f64()) {
                     ui_mgr.show_error(reason, time.elapsed_secs_f64());
                 }
             }
@@ -1137,7 +1134,7 @@ pub(crate) fn process_ui_actions(
                 petal_id,
                 petal_name,
             } => {
-                hexon::manifest_open(&mut ui_mgr, petal_id, petal_name);
+                hexon::manifest_open(&mut ui_mgr, petal_id, petal_name, nav.active_scope());
             }
             UiAction::DownloadNodeAsset { node_id } => {
                 asset::request_download(&mut asset_ops, node_id);

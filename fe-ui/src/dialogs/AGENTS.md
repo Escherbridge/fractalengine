@@ -342,3 +342,18 @@ verb renders. Report routing also compares the pinned owner with the current
 Petal and emits the pinned owner in its typed action; it never rebinds an old
 hit ID to a new Petal. The action handler independently refuses queued commands
 after navigation, including a same-ID target in the destination.
+
+## Petal requirements
+
+requirements_state.rs owns one dialog's exact ULID-correlated load/save and raw
+persisted CAS baseline. Initial loading disables editing. Only a matching
+Petal/scope/request readback acknowledges a save; newer edits and unapplied Add
+fields stay dirty. Timeout/failure disables another save until an explicit read.
+A differing retained draft requires an explicit keep-draft/use-saved decision.
+No mutation is retried automatically. Actual navigation is checked at read,
+write and response use, and reopening mints unrelated IDs.
+
+The dialog edits bounded declaration/catalog metadata, not content installation,
+scene fallback/gating or residency policy. Settings remains the distance
+authority. Explicit legacy metadata is kept in the raw baseline without exposing
+it as an active setting. Copy/dirty-close remain available for a retained draft.

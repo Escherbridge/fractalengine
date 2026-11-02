@@ -8,8 +8,8 @@ use crate::{BlobStoreHandle, ReplicationSender, replicate_row};
 
 const CATALOG_LIMIT: usize = 1024;
 
-/// Publish a committed Petal through the same guarded catalog seam as startup repair.
-pub(crate) async fn publish_created_petal(
+/// Publish a committed Petal through the guarded catalog seam used by startup repair.
+pub(crate) async fn publish_petal(
     db: &Db,
     blobs: &BlobStoreHandle,
     sender: Option<&ReplicationSender>,

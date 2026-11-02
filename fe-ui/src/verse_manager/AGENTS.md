@@ -420,3 +420,7 @@ PathAssetCache.note_properties is crate-visible so the checked editor's authoriz
 current-snapshot recovery can reuse the normal property projection after a lost
 or refused save. It preserves the descriptor/curve fingerprint and applied gates;
 Undo introduces no independent stamp sampler or cache format.
+
+PetalRequirementsLoaded and exact RequestFailed replies route into the open
+requirements dialog state. They never mutate Node/Verse scene caches, residency
+or selection. The target scope/request is checked by the dialog controller.

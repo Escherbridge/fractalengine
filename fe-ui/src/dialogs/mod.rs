@@ -11,6 +11,7 @@ mod join;
 mod node_options;
 mod peer_debug;
 mod petal_manifest;
+pub(crate) mod requirements_state;
 
 pub(crate) use context_menu::node_options_prefill;
 pub use context_menu::render_context_menu;
@@ -173,7 +174,7 @@ pub enum ActiveDialog {
         available_hexon_ids: Vec<String>,
         add_hexon_id_buf: String,
         add_hexon_type_buf: String,
-        render_distance_buf: String,
+        requirements_state: requirements_state::RequirementsState,
         dirty: bool,
     },
     EntitySettings {
