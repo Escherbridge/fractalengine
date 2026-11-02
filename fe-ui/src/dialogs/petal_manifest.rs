@@ -75,7 +75,7 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager, nav: &
             );
             ui.add_space(8.0);
 
-            ui.label(requirements_state.status());
+            ui.label(requirements_state.status(*dirty || !add_hexon_id_buf.is_empty() || !add_hexon_type_buf.is_empty()));
             if *dirty {ui.label("Unsaved draft changes.");}
             if let Some(error) = &requirements_state.error { ui.colored_label(theme::STATUS_OFFLINE, error); }
             if requirements_state.error.is_some() && ui.button("Reload saved data (keep draft)").observed(ui).clicked() { requirements_state.refresh(); }

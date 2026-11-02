@@ -361,20 +361,70 @@ mod tests {
             panic!("only one checked save")
         };
         assert_eq!(expected, initial);
-        let mut newer = draft.clone();
-        newer.hexons[0].required = false;
-        if let ActiveDialog::PetalManifest { manifest, .. } = &mut ui.active_dialog {
-            *manifest = newer.clone();
-        }
         let saved = PetalRequirementsSnapshot {
             requirements: draft.clone(),
             document: Some(draft.update_document(None).unwrap()),
             ..initial.clone()
         };
         state::apply(&mut ui, &nav, &save, Ok(&saved));
-        assert!(
-            matches!(&ui.active_dialog,ActiveDialog::PetalManifest {manifest,dirty:true,..} if manifest==&newer),
-            "late save keeps newer draft"
+        let ActiveDialog::PetalManifest {
+            dirty,
+            requirements_state,
+            add_hexon_id_buf,
+            ..
+        } = &mut ui.active_dialog
+        else {
+            panic!()
+        };
+        assert!(!*dirty);
+        assert_eq!(requirements_state.status(*dirty), "Requirements saved.");
+        *add_hexon_id_buf = "unapplied-model".into();
+        *dirty = true;
+        assert_eq!(
+            requirements_state.status(*dirty || !add_hexon_id_buf.is_empty()),
+            "Last submitted declaration is confirmed saved. Newer draft changes remain unsaved."
+        );
+        add_hexon_id_buf.clear();
+        let mut newer = draft.clone();
+        newer.hexons[0].required = false;
+        if let ActiveDialog::PetalManifest {
+            manifest, dirty, ..
+        } = &mut ui.active_dialog
+        {
+            *manifest = newer.clone();
+            *dirty = true;
+        }
+        state::save(&mut ui, &nav, &tx, "p1", newer.clone(), 1.2).unwrap();
+        let DbCommand::SetPetalRequirements {
+            correlation_id: save_newer,
+            ..
+        } = rx.recv().unwrap()
+        else {
+            panic!()
+        };
+        let mut latest = saved.clone();
+        latest.requirements = newer.clone();
+        latest.document = Some(newer.update_document(saved.document.as_ref()).unwrap());
+        // Another edit arrives while the preceding declaration is saving.
+        newer.hexons[0].hexon_id = "model-v2".into();
+        if let ActiveDialog::PetalManifest { manifest, .. } = &mut ui.active_dialog {
+            *manifest = newer.clone();
+        }
+        state::apply(&mut ui, &nav, &save_newer, Ok(&latest));
+        let ActiveDialog::PetalManifest {
+            manifest,
+            dirty,
+            requirements_state,
+            ..
+        } = &ui.active_dialog
+        else {
+            panic!()
+        };
+        assert_eq!(manifest, &newer, "late save keeps newer draft");
+        assert!(*dirty);
+        assert_eq!(
+            requirements_state.status(*dirty),
+            "Last submitted declaration is confirmed saved. Newer draft changes remain unsaved."
         );
         state::save(&mut ui, &nav, &tx, "p1", newer.clone(), 2.0).unwrap();
         let DbCommand::SetPetalRequirements {
@@ -454,5 +504,6 @@ mod tests {
         );
         assert!(rx.try_recv().is_err());
     }
+
 
 }

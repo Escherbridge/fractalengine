@@ -54,14 +54,15 @@ impl RequirementsState {
             && !self.needs_review
             && self.loaded.as_ref().is_some_and(|s| s.can_manage)
     }
-    pub(crate) fn status(&self) -> &str {
+    pub(crate) fn status(&self, dirty: bool) -> &str {
         match self.pending {
             Some(Pending::Load { .. }) => "Loading saved requirements...",
             Some(Pending::Save { .. }) => "Saving; waiting for persisted readback...",
             None if self.queued => "Waiting to load saved requirements...",
-            None if self.saved => {
+            None if self.saved && dirty => {
                 "Last submitted declaration is confirmed saved. Newer draft changes remain unsaved."
             }
+            None if self.saved => "Requirements saved.",
             None => {
                 "Persisted declaration only. Content is not installed or fetched automatically."
             }
