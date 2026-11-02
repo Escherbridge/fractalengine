@@ -362,6 +362,16 @@ paint, no render fn) — its content moved to two consumers:
 All panel-rendering submodules are `pub(crate)` — nothing outside `fe-ui`
 should render sub-panels directly; go through `gardener_console`.
 
+## Inspector Portal URL validation
+
+The Portal URL control reuses `actions::portal::compute_save_url` as its inline
+validation boundary, including empty-to-clear normalization and the backend's
+`fe_webview::security::is_url_allowed` policy. Invalid drafts remain editable,
+show an inline reason, and cannot queue SaveUrl or OpenPortal. Saving requires
+the active Editor role and a selected node. The action handler still validates
+again when draining the action. Opening a URL no longer logs its raw contents.
+The existing admin config-URL buffer is unchanged by this validation slice.
+
 ## Selected report incomplete state
 
 Volume reports distinguish pending computation from incomplete terrain coverage.

@@ -153,7 +153,7 @@ pub(crate) fn right_inspector(
             ui.add_space(2.0);
             inspector_transform_section(ui, inspector, ui_mgr);
             ui.add_space(2.0);
-            inspector_url_meta_section(ui, inspector, ui_mgr, local_role);
+            inspector_url_meta_section(ui, inspector, node_mgr, ui_mgr, local_role);
             ui.add_space(2.0);
             inspector_properties_section(ui, inspector, node_mgr, ui_mgr);
             ui.add_space(2.0);
@@ -524,6 +524,7 @@ fn inspector_transform_section(
 fn inspector_url_meta_section(
     ui: &mut egui::Ui,
     inspector: &mut InspectorFormState,
+    node_mgr: &NodeManager,
     ui_mgr: &mut UiManager,
     local_role: &LocalUserRole,
 ) {
@@ -564,13 +565,32 @@ fn inspector_url_meta_section(
         }
 
         ui.add_space(6.0);
+        let validation = crate::actions::portal::compute_save_url(node_mgr, inspector);
+        if let crate::actions::portal::SaveUrlOutcome::Blocked { reason } = &validation {
+            ui.add(
+                egui::Label::new(egui::RichText::new(reason).color(theme::STATUS_OFFLINE)).wrap(),
+            );
+        }
+        let valid = matches!(
+            validation,
+            crate::actions::portal::SaveUrlOutcome::Persist { .. }
+        );
+        let editable = local_role.can_edit();
         if ui
-            .add(
+            .add_enabled(
+                valid && editable,
                 egui::Button::new("\u{1F4BE} Save")
                     .fill(theme::BG_SAVE)
                     .min_size(egui::vec2(ui.available_width(), 28.0)),
             )
             .named(ui, "Save portal URLs")
+            .on_disabled_hover_text(if node_mgr.selected.is_none() {
+                "Select a node to save its Portal URL."
+            } else if !editable {
+                "Editor access is required to save this Portal URL."
+            } else {
+                "Correct the Portal URL before saving."
+            })
             .clicked()
         {
             ui_mgr.push_action(UiAction::SaveUrl);
@@ -578,7 +598,7 @@ fn inspector_url_meta_section(
 
         ui.add_space(4.0);
 
-        let has_url = !inspector.external_url.trim().is_empty();
+        let has_url = valid && !inspector.external_url.trim().is_empty();
         let btn = egui::Button::new("\u{1F310} Open Portal")
             .fill(if has_url {
                 theme::BG_BUTTON_ACTIVE
@@ -588,16 +608,14 @@ fn inspector_url_meta_section(
             .min_size(egui::vec2(ui.available_width(), 28.0));
         let resp = ui.add_enabled(has_url, btn).observed(ui);
         if resp.clicked() {
-            bevy::log::info!(
-                "Portal: 'Open Portal' clicked — URL: {}",
-                inspector.external_url
-            );
             ui_mgr.push_action(UiAction::OpenPortal {
                 url: inspector.external_url.clone(),
             });
         }
         if !has_url {
-            resp.on_hover_text("Set a Portal URL above to open the webview");
+            resp.on_disabled_hover_text(
+                "Select a node and enter an allowed Portal URL to open it.",
+            );
         }
 
         ui.add_space(4.0);
