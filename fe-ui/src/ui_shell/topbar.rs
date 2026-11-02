@@ -476,6 +476,9 @@ pub fn receive_close_requests(
 pub fn render_close_confirmation(
     mut contexts: bevy_egui::EguiContexts,
     mut topbar: ResMut<TopbarState>,
+    ui_mgr: Res<crate::actions::UiManager>,
+    settings: Res<crate::settings::AppSettings>,
+    session: Res<crate::settings::SettingsSession>,
 ) {
     if !topbar.close_pending {
         return;
@@ -486,6 +489,12 @@ pub fn render_close_confirmation(
     egui::Modal::new(egui::Id::new("close-fractalengine-confirmation")).show(ctx, |ui| {
         ui.heading("Close FractalEngine?");
         ui.label("Close this window and end the current session?");
+        if matches!(&ui_mgr.active_dialog, crate::dialogs::ActiveDialog::PetalManifest { dirty: true, .. }) {
+            ui.label("Unsaved Petal requirements will be discarded. Cancel to keep editing.");
+        }
+        if session.persistence_available && !session.is_saved(&settings) {
+            ui.label("Local settings have not finished saving. Cancel to wait or retry saving.");
+        }
         ui.horizontal(|ui| {
             if ui.button("Cancel close").observed(ui).clicked() {
                 topbar.close_pending = false;

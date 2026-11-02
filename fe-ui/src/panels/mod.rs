@@ -151,6 +151,7 @@ pub fn gardener_console(
     // report_request`/`drain_volume_report_result` (plugin.rs, PostUpdate)
     // are its sole writers.
     volume_report: &crate::panels::volume_report_panel::VolumeReportState,
+    settings_session: &mut crate::settings::SettingsSession,
 ) -> egui::Rect {
     crate::ui_shell::layout_policy::begin_ui_pass(ctx);
     crate::ui_shell::layout_policy::apply_style(ctx);
@@ -232,6 +233,8 @@ pub fn gardener_console(
         render_override,
         volume_report,
         modal,
+        settings_session,
+        topbar_state,
     );
 
 
@@ -600,6 +603,7 @@ mod tests {
                         &mut identity_banner,
                         None,
                         &volume_report,
+                        &mut crate::settings::SettingsSession::default(),
                     );
                 });
             };

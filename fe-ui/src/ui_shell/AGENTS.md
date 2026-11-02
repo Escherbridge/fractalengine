@@ -404,3 +404,19 @@ from shell quarantine and domain selection. One per-dialog counter gives each
 new target/lifetime a distinct confirmation salt. Explicit close and a missed
 render frame disarm the prior lifetime. DirtyClose is the common decision for
 requirements Close/X and explicit discard; it never writes or clears a draft.
+
+
+## Settings receipts and restart boundary
+
+SettingsSession compares the current settings with the last successful atomic
+file write. The first startup observation seeds a baseline without displaying a
+new save receipt. Success alone updates Saved; failure retains an inline error
+and permits one explicit Retry. Reverting/editing the draft cannot invent a disk
+receipt. Hosts without SettingsPersistence remain explicitly session-only.
+
+The relay startup baseline identifies changes that require restarting. Once
+saved, Close to restart opens the same OS/caption/QA close confirmation. It does
+not spawn a process or promise an automatic restart. The confirmation discloses
+unsaved requirements and pending local settings. The user must reopen the app;
+automatic cross-platform restart needs orderly DB/API/sync thread shutdown first.
+The QA launcher remains the sole automated QA lifecycle owner.

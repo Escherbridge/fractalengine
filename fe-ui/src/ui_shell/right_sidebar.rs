@@ -295,6 +295,8 @@ pub fn render_right_sidebar(
     // are its sole writers.
     volume_report: &VolumeReportState,
     modal: &mut super::modal::ModalManagerState,
+    settings_session: &mut crate::settings::SettingsSession,
+    topbar: &mut super::topbar::TopbarState,
 ) {
     if !super::layout_policy::can_show_right(ctx) {
         return;
@@ -400,6 +402,8 @@ pub fn render_right_sidebar(
             hierarchy,
             local_role,
             render_override,
+            settings_session,
+            topbar,
         ),
         Some(RightSidebarSection::Maps) => render_maps_section(
             ctx,
@@ -685,10 +689,33 @@ fn render_settings_section(
     hierarchy: &VerseManager,
     local_role: &LocalUserRole,
     render_override: &mut crate::settings::PetalRenderOverride,
+    session: &mut crate::settings::SettingsSession,
+    topbar: &mut super::topbar::TopbarState,
 ) {
     crate::settings::sanitize(app_settings);
     let residency_line = state.residency.line();
     section_chrome(ctx, state, RightSidebarSection::Settings, |ui| {
+        if !session.persistence_available {
+            ui.label("Settings are available for this session only.");
+        } else if let Some(error) = session.error.as_deref() {
+            ui.colored_label(theme::NOTICE_TEXT, error);
+            if ui.button("Retry saving settings").observed(ui).clicked() {
+                session.retry_requested = true;
+            }
+        } else if session.is_saved(app_settings) {
+            if session.saved_at.is_some() { ui.label("Settings saved"); }
+        } else {
+            ui.label("Saving settings...");
+        }
+        if session.needs_restart(app_settings) {
+            ui.label("Restart required; close and reopen FractalEngine.");
+            if ui.add_enabled(session.is_saved(app_settings), egui::Button::new("Close to restart..."))
+                .observed(ui)
+                .on_disabled_hover_text("Wait for these settings to be saved before closing.")
+                .clicked() {
+                topbar.close_pending = true;
+            }
+        }
         settings_heading(ui, "Rendering");
         settings_row(ui, "Render distance", |ui, label| {
             ui.add(

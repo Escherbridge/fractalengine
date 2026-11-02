@@ -305,6 +305,27 @@ pub struct SettingsPersistence {
     pub path: PathBuf,
 }
 
+/// Disk-save receipts and the startup baseline for local Settings UI.
+#[derive(Resource, Default, Debug)]
+pub struct SettingsSession {
+    startup_relay: Option<String>,
+    persisted: Option<AppSettings>,
+    pub persistence_available: bool,
+    pub saved_at: Option<f64>,
+    pub error: Option<String>,
+    pub retry_requested: bool,
+}
+
+impl SettingsSession {
+    pub fn needs_restart(&self, settings: &AppSettings) -> bool {
+        self.startup_relay.as_ref().is_some_and(|relay| relay != &settings.relay)
+    }
+
+    pub fn is_saved(&self, settings: &AppSettings) -> bool {
+        self.persistence_available && self.persisted.as_ref() == Some(settings)
+    }
+}
+
 /// Trailing-edge debounce for settings saves: the first observation is the
 /// loaded state; a change is saved once it has been stable for
 /// `SAVE_DEBOUNCE_SECS`.
@@ -341,13 +362,29 @@ pub fn save_app_settings_debounced(
     persistence: Option<Res<SettingsPersistence>>,
     time: Res<Time>,
     mut debounce: Local<SettingsSaveDebounce>,
+    mut session: ResMut<SettingsSession>,
 ) {
-    let Some(persistence) = persistence else {
-        return;
-    };
-    if debounce.poll(&settings, time.elapsed_secs_f64()) {
-        if let Err(err) = save_settings_to(&persistence.path, &settings) {
-            warn!(path = %persistence.path.display(), error = %err, "failed to save settings");
+    if session.startup_relay.is_none() {
+        session.startup_relay = Some(settings.relay.clone());
+        if persistence.is_some() {
+            session.persisted = Some(settings.clone());
+        }
+    }
+    session.persistence_available = persistence.is_some();
+    let Some(persistence) = persistence else { return; };
+    let now = time.elapsed_secs_f64();
+    let retry = std::mem::take(&mut session.retry_requested);
+    if debounce.poll(&settings, now) || retry {
+        match save_settings_to(&persistence.path, &settings) {
+            Ok(()) => {
+                session.persisted = Some(settings.clone());
+                session.saved_at = Some(now);
+                session.error = None;
+            }
+            Err(err) => {
+                warn!(path = %persistence.path.display(), error = %err, "failed to save settings");
+                session.error = Some(format!("Settings not saved: {err}"));
+            }
         }
     }
 }
@@ -772,6 +809,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<AppSettings>()
             .init_resource::<Time>()
+            .init_resource::<SettingsSession>()
             .add_systems(Update, save_app_settings_debounced);
         app.update();
         app.world_mut().resource_mut::<AppSettings>().entity_cap = 77;
@@ -798,6 +836,24 @@ mod tests {
         let (loaded, outcome) = load_settings_from(&path);
         assert_eq!(outcome, LoadOutcome::Loaded);
         assert_eq!(loaded.entity_cap, 88);
+        assert!(app.world().resource::<SettingsSession>().is_saved(app.world().resource::<AppSettings>()));
+        assert!(app.world().resource::<SettingsSession>().saved_at.is_some());
+        let blocked = dir.path().join("not-a-directory");
+        std::fs::write(&blocked, "fixture").unwrap();
+        app.world_mut().resource_mut::<SettingsPersistence>().path = blocked.join("settings.ron");
+        app.world_mut().resource_mut::<AppSettings>().entity_cap = 99;
+        app.update();
+        app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_secs(2));
+        app.update();
+        assert!(app.world().resource::<SettingsSession>().error.is_some());
+        assert!(!app.world().resource::<SettingsSession>().is_saved(app.world().resource::<AppSettings>()));
+        app.world_mut().resource_mut::<SettingsPersistence>().path = path.clone();
+        app.world_mut().resource_mut::<SettingsSession>().retry_requested = true;
+        app.update();
+        assert!(app.world().resource::<SettingsSession>().error.is_none());
+        assert_eq!(load_settings_from(&path).0.entity_cap, 99);
+        app.world_mut().resource_mut::<AppSettings>().relay = "disabled".into();
+        assert!(app.world().resource::<SettingsSession>().needs_restart(app.world().resource::<AppSettings>()));
     }
 
     #[test]

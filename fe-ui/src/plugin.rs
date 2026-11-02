@@ -841,6 +841,7 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<crate::timeseries_settings::TimeseriesSettingsState>();
         // Application settings (D-78) + terrain-proposal editor state (FR-5).
         app.init_resource::<crate::settings::AppSettings>();
+        app.init_resource::<crate::settings::SettingsSession>();
         app.init_resource::<crate::terrain_proposal_state::ProposalEditState>();
         // Wave-1 (spatial-builder-program-20260725): interaction states homed in
         // the action leaf files. StampInteractionState is the third selection
@@ -1110,6 +1111,7 @@ struct MiscUiParams<'w> {
 /// without re-touching this system's signature.
 #[derive(bevy::ecs::system::SystemParam)]
 struct UiShellParams<'w> {
+    settings_session: ResMut<'w, crate::settings::SettingsSession>,
     topbar: ResMut<'w, crate::ui_shell::topbar::TopbarState>,
     left_sidebar: ResMut<'w, crate::ui_shell::left_sidebar::LeftSidebarState>,
     right_sidebar: ResMut<'w, crate::ui_shell::right_sidebar::RightSidebarState>,
@@ -1178,6 +1180,7 @@ fn gardener_ui_system(
         &mut misc.identity_banner,
         p2p.node_identity.as_deref(),
         &misc.volume_report,
+        &mut ui_shell.settings_session,
     );
     // Pointer routing excludes the resize bands: a press that starts a window
     // resize must not also pick / place in the viewport (§window-chrome).
