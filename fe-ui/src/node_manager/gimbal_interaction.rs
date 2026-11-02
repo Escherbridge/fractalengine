@@ -166,6 +166,7 @@ pub(super) fn handle_gimbal_interaction(
     children_query: Query<&Children>,
     mut arbiter: ResMut<ClickArbiter>,
     stamp_query: Query<(), With<crate::verse_manager::PathAssetInstance>>,
+    undo: Res<crate::undo::UndoState>,
 ) {
     // Only the transform gizmo tools run the gimbal. Select has no gizmo; Pen
     // draws paths — running here would let `pick_axis` claim `Gimbal` (highest
@@ -176,6 +177,9 @@ pub(super) fn handle_gimbal_interaction(
         tool.active_tool,
         Tool::Select | Tool::Pen | Tool::Brush | Tool::Measure
     ) {
+        return;
+    }
+    if undo.is_pending() {
         return;
     }
     let Some(sel) = manager.selected.as_mut() else {
@@ -192,8 +196,13 @@ pub(super) fn handle_gimbal_interaction(
 
     // Release → commit
     if mouse_button.just_released(MouseButton::Left) && sel.drag.is_some() {
-        sel.drag = None;
+        let drag = sel.drag.take().unwrap();
         sel.drag_committed = true;
+        manager.pending_transform_before = Some(Transform {
+            translation: drag.start_pos,
+            rotation: drag.start_rot,
+            scale: drag.start_scale,
+        });
         return;
     }
 

@@ -1204,6 +1204,7 @@ pub enum DbResult {
         node_id: String,
         request_id: String,
         receipt: Option<crate::node_history::NodeMutationReceipt>,
+        current: crate::node_history::NodeRowSnapshot,
         correlation_id: String,
     },
     /// GUI-only committed plugin removal; it has no pending API reply family.

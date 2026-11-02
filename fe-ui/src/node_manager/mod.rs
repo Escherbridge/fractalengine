@@ -75,6 +75,7 @@ pub use dispatch::{resolve_operation, HandleSide, HitTarget, Operation};
 #[derive(Resource, Default)]
 pub struct NodeManager {
     pub selected: Option<NodeSelection>,
+    pub(crate) pending_transform_before: Option<Transform>,
     /// Sidebar click stores the node_id here; `sync_sidebar_to_manager`
     /// resolves the ECS Entity and calls `select()`.
     pub pending_sidebar_select: Option<String>,
@@ -258,6 +259,7 @@ impl NodeManager {
             // Already selected — keep drag state intact.
             return;
         }
+        self.pending_transform_before=None;
         self.selected = Some(NodeSelection {
             entity,
             node_id,
@@ -267,6 +269,7 @@ impl NodeManager {
     }
 
     pub fn deselect(&mut self) {
+        self.pending_transform_before=None;
         self.pending_navigation_select = None;
         self.selected = None;
     }
@@ -278,6 +281,7 @@ impl NodeManager {
             .as_mut()
             .filter(|selection| selection.node_id == node_id)
         {
+            self.pending_transform_before=None;
             let interrupted = selection.drag.is_some() || selection.drag_committed;
             selection.drag = None;
             selection.drag_committed = false;
@@ -297,6 +301,7 @@ impl NodeManager {
         let selection = self.selected.as_mut()?;
         let drag = selection.drag.take()?;
         selection.drag_committed = false;
+        self.pending_transform_before=None;
         Some((
             selection.entity,
             DragRestore {
@@ -318,6 +323,7 @@ impl Plugin for NodeManagerPlugin {
     fn build(&self, app: &mut App) {
         app.init_gizmo_group::<crate::gimbal::GimbalGizmoGroup>();
         app.init_resource::<NodeManager>();
+        app.init_resource::<crate::undo::UndoState>();
         app.init_resource::<router::ClickArbiter>();
         app.init_resource::<brush_interaction::BrushGesture>();
         app.init_resource::<measure::MeasureState>();
@@ -568,6 +574,396 @@ mod tests {
         assert!(
             !mgr.selected.as_ref().map(|s| s.drag_committed).unwrap(),
             "a canceled drag must never look committed to broadcast_transform"
+        );
+
+        use crate::verse_manager::{FractalEntry, NodeEntry, PetalEntry, VerseEntry, VerseManager};
+        use fe_runtime::messages::{DbCommand, DbResult, NodeMutation};
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_message::<DbResult>();
+        let nav = crate::navigation_manager::NavigationManager {
+            active_verse_id: Some("v".into()),
+            active_fractal_id: Some("f".into()),
+            active_petal_id: Some("p".into()),
+            ..Default::default()
+        };
+        app.insert_resource(nav)
+            .init_resource::<crate::undo::UndoState>()
+            .init_resource::<NodeManager>()
+            .init_resource::<router::ClickArbiter>()
+            .init_resource::<crate::actions::UiManager>()
+            .init_resource::<crate::visibility::VisibilityState>();
+        app.insert_resource(crate::plugin::ToolState {
+            active_tool: crate::panels::toolbar::Tool::Move,
+        });
+        app.insert_resource(VerseManager::from_verses(vec![VerseEntry {
+            id: "v".into(),
+            fractals: vec![FractalEntry {
+                id: "f".into(),
+                petals: vec![PetalEntry {
+                    id: "p".into(),
+                    nodes: vec![NodeEntry {
+                        id: "node-1".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }]));
+        let (tx, rx) = crossbeam::channel::unbounded();
+        app.insert_resource(fe_runtime::app::DbCommandSender(tx));
+        let after = Transform::from_xyz(4.0, 5.0, 6.0)
+            .with_rotation(Quat::from_rotation_z(0.7))
+            .with_scale(Vec3::new(3.0, 4.0, 5.0));
+        let target = app
+            .world_mut()
+            .spawn((
+                after,
+                GlobalTransform::default(),
+                crate::plugin::SpawnedNodeMarker {
+                    node_id: "node-1".into(),
+                    petal_id: "p".into(),
+                },
+            ))
+            .id();
+        app.world_mut().spawn(bevy::window::Window::default());
+        app.world_mut().spawn((
+            Camera::default(),
+            GlobalTransform::default(),
+            fe_renderer::camera::OrbitCameraController::default(),
+        ));
+        {
+            let mut manager = app.world_mut().resource_mut::<NodeManager>();
+            manager.select(target, "node-1");
+            begin_axis_drag(&mut manager);
+        }
+        let mut mouse = ButtonInput::<MouseButton>::default();
+        mouse.press(MouseButton::Left);
+        mouse.clear();
+        mouse.release(MouseButton::Left);
+        app.insert_resource(mouse);
+        app.add_systems(
+            Update,
+            (
+                crate::undo::observe_results,
+                gimbal_interaction::handle_gimbal_interaction,
+                transform_broadcast::broadcast_transform,
+            )
+                .chain(),
+        );
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .clear();
+        assert_eq!(
+            app.world()
+                .resource::<crate::undo::UndoState>()
+                .history_counts(),
+            (0, 0)
+        );
+        let command = rx.try_recv().expect("release sends one checked operation");
+        let DbCommand::CommitCheckedNodeMutation {
+            expected,
+            mutation,
+            correlation_id,
+            ..
+        } = command
+        else {
+            panic!("release must use checked commit, never legacy UpdateNodeTransform")
+        };
+        let fe_runtime::node_history::NodeEditBefore::Transform(before) = expected.before else {
+            panic!("full starting transform required")
+        };
+        assert_eq!(before.position, [1.0, 2.0, 3.0]);
+        assert_eq!(before.scale, [2.0; 3]);
+        assert!(before.matches(&crate::undo::transform_value(
+            &Transform::from_xyz(1.0, 2.0, 3.0)
+                .with_rotation(Quat::from_rotation_y(0.5))
+                .with_scale(Vec3::splat(2.0))
+        )));
+        let NodeMutation::FullTransform {
+            position,
+            rotation,
+            scale,
+        } = mutation
+        else {
+            panic!("full transform required")
+        };
+        assert_eq!(position, [4.0, 5.0, 6.0]);
+        assert_eq!(scale, [3.0, 4.0, 5.0]);
+        assert!(rx.try_recv().is_err(), "one release must not double-commit");
+        let mut state:fe_runtime::node_history::NodeRowSnapshot=serde_json::from_value(serde_json::json!({"node_id":"node-1","petal_id":"p","position":position,"elevation":position[1],"rotation":rotation,"scale":scale,"interactive":false,"created_at":"test","edit_seq":1,"properties":{"nested":{"gain":2}}})).unwrap();
+        app.world_mut()
+            .write_message(DbResult::NodeMutationCommitted {
+                receipt: fe_runtime::node_history::NodeMutationReceipt {
+                    node_id: "node-1".into(),
+                    history_version: 1,
+                    state: state.clone(),
+                    persist: fe_runtime::node_history::PersistStatus::Committed,
+                },
+                correlation_id: Some(correlation_id),
+            });
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<crate::undo::UndoState>()
+                .history_counts(),
+            (1, 0)
+        );
+        app.world_mut().resource_mut::<NodeManager>().deselect();
+        app.world_mut()
+            .resource_scope(|world, mut undo: Mut<crate::undo::UndoState>| {
+                undo.replay(
+                    false,
+                    world.resource(),
+                    world.resource(),
+                    world.resource(),
+                    &world.resource::<fe_runtime::app::DbCommandSender>().0,
+                )
+                .unwrap()
+            });
+        assert_eq!(
+            app.world()
+                .resource::<crate::undo::UndoState>()
+                .history_counts(),
+            (1, 0),
+            "Undo waits for its own receipt"
+        );
+        let DbCommand::CommitCheckedNodeMutation {
+            mutation:
+                NodeMutation::FullTransform {
+                    position,
+                    rotation,
+                    scale,
+                },
+            expected,
+            correlation_id,
+            ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("checked inverse expected")
+        };
+        assert_eq!(expected.history_version, Some(1));
+        assert_eq!(position, [1.0, 2.0, 3.0]);
+        assert_eq!(scale, [2.0; 3]);
+        state.position = position.map(f64::from);
+        state.elevation = state.position[1];
+        state.rotation = rotation.map(f64::from).to_vec();
+        state.scale = scale.map(f64::from);
+        app.world_mut()
+            .write_message(DbResult::NodeMutationCommitted {
+                receipt: fe_runtime::node_history::NodeMutationReceipt {
+                    node_id: "node-1".into(),
+                    history_version: 2,
+                    state: state.clone(),
+                    persist: fe_runtime::node_history::PersistStatus::Committed,
+                },
+                correlation_id: Some(correlation_id),
+            });
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<crate::undo::UndoState>()
+                .history_counts(),
+            (0, 1)
+        );
+        app.world_mut()
+            .resource_scope(|world, mut undo: Mut<crate::undo::UndoState>| {
+                undo.replay(
+                    true,
+                    world.resource(),
+                    world.resource(),
+                    world.resource(),
+                    &world.resource::<fe_runtime::app::DbCommandSender>().0,
+                )
+                .unwrap()
+            });
+        let DbCommand::CommitCheckedNodeMutation {
+            mutation:
+                NodeMutation::FullTransform {
+                    position,
+                    rotation,
+                    scale,
+                },
+            expected,
+            correlation_id,
+            ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("checked redo expected")
+        };
+        assert_eq!(expected.history_version, Some(2));
+        assert_eq!(position, [4.0, 5.0, 6.0]);
+        assert_eq!(scale, [3.0, 4.0, 5.0]);
+        state.position = position.map(f64::from);
+        state.elevation = state.position[1];
+        state.rotation = rotation.map(f64::from).to_vec();
+        state.scale = scale.map(f64::from);
+        app.world_mut()
+            .write_message(DbResult::NodeMutationCommitted {
+                receipt: fe_runtime::node_history::NodeMutationReceipt {
+                    node_id: "node-1".into(),
+                    history_version: 3,
+                    state,
+                    persist: fe_runtime::node_history::PersistStatus::Committed,
+                },
+                correlation_id: Some(correlation_id),
+            });
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<crate::undo::UndoState>()
+                .history_counts(),
+            (1, 0)
+        );
+        let points = serde_json::json!([
+            [1.0, 0.0, 2.0, 17.25, -0.5, 0.0, 0.0, 0.5, 0.0, 0.0, 2.0, 0.6],
+            [8.0, 2.0, 9.0, 29.5]
+        ]);
+        let rows = crate::gis::decode_gpx_points(&points);
+        let id = app
+            .world_mut()
+            .resource_scope(|world, mut undo: Mut<crate::undo::UndoState>| {
+                undo.reserve_path(
+                    world.resource(),
+                    "node-1",
+                    0,
+                    [1.0, 0.0, 2.0],
+                    [4.0, 3.0, 6.0],
+                    Some(3),
+                    &rows,
+                )
+                .unwrap()
+                .unwrap()
+            });
+        let read = app
+            .world()
+            .resource::<crate::undo::UndoState>()
+            .path_read_command(&id)
+            .unwrap();
+        assert!(matches!(read,DbCommand::ResolveCheckedNodeMutation {request_id,..} if request_id==id));
+        app.world_mut()
+            .resource_scope(|world, mut undo: Mut<crate::undo::UndoState>| {
+                undo.commit_path(
+                    &id,
+                    points.clone(),
+                    &world.resource::<fe_runtime::app::DbCommandSender>().0,
+                )
+                .unwrap()
+            });
+        assert_eq!(
+            app.world()
+                .resource::<crate::undo::UndoState>()
+                .history_counts(),
+            (1, 0)
+        );
+        assert!(
+            app.world_mut()
+                .resource_mut::<crate::undo::UndoState>()
+                .take_path_projection()
+                .is_none(),
+            "queued move must not project as confirmed"
+        );
+        let DbCommand::CommitCheckedNodeMutation {
+            mutation: NodeMutation::PropertySet { value, .. },
+            expected,
+            ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("point move uses checked property commit")
+        };
+        assert!(
+            matches!(expected.before,fe_runtime::node_history::NodeEditBefore::PathPoints(ref before) if before==&points)
+        );
+        assert_eq!(
+            value[0].as_array().unwrap()[3..],
+            points[0].as_array().unwrap()[3..]
+        );
+        assert_eq!(value[1], points[1]);
+        let mut path_state:fe_runtime::node_history::NodeRowSnapshot=serde_json::from_value(serde_json::json!({"node_id":"node-1","petal_id":"p","position":[4.0,5.0,6.0],"elevation":5.0,"rotation":[0.0,0.0,0.7],"scale":[3.0,4.0,5.0],"interactive":false,"created_at":"test","edit_seq":3,"properties":{"nested":{"gain":2},"gpx_points":value}})).unwrap();
+        app.world_mut()
+            .write_message(DbResult::NodeMutationCommitted {
+                receipt: fe_runtime::node_history::NodeMutationReceipt {
+                    node_id: "node-1".into(),
+                    history_version: 4,
+                    state: path_state.clone(),
+                    persist: fe_runtime::node_history::PersistStatus::Committed,
+                },
+                correlation_id: Some(id),
+            });
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<crate::undo::UndoState>()
+                .history_counts(),
+            (2, 0)
+        );
+        let projection = app
+            .world_mut()
+            .resource_mut::<crate::undo::UndoState>()
+            .take_path_projection()
+            .unwrap();
+        assert_eq!(projection.points, path_state.properties["gpx_points"]);
+        assert_eq!(projection.editor_rows()[0].time_seconds, Some(17.25));
+        app.world_mut()
+            .resource_scope(|world, mut undo: Mut<crate::undo::UndoState>| {
+                undo.replay(
+                    false,
+                    world.resource(),
+                    world.resource(),
+                    world.resource(),
+                    &world.resource::<fe_runtime::app::DbCommandSender>().0,
+                )
+                .unwrap()
+            });
+        let DbCommand::CommitCheckedNodeMutation {
+            mutation: NodeMutation::PropertySet { value, .. },
+            expected,
+            correlation_id,
+            ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("point inverse uses checked property commit")
+        };
+        assert_eq!(expected.history_version, Some(4));
+        assert_eq!(value, points);
+        path_state.properties.insert("gpx_points".into(), value);
+        app.world_mut()
+            .write_message(DbResult::NodeMutationCommitted {
+                receipt: fe_runtime::node_history::NodeMutationReceipt {
+                    node_id: "node-1".into(),
+                    history_version: 5,
+                    state: path_state,
+                    persist: fe_runtime::node_history::PersistStatus::Committed,
+                },
+                correlation_id: Some(correlation_id),
+            });
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<crate::undo::UndoState>()
+                .history_counts(),
+            (1, 1)
+        );
+        assert_eq!(
+            app.world_mut()
+                .resource_mut::<crate::undo::UndoState>()
+                .take_path_projection()
+                .unwrap()
+                .points,
+            points
+        );
+        app.world_mut()
+            .resource_mut::<crate::navigation_manager::NavigationManager>()
+            .navigate_to_petal("other-petal");
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<crate::undo::UndoState>()
+                .history_counts(),
+            (0, 0)
         );
     }
 

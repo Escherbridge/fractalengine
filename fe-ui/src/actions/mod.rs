@@ -208,6 +208,8 @@ pub enum UiAction {
         index: usize,
     },
     /// Move the point at `index` to a new world position (viewport drag commit).
+    PathMovePointFromGesture {track_node_id:String,index:usize,position:[f32;3],origin:crate::undo::PointEditOrigin},
+    PathMovePointUntracked {track_node_id:String,index:usize,position:[f32;3]},
     PathMovePoint {
         track_node_id: String,
         index: usize,
@@ -908,6 +910,7 @@ pub(crate) struct GisPathParams<'w> {
 /// registration scaffold + `plugin.rs` for registration.
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct ToolStateParams<'w> {
+    undo:ResMut<'w,crate::undo::UndoState>,
     tool_panel: ResMut<'w, crate::panels::tool_panel::ToolPanelState>,
     proposal_state: ResMut<'w, ProposalEditState>,
     stamp_state: ResMut<'w, asset::StampInteractionState>,
@@ -968,6 +971,7 @@ pub(crate) fn process_ui_actions(
         mut path_ops,
     } = gis;
     let ToolStateParams {
+        mut undo,
         mut tool_panel,
         mut proposal_state,
         mut stamp_state,
@@ -1037,6 +1041,7 @@ pub(crate) fn process_ui_actions(
                 }
             }
             UiAction::ApplyNodeTransform => {
+                if undo.is_pending() || node_mgr.gesture_active {ui_mgr.show_advisory("Finish the gesture or wait for the previous edit to save",now_secs);continue;}
                 if let Err(reason) =
                     transform::apply(&inspector, &mut node_mgr, &mut transform_query)
                 {
@@ -1271,23 +1276,23 @@ pub(crate) fn process_ui_actions(
             } => {
                 path::remove_point(&mut path_ops, &mut path_state, track_node_id, index);
             }
-            UiAction::PathMovePoint {
-                track_node_id,
-                index,
-                position,
-            } => {
-                path::move_point(
-                    &mut path_ops,
-                    &mut path_state,
-                    track_node_id,
-                    index,
-                    position,
-                );
+            UiAction::PathMovePointFromGesture {track_node_id,index,position,origin}=>{
+                if !origin.matches(&path_state,&nav){ui_mgr.show_advisory("Path changed during the gesture; move skipped",now_secs);continue;}
+                queue_checked_point(&mut undo,&nav,&verse_mgr,&mut path_ops,&path_state,track_node_id,index,position,&mut ui_mgr,now_secs);
+            }
+            UiAction::PathMovePoint {track_node_id,index,position}=>{
+                queue_checked_point(&mut undo,&nav,&verse_mgr,&mut path_ops,&path_state,track_node_id,index,position,&mut ui_mgr,now_secs);
+            }
+            UiAction::PathMovePointUntracked {track_node_id,index,position}=>{
+                if undo.is_pending(){ui_mgr.show_advisory("Saving the previous edit; wait for confirmation",now_secs);continue;}
+                undo.invalidate_redo();path::move_point(&mut path_ops,&mut path_state,track_node_id,index,position);
             }
             UiAction::PathTransformPoints {
                 track_node_id,
                 points,
             } => {
+                if undo.is_pending(){ui_mgr.show_advisory("Saving the previous edit; wait for confirmation",now_secs);continue;}
+                undo.invalidate_redo();
                 path::transform_points(&mut path_ops, &mut path_state, track_node_id, points);
             }
             UiAction::PathAnnotatePoint {
@@ -2284,5 +2289,46 @@ mod tests {
             Some("track-1"),
             "deleting a DIFFERENT track must not touch the active editing session"
         );
+    }
+}
+
+fn queue_checked_point(
+    undo: &mut crate::undo::UndoState,
+    nav: &crate::navigation_manager::NavigationManager,
+    hierarchy: &crate::verse_manager::VerseManager,
+    ops: &mut crate::path_ops::PendingPathOps,
+    state: &crate::gis::PathEditorState,
+    track: String,
+    index: usize,
+    position: [f32; 3],
+    ui: &mut UiManager,
+    now: f64,
+) {
+    if state.editing_track_id.as_deref() != Some(track.as_str()) {
+        ui.show_advisory("Path selection changed; move skipped", now);
+        return;
+    }
+    let Some(before) = state.points.get(index).map(|row| row.position) else {
+        ui.show_advisory("Path point is unavailable", now);
+        return;
+    };
+    match undo.reserve_path(
+        nav,
+        &track,
+        index,
+        before,
+        position,
+        hierarchy.committed_versions.get(&track).copied(),
+        &state.points,
+    ) {
+        Ok(Some(request_id)) => {
+            ops.0.push(crate::path_ops::PathOp::CheckedMovePoint {
+                track_node_id: track,
+                request_id,
+            });
+            ui.show_toast("Saving point move...", now);
+        }
+        Ok(None) => {}
+        Err(error) => ui.show_advisory(error, now),
     }
 }

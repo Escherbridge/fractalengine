@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use crate::{op_log::commit_operation_atomic_with, repo::Db, types::OpLogEntry};
 
-const JOURNAL_VERSION: u64 = 1;
+pub(crate) const JOURNAL_VERSION: u64 = 1;
 const MAX_REPLAY_ROWS: usize = 10_000;
 
 fn require_grant(grant: &NodeAccessGrant, scope: &str) -> anyhow::Result<()> {

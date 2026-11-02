@@ -30,6 +30,7 @@ pub mod terrain_proposal_state;
 pub mod theme;
 pub mod timeseries_settings;
 pub mod ui_shell;
+pub mod undo;
 pub mod verse_manager;
 pub mod viewport;
 pub mod viewport_labels;

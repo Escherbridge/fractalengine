@@ -97,6 +97,7 @@ pub(crate) fn shortcut_hint_line() -> String {
         .map(|d| format!("{} = {}", d.key, d.name))
         .collect::<Vec<_>>()
         .join("  ");
+    line.push_str("  Ctrl/Cmd+Z = Undo transforms / one point; Shift = Redo (50 session edits)");
     line.push_str("  \u{2022}  Esc = back out one step  \u{2022}  Right-click = cancel / menu");
     line
 }

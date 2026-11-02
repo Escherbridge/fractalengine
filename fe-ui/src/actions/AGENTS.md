@@ -348,6 +348,7 @@ it did not persist requirements. No write is sent now. Settings remains the
 render-distance authority, and the manifest data type stays compatible until
 a reviewed scoped requirements persistence/readback contract is implemented.
 
+<<<<<<< HEAD
 Desktop query submission uses ScopedQuery for user SQL, generated GIS
 annotation/property reads and generated Paths listings. Each retains its own
 existing request ID/buffer. Query tab extracts one requested petal from the
@@ -365,3 +366,13 @@ It then changes only `ProposalEditState.selected` and reveals the Volume report;
 repeated opens are idempotent. Stale/foreign/missing targets leave selection and
 sidebar unchanged and produce an advisory. No DB, clipboard or geometry write
 is part of this command.
+=======
+
+## checked editor edits
+
+Inspector transform parsing rejects non-finite values before ECS assignment.
+Supported point actions reserve their old position while rows remain unchanged
+and queue CheckedMovePoint; the host binds complete stored JSON. Gesture origins
+are checked again when actions drain. Untracked multi-point edits preserve their
+legacy queue and invalidate redo. Pending saves/gestures refuse competing edits.
+>>>>>>> 7f6210b (feat(undo): wire bounded confirmed transform and point commands)

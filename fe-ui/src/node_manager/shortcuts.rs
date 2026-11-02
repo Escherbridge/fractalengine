@@ -18,12 +18,20 @@ use crate::verse_manager::{NodeEntry, VerseManager};
 use crate::visibility::{self, NodeAncestry, OverrideState, VisibilityState};
 use fe_runtime::{app::DbCommandSender, messages::DbCommand};
 
+#[derive(bevy::ecs::system::SystemParam)]
+pub(super) struct UndoShortcutContext<'w> {
+    undo: ResMut<'w, crate::undo::UndoState>,
+    topbar: Option<Res<'w, crate::ui_shell::topbar::TopbarState>>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Shortcut {
     Activate(Tool),
     DeleteSelection,
     FrameSelection,
     ToggleRightSidebar,
+    Undo,
+    Redo,
 }
 
 impl Shortcut {
@@ -31,6 +39,8 @@ impl Shortcut {
         matches!(
             self,
             Self::DeleteSelection
+                | Self::Undo
+                | Self::Redo
                 | Self::Activate(Tool::Move | Tool::Rotate | Tool::Scale | Tool::Pen | Tool::Brush)
         )
     }
@@ -51,6 +61,13 @@ fn shortcut(keyboard: &ButtonInput<KeyCode>, keyboard_owned: bool) -> Option<Sho
     let shift = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     if command && shift && !alt && keyboard.just_pressed(KeyCode::KeyB) {
         return Some(Shortcut::ToggleRightSidebar);
+    }
+    if command && !alt && keyboard.just_pressed(KeyCode::KeyZ) {
+        return Some(if shift {
+            Shortcut::Redo
+        } else {
+            Shortcut::Undo
+        });
     }
     if command || alt {
         return None;
@@ -271,6 +288,7 @@ pub(super) fn handle_tool_shortcuts(
     spawned: Query<&SpawnedNodeMarker>,
     db: Res<DbCommandSender>,
     clock: Res<crate::notice::NoticeClock>,
+    mut undo_context: UndoShortcutContext,
 ) {
     // Mirror the gesture aggregate onto `NodeManager` first — even on the egui
     // early-return below — so the topbar's `InputContext` stash (and thus the
@@ -290,9 +308,16 @@ pub(super) fn handle_tool_shortcuts(
         gestures.node_mgr.gesture_active = gesture_active;
     }
 
+    if undo_context
+        .topbar
+        .as_ref()
+        .is_some_and(|topbar| topbar.close_pending)
+    {
+        return;
+    }
     let egui_wants_kb = egui_ctx
         .ctx_mut()
-        .map(|ctx| ctx.wants_keyboard_input())
+        .map(|ctx| ctx.wants_keyboard_input() || egui::Popup::is_any_open(ctx))
         .unwrap_or(false);
     if egui_wants_kb {
         return;
@@ -337,6 +362,22 @@ pub(super) fn handle_tool_shortcuts(
             return;
         }
         match command {
+            Shortcut::Undo | Shortcut::Redo => {
+                if gesture_active {
+                    ui_mgr.show_advisory(
+                        "Finish or cancel the current gesture before Undo",
+                        clock.elapsed_secs_f64(),
+                    );
+                } else if let Err(error) = undo_context.undo.replay(
+                    command == Shortcut::Redo,
+                    &nav,
+                    &hierarchy,
+                    &visibility,
+                    &db.0,
+                ) {
+                    ui_mgr.show_advisory(error, clock.elapsed_secs_f64());
+                }
+            }
             Shortcut::Activate(next) => tool.activate(next, &mut right_sidebar),
             Shortcut::ToggleRightSidebar => right_sidebar.toggle_collapsed(),
             Shortcut::FrameSelection | Shortcut::DeleteSelection => {
@@ -472,6 +513,29 @@ mod tests {
         keys.press(KeyCode::ShiftLeft);
         keys.press(KeyCode::KeyB);
         assert_eq!(shortcut(&keys, false), Some(Shortcut::ToggleRightSidebar));
+        for modifier in [KeyCode::ControlLeft, KeyCode::SuperLeft] {
+            let mut undo_keys = ButtonInput::default();
+            undo_keys.press(modifier);
+            undo_keys.press(KeyCode::KeyZ);
+            assert_eq!(shortcut(&undo_keys, false), Some(Shortcut::Undo));
+            assert_eq!(shortcut(&undo_keys, true), None);
+            undo_keys.press(KeyCode::ShiftLeft);
+            assert_eq!(shortcut(&undo_keys, false), Some(Shortcut::Redo));
+            undo_keys.press(KeyCode::AltLeft);
+            assert_eq!(shortcut(&undo_keys, false), None);
+        }
+        for replay in [Shortcut::Undo, Shortcut::Redo] {
+            let mut ui = UiManager::default();
+            assert!(!admit_shortcut(
+                replay,
+                &LocalUserRole {
+                    role: Some(fe_database::RoleLevel::Viewer)
+                },
+                &NavigationManager::default(),
+                &mut ui,
+                0.0
+            ));
+        }
         let mut right = RightSidebarState::default();
         right.toggle_collapsed();
         assert!(right.collapsed);

@@ -1149,6 +1149,7 @@ struct PendingAnnotateCreate {
 /// (existing node_id vs. content-based petal_id+name, per AGENTS.md §gpx).
 #[derive(Resource, Default)]
 pub struct PendingPathEdits {
+    checked_reads:HashMap<String,String>,
     reads: HashMap<String, VecDeque<PendingPathRead>>,
     /// FR-4: authored-`CreateTrack` waiters keyed by a process-unique
     /// correlation id (not `(petal_id, name)`) so a same-named GPX import in
@@ -1173,6 +1174,13 @@ pub struct PendingPathEdits {
     seed_pending: std::collections::HashSet<String>,
 }
 
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct PathUndoContext<'w> {
+    ui_mgr:Option<Res<'w,fe_ui::actions::UiManager>>,
+    nav:Option<Res<'w,fe_ui::navigation_manager::NavigationManager>>,
+    undo:ResMut<'w,fe_ui::undo::UndoState>,
+}
+
 /// Drains `PendingPathOps` each frame. Ops needing the current point list
 /// (`AppendPoint`, `RemovePoint`, `AnnotatePoint`, `ExportGpx`) issue a
 /// `GetNodeProperties` and defer their mutation to `advance_path_edits`;
@@ -1195,16 +1203,70 @@ pub fn drain_path_ops(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut status: ResMut<PathEditStatus>,
     mut commands: Commands,
-    ui_mgr: Option<Res<fe_ui::actions::UiManager>>,
-    nav: Option<Res<fe_ui::navigation_manager::NavigationManager>>,
+    context: PathUndoContext,
 ) {
+    let PathUndoContext {
+        ui_mgr,
+        nav,
+        mut undo,
+    } = context;
+    pending.checked_reads.retain(|id, _| undo.owns_request(id));
     if ops.0.is_empty() {
         return;
     }
     let active_petal_id = active_terrain.petal_id.clone().unwrap_or_default();
 
-    for op in ops.0.drain(..) {
+    for op in std::mem::take(&mut ops.0) {
+        let waiting = undo.pending_path();
+        let target = match &op {
+            PathOp::DeleteTrack { track_node_id }
+            | PathOp::AppendPoint { track_node_id, .. }
+            | PathOp::RemovePoint { track_node_id, .. }
+            | PathOp::MovePoint { track_node_id, .. }
+            | PathOp::AppendSmoothPoint { track_node_id, .. }
+            | PathOp::SetAnchorHandles { track_node_id, .. }
+            | PathOp::SetAnchorCorner { track_node_id, .. } => Some(track_node_id.as_str()),
+            _ => None,
+        };
+        if target.is_some() && target == waiting {
+            ops.0.push(op);
+            continue;
+        }
         match op {
+            PathOp::CheckedMovePoint {
+                track_node_id,
+                request_id,
+            } => {
+                let unsettled = pending
+                    .reads
+                    .get(&track_node_id)
+                    .is_some_and(|q| !q.is_empty())
+                    || pending.seed_pending.contains(&track_node_id)
+                    || pending.track_property_confirms.contains_key(&track_node_id);
+                let outcome = if unsettled {
+                    Err("Wait for the path's queued edits to finish".to_string())
+                } else {
+                    undo.path_read_command(&request_id).and_then(|command| {
+                        db_tx.0.send(command).map_err(|_| {
+                            "Database connection closed; point move was not queued".into()
+                        })
+                    })
+                };
+                match outcome {
+                    Ok(()) => {
+                        pending.checked_reads.insert(request_id, track_node_id);
+                    }
+                    Err(error) => {
+                        undo.cancel_path(&request_id);
+                        *status = PathEditStatus {
+                            track_node_id: Some(track_node_id),
+                            message: None,
+                            error: Some(error),
+                        };
+                    }
+                }
+            }
+
             PathOp::CreateTrack {
                 petal_id,
                 name,
@@ -1694,11 +1756,52 @@ pub fn advance_path_edits(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut status: ResMut<PathEditStatus>,
     mut commands: Commands,
+    mut undo: ResMut<fe_ui::undo::UndoState>,
+    mut path_state: Option<ResMut<fe_ui::gis::PathEditorState>>,
 ) {
+    while let Some(projection) = undo.take_path_projection() {
+        if active_terrain.petal_id.as_deref() != Some(projection.petal_id.as_str()) {
+            continue;
+        }
+        let points = json_to_route_points(&projection.points);
+        pending
+            .in_flight_points
+            .insert(projection.node_id.clone(), points.clone());
+        reconcile_track_render(
+            &mut route_map,
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            &track_lines,
+            &single_nodes,
+            &projection.petal_id,
+            &projection.node_id,
+            points,
+            true,
+        );
+        if let Some(state) = path_state
+            .as_deref_mut()
+            .filter(|state| state.editing_track_id.as_deref() == Some(projection.node_id.as_str()))
+        {
+            let rows = projection.editor_rows();
+            if rows.len() != state.points.len() {
+                state.selected_point = None;
+                state.selected_segment = None;
+            }
+            state.points = rows;
+            state.points_pending = false;
+        }
+        *status = PathEditStatus {
+            track_node_id: Some(projection.node_id),
+            message: Some("Point edit confirmed".into()),
+            error: None,
+        };
+    }
     if pending.reads.is_empty()
         && pending.creates.is_empty()
         && pending.annotate_creates.is_empty()
         && pending.track_property_confirms.is_empty()
+        && pending.checked_reads.is_empty()
     {
         return;
     }
@@ -1706,6 +1809,47 @@ pub fn advance_path_edits(
 
     for result in db_results.read() {
         match result {
+            DbResult::CheckedNodeMutationResolved {
+                node_id,
+                request_id,
+                receipt,
+                current,
+                correlation_id,
+            } if request_id == correlation_id
+                && pending.checked_reads.get(request_id) == Some(node_id) =>
+            {
+                pending.checked_reads.remove(request_id);
+                let outcome = if receipt.is_some() {
+                    Err("This point request already has a persisted result; reconciliation required".into())
+                } else {
+                    current
+                        .properties
+                        .get(GPX_POINTS_KEY)
+                        .cloned()
+                        .ok_or_else(|| "Path points are unavailable".to_string())
+                        .and_then(|points| undo.commit_path(request_id, points, &db_tx.0))
+                };
+                if let Err(error) = outcome {
+                    undo.cancel_path(request_id);
+                    *status = PathEditStatus {
+                        track_node_id: Some(node_id.clone()),
+                        message: None,
+                        error: Some(error),
+                    };
+                }
+            }
+            DbResult::RequestFailed {
+                correlation_id,
+                error,
+            } if pending.checked_reads.contains_key(correlation_id) => {
+                let node_id = pending.checked_reads.remove(correlation_id).unwrap();
+                undo.cancel_path(correlation_id);
+                *status = PathEditStatus {
+                    track_node_id: Some(node_id),
+                    message: None,
+                    error: Some(error.clone()),
+                };
+            }
             DbResult::NodeCreated {
                 id,
                 petal_id,
@@ -2640,6 +2784,18 @@ mod tests {
         assert_eq!(back[0].handle_out, Some([1.0, 0.0, -0.5]));
         assert_eq!(back[0].corner, CornerKind::Symmetric);
         assert!((back[0].smoothness - 0.5).abs() < f32::EPSILON);
+        let before=route_points_to_json(&back);
+        let projection=fe_ui::undo::PathProjection {node_id:"track".into(),petal_id:"p".into(),points:before.clone()};
+        let rows=projection.editor_rows();
+        let nav=fe_ui::navigation_manager::NavigationManager {active_verse_id:Some("v".into()),active_fractal_id:Some("f".into()),active_petal_id:Some("p".into()),..Default::default()};
+        let mut undo=fe_ui::undo::UndoState::default();
+        let request=undo.reserve_path(&nav,"track",0,[9.0,0.0,9.0],[4.0,3.0,6.0],Some(7),&rows).unwrap().unwrap();
+        let (tx,rx)=crossbeam::channel::unbounded();undo.commit_path(&request,before.clone(),&tx).unwrap();
+        let DbCommand::CommitCheckedNodeMutation {mutation:fe_runtime::messages::NodeMutation::PropertySet {value,..},expected,correlation_id,..}=rx.try_recv().unwrap() else {panic!("point move requires committed receipt contract")};
+        assert_eq!(correlation_id,request);assert_eq!(expected.history_version,Some(7));
+        assert_eq!(value[0].as_array().unwrap()[3..],before[0].as_array().unwrap()[3..]);
+        assert!(undo.is_pending());assert!(undo.take_path_projection().is_none(),"no render projection before matching receipt");
+
     }
 
     #[test]

@@ -1573,6 +1573,7 @@ checks it again before delivering read payloads. Already admitted commits retain
 their actual receipt after revocation; transport loss remains an unknown outcome.
 
 
+<<<<<<< HEAD
 ## §qa-report-diagnostic
 
 The existing argument-free Owner/input-opt-in ui-state projection includes one
@@ -1606,3 +1607,20 @@ a replay of any earlier report; pair with scene revision and stable assignment/
 origin during live verification, preserving temporal uncertainty explicitly.
 The existing grounded-camera journey carries diagnostic boundary cases; its
 execution and the live overlap oracle remain pending the integrated sweep/stage.
+=======
+## checked point Undo bridge
+
+CheckedMovePoint uses the shared Undo reservation and an authorized current-state
+resolution. It refuses unsettled deferred reads/track creation and queues reads
+behind already-enqueued writes. Its before-state comes from persisted raw JSON,
+not the optimistic in_flight_points cache. Only one point's xyz may change.
+
+Matching receipt/reconciliation projections replace the in-flight buffer, route
+map, line/single-point mesh and matching editor rows through existing helpers.
+Checked moves do not call persist_and_render_points before confirmation. Ordinary
+writes to the same track wait while a covered operation is pending, preserving
+append order. Current-snapshot recovery also hydrates the existing path-stamp
+cache. Segment/whole-path moves retain untracked behavior. The sole builder must
+refresh the existing workspace ulid dependency edge added to fe-ui; this source
+lane does not edit Cargo.lock or execute Cargo.
+>>>>>>> 7f6210b (feat(undo): wire bounded confirmed transform and point commands)

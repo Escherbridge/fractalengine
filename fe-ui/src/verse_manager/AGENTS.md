@@ -412,3 +412,11 @@ late acknowledgements for another open target do not change that form.
 The GUI-only PluginNodeRemoved result shares the existing committed node-removal
 manager/cache adapter. It deliberately has no API reply family, so background
 plugin soft deletes cannot satisfy a pending legacy DeleteNode request.
+
+
+## Undo recovery projections
+
+PathAssetCache.note_properties is crate-visible so the checked editor's authorized
+current-snapshot recovery can reuse the normal property projection after a lost
+or refused save. It preserves the descriptor/curve fingerprint and applied gates;
+Undo introduces no independent stamp sampler or cache format.

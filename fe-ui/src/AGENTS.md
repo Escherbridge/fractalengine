@@ -1339,6 +1339,7 @@ from unavailable or over4096-byte material; raw JSON type is retained in bounded
 30-second deadline and bounded retry. No whole-property-bag cache or unscoped SQL is introduced.
 
 
+<<<<<<< HEAD
 ## §feedback-status
 
 The notice renderer uses theme::notice_fill and NOTICE_TEXT while UiManager
@@ -1366,3 +1367,41 @@ transitions are transient; selected/disabled/overlay pairs outside this set
 need separate checks when adopted. tab_fill and BG_PRIMARY provide neutral
 shared emphasis for owned tab/action integrations. The existing render journey
 contains contrast assertions; execution is pending the final integrated sweep.
+=======
+## editor-undo
+
+undo.rs owns the Command-pattern session stack for ordinary full transforms and
+single path-point positions. At most 50 operations across Undo/Redo and 4 MiB
+of encoded before/after values are retained. Full navigation ancestry changes
+reset generation, pending ownership, projections and stacks; selection does not.
+Restart starts empty. Undo appends ordinary immutable facts rather than deleting
+history or materializing a historical preview.
+
+One covered edit may be pending globally. Gimbal release captures AxisDrag before
+clear; Inspector captures the full old Transform before assignment. The producer
+sends one checked mutation. Matching identity, generation, target state and an
+advanced persisted version are required before recording/transferring an entry.
+First hydrated edits without a known version use atomic relevant-before CAS;
+receipts establish the version afterward. No-op/cancel/refusal records nothing.
+
+Every write identity is a restart-unique ui-undo-ULID. Timeout resolves its exact
+immutable fact without retrying the mutation. Known refusal also reads current
+authorized state before restoring display; an old optimistic before-state never
+overrides peer state. Failed reconciliation stays blocked/indeterminate. A later
+chord may retry only that read. Late prior-generation results cannot revive a
+cleared stack. A conflict skips one requested item and clears redo.
+
+Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z respect text focus, popups, close confirmation,
+exclusive dialogs, live gestures and advisory Editor role; the DB rechecks stored
+Editor authority in the transaction. Hidden/deleted/moved targets are not recreated.
+
+Point gestures retain track/petal plus complete editor rows at press. The action
+reserves before changing its buffer. The host reads authorized current state on
+the DB channel and changes only xyz in the complete raw point JSON. Point order,
+index and known metadata must still match. Timestamps, relative handles, corner
+and smoothness are not rebuilt from f32 display rows. Route/mesh/editor rows and
+path-stamp caches reconcile from matching confirmed/current projections. Queued
+ordinary writes to that track wait for resolution. Segment/whole-path moves,
+append/insert/remove/handles, arbitrary properties/schema, create/delete, Measure
+and terrain remain outside Undo coverage.
+>>>>>>> 7f6210b (feat(undo): wire bounded confirmed transform and point commands)

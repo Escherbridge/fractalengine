@@ -36,6 +36,7 @@ pub(super) const MARKER_BODY_RADIUS: f32 = 0.7;
 #[derive(Resource, Default)]
 pub struct PathGimbalDrag {
     pub active: Option<PathGimbalDragState>,
+    origin: Option<crate::undo::PointEditOrigin>,
 }
 
 /// A live vertex/segment gimbal drag. `affected` holds `(index, start world
@@ -116,6 +117,8 @@ pub(super) fn handle_path_gimbal_drag(
     mut ui_mgr: ResMut<UiManager>,
     mut markers: Query<(&mut Transform, &PathPointMarker)>,
     mut arbiter: ResMut<ClickArbiter>,
+    nav: Res<crate::navigation_manager::NavigationManager>,
+    undo: Res<crate::undo::UndoState>,
 ) {
     // Stranded-gesture sweep (finding F4) — the same idiom the four sibling
     // gestures use. A Hover frame means the button is up, so a surviving drag
@@ -135,16 +138,32 @@ pub(super) fn handle_path_gimbal_drag(
     // a bare axis click doesn't queue a no-op round-trip).
     if mouse_button.just_released(MouseButton::Left) {
         if let Some(state) = drag.active.take() {
+            let Some(origin) = drag
+                .origin
+                .take()
+                .filter(|origin| origin.matches(&path_state, &nav))
+            else {
+                return;
+            };
             for (i, (idx, start)) in state.affected.iter().enumerate() {
                 let pos = state.current.get(i).copied().unwrap_or(*start);
                 if (pos - *start).length() < 1e-4 {
                     continue;
                 }
-                ui_mgr.push_action(UiAction::PathMovePoint {
-                    track_node_id: state.track_id.clone(),
-                    index: *idx,
-                    position: [pos.x, pos.y, pos.z],
-                });
+                if state.affected.len() == 1 {
+                    ui_mgr.push_action(UiAction::PathMovePointFromGesture {
+                        track_node_id: state.track_id.clone(),
+                        index: *idx,
+                        position: pos.to_array(),
+                        origin: origin.clone(),
+                    });
+                } else {
+                    ui_mgr.push_action(UiAction::PathMovePointUntracked {
+                        track_node_id: state.track_id.clone(),
+                        index: *idx,
+                        position: pos.to_array(),
+                    });
+                }
             }
         }
         return;
@@ -184,7 +203,7 @@ pub(super) fn handle_path_gimbal_drag(
 
     // Press → maybe begin a drag. The arbiter has already applied egui + viewport
     // gating and computed the ray/phase.
-    if !arbiter.is_fresh_press() || !arbiter.is_available() {
+    if undo.is_pending() || !arbiter.is_fresh_press() || !arbiter.is_available() {
         return;
     }
     let Some(cursor_pos) = cursor else { return };
@@ -269,6 +288,7 @@ pub(super) fn handle_path_gimbal_drag(
     }
     let screen_dir = axis_screen_dir(axis, center, camera, cam_tx);
     let current: Vec<Vec3> = affected.iter().map(|(_, p)| *p).collect();
+    drag.origin = crate::undo::PointEditOrigin::capture(&path_state, &nav);
     drag.active = Some(PathGimbalDragState {
         axis,
         axis_screen_dir: screen_dir,
@@ -364,6 +384,7 @@ mod tests {
 
     fn live_drag() -> PathGimbalDrag {
         PathGimbalDrag {
+            origin: None,
             active: Some(PathGimbalDragState {
                 axis: GimbalAxis::X,
                 axis_screen_dir: Vec2::X,

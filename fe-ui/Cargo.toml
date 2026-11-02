@@ -24,6 +24,7 @@ fe-identity = { path = "../fe-identity" }
 url = { version = "2", features = ["serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+ulid = { workspace = true }
 rfd = { workspace = true }
 # AppSettings persistence (settings.ron under the platform config dir).
 ron = "0.12"

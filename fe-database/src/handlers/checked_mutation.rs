@@ -144,6 +144,7 @@ pub(crate) async fn commit(
         data.clone(),
         schemas,
     )?;
+    anyhow::ensure!(prepared.version > 0, "invalid stored edit history version");
     let receipt = NodeMutationReceipt {
         node_id: node_id.into(),
         history_version: prepared.version,
@@ -253,7 +254,7 @@ pub(crate) async fn resolve(
     petal_id: &str,
     request_id: &str,
     local_did: &str,
-) -> anyhow::Result<Option<NodeMutationReceipt>> {
+) -> anyhow::Result<(Option<NodeMutationReceipt>, NodeRowSnapshot)> {
     anyhow::ensure!(
         !request_id.is_empty() && request_id.len() <= 128,
         "invalid editor request identity"
@@ -274,6 +275,7 @@ pub(crate) async fn resolve(
     bindings.extend(ancestry_bindings);
     let slot = sql.len() + 1;
     sql.push("SELECT * OMIT id FROM node_log WHERE node_id=$resolve_node AND payload.editor_request_id=$resolve_request LIMIT 2".into());
+    sql.push("SELECT * OMIT id FROM node WHERE node_id=$resolve_node AND tombstone=NONE".into());
     bindings.extend([
         ("resolve_node".into(), json!(node_id)),
         ("resolve_request".into(), json!(request_id)),
@@ -288,12 +290,26 @@ pub(crate) async fn resolve(
     let mut response = query.await?.check()?;
     let rows: Vec<Value> = response.take(slot)?;
     anyhow::ensure!(rows.len() <= 1, "ambiguous editor request receipt");
+    let current_rows: Vec<Value> = response.take(slot + 1)?;
+    anyhow::ensure!(current_rows.len() == 1, "object not found or not permitted");
+    let current: NodeRowSnapshot =
+        serde_json::from_value(node_history::normalize_snapshot(current_rows[0].clone())?)?;
+    anyhow::ensure!(
+        current.node_id == node_id && current.petal_id == petal_id,
+        "unrelated current object"
+    );
     let Some(row) = rows.first() else {
-        return Ok(None);
+        return Ok((None, current));
     };
     anyhow::ensure!(
         row["payload"]["scope"] == scope,
         "request scope is no longer available"
+    );
+    anyhow::ensure!(
+        row["payload"]["journal_version"] == node_history::JOURNAL_VERSION
+            && matches!(row["op"].as_str(), Some("full_transform" | "property_set"))
+            && row["row_version"].as_i64().is_some_and(|v| v > 0),
+        "unsupported editor receipt fact"
     );
     let state: NodeRowSnapshot = serde_json::from_value(row["payload"]["after_state"].clone())?;
     anyhow::ensure!(
@@ -308,12 +324,15 @@ pub(crate) async fn resolve(
         "object moved during request reconciliation"
     );
     entity::prepare_scope_permission(db, &scope, local_did, fe_policy::RoleLevel::Viewer).await?;
-    Ok(Some(NodeMutationReceipt {
-        node_id: node_id.into(),
-        history_version: row["row_version"]
-            .as_i64()
-            .ok_or_else(|| anyhow::anyhow!("invalid receipt version"))?,
-        state,
-        persist: PersistStatus::Committed,
-    }))
+    Ok((
+        Some(NodeMutationReceipt {
+            node_id: node_id.into(),
+            history_version: row["row_version"]
+                .as_i64()
+                .ok_or_else(|| anyhow::anyhow!("invalid receipt version"))?,
+            state,
+            persist: PersistStatus::Committed,
+        }),
+        current,
+    ))
 }

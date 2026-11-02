@@ -82,6 +82,7 @@ fn height_delta_from_cursor(prev_cursor_y: f32, cur_cursor_y: f32, sensitivity: 
 #[derive(Resource, Default)]
 pub struct PathPointDrag {
     pub active: Option<PathPointDragState>,
+    origin:Option<crate::undo::PointEditOrigin>,
 }
 
 /// pen_curve_tool_20260722 (FR-4): drag distance below which a Pen release is
@@ -414,6 +415,7 @@ fn snap_path_position(
     ]
 }
 
+#[cfg(test)]
 fn apply_snapped_point_release(
     points: &mut [PathPointRow],
     index: usize,
@@ -675,11 +677,13 @@ pub(super) fn handle_path_point_interaction(
     mut marker_tx: Query<(&mut Transform, &PathPointMarker)>,
     marker_pick: Query<(&GlobalTransform, &PathPointMarker)>,
     snap_sources: ForeignSnapSources,
-    mut arbiter: ResMut<ClickArbiter>,
+    mut arbiter: ResMut<ClickArbiter>,    undo:Res<crate::undo::UndoState>,
+
 ) {
     // Stranded-gesture sweep: a Hover frame (button up) with a live drag means
     // its Release was missed — drop it before it can replay on a later click.
     let phase = arbiter.phase();
+    if undo.is_pending() && phase==PointerPhase::Press {return;}
     sweep_stranded_drag(phase, &mut drag.active);
     sweep_stranded_drag(phase, &mut pen_drag.active);
 
@@ -719,6 +723,7 @@ pub(super) fn handle_path_point_interaction(
             Vec::new()
         };
         if let Some(state) = drag.active.take() {
+            let Some(origin)=drag.origin.take().filter(|origin|origin.matches(&path_state,&nav)) else {return;};
             // A drag can only start while editing a track, so `editing_track_id`
             // is `Some` here.
             let marker_position = marker_tx
@@ -734,17 +739,18 @@ pub(super) fn handle_path_point_interaction(
                     path_state.snap,
                     petal_map.world_scale,
                 );
-                if apply_snapped_point_release(&mut path_state.points, state.index, snapped) {
+                if path_state.points.get(state.index).is_some() {
                     if let Some((mut transform, _)) = marker_tx
                         .iter_mut()
                         .find(|(_, marker)| marker.index == state.index)
                     {
                         transform.translation = Vec3::from(snapped);
                     }
-                    ui_mgr.push_action(UiAction::PathMovePoint {
+                    ui_mgr.push_action(UiAction::PathMovePointFromGesture {
                         track_node_id: track_id,
                         index: state.index,
                         position: snapped,
+                        origin,
                     });
                 }
             }
@@ -878,6 +884,7 @@ pub(super) fn handle_path_point_interaction(
                 .find(|(_, m)| m.index == index)
                 .map(|(g, _)| g.translation().y)
                 .unwrap_or(0.0);
+            drag.origin=crate::undo::PointEditOrigin::capture(&path_state,&nav);
             drag.active = Some(PathPointDragState {
                 index,
                 plane_y,
@@ -1242,6 +1249,12 @@ mod tests {
 
     #[test]
     fn snapped_release_updates_authoritative_point_and_rejects_bad_indices() {
+        let nav=NavigationManager {active_verse_id:Some("v".into()),active_fractal_id:Some("f".into()),active_petal_id:Some("p".into()),..Default::default()};
+        let mut editor=PathEditorState::default();editor.editing_track_id=Some("track".into());editor.points=vec![crate::gis::PathPointRow {position:[1.0,0.0,2.0],time_seconds:Some(17.25),..Default::default()}];
+        let origin=crate::undo::PointEditOrigin::capture(&editor,&nav).unwrap();assert!(origin.matches(&editor,&nav));
+        editor.editing_track_id=Some("another-track".into());assert!(!origin.matches(&editor,&nav));editor.editing_track_id=Some("track".into());
+        editor.points[0].time_seconds=Some(99.0);assert!(!origin.matches(&editor,&nav));
+
         let mut points = vec![point([3.0, 2.0, 1.0])];
         assert!(apply_snapped_point_release(&mut points, 0, [4.0, 2.0, 5.0]));
         assert_eq!(points[0].position, [4.0, 2.0, 5.0]);

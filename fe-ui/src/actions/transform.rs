@@ -31,6 +31,9 @@ pub(crate) fn parse_inspector_transform(
                 .trim()
                 .parse::<f32>()
                 .map_err(|_| format!("{} {label} isn't a number", AXES[i]))?;
+            if !vals[i].is_finite() {
+                return Err(format!("{} {label} must be finite", AXES[i]));
+            }
         }
         Ok(Vec3::from_array(vals))
     }
@@ -74,6 +77,7 @@ pub(crate) fn apply(
         return Ok(());
     };
 
+    let before = *transform;
     transform.translation = parsed.position;
     transform.rotation = Quat::from_euler(
         EulerRot::XYZ,
@@ -84,6 +88,7 @@ pub(crate) fn apply(
     transform.scale = parsed.scale;
 
     sel.drag_committed = true;
+    node_mgr.pending_transform_before = Some(before);
     Ok(())
 }
 

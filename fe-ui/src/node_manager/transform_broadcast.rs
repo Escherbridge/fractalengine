@@ -20,7 +20,11 @@ pub(super) fn broadcast_transform(
     db_sender: Res<fe_runtime::app::DbCommandSender>,
     mut verse_mgr: ResMut<crate::verse_manager::VerseManager>,
     mut ui_mgr: ResMut<crate::actions::UiManager>,
+    mut undo: ResMut<crate::undo::UndoState>,
+    nav: Res<crate::navigation_manager::NavigationManager>,
+    clock: Res<crate::notice::NoticeClock>,
 ) {
+    let before = manager.pending_transform_before.take();
     let Some(sel) = manager.selected.as_mut() else {
         return;
     };
@@ -36,6 +40,7 @@ pub(super) fn broadcast_transform(
     // `centroid` is the exact baseline the mesh was anchored at, so the bake
     // pivots identically to what the gimbal displayed.
     if let Ok(pick) = pick_shapes.get(entity) {
+        undo.invalidate_redo();
         let Ok((mut transform, marker)) = transform_query.get_mut(entity) else {
             return;
         };
@@ -63,25 +68,34 @@ pub(super) fn broadcast_transform(
     let Ok((transform, marker)) = transform_query.get(entity) else {
         return;
     };
-    let pos = transform.translation;
-    let (rx, ry, rz) = transform.rotation.to_euler(EulerRot::XYZ);
-    let sc = transform.scale;
-
-    // Keep in-memory NodeEntry in sync so respawn_on_petal_change uses the
-    // updated position instead of the stale initial one.
-    verse_mgr.update_node_transform(&marker.node_id, *transform);
-
-    if db_sender
-        .0
-        .send(fe_runtime::messages::DbCommand::UpdateNodeTransform {
-            node_id: marker.node_id.clone(),
-            position: [pos.x, pos.y, pos.z],
-            rotation: [rx, ry, rz],
-            scale: [sc.x, sc.y, sc.z],
-        })
-        .is_err()
-    {
-        bevy::log::warn!("db_sender channel closed — DB thread may have crashed");
+    let after = *transform;
+    let node_id = marker.node_id.clone();
+    let petal_id = marker.petal_id.clone();
+    let Some(before) = before else {
+        ui_mgr.show_advisory(
+            "Transform had no captured starting state; edit was not saved",
+            clock.elapsed_secs_f64(),
+        );
+        return;
+    };
+    match undo.transform(
+        &nav,
+        &node_id,
+        &petal_id,
+        before,
+        after,
+        verse_mgr.committed_versions.get(&node_id).copied(),
+        &db_sender.0,
+    ) {
+        Ok(true) => ui_mgr.show_toast("Saving transform...", clock.elapsed_secs_f64()),
+        Ok(false) => {}
+        Err(error) => {
+            verse_mgr.update_node_transform(&node_id, before);
+            if let Ok((mut target, _)) = transform_query.get_mut(entity) {
+                *target = before;
+            }
+            ui_mgr.show_advisory(error, clock.elapsed_secs_f64());
+        }
     }
 }
 

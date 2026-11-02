@@ -1633,7 +1633,7 @@ pub fn spawn_db_thread_shared(
                     }
                     Ok(DbCommand::ResolveCheckedNodeMutation {node_id,petal_id,request_id,correlation_id})=>{
                         match handlers::checked_mutation::resolve(&db,&node_id,&petal_id,&request_id,&local_did).await {
-                            Ok(receipt)=>send_result(&tx,DbResult::CheckedNodeMutationResolved {node_id,request_id,receipt,correlation_id}),
+                            Ok((receipt,current))=>send_result(&tx,DbResult::CheckedNodeMutationResolved {node_id,request_id,receipt,current,correlation_id}),
                             Err(error)=>send_result(&tx,DbResult::RequestFailed {error:format!("Edit reconciliation unavailable: {error:#}"),correlation_id}),
                         }
                     }

@@ -129,8 +129,11 @@ pub struct NodeStateAtVersion {
 /// Typed full transform used by editor compare-and-swap commands.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeTransformValue {
+    /// Petal-local XYZ position.
     pub position: [f64; 3],
+    /// Quaternion orientation, compared with sign equivalence.
     pub rotation: [f32; 4],
+    /// Per-axis scale.
     pub scale: [f64; 3],
 }
 
@@ -174,14 +177,19 @@ impl NodeTransformValue {
 /// Relevant state required before an editor operation may commit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NodeEditBefore {
+    /// Full transform at the start of the edit.
     Transform(NodeTransformValue),
+    /// Complete stored point rows before one position changes.
     PathPoints(Value),
 }
 
 /// Editor-only compare-and-swap precondition, checked again inside the transaction.
 #[derive(Debug, Clone)]
 pub struct NodeEditPrecondition {
+    /// Full captured ancestry, never an authorization grant.
     pub scope: String,
+    /// Known committed version; initial hydrated edits may rely on state CAS.
     pub history_version: Option<i64>,
+    /// Relevant state the transaction must still contain.
     pub before: NodeEditBefore,
 }

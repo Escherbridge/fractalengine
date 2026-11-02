@@ -1708,6 +1708,37 @@ mod tests {
                 .unwrap(),
             latest
         );
+        use fe_runtime::node_history::{NodeEditBefore,NodeEditPrecondition};
+        use fe_runtime::messages::NodeMutation;
+        let undo_node=crud::create_node_as(&db,"tree-other-petal","undo point fixture",[0.0;3],"did:qa").await.unwrap();
+        let path_before=serde_json::json!([[1.0,0.0,2.0,17.25,-0.5,0.0,0.0,0.5,0.0,0.0,2.0,0.6],[8.0,2.0,9.0,29.5]]);
+        crate::handlers::entity_property::set_entity_property_as(&db,&undo_node,"gpx_points",&path_before,"did:qa").await.unwrap();
+        let base=crate::handlers::node_history::receipt(&db,&undo_node).await.unwrap();
+        let mut path_after=path_before.clone();path_after[0][0]=serde_json::json!(4.0);path_after[0][1]=serde_json::json!(3.0);path_after[0][2]=serde_json::json!(6.0);
+        let expected=NodeEditPrecondition {scope:plugin_scope.clone(),history_version:Some(base.history_version),before:NodeEditBefore::PathPoints(path_before.clone())};
+        let point_move=NodeMutation::PropertySet {key:"gpx_points".into(),value:path_after.clone()};
+        let saved=crate::handlers::checked_mutation::commit(&db,&undo_node,&point_move,&expected,"qa-undo-point","did:qa").await.unwrap();
+        assert_eq!(saved.state.properties["gpx_points"],path_after);
+        assert_eq!(saved.state.properties["gpx_points"][0].as_array().unwrap()[3..],path_before[0].as_array().unwrap()[3..]);
+        let inverse_expected=NodeEditPrecondition {scope:plugin_scope.clone(),history_version:Some(saved.history_version),before:NodeEditBefore::PathPoints(path_after.clone())};
+        let inverse=NodeMutation::PropertySet {key:"gpx_points".into(),value:path_before.clone()};
+        let unchanged_ops=op_log_count(&db).await;
+        for (request,guard,actor) in [("qa-undo-stale",&expected,"did:qa"),("qa-undo-viewer",&inverse_expected,"did:tree-viewer")] {
+            crate::handlers::checked_mutation::commit(&db,&undo_node,&inverse,guard,request,actor).await.expect_err("stale or insufficient-role inverse must refuse");
+        }
+        db.query("DEFINE EVENT fail_editor_fact ON TABLE node_log WHEN $after.payload.editor_request_id='qa-undo-fail' THEN {THROW 'induced editor journal failure'}").await.unwrap().check().unwrap();
+        crate::handlers::checked_mutation::commit(&db,&undo_node,&inverse,&inverse_expected,"qa-undo-fail","did:qa").await.expect_err("journal failure rolls checked state and intention back together");
+        db.query("REMOVE EVENT fail_editor_fact ON TABLE node_log").await.unwrap().check().unwrap();
+        db.query("CREATE fractal SET fractal_id='undo-reparent-fractal',verse_id='tree-10',owner_did='did:qa',name='other',created_at='2026-11-02'; UPDATE petal SET fractal_id='undo-reparent-fractal' WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();
+        crate::handlers::checked_mutation::commit(&db,&undo_node,&inverse,&inverse_expected,"qa-undo-moved","did:qa").await.expect_err("queued old ancestry must refuse after reparent");
+        db.query("UPDATE petal SET fractal_id='tree-other-fractal' WHERE petal_id='tree-other-petal'; DELETE fractal WHERE fractal_id='undo-reparent-fractal'").await.unwrap().check().unwrap();
+        assert_eq!(op_log_count(&db).await,unchanged_ops);
+        let still_saved=crate::handlers::node_history::receipt(&db,&undo_node).await.unwrap();
+        assert_eq!(still_saved.history_version,saved.history_version);assert_eq!(still_saved.state.properties["gpx_points"],path_after);
+        let undone=crate::handlers::checked_mutation::commit(&db,&undo_node,&inverse,&inverse_expected,"qa-undo-inverse","did:qa").await.unwrap();
+        assert!(undone.history_version>saved.history_version);assert_eq!(undone.state.properties["gpx_points"],path_before);
+        let (recovered,current)=crate::handlers::checked_mutation::resolve(&db,&undo_node,"tree-other-petal","qa-undo-point","did:qa").await.unwrap();
+        assert_eq!(recovered.unwrap().history_version,saved.history_version);assert_eq!(current.properties["gpx_points"],path_before);
         let before_plugin_ops = op_log_count(&db).await;
         let invalid = vec![
             PendingOp::SetProperty {

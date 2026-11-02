@@ -183,6 +183,7 @@ pub struct VerseManagerPlugin;
 impl Plugin for VerseManagerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<VerseManager>();
+        app.init_resource::<crate::undo::UndoState>();
         app.init_resource::<TextureRegistryRes>();
         app.init_resource::<PrimitiveMaterialAssets>();
         app.init_resource::<PathAssetApplied>();
@@ -206,6 +207,7 @@ impl Plugin for VerseManagerPlugin {
         app.add_systems(
             Update,
             (
+                crate::undo::observe_results,
                 lifecycle_events::apply_lifecycle_events,
                 db_results::apply_db_results,
                 residency_ledger::update_residency_ledger,

@@ -900,6 +900,7 @@ from a collapsed state. The legacy left toggle remains bare Ctrl/Cmd+B only,
 with Shift/Alt chords and keyboard-owned editors excluded. These are session
 layout choices; no panel rendering or domain selection is duplicated here.
 
+<<<<<<< HEAD
 ## Context-menu ownership lifetime
 
 `write_target` pins the current Petal once when classification completes for
@@ -908,3 +909,17 @@ selection. Context-menu rendering closes a classified menu after a Petal change;
 terrain report actions carry this classified owner and cannot adopt a same-ID
 target in the newly active Petal. Existing classification and report journeys
 cover pinning, stale-menu closure and queued-action refusal.
+=======
+
+## editor-undo capture
+
+The ordinary release path retains its press-time full transform before dropping
+AxisDrag. Inspector Apply retains its old Transform through the same producer.
+Only one checked command is sent and history stores IDs rather than Entities.
+Cancel and no-op do not record a command; saving blocks new covered gestures.
+
+Marker/vertex gestures retain PointEditOrigin through release and the next action
+frame. Track, petal or editor-row changes drop the candidate. Marker release
+leaves authoritative editor rows untouched until confirmation. Two-point segment
+moves explicitly remain untracked, avoiding independently undoable half-gestures.
+>>>>>>> 7f6210b (feat(undo): wire bounded confirmed transform and point commands)

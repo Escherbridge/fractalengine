@@ -80,7 +80,7 @@ impl PathAssetCache {
     /// points when it carries BOTH a `path_asset` and a non-empty `gpx_points`,
     /// else drop any stale entry. `petal_id` is the node's owning petal (from
     /// `VerseManager`); `None` (unknown node) can't be materialized, so it evicts.
-    pub(super) fn note_properties(
+    pub(crate) fn note_properties(
         &mut self,
         node_id: &str,
         petal_id: Option<&str>,
