@@ -4,8 +4,8 @@ date: 2026-11-01
 status: in_progress
 source: ./handoff-20261101-qa-chain.md
 current_writer: /root
-current_slice: Reviewed scoped query, feedback, sidebar, terrain reports, restart catalog repair and Undo integrated through 60e5772; app stopped before integration; combined review and fresh stage pending
-parallel_code_worktrees: Inspector URL/API author; requirements persistence author; independent combined-source review; all code-only outside root Cargo owner
+current_slice: Focused pass14 independently reviewed; source through 5aec1d8 includes requirements, report flow, settings and Inspector; app84248 stopped; Inspector lifecycle recheck and next build pending
+parallel_code_worktrees: Access controls author; chrome/tree polish author; Inspector lifecycle independent reviewer; all code-only outside root Cargo owner
 ---
 
 # QA chain continuation
@@ -32,6 +32,42 @@ Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.
 - [ ] Push the finished goal, wait for CI success, verify release assets and publish tagged downloads/links.
 
 ## Current acceptance state
+
+### Latest checkpoint — focused pass14 and next integration
+
+- The verified stage75d2860 compiled and restarted the retained root without a
+  reseed. Its original fleet recovered with exact versions/state hashes, six raw
+  and six calibrated readings, two covered shards, an actual answerer and exact
+  REST/MCP row parity. This was read-only, with no re-ingestion. The independent
+  qa14_evidence_verifier confirmed the artifacts. A fresh full driver scenario
+  and same-new-stage restart remain required.
+- Native two-edit/two-Undo/two-Redo succeeded with exact stored and ECS positions
+  and advancing immutable history. Final Undo restored Cube3's initial transform
+  and properties. Its first checked edit correctly added a supported legacy
+  baseline, not a duplicate edit. Path/recovery/conflict cases remain unexecuted.
+- Runtime bounds, all five pristine probes and the grounded tile origin confirm
+  the2.270m³ displayed overlap prediction; the whole box is3.125m³. The native
+  picker reaches saved regionr1, whose report shows earth material and38.83m³
+  fill. Historical terrain epoch identity remains explicitly unverified.
+- The verifier independently reconciled pass13's two deliberate validation
+  warnings. Original summaries, hashes and coverage_ready=false remain unchanged.
+  Focused passes still provide no full-coverage convergence credit.
+- QA-0038 report scrolling and QA-0039 small hit targets were retained as open
+  findings. The reviewed single-scroll report correction is integrated9b73a7e;
+  live re-verification is pending. Chrome/tree action sizes are being repaired in
+  an isolated checkout. Informational role text will remain distinct from actions.
+- Root84248 and all seven freshly captured descendants were proven absent before
+  this integration. No application or Cargo is running at this checkpoint.
+- Requirements persistence and its clean/dirty saved cue are integrated through
+  b34df9f with independent security/design approval. Settings disk receipts,
+  per-section Retry and gated reset safety are integrated throughd0d7192. Live
+  Reset is still disabled: coordinated writer shutdown and runtime/session/cache
+  invalidation remain mandatory implementation work before enabling it.
+- Inspector URL, actual endpoint and correlated token state are integrated through
+ 5aec1d8. Independent review found a programmatic tab transition bypass; correction
+  d569d40 is frozen for recheck before integration. Access controls and remaining
+  chrome polish are separate code-only authors. Next production build and live
+  acceptance are pending. Final suite, full QA, CI and tagged downloads remain open.
 
 ### Authoritative continuation checkpoint — 2026-11-02
 

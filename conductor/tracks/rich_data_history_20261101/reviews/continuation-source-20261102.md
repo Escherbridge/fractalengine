@@ -21,6 +21,10 @@ or live acceptance, and they do not supersede the campaign's final verification.
 | Distributed catalog restart repair | 9fb8848, 01baece | harness_security_review: source-ready, bounded stored Manager authority/read fences, allowlisted wire rows, committed Petal publication and catalog admission ordering. | Integrated5ed9e6c/c6fda5f; prove old populated Petal recovers without re-ingestion, then fresh scenario/restart. |
 | Selected-object terrain diagnostics | 1ee27ec | harness_advocate: source-ready; existing Owner/input/scope boundary, selected-object bounds and five pristine probes only, epoch explicitly unverified. | Integrated3461b8b; runtime grounded origin and sample/bounds proof pending. |
 | Combined integration | main60e5772 versus ea8c8e8 | harness_security_review: no combined blocker; reviewed final Undo/ScopedQuery/distributed files match, ParentMutation helper/index and Viewer/Editor/Manager floors preserved, report Petal pin and optional public identity wiring intact. | Build and live acceptance pending. Reported CRLF hygiene is normalized separately; no runtime claim. |
+| Requirements persistence and saved cue | 094de4e, c6163e3, a3b0ff8 | harness_security_review and interaction_design_review: source-ready; actual stored authority, raw-document/scope CAS, atomic operation/readback, exact pending identity and newer drafts retained. Clean and dirty saved copy corrected and rechecked. | Integrated through b34df9f; compile, real saved declaration/reopen and replication journeys pending. Declaration-only product boundary is D-QA-012. |
+| Report scroll flow | 3a3251b | interaction_design_review: source-ready; remove inner vertical viewport, retain bounded128 rows and per-node identity in outer report scroll. | Integrated9b73a7e; three-size painted-clip journey authored, next-stage live QA-0038 repair proof pending. |
+| Shell recovery/settings/reset safety | 795fca9, 237c38d, 580c274 | harness_security_review: source-ready only with live Reset disabled; per-section Retry, actual disk receipts and immutable offline clear fences inspected. | Integrated through d0d7192. Coordinated API/sync/plugin shutdown and runtime/cache/session invalidation remain open before enabling live Reset. Compile/native and isolated-store journeys pending. |
+| Inspector URL/endpoint/token lifecycle | 90c786b, 90562d5, f903a25, d569d40 | harness_security_review: initial stack source-ready. interaction_design_review found same-target report-tab cleanup bypass; private tab/setter plus submission/reply guards close it in d569d40, independently rechecked. | Integrated through8942516. Combined integration review, compile and native mint/clear/endpoint/A8 proof pending. |
 
 ## Scoped SQL compatibility boundary
 
@@ -46,3 +50,26 @@ Before adding another command kind, consider an explicit PendingPhase enum for
 path-read/commit/reconciliation states and extract confirmation validation,
 cursor rebasing and retention into named helpers. These are maintainability
 recommendations, not unresolved correctness findings or user decisions.
+
+## Focused evidence review
+
+The independent qa14_evidence_verifier recomputed the pass13 context hash and all
+three original fleet state digests, checked read-only traces and exact REST/MCP
+rows/coverage metadata, and confirmed two covered shards and a real answerer with
+unchanged six raw plus six calibrated readings. This supports targeted cross-build
+recovery without re-ingestion; it is not the strict same-stage driver restart gate.
+
+The same verifier checked native consecutive Undo/Redo input traces against each
+stored and ECS readback, immutable history prefixes and restored Cube3 properties.
+The initial supported baseline explains v4→v6. Terrain bounds and five probes
+independently reproduce2.2704029455780983m³, matching the2.270m³ display; the report
+epoch remains explicitly unknown. QA-0038 clipping was visually confirmed and
+QA-0039 small targets remain open. No full coverage approval was given.
+
+Pass13 warnings seq1327 and1328 were independently reconciled against the two
+intentional refusal receipts and bounded owned stdout at matching timestamps:
+invalid calibration.gain expected Number, and required maintenance.last_service
+absent on Gamma. Before/after state/history/schema remain unchanged. All38 original
+receipts passed with no generation/retention gap. Original artifacts, hashes and
+coverage_ready=false remain unchanged. This review closes only those warning
+classifications, not the campaign's clean full-pass gate.
