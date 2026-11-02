@@ -126,6 +126,7 @@ impl fe_sdk::plugin_host::TransactionSink for MockHostEnv {
         fe_sdk::plugin_host::validate_transaction(ops)?;
         let mut staged = self.clone();
         let mut created_node_ids = Vec::new();
+        let mut deleted_node_ids = Vec::new();
         for op in ops {
             match op {
                 PendingOp::SetProperty {
@@ -186,7 +187,25 @@ impl fe_sdk::plugin_host::TransactionSink for MockHostEnv {
                         .get(node_id)
                         .filter(|node| node.petal_id == petal_id)
                         .ok_or("node not found or not permitted")?;
-                    let _ = node;
+                    if [
+                        "gpx_track_id",
+                        "owning_path_id",
+                        fe_sdk::PATH_ASSET_PROPERTY_KEY,
+                    ]
+                    .iter()
+                    .any(|key| node.properties.contains_key(*key))
+                    {
+                        return Err("plugin v1 refuses path/stamp lifecycle deletion".into());
+                    }
+                    if self
+                        .nodes
+                        .values()
+                        .chain(staged.nodes.values())
+                        .any(|node| depends_on(node, node_id))
+                    {
+                        return Err("plugin v1 refuses deletion with dependent children".into());
+                    }
+                    deleted_node_ids.push(node_id.clone());
                     staged.nodes.remove(node_id);
                     staged.properties.retain(|(id, _), _| id != node_id);
                     staged.scene_changes.push(SceneChange::NodeRemoved {
@@ -195,6 +214,12 @@ impl fe_sdk::plugin_host::TransactionSink for MockHostEnv {
                 }
             }
         }
+        if deleted_node_ids
+            .iter()
+            .any(|id| staged.nodes.values().any(|node| depends_on(node, id)))
+        {
+            return Err("plugin batch introduces a dependent child of a deleted node".into());
+        }
         staged.transactions.push(ops.to_vec());
         *self = staged;
         Ok(TransactionReceipt {
@@ -202,6 +227,16 @@ impl fe_sdk::plugin_host::TransactionSink for MockHostEnv {
             created_node_ids,
         })
     }
+}
+
+fn depends_on(node: &NodeSnapshot, parent_id: &str) -> bool {
+    ["parent_id", "gpx_track_id", "owning_path_id"]
+        .iter()
+        .any(|key| {
+            node.properties.get(*key).is_some_and(|value| {
+                fe_sdk::plugin_host::property_json(value).as_str() == Some(parent_id)
+            })
+        })
 }
 
 impl Default for MockHostEnv {
@@ -241,6 +276,117 @@ mod tests {
         assert_eq!(retrieved.node_id, "node_01");
         assert_eq!(retrieved.name, "Test Node");
         assert!(host.get_node("nonexistent").is_none());
+        use fe_sdk::plugin_host::{PendingOp, TransactionSink};
+        let mut base = host.clone();
+        base.insert_node("child", make_snapshot("child", "child"));
+        base.insert_property("node_01", "existing", "preserved");
+        base.scene_changes.push(SceneChange::NodeAdded {
+            node_id: "node_01".into(),
+            petal_id: "petal_01".into(),
+            name: "Test Node".into(),
+        });
+        let delete = PendingOp::DeleteNode {
+            node_id: "node_01".into(),
+        };
+        let harmless = PendingOp::SetProperty {
+            node_id: "child".into(),
+            key: "other".into(),
+            value: serde_json::json!("must roll back"),
+        };
+        TransactionSink::commit(
+            &mut base,
+            "petal_01",
+            &[PendingOp::SetProperty {
+                node_id: "child".into(),
+                key: "baseline".into(),
+                value: serde_json::json!("preserved"),
+            }],
+        )
+        .unwrap();
+        let mut cases = Vec::new();
+        for key in [
+            "gpx_track_id",
+            "owning_path_id",
+            fe_sdk::PATH_ASSET_PROPERTY_KEY,
+        ] {
+            let mut own_marker = base.clone();
+            own_marker
+                .nodes
+                .get_mut("node_01")
+                .unwrap()
+                .properties
+                .insert(key.into(), PropertyValue::Json(serde_json::Value::Null));
+            cases.push((own_marker, vec![harmless.clone(), delete.clone()]));
+            cases.push((
+                base.clone(),
+                vec![
+                    PendingOp::SetProperty {
+                        node_id: "node_01".into(),
+                        key: key.into(),
+                        value: serde_json::Value::Null,
+                    },
+                    delete.clone(),
+                ],
+            ));
+        }
+        for key in ["parent_id", "gpx_track_id", "owning_path_id"] {
+            let link = PendingOp::SetProperty {
+                node_id: "child".into(),
+                key: key.into(),
+                value: serde_json::json!("node_01"),
+            };
+            let mut existing_child = base.clone();
+            existing_child
+                .nodes
+                .get_mut("child")
+                .unwrap()
+                .properties
+                .insert(key.into(), PropertyValue::String("node_01".into()));
+            let mut foreign_child = existing_child.clone();
+            foreign_child.nodes.get_mut("child").unwrap().petal_id = "another-petal".into();
+            cases.push((foreign_child, vec![delete.clone()]));
+            cases.push((
+                existing_child.clone(),
+                vec![harmless.clone(), delete.clone()],
+            ));
+            cases.push((
+                existing_child,
+                vec![
+                    PendingOp::DeleteNode {
+                        node_id: "child".into(),
+                    },
+                    delete.clone(),
+                ],
+            ));
+            cases.push((base.clone(), vec![link.clone(), delete.clone()]));
+            cases.push((base.clone(), vec![delete.clone(), link]));
+        }
+        for (mut case, ops) in cases {
+            let before = case.clone();
+            assert!(
+                TransactionSink::commit(&mut case, "petal_01", &ops).is_err(),
+                "unsupported lifecycle batch must refuse: {ops:?}"
+            );
+            assert_eq!(
+                serde_json::to_value(&case.nodes).unwrap(),
+                serde_json::to_value(&before.nodes).unwrap()
+            );
+            assert_eq!(case.properties, before.properties);
+            assert_eq!(
+                serde_json::to_value(&case.scene_changes).unwrap(),
+                serde_json::to_value(&before.scene_changes).unwrap()
+            );
+            assert_eq!(case.transactions, before.transactions);
+        }
+        let mut plain = base;
+        assert_eq!(
+            TransactionSink::commit(&mut plain, "petal_01", &[delete])
+                .unwrap()
+                .op_count,
+            1
+        );
+        assert!(plain.get_node("node_01").is_none());
+        assert!(plain.get_node("child").is_some());
     }
 
     #[test]

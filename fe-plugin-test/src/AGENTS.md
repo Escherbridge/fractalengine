@@ -77,3 +77,11 @@ errors before the mock sink or spy records a write. delete_node uses the same
 atomic mock transaction sink as the other scene mutations. The SDK remains
 Rhai-free, so this boundary adapter mirrors the production converter rather than
 introducing an engine dependency into the testing kit.
+
+Plain-node deletion follows the production v1 lifecycle boundary: any path/stamp
+marker on the staged target refuses deletion, even when the marker value is null.
+Existing live dependencies and links introduced by earlier operations refuse at
+delete preparation; links introduced later are checked against every deleted ID
+before clone-swap. An earlier child deletion does not bypass the production
+preflight against the original stored snapshots. Refusal leaves all node data,
+property records, scene changes and committed batches unchanged.
