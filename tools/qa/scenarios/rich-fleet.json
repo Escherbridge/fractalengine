@@ -899,13 +899,13 @@
           ]
         }
       },
-      "reason_contains": "gain"
+      "reason_contains": "operation refused"
     },
     {
       "id": "reject-incompatible-schema",
       "op": "reject_schema",
       "schema": "metadata-v3-incompatible",
-      "reason_contains": "last_service"
+      "reason_contains": "schema revision refused"
     },
     {
       "id": "checkpoint-final",

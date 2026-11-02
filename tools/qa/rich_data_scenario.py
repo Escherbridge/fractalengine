@@ -1,6 +1,7 @@
 """Validate rich-data scenario intent; see tools/qa/AGENTS.md §rich-data."""
 
 import datetime
+from decimal import Decimal
 import json
 import math
 from pathlib import Path
@@ -62,7 +63,9 @@ def parse_json(text):
 
 def finite_tree(value, depth=0):
     require(depth <= 20, "JSON exceeds depth 20")
-    if isinstance(value, float):
+    if type(value) is int:
+        require(-(2**63) <= value <= 2**63-1, "integer exceeds signed 64-bit storage range")
+    elif isinstance(value, float):
         require(math.isfinite(value), "nonfinite number")
     elif isinstance(value, dict):
         for key, child in value.items():
@@ -93,14 +96,18 @@ def epoch_ms(text):
     except ValueError as error:
         raise ScenarioError("invalid_scenario", "invalid recorded_at") from error
     require(value.tzinfo is not None and value.utcoffset() == datetime.timedelta(0), "recorded_at must be UTC")
-    milliseconds = (value - datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)).total_seconds() * 1000
-    require(milliseconds.is_integer(), "recorded_at must resolve to integral milliseconds")
-    return int(milliseconds)
+    elapsed = value - datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
+    require(elapsed.microseconds % 1000 == 0, "recorded_at must resolve to integral milliseconds")
+    return (elapsed.days * 86400 + elapsed.seconds) * 1000 + elapsed.microseconds // 1000
 
 
 def equal_json(actual, expected, tolerance=1e-5, subset=False):
     if type(expected) in (int, float):
-        return type(actual) in (int, float) and math.isfinite(actual) and math.isclose(actual, expected, rel_tol=0, abs_tol=tolerance)
+        if type(actual) not in (int, float) or (isinstance(actual, float) and not math.isfinite(actual)):
+            return False
+        if type(actual) is int and type(expected) is int:
+            return actual == expected
+        return abs(Decimal(str(actual)) - Decimal(str(expected))) <= Decimal(str(tolerance))
     if type(actual) is not type(expected):
         return False
     if isinstance(expected, dict):
@@ -126,7 +133,8 @@ def load_scenario(path):
     require(len(raw) <= MAX_SCENARIO_BYTES, "scenario exceeds 1 MiB")
     spec = parse_json(raw.decode("utf-8-sig"))
     require(isinstance(spec, dict) and spec.get("format") == "fe-rich-data-v1", "unsupported scenario format")
-    require(set(spec) == {"format", "id", "description", "step_timeout_seconds", "objects", "schemas", "oracles", "steps"},
+    required_fields = {"format", "id", "description", "step_timeout_seconds", "objects", "schemas", "oracles", "steps"}
+    require(required_fields.issubset(spec) and not (set(spec)-required_fields-{"coverage"}),
             "unknown or missing scenario fields")
     require(isinstance(spec["id"], str) and NAME.fullmatch(spec["id"]), "invalid scenario ID")
     require(type(spec["step_timeout_seconds"]) in (int, float) and 1 <= spec["step_timeout_seconds"] <= 60,
@@ -139,6 +147,7 @@ def load_scenario(path):
         require(isinstance(body, dict) and set(body) == {"name", "position", "rotation", "scale", "properties"}, "invalid object " + name)
         require(isinstance(body["name"], str) and 0 < len(body["name"]) <= 96, "invalid display name")
         require(isinstance(body["properties"], dict), "object properties must be an object")
+        require(body["properties"].get("qa_fixture") == spec["id"], "each object's qa_fixture must match the scenario ID")
         for field in ("position", "rotation", "scale"):
             vector(body[field], field)
         require(all(value > 0 for value in body["scale"]), "scale must be positive")
@@ -159,7 +168,7 @@ def load_scenario(path):
                     and 0 < len(values["values"]) == len(values["times_ms"]) <= 512, "invalid oracle arrays")
             require(all(type(t) is int for t in values["times_ms"])
                     and values["times_ms"] == sorted(set(values["times_ms"])), "oracle event times must be unique and ordered")
-            require(all(type(v) in (int, float) for v in values["values"]), "oracle values must be numeric")
+            require(all(type(v) in (int, float) and abs(v) <= 1e15 for v in values["values"]), "oracle values exceed the QA numeric bound")
             stats = values["stats"]
             require(isinstance(stats, dict) and set(stats) == {"count", "min", "max", "mean", "sum"}, "invalid oracle statistics")
             integer(stats["count"], 1, 512, "oracle count")
@@ -167,7 +176,7 @@ def load_scenario(path):
     finite_tree(spec)
     steps = spec["steps"]
     require(isinstance(steps, list) and 0 < len(steps) <= MAX_STEPS, "scenario needs 1..128 steps")
-    seen, created, assets, revisions = set(), set(), set(), {}
+    seen, created, assets, revisions, versions = set(), set(), set(), {}, {}
     for step in steps:
         require(isinstance(step, dict) and isinstance(step.get("id"), str) and NAME.fullmatch(step["id"]), "invalid step ID")
         require(step["id"] not in seen, "duplicate step ID: " + step["id"])
@@ -202,6 +211,12 @@ def load_scenario(path):
         for field in ("expect_version", "version"):
             if field in step:
                 integer(step[field], 1, 2**63-1, field)
+        if "expect_version" in step:
+            require(step["expect_version"] == versions.get(step["object"], 0) + 1,
+                    "declared object commit versions must be consecutive")
+            versions[step["object"]] = step["expect_version"]
+        if op == "state_at":
+            require(step["version"] <= versions[step["object"]], "state_at references a future declared commit")
         if op == "transform":
             for field in ("position", "rotation", "scale"):
                 vector(step[field], field)
@@ -227,10 +242,12 @@ def load_scenario(path):
             field = {"append_readings":"values", "derive_metric":"calibration_versions", "checkpoint":"expect", "distances":"expected_m"}[op]
             require(isinstance(step[field], dict) and step[field] and set(step[field]).issubset(created), "unknown object in " + field)
         if op == "append_readings":
-            require(all(type(value) in (int, float) for value in step["values"].values()), "readings must be numbers")
+            require(all(type(value) in (int, float) and abs(value) <= 1e12 for value in step["values"].values()),
+                    "readings exceed the QA driver numeric bound of 1e12")
         if op == "derive_metric":
-            for version in step["calibration_versions"].values():
+            for name, version in step["calibration_versions"].items():
                 integer(version, 1, 2**63-1, "calibration history version")
+                require(version <= versions[name], "calibration references a future declared commit")
         if op == "query_metrics":
             require(step["kind"] in {"rows", "aggregate", "latest"} and step["mode"] in {"local", "distributed"}, "invalid query mode")
             require(step["oracle"] in spec["oracles"], "unknown oracle")
@@ -246,8 +263,16 @@ def load_scenario(path):
             integer(step["after_version"], 0, 2**63-1, "history cursor")
             integer(step["limit"], 1, 128, "history page size")
             require(isinstance(step["expect_versions"], list) and len(step["expect_versions"]) <= 512, "invalid history oracle")
+            require(len(step["expect_versions"]) <= step["limit"] * 64, "history oracle exceeds the bounded page budget")
             require(all(type(v) is int and step["after_version"] < v <= 2**63-1 for v in step["expect_versions"])
                     and step["expect_versions"] == sorted(set(step["expect_versions"])), "invalid expected history order")
         if "mcp_parity" in step:
             require(type(step["mcp_parity"]) is bool, "mcp_parity must be boolean")
+    coverage = spec.get("coverage", {})
+    require(isinstance(coverage, dict) and set(coverage).issubset(seen | {"restart-state-and-blobs"}), "invalid coverage step references")
+    assigned = set()
+    for checkpoints in coverage.values():
+        require(isinstance(checkpoints,list) and checkpoints and all(isinstance(item,str) and re.fullmatch(r"F[0-9]{3}\.[A-Za-z0-9_-]+",item) for item in checkpoints), "invalid coverage checkpoint IDs")
+        require(len(set(checkpoints)) == len(checkpoints) and not (set(checkpoints)&assigned), "coverage checkpoint is assigned twice")
+        assigned.update(checkpoints)
     return spec

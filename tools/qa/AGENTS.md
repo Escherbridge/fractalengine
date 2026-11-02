@@ -353,3 +353,53 @@ three-dimensional travel10/8/4m. A fleet-only sum99 is insufficient because the 
 evolution is additive optional metadata, followed by a rejected incompatible revision. Definitions use the new
 bounded `{version,schema}` vocabulary, not unrestricted JSON Schema. Current source/receipt contracts must be
 reconciled before execution; unavailable committed/history APIs cannot fall back to queued legacy mutations.
+
+`rich_data.py` separates validated intent from fixed effect handlers and actual evidence. It reuses `fe.py`
+token loading and its redirect-refusing loopback HTTP transport. Read-only requests can retry rate limiting;
+mutations never retry. A timeout or unconfirmed write stops with an unknown outcome: inspect persisted state,
+then use a fresh isolated scope if repeating the write scenario. Initial create/property/full-transform writes
+require `persist=committed`, exact expected per-object versions, current properties/transform readback and a
+verified journal entry before advancing. Readings require stored row IDs, values, units and event-time readback.
+The driver bounds raw measurement magnitudes to1e12 and derived values to1e15 for predictable QA/report math;
+these are driver limits, not product storage limits. Typed object properties retain signed64-bit integer text.
+
+Structural validation performs no app operations:
+
+```powershell
+python tools/qa/rich_data.py --scenario tools/qa/scenarios/rich-fleet.json --validate-only
+```
+
+After the owned run is staged from the reviewed source, create a fresh owned verse/fractal/petal and supply its
+actual IDs. The launcher must have copied the renderable `fractalengine/assets/samples/info_panel.glb` into that
+run. Execution is explicit:
+
+```powershell
+python tools/qa/rich_data.py --scenario tools/qa/scenarios/rich-fleet.json --run <absolute-owned-run> --pass-id <current-pass> --verse-id <actual-verse-ULID> --petal-id <actual-petal-ULID>
+```
+
+The pass/run/scenario evidence directory is exclusive. Existing evidence refuses another non-idempotent run;
+never delete it to hide an earlier failure. A fresh scenario execution needs a new pass/run binding. Reports
+remain within `qa/passes/<pass>/rich-data/<run>/<scenario>/`; step receipts, context and index include stage
+commit/fingerprint, scenario digest and a fingerprint of all driver/transport/report modules. Tokens must live
+inside the owned run, and requests/artifacts scrub encoded payloads and credentials. A log gap, generation
+change or new warn/error leaves coverage UNKNOWN for independent review even when the data assertions succeed.
+`coverage-candidates.jsonl` is partial API evidence, never a whole-pass acceptance claim; merge only one final
+reviewed record per checkpoint into the current pass ledger. It does not produce GUI PASS records.
+
+After the main owner stops/relaunches the exact same owned root and refreshes `current.json` process identity,
+repeat with the same options plus `--verify-state <absolute-current-pass-context.json>`. This hook performs only
+reads. It requires a changed recorded process identity with unchanged source/pass/run/scope/driver provenance,
+checks current and earlier snapshot hashes, schemas, uploaded GLB/provenance bytes and trajectory positions,
+then repeats the row/aggregate/window/latest/history oracles. It neither restarts nor launches the app. The
+reviewer must pair it with actual stop/relaunch evidence; changing a JSON process identity alone is no proof.
+
+## §rich-data-report
+
+`rich_data_report.py` exports collected rows only: queryable `measurements.json`, measurement/trajectory CSV and
+an offline `report.html`. Native SVG charts use recorded sensor time and stored object positions, while the
+history selector uses collected committed-version snapshots. This report is a QA artifact; product charts,
+Properties, Query and History UI still require their own observed interactions and judged screenshots.
+Repeated query views of the same reading ID share one export row; distinct reading IDs remain distinct so
+duplicates cannot disappear. JSON embedded in HTML escapes `<` and Unicode line separators; dynamic labels and
+states use DOM textContent, never HTML interpolation. No CDN, network fetch, API token or expected oracle point
+is embedded. Failed executions still export the actual partial observations and clearly label incompleteness.
