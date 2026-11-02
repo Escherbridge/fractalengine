@@ -1455,3 +1455,8 @@ explicit navigation/back action begins a new cursor lifecycle. Call manager meth
 Navigation replica submissions are nonblocking and retain only definitely-unsent transitions.
 A superseded addressed handoff queues an exact native lease close before ordinary navigation
 continues; mismatched handoffs are retained until accepted cleanup rather than dropped.
+
+
+Terminal clear_read_models also replaces the separate ReplicaHandoff resource. Native shutdown
+owns any remaining transport close; terminal invalidation only drops the obsolete UI lease and
+cannot later reopen or adopt it. The existing native lifecycle journey covers this reset adjunct.

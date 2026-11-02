@@ -490,5 +490,19 @@ mod tests {
             sync_rx.try_recv().is_err(),
             "Accepted cleanup/open commands are not replayed"
         );
+        assert!(app
+            .world_mut()
+            .resource_mut::<ReplicaHandoff>()
+            .install(old_join));
+        crate::maintenance::clear_read_models(app.world_mut());
+        assert!(
+            !app.world().resource::<ReplicaHandoff>().pending(),
+            "Terminal invalidation clears the separately owned native handoff lease"
+        );
+        assert!(app
+            .world()
+            .resource::<NavigationManager>()
+            .active_verse_id
+            .is_none());
     }
 }

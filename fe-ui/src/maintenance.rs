@@ -22,6 +22,7 @@ pub fn clear_read_models(world: &mut World) {
     if let Some(mut ui) = world.get_resource_mut::<crate::actions::UiManager>() {
         ui.clear_for_terminal_reset();
     }
+    reset::<crate::invitations::ReplicaHandoff>(world);
     reset::<crate::plugin::InspectorFormState>(world);
     reset::<crate::plugin::SidebarState>(world);
     reset::<crate::plugin::ToolState>(world);
