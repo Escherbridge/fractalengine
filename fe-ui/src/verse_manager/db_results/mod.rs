@@ -1217,6 +1217,7 @@ mod tests {
             nav.active_scope().as_deref(),
             Some("VERSE#populated-verse-FRACTAL#f-PETAL#p")
         );
+        let mut nav = NavigationManager::default();
         hierarchy::select_initial_navigation(&[empty.clone()], &mut nav, true);
         assert_eq!(nav.active_scope().as_deref(), Some("VERSE#empty-verse"));
         let mut nav = NavigationManager::default();
@@ -1235,7 +1236,7 @@ mod tests {
         assert!(ui.join_flow.allow_initial_navigation(&nav),"An explicit navigation lifecycle changes the admission cursor revision");
         let allow = ui.join_flow.allow_initial_navigation(&nav);
         hierarchy::select_initial_navigation(&[empty],&mut nav,allow);
-        assert_eq!(nav.active_verse_id.as_deref(),Some("empty-verse"));
+        assert!(nav.active_verse_id.is_none(),"The shared startup latch preserves explicit Back even after the Join-specific admission revision changes");
 
     }
 

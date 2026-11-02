@@ -190,15 +190,10 @@ impl JoinState {
         debug_assert!(self.cleanup_lease.is_none());
         self.cleanup_lease = Some(lease);
     }
-    pub fn cleanup(&mut self, nav: &NavigationManager, sync: Option<&SyncCommandSenderRes>) {
+    pub fn cleanup(&mut self, sync: Option<&SyncCommandSenderRes>) {
         let Some(lease) = &self.cleanup_lease else {
             return;
         };
-        // The active navigation cursor owns its replica independently of this dialog.
-        if nav.active_verse_id.as_deref() == Some(lease.verse_id.as_str()) {
-            self.cleanup_lease = None;
-            return;
-        }
         let Some(sync) = sync else {
             return;
         };
@@ -267,7 +262,7 @@ impl JoinState {
         db: &Sender<DbCommand>,
         sync: Option<&SyncCommandSenderRes>,
     ) -> Option<ReadyJoin> {
-        self.cleanup(nav, sync);
+        self.cleanup(sync);
         if let Some(input) = self.input.take() {
             let Some((did, clock)) = did.zip(unix_now()) else {
                 self.fail("The local identity or clock is unavailable. Nothing was submitted.");

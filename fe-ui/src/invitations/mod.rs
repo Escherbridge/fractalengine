@@ -99,7 +99,7 @@ pub(crate) fn drive(
     let did = identity.as_deref().map(|id| id.did.as_str());
     let mut join = std::mem::take(&mut ui.join_flow);
     join.synchronize(&ui.active_dialog, &nav, did);
-    join.cleanup(&nav, sync.as_deref());
+    join.cleanup(sync.as_deref());
     for result in results.read() {
         if let Some((target, state)) =
             crate::dialogs::entity_access::invitation_context(&mut ui.active_dialog)
@@ -158,7 +158,7 @@ pub(crate) fn drive(
                 .map_or(0.0, |clock| clock.elapsed_secs_f64()),
         );
     }
-    join.cleanup(&nav, sync.as_deref());
+    join.cleanup(sync.as_deref());
     ui.join_request.pending = join.active();
     ui.join_request.error = join.error.map(str::to_owned);
     ui.join_flow = join;

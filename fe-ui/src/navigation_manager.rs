@@ -15,7 +15,9 @@ pub struct NavigationManager {
     pub active_fractal_id: Option<String>,
     pub active_fractal_name: String,
     pub active_petal_id: Option<String>,
-    pub(crate) intent_revision: u64,
+    /// Manager-owned revision; public for existing cross-crate struct updates.
+    #[doc(hidden)]
+    pub intent_revision: u64,
     /// Set through manager methods; public for existing struct-update callers.
     #[doc(hidden)]
     pub initial_auto_navigation_suppressed: bool,
@@ -495,6 +497,55 @@ mod tests {
         assert!(
             sync_rx.try_recv().is_err(),
             "Accepted cleanup/open commands are not replayed"
+        );
+        let mut canceled = crate::invitations::JoinState::default();
+        let canceled_lease = JoinedReplicaLease {
+            request_id: "canceled-B-generation".into(),
+            verse_id: "B".into(),
+            namespace_id: "ab".repeat(32),
+        };
+        canceled.retain_cleanup(canceled_lease.clone());
+        let sync = app
+            .world()
+            .resource::<fe_sync::SyncCommandSenderRes>()
+            .clone();
+        for i in 0..4 {
+            sync.0
+                .try_send(SyncCommand::CloseVerseReplica {
+                    verse_id: format!("occupied-cancel-{i}"),
+                })
+                .unwrap();
+        }
+        app.world_mut()
+            .resource_mut::<NavigationManager>()
+            .navigate_to_verse("B", "B selected before adoption");
+        canceled.cleanup(Some(&sync));
+        assert!(
+            !canceled
+                .queue(fe_runtime::join_invite::JoinCredential::new("next-join".into()).unwrap()),
+            "A cursor temporarily pointing to B does not discard its canceled native cleanup lease"
+        );
+        app.world_mut()
+            .resource_mut::<NavigationManager>()
+            .navigate_to_verse("C", "Independent C");
+        for _ in 0..4 {
+            assert!(matches!(
+                sync_rx.try_recv(),
+                Ok(SyncCommand::CloseVerseReplica { .. })
+            ));
+        }
+        canceled.cleanup(Some(&sync));
+        app.update();
+        assert!(matches!(sync_rx.try_recv(),Ok(SyncCommand::CloseJoinedReplica {lease}) if lease==canceled_lease),"Canceled B is conditionally closed after transient B then C, even when lifecycle never adopted B");
+        assert!(
+            sync_rx.try_recv().is_err()
+                && app
+                    .world()
+                    .resource::<NavigationManager>()
+                    .active_verse_id
+                    .as_deref()
+                    == Some("C"),
+            "The already owned C pipeline receives no cleanup or reopen"
         );
         assert!(app
             .world_mut()

@@ -1448,8 +1448,9 @@ on final navigation; ordinary verse changes retain their existing close/open beh
 
 
 NavigationManager owns a monotonic intent revision alongside its cursor. Addressed admission
-captures that revision to suppress late initial hierarchy navigation even after Cancel, until an
-explicit navigation/back action begins a new cursor lifecycle. Call manager methods for intents.
+captures that revision to suppress late initial hierarchy navigation even after Cancel. Explicit
+navigation/back changes the Join guard lifecycle but keeps the shared startup latch suppressed;
+Back never invites a later reload to re-enter. Call manager methods for navigation intents.
 
 
 Navigation replica submissions are nonblocking and retain only definitely-unsent transitions.

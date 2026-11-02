@@ -38,8 +38,9 @@ normal navigation lifecycle to retain that exact namespace's already-live pipeli
 reopening it and discarding its connection proof. Its source is only this ready coordinator;
 the lifecycle checks the current hierarchy namespace before consuming it.
 
-Cancel and replacement immediately discard input and pending receivers. Cleanup closes only a
-replica requested by this join when the navigation cursor does not own that Verse. The same
+Cancel and replacement immediately discard input and pending receivers. Cleanup conditionally
+closes only the exact native lease requested by this join; cursor equality never proves
+lifecycle adoption. The same
 Sync channel orders cleanup after an earlier open. Late replies cannot restore a dropped
 request. The overall deadline is 30 seconds; false readiness polls are bounded read-only work,
 while admission/import are never automatically repeated. At most 64 submitted nonces are kept
@@ -67,8 +68,10 @@ is full. Existing GUI journeys use actual full bounded DB/native channels, witho
 A successfully queued admission retains the navigation intent revision independently of the
 active dialog/attempt. Cancel, failure and replacement do not erase that guard. Every initial
 hierarchy selection consults it, so a late joined row cannot select itself after the dialog closes
-on an empty store. NavigationManager records explicit navigation/back intents; a changed revision
-permits the next ordinary initial-navigation lifecycle. Terminal read-model reset clears the guard.
+on an empty store. NavigationManager records explicit navigation/back intents; a changed revision releases only
+the Join-specific guard. The independent startup latch still honors explicit Back, so ordinary
+reloads cannot re-enter afterward. Read-only suppression does not advance the intent revision.
+Terminal read-model reset clears the Join guard.
 
 
 ## Exact native lease ownership
@@ -86,3 +89,10 @@ New Join admission waits while a previous handoff remains owned, under its input
 The existing lifecycle journey covers ready B superseded by C before adoption, including a
 full bounded queue; the existing sync lifetime journey covers stale generation/namespace and
 ordinary-reopen refusal of conditional cleanup.
+
+
+Canceled attempts retain their exact native lease until CloseJoinedReplica is accepted, even
+when the current cursor temporarily selects that Verse. Actual ordinary adoption/reopen clears
+Sync's prior lease, making a late conditional close harmless to the independent pipeline. The
+existing lifecycle journey now also covers canceled B, transient cursor B, then independently
+owned C before lifecycle observes B, under a full bounded queue.
