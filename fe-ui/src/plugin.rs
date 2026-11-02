@@ -184,6 +184,7 @@ impl Default for SidebarState {
 pub struct ToolState {
     pub active_tool: Tool,
     pub snap: crate::node_manager::ToolSnapSettings,
+    pub terrain: crate::node_manager::TerrainAuthoringState,
 }
 
 impl ToolState {

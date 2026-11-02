@@ -301,7 +301,7 @@ pub(super) fn handle_tool_shortcuts(
     //   * stale-TRUE on the frame a gesture RELEASES — one extra frame of menu
     //     suppression, harmless.
     // Only the rung-0 cancel below is exact: it writes `false` in this pass.
-    let gesture_active = gestures.any_active();
+    let gesture_active = gestures.any_active() || tool.terrain.is_active();
     if gestures.node_mgr.gesture_active != gesture_active {
         gestures.node_mgr.gesture_active = gesture_active;
     }
@@ -338,6 +338,7 @@ pub(super) fn handle_tool_shortcuts(
                 EscapeRung::CloseContextMenu => ui_mgr.close_dialog(),
                 EscapeRung::CancelGesture => {
                     gestures.cancel_all();
+                    tool.terrain.cancel();
                     gestures.node_mgr.gesture_active = false;
                 }
                 EscapeRung::ClearIsolate => visibility.clear_solo(),
@@ -348,6 +349,10 @@ pub(super) fn handle_tool_shortcuts(
             }
         }
         return;
+    }
+    if !dialog_open && tool.terrain.polygon_active() {
+        if keyboard.just_pressed(KeyCode::Enter) {tool.terrain.request_close();return;}
+        if keyboard.just_pressed(KeyCode::Backspace) {tool.terrain.request_pop();return;}
     }
     if let Some(command) = shortcut(&keyboard, dialog_open) {
         if !admit_shortcut(

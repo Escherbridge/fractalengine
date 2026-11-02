@@ -374,6 +374,9 @@ pub fn render_right_sidebar(
                 petal_map,
                 nav.active_petal_id.as_deref(),
             ),
+            nav,
+            petal_map,
+            local_role,
         ),
         Some(RightSidebarSection::TerrainTools) => render_terrain_tools_section(
             ctx,
@@ -382,6 +385,10 @@ pub fn render_right_sidebar(
             ui_mgr,
             proposal_state,
             petal_map.world_scale,
+            tool,
+            nav,
+            petal_map,
+            local_role,
         ),
         Some(RightSidebarSection::ProposalReport) => {
             let open_node = render_proposal_report_section(
@@ -548,6 +555,9 @@ fn render_options_section(
     active_petal_id: Option<&str>,
     measure_state: &mut crate::node_manager::measure::MeasureState,
     measure_world_scale: f64,
+    nav:&NavigationManager,
+    petal_map:&PetalMapState,
+    role:&LocalUserRole,
 ) {
     let kind = project_selection(
         node_mgr
@@ -579,6 +589,10 @@ fn render_options_section(
             measure_state,
             measure_world_scale,
             &mut tool.snap,
+            &mut tool.terrain,
+            nav,
+            petal_map,
+            role,
         );
     });
 }
@@ -634,12 +648,16 @@ fn render_terrain_tools_section(
     ui_mgr: &mut UiManager,
     proposal_state: &mut ProposalEditState,
     world_scale: f64,
+    tool:&mut ToolState,
+    nav:&NavigationManager,
+    map:&PetalMapState,
+    role:&LocalUserRole,
 ) {
     terrain_tools_panel::ensure_defaults(tool_panel_state);
     section_chrome(ctx, state, RightSidebarSection::TerrainTools, |ui| {
         terrain_tools_panel::render_palette(ui, tool_panel_state);
         ui.add_space(6.0);
-        terrain_tools_panel::render_controls_and_emit(ui, tool_panel_state, ui_mgr, world_scale);
+        terrain_tools_panel::render_controls_and_emit(ui, tool_panel_state, ui_mgr, world_scale, &mut tool.terrain, tool.active_tool, nav,map,role);
         ui.add_space(6.0);
         ui.separator();
         ui.add_space(6.0);

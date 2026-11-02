@@ -47,6 +47,9 @@ mod sidebar_sync;
 mod transform_broadcast;
 mod transform_snap;
 pub use transform_snap::{ToolSnapSettings, TransformAxisLock};
+mod terrain_authoring;
+pub use terrain_authoring::{TerrainAuthoringCommit, TerrainAuthoringState};
+pub(crate) use terrain_authoring::shape_at;
 mod viewport_pick;
 
 use bevy::prelude::*;
@@ -368,7 +371,7 @@ impl Plugin for NodeManagerPlugin {
                 inspector_sync::sync_manager_to_inspector,
                 selection::update_selection_state, // FR-1: project the read-model before the gimbal draws
                 path_handle_interaction::draw_handle_stems, // anchor→handle stems (draws only, steals no clicks)
-                gimbal_interaction::draw_gimbal_system,
+                (gimbal_interaction::draw_gimbal_system,terrain_authoring::draw_terrain_draft).chain(),
                 transform_broadcast::broadcast_transform,
                 transform_broadcast::apply_inbound_transforms,
             )
@@ -1296,11 +1299,11 @@ mod tests {
         app.init_resource::<NodeManager>()
             .init_resource::<crate::undo::UndoState>()
             .init_resource::<router::ClickArbiter>()
-            .insert_resource(crate::plugin::ToolState { active_tool:crate::panels::toolbar::Tool::Move, snap })
-            .insert_resource(crate::terrain_map::PetalMapState { loaded:true,petal_id:Some("snap-petal".into()),world_scale:2.0,..Default::default() })
+            .insert_resource(crate::plugin::ToolState { active_tool:crate::panels::toolbar::Tool::Move, snap, ..Default::default() })
+            .insert_resource(crate::terrain_map::PetalMapState { loaded:true,petal_id:Some("snap-petal".into()),world_scale:2.0,terrain_json:Some(serde_json::json!({"enabled":true})),..Default::default() })
             .insert_resource(crate::navigation_manager::NavigationManager { active_petal_id:Some("snap-petal".into()),..Default::default() });
         let mut window=Window::default();
-        window.set_cursor_position(Some(Vec2::new(6.0,0.0)));
+        window.set_cursor_position(Some(Vec2::new(10.0,0.0)));
         app.world_mut().spawn(window);
         app.world_mut().spawn((Camera::default(),GlobalTransform::default(),fe_renderer::camera::OrbitCameraController::default()));
         let node=app.world_mut().spawn((Transform::from_xyz(1.0,2.0,3.0),GlobalTransform::from_translation(Vec3::new(0.0,0.0,100.0)))).id();
@@ -1312,7 +1315,7 @@ mod tests {
         let mut buttons=ButtonInput::<MouseButton>::default();buttons.press(MouseButton::Left);buttons.clear();
         app.insert_resource(buttons).add_systems(Update,gimbal_interaction::handle_gimbal_interaction);
         app.update();
-        assert_eq!(app.world().get::<Transform>(node).unwrap().translation,Vec3::new(2.0,2.0,3.0));
+        assert_eq!(app.world().get::<Transform>(node).unwrap().translation,Vec3::new(4.0,2.0,3.0));
         app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(MouseButton::Left);
         app.update();
         let manager=app.world().resource::<NodeManager>();

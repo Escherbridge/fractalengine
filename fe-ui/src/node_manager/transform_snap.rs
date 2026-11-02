@@ -16,7 +16,10 @@ pub enum TransformAxisLock {
 impl TransformAxisLock {
     pub fn allows(self, axis: GimbalAxis) -> bool {
         matches!(self, Self::Any)
-            || matches!((self, axis), (Self::X, GimbalAxis::X) | (Self::Y, GimbalAxis::Y) | (Self::Z, GimbalAxis::Z))
+            || matches!(
+                (self, axis),
+                (Self::X, GimbalAxis::X) | (Self::Y, GimbalAxis::Y) | (Self::Z, GimbalAxis::Z)
+            )
     }
 }
 
@@ -52,11 +55,21 @@ pub(crate) fn snap_scalar(value: f32, step: f32) -> f32 {
         return value;
     }
     let snapped = (value / step).round() * step;
-    if snapped.is_finite() { snapped } else { value }
+    if snapped.is_finite() {
+        snapped
+    } else {
+        value
+    }
 }
 
 impl ToolSnapSettings {
-    pub(crate) fn move_position(self, start: Vec3, axis: GimbalAxis, distance: f32, world_scale: f64) -> Vec3 {
+    pub(crate) fn move_position(
+        self,
+        start: Vec3,
+        axis: GimbalAxis,
+        distance: f32,
+        world_scale: f64,
+    ) -> Vec3 {
         let mut result = start;
         if !self.axis.allows(axis) || !distance.is_finite() {
             return result;
@@ -64,31 +77,58 @@ impl ToolSnapSettings {
         let index = axis_index(axis);
         let value = start[index] + distance;
         result[index] = if self.grid_enabled {
-            snap_scalar(value, crate::geometry::meters_to_world(self.grid_m, world_scale))
-        } else { value };
+            snap_scalar(
+                value,
+                crate::geometry::meters_to_world(self.grid_m, world_scale),
+            )
+        } else {
+            value
+        };
         result
     }
 
     pub(crate) fn rotation_angle(self, angle: f32) -> f32 {
-        if self.angle_enabled { snap_scalar(angle, self.angle_degrees.to_radians()) } else { angle }
+        if self.angle_enabled {
+            snap_scalar(angle, self.angle_degrees.to_radians())
+        } else {
+            angle
+        }
     }
 
     pub(crate) fn scale_value(self, start: Vec3, axis: GimbalAxis, factor: f32) -> Vec3 {
-        if !self.axis.allows(axis) || !factor.is_finite() { return start; }
+        if !self.axis.allows(axis) || !factor.is_finite() {
+            return start;
+        }
         let factor = factor.max(0.001);
         if self.uniform_scale {
-            let factor = if self.scale_enabled { snap_scalar(factor, self.scale_step).max(0.001) } else { factor };
+            let factor = if self.scale_enabled {
+                snap_scalar(factor, self.scale_step).max(0.001)
+            } else {
+                factor
+            };
             return start * factor;
         }
         let index = axis_index(axis);
         let value = start[index] * factor;
-        let value = if self.scale_enabled { snap_scalar(value, self.scale_step) } else { value };
+        let value = if self.scale_enabled {
+            snap_scalar(value, self.scale_step)
+        } else {
+            value
+        };
         let mut result = start;
-        result[index] = if value == 0.0 { 0.001_f32.copysign(start[index]) } else { value };
+        result[index] = if value == 0.0 {
+            0.001_f32.copysign(start[index])
+        } else {
+            value
+        };
         result
     }
 }
 
 fn axis_index(axis: GimbalAxis) -> usize {
-    match axis { GimbalAxis::X => 0, GimbalAxis::Y => 1, GimbalAxis::Z => 2 }
+    match axis {
+        GimbalAxis::X => 0,
+        GimbalAxis::Y => 1,
+        GimbalAxis::Z => 2,
+    }
 }

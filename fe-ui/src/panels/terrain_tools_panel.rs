@@ -1,21 +1,4 @@
-//! FR-5 (terrain_editor_overhaul_20260718): the Cities-Skylines-style terrain
-//! tool palette. ui_shell_architecture Phase 4 folded the former floating
-//! window into `ui_shell::right_sidebar::render_terrain_tools_section`; these
-//! are now pure rendering helpers it calls directly (the section rail is the
-//! sole reveal path, plus `UiAction::RevealSection { slug: "terrain" }` from
-//! the Brush options cross-link). Emits
-//! `UiAction::TerrainProposalAdd`/`TerrainProposalDelete`; the true
-//! `TerrainHeightField`/tileset are never written here (NFR-1) — this panel
-//! only ever builds action payloads. As of D6-B the TerrainTools section holds
-//! ONLY the proposal palette/controls/list: `render_brush_controls` and
-//! `sculpt_footprint_area` are called from the Options section's Brush arm
-//! (`panels::tool_options`), which also calls `circle_footprint`/
-//! `rect_footprint` to wire the shape-mode Apply affordance (finding #14).
-//! Phase 6 (D17, finding #9): `render_controls_and_emit` now takes the
-//! caller's `world_scale` (`PetalMapState.world_scale`) so the footprint
-//! radius/target height/delta fields display and edit in real metres instead
-//! of unlabeled world units — see its doc comment for the exact boundary.
-//! See `panels/AGENTS.md` §terrain-tools.
+//! Proposal placement palette and sculpt controls; see panels/AGENTS.md ?terrain-authoring.
 
 use bevy_egui::egui;
 
@@ -124,26 +107,17 @@ fn render_world_scale_chip(ui: &mut egui::Ui, world_scale: f64) {
     );
 }
 
-/// Footprint/height/delta control row + the "Add proposal" button that
-/// builds `UiAction::TerrainProposalAdd`. Footprint is a circle centered at
-/// the origin (same "append at origin, reposition later" convention as the
-/// Pen section's shape buttons — see `tool_panel.rs::render_pen_section`);
-/// dragging a placed proposal is a follow-up once FR-1/FR-3 gimbal-on-typed-
-/// selection wiring lands elsewhere in this track.
-///
-/// D17 (finding #9): `ToolPanelState.terrain_footprint_radius/
-/// terrain_target_height/terrain_delta` stay stored in WORLD UNITS (still fed
-/// straight into `curve::circle`/`TerrainProposalAdd` below, unchanged) — only
-/// the DragValue *display and entry* converts through `world_to_meters`/
-/// `meters_to_world` at the widget boundary, matching the sibling Brush
-/// controls one scroll away which are meters-native in `SculptToolState`.
-/// `world_scale` must come from the caller (`PetalMapState.world_scale`,
-/// threaded via `right_sidebar::render_terrain_tools_section`).
+/// Arm a captured proposal for one viewport click; see panels/AGENTS.md ?terrain-authoring.
 pub(crate) fn render_controls_and_emit(
     ui: &mut egui::Ui,
     tool_panel: &mut ToolPanelState,
-    ui_mgr: &mut UiManager,
+    _ui_mgr: &mut UiManager,
     world_scale: f64,
+    authoring:&mut crate::node_manager::TerrainAuthoringState,
+    active_tool:crate::panels::toolbar::Tool,
+    nav:&crate::navigation_manager::NavigationManager,
+    map:&crate::terrain_map::PetalMapState,
+    role:&crate::plugin::LocalUserRole,
 ) {
     tool_panel.sanitize_numeric_state();
     render_world_scale_chip(ui, world_scale);
@@ -219,40 +193,16 @@ pub(crate) fn render_controls_and_emit(
     });
     ui.add_space(4.0);
 
-    if ui
-        .button(format!(
-            "Add {} proposal",
-            tool_panel.terrain_tool_mode.label()
-        )).observed(ui)
-        .on_hover_text(PROPOSAL_ONLY_DISCLOSURE)
-        .clicked()
-    {
-        // curve::circle emits XZ-plane [x, y, z] points (y = 0); the proposal
-        // footprint is 2-D [x, z] to match the JSON contract + fe_terrain.
-        // Still world units — the metres conversion above is display-only.
-        let footprint: Vec<[f32; 2]> = curve::circle(
-            [0.0, 0.0, 0.0],
-            tool_panel.terrain_footprint_radius,
-            FOOTPRINT_SEGMENTS,
-        )
-        .into_iter()
-        .map(|[x, _, z]| [x, z])
-        .collect();
-        ui_mgr.push_action(UiAction::TerrainProposalAdd {
-            op: tool_panel.terrain_tool_mode.to_proposal_op(),
-            footprint,
-            target_height: Some(tool_panel.terrain_target_height),
-            delta: Some(tool_panel.terrain_delta),
-        });
+    let can_place=role.can_edit()&&map.loaded&&nav.active_verse_id.is_some()&&nav.active_fractal_id.is_some()&&nav.active_petal_id.as_deref().is_some_and(|id|crate::actions::terrain_proposal::petal_map_enabled(map,id));
+    if ui.add_enabled(can_place&&!authoring.is_active(),egui::Button::new(format!("Place {} proposal",tool_panel.terrain_tool_mode.label())))
+        .named(ui,"Arm terrain proposal placement").on_hover_text(PROPOSAL_ONLY_DISCLOSURE).clicked() {
+        authoring.arm_proposal(nav,map,role,tool_panel.terrain_tool_mode.to_proposal_op(),tool_panel.terrain_footprint_radius,tool_panel.terrain_target_height,tool_panel.terrain_delta,active_tool);
     }
-    ui.label(
-        egui::RichText::new(
-            "Proposals append at the origin; drag to reposition once gimbal-on-proposal lands.",
-        )
-        .small()
-        .color(theme::TEXT_MUTED)
-        .italics(),
-    );
+    if let Some(op)=authoring.armed_proposal_op(){
+        ui.label(format!("Captured {op:?} proposal: click the viewport to place it. Escape cancels."));
+        if ui.button("Cancel placement").named(ui,"Cancel terrain proposal placement").clicked(){authoring.cancel();}
+    }
+    if !can_place {ui.label("Editor access and an enabled, loaded map in the active Petal are required.");}
     ui.add_space(2.0);
     ui.label(
         egui::RichText::new(PROPOSAL_ONLY_DISCLOSURE)

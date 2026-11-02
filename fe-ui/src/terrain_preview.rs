@@ -20,7 +20,9 @@ use crate::panels::toolbar::Tool;
 use crate::plugin::ToolState;
 use crate::terrain_map::PetalMapState;
 use crate::terrain_proposal_state::{ProposalEditState, ProposalOp};
-use crate::ui_shell::right_sidebar::{RightSidebarSection, RightSidebarState};
+use crate::ui_shell::right_sidebar::RightSidebarState;
+#[cfg(test)]
+use crate::ui_shell::right_sidebar::RightSidebarSection;
 
 /// World-unit snapshot [`BrushGesture::preview_snapshot`] hands back: the
 /// corridor footprint is already the same polygon a release would commit. No
@@ -99,10 +101,17 @@ fn sculpt_shape_draft(
     tool: &ToolState,
     petal_id: &str,
     world_scale: f64,
+    nav:&NavigationManager,
+    map:&PetalMapState,
 ) -> Option<ProposalPreview> {
     if tool.active_tool != Tool::Brush || matches!(sculpt.shape_mode, SculptShapeMode::Brush) {
         return None;
     }
+    if let Some(draft)=tool.terrain.shape_preview(nav,map) {
+        let (target_m,delta_m,strength)=region_record_preview_params(&draft.op,draft.target_m,draft.delta_m);
+        return Some(ProposalPreview{petal_id:petal_id.into(),op:draft.op,footprint:draft.footprint_world,target_m,delta_m,strength,source:PreviewSource::SculptShape});
+    }
+    if !tool.terrain.polygon_matches(nav,map) {return None;}
     let footprint = shape_commit_footprint_world(sculpt, world_scale);
     if footprint.len() < 3 {
         return None;
@@ -146,27 +155,10 @@ fn brush_stroke_draft(
     })
 }
 
-/// Source (a): the armed palette op/radius/delta — a circle centered at the
-/// origin, the SAME "append at origin, reposition later" convention
-/// `terrain_tools_panel::render_controls_and_emit` uses when it emits
-/// `TerrainProposalAdd`, so a shown preview matches what Add would commit.
-fn palette_draft(tool_panel: &ToolPanelState, petal_id: &str, world_scale: f64) -> ProposalPreview {
-    let radius = if tool_panel.terrain_footprint_radius.is_finite()
-        && tool_panel.terrain_footprint_radius > 0.0
-    {
-        tool_panel.terrain_footprint_radius
-    } else {
-        5.0
-    };
-    ProposalPreview {
-        petal_id: petal_id.to_string(),
-        op: proposal_op_snake(tool_panel.terrain_tool_mode.to_proposal_op()).to_string(),
-        footprint: circle_footprint(radius),
-        target_m: world_to_meters(tool_panel.terrain_target_height, world_scale),
-        delta_m: world_to_meters(tool_panel.terrain_delta, world_scale),
-        strength: 1.0,
-        source: PreviewSource::PaletteOp,
-    }
+/// Preview the captured proposal at its hovered viewport position.
+fn palette_draft(tool:&ToolState,petal_id:&str,world_scale:f64,nav:&NavigationManager,map:&PetalMapState)->Option<ProposalPreview> {
+    let draft=tool.terrain.proposal_preview(nav,map,tool.active_tool)?;
+    Some(ProposalPreview{petal_id:petal_id.into(),op:proposal_op_snake(draft.op).into(),footprint:draft.footprint_world,target_m:world_to_meters(draft.target_world,world_scale),delta_m:world_to_meters(draft.delta_world,world_scale),strength:1.0,source:PreviewSource::PaletteOp})
 }
 
 /// Source (d): the selected committed proposal, for the readout only — shown
@@ -207,9 +199,9 @@ pub(crate) fn publish_proposal_preview(
     mut commands: Commands,
     current: Option<Res<ProposalPreview>>,
     nav: Res<NavigationManager>,
-    right_sidebar: Res<RightSidebarState>,
+    _right_sidebar: Res<RightSidebarState>,
     tool_state: Res<ToolState>,
-    tool_panel: Res<ToolPanelState>,
+    _tool_panel: Res<ToolPanelState>,
     sculpt: Res<SculptToolState>,
     proposal_state: Res<ProposalEditState>,
     petal_map: Res<PetalMapState>,
@@ -232,12 +224,7 @@ pub(crate) fn publish_proposal_preview(
         return;
     }
 
-    // `TerrainProposalAdd` leaves the palette's fields armed for the next Add
-    // by design (see `render_controls_and_emit`'s doc comment — it never
-    // resets `ToolPanelState.terrain_*`), so a grown proposal count is the
-    // only signal that a commit just landed. Suppress the palette source for
-    // exactly that one frame so the just-committed draft doesn't linger as if
-    // still pending.
+    // Suppress a consumed proposal preview on its commit frame.
     let just_committed = proposal_state.proposals.len() > *last_proposal_count;
     *last_proposal_count = proposal_state.proposals.len();
 
@@ -249,10 +236,9 @@ pub(crate) fn publish_proposal_preview(
     let world_scale = petal_map.world_scale;
 
     let draft = brush_stroke_draft(&brush, &petal_id, world_scale)
-        .or_else(|| sculpt_shape_draft(&sculpt, &tool_state, &petal_id, world_scale))
+        .or_else(|| sculpt_shape_draft(&sculpt, &tool_state, &petal_id, world_scale,&nav,&petal_map))
         .or_else(|| {
-            (!just_committed && right_sidebar.is_active(RightSidebarSection::TerrainTools))
-                .then(|| palette_draft(&tool_panel, &petal_id, world_scale))
+            (!just_committed).then(||palette_draft(&tool_state,&petal_id,world_scale,&nav,&petal_map)).flatten()
         })
         .or_else(|| selected_proposal_draft(&proposal_state, &petal_id, world_scale));
 
@@ -306,9 +292,29 @@ mod tests {
     }
 
     fn arm_petal(app: &mut App, petal_id: &str) {
-        app.world_mut()
-            .resource_mut::<NavigationManager>()
-            .active_petal_id = Some(petal_id.to_string());
+        {
+            let mut nav=app.world_mut().resource_mut::<NavigationManager>();
+            nav.active_verse_id=Some("v".into());nav.active_fractal_id=Some("f".into());nav.active_petal_id=Some(petal_id.into());
+        }
+        let mut map=app.world_mut().resource_mut::<PetalMapState>();
+        map.petal_id=Some(petal_id.into());map.loaded=true;map.terrain_json=Some(serde_json::json!({"enabled":true}));
+    }
+
+    fn arm_preview(app:&mut App,shape:bool) {
+        app.world_mut().resource_scope(|world,mut tool:Mut<ToolState>| {
+            let current=world.resource::<NavigationManager>();
+            let nav=NavigationManager{active_verse_id:current.active_verse_id.clone(),active_fractal_id:current.active_fractal_id.clone(),active_petal_id:current.active_petal_id.clone(),..Default::default()};
+            let map=world.resource::<PetalMapState>().clone();
+            let role=crate::plugin::LocalUserRole{role:Some(fe_database::RoleLevel::Editor)};
+            let active=tool.active_tool;
+            if shape {
+                assert!(tool.terrain.arm_shape(&nav,&map,&role,world.resource::<SculptToolState>(),active));
+            } else {
+                let panel=world.resource::<ToolPanelState>();
+                assert!(tool.terrain.arm_proposal(&nav,&map,&role,panel.terrain_tool_mode.to_proposal_op(),if panel.terrain_footprint_radius>0.0{panel.terrain_footprint_radius}else{5.0},panel.terrain_target_height,panel.terrain_delta,active));
+            }
+            tool.terrain.hover(Some([0.0,0.0]),&mut world.resource_mut::<SculptToolState>(),&map);
+        });
     }
 
     #[test]
@@ -324,6 +330,7 @@ mod tests {
             tool_panel.terrain_target_height = 5.0;
             tool_panel.terrain_delta = 2.0;
         }
+        arm_preview(&mut app,false);
         // Frame 1 settles the petal-entry baseline (the same
         // `Local<Option<String>>` "first frame initializes, doesn't act"
         // idiom `navigation_manager`'s own tests use); frame 2 is the one
@@ -395,6 +402,7 @@ mod tests {
             sculpt.target_height = 4.0;
             sculpt.strength = 0.5;
         }
+        arm_preview(&mut app,true);
         app.update();
         app.update();
 
@@ -421,6 +429,7 @@ mod tests {
         app.world_mut()
             .resource_mut::<RightSidebarState>()
             .reveal(RightSidebarSection::TerrainTools);
+        arm_preview(&mut app,false);
         app.update();
         app.update();
         assert!(
@@ -430,11 +439,11 @@ mod tests {
 
         // Disarm: close the Terrain tools section (same petal, no settling
         // frame needed — the clear takes effect the next update).
-        app.world_mut().resource_mut::<RightSidebarState>().requested = None;
+        app.world_mut().resource_mut::<ToolState>().terrain.cancel();
         app.update();
         assert!(
             app.world().get_resource::<ProposalPreview>().is_none(),
-            "closing the section disarms the preview"
+            "explicit Cancel disarms the preview"
         );
 
         // Re-arm, then simulate a commit landing (`TerrainProposalAdd`'s
@@ -443,6 +452,7 @@ mod tests {
         app.world_mut()
             .resource_mut::<RightSidebarState>()
             .reveal(RightSidebarSection::TerrainTools);
+        arm_preview(&mut app,false);
         app.update();
         assert!(app.world().get_resource::<ProposalPreview>().is_some());
         app.world_mut()
@@ -462,6 +472,7 @@ mod tests {
         app.world_mut()
             .resource_mut::<RightSidebarState>()
             .reveal(RightSidebarSection::TerrainTools);
+        arm_preview(&mut app,false);
         app.update();
         app.update();
         assert!(app.world().get_resource::<ProposalPreview>().is_some());

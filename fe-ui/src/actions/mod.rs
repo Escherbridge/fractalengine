@@ -280,6 +280,7 @@ pub enum UiAction {
         target_height: Option<f32>,
         delta: Option<f32>,
     },
+    CommitTerrainAuthoring(Box<crate::node_manager::TerrainAuthoringCommit>),
     /// Delete a terrain proposal by id and re-persist the `proposals` block.
     TerrainProposalDelete {
         id: String,
@@ -1004,6 +1005,16 @@ pub(crate) fn process_ui_actions(
 
     let actions = ui_mgr.drain_actions();
     for action in actions {
+        let action = match action {
+            UiAction::CommitTerrainAuthoring(commit) => {
+                let Some(action) = commit.into_action(&nav, &petal_map, &local_role) else {
+                    ui_mgr.show_advisory("Terrain placement canceled: its map, navigation or edit access changed", now_secs);
+                    continue;
+                };
+                action
+            }
+            action => action,
+        };
         match action {
             UiAction::OpenPortal { url } => {
                 if let Some(parsed) = open_portal(&node_mgr, &mut ui_mgr, &url, now_secs) {
@@ -1355,6 +1366,9 @@ pub(crate) fn process_ui_actions(
             }
             UiAction::PathAppendShape { points } => {
                 path::append_shape(&mut path_ops, &mut path_state, points);
+            }
+            UiAction::CommitTerrainAuthoring(_) => {
+                ui_mgr.show_advisory("Terrain placement could not be validated", now_secs);
             }
             UiAction::TerrainProposalAdd {
                 op,

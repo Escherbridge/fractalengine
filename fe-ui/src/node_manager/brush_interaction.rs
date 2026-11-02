@@ -68,6 +68,7 @@ struct ActiveStroke {
 #[derive(Resource, Default)]
 pub(crate) struct BrushGesture {
     active: Option<ActiveStroke>,
+    scope: Option<super::terrain_authoring::TerrainScope>,
 }
 
 impl BrushGesture {
@@ -79,6 +80,7 @@ impl BrushGesture {
     /// Drop the in-flight stroke without emitting its dabs (staged-Escape rung 0).
     pub(super) fn cancel(&mut self) {
         self.active = None;
+        self.scope = None;
     }
 
     /// Read-only snapshot of the in-progress stroke for the live preview
@@ -161,7 +163,7 @@ fn petal_map_is_loading(petal_map: &PetalMapState, petal_id: &str) -> bool {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_brush_interaction(
     mouse: Res<ButtonInput<MouseButton>>,
-    tool: Res<ToolState>,
+    mut tool: ResMut<ToolState>,
     nav: Res<NavigationManager>,
     petal_map: Res<PetalMapState>,
     time: Res<crate::notice::NoticeClock>,
@@ -169,15 +171,43 @@ pub(super) fn handle_brush_interaction(
     mut gesture: ResMut<BrushGesture>,
     mut ui_mgr: ResMut<UiManager>,
     mut arbiter: ResMut<ClickArbiter>,
+    role: Res<crate::plugin::LocalUserRole>,
 ) {
     // Escape is NO LONGER read here: it is the central staged ladder's rung 0
     // (`shortcuts::handle_tool_shortcuts`, which runs first in the chain and
     // clears this resource through `GestureParams`). What stays is the
     // gesture-shaped cancel set: right-click (D5's cancel half), a tool change
     // away from Brush, and the petal-change guard below.
-    let brush_active = tool.active_tool == Tool::Brush;
-    if mouse.just_pressed(MouseButton::Right) || !brush_active {
-        gesture.active = None;
+    let active_tool = tool.active_tool;
+    tool.terrain.synchronize(&nav,&petal_map,&role,active_tool,&mut sculpt);
+    let brush_active = active_tool == Tool::Brush;
+    if mouse.just_pressed(MouseButton::Right) {
+        gesture.cancel();
+        tool.terrain.cancel();
+        sculpt.region_draft.clear();
+        return;
+    }
+
+    let hit = arbiter.ray().and_then(ground_hit);
+    tool.terrain.hover(hit,&mut sculpt,&petal_map);
+    if let Some(commit)=tool.terrain.finish_polygon(&sculpt) {
+        ui_mgr.push_action(UiAction::CommitTerrainAuthoring(Box::new(commit)));
+        return;
+    }
+    if arbiter.is_fresh_press() && (tool.terrain.is_active() || (brush_active && sculpt.shape_mode==crate::actions::terrain_proposal::SculptShapeMode::Polygon)) {
+        let Some(point)=hit else{return};
+        if !arbiter.claim(ClickPriority::Brush){return}
+        if let Some(commit)=tool.terrain.place(point,&mut sculpt,&nav,&petal_map,&role,active_tool,time.elapsed_secs_f64()) {
+            ui_mgr.push_action(UiAction::CommitTerrainAuthoring(Box::new(commit)));
+        }
+        return;
+    }
+    if !brush_active || sculpt.shape_mode!=crate::actions::terrain_proposal::SculptShapeMode::Brush {
+        gesture.cancel();
+        return;
+    }
+    if !role.can_edit() || gesture.scope.as_ref().is_some_and(|scope|!scope.matches(&nav,&petal_map)) {
+        gesture.cancel();
         return;
     }
 
@@ -195,7 +225,6 @@ pub(super) fn handle_brush_interaction(
         return;
     }
 
-    let hit = arbiter.ray().and_then(ground_hit);
     match arbiter.phase() {
         PointerPhase::Press => {
             let Some(center) = hit else { return };
@@ -227,6 +256,8 @@ pub(super) fn handle_brush_interaction(
                 return;
             }
             sculpt.sanitize_numeric_state();
+            let Some(scope)=super::terrain_authoring::TerrainScope::capture(&nav,&petal_map,&role) else{return};
+            gesture.scope=Some(scope);
             gesture.active = Some(ActiveStroke {
                 petal_id: petal_id.to_string(),
                 samples: vec![center],
@@ -253,8 +284,8 @@ pub(super) fn handle_brush_interaction(
                     stroke.settings.radius * DAB_SPACING_RADIUS_FACTOR,
                 );
             }
-            if let Some(action) = stroke_action(stroke) {
-                ui_mgr.push_action(action);
+            if let (Some(action),Some(scope)) = (stroke_action(stroke),gesture.scope.take()) {
+                ui_mgr.push_action(UiAction::CommitTerrainAuthoring(Box::new(super::TerrainAuthoringCommit::new(scope,action))));
             }
         }
         PointerPhase::Hover => {}
@@ -274,6 +305,7 @@ impl BrushGesture {
         radius: f32,
     ) -> Self {
         Self {
+            scope: None,
             active: Some(ActiveStroke {
                 petal_id: petal_id.to_string(),
                 samples,
@@ -368,6 +400,7 @@ mod tests {
 
     fn live_gesture() -> BrushGesture {
         BrushGesture {
+            scope: None,
             active: Some(ActiveStroke {
                 petal_id: "p".to_string(),
                 samples: vec![[1.0, 1.0]],
@@ -418,6 +451,7 @@ mod tests {
         // this assertion would go red.
         let samples = vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0]];
         let gesture = BrushGesture {
+            scope: None,
             active: Some(ActiveStroke {
                 petal_id: "p1".to_string(),
                 samples: samples.clone(),
@@ -447,5 +481,69 @@ mod tests {
         map.loaded = true;
         assert!(!petal_map_is_loading(&map, "p"));
         assert!(petal_map_is_loading(&map, "other"));
+
+        let mut app=App::new();
+        app.insert_resource(NavigationManager{active_verse_id:Some("v".into()),active_fractal_id:Some("f".into()),active_petal_id:Some("p".into()),..Default::default()})
+            .insert_resource(PetalMapState{petal_id:Some("p".into()),loaded:true,world_scale:2.0,terrain_json:Some(serde_json::json!({"enabled":true,"origin":{"lat":0,"lon":0,"ele":0}})),..Default::default()})
+            .insert_resource(crate::plugin::LocalUserRole{role:Some(fe_database::RoleLevel::Editor)})
+            .insert_resource(ToolState{active_tool:Tool::Brush,..Default::default()})
+            .insert_resource(SculptToolState{shape_mode:crate::actions::terrain_proposal::SculptShapeMode::Polygon,..Default::default()})
+            .init_resource::<BrushGesture>().init_resource::<UiManager>()
+            .init_resource::<crate::notice::NoticeClock>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<ClickArbiter>()
+            .add_systems(Update,handle_brush_interaction);
+        for (x,z) in [(0.0,0.0),(4.0,0.0),(0.0,6.0)] {
+            app.insert_resource(ClickArbiter::pressed_along(Ray3d::new(Vec3::new(x,10.0,z),Dir3::NEG_Y)));
+            app.update();
+        }
+        assert_eq!(app.world().resource::<SculptToolState>().region_draft,vec![[0.0,0.0],[2.0,0.0],[0.0,3.0]]);
+        assert!(app.world_mut().resource_mut::<UiManager>().drain_actions().is_empty(),"draft clicks never write");
+        app.insert_resource(ClickArbiter::default());
+        app.world_mut().resource_mut::<ToolState>().terrain.request_pop();app.update();
+        assert_eq!(app.world().resource::<SculptToolState>().region_draft.len(),2);
+        app.insert_resource(ClickArbiter::pressed_along(Ray3d::new(Vec3::new(0.0,10.0,6.0),Dir3::NEG_Y)));app.update();
+        app.insert_resource(ClickArbiter::default());
+        app.world_mut().resource_mut::<ToolState>().terrain.request_close();app.update();
+        let UiAction::CommitTerrainAuthoring(commit)=app.world_mut().resource_mut::<UiManager>().drain_actions().pop().unwrap() else{panic!("polygon close must queue the scoped intent")};
+        let nav=app.world().resource::<NavigationManager>();let map=app.world().resource::<PetalMapState>();let role=app.world().resource::<crate::plugin::LocalUserRole>();
+        let UiAction::SculptShapeRegion{footprint,..}=commit.clone().into_action(nav,map,role).unwrap() else{panic!("polygon must reuse the ordinary shape action")};
+        assert_eq!(footprint,vec![[0.0,0.0],[2.0,0.0],[0.0,3.0]]);
+        let mut moved=NavigationManager{active_verse_id:Some("v".into()),active_fractal_id:Some("foreign".into()),active_petal_id:Some("p".into()),..Default::default()};
+        assert!(commit.clone().into_action(&moved,map,role).is_none(),"same Petal ID cannot hide a changed parent");
+        moved.active_fractal_id=Some("f".into());
+        assert!(commit.clone().into_action(&moved,map,&crate::plugin::LocalUserRole{role:Some(fe_database::RoleLevel::Viewer)}).is_none());
+        let mut changed_map=map.clone();changed_map.terrain_json.as_mut().unwrap()["origin"]["lat"]=serde_json::json!(5);
+        assert!(commit.into_action(&moved,&changed_map,role).is_none(),"map assignment changed before dispatch");
+
+        app.world_mut().resource_mut::<SculptToolState>().shape_mode=crate::actions::terrain_proposal::SculptShapeMode::Circle;
+        app.world_mut().resource_mut::<SculptToolState>().radius=3.0;
+        app.world_mut().resource_scope(|world,mut tool:bevy::prelude::Mut<ToolState>|{
+            let nav=world.resource::<NavigationManager>();let map=world.resource::<PetalMapState>();let role=world.resource::<crate::plugin::LocalUserRole>();let sculpt=world.resource::<SculptToolState>();
+            assert!(tool.terrain.arm_shape(nav,map,role,sculpt,Tool::Brush));
+        });
+        assert!(app.world_mut().resource_mut::<UiManager>().drain_actions().is_empty(),"arming is not persistence");
+        app.insert_resource(ClickArbiter::pressed_along(Ray3d::new(Vec3::new(20.0,10.0,-10.0),Dir3::NEG_Y)));app.update();
+        let UiAction::CommitTerrainAuthoring(commit)=app.world_mut().resource_mut::<UiManager>().drain_actions().pop().unwrap() else{panic!("shape placement")};
+        let UiAction::SculptShapeRegion{footprint,..}=commit.into_action(app.world().resource::<NavigationManager>(),app.world().resource::<PetalMapState>(),app.world().resource::<crate::plugin::LocalUserRole>()).unwrap() else{panic!("shape action")};
+        let mean_x=footprint.iter().map(|p|p[0]).sum::<f32>()/footprint.len() as f32;
+        let mean_z=footprint.iter().map(|p|p[1]).sum::<f32>()/footprint.len() as f32;
+        assert!((mean_x-10.0).abs()<0.0001&&(mean_z+5.0).abs()<0.0001,"clicked world point converts to the actual meter center, not the origin");
+
+        app.world_mut().resource_mut::<ToolState>().active_tool=Tool::Select;
+        app.world_mut().resource_scope(|world,mut tool:bevy::prelude::Mut<ToolState>|{
+            assert!(tool.terrain.arm_proposal(world.resource::<NavigationManager>(),world.resource::<PetalMapState>(),world.resource::<crate::plugin::LocalUserRole>(),crate::terrain_proposal_state::ProposalOp::Raise,4.0,5.0,1.0,Tool::Select));
+        });
+        app.insert_resource(ClickArbiter::pressed_along(Ray3d::new(Vec3::new(30.0,10.0,40.0),Dir3::NEG_Y)));app.update();
+        let UiAction::CommitTerrainAuthoring(commit)=app.world_mut().resource_mut::<UiManager>().drain_actions().pop().unwrap() else{panic!("proposal placement")};
+        let UiAction::TerrainProposalAdd{footprint,..}=commit.into_action(app.world().resource::<NavigationManager>(),app.world().resource::<PetalMapState>(),app.world().resource::<crate::plugin::LocalUserRole>()).unwrap() else{panic!("proposal action")};
+        assert!((footprint.iter().map(|p|p[0]).sum::<f32>()/footprint.len() as f32-30.0).abs()<0.0001);
+        assert!((footprint.iter().map(|p|p[1]).sum::<f32>()/footprint.len() as f32-40.0).abs()<0.0001);
+        app.world_mut().resource_mut::<ToolState>().active_tool=Tool::Brush;
+        app.world_mut().resource_mut::<SculptToolState>().shape_mode=crate::actions::terrain_proposal::SculptShapeMode::Brush;
+        app.world_mut().resource_mut::<crate::plugin::LocalUserRole>().role=Some(fe_database::RoleLevel::Viewer);
+        app.insert_resource(ClickArbiter::pressed_along(Ray3d::new(Vec3::new(1.0,10.0,1.0),Dir3::NEG_Y)));app.update();
+        assert!(!app.world().resource::<BrushGesture>().is_active());
+        assert!(app.world_mut().resource_mut::<UiManager>().drain_actions().is_empty(),"Viewer press cannot queue a sculpt operation");
     }
 }

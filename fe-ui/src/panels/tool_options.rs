@@ -1,17 +1,4 @@
-//! ui_semantics_unification_20260808 Phase 3 (D6-B/D7/D8/D9): the ONE
-//! active-tool options dispatcher. `render` has exactly one arm per
-//! [`Tool`], and every arm REUSES an existing render helper — nothing here is
-//! a second copy of a control that lives elsewhere (finding #7/#8). This module
-//! owns no state of its own: it never holds a selection, only ever edits tool
-//! PARAMETERS (`ToolPanelState`/`SculptToolState`) and the edited track's
-//! anchor buffer. See `fe-ui/src/panels/AGENTS.md` §tool-options.
-//!
-//! Phase 6 (finding #14): the Brush arm's shape-mode picker now has a real
-//! Apply affordance — `render_sculpt_shape_picker` builds a footprint
-//! (`shape_apply_footprint`) and pushes `UiAction::SculptShapeRegion` with the
-//! current sculpt params, gated on `can_apply_shape_region`. `render`'s new
-//! `active_petal_id` parameter is display/gating-only, sourced from the
-//! caller's `NavigationManager.active_petal_id`.
+//! Active-tool options dispatcher; see panels/AGENTS.md ?tool-options.
 
 use bevy_egui::egui;
 
@@ -72,16 +59,7 @@ pub(crate) fn arm_has_live_controls(arm: ToolOptionsArm) -> bool {
     )
 }
 
-/// The one options dispatcher, called by
-/// `ui_shell::right_sidebar::render_options_section` after the selection
-/// readout + separator. One arm per tool; no arm renders another arm's widgets.
-///
-/// `active_petal_id` (finding #14, Phase 6): the Brush arm's shape-mode Apply
-/// affordance needs the active petal to build `UiAction::SculptShapeRegion`;
-/// threaded from the caller's `NavigationManager.active_petal_id` (display-only
-/// everywhere else in this module, mirroring how `sculpt_state`/`path_state`
-/// are the only mutable inputs). `too_many_arguments` is crate-wide allowed
-/// (`fe-ui/src/lib.rs:3`), matching every other wide dispatcher/section fn.
+/// Render the active tool?s controls through their shared state.
 pub(crate) fn render(
     ui: &mut egui::Ui,
     active_tool: Tool,
@@ -95,15 +73,19 @@ pub(crate) fn render(
     measure: &mut MeasureState,
     measure_world_scale: f64,
     snap: &mut crate::node_manager::ToolSnapSettings,
+    authoring: &mut crate::node_manager::TerrainAuthoringState,
+    nav: &crate::navigation_manager::NavigationManager,
+    map: &crate::terrain_map::PetalMapState,
+    role: &crate::plugin::LocalUserRole,
 ) {
     let arm = options_arm(active_tool);
     match arm {
         ToolOptionsArm::Selection => render_select_options(ui, selection),
-        ToolOptionsArm::Transform => crate::panels::transform_options::render(ui, active_tool, snap, measure_world_scale),
+        ToolOptionsArm::Transform => crate::panels::transform_options::render(ui, active_tool, snap, if map.loaded {crate::node_manager::measure::measure_world_scale(map,nav.active_petal_id.as_deref())} else {f64::NAN}),
         ToolOptionsArm::Pen => {
-            render_pen_options(ui, tool_panel_state, path_state, ui_mgr, verse_mgr)
+            render_pen_options(ui, tool_panel_state, path_state, ui_mgr, verse_mgr, active_petal_id, measure_world_scale)
         }
-        ToolOptionsArm::Brush => render_brush_options(ui, sculpt_state, ui_mgr, active_petal_id),
+        ToolOptionsArm::Brush => render_brush_options(ui, sculpt_state, ui_mgr, authoring, nav, map, role),
         ToolOptionsArm::Measure => {
             render_measure_options(ui, measure, measure_world_scale, ui_mgr, active_petal_id)
         }
@@ -147,17 +129,40 @@ fn render_select_options(ui: &mut egui::Ui, selection: &SelectionKind) {
     }
 }
 
-/// Pen arm (D7 + D8) — the ONLY host of the pen/curve/shape controls (the
-/// retired `PathTools` section), the path-asset stamp picker, and the
-/// per-anchor corner editor moved out of the Data window's Paths tab. The Paths
-/// tab keeps the track list, start/stop editing, and the per-point list.
+fn render_pen_picker(ui:&mut egui::Ui,path:&mut PathEditorState,ui_mgr:&mut UiManager,tree:&VerseManager,petal_id:Option<&str>,world_scale:f64) {
+    ui.label("Path in the active Petal");
+    let Some(petal)=petal_id.and_then(|id|tree.find_petal(id)) else {ui.label("Open a Petal before choosing a path.");return};
+    if ui.add_enabled(!path.tracks_pending,egui::Button::new("Refresh paths")).named(ui,"Refresh Pen path picker").clicked(){ui_mgr.push_action(UiAction::PathQueryTracks{petal_id:petal.id.clone()});}
+    if path.tracks_pending {ui.label("Loading paths?");}
+    for track in path.tracks.iter().filter(|row|petal.nodes.iter().any(|node|node.id==row.node_id)).take(256) {
+        if ui.add(egui::Button::selectable(path.editing_track_id.as_deref()==Some(track.node_id.as_str()),&track.name).truncate()).named(ui,format_args!("Edit Pen path {}",track.name)).on_hover_text(&track.node_id).clicked(){ui_mgr.push_action(UiAction::PathSelectTrack{track_node_id:track.node_id.clone()});}
+    }
+    if !path.tracks.iter().any(|row|petal.nodes.iter().any(|node|node.id==row.node_id))&&!path.tracks_pending {ui.label("No paths loaded. Refresh, or click the viewport with Pen to create one.");}
+    if path.editing_track_id.as_deref().is_some_and(|id|petal.nodes.iter().any(|node|node.id==id)) {
+        if path.points_pending {ui.label("Loading path points?");return}
+        let unit=if world_scale.is_finite()&&world_scale>0.0 {"m"} else {"world units"};
+        for (index,point) in path.points.iter().take(256).enumerate() {
+            let [x,y,z]=point.position.map(|v|crate::geometry::world_to_meters(v,world_scale));
+            if ui.add(egui::Button::selectable(path.selected_point==Some(index),format!("Point {}: {x:.2}, {y:.2}, {z:.2} {unit}",index+1)).truncate()).named(ui,format_args!("Select Pen path point {}",index+1)).clicked(){path.selected_point=Some(index);path.selected_segment=None;}
+        }
+        if path.points.len()>256 {ui.label("First256 points shown; Data ? Paths contains the complete editor.");}
+    }
+}
+
+/// Pen controls, current-Petal path picker and anchor selection.
 fn render_pen_options(
     ui: &mut egui::Ui,
     tool_panel_state: &mut ToolPanelState,
     path_state: &mut PathEditorState,
     ui_mgr: &mut UiManager,
     verse_mgr: &VerseManager,
+    active_petal: Option<&str>,
+    world_scale: f64,
 ) {
+    render_pen_picker(ui,path_state,ui_mgr,verse_mgr,active_petal,world_scale);
+    if path_state.editing_track_id.as_deref().is_some_and(|id|!active_petal.and_then(|p|verse_mgr.find_petal(p)).is_some_and(|p|p.nodes.iter().any(|node|node.id==id))) {
+        ui.label("The edited path belongs to another Petal. Choose a current path above.");return;
+    }
     tool_panel::render_pen_section(ui, tool_panel_state);
     ui.add_space(6.0);
     ui.separator();
@@ -182,7 +187,7 @@ fn render_corner_editor(
 ) {
     let Some(track_id) = path_state.editing_track_id.clone() else {
         ui.label(
-            egui::RichText::new("Open a path in the Data window's Paths tab to edit its anchors.")
+            egui::RichText::new("Choose a path above, or click the viewport with Pen to create one.")
                 .small()
                 .color(theme::TEXT_MUTED)
                 .italics(),
@@ -191,7 +196,7 @@ fn render_corner_editor(
     };
     let Some(idx) = path_state.selected_point else {
         ui.label(
-            egui::RichText::new("Select a path point to edit its corner settings.")
+            egui::RichText::new("Select a point above or in the viewport to edit its corner settings.")
                 .small()
                 .color(theme::TEXT_MUTED)
                 .italics(),
@@ -227,31 +232,25 @@ fn render_brush_options(
     ui: &mut egui::Ui,
     sculpt: &mut SculptToolState,
     ui_mgr: &mut UiManager,
-    active_petal_id: Option<&str>,
+    authoring: &mut crate::node_manager::TerrainAuthoringState,
+    nav: &crate::navigation_manager::NavigationManager,
+    map: &crate::terrain_map::PetalMapState,
+    role: &crate::plugin::LocalUserRole,
 ) {
-    terrain_tools_panel::render_brush_controls(ui, sculpt);
+    ui.add_enabled_ui(!authoring.shape_armed(),|ui|terrain_tools_panel::render_brush_controls(ui, sculpt));
     ui.add_space(6.0);
-    render_sculpt_shape_picker(ui, sculpt, active_petal_id, ui_mgr);
+    render_sculpt_shape_picker(ui,sculpt,authoring,nav,map,role);
     ui.add_space(6.0);
     ui.separator();
     ui.add_space(6.0);
     render_brush_cross_links(ui, ui_mgr);
 }
 
-/// Footprint the "Apply" button submits for the sculpt shape picker, one case
-/// per [`SculptShapeMode`] (finding #14). Circle/Rect are synthesized fresh
-/// from `SculptToolState.radius` via `terrain_tools_panel::circle_footprint`/
-/// `rect_footprint` — the same origin-anchored, petal-local-METERS convention
-/// (N-1) `SculptShapeRegion` expects, unlike the freeform Brush stroke's
-/// world-unit snapshot (`brush_interaction::BrushSnapshot`). Polygon reads the
-/// in-progress `region_draft` as-is. Brush has no shape-region affordance — it
-/// commits through the viewport drag gesture instead — so it returns empty.
-/// Pure.
+/// Current centered shape footprint in Petal-local meters.
 pub(crate) fn shape_apply_footprint(sculpt: &SculptToolState) -> Vec<[f32; 2]> {
     match sculpt.shape_mode {
         SculptShapeMode::Brush => Vec::new(),
-        SculptShapeMode::Circle => terrain_tools_panel::circle_footprint(sculpt.sanitized_radius()),
-        SculptShapeMode::Rect => terrain_tools_panel::rect_footprint(sculpt.sanitized_radius()),
+        SculptShapeMode::Circle | SculptShapeMode::Rect => crate::node_manager::shape_at(sculpt.shape_mode,sculpt.shape_center_m,sculpt.sanitized_radius()),
         SculptShapeMode::Polygon => sculpt.region_draft.clone(),
     }
 }
@@ -277,117 +276,45 @@ pub(crate) fn shape_region_op_fields(sculpt: &SculptToolState) -> (Option<f32>, 
     }
 }
 
-/// Non-empty material tag, defaulting to `"earth"` — mirrors
-/// `BrushSnapshot::from_state`'s trimming rule so Circle/Rect/Polygon regions
-/// and Brush strokes agree on the same default. Pure.
-fn shape_region_material(sculpt: &SculptToolState) -> String {
-    let trimmed = sculpt.material.trim();
-    if trimmed.is_empty() {
-        "earth".to_string()
-    } else {
-        trimmed.to_string()
-    }
+pub(crate) fn shape_region_material(sculpt:&SculptToolState)->String {
+    let material=sculpt.material.trim();
+    if material.is_empty(){"earth".into()}else{material.into()}
 }
 
-/// Shape-mode picker + polygon-draft management + live footprint readout +
-/// the Apply affordance (finding #14) that actually commits a Circle/Rect/
-/// Polygon region via `UiAction::SculptShapeRegion`. Moved out of the deleted
-/// `render_sculpt_placeholder` so `SculptToolState` has one host.
-/// `sculpt_footprint_area` stays homed (and unit-tested) in
-/// `terrain_tools_panel`.
+/// Shape placement and polygon draft controls.
 fn render_sculpt_shape_picker(
     ui: &mut egui::Ui,
     sculpt: &mut SculptToolState,
-    active_petal_id: Option<&str>,
-    ui_mgr: &mut UiManager,
+    authoring: &mut crate::node_manager::TerrainAuthoringState,
+    nav: &crate::navigation_manager::NavigationManager,
+    map: &crate::terrain_map::PetalMapState,
+    role: &crate::plugin::LocalUserRole,
 ) {
-    ui.label(egui::RichText::new("Shape").small().color(theme::TEXT_DIM));
-    ui.horizontal_wrapped(|ui| {
+    ui.label("Shape");
+    ui.add_enabled_ui(!authoring.is_active(),|ui|ui.horizontal_wrapped(|ui| {
         for mode in SculptShapeMode::ALL {
-            ui.selectable_value(&mut sculpt.shape_mode, mode, mode.label())
-                .named(ui, format_args!("Earthwork shape: {}", mode.label()));
+            if ui.selectable_value(&mut sculpt.shape_mode,mode,mode.label()).named(ui,format_args!("Earthwork shape: {}",mode.label())).changed() {sculpt.region_draft.clear();}
         }
-    });
-
-    if sculpt.shape_mode == SculptShapeMode::Brush {
-        ui.label(
-            egui::RichText::new(
-                "Brush paints directly in the viewport by dragging — no Apply needed here.",
-            )
-            .small()
-            .color(theme::TEXT_MUTED)
-            .italics(),
-        );
+    }));
+    if sculpt.shape_mode==SculptShapeMode::Brush {
+        ui.label("Press and drag in the viewport, then release to commit. Escape cancels.");
         return;
     }
-
-    if sculpt.shape_mode == SculptShapeMode::Polygon {
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(format!(
-                    "Polygon draft: {} point(s)",
-                    sculpt.region_draft.len()
-                ))
-                .small()
-                .color(theme::TEXT_DIM),
-            );
-            if ui
-                .small_button("Clear")
-                .named(ui, "Clear earthwork polygon draft")
-                .clicked()
-            {
-                sculpt.region_draft.clear();
-            }
-        });
+    let can_place=role.can_edit()&&nav.active_verse_id.is_some()&&nav.active_fractal_id.is_some()&&map.loaded&&nav.active_petal_id.as_deref().is_some_and(|id|crate::actions::terrain_proposal::petal_map_enabled(map,id));
+    if sculpt.shape_mode==SculptShapeMode::Polygon {
+        ui.label(format!("Polygon draft: {} points",sculpt.region_draft.len()));
+        ui.label("Click viewport vertices. Enter or double-click closes; Backspace removes the last vertex; Escape cancels.");
+        let can_close=can_place&&authoring.polygon_active()&&terrain_tools_panel::sculpt_footprint_area(sculpt)>0.000001&&can_apply_shape_region(sculpt.region_draft.len(),nav.active_petal_id.as_deref());
+        if sculpt.region_draft.len()>=3&&terrain_tools_panel::sculpt_footprint_area(sculpt)<=0.000001 {ui.label("Add a non-collinear vertex so the polygon has a nonzero area.");}
+        if ui.add_enabled(can_close,egui::Button::new("Close polygon")).named(ui,"Close earthwork polygon").clicked(){authoring.request_close();}
+    } else {
+        if ui.add_enabled(can_place&&!authoring.is_active(),egui::Button::new(format!("Place {} region",sculpt.shape_mode.label()))).named(ui,"Arm earthwork region placement").clicked(){authoring.arm_shape(nav,map,role,sculpt,Tool::Brush);}
+        if authoring.shape_armed(){ui.label("Click the viewport to place the captured shape. Escape or Cancel stops placement.");}
     }
-
-    ui.add_space(4.0);
-    let area = terrain_tools_panel::sculpt_footprint_area(sculpt);
-    ui.label(
-        egui::RichText::new(format!("Footprint area \u{2248} {area:.1} m\u{b2}"))
-            .small()
-            .color(theme::TEXT_MUTED),
-    );
-
-    ui.add_space(4.0);
-    let footprint = shape_apply_footprint(sculpt);
-    let can_apply = can_apply_shape_region(footprint.len(), active_petal_id);
-    let clicked = ui
-        .add_enabled(
-            can_apply,
-            egui::Button::new(format!("Apply {} region", sculpt.shape_mode.label())),
-        ).observed(ui)
-        .on_hover_text("Commits a defined-shape earthwork region — a persisted, addressable node")
-        .clicked();
-    if clicked {
-        if let Some(petal_id) = active_petal_id {
-            let (target_height, delta) = shape_region_op_fields(sculpt);
-            ui_mgr.push_action(UiAction::SculptShapeRegion {
-                petal_id: petal_id.to_string(),
-                footprint,
-                op: sculpt.op.to_snake().to_string(),
-                target_height,
-                delta,
-                material: shape_region_material(sculpt),
-            });
-        }
-    }
-    if active_petal_id.is_none() {
-        ui.label(
-            egui::RichText::new("Navigate to a petal to apply this region.")
-                .small()
-                .color(theme::TEXT_MUTED)
-                .italics(),
-        );
-    } else if sculpt.shape_mode == SculptShapeMode::Polygon && sculpt.region_draft.len() < 3 {
-        ui.label(
-            egui::RichText::new("Add at least 3 draft points to apply a polygon region.")
-                .small()
-                .color(theme::TEXT_MUTED)
-                .italics(),
-        );
-    }
+    let area=terrain_tools_panel::sculpt_footprint_area(sculpt);
+    ui.label(format!("Footprint area ? {area:.1} m?"));
+    if ui.add_enabled(authoring.is_active()||!sculpt.region_draft.is_empty(),egui::Button::new("Cancel / clear draft")).named(ui,"Cancel earthwork placement or polygon draft").clicked(){authoring.cancel();sculpt.region_draft.clear();}
+    if !can_place {ui.label("Editor access and an enabled, loaded map in the active Petal are required.");}
 }
 
 /// D11 cross-links: the two surfaces a Brush stroke shows up in, addressed by
@@ -403,7 +330,7 @@ fn render_brush_cross_links(ui: &mut egui::Ui, ui_mgr: &mut UiManager) {
             ui_mgr.push_action(reveal(RightSidebarSection::TerrainTools));
         }
         if ui
-            .button("Earthwork report \u{2192}").observed(ui)
+            .button("Volume report \u{2192}").observed(ui)
             .on_hover_text("Open the cut/fill report for the current petal")
             .clicked()
         {

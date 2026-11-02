@@ -238,9 +238,7 @@ pub(super) fn handle_gimbal_interaction(
                         .length()
                         .max(0.5)
                         * 0.002;
-                    let world_scale = petal_map.as_ref().filter(|map| {
-                        map.loaded && map.petal_id.as_deref() == nav.as_ref().and_then(|nav| nav.active_petal_id.as_deref())
-                    }).map_or(0.0, |map| map.world_scale);
+                    let world_scale=petal_map.as_ref().filter(|map|map.loaded).map_or(f64::NAN,|map|super::measure::measure_world_scale(map,nav.as_ref().and_then(|nav|nav.active_petal_id.as_deref())));
                     transform.translation = tool.snap.move_position(drag.start_pos, drag.axis, movement * scale_factor, world_scale);
                 }
                 Tool::Scale => {

@@ -331,9 +331,12 @@ pub fn sync_volume_report_request(
         &proposal_state,
         petal_map.terrain_json.as_ref(),
         &sculpt,
-        tool.active_tool == Tool::Brush,
+        tool.active_tool == Tool::Brush && tool.terrain.polygon_matches(&nav,&petal_map),
         petal_map.world_scale,
-    );
+    ).or_else(|| {
+        (tool.active_tool==Tool::Brush).then(||tool.terrain.shape_preview(&nav,&petal_map)).flatten()
+            .map(|draft|ResolvedVolumeSelection::Drawn{footprint:draft.footprint_world})
+    });
     let Some(resolved) = resolved else {
         state.clear();
         return;

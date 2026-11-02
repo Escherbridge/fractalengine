@@ -315,6 +315,7 @@ pub struct SculptToolState {
     pub material: String,
     /// In-progress polygon footprint points `[x, z]` (Polygon shape mode).
     pub region_draft: Vec<[f32; 2]>,
+    pub shape_center_m: [f32; 2],
     /// Monotonic id counter for minted region ids (no `uuid`/`rand` dep).
     /// `pub(crate)`: reachable from `panels::terrain_tools_panel`'s `..Default`
     /// struct-update in tests (FRU needs every field visible; E0451 otherwise).
@@ -332,6 +333,7 @@ impl Default for SculptToolState {
             delta: 1.0,
             material: "earth".to_string(),
             region_draft: Vec::new(),
+            shape_center_m: [0.0; 2],
             next_region_id: 0,
         }
     }
