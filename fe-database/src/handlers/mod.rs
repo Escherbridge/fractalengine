@@ -29,6 +29,7 @@ pub mod raw_query;
 pub mod rbac;
 pub mod replicated_row;
 pub mod scene_materials;
+pub mod scoped_query;
 pub mod seed;
 pub mod transform;
 pub mod ts_partial;

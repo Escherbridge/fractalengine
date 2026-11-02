@@ -19,6 +19,22 @@ impl ParentMutation {
         (self.guards,self.bindings)
     }
 
+    /// Rebind this trusted fence for one member of a multi-target read transaction.
+    pub(crate) fn scoped_read_fence(self, index: usize) -> (Vec<String>, Vec<(String, Value)>) {
+        let prefix = format!("scoped_query_{index}_");
+        let guards = self
+            .guards
+            .into_iter()
+            .map(|sql| sql.replace("$entity_", &format!("${prefix}")))
+            .collect();
+        let bindings = self
+            .bindings
+            .into_iter()
+            .map(|(name, value)| (name.replacen("entity_", &prefix, 1), value))
+            .collect();
+        (guards, bindings)
+    }
+
     pub(crate) async fn commit(
         self,
         db: &Db,
@@ -70,7 +86,7 @@ pub(crate) async fn prepare_parent_mutation(
     .await
 }
 
-async fn prepare_parent_access(
+pub(crate) async fn prepare_parent_access(
     db: &Db,
     entity_type: EntityType,
     entity_id: &str,

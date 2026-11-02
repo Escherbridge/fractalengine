@@ -294,7 +294,8 @@ fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
         | DbCommand::CommitNodeMutation { correlation_id, .. }
         | DbCommand::CreateObject { correlation_id, .. }
         | DbCommand::ReadNodeHistory { correlation_id, .. } => correlation_id.as_deref(),
-        DbCommand::ElevatedQuery { correlation_id, .. } => Some(correlation_id.as_str()),
+        DbCommand::ElevatedQuery { correlation_id, .. }
+        | DbCommand::ScopedQuery { correlation_id, .. } => Some(correlation_id.as_str()),
         _ => None,
     }
 }
@@ -423,7 +424,9 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
         ListFieldDefs { .. } => ReplyKind::FieldDefsListed,
         UpdateFieldDef { .. } => ReplyKind::FieldDefUpdated,
         DeleteFieldDef { .. } => ReplyKind::FieldDefDeleted,
-        RawQuery { .. } | SetFieldSchema { .. } | GetFieldSchema { .. } => ReplyKind::QueryResult,
+        RawQuery { .. } | ScopedQuery { .. } | SetFieldSchema { .. } | GetFieldSchema { .. } => {
+            ReplyKind::QueryResult
+        }
         CommitNodeMutation { .. } | CreateObject { .. } => ReplyKind::NodeMutationCommitted,
         ReadNodeHistory {
             at_version: Some(_),
@@ -1243,6 +1246,25 @@ mod tests {
     /// consumed by its own entry instead of landing on the next caller.
     #[test]
     fn raw_query_replies_route_only_by_correlation_id() {
+        let mut scoped_pending = PendingApiRequests::default();
+        let (scoped_tx, mut scoped_rx) = tokio::sync::oneshot::channel();
+        scoped_pending.enqueue_for(
+            &DbCommand::ScopedQuery {
+                sql: "SELECT * FROM node".into(),
+                vars: Default::default(),
+                petal_scope: vec!["p".into()],
+                correlation_id: "scoped".into(),
+            },
+            scoped_tx,
+        );
+        assert!(scoped_pending.try_deliver(DbResult::QueryFailed {
+            error: "not found or not permitted".into(),
+            correlation_id: "scoped".into()
+        }));
+        assert!(
+            matches!(scoped_rx.try_recv(), Ok(DbResult::QueryFailed { correlation_id, .. }) if correlation_id == "scoped")
+        );
+
         let mut pending = PendingApiRequests::default();
         let (a_tx, a_rx) = tokio::sync::oneshot::channel();
         let (b_tx, mut b_rx) = tokio::sync::oneshot::channel();

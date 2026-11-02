@@ -1672,3 +1672,72 @@ before effects, in addition to the 64 KiB input and per-snapshot bounds.
 ### Schema revision array migration
 
 Field-definition revision history is an optional array of descriptor objects. The pinned database parser requires an explicit object-containing type for FLEXIBLE; a bare array or any is insufficient. Reapply the outer array<object> declaration and its wildcard object element with OVERWRITE so existing roots retain arbitrary nested descriptor fields. Default values use the explicit optional JSON union to preserve scalar and compound representations. Boot and persisted roundtrip evidence are required in addition to source review.
+
+
+## scoped-query
+
+DbCommand::ScopedQuery is the desktop SQL input path. Query tab, generated GIS
+filters and generated Paths listing send required correlation IDs and requested
+petal IDs. Every target is resolved and authorized from stored ancestry/roles
+using the DB thread's actual local identity at Viewer floor. Requested IDs and
+LocalUserRole are not authority. Existing ParentMutation stored-policy snapshots
+are reused; trusted fence bindings are renamed by target index so every member
+is checked in one read transaction. Changes to owner, default access, role rows,
+ancestry or identity cardinality invalidate the plan. Unknown, denied and
+ambiguous targets uniformly return not found or not permitted. One authorized
+target never authorizes another member; no special Owner bypass is added.
+
+Shared prepare_scoped_sql confines every allowed source before user predicates.
+Desktop queries refuse API-global metadata sources (verse/fractal/field_def/
+crate_entry) and permit node, iot_reading, device_payload, petal, room, model and
+crate_registry only. Native surrealdb-core 3.0.5 parses the exact executable
+SELECT with its 5s TIMEOUT and checks one statement. It also checks generated
+transaction boundaries. IndexedResults is checked and decoded at the single
+known SELECT slot. Engine/decode failure, unexpected statement count, partial
+data, row cap and byte cap produce correlated QueryFailed, never empty success.
+
+Bounds: 16 distinct conservative ASCII petal IDs, 128-byte IDs, 64 KiB SQL,
+64 declared bindings with 64-byte names, 16 nesting levels/8192 values/64 KiB
+JSON, 10000 result rows and 8 MiB result bytes (the existing /query ceilings).
+Binding depth/count/string limits are checked iteratively before serialization.
+Every parameter reference must be declared; server controls and protected session
+names cannot be bound. Shared comments/record-constructor/source restrictions
+remain. Desktop additionally refuses caller TIMEOUT, FETCH, VERSION, WITH,
+PARALLEL, EXPLAIN, TEMPFILES, FUNCTION and FUTURE clauses. A quote-aware lexical
+pass permits count, array::len and the named math aggregate/scalar functions
+listed in the handler. Custom/external/session calls and allocation/range/repeat
+generators are refused. Function-looking text in strings is not code. This is
+the initial conservative desktop dialect; expansions belong in the campaign
+decision ledger and require security review, not automatic fallback.
+
+Preparation/execution have a 7s async backstop; execution also has a 6s backstop
+around the 5s DB statement limit. Row/byte limits are checked after strict
+decoding, consistent with the existing API path. These are not pre-allocation
+memory isolation or a claim that async timeout preempts arbitrary synchronous
+allocation; generator functions are refused for that reason. RawQuery retains
+trusted/server-built API fallback, internal scope/GIS reads and laboratory
+contracts; the desktop table whitelist is not imposed on those callers.
+
+The existing real-store journey covers both data planes and nested properties,
+foreign predicates/OR/subqueries, dialect/parser/binding refusals, no-read denial,
+Viewer success, all-target denial and revocation between plan capture and
+transaction execution. It also captures a request before revocation and
+dispatches it afterward to exercise point-of-use authorization. Tests, exact
+timeout outcomes, fresh GUI proof and independent security review remain pending.
+
+The token gate also refuses unquoted slash/backslash, range syntax, closure
+pipes, non-ASCII tokens and dynamic expression/parameter calls. This avoids
+quote confusion inside regex literals hiding later calls from a quote-only
+scanner; native parser success/count alone cannot establish function policy.
+Quoted Unicode/string values remain usable. Slash refusal also excludes desktop
+division syntax in this initial dialect. Regex/division/lambda expansion is a
+decision-ledger follow-up requiring a reviewed lexer/engine contract; trusted
+programmatic API/report queries retain their existing behavior.
+
+The desktop gate also refuses graph arrows and global metadata identifiers
+(verse, fractal, field_def, crate_entry) anywhere in SQL, including projection
+record literals. FROM-only source rewriting cannot bound those record/graph
+reads. Quoted metadata words are conservatively refused too; any wider desktop
+dialect belongs in the reviewed decision ledger. API guard semantics and trusted
+programmatic callers remain unchanged. The existing refusal journey covers these
+projection and incoming/outgoing/bidirectional graph forms.

@@ -898,13 +898,19 @@ pub enum DbCommand {
     DeleteFieldDef {
         field_def_id: String,
     },
-    /// Execute a read-only SurrealQL query (SELECT/RETURN only).
-    /// Used by the GUI query tab. Security: only SELECT/RETURN are accepted.
+    /// User-authored desktop SELECT, stored Viewer authorization and petal scoping at use.
+    ScopedQuery {
+        sql: String,
+        vars: std::collections::HashMap<String, serde_json::Value>,
+        petal_scope: Vec<String>,
+        correlation_id: String,
+    },
+    /// Trusted server-built/prevalidated SELECT; user-authored desktop text uses ScopedQuery.
     RawQuery {
         sql: String,
         vars: std::collections::HashMap<String, serde_json::Value>,
         /// API-originated queries carry a fresh id the DB thread echoes on
-        /// `QueryResult`/`QueryFailed`; GUI queries send `None`
+        /// `QueryResult`/`QueryFailed`; uncorrelated trusted callers send `None`
         /// (fe-runtime src/AGENTS.md §api-reply-correlation).
         correlation_id: Option<String>,
     },

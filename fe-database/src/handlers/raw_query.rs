@@ -32,8 +32,8 @@ fn contains_keyword(sql_upper: &str, keyword: &str) -> bool {
 }
 
 /// The DB thread's reply to `RawQuery`: only a single `SELECT` is run. A
-/// correlated (API) caller gets `QueryResult`/`QueryFailed` echoing its id; a
-/// GUI query (`None`) gets `QueryResult { None }` or the wildcard `Error`.
+/// correlated caller gets `QueryResult`/`QueryFailed` echoing its id.
+/// Trusted uncorrelated reads (`None`) get `QueryResult { None }` or `Error`.
 /// See fe-runtime src/AGENTS.md §api-reply-correlation.
 pub async fn raw_query_reply(
     db: &Db,

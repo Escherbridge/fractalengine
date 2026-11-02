@@ -813,3 +813,10 @@ atomic commit admission, and before returning read data. The last active check
 before invoking the atomic commit helper is the commit admission boundary: an
 already admitted transaction may commit after revocation. Its persisted receipt
 must still be returned; revocation is not a rollback or a retry instruction.
+
+ScopedQuery carries sql/vars, requested petal_scope and a mandatory correlation
+string. Pending routing maps it to the existing QueryResult family; all DB
+outcomes echo QueryResult(Some(id)) or QueryFailed(id). Desktop text must use
+this path rather than RawQuery. The latter remains for trusted server-built or
+prevalidated internal queries and existing API fallback. No plugin-host request
+or authority contract changes in this slice.

@@ -1643,6 +1643,10 @@ pub fn spawn_db_thread_shared(
                             Err(e) => send_result(&tx, DbResult::Error(format!("Delete field def failed: {e}"))),
                         }
                     }
+                    Ok(DbCommand::ScopedQuery { sql, vars, petal_scope, correlation_id }) => {
+                        let reply = handlers::scoped_query::scoped_query_reply(&db, &sql, &vars, &petal_scope, &local_did, correlation_id).await;
+                        send_result(&tx, reply);
+                    }
                     Ok(DbCommand::RawQuery { sql, vars, correlation_id }) => {
                         let reply = handlers::raw_query::raw_query_reply(&db, &sql, &vars, correlation_id).await;
                         send_result(&tx, reply);
