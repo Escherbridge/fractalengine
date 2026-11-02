@@ -7,6 +7,18 @@ $QaStageRoot = Join-Path $QaRepoRoot ".qa\stage"
 $QaRunRoot = Join-Path $QaRepoRoot ".qa\run"
 $QaApiBase = "http://127.0.0.1:8765"
 
+# One fail-fast lease coordinates selection, publication and deletion across lifecycle tools.
+function Enter-QaLifecycleLease {
+    $qaRoot = Join-Path $QaRepoRoot '.qa'
+    $leasePath = Resolve-QaChildPath -Path (Join-Path $qaRoot 'lifecycle.lock') -Root $qaRoot
+    New-Item -ItemType Directory -Path $qaRoot -Force | Out-Null
+    try {
+        return [IO.File]::Open($leasePath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    } catch [IO.IOException] {
+        throw 'QA lifecycle is busy or its lease is unavailable; no lifecycle action was performed. Retry explicitly after the owner finishes.'
+    }
+}
+
 function Write-QaLog {
     param([string]$Message)
     $ts = (Get-Date).ToString("HH:mm:ss.fff")

@@ -1,8 +1,10 @@
-# Stop only the recorded process identity and its verified descendants.
+﻿# Stop only the recorded process identity and its verified descendants.
 [CmdletBinding()]
 param([string]$Run)
 . "$PSScriptRoot\_lib.ps1"
 $ErrorActionPreference = 'Stop'
+$lifecycleLease = Enter-QaLifecycleLease
+try {
 
 if (-not $Run) {
     $pointer = Join-Path $QaRepoRoot '.qa\current'
@@ -22,3 +24,5 @@ if (-not $process) {
 }
 Stop-QaOwnedProcessTree -Identity $current.process_identity -RecordedDescendants @($current.descendant_identities)
 Write-QaLog "Stopped. Run dir kept at $runDir"
+
+} finally { $lifecycleLease.Dispose() }

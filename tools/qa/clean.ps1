@@ -1,8 +1,10 @@
-# Prune confined QA directories, retaining live runs and their stages.
+﻿# Prune confined QA directories, retaining live runs and their stages.
 [CmdletBinding()]
 param([ValidateRange(0,36500)][int]$Days = 7, [ValidateRange(0,10000)][int]$Keep = 3, [switch]$DryRun)
 . "$PSScriptRoot\_lib.ps1"
 $ErrorActionPreference = 'Stop'
+$lifecycleLease = Enter-QaLifecycleLease
+try {
 $cutoff = (Get-Date).AddDays(-$Days)
 $liveRuns = @{}
 $liveStages = @{}
@@ -53,3 +55,5 @@ foreach ($root in @($QaStageRoot, $QaRunRoot)) {
         else { Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop }
     }
 }
+
+} finally { $lifecycleLease.Dispose() }

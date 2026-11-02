@@ -22,6 +22,7 @@ param(
 $QaApiBase = "http://127.0.0.1:$ApiPort"
 $ErrorActionPreference = 'Stop'
 
+$lifecycleLease = Enter-QaLifecycleLease
 $resume = $null
 $runLock = $null
 $attemptPath = $null
@@ -39,6 +40,16 @@ if ($ResumeRun) {
             $value = [bool]$resume.current.qa_options.($option[1])
             if ($option[0] -eq 'DisableSyntheticInput') { $value = -not $value }
             Set-Variable -Name $option[0] -Value ([switch]$value)
+        }
+    }
+    if ($PSBoundParameters.ContainsKey('A11yTiming') -and -not $A11yTiming -and -not $PSBoundParameters.ContainsKey('A11yContinuous')) {
+        $A11yContinuous = [switch]$false
+    }
+    if ($A11yTiming) {
+        foreach ($marker in @('a11y-timing-owner.json','a11y-baseline-ready.json','a11y-timing.json')) {
+            if (Test-Path -LiteralPath (Join-Path $run $marker)) {
+                throw 'Resume timing requires fresh exclusive markers. Existing proof is preserved; explicitly use -A11yTiming:$false or create a fresh timing run.'
+            }
         }
     }
 }
@@ -279,4 +290,7 @@ Write-Output $run
     }
 }
 
-} finally { if ($runLock) { $runLock.Dispose() } }
+} finally {
+    try { if ($runLock) { $runLock.Dispose() } }
+    finally { $lifecycleLease.Dispose() }
+}

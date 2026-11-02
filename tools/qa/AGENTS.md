@@ -489,3 +489,39 @@ No PowerShell smoke-test file exists in this harness. This seam is statically
 parser-checked; actual same-root startup, inherited/overridden port, preserved
 fixture/config/identity/WebView state, failure rollback and the dual durability
 readback remain required live checks by the main owner after review.
+
+### Lifecycle serialization and timing resumes
+
+Fresh launch, resume, stage, stop and clean acquire the same exclusive
+`.qa/lifecycle.lock` before selecting any run/stage, reading a current pointer,
+starting/stopping processes or deleting directories. The lease is outside both
+`.qa/run` and `.qa/stage`, so recursive cleanup never reaches it. Acquisition
+is fail-fast: a busy/unavailable lease refuses the operation before lifecycle
+effects. Startup retains it through publication of the new manifest; this
+protects both the previous run/stage and a selected new stage during the gap
+between old-process exit and new-current publication. Clean cannot partially
+delete a run and then discover an open lock inside it. Every entry releases
+its handle in finally. `restart.ps1` delegates directly to launch, and launch
+calls internal cleanup helpers, so no public entry reacquires its own lease.
+The per-run restart lock remains an additional guard, not the cleanup boundary.
+
+The collector's timing owner marker is exclusive to one process lifetime.
+Resume with inherited or explicitly requested timing refuses existing
+`a11y-timing-owner.json`, `a11y-baseline-ready.json` or `a11y-timing.json` before
+stopping the prior process. Prior proof is neither removed nor overwritten.
+From the current owner PowerShell, disable timing explicitly when continuing
+the persisted dataset:
+
+```powershell
+& .\tools\qa\restart.ps1 -Run $ownedRun -A11yTiming:$false
+```
+
+Explicitly disabling timing also disables inherited continuous timing unless
+`-A11yContinuous` is explicitly supplied. Requesting continuous=true with
+timing=false is refused before stop. The new manifest records the actual
+false values, while previous-start metadata and timing artifacts preserve the
+old proof. A fresh isolated timing run is required for another timed lifetime;
+a resumed manifest never claims that old timing output belongs to its process.
+Windows PowerShell5.1 callers should use the direct script invocation above
+for explicit false switches rather than the external `powershell -File`
+argument format, which cannot reliably convey false switch values.

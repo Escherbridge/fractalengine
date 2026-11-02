@@ -12,6 +12,8 @@ param([ValidateRange(1,16)][int]$Jobs = 2)
 
 . "$PSScriptRoot\_lib.ps1"
 $ErrorActionPreference = 'Stop'
+$lifecycleLease = Enter-QaLifecycleLease
+try {
 
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 $sourceFingerprint = Get-QaSourceFingerprint
@@ -91,3 +93,5 @@ $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $stageDir 'stag
 
 Write-QaLog "Staged $sha -> $stageDir ($([math]::Round($sw.Elapsed.TotalSeconds, 1))s total)"
 Write-Output $stageDir
+
+} finally { $lifecycleLease.Dispose() }
