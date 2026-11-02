@@ -57,6 +57,15 @@ or only a verse is active. Leaving a fractal clears its petal. Startup selects a
 `(verse, fractal, petal)` tuple before updating the cursor, so scenes and replicas use the same verse.
 The relative navigation methods remain for callers already operating within the active parent.
 
+Initial hierarchy auto-selection is allowed only while NavigationManager's startup
+gate is armed and no Verse is selected. Explicit navigate/back methods suppress it,
+including Back before startup data arrives. Read-only hydration calls the separate
+suppression method without changing navigation intent or any async intent revision.
+Both hierarchy fallback branches use this gate; repeated reloads cannot re-enter
+a Verse after exit. The latch field remains public only for existing struct-update
+callers across crates; transitions belong to the manager methods.
+
+
 `active_scope` returns no scope for an empty or incomplete cursor; callers must never downgrade
 an incomplete descendant selection into a broader verse query. The role resolver clears its cache
 when the scope changes or ancestry is invalid, warns once per invalid interval, and issues no request

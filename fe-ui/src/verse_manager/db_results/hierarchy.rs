@@ -106,7 +106,7 @@ pub(super) fn handle_hierarchy_loaded(
     residency: &super::super::ResidencyLedger,
     ts_settings: &mut crate::timeseries_settings::TimeseriesSettingsState,
 ) {
-    let first_load = nav.active_verse_id.is_none();
+    let first_load = nav.initial_auto_navigation_allowed();
 
     // M2/F6: mirror each verse's persisted timeseries settings into the
     // settings surface state (the verse row's ts_* columns are the truth).
@@ -233,11 +233,8 @@ pub(super) fn handle_hierarchy_loaded(
         );
     }
 
-    // Auto-select verse after a non-first hierarchy load (Seeded /
-    // VerseJoined / DatabaseReset / external API poll) when nothing is
-    // active. CreateVerse itself does NOT reload the hierarchy — the
-    // `VerseCreated` arm appends the new verse to the tree directly.
-    if nav.active_verse_id.is_none() {
+    // A later seed may supply the first startup verse, before any cursor intent.
+    if nav.initial_auto_navigation_allowed() {
         if let Some(v) = verse_mgr.verses.first() {
             nav.navigate_to_verse(&v.id, &v.name);
         }

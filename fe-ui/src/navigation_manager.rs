@@ -15,11 +15,25 @@ pub struct NavigationManager {
     pub active_fractal_id: Option<String>,
     pub active_fractal_name: String,
     pub active_petal_id: Option<String>,
+    /// Set through manager methods; public for existing struct-update callers.
+    #[doc(hidden)]
+    pub initial_auto_navigation_suppressed: bool,
 }
 
 impl NavigationManager {
+    /// Startup may choose a cursor only before navigation intent or hydration.
+    pub fn initial_auto_navigation_allowed(&self) -> bool {
+        !self.initial_auto_navigation_suppressed && self.active_verse_id.is_none()
+    }
+
+    /// Keep read-only hydration from choosing a cursor; this is not user intent.
+    pub fn suppress_initial_auto_navigation(&mut self) {
+        self.initial_auto_navigation_suppressed = true;
+    }
+
     /// Enter a verse. Clears fractal and petal selection.
     pub fn navigate_to_verse(&mut self, id: impl Into<String>, name: impl Into<String>) {
+        self.suppress_initial_auto_navigation();
         self.active_verse_id = Some(id.into());
         self.active_verse_name = name.into();
         self.active_fractal_id = None;
@@ -29,6 +43,7 @@ impl NavigationManager {
 
     /// Enter a fractal within the current verse. Clears petal selection.
     pub fn navigate_to_fractal(&mut self, id: impl Into<String>, name: impl Into<String>) {
+        self.suppress_initial_auto_navigation();
         self.active_fractal_id = Some(id.into());
         self.active_fractal_name = name.into();
         self.active_petal_id = None;
@@ -36,6 +51,7 @@ impl NavigationManager {
 
     /// Enter a petal within the current fractal.
     pub fn navigate_to_petal(&mut self, id: impl Into<String>) {
+        self.suppress_initial_auto_navigation();
         self.active_petal_id = Some(id.into());
     }
 
@@ -86,16 +102,19 @@ impl NavigationManager {
     }
 
     pub fn back_from_petal(&mut self) {
+        self.suppress_initial_auto_navigation();
         self.active_petal_id = None;
     }
 
     pub fn back_from_fractal(&mut self) {
+        self.suppress_initial_auto_navigation();
         self.active_fractal_id = None;
         self.active_fractal_name.clear();
         self.active_petal_id = None;
     }
 
     pub fn back_from_verse(&mut self) {
+        self.suppress_initial_auto_navigation();
         self.active_verse_id = None;
         self.active_verse_name.clear();
         self.active_fractal_id = None;
@@ -277,10 +296,26 @@ mod tests {
     #[test]
     fn back_from_verse_clears_all_fields() {
         let mut nav = NavigationManager::default();
+        assert!(nav.initial_auto_navigation_allowed());
+        nav.suppress_initial_auto_navigation();
+        assert!(!nav.initial_auto_navigation_allowed());
+        assert!(
+            nav.active_verse_id.is_none()
+                && nav.active_fractal_id.is_none()
+                && nav.active_petal_id.is_none(),
+            "hydration suppression does not fabricate cursor intent"
+        );
+        nav = NavigationManager::default();
+        nav.back_from_verse();
+        assert!(
+            !nav.initial_auto_navigation_allowed(),
+            "Back before startup data prevents automatic re-entry"
+        );
         nav.navigate_to_verse("v1", "Verse 1");
         nav.navigate_to_fractal("f1", "Fractal 1");
         nav.navigate_to_petal("p1");
         nav.back_from_verse();
+        assert!(!nav.initial_auto_navigation_allowed());
         assert!(nav.active_verse_id.is_none());
         assert!(nav.active_verse_name.is_empty());
         assert!(nav.active_fractal_id.is_none());
