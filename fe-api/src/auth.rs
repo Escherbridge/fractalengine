@@ -79,20 +79,24 @@ async fn durable_snapshot(
     }
 }
 
+fn require_unexpired(claims: &ApiClaims) -> Result<(), StatusCode> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
+        .as_secs();
+    if claims.exp <= now {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    Ok(())
+}
+
 /// Revalidate a verified credential before a protected action or async response.
 pub async fn require_current_credential(
     state: &crate::server::ApiState,
     claims: &ApiClaims,
 ) -> Result<(), StatusCode> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
-        .as_secs();
-    if claims.exp <= now
-        || claims.jti.is_empty()
-        || claims.jti.len() > 128
-        || claims.jti.chars().any(char::is_control)
-    {
+    require_unexpired(claims)?;
+    if claims.jti.is_empty() || claims.jti.len() > 128 || claims.jti.chars().any(char::is_control) {
         return Err(StatusCode::UNAUTHORIZED);
     }
     {
@@ -124,7 +128,7 @@ pub async fn require_current_credential(
     if state.revoked_jtis.read().await.contains(&claims.jti) {
         return Err(StatusCode::UNAUTHORIZED);
     }
-    Ok(())
+    require_unexpired(claims)
 }
 
 pub(crate) async fn validate_auth_startup(

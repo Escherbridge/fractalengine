@@ -305,6 +305,45 @@ async fn short_ttl_token_authenticates_then_expires_live() {
         StatusCode::UNAUTHORIZED,
         "an expired token must be denied by the live middleware"
     );
+    let held_read = h.state.revoked_jtis.write().await;
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_secs();
+    let deadline = started + 2;
+    let delayed_token = fe_identity::api_token::mint_api_token_at(
+        &h.keypair,
+        "VERSE#v1",
+        "viewer",
+        started,
+        deadline,
+        "delayed-credential-expiry",
+    )
+    .unwrap();
+    let delayed = fe_api::auth::authenticate(&h.state, &delayed_token);
+    tokio::pin!(delayed);
+    std::future::poll_fn(
+        |context| match std::future::Future::poll(delayed.as_mut(), context) {
+            std::task::Poll::Pending => std::task::Poll::Ready(()),
+            std::task::Poll::Ready(result) => {
+                panic!("Credential read must wait on the held authority lock: {result:?}")
+            }
+        },
+    )
+    .await;
+    let expires_at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(deadline);
+    tokio::time::sleep(
+        expires_at
+            .duration_since(std::time::SystemTime::now())
+            .expect("credential starts unexpired"),
+    )
+    .await;
+    drop(held_read);
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(5), delayed).await.unwrap().unwrap_err(),
+        StatusCode::UNAUTHORIZED,
+        "A credential expiring while its authority read waits must not release a protected response"
+    );
     let standalone = ApiHarness::spawn_elevated_without_db_reader()
         .await
         .unwrap();
