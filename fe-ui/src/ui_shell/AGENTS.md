@@ -465,3 +465,9 @@ blocks the existing scene keyboard decoder and hierarchy shortcut, preserves
 text-input ownership and closes through Escape, outside click or its Close
 button. Narrow windows use named Tools/Panels menus below1160 points, keeping
 full tool names in the menu. Section buttons retain their existing toggles.
+
+Inspector's chrome body slot is unscrolled: right_inspector pins selection/tab
+navigation above its one vertical body ScrollArea. Other sections retain the
+shared chrome scroll. Keep the section title/rail outside both layouts; do not
+wrap Inspector in another shell scroll or reset offsets to make tabs reachable.
+Property-grid horizontal scrolling and bounded value editors remain local.

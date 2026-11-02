@@ -374,6 +374,23 @@ The existing admin config-URL buffer is unchanged by this validation slice.
 
 ## Inspector API access request ownership
 
+Inspector owns one vertical body scroll below its fixed selection/tab header.
+The shared sidebar chrome still supplies the fixed section title and rail, but
+hands Inspector an unscrolled slot. Tabs therefore do not inherit a long tab
+body's offset or depend on a forced offset reset when switching. The body keeps
+the existing right_section_scroll_Inspector salt; property-table horizontal and
+bounded-editor salts remain unchanged. Query, Data and property draft ownership
+and the private tab lifecycle are unchanged. Native body offsets can still clamp
+when a different tab has shorter content.
+
+The generated token uses a clipped single-line native password preview. It is
+masked by default, with native explicit Reveal semantics. Token-card actions use
+layout_policy::action for at least 24 logical points and the shared 20-physical
+backstop; client Copy is allocated before its clipped public DID. Clipboard
+payloads still come from the stored token/client and full curl formatter, never
+the clipped preview. This layout change does not establish the sole cause of
+the retained QA15 scroll refusal or replace integrated pointer/A8 verification.
+
 `InspectorTokenRequest` binds one mint to the current selected node and scope,
 a process-unique nonce, requested role/client and a monotonic 30-second timeout.
 Generate is disabled while pending; request inputs are retained on failure.

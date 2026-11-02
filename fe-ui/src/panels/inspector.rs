@@ -22,18 +22,12 @@ use crate::panels::widgets::{meters_to_world, world_to_meters};
 use crate::plugin::{InspectorFormState, InspectorTab, LocalUserRole, API_TOKEN_PAGE_SIZE};
 use crate::terrain_map::PetalMapState;
 use crate::theme;
+use crate::ui_shell::layout_policy;
 use crate::verse_manager::db_results::tokens::mint_command;
 use crate::verse_manager::VerseManager;
 use fe_runtime::messages::DbCommand;
 
-/// Inspector BODY. ui_semantics_unification_20260808 D10 removed this panel's
-/// bespoke `SidePanel::right("inspector")` + `show_animated` self-collapse: the
-/// right region has exactly one chrome now
-/// (`ui_shell::right_sidebar::section_chrome`), and the Inspector opting out of
-/// it was why the section rail — the sole entry point to Terrain Tools and the
-/// Proposal Report — was invisible in the resting app (finding #3). The
-/// section header/close affordance is the chrome's; the sections below all
-/// carry their own empty states, so this renders fine with nothing selected.
+/// Inspector navigation and scrolling tab body; see panels/AGENTS.md.
 pub(crate) fn right_inspector(
     ui: &mut egui::Ui,
     inspector: &mut InspectorFormState,
@@ -62,6 +56,45 @@ pub(crate) fn right_inspector(
         nav,
         local_role,
     );
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            inspector_navigation(ui, inspector, node_mgr, db_tx, nav)
+        });
+    crate::ui_shell::layout_policy::scroll(
+        ui,
+        "Inspector",
+        [false, true],
+        egui::ScrollArea::vertical()
+            .id_salt("right_section_scroll_Inspector")
+            .auto_shrink([false, false]),
+        |ui| {
+            egui::Frame::NONE
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    inspector_tab_body(
+                        ui,
+                        inspector,
+                        node_mgr,
+                        hierarchy,
+                        ui_mgr,
+                        local_role,
+                        db_tx,
+                        nav,
+                        asset_status,
+                    );
+                });
+        },
+    );
+}
+
+fn inspector_navigation(
+    ui: &mut egui::Ui,
+    inspector: &mut InspectorFormState,
+    node_mgr: &mut NodeManager,
+    db_tx: &crossbeam::channel::Sender<DbCommand>,
+    nav: &NavigationManager,
+) {
     if node_mgr.selected_entity().is_some() {
         crate::ui_shell::layout_policy::trailing_row(ui, |ui| {
             if ui
@@ -135,7 +168,19 @@ pub(crate) fn right_inspector(
         }
     });
     ui.separator();
+}
 
+fn inspector_tab_body(
+    ui: &mut egui::Ui,
+    inspector: &mut InspectorFormState,
+    node_mgr: &NodeManager,
+    hierarchy: &VerseManager,
+    ui_mgr: &mut UiManager,
+    local_role: &LocalUserRole,
+    db_tx: &crossbeam::channel::Sender<DbCommand>,
+    nav: &NavigationManager,
+    asset_status: &AssetDownloadStatus,
+) {
     match inspector.active_tab() {
         InspectorTab::Properties => {
             ui.add_space(4.0);
@@ -1038,7 +1083,7 @@ fn inspector_api_access_section(
                                         .color(theme::TEXT_SECTION),
                                 );
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.add(egui::Button::new("\u{2715}").fill(egui::Color32::TRANSPARENT).small()).named(ui, "Dismiss generated API token").clicked() {
+                                    if layout_policy::action(ui, egui::Button::new("\u{2715}").fill(egui::Color32::TRANSPARENT), "Dismiss generated API token").clicked() {
                                         dismiss_token = true;
                                     }
                                 });
@@ -1047,15 +1092,16 @@ fn inspector_api_access_section(
                             ui.add_space(2.0);
                             let mut display = token.clone();
                             let reveal_label = if inspector.api_token_request.revealed { "Hide token" } else { "Reveal token" };
-                            if ui.button(reveal_label).named(ui, format_args!("{reveal_label}: generated API token")).clicked() {
+                            let reveal_name = if inspector.api_token_request.revealed { "Hide token: generated API token" } else { "Reveal token: generated API token" };
+                            if layout_policy::action(ui, egui::Button::new(reveal_label), reveal_name).clicked() {
                                 inspector.api_token_request.revealed = !inspector.api_token_request.revealed;
                             }
                             ui.add(
-                                egui::TextEdit::multiline(&mut display)
+                                egui::TextEdit::singleline(&mut display)
                                     .password(!inspector.api_token_request.revealed)
                                     .interactive(false)
                                     .desired_width(ui.available_width())
-                                    .desired_rows(3)
+                                    .clip_text(true)
                                     .font(egui::TextStyle::Monospace),
                             ).named(ui, "Generated API token");
 
@@ -1065,30 +1111,25 @@ fn inspector_api_access_section(
                             if let Some(ref client) = inspector.generated_api_token_client {
                                 ui.add_space(4.0);
                                 ui.horizontal(|ui| {
-                                    ui.label(
-                                        egui::RichText::new("Client:")
-                                            .small()
-                                            .color(theme::TEXT_DIM),
-                                    );
+                                    if layout_policy::action(ui,
+                                        egui::Button::new("Copy client").fill(egui::Color32::TRANSPARENT),
+                                        "Copy generated token client DID").on_hover_text("Copy client DID")
+                                        .clicked()
+                                    {
+                                        copy_inspector_text(ui, ui_mgr, client, "Copied token client DID");
+                                    }
                                     crate::panels::widgets::clipped_value(
                                         ui,
                                         client,
                                         theme::TEXT_SECTION,
                                     );
-                                    if ui
-                                        .add(egui::Button::new("\u{1F4CB}").fill(egui::Color32::TRANSPARENT).small())
-                                        .named(ui, "Copy generated token client DID").on_hover_text("Copy client DID")
-                                        .clicked()
-                                    {
-                                        copy_inspector_text(ui, ui_mgr, client, "Copied token client DID");
-                                    }
                                 });
                             }
 
                             ui.add_space(4.0);
                             // Copy Token button
                             ui.horizontal(|ui| {
-                                if ui.add(egui::Button::new("\u{1F4CB} Copy Token").fill(theme::BG_BUTTON_ACTIVE).small()).named(ui, "Copy generated API token").clicked() {
+                                if layout_policy::action(ui, egui::Button::new("\u{1F4CB} Copy Token").fill(theme::BG_BUTTON_ACTIVE), "Copy generated API token").clicked() {
                                     copy_inspector_text(ui, ui_mgr, token, "Copied token to clipboard");
                                 }
                             });
@@ -1111,8 +1152,8 @@ fn inspector_api_access_section(
                                                 .color(theme::TEXT_MUTED),
                                         );
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            if ui.add(egui::Button::new("\u{1F4CB}").fill(egui::Color32::TRANSPARENT).small())
-                                                .named(ui, "Copy selected node properties curl command").on_hover_text("Copy authenticated GET properties command")
+                                            if layout_policy::action(ui, egui::Button::new("\u{1F4CB}").fill(egui::Color32::TRANSPARENT),
+                                                "Copy selected node properties curl command").on_hover_text("Copy authenticated GET properties command")
                                                 .clicked()
                                             {
                                                 if let Some(command) = node_properties_curl(address, node_id, token) {

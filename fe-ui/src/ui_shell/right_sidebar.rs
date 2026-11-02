@@ -1626,6 +1626,10 @@ pub(crate) fn section_chrome(
             ui.add_space(2.0);
             section_rail(ui, state);
             ui.separator();
+            if section == RightSidebarSection::Inspector {
+                body(ui);
+                return;
+            }
             crate::ui_shell::layout_policy::scroll(
                 ui,
                 section_label(section),
