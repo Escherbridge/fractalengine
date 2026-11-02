@@ -61,7 +61,8 @@ pub async fn prepare_development_reset(
     let mut snapshot = db.query("SELECT verse_id, created_by FROM verse ORDER BY verse_id LIMIT 1025; INFO FOR DB;")
         .await?.check()?;
     let verses: Vec<serde_json::Value> = snapshot.take(0)?;
-    let metadata: serde_json::Value = snapshot.take(1)?;
+    let metadata: Option<serde_json::Value> = snapshot.take(1)?;
+    let metadata = metadata.ok_or_else(|| anyhow::anyhow!("Local database reset cannot read the table inventory"))?;
     anyhow::ensure!(verses.len() <= 1024, "Local database reset exceeds the 1024-Verse safety bound");
     let mut identities = std::collections::BTreeSet::new();
     for verse in &verses {
