@@ -23,6 +23,32 @@ use fe_runtime::messages::DbCommand;
 /// died mid-request — without it Cancel and the close-X would never return.
 const JOIN_LOCK_TIMEOUT_SECONDS: f64 = 30.0;
 
+const MAX_INVITE_BYTES: usize = 64 * 1024;
+
+struct InviteBuffer<'a> {
+    value: &'a mut String,
+    rejected: &'a mut bool,
+}
+
+impl egui::TextBuffer for InviteBuffer<'_> {
+    fn is_mutable(&self) -> bool {
+        true
+    }
+    fn as_str(&self) -> &str {
+        self.value
+    }
+    fn insert_text(&mut self, text: &str, char_index: usize) -> usize {
+        if self.value.len().saturating_add(text.len()) > MAX_INVITE_BYTES {
+            *self.rejected = true;
+            return 0;
+        }
+        egui::TextBuffer::insert_text(self.value, text, char_index)
+    }
+    fn delete_char_range(&mut self, range: std::ops::Range<usize>) {
+        egui::TextBuffer::delete_char_range(self.value, range);
+    }
+}
+
 pub fn render_join_dialog(
     ctx: &egui::Context,
     ui_mgr: &mut UiManager,
@@ -41,6 +67,10 @@ pub fn render_join_dialog(
         return;
     };
 
+    let mut oversized = invite_buf.len() > MAX_INVITE_BYTES;
+    if oversized {
+        invite_buf.clear();
+    }
     let mut close = false;
     let mut invite_to_send: Option<String> = None;
 
@@ -67,9 +97,12 @@ pub fn render_join_dialog(
         ui.label("Paste an invite string to join a verse:");
         ui.add_space(4.0);
 
+        let mut buffer = InviteBuffer {value: invite_buf, rejected: &mut oversized};
         ui.add_enabled(
             !pending,
-            egui::TextEdit::singleline(invite_buf)
+            egui::TextEdit::singleline(&mut buffer)
+                .id(egui::Id::new("join_credential_input"))
+                .min_size(egui::Vec2::splat(crate::object_data::target_size(ui)))
                 .password(true)
                 .char_limit(64 * 1024)
                 .desired_width(f32::INFINITY)
@@ -78,6 +111,9 @@ pub fn render_join_dialog(
         )
         .named(ui, "Verse invite string");
 
+        if oversized {
+            ui.colored_label(theme::STATUS_OFFLINE,"Invitation input exceeds the 64 KiB byte limit. Paste a smaller, complete invitation.");
+        }
         if let Some(err) = error.as_deref() {
             ui.add_space(4.0);
             ui.label(egui::RichText::new(err).color(theme::STATUS_OFFLINE));
@@ -85,7 +121,7 @@ pub fn render_join_dialog(
 
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let can_join = !pending && !invite_buf.trim().is_empty();
+            let can_join = !pending && !oversized && invite_buf.len() <= MAX_INVITE_BYTES && !invite_buf.trim().is_empty();
             if ui
                 .add_enabled(can_join, egui::Button::new("Join"))
                 .observed(ui)
@@ -194,6 +230,14 @@ mod tests {
         // (egui's own id derivation), so its response — and bounding rect —
         // is readable back by that same id without changing the render fn.
         run_frame(&ctx, time, Vec::new(), &mut ui_mgr, &tx);
+        let input = ctx
+            .read_response(egui::Id::new("join_credential_input"))
+            .expect("Masked invite editor exposes its actual response");
+        assert!(
+            input.rect.height() >= 24.0 && input.rect.width() >= 24.0,
+            "Single-line Join input keeps the actual logical target floor"
+        );
+
         let window_rect = ctx
             .read_response(egui::Id::new("Join Verse"))
             .map(|r| r.rect)
@@ -235,6 +279,39 @@ mod tests {
         ui_mgr.active_dialog = ActiveDialog::JoinDialog {
             invite_buf: String::new(),
         };
+        if let ActiveDialog::JoinDialog { invite_buf } = &mut ui_mgr.active_dialog {
+            *invite_buf = "\u{1f600}".repeat(MAX_INVITE_BYTES / 4 + 1);
+        }
+        run_frame(&ctx, 0.0, Vec::new(), &mut ui_mgr, &tx);
+        assert!(
+            matches!(&ui_mgr.active_dialog,ActiveDialog::JoinDialog {invite_buf} if invite_buf.is_empty()),
+            "An oversized non-ASCII prefilled credential is discarded before widget/admission"
+        );
+        let mut draft = String::new();
+        let mut rejected = false;
+        let mut bounded = InviteBuffer {
+            value: &mut draft,
+            rejected: &mut rejected,
+        };
+        assert_eq!(
+            egui::TextBuffer::insert_text(
+                &mut bounded,
+                &"\u{1f600}".repeat(MAX_INVITE_BYTES / 4 + 1),
+                0
+            ),
+            0
+        );
+        assert!(
+            rejected && draft.is_empty(),
+            "Byte-bound edits refuse an oversized Unicode paste without truncating a credential"
+        );
+        assert!(!format!(
+            "{:?}",
+            ActiveDialog::JoinDialog {
+                invite_buf: "credential-sentinel".into()
+            }
+        )
+        .contains("credential-sentinel"));
         ui_mgr.join_request.start(0.0);
         let mut time = JOIN_LOCK_TIMEOUT_SECONDS + 1.0;
 
