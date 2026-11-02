@@ -17,6 +17,7 @@ pub(crate) mod node_props;
 pub(crate) mod path;
 pub(crate) mod portal;
 mod query;
+pub(crate) use query::next_ui_query_id;
 pub(crate) mod terrain_proposal;
 mod transform;
 

@@ -373,7 +373,7 @@ pub(crate) fn collect(
     }
     publish(&mut snapshot, next);
     if cache.pending.is_none() && !missing_materials.is_empty() && now >= cache.retry_after {
-        let id = crate::actions::query::next_ui_query_id("scene-materials");
+        let id = crate::actions::next_ui_query_id("scene-materials");
         if sender
             .0
             .try_send(DbCommand::ReadSceneMaterials {

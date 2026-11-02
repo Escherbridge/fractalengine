@@ -32,7 +32,7 @@ pub(super) struct Request {
 impl Request {
     fn new(kind: &str) -> Self {
         Self {
-            id: crate::actions::query::next_ui_query_id(kind),
+            id: crate::actions::next_ui_query_id(kind),
             started: Instant::now(),
         }
     }
