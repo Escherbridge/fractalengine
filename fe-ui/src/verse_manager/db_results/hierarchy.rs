@@ -235,7 +235,7 @@ pub(super) fn handle_hierarchy_loaded(
     }
 
     // A later seed may supply the first startup verse, before any cursor intent.
-    if nav.initial_auto_navigation_allowed() {
+    if allow_initial_navigation && nav.initial_auto_navigation_allowed() {
         if let Some(v) = verse_mgr.verses.first() {
             nav.navigate_to_verse(&v.id, &v.name);
         }
@@ -251,7 +251,7 @@ pub(super) fn select_initial_navigation(
     nav: &mut NavigationManager,
     allowed: bool,
 ) {
-    if !allowed {return;}
+    if !allowed || !nav.initial_auto_navigation_allowed() {return;}
     for verse in verses {
         for fractal in &verse.fractals {
             if let Some(petal) = fractal

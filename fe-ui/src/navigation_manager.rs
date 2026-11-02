@@ -313,7 +313,13 @@ mod tests {
     fn back_from_verse_clears_all_fields() {
         let mut nav = NavigationManager::default();
         assert!(nav.initial_auto_navigation_allowed());
+        let revision = nav.intent_revision();
         nav.suppress_initial_auto_navigation();
+        assert_eq!(
+            nav.intent_revision(),
+            revision,
+            "Read-only hydration suppression preserves the independent intent revision"
+        );
         assert!(!nav.initial_auto_navigation_allowed());
         assert!(
             nav.active_verse_id.is_none()
