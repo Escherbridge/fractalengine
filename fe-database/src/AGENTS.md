@@ -1589,8 +1589,9 @@ Hierarchy rename, description update and physical subtree deletion require
 Manager at the target's stored scope, using the DB thread's resolved local DID.
 CreateFractal and CreatePetal use the same preparation at the stored parent.
 `handlers/entity.rs::ParentMutation` snapshots the owner's/default-access inputs
-and the actor's exact ancestor role rows before checking the existing role
-resolver. Its transaction fences those inputs and every stored ancestry edge
+and the actor's exact ancestor role rows. Permission is derived solely from
+those captured inputs through the shared pure role resolver, never a separate
+live role read. Its transaction fences those inputs and every stored ancestry edge
 before any write. Missing, moved, ambiguous or no-longer-authorized targets fail
 without partial changes. SQL identifiers come only from the EntityType match;
 caller names and identifiers are bound parameters.

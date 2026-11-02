@@ -75,15 +75,7 @@ pub(crate) async fn prepare_parent_mutation(
     let verse: Vec<Value> = snapshot.take(0)?;
     let roles: Vec<Value> = snapshot.take(1)?;
     anyhow::ensure!(verse.len() == 1, "hierarchy ancestry not found");
-    crate::require_node_role(
-        db,
-        local_did,
-        &scope,
-        fe_policy::RoleLevel::Manager,
-        "Hierarchy mutation",
-    )
-    .await
-    .map_err(anyhow::Error::msg)?;
+    require_snapshot_manager(&verse[0], &roles, &scopes, local_did)?;
 
     let mut guards = vec![
         "IF (SELECT verse_id, created_by, default_access FROM verse WHERE verse_id = $entity_verse) != $entity_verse_snapshot { THROW 'hierarchy authority changed'; }".into(),
@@ -107,6 +99,32 @@ pub(crate) async fn prepare_parent_mutation(
         bindings.push(("entity_petal".into(), json!(petal)));
     }
     Ok(ParentMutation { guards, bindings })
+}
+
+/// Authorize precisely the captured values that the transaction will fence.
+pub(crate) fn require_snapshot_manager(
+    verse: &Value,
+    roles: &[Value],
+    scopes: &[String],
+    local_did: &str,
+) -> anyhow::Result<()> {
+    let mut ordered_roles = Vec::with_capacity(scopes.len());
+    for scope in scopes {
+        let mut at_scope = roles.iter().filter(|row| row["scope"].as_str() == Some(scope.as_str()));
+        if let Some(row) = at_scope.next() {
+            anyhow::ensure!(at_scope.next().is_none(), "ambiguous hierarchy authority");
+            ordered_roles.push(row["role"].as_str().ok_or_else(|| anyhow::anyhow!("invalid stored role"))?);
+        }
+    }
+    let role = crate::role_manager::resolve_role_snapshot(
+        local_did,
+        verse["created_by"].as_str().unwrap_or(""),
+        verse["default_access"].as_str().unwrap_or("viewer"),
+        ordered_roles,
+    );
+    anyhow::ensure!(role.is_at_least(fe_policy::RoleLevel::Manager),
+        "Hierarchy mutation refused: stored role {role} is below Manager");
+    Ok(())
 }
 
 fn table_identity(entity_type: EntityType) -> (&'static str, &'static str) {

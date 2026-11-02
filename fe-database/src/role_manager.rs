@@ -39,6 +39,22 @@ async fn get_verse_owner_and_default(db: &Db, verse_id: &str) -> anyhow::Result<
     })
 }
 
+/// Resolve Owner, nearest explicit role, then default from captured inputs.
+pub(crate) fn resolve_role_snapshot<'a>(
+    peer_did: &str,
+    owner_did: &str,
+    default_access: &str,
+    roles: impl IntoIterator<Item = &'a str>,
+) -> RoleLevel {
+    if peer_did == owner_did {
+        return RoleLevel::Owner;
+    }
+    roles.into_iter()
+        .find(|role| *role != "public" && !role.is_empty())
+        .map(RoleLevel::from)
+        .unwrap_or_else(|| RoleLevel::from(default_access))
+}
+
 /// Resolve the effective role for a peer at a given scope.
 ///
 /// Walks up the hierarchy: petal -> fractal -> verse -> verse.default_access.
@@ -54,18 +70,21 @@ pub async fn resolve_role(db: &Db, peer_did: &str, scope: &str) -> anyhow::Resul
     // 2. Walk up the scope chain: check most-specific first.
     //    `get_role` returns RoleId("public") when no explicit row exists.
     let mut current_scope = Some(scope.to_string());
+    let mut roles = Vec::new();
     while let Some(s) = current_scope {
         let role = rbac::get_role(db, peer_did, &s).await?;
-        let role_str = role.0.as_str();
+        let explicit = role.0 != "public" && !role.0.is_empty();
+        roles.push(role.0);
         // "public" is the sentinel for "no explicit role assigned".
-        if role_str != "public" && !role_str.is_empty() {
-            return Ok(RoleLevel::from(role_str));
+        if explicit {
+            break;
         }
         current_scope = parent_scope(&s);
     }
 
     // 3. Fall back to verse default_access.
-    Ok(RoleLevel::from(verse.default_access.as_str()))
+    Ok(resolve_role_snapshot(peer_did, &verse.owner_did, &verse.default_access,
+        roles.iter().map(String::as_str)))
 }
 
 /// A local role command refused before anything was written (plan §2.3).

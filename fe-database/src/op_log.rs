@@ -1396,6 +1396,44 @@ mod tests {
             )
             .await
             .expect_err("revoked Manager refuses inside transaction");
+        let captured_scopes = vec![
+            crate::build_scope("tree-1", Some("tree-fractal"), Some("tree-petal")),
+            crate::build_scope("tree-1", Some("tree-fractal"), None),
+            crate::build_scope("tree-1", None, None),
+        ];
+        let mut captured = db.query("SELECT verse_id, created_by, default_access FROM verse WHERE verse_id='tree-1'; SELECT scope, role FROM role WHERE peer_did='did:tree-user' AND scope IN $scopes ORDER BY scope, role")
+            .bind(("scopes",captured_scopes.clone())).await.unwrap().check().unwrap();
+        let captured_verse: Vec<serde_json::Value> = captured.take(0).unwrap();
+        let captured_roles: Vec<serde_json::Value> = captured.take(1).unwrap();
+        db.query("UPDATE role:tree_local SET role='manager'")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        assert_eq!(
+            crate::node_role_at(&db, "did:tree-user", "VERSE#tree-1").await,
+            fe_policy::RoleLevel::Manager,
+            "a separate live resolver can observe temporary Manager"
+        );
+        entity::require_snapshot_manager(
+            &captured_verse[0],
+            &captured_roles,
+            &captured_scopes,
+            "did:tree-user",
+        )
+        .expect_err("captured Viewer must refuse even while a later live read sees Manager");
+        db.query("UPDATE role:tree_local SET role='viewer'")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        entity::require_snapshot_manager(
+            &captured_verse[0],
+            &captured_roles,
+            &captured_scopes,
+            "did:tree-user",
+        )
+        .expect_err("Viewer to Manager to Viewer cannot authorize the original snapshot");
         db.query("UPDATE role:tree_local SET role='manager'; DEFINE EVENT fail_hierarchy_cascade ON TABLE petal WHEN true THEN { THROW 'induced hierarchy failure' }").await.unwrap().check().unwrap();
         entity::delete_entity_handler(&db, EntityType::Verse, "tree-1", "did:tree-user")
             .await
