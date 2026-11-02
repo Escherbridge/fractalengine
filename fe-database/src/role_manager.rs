@@ -177,7 +177,8 @@ async fn issue_local_statement(
     revoked: bool,
     repl_tx: Option<&ReplicationSender>,
     blob_store: &BlobStoreHandle,
-) -> anyhow::Result<()> {
+    invite_manifest: Option<(&crate::join_invite::JoinManifest,u64)>,
+) -> anyhow::Result<fe_policy::RoleStatement> {
     let entry = OpLogEntry {
         lamport_clock: 0,
         node_id: NodeId(caller_did.to_string()),
@@ -197,12 +198,16 @@ async fn issue_local_statement(
         return Err(RoleCommandError::ManagerCannotAssignNone.into());
     }
     let authority=crate::handlers::entity::prepare_scope_permission(db,scope,caller_did,fe_policy::RoleLevel::Manager).await?;
+    let authority = if let Some((manifest,deadline)) = invite_manifest {
+        anyhow::ensure!(owner == caller_did && manifest.created_by == owner, "Fresh invitation requires the pinned Owner");
+        authority.with_invite_manifest(manifest,deadline)
+    } else { authority };
     let prior = role_grants::load_effective_roles(db, verse_id).await?;
     let stmt=role_grants::commit_local_statement(db,entry,verse_id,caller_did,peer_did,scope,role,revoked,authority,&owner).await?;
     // A crash before this line is repaired by the startup repartition and re-emit (AC-42).
     role_grants::repartition(db, verse_id, prior.as_ref()).await?;
     role_grants::publish_statement(repl_tx, blob_store, verse_id, &stmt);
-    Ok(())
+    Ok(stmt)
 }
 
 /// Assign a role as a local statement (plan §2.3): the caller needs Manager+ at the target
@@ -229,9 +234,24 @@ pub async fn assign_role_checked(
         return Err(RoleCommandError::ManagerCannotAssignNone.into());
     }
     issue_local_statement(
-        db, &verse_id, caller_did, peer_did, scope, granted, false, repl_tx, blob_store,
+        db, &verse_id, caller_did, peer_did, scope, granted, false, repl_tx, blob_store, None,
     )
-    .await
+    .await.map(|_| ())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn assign_role_for_invite(
+    db: &Db, caller: &str, recipient: &str, scope: &str, role: &str,
+    manifest: &crate::join_invite::JoinManifest,
+    deadline: u64,
+    repl_tx: Option<&ReplicationSender>, blob_store: &BlobStoreHandle,
+) -> anyhow::Result<u64> {
+    let granted = GrantedRole::parse(role).filter(|role| *role != GrantedRole::None)
+        .ok_or_else(|| anyhow::anyhow!("Unsupported invitation role"))?;
+    let (verse_id, owner) = check_role_command(db,caller,recipient,scope,"Invitation role grant").await?;
+    anyhow::ensure!(caller == owner && manifest.created_by == owner, "Fresh invitation requires the pinned Owner");
+    let statement = issue_local_statement(db,&verse_id,caller,recipient,scope,granted,false,repl_tx,blob_store,Some((manifest,deadline))).await?;
+    Ok(statement.hlc)
 }
 
 /// Revoke as a local statement: the caller's own `revoked` statement for the key, which
@@ -258,6 +278,7 @@ pub async fn revoke_role_checked(
         true,
         repl_tx,
         blob_store,
+        None,
     )
     .await?;
     let role_after = resolve_role(db, peer_did, scope).await?;

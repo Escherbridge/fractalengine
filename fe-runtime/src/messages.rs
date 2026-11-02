@@ -694,6 +694,26 @@ pub enum DbCommand {
         action: crate::entity_access::EntityAccessAction,
         request_id: String,
     },
+    PrepareJoinInvite {
+        target: crate::entity_access::EntityAccessTarget,
+        recipient_did: String,
+        role: String,
+        expiry_hours: u32,
+        request_id: String,
+    },
+    IssueJoinInvite {
+        source: crate::join_invite::InviteSource,
+        ticket: crate::join_invite::JoinCredential,
+        request_id: String,
+    },
+    AdmitJoinInvite {
+        credential: crate::join_invite::JoinCredential,
+        request_id: String,
+    },
+    CheckJoinReadiness {
+        credential: crate::join_invite::JoinCredential,
+        request_id: String,
+    },
     // --- Entity Settings: Access management ---
     /// Resolve effective roles for a list of peers at a scope.
     ResolveRolesForPeers {
@@ -1446,6 +1466,22 @@ pub enum DbResult {
         target: crate::entity_access::EntityAccessTarget,
         request_id: String,
         result: Result<crate::entity_access::EntityAccessSnapshot, String>,
+    },
+    JoinInvitePrepared {
+        request_id: String,
+        result: Result<crate::join_invite::InviteSource, String>,
+    },
+    JoinInviteIssued {
+        request_id: String,
+        result: Result<crate::join_invite::IssuedInvitation, String>,
+    },
+    JoinInviteAdmitted {
+        request_id: String,
+        result: Result<crate::join_invite::JoinAdmission, String>,
+    },
+    JoinReadinessChecked {
+        request_id: String,
+        result: Result<bool, String>,
     },
     PeerRolesResolved {
         scope: String,

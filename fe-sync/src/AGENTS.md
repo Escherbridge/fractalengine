@@ -1969,3 +1969,9 @@ proofs while leaving the normal event reader available for recovery. Another
 successful SyncFinished is required; an unknown missed NeighborDown or failure
 cannot preserve readiness. The existing real-transport journey drives a bounded
 continuing error stream through the actual pump and checks this invalidation.
+
+Canonical native ticket parsing is now owned by fe-database::join_ticket, a pure
+admission module. The sync module re-exports that one policy and owns only live
+export, capability import, subscriptions, dial and readiness effects. This avoids
+DB-to-sync waits and duplicate ticket parsing rules; no database command trusts
+a caller-supplied native-validation boolean.

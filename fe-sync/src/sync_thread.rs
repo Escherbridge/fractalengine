@@ -7285,7 +7285,7 @@ mod tests {
         let recipient_did = recipient_key.to_did_key();
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         let invitation = fe_database::join_invite::JoinInvitation::issue_owner(
-            &owner_key, recipient_did.clone(), format!("VERSE#{verse_id}"), fe_database::join_invite::JoinRole::Viewer,
+            &owner_key, recipient_did.clone(), format!("VERSE#{verse_id}"), fe_database::join_invite::JoinRole::Viewer, 1,
             fe_database::join_invite::JoinManifest {
                 verse_id: verse_id.clone(), name: "Open-Race Verse".into(), created_by: local_did_b.clone(),
                 created_at: "2026-10-07T00:00:00Z".into(), namespace_id: ns_id.clone(), default_access: "viewer".into(),

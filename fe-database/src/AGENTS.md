@@ -1823,3 +1823,16 @@ acceptance, not the lifetime of a copied transport capability. Whole-Verse read
 access is not subtree confidentiality, and role revocation does not erase bytes
 or capabilities already received. Cross-store admission is explicitly staged;
 parsing or local row creation alone must never produce joined readiness.
+
+The canonical pure native ticket parser now lives beside the envelope in
+`join_ticket`, with existing-workspace iroh/iroh-docs dependencies. It has no
+network, engine or service effects. fe-sync re-exports this one parser rather
+than providing a second policy. VerifiedJoinInvitation retains a parsed ticket;
+invalid namespace/capability/issuer/address data therefore refuses before issuer
+grant or recipient metadata writes, without trusting a GUI boolean.
+
+The envelope also signs the actual ordinary issuer grant HLC. Readiness requires
+the owner's normally replicated, nonrevoked grant at least that new clock plus
+actual effective role and ancestry. A public default Viewer or older cached grant
+cannot fabricate convergence. Manager issuance still requires its owner-rooted
+delegation proof and is not enabled by this Owner-only slice.

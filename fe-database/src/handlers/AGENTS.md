@@ -342,3 +342,26 @@ live typed stamp with matching path/index/Petal metadata, and rechecks that
 projected target snapshot in a guards-only transaction before returning. A
 no-op never writes a row, baseline, intention or lifecycle event; incompatible,
 tombstoned and ambiguous targets are refused, including legacy uncovered rows.
+
+## Addressed join
+
+`addressed_join` separates Owner source preparation, native-ticket-backed issuance,
+recipient identity admission and read-only role readiness. Issuance uses the
+ordinary checked role-statement writer, adding the exact owner manifest snapshot
+and database-time preparation deadline to that same transaction. Only the actual
+committed grant clock enters the signed envelope. A later signing/readback failure
+reports an unconfirmed grant outcome, never an automatic replay.
+
+Recipient admission verifies the addressed signature and canonical native ticket
+before effects. One transaction fences existing Verse identity and membership,
+checks expiry using database time, and creates only missing pinned metadata. An
+existing owner, namespace or creation identity is never rebound. Membership is
+acceptance metadata, not replica readiness or a locally fabricated issuer grant.
+Actual normal role convergence and current ancestry are checked separately.
+
+The legacy Join command now validates then explicitly refuses bootstrap-incomplete
+links without writes. It no longer emits successful Joined for a scoped parse or
+warns and replaces an existing namespace. Its existing real-store journeys now
+cover actual Owner issuance for all three recipient roles, normal grant replay,
+revocation, identity conflicts, membership rollback and captured-source refusal.
+Native transport convergence remains the separate real read-ticket journey.

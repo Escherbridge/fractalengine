@@ -959,3 +959,13 @@ None; they do not fabricate initial history coverage or a rotation/scale.
 NativeImportRequest carries a local nonce and captured hierarchy for dialog routing
 only. ImportGltf echoes it on success and typed ImportGltfFailed; these have no API
 correlation and cannot claim an API placement waiter. Legacy/test senders use None.
+
+
+## Addressed join
+
+The four local invitation phase command/result families are correlated and are
+not serialized REST/MCP requests or generic API pending replies. JoinCredential
+has redacted Debug and no serialization implementation; source metadata carries
+no ticket. The desktop coordinator owns native export between DB preparation and
+issuance, and native validation before admission. TestPeer explicitly refuses
+these desktop operations rather than fabricating storage or network readiness.

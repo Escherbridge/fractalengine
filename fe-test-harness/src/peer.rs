@@ -469,6 +469,26 @@ impl TestPeer {
                                 tracing::warn!("DB result channel closed during refused development reset");
                             }
                         }
+                        Ok(DbCommand::PrepareJoinInvite { request_id, .. }) => {
+                            if db_result_tx.send(DbResult::JoinInvitePrepared {request_id,result:Err("Addressed invitations require the desktop coordinator".into())}).is_err() {
+                                tracing::warn!("Test peer invitation reply channel closed");
+                            }
+                        }
+                        Ok(DbCommand::IssueJoinInvite { request_id, .. }) => {
+                            if db_result_tx.send(DbResult::JoinInviteIssued {request_id,result:Err("Addressed invitations require the desktop coordinator".into())}).is_err() {
+                                tracing::warn!("Test peer invitation reply channel closed");
+                            }
+                        }
+                        Ok(DbCommand::AdmitJoinInvite { request_id, .. }) => {
+                            if db_result_tx.send(DbResult::JoinInviteAdmitted {request_id,result:Err("Addressed joins require the desktop coordinator".into())}).is_err() {
+                                tracing::warn!("Test peer invitation reply channel closed");
+                            }
+                        }
+                        Ok(DbCommand::CheckJoinReadiness { request_id, .. }) => {
+                            if db_result_tx.send(DbResult::JoinReadinessChecked {request_id,result:Err("Addressed joins require real replica and role admission".into())}).is_err() {
+                                tracing::warn!("Test peer invitation reply channel closed");
+                            }
+                        }
                         Ok(DbCommand::TerminalDevelopmentReset { request_id, .. }) => {
                             if db_result_tx.send(DbResult::TerminalDevelopmentReset { request_id, cleared: false, error: Some("Terminal reset is unavailable in a running test peer".into()) }).is_err() {
                                 tracing::warn!("DB result channel closed during refused terminal reset");

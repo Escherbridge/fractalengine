@@ -581,3 +581,8 @@ cold and covers correlated failure, missing reply and deadline, stale success,
 Full retention, disconnected recovery, then successful fallback classification.
 The existing primitive/property journeys check the retained read boundary. These
 checks are authored only; root owns execution.
+
+The addressed invitation phase replies are consumed by their separate correlated
+workflow reader. The ordinary tree/result projection ignores them before generic
+API fallback, so a prepared source or pending membership cannot navigate, create
+a scene, satisfy an unrelated API waiter or masquerade as Joined.

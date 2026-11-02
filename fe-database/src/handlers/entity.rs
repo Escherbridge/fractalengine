@@ -15,6 +15,13 @@ pub(crate) struct ParentMutation {
 }
 
 impl ParentMutation {
+    pub(crate) fn with_invite_manifest(mut self, manifest: &crate::join_invite::JoinManifest, deadline: u64) -> Self {
+        self.guards.push("IF (SELECT verse_id,name,created_by,created_at,namespace_id,default_access,ts_mode,ts_replication_factor,ts_bucket_width_ms FROM verse WHERE verse_id=$entity_verse) != $invite_manifest_snapshot { THROW 'invitation source changed'; }".into());
+        self.guards.push("IF time::unix() >= $invite_source_deadline { THROW 'invitation preparation expired'; }".into());
+        self.bindings.push(("invite_manifest_snapshot".into(),serde_json::json!([manifest])));
+        self.bindings.push(("invite_source_deadline".into(),serde_json::json!(deadline)));
+        self
+    }
     pub(crate) fn scope(&self) -> &str { &self.scope }
     pub(crate) fn role(&self) -> fe_policy::RoleLevel { self.role }
 

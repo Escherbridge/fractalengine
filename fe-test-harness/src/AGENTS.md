@@ -184,3 +184,11 @@ The simplified peer import adapter explicitly marks its complete GUI birth
 materialization unavailable. It is not the production scoped initial-history or
 full initial-TRS receipt implementation; real-store and UI App journeys cover
 those contracts separately. Its existing API identity/correlation shape remains.
+
+
+## Addressed invitation refusal
+
+The simplified TestPeer explicitly refuses the four local desktop invitation
+phases with their exact correlated result families. It does not export a ticket,
+create a foreign-owner Verse or report readiness. Production DB and native read-
+ticket journeys provide the real storage and transport assertions.

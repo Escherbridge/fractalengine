@@ -182,21 +182,31 @@ mod tests {
             name: "Addressed".into(),
             created_by: kp.to_did_key(),
             created_at: "2026-11-02T00:00:00Z".into(),
-            namespace_id: "ab".repeat(32),
+            namespace_id: hex::encode(crate::derive_namespace_id(&[23u8; 32])),
             default_access: "none".into(),
             ts_mode: "mirror".into(),
             ts_replication_factor: 1,
             ts_bucket_width_ms: 86_400_000,
         };
-        // Envelope-only fixtures cannot satisfy native ticket admission.
+        // Native ticket grammar fixture; its controlled address has no live listener.
         for role in [JoinRole::Viewer, JoinRole::Editor, JoinRole::Manager] {
+            let secret = iroh_docs::NamespaceSecret::from_bytes(&[23u8; 32]);
+            let capability = if role == JoinRole::Viewer {
+                iroh_docs::Capability::Read(secret.id())
+            } else {
+                iroh_docs::Capability::Write(secret)
+            };
+            let peer = iroh::EndpointAddr::new(kp.to_iroh_secret().public())
+                .with_ip_addr("127.0.0.1:40000".parse().unwrap());
+            let ticket = iroh_docs::ticket::DocTicket::new(capability, vec![peer]).to_string();
             let addressed = JoinInvitation::issue_owner(
                 &kp,
                 recipient.clone(),
                 "VERSE#addressed-verse".into(),
                 role,
+                1,
                 manifest.clone(),
-                "doc-envelope-only-fixture".into(),
+                ticket,
                 100,
                 3600,
             )

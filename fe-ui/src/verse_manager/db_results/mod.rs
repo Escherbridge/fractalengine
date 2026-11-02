@@ -163,6 +163,10 @@ pub(super) fn apply_db_results(
             super::scene_property_reads::Reply::Unowned
             | super::scene_property_reads::Reply::Accepted => {}
         }
+        if matches!(result, DbResult::JoinInvitePrepared { .. } | DbResult::JoinInviteIssued { .. }
+            | DbResult::JoinInviteAdmitted { .. } | DbResult::JoinReadinessChecked { .. }) {
+            continue;
+        }
         if matches!(result, DbResult::NodeUrlUpdated { .. }) {
             crate::actions::portal::finish_url_save(&mut ui_mgr, &mut verse_mgr, &nav, &node_mgr, result, caches.time.elapsed_secs_f64(), &db_sender.0, &inspector);
             continue;

@@ -20,6 +20,14 @@ pub enum JoinRole {
 }
 
 impl JoinRole {
+    pub fn parse(role: &str) -> anyhow::Result<Self> {
+        match role {
+            "viewer" => Ok(Self::Viewer),
+            "editor" => Ok(Self::Editor),
+            "manager" => Ok(Self::Manager),
+            _ => anyhow::bail!("Unsupported invitation role"),
+        }
+    }
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Viewer => "viewer",
@@ -106,6 +114,7 @@ pub struct JoinInvitation {
     recipient_did: String,
     scope: String,
     role: JoinRole,
+    grant_hlc: u64,
     issued_at: u64,
     expires_at: u64,
     manifest: JoinManifest,
@@ -127,9 +136,12 @@ impl std::fmt::Debug for JoinInvitation {
 
 /// A signature-checked envelope; native ticket admission remains a separate fence.
 #[derive(Debug, Clone)]
-pub struct VerifiedJoinInvitation(JoinInvitation);
+pub struct VerifiedJoinInvitation(JoinInvitation, crate::join_ticket::NativeJoinTicket);
 
 impl VerifiedJoinInvitation {
+    pub fn native_ticket(&self) -> &crate::join_ticket::NativeJoinTicket {
+        &self.1
+    }
     pub fn manifest(&self) -> &JoinManifest {
         &self.0.manifest
     }
@@ -141,6 +153,12 @@ impl VerifiedJoinInvitation {
     }
     pub fn role(&self) -> JoinRole {
         self.0.role
+    }
+    pub fn grant_hlc(&self) -> u64 {
+        self.0.grant_hlc
+    }
+    pub(crate) fn signature(&self) -> &str {
+        &self.0.signature
     }
     pub fn issuer_did(&self) -> &str {
         &self.0.issuer_did
@@ -167,6 +185,7 @@ impl JoinInvitation {
         recipient_did: String,
         scope: String,
         role: JoinRole,
+        grant_hlc: u64,
         manifest: JoinManifest,
         ticket: String,
         now: u64,
@@ -182,6 +201,7 @@ impl JoinInvitation {
             recipient_did,
             scope,
             role,
+            grant_hlc,
             issued_at: now,
             expires_at,
             manifest,
@@ -189,6 +209,12 @@ impl JoinInvitation {
             signature: String::new(),
         };
         invitation.validate(&invitation.recipient_did, now)?;
+        crate::join_ticket::NativeJoinTicket::parse(
+            &invitation.ticket,
+            &invitation.manifest.namespace_id,
+            invitation.role,
+            &invitation.issuer_did,
+        )?;
         invitation.signature = hex::encode(keypair.sign(&invitation.canonical_bytes()?).to_bytes());
         invitation.to_link()?;
         Ok(invitation)
@@ -228,7 +254,13 @@ impl JoinInvitation {
         let invitation: Self = serde_json::from_slice(&raw)
             .map_err(|_| anyhow::anyhow!("Invalid invitation envelope"))?;
         invitation.verify(recipient_did, now)?;
-        Ok(VerifiedJoinInvitation(invitation))
+        let native = crate::join_ticket::NativeJoinTicket::parse(
+            &invitation.ticket,
+            &invitation.manifest.namespace_id,
+            invitation.role,
+            &invitation.issuer_did,
+        )?;
+        Ok(VerifiedJoinInvitation(invitation, native))
     }
 
     fn validate(&self, recipient_did: &str, now: u64) -> anyhow::Result<()> {
@@ -242,6 +274,10 @@ impl JoinInvitation {
         anyhow::ensure!(
             self.recipient_did != self.issuer_did,
             "Invitation recipient is already the Owner"
+        );
+        anyhow::ensure!(
+            self.grant_hlc > 0,
+            "Invitation lacks a committed role statement"
         );
         anyhow::ensure!(
             self.nonce.len() == 26
@@ -320,6 +356,7 @@ impl JoinInvitation {
             &self.recipient_did,
             &self.scope,
             self.role,
+            self.grant_hlc,
             self.issued_at,
             self.expires_at,
             &self.manifest,
@@ -329,7 +366,7 @@ impl JoinInvitation {
     }
 }
 
-fn canonical_did(did: &str) -> anyhow::Result<()> {
+pub(crate) fn canonical_did(did: &str) -> anyhow::Result<()> {
     anyhow::ensure!(did.len() <= 128, "Invalid invitation peer identity");
     let key = fe_identity::public_key_from_did_key(did)
         .map_err(|_| anyhow::anyhow!("Invalid invitation peer identity"))?;

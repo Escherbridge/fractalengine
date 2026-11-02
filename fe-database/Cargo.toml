@@ -38,6 +38,8 @@ hex = "0.4"
 blake3 = { workspace = true }
 ed25519-dalek = { workspace = true }
 rand = "0.8"
+iroh = { workspace = true }
+iroh-docs = { workspace = true }
 
 [dev-dependencies]
 crossbeam = { workspace = true }

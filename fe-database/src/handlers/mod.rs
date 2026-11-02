@@ -2,6 +2,7 @@
 //! fe-database/src/AGENTS.md §handlers).
 
 pub(crate) mod checked_mutation;
+pub(crate) mod addressed_join;
 pub(crate) mod stamp_overrides;
 pub(crate) mod stamp_promotion;
 pub mod admin;

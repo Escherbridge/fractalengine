@@ -63,6 +63,7 @@ pub mod canon_log;
 pub mod handlers;
 pub mod invite;
 pub mod join_invite;
+pub mod join_ticket;
 pub mod merge;
 pub mod migration;
 pub mod model_url_meta;
@@ -992,6 +993,27 @@ pub fn spawn_db_thread_shared(
                             }
                             Err(e) => send_result(&tx, DbResult::Error(e)),
                         }
+                    }
+                    Ok(DbCommand::PrepareJoinInvite { target, recipient_did, role, expiry_hours, request_id }) => {
+                        let result = handlers::addressed_join::prepare(&db,&local_did,&target,&recipient_did,&role,expiry_hours).await;
+                        send_result(&tx,DbResult::JoinInvitePrepared {request_id,result:result.map_err(|error|error.to_string())});
+                    }
+                    Ok(DbCommand::IssueJoinInvite { source, ticket, request_id }) => {
+                        let result = handlers::addressed_join::issue(&db,&local_did,keypair.as_ref(),&source,&ticket,&blob_store,repl_tx.as_ref()).await;
+                        if result.is_ok() {
+                            if let Some(verse) = role_grants::verse_of_scope(&source.target.scope) {
+                                echo_rows(admissions.retry_author_roles(&db,&verse,entity_change_tx.as_ref()).await);
+                            }
+                        }
+                        send_result(&tx,DbResult::JoinInviteIssued {request_id,result:result.map_err(|error|error.to_string())});
+                    }
+                    Ok(DbCommand::AdmitJoinInvite { credential, request_id }) => {
+                        let result = handlers::addressed_join::admit(&db,&local_did,&credential).await;
+                        send_result(&tx,DbResult::JoinInviteAdmitted {request_id,result:result.map_err(|error|error.to_string())});
+                    }
+                    Ok(DbCommand::CheckJoinReadiness { credential, request_id }) => {
+                        let result = handlers::addressed_join::ready(&db,&local_did,&credential).await;
+                        send_result(&tx,DbResult::JoinReadinessChecked {request_id,result:result.map_err(|error|error.to_string())});
                     }
                     Ok(DbCommand::EntityAccess { target, action, request_id }) => {
                         let result=handlers::entity_access::execute(&db,&blob_store,repl_tx.as_ref(),&local_did,&target,&action,keypair.as_ref(),|jti| send_result(&tx,DbResult::ApiTokenRevoked { jti:jti.to_owned() })).await;
