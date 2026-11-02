@@ -44,6 +44,18 @@ impl ParentMutation {
         self.execute(db, statements, bindings).await.map(|_| ())
     }
 
+    /// Read the single SELECT slot after fencing this stored authority snapshot.
+    pub(crate) async fn read_rows(
+        self,
+        db: &Db,
+        select: &str,
+        bindings: Vec<(String, Value)>,
+    ) -> anyhow::Result<Vec<Value>> {
+        let result_index = self.guards.len() + 1;
+        let mut response = self.execute(db, &[select], bindings).await?;
+        Ok(response.take(result_index)?)
+    }
+
     async fn execute(
         self,
         db: &Db,

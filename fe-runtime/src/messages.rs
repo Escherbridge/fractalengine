@@ -1134,6 +1134,10 @@ pub enum DbCommand {
         /// `did:key` of the peer that authored the entry.
         author_did: String,
     },
+    /// Re-publish stored locally Manager-authorized Verse/Petal catalog after replica open.
+    ReemitLocalVerseCatalog {
+        verse_id: String,
+    },
     /// A verse replica just opened (sent by the sync thread): re-emit this node's own live
     /// role statements for the verse so a grant or revocation issued while the replica was
     /// closed, or evicted from pending writes, still reaches peers (role_propagation AC-42).

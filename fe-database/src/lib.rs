@@ -670,7 +670,14 @@ pub fn spawn_db_thread_shared(
                     }
                     Ok(DbCommand::CreatePetal { fractal_id, name }) => {
                         match handlers::crud::create_petal_handler(&db, &fractal_id, &name, &local_did).await {
-                            Ok(id) => send_result(&tx, DbResult::PetalCreated { id, fractal_id, name }),
+                            Ok(id) => {
+                                if let Err(error) = handlers::local_catalog::publish_created_petal(
+                                    &db, &blob_store, repl_tx.as_ref(), &local_did, &id,
+                                ).await {
+                                    tracing::warn!(petal_id = %id, "committed Petal catalog publish failed: {error:#}");
+                                }
+                                send_result(&tx, DbResult::PetalCreated { id, fractal_id, name });
+                            },
                             Err(e) => send_result(&tx, DbResult::Error(format!("Create petal failed: {e}"))),
                         }
                     }
@@ -1856,6 +1863,14 @@ pub fn spawn_db_thread_shared(
                                 )
                                 .await,
                         );
+                    }
+                    Ok(DbCommand::ReemitLocalVerseCatalog { verse_id }) => {
+                        match handlers::local_catalog::reemit(
+                            &db, &blob_store, repl_tx.as_ref(), &local_did, &verse_id,
+                        ).await {
+                            Ok(emitted) => tracing::debug!(verse_id, emitted, "re-emitted stored local Verse catalog on replica open"),
+                            Err(error) => tracing::warn!(verse_id, "local Verse catalog recovery refused or failed: {error:#}"),
+                        }
                     }
                     Ok(DbCommand::ReemitLocalRoleStatements { verse_id }) => {
                         match role_grants::reemit_local_statements(

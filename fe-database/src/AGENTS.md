@@ -1752,3 +1752,12 @@ comparisons. The shared API guard separately refuses whole-word TABLE/RECORD
 (including data/field uses) to close nested capability casts without removing
 ordinary API comparisons. Existing real-store and pure refusal journeys were
 extended; source-only validation is not runtime proof.
+
+Replica catalog restart repair lives in handlers/local_catalog.rs. CreatePetal
+now publishes only after its authoritative commit; replica open requests a
+stored Manager-authorized, ancestry-fenced catalog re-emit through the same
+replication seam. See handlers/AGENTS.md local-catalog for limits and fields.
+Existing durable role-restart journey also checks committed Petal publication,
+Verse/Fractal/Petal recovery ordering, exact identities, private-field omission
+and Viewer no-publish. No readings, history, schema, blobs or journal facts are
+re-ingested by this command. Execution and live restart proof remain pending.

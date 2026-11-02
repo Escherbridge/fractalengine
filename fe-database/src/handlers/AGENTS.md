@@ -24,3 +24,21 @@ with optional exact name narrowing. More than 1,024 candidates or 2 MiB refuses
 explicitly. The shared NodeQuery.matches predicate runs before the final page
 limit; Surreal numeric equality cannot admit float/int mismatches or hide a
 later exact match behind a coerced first result. Overflow returns no partial page.
+
+## local-catalog
+
+CreatePetal used to commit only to SurrealDB, while live ingest built shard
+placement in memory. Its missing replicated Petal mapping stranded signed shard
+rows in quarantine after a restart. local_catalog publishes the committed Petal
+readback and repairs existing stores on replica open. It never reinserts readings.
+
+Repair uses the actual DB-thread identity, preflights stored Manager access,
+and fences each current target's ancestry/policy in the existing hierarchy
+transaction before reading. Viewer startup skips publication quietly. Explicit
+wire columns restore Verse, Fractal, then Petal; storage IDs, view_hidden and
+unlisted private columns are excluded. Each child read constrains the requested
+Verse again. Candidate sets cap at 1024 Fractals and 1024 Petals; oversize refuses
+instead of silently truncating. SELECTs have 5s DB timeouts. This is bounded local
+catalog repair, not permission to publish arbitrary foreign rows or reconstruct
+historical grants. Existing replication backpressure can still drop a publish;
+failed/missing ancestry remains not-ready and is recoverable on another open.

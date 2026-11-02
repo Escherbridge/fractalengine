@@ -820,3 +820,9 @@ outcomes echo QueryResult(Some(id)) or QueryFailed(id). Desktop text must use
 this path rather than RawQuery. The latter remains for trusted server-built or
 prevalidated internal queries and existing API fallback. No plugin-host request
 or authority contract changes in this slice.
+
+
+ReemitLocalVerseCatalog is an internal fire-and-forget replica-open request.
+The database uses its actual local identity and stored Manager authority to
+re-publish current Verse/Fractal/Petal catalog rows. It carries no caller role,
+SQL, data or API reply and grants no authority. Readings are never re-ingested.

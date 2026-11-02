@@ -16,6 +16,7 @@ pub mod entity_property;
 pub mod field_def;
 pub mod inbound_admissions;
 pub mod invite;
+pub(crate) mod local_catalog;
 pub mod iot_reading;
 pub mod node_history;
 pub mod node_log;

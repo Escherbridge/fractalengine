@@ -282,6 +282,19 @@ fn a_revocation_issued_while_the_replica_is_closed_reaches_peers_after_restart()
     let (verse, scope, revocation) = {
         let harness = Harness::open(dir.path(), 64);
         let (verse, scope) = harness.create_hierarchy();
+        let petal = fe_database::parse_scope(&scope).unwrap().petal_id.unwrap();
+        let emitted: Vec<_> = harness.repl_rx.try_iter().collect();
+        let created = emitted
+            .iter()
+            .find(|event| event.table == "petal")
+            .expect("committed Petal is published");
+        assert_eq!(created.record_id, petal);
+        assert_eq!(created.verse_id, verse);
+        let row: serde_json::Value =
+            serde_json::from_slice(&harness.blobs.bytes_for(&created.content_hash).unwrap())
+                .unwrap();
+        assert_eq!(row["petal_id"], petal);
+        assert!(row.get("id").is_none() && row.get("view_hidden").is_none());
         harness.assign(&scope, "editor");
         harness.revoke(&scope);
         assert_eq!(harness.peer_role(&scope), "viewer");
@@ -310,7 +323,9 @@ fn a_revocation_issued_while_the_replica_is_closed_reaches_peers_after_restart()
     assert_eq!(harness.peer_role(&scope), "viewer");
 
     // The replica-open signal from the sync thread re-emits it once more.
-    harness.send(DbCommand::ReemitLocalRoleStatements { verse_id: verse });
+    harness.send(DbCommand::ReemitLocalRoleStatements {
+        verse_id: verse.clone(),
+    });
     let deadline = std::time::Instant::now() + TIMEOUT;
     let on_open = loop {
         let found = harness.role_statements();
@@ -321,6 +336,41 @@ fn a_revocation_issued_while_the_replica_is_closed_reaches_peers_after_restart()
     };
     assert_eq!(on_open.len(), 1);
     assert_eq!(on_open[0].1, revocation);
+
+    harness.send(DbCommand::ReemitLocalVerseCatalog {
+        verse_id: verse.clone(),
+    });
+    harness.ask(DbCommand::LoadHierarchy, |result| {
+        matches!(result, DbResult::HierarchyLoaded { .. })
+    });
+    let catalog: Vec<_> = harness.repl_rx.try_iter().collect();
+    assert_eq!(
+        catalog
+            .iter()
+            .map(|event| event.table.as_str())
+            .collect::<Vec<_>>(),
+        vec!["verse", "fractal", "petal"],
+        "startup repair restores ancestry order without ingest"
+    );
+    for event in &catalog {
+        assert_eq!(event.verse_id, verse);
+        let row: serde_json::Value =
+            serde_json::from_slice(&harness.blobs.bytes_for(&event.content_hash).unwrap()).unwrap();
+        assert!(row.get("id").is_none() && row.get("view_hidden").is_none());
+    }
+    let db = harness.db();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        db.query("UPDATE verse SET created_by='did:key:foreign-owner', default_access='viewer' WHERE verse_id=$verse")
+            .bind(("verse", verse.clone())).await.unwrap().check().unwrap();
+    });
+    harness.send(DbCommand::ReemitLocalVerseCatalog { verse_id: verse });
+    harness.ask(DbCommand::LoadHierarchy, |result| {
+        matches!(result, DbResult::HierarchyLoaded { .. })
+    });
+    assert!(
+        harness.repl_rx.try_recv().is_err(),
+        "Viewer startup must not sign or publish catalog rows"
+    );
 }
 
 /// AC-42, T23: a revocation whose publish was dropped by a flooded replication path is
