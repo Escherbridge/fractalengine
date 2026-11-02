@@ -47,6 +47,9 @@ pub struct PathAssetCache {
 }
 
 impl PathAssetCache {
+    #[cfg(test)]
+    pub(crate) fn cached_point_positions(&self,track_id:&str)->Option<&[[f32;3]]> {self.entries.get(track_id).map(|entry|entry.points.as_slice())}
+
     /// Cached entry for a track, if its properties carried a stampable path.
     pub(super) fn get(&self, track_id: &str) -> Option<&PathAssetCacheEntry> {
         self.entries.get(track_id)

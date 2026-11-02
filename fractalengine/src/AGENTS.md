@@ -1573,7 +1573,6 @@ checks it again before delivering read payloads. Already admitted commits retain
 their actual receipt after revocation; transport loss remains an unknown outcome.
 
 
-<<<<<<< HEAD
 ## §qa-report-diagnostic
 
 The existing argument-free Owner/input-opt-in ui-state projection includes one
@@ -1607,7 +1606,6 @@ a replay of any earlier report; pair with scene revision and stable assignment/
 origin during live verification, preserving temporal uncertainty explicitly.
 The existing grounded-camera journey carries diagnostic boundary cases; its
 execution and the live overlap oracle remain pending the integrated sweep/stage.
-=======
 ## checked point Undo bridge
 
 CheckedMovePoint uses the shared Undo reservation and an authorized current-state
@@ -1623,4 +1621,10 @@ append order. Current-snapshot recovery also hydrates the existing path-stamp
 cache. Segment/whole-path moves retain untracked behavior. The sole builder must
 refresh the existing workspace ulid dependency edge added to fe-ui; this source
 lane does not edit Cargo.lock or execute Cargo.
->>>>>>> 7f6210b (feat(undo): wire bounded confirmed transform and point commands)
+
+
+The checked point bridge receives the live navigation resource when committing a
+read result and when draining projections. It cannot rely on the Undo observer
+having run first. A changed verse/fractal/petal generation refuses the late write
+and drops the old projection even if ActivePetalTerrain has not caught up. The
+current typed node ID/petal is checked again before extracting gpx_points.

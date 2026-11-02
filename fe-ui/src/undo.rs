@@ -4,7 +4,10 @@ use crate::{navigation_manager::NavigationManager, verse_manager::VerseManager};
 use bevy::prelude::*;
 use fe_runtime::{
     messages::{DbCommand, DbResult, NodeMutation},
-    node_history::{NodeEditBefore, NodeEditPrecondition, NodeMutationReceipt, NodeTransformValue},
+    node_history::{
+        NodeEditBefore, NodeEditPrecondition, NodeMutationReceipt, NodeRowSnapshot,
+        NodeTransformValue,
+    },
 };
 use serde_json::Value;
 use std::{
@@ -44,6 +47,14 @@ impl EditValue {
             },
         }
     }
+    fn matches_state(&self, state: &NodeRowSnapshot) -> bool {
+        match self {
+            Self::Transform(value) => {
+                NodeTransformValue::from_row(state).is_some_and(|current| value.matches(&current))
+            }
+            Self::PathPoints(value) => state.properties.get("gpx_points") == Some(value),
+        }
+    }
     fn bytes(&self) -> usize {
         match self {
             Self::Transform(_) => 128,
@@ -58,9 +69,17 @@ struct Entry {
     scope: String,
     before: EditValue,
     after: EditValue,
-    version: Option<i64>,
+    before_version: Option<i64>,
+    after_version: Option<i64>,
 }
 impl Entry {
+    fn expected_version(&self, origin: Origin) -> Option<i64> {
+        if origin == Origin::Undo {
+            self.after_version
+        } else {
+            self.before_version
+        }
+    }
     fn bytes(&self) -> usize {
         self.before.bytes() + self.after.bytes() + self.node_id.len() + self.scope.len()
     }
@@ -92,11 +111,19 @@ struct Pending {
     conflict: bool,
 }
 
+fn navigation_key(nav: &NavigationManager) -> Option<[&str; 3]> {
+    Some([
+        nav.active_verse_id.as_deref()?,
+        nav.active_fractal_id.as_deref()?,
+        nav.active_petal_id.as_deref()?,
+    ])
+}
+
 /// Gesture context retained before a path editor buffer can change.
 #[derive(Debug, Clone)]
 pub struct PointEditOrigin {
     track_id: String,
-    petal_id: Option<String>,
+    navigation: Option<[String; 3]>,
     points: Vec<crate::gis::PathPointRow>,
 }
 impl PointEditOrigin {
@@ -106,7 +133,7 @@ impl PointEditOrigin {
     ) -> Option<Self> {
         Some(Self {
             track_id: state.editing_track_id.clone()?,
-            petal_id: nav.active_petal_id.clone(),
+            navigation: navigation_key(nav).map(|ids| ids.map(str::to_owned)),
             points: state.points.clone(),
         })
     }
@@ -116,7 +143,11 @@ impl PointEditOrigin {
         nav: &NavigationManager,
     ) -> bool {
         state.editing_track_id.as_deref() == Some(self.track_id.as_str())
-            && self.petal_id == nav.active_petal_id
+            && self
+                .navigation
+                .as_ref()
+                .map(|ids| ids.each_ref().map(String::as_str))
+                == navigation_key(nav)
             && self.points == state.points
     }
 }
@@ -142,6 +173,7 @@ impl PathProjection {
 #[derive(Resource, Default)]
 pub struct UndoState {
     projections: VecDeque<PathProjection>,
+    navigation: Option<[String; 3]>,
     scope: Option<String>,
     petal_id: Option<String>,
     generation: u64,
@@ -165,24 +197,33 @@ fn request_id() -> String {
 
 impl UndoState {
     fn sync(&mut self, nav: &NavigationManager) {
-        let scope = nav
-            .active_verse_id
-            .as_deref()
-            .zip(nav.active_fractal_id.as_deref())
-            .zip(nav.active_petal_id.as_deref())
-            .map(|((v, f), p)| fe_database::build_scope(v, Some(f), Some(p)));
-        if self.scope != scope {
-            self.scope = scope;
-            self.petal_id = nav.active_petal_id.clone();
-            self.generation = self.generation.wrapping_add(1);
-            self.undo.clear();
-            self.redo.clear();
-            self.pending = None;
-            self.projections.clear();
+        let current = navigation_key(nav);
+        if self
+            .navigation
+            .as_ref()
+            .map(|ids| ids.each_ref().map(String::as_str))
+            == current
+        {
+            return;
         }
+        self.navigation = current.map(|ids| ids.map(str::to_owned));
+        self.scope = current.map(|[verse, fractal, petal]| {
+            fe_database::build_scope(verse, Some(fractal), Some(petal))
+        });
+        self.petal_id = nav.active_petal_id.clone();
+        self.generation = self.generation.wrapping_add(1);
+        self.undo.clear();
+        self.redo.clear();
+        self.pending = None;
+        self.projections.clear();
+    }
+    /// Recheck the actual navigation resource at a host bridge boundary.
+    pub fn synchronize_navigation(&mut self, nav: &NavigationManager) {
+        self.sync(nav);
     }
     /// Drain one confirmed route projection for the host's render bridge.
-    pub fn take_path_projection(&mut self) -> Option<PathProjection> {
+    pub fn take_path_projection(&mut self, nav: &NavigationManager) -> Option<PathProjection> {
+        self.sync(nav);
         self.projections.pop_front()
     }
     fn project_path(&mut self, node_id: &str, petal_id: &str, points: Value) {
@@ -199,6 +240,10 @@ impl UndoState {
     #[cfg(test)]
     pub(crate) fn history_counts(&self) -> (usize, usize) {
         (self.undo.len(), self.redo.len())
+    }
+    #[cfg(test)]
+    pub(crate) fn queued_path_projection(&self) -> Option<&PathProjection> {
+        self.projections.front()
     }
     /// Covered edits serialize until persistence or exact reconciliation resolves.
     pub fn is_pending(&self) -> bool {
@@ -246,7 +291,7 @@ impl UndoState {
             mutation: target.mutation(),
             expected: NodeEditPrecondition {
                 scope: entry.scope.clone(),
-                history_version: entry.version,
+                history_version: entry.expected_version(origin),
                 before: expected.expected(),
             },
             correlation_id: id.clone(),
@@ -292,7 +337,8 @@ impl UndoState {
                 scope: self.scope.clone().unwrap(),
                 before: EditValue::Transform(before),
                 after: EditValue::Transform(after),
-                version,
+                before_version: version,
+                after_version: None,
             },
             Origin::Normal,
             db,
@@ -362,20 +408,37 @@ impl UndoState {
     /// Bind the reservation to complete persisted point JSON without rebuilding metadata.
     pub fn commit_path(
         &mut self,
+        nav: &NavigationManager,
         id: &str,
-        before: Value,
+        current: &NodeRowSnapshot,
         db: &crossbeam::channel::Sender<DbCommand>,
     ) -> Result<(), String> {
+        self.sync(nav);
         let pending = self
             .pending
             .as_ref()
-            .filter(|p| p.request_id == id && p.generation == self.generation)
+            .filter(|p| p.request_id == id && p.generation == self.generation && p.entry.is_none())
             .ok_or("Path edit belongs to an older session")?;
         let draft = pending
             .path
             .clone()
             .ok_or("Path edit reservation is missing")?;
-        if crate::gis::decode_gpx_points(&before) != draft.rows {
+        if current.node_id != draft.node_id
+            || self.petal_id.as_deref() != Some(current.petal_id.as_str())
+        {
+            return Err("Path read belongs to another target or petal".into());
+        }
+        let before = current
+            .properties
+            .get("gpx_points")
+            .cloned()
+            .ok_or("Path points are unavailable")?;
+        let mut stored_rows = crate::gis::decode_gpx_points(&before);
+        let mut expected_rows = draft.rows.clone();
+        for row in stored_rows.iter_mut().chain(&mut expected_rows) {
+            row.time_seconds = Some(row.time_seconds.unwrap_or(0.0));
+        }
+        if stored_rows != expected_rows {
             return Err(
                 "Path point order or metadata changed since the gesture; move skipped".into(),
             );
@@ -402,14 +465,15 @@ impl UndoState {
             scope: self.scope.clone().ok_or("Petal closed")?,
             before: EditValue::PathPoints(before),
             after: EditValue::PathPoints(after),
-            version: draft.version,
+            before_version: draft.version,
+            after_version: None,
         };
         db.send(DbCommand::CommitCheckedNodeMutation {
             node_id: entry.node_id.clone(),
             mutation: entry.after.mutation(),
             expected: NodeEditPrecondition {
                 scope: entry.scope.clone(),
-                history_version: entry.version,
+                history_version: entry.before_version,
                 before: entry.before.expected(),
             },
             correlation_id: id.into(),
@@ -485,7 +549,9 @@ impl UndoState {
         if hierarchy
             .committed_versions
             .get(&entry.node_id)
-            .is_some_and(|v| Some(*v) != entry.version)
+            .is_some_and(|v| {
+                Some(*v) != entry.expected_version(if redo { Origin::Redo } else { Origin::Undo })
+            })
         {
             if redo {
                 self.redo.pop();
@@ -498,7 +564,11 @@ impl UndoState {
         self.start(entry, if redo { Origin::Redo } else { Origin::Undo }, db)?;
         Ok(())
     }
-    fn confirm(&mut self, receipt: &NodeMutationReceipt) -> Result<(), String> {
+    fn confirm_history(
+        &mut self,
+        receipt: &NodeMutationReceipt,
+        current: &NodeRowSnapshot,
+    ) -> Result<(), String> {
         let Some(pending) = self.pending.as_ref() else {
             return Ok(());
         };
@@ -515,7 +585,7 @@ impl UndoState {
         }
         if receipt.history_version <= 0
             || entry
-                .version
+                .expected_version(pending.origin)
                 .is_some_and(|old| receipt.history_version <= old)
         {
             return Err("Saved edit version did not advance; reconciliation required".into());
@@ -525,28 +595,28 @@ impl UndoState {
         } else {
             &entry.after
         };
-        let matches = match target {
-            EditValue::Transform(value) => {
-                NodeTransformValue::from_row(&receipt.state).is_some_and(|v| value.matches(&v))
-            }
-            EditValue::PathPoints(value) => {
-                receipt.state.properties.get("gpx_points") == Some(value)
-            }
-        };
-        if !matches {
+        if !target.matches_state(&receipt.state) {
             return Err("Saved edit differs from its receipt; reconciliation required".into());
         }
-        if let Some(points) = receipt
-            .state
-            .properties
-            .get("gpx_points")
-            .filter(|_| matches!(entry.before, EditValue::PathPoints(_)))
-        {
-            self.project_path(&receipt.node_id, &receipt.state.petal_id, points.clone());
-        }
+        let current_is_receipt = serde_json::to_value(current)
+            .ok()
+            .zip(serde_json::to_value(&receipt.state).ok())
+            .is_some_and(|(a, b)| a == b);
         let pending = self.pending.take().unwrap();
         let mut entry = pending.entry.unwrap();
-        entry.version = Some(receipt.history_version);
+        let previous_target = if pending.origin == Origin::Undo {
+            entry.before_version
+        } else {
+            entry.after_version
+        };
+        if pending.origin == Origin::Undo {
+            entry.before_version = Some(receipt.history_version);
+        } else {
+            entry.after_version = Some(receipt.history_version);
+        }
+        let node_id = entry.node_id.clone();
+        let scope = entry.scope.clone();
+        let petal_id = entry.petal_id.clone();
         match pending.origin {
             Origin::Normal => {
                 self.redo.clear();
@@ -559,6 +629,27 @@ impl UndoState {
             Origin::Redo => {
                 self.redo.pop();
                 self.undo.push_back(entry);
+            }
+        }
+        if current_is_receipt && previous_target.is_some() && pending.origin != Origin::Normal {
+            let next = if pending.origin == Origin::Undo {
+                self.undo.iter_mut().rev().find(|entry| {
+                    entry.node_id == node_id && entry.scope == scope && entry.petal_id == petal_id
+                })
+            } else {
+                self.redo.iter_mut().rev().find(|entry| {
+                    entry.node_id == node_id && entry.scope == scope && entry.petal_id == petal_id
+                })
+            };
+            if let Some(next) = next {
+                let (version, state) = if pending.origin == Origin::Undo {
+                    (&mut next.after_version, &next.after)
+                } else {
+                    (&mut next.before_version, &next.before)
+                };
+                if *version == previous_target && state.matches_state(current) {
+                    *version = Some(receipt.history_version);
+                }
             }
         }
         while self.undo.len() + self.redo.len() > MAX_ENTRIES
@@ -597,8 +688,24 @@ pub(crate) fn observe_results(
                 receipt,
                 correlation_id: Some(id),
             } if undo.pending.as_ref().is_some_and(|p| p.request_id == *id) => {
-                match undo.confirm(receipt) {
-                    Ok(()) => ui.show_toast("Edit saved", now),
+                let path = undo
+                    .pending
+                    .as_ref()
+                    .and_then(|p| p.entry.as_ref())
+                    .is_some_and(|entry| matches!(entry.before, EditValue::PathPoints(_)));
+                match undo.confirm_history(receipt, &receipt.state) {
+                    Ok(()) => {
+                        if path {
+                            if let Some(points) = receipt.state.properties.get("gpx_points") {
+                                undo.project_path(
+                                    &receipt.node_id,
+                                    &receipt.state.petal_id,
+                                    points.clone(),
+                                );
+                            }
+                        }
+                        ui.show_toast("Edit saved", now);
+                    }
                     Err(error) => {
                         ui.show_error(error, now);
                         if let Err(error) = undo.reconcile(&db.0) {
@@ -689,7 +796,7 @@ pub(crate) fn observe_results(
                     }
                 }
                 if let Some(receipt) = receipt {
-                    if let Err(error) = undo.confirm(receipt) {
+                    if let Err(error) = undo.confirm_history(receipt, current) {
                         ui.show_error(error, now);
                     }
                 } else {
@@ -707,6 +814,7 @@ pub(crate) fn observe_results(
             }
             DbResult::DatabaseReset { .. } => {
                 undo.scope = None;
+                undo.navigation = None;
                 undo.generation = undo.generation.wrapping_add(1);
                 undo.projections.clear();
                 undo.undo.clear();

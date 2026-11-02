@@ -1210,6 +1210,9 @@ pub fn drain_path_ops(
         nav,
         mut undo,
     } = context;
+    if let Some(nav) = nav.as_deref() {
+        undo.synchronize_navigation(nav);
+    }
     pending.checked_reads.retain(|id, _| undo.owns_request(id));
     if ops.0.is_empty() {
         return;
@@ -1758,8 +1761,9 @@ pub fn advance_path_edits(
     mut commands: Commands,
     mut undo: ResMut<fe_ui::undo::UndoState>,
     mut path_state: Option<ResMut<fe_ui::gis::PathEditorState>>,
+    nav: Res<fe_ui::navigation_manager::NavigationManager>,
 ) {
-    while let Some(projection) = undo.take_path_projection() {
+    while let Some(projection) = undo.take_path_projection(&nav) {
         if active_terrain.petal_id.as_deref() != Some(projection.petal_id.as_str()) {
             continue;
         }
@@ -1822,12 +1826,7 @@ pub fn advance_path_edits(
                 let outcome = if receipt.is_some() {
                     Err("This point request already has a persisted result; reconciliation required".into())
                 } else {
-                    current
-                        .properties
-                        .get(GPX_POINTS_KEY)
-                        .cloned()
-                        .ok_or_else(|| "Path points are unavailable".to_string())
-                        .and_then(|points| undo.commit_path(request_id, points, &db_tx.0))
+                    undo.commit_path(&nav, request_id, current, &db_tx.0)
                 };
                 if let Err(error) = outcome {
                     undo.cancel_path(request_id);
@@ -2789,12 +2788,22 @@ mod tests {
         let rows=projection.editor_rows();
         let nav=fe_ui::navigation_manager::NavigationManager {active_verse_id:Some("v".into()),active_fractal_id:Some("f".into()),active_petal_id:Some("p".into()),..Default::default()};
         let mut undo=fe_ui::undo::UndoState::default();
-        let request=undo.reserve_path(&nav,"track",0,[9.0,0.0,9.0],[4.0,3.0,6.0],Some(7),&rows).unwrap().unwrap();
-        let (tx,rx)=crossbeam::channel::unbounded();undo.commit_path(&request,before.clone(),&tx).unwrap();
+        let request=undo.reserve_path(&nav,"track",0,rows[0].position,[4.0,3.0,6.0],Some(7),&rows).unwrap().unwrap();
+        let current:fe_runtime::node_history::NodeRowSnapshot=serde_json::from_value(serde_json::json!({"node_id":"track","petal_id":"p","position":[0.0,0.0,0.0],"elevation":0.0,"rotation":[0.0,0.0,0.0],"scale":[1.0,1.0,1.0],"interactive":false,"created_at":"test","edit_seq":0,"properties":{"gpx_points":before}})).unwrap();
+        let (tx,rx)=crossbeam::channel::unbounded();undo.commit_path(&nav,&request,&current,&tx).unwrap();
         let DbCommand::CommitCheckedNodeMutation {mutation:fe_runtime::messages::NodeMutation::PropertySet {value,..},expected,correlation_id,..}=rx.try_recv().unwrap() else {panic!("point move requires committed receipt contract")};
         assert_eq!(correlation_id,request);assert_eq!(expected.history_version,Some(7));
         assert_eq!(value[0].as_array().unwrap()[3..],before[0].as_array().unwrap()[3..]);
-        assert!(undo.is_pending());assert!(undo.take_path_projection().is_none(),"no render projection before matching receipt");
+        assert!(undo.is_pending());assert!(undo.take_path_projection(&nav).is_none(),"no render projection before matching receipt");
+        let mut authored=fe_ui::undo::UndoState::default();let mut authored_rows=rows.clone();authored_rows[0].time_seconds=None;
+        let id=authored.reserve_path(&nav,"track",0,authored_rows[0].position,[4.0,3.0,6.0],Some(7),&authored_rows).unwrap().unwrap();
+        authored.commit_path(&nav,&id,&current,&tx).unwrap();
+        let DbCommand::CommitCheckedNodeMutation {mutation:fe_runtime::messages::NodeMutation::PropertySet {value,..},..}=rx.try_recv().unwrap() else {panic!("authored timestamp encoding must remain editable")};assert_eq!(value[0][3],before[0][3]);
+        for (fractal,petal) in [("f","another-petal"),("another-fractal","p")] {
+            let mut delayed=fe_ui::undo::UndoState::default();let id=delayed.reserve_path(&nav,"track",0,rows[0].position,[4.0,3.0,6.0],Some(7),&rows).unwrap().unwrap();
+            let changed=fe_ui::navigation_manager::NavigationManager {active_verse_id:Some("v".into()),active_fractal_id:Some(fractal.into()),active_petal_id:Some(petal.into()),..Default::default()};
+            assert!(delayed.commit_path(&changed,&id,&current,&tx).is_err());assert!(rx.try_recv().is_err());
+        }
 
     }
 

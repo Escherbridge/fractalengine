@@ -1339,7 +1339,6 @@ from unavailable or over4096-byte material; raw JSON type is retained in bounded
 30-second deadline and bounded retry. No whole-property-bag cache or unscoped SQL is introduced.
 
 
-<<<<<<< HEAD
 ## §feedback-status
 
 The notice renderer uses theme::notice_fill and NOTICE_TEXT while UiManager
@@ -1367,7 +1366,6 @@ transitions are transient; selected/disabled/overlay pairs outside this set
 need separate checks when adopted. tab_fill and BG_PRIMARY provide neutral
 shared emphasis for owned tab/action integrations. The existing render journey
 contains contrast assertions; execution is pending the final integrated sweep.
-=======
 ## editor-undo
 
 undo.rs owns the Command-pattern session stack for ordinary full transforms and
@@ -1404,4 +1402,20 @@ path-stamp caches reconcile from matching confirmed/current projections. Queued
 ordinary writes to that track wait for resolution. Segment/whole-path moves,
 append/insert/remove/handles, arbitrary properties/schema, create/delete, Measure
 and terrain remain outside Undo coverage.
->>>>>>> 7f6210b (feat(undo): wire bounded confirmed transform and point commands)
+
+
+Undo entries retain separate committed versions for their before and after
+states. After a confirmed movement, only the next same-node/same-scope entry
+with the exact prior version link and equivalent relevant state adopts the new
+cursor. This permits consecutive same-object Undo/Redo without treating peer
+versions as local predecessors. Recovery confirms the historical operation but
+projects only its authorized current snapshot; an older receipt never replaces
+a newer route. A differing recovery snapshot cannot rebase the next command.
+
+Path bridge entry points check the actual NavigationManager at use, independently
+of observer scheduling. Full verse/fractal/petal changes clear old reservations
+and projections before a late read can enqueue a write. Typed read target identity
+and petal must match the reservation; the DB still fences actual stored ancestry.
+Navigation comparisons allocate only when the key changes. Authored absent time
+and its existing stored zero encoding compare equivalently in display-row checks;
+the complete raw timestamp value remains unchanged in the checked write.
