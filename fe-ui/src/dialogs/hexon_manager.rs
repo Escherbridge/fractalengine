@@ -83,7 +83,7 @@ pub fn render_hexon_manager(
             // Top bar: search + install from file
             ui.vertical(|ui| {
                 ui.add(
-                    egui::TextEdit::singleline(filter_text)
+                    crate::ui_shell::layout_policy::text_input(ui, filter_text)
                         .hint_text("Search maps...")
                         .desired_width(ui.available_width()),
                 )
@@ -130,7 +130,7 @@ pub fn render_hexon_manager(
             ui.vertical(|ui| {
                 ui.add_enabled_ui(registry_url.is_some(), |ui| {
                     ui.add(
-                        egui::TextEdit::singleline(registry_uri_buf)
+                        crate::ui_shell::layout_policy::text_input(ui, registry_uri_buf)
                             .hint_text("hexon_id or hexon_id@version")
                             .desired_width((ui.available_width() - 120.0).max(64.0)),
                     )

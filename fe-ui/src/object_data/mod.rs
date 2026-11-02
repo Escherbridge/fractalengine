@@ -188,7 +188,7 @@ pub(super) fn button(ui: &mut egui::Ui, text: &str, name: &str, enabled: bool) -
 }
 
 pub(super) fn target_size(ui: &egui::Ui) -> f32 {
-    24.0_f32.max(20.0 / ui.ctx().pixels_per_point())
+    crate::ui_shell::layout_policy::target_size(ui.ctx())
 }
 
 pub(super) fn error(ui: &mut egui::Ui, error: &Option<String>) {

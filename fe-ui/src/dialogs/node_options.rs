@@ -83,7 +83,7 @@ pub fn render_node_options_dialog(
             let name_label = ui.label(egui::RichText::new("Name:").small().color(theme::TEXT_DIM));
             ui.add_enabled(
                 can_edit,
-                egui::TextEdit::singleline(node_name_buf).desired_width(f32::INFINITY),
+                crate::ui_shell::layout_policy::text_input(ui, node_name_buf).desired_width(f32::INFINITY),
             )
             .labelled(ui, &name_label);
 
@@ -95,7 +95,7 @@ pub fn render_node_options_dialog(
             );
             ui.add_enabled(
                 can_edit && storage_allows_save,
-                egui::TextEdit::singleline(webpage_url_buf)
+                crate::ui_shell::layout_policy::text_input(ui, webpage_url_buf)
                     .hint_text("https://\u{2026}")
                     .desired_width(f32::INFINITY),
             )

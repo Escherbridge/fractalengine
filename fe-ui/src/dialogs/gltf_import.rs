@@ -111,7 +111,7 @@ pub fn render_gltf_import_dialog(
             );
             ui.horizontal(|ui| {
                 ui.add(
-                    egui::TextEdit::singleline(file_path_buf)
+                    crate::ui_shell::layout_policy::text_input(ui, file_path_buf)
                         .hint_text("path/to/model.glb")
                         .desired_width(ui.available_width() - 70.0),
                 )
@@ -149,7 +149,7 @@ pub fn render_gltf_import_dialog(
                     .color(theme::TEXT_DIM),
             );
             ui.add(
-                egui::TextEdit::singleline(name_buf)
+                crate::ui_shell::layout_policy::text_input(ui, name_buf)
                     .hint_text("My Model")
                     .desired_width(f32::INFINITY),
             )
@@ -337,6 +337,42 @@ mod tests {
                 .text
                 .contains("not connected")
         );
+
+        for (physical_width, scale) in [(1024.0, 1.0), (640.0, 2.0)] {
+            let ctx = egui::Context::default();
+            ctx.set_pixels_per_point(scale);
+            ctx.style_mut(|style| {
+                style.text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(10.0));
+            });
+            let mut manager = UiManager::default();
+            manager.open_dialog(ActiveDialog::GltfImport {
+                file_path_buf: String::new(), name_buf: String::new(), position: [0.0; 3],
+            });
+            let mut nav = NavigationManager::default();
+            nav.navigate_to_petal_in_fractal("v", "Verse", "f", "Fractal", "p");
+            let (tx, rx) = crossbeam::channel::unbounded();
+            for frame in 0..3 {
+                crate::ui_shell::layout_policy::begin_frame(&ctx, true);
+                let _ = ctx.run(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO,
+                        egui::vec2(physical_width / scale, 720.0 / scale))),
+                    time: Some(frame as f64), ..Default::default()
+                }, |ctx| {
+                    crate::ui_shell::layout_policy::begin_ui_pass(ctx);
+                    render_gltf_import_dialog(ctx, &mut manager, &nav, &tx, 1.0);
+                });
+            }
+            let observations = crate::ui_shell::layout_policy::observations(&ctx);
+            let fields: Vec<_> = observations.controls.iter().filter(|control| control.draggable).collect();
+            assert_eq!(fields.len(), 2, "the actual import renders its two editable fields");
+            for field in fields {
+                let visible = field.hit.intersect(field.clip);
+                assert!(visible.height() >= 24.0 && visible.height() * scale >= 20.0,
+                    "the actual native field retains its target at {physical_width}px/{scale}x");
+            }
+            assert!(matches!(manager.active_dialog, ActiveDialog::GltfImport { .. }));
+            assert!(rx.try_recv().is_err(), "drawing the form cannot import a blank path");
+        }
 
         use crate::file_dialogs::{FileDialogProvider, FileDialogRequest, QaFileDialogs};
         use fe_runtime::qa_debug::{DialogAnswer, DialogAnswerBatch, DialogKind};

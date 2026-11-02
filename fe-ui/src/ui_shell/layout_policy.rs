@@ -149,6 +149,15 @@ pub fn dialog_width(ctx: &egui::Context, preferred: f32) -> f32 {
         .min((ctx.viewport_rect().width() - 16.0).max(0.0))
 }
 
+pub(crate) fn target_size(ctx: &egui::Context) -> f32 {
+    24.0_f32.max(20.0 / ctx.pixels_per_point())
+}
+
+/// A single-line form input with the shared native interaction minimum.
+pub(crate) fn text_input<'a>(ui: &egui::Ui, text: &'a mut dyn egui::TextBuffer) -> egui::TextEdit<'a> {
+    egui::TextEdit::singleline(text).min_size(egui::vec2(0.0, target_size(ui.ctx())))
+}
+
 pub fn bounded_window<'a>(
     ctx: &egui::Context,
     title: impl Into<egui::WidgetText>,
@@ -263,7 +272,7 @@ pub fn record_response(ui: &egui::Ui, response: &egui::Response) {
 }
 
 pub fn action(ui: &mut egui::Ui, button: egui::Button<'_>, name: &str) -> egui::Response {
-    let minimum = (20.0 / ui.ctx().pixels_per_point()).max(24.0);
+    let minimum = target_size(ui.ctx());
     use crate::accessibility::ResponseExt;
     ui.add(button.min_size(egui::Vec2::splat(minimum))).named(ui, name)
 }

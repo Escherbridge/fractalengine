@@ -393,3 +393,16 @@ Node Options uses the same confirmed storage explanation as Inspector. Known uns
 storage disables its URL editor/action while the shared Save still permits authorized rename.
 Missing unique metadata explains that explicit nonempty Save creates local Portal metadata;
 opening or selecting the dialog does not create it.
+
+## Native form input targets
+
+Single-line inputs for GLTF import, creation, entity/name and Node Options,
+map search/registry IDs and manual requirements IDs use layout_policy::text_input.
+It returns the native TextEdit builder with the shared 24-point/20-physical-pixel
+minimum; labels, enabled gates, draft identity, widths and events stay with each
+form. Multiline forms and already-sized Access inputs retain their existing policy.
+Pinned egui0.33.3 TextEdit calculates its outer size from text/margins and min_size;
+interact_size.y alone does not enlarge these fields. The existing GLTF gate/file
+journey additionally renders the actual two inputs at compact and scaled widths
+and checks native response clipping and the no-command blank-path behavior.
+Those assertions are authored, not executed, until the final integrated sweep.

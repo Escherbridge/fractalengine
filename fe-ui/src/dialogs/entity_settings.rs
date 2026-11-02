@@ -152,7 +152,7 @@ pub fn render_entity_settings_dialog(
                     let name_label = ui.label(egui::RichText::new("Name").color(theme::TEXT_SECTION).strong());
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        ui.add_enabled(can_edit_draft, egui::TextEdit::singleline(name_buf).desired_width(300.0)).labelled(ui, &name_label);
+                        ui.add_enabled(can_edit_draft, crate::ui_shell::layout_policy::text_input(ui, name_buf).desired_width(300.0)).labelled(ui, &name_label);
                         if ui.add_enabled(can_write, egui::Button::new("Rename").fill(theme::BG_SAVE)).named(ui, format_args!("Rename {type_label} {entity_name}")).clicked() {
                             let new_name = name_buf.trim().to_string();
                             if !new_name.is_empty() {

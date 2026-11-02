@@ -62,7 +62,7 @@ pub fn render_create_dialog(
             let name_label = ui.label(egui::RichText::new("Name:").small().color(theme::TEXT_DIM));
             let name_resp = ui
                 .add(
-                    egui::TextEdit::singleline(name_buf)
+                    crate::ui_shell::layout_policy::text_input(ui, name_buf)
                         .hint_text("Enter name\u{2026}")
                         .desired_width(f32::INFINITY),
                 )

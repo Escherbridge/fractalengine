@@ -477,3 +477,11 @@ Property-grid horizontal scrolling and bounded value editors remain local.
 SettingDraft is crate-visible so the Paths point-height control uses the same finalized-text,
 keyboard and pointer interaction policy as durable settings. The existing native settings
 journey also exercises the actual point widget for Enter, blur, drag and focus-only frames.
+
+## Form target policy
+
+layout_policy::target_size is the shared 24-point/20-physical-pixel rule. Existing
+object_data and action helpers delegate to it. text_input applies that minimum to
+a native single-line TextEdit builder, leaving the caller's width, labels, enabled
+state and interaction lifecycle intact. It does not resize read-only text or change
+global icon/font density.
