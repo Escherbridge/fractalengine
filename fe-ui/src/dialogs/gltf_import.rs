@@ -397,7 +397,7 @@ mod tests {
             manager.open_dialog(ActiveDialog::GltfImport {
                 file_path_buf: "model.glb".into(), name_buf: "Model".into(), position: [0.0; 3],
             });
-            manager.gltf_import_request.start(5.0);
+            manager.gltf_import_request.start(owner.clone(), 0.0);
             let output = ctx.run(egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO,
                     egui::vec2(physical_width / scale, 720.0 / scale))),

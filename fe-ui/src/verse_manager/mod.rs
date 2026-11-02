@@ -36,7 +36,9 @@ pub use path_asset_materialize::{
 /// Hard never-crash backstops that `settings::sanitize` clamps the soft caps to.
 pub(crate) use path_asset_materialize::MAX_STAMPS_PER_PETAL;
 pub(crate) use path_asset_materialize::{parse_stamp_marker_id, stamp_marker_id};
-pub(crate) use path_asset_materialize::{StampSelectionSource, StampRenderSource};
+pub(crate) use path_asset_materialize::StampSelectionSource;
+#[cfg(test)]
+pub(crate) use path_asset_materialize::StampRenderSource;
 pub use primitive_materialize::PrimitiveDescriptorCache;
 pub use primitive_reconcile::PrimitiveMaterialAssets;
 pub use residency_ledger::{radius_scale_for_pressure, ResidencyLedger};
