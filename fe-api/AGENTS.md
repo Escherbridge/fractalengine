@@ -2241,3 +2241,7 @@ Canonical WS is a separate, unmounted capability protocol with no JWT verifier o
 The existing token lifecycle and actual-upgrade WS journeys cover persisted revoke without hints, fresh API runtime restart, lagged/closed recovery, unavailable startup/read refusal, old Owner POST /verses denial after reset, fresh generation mint/dev bootstrap, idle/current/new WS denial and no credential disclosure. Test function count is unchanged; no tests were executed in the source author lane.
 
 Credential completion checks take a fresh wall-clock expiry reading after all durable and cache awaits, immediately before success. The existing expiry journey polls a real signed credential admission until it blocks on a held authority read, resumes after its deadline, and requires denial. Clock errors remain unavailable; neither cached admission nor an earlier time reading substitutes for the final check.
+
+## QA Portal evidence
+
+Authenticated routes are GET `/api/v1/debug/portal-fixture/observe`, POST `/api/v1/debug/portal-fixture/action` with exactly a fixed link operation, and POST `/api/v1/debug/portal-fixture/capture`. All reuse the existing default-off input/Owner QA gate and budget. The dedicated bridge carries token scope and a host-owned five-second deadline. Completion rechecks input posture, token role/expiry/revocation, receipt scope, deadline and exact live fixture permit. Capture returns native image/png bytes plus bounded `x-fe-portal-fixture` metadata; generic diagnostic JSON never contains image base64. No general browser automation API is exposed.

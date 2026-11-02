@@ -9,6 +9,11 @@ pub mod tauri;
 #[cfg(all(windows, feature = "backend-tauri"))]
 mod qa_navigation;
 
+#[cfg(all(windows, feature = "backend-tauri"))]
+mod fixture_surface;
+#[cfg(all(windows, feature = "backend-tauri"))]
+mod fixture_stream;
+
 pub mod stub;
 
 pub fn embedded_browsing_supported() -> bool {

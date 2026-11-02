@@ -76,6 +76,9 @@ pub(crate) mod win32 {
         fn DestroyWindow(h_wnd: HWND) -> BOOL;
         fn ShowWindow(h_wnd: HWND, n_cmd_show: i32) -> BOOL;
         fn IsWindow(h_wnd: HWND) -> BOOL;
+        fn IsWindowVisible(h_wnd: HWND) -> BOOL;
+        fn SetPropW(h_wnd: HWND, name: LPCWSTR, data: isize) -> BOOL;
+        fn GetPropW(h_wnd: HWND, name: LPCWSTR) -> isize;
         fn SetWindowPos(
             h_wnd: HWND,
             h_wnd_insert_after: HWND,
@@ -240,6 +243,14 @@ pub(crate) mod win32 {
 
     pub(crate) fn is_window(hwnd: HWND) -> bool {
         unsafe { IsWindow(hwnd) != 0 }
+    }
+
+    const QA_COOKIE: &[u16] = &[70, 69, 81, 65, 80, 111, 114, 116, 97, 108, 0];
+    pub(crate) fn set_qa_cookie(hwnd: HWND, cookie: isize) -> bool {
+        cookie != 0 && unsafe { SetPropW(hwnd, QA_COOKIE.as_ptr(), cookie) != 0 }
+    }
+    pub(crate) fn is_owned_visible_popup(hwnd: HWND, cookie: isize) -> bool {
+        cookie != 0 && unsafe { IsWindow(hwnd) != 0 && IsWindowVisible(hwnd) != 0 && GetPropW(hwnd, QA_COOKIE.as_ptr()) == cookie }
     }
 }
 

@@ -64,21 +64,21 @@ pub(super) fn enforce(
     fixture_session: &Cell<bool>,
     unusable: &Cell<bool>,
     events: &RefCell<Vec<BackendEvent>>,
-) {
+) -> bool {
     if unusable.get() {
         // Closing can reenter callbacks; the terminal transition already owns Stop/Close.
         if attempt.set_cancel(true).is_err() {
             tracing::error!("Already-disabled browser could not cancel a reentrant navigation");
         }
-        return;
+        return false;
     }
     if attempt.set_cancel(true).is_err() {
         disable(attempt, unusable, events, false);
-        return;
+        return false;
     }
     let Ok((raw, redirected)) = attempt.metadata() else {
         disable(attempt, unusable, events, true);
-        return;
+        return false;
     };
     let fixture_target = fe_runtime::qa_web::preview_allows(&raw);
     let allowed = if fixture_session.get() || fixture_target {
@@ -89,7 +89,7 @@ pub(super) fn enforce(
     if allowed {
         if attempt.set_cancel(false).is_err() {
             disable(attempt, unusable, events, false);
-            return;
+            return false;
         }
         if fixture_target {
             fixture_session.set(true);
@@ -97,10 +97,12 @@ pub(super) fn enforce(
         if let Ok(url) = raw.parse() {
             events.borrow_mut().push(BackendEvent::UrlChanged(url));
         }
+        true
     } else {
         events.borrow_mut().push(BackendEvent::Error(
             "Navigation refused: URL policy, fixture redirect, or unavailable helper".into(),
         ));
+        false
     }
 }
 
@@ -136,6 +138,7 @@ pub(super) fn install(
     fixture_session: Rc<Cell<bool>>,
     unusable: Rc<Cell<bool>>,
     events: Rc<RefCell<Vec<BackendEvent>>>,
+    clock: Rc<super::fixture_surface::NavigationClock>,
 ) -> anyhow::Result<()> {
     let native = webview.webview();
     let controller = webview.controller();
@@ -152,12 +155,19 @@ pub(super) fn install(
                     webview: &callback_native,
                     controller: &callback_controller,
                 };
-                enforce(
+                let allowed = enforce(
                     &attempt,
                     &fixture_session,
                     &callback_unusable,
                     &callback_events,
                 );
+                if allowed {
+                    clock.bump();
+                } else if !callback_unusable.get() {
+                    if let Ok((raw, _)) = attempt.metadata() {
+                        clock.refuse(raw);
+                    }
+                }
                 Ok(())
             })),
             &mut token,
@@ -175,4 +185,19 @@ pub(super) fn install(
         ));
     }
     Ok(())
+}
+
+pub(super) fn abort(
+    webview: &wry::WebView,
+    unusable: &Cell<bool>,
+    events: &RefCell<Vec<BackendEvent>>,
+) {
+    let native = webview.webview();
+    let controller = webview.controller();
+    let attempt = NativeAttempt {
+        args: None,
+        webview: &native,
+        controller: &controller,
+    };
+    disable(&attempt, unusable, events, false);
 }

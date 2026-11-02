@@ -78,6 +78,7 @@ pub fn input_allowed_from_env() -> bool {
 /// The input surface as wired on this host.
 #[derive(Clone, Debug)]
 pub struct InputSurface {
+    pub portal_fixture: Option<fe_runtime::qa_portal::FixtureSender>,
     pub qa_debug: Option<fe_runtime::qa_debug::QaSender>,
     /// Operator opt-in, read once at startup ([`input_allowed_from_env`]).
     pub allowed: bool,
@@ -98,6 +99,7 @@ impl InputSurface {
     /// A surface with the given opt-in and bridge and the default timeout.
     pub fn new(allowed: bool, bridge: Option<InputRequestSender>) -> Self {
         Self {
+            portal_fixture: None,
             qa_debug: None,
             allowed,
             bridge,
@@ -107,6 +109,11 @@ impl InputSurface {
 
     pub fn with_qa_debug(mut self, bridge: fe_runtime::qa_debug::QaSender) -> Self {
         self.qa_debug = Some(bridge);
+        self
+    }
+
+    pub fn with_portal_fixture(mut self, bridge: fe_runtime::qa_portal::FixtureSender) -> Self {
+        self.portal_fixture = Some(bridge);
         self
     }
 

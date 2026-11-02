@@ -34,6 +34,11 @@ pub enum BackendEvent {
 /// all input events within its own window; the Bevy side never forwards
 /// keyboard/mouse events.
 pub trait WebViewBackend: 'static {
+    fn fixture_start(&mut self, _command: &fe_runtime::qa_portal::FixtureCommand) -> Result<(), fe_runtime::qa_debug::QaFailure> {
+        Err(fe_runtime::qa_portal::unavailable())
+    }
+    fn fixture_poll(&mut self) -> Option<fe_runtime::qa_portal::FixtureOutcome> { None }
+    fn fixture_cancel(&mut self) {}
     /// Create the backend's window/surface at `geometry`.
     /// `parent_handle` is the raw window handle of the main Bevy window
     /// so the backend can set ownership/z-order relationships.

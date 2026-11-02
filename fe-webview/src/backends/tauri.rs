@@ -27,6 +27,8 @@ pub struct TauriBackend {
     guard_unusable: Rc<Cell<bool>>,
     #[cfg(target_os = "windows")]
     popup_hwnd: isize,
+    #[cfg(target_os = "windows")]
+    fixture_surface: super::fixture_surface::Surface,
 }
 
 /// Navigation-handler decision: validates via `security::is_url_allowed`, records
@@ -87,6 +89,8 @@ impl WebViewBackend for TauriBackend {
         let fixture_session = Rc::new(Cell::new(false));
         let guard_unusable = Rc::new(Cell::new(false));
         let load_guard_unusable = guard_unusable.clone();
+        #[cfg(target_os = "windows")]
+        let fixture_surface = super::fixture_surface::Surface::default();
 
         // --- build wry WebView -------------------------------------------
 
@@ -135,6 +139,12 @@ impl WebViewBackend for TauriBackend {
             // Create visible popup BEFORE building webview — WebView2 needs
             // a visible parent HWND to initialize its rendering pipeline.
             let popup_hwnd = win32::create_popup(parent_hwnd, &geometry)?;
+            if fe_runtime::qa_web::captured()
+                && !win32::set_qa_cookie(popup_hwnd, fixture_surface.cookie())
+            {
+                win32::destroy(popup_hwnd);
+                anyhow::bail!("could not bind QA Portal popup lifetime");
+            }
             tracing::debug!("TauriBackend: popup HWND = {popup_hwnd:#x}");
 
             let popup = PopupHandle(popup_hwnd);
@@ -150,6 +160,7 @@ impl WebViewBackend for TauriBackend {
                     fixture_session.clone(),
                     guard_unusable.clone(),
                     events.clone(),
+                    fixture_surface.clock.clone(),
                 ) {
                     drop(webview);
                     win32::destroy(popup_hwnd);
@@ -183,6 +194,8 @@ impl WebViewBackend for TauriBackend {
             guard_unusable,
             #[cfg(target_os = "windows")]
             popup_hwnd,
+            #[cfg(target_os = "windows")]
+            fixture_surface,
         })
     }
 
@@ -211,6 +224,8 @@ impl WebViewBackend for TauriBackend {
 
     fn go_back(&mut self) -> anyhow::Result<()> {
         self.ensure_usable()?;
+        #[cfg(target_os = "windows")]
+        self.fixture_surface.clock.bump();
         tracing::info!("TauriBackend::go_back");
         self.webview
             .evaluate_script("history.back()")
@@ -220,12 +235,16 @@ impl WebViewBackend for TauriBackend {
 
     fn go_forward(&mut self) -> anyhow::Result<()> {
         self.ensure_usable()?;
+        #[cfg(target_os = "windows")]
+        self.fixture_surface.clock.bump();
         self.webview.evaluate_script("history.forward()")?;
         Ok(())
     }
 
     fn reload(&mut self) -> anyhow::Result<()> {
         self.ensure_usable()?;
+        #[cfg(target_os = "windows")]
+        self.fixture_surface.clock.bump();
         self.webview.evaluate_script("location.reload()")?;
         Ok(())
     }
@@ -247,6 +266,8 @@ impl WebViewBackend for TauriBackend {
 
     fn hide(&mut self) -> anyhow::Result<()> {
         self.ensure_usable()?;
+        #[cfg(target_os = "windows")]
+        self.fixture_surface.clock.bump();
         if self.visible {
             tracing::debug!("TauriBackend::hide");
             self.webview
@@ -266,6 +287,8 @@ impl WebViewBackend for TauriBackend {
     fn reposition(&mut self, geometry: WindowGeometry) -> anyhow::Result<()> {
         self.ensure_usable()?;
         #[cfg(target_os = "windows")]
+        self.fixture_surface.clock.bump();
+        #[cfg(target_os = "windows")]
         win32::move_window(self.popup_hwnd, &geometry);
 
         self.webview
@@ -275,6 +298,8 @@ impl WebViewBackend for TauriBackend {
     }
 
     fn destroy(&mut self) {
+        #[cfg(target_os = "windows")]
+        self.fixture_surface.clock.bump();
         if self.alive {
             self.alive = false;
             #[cfg(target_os = "windows")]
@@ -316,9 +341,59 @@ impl WebViewBackend for TauriBackend {
     fn is_alive(&self) -> bool {
         self.alive && !self.guard_unusable.get()
     }
+
+    fn fixture_start(
+        &mut self,
+        command: &fe_runtime::qa_portal::FixtureCommand,
+    ) -> Result<(), fe_runtime::qa_debug::QaFailure> {
+        #[cfg(target_os = "windows")]
+        {
+            let visible = self.fixture_visible();
+            return self.fixture_surface.start(
+                &self.webview,
+                visible,
+                self.guard_unusable.get(),
+                command,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = command;
+            Err(fe_runtime::qa_portal::unavailable())
+        }
+    }
+
+    fn fixture_poll(&mut self) -> Option<fe_runtime::qa_portal::FixtureOutcome> {
+        #[cfg(target_os = "windows")]
+        {
+            let visible = self.fixture_visible();
+            let result =
+                self.fixture_surface
+                    .poll(&self.webview, visible, self.guard_unusable.get());
+            if matches!(&result, Some(Err(_))) {
+                super::qa_navigation::abort(&self.webview, &self.guard_unusable, &self.events);
+            }
+            return result;
+        }
+        #[cfg(not(target_os = "windows"))]
+        None
+    }
+
+    fn fixture_cancel(&mut self) {
+        #[cfg(target_os = "windows")]
+        if self.fixture_surface.cancel() {
+            super::qa_navigation::abort(&self.webview, &self.guard_unusable, &self.events);
+        }
+    }
 }
 
 impl TauriBackend {
+    #[cfg(target_os = "windows")]
+    fn fixture_visible(&self) -> bool {
+        self.alive
+            && self.visible
+            && win32::is_owned_visible_popup(self.popup_hwnd, self.fixture_surface.cookie())
+    }
     fn ensure_usable(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             !self.guard_unusable.get(),

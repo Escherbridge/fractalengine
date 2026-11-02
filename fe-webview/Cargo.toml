@@ -28,6 +28,8 @@ raw-window-handle = "0.6"
 url = { version = "2", features = ["serde"] }
 ipnet = "2"
 serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
 anyhow = { workspace = true }
 tracing = { workspace = true }
 fe-database = { path = "../fe-database" }
@@ -39,3 +41,5 @@ ulid = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = { version = "0.38.2", optional = true }
+windows = { version = "0.61.3", features = ["Win32_System_Com", "Win32_Foundation"] }
+windows-core = "0.61.2"
