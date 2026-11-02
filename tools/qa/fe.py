@@ -751,6 +751,8 @@ def print_action_logs(run, verse, watermark):
         if not isinstance(entries, list):
             raise Refused(0, "invalid_response", "logs entries must be an array")
         after_generation, after_seq = snapshot.get("generation"), snapshot.get("latest_seq")
+        if any(type(value) is not int or value < 0 for value in (after_generation, after_seq)):
+            raise Refused(0, "invalid_response", "log after-watermark must contain nonnegative integer counters")
         changed = after_generation != generation
         delta = after_seq - seq if type(after_seq) is int else None
         emit({"new_logs":entries, "generation_changed":changed,
@@ -888,11 +890,13 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
         run = load_run(args.run)
-        watermark = log_watermark(run, args.verse) if args.command in {"move","click","drag","key","type","scroll","dialog-answer","window"} else None
+        observe_logs = args.command in {"move","click","drag","key","type","scroll","dialog-answer","window"}
+        watermark = log_watermark(run, args.verse) if observe_logs else None
         try:
             args.func(run, args)
         finally:
-            print_action_logs(run, args.verse, watermark)
+            if observe_logs:
+                print_action_logs(run, args.verse, watermark)
         return EXIT_OK
     except Refused as refusal:
         emit(refusal.as_dict())
