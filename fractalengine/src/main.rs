@@ -74,6 +74,9 @@ fn main() {
     }
 
     let qa_enabled = fe_api::input::input_allowed_from_env();
+    if let Err(error) = fe_runtime::qa_web::install(qa_root.as_deref(), qa_enabled) {
+        eprintln!("controlled QA web fixture unavailable: {error}");
+    }
     let qa_dialogs = if qa_enabled {
         qa_root
             .as_ref()

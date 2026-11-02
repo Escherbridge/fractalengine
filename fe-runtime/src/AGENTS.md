@@ -905,3 +905,9 @@ node. Both GUI result families are consumed before PendingApiRequests fallback.
 ## Portal URLs
 
 `portal_url` owns the production literal-address URL policy. `fe-webview::security` re-exports it so existing consumers retain the same API and decisions. Keeping this pure policy below both database and browser consumers prevents persistence and navigation from acquiring different URL rules.
+
+## QA web fixtures
+
+`qa_web` captures an immutable, nonserialized capability once at host startup after the existing input opt-in and canonical run root are captured. It admits only the two exact raw canonical `/web/one` and `/web/two` addresses from mutually consistent bounded run, config and readiness receipts. Directory/file handles retain the receipt boundary; the launcher current receipt is read and released so its normal startup replacement remains possible. Starting fixtures after the app does not grant that running host a capability: restart the app while the same fixture helper remains alive.
+
+Preview checks are pure and cheap. Effect admission rechecks a retained Windows process handle, creation ticks, executable and exact IPv4 loopback listener PID before navigation or persistence; any failed live check permanently revokes the capability. Expiry is conservatively anchored to process creation and also bounded by a monotonic deadline. Windows TCP table reads are bounded to one MiB and two retries. Unsupported platforms refuse the exception. Environment and receipt files are never reread during navigation. The capability does not change external browser policy or grant registry/API/other private hosts access.
