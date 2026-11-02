@@ -181,7 +181,8 @@ node through the direct local reader, and then starts the API thread. The seed
 barrier prevents a first-run empty snapshot and the early subscription prevents
 a change-event gap. Seed failure remains fatal, but a malformed row, query
 failure, or 10-second hydration timeout leaves the editor running with
-`api_db_reader = None`; the analytics endpoint fails unavailable rather than
+`entity_store = None`; the shared DB reader remains configured for durable
+authentication, while the analytics endpoint fails unavailable rather than
 exposing a partial cache.
 
 **The reader is the DB thread's own handle (OF-2, 2026-10-13).** `main.rs`
@@ -1429,8 +1430,9 @@ bootstrap: the GUI writes, and keeps rewriting, a token file the agent reads.
   with one fresh client DID per process (`fe_identity::new_client_did`), so an
   agent's uploads share one owner bucket across rewrites. They are NOT recorded
   in the `api_token` store: the 8 h TTL bounds them, they never show in the
-  Inspector's token list, and they can't be revoked from it — restart without
-  the env var and let them expire, or rotate the node key.
+  Inspector's token list, and they cannot be individually revoked from it.
+  They obey the stored authentication generation, so terminal reset retires
+  old dev tokens without rotating the node key.
 - **Loopback only, fail closed.** `loopback_api_base` refuses any bound
   address whose IP is not loopback (`0.0.0.0`, a LAN IP, `[::]`, an
   IPv4-mapped address): the writer logs an error and exits, nothing is minted
@@ -1669,4 +1671,4 @@ The final DB command is FIFO behind prior work and is the worker's last operatio
 
 Opt-in QA hosts emit credential-free, create-new phase receipts beneath the already captured run root. Receipts include the request, process ID, joined service names, remaining job count and DB result/join facts. They do not resurrect the stopped API. Capture the terminal UI through an already admitted capture before freeze, retain exact process ownership, and inspect the actual disposable store after close/reopen. This source contract is not executed reset acceptance.
 
-API session shutdown and dev-token file invalidation do not assert cryptographic revocation of previously signed JWTs after a later process starts. Identity/signing keys are retained. Persistent revocation and post-reset credential validity remain a separate mandatory authentication lifecycle acceptance gate; do not label token-row deletion as token revocation.
+API session shutdown and dev-token file invalidation accompany the durable credential-generation rotation in the reset transaction. Reopened REST and legacy WS admission reject pre-reset JWTs even when their signatures and Owner claims remain valid. Identity/signing keys are retained; token-row deletion alone is not the revocation mechanism. The source-authored lifecycle journeys still require the integrated execution and independent review gate before reset activation.

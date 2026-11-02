@@ -225,23 +225,11 @@ async fn run_server(config: ApiConfig, stop: fe_runtime::service_lifecycle::Stop
         input: config.input,
     });
 
-    // Background task: listen for revocation notifications from Bevy thread
-    let revoked_cache = revoked_jtis.clone();
-    let mut revocation_rx = config.revocation_rx;
-    tokio::spawn(async move {
-        loop {
-            match revocation_rx.recv().await {
-                Ok(jti) => {
-                    revoked_cache.write().await.insert(jti);
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!("Revocation listener lagged by {n} messages");
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-        tracing::info!("Revocation listener shut down");
-    });
+    if auth::validate_auth_startup(&state).await.is_err() {
+        tracing::error!("API credential authority is unavailable; listener was not started");
+        return;
+    }
+    tokio::spawn(auth::listen_for_revocations(state.clone(), config.revocation_rx));
 
     let router = server::build_router(state);
 

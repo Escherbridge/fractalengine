@@ -64,6 +64,7 @@ pub async fn emit_dev_tokens(
 ) -> anyhow::Result<DevTokenEmission> {
     let api_base = loopback_api_base(bound)?;
     let local_did = keypair.to_did_key();
+    let generation = fe_database::api_auth::current_generation(db).await?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs();
@@ -94,13 +95,14 @@ pub async fn emit_dev_tokens(
             &scope,
             &role,
             DEV_TOKEN_TTL_SECS,
-            &ulid::Ulid::new().to_string(),
+            &fe_database::api_auth::new_jti(&generation)?,
             client_did,
         )?;
         tokens.insert(verse_id.clone(), token);
         roles.insert(verse_id.clone(), role);
     }
 
+    anyhow::ensure!(fe_database::api_auth::current_generation(db).await? == generation, "Credential generation changed during dev-token publication");
     let document = serde_json::json!({
         "api_base": api_base,
         "tokens": tokens,

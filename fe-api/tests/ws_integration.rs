@@ -131,7 +131,118 @@ async fn ws_handshake_auth_subscribe_and_scene_broadcast_end_to_end() {
     assert_eq!(delta["changes"][0]["op"], "node_added");
     assert_eq!(delta["changes"][0]["node"]["node_id"], "n-broadcast");
 
-    let _ = ws.close(None).await;
+    let (mut idle, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+        .await
+        .unwrap();
+    assert_eq!(next_json(&mut idle).await["type"], "auth_required");
+    idle.send(WsMessage::Text(
+        json!({"type":"auth","access_token":token})
+            .to_string()
+            .into(),
+    ))
+    .await
+    .unwrap();
+    assert_eq!(next_json(&mut idle).await["type"], "auth_ok");
+    let claims = fe_identity::verify_api_token(&token, &h.keypair.verifying_key()).unwrap();
+    let record = fe_database::api_token_store::ApiTokenRecord {
+        jti: claims.jti.clone(),
+        scope: claims.scope.clone(),
+        max_role: claims.max_role.clone(),
+        label: None,
+        sub: claims.sub.clone(),
+        created_at: "2026-01-01T00:00:00Z".into(),
+        expires_at: "2099-01-01T00:00:00Z".into(),
+        revoked: false,
+        client: None,
+    };
+    fe_database::api_token_store::store_api_token(&h.db, &record)
+        .await
+        .unwrap();
+    assert!(
+        fe_database::api_token_store::revoke_api_token(&h.db, &claims.jti, &claims.sub)
+            .await
+            .unwrap()
+    );
+    assert!(
+        h.state.revoked_jtis.read().await.is_empty(),
+        "WS validity must not depend on receiving a hint"
+    );
+    assert_eq!(
+        next_json(&mut idle).await["type"],
+        "auth_invalid",
+        "An idle upgraded socket is invalidated without an incoming frame or broadcast"
+    );
+    let forbidden_node = h
+        .seed_node(
+            &chain.petal_id,
+            "revoked write target",
+            [0.0, 0.0, 0.0],
+            None,
+        )
+        .await
+        .unwrap();
+    let _=ws.send(WsMessage::Text(json!({"type":"transform_update","node_id":forbidden_node,"position":[9.0,9.0,9.0],"rotation":[0.0,0.0,0.0],"scale":[1.0,1.0,1.0]}).to_string().into())).await;
+    let _ = h
+        .state
+        .transform_broadcast_tx
+        .send(fe_runtime::messages::TransformUpdate {
+            node_id: "must-not-leak".into(),
+            petal_id: chain.petal_id.clone(),
+            position: [9.0, 9.0, 9.0],
+            rotation: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
+            timestamp_ms: 1,
+            source_did: h.did(),
+        });
+    let invalid = next_json(&mut ws).await;
+    assert_eq!(
+        invalid["type"], "auth_invalid",
+        "Revocation blocks incoming commands and outgoing data"
+    );
+    assert!(!invalid.to_string().contains(&token));
+    let closed = tokio::time::timeout(FRAME_TIMEOUT, ws.next())
+        .await
+        .unwrap();
+    assert!(matches!(
+        closed,
+        None | Some(Err(_)) | Some(Ok(WsMessage::Close(_)))
+    ));
+    assert!(
+        h.api_command_receiver().try_recv().is_err(),
+        "Revoked WS must not flush a transform mutation"
+    );
+    let (mut reopened, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+        .await
+        .unwrap();
+    assert_eq!(next_json(&mut reopened).await["type"], "auth_required");
+    reopened
+        .send(WsMessage::Text(
+            json!({"type":"auth","access_token":token})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        next_json(&mut reopened).await["type"],
+        "auth_invalid",
+        "New upgraded sockets reject persisted revocation too"
+    );
+    let sibling = h.mint_token(&chain.verse_scope(), "viewer");
+    let (mut fresh, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+        .await
+        .unwrap();
+    assert_eq!(next_json(&mut fresh).await["type"], "auth_required");
+    fresh
+        .send(WsMessage::Text(
+            json!({"type":"auth","access_token":sibling})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(next_json(&mut fresh).await["type"], "auth_ok");
+    let _ = fresh.close(None).await;
 }
 
 #[tokio::test]

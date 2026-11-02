@@ -622,6 +622,7 @@ fn main() {
     // Direct reader = clone of the DB thread's handle (never a second SurrealKV
     // open: the store lock refuses it, os error 33). Hydration failure leaves the
     // editor running with the analytics surface closed. See AGENTS.md §entity-store-analytics.
+    let mut entity_store_for_api = Some(Arc::clone(&entity_store));
     let api_db_reader: Option<Arc<fe_api::db_reader::ReadDb>> = {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -643,7 +644,8 @@ fn main() {
                     %error,
                     "Could not hydrate EntityStore; analytics API will remain unavailable"
                 );
-                None
+                entity_store_for_api = None;
+                Some(Arc::new(fe_api::db_reader::ReadDb::new(shared_db)))
             }
         }
     };
@@ -689,7 +691,7 @@ fn main() {
         cors_origins: None, // defaults to localhost-only
         entity_change_tx: entity_change_tx.clone(),
         api_db_reader,
-        entity_store: Some(Arc::clone(&entity_store)),
+        entity_store: entity_store_for_api,
         tileset_registry: tileset_registry.clone(),
         hexon_registry: None,
         announcement_store: None,

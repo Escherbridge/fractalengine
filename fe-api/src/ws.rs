@@ -154,7 +154,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                 .await;
                 None
             } else {
-                match fe_identity::api_token::verify_api_token(&access_token, &state.verifying_key)
+                match crate::auth::authenticate(&state, &access_token).await
                 {
                     Ok(claims) => {
                         tracing::info!(
@@ -166,8 +166,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                         send_msg(&mut socket, &WsServerMsg::AuthOk {}).await;
                         Some(claims)
                     }
-                    Err(e) => {
-                        tracing::warn!("WS auth failed: {e}");
+                    Err(_) => {
+                        tracing::warn!("WS credential admission denied");
                         send_msg(
                             &mut socket,
                             &WsServerMsg::AuthInvalid {
@@ -216,6 +216,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
         tokio::select! {
             // Incoming client message
             msg = recv_msg(&mut socket) => {
+                if !credential_still_current(&mut socket, &state, &claims).await {
+                    break;
+                }
                 match msg {
                     Some(WsClientMsg::Subscribe { channel, petal_id }) => {
                         // One denial for unknown and out-of-scope (§existence-oracle).
@@ -223,7 +226,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                             .await
                             .is_none()
                         {
-                            send_msg(&mut socket, &WsServerMsg::Error {
+                            send_protected(&mut socket, &state, &claims, &WsServerMsg::Error {
                                 code: "not_found".into(),
                                 message: crate::rest::NOT_FOUND_OR_DENIED.into(),
                             }).await;
@@ -231,12 +234,12 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                         }
                         subscribed_petals.insert(petal_id.clone());
                         let resp = WsServerMsg::Subscribed { channel, petal_id };
-                        send_msg(&mut socket, &resp).await;
+                        send_protected(&mut socket, &state, &claims, &resp).await;
                     }
                     Some(WsClientMsg::Unsubscribe { channel, petal_id }) => {
                         subscribed_petals.remove(&petal_id);
                         let resp = WsServerMsg::Unsubscribed { channel, petal_id };
-                        send_msg(&mut socket, &resp).await;
+                        send_protected(&mut socket, &state, &claims, &resp).await;
                     }
                     Some(WsClientMsg::Ping { timestamp_ms }) => {
                         let now = unix_now_ms();
@@ -244,7 +247,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                             timestamp_ms,
                             server_timestamp_ms: now,
                         };
-                        send_msg(&mut socket, &resp).await;
+                        send_protected(&mut socket, &state, &claims, &resp).await;
                     }
                     Some(WsClientMsg::TransformUpdate {
                         node_id,
@@ -254,14 +257,14 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                     }) => {
                         // Enforce editor role — viewers cannot push transforms.
                         if crate::auth::require_role_level(&claims, fe_database::RoleLevel::Editor).is_err() {
-                            send_msg(&mut socket, &WsServerMsg::Error {
+                            send_protected(&mut socket, &state, &claims, &WsServerMsg::Error {
                                 code: "forbidden".into(),
                                 message: "editor role required for transform updates".into(),
                             }).await;
                             continue;
                         }
                         if !crate::endpoint::is_addressable_node_id(&node_id) {
-                            send_msg(&mut socket, &WsServerMsg::Error {
+                            send_protected(&mut socket, &state, &claims, &WsServerMsg::Error {
                                 code: "invalid_request".into(),
                                 message: "invalid node_id".into(),
                             }).await;
@@ -271,7 +274,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                         let Some(scope) =
                             crate::rest::authorized_node_scope(&state, &claims, &node_id).await
                         else {
-                            send_msg(&mut socket, &WsServerMsg::Error {
+                            send_protected(&mut socket, &state, &claims, &WsServerMsg::Error {
                                 code: "not_found".into(),
                                 message: crate::rest::NOT_FOUND_OR_DENIED.into(),
                             }).await;
@@ -280,20 +283,21 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                         if let Some(denial) =
                             crate::rest::stamp_translate_denied(&state, &node_id, position).await
                         {
-                            send_msg(&mut socket, &WsServerMsg::Error {
+                            send_protected(&mut socket, &state, &claims, &WsServerMsg::Error {
                                 code: "forbidden".into(),
                                 message: denial.into(),
                             }).await;
                             continue;
                         }
                         let Some(petal_id) = petal_id_from_scope(&scope) else {
-                            send_msg(&mut socket, &WsServerMsg::Error {
+                            send_protected(&mut socket, &state, &claims, &WsServerMsg::Error {
                                 code: "not_found".into(),
                                 message: "transform target has no petal scope".into(),
                             }).await;
                             continue;
                         };
                         let now = unix_now_ms();
+                        if !credential_still_current(&mut socket, &state, &claims).await { break; }
                         // Optimistic broadcast — subscribers see the update immediately.
                         let _ = state.transform_broadcast_tx.send(TransformUpdate {
                             node_id: node_id.clone(),
@@ -313,7 +317,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                     Some(WsClientMsg::SceneSubscribe { petal_id, .. }) => {
                         // One denial for unknown and out-of-scope (§existence-oracle).
                         if crate::rest::authorized_petal_scope(&state, &claims, &petal_id).await.is_none() {
-                            send_msg(&mut socket, &WsServerMsg::Error {
+                            send_protected(&mut socket, &state, &claims, &WsServerMsg::Error {
                                 code: "not_found".into(),
                                 message: crate::rest::NOT_FOUND_OR_DENIED.into(),
                             }).await;
@@ -336,7 +340,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                         };
                         subscribed_petals.insert(petal_id);
                         scene_version = next_version;
-                        send_msg(&mut socket, &snapshot).await;
+                        send_protected(&mut socket, &state, &claims, &snapshot).await;
                     }
                     Some(WsClientMsg::EntityCommand { request_id, command }) => {
                         let msg = match handle_entity_command(&state, &claims, command).await {
@@ -347,7 +351,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                                 request_id, ok: false, data: None, error: Some(e),
                             },
                         };
-                        send_msg(&mut socket, &msg).await;
+                        send_protected(&mut socket, &state, &claims, &msg).await;
                     }
                     Some(WsClientMsg::Auth { .. }) => {
                         // Already authenticated; ignore re-auth
@@ -358,6 +362,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
 
             // Outbound transform broadcasts
             update = transform_rx.recv() => {
+                if !credential_still_current(&mut socket, &state, &claims).await {
+                    break;
+                }
                 match update {
                     Ok(tu) if !subscribed_petals.is_empty()
                         && subscribed_petals.contains(&tu.petal_id) =>
@@ -370,7 +377,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                             scale: tu.scale,
                             timestamp_ms: tu.timestamp_ms,
                         };
-                        send_msg(&mut socket, &msg).await;
+                        send_protected(&mut socket, &state, &claims, &msg).await;
                     }
                     Ok(_) => {} // filtered out by subscription
                     Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -378,6 +385,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                         if let Err(error) = send_scene_snapshots(
                             &mut socket,
                             &state,
+                            &claims,
                             &subscribed_petals,
                             &mut scene_version,
                         )
@@ -394,6 +402,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
 
             // Outbound entity change deltas (scene graph CUD)
             change = entity_change_rx.recv() => {
+                if !credential_still_current(&mut socket, &state, &claims).await {
+                    break;
+                }
                 match change {
                     Ok(ref sc) if !subscribed_petals.is_empty() => {
                         // TransformFailed → send rollback instead of a delta
@@ -402,7 +413,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                             continue;
                         }
                         if let SceneChange::TransformFailed { node_id, position, rotation, scale, .. } = sc {
-                            send_msg(&mut socket, &WsServerMsg::TransformRollback {
+                            send_protected(&mut socket, &state, &claims, &WsServerMsg::TransformRollback {
                                 node_id: node_id.clone(),
                                 position: *position,
                                 rotation: *rotation,
@@ -411,7 +422,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                             continue;
                         }
                         scene_version += 1;
-                        send_msg(&mut socket, &WsServerMsg::SceneDelta {
+                        send_protected(&mut socket, &state, &claims, &WsServerMsg::SceneDelta {
                             petal_id: petal_id.to_owned(),
                             version: scene_version,
                             changes: vec![sc.clone()],
@@ -423,6 +434,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                         if let Err(error) = send_scene_snapshots(
                             &mut socket,
                             &state,
+                            &claims,
                             &subscribed_petals,
                             &mut scene_version,
                         )
@@ -439,6 +451,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
 
             // Debounce flush: persist batched transform updates to DB every 200ms.
             _ = debounce_interval.tick() => {
+                if !credential_still_current(&mut socket, &state, &claims).await {
+                    break;
+                }
                 for (node_id, (position, rotation, scale)) in transform_debounce.drain() {
                     let _ = state.api_cmd_tx.send(ApiCommand::TransformPersist {
                         node_id,
@@ -455,6 +470,19 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+async fn credential_still_current(socket: &mut WebSocket, state: &ApiState, claims: &ApiClaims) -> bool {
+    if crate::auth::require_current_credential(state, claims).await.is_ok() { return true; }
+    send_msg(socket, &WsServerMsg::AuthInvalid { message: "credential is no longer valid".into() }).await;
+    let _ = socket.send(Message::Close(None)).await;
+    false
+}
+
+async fn send_protected(socket: &mut WebSocket, state: &ApiState, claims: &ApiClaims, message: &WsServerMsg) {
+    if credential_still_current(socket, state, claims).await {
+        send_msg(socket, message).await;
+    }
+}
 
 /// Serialize `msg` to JSON and send it as a Text frame on `socket`.
 async fn send_msg(socket: &mut WebSocket, msg: &WsServerMsg) {
@@ -480,6 +508,7 @@ async fn recv_msg(socket: &mut WebSocket) -> Option<WsClientMsg> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SceneSnapshotLoadError {
+    CredentialInvalid,
     DirectQuery,
     DirectResult,
     MalformedNode,
@@ -609,6 +638,7 @@ fn snapshot_node_from_row(
 async fn send_scene_snapshots(
     socket: &mut WebSocket,
     state: &ApiState,
+    claims: &ApiClaims,
     subscribed_petals: &HashSet<String>,
     scene_version: &mut u64,
 ) -> Result<(), SceneSnapshotLoadError> {
@@ -620,6 +650,9 @@ async fn send_scene_snapshots(
         snapshots.push((petal_id.clone(), nodes));
     }
     for (petal_id, nodes) in snapshots {
+        if !credential_still_current(socket, state, claims).await {
+            return Err(SceneSnapshotLoadError::CredentialInvalid);
+        }
         *scene_version += 1;
         send_msg(
             socket,

@@ -22,7 +22,7 @@ pub struct ApiState {
     /// Entity change broadcast for scene graph streaming (CUD deltas).
     pub entity_change_tx: tokio::sync::broadcast::Sender<fe_runtime::messages::SceneChange>,
     pub verifying_key: ed25519_dalek::VerifyingKey,
-    /// Cache of revoked token JTIs. Checked by auth middleware.
+    /// Revocation hints; configured stores are also checked durably at every use.
     pub revoked_jtis: Arc<tokio::sync::RwLock<HashSet<String>>>,
     /// Content-addressed blob store for asset delivery. `None` if not configured.
     pub blob_store: Option<fe_runtime::blob_store::BlobStoreHandle>,
