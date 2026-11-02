@@ -13,6 +13,7 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
 mod asset_bridge;
+mod api_endpoint;
 mod gpx_bridge;
 mod input_bridge;
 mod plugin_bridge;
@@ -570,11 +571,15 @@ fn main() {
     let (api_listening_tx, api_listening_rx) = crossbeam::channel::bounded(1);
     let (dev_listening_tx, dev_listening_rx) = crossbeam::channel::bounded(1);
     let (qa_listening_tx, qa_listening_rx) = crossbeam::channel::bounded(1);
+    let (ui_listening_tx, ui_listening_rx) = crossbeam::channel::bounded(1);
     let notify_dev = dev_token_out.is_some();
     let notify_controls = qa_dialogs.is_some();
-    if notify_dev || notify_controls {
+    {
         std::thread::spawn(move || {
             if let Ok(bound) = api_listening_rx.recv() {
+                if ui_listening_tx.send(bound).is_err() {
+                    tracing::warn!("UI listener notification was dropped");
+                }
                 if notify_dev && dev_listening_tx.send(bound).is_err() {
                     tracing::warn!("dev-token listener notification was dropped");
                 }
@@ -584,6 +589,7 @@ fn main() {
             }
         });
     }
+    api_endpoint::install(&mut app, ui_listening_rx);
 
     // Direct reader = clone of the DB thread's handle (never a second SurrealKV
     // open: the store lock refuses it, os error 33). Hydration failure leaves the
@@ -685,7 +691,7 @@ fn main() {
         // Agent input surface: OFF unless FE_API_INPUT_ALLOW=1 (read once
         // here; loud WARN when on) — fe-api/AGENTS.md §agent-input-surface.
         input: fe_api::input::InputSurface::new(qa_enabled, Some(input_tx)).with_qa_debug(qa_tx),
-        listening_tx: (notify_dev || notify_controls).then_some(api_listening_tx),
+        listening_tx: Some(api_listening_tx),
     });
 
     // Agent QA: write loopback-only API tokens for every local verse once the

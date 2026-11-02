@@ -280,6 +280,7 @@ pub struct InspectorFormState {
     /// (W6-7b GUI mint surface; the DB door is the authority, this only
     /// gates the Generate button — see `fe_identity::validate_client_did`).
     pub api_token_client_buf: String,
+    pub api_endpoint: Option<std::net::SocketAddr>,
     pub generated_api_token: Option<String>,
     /// The just-minted token's `client` claim (requested or freshly generated).
     pub generated_api_token_client: Option<String>,
@@ -328,6 +329,7 @@ impl Default for InspectorFormState {
             api_token_role_buf: "viewer".into(),
             api_token_expiry_buf: 720,
             api_token_client_buf: String::new(),
+            api_endpoint: None,
             generated_api_token: None,
             generated_api_token_client: None,
             api_tokens: Vec::new(),
@@ -822,6 +824,7 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<SidebarState>();
         app.init_resource::<ToolState>();
         app.init_resource::<InspectorFormState>();
+        app.init_resource::<fe_runtime::app::RuntimeApiEndpoint>();
         app.init_resource::<LocalUserRole>();
         // Startup identity-degradation banner (src/AGENTS.md §identity-tiers).
         // The GUI binary inserts the real value before this plugin builds;
@@ -1113,6 +1116,7 @@ struct MiscUiParams<'w> {
 #[derive(bevy::ecs::system::SystemParam)]
 struct UiShellParams<'w> {
     settings_session: ResMut<'w, crate::settings::SettingsSession>,
+    api_endpoint: Res<'w, fe_runtime::app::RuntimeApiEndpoint>,
     topbar: ResMut<'w, crate::ui_shell::topbar::TopbarState>,
     left_sidebar: ResMut<'w, crate::ui_shell::left_sidebar::LeftSidebarState>,
     right_sidebar: ResMut<'w, crate::ui_shell::right_sidebar::RightSidebarState>,
@@ -1142,6 +1146,9 @@ fn gardener_ui_system(
     mut ui_shell: UiShellParams,
 ) {
     let Ok(ectx) = ctx.ctx_mut() else { return };
+    if inspector.api_endpoint != ui_shell.api_endpoint.0 {
+        inspector.api_endpoint = ui_shell.api_endpoint.0;
+    }
 
     let rect = panels::gardener_console(
         ectx,

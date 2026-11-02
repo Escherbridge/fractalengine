@@ -1,5 +1,13 @@
 # fractalengine (GUI binary) — main wiring rationale
 
+## Confirmed local API address
+
+The existing API-listening fan-out always forwards the actual bound SocketAddr
+to `api_endpoint::install`, alongside its opt-in dev-token and QA-control feeds.
+That bridge writes `fe_runtime::app::RuntimeApiEndpoint`; it does not infer a
+port or advertise a listener before binding. Inspector examples consume the
+resource mirror. Failure to receive an address leaves those examples unavailable.
+
 ## §qa-dialog-window-controls
 
 Actual API listener notification is fanned out once to the dev-token writer and QA control host; cloned receivers

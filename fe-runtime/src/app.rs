@@ -17,6 +17,10 @@ pub struct NetworkCommandSender(pub crossbeam::channel::Sender<NetworkCommand>);
 #[derive(Resource)]
 pub struct DbCommandSender(pub crossbeam::channel::Sender<DbCommand>);
 
+/// Local API address confirmed by the server's bound-listener notification.
+#[derive(Resource, Default, Clone, Copy)]
+pub struct RuntimeApiEndpoint(pub Option<std::net::SocketAddr>);
+
 #[derive(Resource)]
 pub struct NetworkEventReceiver(pub Arc<Mutex<crossbeam::channel::Receiver<NetworkEvent>>>);
 

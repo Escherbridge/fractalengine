@@ -842,3 +842,10 @@ and the existing twelve content kinds. Explicit legacy render_distance/fallback
 metadata survives updates; unknown fields refuse lossy editing. Local-only
 Get/Set commands are mandatory-correlated with no API reply family. Snapshot
 can_manage is advisory; the DB derives its actual actor and stored authority.
+
+## Confirmed local API endpoint
+
+app::RuntimeApiEndpoint carries only the SocketAddr reported after the API
+listener binds. It defaults to unavailable; GUI examples must not infer an
+address from environment variables or a default port. The host owns updates,
+and the Inspector receives a form-display mirror of the confirmed address.
