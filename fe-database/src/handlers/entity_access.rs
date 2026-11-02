@@ -14,6 +14,21 @@ fn bounded_identity(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
 }
 
+fn scope_contains(target: &crate::ScopeParts, scope: &str) -> bool {
+    let Ok(candidate) = crate::parse_scope(scope) else {
+        return false;
+    };
+    target.verse_id == candidate.verse_id
+        && target
+            .fractal_id
+            .as_ref()
+            .is_none_or(|id| candidate.fractal_id.as_ref() == Some(id))
+        && target
+            .petal_id
+            .as_ref()
+            .is_none_or(|id| candidate.petal_id.as_ref() == Some(id))
+}
+
 async fn authority(
     db: &Db,
     target: &EntityAccessTarget,
@@ -46,6 +61,11 @@ pub(crate) async fn load(
     let access = authority(db, target, local_did).await?;
     let local_role = access.role().to_string();
     let parts = crate::parse_scope(&target.scope)?;
+    let child_marker = match (&parts.fractal_id, &parts.petal_id) {
+        (None, None) => Some("-FRACTAL#"),
+        (Some(_), None) => Some("-PETAL#"),
+        _ => None,
+    };
     let mut scopes = vec![target.scope.clone()];
     while let Some(parent) = crate::parent_scope(scopes.last().unwrap()) {
         scopes.push(parent);
@@ -55,10 +75,10 @@ pub(crate) async fn load(
          (SELECT peer_did, scope, role FROM role WHERE scope IN $access_scopes ORDER BY scope, peer_did LIMIT 257) AS roles, \
          (SELECT jti, scope, max_role, label, sub, created_at, expires_at, revoked, client FROM api_token \
           WHERE revoked = false AND expires_at > $access_now \
-          AND (scope = $access_scope OR string::starts_with(scope, $access_child)) ORDER BY jti LIMIT 51) AS tokens \
+          AND (scope = $access_scope OR ($access_has_children AND string::starts_with(scope, $access_child))) ORDER BY jti LIMIT 51) AS tokens \
          FROM verse WHERE verse_id = $access_verse TIMEOUT 5s",
         vec![("access_scopes".into(), json!(scopes)), ("access_now".into(), json!(chrono::Utc::now().to_rfc3339())),
-             ("access_scope".into(), json!(target.scope)), ("access_child".into(), json!(format!("{}-",target.scope))),
+             ("access_scope".into(), json!(target.scope)), ("access_child".into(), json!(format!("{}{}",target.scope,child_marker.unwrap_or("")))), ("access_has_children".into(), json!(child_marker.is_some())),
              ("access_verse".into(), json!(parts.verse_id))]).await?;
     anyhow::ensure!(
         serde_json::to_vec(&rows)?.len() <= 1024 * 1024,
@@ -118,8 +138,9 @@ pub(crate) async fn load(
         );
         roles.push((did, role.to_string()));
     }
-    let records: Vec<crate::api_token_store::ApiTokenRecord> =
+    let mut records: Vec<crate::api_token_store::ApiTokenRecord> =
         serde_json::from_value(row["tokens"].clone())?;
+    records.retain(|record| scope_contains(&parts, &record.scope));
     let mut tokens = super::api_token::records_to_info(records);
     let tokens_truncated = tokens.len() > MAX_TOKENS;
     tokens.truncate(MAX_TOKENS);
@@ -265,11 +286,11 @@ async fn revoke_token(
         bounded_identity(jti) && bounded_identity(sub),
         "Invalid token identity"
     );
+    let parts = crate::parse_scope(&target.scope)?;
     anyhow::ensure!(
-        scope == target.scope || scope.starts_with(&format!("{}-", target.scope)),
+        scope_contains(&parts, scope),
         "Token is outside this settings target"
     );
-    crate::parse_scope(scope)?;
     let access = authority(db, target, local_did).await?;
     let exact = "SELECT jti,sub,scope,revoked FROM api_token WHERE jti=$access_jti";
     let mut response = db

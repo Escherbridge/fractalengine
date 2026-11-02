@@ -293,6 +293,129 @@ fn an_editor_creating_a_petal_gets_no_implicit_owner_row() {
     let minted=access("access-token-mint",Access::MintToken {max_role:"viewer".into(),ttl_hours:1,client_did:None}).expect("scoped mint");
     assert!(minted.minted.is_some());assert!(!format!("{minted:?}").contains(&minted.minted.as_ref().unwrap().token),"Debug never reveals token");
     let token=minted.tokens.first().expect("readback token");
+    let verse_target = EntityAccessTarget {
+        entity_type: EntityType::Verse,
+        entity_id: owned_parts.verse_id.clone(),
+        scope: build_scope(&owned_parts.verse_id, None, None),
+    };
+    let fractal_target = EntityAccessTarget {
+        entity_type: EntityType::Fractal,
+        entity_id: owned_parts.fractal_id.clone().unwrap(),
+        scope: build_scope(
+            &owned_parts.verse_id,
+            owned_parts.fractal_id.as_deref(),
+            None,
+        ),
+    };
+    for (boundary, foreign_scopes) in [
+        (
+            verse_target,
+            vec![
+                build_scope(&format!("{}-other", owned_parts.verse_id), None, None),
+                build_scope(
+                    &format!("{}-other", owned_parts.verse_id),
+                    owned_parts.fractal_id.as_deref(),
+                    owned_parts.petal_id.as_deref(),
+                ),
+            ],
+        ),
+        (
+            fractal_target,
+            vec![
+                build_scope(
+                    &owned_parts.verse_id,
+                    Some(&format!(
+                        "{}-other",
+                        owned_parts.fractal_id.as_deref().unwrap()
+                    )),
+                    None,
+                ),
+                build_scope(
+                    &owned_parts.verse_id,
+                    Some(&format!(
+                        "{}-other",
+                        owned_parts.fractal_id.as_deref().unwrap()
+                    )),
+                    owned_parts.petal_id.as_deref(),
+                ),
+            ],
+        ),
+        (
+            target.clone(),
+            vec![build_scope(
+                &owned_parts.verse_id,
+                owned_parts.fractal_id.as_deref(),
+                Some(&format!(
+                    "{}-other",
+                    owned_parts.petal_id.as_deref().unwrap()
+                )),
+            )],
+        ),
+    ] {
+        for foreign_scope in foreign_scopes {
+            let foreign = fe_database::api_token_store::ApiTokenRecord {
+                jti: format!("foreign-{}", ulid::Ulid::new()),
+                scope: foreign_scope.clone(),
+                max_role: "viewer".into(),
+                label: None,
+                sub: local_did(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+                expires_at: "2099-01-01T00:00:00Z".into(),
+                revoked: false,
+                client: None,
+            };
+            rt.block_on(fe_database::api_token_store::store_api_token(&db, &foreign))
+                .expect("foreign token fixture");
+            let DbResult::EntityAccessFinished { result, .. } = harness.ask(
+                DbCommand::EntityAccess {
+                    target: boundary.clone(),
+                    action: Access::Load { peer_dids: vec![] },
+                    request_id: "access-hyphen-boundary-load".into(),
+                },
+                |r| matches!(r, DbResult::EntityAccessFinished { .. }),
+            ) else {
+                unreachable!()
+            };
+            let loaded = result.expect("boundary target loads");
+            assert!(
+                loaded.tokens.iter().any(|row| row.jti == token.jti),
+                "Real descendants remain visible"
+            );
+            assert!(
+                loaded.tokens.iter().all(|row| row.jti != foreign.jti),
+                "Hyphen-prefix scope must not expose foreign metadata: {} / {}",
+                boundary.scope,
+                foreign.scope
+            );
+            let DbResult::EntityAccessFinished { result, .. } = harness.ask(
+                DbCommand::EntityAccess {
+                    target: boundary.clone(),
+                    action: Access::RevokeToken {
+                        jti: foreign.jti.clone(),
+                        sub: foreign.sub.clone(),
+                        scope: foreign.scope.clone(),
+                    },
+                    request_id: "access-hyphen-boundary-revoke".into(),
+                },
+                |r| matches!(r, DbResult::EntityAccessFinished { .. }),
+            ) else {
+                unreachable!()
+            };
+            assert!(
+                result.is_err(),
+                "Hyphen-prefix token is outside the parsed target components"
+            );
+            assert!(
+                !rt.block_on(fe_database::api_token_store::is_token_revoked(
+                    &db,
+                    &foreign.jti
+                ))
+                .unwrap(),
+                "Refused foreign token remains active"
+            );
+        }
+    }
+
     assert!(access("access-token-wrong-sub",Access::RevokeToken {jti:token.jti.clone(),sub:"wrong".into(),scope:token.scope.clone()}).is_err());
     let refreshed=access("access-token-still-present",Access::Load {peer_dids:vec![]}).unwrap();assert!(refreshed.tokens.iter().any(|row|row.jti==token.jti));
     let revoked=access("access-token-revoke",Access::RevokeToken {jti:token.jti.clone(),sub:token.sub.clone(),scope:token.scope.clone()}).expect("exact target revoke");
