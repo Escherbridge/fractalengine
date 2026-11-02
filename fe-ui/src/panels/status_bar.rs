@@ -32,6 +32,8 @@ pub(crate) fn status_bar(
     // F6: startup identity-degradation warning — session-sticky until the
     // user clicks it away (fractalengine/src/AGENTS.md §identity-tiers).
     identity_banner: &mut crate::plugin::IdentityBanner,
+    local_role: &crate::plugin::LocalUserRole,
+    node_identity: Option<&fe_identity::NodeIdentity>,
 ) {
     egui::TopBottomPanel::bottom("statusbar")
         .exact_height(22.0)
@@ -66,13 +68,17 @@ pub(crate) fn status_bar(
 
                 ui.separator();
                 // Clickable peer count opens debug panel
-                let peer_label = egui::RichText::new(format!("{} peers", peer_count))
-                    .small()
-                    .color(theme::TEXT_DIM);
+                let peer_label = egui::RichText::new(format!(
+                    "{} {}",
+                    peer_count,
+                    if peer_count == 1 { "peer" } else { "peers" }
+                ))
+                .small()
+                .color(theme::STATUS_NORMAL);
                 if ui
-                    .add(egui::Label::new(peer_label).sense(egui::Sense::click()))
+                    .small_button(peer_label)
                     .button_named(ui, "Open peer debug panel")
-                    .on_hover_text("Click for peer debug panel")
+                    .on_hover_text("Open connection and peer details")
                     .clicked()
                 {
                     if matches!(ui_mgr.active_dialog, ActiveDialog::PeerDebug) {
@@ -82,22 +88,8 @@ pub(crate) fn status_bar(
                     }
                 }
 
-                // Phase F: show active verse name
-                if let Some(ref _vid) = nav.active_verse_id {
-                    ui.separator();
-                    ui.label(
-                        egui::RichText::new(format!("Verse: {}", nav.active_verse_name))
-                            .small()
-                            .color(theme::TEXT_DIM),
-                    );
-                } else if !is_online {
-                    ui.separator();
-                    ui.label(
-                        egui::RichText::new("Local only")
-                            .small()
-                            .color(theme::TEXT_MUTED),
-                    );
-                }
+                ui.separator();
+                crate::role_chip::role_status(ui, local_role, nav, node_identity);
 
                 ui.separator();
                 // "rooms" is a legacy table with no in-app create path — not shown.

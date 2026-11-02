@@ -6,7 +6,7 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass};
 use fe_database::RoleLevel;
 
-use crate::{atlas::DashboardState, panels, panels::toolbar::Tool, role_chip};
+use crate::{atlas::DashboardState, panels, panels::toolbar::Tool};
 
 // ---------------------------------------------------------------------------
 // Compat re-exports — symbols reachable at `fe_ui::plugin::*` before the
@@ -81,7 +81,7 @@ fn watchdog_transition(prev_exceeded: bool, count: usize, ceiling: usize) -> (bo
 }
 
 /// Counts `Mesh3d` entities each frame (archetypal filter — cheap) and trips
-/// the budget gate + toast when the ceiling is crossed. Runs in `Last` so the
+/// the budget gate and persistent condition when exceeded. Runs in `Last` so the
 /// gate is set before the next frame's spawners. See AGENTS.md §mesh-budget.
 fn mesh_instance_watchdog(
     meshes: Query<(), With<Mesh3d>>,
@@ -93,6 +93,7 @@ fn mesh_instance_watchdog(
     mut budget: ResMut<MeshInstanceBudget>,
     mut ui_mgr: ResMut<UiManager>,
     time: Res<crate::notice::NoticeClock>,
+    mut last_condition: Local<Option<(usize, usize)>>,
 ) {
     let count = meshes.iter().len();
     let (exceeded, announce) = watchdog_transition(budget.exceeded, count, budget.ceiling);
@@ -126,19 +127,24 @@ fn mesh_instance_watchdog(
         budget.churn_added = 0;
         budget.churn_removed = 0;
     }
+    if exceeded && *last_condition != Some((count, budget.ceiling)) {
+        ui_mgr.set_condition(
+            "mesh_budget",
+            Some(format!(
+                "Scene too large: {count} mesh instances (limit {}). Spawning paused.",
+                budget.ceiling,
+            )),
+        );
+        *last_condition = Some((count, budget.ceiling));
+    } else if !exceeded && last_condition.take().is_some() {
+        ui_mgr.set_condition("mesh_budget", None);
+    }
     budget.last_count = count;
     if announce {
         bevy::log::error!(
             "mesh instance watchdog: {} instances > ceiling {} — further scene spawning halted",
             count,
             budget.ceiling
-        );
-        ui_mgr.show_toast(
-            format!(
-                "Scene too large: {count} mesh instances (limit {}). Spawning paused.",
-                budget.ceiling
-            ),
-            time.elapsed_secs_f64(),
         );
     }
     budget.exceeded = exceeded;
@@ -449,6 +455,45 @@ mod tests {
         assert!(
             matches!(rx.try_recv().unwrap(), fe_runtime::messages::DbCommand::ResolveLocalRole { scope } if scope == "VERSE#v2-FRACTAL#f2")
         );
+        let ctx = bevy_egui::egui::Context::default();
+        for (resolved, scoped, expected) in [
+            (None, true, "Role: \u{2014}"),
+            (Some(RoleLevel::Editor), true, "Role: Editor"),
+            (Some(RoleLevel::None), true, "Role: No access"),
+            (Some(RoleLevel::Viewer), false, "Role: \u{2014}"),
+        ] {
+            let mut nav = crate::navigation_manager::NavigationManager::default();
+            if scoped {
+                nav.navigate_to_verse("v2", "Verse 2");
+            }
+            let output = ctx.run(Default::default(), |ctx| {
+                bevy_egui::egui::CentralPanel::default().show(ctx, |ui| {
+                    crate::role_chip::role_status(
+                        ui,
+                        &LocalUserRole { role: resolved },
+                        &nav,
+                        None,
+                    );
+                });
+            });
+            let text: String = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    bevy_egui::egui::epaint::Shape::Text(text) => {
+                        Some(text.galley.job.text.as_str())
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                text.contains(expected),
+                "role status must match actual resolution: {text}"
+            );
+            if scoped {
+                assert!(text.contains("Verse 2"));
+            }
+        }
     }
 
     #[test]
@@ -497,6 +542,55 @@ mod tests {
     #[test]
     fn watchdog_recovers_when_count_drops() {
         assert_eq!(watchdog_transition(true, 10, 2_000_000), (false, false));
+        let mut app = App::new();
+        app.init_resource::<UiManager>()
+            .init_resource::<crate::notice::NoticeClock>()
+            .insert_resource(MeshInstanceBudget {
+                ceiling: 2,
+                ..Default::default()
+            })
+            .add_systems(Update, mesh_instance_watchdog);
+        let meshes: Vec<_> = (0..3)
+            .map(|_| app.world_mut().spawn(Mesh3d::default()).id())
+            .collect();
+        for _ in 0..2 {
+            app.update();
+            let manager = app.world().resource::<UiManager>();
+            assert_eq!(
+                manager
+                    .conditions()
+                    .filter(|(key, _)| *key == "mesh_budget")
+                    .count(),
+                1
+            );
+            assert!(
+                manager.active_notice(0.0).is_none(),
+                "ongoing conditions are not transient notices"
+            );
+        }
+        app.world_mut().resource_mut::<MeshInstanceBudget>().ceiling = 1;
+        app.update();
+        assert!(
+            app.world()
+                .resource::<UiManager>()
+                .conditions()
+                .next()
+                .unwrap()
+                .1
+                .contains("limit 1")
+        );
+        for mesh in meshes {
+            app.world_mut().despawn(mesh);
+        }
+        app.update();
+        assert!(!app.world().resource::<MeshInstanceBudget>().exceeded);
+        assert!(
+            app.world()
+                .resource::<UiManager>()
+                .conditions()
+                .next()
+                .is_none()
+        );
     }
 
     #[test]
@@ -957,8 +1051,7 @@ struct P2pDialogParams<'w> {
     node_mgr: ResMut<'w, crate::node_manager::NodeManager>,
     ui_mgr: ResMut<'w, UiManager>,
     portal_rect: ResMut<'w, fe_webview::plugin::PortalPanelRect>,
-    // TODO: add node_identity once fe-identity is a dependency of fe-ui
-    // node_identity: Res<'w, fe_identity::NodeIdentity>,
+    node_identity: Option<Res<'w, fe_identity::NodeIdentity>>,
 }
 
 /// Small bundle for miscellaneous read/write-once resources that don't fit an
@@ -1083,6 +1176,7 @@ fn gardener_ui_system(
         &misc.downloads,
         &mut misc.render_override,
         &mut misc.identity_banner,
+        p2p.node_identity.as_deref(),
         &misc.volume_report,
     );
     // Pointer routing excludes the resize bands: a press that starts a window
@@ -1109,12 +1203,6 @@ fn gardener_ui_system(
     p2p.portal_rect.y = insets.y;
     p2p.portal_rect.width = insets.width;
     p2p.portal_rect.height = insets.height;
-
-    let role_label = match &local_role.role {
-        Some(role) => role.to_string(),
-        None => "viewer".to_string(),
-    };
-    role_chip::role_chip_hud(ectx, &role_label);
 
     // terrain_proposal_delta_viz S3 (FR-3): the live preview readout. A
     // standalone overlay rather than a widget spliced into

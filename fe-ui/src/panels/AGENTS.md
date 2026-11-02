@@ -527,3 +527,17 @@ The existing captured scope/request ID travels through ScopedQuery; stored DB
 Viewer authority and source substitution are the actual guard. Results
 correlation/invalidation and current-petal selection are unchanged. The hint
 lists only petal-filtered desktop sources.
+
+## §feedback-rendering
+
+The last overlay uses active_notice rather than active_toast, so severity and
+notice ID reach the renderer. Errors use normal-size text, reserve a named
+Dismiss action, and call hold_notice on pointer containment. Dismiss retains
+the history entry. The existing numeric render smoke also exercises real pointer
+hover and press/release through expiry, priority and dismissal, alongside the
+queue's existing journeys.
+
+The status bar receives LocalUserRole and optional injected NodeIdentity through
+gardener_console. Role text is bounded/truncated with full verse and capability
+details on hover; connection status uses neutral shared tokens. See ../AGENTS.md
+§feedback-status for contrast pairs and condition ownership.

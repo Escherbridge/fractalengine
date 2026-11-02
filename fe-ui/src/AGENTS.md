@@ -1337,3 +1337,32 @@ pending state; old replies cannot hydrate it. Material/primitive changes invalid
 property readbacks and transform-only commits do not cause needless material queries. Missing material is distinct
 from unavailable or over4096-byte material; raw JSON type is retained in bounded previews. Requests use a monotonic
 30-second deadline and bounded retry. No whole-property-bag cache or unscoped SQL is introduced.
+
+
+## §feedback-status
+
+The notice renderer uses theme::notice_fill and NOTICE_TEXT while UiManager
+remains the queue, priority, expiry, hold and history authority. Only Errors
+offer Dismiss and pin on hover; a held error stays until dismissal, matching
+the existing queue contract. The renderer reserves space beside wrapped text
+for the action. Info and Advisory retain their automatic lifetimes.
+
+Role status belongs to the status bar. It shows the resolved current-scope
+role plus verse name; absent resolution or no verse shows a dash, distinct
+from resolved No access. Capability copy is advisory, never authorization.
+The optional NodeIdentity resource comes from the binary and supplies only
+the public DID on hover; harnesses without it report unavailable.
+
+The mesh watchdog owns the mesh_budget condition key. It updates only when
+count/ceiling changes while exceeded and clears on recovery. This ongoing
+condition does not compete with completed-action notices. Existing rising-edge
+logging and the spawn gate remain unchanged.
+
+WCAG sRGB relative luminance gives TEXT_MUTED (145,145,165), TEXT_DIM
+(155,155,175) and STATUS_NORMAL (155,165,175) at least 4.5:1 against panel,
+status, dialog and button fills; muted/button is the tightest pair (~4.7:1).
+NOTICE_TEXT exceeds 4.5:1 on all three notice fills at full opacity. Fade
+transitions are transient; selected/disabled/overlay pairs outside this set
+need separate checks when adopted. tab_fill and BG_PRIMARY provide neutral
+shared emphasis for owned tab/action integrations. The existing render journey
+contains contrast assertions; execution is pending the final integrated sweep.

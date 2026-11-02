@@ -54,6 +54,7 @@ pub(crate) mod widgets;
 
 use bevy_egui::egui;
 
+use crate::accessibility::ResponseExt;
 use crate::actions::UiManager;
 use crate::asset_ops::AssetDownloadStatus;
 use crate::dialogs::ActiveDialog;
@@ -63,7 +64,7 @@ use crate::plugin::{
     ViewportCursorWorld,
 };
 use crate::ui_shell::modal::{
-    guarded, is_dialog_family, transient_order, TransientLayer, TransientVisibility,
+    TransientLayer, TransientVisibility, guarded, is_dialog_family, transient_order,
 };
 use crate::verse_manager::VerseManager;
 use fe_runtime::messages::DbCommand;
@@ -144,6 +145,7 @@ pub fn gardener_console(
     // F6: startup identity-degradation banner (persistent, click-to-dismiss
     // segment in the status bar) — see `panels/AGENTS.md` §identity-banner.
     identity_banner: &mut crate::plugin::IdentityBanner,
+    node_identity: Option<&fe_identity::NodeIdentity>,
     // terrain_proposal_delta_viz_20261025 S6: the Volume report's live
     // query + latest true-figures answer. Read-only here — `sync_volume_
     // report_request`/`drain_volume_report_result` (plugin.rs, PostUpdate)
@@ -179,6 +181,8 @@ pub fn gardener_console(
         hierarchy,
         vis_state,
         identity_banner,
+        local_role,
+        node_identity,
     );
 
     // Left sidebar (FR-3 shell_ux_sidebar): user-sticky. The manager applies
@@ -407,29 +411,52 @@ pub fn gardener_console(
     viewport_response.response.rect
 }
 
-fn render_toast(ctx: &egui::Context, ui_mgr: &UiManager) {
+fn render_toast(ctx: &egui::Context, ui_mgr: &mut UiManager) {
     let now = ctx.input(|i| i.time);
-    let Some((msg, alpha)) = ui_mgr.active_toast(now) else {
+    let Some((notice, alpha)) = ui_mgr.active_notice(now) else {
         return;
     };
-
-    let bg = egui::Color32::from_rgba_unmultiplied(30, 30, 40, (alpha * 220.0) as u8);
-    let text_color = egui::Color32::from_rgba_unmultiplied(220, 220, 220, (alpha * 255.0) as u8);
-
-    egui::Area::new(egui::Id::new("toast_overlay"))
+    let id = notice.id;
+    let is_error = notice.severity == crate::notice::Severity::Error;
+    let mut dismissed = false;
+    let area = egui::Area::new(egui::Id::new("toast_overlay"))
+        .order(egui::Order::Foreground)
         .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(16.0, -40.0))
-        .interactable(false)
+        .interactable(true)
         .show(ctx, |ui| {
+            ui.set_max_width((ctx.viewport_rect().width() - 32.0).clamp(80.0, 560.0));
             egui::Frame::NONE
-                .fill(bg)
-                .inner_margin(egui::Margin::symmetric(12, 6))
+                .fill(crate::theme::notice_fill(notice.severity).gamma_multiply(alpha))
+                .inner_margin(egui::Margin::symmetric(12, 8))
                 .corner_radius(6.0)
                 .show(ui, |ui| {
-                    ui.label(egui::RichText::new(msg).color(text_color).small());
+                    ui.horizontal(|ui| {
+                        let text = egui::RichText::new(&notice.text)
+                            .color(crate::theme::NOTICE_TEXT.gamma_multiply(alpha));
+                        let text = if is_error { text } else { text.small() };
+                        let action_width = if is_error { 76.0 } else { 0.0 };
+                        ui.allocate_ui_with_layout(
+                            egui::vec2((ui.available_width() - action_width).max(24.0), 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.add(egui::Label::new(text).wrap())
+                                    .named(ui, format_args!("Notice: {}", notice.text));
+                            },
+                        );
+                        if is_error {
+                            dismissed = ui
+                                .add(egui::Button::new("Dismiss").fill(crate::theme::BG_PRIMARY))
+                                .named(ui, format_args!("Dismiss notice {id}"))
+                                .clicked();
+                        }
+                    });
                 });
         });
-
-    // Request repaint while toast is visible so the fade animates
+    if dismissed {
+        ui_mgr.dismiss_notice(id);
+    } else if is_error && area.response.contains_pointer() {
+        ui_mgr.hold_notice(id, now);
+    }
     ctx.request_repaint();
 }
 
@@ -576,6 +603,7 @@ mod tests {
                         &downloads,
                         &mut render_override,
                         &mut identity_banner,
+                        None,
                         &volume_report,
                     );
                 });
@@ -609,5 +637,104 @@ mod tests {
         assert!(path_state.snap.anchor_radius_m.is_finite());
         assert!(path_state.edited_track_style.width.is_finite());
         assert!(app_settings.render_distance.is_finite());
+
+        let mut notices = UiManager::default();
+        notices.show_error("Import failed: choose a readable file", 100.0);
+        let notice_id = notices.active_notice(100.0).unwrap().0.id;
+        let frame = |time: f64, events: Vec<egui::Event>, manager: &mut UiManager| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 800.0),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    crate::ui_shell::layout_policy::begin_frame(ctx, true);
+                    crate::ui_shell::layout_policy::begin_ui_pass(ctx);
+                    render_toast(ctx, manager);
+                },
+            );
+            crate::ui_shell::layout_policy::observations(&ctx)
+        };
+        frame(100.1, vec![], &mut notices);
+        let controls = frame(100.2, vec![], &mut notices);
+        let dismiss = controls
+            .controls
+            .iter()
+            .find(|c| c.clickable)
+            .expect("visible Dismiss action");
+        let point = dismiss.hit.intersect(dismiss.clip).center();
+        assert!(dismiss.allowed && dismiss.hit.contains(point));
+        frame(100.3, vec![egui::Event::PointerMoved(point)], &mut notices);
+        frame(108.0, vec![egui::Event::PointerMoved(point)], &mut notices);
+        assert_eq!(
+            notices.active_notice(108.0).unwrap().0.id,
+            notice_id,
+            "hover pins the rendered error past its lifetime"
+        );
+        notices.show_toast("Another action completed", 108.0);
+        for (time, pressed) in [(108.1, true), (108.2, false)] {
+            frame(
+                time,
+                vec![egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                &mut notices,
+            );
+        }
+        assert_eq!(
+            notices.active_notice(108.2).unwrap().0.text,
+            "Another action completed"
+        );
+        assert_eq!(
+            notices.error_history().count(),
+            1,
+            "dismiss retains the error history"
+        );
+        assert!(notices.latest_unacknowledged_error().is_none());
+
+        let luminance = |color: egui::Color32| {
+            let channels = [color.r(), color.g(), color.b()].map(|v| {
+                let v = f64::from(v) / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            });
+            channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
+        };
+        for foreground in [
+            crate::theme::TEXT_DIM,
+            crate::theme::TEXT_MUTED,
+            crate::theme::STATUS_NORMAL,
+        ] {
+            for background in [
+                crate::theme::BG_PANEL,
+                crate::theme::BG_STATUSBAR,
+                crate::theme::BG_DIALOG,
+                crate::theme::BG_BUTTON,
+            ] {
+                assert!((luminance(foreground) + 0.05) / (luminance(background) + 0.05) >= 4.5);
+            }
+        }
+        for severity in [
+            crate::notice::Severity::Info,
+            crate::notice::Severity::Advisory,
+            crate::notice::Severity::Error,
+        ] {
+            assert!(
+                (luminance(crate::theme::NOTICE_TEXT) + 0.05)
+                    / (luminance(crate::theme::notice_fill(severity)) + 0.05)
+                    >= 4.5
+            );
+        }
     }
 }
