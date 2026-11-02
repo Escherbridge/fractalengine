@@ -125,8 +125,16 @@ pub struct EarthworkVolumeReport {
 pub fn cut_fill_rgba(dh_m: f32, ramp_max_m: f32, neutral_m: f32) -> [f32; 4] {
     // Degenerate inputs never yield out-of-range channels: a non-finite dh is
     // undrawable (transparent); a neutral band at/above the ramp saturates.
-    let ramp_max = if ramp_max_m.is_finite() { ramp_max_m.max(0.001) } else { 0.001 };
-    let neutral = if neutral_m.is_finite() { neutral_m.max(0.0) } else { 0.0 };
+    let ramp_max = if ramp_max_m.is_finite() {
+        ramp_max_m.max(0.001)
+    } else {
+        0.001
+    };
+    let neutral = if neutral_m.is_finite() {
+        neutral_m.max(0.0)
+    } else {
+        0.0
+    };
     if !dh_m.is_finite() || dh_m.abs() <= neutral {
         return [0.0, 0.0, 0.0, 0.0];
     }
@@ -285,6 +293,10 @@ pub struct VolumeItem {
     pub id: String,
     /// Operator/type name (e.g., "raise", "earthwork_region").
     pub kind: String,
+    /// Actual persisted operation, separate from the record kind.
+    pub operation: String,
+    /// Physical material declared by the terrain record, when specified.
+    pub material: Option<String>,
     /// Standalone cut m³ clipped to the selection footprint.
     pub cut_m3: f64,
     /// Standalone fill m³ clipped to the selection footprint.
@@ -428,10 +440,7 @@ mod tests {
             b_out > r_out && b_out > g_out,
             "fill (dh>0) must have blue dominant"
         );
-        assert!(
-            b_out >= 0.9,
-            "fill blue channel must be high; got {b_out}"
-        );
+        assert!(b_out >= 0.9, "fill blue channel must be high; got {b_out}");
 
         let [r_out, g_out, b_out, a_out] = cut_fill_rgba(-0.6, ramp_max, neutral);
         assert!(a_out > 0.0, "dh<neutral must be opaque");
@@ -462,18 +471,17 @@ mod tests {
         assert!(b_min < 1.0, "cut: blue < 1.0");
 
         // Beyond the ramp max: clamped to saturation (not brighter).
-        let [_, _, b_beyond, a_beyond] =
-            cut_fill_rgba(2.0 * ramp_max, ramp_max, neutral);
+        let [_, _, b_beyond, a_beyond] = cut_fill_rgba(2.0 * ramp_max, ramp_max, neutral);
         assert!(a_beyond > 0.0, "beyond ramp must be opaque");
         assert_eq!(b_beyond, 1.0, "beyond saturates at blue = 1.0");
-        assert_eq!(
-            a_beyond, a_max,
-            "alpha does not change beyond saturation"
-        );
+        assert_eq!(a_beyond, a_max, "alpha does not change beyond saturation");
 
         // Negative neutral band (clamped to 0) should not panic.
         let [_, _, _, a_neg] = cut_fill_rgba(1.0, 5.0, -0.5);
-        assert!(a_neg > 0.0, "negative neutral band is clamped; 1.0 must be opaque");
+        assert!(
+            a_neg > 0.0,
+            "negative neutral band is clamped; 1.0 must be opaque"
+        );
 
         // Negative ramp max (clamped to 0.001) should not panic.
         let [_, _, _, a_tiny] = cut_fill_rgba(0.1, -5.0, 0.05);
@@ -482,14 +490,23 @@ mod tests {
         // Degenerate inputs never produce out-of-range channels (neutral band
         // wider than the ramp used to give 1 - (negative) > 1), and a
         // non-finite dh is undrawable rather than NaN-coloured.
-        for (dh, ramp, band) in [(0.1, -5.0, 0.05), (3.0, 1.0, 2.0), (-3.0, 1.0, 2.0), (1.0, f32::NAN, 0.1)] {
+        for (dh, ramp, band) in [
+            (0.1, -5.0, 0.05),
+            (3.0, 1.0, 2.0),
+            (-3.0, 1.0, 2.0),
+            (1.0, f32::NAN, 0.1),
+        ] {
             let rgba = cut_fill_rgba(dh, ramp, band);
             assert!(
                 rgba.iter().all(|c| (0.0..=1.0).contains(c)),
                 "cut_fill_rgba({dh}, {ramp}, {band}) = {rgba:?} left [0, 1]"
             );
         }
-        assert_eq!(cut_fill_rgba(f32::NAN, 5.0, 0.5)[3], 0.0, "NaN dh is transparent");
+        assert_eq!(
+            cut_fill_rgba(f32::NAN, 5.0, 0.5)[3],
+            0.0,
+            "NaN dh is transparent"
+        );
     }
 
     #[test]

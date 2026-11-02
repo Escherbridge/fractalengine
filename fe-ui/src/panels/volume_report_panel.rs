@@ -381,11 +381,17 @@ pub(crate) fn volume_report_to_tsv(result: &VolumeReportResult, nodes: &[NodeHit
     out.push_str(&format!("Step\t{:.3}\t{unit}\n", result.step_m));
     out.push_str(&format!("Overlap flagged\t{}\n", result.has_overlap));
     out.push('\n');
-    out.push_str("Item\tKind\tCut\tFill\tOverlap area\n");
+    out.push_str("Item\tKind\tOperation\tMaterial\tCut\tFill\tOverlap area\n");
     for item in &result.items {
         out.push_str(&format!(
-            "{}\t{}\t{:.3}\t{:.3}\t{:.3}\n",
-            item.id, item.kind, item.cut_m3, item.fill_m3, item.overlap_area_m2
+            "{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\n",
+            tsv_cell(&item.id),
+            tsv_cell(&item.kind),
+            tsv_cell(&item.operation),
+            tsv_cell(item.material.as_deref().unwrap_or("Not specified")),
+            item.cut_m3,
+            item.fill_m3,
+            item.overlap_area_m2
         ));
     }
     out.push('\n');
@@ -394,6 +400,10 @@ pub(crate) fn volume_report_to_tsv(result: &VolumeReportResult, nodes: &[NodeHit
         out.push_str(&format!("{}\t{}\n", node.name, node.kind));
     }
     out
+}
+
+fn tsv_cell(value: &str) -> String {
+    value.replace(['\t', '\r', '\n'], " ")
 }
 
 // ---------------------------------------------------------------------------
@@ -462,6 +472,37 @@ pub(crate) fn render_volume_report_body(
     ui.label(egui::RichText::new(label).color(theme::TEXT_DIM));
     ui.add_space(4.0);
     let unit = volume_unit_suffix(result.scaled);
+    if let Some(selected) = state
+        .selection_key
+        .as_deref()
+        .and_then(|key| key.split_once(':').map(|(_, id)| id))
+    {
+        if let Some(item) = result.items.iter().find(|item| item.id == selected) {
+            ui.label(egui::RichText::new(format!("Selected {}", item.operation)).strong());
+            ui.label(format!(
+                "Material: {}",
+                item.material.as_deref().unwrap_or("Not specified")
+            ));
+            ui.label(
+                egui::RichText::new(format!(
+                    "Fill: {:.2} {unit}\u{b3}  ·  Cut: {:.2} {unit}\u{b3}",
+                    item.fill_m3, item.cut_m3
+                ))
+                .strong(),
+            );
+            ui.label(format!(
+                "Net: {:.2} {unit}\u{b3}",
+                item.fill_m3 - item.cut_m3
+            ));
+            ui.label(
+                egui::RichText::new("Selected item alone, clipped to this footprint")
+                    .small()
+                    .color(theme::TEXT_DIM),
+            );
+            ui.separator();
+        }
+    }
+    ui.label(egui::RichText::new("Combined terrain change").strong());
     ui.label(format!("Area: {:.2} {unit}\u{b2}", result.area_m2));
     ui.label(format!("Cut: {:.2} {unit}\u{b3}", result.cut_m3));
     ui.label(format!("Fill: {:.2} {unit}\u{b3}", result.fill_m3));
@@ -509,8 +550,12 @@ pub(crate) fn render_volume_report_body(
                 String::new()
             };
             ui.label(format!(
-                "{} ({}): cut {:.2} {unit}\u{b3}, fill {:.2} {unit}\u{b3}{overlap}",
-                item.id, item.kind, item.cut_m3, item.fill_m3
+                "{} ({}; {}): cut {:.2} {unit}\u{b3}, fill {:.2} {unit}\u{b3}{overlap}",
+                item.id,
+                item.operation,
+                item.material.as_deref().unwrap_or("Not specified"),
+                item.cut_m3,
+                item.fill_m3
             ));
         }
     }
@@ -664,6 +709,8 @@ mod tests {
                     .push(fe_renderer::terrain_overlay::VolumeItem {
                         id: "overflow".into(),
                         kind: "raise".into(),
+                        operation: "raise".into(),
+                        material: Some("soil".into()),
                         cut_m3: 0.0,
                         fill_m3: 0.0,
                         overlap_area_m2: 0.0,
@@ -873,6 +920,8 @@ mod tests {
             VolumeItem {
                 id: "p1".into(),
                 kind: "raise".into(),
+                operation: "raise".into(),
+                material: Some("sand".into()),
                 cut_m3: 1.0,
                 fill_m3: 2.0,
                 overlap_area_m2: 0.0,
@@ -880,6 +929,8 @@ mod tests {
             VolumeItem {
                 id: "r2".into(),
                 kind: "earthwork_region".into(),
+                operation: "lower".into(),
+                material: Some("clay".into()),
                 cut_m3: 3.0,
                 fill_m3: 4.0,
                 overlap_area_m2: 5.0,
@@ -894,6 +945,7 @@ mod tests {
         let tsv = volume_report_to_tsv(&result, &nodes);
         assert!(tsv.contains("Cut\t12.500"), "totals present:\n{tsv}");
         assert!(tsv.contains("Fill\t0.000"), "totals present:\n{tsv}");
+        assert!(tsv.contains("raise\tsand") && tsv.contains("lower\tclay"));
         for item in &result.items {
             assert!(
                 tsv.contains(&item.id),

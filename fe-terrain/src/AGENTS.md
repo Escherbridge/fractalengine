@@ -1447,3 +1447,8 @@ describe selected-lattice coverage, not tile download progress or the sampling
 support outside the selection used by smoothing. Complete-coverage integration
 is unchanged. The renderer seam exposes both counts; consumers must withhold
 numeric reports when coverage is incomplete, including empty lattices.
+
+## Report item metadata
+
+The terrain-to-renderer volume seam carries each item's actual operation and material instead of dropping them when the record is a baked region. These labels do not change the composite integrator or coverage/finite refusal.
+

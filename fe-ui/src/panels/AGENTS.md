@@ -506,3 +506,7 @@ No custom color replaces selection or visibility state.
 The sidebar no longer hosts Reset Database or the old Space count grid. Moving
 the reset action to the campaign's application Danger Zone remains a separate
 shell task; this slice does not claim that rehoming is complete.
+## Selected terrain volume and material
+
+The true-volume block is the primary report. Footprint-only geometry is secondary and never labels arbitrary proposals as earth. Selected standalone fill/cut/net and declared material precede combined terrain totals; TSV preserves operation/material with delimiter-safe text.
+

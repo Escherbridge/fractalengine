@@ -266,3 +266,8 @@ updated coverage under the same correlation as resident heights change.
 Readiness also requires finite area, lattice step, totals and every per-item
 metric. Finite height endpoints alone cannot prevent subtraction or scaling
 overflow; UI and TSV consumers share this guard.
+
+## Terrain report metadata
+
+Volume items preserve persisted operation and material separately from their record kind. Selected-item standalone figures and combined-surface totals are distinct; material is never inferred from a render texture.
+

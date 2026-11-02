@@ -68,10 +68,7 @@ pub(crate) fn earthwork_regions_from_terrain(
                 .iter()
                 .filter_map(|p| serde_json::from_value::<[f32; 2]>(p.clone()).ok())
                 .collect();
-            Some(EarthworkRegionSummary {
-                id,
-                footprint,
-            })
+            Some(EarthworkRegionSummary { id, footprint })
         })
         .collect()
 }
@@ -141,11 +138,6 @@ pub(crate) fn render_report_body(
         u = report.length_unit
     ));
     ui.label(format!("Area: {:.2} {}", report.area, report.area_unit));
-    ui.label(
-        egui::RichText::new("Material: earth")
-            .small()
-            .color(theme::TEXT_DIM),
-    );
     ui.label(format!("Slope: {:.1}%", report.slope_pct));
     ui.label(format!("Bearing: {:.1}\u{00b0}", report.bearing_deg));
     if !report.has_scale {
@@ -156,13 +148,6 @@ pub(crate) fn render_report_body(
     // below (`volume_report_panel::render_volume_report_body`), sourced from
     // fe-terrain's real composite integrator — never the area×|delta|
     // approximation this body used to show.
-    ui.add_space(4.0);
-    ui.label(
-        egui::RichText::new("See Volume report below for true cut/fill.")
-            .small()
-            .color(theme::TEXT_DIM)
-            .italics(),
-    );
 }
 
 /// Pure geometry report for one proposal footprint. Kept free of egui/ECS so

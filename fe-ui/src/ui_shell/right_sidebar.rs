@@ -576,7 +576,6 @@ fn render_proposal_report_section(
     volume_report: &VolumeReportState,
 ) {
     section_chrome(ctx, state, RightSidebarSection::ProposalReport, |ui| {
-        proposal_report_panel::render_report_body(ui, proposal_state, world_scale);
         volume_report_panel::render_volume_report_body(
             ui,
             ui_mgr,
@@ -584,6 +583,16 @@ fn render_proposal_report_section(
             hierarchy,
             active_petal,
         );
+        if proposal_state.selected.as_ref().is_some_and(|selected| {
+            proposal_state
+                .proposals
+                .iter()
+                .any(|record| &record.id == selected)
+        }) {
+            ui.collapsing("Footprint geometry", |ui| {
+                proposal_report_panel::render_report_body(ui, proposal_state, world_scale);
+            });
+        }
     });
 }
 
@@ -670,16 +679,19 @@ fn render_settings_section(
 
         // hexon_scale FR-8/FR-10 ruler overlays (mirrored into fe-terrain's
         // RulerSettings by the main binary's terrain bridge).
-        ui.checkbox(&mut app_settings.show_scale_bar, "Scale bar").observed(ui)
+        ui.checkbox(&mut app_settings.show_scale_bar, "Scale bar")
+            .observed(ui)
             .on_hover_text("Bottom-left real-distance scale bar");
-        ui.checkbox(&mut app_settings.show_world_grid, "Metric grid").observed(ui)
+        ui.checkbox(&mut app_settings.show_world_grid, "Metric grid")
+            .observed(ui)
             .on_hover_text("Ground grid at round metric spacing (1 / 2 / 5 × 10ⁿ m); needs a map");
 
         ui.add_space(8.0);
         settings_heading(ui, "Terrain");
         let mut offline = app_settings.tile_mode == crate::settings::TileSourceMode::Offline;
         if ui
-            .checkbox(&mut offline, "Offline tiles (no network)").observed(ui)
+            .checkbox(&mut offline, "Offline tiles (no network)")
+            .observed(ui)
             .on_hover_text(
                 "Serve terrain only from installed hexons; off = each petal's own tile source mode",
             )
@@ -962,7 +974,8 @@ fn render_timeseries_fabric_controls(
     ] {
         let selected = current.mode == mode;
         if ui
-            .radio(selected, tss::mode_label(mode)).observed(ui)
+            .radio(selected, tss::mode_label(mode))
+            .observed(ui)
             .on_hover_text(mode_tooltip(mode))
             .clicked()
             && !selected
@@ -1208,7 +1221,8 @@ fn render_groups_section(
             // The DB refuses an over-long name or a registry past its cap.
             let can_add = !new_name.trim().is_empty() && groups.len() < MAX_VISIBILITY_GROUPS;
             let clicked = ui
-                .add_enabled(can_add, egui::Button::new("Add group")).observed(ui)
+                .add_enabled(can_add, egui::Button::new("Add group"))
+                .observed(ui)
                 .clicked();
             if can_add && (clicked || submitted) {
                 push_registry(ui_mgr, group_ops::with_group_added(groups, &new_name));

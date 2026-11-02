@@ -15,10 +15,9 @@ use crate::iot::{TrackRouteMap, TrackStyleMap};
 use crate::layers::{LayerId, LayerStack, LayerType};
 use crate::lod_ring::{
     capture_chunk_allowance, chunk_retained_by_any_focus, max_ring_radius_for_budget,
-    nearest_focus_index, ring_offsets,
-    ring_radius_tiles, spawn_despawn_radii, stale_for_nearest_focus, upsample_factor_for_height,
-    view_radius_world, FocusReach, DESPAWN_HYSTERESIS, MAX_STREAMING_FOCI, MAX_UPSAMPLE,
-    VIEW_RADIUS_FACTOR, ZOOM_BASE_HEIGHT_M,
+    nearest_focus_index, ring_offsets, ring_radius_tiles, spawn_despawn_radii,
+    stale_for_nearest_focus, upsample_factor_for_height, view_radius_world, FocusReach,
+    DESPAWN_HYSTERESIS, MAX_STREAMING_FOCI, MAX_UPSAMPLE, VIEW_RADIUS_FACTOR, ZOOM_BASE_HEIGHT_M,
 };
 use crate::mesh::interp::upsample_bilinear;
 use crate::mesh::terrain::terrain_mesh;
@@ -785,9 +784,8 @@ pub fn fetch_and_spawn_terrain_chunks(
             .iter()
             .filter(|chunk| {
                 let (z, x, y) = chunk.tile_coords;
-                chunk_anchor_world(TileCoord::new(x, y, z), projection, scale).is_ok_and(|anchor| {
-                    nearest_focus_index(anchor.to_array(), reaches) == Some(0)
-                })
+                chunk_anchor_world(TileCoord::new(x, y, z), projection, scale)
+                    .is_ok_and(|anchor| nearest_focus_index(anchor.to_array(), reaches) == Some(0))
             })
             .count()
     } else {
@@ -839,8 +837,7 @@ pub fn fetch_and_spawn_terrain_chunks(
 
         // Nearest-first so the camera's immediate surroundings fill before the edges.
         for (dx, dy) in ring_offsets(radius) {
-            let budget_spent =
-                held[slot] >= budget || spawned_this_frame >= MAX_SPAWNS_PER_FRAME;
+            let budget_spent = held[slot] >= budget || spawned_this_frame >= MAX_SPAWNS_PER_FRAME;
             // The main focus just stops; a capture keeps walking to count what it still awaits.
             if budget_spent && !focus.capture {
                 break;
@@ -1585,7 +1582,8 @@ fn render_terrain_proposals(
                 .next()
                 .flatten()
         };
-        let Some(lattice) = DeltaLattice::build(&base, &proposed, &footprint, grid_step, world_scale)
+        let Some(lattice) =
+            DeltaLattice::build(&base, &proposed, &footprint, grid_step, world_scale)
         else {
             continue;
         };
@@ -1601,7 +1599,8 @@ fn render_terrain_proposals(
         ghost_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, lattice.ghost_positions.clone());
         ghost_mesh.insert_indices(Indices::U32(lattice.indices.clone()));
         let tint = fe_renderer::terrain_overlay::op_tint(proposal.op_snake());
-        let ghost_material_handle = materials.add(fe_renderer::terrain_overlay::ghost_material(tint));
+        let ghost_material_handle =
+            materials.add(fe_renderer::terrain_overlay::ghost_material(tint));
         let mut ghost_entity = commands.spawn((
             Mesh3d(meshes.add(ghost_mesh)),
             MeshMaterial3d(ghost_material_handle),
@@ -1866,9 +1865,11 @@ fn bake_earthwork_regions(
         }
         let chunk_bounds = positions_world_xz_bounds(&positions, tx.translation);
         let touches = chunk_bounds.is_some_and(|cb| {
-            composite_regions
-                .iter()
-                .any(|r| r.footprint.bounds().is_some_and(|rb| bounds_intersect(cb, rb)))
+            composite_regions.iter().any(|r| {
+                r.footprint
+                    .bounds()
+                    .is_some_and(|rb| bounds_intersect(cb, rb))
+            })
         });
 
         if touches {
@@ -2460,12 +2461,12 @@ fn answer_volume_report_requests(
         return;
     };
 
-        let selection = crate::sculpt::Footprint::Polygon {
-            verts: request.footprint.clone(),
-        };
-        let step = region_grid_step(selection.bounds());
-        let world_scale = config.effective_world_scale();
-        let base = |x: f32, z: f32| height_field.as_ref().and_then(|f| f.height_at(x, z));
+    let selection = crate::sculpt::Footprint::Polygon {
+        verts: request.footprint.clone(),
+    };
+    let step = region_grid_step(selection.bounds());
+    let world_scale = config.effective_world_scale();
+    let base = |x: f32, z: f32| height_field.as_ref().and_then(|f| f.height_at(x, z));
 
     let proposals: Vec<crate::terrain_proposal::TerrainProposal> = config
         .proposals
@@ -2498,6 +2499,8 @@ fn answer_volume_report_requests(
                 crate::volume_report::VolumeItemKind::Proposal => item.op_snake.to_string(),
                 crate::volume_report::VolumeItemKind::Region => "earthwork_region".to_string(),
             },
+            operation: item.op_snake.to_string(),
+            material: item.material,
             cut_m3: item.cut_m3,
             fill_m3: item.fill_m3,
             overlap_area_m2: item.overlap_area_m2,
@@ -2558,14 +2561,25 @@ mod tests {
     fn auto_ramp_max_rounds_up_to_a_nice_value_and_floors_near_zero() {
         // Table-driven: every case's ramp must be >= the input depth (never
         // clips what it draws) and snap to a 1/2/5 x 10^n value.
-        let cases: &[(f32, f32)] = &[(0.0, 0.1), (0.05, 0.1), (0.9, 1.0), (1.4, 2.0), (3.0, 5.0), (7.0, 10.0), (12.0, 20.0)];
+        let cases: &[(f32, f32)] = &[
+            (0.0, 0.1),
+            (0.05, 0.1),
+            (0.9, 1.0),
+            (1.4, 2.0),
+            (3.0, 5.0),
+            (7.0, 10.0),
+            (12.0, 20.0),
+        ];
         for &(input, expected) in cases {
             let got = auto_ramp_max_m(input);
             assert!(
                 (got - expected).abs() < 1e-4,
                 "auto_ramp_max_m({input}) = {got}, expected {expected}"
             );
-            assert!(got >= input, "ramp must never clip its own input: {got} < {input}");
+            assert!(
+                got >= input,
+                "ramp must never clip its own input: {got} < {input}"
+            );
         }
     }
 
@@ -2577,11 +2591,17 @@ mod tests {
         let colors = heatmap_vertex_colors(&dh, 2.0);
         assert_eq!(colors.len(), 3);
         let [r_cut, _, b_cut, a_cut] = colors[0];
-        assert!(a_cut > 0.0 && r_cut > b_cut, "cut (dh<0) must read red-dominant");
+        assert!(
+            a_cut > 0.0 && r_cut > b_cut,
+            "cut (dh<0) must read red-dominant"
+        );
         let [_, _, _, a_zero] = colors[1];
         assert_eq!(a_zero, 0.0, "dh=0 is inside the neutral band");
         let [r_fill, _, b_fill, a_fill] = colors[2];
-        assert!(a_fill > 0.0 && b_fill > r_fill, "fill (dh>0) must read blue-dominant");
+        assert!(
+            a_fill > 0.0 && b_fill > r_fill,
+            "fill (dh>0) must read blue-dominant"
+        );
     }
 
     #[test]
@@ -2835,7 +2855,11 @@ mod tests {
     /// so lattice-based ghosts/heatmaps have something to render from frame
     /// one (the re-ground SEQUENCING itself is `relative_ghost_regrounds_once_
     /// covering_chunks_arrive`'s job; most other tests just need grounding).
-    fn proposal_app_grounded(proposals: Vec<TerrainProposal>, allowance: usize, tile: HeightTile) -> App {
+    fn proposal_app_grounded(
+        proposals: Vec<TerrainProposal>,
+        allowance: usize,
+        tile: HeightTile,
+    ) -> App {
         let mut app = proposal_app(proposals, allowance);
         app.world_mut()
             .resource_mut::<TerrainHeightField>()
@@ -2886,7 +2910,11 @@ mod tests {
             .and_then(|a| a.as_float3())
             .map(|p| p.to_vec())
             .unwrap_or_default();
-        positions.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap().then(a[2].partial_cmp(&b[2]).unwrap()));
+        positions.sort_by(|a, b| {
+            a[0].partial_cmp(&b[0])
+                .unwrap()
+                .then(a[2].partial_cmp(&b[2]).unwrap())
+        });
         positions
     }
 
@@ -3158,7 +3186,11 @@ mod tests {
         }
 
         let before = overlay_visibilities(&mut app);
-        assert_eq!(before.len(), 2, "ghost + heatmap drape spawned, both layer-bound");
+        assert_eq!(
+            before.len(),
+            2,
+            "ghost + heatmap drape spawned, both layer-bound"
+        );
         assert!(
             before.iter().all(|v| *v != Visibility::Hidden),
             "visible by default (OD-8)"
@@ -3179,7 +3211,9 @@ mod tests {
 
         // A rebuild WHILE the layer stays hidden (LayerStack untouched, so
         // `sync_layer_visibility` does not run) must spawn hidden, not pop back.
-        app.world_mut().resource_mut::<ActivePetalTerrain>().revision += 1;
+        app.world_mut()
+            .resource_mut::<ActivePetalTerrain>()
+            .revision += 1;
         app.update();
         let rebuilt = overlay_visibilities(&mut app);
         assert_eq!(rebuilt.len(), 2, "rebuild respawned ghost + drape");
@@ -3249,7 +3283,10 @@ mod tests {
         let region = region_proposal("r1", TerrainOp::Level, 0.0, 5.0);
         let mut app = baked_heatmap_app_without_terrain(vec![region], MAX_PROPOSAL_OVERLAYS);
         app.update();
-        assert!(baked_heatmap_entities(&mut app).is_empty(), "no terrain yet");
+        assert!(
+            baked_heatmap_entities(&mut app).is_empty(),
+            "no terrain yet"
+        );
 
         app.world_mut()
             .resource_mut::<TerrainHeightField>()
@@ -3263,7 +3300,11 @@ mod tests {
             .resource_mut::<TerrainHeightField>()
             .insert((10, 5, 5), flat_tile(Vec3::new(500.0, 0.0, 500.0), 100.0));
         app.update();
-        assert_eq!(baked_heatmap_entities(&mut app), built, "grounded drape never churns");
+        assert_eq!(
+            baked_heatmap_entities(&mut app),
+            built,
+            "grounded drape never churns"
+        );
     }
 
     #[test]
@@ -3278,9 +3319,16 @@ mod tests {
             .resource_mut::<TerrainHeightField>()
             .insert((10, 0, 0), flat_tile(Vec3::ZERO, 300.0));
         app.update();
-        assert_eq!(baked_heatmap_entities(&mut app).len(), 2, "allowance 2 -> 2 drapes");
+        assert_eq!(
+            baked_heatmap_entities(&mut app).len(),
+            2,
+            "allowance 2 -> 2 drapes"
+        );
         let usage = *app.world().resource::<HeatmapVertexUsage>();
-        assert!(usage.baked > 0 && usage.committed == 0, "baked usage tracked: {usage:?}");
+        assert!(
+            usage.baked > 0 && usage.committed == 0,
+            "baked usage tracked: {usage:?}"
+        );
     }
 
     fn baked_heatmap_entities(app: &mut App) -> Vec<Entity> {
@@ -3320,7 +3368,10 @@ mod tests {
         };
         assert!(!colors.is_empty());
         for &[r, _g, b, a] in colors {
-            assert!(a > 0.0, "a pure fill region must be fully outside the neutral band");
+            assert!(
+                a > 0.0,
+                "a pure fill region must be fully outside the neutral band"
+            );
             assert!(b > r, "fill (dh>0) must read blue-dominant: r={r} b={b}");
         }
 
@@ -3335,7 +3386,7 @@ mod tests {
     // --- FR-3 live preview (PREVIEW-DEBOUNCE/PREVIEW-NFR1) ---
 
     use bevy::time::TimeUpdateStrategy;
-    use fe_renderer::terrain_overlay::{ProposalPreview, ProposalPreviewReport, PreviewSource};
+    use fe_renderer::terrain_overlay::{PreviewSource, ProposalPreview, ProposalPreviewReport};
     use std::time::Duration;
 
     #[derive(Resource, Default)]
@@ -3580,7 +3631,10 @@ mod tests {
             app.update();
         }
         let coarse_count = preview_ghost_vertex_count(&mut app);
-        assert!(coarse_count > 0, "a coarse preview is visible on every edit");
+        assert!(
+            coarse_count > 0,
+            "a coarse preview is visible on every edit"
+        );
 
         // Hold the LAST value steady past the debounce window -> exactly one
         // upgrade to the full (finer) lattice.
@@ -3636,7 +3690,11 @@ mod tests {
             Some(PreviewAction::Build { full: true }),
             "settled -> one full rebuild"
         );
-        assert_eq!(d.poll(Some(&a), 0.2), None, "steady state: no further rebuilds");
+        assert_eq!(
+            d.poll(Some(&a), 0.2),
+            None,
+            "steady state: no further rebuilds"
+        );
     }
 
     #[test]
@@ -3687,8 +3745,14 @@ mod tests {
         let reports = &app.world().resource::<CapturedPreviewReports>().0;
         let report = reports.last().expect("readout report written");
         assert!(report.fill_m3 > 0.0 && report.scaled);
-        assert!(preview_ghost_entity(&mut app).is_none(), "no duplicate ghost");
-        assert!(preview_heatmap_entities(&mut app).is_empty(), "no duplicate drape");
+        assert!(
+            preview_ghost_entity(&mut app).is_none(),
+            "no duplicate ghost"
+        );
+        assert!(
+            preview_heatmap_entities(&mut app).is_empty(),
+            "no duplicate drape"
+        );
     }
 
     #[test]
@@ -3700,7 +3764,9 @@ mod tests {
         );
         let mut layer = crate::layers::MapLayer::new(LayerType::ProposalOverlay, 0);
         layer.visible = false;
-        app.world_mut().resource_mut::<LayerStack>().add_layer(layer);
+        app.world_mut()
+            .resource_mut::<LayerStack>()
+            .add_layer(layer);
         app.update();
 
         let world = app.world_mut();
@@ -4318,7 +4384,10 @@ mod tests {
                 fx.main_ring.is_subset(&keys),
                 "the user's ring fills in full beside the capture's chunks"
             );
-            assert!(capture_chunks.is_subset(&keys), "the capture keeps what it holds");
+            assert!(
+                capture_chunks.is_subset(&keys),
+                "the capture keeps what it holds"
+            );
         }
 
         #[test]
