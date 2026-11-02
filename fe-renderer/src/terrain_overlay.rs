@@ -257,9 +257,24 @@ pub struct VolumeReportResult {
 }
 
 impl VolumeReportResult {
-    /// Whether every selected cell has a measured height pair.
+    /// Whether every exposed measurement is finite.
+    pub fn has_finite_measurements(&self) -> bool {
+        [self.area_m2, self.cut_m3, self.fill_m3, self.net_m3]
+            .into_iter()
+            .all(f64::is_finite)
+            && self.step_m.is_finite()
+            && self.items.iter().all(|item| {
+                [item.cut_m3, item.fill_m3, item.overlap_area_m2]
+                    .into_iter()
+                    .all(f64::is_finite)
+            })
+    }
+
+    /// Whether every selected cell is measured and every result is finite.
     pub fn is_complete(&self) -> bool {
-        self.expected_samples > 0 && self.sampled_pairs == self.expected_samples
+        self.expected_samples > 0
+            && self.sampled_pairs == self.expected_samples
+            && self.has_finite_measurements()
     }
 }
 

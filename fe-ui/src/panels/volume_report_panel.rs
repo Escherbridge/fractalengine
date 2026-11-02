@@ -444,7 +444,11 @@ pub(crate) fn render_volume_report_body(
         }
         VolumeDisplay::Incomplete { label, result } => {
             ui.label(egui::RichText::new(label).color(theme::TEXT_DIM));
-            ui.label("Volume unavailable: terrain coverage is incomplete.");
+            ui.label(if result.has_finite_measurements() {
+                "Volume unavailable: terrain coverage is incomplete."
+            } else {
+                "Volume unavailable: calculation is not finite."
+            });
             ui.label(format!(
                 "Sampled {} of {} required terrain points.",
                 result.sampled_pairs, result.expected_samples
@@ -652,6 +656,34 @@ mod tests {
             VolumeDisplay::Incomplete { .. }
         ));
         assert!(volume_report_to_tsv(&incomplete, &[]).is_empty());
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for metric in 0..8 {
+                let mut invalid = answer.clone();
+                invalid.items.push(fe_renderer::terrain_overlay::VolumeItem {
+                    id: "overflow".into(),
+                    kind: "raise".into(),
+                    cut_m3: 0.0,
+                    fill_m3: 0.0,
+                    overlap_area_m2: 0.0,
+                });
+                match metric {
+                    0 => invalid.area_m2 = value,
+                    1 => invalid.cut_m3 = value,
+                    2 => invalid.fill_m3 = value,
+                    3 => invalid.net_m3 = value,
+                    4 => invalid.step_m = value as f32,
+                    5 => invalid.items[0].cut_m3 = value,
+                    6 => invalid.items[0].fill_m3 = value,
+                    7 => invalid.items[0].overlap_area_m2 = value,
+                    _ => unreachable!(),
+                }
+                assert!(!invalid.is_complete());
+                assert!(volume_report_to_tsv(&invalid, &[]).is_empty());
+                app.world_mut().write_message(invalid);
+                app.update();
+                assert_eq!(shown_cut(&app), None, "nonfinite metric {metric} must not be Ready");
+            }
+        }
         app.world_mut().write_message(answer.clone());
         app.update();
         assert_eq!(

@@ -263,3 +263,6 @@ cell centers and finite base/proposed pairs. `is_complete()` requires a nonempty
 lattice and all pairs; incomplete numeric fields are partial intermediates and
 must not be displayed or copied as measurements. The terrain responder may send
 updated coverage under the same correlation as resident heights change.
+Readiness also requires finite area, lattice step, totals and every per-item
+metric. Finite height endpoints alone cannot prevent subtraction or scaling
+overflow; UI and TSV consumers share this guard.
