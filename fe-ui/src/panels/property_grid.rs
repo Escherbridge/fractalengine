@@ -11,6 +11,7 @@ pub(super) struct Columns {
     pub widths: [f32; 4],
     pub height: f32,
     action_widths: [f32; 3],
+    viewport: egui::Rangef,
 }
 
 impl Columns {
@@ -51,6 +52,10 @@ impl Columns {
             ],
             height,
             action_widths,
+            viewport: ui
+                .available_rect_before_wrap()
+                .x_range()
+                .intersection(ui.clip_rect().x_range()),
         }
     }
 
@@ -94,6 +99,25 @@ impl Columns {
             egui::Layout::top_down(egui::Align::Min),
             body,
         )
+    }
+
+    pub fn expanded<R>(&self, ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui) -> R) -> R {
+        let width = (self.viewport.span() - 2.0).max(1.0);
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(self.viewport.min + 1.0, ui.next_widget_position().y),
+            egui::vec2(width, ui.ctx().viewport_rect().height()),
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .id_salt("property-expansion")
+                .max_rect(rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+            |ui| {
+                ui.set_width(width);
+                body(ui)
+            },
+        )
+        .inner
     }
 }
 

@@ -419,6 +419,14 @@ with whole-point rounding. Arming and canceling therefore do not change the
 column origins or require a new horizontal scroll position. Child clipping
 uses those same slot rectangles, preserving actual leaf-response observations.
 
+Expanded editors and read-only JSON details use the table viewport's horizontal
+range captured before its horizontal ScrollArea. The shared `Columns::expanded`
+scope places the existing content at that visible x range and the current row y;
+native scope allocation contributes its actual vertical height. The already
+allocated full-width table still owns horizontal content size. This keeps the
+Editing header, value input, status and Save/Cancel in view at either scroll
+edge without forcing the scroll offset or introducing a second editor/draft.
+
 Scalar previews are single-line ellipses with bounded hover text. Newlines and
 tabs are escaped for display, empty strings are explicit, and objects/arrays
 show field/item counts. Compound values expand into a bounded read-only JSON
@@ -448,6 +456,10 @@ at the right edge, then compares content width, horizontal offset and Edit/Copy
 positions before/after arming and cancellation. It checks the complete action
 rectangles against their actual hit rectangles, child clips and table clip,
 including the full Confirm/Cancel pair; a control count alone is insufficient.
+At those same widths it opens Edit from the right edge, checks the full header,
+input, status and footer against actual hit/clip geometry, verifies real editor
+height with unchanged table width/offset, and cancels a dirty draft without a
+write. Header/status observations are their actual native label responses.
 Only this declared native container ID is used for scroll setup; widget facts
 come from the actual same-pass responses. Its persistence readback is an explicit model simulation;
 these authored assertions have not been executed in the source-only lane and

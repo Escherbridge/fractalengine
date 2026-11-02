@@ -1552,21 +1552,25 @@ fn render_property_row(
         });
     });
     if let Some(draft) = editor.drafts.get_mut(key) {
-        render_property_draft(ui, key, value, draft, loading, columns.height, actions);
+        columns.expanded(ui, |ui| {
+            render_property_draft(ui, key, value, draft, loading, columns.height, actions);
+        });
     } else if expanded && (value.is_object() || value.is_array()) {
-        ui.label(
-            egui::RichText::new("Stored JSON (read only)")
-                .small()
-                .color(theme::TEXT_DIM),
-        );
-        let mut display = PropertyValueKind::format(value);
-        ui.add_enabled_ui(false, |ui| {
-            property_value_editor(
-                ui,
-                &mut display,
-                PropertyValueKind::of(value),
-                format_args!("Stored value of property {key}"),
+        columns.expanded(ui, |ui| {
+            ui.label(
+                egui::RichText::new(format!("Stored JSON for {key} (read only)"))
+                    .small()
+                    .color(theme::TEXT_DIM),
             );
+            let mut display = PropertyValueKind::format(value);
+            ui.add_enabled_ui(false, |ui| {
+                property_value_editor(
+                    ui,
+                    &mut display,
+                    PropertyValueKind::of(value),
+                    format_args!("Stored value of property {key}"),
+                );
+            });
         });
     }
 }
@@ -1580,11 +1584,15 @@ fn render_property_draft(
     target: f32,
     actions: &mut PropertyTableActions,
 ) {
-    ui.label(
-        egui::RichText::new(format!("Editing {key} ({})", draft.kind.label()))
-            .small()
-            .color(theme::TEXT_DIM),
-    );
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(format!("Editing {key} ({})", draft.kind.label()))
+                .small()
+                .color(theme::TEXT_DIM),
+        )
+        .wrap(),
+    )
+    .observed(ui);
     ui.add_enabled_ui(draft.pending.is_none(), |ui| {
         if property_value_editor(
             ui,
@@ -1607,7 +1615,8 @@ fn render_property_draft(
     } else {
         "Matches stored value"
     };
-    ui.label(egui::RichText::new(status).small().color(theme::TEXT_DIM));
+    ui.label(egui::RichText::new(status).small().color(theme::TEXT_DIM))
+        .observed(ui);
     ui.horizontal_wrapped(|ui| {
         let can_save =
             !loading && draft.pending.is_none() && draft.dirty() && value == &draft.source;
@@ -2472,6 +2481,72 @@ mod tests {
                 .unwrap();
             assert!((table_canceled.content_size.x - table_before.content_size.x).abs() < 0.5);
             assert!((table_canceled.offset.x - table_before.offset.x).abs() < 0.5);
+
+            click(
+                width,
+                canceled.controls[0].rect.center(),
+                &mut time,
+                &mut inspector,
+                &mut ui_mgr,
+            );
+            inspector
+                .property_editor
+                .drafts
+                .get_mut("note")
+                .unwrap()
+                .raw = "unsaved replacement at the right scroll edge".into();
+            let (_, editing, _) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
+            let table_editing = editing
+                .scrolls
+                .iter()
+                .find(|scroll| scroll.label == "Custom property table")
+                .unwrap();
+            assert_eq!(
+                editing.controls.len(),
+                8,
+                "row actions, Editing header, input, status and Save/Cancel"
+            );
+            assert!((table_editing.content_size.x - table_before.content_size.x).abs() < 0.5);
+            assert!((table_editing.offset.x - table_before.offset.x).abs() < 0.5);
+            assert!(
+                table_editing.content_size.y > table_before.content_size.y,
+                "the editor must retain real vertical layout space"
+            );
+            for control in &editing.controls[3..] {
+                let visible = control
+                    .rect
+                    .intersect(control.hit)
+                    .intersect(control.clip)
+                    .intersect(table_editing.clip);
+                assert!((visible.width() - control.rect.width()).abs() < 0.5, "the complete editor header, input, status and footer must fit the visible viewport");
+                assert!((visible.height() - control.rect.height()).abs() < 0.5);
+            }
+            for control in &editing.controls[6..] {
+                assert!(control.rect.width() >= 20.0 && control.rect.height() >= 20.0);
+            }
+            let (actions, _, _) = click(
+                width,
+                editing.controls[7].rect.center(),
+                &mut time,
+                &mut inspector,
+                &mut ui_mgr,
+            );
+            assert_eq!(actions.cancel.as_deref(), Some("note"));
+            assert!(actions.save.is_none() && actions.delete.is_none());
+            inspector.property_editor.drafts.remove("note");
+            assert_eq!(inspector.node_properties, stored);
+            assert!(
+                ui_mgr.drain_actions().is_empty(),
+                "canceling a visible dirty editor must not write"
+            );
+            let (_, closed, _) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
+            let table_closed = closed
+                .scrolls
+                .iter()
+                .find(|scroll| scroll.label == "Custom property table")
+                .unwrap();
+            assert!((table_closed.content_size.x - table_before.content_size.x).abs() < 0.5);
+            assert!((table_closed.offset.x - table_before.offset.x).abs() < 0.5);
         }
         let (_, observed, _) = frame(1000.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
         let copy_at = observed.controls[1].rect.center();
@@ -2532,12 +2607,12 @@ mod tests {
         let (_, editing, _) = frame(1000.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
         assert_eq!(
             editing.controls.len(),
-            6,
-            "row actions remain beside the inline editor and Save/Cancel"
+            8,
+            "row actions remain beside the editor header, input, status and Save/Cancel"
         );
         let (actions, _, _) = click(
             1000.0,
-            editing.controls[5].rect.center(),
+            editing.controls[7].rect.center(),
             &mut time,
             &mut inspector,
             &mut ui_mgr,
