@@ -50,3 +50,13 @@ The legacy uncorrelated result handlers cannot complete a current addressed Join
 hierarchy auto-navigation is suspended while that Join owns navigation, including on an empty
 recipient store. The regular hierarchy handler still projects actual stored rows; the invitation
 coordinator alone decides whether the exact current request can navigate.
+
+
+## Bounded command queues
+
+Every coordinator submission uses try_send. A full queue means that exact command was never
+accepted: issuance and join phases fail visibly without replaying accepted effects. Cleanup is
+the exception that retains one definitely-unsent close until queue space is available; it blocks
+a new Join until the close has entered the same FIFO behind the old open. Disconnection keeps
+cleanup unconfirmed. Cancel and deadline checks remain runnable even when either worker queue
+is full. Existing GUI journeys use actual full bounded DB/native channels, without workers.

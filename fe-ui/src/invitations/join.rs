@@ -118,7 +118,7 @@ impl JoinState {
         self.input = None;
         if let Some(attempt) = self.attempt.take() {
             if attempt.replica_requested {
-                self.cleanup_verse = Some(attempt.invitation.manifest().verse_id.clone());
+                self.retain_cleanup(attempt.invitation.manifest().verse_id.clone());
             }
         }
         self.status = None;
@@ -162,6 +162,10 @@ impl JoinState {
             }
         }
     }
+    pub(crate) fn retain_cleanup(&mut self, verse: String) {
+        debug_assert!(self.cleanup_verse.is_none());
+        self.cleanup_verse = Some(verse);
+    }
     pub fn cleanup(&mut self, nav: &NavigationManager, sync: Option<&SyncCommandSenderRes>) {
         let Some(verse) = &self.cleanup_verse else {
             return;
@@ -174,16 +178,20 @@ impl JoinState {
         let Some(sync) = sync else {
             return;
         };
-        if sync
-            .0
-            .send(SyncCommand::CloseVerseReplica {
-                verse_id: verse.clone(),
-            })
-            .is_err()
-        {
-            bevy::log::warn!("Join cleanup sync channel closed");
+        match sync.0.try_send(SyncCommand::CloseVerseReplica {
+            verse_id: verse.clone(),
+        }) {
+            Ok(()) => self.cleanup_verse = None,
+            Err(crossbeam::channel::TrySendError::Full(_)) => {
+                self.status = Some("Waiting to queue cleanup of the canceled join...");
+            }
+            Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                if self.error != Some("Canceled join cleanup is unconfirmed because P2P stopped. No new join was queued.") {
+                    bevy::log::warn!("Join cleanup sync channel closed");
+                }
+                self.error = Some("Canceled join cleanup is unconfirmed because P2P stopped. No new join was queued.");
+            }
         }
-        self.cleanup_verse = None;
     }
     pub fn apply(&mut self, result: &DbResult) {
         let Some(attempt) = &mut self.attempt else {
@@ -263,7 +271,7 @@ impl JoinState {
                 credential: input.credential.clone(),
                 request_id: generation.clone(),
             };
-            if db.send(request).is_err() {
+            if db.try_send(request).is_err() {
                 bevy::log::warn!("Join admission database channel closed");
                 self.fail("The database is unavailable. Nothing was submitted.");
                 return None;
@@ -298,7 +306,7 @@ impl JoinState {
                 let (reply, receiver) = crossbeam::channel::bounded(1);
                 if sync
                     .0
-                    .send(SyncCommand::JoinVerseReplica {
+                    .try_send(SyncCommand::JoinVerseReplica {
                         request: native_request(attempt),
                         reply,
                     })
@@ -332,7 +340,7 @@ impl JoinState {
             }
             Stage::RoleReady => {
                 if !attempt.hierarchy_requested {
-                    if db.send(DbCommand::LoadHierarchy).is_err() {
+                    if db.try_send(DbCommand::LoadHierarchy).is_err() {
                         bevy::log::warn!("Join hydration database channel closed");
                         self.fail("Access converged but the stored scene could not be loaded. Join remains unconfirmed.");
                         return None;
@@ -369,7 +377,7 @@ impl JoinState {
                         let request_id =
                             format!("{}-role-{}", attempt.generation, attempt.check_round);
                         if db
-                            .send(DbCommand::CheckJoinReadiness {
+                            .try_send(DbCommand::CheckJoinReadiness {
                                 credential: attempt.credential.clone(),
                                 request_id: request_id.clone(),
                             })
@@ -407,7 +415,7 @@ fn inspect(attempt: &mut Attempt, sync: &SyncCommandSenderRes, after_role: bool)
     let (reply, receiver) = crossbeam::channel::bounded(1);
     if sync
         .0
-        .send(SyncCommand::InspectJoinedReplica {
+        .try_send(SyncCommand::InspectJoinedReplica {
             request: native_request(attempt),
             reply,
         })

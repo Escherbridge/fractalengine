@@ -191,7 +191,7 @@ impl IssueState {
                 let (reply, receiver) = crossbeam::channel::bounded(1);
                 if sync
                     .0
-                    .send(SyncCommand::ExportJoinTicket {
+                    .try_send(SyncCommand::ExportJoinTicket {
                         request: ExportJoinTicket {
                             request_id: self.generation.clone(),
                             verse_id: manifest.verse_id,
@@ -285,7 +285,7 @@ impl IssueState {
                 return;
             }
             if db
-                .send(DbCommand::PrepareJoinInvite {
+                .try_send(DbCommand::PrepareJoinInvite {
                     target: target.clone(),
                     recipient_did: selection.recipient.clone(),
                     role: selection.role.clone(),
@@ -319,7 +319,7 @@ impl IssueState {
                     }
                     let source = source.clone();
                     if db
-                        .send(DbCommand::IssueJoinInvite {
+                        .try_send(DbCommand::IssueJoinInvite {
                             source: source.clone(),
                             ticket,
                             request_id: format!("{}-issue", self.generation),

@@ -2328,6 +2328,25 @@ mod tests {
             state.request();state.drive(&captured,Some(&issuer),&tx,None);
             assert!(state.error.is_some() && !state.busy() && rx.try_recv().is_err(),"A missing native service refuses without a DB grant or automatic retry");
             state.reset();
+            state.synchronize(&captured,"viewer",1);
+            state.request();
+            let (full_db,full_db_rx)=crossbeam::channel::bounded(1);
+            full_db.try_send(DbCommand::LoadHierarchy).unwrap();
+            state.drive(&captured,Some(&issuer),&full_db,Some(&native));
+            assert!(!state.busy() && state.error.is_some(),"Full bounded DB admission returns immediately as a definite unsent failure");
+            assert!(matches!(full_db_rx.try_recv(),Ok(DbCommand::LoadHierarchy)) && full_db_rx.try_recv().is_err());
+            state.reset();state.synchronize(&captured,"viewer",1);state.request();
+            state.drive(&captured,Some(&issuer),&tx,Some(&native));
+            let DbCommand::PrepareJoinInvite {request_id,..}=rx.try_recv().unwrap() else {panic!("Expected one preparation")};
+            let (full_native,full_native_rx)=crossbeam::channel::bounded(1);
+            full_native.try_send(fe_sync::SyncCommand::CloseVerseReplica {verse_id:"occupied".into()}).unwrap();
+            let full_native=fe_sync::SyncCommandSenderRes(full_native);
+            let source=fe_runtime::join_invite::InviteSource {target:captured.clone(),recipient_did:recipient,role:"viewer".into(),expiry_hours:1,prepared_at:0,nonce:ulid::Ulid::new().to_string(),manifest:serde_json::json!({"verse_id":"access-v","name":"Access verse","created_by":issuer,"created_at":"2026-11-01T00:00:00Z","namespace_id":"ab".repeat(32),"default_access":"none","ts_mode":"local","ts_replication_factor":1,"ts_bucket_width_ms":1000})};
+            state.apply(&fe_runtime::messages::DbResult::JoinInvitePrepared {request_id,result:Ok(source)},&captured,Some(&issuer),Some(&full_native));
+            assert!(!state.busy() && state.error.is_some(),"Full bounded native export returns immediately without a grant/sign command");
+            assert!(matches!(full_native_rx.try_recv(),Ok(fe_sync::SyncCommand::CloseVerseReplica {..})) && full_native_rx.try_recv().is_err());
+            assert!(rx.try_recv().is_err());
+            state.reset();
         }
 
         crate::dialogs::entity_access::submit(&mut mgr,Access::Revoke {peer_did:"did:key:known-peer".into()},&tx);

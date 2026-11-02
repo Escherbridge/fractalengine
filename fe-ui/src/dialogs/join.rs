@@ -317,6 +317,34 @@ mod tests {
             }
         )
         .contains("credential-sentinel"));
+        let (native_tx, native_rx) = crossbeam::channel::bounded(1);
+        native_tx
+            .try_send(fe_sync::SyncCommand::CloseVerseReplica {
+                verse_id: "old-open".into(),
+            })
+            .unwrap();
+        let native = fe_sync::SyncCommandSenderRes(native_tx);
+        let nav = crate::navigation_manager::NavigationManager::default();
+        ui_mgr.join_flow.retain_cleanup("canceled-join".into());
+        ui_mgr.join_flow.cleanup(&nav, Some(&native));
+        assert!(
+            !ui_mgr
+                .join_flow
+                .queue(JoinCredential::new("next-invitation".into()).unwrap()),
+            "Full cleanup queue retains ownership and gates a new Join"
+        );
+        assert!(
+            matches!(native_rx.try_recv(),Ok(fe_sync::SyncCommand::CloseVerseReplica {verse_id}) if verse_id=="old-open")
+        );
+        ui_mgr.join_flow.cleanup(&nav, Some(&native));
+        assert!(
+            matches!(native_rx.try_recv(),Ok(fe_sync::SyncCommand::CloseVerseReplica {verse_id}) if verse_id=="canceled-join"),
+            "Cleanup is ordered after the old accepted command"
+        );
+        assert!(ui_mgr
+            .join_flow
+            .queue(JoinCredential::new("next-invitation".into()).unwrap()));
+        ui_mgr.join_flow.cancel();
         ui_mgr.join_request.start(0.0);
         let mut time = JOIN_LOCK_TIMEOUT_SECONDS + 1.0;
 
