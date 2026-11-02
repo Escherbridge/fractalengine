@@ -1,175 +1,132 @@
 ---
 name: fe-qa-pass
-description: Run one agent-driven QA pass over the live FractalEngine desktop app — stage/launch an isolated build, drive gold-task scenarios with synthetic pointer/keyboard input through tools/qa/fe.py, read every screenshot, judge it against the scenario's expected visuals, then stop the app and write a pass verdict, findings ledger and polish-lane intake. Use for "run a FractalEngine QA pass", "QA pass", "fe-qa-pass", "drive the app and screenshot it", "agent QA loop", "gold tasks for FractalEngine", or after a polish wave to re-verify UI fixes in the real app.
+description: Run one evidence-led FractalEngine QA pass across canonical feature checkpoints and region journeys, drive the owned real app through semantic locators, inspect screenshots/state/persistence/logs, stop exact owned identities and record truthful feature coverage and findings.
 ---
 
-# fe-qa-pass — one QA pass over the running app
+# fe-qa-pass
 
-The native-app analogue of the `ux-qa-research` method (gold tasks,
-scenario rotation, recorded pass verdicts, a two-pass convergence exit)
-without its Playwright machinery: the "browser" is the real Bevy + egui
-window, driven over the agent surfaces (`POST /api/v1/debug/screenshot`,
-`GET /api/v1/debug/camera`, `POST /api/v1/debug/input`) by
-`tools/qa/fe.py`. You are the persona and the judge: you are multimodal,
-so **Read every PNG you take** and judge it against the scenario's
-checkpoint text before taking the next step.
+Use the real owned Bevy+egui application, not a simulated browser. Read every PNG captured as evidence and judge it
+against the named checkpoint. The canonical contract is `qa/features.md`, `qa/feature-checkpoints.json`,
+`qa/source-inventory.md` and `qa/scenarios/J01.md`–`J11.md`. Read `qa/scenarios/README.md` for the exact shared
+commands, fixture contracts, input/edit semantics, evidence schema and rotation. Legacy S files are aliases or
+focused supplements; seven success paths cannot stand in for complete feature coverage.
 
-Files:
+## Ownership and build
 
-```
-tools/qa/{stage,launch,stop,clean}.ps1   isolated launcher (tools/qa/AGENTS.md)
-tools/qa/fe.py                           drive client (tools/qa/AGENTS.md §fe-py)
-qa/scenarios/S*.md                       type: Scenario — gold tasks + checklist
-qa/passes/<NN>/verdict.md                type: QA Pass Verdict (committed)
-qa/passes/<NN>/shots/                    PNGs (gitignored)
-qa/findings.jsonl                        ledger, one JSON object per line (committed)
-conductor/tracks/polish_lane_20261031/plan.md §QA-intake   S1/S2 routing
-```
+Only the designated main source/Cargo/live owner stages/launches apps. Code-only workers never run Cargo/apps.
+Apply all fixes before the integrated test/lint sweep once at campaign end; extend/swap existing journeys, no new
+small test functions. This user's current policy overrides older per-slice test wording. Required production builds
+and focused live evidence remain allowed. Never stage `conductor/.conductor_session_log`; never push during work.
 
-`F` below = `python tools/qa/fe.py` from the repo root. Exit codes: 0 ok,
-2 refused (typed JSON refusal on stdout), 3 app not running / died.
-
-## Procedure
-
-### (a) Stage — only if the build inputs moved
+Before staging read `tools/qa/AGENTS.md` and the actual manifest. Compare tracked and untracked source fingerprint:
 
 ```powershell
 . tools/qa/_lib.ps1
 $qaStage = Get-QaLatestStageDir
-if ($qaStage) {
-    $qaManifest = Get-QaStageManifest -StageDir $qaStage
-    $qaManifest.source_commit                    # actual source commit
-    $qaManifest.source_fingerprint -eq (Get-QaSourceFingerprint)
-} else { $false }
+$qaManifest = Get-QaStageManifest -StageDir $qaStage
+$qaManifest.source_commit
+$qaManifest.source_fingerprint -eq (Get-QaSourceFingerprint)
 ```
 
-True → reuse the stage (docs/scripts-only commits never need a rebuild).
-Stage directory names contain a timestamp: never pass the whole directory
-name to git as a commit. Use `stage.json.source_commit` when inspecting
-history and its source fingerprint when deciding whether the binary matches.
-Check untracked source files too (`git ls-files --others --exclude-standard`).
-The launcher compares a content fingerprint of tracked and untracked build
-inputs with `stage.json`, so a dirty working tree cannot silently reuse an
-older stage. `-AllowStaleStage` is an explicit fallback only: record
-`stage_matches_source: false` and do not call that pass current-source verification.
-Otherwise, and only if `Get-Process cargo,rustc` is empty, run
-`powershell -NoProfile -ExecutionPolicy Bypass -File tools\qa\stage.ps1`
-in the FOREGROUND with the max tool timeout (it sets
-`CARGO_PROFILE_DEV_DEBUG=0`, `RUST_MIN_STACK`, `-j4`). If cargo is running
-(another lane's build), reuse the newest stage and say so in the verdict.
+Handle the missing-stage case explicitly. A directory timestamp is not a commit. Reuse only an exact matching
+fingerprint; stale-stage fallback must be explicit and cannot count as final-current-source acceptance. Coordinate
+with a running owner instead of starting competing Cargo/apps. The stage helper is
+`powershell -NoProfile -ExecutionPolicy Bypass -File tools/qa/stage.ps1`; obey its bounded resource settings.
 
-### (b) Launch
+## Launch and choose scope
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\qa\launch.ps1 -Fixture basic
-```
+Run `tools/qa/launch.ps1 -Fixture basic|terrain` bare, without pipes/redirection of inherited app handles. Save the
+exact returned run path immediately. Define `F = python tools/qa/fe.py --run <owned-run>`; every command and cleanup
+retains that binding even if `.qa/current` changes. For two hosts use two explicit roots/identities/ports. Save
+`F info`, source commit/fingerprint and secret-free fixture metadata; credentials never enter logs or verdicts.
+Set `FE_QA_SHOTS_DIR=qa/passes/<NN>/shots`. Under Git Bash set `MSYS_NO_PATHCONV=1` for `/api/...` arguments.
 
-Run it **bare** — never pipe (`| Select-Object`) or redirect (`> file`) its
-output: the app inherits that pipe, so the call does not return until the
-app exits. Then `F info` (run dir, pid, fixture ids, token roles) and
-`F shot --label launch`. Set `FE_QA_SHOTS_DIR=qa/passes/<NN>/shots` for the
-whole pass (Bash: `export FE_QA_SHOTS_DIR=...`; also `export
-MSYS_NO_PATHCONV=1` so `/api/...` args survive Git Bash).
+The first full pass and two final convergence passes run all eleven journeys, every current GUI variant and all
+mandatory API/OS acceptance. Bounded exploratory rotation cycles A=J01/J02/J03/J06, B=J04/J05/J09/J11,
+C=J07/J08/J10 by `(pass-1)%3`; every region appears within three passes. Every pass additionally runs J04's positive
+terrain oracle, J06's full three-size layout sweep, all changed regions and all fixed-finding rechecks. Report
+current-pass coverage only; never import old PASS records to manufacture100%. Refresh the catalog when polish
+adds/removes/wires controls, preserving retired IDs as explained exclusions/supersession.
 
-Immediately save `F info`'s `run_dir` as the pass's owned run. Keep that
-exact value through cleanup; another launch can replace `.qa/current`.
+## Drive and observe
 
-### (c) Drive each scenario in the rotation
+Resolve actual control name/role/parent from `F ui --interactive` and the latest PNG, then use `click --name`,
+`type --into`, `wait-for` and other documented commands. Reject ambiguity; `--nth` requires recorded current
+candidates/order. No blind fixed pixel guesses. Only viewport gestures use manually grounded pixels; non-viewport
+drags derive from named response bounds or remain a precise missing-surface finding. Existing text requires
+click/select-all/type; DragValue needs double-click/edit/Enter. API setup/readback does not exercise a GUI control.
 
-Rotation (qa/scenarios/README.md §Rotation): the gold set S01-S07 on its
-success path, plus S08 items `((NN-1)*6 % 18)+1` … six at a time. Order
-scenarios so any step marked "LAST: it ends the run" runs last, and
-blocked scenarios (precondition unmet, e.g. S04 without a tileset) are
-recorded `BLOCKED` with the reason instead of improvised.
+Wait for actual state/data/mesh/report, not fixed sleeps. `settled` excludes unknown DB/sync/terrain completion.
+At each checkpoint record actual UI action, read/judge PNG, authoritative state, durable API/file readback when
+applicable and new warning/error delta. Record secondary overlap/clipping/stale counts even if the main task worked.
+Run layout-check at1280×720,1920×1080,1024×640 with every reachable panel/dialog/tab; include long inputs/UI scaling.
+Report measured violations and unknown response/text/clip/layer/scroll facts separately. Zero measured violations
+with incomplete observations is not a blanket layout PASS; name exact unverified control variants.
 
-For each step: run the `F` line, Read the PNG (`--capture` output path or
-`F shot`), compare it with the checkpoint text, and note:
+Terrain uses a fresh real S7 map, residency and independent constant-depth oracle: separate petals,10×10m square,
+Raise positive2 => area100/fill200/net200; Lower positive1 => cut100/net-100. Raw tolerance0.001. Read actual UI
+figures and asynchronous persisted values; initial zeros or missing samples do not pass. Filter seeded node queries
+by exact petal/qa_fixture/qa_role: three values10/20/30, count3 and sum60. Marker/earthwork nodes do not inflate it.
+Retain the canonical S02–S06 fixture supplements, including grounding offset and fresh basic arrangement.
 
-- **pass / fail** per checkpoint, with the PNG path;
-- anything else wrong in that frame (overlap, stale count, clipped text,
-  wrong panel) — a finding even if the checkpoint passed;
-- coordinates are 1280x720 guesses: locate the control in the latest PNG
-  first; never click blind twice.
+Queue a confined `dialog-answer --kind open|save|folder` or cancellation before native controls. Empty/wrong-kind
+responses remain typed and nonblocking. Never fall back to a native picker during synthetic driving. Window API
+commands exercise their seam/setup; the actual caption button/grip route has its own GUI evidence.
 
-Reactions:
+Never capture generated token/invite frames. Generate/copy without capture, inspect redacted control/metadata,
+leave API tab/close dialog to clear the credential, then capture. Synthetic clipboard writes are intentionally
+suppressed; do not read host clipboard. A refused clipboard chord is not proof of CopyText sink isolation.
+Normal OS AccessKit/timing uses input-off owned HWND and actual FE samples; input-on debug tree or isolated egui
+microbenchmarks cannot substitute. No desktop enumeration, unrelated-app actions or global display/AT changes.
 
-| fe.py says | meaning | do |
-|---|---|---|
-| `view_changed_verse` (exit 0) | your click opened another verse; the host denied the rest of the batch under the old token (by design) | re-shoot; continue |
-| exit 2, `429`/`409` after retries | budget/single-flight contention | wait 2 s, retry once, then record |
-| exit 2, `not_found_or_denied` | no owner token covers the view (verse browser open, or a joined verse) | navigate into an owned verse; record if the scenario needed that view |
-| exit 2, `clipboard_chord_refused` | Ctrl/Super+C/V/X or text under Ctrl — refused by design | not a finding |
-| exit 3 | the app died | S1: copy the panic lines from `<run>/stderr.log`, run stop.ps1, relaunch (b), continue with the NEXT scenario |
-| gold step fails 2 attempts | abandonment | mark the gold task FAIL, move on |
+| Client result | Required response |
+|---|---|
+| `view_changed_verse`, exit0 | Re-read state/PNG; old-scope batch was correctly stopped. |
+|409/429 after bounded client retries | Retry once after condition clears; persistent contention is a finding. |
+|`not_found_or_denied` | Check actual view/token scope; expected negative case may pass, required success cannot. |
+|`clipboard_chord_refused` | Expected planner policy; keep distinct from the sink/UI-copy checkpoint. |
+|exit3/app crash | Record S1 panic from owned stderr, exact stop, relaunch and continue next scenario. |
+|Required gold step fails twice | Mark FAIL/abandoned, retain evidence and continue; no scenario weakening. |
+|Missing controlled prerequisite | BLOCKED with precise dependency; never fake product success or failure. |
 
-Before native Browse/Install/Save controls, queue `F dialog-answer <run-local path>` with the matching
-`--kind open|save|folder`, or `--cancel`. The QA provider returns a typed visible error when no answer is queued;
-it never falls back to a blocking native dialog while synthetic input is enabled. Use `F window size W H`
-for layout checks and `F window close` to exercise real confirmation. Cancel keeps the app running.
+## Evidence and verdict
 
-### (d) Stop — always, even on failure
+Write one final `qa/passes/<NN>/checkpoints.jsonl` record per checkpoint, bound to current `pass_id` and declared
+owned `run_id` even for non-PASS outcomes. Ledger/artifacts remain inside that pass directory. Follow the README schema. Missing IDs are
+NOT_RUN; FAIL/BLOCKED/UNKNOWN do not count. GUI PASS requires a judged PNG, assertions and actual actions; persistent
+families require durable readback. API/OS have separate mandatory evidence and denominators. Hashes and structured
+assertions support review, but cannot themselves judge pixels or establish truth.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\qa\stop.ps1 -Run <owned-run-dir>
-```
+Run `python tools/qa/coverage.py --ledger qa/passes/<NN>/checkpoints.jsonl --root . --pass-id <NN> --run-id <owned-run-id>`
+and save its report; repeat --run-id for two hosts. Final strict
+acceptance adds `--stage-commit <actual-source-commit> --stage-fingerprint <actual-64hex> --require-complete` and must
+exit0. It rejects unknown/duplicate IDs, earlier-pass/run evidence, stale/mixed provenance (including supplied
+non-PASS provenance), absent/mismatched artifacts and missing judgments. Checkpoints cannot override source-family
+region or durable-readback requirements.
+The catalog's reviewed source fingerprint must match too; reconcile new/removed UI/API routes before updating it.
+Do not interpret a non-strict incomplete report's exit0 as acceptance.
 
-It kills the exact recorded pid tree (WebView2 children included), never by
-name. Verify it printed `Stopped.` or `already gone`.
+The verdict has OKF `type: QA Pass Verdict`, pass/date/stage/source_fingerprint/run_dirs/journeys/full_coverage.
+First body line: `pass NN: gold a/b, new S1/S2 n, GUI coverage c/d, API coverage e/f, OS coverage g/h`.
+The denominator is every current applicable checkpoint, not scenarios in a rotation. Report per R1–R11, every
+uncovered ID/reason, all gold outcomes, actual PNG/assertion links, findings, loop-health/timings and prior/current
+convergence. Focused smoke verdicts explicitly say full_coverage:false and cannot establish convergence.
 
-### (e) Verdict + findings ledger
+Append/update `qa/findings.jsonl` by stable fingerprint/ID; never duplicate a repeated finding or delete history.
+New IDs are max+1. S1=crash/data loss/gold impossible; S2=broken/lying feature or blocking QA surface; S3=visible
+defect with workaround; S4=cosmetic/copy. Store exact commands, evidence and confirmed source root cause or
+unconfirmed. Reverified fixed findings become closed with closed_in; source fixes alone do not close them.
+Route every open S1/S2 into polish plan §QA-intake; strike closed rows with the closing pass. Secret-free artifacts
+only. Do not claim user in-app checks are completed by these agent records.
 
-`qa/passes/<NN>/verdict.md` (frontmatter `type: QA Pass Verdict`, `pass`,
-`date`, `stage`, `run_dirs`, `scenarios`), sections in this order:
+## Cleanup and convergence
 
-1. **Trend line** (first line of the body, verbatim shape):
-   `pass NN: gold a/b, new S1/S2 n, coverage c/d` — a = gold tasks passed,
-   b = gold tasks attempted (BLOCKED counts in b only when attempted),
-   n = new S1+S2 findings this pass, c/d = scenarios driven / scenarios in
-   this pass's rotation.
-2. **Gold tasks** — table: id, scenario, PASS/FAIL/BLOCKED, evidence PNG,
-   one-line reason.
-3. **Findings by severity** S1 → S4, each: ledger id, title, scenario+step,
-   screenshot path(s), exact repro `F` command lines, root cause `file:line`
-   when confirmed in code (else "unconfirmed").
-4. **Coverage** — scenarios/S08 items driven vs. skipped (with reason).
-5. **Loop health** — fe.py/launcher problems met this pass (they are QA-infra
-   findings too) and timings.
-6. **Convergence** — this pass's exit check and the previous pass's.
+Always `stop.ps1 -Run <exact-owned-run>` in finally, for every host/helper/server owned by the pass. Verify PID,
+creation and executable identities, command result and eventual absence. A child timeout can honestly fail stop;
+later identity absence is separate evidence. Recycled unrelated PIDs stay untouched, and post-snapshot descendants
+remain unknown without a later verified capture. Never kill by process name.
 
-Severity rubric: **S1** crash, data loss, or a gold task impossible;
-**S2** a feature broken or lying with no reasonable workaround, or a
-QA-infra gap that blocks a gold task; **S3** visible defect with a
-workaround (overlap, stale count, Enter not submitting); **S4** cosmetic or
-copy.
-
-`qa/findings.jsonl` — append one line per NEW finding:
-
-```json
-{"id":"QA-0001","fingerprint":"sidebar-petal-click-no-fractal-panic","severity":"S1","status":"open","title":"…","scenario":"S03","step":7,"first_seen":"01","last_seen":"01","evidence":["qa/passes/01/shots/…png"],"repro":["F …"],"root_cause":"fe-ui/src/panels/sidebar.rs:461","routed":"polish_lane §QA-intake","research_ids":[]}
-```
-
-Ids are stable and never reused: next id = max existing + 1. Before adding,
-match on `fingerprint` — a finding seen again updates `last_seen` (rewrite
-that line) instead of duplicating; a finding whose checkpoint now passes is
-set `"status":"closed","closed_in":"<NN>"` (re-verified fixed), never
-deleted. Keep the file valid JSONL (one object per line).
-
-### (f) Route S1/S2 into the polish lane
-
-Append (or update) rows under `## §QA-intake` at the end of
-`conductor/tracks/polish_lane_20261031/plan.md` — one row per open S1/S2:
-`| QA id | sev | title | evidence | root cause | suggested wave |`. The
-polish advocates read this section at each wave start; closed findings get
-`~~struck~~` with the closing pass.
-
-## Convergence exit
-
-The loop is done when **two consecutive passes** each have every gold task
-PASS (BLOCKED counts as not passing) **and** zero new S1/S2. Say in every
-verdict whether this pass met it and whether the previous one did.
-
-## Commit
-
-Commit `verdict.md`, `findings.jsonl`, any scenario edits and the plan.md
-intake with explicit paths (`git commit -m … -- <paths>`); never the PNGs
-(`qa/passes/**/shots/` is gitignored), never `git add -A`, never push.
+Two consecutive final-code passes each require all G1–G11 gold tasks PASS, current GUI coverage100%, all mandatory
+API/OS acceptance complete and zero new S1/S2. State exact previous pass/fingerprint/denominators. A six-iteration
+batch cap is an unconverged result if criteria do not hold. Commit explicit verdict/checkpoint/coverage/findings/
+intake paths, never PNGs or session log. Final CI/tagged release is a later campaign gate owned by the parent.

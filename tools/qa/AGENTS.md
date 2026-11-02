@@ -281,3 +281,34 @@ App environment overrides are scoped to Start-Process with a complete prior-valu
 snapshot restored in finally, including a failed start. The child inherits its
 isolated root/token/input/timing settings, while an invoking PowerShell session
 keeps every original process environment value for later commands.
+
+## §feature-coverage
+
+`qa/feature-checkpoints.json` is the canonical edit point for stable checkpoint IDs, current GUI/API/OS/planned/
+unreachable classification, durable-readback requirements, source families and gold-task membership. Its family
+metadata keeps entry/outcome/source context in one place; checkpoints reference those families. `qa/features.md`
+and `qa/scenarios/J01.md`–`J11.md` explain the contract and actual journeys. Refresh all affected representations
+when a polish wave changes reachable behavior; never obtain100% by silently removing an uncovered control.
+
+`coverage.py` is an offline standard-library evidence validator and summary command. It reads one canonical
+catalog plus one current-pass JSONL ledger; it does not call the app, touch clipboard, inspect processes or access
+credentials. It rejects unknown/duplicate IDs and malformed evidence, validates artifact hashes and judged GUI
+PNGs, requires structured assertions and durable/API/OS artifacts as classified, and prints per-region counts,
+gold outcomes and explicit uncovered IDs. Ledger and artifact paths resolve inside `qa/passes/<pass-id>/` under
+the supplied repo root, with no redirected pass directory. Every record belongs to the expected pass ID and one
+declared current owned run, including non-PASS records; any supplied stage provenance is checked for those records
+too. Checkpoints may not override their source family's region or durable-readback requirement.
+
+Every summary supplies `--pass-id <NN> --run-id <owned-run-id>`; repeat run-id for two hosts. Use
+`--require-complete --stage-commit <actual> --stage-fingerprint <actual>` for final acceptance; incomplete or
+invalid input exits2. Reporting mode may exit0 while incomplete, so inspect `complete` and keep the strict gate.
+The catalog's reviewed `catalog_source_fingerprint` must match the staged source after source/caller reconciliation.
+It starts null while main integration is pending. A changed code fingerprint requires reviewing newly reachable/
+retired routes before changing this field. A source fingerprint does not prove the catalog itself is exhaustive.
+
+The exact record schema and PowerShell commands live in `qa/scenarios/README.md`. Use explicit UTF-8 when storing
+JSON with Windows PowerShell5.1; plain output redirection defaults to UTF-16. One final record per checkpoint
+prevents historical PASS rows from overriding current failures. Reused artifacts may support multiple specific
+assertions from the same actual state/actions. This validator checks reported evidence and byte integrity; pixel
+judgment and truth of assertions still need the agent and independent reviewer. No scenario, file existence or
+unreviewed hash alone counts as exercised feature coverage.
