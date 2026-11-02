@@ -628,6 +628,12 @@ pub enum DbCommand {
         entity_type: EntityType,
         entity_id: String,
     },
+    /// Local GUI hierarchy access operation; actor comes only from the DB thread.
+    EntityAccess {
+        target: crate::entity_access::EntityAccessTarget,
+        action: crate::entity_access::EntityAccessAction,
+        request_id: String,
+    },
     // --- Entity Settings: Access management ---
     /// Resolve effective roles for a list of peers at a scope.
     ResolveRolesForPeers {
@@ -1366,6 +1372,11 @@ pub enum DbResult {
     EntityDeleted {
         entity_type: EntityType,
         entity_id: String,
+    },
+    EntityAccessFinished {
+        target: crate::entity_access::EntityAccessTarget,
+        request_id: String,
+        result: Result<crate::entity_access::EntityAccessSnapshot, String>,
     },
     PeerRolesResolved {
         scope: String,

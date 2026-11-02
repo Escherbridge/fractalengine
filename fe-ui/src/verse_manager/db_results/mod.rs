@@ -396,7 +396,10 @@ pub(super) fn apply_db_results(
                 *instance_index as usize,
             ),
             DbResult::VerseInviteGenerated { invite_string, .. } => {
-                roles::handle_verse_invite_generated(invite_string, &mut ui_mgr)
+                roles::handle_verse_invite_generated(invite_string, &mut ui_mgr,caches.time.elapsed_secs_f64())
+            }
+            DbResult::EntityAccessFinished {target,request_id,result} => {
+                crate::dialogs::entity_access::apply(&mut ui_mgr,target,request_id,result);
             }
             DbResult::PeerRolesResolved { scope, roles } => {
                 roles::handle_peer_roles_resolved(scope, roles, &mut ui_mgr)
@@ -1615,21 +1618,13 @@ mod tests {
     // --- roles / dialog handlers ---
 
     #[test]
-    fn verse_invite_generated_opens_invite_dialog() {
-        let mut ui = UiManager::default();
-        roles::handle_verse_invite_generated("fractal://invite", &mut ui);
-        match &ui.active_dialog {
-            ActiveDialog::InviteDialog {
-                invite_string,
-                include_write_cap,
-                expiry_hours,
-            } => {
-                assert_eq!(invite_string, "fractal://invite");
-                assert!(!include_write_cap);
-                assert_eq!(*expiry_hours, 24);
-            }
-            other => panic!("expected InviteDialog, got {other:?}"),
-        }
+    fn legacy_verse_invite_does_not_open_an_unrendered_dialog() {
+        let mut ui=UiManager::default();
+        roles::handle_verse_invite_generated("fractal://invite",&mut ui,1.0);
+        assert!(matches!(ui.active_dialog,ActiveDialog::None));
+        ui.open_dialog(ActiveDialog::JoinDialog {invite_buf:"retained".into()});
+        roles::handle_verse_invite_generated("fractal://late-invite",&mut ui,1.1);
+        assert!(matches!(&ui.active_dialog,ActiveDialog::JoinDialog {invite_buf} if invite_buf=="retained"));
     }
 
     #[test]

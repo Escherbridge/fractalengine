@@ -146,6 +146,7 @@ pub fn gardener_console(
     // segment in the status bar) — see `panels/AGENTS.md` §identity-banner.
     identity_banner: &mut crate::plugin::IdentityBanner,
     node_identity: Option<&fe_identity::NodeIdentity>,
+    known_peers: Option<&fe_runtime::PeerRegistry>,
     // terrain_proposal_delta_viz_20261025 S6: the Volume report's live
     // query + latest true-figures answer. Read-only here — `sync_volume_
     // report_request`/`drain_volume_report_result` (plugin.rs, PostUpdate)
@@ -343,7 +344,7 @@ pub fn gardener_console(
                     crate::dialogs::render_node_options_dialog(ctx, ui_mgr, hierarchy, db_tx)
                 });
                 let _ = guarded(modal, "dialog_entity_settings", || {
-                    crate::dialogs::render_entity_settings_dialog(ctx, ui_mgr, db_tx, local_role)
+                    crate::dialogs::render_entity_settings_dialog(ctx, ui_mgr, db_tx, local_role,known_peers,inspector.api_endpoint)
                 });
                 // FR-2 (shell_ux_sidebar): the Map Manager is a right-sidebar
                 // section now (`ui_shell::right_sidebar::render_maps_section`),
@@ -602,6 +603,7 @@ mod tests {
                         &downloads,
                         &mut render_override,
                         &mut identity_banner,
+                        None,
                         None,
                         &volume_report,
                         &mut crate::settings::SettingsSession::default(),

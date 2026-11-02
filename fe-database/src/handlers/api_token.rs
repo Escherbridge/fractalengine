@@ -8,7 +8,6 @@ use fe_runtime::messages::ApiTokenInfo;
 
 use crate::api_token_store;
 use crate::repo::Db;
-use crate::role_manager::resolve_role;
 use crate::RoleLevel;
 
 /// Helper: current time as RFC 3339 string.
@@ -66,7 +65,8 @@ pub(crate) async fn mint_api_token_handler(
     let client = fe_identity::resolve_client_did(client_did)?;
 
     // --- Authorization: caller must have Manager+ role at the requested scope ---
-    let caller_role = resolve_role(db, local_did, scope).await?;
+    let authority=super::entity::prepare_scope_permission(db,scope,local_did,fe_policy::RoleLevel::Manager).await?;
+    let caller_role = authority.role();
     if !caller_role.can_manage() {
         anyhow::bail!(
             "insufficient permissions: need Manager or Owner at scope '{}', have {:?}",
@@ -122,7 +122,13 @@ pub(crate) async fn mint_api_token_handler(
         revoked: false,
         client: Some(client.clone()),
     };
-    api_token_store::store_api_token(db, &record).await?;
+    let mut value=serde_json::to_value(&record)?;
+    if let Some(object)=value.as_object_mut() { object.retain(|_,value| !value.is_null()); }
+    authority.commit(db,&[
+        "IF array::len((SELECT jti FROM api_token WHERE sub=$mint_actor AND revoked=false AND expires_at>$mint_now)) >= 50 { THROW 'active token limit reached'; }",
+        "CREATE api_token CONTENT $mint_record;",
+        "IF array::len((SELECT jti FROM api_token WHERE jti=$mint_jti AND sub=$mint_actor AND scope=$mint_scope AND revoked=false)) != 1 { THROW 'token persistence unconfirmed'; }"
+    ],vec![("mint_actor".into(),serde_json::json!(local_did)),("mint_now".into(),serde_json::json!(now)),("mint_record".into(),value),("mint_jti".into(),serde_json::json!(jti)),("mint_scope".into(),serde_json::json!(scope))]).await?;
 
     Ok(MintedApiToken {
         token,
@@ -141,6 +147,12 @@ pub(crate) async fn revoke_api_token_handler(
     jti: &str,
 ) -> anyhow::Result<bool> {
     api_token_store::revoke_api_token(db, jti, local_did).await
+}
+
+/// Revoke only a token owned by the actual DB-thread identity.
+pub(crate) async fn revoke_local_api_token_handler(db:&Db,local_did:&str,target_sub:&str,jti:&str)->anyhow::Result<bool> {
+    anyhow::ensure!(target_sub==local_did,"Token subject is not the local revocation authority");
+    revoke_api_token_handler(db,local_did,jti).await
 }
 
 /// List active (non-revoked, non-expired) tokens for the local node, paginated.
@@ -172,7 +184,7 @@ pub(crate) async fn list_api_tokens_by_scope_handler(
     Ok((records_to_info(records), total))
 }
 
-fn records_to_info(records: Vec<api_token_store::ApiTokenRecord>) -> Vec<ApiTokenInfo> {
+pub(crate) fn records_to_info(records: Vec<api_token_store::ApiTokenRecord>) -> Vec<ApiTokenInfo> {
     records
         .into_iter()
         .map(|r| ApiTokenInfo {

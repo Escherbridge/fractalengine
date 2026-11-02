@@ -1,0 +1,597 @@
+//! Target-bound access state and confirmed controls; see dialogs/AGENTS.md.
+
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
+
+use bevy_egui::egui;
+use fe_runtime::{
+    entity_access::{EntityAccessAction, EntityAccessSnapshot, EntityAccessTarget},
+    messages::DbCommand,
+};
+
+use super::{ActiveDialog, SettingsTab};
+use crate::{accessibility::ResponseExt, actions::UiManager, theme};
+
+#[derive(Debug, Clone)]
+struct Pending {
+    id: String,
+    target: EntityAccessTarget,
+    started: Instant,
+    secret: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct EntityAccessState {
+    target: Option<EntityAccessTarget>,
+    pending: Option<Pending>,
+    pub(crate) snapshot: Option<EntityAccessSnapshot>,
+    queued_read: bool,
+    read_required: bool,
+    pub(crate) error: Option<&'static str>,
+    role_drafts: BTreeMap<String, String>,
+    api_open: bool,
+    reveal_secret: bool,
+}
+
+impl Default for EntityAccessState {
+    fn default() -> Self {
+        Self {
+            target: None,
+            pending: None,
+            snapshot: None,
+            queued_read: false,
+            read_required: true,
+            error: None,
+            role_drafts: BTreeMap::new(),
+            api_open: false,
+            reveal_secret: false,
+        }
+    }
+}
+
+impl EntityAccessState {
+    pub(crate) fn refresh(&mut self) {
+        self.queued_read = true;
+        self.error = None;
+    }
+    pub(crate) fn waiting(&self) -> bool {
+        self.pending.is_some()
+    }
+    fn leave_api(&mut self) {
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.minted = None;
+        }
+        if self.pending.as_ref().is_some_and(|p| p.secret) {
+            self.pending = None;
+            self.read_required = true;
+        }
+        self.reveal_secret = false;
+    }
+    fn synchronize(&mut self, target: &EntityAccessTarget, is_api: bool) {
+        if self.target.as_ref() != Some(target) {
+            let queued = self.queued_read;
+            *self = Self::default();
+            self.target = Some(target.clone());
+            self.queued_read = queued;
+        }
+        if self.api_open && !is_api {
+            self.leave_api();
+        }
+        self.api_open = is_api;
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.started.elapsed() >= Duration::from_secs(30))
+        {
+            self.pending = None;
+            self.read_required = true;
+            self.snapshot = None;
+            self.error=Some("Access request timed out; its outcome is unconfirmed. Refresh before making another change.");
+        }
+    }
+}
+
+fn current_target(dialog: &ActiveDialog) -> Option<EntityAccessTarget> {
+    let ActiveDialog::EntitySettings {
+        entity_type,
+        entity_id,
+        details,
+        ..
+    } = dialog
+    else {
+        return None;
+    };
+    let stored = details.loaded.as_ref()?;
+    (stored.entity_type == entity_type.runtime() && stored.entity_id == *entity_id).then(|| {
+        EntityAccessTarget {
+            entity_type: stored.entity_type,
+            entity_id: stored.entity_id.clone(),
+            scope: stored.scope.clone(),
+        }
+    })
+}
+
+pub(crate) fn service(
+    ui_mgr: &mut UiManager,
+    sender: &crossbeam::channel::Sender<DbCommand>,
+    peers: Option<&fe_runtime::PeerRegistry>,
+) {
+    let Some(target) = current_target(&ui_mgr.active_dialog) else {
+        return;
+    };
+    let ActiveDialog::EntitySettings {
+        access,
+        details,
+        active_tab,
+        ..
+    } = &mut ui_mgr.active_dialog
+    else {
+        return;
+    };
+    access.synchronize(&target, *active_tab == SettingsTab::ApiAccess);
+    if !details
+        .loaded
+        .as_ref()
+        .is_some_and(|d| fe_database::RoleLevel::from(d.role.as_str()).can_manage())
+    {
+        access.pending = None;
+        access.snapshot = None;
+        access.read_required = true;
+        return;
+    }
+    if access.queued_read && !access.waiting() {
+        access.queued_read = false;
+        let mut peer_dids: Vec<String> = peers
+            .into_iter()
+            .flat_map(|p| p.iter().map(|(did, _)| did.clone()))
+            .take(257)
+            .collect();
+        peer_dids.sort();
+        peer_dids.dedup();
+        queue(
+            access,
+            target,
+            EntityAccessAction::Load { peer_dids },
+            sender,
+        );
+    }
+}
+
+fn queue(
+    state: &mut EntityAccessState,
+    target: EntityAccessTarget,
+    action: EntityAccessAction,
+    sender: &crossbeam::channel::Sender<DbCommand>,
+) {
+    if state.waiting() {
+        return;
+    }
+    let id = format!("entity-access-{}", ulid::Ulid::new());
+    let secret = matches!(action, EntityAccessAction::MintToken { .. });
+    if sender
+        .send(DbCommand::EntityAccess {
+            target: target.clone(),
+            action,
+            request_id: id.clone(),
+        })
+        .is_err()
+    {
+        bevy::log::warn!("Entity access channel closed");
+        state.error = Some("The database is unavailable. Nothing was sent.");
+        state.read_required = true;
+        return;
+    }
+    state.pending = Some(Pending {
+        id,
+        target,
+        started: Instant::now(),
+        secret,
+    });
+    state.error = None;
+}
+
+pub(crate) fn submit(
+    ui_mgr: &mut UiManager,
+    action: EntityAccessAction,
+    sender: &crossbeam::channel::Sender<DbCommand>,
+) {
+    let Some(target) = current_target(&ui_mgr.active_dialog) else {
+        return;
+    };
+    let ActiveDialog::EntitySettings {
+        access,
+        details,
+        active_tab,
+        ..
+    } = &mut ui_mgr.active_dialog
+    else {
+        return;
+    };
+    access.synchronize(&target, *active_tab == SettingsTab::ApiAccess);
+    if access.read_required
+        || access.waiting()
+        || !details
+            .loaded
+            .as_ref()
+            .is_some_and(|d| fe_database::RoleLevel::from(d.role.as_str()).can_manage())
+    {
+        return;
+    }
+    queue(access, target, action, sender);
+}
+
+pub(crate) fn apply(
+    ui_mgr: &mut UiManager,
+    target: &EntityAccessTarget,
+    id: &str,
+    result: &Result<EntityAccessSnapshot, String>,
+) {
+    if current_target(&ui_mgr.active_dialog).as_ref() != Some(target) {
+        return;
+    }
+    let ActiveDialog::EntitySettings {
+        access, active_tab, ..
+    } = &mut ui_mgr.active_dialog
+    else {
+        return;
+    };
+    access.synchronize(target, *active_tab == SettingsTab::ApiAccess);
+    if !access
+        .pending
+        .as_ref()
+        .is_some_and(|p| p.id == id && p.target == *target)
+    {
+        return;
+    }
+    access.pending = None;
+    match result {
+        Ok(snapshot) if snapshot.minted.is_some() && *active_tab != SettingsTab::ApiAccess => {
+            access.leave_api();
+            access.read_required = true;
+        }
+        Ok(snapshot) if fe_database::RoleLevel::from(snapshot.local_role.as_str()).can_manage() => {
+            access.snapshot = Some(snapshot.clone());
+            access.read_required = false;
+            access.error = None;
+            access.role_drafts.clear();
+            access.reveal_secret = false;
+        }
+        _ => {
+            access.snapshot = None;
+            access.read_required = true;
+            access.error=Some("The access operation was not confirmed. Refresh stored access before making another change.");
+        }
+    }
+}
+
+pub(crate) fn role_controls(
+    ui: &mut egui::Ui,
+    state: &mut EntityAccessState,
+    peers: Option<&fe_runtime::PeerRegistry>,
+) -> Option<EntityAccessAction> {
+    let mut action = None;
+    if ui
+        .add_enabled(!state.waiting(), egui::Button::new("Refresh stored access"))
+        .named(ui, "Refresh entity access")
+        .clicked()
+    {
+        state.refresh();
+    }
+    if state.waiting() {
+        ui.spinner();
+        ui.label("Waiting for stored access...");
+    }
+    if let Some(error) = state.error {
+        ui.colored_label(theme::STATUS_OFFLINE, error);
+    }
+    let Some(snapshot) = state.snapshot.as_ref() else {
+        ui.label("Load current effective roles before changing access.");
+        return action;
+    };
+    if let Some(notice) = &snapshot.notice {
+        ui.label(notice);
+    }
+    let owner =
+        fe_database::RoleLevel::from(snapshot.local_role.as_str()) == fe_database::RoleLevel::Owner;
+    let enabled = !state.waiting() && !state.read_required;
+    ui.label("Effective roles include inherited access and grants from other managers.");
+    for (did, role) in &snapshot.roles {
+        ui.push_id(did,|ui|{
+            ui.separator();
+            let peer=peers.and_then(|registry|registry.get(did));
+            let name=peer.and_then(|p|p.display_name.as_deref()).unwrap_or(did);
+            ui.add(egui::Label::new(name).truncate()).on_hover_text(did);
+            ui.label(format!("Effective role: {role}"));
+            if role=="owner" {ui.label("Ownership is managed separately.");return;}
+            ui.add_enabled_ui(enabled,|ui|{
+                let draft=state.role_drafts.entry(did.clone()).or_insert_with(||role.clone());
+                egui::ComboBox::from_id_salt("role_draft").selected_text(draft.as_str()).show_ui(ui,|ui|{
+                    for value in ["viewer","editor","manager"] {ui.selectable_value(draft,value.to_owned(),value).observed(ui);}
+                    if owner {ui.selectable_value(draft,"none".into(),"none (owner pin)").observed(ui);}
+                }).response.named(ui,format_args!("Role to assign for {did}"));
+                let grantable=matches!(draft.as_str(),"viewer"|"editor"|"manager") || (owner && draft=="none");
+                ui.add_enabled_ui(grantable,|ui| {
+                    if crate::panels::widgets::confirm_button(ui,("assign_role",did,draft.as_str()),"Save role...","Confirm role change",&format!("Assign role {draft} to {did}")) {
+                        action=Some(EntityAccessAction::Assign {peer_did:did.clone(),role:draft.clone()});
+                    }
+                });
+                let revoke_label=if owner {"Block access here..."}else{"Revoke my grant..."};
+                if owner {ui.label("Owner revocation blocks this scope. Other grants may still provide access elsewhere.");}
+                if crate::panels::widgets::confirm_button(ui,("revoke_role",did),revoke_label,"Confirm revoke",&format!("Revoke role grant for {did}")) {
+                    action=Some(EntityAccessAction::Revoke {peer_did:did.clone()});
+                }
+            });
+        });
+    }
+    action
+}
+
+pub(crate) fn token_controls(
+    ui: &mut egui::Ui,
+    state: &mut EntityAccessState,
+) -> Option<EntityAccessAction> {
+    let mut action = None;
+    if ui
+        .add_enabled(!state.waiting(), egui::Button::new("Refresh token list"))
+        .named(ui, "Refresh entity API tokens")
+        .clicked()
+    {
+        state.refresh();
+    }
+    if let Some(error) = state.error {
+        ui.colored_label(theme::STATUS_OFFLINE, error);
+    }
+    if state.waiting() {
+        ui.spinner();
+        ui.label("Waiting for stored token metadata...");
+    }
+    let Some(snapshot) = &state.snapshot else {
+        ui.label("Load stored access to view tokens for this entry.");
+        return None;
+    };
+    let enabled = !state.waiting() && !state.read_required;
+    if let Some(notice) = &snapshot.notice {
+        ui.label(notice);
+    }
+    if snapshot.tokens.is_empty() {
+        ui.label("No active API tokens in this entry's scope.");
+    }
+    if snapshot.tokens_truncated {
+        ui.label("Showing the first 50 active tokens. Revoking entries and refreshing reveals later records.");
+    }
+    for token in &snapshot.tokens {
+        ui.push_id((&token.jti, &token.sub, &token.scope), |ui| {
+            ui.separator();
+            ui.add(egui::Label::new(token.label.as_deref().unwrap_or(&token.jti)).truncate())
+                .on_hover_text(&token.jti);
+            ui.add(egui::Label::new(format!("{} / {}", token.max_role, token.scope)).truncate())
+                .on_hover_text(&token.scope);
+            ui.add(egui::Label::new(format!("Issuer: {}", token.sub)).truncate())
+                .on_hover_text(&token.sub);
+            ui.label(format!("Expires: {}", token.expires_at));
+            ui.add_enabled_ui(enabled, |ui| {
+                if crate::panels::widgets::confirm_button(
+                    ui,
+                    ("revoke_token", &token.jti, &token.sub, &token.scope),
+                    "Revoke token...",
+                    "Confirm token revoke",
+                    &format!("Revoke API token {}", token.jti),
+                ) {
+                    action = Some(EntityAccessAction::RevokeToken {
+                        jti: token.jti.clone(),
+                        sub: token.sub.clone(),
+                        scope: token.scope.clone(),
+                    });
+                }
+            });
+        });
+    }
+    action
+}
+
+pub(crate) fn select_tab(
+    tab: &mut SettingsTab,
+    state: &mut EntityAccessState,
+    legacy_token: &mut Option<String>,
+    legacy_client: &mut Option<String>,
+    next: SettingsTab,
+) {
+    if *tab == SettingsTab::ApiAccess && next != SettingsTab::ApiAccess {
+        state.leave_api();
+        *legacy_token = None;
+        *legacy_client = None;
+    }
+    *tab = next;
+    if matches!(next, SettingsTab::Access | SettingsTab::ApiAccess) {
+        state.refresh();
+    }
+}
+
+pub(crate) fn invite_controls(
+    ui: &mut egui::Ui,
+    state: &mut EntityAccessState,
+    role: &mut String,
+    expiry: &mut u32,
+) -> (Option<EntityAccessAction>, bool) {
+    let mut action = None;
+    let mut copied = false;
+    ui.separator();
+    ui.label("Generate scoped invite");
+    ui.add_enabled_ui(!state.waiting() && !state.read_required, |ui| {
+        egui::ComboBox::from_id_salt("entity_invite_role")
+            .selected_text(role.as_str())
+            .show_ui(ui, |ui| {
+                for value in ["viewer", "editor", "manager"] {
+                    ui.selectable_value(role, value.into(), value).observed(ui);
+                }
+            })
+            .response
+            .named(ui, "Scoped invite role");
+        ui.add(egui::DragValue::new(expiry).range(1..=720).suffix(" hours"))
+            .named(ui, "Scoped invite expiry hours");
+        if ui
+            .button("Generate invite")
+            .named(ui, "Generate invite for this entry")
+            .clicked()
+        {
+            action = Some(EntityAccessAction::GenerateInvite {
+                role: role.clone(),
+                expiry_hours: *expiry,
+            });
+        }
+    });
+    if let Some(link) = state
+        .snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.invite_link.as_ref())
+    {
+        ui.label("Invite generated for this entry. Treat it as an access credential.");
+        if ui
+            .button("Copy invite link")
+            .named(ui, "Copy scoped invite link")
+            .clicked()
+        {
+            ui.ctx().copy_text(link.clone());
+            copied = true;
+        }
+    }
+    (action, copied)
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace(char::from(39), "'\\''"))
+}
+
+pub(crate) fn scoped_example(
+    endpoint: std::net::SocketAddr,
+    target: &EntityAccessTarget,
+    token: &str,
+) -> Option<String> {
+    let mut url = url::Url::parse(&format!("http://{endpoint}")).ok()?;
+    if target.entity_type == fe_runtime::messages::EntityType::Petal {
+        url.path_segments_mut().ok()?.extend([
+            "api",
+            "v1",
+            "petals",
+            target.entity_id.as_str(),
+            "nodes",
+        ]);
+        Some(format!(
+            "curl -s {} -H {}",
+            shell_quote(url.as_str()),
+            shell_quote(&format!("Authorization: Bearer {token}"))
+        ))
+    } else {
+        url.set_path("/api/v1/query");
+        Some(format!("curl -s -X POST {} -H {} -H 'Content-Type: application/json' --data '{{\"sql\":\"SELECT node_id, petal_id FROM node LIMIT 10\",\"vars\":{{}}}}'",shell_quote(url.as_str()),shell_quote(&format!("Authorization: Bearer {token}"))))
+    }
+}
+
+pub(crate) fn api_controls(
+    ui: &mut egui::Ui,
+    state: &mut EntityAccessState,
+    role: &mut String,
+    expiry: &mut u32,
+    client: &mut String,
+    endpoint: Option<std::net::SocketAddr>,
+) -> (Option<EntityAccessAction>, bool) {
+    let mut action = token_controls(ui, state);
+    let mut copied = false;
+    ui.separator();
+    ui.label("Generate a token for this entry");
+    if let Some(endpoint) = endpoint {
+        ui.label(format!("API listening at http://{endpoint}"));
+    } else {
+        ui.label("API endpoint is not available yet; authenticated examples appear after the listener confirms its address.");
+    }
+    ui.add_enabled_ui(!state.waiting() && !state.read_required, |ui| {
+        egui::ComboBox::from_id_salt("entity_token_role")
+            .selected_text(role.as_str())
+            .show_ui(ui, |ui| {
+                for value in ["viewer", "editor", "manager"] {
+                    ui.selectable_value(role, value.into(), value).observed(ui);
+                }
+            })
+            .response
+            .named(ui, "Entity API token maximum role");
+        ui.add(egui::DragValue::new(expiry).range(1..=720).suffix(" hours"))
+            .named(ui, "Entity API token expiry hours");
+        ui.add(
+            egui::TextEdit::singleline(client)
+                .hint_text("Client DID, or leave blank for a fresh client"),
+        )
+        .named(ui, "Entity API token client DID");
+        let valid_client =
+            client.trim().is_empty() || fe_identity::validate_client_did(client.trim()).is_ok();
+        if !valid_client {
+            ui.colored_label(
+                theme::STATUS_OFFLINE,
+                "Enter a valid Ed25519 client DID or leave it blank.",
+            );
+        }
+        if ui
+            .add_enabled(valid_client, egui::Button::new("Generate API token"))
+            .named(ui, "Generate API token for this entry")
+            .clicked()
+        {
+            action = Some(EntityAccessAction::MintToken {
+                max_role: role.clone(),
+                ttl_hours: *expiry,
+                client_did: (!client.trim().is_empty()).then(|| client.trim().to_owned()),
+            });
+        }
+    });
+    if let Some(minted) = state
+        .snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.minted.as_ref())
+    {
+        ui.separator();
+        ui.label("Copy this token before leaving API Access or refreshing.");
+        ui.checkbox(&mut state.reveal_secret, "Reveal token")
+            .named(ui, "Reveal generated entity API token");
+        let mut display = minted.token.clone();
+        ui.add(
+            egui::TextEdit::singleline(&mut display)
+                .password(!state.reveal_secret)
+                .interactive(false),
+        )
+        .named(ui, "Generated entity API token");
+        ui.label(format!("Expires: {}", minted.expires_at));
+        if ui
+            .button("Copy token")
+            .named(ui, "Copy generated entity API token")
+            .clicked()
+        {
+            ui.ctx().copy_text(minted.token.clone());
+            copied = true;
+        }
+        if let Some(command) = endpoint
+            .zip(state.target.as_ref())
+            .and_then(|(endpoint, target)| scoped_example(endpoint, target, &minted.token))
+        {
+            let mut preview = if state.reveal_secret {
+                command.clone()
+            } else {
+                command.replace(&minted.token, "<TOKEN>")
+            };
+            ui.add(
+                egui::TextEdit::multiline(&mut preview)
+                    .interactive(false)
+                    .desired_rows(4),
+            )
+            .named(ui, "Entity scoped API read example");
+            if ui
+                .button("Copy authenticated read command")
+                .named(ui, "Copy entity scoped API read command")
+                .clicked()
+            {
+                ui.ctx().copy_text(command);
+                copied = true;
+            }
+        }
+    }
+    (action, copied)
+}

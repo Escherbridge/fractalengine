@@ -96,6 +96,13 @@ pub fn run() -> Result<TestResult> {
         other => anyhow::bail!("Expected ApiTokensListed, got: {other:?}"),
     }
 
+    alice.send(DbCommand::RevokeApiToken {jti:jti.clone(),sub:"did:key:forged-subject".into()});
+    let forged=alice.db_result_rx.recv_timeout(std::time::Duration::from_secs(10))?;
+    assert!(matches!(forged,DbResult::Error(_)),"A supplied subject cannot become the local actor");
+    alice.send(DbCommand::ListApiTokens {offset:0,limit:10});
+    let present=alice.wait_for(|reply|matches!(reply,DbResult::ApiTokensListed {..}),std::time::Duration::from_secs(10))?;
+    assert!(matches!(present,DbResult::ApiTokensListed {tokens,..} if tokens.iter().any(|token|token.jti==jti&&!token.revoked)),"Forged subject refusal leaves the token active");
+
     // 5. Revoke the token
     let alice_sub = alice.keypair.to_did_key();
     alice.send(DbCommand::RevokeApiToken {

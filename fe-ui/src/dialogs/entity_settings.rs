@@ -8,64 +8,39 @@ use crate::accessibility::ResponseExt;
 use super::{ActiveDialog, EntitySettingsType, SettingsTab};
 use crate::actions::UiManager;
 use crate::theme;
-use crate::verse_manager::db_results::tokens::mint_command;
 use fe_runtime::messages::{DbCommand, EntityType};
-
-/// Build a hierarchical scope string from entity settings dialog context.
-fn build_entity_scope(
-    entity_type: &EntitySettingsType,
-    entity_id: &str,
-    parent_verse_id: &str,
-    parent_fractal_id: &Option<String>,
-) -> String {
-    match entity_type {
-        EntitySettingsType::Verse => fe_database::build_scope(entity_id, None, None),
-        EntitySettingsType::Fractal => {
-            fe_database::build_scope(parent_verse_id, Some(entity_id), None)
-        }
-        EntitySettingsType::Petal => {
-            let fid = parent_fractal_id.as_deref().unwrap_or("");
-            fe_database::build_scope(parent_verse_id, Some(fid), Some(entity_id))
-        }
-    }
-}
 
 pub fn render_entity_settings_dialog(
     ctx: &egui::Context,
     ui_mgr: &mut UiManager,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
     _local_role: &crate::plugin::LocalUserRole,
+    known_peers: Option<&fe_runtime::PeerRegistry>,
+    api_endpoint: Option<std::net::SocketAddr>,
 ) {
     super::entity_details::request_if_needed(ui_mgr, db_tx, ctx.input(|input| input.time));
+    super::entity_access::service(ui_mgr,db_tx,known_peers);
     // Early-return guard: only render when EntitySettings is active.
     let ActiveDialog::EntitySettings {
         ref entity_type,
         ref entity_id,
         ref entity_name,
-        ref parent_verse_id,
-        ref parent_fractal_id,
         ref mut details,
         ref mut active_tab,
         ref mut name_buf,
         ref mut default_access_buf,
         ref mut description_buf,
-        ref mut peer_roles,
-        ref mut roles_loading,
+        ref mut access,
         ref mut invite_role_buf,
         ref mut invite_expiry_buf,
-        ref mut generated_invite_link,
         ref mut pending_delete,
         ref mut pending_claim_ownership,
-        ref mut api_tokens,
-        ref mut api_tokens_loading,
-        ref mut api_token_scope_buf,
         ref mut api_token_role_buf,
         ref mut api_token_expiry_buf,
         ref mut api_token_client_buf,
         ref mut generated_api_token,
         ref mut generated_api_token_client,
-        ref mut scoped_api_tokens,
-        ref mut scoped_tokens_loading,
+        ..
     } = ui_mgr.active_dialog
     else {
         return;
@@ -87,6 +62,8 @@ pub fn render_entity_settings_dialog(
     let mut close = false;
     let mut still_open = true;
     let mut send_failure = None;
+    let mut access_action=None;
+    let mut copied_access=false;
 
     crate::ui_shell::layout_policy::bounded_window(ctx, title)
         .open(&mut still_open)
@@ -130,7 +107,7 @@ pub fn render_entity_settings_dialog(
                     ).observed(ui)
                     .clicked()
                 {
-                    *active_tab = SettingsTab::General;
+                    super::entity_access::select_tab(active_tab,access,generated_api_token,generated_api_token_client,SettingsTab::General);
                 }
 
                 let acc_fill = if current_tab == SettingsTab::Access {
@@ -145,7 +122,7 @@ pub fn render_entity_settings_dialog(
                     ).observed(ui)
                     .clicked()
                 {
-                    *active_tab = SettingsTab::Access;
+                    super::entity_access::select_tab(active_tab,access,generated_api_token,generated_api_token_client,SettingsTab::Access);
                 }
 
                 let api_fill = if current_tab == SettingsTab::ApiAccess {
@@ -160,14 +137,8 @@ pub fn render_entity_settings_dialog(
                     ).observed(ui)
                     .clicked()
                 {
-                    *active_tab = SettingsTab::ApiAccess;
-                    // Request token list when switching to API tab
-                    db_tx
-                        .send(DbCommand::ListApiTokens {
-                            offset: 0,
-                            limit: crate::plugin::API_TOKEN_PAGE_SIZE,
-                        })
-                        .ok();
+                    super::entity_access::select_tab(active_tab,access,generated_api_token,generated_api_token_client,SettingsTab::ApiAccess);
+
                 }
             });
 
@@ -176,6 +147,7 @@ pub fn render_entity_settings_dialog(
             ui.add_space(8.0);
 
             // Tab content
+            egui::ScrollArea::vertical().id_salt(("entity_settings_body",entity_id.as_str(),current_tab as u8)).show(ui,|ui| {
             match current_tab {
                 SettingsTab::General => {
                     // --- Rename ---
@@ -405,594 +377,22 @@ pub fn render_entity_settings_dialog(
                     });
                 }
                 SettingsTab::Access => {
-                    if !can_write { ui.disable(); }
-                    ui.label(egui::RichText::new("Peer Access").color(theme::TEXT_SECTION).strong());
-                    ui.add_space(8.0);
-
-                    if peer_roles.is_empty() && !*roles_loading {
-                        ui.label(
-                            egui::RichText::new(
-                                "No peers known yet. Peers will appear here when they connect.",
-                            )
-                            .color(theme::TEXT_MUTED)
-                            .italics(),
-                        );
-                    } else if *roles_loading {
-                        ui.label(
-                            egui::RichText::new("Loading peer roles...")
-                                .color(theme::TEXT_MUTED)
-                                .italics(),
-                        );
-                    } else {
-                        // Peer list table
-                        for (i, peer) in peer_roles.iter_mut().enumerate() {
-                            let row_bg = if i % 2 == 0 {
-                                theme::BG_PEER_ROW_EVEN
-                            } else {
-                                theme::BG_PEER_ROW_ODD
-                            };
-                            egui::Frame::NONE.fill(row_bg).inner_margin(egui::Margin::same(4)).show(
-                                ui,
-                                |ui| {
-                                    ui.horizontal(|ui| {
-                                        // Online indicator
-                                        let dot_color = if peer.is_online {
-                                            theme::ICON_ONLINE
-                                        } else {
-                                            theme::ICON_OFFLINE
-                                        };
-                                        ui.colored_label(dot_color, "\u{25CF}");
-
-                                        // Display name
-                                        let display = if peer.display_name.is_empty() {
-                                            &peer.peer_did
-                                        } else {
-                                            &peer.display_name
-                                        };
-                                        ui.label(egui::RichText::new(display).strong());
-
-                                        // Truncated DID
-                                        if !peer.display_name.is_empty() {
-                                            let truncated = if peer.peer_did.len() > 20 {
-                                                format!("{}...", &peer.peer_did[..20])
-                                            } else {
-                                                peer.peer_did.clone()
-                                            };
-                                            ui.label(
-                                                egui::RichText::new(truncated)
-                                                    .monospace()
-                                                    .small()
-                                                    .color(theme::TEXT_DIM),
-                                            );
-                                        }
-
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
-                                                // Role badge (read-only display for now)
-                                                let role_color = match peer.role.as_str() {
-                                                    "owner" => theme::TEXT_ROLE_OWNER,
-                                                    "manager" => theme::TEXT_ROLE_MANAGER,
-                                                    "editor" => theme::TEXT_ROLE_EDITOR,
-                                                    _ => theme::TEXT_ROLE_VIEWER,
-                                                };
-                                                ui.label(
-                                                    egui::RichText::new(&peer.role)
-                                                        .color(role_color)
-                                                        .strong(),
-                                                );
-                                            },
-                                        );
-                                    });
-                                },
-                            );
-                        }
-                    }
-
-                    // --- Invite generation section ---
-                    ui.add_space(16.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new("Generate Invite Link").color(theme::TEXT_SECTION).strong(),
-                    );
-                    ui.add_space(4.0);
-
-                    ui.horizontal(|ui| {
-                        ui.label("Role:");
-                        egui::ComboBox::from_id_salt("invite_role")
-                            .selected_text(invite_role_buf.as_str())
-                            .width(100.0)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(invite_role_buf, "viewer".to_string(), "Viewer").observed(ui);
-                                ui.selectable_value(invite_role_buf, "editor".to_string(), "Editor").observed(ui);
-                                ui.selectable_value(invite_role_buf, "manager".to_string(), "Manager").observed(ui);
-                            })
-                            .response
-                            .named(ui, "Invite role");
-
-                        ui.label("Expires:");
-                        egui::ComboBox::from_id_salt("invite_expiry")
-                            .selected_text(match *invite_expiry_buf {
-                                1 => "1 hour",
-                                24 => "24 hours",
-                                168 => "7 days",
-                                720 => "30 days",
-                                _ => "24 hours",
-                            })
-                            .width(100.0)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(invite_expiry_buf, 1, "1 hour").observed(ui);
-                                ui.selectable_value(invite_expiry_buf, 24, "24 hours").observed(ui);
-                                ui.selectable_value(invite_expiry_buf, 168, "7 days").observed(ui);
-                                ui.selectable_value(invite_expiry_buf, 720, "30 days").observed(ui);
-                            })
-                            .response
-                            .named(ui, "Invite expiration");
-
-                        if ui.add(egui::Button::new("Generate").fill(theme::BG_SAVE)).observed(ui).clicked() {
-                            let _etype = match entity_type {
-                                EntitySettingsType::Verse => "verse",
-                                EntitySettingsType::Fractal => "fractal",
-                                EntitySettingsType::Petal => "petal",
-                            };
-                            let scope =
-                                build_entity_scope(entity_type, entity_id, parent_verse_id, parent_fractal_id);
-                            db_tx
-                                .send(DbCommand::GenerateScopedInvite {
-                                    scope,
-                                    role: invite_role_buf.clone(),
-                                    expiry_hours: *invite_expiry_buf,
-                                })
-                                .ok();
-                        }
-                    });
-
-                    // Show generated link
-                    if let Some(ref link) = generated_invite_link {
-                        ui.add_space(8.0);
-                        egui::Frame::NONE
-                            .fill(theme::BG_INVITE_LINK)
-                            .inner_margin(egui::Margin::same(8))
-                            .corner_radius(4.0)
-                            .show(ui, |ui| {
-                                let mut link_display = link.clone();
-                                ui.add(
-                                    egui::TextEdit::multiline(&mut link_display)
-                                        .desired_rows(2)
-                                        .desired_width(f32::INFINITY)
-                                        .font(egui::TextStyle::Monospace),
-                                )
-                                .named(ui, "Generated invite link");
-                                if ui.button("Copy to Clipboard").named(ui, "Copy generated invite link").clicked() {
-                                    ui.ctx().copy_text(link.clone());
-                                }
-                            });
-                    }
+                    ui.label(egui::RichText::new("Peer Access").strong());
+                    access_action=super::entity_access::role_controls(ui,access,known_peers);
+                    let (invite_action,copied)=super::entity_access::invite_controls(ui,access,invite_role_buf,invite_expiry_buf);
+                    access_action=invite_action.or(access_action);copied_access|=copied;
                 }
                 SettingsTab::ApiAccess => {
-                    if !can_write { ui.disable(); }
-                    ui.label(
-                        egui::RichText::new("API Access Tokens").color(theme::TEXT_SECTION).strong(),
-                    );
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(
-                            "Generate tokens for external API, MCP, and IoT access to this entity.",
-                        )
-                        .small()
-                        .color(theme::TEXT_MUTED)
-                        .italics(),
-                    );
-                    ui.add_space(8.0);
-
-                    // --- Endpoint URL bar (prominent, copyable) ---
-                    let base_url = "http://127.0.0.1:8765";
-                    egui::Frame::NONE
-                        .fill(egui::Color32::from_rgb(30, 35, 50))
-                        .inner_margin(egui::Margin::same(8))
-                        .corner_radius(4.0)
-                        .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("API Endpoint").small().color(theme::TEXT_MUTED));
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.small_button("Copy").named(ui, "Copy API endpoint URL").clicked() {
-                                        ui.ctx().copy_text(base_url.to_string());
-                                    }
-                                    ui.label(
-                                        egui::RichText::new(base_url)
-                                            .monospace()
-                                            .color(egui::Color32::from_rgb(130, 200, 255))
-                                            .size(14.0),
-                                    );
-                                });
-                            });
-                            ui.add_space(4.0);
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("MCP:").small().color(theme::TEXT_DIM));
-                                ui.label(
-                                    egui::RichText::new("POST /mcp").monospace().small().color(theme::TEXT_BRIGHT),
-                                );
-                                ui.add_space(12.0);
-                                ui.label(egui::RichText::new("WebSocket:").small().color(theme::TEXT_DIM));
-                                ui.label(
-                                    egui::RichText::new("GET /ws").monospace().small().color(theme::TEXT_BRIGHT),
-                                );
-                            });
-                        });
-
-                    ui.add_space(12.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-
-                    // --- Generate new token ---
-                    ui.label(
-                        egui::RichText::new("Generate New Token").color(theme::TEXT_SECTION).strong(),
-                    );
-                    ui.add_space(4.0);
-
-                    // Auto-fill scope from entity using correct hierarchy
-                    if api_token_scope_buf.is_empty() {
-                        *api_token_scope_buf =
-                            build_entity_scope(entity_type, entity_id, parent_verse_id, parent_fractal_id);
-                    }
-
-                    // Auto-load scoped tokens for admin dashboard on first render
-                    if scoped_api_tokens.is_empty() && !*scoped_tokens_loading {
-                        *scoped_tokens_loading = true;
-                        let scope_prefix =
-                            build_entity_scope(entity_type, entity_id, parent_verse_id, parent_fractal_id);
-                        db_tx
-                            .send(DbCommand::ListApiTokensByScope {
-                                scope_prefix,
-                                offset: 0,
-                                limit: crate::plugin::API_TOKEN_PAGE_SIZE,
-                            })
-                            .ok();
-                    }
-
-                    ui.horizontal(|ui| {
-                        ui.label("Scope:");
-                        ui.add(
-                            egui::TextEdit::singleline(api_token_scope_buf)
-                                .desired_width(200.0)
-                                .font(egui::TextStyle::Monospace),
-                        )
-                        .named(ui, "API token scope");
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.label("Max Role:");
-                        egui::ComboBox::from_id_salt("api_token_role")
-                            .selected_text(api_token_role_buf.as_str())
-                            .width(100.0)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(api_token_role_buf, "viewer".to_string(), "Viewer").observed(ui);
-                                ui.selectable_value(api_token_role_buf, "editor".to_string(), "Editor").observed(ui);
-                                ui.selectable_value(api_token_role_buf, "manager".to_string(), "Manager").observed(ui);
-                            })
-                            .response
-                            .named(ui, "API token maximum role");
-
-                        ui.label("Expires:");
-                        egui::ComboBox::from_id_salt("api_token_expiry")
-                            .selected_text(match *api_token_expiry_buf {
-                                1 => "1 hour",
-                                24 => "24 hours",
-                                168 => "7 days",
-                                720 => "30 days",
-                                _ => "24 hours",
-                            })
-                            .width(100.0)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(api_token_expiry_buf, 1, "1 hour").observed(ui);
-                                ui.selectable_value(api_token_expiry_buf, 24, "24 hours").observed(ui);
-                                ui.selectable_value(api_token_expiry_buf, 168, "7 days").observed(ui);
-                                ui.selectable_value(api_token_expiry_buf, 720, "30 days").observed(ui);
-                            })
-                            .response
-                            .named(ui, "API token expiration");
-                    });
-
-                    // Client DID (W6-7b): blank mints a fresh client; the DB
-                    // door is the authority on `client_did` — this field only
-                    // gates the Generate button so a malformed DID never
-                    // leaves the GUI.
-                    ui.horizontal(|ui| {
-                        ui.label("Client DID:");
-                        ui.add(
-                            egui::TextEdit::singleline(api_token_client_buf)
-                                .desired_width(220.0)
-                                .hint_text("blank = new client")
-                                .font(egui::TextStyle::Monospace),
-                        )
-                        .named(ui, "API token client DID");
-                    });
-                    let client_trimmed = api_token_client_buf.trim();
-                    let client_valid = client_trimmed.is_empty()
-                        || fe_identity::validate_client_did(client_trimmed).is_ok();
-                    if !client_valid {
-                        ui.label(
-                            egui::RichText::new("Not a valid ed25519 did:key")
-                                .small()
-                                .color(theme::STATUS_OFFLINE),
-                        );
-                    }
-
-                    ui.add_space(4.0);
-                    if ui
-                        .add_enabled(
-                            client_valid,
-                            egui::Button::new("Generate API Token").fill(theme::BG_SAVE),
-                        ).observed(ui)
-                        .clicked()
-                    {
-                        db_tx
-                            .send(mint_command(
-                                api_token_scope_buf.clone(),
-                                api_token_role_buf.clone(),
-                                *api_token_expiry_buf,
-                                None,
-                                client_trimmed,
-                                None,
-                            ))
-                            .ok();
-                    }
-
-                    // Show generated token + curl example
-                    if let Some(ref token) = generated_api_token {
-                        ui.add_space(8.0);
-                        egui::Frame::NONE
-                            .fill(theme::BG_INVITE_LINK)
-                            .inner_margin(egui::Margin::same(8))
-                            .corner_radius(4.0)
-                            .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new("Token (copy now — shown only once):")
-                                        .small()
-                                        .color(theme::STATUS_OFFLINE)
-                                        .strong(),
-                                );
-                                let mut token_display = token.clone();
-                                ui.add(
-                                    egui::TextEdit::multiline(&mut token_display)
-                                        .desired_rows(3)
-                                        .desired_width(f32::INFINITY)
-                                        .font(egui::TextStyle::Monospace),
-                                )
-                                .named(ui, "Generated API token");
-                                ui.horizontal(|ui| {
-                                    if ui.button("Copy Token").observed(ui).clicked() {
-                                        ui.ctx().copy_text(token.clone());
-                                    }
-                                    if ui.button("Copy curl").named(ui, "Copy health check curl command").clicked() {
-                                        let curl_cmd = format!(
-                                            "curl -s {}/health -H \"Authorization: Bearer {}\"",
-                                            base_url, token,
-                                        );
-                                        ui.ctx().copy_text(curl_cmd);
-                                    }
-                                });
-                                // Minted `client` claim (W6-7b).
-                                if let Some(ref client) = generated_api_token_client {
-                                    ui.add_space(4.0);
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            egui::RichText::new("Client:")
-                                                .small()
-                                                .color(theme::TEXT_DIM),
-                                        );
-                                        ui.label(
-                                            egui::RichText::new(client)
-                                                .small()
-                                                .monospace()
-                                                .color(theme::TEXT_SECTION),
-                                        );
-                                        if ui.small_button("Copy").named(ui, "Copy generated token client DID").clicked() {
-                                            ui.ctx().copy_text(client.clone());
-                                        }
-                                    });
-                                }
-                            });
-
-                        // curl example
-                        ui.add_space(6.0);
-                        egui::Frame::NONE
-                            .fill(egui::Color32::from_rgb(25, 25, 35))
-                            .inner_margin(egui::Margin::same(8))
-                            .corner_radius(4.0)
-                            .show(ui, |ui| {
-                                ui.label(egui::RichText::new("Test with curl:").small().color(theme::TEXT_MUTED));
-                                ui.add_space(2.0);
-                                let curl_health = format!(
-                                    "curl -s {}/health \\\n  -H \"Authorization: Bearer <token>\"",
-                                    base_url,
-                                );
-                                let curl_rest = format!(
-                                    "curl -s {}/api/v1/nodes \\\n  -H \"Authorization: Bearer <token>\"",
-                                    base_url,
-                                );
-                                let mut curl_display =
-                                    format!("# Health check\n{}\n\n# List nodes\n{}", curl_health, curl_rest);
-                                ui.add(
-                                    egui::TextEdit::multiline(&mut curl_display)
-                                        .desired_rows(6)
-                                        .desired_width(f32::INFINITY)
-                                        .font(egui::TextStyle::Monospace),
-                                )
-                                .named(ui, "API request examples");
-                            });
-                    }
-
-                    // --- Active tokens list ---
-                    ui.add_space(12.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new("Active Tokens").color(theme::TEXT_SECTION).strong());
-                    ui.add_space(4.0);
-
-                    if *api_tokens_loading {
-                        ui.label(egui::RichText::new("Loading tokens...").color(theme::TEXT_MUTED).italics());
-                    } else if api_tokens.is_empty() {
-                        ui.label(
-                            egui::RichText::new("No active API tokens.").color(theme::TEXT_MUTED).italics(),
-                        );
-                    } else {
-                        let mut revoke_jti: Option<(String, String)> = None;
-                        for (i, tok) in api_tokens.iter().enumerate() {
-                            let row_bg = if i % 2 == 0 {
-                                theme::BG_PEER_ROW_EVEN
-                            } else {
-                                theme::BG_PEER_ROW_ODD
-                            };
-                            egui::Frame::NONE.fill(row_bg).inner_margin(egui::Margin::same(4)).show(
-                                ui,
-                                |ui| {
-                                    ui.horizontal(|ui| {
-                                        let role_color = match tok.max_role.as_str() {
-                                            "manager" => theme::TEXT_ROLE_MANAGER,
-                                            "editor" => theme::TEXT_ROLE_EDITOR,
-                                            _ => theme::TEXT_ROLE_VIEWER,
-                                        };
-                                        ui.label(egui::RichText::new(&tok.max_role).color(role_color).strong());
-                                        ui.label(
-                                            egui::RichText::new(&tok.scope).monospace().small().color(theme::TEXT_DIM),
-                                        );
-
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            if ui.add(egui::Button::new("Revoke").fill(theme::BG_DANGER).small()).named(ui, format_args!("Revoke API token {} for scope {}", i + 1, tok.scope)).clicked() {
-                                                revoke_jti = Some((tok.jti.clone(), tok.sub.clone()));
-                                            }
-                                            ui.label(
-                                                egui::RichText::new(format!(
-                                                    "exp: {}",
-                                                    &tok.expires_at[..10.min(tok.expires_at.len())]
-                                                ))
-                                                .small()
-                                                .color(theme::TEXT_MUTED),
-                                            );
-                                            if let Some(ref client) = tok.client {
-                                                ui.label(
-                                                    egui::RichText::new(format!("client: {}", client))
-                                                        .small()
-                                                        .monospace()
-                                                        .color(theme::TEXT_DIM),
-                                                );
-                                            }
-                                        });
-                                    });
-                                },
-                            );
-                        }
-                        if let Some((jti, sub)) = revoke_jti.take() {
-                            db_tx.send(DbCommand::RevokeApiToken { jti, sub }).ok();
-                            // Refresh is triggered by DbResult::ApiTokenRevoked handler
-                        }
-                    }
-
-                    // --- Admin: All tokens scoped to this entity ---
-                    ui.add_space(12.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-
-                    let scope_label = match entity_type {
-                        EntitySettingsType::Verse => "Verse",
-                        EntitySettingsType::Fractal => "Fractal",
-                        EntitySettingsType::Petal => "Petal",
-                    };
-                    ui.label(
-                        egui::RichText::new(format!("All API Tokens in this {}", scope_label))
-                            .color(theme::TEXT_SECTION)
-                            .strong(),
-                    );
-                    ui.add_space(2.0);
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Tokens scoped to this {} and all sub-entities.",
-                            scope_label.to_lowercase()
-                        ))
-                        .small()
-                        .color(theme::TEXT_MUTED)
-                        .italics(),
-                    );
-                    ui.add_space(4.0);
-
-                    if *scoped_tokens_loading && scoped_api_tokens.is_empty() {
-                        ui.label(
-                            egui::RichText::new("Loading scoped tokens...").color(theme::TEXT_MUTED).italics(),
-                        );
-                    } else if scoped_api_tokens.is_empty() {
-                        ui.label(
-                            egui::RichText::new("No active API tokens in this scope.")
-                                .color(theme::TEXT_MUTED)
-                                .italics(),
-                        );
-                    } else {
-                        ui.label(
-                            egui::RichText::new(format!("{} active token(s)", scoped_api_tokens.len()))
-                                .small()
-                                .color(theme::TEXT_MUTED),
-                        );
-                        ui.add_space(4.0);
-                        let mut revoke_scoped_jti: Option<(String, String)> = None;
-                        for (i, tok) in scoped_api_tokens.iter().enumerate() {
-                            let row_bg = if i % 2 == 0 {
-                                theme::BG_PEER_ROW_EVEN
-                            } else {
-                                theme::BG_PEER_ROW_ODD
-                            };
-                            egui::Frame::NONE.fill(row_bg).inner_margin(egui::Margin::same(4)).show(
-                                ui,
-                                |ui| {
-                                    ui.horizontal(|ui| {
-                                        let role_color = match tok.max_role.as_str() {
-                                            "manager" => theme::TEXT_ROLE_MANAGER,
-                                            "editor" => theme::TEXT_ROLE_EDITOR,
-                                            _ => theme::TEXT_ROLE_VIEWER,
-                                        };
-                                        ui.label(egui::RichText::new(&tok.max_role).color(role_color).strong());
-                                        ui.label(
-                                            egui::RichText::new(&tok.scope).monospace().small().color(theme::TEXT_DIM),
-                                        );
-
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            if ui.add(egui::Button::new("Revoke").fill(theme::BG_DANGER).small()).named(ui, format_args!("Revoke API token {} for scope {}", i + 1, tok.scope)).clicked() {
-                                                revoke_scoped_jti = Some((tok.jti.clone(), tok.sub.clone()));
-                                            }
-                                            ui.label(
-                                                egui::RichText::new(format!(
-                                                    "exp: {}",
-                                                    &tok.expires_at[..10.min(tok.expires_at.len())]
-                                                ))
-                                                .small()
-                                                .color(theme::TEXT_MUTED),
-                                            );
-                                            if let Some(ref lbl) = tok.label {
-                                                ui.label(egui::RichText::new(lbl).small().color(theme::TEXT_BRIGHT));
-                                            }
-                                            if let Some(ref client) = tok.client {
-                                                ui.label(
-                                                    egui::RichText::new(format!("client: {}", client))
-                                                        .small()
-                                                        .monospace()
-                                                        .color(theme::TEXT_DIM),
-                                                );
-                                            }
-                                        });
-                                    });
-                                },
-                            );
-                        }
-                        if let Some((jti, sub)) = revoke_scoped_jti.take() {
-                            db_tx.send(DbCommand::RevokeApiToken { jti, sub }).ok();
-                            // Refresh is triggered by DbResult::ApiTokenRevoked handler
-                        }
-                    }
+                    ui.label(egui::RichText::new("API Access").strong());
+                    let (action,copied)=super::entity_access::api_controls(ui,access,api_token_role_buf,api_token_expiry_buf,api_token_client_buf,api_endpoint);
+                    access_action=action;copied_access|=copied;
                 }
             }
+            });
         });
 
+    if let Some(action)=access_action {super::entity_access::submit(ui_mgr,action,db_tx);}
+    if copied_access {ui_mgr.show_toast("Copied access value",ctx.input(|input|input.time));}
     if let Some(message) = send_failure {
         ui_mgr.show_error(message, ctx.input(|input| input.time));
     }

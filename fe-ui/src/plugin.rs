@@ -1075,6 +1075,7 @@ struct P2pDialogParams<'w> {
     ui_mgr: ResMut<'w, UiManager>,
     portal_rect: ResMut<'w, fe_webview::plugin::PortalPanelRect>,
     node_identity: Option<Res<'w, fe_identity::NodeIdentity>>,
+    known_peers: Option<Res<'w,fe_runtime::PeerRegistry>>,
 }
 
 /// Small bundle for miscellaneous read/write-once resources that don't fit an
@@ -1205,6 +1206,7 @@ fn gardener_ui_system(
         &mut misc.render_override,
         &mut misc.identity_banner,
         p2p.node_identity.as_deref(),
+        p2p.known_peers.as_deref(),
         &misc.volume_report,
         &mut ui_shell.settings_session,
     );

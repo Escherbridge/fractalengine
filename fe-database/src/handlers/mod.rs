@@ -61,3 +61,5 @@ pub(crate) fn correlated_failure(correlation_id: &Option<String>, error: String)
         None => DbResult::Error(error),
     }
 }
+
+pub(crate) mod entity_access;

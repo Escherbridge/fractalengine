@@ -7,6 +7,7 @@ pub mod bridge;
 pub mod channels;
 pub mod diag15m; // DIAG-15M: temporary render diagnostics
 pub mod distributed_query;
+pub mod entity_access;
 pub mod input;
 pub mod ktx2_guard;
 pub mod messages;

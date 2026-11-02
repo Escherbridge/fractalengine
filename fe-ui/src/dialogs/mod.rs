@@ -4,6 +4,7 @@
 mod context_menu;
 mod create_entity;
 pub(crate) mod entity_details;
+pub(crate) mod entity_access;
 mod entity_settings;
 mod gltf_import;
 mod hexon_manager;
@@ -53,15 +54,6 @@ pub enum SettingsTab {
     General,
     Access,
     ApiAccess,
-}
-
-/// A peer's resolved role at a specific scope, for display in the Access tab.
-#[derive(Debug, Clone)]
-pub struct PeerRoleEntry {
-    pub peer_did: String,
-    pub display_name: String,
-    pub role: String,
-    pub is_online: bool,
 }
 
 /// An API token record for display in the API Access tab.
@@ -146,11 +138,6 @@ pub enum ActiveDialog {
         /// Live descendant count for the cascade confirm (`NodeDescendantCount`).
         descendant_count: Option<usize>,
     },
-    InviteDialog {
-        invite_string: String,
-        include_write_cap: bool,
-        expiry_hours: u32,
-    },
     JoinDialog {
         invite_buf: String,
     },
@@ -192,8 +179,7 @@ pub enum ActiveDialog {
         default_access_buf: Option<String>,
         description_buf: Option<String>,
         // Access tab state
-        peer_roles: Vec<PeerRoleEntry>,
-        roles_loading: bool,
+        access: entity_access::EntityAccessState,
         invite_role_buf: String,
         invite_expiry_buf: u32,
         generated_invite_link: Option<String>,

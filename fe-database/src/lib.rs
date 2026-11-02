@@ -988,6 +988,17 @@ pub fn spawn_db_thread_shared(
                             Err(e) => send_result(&tx, DbResult::Error(e)),
                         }
                     }
+                    Ok(DbCommand::EntityAccess { target, action, request_id }) => {
+                        let result=handlers::entity_access::execute(&db,&blob_store,repl_tx.as_ref(),&local_did,&target,&action,keypair.as_ref(),|jti| send_result(&tx,DbResult::ApiTokenRevoked { jti:jti.to_owned() })).await;
+                        if result.is_ok() {
+                            if matches!(action,fe_runtime::entity_access::EntityAccessAction::Assign {..} | fe_runtime::entity_access::EntityAccessAction::Revoke {..}) {
+                                if let Some(verse)=role_grants::verse_of_scope(&target.scope) {
+                                    echo_rows(admissions.retry_author_roles(&db,&verse,entity_change_tx.as_ref()).await);
+                                }
+                            }
+                        }
+                        send_result(&tx,DbResult::EntityAccessFinished { target,request_id,result:result.map_err(|error| error.to_string()) });
+                    }
                     Ok(DbCommand::ResolveRolesForPeers { scope, peer_dids }) => {
                         let roles = handlers::rbac::resolve_roles_for_peers_handler(&db, &scope, &peer_dids).await;
                         send_result(&tx, DbResult::PeerRolesResolved { scope, roles });
@@ -1056,7 +1067,7 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::RevokeApiToken { jti, sub }) => {
-                        match handlers::api_token::revoke_api_token_handler(&db, &sub, &jti).await {
+                        match handlers::api_token::revoke_local_api_token_handler(&db, &local_did, &sub, &jti).await {
                             Ok(true) => send_result(&tx, DbResult::ApiTokenRevoked { jti }),
                             Ok(false) => send_result(&tx, DbResult::Error(format!("API token not found or not owned: {jti}"))),
                             Err(e) => send_result(&tx, DbResult::Error(format!("Revoke API token failed: {e}"))),

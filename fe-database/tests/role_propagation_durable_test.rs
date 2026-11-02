@@ -263,13 +263,42 @@ fn an_editor_creating_a_petal_gets_no_implicit_owner_row() {
     });
     assert!(owner_rows.is_empty(), "{owner_rows:?}");
     let DbResult::LocalRoleResolved { role, .. } = harness
-        .ask(DbCommand::ResolveLocalRole { scope: petal_scope }, |r| {
+        .ask(DbCommand::ResolveLocalRole { scope: petal_scope.clone() }, |r| {
             matches!(r, DbResult::LocalRoleResolved { .. })
         })
     else {
         unreachable!()
     };
     assert_eq!(role, "editor");
+
+    use fe_runtime::entity_access::{EntityAccessAction as Access,EntityAccessTarget};
+    use fe_runtime::messages::EntityType;
+    let denied=EntityAccessTarget {entity_type:EntityType::Petal,entity_id:petal,scope:petal_scope.clone()};
+    let DbResult::EntityAccessFinished {request_id,result,..}=harness.ask(DbCommand::EntityAccess {target:denied,action:Access::Load {peer_dids:vec![PEER.into()]},request_id:"access-editor-denied".into()},|r|matches!(r,DbResult::EntityAccessFinished {..})) else {unreachable!()};
+    assert_eq!(request_id,"access-editor-denied");assert!(result.is_err(),"Editor cannot inspect Manager-only access metadata");
+    let (_,owned_scope)=harness.create_hierarchy();
+    let owned_parts=fe_database::parse_scope(&owned_scope).unwrap();
+    harness.ask(DbCommand::SetVerseDefaultAccess {verse_id:owned_parts.verse_id.clone(),default_access:"viewer".into()},|reply|matches!(reply,DbResult::VerseDefaultAccessSet {..}));
+    let target=EntityAccessTarget {entity_type:EntityType::Petal,entity_id:owned_parts.petal_id.clone().unwrap(),scope:owned_scope};
+    let access=|id:&str,action:Access| {
+        let DbResult::EntityAccessFinished {target:returned,request_id,result}=harness.ask(DbCommand::EntityAccess {target:target.clone(),action,request_id:id.into()},|r|matches!(r,DbResult::EntityAccessFinished {..})) else {unreachable!()};
+        assert_eq!(returned,target);assert_eq!(request_id,id);result
+    };
+    let initial=access("access-owner-load",Access::Load {peer_dids:vec![PEER.into()]}).expect("Owner reads roles");
+    assert_eq!(initial.local_role,"owner");assert!(initial.roles.iter().any(|(did,role)|did==PEER&&role=="viewer"));
+    let assigned=access("access-assign",Access::Assign {peer_did:PEER.into(),role:"editor".into()}).expect("checked assignment");
+    assert!(assigned.roles.iter().any(|(did,role)|did==PEER&&role=="editor"));
+    let revoked=access("access-revoke",Access::Revoke {peer_did:PEER.into()}).expect("checked revoke");
+    assert!(revoked.roles.iter().any(|(did,role)|did==PEER&&role=="none"),"Owner revoke pins the cell; do not fabricate inherited role");
+    let minted=access("access-token-mint",Access::MintToken {max_role:"viewer".into(),ttl_hours:1,client_did:None}).expect("scoped mint");
+    assert!(minted.minted.is_some());assert!(!format!("{minted:?}").contains(&minted.minted.as_ref().unwrap().token),"Debug never reveals token");
+    let token=minted.tokens.first().expect("readback token");
+    assert!(access("access-token-wrong-sub",Access::RevokeToken {jti:token.jti.clone(),sub:"wrong".into(),scope:token.scope.clone()}).is_err());
+    let refreshed=access("access-token-still-present",Access::Load {peer_dids:vec![]}).unwrap();assert!(refreshed.tokens.iter().any(|row|row.jti==token.jti));
+    let revoked=access("access-token-revoke",Access::RevokeToken {jti:token.jti.clone(),sub:token.sub.clone(),scope:token.scope.clone()}).expect("exact target revoke");
+    assert!(revoked.tokens.iter().all(|row|row.jti!=token.jti));
+    rt.block_on(async {db.query("UPDATE petal SET fractal_id='moved' WHERE petal_id=$id").bind(("id",target.entity_id.clone())).await.unwrap().check().unwrap();});
+    assert!(access("access-stale-parent",Access::Load {peer_dids:vec![]}).is_err(),"Stale target cannot read a reparented branch");
 }
 
 /// AC-42, T23: a revocation published while the verse's replica was closed (the event never

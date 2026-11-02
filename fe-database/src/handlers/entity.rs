@@ -15,6 +15,9 @@ pub(crate) struct ParentMutation {
 }
 
 impl ParentMutation {
+    pub(crate) fn scope(&self) -> &str { &self.scope }
+    pub(crate) fn role(&self) -> fe_policy::RoleLevel { self.role }
+
     pub(crate) fn can_manage(&self) -> bool { self.role.is_at_least(fe_policy::RoleLevel::Manager) }
 
     pub(crate) fn into_parts(self) -> (Vec<String>,Vec<(String,Value)>) {

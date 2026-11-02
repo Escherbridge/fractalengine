@@ -2,7 +2,7 @@
 
 - `mod.rs` — `ActiveDialog` enum (mutual exclusion — at most one dialog open
   at a time), plus the small supporting types owned by its variants
-  (`CreateKind`, `EntitySettingsType`, `SettingsTab`, `PeerRoleEntry`,
+  (`CreateKind`, `EntitySettingsType`, `SettingsTab`,
   `ApiTokenEntry`).
 - One file per dialog: `context_menu.rs`, `create_entity.rs`,
   `gltf_import.rs`, `join.rs`, `peer_debug.rs`, `node_options.rs`,
@@ -357,3 +357,11 @@ The dialog edits bounded declaration/catalog metadata, not content installation,
 scene fallback/gating or residency policy. Settings remains the distance
 authority. Explicit legacy metadata is kept in the raw baseline without exposing
 it as an active setting. Copy/dirty-close remain available for a retained draft.
+
+## Target Access controller
+
+entity_access separates request ownership from rendering. Each local request binds a fresh ULID to EntityType/id/full stored scope. Late/foreign receipts are ignored; timeout is unconfirmed. Failed writes require an explicit read before another mutation. Role controls show effective inherited roles and confirm every assignment/revoke. Owner blocking and Manager own-grant revocation use distinct copy. UI hints are not backend authority.
+
+EntitySettings generates invites/API credentials through this typed owner, not legacy uncorrelated list/mint/invite state. Secrets are masked by default, clear on leaving API Access and are rejected at receipt use if another tab is active, including programmatic transitions. Explicit copy emits the requested value and a nonsecret toast. Read examples derive from the confirmed listener: Petal uses its registered scoped nodes GET; Verse/Fractal use authenticated scoped query POST. No health-check bearer demo or guessed port is shown.
+
+The unrendered InviteDialog variant is retired. Legacy invite completion never opens an invisible exclusive modal or retains its credential; it directs the user to scoped Access controls. Existing General details/draft readback remain authoritative. The dialog body has one bounded vertical viewport below the tabs.

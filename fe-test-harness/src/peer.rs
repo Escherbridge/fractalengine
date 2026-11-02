@@ -780,9 +780,8 @@ impl TestPeer {
                             }
                         }
                         Ok(DbCommand::RevokeApiToken { jti, sub }) => {
-                            match fe_database::api_token_store::revoke_api_token(&db, &jti, &sub)
-                                .await
-                            {
+                            let result=if sub==db_local_did {fe_database::api_token_store::revoke_api_token(&db,&jti,&db_local_did).await} else {Err(anyhow::anyhow!("Token subject is not the local revocation authority"))};
+                            match result {
                                 Ok(true) => {
                                     db_result_tx
                                         .send(DbResult::ApiTokenRevoked { jti })

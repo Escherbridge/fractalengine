@@ -6,74 +6,21 @@ use crate::dialogs::ActiveDialog;
 use crate::navigation_manager::NavigationManager;
 
 /// `VerseInviteGenerated`: open the invite dialog with the fresh invite string.
-pub(super) fn handle_verse_invite_generated(invite_string: &str, ui_mgr: &mut UiManager) {
-    ui_mgr.open_dialog(ActiveDialog::InviteDialog {
-        invite_string: invite_string.to_string(),
-        include_write_cap: false,
-        expiry_hours: 24,
-    });
+pub(super) fn handle_verse_invite_generated(_invite_string:&str,ui_mgr:&mut UiManager,now:f64) {
+    ui_mgr.show_toast("Use the verse Options / Access tab to generate a scoped invite.",now);
 }
 
-/// `PeerRolesResolved`: populate the EntitySettings peer-role list.
-pub(super) fn handle_peer_roles_resolved(
-    scope: &str,
-    roles: &[(String, String)],
-    ui_mgr: &mut UiManager,
-) {
-    if let ActiveDialog::EntitySettings {
-        ref mut peer_roles,
-        ref mut roles_loading,
-        ..
-    } = ui_mgr.active_dialog
-    {
-        *peer_roles = roles
-            .iter()
-            .map(|(did, role)| crate::dialogs::PeerRoleEntry {
-                peer_did: did.clone(),
-                display_name: String::new(),
-                role: role.clone(),
-                is_online: false,
-            })
-            .collect();
-        *roles_loading = false;
-    }
-    bevy::log::debug!("Resolved {} peer roles at scope {}", roles.len(), scope);
+/// Legacy role replies cannot populate the target-bound Access request state.
+pub(super) fn handle_peer_roles_resolved(scope:&str,roles:&[(String,String)],_ui_mgr:&mut UiManager) {
+    bevy::log::debug!(scope,count=roles.len(),"Legacy role read completed");
 }
 
-/// `RoleAssigned`: reflect the new role in the open EntitySettings dialog.
-pub(super) fn handle_role_assigned(
-    peer_did: &str,
-    scope: &str,
-    role: &str,
-    ui_mgr: &mut UiManager,
-) {
-    if let ActiveDialog::EntitySettings {
-        ref mut peer_roles, ..
-    } = ui_mgr.active_dialog
-    {
-        if let Some(entry) = peer_roles.iter_mut().find(|p| p.peer_did == peer_did) {
-            entry.role = role.to_string();
-        }
-    }
-    bevy::log::info!(
-        "Assigned role '{}' to {} at scope {}",
-        role,
-        peer_did,
-        scope
-    );
+pub(super) fn handle_role_assigned(peer_did:&str,scope:&str,role:&str,_ui_mgr:&mut UiManager) {
+    bevy::log::debug!(peer_did,scope,role,"Legacy role assignment completed");
 }
 
-/// `RoleRevoked`: mark the peer's role as none in the open EntitySettings dialog.
-pub(super) fn handle_role_revoked(peer_did: &str, scope: &str, ui_mgr: &mut UiManager) {
-    if let ActiveDialog::EntitySettings {
-        ref mut peer_roles, ..
-    } = ui_mgr.active_dialog
-    {
-        if let Some(entry) = peer_roles.iter_mut().find(|p| p.peer_did == peer_did) {
-            entry.role = "none".to_string();
-        }
-    }
-    bevy::log::info!("Revoked role for {} at scope {}", peer_did, scope);
+pub(super) fn handle_role_revoked(peer_did:&str,scope:&str,_ui_mgr:&mut UiManager) {
+    bevy::log::debug!(peer_did,scope,"Legacy role revoke completed; effective role requires a fresh read");
 }
 
 /// `ScopedInviteGenerated`: surface the invite link in the open EntitySettings dialog.

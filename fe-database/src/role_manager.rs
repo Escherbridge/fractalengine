@@ -7,7 +7,7 @@ use crate::repo::Db;
 use crate::role_level::RoleLevel;
 use crate::scope::{parent_scope, parse_scope};
 use crate::types::{NodeId, OpLogEntry, OpType};
-use crate::{op_log, rbac, role_grants, BlobStoreHandle, ReplicationSender};
+use crate::{rbac, role_grants, BlobStoreHandle, ReplicationSender};
 
 /// Verse-level metadata needed for role resolution.
 struct VerseInfo {
@@ -192,26 +192,13 @@ async fn issue_local_statement(
         sig: "00".repeat(64),
         hlc_timestamp: String::new(),
     };
+    let (_, owner) = check_role_command(db,caller_did,peer_did,scope,"Role statement").await?;
+    if role == GrantedRole::None && !revoked && caller_did != owner {
+        return Err(RoleCommandError::ManagerCannotAssignNone.into());
+    }
+    let authority=crate::handlers::entity::prepare_scope_permission(db,scope,caller_did,fe_policy::RoleLevel::Manager).await?;
     let prior = role_grants::load_effective_roles(db, verse_id).await?;
-    let (stmt_verse, stmt_scope, stmt_peer, stmt_grantor) = (
-        verse_id.to_string(),
-        scope.to_string(),
-        peer_did.to_string(),
-        caller_did.to_string(),
-    );
-    let stmt = op_log::commit_operation(db, entry, move |lamport| async move {
-        let stmt = RoleStatement {
-            scope: stmt_scope,
-            peer_did: stmt_peer,
-            grantor_did: stmt_grantor,
-            role,
-            revoked,
-            hlc: lamport,
-        };
-        role_grants::admit_local_statement(db, &stmt_verse, &stmt).await?;
-        Ok(stmt)
-    })
-    .await?;
+    let stmt=role_grants::commit_local_statement(db,entry,verse_id,caller_did,peer_did,scope,role,revoked,authority,&owner).await?;
     // A crash before this line is repaired by the startup repartition and re-emit (AC-42).
     role_grants::repartition(db, verse_id, prior.as_ref()).await?;
     role_grants::publish_statement(repl_tx, blob_store, verse_id, &stmt);
@@ -439,5 +426,14 @@ mod tests {
             RoleLevel::Viewer,
             "peer with no role on default_access=viewer verse should get Viewer"
         );
+
+        let captured=crate::handlers::entity::prepare_scope_permission(&db,&scope,owner_did,fe_policy::RoleLevel::Manager).await.unwrap();
+        let before:Vec<serde_json::Value>=db.query("SELECT * FROM op_log").await.unwrap().take(0).unwrap();
+        db.query("UPDATE verse SET created_by='did:key:new-owner' WHERE verse_id=$v").bind(("v",verse_id.to_owned())).await.unwrap().check().unwrap();
+        let intention=crate::types::OpLogEntry {lamport_clock:0,node_id:crate::types::NodeId(owner_did.into()),op_type:crate::types::OpType::AssignRole,payload:serde_json::json!({"scope":scope,"peer_did":random_peer,"grantor_did":owner_did,"role":"editor","revoked":false}),sig:"00".repeat(64),hlc_timestamp:String::new()};
+        assert!(crate::role_grants::commit_local_statement(&db,intention,verse_id,owner_did,random_peer,&scope,fe_policy::GrantedRole::Editor,false,captured,owner_did).await.is_err(),"Owner change between preparation and use rolls back statement and operation");
+        let after:Vec<serde_json::Value>=db.query("SELECT * FROM op_log").await.unwrap().take(0).unwrap();assert_eq!(before,after);
+        let grants:Vec<serde_json::Value>=db.query("SELECT * FROM role_grant").await.unwrap().take(0).unwrap();assert!(grants.is_empty());
+
     }
 }

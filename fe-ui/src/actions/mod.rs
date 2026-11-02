@@ -2151,6 +2151,50 @@ mod tests {
         );
         mgr.close_dialog();
         assert!(!mgr.any_dialog_open());
+
+        use fe_runtime::entity_access::{EntityAccessAction as Access,EntityAccessSnapshot,EntityMintedToken};
+        mgr.open_dialog(crate::dialogs::entity_details::dialog(crate::dialogs::EntitySettingsType::Verse,"access-v","Access verse","access-v",None));
+        let (kind,id,nonce)=queue(&mut mgr,40.0);
+        let details=fe_runtime::messages::EntityDetails {entity_type:kind,entity_id:id.clone(),verse_id:id.clone(),fractal_id:None,scope:"VERSE#access-v".into(),name:"Access verse".into(),default_access:Some("none".into()),description:None,role:"owner".into()};
+        crate::dialogs::entity_details::apply(&mut mgr,kind,&id,nonce,&Ok(details),40.1);
+        let mut peers=fe_runtime::PeerRegistry::default();peers.insert(fe_runtime::PeerEntry::new("did:key:known-peer".into()));
+        if let ActiveDialog::EntitySettings {active_tab,access,generated_api_token,generated_api_token_client,..}=&mut mgr.active_dialog {
+            crate::dialogs::entity_access::select_tab(active_tab,access,generated_api_token,generated_api_token_client,crate::dialogs::SettingsTab::Access);
+        }
+        crate::dialogs::entity_access::service(&mut mgr,&tx,Some(&peers));
+        let DbCommand::EntityAccess {target,request_id:read_id,action:Access::Load {peer_dids}}=rx.try_recv().unwrap() else{panic!("Expected target-bound known-peer read")};
+        assert_eq!(peer_dids,vec!["did:key:known-peer"]);
+        let snapshot=EntityAccessSnapshot {local_did:"did:key:owner".into(),local_role:"owner".into(),roles:vec![("did:key:known-peer".into(),"viewer".into())],tokens:vec![],tokens_truncated:false,notice:None,invite_link:None,minted:None};
+        crate::dialogs::entity_access::apply(&mut mgr,&target,"foreign-nonce",&Ok(snapshot.clone()));
+        if let ActiveDialog::EntitySettings {access,..}=&mgr.active_dialog {assert!(access.snapshot.is_none()&&access.waiting());}
+        crate::dialogs::entity_access::apply(&mut mgr,&target,&read_id,&Ok(snapshot.clone()));
+        crate::dialogs::entity_access::submit(&mut mgr,Access::Revoke {peer_did:"did:key:known-peer".into()},&tx);
+        let DbCommand::EntityAccess {request_id:change_id,..}=rx.try_recv().unwrap() else{unreachable!()};
+        crate::dialogs::entity_access::apply(&mut mgr,&target,&change_id,&Err("unconfirmed write".into()));
+        crate::dialogs::entity_access::submit(&mut mgr,Access::Revoke {peer_did:"did:key:known-peer".into()},&tx);
+        assert!(rx.try_recv().is_err(),"No mutation retry before explicit authoritative read");
+        if let ActiveDialog::EntitySettings {access,..}=&mut mgr.active_dialog {access.refresh();}
+        crate::dialogs::entity_access::service(&mut mgr,&tx,Some(&peers));
+        let DbCommand::EntityAccess {request_id:refresh_id,action:Access::Load {..},..}=rx.try_recv().unwrap() else{panic!("Only a read may retry")};
+        crate::dialogs::entity_access::apply(&mut mgr,&target,&refresh_id,&Ok(snapshot.clone()));
+        if let ActiveDialog::EntitySettings {active_tab,access,generated_api_token,generated_api_token_client,..}=&mut mgr.active_dialog {
+            crate::dialogs::entity_access::select_tab(active_tab,access,generated_api_token,generated_api_token_client,crate::dialogs::SettingsTab::ApiAccess);
+        }
+        crate::dialogs::entity_access::service(&mut mgr,&tx,Some(&peers));
+        let DbCommand::EntityAccess {request_id:api_read,..}=rx.try_recv().unwrap() else{unreachable!()};
+        crate::dialogs::entity_access::apply(&mut mgr,&target,&api_read,&Ok(snapshot.clone()));
+        crate::dialogs::entity_access::submit(&mut mgr,Access::MintToken {max_role:"viewer".into(),ttl_hours:1,client_did:None},&tx);
+        let DbCommand::EntityAccess {request_id:mint_id,..}=rx.try_recv().unwrap() else{unreachable!()};
+        if let ActiveDialog::EntitySettings {active_tab,..}=&mut mgr.active_dialog {*active_tab=crate::dialogs::SettingsTab::General;}
+        let mut minted=snapshot.clone();minted.minted=Some(EntityMintedToken {token:"fake.secret.for-lifecycle-proof".into(),client:"did:key:client".into(),expires_at:"2027-01-01T00:00:00Z".into()});
+        crate::dialogs::entity_access::apply(&mut mgr,&target,&mint_id,&Ok(minted));
+        if let ActiveDialog::EntitySettings {access,..}=&mgr.active_dialog {assert!(access.snapshot.as_ref().is_none_or(|snapshot|snapshot.minted.is_none()),"Programmatic tab leave cannot retain a late secret");}
+        let example=crate::dialogs::entity_access::scoped_example("127.0.0.1:8882".parse().unwrap(),&target,"<TOKEN>").unwrap();
+        assert!(example.contains("http://127.0.0.1:8882/api/v1/query")&&!example.contains("/health")&&!example.contains("/api/v1/nodes'"));
+        let mut petal=target.clone();petal.entity_type=fe_runtime::messages::EntityType::Petal;petal.entity_id="p/one'quote".into();
+        let example=crate::dialogs::entity_access::scoped_example("[::1]:8882".parse().unwrap(),&petal,"<TOKEN>").unwrap();
+        assert!(example.contains("http://[::1]:8882/api/v1/petals/p%2Fone")&&example.contains("/nodes"));
+        mgr.close_dialog();
     }
 
     // ---- D11: UiAction::RevealSection ------------------------------------

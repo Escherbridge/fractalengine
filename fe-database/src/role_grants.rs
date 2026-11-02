@@ -417,6 +417,51 @@ pub async fn admit_local_statement(
     write_live_version(db, verse_id, stmt, false).await
 }
 
+/// Commit a locally authorized statement and its operation under captured fences.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn commit_local_statement(
+    db: &Db, entry: crate::types::OpLogEntry, verse_id: &str, caller: &str,
+    peer: &str, scope: &str, role: GrantedRole, revoked: bool,
+    authority: crate::handlers::entity::ParentMutation, owner: &str,
+) -> anyhow::Result<RoleStatement> {
+    let mut candidate = RoleStatement { scope: scope.into(), peer_did: peer.into(), grantor_did: caller.into(), role, revoked, hlc: 0 };
+    let key = statement_record_id(&candidate);
+    let grant_select = "SELECT statement_key,verse_id,scope,peer_did,grantor_did,role,revoked,hlc,updated_at FROM role_grant WHERE statement_key=$local_role_key";
+    let pending_select = "SELECT statement_key,verse_id,scope,peer_did,grantor_did,role,revoked,hlc,updated_at,received_at FROM role_statement_pending WHERE statement_key=$local_role_key";
+    let mut response=db.query(format!("{grant_select};{pending_select}"))
+        .bind(("local_role_key",key.clone())).await?.check()?;
+    let granted:Vec<serde_json::Value>=response.take(0)?;
+    let pending:Vec<serde_json::Value>=response.take(1)?;
+    anyhow::ensure!(granted.len() <= 1 && pending.len() <= 1,"Ambiguous role statement identity");
+    let prior = live_version(db,&candidate).await?.map(|(_,statement)|statement);
+    let verse_id=verse_id.to_owned();
+    let (mut guards,mut bindings)=authority.into_parts();
+    guards.push(format!("IF ({grant_select}) != $local_role_granted {{ THROW 'role statement changed'; }}"));
+    guards.push(format!("IF ({pending_select}) != $local_role_pending {{ THROW 'role statement changed'; }}"));
+    guards.push("IF array::len((SELECT verse_id FROM verse WHERE verse_id=$local_role_verse AND created_by=$local_role_owner)) != 1 { THROW 'role owner changed'; }".into());
+    guards.push("IF $local_role_allowed = false { THROW 'newer role statement exists'; }".into());
+    guards.push("DELETE role_grant WHERE statement_key=$local_role_key".into());
+    guards.push("DELETE role_statement_pending WHERE statement_key=$local_role_key".into());
+    guards.push("CREATE role_grant CONTENT $local_role_row".into());
+    bindings.extend([
+        ("local_role_key".into(),serde_json::json!(key)),
+        ("local_role_granted".into(),serde_json::json!(granted)),
+        ("local_role_pending".into(),serde_json::json!(pending)),
+        ("local_role_verse".into(),serde_json::json!(verse_id)),
+        ("local_role_owner".into(),serde_json::json!(owner)),
+    ]);
+    let mut committed = None;
+    crate::op_log::commit_operation_atomic_with(db,entry,|clock| {
+        candidate.hlc=clock;
+        let allowed=prior.as_ref().is_none_or(|prior| latest_per_grantor([prior,&candidate]).first()==Some(&candidate));
+        bindings.push(("local_role_allowed".into(),serde_json::json!(allowed)));
+        bindings.push(("local_role_row".into(),statement_row(&verse_id,&candidate,false)));
+        committed=Some(candidate.clone());
+        (guards,bindings)
+    }).await?;
+    Ok(committed.expect("atomic statement builder ran"))
+}
+
 /// Each `(scope, peer)` cell the statements mention.
 fn cells(statements: &[RoleStatement]) -> BTreeSet<(String, String)> {
     statements
