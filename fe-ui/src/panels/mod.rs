@@ -28,6 +28,8 @@ pub(crate) mod tool_inspector;
 pub(crate) mod tool_options;
 pub(crate) mod tool_panel;
 pub(crate) mod toolbar;
+pub(crate) mod tree_appearance;
+pub(crate) mod tree_entry;
 /// terrain_proposal_delta_viz_20261025 S6: true-figures "Volume report" block
 /// hosted below `proposal_report_panel` in the same renamed section. See
 /// `panels/AGENTS.md` §volume-report.
@@ -195,6 +197,8 @@ pub fn gardener_console(
             node_mgr,
             ui_mgr,
             vis_state,
+            app_settings,
+            local_role,
         )
     });
 
@@ -329,6 +333,9 @@ pub fn gardener_console(
                 });
                 let _ = guarded(modal, "dialog_peer_debug", || {
                     crate::dialogs::render_peer_debug_panel(ctx, ui_mgr, sync_status)
+                });
+                let _ = guarded(modal, "dialog_tree_appearance", || {
+                    tree_appearance::render(ctx, ui_mgr, app_settings, hierarchy)
                 });
                 let _ = guarded(modal, "dialog_node_options", || {
                     crate::dialogs::render_node_options_dialog(ctx, ui_mgr, hierarchy, db_tx)

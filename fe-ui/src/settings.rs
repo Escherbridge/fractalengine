@@ -44,11 +44,34 @@ pub enum TileSourceMode {
     Hybrid,
 }
 
+/// Stable vector symbol for a local hierarchy display preference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TreeIcon {
+    Circle,
+    Diamond,
+    Square,
+    Triangle,
+    Star,
+    Hexagon,
+    Cross,
+    Ring,
+}
+
+/// Per-entry local icon and RGB color.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EntryAppearance {
+    pub icon: TreeIcon,
+    pub color: [u8; 3],
+}
+
 /// User-tunable application settings (D-78). The global defaults for the
 /// residency ledger; `PetalRenderOverride` carries the per-petal override.
 #[derive(Resource, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
+    /// Local display preferences keyed by hierarchy kind and stable entry id.
+    pub tree_appearance: std::collections::BTreeMap<String, EntryAppearance>,
     /// Global render distance (world units); soft residency horizon. `0` halts
     /// distance-ranked spawning entirely.
     pub render_distance: f32,
@@ -88,6 +111,7 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            tree_appearance: Default::default(),
             render_distance: 500.0,
             mesh_budget_ceiling: crate::plugin::MAX_MESH_INSTANCES,
             entity_cap: DEFAULT_ENTITY_CAP,

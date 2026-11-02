@@ -1312,3 +1312,11 @@ make completion claims only after the integrated live accessibility audit.
 is the single production confirmation API. Supply a contextual accessible
 `name` (prefer `format_args!` for repeated rows); the helper names the arm,
 confirm, and cancel responses directly. Existing tests call this same API.
+
+## Local tree appearance settings
+
+AppSettings.tree_appearance persists stable kind:id keys to a TreeIcon and
+opaque RGB bytes. Absent entries use the hierarchy-kind default. Model types
+live in settings.rs; temporary drafts and drawing live under tree_appearance.
+These are local display preferences, not synced scene properties. Existing
+settings debounce, restart format and QA-root isolation own persistence.

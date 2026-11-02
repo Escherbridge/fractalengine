@@ -20,7 +20,15 @@ pub(super) fn sync_sidebar_to_manager(
     mut ui_mgr: ResMut<UiManager>,
     time: Res<crate::notice::NoticeClock>,
 ) {
-    let Some(node_id) = manager.pending_sidebar_select.take() else {
+    let (node_id, mut navigation) = if let Some(node_id) = manager.pending_sidebar_select.take() {
+        manager.pending_navigation_select = None;
+        (node_id, None)
+    } else if let Some(pending) = manager.pending_navigation_select.take() {
+        if nav.active_petal_id.as_deref() != Some(pending.petal_id.as_str()) {
+            return;
+        }
+        (pending.node_id.clone(), Some(pending))
+    } else {
         return;
     };
 
@@ -41,6 +49,16 @@ pub(super) fn sync_sidebar_to_manager(
 
     if let Some((entity, _)) = matched {
         manager.select(entity, node_id);
+    } else if let Some(mut pending) = navigation.take() {
+        pending.remaining_frames = pending.remaining_frames.saturating_sub(1);
+        if pending.remaining_frames > 0 {
+            manager.pending_navigation_select = Some(pending);
+        } else {
+            ui_mgr.show_toast(
+                "The object did not become available in this petal. Select it again after loading.",
+                time.elapsed_secs_f64(),
+            );
+        }
     } else {
         manager.deselect();
     }
@@ -137,9 +155,7 @@ mod tests {
         let (mut app, _) = app_with_selection();
         app.init_resource::<Time>(); // virtual time, left at 0 (lagging)
         {
-            let mut clock = app
-                .world_mut()
-                .resource_mut::<crate::notice::NoticeClock>();
+            let mut clock = app.world_mut().resource_mut::<crate::notice::NoticeClock>();
             let start = clock.startup();
             clock.update_with_instant(start);
             clock.update_with_instant(start + std::time::Duration::from_secs(10));

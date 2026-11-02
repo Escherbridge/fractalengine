@@ -851,3 +851,14 @@ mid-respawn — stamp verbs key on the payload, never the entity). The pure core
 hit → `NodeManager.select`; stamp hit → `UiAction::SelectStamp` (idempotent,
 lazy promotion — N-3/N-9). Always resolves — worst case `Empty` — so the menu
 can't hang unclassified (N-8).
+
+## Selection after petal navigation
+
+A tree click on a node in another petal uses
+`request_select_after_navigation`, subordinate to NodeManager's existing
+selection authority. The resolver waits at most 120 Update frames for an entity
+with both the requested node and petal identities. A changed destination,
+explicit selection/deselection, normal sidebar request, or hidden-node refusal
+cancels it. Timeout reports an unavailable object instead of selecting a stale
+entity later. This wait covers deferred petal materialization and never creates
+a second selected-node store. Existing current-petal requests remain one-shot.

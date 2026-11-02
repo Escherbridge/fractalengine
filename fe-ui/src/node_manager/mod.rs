@@ -78,6 +78,7 @@ pub struct NodeManager {
     /// Sidebar click stores the node_id here; `sync_sidebar_to_manager`
     /// resolves the ECS Entity and calls `select()`.
     pub pending_sidebar_select: Option<String>,
+    pub(super) pending_navigation_select: Option<NavigationSelection>,
     /// Which axis the cursor is hovering over (for highlight feedback).
     pub hovered_axis: Option<GimbalAxis>,
     /// Per-frame mirror of `GestureParams::any_active`, written first in the
@@ -92,6 +93,12 @@ pub struct NodeManager {
     /// suppression). Only a rung-0 cancel is exact. See AGENTS.md
     /// §staged-escape.
     pub gesture_active: bool,
+}
+
+pub(super) struct NavigationSelection {
+    node_id: String,
+    petal_id: String,
+    remaining_frames: u8,
 }
 
 /// A currently selected node and its optional in-progress drag session.
@@ -208,6 +215,16 @@ impl GestureParams<'_, '_> {
 }
 
 impl NodeManager {
+    /// Select after the destination petal materializes, within a bounded frame budget.
+    pub fn request_select_after_navigation(&mut self, node_id: &str, petal_id: &str) {
+        self.deselect();
+        self.pending_sidebar_select = None;
+        self.pending_navigation_select = Some(NavigationSelection {
+            node_id: node_id.into(),
+            petal_id: petal_id.into(),
+            remaining_frames: 120,
+        });
+    }
     /// Queue selection through the normal entity resolver and frame its live transform.
     pub fn request_select_and_frame(
         &mut self,
@@ -215,6 +232,7 @@ impl NodeManager {
         fallback: [f32; 3],
         focus: &mut crate::plugin::CameraFocusTarget,
     ) {
+        self.pending_navigation_select = None;
         self.pending_sidebar_select = Some(node_id.to_owned());
         focus.target = Some((node_id.to_owned(), fallback));
     }
@@ -234,6 +252,7 @@ impl NodeManager {
     /// Select a node. If the same entity is already selected the drag state
     /// is preserved; selecting a different entity resets drag state.
     pub fn select(&mut self, entity: Entity, node_id: impl Into<String>) {
+        self.pending_navigation_select = None;
         let node_id = node_id.into();
         if self.selected.as_ref().map(|s| s.entity) == Some(entity) {
             // Already selected — keep drag state intact.
@@ -248,6 +267,7 @@ impl NodeManager {
     }
 
     pub fn deselect(&mut self) {
+        self.pending_navigation_select = None;
         self.selected = None;
     }
 

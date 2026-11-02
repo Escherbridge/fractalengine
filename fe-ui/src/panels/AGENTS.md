@@ -438,3 +438,38 @@ function is added. Its persistence readback is an explicit model simulation;
 these authored assertions have not been executed in the source-only lane and
 do not prove DB persistence or backend schema enforcement. Integrated
 compilation, execution and live UI readability/a11y verification remain required.
+
+## Hierarchy rows and local appearance
+
+`tree_entry::Target` carries the clicked row's kind, stable ID and ancestry.
+`tree_entry::row` owns the shared fixed icon/name/visibility/menu layout and
+routes typed presentation commands. Menus never borrow the Inspector's current
+target. Rename and Options reuse Node Options or Entity Settings; Node Options
+retains its explicit subtree-delete confirmation. Parent branch deletion stays
+disabled with an explanation because no supported branch-delete command exists.
+Copy ID copies the clicked ID. Editing controls are advisory-role-gated against
+the active verse; database handlers remain authoritative.
+
+The existing NavigationManager remains the hierarchy cursor and NodeManager
+remains the node-selection authority. A current hierarchy name is a no-op;
+other names navigate with full ancestry, while only native chevrons collapse.
+Selected rows have a strong fill and selected button semantics; active ancestors
+use a quieter path fill. Visibility remains an independent 24-point gutter.
+Horizontal scrolling keeps row controls reachable at narrow widths, with a
+220-point tree content floor and 12-point indentation. Inactive-petal node names
+enter their complete petal ancestry and request bounded deferred selection.
+
+`tree_appearance` draws the appearance dialog inside the existing ActiveDialog
+mutual-exclusion family. Its actual circular hue/saturation wheel and numeric
+Hue/Saturation/Brightness controls sit alongside the named vector-icon palette;
+hex input uses strict #RRGGBB. The preview and Reset alter only the draft until
+Save; Cancel/Escape discard it. An invalid hex or deleted target cannot save.
+Vector symbols retain an outline for very dark/light selected colors, without
+depending on font glyph coverage. These are per-device display preferences in
+AppSettings, keyed by hierarchy kind plus stable entry ID, not replicated scene
+properties. Existing debounced settings persistence and QA-root isolation apply.
+No custom color replaces selection or visibility state.
+
+The sidebar no longer hosts Reset Database or the old Space count grid. Moving
+the reset action to the campaign's application Danger Zone remains a separate
+shell task; this slice does not claim that rehoming is complete.

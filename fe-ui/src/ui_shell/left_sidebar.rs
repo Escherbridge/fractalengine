@@ -70,6 +70,8 @@ pub fn render_left_sidebar(
     ui_mgr: &mut UiManager,
     // hierarchy_visibility_groups_20260808 Phase 1: sidebar eye toggles.
     vis_state: &mut crate::visibility::VisibilityState,
+    app_settings: &crate::settings::AppSettings,
+    local_role: &crate::plugin::LocalUserRole,
 ) {
     sidebar_state.open = left_visibility(state.policy, state.user_intent)
         && super::layout_policy::can_show_left(ctx);
@@ -84,6 +86,8 @@ pub fn render_left_sidebar(
         node_mgr,
         ui_mgr,
         vis_state,
+        app_settings,
+        local_role,
     );
 }
 

@@ -108,6 +108,9 @@ pub struct ContextTarget {
 pub enum ActiveDialog {
     #[default]
     None,
+    TreeAppearance {
+        draft: crate::panels::tree_appearance::AppearanceDraft,
+    },
     CreateEntity {
         kind: CreateKind,
         parent_id: String,
