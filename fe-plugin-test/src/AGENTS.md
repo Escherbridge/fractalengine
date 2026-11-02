@@ -69,3 +69,11 @@ queries evaluate the same structured predicates and sort by node ID before
 limiting. The Rhai runner routes scene reads/writes through these contracts.
 This is an in-memory behavioral model, not evidence of production persistence
 or replication. SDK storage/query mocks remain separate backends.
+
+
+Rhai scene set_property mirrors production's checked Dynamic conversion: depth
+16, finite numbers, JSON types only, and 64 KiB. Invalid values produce script
+errors before the mock sink or spy records a write. delete_node uses the same
+atomic mock transaction sink as the other scene mutations. The SDK remains
+Rhai-free, so this boundary adapter mirrors the production converter rather than
+introducing an engine dependency into the testing kit.

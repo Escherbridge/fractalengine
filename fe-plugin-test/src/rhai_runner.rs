@@ -99,7 +99,7 @@ impl RhaiTestRunner {
             engine.register_fn(
                 "set_property",
                 move |node_id: &str, key: &str, value: Dynamic| -> Result<(), Box<EvalAltResult>> {
-                    let value = dynamic_to_json(&value);
+                    let value = checked_dynamic_to_json(&value).map_err(to_script_error)?;
                     let mut host = h
                         .lock()
                         .map_err(|_| to_script_error("mock host lock poisoned"))?;
@@ -156,6 +156,32 @@ impl RhaiTestRunner {
                         .into_iter()
                         .next()
                         .ok_or_else(|| to_script_error("creation has no ID"))
+                },
+            );
+        }
+        {
+            let h = host.clone();
+            engine.register_fn(
+                "delete_node",
+                move |node_id: &str| -> Result<(), Box<EvalAltResult>> {
+                    let mut host = h
+                        .lock()
+                        .map_err(|_| to_script_error("mock host lock poisoned"))?;
+                    let petal = host
+                        .nodes
+                        .get(node_id)
+                        .ok_or_else(|| to_script_error("node not found"))?
+                        .petal_id
+                        .clone();
+                    fe_sdk::plugin_host::TransactionSink::commit(
+                        &mut *host,
+                        &petal,
+                        &[fe_sdk::plugin_host::PendingOp::DeleteNode {
+                            node_id: node_id.into(),
+                        }],
+                    )
+                    .map_err(to_script_error)?;
+                    Ok(())
                 },
             );
         }
@@ -514,6 +540,24 @@ mod tests {
             before.properties, after.properties,
             "failed batch must leave earlier writes unapplied"
         );
+        for script in [
+            r#"set_property("n1", "color", parse_float("NaN"));"#,
+            r#"set_property("n1", "color", parse_float("inf"));"#,
+            r#"let v=[]; for n in 0..18 { v=[v]; } set_property("n1", "color", v);"#,
+        ] {
+            assert!(
+                runner.eval_script(script).is_err(),
+                "invalid JSON data must fail: {script}"
+            );
+        }
+        assert!(
+            checked_dynamic_to_json(&Dynamic::from(std::time::Duration::from_secs(1))).is_err()
+        );
+        let denied = runner.host();
+        assert_eq!(denied.transactions.len(), after.transactions.len());
+        assert_eq!(denied.properties, after.properties);
+        assert_eq!(denied.scene_changes.len(), after.scene_changes.len());
+        runner.eval_script(r#"let id=create_node("p1", "delete me"); delete_node(id); assert(get_node(id) == ());"#).unwrap();
     }
 
     #[test]
@@ -677,4 +721,57 @@ mod tests {
             "non-SELECT query should raise a script error"
         );
     }
+}
+
+fn checked_dynamic_to_json(value: &Dynamic) -> Result<serde_json::Value, String> {
+    fn convert(value: &Dynamic, depth: usize) -> Result<serde_json::Value, String> {
+        if depth > 16 {
+            return Err("plugin property nesting exceeds 16".into());
+        }
+        if value.is_unit() {
+            return Ok(serde_json::Value::Null);
+        }
+        if let Ok(value) = value.as_bool() {
+            return Ok(value.into());
+        }
+        if let Ok(value) = value.as_int() {
+            return Ok(value.into());
+        }
+        if let Ok(value) = value.as_float() {
+            return serde_json::Number::from_f64(value)
+                .map(serde_json::Value::Number)
+                .ok_or_else(|| "non-finite plugin property number".into());
+        }
+        if let Ok(value) = value.clone().into_string() {
+            return Ok(value.into());
+        }
+        if value.is_array() {
+            return value
+                .clone()
+                .cast::<rhai::Array>()
+                .iter()
+                .map(|value| convert(value, depth + 1))
+                .collect::<Result<Vec<_>, _>>()
+                .map(serde_json::Value::Array);
+        }
+        if value.is_map() {
+            return value
+                .clone()
+                .cast::<Map>()
+                .iter()
+                .map(|(key, value)| Ok((key.to_string(), convert(value, depth + 1)?)))
+                .collect::<Result<serde_json::Map<_, _>, String>>()
+                .map(serde_json::Value::Object);
+        }
+        Err("plugin property value is not JSON data".into())
+    }
+    let value = convert(value, 0)?;
+    if serde_json::to_vec(&value)
+        .map_err(|error| error.to_string())?
+        .len()
+        > fe_sdk::plugin_host::MAX_HOST_BYTES
+    {
+        return Err("plugin property exceeds 65536 bytes".into());
+    }
+    Ok(value)
 }
