@@ -26,7 +26,10 @@ for the deliberate rejection cases. Independent warning reconciliation is pendin
   Requirements are declarations, with availability unknown and no automatic fetch,
   installation or scene gating.
 - A disallowed Portal URL stayed in the draft with an inline policy explanation;
-  Save/Open were disabled, and persisted webpage_url remained unchanged.
+  Save/Open were disabled and no such action was submitted. The scratch persistence
+  probe queried an unused node column, not model.external_url. It does not establish
+  durable model-URL equality; see portal-url-oracle-correction.json. The next URL
+  pass must compare the actual model association. Original probe files are retained.
 - Native API generation produced a one-hour scoped Viewer token. Default password
   semantics hid its value in the retained tree and pixels; no JWT appears in the
   native JSONL evidence. The endpoint is the real127.0.0.1:8882 listener, and curl
