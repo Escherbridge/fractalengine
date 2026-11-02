@@ -450,8 +450,9 @@ disabled here pending review of the legacy DeleteEntity command: unlike the
 node tombstone path, its current dispatcher lacks a stored-role guard and
 transactional lifecycle coverage. Existing Entity Settings still owns that
 legacy action; this sidebar slice does not repair that backend gap.
-Copy ID copies the clicked ID. Editing controls are advisory-role-gated against
-the active verse. These checks are presentation only; the legacy parent
+Copy ID copies the clicked ID. Editing controls require the exact active scope for which LocalUserRole
+is resolved: nodes use their owning petal; hierarchy rows require that entry
+with no downstream scope. A child-scope Manager never enables ancestor edits. These checks are presentation only; the legacy parent
 RenameEntity/DeleteEntity authorization gap remains a campaign follow-up.
 
 The existing NavigationManager remains the hierarchy cursor and NodeManager

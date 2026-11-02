@@ -207,6 +207,7 @@ fn render_verse_tree(
                             name: &verse_name,
                             verse_id: &verse_id,
                             fractal_id: None,
+                            petal_id: None,
                             url: None,
                         },
                         is_active_verse
@@ -214,7 +215,7 @@ fn render_verse_tree(
                             && node_mgr.selected.is_none(),
                         is_active_verse,
                         own_visible,
-                        nav.active_verse_id.as_deref(),
+                        nav,
                         local_role,
                         settings,
                         ui_mgr,
@@ -253,7 +254,10 @@ fn render_verse_tree(
                 CreateKind::Fractal,
                 &verse_id,
                 ui_mgr,
-                local_role.can_manage() && is_active_verse,
+                local_role.can_manage()
+                    && is_active_verse
+                    && nav.active_fractal_id.is_none()
+                    && nav.active_petal_id.is_none(),
             );
         });
         toggle_response.named(ui, format_args!("Expand or collapse verse {verse_name}"));
@@ -329,12 +333,13 @@ fn render_fractals(
                             name: &fractal_name,
                             verse_id: verse_id,
                             fractal_id: None,
+                            petal_id: None,
                             url: None,
                         },
                         is_active && nav.active_petal_id.is_none() && node_mgr.selected.is_none(),
                         is_active,
                         own_visible,
-                        nav.active_verse_id.as_deref(),
+                        nav,
                         local_role,
                         settings,
                         ui_mgr,
@@ -375,7 +380,10 @@ fn render_fractals(
                 CreateKind::Petal,
                 &fractal_id,
                 ui_mgr,
-                local_role.can_manage() && nav.active_verse_id.as_deref() == Some(verse_id),
+                local_role.can_manage()
+                    && nav.active_verse_id.as_deref() == Some(verse_id)
+                    && nav.active_fractal_id.as_deref() == Some(&fractal_id)
+                    && nav.active_petal_id.is_none(),
             );
         });
         toggle_response.named(
@@ -439,12 +447,13 @@ fn render_petals(
                             name: &petal_name,
                             verse_id: verse_id,
                             fractal_id: Some(fractal_id),
+                            petal_id: Some(&petal_id),
                             url: None,
                         },
                         is_active && node_mgr.selected.is_none(),
                         is_active,
                         own_visible,
-                        nav.active_verse_id.as_deref(),
+                        nav,
                         local_role,
                         settings,
                         ui_mgr,
@@ -491,11 +500,15 @@ fn render_petals(
                     CreateKind::Node,
                     &petal_id,
                     ui_mgr,
-                    local_role.can_edit() && nav.active_verse_id.as_deref() == Some(verse_id),
+                    local_role.can_edit()
+                        && nav.active_verse_id.as_deref() == Some(verse_id)
+                        && nav.active_petal_id.as_deref() == Some(&petal_id),
                 );
                 if ui
                     .add_enabled(
-                        local_role.can_manage() && nav.active_verse_id.as_deref() == Some(verse_id),
+                        local_role.can_manage()
+                            && nav.active_verse_id.as_deref() == Some(verse_id)
+                            && nav.active_petal_id.as_deref() == Some(&petal_id),
                         egui::Button::new(egui::RichText::new("Petal requirements").small())
                             .fill(theme::BG_BUTTON)
                             .min_size(egui::vec2(0.0, 24.0)),
@@ -644,12 +657,13 @@ fn render_nodes(
                 name: &node_name,
                 verse_id: ancestry.verse_id,
                 fractal_id: Some(ancestry.fractal_id),
+                petal_id: Some(ancestry.petal_id),
                 url: Some(&webpage_url),
             },
             is_selected,
             false,
             is_active_petal && effectively_visible,
-            nav.active_verse_id.as_deref(),
+            nav,
             local_role,
             settings,
             ui_mgr,
@@ -952,12 +966,18 @@ mod tests {
                             name: "Long object name with meaningful suffix",
                             verse_id: "v1",
                             fractal_id: Some("f1"),
+                            petal_id: Some("p1"),
                             url: None,
                         },
                         true,
                         false,
                         true,
-                        Some("v1"),
+                        &crate::navigation_manager::NavigationManager {
+                            active_verse_id: Some("v1".into()),
+                            active_fractal_id: Some("f1".into()),
+                            active_petal_id: Some("p1".into()),
+                            ..Default::default()
+                        },
                         &crate::plugin::LocalUserRole {
                             role: Some(fe_database::RoleLevel::Owner),
                         },

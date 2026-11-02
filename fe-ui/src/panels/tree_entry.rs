@@ -4,6 +4,7 @@ use super::tree_appearance::{AppearanceDraft, EntryKind};
 use crate::accessibility::ResponseExt;
 use crate::actions::UiManager;
 use crate::dialogs::{ActiveDialog, EntitySettingsType, SettingsTab};
+use crate::navigation_manager::NavigationManager;
 use crate::plugin::LocalUserRole;
 use crate::settings::AppSettings;
 use crate::theme;
@@ -16,6 +17,7 @@ pub(crate) struct Target<'a> {
     pub name: &'a str,
     pub verse_id: &'a str,
     pub fractal_id: Option<&'a str>,
+    pub petal_id: Option<&'a str>,
     pub url: Option<&'a str>,
 }
 
@@ -105,7 +107,7 @@ fn menu(ui: &mut egui::Ui, target: Target<'_>, can_edit: bool, command: &mut Opt
                 format_args!("{label} {} {}", target.kind.label(), target.name),
             )
             .on_disabled_hover_text(
-                "Open this entry's verse with an Editor role (Manager for hierarchy settings).",
+                "Enter this entry's scope before editing it: Editor for nodes, Manager for hierarchy settings.",
             )
             .clicked()
         {
@@ -125,8 +127,12 @@ fn menu(ui: &mut egui::Ui, target: Target<'_>, can_edit: bool, command: &mut Opt
             ui.close();
         }
     } else {
-        ui.add_enabled(false, egui::Button::new("Delete…")).named(ui, format_args!("Delete {} {} unavailable", target.kind.label(), target.name))
-            .on_disabled_hover_text("Branch deletion needs the hierarchy safety review before it is exposed here. Individual nodes use the confirmed delete flow in Node Options.");
+        ui.add_enabled(false, egui::Button::new("Delete…"))
+            .named(
+                ui,
+                format_args!("Delete {} {} unavailable", target.kind.label(), target.name),
+            )
+            .on_disabled_hover_text("Deleting this branch is currently unavailable.");
     }
 }
 
@@ -137,7 +143,7 @@ pub(crate) fn row(
     selected: bool,
     on_path: bool,
     enabled: bool,
-    active_verse: Option<&str>,
+    navigation: &NavigationManager,
     role: &LocalUserRole,
     settings: &AppSettings,
     ui_mgr: &mut UiManager,
@@ -149,7 +155,25 @@ pub(crate) fn row(
         .get(&target.kind.key(target.id))
         .copied()
         .unwrap_or_else(|| target.kind.default_appearance());
-    let can_edit = active_verse == Some(target.verse_id)
+    let scope_matches = navigation.active_verse_id.as_deref() == Some(target.verse_id)
+        && match target.kind {
+            EntryKind::Verse => {
+                navigation.active_fractal_id.is_none() && navigation.active_petal_id.is_none()
+            }
+            EntryKind::Fractal => {
+                navigation.active_fractal_id.as_deref() == Some(target.id)
+                    && navigation.active_petal_id.is_none()
+            }
+            EntryKind::Petal => {
+                navigation.active_fractal_id.as_deref() == target.fractal_id
+                    && navigation.active_petal_id.as_deref() == Some(target.id)
+            }
+            EntryKind::Node => {
+                navigation.active_fractal_id.as_deref() == target.fractal_id
+                    && navigation.active_petal_id.as_deref() == target.petal_id
+            }
+        };
+    let can_edit = scope_matches
         && if target.kind == EntryKind::Node {
             role.can_edit()
         } else {
