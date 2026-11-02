@@ -126,3 +126,29 @@ Path/Portal/WEB seams on maind7fadfa2 passed combined security review. The offli
 resolver updated only three dependency edges, with no version upgrades; root
 05285dd7 commits them and six whitespace-only changed lines. Stage build is now
 running; no compilation or live acceptance is implied by these source verdicts.
+
+## Pass17 independent evidence and next source batch
+
+The independent verifier approved the focused pass17 evidence. All three canonical
+hashes recompute; versions6 through10 retain the entire old history prefix, and
+Cancel/Remove/Undo/Redo/final Undo match their intended full bags and raw rows.
+The nine transform axes and native token controls meet the measured target sizes.
+Property Edit/Cancel succeeded after actual226px horizontal scrolling. Stage and
+restart manifests match; all eight saved cleanup identities are absent.
+
+All13 stdout warning-line hashes match, with zero ERROR lines and two explicit
+URL transaction refusals. Duplicate logger initialization is absent. Screenshots
+show three red stamped cubes and the descriptor stores fixed_count3, but selection
+remains the Path; atomic stamp Apply is not claimed. No JWT was found in saved
+JSON/JSONL. FULL coverage, convergence and integrated-test flags remain false.
+
+Separate security review approves Portal ff540ddb, terminal reset throughfca37755,
+durable auth through964b000e and native fixture surface throughe3056d4b for source
+integration. Design review approves Path UI be7a0518/17cd7b4e and catalog2aa15dbe
+only at its audited d7fadfa2 snapshot. All require integrated build/live execution.
+
+Coverage re-review approves fe16e792/dd69e818/43cb0821: immutable pins deny write
+and delete sharing, active stdout alone permits its writer, and bounded evidence
+hashing and strict parsing consume the same byte buffer. The synthetic packet has
+not run and supplies no application coverage. Terminal-close evidence after root
+exit remains a separate mandatory implementation and acceptance gap.

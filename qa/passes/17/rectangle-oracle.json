@@ -1,0 +1,27 @@
+{
+  "source": "UI radiusX5/radiusZ3; independent centered rectangle geometry before action",
+  "expected_positions": [
+    [
+      -5,
+      0,
+      -3
+    ],
+    [
+      5,
+      0,
+      -3
+    ],
+    [
+      5,
+      0,
+      3
+    ],
+    [
+      -5,
+      0,
+      3
+    ]
+  ],
+  "expected_appended_count": 4,
+  "closed_duplicate_endpoint": false
+}

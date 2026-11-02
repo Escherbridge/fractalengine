@@ -1,0 +1,17 @@
+{
+  "count": 3,
+  "distribution": "equal path-progress samples including start and end",
+  "first_position": [
+    -5,
+    0,
+    -3
+  ],
+  "last_position": [
+    -5,
+    0,
+    3
+  ],
+  "align_tangent": false,
+  "path_node_count_before": 1,
+  "note": "procedural instances are not persisted object nodes until promotion; actual native image/count still required"
+}

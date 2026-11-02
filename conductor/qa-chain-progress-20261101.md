@@ -4,8 +4,8 @@ date: 2026-11-01
 status: in_progress
 source: ./handoff-20261101-qa-chain.md
 current_writer: /root
-current_slice: Pass16 focused complete and exact processes stopped; reviewed Inspector, fixture discovery, W5 cleanup and full Path stack integrated through df6293ee; Portal read-model correction pending review; WEB source-ready; terminal reset authoring
-parallel_code_worktrees: Portal read-model correction, terminal reset lifecycle; logger ownership source review
+current_slice: Pass17 focused stopped with eight exact identities absent; stage7f51de19 built and ran; reviewed Portal, Path UI, Reset/Auth and native WEB stacks pending integration; stamp selection correction authoring
+parallel_code_worktrees: Stamp selection and checked promotion; independent pass17 evidence and coverage-boundary reviews
 ---
 
 # QA chain continuation
@@ -33,7 +33,35 @@ Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.
 
 ## Current acceptance state
 
-### Latest checkpoint - pass16 focused and integrated source df6293ee
+### Latest checkpoint - pass17 focused and integrated source 7f51de19
+
+- Stage7f51de19 built successfully and resumed the retained dataset without reseeding.
+  Root85348 and seven freshly captured descendants are absent. No app or Cargo
+  process remains owned by this campaign. Saved evidence is qa/passes/17/verdict.json;
+  independent evidence review approved the focused derived checks. No full coverage or convergence claim.
+- Empty Inspector exposes no transform Apply; all nine selected transform axes and
+  URL/DID/paging controls have native targets at least24px. Compact token Cancel,
+  confirmed Revoke and secret clearing worked. Property Edit/Copy/Delete are
+  reachable after real horizontal scrolling; a zero-height reported scroll viewport
+  makes the current layout classifier inconclusive, rather than proving inaccessibility.
+- Native rectangle authoring matched the four-point predeclared oracle. Smooth
+  changed only Point2 metadata, preserving XYZ and timestamp. Confirmed Remove,
+  Undo, Redo and final Undo restored the entire canonical property bag; versions6
+  through10 preserve the old history prefix. Three stamped cubes rendered, but
+  selection never reached their editor; no atomic stamp-edit success is claimed.
+- Ordinary imported-node URL reads failed because NONE/null snapshots disagreed.
+  Reviewed ff540ddb adds canonical fences and explicit local metadata initialization
+  under D-QA-014. Reviewed be7a0518/17cd7b4e address small Path controls, Point2 labels
+  and floating-Data help overlap. Stamped selection and checked promotion are authoring.
+- Reviewed terminal reset, durable credential generation/revocation and native
+  WebView fixture observation/capture await integration and actual execution. The
+  coverage-boundary correction awaits independent re-review. These are mandatory
+  fixes/acceptance work, not deferred decisions. All warning hashes remain explicit;
+  the duplicate logger error is absent in this focused run, with no clean-log claim.
+- Full current catalog, native WEB/Reset/auth/P2P, UX audits, campaign-end integrated
+  verification, exact-SHA CI and downloadable tagged releases remain required.
+
+### Previous checkpoint - pass16 focused and integrated source df6293ee
 
 - Stage452e5670 built successfully with sealed helper. Owned root2516 resumed the
   preserved dataset without reseeding. All eight freshly captured identities are
