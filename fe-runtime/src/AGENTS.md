@@ -758,3 +758,10 @@ for CreateObject has its own reply family with no pending command and a fresh ID
 cannot claim another request's pending waiter. The dedicated committed receipt is
 separate. NodeMutation is a bounded operation vocabulary; full transforms use Euler
 XYZ radians. History versions are per object and independent of transform edit_seq.
+
+NodeAccessGrant is a non-deserializable internal enum: Local or Scoped(String).
+The three ordinary history commands now require grant. API constructs Scoped
+from validated token claims; the desktop adapter explicitly supplies Local.
+UnavailableScope is a read-only history availability value; foreign or unknown
+facts carry static unavailable_interval entries with no original payload. The
+public REST envelope and committed materialization DTO shapes are unchanged.

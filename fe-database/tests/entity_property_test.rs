@@ -445,6 +445,7 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
             .send(DbCommand::CommitNodeMutation {
                 node_id: historical.clone(),
                 actor_did: "did:qa-editor".into(),
+                grant: fe_runtime::node_history::NodeAccessGrant::Local,
                 correlation_id: Some(format!("move-{expected_version}")),
                 mutation: fe_runtime::messages::NodeMutation::FullTransform {
                     position,
@@ -474,6 +475,7 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
                 after_version: after,
                 limit: 2,
                 at_version: None,
+                grant: fe_runtime::node_history::NodeAccessGrant::Local,
                 correlation_id: Some(format!("page-{after}")),
             })
             .unwrap();
@@ -505,6 +507,7 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
                 after_version: 0,
                 limit: 1,
                 at_version: Some(version),
+                grant: fe_runtime::node_history::NodeAccessGrant::Local,
                 correlation_id: Some(format!("state-{version}")),
             })
             .unwrap();

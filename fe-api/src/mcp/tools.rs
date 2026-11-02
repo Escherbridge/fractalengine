@@ -467,6 +467,7 @@ pub(super) fn get_node_history(call: ToolCall<'_>) -> ToolFuture<'_> {
             .unwrap_or(100);
         crate::node_history::read_core(
             call.state,
+            call.claims,
             str_arg(call.args, "node_id"),
             after,
             limit,
@@ -483,8 +484,15 @@ pub(super) fn read_node_at_version(call: ToolCall<'_>) -> ToolFuture<'_> {
             .get("at_version")
             .and_then(Value::as_i64)
             .ok_or("at_version required")?;
-        crate::node_history::read_core(call.state, str_arg(call.args, "node_id"), 0, 1, Some(at))
-            .await
+        crate::node_history::read_core(
+            call.state,
+            call.claims,
+            str_arg(call.args, "node_id"),
+            0,
+            1,
+            Some(at),
+        )
+        .await
     })
 }
 

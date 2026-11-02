@@ -305,6 +305,7 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
             node_id,
             mutation,
             actor_did,
+            grant: _,
             correlation_id,
         } => {
             m.log

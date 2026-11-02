@@ -1534,3 +1534,28 @@ Arbitrary elevated/replicated/import/clear/rename paths are not claimed as cover
 operations. Comparing row state detects an unjournaled interval before the next
 covered write; current_state_verified reports whether the latest fact matches the
 current row. Current state can differ while older committed versions remain valid.
+
+### Node-history grant binding and historical scope
+
+The dedicated CreateObject/CommitNodeMutation/ReadNodeHistory commands carry a
+trusted NodeAccessGrant: Local for internal desktop calls, or Scoped with the
+validated token scope. The enum is not deserialized from request bodies. Grant
+containment compares parsed verse/fractal/petal identifiers, never an identifier
+prefix. Dedicated writes check the current stored ancestry before preparing an
+operation and again before committing; fixed bound SQL fences verify the exact
+node/petal/fractal/verse chain inside the same transaction. A queued reparent or
+ancestry change refuses without durable state, intention, history, or sequence
+advance. A scope change starts a fresh coverage baseline even when the node row
+itself otherwise stayed equal.
+
+Read admission is rechecked on the DB writer using current ancestry or the latest
+retained covered scope after deletion. Every returned fact/baseline is separately
+authorized by its own retained scope and matching node/petal snapshot identity.
+Foreign facts and legacy facts without verified scope become static
+unavailable_interval markers: only requested node identity and cursor version are
+retained, with no original payload, log id, actor, HLC or timestamp. Replay refuses
+an unauthorized baseline or interval with unavailable_scope and no state. Coverage
+start metadata is omitted when the initial baseline is outside the caller grant.
+The local desktop may inspect facts in any valid retained scope, but unknown-scope
+legacy payloads are still redacted. Historical reads never infer ownership from
+only the object's present location.

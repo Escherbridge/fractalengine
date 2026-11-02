@@ -46,6 +46,7 @@ pub(crate) async fn resolved_scope(state: &ApiState, node_id: &str) -> Option<St
 
 pub(crate) async fn read_core(
     state: &ApiState,
+    claims: &ApiClaims,
     node_id: &str,
     after_version: i64,
     limit: usize,
@@ -62,6 +63,7 @@ pub(crate) async fn read_core(
             after_version,
             limit,
             at_version,
+            grant: fe_runtime::node_history::NodeAccessGrant::Scoped(claims.scope.clone()),
             correlation_id: Some(id.clone()),
         },
         &id,
@@ -88,6 +90,7 @@ pub(crate) async fn commit_core(
             node_id: node_id.to_string(),
             mutation,
             actor_did: claims.sub.clone(),
+            grant: fe_runtime::node_history::NodeAccessGrant::Scoped(claims.scope.clone()),
             correlation_id: Some(id.clone()),
         },
         &id,
@@ -111,6 +114,7 @@ pub(crate) async fn create_core(
             petal_id: petal_id.to_string(),
             input,
             actor_did: claims.sub.clone(),
+            grant: fe_runtime::node_history::NodeAccessGrant::Scoped(claims.scope.clone()),
             correlation_id: Some(id.clone()),
         },
         &id,
@@ -125,7 +129,38 @@ enum HistoryReplyFamily {
     State,
 }
 
+enum HistoryTarget {
+    Node(String),
+    Petal(String),
+}
+
+impl HistoryTarget {
+    fn matches_node(&self, node_id: &str) -> bool {
+        matches!(self,Self::Node(expected) if expected == node_id)
+    }
+    fn matches_receipt(&self, receipt: &fe_runtime::node_history::NodeMutationReceipt) -> bool {
+        receipt.node_id == receipt.state.node_id
+            && match self {
+                Self::Node(node_id) => node_id == &receipt.node_id,
+                Self::Petal(petal_id) => {
+                    petal_id == &receipt.state.petal_id
+                        && crate::types::is_valid_ulid(&receipt.node_id)
+                }
+            }
+    }
+}
+
 async fn correlated(state: &ApiState, command: DbCommand, id: &str) -> Result<Value, String> {
+    let target = match &command {
+        DbCommand::ReadNodeHistory { node_id, .. }
+        | DbCommand::CommitNodeMutation { node_id, .. } => HistoryTarget::Node(node_id.clone()),
+        DbCommand::CreateObject { petal_id, .. } => HistoryTarget::Petal(petal_id.clone()),
+        _ => return Err("unsupported history command".into()),
+    };
+    let requested_version = match &command {
+        DbCommand::ReadNodeHistory { at_version, .. } => *at_version,
+        _ => None,
+    };
     let expected = match &command {
         DbCommand::ReadNodeHistory {
             at_version: Some(_),
@@ -141,19 +176,37 @@ async fn correlated(state: &ApiState, command: DbCommand, id: &str) -> Result<Va
         DbResult::NodeMutationCommitted {
             receipt,
             correlation_id: Some(echoed),
-        } if echoed == id && expected == HistoryReplyFamily::Committed => {
+        } if echoed == id
+            && expected == HistoryReplyFamily::Committed
+            && target.matches_receipt(&receipt) =>
+        {
             serde_json::to_value(receipt).map_err(|_| "invalid committed receipt".into())
         }
         DbResult::NodeHistoryLoaded {
             page,
             correlation_id: Some(echoed),
-        } if echoed == id && expected == HistoryReplyFamily::Page => {
+        } if echoed == id
+            && expected == HistoryReplyFamily::Page
+            && target.matches_node(&page.coverage.node_id)
+            && page
+                .entries
+                .iter()
+                .all(|entry| target.matches_node(&entry.node_id)) =>
+        {
             serde_json::to_value(page).map_err(|_| "invalid history page".into())
         }
         DbResult::NodeStateAtVersionLoaded {
             state,
             correlation_id: Some(echoed),
-        } if echoed == id && expected == HistoryReplyFamily::State => {
+        } if echoed == id
+            && expected == HistoryReplyFamily::State
+            && target.matches_node(&state.coverage.node_id)
+            && requested_version == Some(state.at_version)
+            && state
+                .state
+                .as_ref()
+                .is_none_or(|snapshot| target.matches_node(&snapshot.node_id)) =>
+        {
             serde_json::to_value(state).map_err(|_| "invalid historical state".into())
         }
         DbResult::RequestFailed {
@@ -200,7 +253,17 @@ pub async fn history(
 ) -> Json<ApiResponse<Value>> {
     response(
         match authorized(&state, &claims, &node_id, "viewer").await {
-            Ok(()) => read_core(&state, &node_id, query.after_version, query.limit, None).await,
+            Ok(()) => {
+                read_core(
+                    &state,
+                    &claims,
+                    &node_id,
+                    query.after_version,
+                    query.limit,
+                    None,
+                )
+                .await
+            }
             Err(error) => Err(error),
         },
     )
@@ -214,7 +277,7 @@ pub async fn state_at(
 ) -> Json<ApiResponse<Value>> {
     response(
         match authorized(&state, &claims, &node_id, "viewer").await {
-            Ok(()) => read_core(&state, &node_id, 0, 1, Some(query.at_version)).await,
+            Ok(()) => read_core(&state, &claims, &node_id, 0, 1, Some(query.at_version)).await,
             Err(error) => Err(error),
         },
     )

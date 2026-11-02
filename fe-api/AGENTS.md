@@ -2182,3 +2182,20 @@ materialization. NodeHistoryLoaded and NodeStateAtVersionLoaded remain read-only
 previews; the UI must never apply them as live state. The separate API receipt
 stays NodeMutationCommitted with its matching request ID. These shared typed DTOs
 live in fe-runtime::node_history; their serialized REST shapes above are unchanged.
+
+### Node-history request and reply identity boundaries
+
+The API constructs NodeAccessGrant::Scoped from the validated claims.scope; scope
+and actor never come from object/mutation JSON. The DB rechecks this grant at use,
+fences current ancestry transactionally, and authorizes each historical fact by
+its retained scope. Unknown/foreign historical intervals expose static cursor
+markers only, or unavailable_scope without replay state. Current-node admission
+alone never grants access to an earlier scope's object history.
+
+Correlated success must match nonce, reply family, and requested identity. A
+mutation receipt's node_id must equal its state.node_id and the requested node;
+a create receipt must identify its requested petal and a valid new node id.
+History page coverage and every entry identify the requested node; state previews
+also match the requested version and snapshot node. Property wrappers return
+success only after these checks, rather than manufacturing success from the
+requested id when the DB replied for another object.

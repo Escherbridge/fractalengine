@@ -1523,13 +1523,13 @@ pub fn spawn_db_thread_shared(
                         };
                         send_result(&tx, reply);
                     }
-                    Ok(DbCommand::ReadNodeHistory { node_id, after_version, limit, at_version, correlation_id }) => {
-                        let reply = handlers::node_history::read_reply(&db,&node_id,after_version,limit,at_version,correlation_id).await;
+                    Ok(DbCommand::ReadNodeHistory { node_id, after_version, limit, at_version, grant, correlation_id }) => {
+                        let reply = handlers::node_history::read_reply(&db,&node_id,after_version,limit,at_version,&grant,correlation_id).await;
                         send_result(&tx, reply);
                     }
-                    Ok(DbCommand::CreateObject { petal_id, input, actor_did, correlation_id }) => {
-                        let outcome = handlers::node_history::create_object(&db, &petal_id, &input.name, input.asset_id.as_deref(), input.position,
-                            input.rotation.iter().map(|v|f64::from(*v)).collect(), input.scale.iter().map(|v|f64::from(*v)).collect(), input.properties, &actor_did).await;
+                    Ok(DbCommand::CreateObject { petal_id, input, actor_did, grant, correlation_id }) => {
+                        let outcome = handlers::node_history::create_object_granted(&db, &petal_id, &input.name, input.asset_id.as_deref(), input.position,
+                            input.rotation.iter().map(|v|f64::from(*v)).collect(), input.scale.iter().map(|v|f64::from(*v)).collect(), input.properties, &actor_did,&grant).await;
                         match outcome {
                             Ok((node_id, asset_path)) => {
                                 if let Some(ref ect) = entity_change_tx {
@@ -1554,12 +1554,12 @@ pub fn spawn_db_thread_shared(
                             Err(error) => send_result(&tx,handlers::correlated_failure(&correlation_id,format!("Create object refused: {error}"))),
                         }
                     }
-                    Ok(DbCommand::CommitNodeMutation { node_id, mutation, actor_did, correlation_id }) => {
+                    Ok(DbCommand::CommitNodeMutation { node_id, mutation, actor_did, grant, correlation_id }) => {
                         use fe_runtime::messages::NodeMutation;
                         let outcome = match &mutation {
-                            NodeMutation::PropertySet { key, value } => handlers::entity_property::set_entity_property_as(&db, &node_id, key, value, &actor_did).await,
-                            NodeMutation::PropertyDeleted { key } => handlers::entity_property::delete_entity_property_as(&db, &node_id, key, &actor_did).await,
-                            NodeMutation::FullTransform { position, rotation, scale } => handlers::transform::update_node_transform_as(&db, &node_id, *position, *rotation, *scale, &actor_did).await,
+                            NodeMutation::PropertySet { key, value } => handlers::entity_property::set_entity_property_granted(&db, &node_id, key, value, &actor_did,&grant).await,
+                            NodeMutation::PropertyDeleted { key } => handlers::entity_property::delete_entity_property_granted(&db, &node_id, key, &actor_did,&grant).await,
+                            NodeMutation::FullTransform { position, rotation, scale } => handlers::transform::update_node_transform_granted(&db, &node_id, *position, *rotation, *scale, &actor_did,&grant).await,
                         };
                         match outcome {
                             Ok(()) => {

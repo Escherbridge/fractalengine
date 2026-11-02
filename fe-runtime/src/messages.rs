@@ -818,6 +818,7 @@ pub enum DbCommand {
         node_id: String,
         mutation: NodeMutation,
         actor_did: String,
+        grant: crate::node_history::NodeAccessGrant,
         correlation_id: Option<String>,
     },
     /// Create initial properties and complete baseline in one committed transaction.
@@ -825,6 +826,7 @@ pub enum DbCommand {
         petal_id: String,
         input: CreateObjectInput,
         actor_did: String,
+        grant: crate::node_history::NodeAccessGrant,
         correlation_id: Option<String>,
     },
     /// Durable bounded journal page or exact-version replay; not generic raw-table access.
@@ -833,6 +835,7 @@ pub enum DbCommand {
         after_version: i64,
         limit: usize,
         at_version: Option<i64>,
+        grant: crate::node_history::NodeAccessGrant,
         correlation_id: Option<String>,
     },
     /// Delete a field definition by ID.

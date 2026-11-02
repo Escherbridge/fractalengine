@@ -626,7 +626,7 @@ mod tests {
         let gap = crate::handlers::node_history::read(&db, &node_id, 0, 1, Some(6))
             .await
             .unwrap();
-        assert_eq!(gap["availability"], "incomplete_interval");
+        assert_eq!(gap["availability"], "unavailable_scope");
         assert!(gap.get("state").is_none());
         crate::handlers::entity_property::set_entity_property_as(
             &db,
@@ -661,6 +661,207 @@ mod tests {
         assert_eq!(unavailable["coverage_start_version"], 100);
         assert_eq!(unavailable["availability"], "before_coverage");
         assert!(unavailable.get("state").is_none());
+
+        use fe_runtime::node_history::NodeAccessGrant;
+        let scope_a = crate::build_scope(
+            "history-verse",
+            Some("history-fractal"),
+            Some("history-petal"),
+        );
+        let scope_b = crate::build_scope(
+            "history-verse",
+            Some("history-fractal"),
+            Some("history-petal-b"),
+        );
+        let grant_a = NodeAccessGrant::Scoped(scope_a.clone());
+        let grant_b = NodeAccessGrant::Scoped(scope_b);
+        assert!(
+            crate::handlers::node_history::read_granted(
+                &db,
+                &node_id,
+                0,
+                1,
+                None,
+                &NodeAccessGrant::Scoped("VERSE#history".into())
+            )
+            .await
+            .is_err(),
+            "a hyphen-bearing verse id cannot be covered by an identifier prefix"
+        );
+        let (captured_fence, captured_bindings) =
+            crate::handlers::node_history::scope_fence(&scope_a, Some(&node_id)).unwrap();
+        db.query("CREATE petal CONTENT {petal_id:'history-petal-b',fractal_id:'history-fractal',name:'B',node_id:'b',created_at:'2026-11-01'};
+            UPDATE node SET petal_id='history-petal-b' WHERE node_id=$id")
+            .bind(("id",node_id.clone())).await.unwrap().check().unwrap();
+        let state_after_reparent = crate::handlers::node_history::snapshot(&db, &node_id)
+            .await
+            .unwrap();
+        let count_before_denial = op_log_count(&db).await;
+        let denied = crate::handlers::entity_property::set_entity_property_granted(
+            &db,
+            &node_id,
+            "calibration",
+            &serde_json::json!({"gain":999}),
+            "did:queued-editor",
+            &grant_a,
+        )
+        .await
+        .expect_err("queued old grant cannot write the new petal");
+        assert!(denied.to_string().contains("not permitted"));
+        assert_eq!(
+            crate::handlers::node_history::snapshot(&db, &node_id)
+                .await
+                .unwrap(),
+            state_after_reparent
+        );
+        assert_eq!(op_log_count(&db).await, count_before_denial);
+        db.query("CREATE verse CONTENT {verse_id:'foreign-history-verse',name:'foreign',created_by:'did:qa',created_at:'2026-11-01'};
+            CREATE fractal CONTENT {fractal_id:'foreign-history-fractal',verse_id:'foreign-history-verse',owner_did:'did:qa',name:'foreign',created_at:'2026-11-01'};
+            CREATE petal CONTENT {petal_id:'queued-create-petal',fractal_id:'history-fractal',name:'queued',node_id:'queued',created_at:'2026-11-01'}")
+            .await.unwrap().check().unwrap();
+        let prechecked_create_scope = crate::handlers::preconditions::require_petal_scope(
+            &db,
+            "queued-create-petal",
+            "precheck",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            prechecked_create_scope,
+            crate::build_scope(
+                "history-verse",
+                Some("history-fractal"),
+                Some("queued-create-petal")
+            )
+        );
+        let queued_create_grant = NodeAccessGrant::Scoped("VERSE#history-verse".into());
+        db.query("UPDATE petal SET fractal_id='foreign-history-fractal' WHERE petal_id='queued-create-petal'").await.unwrap().check().unwrap();
+        crate::handlers::node_history::create_object_granted(
+            &db,
+            "queued-create-petal",
+            "queued create must fail",
+            None,
+            [0.0; 3],
+            vec![0.0; 3],
+            vec![1.0; 3],
+            serde_json::Map::new(),
+            "did:queued-editor",
+            &queued_create_grant,
+        )
+        .await
+        .expect_err("petal moved between API precheck and DB create");
+        let queued_nodes: Vec<serde_json::Value> = db
+            .query("SELECT node_id FROM node WHERE petal_id='queued-create-petal'")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert!(queued_nodes.is_empty());
+        assert_eq!(op_log_count(&db).await, count_before_denial);
+        assert_eq!(
+            crate::handlers::node_history::read(&db, &node_id, 0, 1, None)
+                .await
+                .unwrap()["current_version"],
+            8
+        );
+        let fence_error =
+            commit_operation_atomic(&db, probe_entry(), &captured_fence, captured_bindings)
+                .await
+                .expect_err("in-transaction ancestry fence must reject the old resolution");
+        assert!(fence_error
+            .to_string()
+            .contains("authorized ancestry changed"));
+        assert_eq!(
+            op_log_count(&db).await,
+            count_before_denial,
+            "scope fence rolls back the intention too"
+        );
+        crate::handlers::node_history::create_object_granted(
+            &db,
+            "history-petal-b",
+            "denied create",
+            None,
+            [0.0; 3],
+            vec![0.0; 3],
+            vec![1.0; 3],
+            serde_json::Map::new(),
+            "did:queued-editor",
+            &grant_a,
+        )
+        .await
+        .expect_err("queued create grant must match the current petal ancestry");
+        assert_eq!(op_log_count(&db).await, count_before_denial);
+        assert!(
+            crate::handlers::node_history::read_granted(&db, &node_id, 0, 200, None, &grant_a)
+                .await
+                .is_err()
+        );
+        let old_page =
+            crate::handlers::node_history::read_granted(&db, &node_id, 0, 1, None, &grant_b)
+                .await
+                .unwrap();
+        assert_eq!(old_page["entries"][0]["op"], "unavailable_interval");
+        assert_eq!(
+            old_page["entries"][0]["payload"],
+            serde_json::json!({"availability":"unavailable_scope"})
+        );
+        assert_eq!(old_page["entries"][0]["source_did"], "");
+        assert!(old_page["coverage_started_at"].is_null());
+        let old_state =
+            crate::handlers::node_history::read_granted(&db, &node_id, 0, 1, Some(3), &grant_b)
+                .await
+                .unwrap();
+        assert_eq!(old_state["availability"], "unavailable_scope");
+        assert!(old_state.get("state").is_none());
+        crate::handlers::entity_property::set_entity_property_granted(
+            &db,
+            &node_id,
+            "calibration",
+            &serde_json::json!({"gain":5}),
+            "did:matching-editor",
+            &grant_b,
+        )
+        .await
+        .unwrap();
+        let new_state =
+            crate::handlers::node_history::read_granted(&db, &node_id, 0, 1, Some(10), &grant_b)
+                .await
+                .unwrap();
+        assert_eq!(new_state["availability"], "available");
+        assert_eq!(new_state["baseline_version"], 9);
+        assert_eq!(new_state["state"]["properties"]["calibration"]["gain"], 5);
+        crate::handlers::node_log::append_node_log(
+            &db,
+            &node_id,
+            "legacy_unknown_scope",
+            "secret-old-actor",
+            &serde_json::json!({"secret":"must-not-leak"}),
+        )
+        .await
+        .unwrap();
+        let unknown_page =
+            crate::handlers::node_history::read_granted(&db, &node_id, 10, 1, None, &grant_b)
+                .await
+                .unwrap();
+        assert_eq!(unknown_page["entries"][0]["op"], "unavailable_interval");
+        assert!(!unknown_page.to_string().contains("must-not-leak"));
+        assert!(!unknown_page.to_string().contains("secret-old-actor"));
+        db.query("DELETE node WHERE node_id=$id")
+            .bind(("id", node_id.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        assert!(
+            crate::handlers::node_history::read_granted(&db, &node_id, 0, 1, None, &grant_a)
+                .await
+                .is_err()
+        );
+        let retained =
+            crate::handlers::node_history::read_granted(&db, &node_id, 0, 1, None, &grant_b)
+                .await
+                .unwrap();
+        assert_eq!(retained["entries"][0]["op"], "unavailable_interval");
     }
 
     /// A fixed fake clock source for the override tests (a real test would

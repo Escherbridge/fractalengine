@@ -9,15 +9,17 @@ use crate::types::{NodeId, OpLogEntry, OpType};
 
 /// Persist a transform change for a node (position/rotation/scale).
 #[instrument(skip(db))]
-pub(crate) async fn update_node_transform_as(
+pub(crate) async fn update_node_transform_granted(
     db: &Db,
     node_id: &str,
     position: [f32; 3],
     rotation: [f32; 3],
     scale: [f32; 3],
     actor: &str,
+    grant: &fe_runtime::node_history::NodeAccessGrant,
 ) -> anyhow::Result<()> {
     require_node_exists(db, node_id, "UpdateNodeTransform").await?;
+    super::node_history::authorized_node_scope(db, node_id, grant).await?;
     if position
         .iter()
         .chain(&rotation)
@@ -49,7 +51,7 @@ pub(crate) async fn update_node_transform_as(
         vec!["UPDATE node SET position = <geometry<point>> [$x, $z], elevation = $y, rotation = $rot, scale = $sc, edit_seq = edit_seq + 1 WHERE node_id = $node_id".into()],
         vec![("x".into(), serde_json::json!(position[0] as f64)), ("z".into(), serde_json::json!(position[2] as f64)), ("y".into(), serde_json::json!(position[1] as f64)),
             ("rot".into(), serde_json::json!(rot)), ("sc".into(), serde_json::json!(sc)), ("node_id".into(), serde_json::json!(node_id))],
-        actor, "full_transform", serde_json::json!({"position":position,"rotation":rotation,"scale":scale}), serde_json::json!({})).await?;
+        actor, "full_transform", serde_json::json!({"position":position,"rotation":rotation,"scale":scale}), serde_json::json!({}), grant).await?;
     Ok(())
 }
 
@@ -132,4 +134,25 @@ pub(crate) async fn update_node_url_handler(
         .await
         .map_err(|e| anyhow::anyhow!("UpdateNodeUrl DB query failed: {e}"))?;
     Ok(())
+}
+
+/// Internal local transform write compatibility entry.
+pub(crate) async fn update_node_transform_as(
+    db: &Db,
+    node_id: &str,
+    position: [f32; 3],
+    rotation: [f32; 3],
+    scale: [f32; 3],
+    actor: &str,
+) -> anyhow::Result<()> {
+    update_node_transform_granted(
+        db,
+        node_id,
+        position,
+        rotation,
+        scale,
+        actor,
+        &fe_runtime::node_history::NodeAccessGrant::Local,
+    )
+    .await
 }

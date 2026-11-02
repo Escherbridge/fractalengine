@@ -2661,5 +2661,145 @@ mod tests {
                 }
             }
         }
+
+        for operation in 0..5 {
+            for fault in 0..4 {
+                let call = async {
+                    match operation {
+                        0 => set_property_as(
+                            &state,
+                            &claims,
+                            "node",
+                            "key".into(),
+                            serde_json::json!(10),
+                        )
+                        .await
+                        .map(|_| ()),
+                        1 => delete_property_as(&state, &claims, "node", "key")
+                            .await
+                            .map(|_| ()),
+                        2 => crate::node_history::create_core(
+                            &state,
+                            &claims,
+                            "petal",
+                            serde_json::from_value(serde_json::json!({"name":"object"})).unwrap(),
+                        )
+                        .await
+                        .map(|_| ()),
+                        3 => crate::node_history::read_core(&state, &claims, "node", 0, 1, None)
+                            .await
+                            .map(|_| ()),
+                        _ => crate::node_history::read_core(&state, &claims, "node", 0, 1, Some(3))
+                            .await
+                            .map(|_| ()),
+                    }
+                };
+                let respond = async {
+                    let ApiCommand::DbRequest { cmd, reply_tx } = api_cmd_rx
+                        .recv_timeout(std::time::Duration::from_secs(1))
+                        .unwrap()
+                    else {
+                        panic!("expected typed request")
+                    };
+                    let (id, grant) = match cmd {
+                        DbCommand::CommitNodeMutation {
+                            correlation_id: Some(id),
+                            grant,
+                            actor_did,
+                            ..
+                        }
+                        | DbCommand::CreateObject {
+                            correlation_id: Some(id),
+                            grant,
+                            actor_did,
+                            ..
+                        } => {
+                            assert_eq!(actor_did, claims.sub);
+                            (id, grant)
+                        }
+                        DbCommand::ReadNodeHistory {
+                            correlation_id: Some(id),
+                            grant,
+                            ..
+                        } => (id, grant),
+                        other => panic!("unexpected typed request: {other:?}"),
+                    };
+                    assert!(
+                        matches!(grant,fe_runtime::node_history::NodeAccessGrant::Scoped(ref scope) if scope == &claims.scope)
+                    );
+                    let node_id = if operation == 2 {
+                        "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+                    } else {
+                        "node"
+                    };
+                    let mut snapshot = serde_json::json!({"node_id":node_id,"petal_id":"petal","display_name":"object","position":[0.0,0.0,0.0],"elevation":0.0,
+                        "rotation":[0.0,0.0,0.0],"scale":[1.0,1.0,1.0],"interactive":false,"created_at":"now","edit_seq":0,"properties":{"key":10}});
+                    let mut coverage = serde_json::json!({"node_id":"node","journal_version":1,"current_version":3,"coverage_start_version":1,"coverage_started_at":"now",
+                        "supported_operations":[],"order":"per_object_commit_version","event_time_ordering":false,"current_state_verified":true});
+                    let reply = if operation < 3 {
+                        let mut receipt = serde_json::json!({"node_id":node_id,"history_version":1,"state":snapshot,"persist":"committed"});
+                        if fault == 1 {
+                            receipt["node_id"] = serde_json::json!("wrong-node");
+                        }
+                        if fault == 2 {
+                            receipt["state"]["node_id"] = serde_json::json!("wrong-node");
+                        }
+                        if fault == 3 {
+                            if operation == 2 {
+                                receipt["state"]["petal_id"] = serde_json::json!("foreign-petal");
+                            } else {
+                                receipt["node_id"] = serde_json::json!("wrong-node");
+                                receipt["state"]["node_id"] = serde_json::json!("wrong-node");
+                            }
+                        }
+                        DbResult::NodeMutationCommitted {
+                            receipt: serde_json::from_value(receipt).unwrap(),
+                            correlation_id: Some(id),
+                        }
+                    } else if operation == 3 {
+                        if fault == 1 || fault == 3 {
+                            coverage["node_id"] = serde_json::json!("wrong-node");
+                        }
+                        let entry_node = if fault == 2 || fault == 3 {
+                            "wrong-node"
+                        } else {
+                            "node"
+                        };
+                        coverage["entries"] = serde_json::json!([{"log_id":"log","node_id":entry_node,"hlc_timestamp":1,"op":"baseline","source_did":"actor","payload":{},"row_version":1,"created_at":"now"}]);
+                        coverage["next_after_version"] = serde_json::Value::Null;
+                        DbResult::NodeHistoryLoaded {
+                            page: serde_json::from_value(coverage).unwrap(),
+                            correlation_id: Some(id),
+                        }
+                    } else {
+                        if fault == 1 {
+                            coverage["node_id"] = serde_json::json!("wrong-node");
+                        }
+                        if fault == 2 {
+                            snapshot["node_id"] = serde_json::json!("wrong-node");
+                        }
+                        coverage["at_version"] = serde_json::json!(if fault == 3 { 4 } else { 3 });
+                        coverage["availability"] = serde_json::json!("available");
+                        coverage["baseline_version"] = serde_json::json!(1);
+                        coverage["state"] = snapshot;
+                        DbResult::NodeStateAtVersionLoaded {
+                            state: serde_json::from_value(coverage).unwrap(),
+                            correlation_id: Some(id),
+                        }
+                    };
+                    reply_tx.send(reply).unwrap();
+                };
+                let (result, ()) = tokio::join!(call, respond);
+                if fault == 0 {
+                    assert!(result.is_ok(), "operation {operation}: {result:?}");
+                } else {
+                    assert_eq!(
+                        result.unwrap_err(),
+                        "committed reply not confirmed; read back before retrying",
+                        "operation {operation}, identity fault {fault}"
+                    );
+                }
+            }
+        }
     }
 }

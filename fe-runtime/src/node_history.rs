@@ -3,6 +3,15 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Trusted admission context, constructed by API auth or the local desktop.
+#[derive(Debug, Clone)]
+pub enum NodeAccessGrant {
+    /// Internal desktop command; never deserialized from an HTTP/MCP body.
+    Local,
+    /// Validated token grant, rechecked against stored ancestry at DB use.
+    Scoped(String),
+}
+
 /// Persisted node-table snapshot with XYZ position and stored rotation components.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeRowSnapshot {
@@ -83,6 +92,7 @@ pub enum HistoryAvailability {
     IncompleteInterval,
     UnsupportedOperation,
     VersionUnavailable,
+    UnavailableScope,
 }
 
 /// Read-only historical preview, distinct from a current-state commit receipt.

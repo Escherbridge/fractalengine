@@ -1,11 +1,102 @@
 //! Atomic ordinary node journal and bounded replay; see src/AGENTS.md §node-history.
 
+use fe_runtime::node_history::NodeAccessGrant;
 use serde_json::{json, Value};
 
 use crate::{op_log::commit_operation_atomic_with, repo::Db, types::OpLogEntry};
 
 const JOURNAL_VERSION: u64 = 1;
 const MAX_REPLAY_ROWS: usize = 10_000;
+
+fn require_grant(grant: &NodeAccessGrant, scope: &str) -> anyhow::Result<()> {
+    let resource = crate::parse_scope(scope)?;
+    if let NodeAccessGrant::Scoped(granted) = grant {
+        let granted = crate::parse_scope(granted)?;
+        if granted.verse_id != resource.verse_id
+            || granted
+                .fractal_id
+                .as_ref()
+                .is_some_and(|id| resource.fractal_id.as_ref() != Some(id))
+            || granted
+                .petal_id
+                .as_ref()
+                .is_some_and(|id| resource.petal_id.as_ref() != Some(id))
+        {
+            anyhow::bail!("not found or not permitted");
+        }
+    }
+    Ok(())
+}
+
+pub(crate) async fn authorized_node_scope(
+    db: &Db,
+    node_id: &str,
+    grant: &NodeAccessGrant,
+) -> anyhow::Result<String> {
+    let scope = super::crud::resolve_node_scope_handler(db, node_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("not found or not permitted"))?;
+    require_grant(grant, &scope)?;
+    Ok(scope)
+}
+
+pub(crate) fn scope_fence(
+    scope: &str,
+    node_id: Option<&str>,
+) -> anyhow::Result<(Vec<String>, Vec<(String, Value)>)> {
+    let parts = crate::parse_scope(scope)?;
+    let fractal = parts
+        .fractal_id
+        .ok_or_else(|| anyhow::anyhow!("node scope has no fractal"))?;
+    let petal = parts
+        .petal_id
+        .ok_or_else(|| anyhow::anyhow!("node scope has no petal"))?;
+    let mut statements = vec![
+        "IF array::len((SELECT VALUE verse_id FROM verse WHERE verse_id = $history_authorized_verse)) != 1 { THROW 'authorized ancestry changed'; }".into(),
+        "IF array::len((SELECT VALUE fractal_id FROM fractal WHERE fractal_id = $history_authorized_fractal AND verse_id = $history_authorized_verse)) != 1 { THROW 'authorized ancestry changed'; }".into(),
+        "IF array::len((SELECT VALUE petal_id FROM petal WHERE petal_id = $history_authorized_petal AND fractal_id = $history_authorized_fractal)) != 1 { THROW 'authorized ancestry changed'; }".into(),
+    ];
+    let mut bindings = vec![
+        ("history_authorized_verse".into(), json!(parts.verse_id)),
+        ("history_authorized_fractal".into(), json!(fractal)),
+        ("history_authorized_petal".into(), json!(petal)),
+    ];
+    if let Some(id) = node_id {
+        statements.push("IF array::len((SELECT VALUE node_id FROM node WHERE node_id = $history_authorized_node AND petal_id = $history_authorized_petal)) != 1 { THROW 'authorized ancestry changed'; }".into());
+        bindings.push(("history_authorized_node".into(), json!(id)));
+    }
+    Ok((statements, bindings))
+}
+
+fn fact_is_authorized(row: &Value, node_id: &str, grant: &NodeAccessGrant) -> bool {
+    if row["node_id"].as_str() != Some(node_id)
+        || row["payload"]["journal_version"] != JOURNAL_VERSION
+    {
+        return false;
+    }
+    let Some(scope) = row["payload"]["scope"].as_str() else {
+        return false;
+    };
+    if require_grant(grant, scope).is_err() {
+        return false;
+    }
+    let Ok(parts) = crate::parse_scope(scope) else {
+        return false;
+    };
+    let Some(petal_id) = parts.petal_id.as_deref() else {
+        return false;
+    };
+    let matches = |state: &Value| {
+        state["node_id"].as_str() == Some(node_id) && state["petal_id"].as_str() == Some(petal_id)
+    };
+    matches(&row["payload"]["after_state"])
+        && (row["op"] != "baseline" || matches(&row["payload"]["state"]))
+}
+
+fn unavailable_fact(node_id: &str, version: i64) -> Value {
+    json!({"log_id":format!("unavailable-{version}"),"node_id":node_id,"hlc_timestamp":0,"op":"unavailable_interval",
+        "source_did":"","payload":{"availability":"unavailable_scope"},"row_version":version,"created_at":""})
+}
 
 fn check_snapshot_size(value: &Value) -> anyhow::Result<()> {
     if serde_json::to_vec(value)?.len() > fe_sdk::property_schema::MAX_PROPERTY_BYTES {
@@ -91,11 +182,12 @@ pub(crate) async fn read_reply(
     after_version: i64,
     limit: usize,
     at_version: Option<i64>,
+    grant: &NodeAccessGrant,
     correlation_id: Option<String>,
 ) -> fe_runtime::messages::DbResult {
     use fe_runtime::messages::DbResult;
     let result = async {
-        let value = read(db, node_id, after_version, limit, at_version).await?;
+        let value = read_granted(db, node_id, after_version, limit, at_version, grant).await?;
         Ok::<_, anyhow::Error>(if at_version.is_some() {
             DbResult::NodeStateAtVersionLoaded {
                 state: serde_json::from_value(value)?,
@@ -160,7 +252,7 @@ pub(crate) fn materialization(
 
 /// Atomically create an ordinary object and its complete first journal baseline.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn create_object(
+pub(crate) async fn create_object_granted(
     db: &Db,
     petal_id: &str,
     name: &str,
@@ -170,8 +262,10 @@ pub(crate) async fn create_object(
     scale: Vec<f64>,
     properties: serde_json::Map<String, Value>,
     actor: &str,
+    grant: &NodeAccessGrant,
 ) -> anyhow::Result<(String, Option<String>)> {
     let scope = super::preconditions::require_petal_scope(db, petal_id, "CreateObject").await?;
+    require_grant(grant, &scope)?;
     if name.trim().is_empty()
         || name.len() > 1024
         || position.iter().any(|v| !v.is_finite())
@@ -229,16 +323,17 @@ pub(crate) async fn create_object(
     };
     let actor = actor.to_string();
     let created_id = id.clone();
+    let (mut scope_statements, mut scope_bindings) = scope_fence(&scope, None)?;
     commit_operation_atomic_with(db, entry, move |hlc| {
         let fact = json!({"log_id":ulid::Ulid::new().to_string(),"node_id":created_id,
             "hlc_timestamp":hlc as i64,"op":"baseline","source_did":actor,"row_version":1,
             "created_at":chrono::Utc::now().to_rfc3339(),"payload":{"journal_version":JOURNAL_VERSION,
                 "scope":scope,"state":state,"after_state":state,"coverage_reason":"object_created",
                 "schema_versions":schema_versions}});
-        (vec!["CREATE node CONTENT object::extend($created_state, {position: <geometry<point>> [$created_x, $created_z]})".into(),
-            "CREATE node_log CONTENT $created_fact".into()],
-            vec![("created_state".into(),state),("created_fact".into(),fact),
-                ("created_x".into(),json!(position[0] as f64)),("created_z".into(),json!(position[2] as f64))])
+        scope_statements.extend(["CREATE node CONTENT object::extend($created_state, {position: <geometry<point>> [$created_x, $created_z]})".into(),"CREATE node_log CONTENT $created_fact".into()]);
+        scope_bindings.extend([("created_state".into(),state),("created_fact".into(),fact),
+                ("created_x".into(),json!(position[0] as f64)),("created_z".into(),json!(position[2] as f64))]);
+        (scope_statements,scope_bindings)
     }).await?;
     Ok((id, asset_path))
 }
@@ -254,18 +349,18 @@ pub(crate) async fn commit_mutation(
     op: &str,
     data: Value,
     schema_versions: Value,
+    grant: &NodeAccessGrant,
 ) -> anyhow::Result<i64> {
     let node_id = entry.node_id.0.clone();
     let before = snapshot(db, &node_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("node not found"))?;
-    let scope = super::crud::resolve_node_scope_handler(db, &node_id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("node scope not found"))?;
+    let scope = authorized_node_scope(db, &node_id, grant).await?;
     let previous = latest(db, &node_id).await?;
     let last_version = previous.as_ref().map(row_version).transpose()?.unwrap_or(0);
     let continuous = previous.as_ref().is_some_and(|row| {
         row["payload"]["journal_version"] == JOURNAL_VERSION
+            && row["payload"]["scope"].as_str() == Some(scope.as_str())
             && row["payload"]["after_state"] == before
     });
     let baseline_version = last_version
@@ -301,21 +396,25 @@ pub(crate) async fn commit_mutation(
         "scope": scope, "data": data, "after_state": after, "schema_versions": schema_versions}),
     ));
     let actor = actor.to_string();
+    let (mut scope_statements, scope_bindings) = scope_fence(&scope, Some(&node_id))?;
     commit_operation_atomic_with(db, entry, move |hlc| {
-        let mut sql = statements;
-        // Optimistic backstop for the documented single DB-thread writer.
-        sql.insert(0, "IF array::len((SELECT VALUE node_id FROM node WHERE node_id = $history_node)) != 1 { THROW 'history target disappeared'; }".into());
-        bindings.push(("history_node".into(), json!(node_id)));
+        scope_statements.extend(statements);
+        let mut sql = scope_statements;
+        bindings.extend(scope_bindings);
         for (index, (op, row_version, payload)) in facts.into_iter().enumerate() {
             let name = format!("history_fact_{index}");
             sql.push(format!("CREATE node_log CONTENT ${name}"));
-            bindings.push((name, json!({"log_id": ulid::Ulid::new().to_string(),
+            bindings.push((
+                name,
+                json!({"log_id": ulid::Ulid::new().to_string(),
                 "node_id": node_id, "hlc_timestamp": hlc as i64, "op": op,
                 "source_did": actor, "payload": payload, "row_version": row_version,
-                "created_at": chrono::Utc::now().to_rfc3339()})));
+                "created_at": chrono::Utc::now().to_rfc3339()}),
+            ));
         }
         (sql, bindings)
-    }).await?;
+    })
+    .await?;
     Ok(version)
 }
 
@@ -357,12 +456,13 @@ fn reduce_change(state: &mut Value, op: &str, data: &Value) -> anyhow::Result<()
 }
 
 /// Read a bounded immutable page or reconstruct one exact commit version.
-pub(crate) async fn read(
+pub(crate) async fn read_granted(
     db: &Db,
     node_id: &str,
     after_version: i64,
     limit: usize,
     at_version: Option<i64>,
+    grant: &NodeAccessGrant,
 ) -> anyhow::Result<Value> {
     if after_version < 0 || !(1..=200).contains(&limit) || at_version.is_some_and(|v| v < 1) {
         anyhow::bail!("invalid history bounds");
@@ -370,23 +470,38 @@ pub(crate) async fn read(
     let latest = latest(db, node_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("history unavailable"))?;
+    let current_scope = super::crud::resolve_node_scope_handler(db, node_id).await?;
+    let admitted_scope = if let Some(scope) = current_scope {
+        scope
+    } else {
+        let mut response = db.query("SELECT payload.scope AS scope FROM node_log WHERE node_id = $id AND payload.journal_version = 1 ORDER BY row_version DESC LIMIT 1")
+            .bind(("id",node_id.to_string())).await?.check()?;
+        let rows: Vec<Value> = response.take(0)?;
+        rows.first()
+            .and_then(|row| row["scope"].as_str())
+            .ok_or_else(|| anyhow::anyhow!("not found or not permitted"))?
+            .to_string()
+    };
+    require_grant(grant, &admitted_scope)?;
     let current_version = row_version(&latest)?;
     let mut baseline_response = db.query("SELECT * OMIT id FROM node_log WHERE node_id = $id AND op = 'baseline' AND payload.journal_version = 1 ORDER BY row_version ASC LIMIT 1")
         .bind(("id", node_id.to_string())).await?.check()?;
     let baselines: Vec<Value> = baseline_response.take(0)?;
-    let coverage_start = baselines.first().map(row_version).transpose()?;
+    let baseline = baselines
+        .first()
+        .filter(|row| fact_is_authorized(row, node_id, grant));
+    let coverage_start = baseline.map(row_version).transpose()?;
     let mut metadata = json!({"node_id":node_id, "journal_version": JOURNAL_VERSION,
         "current_version":current_version, "coverage_start_version":coverage_start,
-        "coverage_started_at":baselines.first().and_then(|b|b.get("created_at")),
+        "coverage_started_at":baseline.and_then(|b|b.get("created_at")),
         "supported_operations":["baseline","property_set","property_deleted","full_transform"],
         "order":"per_object_commit_version", "event_time_ordering":false});
     let current_matches = snapshot(db, node_id).await?.is_some_and(|state| {
-        latest["payload"]["journal_version"] == JOURNAL_VERSION
-            && latest["payload"]["after_state"] == state
+        fact_is_authorized(&latest, node_id, grant) && latest["payload"]["after_state"] == state
     });
     metadata["current_state_verified"] = json!(current_matches);
     if let Some(target) = at_version {
-        return replay(db, node_id, target, metadata).await;
+        return replay(db, node_id, target, metadata, grant).await;
     }
     let mut response = db.query("SELECT * OMIT id FROM node_log WHERE node_id = $id AND row_version > $after ORDER BY row_version ASC LIMIT $limit")
         .bind(("id", node_id.to_string())).bind(("after", after_version)).bind(("limit", (limit + 1) as i64)).await?.check()?;
@@ -401,11 +516,27 @@ pub(crate) async fn read(
     } else {
         Value::Null
     };
-    metadata["entries"] = json!(rows);
+    let visible_rows: Vec<Value> = rows
+        .into_iter()
+        .map(|row| {
+            if fact_is_authorized(&row, node_id, grant) {
+                Ok(row)
+            } else {
+                Ok(unavailable_fact(node_id, row_version(&row)?))
+            }
+        })
+        .collect::<anyhow::Result<_>>()?;
+    metadata["entries"] = json!(visible_rows);
     Ok(metadata)
 }
 
-async fn replay(db: &Db, node_id: &str, target: i64, mut metadata: Value) -> anyhow::Result<Value> {
+async fn replay(
+    db: &Db,
+    node_id: &str,
+    target: i64,
+    mut metadata: Value,
+    grant: &NodeAccessGrant,
+) -> anyhow::Result<Value> {
     metadata["at_version"] = json!(target);
     let mut response = db.query("SELECT * OMIT id FROM node_log WHERE node_id = $id AND op = 'baseline' AND payload.journal_version = 1 AND row_version <= $target ORDER BY row_version DESC LIMIT 1")
         .bind(("id", node_id.to_string())).bind(("target", target)).await?.check()?;
@@ -414,6 +545,10 @@ async fn replay(db: &Db, node_id: &str, target: i64, mut metadata: Value) -> any
         metadata["availability"] = json!("before_coverage");
         return Ok(metadata);
     };
+    if !fact_is_authorized(baseline, node_id, grant) {
+        metadata["availability"] = json!("unavailable_scope");
+        return Ok(metadata);
+    }
     let start = row_version(baseline)?;
     let mut state = baseline["payload"]["state"].clone();
     let mut expected = start;
@@ -426,6 +561,10 @@ async fn replay(db: &Db, node_id: &str, target: i64, mut metadata: Value) -> any
             break;
         }
         for row in &rows {
+            if !fact_is_authorized(row, node_id, grant) {
+                metadata["availability"] = json!("unavailable_scope");
+                return Ok(metadata);
+            }
             processed += 1;
             expected = expected
                 .checked_add(1)
@@ -470,4 +609,52 @@ async fn replay(db: &Db, node_id: &str, target: i64, mut metadata: Value) -> any
         metadata["baseline_version"] = json!(start);
     }
     Ok(metadata)
+}
+
+/// Internal local create compatibility seam.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_object(
+    db: &Db,
+    petal_id: &str,
+    name: &str,
+    asset_id: Option<&str>,
+    position: [f32; 3],
+    rotation: Vec<f64>,
+    scale: Vec<f64>,
+    properties: serde_json::Map<String, Value>,
+    actor: &str,
+) -> anyhow::Result<(String, Option<String>)> {
+    create_object_granted(
+        db,
+        petal_id,
+        name,
+        asset_id,
+        position,
+        rotation,
+        scale,
+        properties,
+        actor,
+        &NodeAccessGrant::Local,
+    )
+    .await
+}
+
+/// Internal local read compatibility seam.
+#[cfg(test)]
+pub(crate) async fn read(
+    db: &Db,
+    node_id: &str,
+    after_version: i64,
+    limit: usize,
+    at_version: Option<i64>,
+) -> anyhow::Result<Value> {
+    read_granted(
+        db,
+        node_id,
+        after_version,
+        limit,
+        at_version,
+        &NodeAccessGrant::Local,
+    )
+    .await
 }
