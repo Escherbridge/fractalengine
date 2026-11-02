@@ -702,3 +702,26 @@ Brush Options holds the live sculpt controls, explicit shape arm/cancel controls
 Pen Options reuses the existing PathQueryTracks/PathSelectTrack commands. Its picker filters cached rows against nodes actually present in the active Petal, and shows bounded named anchor selection with one-based indices and meter/world-unit labels. The complete Data > Paths editor remains available; corner editing and stamp controls reuse their existing implementations. Cached editing targets outside the active Petal are refused by this surface.
 
 Point/segment selections show a disabled object-constraint block with a direct explanation of the existing Pen/Data Paths snap authority; the controls do not pretend to change a different editor.
+
+
+## Inspector selection and native editor targets
+
+The Properties tab has a selection empty state instead of exposing retained transform or Portal
+buffers as editable content. Both sections also guard their own entry points: transform editing
+and Apply require a current NodeManager selection plus Editor access; Portal inputs require
+Editor access while Save/Open retain the Portal adapter's existing validation and acknowledgement
+path. Selection guards do not discard drafts or substitute a different object.
+
+Inspector TextEdits declare native minimum sizes of 24 logical points with the shared 20 physical
+pixel backstop. Transform labels move above their axis row in compact panels, and axis fields
+stack individually when three usable targets cannot fit. Width budgeting includes each TextEdit's
+explicit horizontal margins, so a minimum target does not push its neighboring axis off-screen.
+API Client DID uses the same native minimum; Previous/Next/Refresh remain named actions and wrap
+within compact panels. Token metadata has its own row; Revoke and its existing Cancel/Confirm
+sequence occupy a separate wrapping action row, so long labels cannot consume their width or turn
+a destructive button into a tall sliver. Informational labels keep their natural size.
+
+The existing Inspector editing journey covers empty/deselected states, Viewer input and Apply
+rejection, Manager Apply, compact transform and Portal hit rectangles and clips, and real token
+pagination/refresh commands and the cancel/confirm revocation sequence with long token metadata. It observes egui responses and output only, without host input or
+clipboard access.

@@ -184,6 +184,10 @@ fn inspector_tab_body(
 ) {
     match inspector.active_tab() {
         InspectorTab::Properties => {
+            if node_mgr.selected.is_none() {
+                ui.label("Select an object in the hierarchy or viewport to inspect its properties.");
+                return;
+            }
             ui.add_space(4.0);
             inspector_entity_section(ui, node_mgr, ui_mgr);
             ui.add_space(2.0);
@@ -199,7 +203,7 @@ fn inspector_tab_body(
                 ui, inspector, node_mgr, ui_mgr,
             );
             ui.add_space(2.0);
-            inspector_transform_section(ui, inspector, ui_mgr);
+            inspector_transform_section(ui, inspector, node_mgr, ui_mgr, local_role);
             ui.add_space(2.0);
             inspector_url_meta_section(ui, inspector, node_mgr, ui_mgr, local_role);
             ui.add_space(2.0);
@@ -414,9 +418,66 @@ pub(crate) fn sync_inspector_units(
     };
 }
 
-/// One label + 3 axis inputs. `convert(axis, entered) -> Option<world>` maps the
-/// edited display value into the world/scale buffer `dst_bufs` on change (None
-/// leaves that axis' `dst` untouched). Returns true when Enter committed.
+/// Minimum native editor target, including the physical-pixel backstop.
+fn inspector_target_size(ui: &egui::Ui) -> egui::Vec2 {
+    egui::Vec2::splat(24.0_f32.max(20.0 / ui.ctx().pixels_per_point()))
+}
+
+/// Lay out axis inputs with a stacked label when the inspector is compact.
+fn transform_axis_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    mut body: impl FnMut(&mut egui::Ui, &str, usize, f32),
+) {
+    let minimum = inspector_target_size(ui).x;
+    let spacing = ui.spacing().item_spacing.x;
+    let inline_label = ui.available_width() >= 360.0;
+    let axis_space = ui.available_width()
+        - if inline_label {
+            TRANSFORM_LABEL_W + spacing
+        } else {
+            0.0
+        };
+    let stacked_axes = axis_space < 3.0 * (minimum + 10.0) + 5.0 * spacing;
+    if !inline_label {
+        ui.label(egui::RichText::new(label).small().color(theme::TEXT_DIM));
+    }
+    ui.horizontal(|ui| {
+        if inline_label {
+            ui.add_sized(
+                [TRANSFORM_LABEL_W, minimum],
+                egui::Label::new(egui::RichText::new(label).small().color(theme::TEXT_DIM)),
+            );
+        }
+        if stacked_axes {
+            ui.vertical(|ui| {
+                for (index, axis) in ["X", "Y", "Z"].iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.add_sized(
+                            [10.0, minimum],
+                            egui::Label::new(
+                                egui::RichText::new(*axis).small().color(theme::TEXT_AXIS),
+                            ),
+                        );
+                        let input_width = ui.available_width().max(minimum);
+                        body(ui, axis, index, input_width);
+                    });
+                }
+            });
+        } else {
+            let input_width = ((axis_space - 30.0 - spacing * 5.0) / 3.0).max(minimum);
+            for (index, axis) in ["X", "Y", "Z"].iter().enumerate() {
+                ui.add_sized(
+                    [10.0, minimum],
+                    egui::Label::new(egui::RichText::new(*axis).small().color(theme::TEXT_AXIS)),
+                );
+                body(ui, axis, index, input_width);
+            }
+        }
+    });
+}
+
+/// Edit displayed units and retain the converted world-value buffers.
 fn units_axis_row(
     ui: &mut egui::Ui,
     label: &str,
@@ -425,83 +486,69 @@ fn units_axis_row(
     convert: impl Fn(usize, f32) -> Option<f32>,
 ) -> bool {
     let mut commit = false;
-    ui.horizontal(|ui| {
-        let input_w = axis_input_width(ui);
-        ui.add_sized(
-            [TRANSFORM_LABEL_W, 16.0],
-            egui::Label::new(egui::RichText::new(label).small().color(theme::TEXT_DIM)),
-        );
-        for (i, (axis, (src, dst))) in ["X", "Y", "Z"]
-            .iter()
-            .zip(src_bufs.iter_mut().zip(dst_bufs.iter_mut()))
-            .enumerate()
-        {
-            ui.label(egui::RichText::new(*axis).small().color(theme::TEXT_AXIS));
-            let resp = ui
-                .add(
-                    egui::TextEdit::singleline(src)
-                        .desired_width(input_w)
-                        .font(egui::TextStyle::Monospace),
-                )
-                .named(ui, format_args!("{label} {axis}"));
-            if resp.changed() {
-                if let Ok(entered) = src.trim().parse::<f32>() {
-                    if let Some(v) = convert(i, entered) {
-                        *dst = format!("{v:.4}");
-                    }
+    transform_axis_row(ui, label, |ui, axis, index, input_width| {
+        let minimum = inspector_target_size(ui);
+        let src = &mut src_bufs[index];
+        let resp = ui
+            .add(
+                egui::TextEdit::singleline(src)
+                    .desired_width((input_width - 8.0).max(0.0))
+                    .min_size(minimum)
+                    .margin(egui::Margin::symmetric(4, 2))
+                    .font(egui::TextStyle::Monospace),
+            )
+            .named(ui, format_args!("{label} {axis}"));
+        if resp.changed() {
+            if let Ok(entered) = src.trim().parse::<f32>() {
+                if let Some(value) = convert(index, entered) {
+                    dst_bufs[index] = format!("{value:.4}");
                 }
             }
-            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                commit = true;
-            }
+        }
+        if resp.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+            commit = true;
         }
     });
     commit
 }
 
-/// One label + 3 axis inputs edited in place (no conversion). Used for the raw
-/// rotation-degrees and scale-multiplier rows.
+/// Edit rotation degrees or raw scale multipliers.
 fn raw_axis_row(ui: &mut egui::Ui, label: &str, bufs: &mut [String; 3]) -> bool {
     let mut commit = false;
-    ui.horizontal(|ui| {
-        let input_w = axis_input_width(ui);
-        ui.add_sized(
-            [TRANSFORM_LABEL_W, 16.0],
-            egui::Label::new(egui::RichText::new(label).small().color(theme::TEXT_DIM)),
-        );
-        for (axis, buf) in ["X", "Y", "Z"].iter().zip(bufs.iter_mut()) {
-            ui.label(egui::RichText::new(*axis).small().color(theme::TEXT_AXIS));
-            let resp = ui
-                .add(
-                    egui::TextEdit::singleline(buf)
-                        .desired_width(input_w)
-                        .font(egui::TextStyle::Monospace),
-                )
-                .named(ui, format_args!("{label} {axis}"));
-            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                commit = true;
-            }
+    transform_axis_row(ui, label, |ui, axis, index, input_width| {
+        let minimum = inspector_target_size(ui);
+        let resp = ui
+            .add(
+                egui::TextEdit::singleline(&mut bufs[index])
+                    .desired_width((input_width - 8.0).max(0.0))
+                    .min_size(minimum)
+                    .margin(egui::Margin::symmetric(4, 2))
+                    .font(egui::TextStyle::Monospace),
+            )
+            .named(ui, format_args!("{label} {axis}"));
+        if resp.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+            commit = true;
         }
     });
     commit
 }
 
-/// Label column width for the transform rows (wide enough for "Position (m)").
 const TRANSFORM_LABEL_W: f32 = 74.0;
-
-/// Dynamic per-axis input width so the 3 fields always fit the current panel
-/// width (same self-fitting math the transform section used before FR-2).
-fn axis_input_width(ui: &egui::Ui) -> f32 {
-    const AXIS_W: f32 = 10.0; // "X" / "Y" / "Z"
-    let spacing = ui.spacing().item_spacing.x;
-    ((ui.available_width() - TRANSFORM_LABEL_W - spacing * 7.0 - AXIS_W * 3.0) / 3.0).max(32.0)
-}
 
 fn inspector_transform_section(
     ui: &mut egui::Ui,
     inspector: &mut InspectorFormState,
+    node_mgr: &NodeManager,
     ui_mgr: &mut UiManager,
+    local_role: &LocalUserRole,
 ) {
+    if node_mgr.selected.is_none() {
+        ui.label("Select an object to edit its transform.");
+        return;
+    }
+    if !local_role.can_edit() {
+        ui.label("Editor access is required to edit this object's transform.");
+    }
     egui::CollapsingHeader::new(
         egui::RichText::new("Transform")
             .strong()
@@ -509,57 +556,53 @@ fn inspector_transform_section(
     )
     .default_open(true)
     .show(ui, |ui| {
-        ui.add_space(4.0);
-        // Rows edit real-unit display buffers and live-write the converted
-        // world/scale values into inspector.pos / inspector.scale; the Apply
-        // action (actions::transform) still parses those world buffers, so its
-        // path is unchanged (it receives world units / radians). Rotation is
-        // already degrees-side in inspector.rot. See AGENTS.md §inspector-units.
-        let mut commit = false;
-        let ws = inspector.world_scale;
-        let base = inspector.base_extents;
+        ui.add_enabled_ui(local_role.can_edit(), |ui| {
+            ui.add_space(4.0);
+            // Real-unit buffers feed the existing Apply path; see AGENTS.md inspector-units.
+            let mut commit = false;
+            let ws = inspector.world_scale;
+            let base = inspector.base_extents;
 
-        // Position — meters → world into inspector.pos.
-        commit |= units_axis_row(
-            ui,
-            "Position (m)",
-            &mut inspector.pos_m,
-            &mut inspector.pos,
-            |_, m| Some(meters_to_world(m, ws)),
-        );
-
-        // Rotation — degrees, edited in place (Apply converts to radians).
-        commit |= raw_axis_row(ui, "Rotation (\u{00B0})", &mut inspector.rot);
-
-        // Size — real meters → scale multiplier into inspector.scale. Only when
-        // a base AABB is available (else the raw Scale row below is the control).
-        if let Some(base) = base {
+            // Position — meters → world into inspector.pos.
             commit |= units_axis_row(
                 ui,
-                "Size (m)",
-                &mut inspector.size_m,
-                &mut inspector.scale,
-                |i, m| size_to_scale(m, base[i], ws),
+                "Position (m)",
+                &mut inspector.pos_m,
+                &mut inspector.pos,
+                |_, m| Some(meters_to_world(m, ws)),
             );
-        }
 
-        // Scale — raw multiplier, edited in place (fallback when no AABB).
-        commit |= raw_axis_row(ui, "Scale", &mut inspector.scale);
+            // Rotation — degrees, edited in place (Apply converts to radians).
+            commit |= raw_axis_row(ui, "Rotation (\u{00B0})", &mut inspector.rot);
 
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            if ui
-                .button("Apply")
-                .named(ui, "Apply node transform")
-                .clicked()
-            {
-                commit = true;
+            // Size — real meters → scale multiplier into inspector.scale. Only when
+            // a base AABB is available (else the raw Scale row below is the control).
+            if let Some(base) = base {
+                commit |= units_axis_row(
+                    ui,
+                    "Size (m)",
+                    &mut inspector.size_m,
+                    &mut inspector.scale,
+                    |i, m| size_to_scale(m, base[i], ws),
+                );
             }
+
+            // Scale — raw multiplier, edited in place (fallback when no AABB).
+            commit |= raw_axis_row(ui, "Scale", &mut inspector.scale);
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if layout_policy::action(ui, egui::Button::new("Apply"), "Apply node transform")
+                    .clicked()
+                {
+                    commit = true;
+                }
+            });
+            if commit && node_mgr.selected.is_some() && local_role.can_edit() {
+                ui_mgr.push_action(UiAction::ApplyNodeTransform);
+            }
+            ui.add_space(4.0);
         });
-        if commit {
-            ui_mgr.push_action(UiAction::ApplyNodeTransform);
-        }
-        ui.add_space(4.0);
     })
     .header_response
     .observed(ui);
@@ -576,6 +619,10 @@ fn inspector_url_meta_section(
     ui_mgr: &mut UiManager,
     local_role: &LocalUserRole,
 ) {
+    if node_mgr.selected.is_none() {
+        ui.label("Select an object to inspect its Portal URL.");
+        return;
+    }
     egui::CollapsingHeader::new(
         egui::RichText::new("Portal URLs")
             .strong()
@@ -590,12 +637,16 @@ fn inspector_url_meta_section(
                 .small()
                 .color(theme::TEXT_DIM),
         );
-        ui.add(
+        let minimum = inspector_target_size(ui);
+        ui.add_enabled(
+            local_role.can_edit(),
             egui::TextEdit::singleline(&mut inspector.external_url)
+                .min_size(minimum)
                 .hint_text("https://\u{2026}")
                 .desired_width(f32::INFINITY),
         )
-        .named(ui, "Portal URL");
+        .named(ui, "Portal URL")
+        .on_disabled_hover_text("Editor access is required to edit this object's Portal URL.");
 
         if local_role.can_manage() {
             ui.add_space(4.0);
@@ -606,6 +657,7 @@ fn inspector_url_meta_section(
             );
             ui.add(
                 egui::TextEdit::singleline(&mut inspector.config_url)
+                    .min_size(minimum)
                     .hint_text("https://admin.\u{2026}")
                     .desired_width(f32::INFINITY),
             )
@@ -1032,8 +1084,10 @@ fn inspector_api_access_section(
                         .small()
                         .color(theme::TEXT_DIM),
                 );
+                let minimum = inspector_target_size(ui);
                 ui.add_enabled(!pending,
                     egui::TextEdit::singleline(&mut inspector.api_token_client_buf)
+                        .min_size(minimum)
                         .desired_width(ui.available_width())
                         .hint_text("did:key:z... (optional)")
                         .font(egui::TextStyle::Monospace),
@@ -1232,72 +1286,29 @@ fn inspector_api_access_section(
                             .corner_radius(2.0)
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(&tok.max_role)
-                                            .small()
-                                            .strong()
-                                            .color(theme::TEXT_SECTION),
-                                    );
-                                    if let Some(ref lbl) = tok.label {
-                                        crate::panels::widgets::clipped_value(
-                                            ui,
-                                            lbl,
-                                            theme::TEXT_MUTED,
-                                        );
+                                    ui.label(egui::RichText::new(&tok.max_role).small().strong().color(theme::TEXT_SECTION));
+                                    if let Some(ref label) = tok.label {
+                                        crate::panels::widgets::clipped_value(ui, label, theme::TEXT_MUTED);
                                     }
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            // Two-step confirm (destructive-action convention).
-                                            let pending_id =
-                                                egui::Id::new("inspector_token_revoke_pending");
-                                            let pending: Option<String> =
-                                                ui.ctx().data(|d| d.get_temp(pending_id));
-                                            if pending.as_deref() == Some(tok.jti.as_str()) {
-                                                if ui
-                                                    .add(
-                                                        egui::Button::new(
-                                                            egui::RichText::new("Cancel").small(),
-                                                        )
-                                                        .fill(theme::BG_BUTTON),
-                                                    ).named(ui, format_args!("Cancel API token revocation for scope {}", tok.scope))
-                                                    .clicked()
-                                                {
-                                                    ui.ctx().data_mut(|d| {
-                                                        d.remove::<String>(pending_id)
-                                                    });
-                                                }
-                                                if ui
-                                                    .add(
-                                                        egui::Button::new(
-                                                            egui::RichText::new("Confirm Revoke")
-                                                                .small(),
-                                                        )
-                                                        .fill(theme::BG_DANGER),
-                                                    ).named(ui, format_args!("Confirm API token revocation for scope {}", tok.scope))
-                                                    .clicked()
-                                                {
-                                                    revoke_jti =
-                                                        Some((tok.jti.clone(), tok.sub.clone()));
-                                                    ui.ctx().data_mut(|d| {
-                                                        d.remove::<String>(pending_id)
-                                                    });
-                                                }
-                                            } else if ui
-                                                .add(
-                                                    egui::Button::new(
-                                                        egui::RichText::new("Revoke").small(),
-                                                    )
-                                                    .fill(theme::BG_DANGER),
-                                                ).named(ui, format_args!("Revoke API token for scope {}", tok.scope))
-                                                .clicked()
-                                            {
-                                                ui.ctx().data_mut(|d| {
-                                                    d.insert_temp(pending_id, tok.jti.clone())
-                                                });
-                                            }
-                                        },
-                                    );
+                                });
+                                ui.horizontal_wrapped(|ui| {
+                                    let minimum = inspector_target_size(ui);
+                                    let pending_id = egui::Id::new("inspector_token_revoke_pending");
+                                    let pending: Option<String> = ui.ctx().data(|data| data.get_temp(pending_id));
+                                    if pending.as_deref() == Some(tok.jti.as_str()) {
+                                        if ui.add(egui::Button::new("Cancel").fill(theme::BG_BUTTON).min_size(minimum).truncate())
+                                            .named(ui, format_args!("Cancel API token revocation for scope {}", tok.scope)).clicked() {
+                                            ui.ctx().data_mut(|data| { data.remove::<String>(pending_id); });
+                                        }
+                                        if ui.add(egui::Button::new("Confirm Revoke").fill(theme::BG_DANGER).min_size(minimum).truncate())
+                                            .named(ui, format_args!("Confirm API token revocation for scope {}", tok.scope)).clicked() {
+                                            revoke_jti = Some((tok.jti.clone(), tok.sub.clone()));
+                                            ui.ctx().data_mut(|data| { data.remove::<String>(pending_id); });
+                                        }
+                                    } else if ui.add(egui::Button::new("Revoke").fill(theme::BG_DANGER).min_size(minimum).truncate())
+                                        .named(ui, format_args!("Revoke API token for scope {}", tok.scope)).clicked() {
+                                        ui.ctx().data_mut(|data| { data.insert_temp(pending_id, tok.jti.clone()); });
+                                    }
                                 });
                                 ui.label(
                                     egui::RichText::new(token_expiry_label(&tok.expires_at, chrono::Utc::now()))
@@ -1330,9 +1341,10 @@ fn inspector_api_access_section(
                 ui.add_space(4.0);
                 let total_pages = ((inspector.api_tokens_total as u32).max(1) - 1) / API_TOKEN_PAGE_SIZE + 1;
                 let current_page = inspector.api_tokens_page;
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let minimum = inspector_target_size(ui);
                     let can_prev = current_page > 0;
-                    if ui.add_enabled(can_prev, egui::Button::new("\u{25C0}").fill(theme::BG_BUTTON).small()).named(ui, "Previous API token page").clicked() {
+                    if ui.add_enabled(can_prev, egui::Button::new("\u{25C0}").fill(theme::BG_BUTTON).min_size(minimum)).named(ui, "Previous API token page").clicked() {
                         inspector.api_tokens_page = current_page.saturating_sub(1);
                         send_scoped_token_list(db_tx, &inspector.api_token_scope_buf, inspector.api_tokens_page);
                     }
@@ -1342,15 +1354,13 @@ fn inspector_api_access_section(
                             .color(theme::TEXT_DIM),
                     );
                     let can_next = current_page + 1 < total_pages;
-                    if ui.add_enabled(can_next, egui::Button::new("\u{25B6}").fill(theme::BG_BUTTON).small()).named(ui, "Next API token page").clicked() {
+                    if ui.add_enabled(can_next, egui::Button::new("\u{25B6}").fill(theme::BG_BUTTON).min_size(minimum)).named(ui, "Next API token page").clicked() {
                         inspector.api_tokens_page = current_page + 1;
                         send_scoped_token_list(db_tx, &inspector.api_token_scope_buf, inspector.api_tokens_page);
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(egui::Button::new("\u{21BB} Refresh").fill(theme::BG_BUTTON).small()).observed(ui).clicked() {
-                            send_scoped_token_list(db_tx, &inspector.api_token_scope_buf, inspector.api_tokens_page);
-                        }
-                    });
+                    if layout_policy::action(ui, egui::Button::new("\u{21BB} Refresh").fill(theme::BG_BUTTON), "Refresh API token page").clicked() {
+                        send_scoped_token_list(db_tx, &inspector.api_token_scope_buf, inspector.api_tokens_page);
+                    }
                 });
 
                 ui.add_space(4.0);
@@ -3442,6 +3452,442 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
+        // Reuse the render journey for empty, read-only and compact editor states.
+        for width in [120.0, 260.0, 320.0, 640.0] {
+            let target_ctx = egui::Context::default();
+            let mut target_time = 800.0;
+            let mut form = InspectorFormState::default();
+            form.external_url = "https://example.com/retained".into();
+            form.api_endpoint = Some("127.0.0.1:8882".parse().unwrap());
+            form.api_token_scope_buf = "VERSE#target-v#FRACTAL#target-f#PETAL#target-p".into();
+            form.api_tokens_page = 1;
+            form.api_tokens_total = u64::from(API_TOKEN_PAGE_SIZE) * 3;
+            let mut selected = NodeManager::default();
+            let mut feedback = UiManager::default();
+            let viewer = LocalUserRole {
+                role: Some(fe_database::RoleLevel::Viewer),
+            };
+            let (target_tx, target_rx) = crossbeam::channel::unbounded();
+            let target_frame = |section: u8,
+                                role: &LocalUserRole,
+                                nodes: &NodeManager,
+                                form: &mut InspectorFormState,
+                                feedback: &mut UiManager,
+                                events: Vec<egui::Event>,
+                                time: &mut f64| {
+                *time += 0.05;
+                layout_policy::begin_frame(&target_ctx, true);
+                let output = target_ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 1800.0),
+                        )),
+                        time: Some(*time),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        layout_policy::begin_ui_pass(ctx);
+                        egui::CentralPanel::default().show(ctx, |ui| match section {
+                            0 => inspector_tab_body(
+                                ui,
+                                form,
+                                nodes,
+                                &VerseManager::default(),
+                                feedback,
+                                role,
+                                &target_tx,
+                                &NavigationManager::default(),
+                                &AssetDownloadStatus::default(),
+                            ),
+                            1 => inspector_transform_section(ui, form, nodes, feedback, role),
+                            2 => inspector_url_meta_section(ui, form, nodes, feedback, role),
+                            _ => inspector_api_access_section(
+                                ui, form, nodes, &target_tx, role, feedback,
+                            ),
+                        });
+                    },
+                );
+                (layout_policy::observations(&target_ctx), output)
+            };
+            let target_click = |section,
+                                role: &LocalUserRole,
+                                nodes: &NodeManager,
+                                form: &mut InspectorFormState,
+                                feedback: &mut UiManager,
+                                point,
+                                time: &mut f64| {
+                target_frame(
+                    section,
+                    role,
+                    nodes,
+                    form,
+                    feedback,
+                    vec![egui::Event::PointerMoved(point)],
+                    time,
+                );
+                for pressed in [true, false] {
+                    target_frame(
+                        section,
+                        role,
+                        nodes,
+                        form,
+                        feedback,
+                        vec![egui::Event::PointerButton {
+                            pos: point,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        }],
+                        time,
+                    );
+                }
+            };
+            let assert_target = |control: &layout_policy::ControlObservation| {
+                let visible = control.rect.intersect(control.hit).intersect(control.clip);
+                assert!(
+                    visible.width() >= 23.99 && visible.height() >= 23.99,
+                    "actual compact editor hit target is too small at {width}: {:?}",
+                    visible
+                );
+                assert!((visible.width() - control.rect.width()).abs() < 0.5);
+                assert!((visible.height() - control.rect.height()).abs() < 0.5);
+            };
+            for section in [0, 1, 2] {
+                let (empty, output) = target_frame(
+                    section,
+                    &manager,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    vec![],
+                    &mut target_time,
+                );
+                assert!(
+                    empty.controls.is_empty(),
+                    "empty Inspector must not offer stale editors or Apply"
+                );
+                assert!(painted(&output).contains("Select an object"));
+            }
+            assert_eq!(form.external_url, "https://example.com/retained");
+            assert!(feedback.drain_actions().is_empty());
+            selected.select(Entity::from_bits(44), "target-node");
+            for role in [&viewer, &manager] {
+                let (transform, _) = target_frame(
+                    1,
+                    role,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    vec![],
+                    &mut target_time,
+                );
+                assert_eq!(
+                    transform.controls.len(),
+                    11,
+                    "nine axis fields, Apply and native header"
+                );
+                for control in transform.controls.iter().take(10) {
+                    assert_target(control);
+                }
+                for pair in transform
+                    .controls
+                    .iter()
+                    .take(9)
+                    .collect::<Vec<_>>()
+                    .windows(2)
+                {
+                    assert!(!pair[0].rect.intersects(pair[1].rect));
+                }
+                let original = form.pos_m.clone();
+                target_click(
+                    1,
+                    role,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    transform.controls[0].rect.center(),
+                    &mut target_time,
+                );
+                target_frame(
+                    1,
+                    role,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    vec![
+                        egui::Event::Text("7".into()),
+                        egui::Event::Key {
+                            key: egui::Key::Enter,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                    &mut target_time,
+                );
+                if !role.can_edit() {
+                    assert_eq!(
+                        form.pos_m, original,
+                        "read-only transform fields cannot edit retained buffers"
+                    );
+                    assert!(feedback.drain_actions().is_empty());
+                } else {
+                    feedback.drain_actions();
+                }
+                target_click(
+                    1,
+                    role,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    transform.controls[9].rect.center(),
+                    &mut target_time,
+                );
+                if role.can_edit() {
+                    assert!(matches!(
+                        feedback.drain_actions().as_slice(),
+                        [UiAction::ApplyNodeTransform]
+                    ));
+                } else {
+                    assert!(feedback.drain_actions().is_empty());
+                }
+                let (portal, _) = target_frame(
+                    2,
+                    role,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    vec![],
+                    &mut target_time,
+                );
+                assert_target(&portal.controls[0]);
+                if !role.can_edit() {
+                    let original = form.external_url.clone();
+                    target_click(
+                        2,
+                        role,
+                        &selected,
+                        &mut form,
+                        &mut feedback,
+                        portal.controls[0].rect.center(),
+                        &mut target_time,
+                    );
+                    target_frame(
+                        2,
+                        role,
+                        &selected,
+                        &mut form,
+                        &mut feedback,
+                        vec![egui::Event::Text("denied".into())],
+                        &mut target_time,
+                    );
+                    assert_eq!(form.external_url, original);
+                    target_click(
+                        2,
+                        role,
+                        &selected,
+                        &mut form,
+                        &mut feedback,
+                        portal.controls[1].rect.center(),
+                        &mut target_time,
+                    );
+                    assert!(feedback.drain_actions().is_empty());
+                }
+            }
+            // The API tab's padded fields need at least a normal compact Inspector width.
+            if width >= 260.0 {
+                let (api, _) = target_frame(
+                    3,
+                    &manager,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    vec![],
+                    &mut target_time,
+                );
+                assert_target(&api.controls[5]); // Client DID after endpoint/scope/node/role/expiry.
+                let page_actions = &api.controls[api.controls.len() - 4..api.controls.len() - 1];
+                assert_eq!(page_actions.len(), 3);
+                for control in page_actions {
+                    assert_target(control);
+                }
+                target_click(
+                    3,
+                    &manager,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    page_actions[0].rect.center(),
+                    &mut target_time,
+                );
+                assert_eq!(form.api_tokens_page, 0);
+                assert!(matches!(
+                    target_rx.try_recv().unwrap(),
+                    DbCommand::ListApiTokensByScope { offset: 0, .. }
+                ));
+                let (api, _) = target_frame(
+                    3,
+                    &manager,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    vec![],
+                    &mut target_time,
+                );
+                target_click(
+                    3,
+                    &manager,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    api.controls[api.controls.len() - 3].rect.center(),
+                    &mut target_time,
+                );
+                assert_eq!(form.api_tokens_page, 1);
+                assert!(
+                    matches!(target_rx.try_recv().unwrap(), DbCommand::ListApiTokensByScope { offset, .. } if offset == API_TOKEN_PAGE_SIZE)
+                );
+                target_click(
+                    3,
+                    &manager,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    api.controls[api.controls.len() - 2].rect.center(),
+                    &mut target_time,
+                );
+                assert!(
+                    matches!(target_rx.try_recv().unwrap(), DbCommand::ListApiTokensByScope { offset, .. } if offset == API_TOKEN_PAGE_SIZE)
+                );
+            }
+            if width >= 260.0 {
+                form.api_tokens = vec![crate::dialogs::ApiTokenEntry {
+                    jti: "compact-revoke-jti".into(),
+                    scope: form.api_token_scope_buf.clone(),
+                    max_role: "viewer".into(),
+                    label: Some("Long public token label ".repeat(40)),
+                    created_at: "2026-11-02T00:00:00Z".into(),
+                    expires_at: "2026-12-02T00:00:00Z".into(),
+                    revoked: false,
+                    sub: "compact-token-issuer".into(),
+                    client: Some("did:key:zPublicFixture".repeat(20)),
+                }];
+                let (api, _) = target_frame(
+                    3,
+                    &manager,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    vec![],
+                    &mut target_time,
+                );
+                let revoke = &api.controls[api.controls.len() - 5];
+                assert_target(revoke);
+                assert!(
+                    revoke.rect.height() < 40.0,
+                    "Revoke must stay a normal action, rather than a tall narrow word"
+                );
+                target_click(
+                    3,
+                    &manager,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    revoke.rect.center(),
+                    &mut target_time,
+                );
+                assert!(
+                    target_rx.try_recv().is_err(),
+                    "Revoke only arms confirmation"
+                );
+                let (armed, _) = target_frame(
+                    3,
+                    &manager,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    vec![],
+                    &mut target_time,
+                );
+                let cancel = &armed.controls[armed.controls.len() - 6];
+                let confirm = &armed.controls[armed.controls.len() - 5];
+                for control in [cancel, confirm] {
+                    assert_target(control);
+                    assert!(control.rect.height() < 40.0);
+                }
+                assert!(!cancel.rect.intersects(confirm.rect));
+                target_click(
+                    3,
+                    &manager,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    cancel.rect.center(),
+                    &mut target_time,
+                );
+                assert!(
+                    target_rx.try_recv().is_err(),
+                    "Cancel cannot revoke a token"
+                );
+                let (api, _) = target_frame(
+                    3,
+                    &manager,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    vec![],
+                    &mut target_time,
+                );
+                target_click(
+                    3,
+                    &manager,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    api.controls[api.controls.len() - 5].rect.center(),
+                    &mut target_time,
+                );
+                assert!(target_rx.try_recv().is_err());
+                let (armed, _) = target_frame(
+                    3,
+                    &manager,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    vec![],
+                    &mut target_time,
+                );
+                target_click(
+                    3,
+                    &manager,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    armed.controls[armed.controls.len() - 5].rect.center(),
+                    &mut target_time,
+                );
+                assert!(
+                    matches!(target_rx.try_recv().unwrap(), DbCommand::RevokeApiToken { jti, sub }
+                    if jti == "compact-revoke-jti" && sub == "compact-token-issuer")
+                );
+                assert!(target_rx.try_recv().is_err());
+            }
+            selected.deselect();
+            let (empty, _) = target_frame(
+                0,
+                &manager,
+                &selected,
+                &mut form,
+                &mut feedback,
+                vec![],
+                &mut target_time,
+            );
+            assert!(empty.controls.is_empty());
+            assert!(feedback.drain_actions().is_empty());
+        }
         let click_surface = |api,
                              point: egui::Pos2,
                              time: &mut f64,
