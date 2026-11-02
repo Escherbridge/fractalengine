@@ -932,3 +932,11 @@ The GUI installs the finite-job registry once before producer startup. A job lea
 ## QA Portal evidence
 
 `qa_portal` defines four fixed operations and a capacity-four correlated bridge, separate from generic JSON diagnostics so native PNG bytes retain a binary transport. The host owns a single five-second job; request bodies cannot supply scope, URL, script, selector or timeout. Observation fields have a strict serde shape and must match the fixed page identity, title, heading and two links. PNGs are at most eight MiB and 2048 pixels per axis. Native page identity and capture evidence are separate from any judgment of the rendered pixels.
+
+
+## Checked GUI stamp selection
+
+CheckedStampPromotion is a private typed local GUI capture, not a new public mutation grammar.
+PromoteCheckedStamp carries full source properties/version, Petal/scope and world scale through
+actual DB use. CheckedStampPromoted echoes the exact request and authoritative properties only
+after its transaction; stale UI receipts cannot establish a different selection.

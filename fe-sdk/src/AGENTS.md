@@ -230,3 +230,10 @@ and cumulative-distance order. The editor curve facade re-exports it; renderer c
 defaults and database metric bounds share these operations without adding engine dependencies.
 Raw anchors retain relative handles. Database preparation fences the original raw rows and map
 after deriving flattened geometry, so a handle edit cannot reinterpret a previously captured arc.
+
+
+## Shared stamp identity sampling
+
+path_asset::sample_progresses supplies identical bounded instance identities to the UI renderer
+and checked GUI promotion validator, including one-point paths, endpoint fallback, metric spacing
+and the 4096 cap. Path geometry flattening and f32 length accumulation remain shared as well.

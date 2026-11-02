@@ -61,6 +61,49 @@ impl PathAssetDescriptor {
     }
 }
 
+/// Shared sampler progress values for rendered and checked stamp identities.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+pub fn sample_progresses(
+    points: &[[f32; 3]],
+    descriptor: &PathAssetDescriptor,
+    total: f32,
+    world_scale: f32,
+) -> Vec<f32> {
+    const MAX_STAMPS: usize = 4096;
+    if points.is_empty() {
+        return Vec::new();
+    }
+    if points.len() == 1 {
+        return vec![0.0];
+    }
+    let scale = if world_scale.is_finite() && world_scale > 0.0 {
+        world_scale
+    } else {
+        1.0
+    };
+    match descriptor.spacing_mode {
+        SpacingMode::FixedSpacing => {
+            let spacing = descriptor.spacing_value * scale;
+            if !(spacing > 0.0) || !(total > 0.0) {
+                return vec![0.0, 1.0];
+            }
+            let count = ((total / spacing).floor() as usize)
+                .saturating_add(1)
+                .min(MAX_STAMPS);
+            (0..count)
+                .map(|index| ((index as f32 * spacing) / total).clamp(0.0, 1.0))
+                .collect()
+        }
+        SpacingMode::FixedCount => match (descriptor.count as usize).min(MAX_STAMPS) {
+            0 => Vec::new(),
+            1 => vec![0.0],
+            count => (0..count)
+                .map(|index| index as f32 / (count - 1) as f32)
+                .collect(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

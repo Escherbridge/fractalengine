@@ -1688,6 +1688,25 @@ pub fn spawn_db_thread_shared(
                             Err(error) => send_result(&tx,handlers::correlated_failure(&correlation_id,format!("Create object refused: {error}"))),
                         }
                     }
+                    Ok(DbCommand::PromoteCheckedStamp {capture,correlation_id}) => {
+                        let outcome=async {
+                            let prepared=handlers::stamp_promotion::prepare(&db,&capture,&correlation_id,&local_did).await?;
+                            handlers::stamp_promotion::commit(&db,prepared).await
+                        }.await;
+                        match outcome {
+                            Ok((node_id,properties,newly_promoted))=>{
+                                if newly_promoted {
+                                    if let Some(address)=lifecycle_uri(&capture.scope,&node_id) {
+                                        emit_lifecycle(&lifecycle_tx,fe_runtime::messages::LifecycleEvent::NodePromoted {
+                                            address,node_id:node_id.clone(),path_id:capture.path_id.clone(),instance_index:capture.instance_index,
+                                        });
+                                    }
+                                }
+                                send_result(&tx,DbResult::CheckedStampPromoted {capture,node_id,properties,newly_promoted,correlation_id});
+                            }
+                            Err(error)=>send_result(&tx,DbResult::RequestFailed {error:format!("Stamp selection promotion refused: {error:#}"),correlation_id}),
+                        }
+                    }
                     Ok(DbCommand::CommitStampOverrides {edit,correlation_id}) => {
                         let outcome=async {
                             let prepared=handlers::stamp_overrides::prepare(&db,&edit,&correlation_id,&local_did).await?;

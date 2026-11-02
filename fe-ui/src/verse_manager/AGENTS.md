@@ -476,3 +476,11 @@ Its map is bounded by cached nodes and shares the existing rebuild/add/remove in
 Committed snapshots preserve it only for the same actual model identity. Terminal reset through
 VerseManager::default clears this state. No standalone Resource or unbounded request registry
 is added. Ordinary missing/shared/assetless metadata is inline state, not an advisory per selection.
+
+
+## Stamp identity sampler
+
+The renderer uses fe_sdk::path_asset::sample_progresses, shared with checked GUI promotion. This
+keeps rendered index existence identical to the DB validator across metric spacing and degenerate
+paths. Materialization budgets may omit a valid sampler index; GUI selection also requires its
+actual live owned scene entity.

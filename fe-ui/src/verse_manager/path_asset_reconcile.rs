@@ -12,7 +12,9 @@
 //! §path-asset-materialization.
 
 use bevy::prelude::*;
-use fe_sdk::path_asset::{PathAssetDescriptor, SpacingMode};
+use fe_sdk::path_asset::PathAssetDescriptor;
+#[cfg(test)]
+use fe_sdk::path_asset::SpacingMode;
 
 use super::path_asset_materialize::PathAssetCache;
 use crate::gis::PathEditorState;
@@ -141,58 +143,11 @@ fn position_at_progress(
 
 /// Hard cap on instances per stamp so a tiny spacing / huge count can't spawn
 /// millions of scene entities and wedge the renderer. Sampling saturates here.
+#[cfg(test)]
 const MAX_STAMPS: usize = 4096;
 
-/// The arc-length progress values (0..1) at which to place instances for a
-/// descriptor. `FixedSpacing`: 0, spacing, 2·spacing, … clamped to total, where
-/// `spacing_value` is real METERS converted to world units via `world_scale`
-/// (FR-3). `FixedCount`: `count` values evenly across the path (scale-invariant).
-/// Guards degenerate inputs (empty path, non-positive spacing, count 0/1)
-/// without dividing by zero, and saturates at [`MAX_STAMPS`].
-#[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN spacing/total must take the degenerate branch
-fn sample_progresses(
-    points: &[[f32; 3]],
-    descriptor: &PathAssetDescriptor,
-    total: f32,
-    world_scale: f32,
-) -> Vec<f32> {
-    if points.is_empty() {
-        return Vec::new();
-    }
-    if points.len() == 1 {
-        return vec![0.0];
-    }
-    match descriptor.spacing_mode {
-        SpacingMode::FixedSpacing => {
-            // FR-3: spacing_value is in real meters; convert to world units.
-            let spacing = descriptor.spacing_value * sanitize_world_scale(world_scale);
-            if !(spacing > 0.0) || !(total > 0.0) {
-                // No valid spacing → just stamp the endpoints (start + end).
-                return vec![0.0, 1.0];
-            }
-            let n = (total / spacing).floor() as usize; // segments
-            let count = (n + 1).min(MAX_STAMPS); // inclusive of the start point, capped
-            if n + 1 > MAX_STAMPS {
-                bevy::log::warn!(
-                    "stamp count saturated: wanted {} of cap {} — spacing too small for path length (check map scale)",
-                    n + 1,
-                    MAX_STAMPS
-                );
-            }
-            (0..count)
-                .map(|i| ((i as f32 * spacing) / total).clamp(0.0, 1.0))
-                .collect()
-        }
-        SpacingMode::FixedCount => match descriptor.count as usize {
-            0 => Vec::new(),
-            1 => vec![0.0],
-            c => {
-                let c = c.min(MAX_STAMPS);
-                (0..c).map(|i| i as f32 / (c - 1) as f32).collect()
-            }
-        },
-    }
-}
+// Shared sampler also validates checked GUI promotion identities.
+use fe_sdk::path_asset::sample_progresses;
 
 /// Yaw (radians) facing the local path direction at `progress`, for
 /// `Quat::from_rotation_y`. Uses the tangent from `progress` toward a point

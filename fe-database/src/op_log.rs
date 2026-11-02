@@ -1776,7 +1776,48 @@ mod tests {
         crate::handlers::entity_property::set_entity_property_as(&db,&undo_node,"gpx_points",&stamp_points,"did:qa").await.unwrap();
         let stamp_descriptor=serde_json::json!({"asset_path":"blob://fixture.glb","spacing_mode":"fixed_count","spacing_value":0.0,"count":3,"tangent_align":true});
         crate::handlers::entity_property::set_entity_property_as(&db,&undo_node,"path_asset",&stamp_descriptor,"did:qa").await.unwrap();
-        let (stamp_node,_)=crud::promote_instance_handler(&db,"tree-other-petal",&undo_node,1).await.unwrap();
+        let promotion_source=crate::handlers::entity_property::get_entity_properties_handler(&db,&undo_node).await.unwrap();
+        let promotion=fe_runtime::messages::CheckedStampPromotion {
+            path_id:undo_node.clone(),petal_id:"tree-other-petal".into(),scope:plugin_scope.clone(),instance_index:1,
+            path_version:None,before_properties:promotion_source.clone(),world_scale:1.0,
+        };
+        let promotion_node=format!("{undo_node}#inst-1");
+        for race in ["role","path","descriptor","points","collision","schema","journal"] {
+            let prepared=crate::handlers::stamp_promotion::prepare(&db,&promotion,&format!("qa-promotion-{race}"),"did:qa").await.unwrap();
+            match race {
+                "role"=>{db.query("UPDATE verse SET created_by='did:other' WHERE verse_id='tree-10'").await.unwrap().check().unwrap();}
+                "path"=>{db.query("UPDATE node SET petal_id='tree-petal' WHERE node_id=$id").bind(("id",undo_node.clone())).await.unwrap().check().unwrap();}
+                "descriptor"=>{db.query("UPDATE node SET properties.path_asset.count=2 WHERE node_id=$id").bind(("id",undo_node.clone())).await.unwrap().check().unwrap();}
+                "points"=>{db.query("UPDATE node SET properties.gpx_points=$points WHERE node_id=$id").bind(("id",undo_node.clone())).bind(("points",serde_json::json!([[8.0,2.0,9.0,29.5],[1.0,0.0,2.0,17.25]]))).await.unwrap().check().unwrap();}
+                "collision"=>{db.query("CREATE node CONTENT {node_id:$id,petal_id:'tree-other-petal',properties:{node_kind:'ordinary'}}").bind(("id",promotion_node.clone())).await.unwrap().check().unwrap();}
+                "schema"=>{db.query("CREATE field_def CONTENT {field_def_id:'qa-promotion-schema',scope:$scope,entity_type:'node',key:'node_kind',enforced_schema:{version:1,schema:{type:'string'}}}").bind(("scope",plugin_scope.clone())).await.unwrap().check().unwrap();}
+                _=>{db.query("DEFINE EVENT fail_checked_promotion ON TABLE node WHEN $after.properties.node_kind='stamp' THEN { THROW 'induced promotion row failure' }").await.unwrap().check().unwrap();}
+            }
+            let before_ops=op_log_count(&db).await;
+            crate::handlers::stamp_promotion::commit(&db,prepared).await.expect_err("checked GUI promotion race must roll back");
+            assert_eq!(op_log_count(&db).await,before_ops);
+            let rows:Vec<serde_json::Value>=db.query("SELECT node_id FROM node WHERE node_id=$id").bind(("id",promotion_node.clone())).await.unwrap().take(0).unwrap();
+            assert_eq!(rows.len(),usize::from(race=="collision"),"refusal cannot leak a promoted node");
+            match race {
+                "role"=>{db.query("UPDATE verse SET created_by='did:qa' WHERE verse_id='tree-10'").await.unwrap().check().unwrap();}
+                "path"=>{db.query("UPDATE node SET petal_id='tree-other-petal' WHERE node_id=$id").bind(("id",undo_node.clone())).await.unwrap().check().unwrap();}
+                "descriptor"|"points"=>{db.query("UPDATE node SET properties=$properties WHERE node_id=$id").bind(("id",undo_node.clone())).bind(("properties",promotion_source.clone())).await.unwrap().check().unwrap();}
+                "collision"=>{db.query("DELETE node WHERE node_id=$id").bind(("id",promotion_node.clone())).await.unwrap().check().unwrap();}
+                "schema"=>{db.query("DELETE field_def WHERE field_def_id='qa-promotion-schema'").await.unwrap().check().unwrap();}
+                _=>{db.query("REMOVE EVENT fail_checked_promotion ON TABLE node").await.unwrap().check().unwrap();}
+            }
+        }
+        let prepared=crate::handlers::stamp_promotion::prepare(&db,&promotion,"qa-promotion-success","did:qa").await.unwrap();
+        let (stamp_node,promoted_properties,newly)=crate::handlers::stamp_promotion::commit(&db,prepared).await.unwrap();
+        assert!(newly && promoted_properties["owning_path_id"]==undo_node);
+        let count_after_promotion=op_log_count(&db).await;
+        let existing=crate::handlers::stamp_promotion::prepare(&db,&promotion,"qa-promotion-existing","did:qa").await.unwrap();
+        let (same,properties,newly)=crate::handlers::stamp_promotion::commit(&db,existing).await.unwrap();
+        assert!(!newly && same==stamp_node && properties==promoted_properties);
+        assert_eq!(op_log_count(&db).await,count_after_promotion,"idempotent address checks do not mint operations");
+        let mut out_of_range=promotion.clone();out_of_range.instance_index=3;
+        crate::handlers::stamp_promotion::prepare(&db,&out_of_range,"qa-promotion-out-of-range","did:qa").await.expect_err("index must exist in the identical shared sampler");
+        crate::handlers::stamp_promotion::prepare(&db,&promotion,"qa-promotion-viewer","did:tree-viewer").await.expect_err("Viewer inspection cannot promote");
         let stamp_before=crate::handlers::entity_property::get_entity_properties_handler(&db,&stamp_node).await.unwrap();
         let stamp_input=fe_runtime::messages::StampOverrideEdit {
             node_id:stamp_node.clone(),path_id:undo_node.clone(),instance_index:1,scope:plugin_scope.clone(),

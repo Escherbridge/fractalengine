@@ -223,3 +223,14 @@ The authentication singleton is recognized as private retained metadata, outside
 The join handler excludes invite_string from its instrument fields. Invites carry
 authority; source identity and the ordinary outcome provide diagnostics without
 retaining the submitted credential in parent-span formatting or log exports.
+
+
+## Checked stamp promotion
+
+The private GUI PromoteCheckedStamp adapter captures full source properties, path version, full
+ancestry and metric scale. It uses the same flattened geometry and progress sampler as rendering
+to validate the chosen instance. Prepared permission, path/Petal snapshots, path history, target
+absence or exact existing stamp identity and enforced creation schemas are checked in the same
+transaction as the ordinary NodePromoted operation and row. Existing stamps return confirmed full
+properties through a guarded read transaction without creating another operation. The legacy public
+PromoteInstance caller-current-index contract remains separate.

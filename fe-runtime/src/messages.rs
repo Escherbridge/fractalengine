@@ -42,6 +42,18 @@ pub enum NodeMutation {
     },
 }
 
+/// Local GUI source capture for a checked first stamp address.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckedStampPromotion {
+    pub path_id: String,
+    pub petal_id: String,
+    pub scope: String,
+    pub instance_index: u32,
+    pub path_version: Option<i64>,
+    pub before_properties: serde_json::Value,
+    pub world_scale: f32,
+}
+
 /// Local editor snapshot for one atomic, path-locked stamp override save.
 #[derive(Debug, Clone)]
 pub struct StampOverrideEdit {
@@ -486,6 +498,10 @@ impl CallerAuth {
 #[derive(Debug, Clone)]
 pub enum DbCommand {
     /// Commit scale, rotation and slide together under current stamp/route authority.
+    PromoteCheckedStamp {
+        capture: CheckedStampPromotion,
+        correlation_id: String,
+    },
     CommitStampOverrides { edit: StampOverrideEdit, correlation_id: String },
     /// Local editor mutation with atomic expected-state and version checks.
     CommitCheckedNodeMutation {
@@ -1499,6 +1515,13 @@ pub enum DbResult {
         petal_id: String,
     },
     /// Result of `PromoteInstance` (FR-5) — a stamp instance became a full node.
+    CheckedStampPromoted {
+        capture: CheckedStampPromotion,
+        node_id: String,
+        properties: serde_json::Value,
+        newly_promoted: bool,
+        correlation_id: String,
+    },
     NodePromoted {
         node_id: String,
         petal_id: String,

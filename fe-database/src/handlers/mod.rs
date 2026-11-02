@@ -3,6 +3,7 @@
 
 pub(crate) mod checked_mutation;
 pub(crate) mod stamp_overrides;
+pub(crate) mod stamp_promotion;
 pub mod admin;
 pub mod api_token;
 pub mod asset_backfill;
