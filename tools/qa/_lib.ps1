@@ -156,6 +156,70 @@ function Resolve-QaChildPath {
     return $full
 }
 
+# Resolve only a timestamp or absolute run directory and validate its recorded provenance.
+function Get-QaResumeContext {
+    param([Parameter(Mandatory)][string]$Run)
+    if (-not [IO.Path]::IsPathRooted($Run) -and $Run -notmatch '^\d{8}-\d{6}-\d{3}$') {
+        throw 'Run must be an absolute owned directory or a yyyyMMdd-HHmmss-fff timestamp'
+    }
+    $candidate = if ([IO.Path]::IsPathRooted($Run)) { $Run } else { Join-Path $QaRunRoot $Run }
+    $directory = Resolve-QaChildPath -Path $candidate -Root $QaRunRoot
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) { throw 'Owned run does not exist' }
+    if ([IO.Path]::GetDirectoryName($directory.TrimEnd('\')) -ne $QaRunRoot) { throw 'Run must be a direct child of the QA run root' }
+    Assert-QaStorageTree -Directory $directory
+    foreach ($relative in @('data\fractalengine.db','identity\node_keypair.key','identity\secrets.json','fractalengine\assets')) {
+        $persisted = Join-Path $directory $relative
+        if (-not (Test-Path -LiteralPath $persisted)) { throw "Required persisted storage is missing: $relative" }
+        $item = Get-Item -LiteralPath $persisted -Force
+        if ($item.PSIsContainer) {
+            if (-not (Get-ChildItem -LiteralPath $persisted -Force | Select-Object -First 1)) { throw "Required persisted storage is empty: $relative" }
+        } elseif ($item.Length -eq 0) { throw "Required persisted storage is empty: $relative" }
+    }
+    $manifestPath = Join-Path $directory 'current.json'
+    $current = Get-Content -LiteralPath $manifestPath -Raw -ErrorAction Stop | ConvertFrom-Json
+    if ($current -isnot [pscustomobject] -or $current.process_identity -isnot [pscustomobject] -or
+        $current.stage_manifest -isnot [pscustomobject] -or $current.qa_options -isnot [pscustomobject] -or $current.fixture -notin @('basic','terrain','none')) {
+        throw 'Run manifest lacks supported restart provenance'
+    }
+    if (-not [string]::Equals([string]$current.run_dir, $directory, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$current.tokens_path, (Join-Path $directory 'tokens.json'), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Run manifest storage paths do not match the owned directory'
+    }
+    if ($current.bootstrap_verse_id -isnot [string] -or $current.bootstrap_verse_id -cnotmatch '^[0-9A-HJKMNP-TV-Z]{26}$') {
+        throw 'Run lacks a valid bootstrap verse ID; restart must not create a replacement scope'
+    }
+    foreach ($key in @('synthetic_input','a11y_timing','a11y_continuous')) {
+        if ($current.qa_options.$key -isnot [bool]) { throw "Run lacks a boolean QA option: $key" }
+    }
+    $oldStage = Resolve-QaChildPath -Path $current.stage -Root $QaStageRoot
+    $actualStage = Get-QaStageManifest -StageDir $oldStage
+    foreach ($key in @('source_commit','source_fingerprint','exe_sha256')) {
+        if (-not $actualStage.$key -or $actualStage.$key -cne $current.stage_manifest.$key) { throw "Recorded stage provenance mismatch: $key" }
+    }
+    if (-not [string]::Equals([string]$current.process_identity.exe_path, (Join-Path $oldStage 'fractalengine.exe'), [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$current.process_identity.start_ticks -notmatch '^\d+$' -or [int]$current.process_identity.pid -le 0 -or
+        [int]$current.pid -ne [int]$current.process_identity.pid) { throw 'Recorded root identity does not match its stage' }
+    $origin = $null
+    if ($current.api_base -isnot [string] -or -not [Uri]::TryCreate($current.api_base, [UriKind]::Absolute, [ref]$origin) -or
+        $origin.Scheme -ne 'http' -or $origin.Host -ne '127.0.0.1' -or $origin.UserInfo -or
+        $origin.AbsolutePath -ne '/' -or $origin.Query -or $origin.Fragment) { throw 'Recorded API origin is not the supported loopback origin' }
+    return @{ directory = $directory; current = $current; port = $origin.Port }
+}
+
+# Reject redirected persisted storage before any stop or new start.
+function Assert-QaStorageTree {
+    param([Parameter(Mandatory)][string]$Directory)
+    $pending = New-Object System.Collections.Generic.Stack[string]
+    $pending.Push($Directory)
+    while ($pending.Count -gt 0) {
+        $path = $pending.Pop()
+        foreach ($item in Get-ChildItem -LiteralPath $path -Force -ErrorAction Stop) {
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "QA storage contains a redirected path: $($item.FullName)" }
+            if ($item.PSIsContainer) { $pending.Push($item.FullName) }
+        }
+    }
+}
+
 function Get-QaProcessIdentity {
     param([Parameter(Mandatory)][int]$ProcessId)
     $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue

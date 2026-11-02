@@ -1,4 +1,4 @@
-# tools/qa/AGENTS.md — staged, isolated QA launcher
+﻿# tools/qa/AGENTS.md — staged, isolated QA launcher
 
 Windows-native PowerShell 5.1 scripts that stage a build, launch it in an
 isolated run dir with a deterministic fixture, and tear it down — so an
@@ -411,3 +411,81 @@ Each affine step independently declares `calibration_schema_versions` per anchor
 The selected fact must match its requested node/committed version/scope and replayed after-state, and its schema
 revision must equal the declared expectation before provenance bytes or derived readings are written. Integer
 presence or copying whatever revision the server returned is insufficient provenance evidence.
+
+## Same-root restart and persistence proof
+
+`restart.ps1 -Run <absolute-directory|yyyyMMdd-HHmmss-fff>` delegates to the
+existing `launch.ps1 -ResumeRun` lifecycle. The directory must already exist
+as a direct child of this checkout's `.qa/run`; relative `.qa/run/...` paths,
+redirected storage and mismatched manifest paths are refused. Restart checks
+recorded stage commit/fingerprint/executable SHA against its stage, binds the
+recorded root identity to that executable, and validates loopback origin and
+QA options before stopping anything. Missing/empty DB, durable identity, secret-store
+or copied-asset storage is refused so a lost dataset cannot masquerade as a restart. An exclusive per-run lock serializes
+restarts. No unrecorded PID, process-name pattern or other run is stopped.
+
+The default stage is the previous stage, not the latest directory. `-Stage`
+accepts a staged directory name when intentionally moving to a newer binary.
+The selected stage must match current build inputs unless `-AllowStaleStage`
+is explicit; both the mismatch and allowance are recorded. Updated binaries
+can change storage behavior, so the same-stage restart is the cleanest
+persistence proof. The previous start's provenance is kept in the new start's
+`previous-start.json`; no token contents or run-local secrets are archived.
+
+Restart issues cleanup only for the exact recorded root/descendant identities
+using the shared aggregated cleanup helper. If the root is already gone, the
+recorded descendants are still checked/cleaned and a warning identifies the
+post-snapshot child coverage limit. A cleanup failure aborts startup. A PID
+reused with a different executable or creation time is left untouched.
+
+A resumed run never invokes the fixture generator, REST fixture mutations,
+asset copying or fresh-root creation. Data, identity, configuration, WebView
+profile, run-local secrets, installed terrain, copied assets and fixture IDs
+stay in the same directory. `-Fixture` is refused with `-ResumeRun`. The old
+port and input/timing options are inherited unless explicitly overridden.
+All nine existing app environment keys are saved/restored around Start-Process
+on success or failure. A missing bootstrap verse is a failure, not a reason to
+create another scope. Startup readiness itself reads only; the application
+may perform its ordinary startup migrations.
+
+Only `tokens.json` is removed after prior cleanup to require a fresh startup
+token emission at the same confined path. Startup waits for HTTP, a fresh
+Owner token for the prior bootstrap verse, an authenticated bounded read of
+that verse's fractals, and a still-live exact new process before handoff.
+Each resumed start writes new stdout/stderr under `starts/<timestamp-guid>/`
+and records process identity, stage provenance and ready/failed status there.
+`current.json` is replaced from a pending file only after successful handoff
+preparation. A failed new start rolls back only that start's captured identity
+tree and preserves the persisted dataset and previous-start record. Inspect
+any failed/stopping attempt and its cleanup outcome before another operation;
+there is no automatic retry of startup or mutations. Failures before process
+creation may leave a `stopping_previous` attempt for explicit diagnosis.
+
+From the main checkout, the operator sequence for both committed history and
+measurement durability is:
+
+```powershell
+$ownedRun = 'C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\.qa\run\<actual-timestamp>'
+$before = Get-Content -LiteralPath (Join-Path $ownedRun 'current.json') -Raw | ConvertFrom-Json
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/qa/restart.ps1 -Run $ownedRun
+if ($LASTEXITCODE -ne 0) { throw 'Restart failed; inspect this start before continuing' }
+$after = Get-Content -LiteralPath (Join-Path $ownedRun 'current.json') -Raw | ConvertFrom-Json
+if ($after.run_dir -ne $before.run_dir -or $after.tokens_path -ne $before.tokens_path) { throw 'Root changed' }
+if ($after.process_identity.start_ticks -eq $before.process_identity.start_ticks) { throw 'No new process lifetime' }
+if (($after.fixture_detail | ConvertTo-Json -Depth 12 -Compress) -cne ($before.fixture_detail | ConvertTo-Json -Depth 12 -Compress)) { throw 'Fixture IDs changed' }
+$after | Select-Object run_dir, process_identity, api_base, stage, stage_manifest, stage_matches_source, restart
+```
+
+Use the same current-pass rich-data context and original command options,
+adding `--verify-state <absolute-current-pass-context.json>` to `rich_data.py`
+and keeping `--run $ownedRun`. That read-only driver hook checks both earlier
+committed object snapshots and measurement rows/aggregates/windows/history;
+it never recreates the data or retries a mutation. Pair the driver artifacts
+with actual restart stdout, the two process lifetimes and start manifests.
+A changed JSON identity or successful startup alone proves neither durability
+nor that a restarted binary matches current source.
+
+No PowerShell smoke-test file exists in this harness. This seam is statically
+parser-checked; actual same-root startup, inherited/overridden port, preserved
+fixture/config/identity/WebView state, failure rollback and the dual durability
+readback remain required live checks by the main owner after review.

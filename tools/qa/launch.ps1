@@ -7,6 +7,7 @@
 [CmdletBinding()]
 param(
     [string]$Stage,
+    [ValidateNotNullOrEmpty()][string]$ResumeRun,
     [ValidateSet("basic", "terrain", "none")]
     [string]$Fixture = "basic",
     [ValidateRange(1,65535)][int]$ApiPort = 8765,
@@ -20,14 +21,37 @@ param(
 . "$PSScriptRoot\_fixture.ps1"
 $QaApiBase = "http://127.0.0.1:$ApiPort"
 $ErrorActionPreference = 'Stop'
-if ($A11yTiming -and -not $DisableSyntheticInput) { throw 'A11yTiming requires DisableSyntheticInput for a normal OS comparison' }
-if ($A11yContinuous -and -not $A11yTiming) { throw 'A11yContinuous requires A11yTiming' }
 
+$resume = $null
+$runLock = $null
+$attemptPath = $null
+try {
+if ($ResumeRun) {
+    $resume = Get-QaResumeContext -Run $ResumeRun
+    $run = $resume.directory
+    $runLock = [IO.File]::Open((Join-Path $run 'restart.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    $resume = Get-QaResumeContext -Run $run
+    if ($PSBoundParameters.ContainsKey('Fixture')) { throw 'ResumeRun preserves the existing fixture; do not supply Fixture' }
+    $Fixture = $resume.current.fixture
+    if (-not $PSBoundParameters.ContainsKey('ApiPort')) { $ApiPort = $resume.port }
+    foreach ($option in @(@('DisableSyntheticInput','synthetic_input'), @('A11yTiming','a11y_timing'), @('A11yContinuous','a11y_continuous'))) {
+        if (-not $PSBoundParameters.ContainsKey($option[0])) {
+            $value = [bool]$resume.current.qa_options.($option[1])
+            if ($option[0] -eq 'DisableSyntheticInput') { $value = -not $value }
+            Set-Variable -Name $option[0] -Value ([switch]$value)
+        }
+    }
+}
+if ($A11yTiming -and -not $DisableSyntheticInput) { throw 'A11yTiming requires DisableSyntheticInput' }
+if ($A11yContinuous -and -not $A11yTiming) { throw 'A11yContinuous requires A11yTiming' }
+$QaApiBase = "http://127.0.0.1:$ApiPort"
 $swTotal = [System.Diagnostics.Stopwatch]::StartNew()
 
 # --- Resolve the stage dir -------------------------------------------------
 if ($Stage) {
     $stageDir = Join-Path $QaStageRoot $Stage
+} elseif ($resume) {
+    $stageDir = $resume.current.stage
 } else {
     $stageDir = Get-QaLatestStageDir
 }
@@ -46,32 +70,52 @@ $stageManifest = Get-QaStageManifest -StageDir $stageDir
 $stageMatchesSource = $stageManifest.source_fingerprint -eq (Get-QaSourceFingerprint)
 if (-not $stageMatchesSource -and -not $AllowStaleStage) { throw 'Stage build inputs differ from current source; rebuild or explicitly use -AllowStaleStage and report limited provenance' }
 if (-not $stageMatchesSource) { Write-Warning 'Using a stale QA stage; results do not verify current source' }
+if ($resume) {
+    $attemptId = (Get-Date).ToString('yyyyMMdd-HHmmss-fff') + '-' + [Guid]::NewGuid().ToString('N')
+    $attemptDir = Resolve-QaChildPath -Path (Join-Path $run "starts\$attemptId") -Root $QaRunRoot
+    New-Item -ItemType Directory -Path $attemptDir -Force | Out-Null
+    $attemptPath = Join-Path $attemptDir 'start.json'
+    $prior = $resume.current
+    $previousStart = @{}
+    foreach ($key in @('pid','api_base','stage','started_at','process_identity','descendant_identities','descendants_captured_at','stage_manifest','stage_matches_source','stale_stage_allowed','qa_options','restart')) {
+        $previousStart[$key] = $prior.$key
+    }
+    $previousStart | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath (Join-Path $attemptDir 'previous-start.json') -Encoding utf8
+    @{ status = 'stopping_previous'; run_dir = $run; stage = $stageDir; stage_manifest = $stageManifest; stage_matches_source = $stageMatchesSource; stale_stage_allowed = [bool]$AllowStaleStage } |
+        ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $attemptPath -Encoding utf8
+    $owned = Get-QaOwnedProcess -Identity $prior.process_identity
+    if ($owned) { $owned.Dispose() }
+    else { Write-Warning 'Root already exited; only recorded descendants can be checked, not children born after its last snapshot' }
+    Stop-QaOwnedProcessTree -Identity $prior.process_identity -RecordedDescendants @($prior.descendant_identities)
+}
 $portProbe = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, $ApiPort)
 try { $portProbe.Start() } finally { $portProbe.Stop() }
 
 # --- Isolated run dir --------------------------------------------------------
-$ts = (Get-Date).ToString("yyyyMMdd-HHmmss-fff")
-$run = Resolve-QaChildPath -Path (Join-Path $QaRunRoot $ts) -Root $QaRunRoot
-New-Item -ItemType Directory -Force -Path $run | Out-Null
-New-Item -ItemType Directory -Force -Path (Join-Path $run "data") | Out-Null
-New-Item -ItemType Directory -Force -Path (Join-Path $run "fractalengine") | Out-Null
+if (-not $resume) {
+    $ts = (Get-Date).ToString("yyyyMMdd-HHmmss-fff")
+    $run = Resolve-QaChildPath -Path (Join-Path $QaRunRoot $ts) -Root $QaRunRoot
+    New-Item -ItemType Directory -Force -Path $run | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $run "data") | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $run "fractalengine") | Out-Null
 
-# Copy the fixture assets into the run-local workspace layout.
-$assetsLink = Join-Path $run "fractalengine\assets"
-$assetsSrc = Join-Path $QaRepoRoot "fractalengine\assets"
-New-Item -ItemType Directory -Path $assetsLink | Out-Null
-foreach ($name in @('branding', 'samples')) {
-    $source = Join-Path $assetsSrc $name
-    if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination $assetsLink -Recurse }
+    # Copy the fixture assets into the run-local workspace layout.
+    $assetsLink = Join-Path $run "fractalengine\assets"
+    $assetsSrc = Join-Path $QaRepoRoot "fractalengine\assets"
+    New-Item -ItemType Directory -Path $assetsLink | Out-Null
+    foreach ($name in @('branding', 'samples')) {
+        $source = Join-Path $assetsSrc $name
+        if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination $assetsLink -Recurse }
+    }
+    Get-ChildItem -LiteralPath $assetsSrc -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $assetsLink }
+
 }
-Get-ChildItem -LiteralPath $assetsSrc -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $assetsLink }
-
-$tokensPath = Join-Path $run "tokens.json"
+$tokensPath = Resolve-QaChildPath -Path (Join-Path $run "tokens.json") -Root $QaRunRoot
 $hexonDir = Join-Path $run "hexons"
 
 # Generate and install the requested offline fixture before the GUI opens its store.
 $terrainDescriptor = $null
-if ($Fixture -ne 'none') {
+if (-not $resume -and $Fixture -ne 'none') {
     $terrainBuilder = Join-Path $stageDir 'build_qa_terrain.exe'
     if (-not (Test-Path -LiteralPath $terrainBuilder)) { throw 'Requested fixture requires a staged build_qa_terrain.exe' }
     $builderOutput = & $terrainBuilder $run
@@ -87,6 +131,17 @@ if ($Fixture -ne 'none') {
 }
 
 # --- Launch -------------------------------------------------------------
+if ($resume) {
+    Assert-QaStorageTree -Directory $run
+    if (Test-Path -LiteralPath $tokensPath) { Remove-Item -LiteralPath $tokensPath -Force }
+}
+$stdoutPath = Join-Path $run 'stdout.log'
+$stderrPath = Join-Path $run 'stderr.log'
+if ($resume) {
+    $stdoutPath = Join-Path $attemptDir 'stdout.log'
+    $stderrPath = Join-Path $attemptDir 'stderr.log'
+}
+
 $appEnvironment = @{
     FE_API_DEV_TOKEN_OUT = $tokensPath
     FE_QA_STORAGE_ROOT = $run
@@ -103,14 +158,15 @@ $swHealth = [System.Diagnostics.Stopwatch]::StartNew()
 $proc = $null
 $identity = $null
 $handedOff = $false
+$recordedDescendants = @()
 try {
 $priorEnvironment = @{}
 foreach ($key in $appEnvironment.Keys) { $priorEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process') }
 try {
     foreach ($key in $appEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $appEnvironment[$key], 'Process') }
     $proc = Start-Process -FilePath $exe -WorkingDirectory $run -PassThru `
-        -RedirectStandardOutput (Join-Path $run "stdout.log") `
-        -RedirectStandardError (Join-Path $run "stderr.log") `
+        -RedirectStandardOutput $stdoutPath `
+        -RedirectStandardError $stderrPath `
         -WindowStyle Hidden
 } finally {
     foreach ($key in $appEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $priorEnvironment[$key], 'Process') }
@@ -119,6 +175,10 @@ $null = $proc.Handle
 $identity = Get-QaProcessIdentity -ProcessId $proc.Id
 if (-not $identity) { throw 'QA process exited before its identity could be recorded' }
 $startedAt = (Get-Date).ToString("o")
+if ($attemptPath) {
+    @{ status = 'starting'; run_dir = $run; process_identity = $identity; started_at = $startedAt; stage = $stageDir; stage_manifest = $stageManifest; stage_matches_source = $stageMatchesSource; stale_stage_allowed = [bool]$AllowStaleStage } |
+        ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $attemptPath -Encoding utf8
+}
 Write-QaLog "Launched pid=$($proc.Id) run=$run"
 
 # Throw into the enclosing lifecycle cleanup on every startup failure.
@@ -141,16 +201,24 @@ Write-QaLog "API healthy after ${healthMs}ms"
 # created_by from the node's own identity, never the caller's claims, which
 # is what makes this bootstrap safe to chain).
 $swToken = [System.Diagnostics.Stopwatch]::StartNew()
-$bootstrap = Wait-QaOwnerToken -TokensPath $tokensPath -TimeoutSec 60
+$bootstrapVerse = if ($resume) { $resume.current.bootstrap_verse_id } else { $null }
+$bootstrap = Wait-QaOwnerToken -TokensPath $tokensPath -VerseId $bootstrapVerse -TimeoutSec 60
 if (-not $bootstrap) {
     Fail "No owner token appeared in $tokensPath within 60s"
 }
 $tokenMs = $swToken.ElapsedMilliseconds
 Write-QaLog "Bootstrap owner token ready (verse $($bootstrap.VerseId)) after ${tokenMs}ms"
 
-$fixtureInfo = $null
+$liveProcess = Get-QaOwnedProcess -Identity $identity
+if (-not $liveProcess) { Fail 'New QA process exited before authenticated readiness' }
+try {
+    $ready = Invoke-WebRequest -Uri "$QaApiBase/api/v1/verses/$($bootstrap.VerseId)/fractals" -UseBasicParsing -MaximumRedirection 0 -TimeoutSec 10 -Headers @{ Authorization = "Bearer $($bootstrap.Token)" }
+    $readyBody = $ready.Content | ConvertFrom-Json
+    if ($readyBody.ok -ne $true) { Fail 'New API did not confirm authenticated readiness' }
+} finally { $liveProcess.Dispose() }
+$fixtureInfo = if ($resume) { $resume.current.fixture_detail } else { $null }
 $swFixture = [System.Diagnostics.Stopwatch]::StartNew()
-if ($Fixture -ne 'none') {
+if (-not $resume -and $Fixture -ne 'none') {
     $fixtureInfo = New-QaSceneFixture -Name $Fixture -BootstrapToken $bootstrap.Token -TokensPath $tokensPath -Run $run -TerrainDescriptor $terrainDescriptor
     Write-QaLog "Fixture '$Fixture' verified: 3 values sum to 60; terrain petals=$($fixtureInfo.terrain_petal_ids -join ',')"
 }
@@ -165,6 +233,8 @@ $current = @{
     tokens_path = $tokensPath
     stage = $stageDir
     fixture = $Fixture
+    stdout_path = $stdoutPath
+    stderr_path = $stderrPath
     qa_options = @{ synthetic_input = -not [bool]$DisableSyntheticInput; a11y_timing = [bool]$A11yTiming; a11y_continuous = [bool]$A11yContinuous }
     started_at = $startedAt
     process_identity = $identity
@@ -172,21 +242,41 @@ $current = @{
     descendants_captured_at = [DateTime]::UtcNow.ToString('o')
     stage_manifest = $stageManifest
     stage_matches_source = $stageMatchesSource
+    stale_stage_allowed = [bool]$AllowStaleStage
     run_dir = $run
     bootstrap_verse_id = $bootstrap.VerseId
     fixture_detail = $fixtureInfo
     timings_ms = @{ health = $healthMs; bootstrap_token = $tokenMs; fixture_seed = $fixtureMs }
 }
-$current | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $run "current.json") -Encoding utf8
+if ($resume) {
+    $current.restart = @{ previous_start = (Join-Path $attemptDir 'previous-start.json'); attempt = $attemptPath; preserved_root = $run; reseeded = $false; port_changed = ($ApiPort -ne $resume.port); stale_stage_allowed = [bool]$AllowStaleStage }
+    @{ status = 'ready'; run_dir = $run; process_identity = $identity; started_at = $startedAt; stage = $stageDir; stage_manifest = $stageManifest; stage_matches_source = $stageMatchesSource; restart = $current.restart } |
+        ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $attemptPath -Encoding utf8
+}
+$current | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $run 'current.pending.json') -Encoding utf8
+Move-Item -LiteralPath (Join-Path $run 'current.pending.json') -Destination (Join-Path $run 'current.json') -Force
 $run | Set-Content (Join-Path $QaRepoRoot ".qa\current") -Encoding ascii -NoNewline
 $handedOff = $true
 
 Write-QaLog "Launch complete in $([math]::Round($swTotal.Elapsed.TotalSeconds, 1))s total. run=$run pid=$($proc.Id)"
 Write-Output $run
 } finally {
-    if (-not $handedOff -and $proc) {
-        if ($identity) { Stop-QaOwnedProcessTree -Identity $identity }
-        elseif (-not $proc.HasExited) { $proc.Kill(); $null = $proc.WaitForExit(10000) }
+    try {
+        if (-not $handedOff -and $attemptPath) {
+            @{ status = 'failed'; run_dir = $run; process_identity = $identity; stage = $stageDir; stage_manifest = $stageManifest; stage_matches_source = $stageMatchesSource; stale_stage_allowed = [bool]$AllowStaleStage } |
+                ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $attemptPath -Encoding utf8
+        }
+    } finally {
+        try {
+            if (-not $handedOff -and $proc) {
+                if ($identity) { Stop-QaOwnedProcessTree -Identity $identity -RecordedDescendants @($recordedDescendants) }
+                elseif (-not $proc.HasExited) {
+                    $proc.Kill()
+                    if (-not $proc.WaitForExit(15000)) { throw 'New start did not exit within rollback deadline' }
+                }
+            }
+        } finally { if ($proc) { $proc.Dispose() } }
     }
-    if ($proc) { $proc.Dispose() }
 }
+
+} finally { if ($runLock) { $runLock.Dispose() } }
