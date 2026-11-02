@@ -937,7 +937,7 @@ pub fn spawn_sync_thread_with_transport(
                                     SyncCommand::OpenVerseReplica { verse_id, namespace_id, namespace_secret, bootstrap_peers } =>
                                         (verse_id, namespace_id, namespace_secret, bootstrap_peers, None),
                                     SyncCommand::JoinVerseReplica { request, reply } => {
-                                        match prepare_join_replica(&replica_transport, &request, &local_did).await {
+                                        match prepare_join_replica(&replicas, &replica_transport, &request, &local_did).await {
                                             Ok(peers) => (request.invitation.manifest().verse_id.clone(),
                                                 request.invitation.manifest().namespace_id.clone(), None, peers,
                                                 Some((request.request_id, request.deadline, request.invitation.expires_at(), reply))),
@@ -1707,10 +1707,14 @@ async fn reassert_own_rows(
 struct ReplicaOpenReport { native_ready: bool }
 
 async fn prepare_join_replica(
+    replicas: &HashMap<String, Box<dyn VerseReplicator>>,
     transport: &ReplicaTransport,
     request: &crate::join_ticket::JoinReplicaRequest,
     local_did: &str,
 ) -> Result<Vec<String>, &'static str> {
+    if replicas.contains_key(&request.invitation.manifest().verse_id) {
+        return Err("This Verse replica is already open; leave it before accepting another invitation");
+    }
     if request.deadline <= std::time::Instant::now() { return Err("Invitation connection request expired"); }
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| "Invitation clock is unavailable")?.as_secs();
@@ -7320,11 +7324,12 @@ mod tests {
             request_id: "cold-read-import".into(), invitation: verified,
             deadline: std::time::Instant::now()+std::time::Duration::from_secs(10),
         };
-        let peers = prepare_join_replica(&ReplicaTransport::Iroh(holder_c.clone()), &request, &recipient_did)
+        let mut current_replicas: HashMap<String,Box<dyn VerseReplicator>> = HashMap::new();
+        let peers = prepare_join_replica(&current_replicas, &ReplicaTransport::Iroh(holder_c.clone()), &request, &recipient_did)
             .await.expect("cold recipient imports its actual read capability without a namespace write secret");
         let peers: Vec<iroh::EndpointAddr> = peers.iter().map(|peer| serde_json::from_str(peer).unwrap()).collect();
         let fresh = IrohDocsReplicator::new(
-            verse_id.clone(), ns_id.clone(), String::new(), recipient_did, holder_c,
+            verse_id.clone(), ns_id.clone(), String::new(), recipient_did.clone(), holder_c.clone(),
         );
         fresh
             .open_document()
@@ -7362,6 +7367,15 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "actual issuer synchronization must complete");
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
+
+        current_replicas.insert(verse_id.clone(),Box::new(fresh));
+        let mut repeat = request.clone();
+        repeat.request_id="join-into-already-current-verse".into();
+        repeat.deadline=std::time::Instant::now()+std::time::Duration::from_secs(10);
+        assert_eq!(prepare_join_replica(&current_replicas,&ReplicaTransport::Iroh(holder_c),&repeat,&recipient_did).await.unwrap_err(),"This Verse replica is already open; leave it before accepting another invitation");
+        let current=current_replicas.get(&verse_id).expect("The refusal preserves the same navigation replica");
+        assert!(current.joined_peer_ready(&ns_id,&local_did_b),"Cancel/timeout after this definite refusal cannot lose the existing native pipeline");
+        assert!(current.snapshot().await.unwrap().iter().any(|row|row.table=="verse" && row.record_id==verse_id && row.data==manifest_bytes),"The real cold-imported document and live pump remain usable without an admission replay");
 
 
         // 4) OWN-DOC DURABLE READ-BACK: shut the creator down cleanly, then

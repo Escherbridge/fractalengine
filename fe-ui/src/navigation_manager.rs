@@ -498,6 +498,16 @@ mod tests {
             sync_rx.try_recv().is_err(),
             "Accepted cleanup/open commands are not replayed"
         );
+        let mut same_current = crate::invitations::JoinState::default();
+        assert!(
+            !same_current.check_target_available("C", app.world().resource::<NavigationManager>())
+        );
+        same_current.cancel();
+        same_current.cleanup(Some(
+            app.world().resource::<fe_sync::SyncCommandSenderRes>(),
+        ));
+        app.update();
+        assert!(sync_rx.try_recv().is_err() && same_current.error.is_some(),"Joining the already recorded current Verse is refused before admission/native replacement; Cancel leaves its navigation pipeline alone");
         let mut canceled = crate::invitations::JoinState::default();
         let canceled_lease = JoinedReplicaLease {
             request_id: "canceled-B-generation".into(),

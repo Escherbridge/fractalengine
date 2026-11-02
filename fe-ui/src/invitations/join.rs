@@ -95,6 +95,13 @@ pub(crate) struct ReadyJoin {
 }
 
 impl JoinState {
+    pub(crate) fn check_target_available(&mut self, verse: &str, nav: &NavigationManager) -> bool {
+        if nav.active_verse_id.as_deref() == Some(verse) {
+            self.fail("This Verse is already active. Leave it before accepting another addressed invitation to it; nothing was submitted.");
+            return false;
+        }
+        true
+    }
     pub(crate) fn retain_admission_navigation(&mut self, nav: &NavigationManager) {
         self.admission_navigation_revision = Some(nav.intent_revision());
     }
@@ -277,6 +284,9 @@ impl JoinState {
                 self.fail("This addressed invitation is invalid, expired, or intended for another identity. Older links cannot bootstrap a fresh join; ask the Owner for a new addressed invitation.");
                 return None;
             };
+            if !self.check_target_available(&invitation.manifest().verse_id, nav) {
+                return None;
+            }
             if self.submitted_nonces.contains(invitation.nonce()) {
                 self.fail("This invitation was already submitted in this session. Inspect stored Access or obtain a new invitation instead of replaying an unconfirmed request.");
                 return None;

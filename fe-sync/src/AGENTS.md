@@ -1982,3 +1982,9 @@ match that lease, as must the local-only CloseJoinedReplica command. Ordinary Op
 invalidates it. Exact conditional close enters the ordinary close branch, including gossip,
 provider and blob-access cleanup. A stale dialog or superseded handoff cannot close a newer
 pipeline with the same Verse ID, and no new transport or wire protocol is introduced.
+
+
+Join preparation refuses a target already present in the replica map before importing a
+capability or replacing its pipeline. The GUI advises leaving that Verse before accepting the
+new invitation. A refused request installs no native generation lease and cannot make its later
+conditional cleanup close the existing navigation pipeline; ordinary Open behavior is unchanged.

@@ -96,3 +96,14 @@ when the current cursor temporarily selects that Verse. Actual ordinary adoption
 Sync's prior lease, making a late conditional close harmless to the independent pipeline. The
 existing lifecycle journey now also covers canceled B, transient cursor B, then independently
 owned C before lifecycle observes B, under a full bounded queue.
+
+
+## Joining the currently open Verse
+
+A new addressed Join cannot replace an existing navigation pipeline. The UI refuses its current
+Verse before admission, nonce consumption or native submission, with explicit leave-then-accept
+recovery. Sync independently refuses any already-open target before capability import/open.
+This also covers a navigation-open racing the UI preflight: admission metadata may have been
+accepted, but the existing native pipeline remains owned and no new join lease is installed.
+A following canceled-request conditional close cannot match that independent pipeline. Existing
+GUI lifecycle and actual cold-read native journeys cover the refusal and preserved live document.
