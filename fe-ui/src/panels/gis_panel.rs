@@ -195,7 +195,7 @@ fn render_annotations_tab(
     world_scale: f64,
 ) {
     let state = &gis_state.annotations;
-    let auto_load = !state.loaded && state.request_id.is_none() && state.error.is_none();
+    let auto_load = !state.load_started && state.request_id.is_none() && state.error.is_none();
     let refresh = ui
         .horizontal(|ui| {
             ui.strong("Annotated Nodes");
@@ -206,7 +206,7 @@ fn render_annotations_tab(
         .inner;
     if auto_load || refresh {
         // Reserve before dispatch so another frame cannot queue the same load.
-        gis_state.annotations.loaded = true;
+        gis_state.annotations.load_started = true;
         ui_mgr.push_action(UiAction::GisRefreshAnnotations {
             petal_id: petal_id.to_owned(),
         });

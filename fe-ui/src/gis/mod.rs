@@ -57,6 +57,7 @@ pub struct AnnotationResults {
     pub rows: Vec<GisResultRow>,
     pub request_id: Option<String>,
     pub loaded: bool,
+    pub load_started: bool,
     pub error: Option<String>,
 }
 

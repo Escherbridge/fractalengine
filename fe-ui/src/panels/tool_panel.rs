@@ -481,6 +481,8 @@ pub(crate) fn render_path_asset_section(
         );
     }
 
+    render_pending_stamp_save(ui, state, ui_mgr);
+
     // stamped_asset_nodes_20260725 (T2): per-stamp editor — select an individual
     // stamp (promotes on first select, FR-2), then scale/rotate/slide it (FR-3).
     if let Some(track_id) = target_track {
@@ -495,6 +497,19 @@ pub(crate) fn render_path_asset_section(
 pub(crate) fn yaw_to_quat(yaw_rad: f32) -> [f32; 4] {
     let half = yaw_rad * 0.5;
     [0.0, half.sin(), 0.0, half.cos()]
+}
+
+fn render_pending_stamp_save(ui: &mut egui::Ui, state: &ToolPanelState, ui_mgr: &mut UiManager) {
+    if state.stamp_save_pending {
+        ui.label("Saving stamp changes; confirmation is pending.");
+        if ui
+            .button("Check save result")
+            .named(ui, "Check pending stamp save receipt")
+            .clicked()
+        {
+            ui_mgr.push_action(UiAction::CheckStampSave);
+        }
+    }
 }
 
 /// Edits one viewport-selected stamp and sends one atomic save intent.
@@ -545,16 +560,6 @@ fn render_stamp_editor(
             }
         });
     }).response.on_disabled_hover_text("Editor access is required; wait for any current save receipt");
-    if state.stamp_save_pending {
-        ui.label("Saving stamp changes; confirmation is pending.");
-        if ui
-            .button("Check save result")
-            .named(ui, "Check pending stamp save receipt")
-            .clicked()
-        {
-            ui_mgr.push_action(UiAction::CheckStampSave);
-        }
-    }
 }
 
 /// Resolve an edited track's display name from the Paths-tab track list,

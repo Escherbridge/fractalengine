@@ -58,6 +58,7 @@ pub(crate) fn refresh_annotations(
     gis_state.sync_petal(Some(&petal_id));
     let request_id = crate::actions::query::next_ui_query_id("annotations");
     let state = &mut gis_state.annotations;
+    state.load_started = true;
     state.request_id = Some(request_id.clone());
     state.error = None;
     let (sql, vars) = gis::annotation_query(&petal_id);
