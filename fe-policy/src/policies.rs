@@ -126,7 +126,7 @@ impl Policy for RoleFloorPolicy {
 }
 
 /// Action-agnostic API-token scope gate: allows iff the subject is an
-/// `ApiToken` one of whose scopes contains `resource` (keyword-boundary prefix).
+/// `ApiToken` one of whose scopes contains `resource` (parsed hierarchy).
 pub struct TokenScopePolicy;
 
 impl Policy for TokenScopePolicy {
@@ -305,22 +305,51 @@ mod tests {
     #[test]
     fn token_scope_table() {
         let policy = TokenScopePolicy;
-        let v1 = token("VERSE#v1", RoleLevel::Editor);
-        // (subject, resource, allowed)
+        // (granted scope, resource, allowed)
         let table = [
-            (&v1, "VERSE#v1-FRACTAL#f-PETAL#p", true),
-            (&v1, "VERSE#v1", true),
-            (&v1, "VERSE#v2-FRACTAL#f-PETAL#p", false),
-            (&v1, "VERSE#v10-FRACTAL#f", false),
-            (&v1, "*", false),
+            ("VERSE#v1", "VERSE#v1-FRACTAL#f-PETAL#p", true),
+            ("VERSE#v1", "VERSE#v1", true),
+            ("VERSE#v1", "VERSE#v2-FRACTAL#f-PETAL#p", false),
+            ("VERSE#v1", "VERSE#v10-FRACTAL#f", false),
+            ("VERSE#v1", "VERSE#v1-other-FRACTAL#f", false),
+            (
+                "VERSE#v1-FRACTAL#f",
+                "VERSE#v1-FRACTAL#f-other-PETAL#p",
+                false,
+            ),
+            (
+                "VERSE#v1-FRACTAL#f-PETAL#p",
+                "VERSE#v1-FRACTAL#f-PETAL#p-other",
+                false,
+            ),
+            (
+                "VERSE#verse-abc-FRACTAL#fractal-xyz",
+                "VERSE#verse-abc-FRACTAL#fractal-xyz-PETAL#petal-123",
+                true,
+            ),
+            ("VERSE#v1", "VERSE#v1-FRACTAL#", false),
+            ("VERSE#v1", "VERSE#v1-FRACTAL#f-PETAL#", false),
+            ("VERSE#v1", "VERSE#v1-FRACTAL#f-PETAL#p-NODE#n", false),
+            ("VERSE#v1", "VERSE#v1-FRACTAL#f-FRACTAL#other", false),
+            ("VERSE#v1-PETAL#p", "VERSE#v1-PETAL#p-FRACTAL#f", false),
+            ("crate:opaque", "crate:opaque", true),
+            ("crate:opaque", "crate:opaque-child", false),
+            ("*", "*", true),
+            ("*", "VERSE#v1", false),
+            ("*", "*-child", false),
+            ("VERSE#v1", "*", false),
         ];
-        for (subject, resource, allowed) in table {
+        for (granted, resource, allowed) in table {
             assert_eq!(
                 policy
-                    .evaluate(subject, &Action::Write, &Scope::new(resource))
+                    .evaluate(
+                        &token(granted, RoleLevel::Editor),
+                        &Action::Write,
+                        &Scope::new(resource)
+                    )
                     .is_allow(),
                 allowed,
-                "{resource}"
+                "{granted} -> {resource}"
             );
         }
         let petal_token = token("VERSE#v1-FRACTAL#f-PETAL#p", RoleLevel::Owner);

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use crate::role_level::RoleLevel;
+use crate::scope::parse_scope;
 
 /// Unified subject: wraps the existing did:key/JWT, API-token, and plugin-capability identities.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,14 +107,27 @@ impl Scope {
     }
 }
 
-/// True if `token_scope` grants access to `resource_scope` — higher scopes
-/// cover everything beneath them, only at a `-` keyword boundary (so
-/// `VERSE#v1` never covers `VERSE#v10`). See AGENTS.md §types.
+/// Exact identity or parsed hierarchy containment; see AGENTS.md §types.
 pub fn scope_contains(token_scope: &str, resource_scope: &str) -> bool {
     if token_scope == resource_scope {
         return true;
     }
-    resource_scope.starts_with(token_scope) && resource_scope[token_scope.len()..].starts_with('-')
+    let (Ok(granted), Ok(resource)) = (parse_scope(token_scope), parse_scope(resource_scope))
+    else {
+        return false;
+    };
+    // Scope markers cannot be embedded in IDs on a descendant grant.
+    if [&granted, &resource].into_iter().any(|parts| {
+        std::iter::once(parts.verse_id.as_str())
+            .chain(parts.fractal_id.as_deref())
+            .chain(parts.petal_id.as_deref())
+            .any(|id| id.contains('#'))
+    }) {
+        return false;
+    }
+    granted.verse_id == resource.verse_id
+        && (granted.fractal_id.is_none() || granted.fractal_id == resource.fractal_id)
+        && (granted.petal_id.is_none() || granted.petal_id == resource.petal_id)
 }
 
 impl fmt::Display for Scope {

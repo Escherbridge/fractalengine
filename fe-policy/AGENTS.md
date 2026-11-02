@@ -61,8 +61,8 @@ denial and allows, so the gate ships before enforcement flips.
 - `TokenScopePolicy` — action-agnostic API-token scope gate: allows iff the
   subject is `AuthContext::ApiToken` and one of its `scopes` contains the
   resource (`scope_contains`). Did/Anonymous/Capability subjects deny with
-  "token-scope: subject carries no token scope"; `Scope::global()` (`*`) is
-  never covered (deny-by-default). **Production caller:**
+  "token-scope: subject carries no token scope"; `Scope::global()` (`*`) has
+  exact identity only and never expands to resource scopes. **Production caller:**
   `fe-api/src/auth.rs::require_scope` (and `require_role_and_scope`), the
   gate under every REST/WS/MCP scope check; proven by
   `fe-api/tests/api_integration.rs::foreign_verse_token_is_denied_by_token_scope_policy`.
@@ -74,10 +74,24 @@ denial and allows, so the gate ships before enforcement flips.
   `crate_id` by a different signed `publisher_did` denied) and `uninstall_as`
   on the `"global"` published record; reached from fe-api `publish_crate`.
 
-`scope_contains` (keyword-boundary prefix containment, `VERSE#v1` never
-covers `VERSE#v10`) lives in `types.rs` with `Scope::contains`; fe-database
-re-exports it (`fe_database::scope_contains`) so existing call sites are
-unchanged.
+`scope_contains` lives in `types.rs` with `Scope::contains`; fe-database
+re-exports it (`fe_database::scope_contains`). Exact string identity remains
+valid for all scopes, including opaque canonical-log keys and `*`; `*` has no
+wildcard expansion. Unequal scopes must parse through the shared hierarchy
+parser, and every ID present in the granted scope must equal the corresponding
+resource ID. Hyphens belong to IDs: `VERSE#v1` cannot cover `VERSE#v1-other`,
+and the same rule applies to Fractal and Petal IDs. Petals have no descendants
+in this scope grammar; nodes authorize at their containing Petal.
+
+The parser historically accepts arbitrary ID text, including misplaced or
+repeated scope markers. Containment rejects `#` inside parsed ID components
+for unequal scopes, so malformed or unknown segments cannot acquire descendant
+authority. This leaves parser/addressing compatibility and exact identity
+unchanged. Existing scope, `TokenScopePolicy`, and API authorization tables
+exercise hyphenated foreign IDs, legitimate descendants, malformed segments,
+opaque identity, and the non-expanding global sentinel. Production consumers
+are API token gates, vision verse checks, and schema-response ancestry checks;
+canonical-log's structured `Scope` has its own containment implementation.
 
 Deferred (not this slice): causal-DAG membership ops (blocked on per-op
 signing, decisions §D5-1).

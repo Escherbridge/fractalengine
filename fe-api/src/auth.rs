@@ -162,6 +162,40 @@ mod tests {
                 forbidden,
             ),
             (
+                "hyphenated foreign verse denied",
+                require_scope(&claims("VERSE#v1", "owner"), "VERSE#v1-other-FRACTAL#f1"),
+                forbidden,
+            ),
+            (
+                "hyphenated foreign fractal denied",
+                require_scope(
+                    &claims("VERSE#v1-FRACTAL#f1", "owner"),
+                    "VERSE#v1-FRACTAL#f1-other-PETAL#p1",
+                ),
+                forbidden,
+            ),
+            (
+                "hyphenated foreign petal denied",
+                require_scope(
+                    &claims(V1_PETAL, "owner"),
+                    "VERSE#v1-FRACTAL#f1-PETAL#p1-other",
+                ),
+                forbidden,
+            ),
+            (
+                "hyphenated ancestor covers its descendant",
+                require_scope(
+                    &claims("VERSE#verse-abc-FRACTAL#fractal-xyz", "viewer"),
+                    "VERSE#verse-abc-FRACTAL#fractal-xyz-PETAL#petal-123",
+                ),
+                Ok(()),
+            ),
+            (
+                "malformed descendant denied",
+                require_scope(&claims("VERSE#v1", "owner"), "VERSE#v1-FRACTAL#f1-PETAL#"),
+                forbidden,
+            ),
+            (
                 "in-scope token covers its petal",
                 require_scope(&claims("VERSE#v1", "viewer"), V1_PETAL),
                 Ok(()),

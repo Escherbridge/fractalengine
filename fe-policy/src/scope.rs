@@ -367,8 +367,16 @@ mod tests {
 
     #[test]
     fn exact_scope_match() {
-        let s = build_scope("v1", Some("f1"), None);
-        assert!(scope_contains(&s, &s));
+        for scope in [
+            "VERSE#v1-FRACTAL#f1",
+            "VERSE#verse-abc-FRACTAL#fractal-xyz-PETAL#petal-123",
+            "crate:opaque",
+            "*",
+            "VERSE#v1-PETAL#interim-RESOURCE#opaque",
+            "",
+        ] {
+            assert!(scope_contains(scope, scope), "{scope}");
+        }
     }
 
     #[test]
@@ -380,7 +388,52 @@ mod tests {
 
     #[test]
     fn partial_id_not_a_boundary() {
-        // VERSE#v1 should NOT contain VERSE#v11
-        assert!(!scope_contains("VERSE#v1", "VERSE#v11"));
+        let cases = [
+            ("VERSE#v1", "VERSE#v11", false),
+            ("VERSE#v1", "VERSE#v1-other", false),
+            ("VERSE#v1", "VERSE#v1-other-FRACTAL#f", false),
+            ("VERSE#v1-FRACTAL#f", "VERSE#v1-FRACTAL#f-other", false),
+            (
+                "VERSE#v1-FRACTAL#f",
+                "VERSE#v1-FRACTAL#f-other-PETAL#p",
+                false,
+            ),
+            (
+                "VERSE#v1-FRACTAL#f-PETAL#p",
+                "VERSE#v1-FRACTAL#f-PETAL#p-other",
+                false,
+            ),
+            (
+                "VERSE#verse-abc",
+                "VERSE#verse-abc-FRACTAL#fractal-xyz-PETAL#petal-123",
+                true,
+            ),
+            (
+                "VERSE#verse-abc-FRACTAL#fractal-xyz",
+                "VERSE#verse-abc-FRACTAL#fractal-xyz-PETAL#petal-123",
+                true,
+            ),
+            ("VERSE#v1", "VERSE#v1-FRACTAL#", false),
+            ("VERSE#v1", "VERSE#v1-FRACTAL#f-PETAL#", false),
+            ("VERSE#v1", "VERSE#v1-PETAL#p", false),
+            ("VERSE#v1", "VERSE#v1-NODE#n", false),
+            ("VERSE#v1", "VERSE#v1-FRACTAL#f-FRACTAL#other", false),
+            ("VERSE#v1", "VERSE#v1-FRACTAL#f-PETAL#p-PETAL#other", false),
+            ("VERSE#v1", "VERSE#v1-FRACTAL#f-PETAL#p-NODE#n", false),
+            ("VERSE#v1", "VERSE#v1-FRACTAL#f-RESOURCE#r", false),
+            ("VERSE#v1-PETAL#p", "VERSE#v1-PETAL#p-FRACTAL#f", false),
+            ("crate:opaque", "crate:opaque-child", false),
+            ("*", "VERSE#v1", false),
+            ("*", "*-child", false),
+            ("VERSE#v1", "*", false),
+            ("", "-child", false),
+        ];
+        for (granted, resource, expected) in cases {
+            assert_eq!(
+                scope_contains(granted, resource),
+                expected,
+                "{granted:?} -> {resource:?}"
+            );
+        }
     }
 }
