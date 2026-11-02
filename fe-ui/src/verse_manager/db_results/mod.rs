@@ -413,7 +413,7 @@ pub(super) fn apply_db_results(
                 roles::handle_role_revoked(peer_did, scope, &mut ui_mgr)
             }
             DbResult::ScopedInviteGenerated { invite_link } => {
-                roles::handle_scoped_invite_generated(invite_link, &mut ui_mgr)
+                roles::handle_scoped_invite_generated(invite_link, &mut ui_mgr,caches.time.elapsed_secs_f64())
             }
             DbResult::LocalRoleResolved { scope, role } => {
                 roles::handle_local_role_resolved(scope, role, &nav, &mut local_role)

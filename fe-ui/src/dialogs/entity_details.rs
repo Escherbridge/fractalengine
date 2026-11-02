@@ -124,19 +124,11 @@ pub(crate) fn dialog(
         access: super::entity_access::EntityAccessState::default(),
         invite_role_buf: "viewer".into(),
         invite_expiry_buf: 24,
-        generated_invite_link: None,
         pending_delete: false,
         pending_claim_ownership: false,
-        api_tokens: vec![],
-        api_tokens_loading: false,
-        api_token_scope_buf: String::new(),
         api_token_role_buf: "viewer".into(),
         api_token_expiry_buf: 24,
         api_token_client_buf: String::new(),
-        generated_api_token: None,
-        generated_api_token_client: None,
-        scoped_api_tokens: vec![],
-        scoped_tokens_loading: false,
     }
 }
 

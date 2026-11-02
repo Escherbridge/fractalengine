@@ -394,14 +394,10 @@ pub(crate) fn token_controls(
 pub(crate) fn select_tab(
     tab: &mut SettingsTab,
     state: &mut EntityAccessState,
-    legacy_token: &mut Option<String>,
-    legacy_client: &mut Option<String>,
     next: SettingsTab,
 ) {
     if *tab == SettingsTab::ApiAccess && next != SettingsTab::ApiAccess {
         state.leave_api();
-        *legacy_token = None;
-        *legacy_client = None;
     }
     *tab = next;
     if matches!(next, SettingsTab::Access | SettingsTab::ApiAccess) {

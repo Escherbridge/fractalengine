@@ -5,10 +5,10 @@ use fe_runtime::app::{DbCommandSender, RevocationBroadcastSender};
 use fe_runtime::messages::{ApiTokenInfo, DbCommand, DbResult};
 
 use crate::actions::UiManager;
-use crate::dialogs::{ActiveDialog, ApiTokenEntry};
+use crate::dialogs::ApiTokenEntry;
 use crate::plugin::InspectorFormState;
 
-/// Route a minted token only to its owning Inspector request or legacy dialog.
+/// Route only an exact Inspector mint; legacy secrets have no UI owner.
 pub(super) fn handle_api_token_minted(
     result: &DbResult,
     selected: Option<&str>,
@@ -54,19 +54,7 @@ pub(super) fn handle_api_token_minted(
         }
         return true;
     }
-    if let ActiveDialog::EntitySettings {
-        generated_api_token,
-        generated_api_token_client,
-        api_token_scope_buf,
-        ..
-    } = &mut ui_mgr.active_dialog
-    {
-        if api_token_scope_buf == scope {
-            *generated_api_token = Some(token.clone());
-            *generated_api_token_client = Some(client.clone());
-            refresh_inspector_tokens(db_sender, inspector);
-        }
-    }
+    // EntitySettings uses EntityAccessFinished; never retain an unowned credential.
     false
 }
 
@@ -121,15 +109,6 @@ pub(super) fn handle_api_tokens_listed(
     inspector: &mut InspectorFormState,
 ) {
     let entries = tokens_to_entries(tokens);
-    if let ActiveDialog::EntitySettings {
-        ref mut api_tokens,
-        ref mut api_tokens_loading,
-        ..
-    } = ui_mgr.active_dialog
-    {
-        *api_tokens = entries.clone();
-        *api_tokens_loading = false;
-    }
     inspector.api_tokens = entries;
     inspector.api_tokens_total = total;
     inspector.api_tokens_loading = false;
@@ -143,15 +122,6 @@ pub(super) fn handle_scoped_api_tokens_listed(
     inspector: &mut InspectorFormState,
 ) {
     let entries = tokens_to_entries(tokens);
-    if let ActiveDialog::EntitySettings {
-        ref mut scoped_api_tokens,
-        ref mut scoped_tokens_loading,
-        ..
-    } = ui_mgr.active_dialog
-    {
-        *scoped_api_tokens = entries.clone();
-        *scoped_tokens_loading = false;
-    }
     inspector.api_tokens = entries;
     inspector.api_tokens_total = total;
     inspector.api_tokens_loading = false;
@@ -257,12 +227,10 @@ mod tests {
         );
         if let ActiveDialog::EntitySettings {
             active_tab,
-            api_token_scope_buf,
             ..
         } = &mut dialog
         {
             *active_tab = SettingsTab::ApiAccess;
-            *api_token_scope_buf = "VERSE#v1".into();
         }
         dialog
     }
@@ -302,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn uncorrelated_mint_surfaces_only_the_matching_dialog_client() {
+    fn uncorrelated_mint_retains_no_secret_and_exact_inspector_nonce_stays_isolated() {
         let mut ui_mgr = UiManager::default();
         ui_mgr.open_dialog(entity_settings_dialog());
         let mut inspector = InspectorFormState::default();
@@ -329,20 +297,9 @@ mod tests {
         );
         assert!(inspector.generated_api_token.is_none());
         assert!(inspector.generated_api_token_client.is_none());
-        if let ActiveDialog::EntitySettings {
-            generated_api_token,
-            generated_api_token_client,
-            ..
-        } = &ui_mgr.active_dialog
-        {
-            assert_eq!(generated_api_token, &Some("private-fixture".to_string()));
-            assert_eq!(
-                generated_api_token_client,
-                &Some("did:key:zClient1".to_string())
-            );
-        } else {
-            panic!("expected EntitySettings dialog to stay open");
-        }
+        if let ActiveDialog::EntitySettings {access,..}=&ui_mgr.active_dialog {
+            assert!(access.snapshot.is_none(),"Uncorrelated mint cannot populate target Access state");
+        } else {panic!("EntitySettings remains open");}
         while rx.try_recv().is_ok() {}
         inspector.set_active_tab(crate::plugin::InspectorTab::ApiAccess);
         crate::panels::inspector::synchronize_token_target(
@@ -405,13 +362,7 @@ mod tests {
             inspector.generated_api_token_client.as_deref(),
             Some("did:key:zClient1")
         );
-        if let ActiveDialog::EntitySettings {
-            generated_api_token,
-            ..
-        } = &ui_mgr.active_dialog
-        {
-            assert_eq!(generated_api_token.as_deref(), Some("private-fixture"));
-        }
+        if let ActiveDialog::EntitySettings {access,..}=&ui_mgr.active_dialog {assert!(access.snapshot.is_none());}
         while rx.try_recv().is_ok() {}
         crate::panels::inspector::submit_inspector_token(
             &mut inspector,

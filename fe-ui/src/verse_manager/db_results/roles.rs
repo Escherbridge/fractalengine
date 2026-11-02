@@ -2,7 +2,6 @@
 //! See ../AGENTS.md §db-results.
 
 use crate::actions::UiManager;
-use crate::dialogs::ActiveDialog;
 use crate::navigation_manager::NavigationManager;
 
 /// `VerseInviteGenerated`: open the invite dialog with the fresh invite string.
@@ -24,15 +23,8 @@ pub(super) fn handle_role_revoked(peer_did:&str,scope:&str,_ui_mgr:&mut UiManage
 }
 
 /// `ScopedInviteGenerated`: surface the invite link in the open EntitySettings dialog.
-pub(super) fn handle_scoped_invite_generated(invite_link: &str, ui_mgr: &mut UiManager) {
-    if let ActiveDialog::EntitySettings {
-        ref mut generated_invite_link,
-        ..
-    } = ui_mgr.active_dialog
-    {
-        *generated_invite_link = Some(invite_link.to_string());
-    }
-    bevy::log::info!("Generated scoped invite link");
+pub(super) fn handle_scoped_invite_generated(_invite_link:&str,ui_mgr:&mut UiManager,now:f64) {
+    ui_mgr.show_toast("Generate invites from the target entry's Access tab to keep the response bound to that entry.",now);
 }
 
 /// `LocalRoleResolved`: cache the local user's resolved role level.

@@ -182,7 +182,6 @@ pub enum ActiveDialog {
         access: entity_access::EntityAccessState,
         invite_role_buf: String,
         invite_expiry_buf: u32,
-        generated_invite_link: Option<String>,
         // Confirmation state
         pending_delete: bool,
         /// F6: two-step confirm for "Claim ownership" (Verse only) — the
@@ -190,19 +189,10 @@ pub enum ActiveDialog {
         /// is just the explicit-click gate. See `dialogs/AGENTS.md` §claim-ownership.
         pending_claim_ownership: bool,
         // API Access tab state
-        api_tokens: Vec<ApiTokenEntry>,
-        api_tokens_loading: bool,
-        api_token_scope_buf: String,
         api_token_role_buf: String,
         api_token_expiry_buf: u32,
         /// Ed25519 `did:key` to mint for; blank mints a fresh client (W6-7b).
         api_token_client_buf: String,
-        generated_api_token: Option<String>,
-        /// The just-minted token's `client` claim (W6-7b).
-        generated_api_token_client: Option<String>,
-        /// Tokens scoped to this entity's scope tree (admin view).
-        scoped_api_tokens: Vec<ApiTokenEntry>,
-        scoped_tokens_loading: bool,
     },
 }
 

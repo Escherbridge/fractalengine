@@ -38,8 +38,6 @@ pub fn render_entity_settings_dialog(
         ref mut api_token_role_buf,
         ref mut api_token_expiry_buf,
         ref mut api_token_client_buf,
-        ref mut generated_api_token,
-        ref mut generated_api_token_client,
         ..
     } = ui_mgr.active_dialog
     else {
@@ -107,7 +105,7 @@ pub fn render_entity_settings_dialog(
                     ).observed(ui)
                     .clicked()
                 {
-                    super::entity_access::select_tab(active_tab,access,generated_api_token,generated_api_token_client,SettingsTab::General);
+                    super::entity_access::select_tab(active_tab,access,SettingsTab::General);
                 }
 
                 let acc_fill = if current_tab == SettingsTab::Access {
@@ -122,7 +120,7 @@ pub fn render_entity_settings_dialog(
                     ).observed(ui)
                     .clicked()
                 {
-                    super::entity_access::select_tab(active_tab,access,generated_api_token,generated_api_token_client,SettingsTab::Access);
+                    super::entity_access::select_tab(active_tab,access,SettingsTab::Access);
                 }
 
                 let api_fill = if current_tab == SettingsTab::ApiAccess {
@@ -137,7 +135,7 @@ pub fn render_entity_settings_dialog(
                     ).observed(ui)
                     .clicked()
                 {
-                    super::entity_access::select_tab(active_tab,access,generated_api_token,generated_api_token_client,SettingsTab::ApiAccess);
+                    super::entity_access::select_tab(active_tab,access,SettingsTab::ApiAccess);
 
                 }
             });
