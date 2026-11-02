@@ -10,6 +10,8 @@ import sys
 
 OUTCOMES = {"PASS", "FAIL", "BLOCKED", "UNKNOWN", "NOT_RUN"}
 BUCKETS = {"Y": "GUI", "A": "API", "O": "OS", "P": "planned", "U": "unreachable"}
+LOG_RING_CAPACITY = 2000
+GATE_OFF_LOG_CASES = {"F112.gate-off": "A", "F114.input-debug-denied": "O"}
 
 
 def object_without_duplicates(pairs):
@@ -78,6 +80,88 @@ def validate_context(checkpoint, record, args):
             require(value.lower() == expected.lower(), name + ": " + key + " differs from this pass")
 
 
+def evidence_object(root, record, path, kinds):
+    require(nonempty(path), "log exception needs an evidence path")
+    require(any(item["path"] == path and item["kind"] in kinds for item in record["artifacts"]),
+            "log exception must reference a declared, hash-validated artifact")
+    source = root / path
+    require(source.stat().st_size <= 65536, "log exception evidence exceeds 64 KiB")
+    value = read_json(source.read_text(encoding="utf-8-sig"))
+    require(isinstance(value, dict), "log exception evidence must be an object")
+    for key in ("pass_id", "run_id", "checkpoint"):
+        require(value.get(key) == record.get(key), "log exception evidence has foreign " + key)
+    return value
+
+
+def validate_gate_off_logs(root, checkpoint, record):
+    name = checkpoint["id"]
+    require(GATE_OFF_LOG_CASES.get(name) == checkpoint["reachability"],
+            name + ": this checkpoint cannot use a gate-off log exception")
+    require(record.get("log_watermark") == {"unavailable_reason": "input_disabled"}
+            and "log_after" not in record and "retention" not in record and record.get("new_logs") == [],
+            name + ": gate-off exception cannot replace an incomplete ordinary log window")
+    exception = record.get("log_exception")
+    require(isinstance(exception, dict) and set(exception) == {"kind", "refusal_artifact", "no_effect_artifact"}
+            and exception["kind"] == "expected_input_disabled",
+            name + ": structured gate-off refusal and no-effect evidence required")
+    refusal = evidence_object(root, record, exception["refusal_artifact"], {"api", "tool"})
+    require(refusal.get("schema") == "fe-qa-gate-off-refusal-v1"
+            and refusal.get("request") == {"method": "GET", "path": "/api/v1/debug/logs"}
+            and refusal.get("response") == {"status": 403, "body": {
+                "ok": False, "code": "qa_gate_refused",
+                "error": "QA diagnostics endpoint is disabled on this node"}},
+            name + ": diagnostic refusal does not match the gate-off REST contract")
+    proof = evidence_object(root, record, exception["no_effect_artifact"], {"api", "tool", "os"})
+    require(proof.get("schema") == "fe-qa-gate-off-no-effect-v1"
+            and isinstance(proof.get("request"), dict)
+            and proof.get("request", {}).get("method") == "POST"
+            and proof.get("request", {}).get("path") == "/api/v1/debug/input"
+            and proof["request"].get("body") == {"commands": [
+                {"kind": "pointer_move", "x": 0, "y": 0}], "wait_frames": 0}
+            and proof.get("response") == {"status": 403, "body": {
+                "ok": False, "error": "input injection endpoint is disabled on this node"}},
+            name + ": input must be refused by the pre-admission gate")
+    before, after = proof.get("before"), proof.get("after")
+    require(isinstance(before, dict) and before == after
+            and all(isinstance(before.get(key), dict) and before[key] for key in ("camera", "hierarchy")),
+            name + ": independent unchanged camera/hierarchy readbacks required")
+
+
+def validate_logs(root, checkpoint, record):
+    name = checkpoint["id"]
+    require("new_logs_unavailable" not in record,
+            name + ": unavailable post-action logs cannot PASS")
+    require(record.get("generation_changed", False) is False,
+            name + ": log generation changed")
+    retention = record.get("retention")
+    if "retention" in record:
+        require(isinstance(retention, dict) and retention.get("possible_gap") is False,
+                name + ": explicit or unknown retention gap cannot PASS")
+    watermark = record.get("log_watermark")
+    if isinstance(watermark, dict) and "unavailable_reason" in watermark:
+        validate_gate_off_logs(root, checkpoint, record)
+        return
+    require("log_exception" not in record, name + ": ordinary log window cannot use an exception")
+    after = record.get("log_after")
+    for label, counters in (("before", watermark), ("after", after)):
+        require(isinstance(counters, dict)
+                and all(type(counters.get(key)) is int and counters[key] >= 0
+                        for key in ("generation", "seq")),
+                name + ": missing or invalid " + label + " log generation/sequence")
+        require("unavailable_reason" not in counters, name + ": unavailable log window")
+    delta = after["seq"] - watermark["seq"]
+    require(after["generation"] == watermark["generation"], name + ": log generation changed")
+    require(0 <= delta <= LOG_RING_CAPACITY, name + ": log window regressed or may have evicted entries")
+    if retention is not None:
+        require(type(retention.get("seq_delta")) is int and retention["seq_delta"] == delta
+                and retention.get("source_derived_capacity") == LOG_RING_CAPACITY,
+                name + ": retention counters disagree with the actual window")
+    require(isinstance(record.get("new_logs"), list), name + ": missing new-log inventory")
+    for entry in record["new_logs"]:
+        require(isinstance(entry, dict) and entry.get("expected") is True and nonempty(entry.get("reason")),
+                name + ": unreviewed warning/error must not PASS")
+
+
 def validate_pass(root, evidence_dir, checkpoint, record):
     name = checkpoint["id"]
     require(checkpoint["reachability"] in "YAO", name + ": excluded checkpoint cannot PASS")
@@ -105,17 +189,7 @@ def validate_pass(root, evidence_dir, checkpoint, record):
         require(bool(kinds & {"api", "tool"}), name + ": missing API/tool response artifact")
     if checkpoint["reachability"] == "O":
         require("os" in kinds, name + ": missing OS/timing report artifact")
-    watermark = record.get("log_watermark")
-    require(isinstance(watermark, dict), name + ": missing log checkpoint")
-    available = (type(watermark.get("generation")) is int
-                 and watermark["generation"] >= 0
-                 and type(watermark.get("seq")) is int and watermark["seq"] >= 0)
-    unavailable = nonempty(watermark.get("unavailable_reason")) and checkpoint["reachability"] in "AO"
-    require(available or unavailable, name + ": log generation/seq or justified API/OS unavailability required")
-    require(isinstance(record.get("new_logs"), list), name + ": missing new-log inventory")
-    for entry in record["new_logs"]:
-        require(isinstance(entry, dict) and entry.get("expected") is True and nonempty(entry.get("reason")),
-                name + ": unreviewed warning/error must not PASS")
+    validate_logs(root, checkpoint, record)
 
 
 def summarize(args):

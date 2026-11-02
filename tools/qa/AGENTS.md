@@ -316,6 +316,72 @@ assertions from the same actual state/actions. This validator checks reported ev
 judgment and truth of assertions still need the agent and independent reviewer. No scenario, file existence or
 unreviewed hash alone counts as exercised feature coverage.
 
+### Complete log windows
+
+An ordinary PASS records both `log_watermark:{generation,seq}` before its action
+and `log_after:{generation,seq}` after it. Counters are nonnegative integers
+(booleans are invalid); generations must match and the sequence delta must be
+between0 and2000 inclusive, the current ring capacity. A changed epoch,
+regressed counter, missing after probe, explicit `new_logs_unavailable`, or
+`retention.possible_gap` prevents PASS even when `new_logs` is empty. Supplied
+retention counters must agree with the derived window and capacity. Every
+returned warning/error still needs independent expected/reason reconciliation.
+Keep the checkpoint's actual action window inside retention; an oversized or
+lost window remains UNKNOWN until that checkpoint is independently repeated
+with complete evidence. Never manufacture equal counters after losing observations.
+
+Only `F112.gate-off` (API) and `F114.input-debug-denied` (OS) can use the narrow
+negative exception. Their watermark is exactly
+`{"unavailable_reason":"input_disabled"}`, `new_logs` is empty, and no
+`log_after` is supplied. `log_exception` contains exactly
+`kind:"expected_input_disabled"`, `refusal_artifact` and `no_effect_artifact`.
+Both paths refer to declared hash-validated current-pass artifacts, at most64KiB
+each; each JSON object repeats the record's `pass_id`, `run_id`, `checkpoint`.
+The diagnostic artifact has schema `fe-qa-gate-off-refusal-v1`, the exact request
+`{method:"GET",path:"/api/v1/debug/logs"}` and raw response
+`{status:403,body:{ok:false,code:"qa_gate_refused",error:"QA diagnostics endpoint is disabled on this node"}}`.
+The no-effect artifact has schema `fe-qa-gate-off-no-effect-v1`, request
+`{method:"POST",path:"/api/v1/debug/input",body:{commands:[{kind:"pointer_move",x:0,y:0}],wait_frames:0}}`,
+raw response `{status:403,body:{ok:false,error:"input injection endpoint is disabled on this node"}}`,
+and equal `before`/`after` objects containing nonempty actual `camera` and
+`hierarchy` readback objects. Retain the real unmodified API response bodies;
+this wrapper adds evidence attribution only. These routes refuse before input
+admission; foreign masked404, malformed/busy/non-Owner failures, success bodies,
+free-form excuses and an unrelated catalog ID do not satisfy the exception.
+Independent review must establish that the captures and no-effect readbacks are
+real; a schema validator cannot authenticate invented evidence.
+
+Positive input-off OS cases cannot borrow this negative exception. They need a
+separately implemented trustworthy owned-stdout window (exact run/PID/start/exe
+and path, bounded before/after offsets, captured bytes/hash, redaction and actual
+warning inventory). That adapter is not implemented here. Keep those positive
+cases UNKNOWN/BLOCKED until ordinary trustworthy logging is available; do not
+enable synthetic input or treat an old focused OS record as FULL acceptance.
+
+The existing J09 validator and S10 layout journeys use the retained offline
+packet `scenarios/evidence-boundaries.py`. Run it once in the final integrated
+sweep with a new `--out qa/passes/<NN>/evidence-boundaries` directory. It invokes
+the actual strict coverage CLI and layout classifier over explicit synthetic
+cases, saves each input and result, and exits2 on a mismatched expectation.
+Its fabricated stage/run and response fixtures are marked offline and contribute
+zero application checkpoints; never merge their ledgers into the real pass.
+
+### Degenerate nested scroll observations
+
+A recorded zero/nonfinite viewport extent is an explicit diagnostic coverage
+gap, including a zero extent on a disabled axis. The classifier labels enabled
+and disabled axis degeneration separately and withholds reachability/clip
+judgment for dependent controls. Missing ancestry/legacy metadata is likewise
+UNKNOWN. This avoids declaring the horizontal property table inaccessible just
+because its recorded disabled-Y viewport height is0 inside a vertically scrolled
+Inspector. It does not assert that impossible source geometry is correct, change
+scroll offsets, lower the20px hit minimum, or certify complete coverage. Ordinary
+fully measured scroll ranges and genuine non-scrollable clipping still receive
+their existing classifications; modal-background withholding runs first.
+Repairing the egui observation itself is separate future work if live evidence
+shows the inner rect should have been nonzero. A successful wheel/Edit/Cancel
+sequence proves that observed path, not all unknown table states.
+
 ## Locator visibility
 
 Named input intersects a same-pass observed control's hit rectangle, clip and

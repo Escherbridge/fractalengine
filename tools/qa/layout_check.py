@@ -1,5 +1,27 @@
 """Pure measured geometry report; see tools/qa/AGENTS.md layout-check."""
 
+import math
+
+
+def scroll_geometry_gap(scroll):
+    axes = scroll.get("axes")
+    if not isinstance(axes, list) or len(axes) != 2 or any(type(axis) is not bool for axis in axes):
+        return "scroll_geometry_invalid"
+    for key in ("viewport", "content_rect", "clip"):
+        rect = scroll.get(key)
+        if not isinstance(rect, dict) or any(type(rect.get(field)) not in (int, float)
+                or not math.isfinite(rect[field]) for field in ("x", "y", "w", "h")):
+            return "scroll_geometry_invalid"
+    for axis, size in enumerate(("w", "h")):
+        extent = scroll["viewport"][size]
+        if extent <= 0:
+            return "scroll_enabled_axis_degenerate" if axes[axis] else "scroll_disabled_axis_degenerate"
+    if any(not isinstance(scroll.get(key), list) or len(scroll[key]) != 2
+           or any(type(value) not in (int, float) or not math.isfinite(value) or value < 0
+                  for value in scroll[key]) for key in ("content_size", "offset")):
+        return "scroll_geometry_invalid"
+    return None
+
 
 def outside(rect, clip, axis):
     start, size = ("x", "w") if axis == 0 else ("y", "h")
@@ -44,6 +66,9 @@ def analyze(tree, state):
                 else:
                     ancestors.append(scroll)
                     clip_sources.append(scroll)
+                    gap = scroll_geometry_gap(scroll)
+                    if gap:
+                        unresolved_scrolls.append(gap)
             parent = by_id.get(parent, {}).get("parent")
         entry = {"id":node["id"],"name":node.get("name"),"bounds":bounds,"panel":ancestors[0]["label"] if ancestors else "window/chrome or uninstrumented region"}
         facts = controls.get(node["id"])
@@ -52,6 +77,8 @@ def analyze(tree, state):
             continue
         for reason in sorted(set(unresolved_scrolls)):
             unknown.append(dict(entry, reason=reason))
+        if unresolved_scrolls:
+            continue
         if facts and any(scroll["layer"] != facts["layer"] for scroll in clip_sources):
             unknown.append(dict(entry, reason="scroll_layer_unresolved"))
             ancestors = [scroll for scroll in ancestors if scroll["layer"] == facts["layer"]]
