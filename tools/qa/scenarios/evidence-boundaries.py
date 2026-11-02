@@ -6,7 +6,9 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import struct
 import sys
+import zlib
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--out", required=True, help="new retained fixture directory, separate from the app ledger")
@@ -19,6 +21,7 @@ from layout_check import analyze
 from owned_stdout import context, digest, prefix_hash, window_projection
 from owned_stdout_windows import WindowsLease
 from coverage import artifact, evidence_object
+from terminal_stdout import BEGIN_SCHEMA, END_SCHEMA
 
 identity = {"pass_id": "fixture", "run_id": "offline-owned-fixture"}
 before = {"camera": {"pose": {"position": [0, 1, 2]}}, "hierarchy": {"verses": []}}
@@ -324,6 +327,142 @@ for label, replacement, expected in [("exception-snapshot-control", False, True)
     results.append({"case": label, "expected_accepted": expected, "accepted": accepted,
                     "passed": accepted == expected, "detail": detail,
                     "boundary": "actual artifact hash then actual evidence_object; no timing-dependent race"})
+terminal_cases = [("terminal-clean", True), ("terminal-confirm-ack", True), ("terminal-reviewed-warning", True),
+    ("terminal-nonzero-exit", False), ("terminal-wrong-pid", False), ("terminal-exit-before-arm", False),
+    ("terminal-live-boolean-bypass", False), ("terminal-wrong-session", False), ("terminal-wrong-begin-hash", False),
+    ("terminal-late-append", False), ("terminal-timeout-overflow", False), ("terminal-missing-warning", False),
+    ("terminal-old-schema", False), ("terminal-missing-lifecycle", False), ("terminal-no-confirmation", False),
+    ("terminal-already-confirming-before-close", False), ("terminal-close-not-applied", False),
+    ("terminal-confirm-before-input-failed", False), ("terminal-confirm-refused", False),
+    ("terminal-confirm-wrong-scope", False), ("terminal-controller-not-armed", False),
+    ("terminal-controller-hash-substitution", False), ("terminal-command-wrong-run", False),
+    ("terminal-other-checkpoint", False), ("terminal-not-gui", False)]
+png = b"\x89PNG\r\n\x1a\n"
+for kind, data in [(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)),
+                   (b"IDAT", zlib.compress(b"\0\0\0\0")), (b"IEND", b"")]:
+    png += struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+for label, expected in terminal_cases:
+    root = output / label
+    checkpoint = "F080.cancel-close" if label == "terminal-other-checkpoint" else "F080.confirm-close"
+    reachability = "O" if label == "terminal-not-gui" else "Y"
+    run_id, creation = "20261102-120000-000", 639000000000000000
+    evidence, run, stage = root / "qa" / "passes" / "fixture", root / ".qa" / "run" / run_id, root / ".qa" / "stage" / "offline-stage"
+    for directory in (evidence, run, stage):
+        directory.mkdir(parents=True)
+    (stage / "fractalengine.exe").write_bytes(b"offline placeholder, never executed")
+    current = {"run_dir": str(run), "stage": str(stage), "stage_matches_source": True,
+        "stage_manifest": {"source_commit": "7f51de19", "source_fingerprint": "a" * 64},
+        "qa_options": {"synthetic_input": True}, "stdout_path": str(run / "stdout.log"),
+        "api_base": "http://127.0.0.1:8882", "process_identity": {"pid": 42,
+            "start_ticks": str(creation), "exe_path": str(stage / "fractalengine.exe")}}
+    (run / "current.json").write_text(json.dumps(current), encoding="utf-8")
+    prefix = b"2026-11-02T12:00:00.000000Z INFO qa_fixture: before close\n"
+    level = "WARN" if label in {"terminal-reviewed-warning", "terminal-missing-warning"} else "INFO"
+    raw = ("2026-11-02T12:00:01.000000Z " + level + " qa_fixture: synthetic shutdown\n").encode()
+    source_path = run / "stdout.log"
+    source_path.write_bytes(prefix + raw)
+    with WindowsLease() as lease:
+        file, binding = context(lease, root, "fixture", run_id, "F080.confirm-close", live=False, capture_kind="terminal_close")
+        begin = {**binding, "schema": BEGIN_SCHEMA, "session_id": "a" * 32, "offset": len(prefix),
+            "prefix_sha256": prefix_hash(file, len(prefix)), "armed_at_ticks": str(creation + 1), "timeout_seconds": 90}
+        end = {**binding, "schema": END_SCHEMA, "session_id": "a" * 32, "offset": len(prefix + raw),
+            "prefix_sha256": prefix_hash(file, len(prefix + raw)), "raw_window_sha256": digest(raw),
+            "projection": window_projection(raw), "elapsed_ms": 1000,
+            "exit": {"pid": 42, "creation_ticks": str(creation), "exit_ticks": str(creation + 10000001), "exit_code": 0}}
+    if label == "terminal-nonzero-exit":
+        end["exit"]["exit_code"] = 1
+    elif label == "terminal-wrong-pid":
+        end["exit"]["pid"] = 43
+    elif label == "terminal-exit-before-arm":
+        end["exit"]["exit_ticks"] = str(creation)
+    elif label == "terminal-live-boolean-bypass":
+        end["observed_live"] = True
+    elif label == "terminal-wrong-session":
+        end["session_id"] = "b" * 32
+    elif label == "terminal-late-append":
+        source_path.write_bytes(prefix + raw + b"2026-11-02T12:00:02.000000Z WARN qa_fixture: late bytes\n")
+    elif label == "terminal-timeout-overflow":
+        end["elapsed_ms"] = 95001
+    elif label == "terminal-old-schema":
+        end["schema"] = "fe-qa-owned-stdout-window-v1"
+    begin_bytes = json.dumps(begin, sort_keys=True).encode()
+    end["begin_receipt_sha256"] = "0" * 64 if label == "terminal-wrong-begin-hash" else digest(begin_bytes)
+    nav = {"verse_id": "v", "fractal_id": "f", "petal_id": "p"}
+    before_state = {"frame": 20, "navigation": nav, "open_windows": ["Inspector"]}
+    confirmation = {"frame": 30, "navigation": nav, "open_windows": ["Close FractalEngine?"]}
+    close_action = {"token_verse": "v", "commands": [{"kind": "pointer_click", "button": "left", "x": 20, "y": 20}],
+        "locator": {"name": "Close FractalEngine", "role": "button", "geometry_source": "observed_hit_clip_window",
+                    "visible_rect": {"x": 10, "y": 10, "w": 24, "h": 24}}, "outcome": {"commands_applied": 1}}
+    confirm_action = {"not_running": True,
+        "message": "API at http://127.0.0.1:8882/api/v1/debug/input did not answer: synthetic shutdown fixture"}
+    confirm_exit = 3
+    if label in {"terminal-confirm-ack", "terminal-confirm-wrong-scope"}:
+        confirm_action, confirm_exit = copy.deepcopy(close_action), 0
+        if label == "terminal-confirm-wrong-scope":
+            confirm_action["token_verse"] = "foreign"
+    elif label == "terminal-no-confirmation":
+        confirmation["open_windows"] = []
+    elif label == "terminal-already-confirming-before-close":
+        before_state["open_windows"] = ["Close FractalEngine?"]
+    elif label == "terminal-close-not-applied":
+        close_action["outcome"]["commands_applied"] = 0
+    elif label == "terminal-confirm-before-input-failed":
+        confirm_action["message"] = "API at http://127.0.0.1:8882/api/v1/debug/camera did not answer: fixture"
+    elif label == "terminal-confirm-refused":
+        confirm_action, confirm_exit = {"refused": True, "code": "input_in_progress"}, 2
+    lifecycle = {"schema": "fe-qa-terminal-close-lifecycle-v1", "pass_id": "fixture", "run_id": run_id,
+        "checkpoint": "F080.confirm-close", "process_identity": current["process_identity"],
+        "begin_receipt_sha256": digest(begin_bytes), "before_state_artifact": "qa/passes/fixture/before.json",
+        "close_action_artifact": "qa/passes/fixture/close.json", "confirmation_state_artifact": "qa/passes/fixture/confirmation.json",
+        "confirmation_png": "qa/passes/fixture/confirmation.png", "confirm_action_artifact": "qa/passes/fixture/confirm.json",
+        "controller_artifact": "qa/passes/fixture/controller.jsonl",
+        "close_command": ["--run", str(run), "click", "--name", "Close FractalEngine", "--role", "button"],
+        "confirm_command": ["--run", str(run), "click", "--name", "Close FractalEngine", "--role", "button"],
+        "confirm_exit_code": confirm_exit}
+    controller = [{"phase": "armed", "checkpoint": "F080.confirm-close", "session_id": begin["session_id"],
+        "begin_artifact": "qa/passes/fixture/begin.json", "sha256": digest(begin_bytes)},
+        {"phase": "complete", "end_artifact": "qa/passes/fixture/end.json",
+         "sha256": digest(json.dumps(end, sort_keys=True).encode()), "exit": end["exit"], "raw_bytes_emitted": False}]
+    if label == "terminal-controller-not-armed":
+        controller[0]["phase"] = "complete"
+    elif label == "terminal-controller-hash-substitution":
+        controller[1]["sha256"] = "0" * 64
+    elif label == "terminal-command-wrong-run":
+        lifecycle["confirm_command"][1] = str(root / ".qa" / "run" / "20261101-120000-000")
+    artifacts = []
+    for filename, value, kind in [("begin.json", begin, "tool"), ("end.json", end, "os" if reachability == "O" else "tool"),
+            ("lifecycle.json", lifecycle, "tool"), ("before.json", before_state, "api"), ("close.json", close_action, "tool"),
+            ("confirmation.json", confirmation, "api"), ("confirm.json", confirm_action, "tool"), ("confirmation.png", png, "png")]:
+        data = value if isinstance(value, bytes) else json.dumps(value, sort_keys=True).encode()
+        (evidence / filename).write_bytes(data)
+        artifacts.append({"path": "qa/passes/fixture/" + filename, "kind": kind, "sha256": digest(data)})
+    controller_bytes = "\n".join(json.dumps(value, sort_keys=True) for value in controller).encode()
+    (evidence / "controller.jsonl").write_bytes(controller_bytes)
+    artifacts.append({"path": "qa/passes/fixture/controller.jsonl", "kind": "tool", "sha256": digest(controller_bytes)})
+    warnings = [{**entry, "expected": True, "reason": "synthetic offline shutdown warning"} for entry in end["projection"]["warnings"]]
+    record = {"pass_id": "fixture", "run_id": run_id, "checkpoint": checkpoint, "outcome": "PASS",
+        "stage_commit": "7f51de19", "stage_fingerprint": "a" * 64, "commands": ["offline validator fixture, not GUI evidence"],
+        "assertions": [{"name": "fixture", "expected": "fixture", "actual": "fixture", "passed": True}],
+        "visual_verdict": {"passed": True, "judged_by": "offline fixture", "notes": "synthetic one-pixel fixture; no app coverage"},
+        "log_source": {"kind": "terminal_close_stdout", "begin_artifact": "qa/passes/fixture/begin.json",
+            "end_artifact": "qa/passes/fixture/end.json", "lifecycle_artifact": "qa/passes/fixture/lifecycle.json"},
+        "artifacts": artifacts, "new_logs": [] if label == "terminal-missing-warning" else warnings}
+    if label == "terminal-missing-lifecycle":
+        record["log_source"]["lifecycle_artifact"] = "qa/passes/fixture/missing.json"
+    catalog = {"catalog_source_fingerprint": "a" * 64,
+        "families": [{"id": "F080", "region": "R6", "requires_persistence": False}],
+        "checkpoints": [{"id": checkpoint, "family": "F080", "reachability": reachability}], "gold_tasks": {"G6": [checkpoint]}}
+    (root / "catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
+    ledger = evidence / "checkpoints.jsonl"
+    ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    command = [sys.executable, str(tools / "coverage.py"), "--root", str(root), "--catalog", str(root / "catalog.json"),
+        "--ledger", str(ledger), "--pass-id", "fixture", "--run-id", run_id,
+        "--stage-commit", "7f51de19", "--stage-fingerprint", "a" * 64, "--require-complete"]
+    completed = subprocess.run(command, capture_output=True, text=True, timeout=15, check=False)
+    results.append({"case": label, "expected_accepted": expected, "exit_code": completed.returncode,
+        "passed": completed.returncode == (0 if expected else 2), "command": command,
+        "stdout": completed.stdout, "stderr": completed.stderr,
+        "limit": "synthetic final-audit data; retained live process/writer-release observation is not executed"})
 summary = {"scope": "offline synthetic validator fixtures; zero application checkpoint coverage",
            "passed": all(result["passed"] for result in results), "cases": results}
 (output / "results.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")

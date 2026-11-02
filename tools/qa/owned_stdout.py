@@ -18,6 +18,7 @@ LOG_LINE = re.compile(r"^\d{4}-\d\d-\d\dT\S+\s+(TRACE|DEBUG|INFO|WARN|ERROR)\s+[
 OS_CHECKPOINTS = {"F114.owned-hwnd-uia", "F114.named-buttons", "F114.finite-bounds", "F114.input-debug-denied",
                   "F115.inactive-baseline", "F115.active-provider", "F115.same-cadence",
                   "F115.frame-sample-summary", "F115.incomplete-baseline-refusal"}
+TERMINAL_CHECKPOINT = "F080.confirm-close"
 
 
 def require(condition, message):
@@ -75,15 +76,19 @@ def window_projection(raw):
     return {"lines": lines, "warnings": inventory, "redaction": "all messages and targets withheld; scope unavailable"}
 
 
-def context(lease, root, pass_id, run_id, checkpoint, live):
+def context(lease, root, pass_id, run_id, checkpoint, live, capture_kind="os"):
     root = canonical(root)
     require(bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", pass_id)), "invalid pass ID")
     require(bool(re.fullmatch(r"\d{8}-\d{6}-\d{3}", run_id)), "owned stdout requires an exact QA run timestamp")
-    require(checkpoint in OS_CHECKPOINTS, "owned stdout is limited to current input-off OS checkpoints")
+    require((capture_kind == "os" and checkpoint in OS_CHECKPOINTS)
+            or (capture_kind == "terminal_close" and checkpoint == TERMINAL_CHECKPOINT),
+            "stdout capture kind does not match its exact allowed checkpoint")
     run = root / ".qa" / "run" / run_id
     current = read_object(lease.file(run / "current.json"))
-    require(isinstance(current.get("qa_options"), dict) and current["qa_options"].get("synthetic_input") is False,
-            "owned stdout OS accounting requires synthetic input off")
+    require(isinstance(current.get("qa_options"), dict)
+            and type(current["qa_options"].get("synthetic_input")) is bool
+            and (capture_kind == "terminal_close" or current["qa_options"]["synthetic_input"] is False),
+            "ordinary OS accounting requires input off; terminal capture records its actual mode")
     require(canonical(current.get("run_dir", "")) == run, "current receipt belongs to another run")
     identity = current.get("process_identity")
     require(isinstance(identity, dict) and set(identity) == {"pid", "start_ticks", "exe_path"},
@@ -118,7 +123,14 @@ def context(lease, root, pass_id, run_id, checkpoint, live):
     binding = {"pass_id": pass_id, "run_id": run_id, "checkpoint": checkpoint,
         "process_identity": identity, "source_path": str(source.relative_to(root)),
         "source_identity": file.identity(), "stage_commit": manifest["source_commit"],
-        "stage_fingerprint": manifest["source_fingerprint"], "synthetic_input": False}
+        "stage_fingerprint": manifest["source_fingerprint"],
+        "synthetic_input": current["qa_options"]["synthetic_input"]}
+    if capture_kind == "terminal_close":
+        binding["capture_kind"] = capture_kind
+        api_base = current.get("api_base")
+        match = re.fullmatch(r"http://127\.0\.0\.1:([0-9]{1,5})", api_base) if isinstance(api_base, str) else None
+        require(match is not None and 1 <= int(match[1]) <= 65535, "terminal capture requires its recorded loopback API origin")
+        binding["api_base"] = api_base
     return file, binding
 
 
@@ -147,6 +159,10 @@ def verify_window(file, binding, begin, end):
         require(begin.get(key) == value and end.get(key) == value, "owned stdout lifetime or provenance changed")
     require(begin.get("observed_live") is True and end.get("observed_live") is True,
             "owned stdout requires live begin and end observations")
+    return verify_byte_window(file, begin, end)
+
+
+def verify_byte_window(file, begin, end):
     start, stop = begin.get("offset"), end.get("offset")
     require(type(start) is int and type(stop) is int and 0 <= start <= stop <= MAX_PREFIX
             and stop - start <= MAX_WINDOW and file.size() >= stop, "stdout window truncated, regressed or oversized")
@@ -160,6 +176,42 @@ def verify_window(file, binding, begin, end):
     return projection["warnings"]
 
 
+def declared_snapshot(lease, root, record, path, kinds, limit=MAX_RECEIPT):
+    relative = Path(path)
+    pass_path = Path("qa") / "passes" / record["pass_id"]
+    require(not relative.is_absolute() and not relative.drive and ".." not in relative.parts
+            and relative.is_relative_to(pass_path), "stdout artifact is outside the exact pass")
+    declared = [item for item in record["artifacts"] if item["path"] == path and item["kind"] in kinds]
+    require(len(declared) == 1, "stdout evidence needs a unique declared artifact")
+    pinned = lease.file(canonical(Path(root) / relative))
+    size = pinned.size()
+    require(size <= limit, "stdout evidence artifact is oversized")
+    raw = pinned.read(0, size)
+    require(digest(raw).lower() == declared[0]["sha256"].lower(), "stdout evidence artifact hash changed")
+    return raw
+
+
+def record_receipts(lease, root, record, source):
+    contents = []
+    for key in ("begin_artifact", "end_artifact"):
+        relative = Path(source[key])
+        require(relative.parent == Path("qa") / "passes" / record["pass_id"], "stdout receipt must be directly in its pass")
+        artifact_path(Path(root), record["pass_id"], relative.name)
+        contents.append(declared_snapshot(lease, root, record, source[key], {"tool", "os"}))
+    begin, end = (json_object(raw) for raw in contents)
+    require(end.get("begin_receipt_sha256") == digest(contents[0]), "stdout end does not bind its begin receipt")
+    return begin, end
+
+
+def reconcile_warnings(expected, reported):
+    require(isinstance(reported, list) and len(reported) == len(expected), "stdout warning inventory is incomplete")
+    for entry, actual in zip(expected, reported):
+        require(isinstance(actual, dict) and set(actual) == set(entry) | {"expected", "reason"}
+                and all(actual.get(key) == value for key, value in entry.items())
+                and actual.get("expected") is True and isinstance(actual.get("reason"), str) and actual["reason"].strip(),
+                "stdout warning/error needs exact inventory and independent reconciliation")
+
+
 def validate_record(root, checkpoint, record):
     require(checkpoint["reachability"] == "O", "owned stdout cannot replace ordinary GUI/API ring accounting")
     source = record.get("log_source")
@@ -169,33 +221,12 @@ def validate_record(root, checkpoint, record):
             "log_exception", "new_logs_unavailable")), "owned stdout cannot conceal a failed or mixed ring window")
     with WindowsLease() as lease:
         file, binding = context(lease, root, record["pass_id"], record["run_id"], checkpoint["id"], live=False)
-        receipts, contents = [], []
-        for key in ("begin_artifact", "end_artifact"):
-            relative = Path(source[key])
-            require(relative.parent == Path("qa") / "passes" / record["pass_id"], "stdout artifact is outside the exact pass")
-            path = artifact_path(Path(root), record["pass_id"], relative.name)
-            declared = [item for item in record["artifacts"] if item["path"] == source[key]
-                        and item["kind"] in {"tool", "os"}]
-            require(len(declared) == 1, "stdout receipts need unique declared tool/OS artifacts")
-            pinned = lease.file(path)
-            require(pinned.size() <= MAX_RECEIPT, "stdout receipt is oversized")
-            raw = pinned.read(0, pinned.size())
-            require(digest(raw).lower() == declared[0]["sha256"].lower(), "stdout receipt hash changed")
-            receipts.append(json_object(raw))
-            contents.append(raw)
-        begin, end = receipts
-        require(end.get("begin_receipt_sha256") == digest(contents[0]), "stdout end does not bind its begin receipt")
+        begin, end = record_receipts(lease, root, record, source)
         require(binding["stage_commit"].lower() == record["stage_commit"].lower()
                 and binding["stage_fingerprint"].lower() == record["stage_fingerprint"].lower(),
                 "stdout evidence belongs to another stage")
         warnings = verify_window(file, binding, begin, end)
-        reported = record.get("new_logs")
-        require(isinstance(reported, list) and len(reported) == len(warnings), "stdout warning inventory is incomplete")
-        for expected, actual in zip(warnings, reported):
-            require(isinstance(actual, dict) and set(actual) == set(expected) | {"expected", "reason"}
-                    and all(actual.get(key) == value for key, value in expected.items())
-                    and actual.get("expected") is True and isinstance(actual.get("reason"), str) and actual["reason"].strip(),
-                    "stdout warning/error needs exact inventory and independent reconciliation")
+        reconcile_warnings(warnings, record.get("new_logs"))
 
 
 def main(argv=None):

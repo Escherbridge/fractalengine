@@ -432,9 +432,102 @@ review must retain successful CLI outcomes and actual owned-lifetime evidence.
 The final audit recomputes bytes, not past process liveness.
 
 End must happen while the exact app is alive. A terminal close whose process has
-already exited cannot be closed by this adapter; keep that separate case
-UNKNOWN/BLOCKED unless it has another reviewed source. No dead/reused PID is
-treated as live and no lingering native child substitutes for the root process.
+already exited cannot be closed by this ordinary OS adapter. The separate
+F080-only retained-handle controller below covers terminal observation without
+changing this rule. No dead/reused PID is treated as live and no lingering native
+child substitutes for the root process.
+
+### Terminal F080 confirm-close evidence
+
+`terminal_stdout.py watch-close` is a bounded local observer for exactly
+`F080.confirm-close` (GUI). It has no click, navigation, process-start, kill or
+other application-control operation. Start it in an owned command session before
+the actual terminal UI actions, and wait for its flushed `phase:"armed"` output:
+
+```powershell
+python tools/qa/terminal_stdout.py watch-close --run-id $qaRunId --pass-id $qaPass --begin close-log-before.json --out close-log-after.json --timeout 90
+```
+
+The watch retains the original root process handle verified live through its
+exact PID/creation ticks/stage executable. It also retains current-run metadata,
+stdout file and ancestor pins. A new random public capture-session ID, native
+process binding, UTC arm ticks, byte offset/prefix hash and bounded timeout are
+written to an exclusive begin receipt. The end filename is also exclusively
+reserved before arming, so an existing output cannot fail only after actual
+Close. Only after successful live publication does it print armed. The main
+owner then captures a full before state, clicks
+the actual caption Close, reads the confirmation state and captures/judges its
+PNG, and issues the named modal Close command. Record the real command order;
+the watcher never performs these actions for the owner.
+
+The configured watch timeout is1–180 seconds. It waits on that same retained
+process object, never reopens a PID after exit, and obtains native PID,
+creation/exit FILETIMEs and exit code from it. Only code0 with matching original
+creation time and exit after the arm point can complete. The watch then has at
+most five seconds to obtain a read-only/no-write-sharing seal on the same stdout
+file. Outstanding writers cause bounded retry or refusal, never a false EOF.
+The sealed source, prefix and exact final byte window must remain finite, UTF-8,
+line-complete and classified under the same byte bounds/redaction rules as the
+ordinary adapter. Every WARN/ERROR remains in the inventory. End publication
+rechecks native exit facts from the retained object; it never marks a dead root
+`observed_live:true`. Nonzero exit, missing writer release, timeout, partial or
+unclassified output leaves no successful terminal end. The observer exits2 and
+does not kill or change the app. Retained failed/begin-only or empty reserved-end
+files are not PASS. Wait for controller exit0 before auditing its closed receipts.
+
+Terminal receipts use distinct `fe-qa-terminal-stdout-begin-v1` and
+`fe-qa-terminal-stdout-window-v1` schemas. End binds the begin SHA256 and session,
+native numeric exit facts and bounded elapsed milliseconds, plus the ordinary
+original-byte hashes and fully withheld projection. Final audit reopens a sealed
+read-only source, requires its size to equal the captured EOF exactly and
+recomputes all bytes/hashes/projections. A later append is refused for terminal
+proof, although ordinary completed OS windows may legitimately have later data.
+Normal before/after live gates and the two negative gate-off exceptions remain
+unchanged. Terminal source cannot be used for Cancel, dirty-reason-only, API/OS
+or another GUI checkpoint. Its metadata records the run's actual input mode.
+
+The GUI ledger uses `log_source` with exactly `kind:"terminal_close_stdout"`,
+`begin_artifact`, `end_artifact`, `lifecycle_artifact`. Receipts are declared
+current-pass tool artifacts; ordinary judged PNG/assertions/command requirements
+still apply. The lifecycle artifact has schema
+`fe-qa-terminal-close-lifecycle-v1` and exactly these additional fields:
+
+- `pass_id`, `run_id`, `checkpoint`, original `process_identity`, and
+  `begin_receipt_sha256` matching the terminal capture.
+- `before_state_artifact`, `close_action_artifact`,
+  `confirmation_state_artifact`, `confirmation_png`, `confirm_action_artifact`,
+  each referring to a uniquely declared hashed same-pass artifact. State files
+  are the actual full `F state` objects. Action files are actual secret-free
+  client stdout JSONL output, including its success/refusal/disconnection outcome.
+  Save UTF-8 stdout separately from stderr; do not merge plain stderr text into JSONL.
+- `controller_artifact` retains the actual two armed/complete stdout objects,
+  matching the session, begin/end paths/hashes and native exit facts. Retain the
+  owned command session's actual output and ordering, not recreated phase flags.
+- `close_command` and `confirm_command` are the actual expanded argument vectors
+  `["--run",<absolute-owned-run>,"click","--name","Close FractalEngine","--role","button"]`;
+  `confirm_exit_code` records its real CLI status.
+
+The validator requires increasing state frames, unchanged navigation, no close
+modal before the caption click and the actual modal afterward. The caption
+result must contain the observed hit/clip named-button locator and one applied
+left click inside it. The confirmation PNG remains subject to independent visual
+judgment. A successful confirm result must match that button/view. A CLI3 caused
+by shutdown during the actual `/debug/input` request can instead be retained as
+an explicitly interrupted response; a failed camera probe, refused input or
+another error cannot substitute. That interrupted request is not an invented
+successful HTTP acknowledgement. Clean native exit plus actual GUI/action/
+lifecycle evidence must be reviewed together: a stdout receipt alone never
+proves GUI intent or that a particular command was applied. Receipts are local
+operator evidence, not cryptographic historical attestation.
+
+The offline packet extends actual strict-CLI validation with synthetic clean,
+acknowledged and reviewed-warning terminal cases, and nonzero/wrong-lifetime,
+exit-before-arm, boolean/schema/session/hash substitutions, later EOF append,
+deadline, missing warnings/lifecycle/modal, zero applied Close, unrelated
+pre-input error, refused confirm, foreign scope and wrong checkpoint/type cases.
+These files execute no app and cannot prove retained live handle, native exit,
+deadline or writer-release behavior. Independent source review and root-owned
+live close/refusal verification remain required before FULL acceptance.
 
 The existing J09 validator and S10 layout journeys use the retained offline
 packet `scenarios/evidence-boundaries.py`. Run it once in the final integrated

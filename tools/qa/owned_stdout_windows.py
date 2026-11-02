@@ -83,6 +83,8 @@ class WindowsLease:
             "FlushFileBuffers": ([wt.HANDLE], wt.BOOL),
             "OpenProcess": ([wt.DWORD, wt.BOOL, wt.DWORD], wt.HANDLE),
             "WaitForSingleObject": ([wt.HANDLE, wt.DWORD], wt.DWORD),
+            "GetExitCodeProcess": ([wt.HANDLE, ctypes.POINTER(wt.DWORD)], wt.BOOL),
+            "GetProcessId": ([wt.HANDLE], wt.DWORD),
             "QueryFullProcessImageNameW": ([wt.HANDLE, wt.DWORD, wt.LPWSTR, ctypes.POINTER(wt.DWORD)], wt.BOOL),
             "GetProcessTimes": ([wt.HANDLE, *([ctypes.POINTER(wt.FILETIME)] * 4)], wt.BOOL),
         }
@@ -90,6 +92,7 @@ class WindowsLease:
             function = getattr(self.api, name)
             function.argtypes, function.restype = arguments, result
         self.handles, self.files, self.roles, self.processes = [], {}, {}, []
+        self.process_identities = {}
 
     def __enter__(self):
         return self
@@ -117,6 +120,8 @@ class WindowsLease:
         flags = 0x00200000 | (0x02000000 if directory else 0)
         handle = self.api.CreateFileW(str(path), access, share, None, 1 if create else 3, flags, None)
         if handle in (None, ctypes.c_void_p(-1).value):
+            if ctypes.get_last_error() == 32:
+                raise BlockingIOError(32, "owned path still has an incompatible writer")
             raise ValueError("could not exclusively pin owned path or create a new artifact")
         self.handles.append(handle)
         pinned = PinnedFile(self, handle)
@@ -162,6 +167,48 @@ class WindowsLease:
         if (os.path.normcase(buffer.value) != os.path.normcase(str(executable))
                 or creation + 504911232000000000 != int(identity["start_ticks"])):
             raise ValueError("PID lifetime or executable no longer matches the owned app")
+        self.process_identities[handle] = dict(identity)
+
+    def wait_owned_exit(self, timeout_ms):
+        if len(self.processes) != 1 or not 0 < timeout_ms <= 180000:
+            raise ValueError("terminal watch requires one retained process and a bounded deadline")
+        if self.api.WaitForSingleObject(self.processes[0], timeout_ms) != 0:
+            raise ValueError("owned root did not signal exit within the terminal deadline")
+        return self.owned_exit()
+
+    def owned_exit(self):
+        if len(self.processes) != 1:
+            raise ValueError("terminal evidence requires one retained owned process")
+        handle = self.processes[0]
+        if self.api.WaitForSingleObject(handle, 0) != 0:
+            raise ValueError("retained root process has not exited")
+        identity, code = self.process_identities[handle], wt.DWORD()
+        times = [wt.FILETIME() for _ in range(4)]
+        if (not self.api.GetExitCodeProcess(handle, ctypes.byref(code))
+                or not self.api.GetProcessTimes(handle, *(ctypes.byref(value) for value in times))):
+            raise ValueError("could not read native exit facts from the retained process")
+        ticks = [str(((value.dwHighDateTime << 32) | value.dwLowDateTime) + 504911232000000000)
+                 for value in times[:2]]
+        if (self.api.GetProcessId(handle) != identity["pid"] or ticks[0] != identity["start_ticks"]
+                or int(ticks[1]) <= int(ticks[0])):
+            raise ValueError("retained process exit facts do not match its original lifetime")
+        return {"pid": identity["pid"], "creation_ticks": ticks[0], "exit_ticks": ticks[1], "exit_code": code.value}
+
+    def seal_stdout(self, path, original):
+        path = canonical(path)
+        key = os.path.normcase(str(path))
+        if self.files.get(key) is not original or self.roles.get(key) != (False, True):
+            raise ValueError("only the already pinned active stdout can be sealed")
+        del self.files[key]
+        del self.roles[key]
+        try:
+            sealed = self._open(path)
+            if sealed.identity() != original.identity():
+                raise ValueError("stdout identity changed before its read-only seal")
+            return sealed
+        except Exception:
+            self.files[key], self.roles[key] = original, (False, True)
+            raise
 
     def check_live(self):
         if any(self.api.WaitForSingleObject(handle, 0) != 258 for handle in self.processes):

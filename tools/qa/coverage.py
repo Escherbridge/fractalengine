@@ -152,7 +152,11 @@ def validate_gate_off_logs(root, checkpoint, record):
 
 def validate_logs(root, checkpoint, record):
     if "log_source" in record:
-        from owned_stdout import validate_record
+        source = record["log_source"]
+        if isinstance(source, dict) and source.get("kind") == "terminal_close_stdout":
+            from terminal_stdout import validate_record
+        else:
+            from owned_stdout import validate_record
         validate_record(root, checkpoint, record)
         return
     name = checkpoint["id"]
