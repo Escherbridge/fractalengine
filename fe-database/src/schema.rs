@@ -428,7 +428,7 @@ define_table! {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         enforced_schema: Option<serde_json::Value> => "TYPE option<object> FLEXIBLE",
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        schema_revisions: Option<serde_json::Value> => "TYPE option<array> FLEXIBLE",
+        schema_revisions: Option<serde_json::Value> => "TYPE option<array<object>> FLEXIBLE",
         created_by:   String                    => "TYPE string",
         created_at:   String                    => "TYPE string"
     }
@@ -726,6 +726,9 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     Repo::<Asset>::apply_schema(db).await?;
     Repo::<FieldDef>::apply_schema(db).await?;
     db.query("DEFINE FIELD OVERWRITE default_val ON TABLE field_def TYPE option<null | bool | number | string | array | object> FLEXIBLE")
+        .await?
+        .check()?;
+    db.query("DEFINE FIELD OVERWRITE schema_revisions ON TABLE field_def TYPE option<array<object>> FLEXIBLE; DEFINE FIELD OVERWRITE schema_revisions[*] ON TABLE field_def TYPE object FLEXIBLE")
         .await?
         .check()?;
     Repo::<NodeLog>::apply_schema(db).await?;

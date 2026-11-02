@@ -1667,3 +1667,8 @@ transaction atomicity.
 Plugin schema capture is restricted to exact ancestor scopes, capped at 256
 enforced definitions per key. Expanded staged states/facts are capped at 2 MiB
 before effects, in addition to the 64 KiB input and per-snapshot bounds.
+
+
+### Schema revision array migration
+
+Field-definition revision history is an optional array of descriptor objects. The pinned database parser requires an explicit object-containing type for FLEXIBLE; a bare array or any is insufficient. Reapply the outer array<object> declaration and its wildcard object element with OVERWRITE so existing roots retain arbitrary nested descriptor fields. Default values use the explicit optional JSON union to preserve scalar and compound representations. Boot and persisted roundtrip evidence are required in addition to source review.
