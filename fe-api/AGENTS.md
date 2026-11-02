@@ -2130,3 +2130,17 @@ it was rendered, allowing clients to retry rather than reading a stale tree.
 ## Property reply identity
 
 REST, MCP and WebSocket property operations share the property core methods. Each method supplies a fresh correlation ID and requires the expected reply variant, echoed ID, node ID and applicable key. Correlated failures must echo the same ID. The projection fallback uses the same checked read core; route-tracker background property writes also carry fresh IDs despite dropped receivers. WebSocket errors retain the client-safe operation failed envelope while logging internal detail. The API never waits for a node to become selected in the GUI.
+
+## §property-schema
+
+GET/PUT `/api/v1/field-defs/by-id/{id}/schema` and MCP
+`get_field_schema` / `set_field_schema` share the same core. Reads require Viewer,
+updates Manager, both at the definition's stored scope (foreign/unknown share one
+denial). PUT body is `{version:1,schema:{type:"object",properties:{gain:{type:"number"}},required:["gain"],additionalProperties:false}}`.
+This is the bounded property-schema vocabulary documented in fe-sdk/src/AGENTS.md,
+not JSON Schema. Unknown keywords are errors. GET returns current descriptor and
+immutable accepted revision list; legacy definitions have no enforced descriptor.
+Updates dry-run existing values/defaults and require the next revision; no implicit
+migration, automatic default insertion or outer required-field constraint. The
+correlated committed reply is independent of GUI selection. Legacy field-def
+constructors and metadata-only behavior remain compatible.

@@ -1473,3 +1473,20 @@ self-authorship, not role, in `handlers::replicated_row` (`canon_log/AGENTS.md`
 ## Node property acknowledgment correlation
 
 The three node property commands echo optional correlation IDs on their typed replies. Failures reuse handlers::correlated_failure: API requests get RequestFailed with the exact ID, GUI requests retain Error. Persistence, scene-change broadcasts and node-log append behavior remain shared. A persisted property must acknowledge independently of which node the GUI currently selects.
+
+## §property-schema
+
+`field_def.enforced_schema` is optional: absent means legacy metadata, present
+means the SDK bounded property-schema contract. SetFieldSchema requires
+consecutive revisions and retains them in `schema_revisions`. It validates the
+stored default and every present value in the resolved descendant scope before
+changing anything (10000-node dry-run cap). It runs on the sole serialized DB
+command writer; no shared-reader or concurrent handler use. No implicit migration
+or backfill. Every applicable ancestor rule is enforced conjunctively by ordinary
+SetNodeProperty; descendant metadata cannot weaken it. Outer properties remain
+optional: DELETE removes them, nested required checks object members, explicit
+null needs permission. Legacy UpdateFieldDef cannot change an enforced type and
+must validate replacement defaults; DeleteFieldDef refuses enforced definitions.
+The default column now accepts arbitrary JSON types; defaults remain suggestions.
+This contract covers ordinary property commands, not arbitrary operator SQL or
+replication. Those paths must not be represented as validated ordinary writes.

@@ -768,6 +768,12 @@ pub enum DbCommand {
         value_type: String,
         default_val: Option<serde_json::Value>,
     },
+    /// Install the next bounded property-schema revision; replies with correlated QueryResult.
+    SetFieldSchema {
+        field_def_id: String,
+        descriptor: serde_json::Value,
+        correlation_id: Option<String>,
+    },
     /// Delete a field definition by ID.
     DeleteFieldDef {
         field_def_id: String,

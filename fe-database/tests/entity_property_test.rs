@@ -265,6 +265,93 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
     );
     assert_eq!(props["dimension.closed"], serde_json::json!(false));
 
+    db.cmd_tx
+        .send(DbCommand::ResolveNodeScope {
+            node_id: node_id.clone(),
+        })
+        .unwrap();
+    let scope = match db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap() {
+        DbResult::ScopeResolved { scope: Some(scope) } => scope,
+        other => panic!("expected resolved scope, got {other:?}"),
+    };
+    db.cmd_tx
+        .send(DbCommand::CreateFieldDef {
+            scope,
+            entity_type: "node".into(),
+            key: "dimension.anchors".into(),
+            value_type: "array".into(),
+            default_val: None,
+        })
+        .unwrap();
+    let field_def_id = match db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap() {
+        DbResult::FieldDefCreated { field_def_id, .. } => field_def_id,
+        other => panic!("expected definition, got {other:?}"),
+    };
+    let descriptor = serde_json::json!({"version":1, "schema":{
+        "type":"array", "minItems":2, "items":{"type":"array", "minItems":3,
+            "maxItems":3, "items":{"type":"number"}}
+    }});
+    let parsed = fe_sdk::property_schema::EnforcedPropertySchema::parse(&descriptor).unwrap();
+    assert!(parsed.validate(&anchors).is_ok());
+    assert!(parsed
+        .validate(&serde_json::json!("[[0,0,0],[3,0,4]]"))
+        .is_err());
+    let mut unsupported = descriptor.clone();
+    unsupported["schema"]["$ref"] = serde_json::json!("https://example.invalid/schema");
+    assert!(fe_sdk::property_schema::EnforcedPropertySchema::parse(&unsupported).is_err());
+    db.cmd_tx
+        .send(DbCommand::SetFieldSchema {
+            field_def_id: field_def_id.clone(),
+            descriptor: descriptor.clone(),
+            correlation_id: Some("schema-v1".into()),
+        })
+        .unwrap();
+    assert!(matches!(db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap(),
+        DbResult::QueryResult { correlation_id: Some(id), .. } if id == "schema-v1"));
+    db.cmd_tx
+        .send(DbCommand::SetNodeProperty {
+            node_id: node_id.clone(),
+            key: "dimension.anchors".into(),
+            value: serde_json::json!("wrong type"),
+            correlation_id: Some("invalid-property".into()),
+        })
+        .unwrap();
+    assert!(matches!(db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap(),
+        DbResult::RequestFailed { correlation_id, .. } if correlation_id == "invalid-property"));
+    assert_eq!(get_properties(&db, &node_id)["dimension.anchors"], anchors);
+    let mut incompatible = descriptor.clone();
+    incompatible["version"] = serde_json::json!(2);
+    incompatible["schema"]["maxItems"] = serde_json::json!(1);
+    db.cmd_tx
+        .send(DbCommand::SetFieldSchema {
+            field_def_id: field_def_id.clone(),
+            descriptor: incompatible,
+            correlation_id: Some("schema-incompatible".into()),
+        })
+        .unwrap();
+    assert!(matches!(db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap(),
+        DbResult::RequestFailed { correlation_id, .. } if correlation_id == "schema-incompatible"));
+    db.cmd_tx
+        .send(DbCommand::DeleteFieldDef {
+            field_def_id: field_def_id.clone(),
+        })
+        .unwrap();
+    assert!(matches!(
+        db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap(),
+        DbResult::Error(_)
+    ));
+    db.cmd_tx
+        .send(DbCommand::UpdateFieldDef {
+            field_def_id,
+            value_type: "string".into(),
+            default_val: None,
+        })
+        .unwrap();
+    assert!(matches!(
+        db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap(),
+        DbResult::Error(_)
+    ));
+
     assert!(
         hierarchy_contains_node(&db, &node_id),
         "the live node is present before delete"

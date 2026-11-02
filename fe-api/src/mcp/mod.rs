@@ -67,6 +67,8 @@ pub enum ScopeRule {
     PetalArg(&'static str),
     /// `args[key]` is a node id; its DB-resolved scope must be covered.
     NodeArg(&'static str),
+    /// Stored field-definition scope, resolved by id.
+    FieldDefArg(&'static str),
     /// `args[key]` is a verse id; its DB-resolved scope must be covered
     /// (CDL-SPEC10 A5 — `register_device_format`/`list_device_formats` are
     /// verse-scoped, like REST's `resolve_verse_scope` + `write_target_authorized`).
@@ -202,7 +204,7 @@ macro_rules! tool {
 }
 
 use HierarchyTarget::{Fractal, Petal, Verse};
-use ScopeRule::{Global, HierarchyArgs, NodeArg, PetalArg, VerseArg};
+use ScopeRule::{FieldDefArg, Global, HierarchyArgs, NodeArg, PetalArg, VerseArg};
 
 /// DEC-C14: the 20-name mcp_scene_primitives vocabulary + 9 shipped extras = 29.
 static TOOLS: &[ToolSpec] = &[
@@ -247,6 +249,10 @@ static TOOLS: &[ToolSpec] = &[
         "Set one custom property (any JSON value) on a node. Requires editor role + the node's scope."),
     tool!(get_properties, Viewer, NodeArg("node_id"),
         "Read all custom properties of a node. Requires viewer role + the node's scope."),
+    tool!(get_field_schema, Viewer, FieldDefArg("field_def_id"),
+        "Read a field's enforced property schema and immutable revision list. Requires viewer role and the stored definition scope."),
+    tool!(set_field_schema, Manager, FieldDefArg("field_def_id"),
+        "Install the next bounded property-schema revision after validating current values. No implicit defaults or migrations. Requires manager role and stored definition scope."),
     tool!(delete_property, Editor, NodeArg("node_id"),
         "Delete one custom property from a node. Requires editor role + the node's scope."),
     tool!(create_waypoint, Editor, PetalArg("petal_id"),
@@ -471,6 +477,13 @@ async fn authorize(
             let scope = crate::rest::resolve_node_scope(state, node_id).await;
             (scope, ClaimedAncestry::default())
         }
+        ScopeRule::FieldDefArg(key) => {
+            let id = id_arg(args, key, is_valid_ulid)?;
+            (
+                crate::property_schema::definition_scope(state, id).await,
+                ClaimedAncestry::default(),
+            )
+        }
         ScopeRule::VerseArg(key) => {
             let verse_id = id_arg(args, key, is_valid_ulid)?;
             let scope = crate::rest::resolve_verse_scope(state, verse_id).await;
@@ -683,8 +696,10 @@ mod tests {
             );
             let schema = (spec.input_schema)();
             assert_eq!(schema["type"], "object", "{}", spec.name);
-            if let ScopeRule::PetalArg(key) | ScopeRule::NodeArg(key) | ScopeRule::VerseArg(key) =
-                spec.scope_rule
+            if let ScopeRule::PetalArg(key)
+            | ScopeRule::NodeArg(key)
+            | ScopeRule::VerseArg(key)
+            | ScopeRule::FieldDefArg(key) = spec.scope_rule
             {
                 assert!(
                     schema["required"]
@@ -697,7 +712,7 @@ mod tests {
         }
         assert_eq!(
             TOOLS.len(),
-            44,
+            46,
             "DEC-C14: 27 non-sim + 5 sim (p2p_asset_streaming S6 added set_petal_render_distance); \
              CDL-SPEC10 A5 added 4 R5 device tools (register/list_device_formats, \
              ingest/list_device_payloads); §screenshot added `screenshot`; \

@@ -14,6 +14,7 @@ pub mod node;
 pub mod path_asset;
 pub mod primitive;
 pub mod property;
+pub mod property_schema;
 pub mod query;
 pub mod scene;
 pub mod source_class;

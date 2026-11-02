@@ -440,6 +440,24 @@ pub(super) fn get_properties(call: ToolCall<'_>) -> ToolFuture<'_> {
     })
 }
 
+pub(super) fn get_field_schema(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        crate::property_schema::get_core(call.state, str_arg(call.args, "field_def_id")).await
+    })
+}
+
+pub(super) fn set_field_schema(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let descriptor = call
+            .args
+            .get("descriptor")
+            .cloned()
+            .ok_or("descriptor required")?;
+        crate::property_schema::set_core(call.state, str_arg(call.args, "field_def_id"), descriptor)
+            .await
+    })
+}
+
 pub(super) fn delete_property(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
         let dto = crate::rest::delete_property_core(
@@ -1260,6 +1278,14 @@ pub(super) mod schema {
 
     pub fn get_properties() -> Value {
         json!({ "type": "object", "properties": { "node_id": { "type": "string" } }, "required": ["node_id"] })
+    }
+
+    pub fn get_field_schema() -> Value {
+        json!({"type":"object", "properties":{"field_def_id":{"type":"string"}}, "required":["field_def_id"]})
+    }
+
+    pub fn set_field_schema() -> Value {
+        json!({"type":"object", "properties":{"field_def_id":{"type":"string"}, "descriptor":{"type":"object"}}, "required":["field_def_id","descriptor"]})
     }
 
     pub fn delete_property() -> Value {

@@ -1543,6 +1543,13 @@ pub fn spawn_db_thread_shared(
                             Err(e) => send_result(&tx, DbResult::Error(format!("Update field def failed: {e}"))),
                         }
                     }
+                    Ok(DbCommand::SetFieldSchema { field_def_id, descriptor, correlation_id }) => {
+                        let reply = match handlers::field_def::set_field_schema_handler(&db, &field_def_id, &descriptor).await {
+                            Ok(row) => DbResult::QueryResult { data: vec![row], correlation_id },
+                            Err(e) => handlers::correlated_failure(&correlation_id, format!("Set field schema failed: {e}")),
+                        };
+                        send_result(&tx, reply);
+                    }
                     Ok(DbCommand::DeleteFieldDef { field_def_id }) => {
                         match handlers::field_def::delete_field_def_handler(&db, &field_def_id).await {
                             Ok(()) => send_result(&tx, DbResult::FieldDefDeleted { field_def_id }),

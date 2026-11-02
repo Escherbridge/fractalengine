@@ -187,6 +187,10 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         )
         // Node properties
         .route(
+            "/api/v1/field-defs/by-id/{field_def_id}/schema",
+            get(crate::property_schema::get).put(crate::property_schema::put),
+        )
+        .route(
             "/api/v1/nodes/{node_id}/properties",
             patch(crate::rest::set_node_property).get(crate::rest::get_node_properties),
         )

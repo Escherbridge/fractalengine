@@ -194,3 +194,17 @@ and a blob response's `Content-Type` is built from it); it does NOT check unique
 same verse â€” that conflict check belongs to `fe-database::handlers::device_payload`, which is the
 only place that can see other rows. `schema` is informative JSON Schema only: R5 says payload bytes
 are stored opaque, so nothing in this crate or fe-database validates bytes against it in v1.
+
+## §property-schema
+
+`property_schema` implements the named **bounded property-schema** vocabulary, not
+JSON Schema. It uses existing serde dependencies; no resolver, `$ref`, network,
+coercion, implicit default or backfill. Each rule requires `type`:
+object/array/string/number/integer/boolean/null. Supported constraints:
+`nullable`, `enum`, `properties`, nested `required`, `additionalProperties`
+(boolean, default true), `items` (one rule), `minItems`/`maxItems`,
+`minLength`/`maxLength`, `minimum`/`maximum`. Unknown keywords and constraints on
+incompatible kinds fail. Required members must be declared. Outer properties
+remain optional; null needs permission. Limits: depth16, rule nodes256,
+encoded schema/property65536bytes. String length counts Unicode scalar values.
+Validation preserves JSON types. Device-format schema remains independent.

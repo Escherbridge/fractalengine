@@ -287,7 +287,8 @@ fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
         | DbCommand::ListDeviceFormats { correlation_id, .. }
         | DbCommand::InsertDevicePayloads { correlation_id, .. }
         | DbCommand::ListDevicePayloads { correlation_id, .. }
-        | DbCommand::RawQuery { correlation_id, .. } => correlation_id.as_deref(),
+        | DbCommand::RawQuery { correlation_id, .. }
+        | DbCommand::SetFieldSchema { correlation_id, .. } => correlation_id.as_deref(),
         DbCommand::ElevatedQuery { correlation_id, .. } => Some(correlation_id.as_str()),
         _ => None,
     }
@@ -407,7 +408,7 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
         ListFieldDefs { .. } => ReplyKind::FieldDefsListed,
         UpdateFieldDef { .. } => ReplyKind::FieldDefUpdated,
         DeleteFieldDef { .. } => ReplyKind::FieldDefDeleted,
-        RawQuery { .. } => ReplyKind::QueryResult,
+        RawQuery { .. } | SetFieldSchema { .. } => ReplyKind::QueryResult,
         ElevatedQuery { .. } => ReplyKind::ElevatedQuery,
         InsertIotReadings { .. } => ReplyKind::IotReadingsInserted,
         GetPetalTerrain {

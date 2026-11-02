@@ -20,6 +20,7 @@ pub(crate) async fn set_entity_property_handler(
     value: &serde_json::Value,
 ) -> anyhow::Result<()> {
     require_node_exists(db, node_id, "SetNodeProperty").await?;
+    super::field_def::validate_property(db, node_id, key, value).await?;
 
     let entry = OpLogEntry {
         lamport_clock: 0,
