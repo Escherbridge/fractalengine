@@ -381,6 +381,8 @@ def run_input(run, args, commands):
         return
     payload = decode_object(raw)
     result = {"token_verse": verse, "commands": commands}
+    if getattr(args, "locator_evidence", None):
+        result["locator"] = args.locator_evidence
     png = payload.pop("capture_after_png_base64", None) if isinstance(payload, dict) else None
     result["outcome"] = payload
     if png:
@@ -418,7 +420,9 @@ def command_move(run, args):
 
 def command_click(run, args):
     if args.name:
-        args.x, args.y = locate(run, args.name, args.role, args.nth, args.verse)
+        args.locator_evidence = {}
+        args.x, args.y = locate(run, args.name, args.role, args.nth, args.verse,
+                                evidence=args.locator_evidence)
     elif args.x is None or args.y is None:
         raise Refused(0, "missing_coordinates", "click needs X Y or --name TEXT")
     click = {"kind": "pointer_click", "x": args.x, "y": args.y, "button": args.button}
@@ -441,7 +445,9 @@ def command_key(run, args):
 
 def command_type(run, args):
     if args.into:
-        x, y = locate(run, args.into, args.role, args.nth, args.verse, input_only=True)
+        args.locator_evidence = {}
+        x, y = locate(run, args.into, args.role, args.nth, args.verse, input_only=True,
+                      evidence=args.locator_evidence)
         focus_args = argparse.Namespace(**vars(args))
         focus_args.capture = False
         run_input(run, focus_args, [{"kind":"pointer_click", "x":x, "y":y, "button":"left"}])
@@ -538,7 +544,28 @@ def tree_nodes(tree):
     return nodes
 
 
-def locate(run, name, role=None, nth=None, verse=None, input_only=False):
+def locator_rectangle(bounds, facts, window):
+    rectangles = [bounds, window]
+    if facts is not None:
+        if facts.get("allowed") is not True:
+            return None
+        rectangles.extend([facts.get("hit"), facts.get("clip")])
+    for rect in rectangles:
+        if not isinstance(rect, dict) or any(type(rect.get(k)) not in (int, float)
+                or not math.isfinite(rect[k]) for k in ("x", "y", "w", "h")):
+            raise Refused(0, "invalid_response", "locator geometry must contain finite rectangles")
+        if rect["w"] <= 0 or rect["h"] <= 0:
+            return None
+    left = max(rect["x"] for rect in rectangles)
+    top = max(rect["y"] for rect in rectangles)
+    right = min(rect["x"] + rect["w"] for rect in rectangles)
+    bottom = min(rect["y"] + rect["h"] for rect in rectangles)
+    if right <= left or bottom <= top:
+        return None
+    return {"x": left, "y": top, "w": right-left, "h": bottom-top}
+
+
+def locate(run, name, role=None, nth=None, verse=None, input_only=False, evidence=None):
     params = {"name":name, "interactive":1}
     if role:
         params["role"] = role
@@ -547,19 +574,25 @@ def locate(run, name, role=None, nth=None, verse=None, input_only=False):
     width, height = window.get("width"), window.get("height")
     if not isinstance(width, (int, float)) or not isinstance(height, (int, float)):
         raise Refused(0, "invalid_response", "primary window dimensions must be numbers")
+    controls = {control["id"]: control for control in tree.get("layout", {}).get("controls", [])}
+    window_rect = {"x": 0, "y": 0, "w": width, "h": height}
+    candidates = tree_nodes(tree)
+    exact = [node for node in candidates if node["name"].casefold() == name.casefold()]
+    if exact:
+        candidates = exact
     nodes = []
-    for node in tree_nodes(tree):
+    for node in candidates:
         bounds = node.get("bounds")
         if not node.get("enabled") or node.get("hidden") or not bounds:
             continue
         if input_only and node["role"] not in {"textinput","multilinetextinput","searchinput","passwordinput"}:
             continue
-        x, y = bounds["x"] + bounds["w"] / 2, bounds["y"] + bounds["h"] / 2
-        if 0 <= x < width and 0 <= y < height:
-            nodes.append(node)
-    exact = [n for n in nodes if n.get("name", "").casefold() == name.casefold()]
-    if exact:
-        nodes = exact
+        facts = controls.get(node["id"])
+        visible = locator_rectangle(bounds, facts, window_rect)
+        if visible is not None:
+            nodes.append(dict(node, locator_rect=visible,
+                              geometry_source="observed_hit_clip_window" if facts is not None
+                              else "bounds_window_fallback_clip_unknown"))
     if not nodes:
         raise Refused(0, "locator_not_found", "no enabled visible widget named " + name)
     if nth is None and len(nodes) != 1:
@@ -567,9 +600,13 @@ def locate(run, name, role=None, nth=None, verse=None, input_only=False):
     index = nth if nth is not None else 0
     if index < 0 or index >= len(nodes):
         raise Refused(0, "locator_index", "--nth is zero-based and outside the matching candidates")
-    bounds = require_object(nodes[index]["bounds"], "widget bounds")
+    selected = nodes[index]
+    bounds = require_object(selected["locator_rect"], "visible widget bounds")
     if bounds.get("w", 0) <= 0 or bounds.get("h", 0) <= 0:
         raise Refused(0, "empty_widget_bounds", "locator has no clickable rectangle")
+    if evidence is not None:
+        evidence.update({"id": selected["id"], "name": selected["name"], "role": selected["role"],
+                         "geometry_source": selected["geometry_source"], "visible_rect": bounds})
     return bounds["x"] + bounds["w"] / 2, bounds["y"] + bounds["h"] / 2
 
 

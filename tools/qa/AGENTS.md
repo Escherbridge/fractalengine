@@ -312,3 +312,14 @@ prevents historical PASS rows from overriding current failures. Reused artifacts
 assertions from the same actual state/actions. This validator checks reported evidence and byte integrity; pixel
 judgment and truth of assertions still need the agent and independent reviewer. No scenario, file existence or
 unreviewed hash alone counts as exercised feature coverage.
+
+## Locator visibility
+
+Named input intersects a same-pass observed control's hit rectangle, clip and
+primary window before choosing its center. Empty, negative or disallowed hits
+are refused. Exact names take priority before visibility filtering, so an
+invisible exact target cannot fall back to a similarly named visible action.
+Scrolling an off-clip menu item into view is a real prerequisite, even when
+AccessKit still reports its full bounds and hidden=false. Input results expose
+the chosen rectangle and whether geometry came from observed hit/clip data or
+an explicit bounds/window fallback with clipping unknown.
