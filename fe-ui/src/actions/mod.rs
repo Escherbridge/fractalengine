@@ -1332,7 +1332,11 @@ pub(crate) fn process_ui_actions(
                     ui_mgr.show_advisory("Path changed since this menu opened; reopen its menu before editing", now_secs);
                     continue;
                 }
-                path::set_anchor_corner(&mut path_ops, &mut path_state, track_node_id, index, corner);
+                match path::queue_checked_corner(&mut undo, &nav, &verse_mgr, &mut path_ops, &path_state, track_node_id, index, corner, &origin) {
+                    Ok(Some(_)) => ui_mgr.show_toast("Saving path corner…", now_secs),
+                    Ok(None) => {}
+                    Err(reason) => ui_mgr.show_advisory(reason, now_secs),
+                }
             }
             UiAction::PathSetAnchorCorner {track_node_id,index,corner} => {
                 if !active_path_edit_allowed(&local_role,&nav,&verse_mgr,&path_state,&track_node_id) {ui_mgr.show_advisory("Editor access is unavailable or path changed",now_secs);continue;}

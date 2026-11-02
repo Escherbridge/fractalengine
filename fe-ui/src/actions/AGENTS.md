@@ -408,4 +408,10 @@ without changing editor rows. The same full route and navigation survive the asy
 read; changed order or metadata refuses before any write. Ordinary Pen corner/smoothness controls
 produce one combined typed intent rather than separate corner/handle writes competing for Undo.
 
-ContextSetAnchorCorner is the viewport-menu-only origin-bearing corner intent. It checks the original route, active node/Petal, advisory Editor access and point index before the ordinary path edit. Other path-editor producers keep their existing action shape.
+ContextSetAnchorCorner is the viewport-menu-only origin-bearing corner intent. It checks the original route, active node/Petal, advisory Editor access and point index before the checked path reservation. Other path-editor producers keep their existing action shape.
+
+The ContextSetAnchorCorner adapter now passes that original origin into
+path::queue_checked_corner, reserving one checked metadata intent. It never
+uses the plain asynchronous SetAnchorCorner path or changes editor rows before
+the receipt. The Path-owned journey exercises a stored-route reorder after
+dispatch and before readback, refusing any commit or projection.
