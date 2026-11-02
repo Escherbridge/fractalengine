@@ -352,11 +352,80 @@ Independent review must establish that the captures and no-effect readbacks are
 real; a schema validator cannot authenticate invented evidence.
 
 Positive input-off OS cases cannot borrow this negative exception. They need a
-separately implemented trustworthy owned-stdout window (exact run/PID/start/exe
-and path, bounded before/after offsets, captured bytes/hash, redaction and actual
-warning inventory). That adapter is not implemented here. Keep those positive
-cases UNKNOWN/BLOCKED until ordinary trustworthy logging is available; do not
-enable synthetic input or treat an old focused OS record as FULL acceptance.
+trustworthy ordinary log window; the local owned-stdout adapter below supplies
+that alternative without enabling input or broadening negative exceptions. A
+missing, failed or unsupported window remains UNKNOWN/BLOCKED. An old focused OS
+record without the actual window is not FULL acceptance.
+
+### Input-off OS stdout windows
+
+`owned_stdout.py` is a local operator CLI, not an API/browser control. It accepts
+only the current catalog's F114/F115 OS checkpoints and a canonical exact QA run
+timestamp. The run's current.json must record synthetic input off, current stage
+provenance and the exact PID, .NET UTC creation ticks and stage executable. Begin
+and end open and retain the live process handle, verify its full executable path
+and creation time, and recheck liveness before publication. They never enumerate
+processes, change focus, inject input, read tokens or change application state.
+
+The Windows-only file adapter pins every existing ancestor with native handles,
+rejects reparse points, aliases, UNC/ADS/device/reserved paths and wrong types,
+and denies delete sharing. The source is only current.json's canonical
+`<run>/stdout.log` or `<run>/starts/<current-attempt>/stdout.log`. Volume/file ID,
+process lifetime and source/stage binding must remain equal. Each source prefix
+scan is capped at64MiB; the captured byte window is at most1MiB. Offsets cannot
+regress or split a line. Prefix changes, truncation, replacement, restart,
+unknown line syntax and invalid UTF-8 refuse completion. Log lines must have the
+native ISO timestamp, explicit TRACE/DEBUG/INFO/WARN/ERROR and target format;
+other output is unknown, not silently ignored. ANSI presentation escapes are
+removed only for classification. Hashes still cover original bytes.
+
+Receipts are created with CREATE_NEW in a pre-existing, pinned current-pass
+directory. No directory is created and no existing receipt is overwritten. The
+CLI requires a plain JSON filename; failure/partial output or a nonzero exit is
+not successful capture. Keep begin/end filenames unique to their checkpoint.
+
+```powershell
+python tools/qa/owned_stdout.py begin --run-id $qaRunId --pass-id $qaPass --checkpoint F115.frame-sample-summary --out os-log-before.json
+# Run the actual bounded input-off OS helper/timing action and retain its report.
+python tools/qa/owned_stdout.py end --run-id $qaRunId --pass-id $qaPass --checkpoint F115.frame-sample-summary --begin os-log-before.json --out os-log-after.json
+```
+
+Both receipts carry pass/run/checkpoint, stage commit/fingerprint, process
+identity, canonical source path, volume/file ID, observed-live flag, byte offset
+and original prefix SHA256. End additionally binds the begin receipt SHA256,
+original window SHA256 and a deterministic redacted projection. Every message
+AND target is withheld because stdout has no trustworthy event scope. Only line
+number, level and original line hash remain. No original stdout bytes, JWT,
+credential, URL or arbitrary message is copied into artifacts or printed. Keep
+the original private source for independent recomputation; do not attach it to
+the pass. The printed CLI result contains only artifact path/hash and operation.
+
+Ordinary OS PASS uses exactly
+`log_source:{kind:"owned_stdout",begin_artifact:"qa/passes/<NN>/os-log-before.json",end_artifact:"qa/passes/<NN>/os-log-after.json"}`.
+Both receipts must also be uniquely declared, hash-validated `tool`/`os`
+artifacts in that same pass; the independent UIAutomation/timing report is still
+required to prove the feature. Do not mix ring watermark/after/retention,
+unavailable fields or a negative exception into this record. `new_logs` must
+match every WARN/ERROR in the redacted end projection exactly and in order,
+adding only `expected:true` and a nonempty independently reviewed reason. Missing
+or extra warnings and unreviewed errors refuse PASS. Never copy a secret into a
+reason. This inventory covers the recorded stdout interval, not all historical
+startup output or a separately written stderr stream.
+
+Coverage audit reopens pinned artifacts and the original owned source, checks
+current run/stage/process attribution, file ID, byte bounds, prefix/window hashes
+and the entire redacted projection. A later append is allowed; changes within
+the captured prefixes are not. Audit may run after cleanup and does not require
+the completed process to stay alive. A changed current process receipt after a
+restart is refused conservatively: retain dedicated OS roots until their audit.
+Receipts are not cryptographic historical process attestation; independent
+review must retain successful CLI outcomes and actual owned-lifetime evidence.
+The final audit recomputes bytes, not past process liveness.
+
+End must happen while the exact app is alive. A terminal close whose process has
+already exited cannot be closed by this adapter; keep that separate case
+UNKNOWN/BLOCKED unless it has another reviewed source. No dead/reused PID is
+treated as live and no lingering native child substitutes for the root process.
 
 The existing J09 validator and S10 layout journeys use the retained offline
 packet `scenarios/evidence-boundaries.py`. Run it once in the final integrated
@@ -365,6 +434,13 @@ the actual strict coverage CLI and layout classifier over explicit synthetic
 cases, saves each input and result, and exits2 on a mismatched expectation.
 Its fabricated stage/run and response fixtures are marked offline and contribute
 zero application checkpoints; never merge their ledgers into the real pass.
+The Windows extension also exercises actual final-audit CLI acceptance/refusal
+over retained synthetic stdout files and real file identities: reviewed/empty
+inventories, later append, missing warnings, truncation, replacement, modified
+prefix, changed lifetime, forged file/projection, partial/unclassified lines,
+bounds, input-on, wrong source/executable, mixed ring and non-OS cases. Those
+fixtures deliberately skip live-process admission and use no running app. Root
+still needs separate live begin/end and exact-lifetime refusal evidence.
 
 ### Degenerate nested scroll observations
 

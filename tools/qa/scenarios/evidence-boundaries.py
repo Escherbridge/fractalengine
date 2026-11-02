@@ -16,6 +16,8 @@ output.mkdir(parents=True, exist_ok=False)
 tools = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(tools))
 from layout_check import analyze
+from owned_stdout import context, digest, prefix_hash, window_projection
+from owned_stdout_windows import WindowsLease
 
 identity = {"pass_id": "fixture", "run_id": "offline-owned-fixture"}
 before = {"camera": {"pose": {"position": [0, 1, 2]}}, "hierarchy": {"verses": []}}
@@ -177,6 +179,114 @@ for label, expected, viewport_change in layout_cases:
     (output / (label + ".json")).write_text(json.dumps(fixture, indent=2), encoding="utf-8")
     results.append({"case": label, "passed": passed, "expected": expected,
                     "violations": violations, "unknown": unknown, "intentional": intentional})
+stdout_cases = [("stdout-info", True), ("stdout-reviewed-warning", True), ("stdout-later-append", True),
+    ("stdout-missing-warning", False), ("stdout-unreviewed-warning", False), ("stdout-truncated", False),
+    ("stdout-replaced", False), ("stdout-prefix-modified", False), ("stdout-restarted", False),
+    ("stdout-forged-liveness", False), ("stdout-forged-file-id", False), ("stdout-forged-projection", False),
+    ("stdout-unclassified-line", False), ("stdout-partial-line", False), ("stdout-oversized", False),
+    ("stdout-input-on", False), ("stdout-wrong-path", False), ("stdout-wrong-executable", False),
+    ("stdout-mixed-ring", False), ("stdout-not-os", False), ("stdout-foreign-begin", False)]
+for label, expected in stdout_cases:
+    root = output / label
+    checkpoint, run_id = "F114.named-buttons", "20261102-120000-000"
+    evidence = root / "qa" / "passes" / "fixture"
+    run = root / ".qa" / "run" / run_id
+    stage = root / ".qa" / "stage" / "offline-validator-fixture"
+    for directory in (evidence, run, stage):
+        directory.mkdir(parents=True)
+    executable = stage / "fractalengine.exe"
+    executable.write_bytes(b"offline validator placeholder; not an application")
+    current = {"run_dir": str(run), "stage": str(stage), "stage_matches_source": True,
+        "stage_manifest": {"source_commit": "7f51de19", "source_fingerprint": "a" * 64},
+        "qa_options": {"synthetic_input": False}, "stdout_path": str(run / "stdout.log"),
+        "process_identity": {"pid": 42, "start_ticks": "639000000000000000", "exe_path": str(executable)}}
+    current_path = run / "current.json"
+    current_path.write_text(json.dumps(current), encoding="utf-8")
+    prefix = b"2026-11-02T12:00:00.000000Z INFO qa_fixture: baseline\n"
+    level = "WARN" if label in {"stdout-reviewed-warning", "stdout-missing-warning", "stdout-unreviewed-warning"} else "INFO"
+    raw = ("2026-11-02T12:00:01.000000Z " + level + " qa_fixture: synthetic private-message sentinel\n").encode()
+    source_path = run / "stdout.log"
+    source_path.write_bytes(prefix + raw)
+    # This exercises final offline verification, not the CLI's live-process admission.
+    with WindowsLease() as lease:
+        pinned, binding = context(lease, root, "fixture", run_id, checkpoint, live=False)
+        begin = {**binding, "schema": "fe-qa-owned-stdout-begin-v1", "observed_live": True,
+                 "offset": len(prefix), "prefix_sha256": prefix_hash(pinned, len(prefix))}
+        end = {**binding, "schema": "fe-qa-owned-stdout-window-v1", "observed_live": True,
+            "offset": len(prefix + raw), "prefix_sha256": prefix_hash(pinned, len(prefix + raw)),
+            "raw_window_sha256": digest(raw), "projection": window_projection(raw)}
+    if label == "stdout-truncated":
+        source_path.write_bytes(prefix)
+    elif label == "stdout-replaced":
+        source_path.rename(run / "original-stdout.log")
+        source_path.write_bytes(prefix + raw)
+    elif label == "stdout-prefix-modified":
+        source_path.write_bytes(prefix.replace(b"baseline", b"modified") + raw)
+    elif label == "stdout-restarted":
+        current["process_identity"]["start_ticks"] = "639000000000000001"
+    elif label == "stdout-forged-liveness":
+        begin["observed_live"] = False
+    elif label == "stdout-forged-file-id":
+        end["source_identity"] = {"volume": "00000000", "file_id": "0000000000000000"}
+    elif label == "stdout-forged-projection":
+        end["projection"]["lines"][0]["message"] = "unredacted synthetic message"
+    elif label in {"stdout-unclassified-line", "stdout-partial-line"}:
+        raw = b"unclassified fixture output\n" if label.endswith("unclassified-line") else raw[:-1]
+        source_path.write_bytes(prefix + raw)
+        end.update(offset=len(prefix + raw), prefix_sha256=digest(prefix + raw), raw_window_sha256=digest(raw))
+    elif label == "stdout-oversized":
+        end["offset"] = len(prefix) + 1024 * 1024 + 1
+    elif label == "stdout-input-on":
+        current["qa_options"]["synthetic_input"] = True
+    elif label == "stdout-wrong-path":
+        current["stdout_path"] = str(run / "unowned.log")
+    elif label == "stdout-wrong-executable":
+        current["process_identity"]["exe_path"] = str(run / "unowned.exe")
+    elif label == "stdout-later-append":
+        with source_path.open("ab") as handle:
+            handle.write(b"2026-11-02T12:00:02.000000Z INFO qa_fixture: later independent window\n")
+    elif label == "stdout-foreign-begin":
+        begin["run_id"] = "20261101-120000-000"
+    current_path.write_text(json.dumps(current), encoding="utf-8")
+    begin_bytes = json.dumps(begin, sort_keys=True).encode()
+    end["begin_receipt_sha256"] = digest(begin_bytes)
+    end_bytes = json.dumps(end, sort_keys=True).encode()
+    (evidence / "begin.json").write_bytes(begin_bytes)
+    (evidence / "end.json").write_bytes(end_bytes)
+    reachability = "A" if label == "stdout-not-os" else "O"
+    catalog = {"catalog_source_fingerprint": "a" * 64,
+        "families": [{"id": "F114", "region": "R9", "requires_persistence": False}],
+        "checkpoints": [{"id": checkpoint, "family": "F114", "reachability": reachability}],
+        "gold_tasks": {"G9": [checkpoint]}}
+    warnings = [{**entry, "expected": True, "reason": "known synthetic offline warning"}
+                for entry in end["projection"]["warnings"]]
+    if label == "stdout-missing-warning":
+        warnings = []
+    elif label == "stdout-unreviewed-warning":
+        warnings[0]["expected"] = False
+    record = {"pass_id": "fixture", "run_id": run_id, "checkpoint": checkpoint, "outcome": "PASS",
+        "stage_commit": "7f51de19", "stage_fingerprint": "a" * 64,
+        "commands": ["offline validator fixture; no app or live-process capture"],
+        "assertions": [{"name": "fixture", "expected": "fixture", "actual": "fixture", "passed": True}],
+        "log_source": {"kind": "owned_stdout", "begin_artifact": "qa/passes/fixture/begin.json",
+                       "end_artifact": "qa/passes/fixture/end.json"}, "new_logs": warnings,
+        "artifacts": [{"path": "qa/passes/fixture/begin.json", "kind": "tool", "sha256": digest(begin_bytes)},
+                      {"path": "qa/passes/fixture/end.json", "kind": "os", "sha256": digest(end_bytes)}]}
+    if label == "stdout-not-os":
+        record["artifacts"][0]["kind"] = "api"
+    if label == "stdout-mixed-ring":
+        record["log_watermark"] = {"generation": 1, "seq": 1}
+    (root / "catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
+    ledger = evidence / "checkpoints.jsonl"
+    ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    command = [sys.executable, str(tools / "coverage.py"), "--root", str(root), "--catalog", str(root / "catalog.json"),
+        "--ledger", str(ledger), "--pass-id", "fixture", "--run-id", run_id,
+        "--stage-commit", "7f51de19", "--stage-fingerprint", "a" * 64, "--require-complete"]
+    completed = subprocess.run(command, capture_output=True, text=True, timeout=15, check=False)
+    results.append({"case": label, "expected_accepted": expected, "exit_code": completed.returncode,
+        "passed": completed.returncode == (0 if expected else 2), "command": command,
+        "stdout": completed.stdout, "stderr": completed.stderr,
+        "limit": "synthetic final-audit fixtures; live begin/end process checks remain separately required"})
 summary = {"scope": "offline synthetic validator fixtures; zero application checkpoint coverage",
            "passed": all(result["passed"] for result in results), "cases": results}
 (output / "results.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")

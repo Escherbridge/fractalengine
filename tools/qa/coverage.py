@@ -128,6 +128,10 @@ def validate_gate_off_logs(root, checkpoint, record):
 
 
 def validate_logs(root, checkpoint, record):
+    if "log_source" in record:
+        from owned_stdout import validate_record
+        validate_record(root, checkpoint, record)
+        return
     name = checkpoint["id"]
     require("new_logs_unavailable" not in record,
             name + ": unavailable post-action logs cannot PASS")
