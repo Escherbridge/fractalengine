@@ -20,7 +20,7 @@ use crate::accessibility::ResponseExt;
 use crate::panels::toolbar::{
     mode_button_fill, stash_input_context, tool_tooltip_text, InputContext, TOOL_DEFS,
 };
-use crate::plugin::ToolState;
+use crate::plugin::{LocalUserRole, ToolState};
 use crate::theme;
 use crate::ui_shell::left_sidebar::LeftSidebarState;
 use crate::ui_shell::right_sidebar::{RightSidebarSection, RightSidebarState};
@@ -489,7 +489,10 @@ pub fn render_close_confirmation(
     egui::Modal::new(egui::Id::new("close-fractalengine-confirmation")).show(ctx, |ui| {
         ui.heading("Close FractalEngine?");
         ui.label("Close this window and end the current session?");
-        if matches!(&ui_mgr.active_dialog, crate::dialogs::ActiveDialog::PetalManifest { dirty: true, .. }) {
+        if matches!(
+            &ui_mgr.active_dialog,
+            crate::dialogs::ActiveDialog::PetalManifest { dirty: true, .. }
+        ) {
             ui.label("Unsaved Petal requirements will be discarded. Cancel to keep editing.");
         }
         if session.persistence_available && !session.is_saved(&settings) {
@@ -507,19 +510,22 @@ pub fn render_close_confirmation(
     });
 }
 
-fn tool_buttons(ui: &mut egui::Ui, tool: &mut ToolState, right: &mut RightSidebarState) {
+fn tool_buttons(
+    ui: &mut egui::Ui,
+    tool: &mut ToolState,
+    right: &mut RightSidebarState,
+    role: &LocalUserRole,
+) {
     for def in &TOOL_DEFS {
         let active = tool.active_tool == def.tool;
         // tool_inspector_ux_20260719 (FR-1): active MODE reads via
         // luminance, not a saturated-blue hue (ui_ux.md §1).
-        let caption = if ui.ctx().viewport_rect().width() < 1160.0 {
-            def.glyph.to_owned()
-        } else {
-            format!("{} {}", def.glyph, def.name)
-        };
+        let caption = format!("{} {}", def.glyph, def.name);
         let btn = egui::Button::new(caption).fill(mode_button_fill(active));
-        if super::layout_policy::action(ui, btn, def.name)
+        let allowed = !def.tool.requires_edit() || role.can_edit();
+        if ui.add_enabled_ui(allowed, |ui| super::layout_policy::action(ui, btn, def.name)).inner
             .on_hover_text(tool_tooltip_text(def))
+            .on_disabled_hover_text("Editor access is required to edit objects or terrain in the current scope. Select and Measure remain available.")
             .clicked()
         {
             // D1/D9: one activation writer — re-press toggles to
@@ -602,12 +608,54 @@ fn section_buttons(
     }
 }
 
+fn help_button(ui: &mut egui::Ui, keyboard_toggle: bool) {
+    let response =
+        super::layout_policy::action(ui, egui::Button::new("?"), "Open keyboard and pointer help")
+            .on_hover_text("Keyboard and pointer controls (?)");
+    let id = egui::Id::new("fractalengine_shortcut_help");
+    if keyboard_toggle {
+        if egui::Popup::is_id_open(ui.ctx(), id) {
+            egui::Popup::close_id(ui.ctx(), id);
+        } else {
+            egui::Popup::open_id(ui.ctx(), id);
+        }
+    }
+    egui::Popup::from_toggle_button_response(&response)
+        .id(id)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_max_width(420.0_f32.min((ui.ctx().viewport_rect().width() - 32.0).max(160.0)));
+            egui::ScrollArea::vertical().max_height((ui.ctx().viewport_rect().height() - 100.0).max(120.0)).show(ui, |ui| {
+                ui.heading("Keyboard and pointer controls");
+                for def in &TOOL_DEFS {
+                    ui.label(format!("{} - {}", def.key, def.name));
+                }
+                ui.separator();
+                for text in [
+                    "Middle drag: orbit; Shift + middle drag: pan; wheel: zoom",
+                    "F: frame selection; Delete: request object deletion",
+                    "Ctrl/Cmd+B: hierarchy; Ctrl/Cmd+Shift+B: inspector sidebar",
+                    "Ctrl/Cmd+Z: Undo transforms / one point; Ctrl/Cmd+Shift+Z: Redo",
+                    "H: hide selected object; Shift+H: show branch; Alt+H: isolate selection",
+                    "Escape: cancel the current step; right-click: cancel gesture or open menu",
+                    "Shortcuts pause while typing or using a popup. Editing requires Editor access.",
+                ] {
+                    ui.add(egui::Label::new(text).wrap());
+                }
+                if super::layout_policy::action(ui, egui::Button::new("Close help"), "Close keyboard and pointer help").clicked() {
+                    ui.close();
+                }
+            });
+        });
+}
+
 /// Renders the top toolbar. Migrated verbatim from `panels::toolbar::top_toolbar`
 /// (FR-4). The former "Tools" button is the **Options** toggle since D7 — the
 /// `PathTools` section it used to reveal is retired into the Options
 /// dispatcher's Pen arm. Section buttons here write `RightSidebarState::toggle`
 /// directly rather than `UiAction::RevealSection`: they are TOGGLES (re-press
 /// closes), and the addressable reveal action is deliberately idempotent.
+#[allow(clippy::too_many_arguments)]
 pub fn render_topbar(
     ctx: &egui::Context,
     topbar: &mut TopbarState,
@@ -616,10 +664,23 @@ pub fn render_topbar(
     gis_panel: &mut crate::gis::GisPanelState,
     left: &mut LeftSidebarState,
     right: &mut RightSidebarState,
+    role: &LocalUserRole,
 ) {
+    let keyboard_owned = ctx.wants_keyboard_input() || egui::Popup::is_any_open(ctx);
+    let help_id = egui::Id::new("fractalengine_shortcut_help");
+    let help_keyboard_toggle = !ctx.wants_keyboard_input()
+        && (!egui::Popup::is_any_open(ctx) || egui::Popup::is_id_open(ctx, help_id))
+        && ctx.input(|input| {
+            !input.modifiers.command
+                && !input.modifiers.alt
+                && input
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, egui::Event::Text(text) if text == "?"))
+        });
     // FR-3 (D-A11): keyboard shortcut for the user-sticky left-sidebar toggle
     // (Ctrl/Cmd+B). Flips session-scoped intent; the manager honors it verbatim.
-    if !ctx.wants_keyboard_input()
+    if !keyboard_owned
         && ctx.input(|i| {
             i.key_pressed(egui::Key::B)
                 && i.modifiers.command
@@ -664,26 +725,32 @@ pub fn render_topbar(
 
                 // FR-3: explicit left-sidebar toggle (the only reveal/hide path
                 // now that auto-collapse is gone). Active fill = currently open.
-                if ui
-                    .add(egui::Button::new("\u{2630}").fill(mode_button_fill(left.user_intent)))
-                    .named(ui, "Toggle hierarchy sidebar")
-                    .on_hover_text("Toggle left sidebar (Ctrl+B)")
-                    .clicked()
+                if super::layout_policy::action(
+                    ui,
+                    egui::Button::new("\u{2630}").fill(mode_button_fill(left.user_intent)),
+                    "Toggle hierarchy sidebar",
+                )
+                .on_hover_text("Toggle left sidebar (Ctrl+B)")
+                .clicked()
                 {
                     left.user_intent = !left.user_intent;
                 }
                 ui.separator();
 
-                let compact = ctx.viewport_rect().width() < 760.0;
+                let compact = ctx.viewport_rect().width() < 1160.0;
                 if compact {
                     ui.menu_button("Tools", |ui| {
-                        tool_buttons(ui, tool, right);
-                        if node_mgr.selected_entity().is_some() && ui.button("Deselect").observed(ui).clicked() {
+                        tool_buttons(ui, tool, right, role);
+                        if node_mgr.selected_entity().is_some()
+                            && ui.button("Deselect").observed(ui).clicked()
+                        {
                             node_mgr.deselect();
                         }
-                    }).response.observed(ui);
+                    })
+                    .response
+                    .observed(ui);
                 } else {
-                    tool_buttons(ui, tool, right);
+                    tool_buttons(ui, tool, right, role);
                 }
                 // Publish the frame's input context for the egui-side surfaces
                 // that cannot read Bevy resources (viewport hint + right-click).
@@ -712,9 +779,12 @@ pub fn render_topbar(
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         caption_buttons(ui, topbar);
                         ui.separator();
+                        help_button(ui, help_keyboard_toggle);
 
                         if compact {
-                            ui.menu_button("Panels", |ui| section_buttons(ui, gis_panel, right)).response.observed(ui);
+                            ui.menu_button("Panels", |ui| section_buttons(ui, gis_panel, right))
+                                .response
+                                .observed(ui);
                         } else {
                             section_buttons(ui, gis_panel, right);
                         }
@@ -776,6 +846,120 @@ mod tests {
         tool.activate(Tool::Brush, &mut right);
         assert_eq!(tool.active_tool, Tool::Select, "re-press rests on Select");
         assert_eq!(right.requested, None);
+
+        let mut bar = TitleBarHarness::new();
+        bar.role.role = Some(fe_database::RoleLevel::Viewer);
+        bar.frame(Vec::new());
+        for def in &TOOL_DEFS {
+            if def.tool.requires_edit() {
+                let at = bar.text_center(&format!("{} {}", def.glyph, def.name));
+                bar.click(at);
+                assert_eq!(
+                    bar.tool.active_tool,
+                    Tool::Select,
+                    "Viewer cannot activate {}",
+                    def.name
+                );
+            }
+        }
+        let measure = TOOL_DEFS
+            .iter()
+            .find(|def| def.tool == Tool::Measure)
+            .unwrap();
+        bar.click(bar.text_center(&format!("{} {}", measure.glyph, measure.name)));
+        assert_eq!(bar.tool.active_tool, Tool::Measure);
+        bar.role.role = Some(fe_database::RoleLevel::Owner);
+        bar.frame(Vec::new());
+        let move_def = TOOL_DEFS.iter().find(|def| def.tool == Tool::Move).unwrap();
+        bar.click(bar.text_center(&format!("{} {}", move_def.glyph, move_def.name)));
+        assert_eq!(bar.tool.active_tool, Tool::Move);
+        assert!(bar.right.is_active(RightSidebarSection::Options));
+
+        let help = egui::Id::new("fractalengine_shortcut_help");
+        bar.click(bar.text_center("?"));
+        assert!(egui::Popup::is_id_open(&bar.ctx, help));
+        bar.frame(Vec::new());
+        assert!(bar
+            .painted_texts
+            .iter()
+            .any(|(text, _)| text == "Keyboard and pointer controls"));
+        for def in &TOOL_DEFS {
+            assert!(bar
+                .painted_texts
+                .iter()
+                .any(|(text, _)| text == &format!("{} - {}", def.key, def.name)));
+        }
+        bar.click(bar.text_center("Close help"));
+        assert!(!egui::Popup::is_id_open(&bar.ctx, help));
+        bar.frame(vec![egui::Event::Text("?".into())]);
+        assert!(
+            egui::Popup::is_id_open(&bar.ctx, help),
+            "keyboard opens the same help"
+        );
+        let left_before = bar.left.user_intent;
+        bar.frame(vec![egui::Event::Key {
+            key: egui::Key::B,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                ctrl: true,
+                command: true,
+                ..Default::default()
+            },
+        }]);
+        assert_eq!(
+            bar.left.user_intent, left_before,
+            "popup owns keyboard shortcuts"
+        );
+        bar.frame(vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        assert!(!egui::Popup::is_id_open(&bar.ctx, help));
+
+        bar.node_mgr.select(Entity::PLACEHOLDER, "selected-node");
+        for width in [1024.0, 1280.0, 1920.0] {
+            bar.screen = egui::vec2(width, 720.0);
+            bar.frame(Vec::new());
+            bar.frame(Vec::new());
+            let observations = super::super::layout_policy::observations(&bar.ctx);
+            let actions = observations
+                .controls
+                .iter()
+                .filter(|control| control.clickable && control.rect.width() < width - 1.0)
+                .collect::<Vec<_>>();
+            for (index, left) in actions.iter().enumerate() {
+                for right in actions.iter().skip(index + 1) {
+                    if left.id != right.id {
+                        let overlap = left.rect.intersect(right.rect);
+                        assert!(
+                            overlap.width() <= 0.1 || overlap.height() <= 0.1,
+                            "{width}: actions overlap {:?} {:?}",
+                            left.rect,
+                            right.rect
+                        );
+                    }
+                }
+            }
+            for control in &observations.controls {
+                if control.clickable && control.rect.width() < width - 1.0 {
+                    assert!(
+                        control.hit.width() >= 24.0 && control.hit.height() >= 24.0,
+                        "{width}: {:?}",
+                        control.hit
+                    );
+                    assert!(
+                        control.clip.contains_rect(control.rect),
+                        "{width}: clipped action {:?}",
+                        control.rect
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -820,6 +1004,9 @@ mod tests {
         gis_panel: crate::gis::GisPanelState,
         left: LeftSidebarState,
         right: RightSidebarState,
+        role: LocalUserRole,
+        screen: egui::Vec2,
+        painted_texts: Vec<(String, egui::Rect)>,
     }
 
     impl TitleBarHarness {
@@ -833,6 +1020,11 @@ mod tests {
                 gis_panel: crate::gis::GisPanelState::default(),
                 left: LeftSidebarState::default(),
                 right: RightSidebarState::default(),
+                role: LocalUserRole {
+                    role: Some(fe_database::RoleLevel::Owner),
+                },
+                screen: SCREEN,
+                painted_texts: Vec::new(),
             };
             harness.frame(Vec::new()); // lay out once: hit tests use last frame's rects
             harness
@@ -841,8 +1033,19 @@ mod tests {
         /// Run one frame; returns the chrome request the bar raised in it.
         fn frame(&mut self, events: Vec<egui::Event>) -> Option<WindowChromeRequest> {
             self.time += 0.05;
+            super::super::layout_policy::begin_frame(&self.ctx, true);
+            super::super::layout_policy::apply_style(&self.ctx);
+            let modifiers = events
+                .iter()
+                .rev()
+                .find_map(|event| match event {
+                    egui::Event::Key { modifiers, .. } => Some(*modifiers),
+                    _ => None,
+                })
+                .unwrap_or(egui::Modifiers::NONE);
             let raw = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, SCREEN)),
+                modifiers,
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.screen)),
                 time: Some(self.time),
                 events,
                 ..Default::default()
@@ -855,13 +1058,49 @@ mod tests {
                 gis_panel,
                 left,
                 right,
+                role,
                 ..
             } = self;
-            let _ = ctx.run(raw, |ctx| {
-                render_topbar(ctx, topbar, tool, node_mgr, gis_panel, left, right);
+            let output = ctx.run(raw, |ctx| {
+                render_topbar(ctx, topbar, tool, node_mgr, gis_panel, left, right, role);
                 render_window_resize_grips(ctx, topbar);
             });
+            fn collect(
+                shape: &egui::epaint::Shape,
+                clip: egui::Rect,
+                texts: &mut Vec<(String, egui::Rect)>,
+            ) {
+                match shape {
+                    egui::epaint::Shape::Text(text) => {
+                        let bounds = egui::Rect::from_min_size(text.pos, text.galley.size());
+                        if clip.contains_rect(bounds) {
+                            texts.push((text.galley.text().to_owned(), bounds));
+                        }
+                    }
+                    egui::epaint::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect(shape, clip, texts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            self.painted_texts.clear();
+            for shape in &output.shapes {
+                collect(&shape.shape, shape.clip_rect, &mut self.painted_texts);
+            }
             self.topbar.chrome_request.take()
+        }
+
+        fn text_center(&self, caption: &str) -> egui::Pos2 {
+            self.painted_texts
+                .iter()
+                .find(|(text, _)| text == caption)
+                .unwrap_or_else(|| {
+                    panic!("missing visible text {caption}: {:?}", self.painted_texts)
+                })
+                .1
+                .center()
         }
 
         fn button(pos: egui::Pos2, pressed: bool) -> egui::Event {

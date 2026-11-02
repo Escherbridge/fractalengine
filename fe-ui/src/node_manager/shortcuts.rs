@@ -36,13 +36,11 @@ enum Shortcut {
 
 impl Shortcut {
     fn requires_edit(self) -> bool {
-        matches!(
-            self,
-            Self::DeleteSelection
-                | Self::Undo
-                | Self::Redo
-                | Self::Activate(Tool::Move | Tool::Rotate | Tool::Scale | Tool::Pen | Tool::Brush)
-        )
+        match self {
+            Self::Activate(tool) => tool.requires_edit(),
+            Self::DeleteSelection | Self::Undo | Self::Redo => true,
+            _ => false,
+        }
     }
 }
 

@@ -168,6 +168,7 @@ pub fn gardener_console(
             gis_panel,
             left_state,
             right_state,
+            local_role,
         )
     });
     // Never guarded: hosts the persistent guard-error segment below (Q-5) —

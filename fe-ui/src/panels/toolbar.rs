@@ -24,6 +24,15 @@ pub enum Tool {
     Measure,
 }
 
+impl Tool {
+    pub(crate) fn requires_edit(self) -> bool {
+        matches!(
+            self,
+            Self::Move | Self::Rotate | Self::Scale | Self::Pen | Self::Brush
+        )
+    }
+}
+
 /// One viewport tool: button glyph, user-facing name, shortcut, key binding.
 /// The hover tooltip text is sourced from `tool_inspector::panel_descriptor`
 /// (joined in `tool_tooltip_text`) so button and description can't drift.

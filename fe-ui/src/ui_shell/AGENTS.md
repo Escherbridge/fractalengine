@@ -448,3 +448,20 @@ selection and reveals Inspector through set_active_tab(Properties). This shared
 transition clears API secrets and pending mint ownership immediately, including
 when the report opens Properties for the already selected node in the same scope.
 Never assign Inspector tabs directly; the form owns the private tab lifecycle.
+
+
+## Chrome tool admission and shortcut help
+
+Tool::requires_edit is shared by keyboard decoding and the topbar. Pointer
+activation keeps the same ToolState::activate writer; edit tools are disabled
+with an Editor explanation when the current role cannot edit. Select and
+Measure remain available. This is advisory UI gating; mutation handlers retain
+their stored target authorization.
+
+The named question-mark button and unmodified question-mark text event open the
+same egui memory popup. Tool names/keys come from TOOL_DEFS; the remaining copy
+states the actual camera, selection, visibility and Undo shortcuts. The popup
+blocks the existing scene keyboard decoder and hierarchy shortcut, preserves
+text-input ownership and closes through Escape, outside click or its Close
+button. Narrow windows use named Tools/Panels menus below1160 points, keeping
+full tool names in the menu. Section buttons retain their existing toggles.
