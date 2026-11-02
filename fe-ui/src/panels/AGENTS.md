@@ -427,7 +427,10 @@ The existing Inspector transform test is extended as
 `inspector_transform_and_typed_property_editing_journey`: original transform
 assertions plus typed Add, invalid-input/no-write behavior, the actual GUI
 command's `correlation_id: None`, draft/readback confirmation, stale-value
-refusal, timeout, deletion and node-scope reset. Its readback is an explicit
-model simulation; it does not prove DB persistence, rendered hit targets or
-backend schema enforcement. Integrated compilation, execution and live UI
-readability/a11y verification remain required.
+refusal, timeout, deletion and node-scope reset. The same journey now also
+authors three-width table/target observations, exact clipboard output and
+real egui Delete arm/cancel/confirm plus Edit/cancel interactions. No new test
+function is added. Its persistence readback is an explicit model simulation;
+these authored assertions have not been executed in the source-only lane and
+do not prove DB persistence or backend schema enforcement. Integrated
+compilation, execution and live UI readability/a11y verification remain required.

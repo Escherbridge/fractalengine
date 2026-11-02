@@ -33,7 +33,7 @@ impl Columns {
             + COLUMN_GAP * 3.0;
         let kind = text_width("number").max(52.0) + 8.0;
         let width = available.max(96.0 + kind + 120.0 + actions + COLUMN_GAP * 3.0);
-        let key_max = (width - kind - actions - COLUMN_GAP * 3.0 - 120.0).min(180.0);
+        let key_max = (width - kind - actions - COLUMN_GAP * 3.0 - 120.0).clamp(96.0, 180.0);
         let key = (width * 0.20).clamp(96.0, key_max);
         Self {
             widths: [

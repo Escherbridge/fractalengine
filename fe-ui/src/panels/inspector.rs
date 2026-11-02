@@ -1498,10 +1498,13 @@ fn render_property_row(
                 ui.add(
                     egui::Label::new(egui::RichText::new(preview).monospace().small()).truncate(),
                 )
-                .on_hover_text(crate::panels::widgets::elide(
-                    &super::property_grid::clipboard_value(value),
-                    800,
-                ));
+                .on_hover_ui(|ui| {
+                    let text = match value {
+                        serde_json::Value::String(text) => super::widgets::elide(text, 800),
+                        other => other.to_string(),
+                    };
+                    ui.add(egui::Label::new(egui::RichText::new(text).monospace()).wrap());
+                });
             }
         });
         columns.cell(ui, 3, |ui| {
@@ -2259,6 +2262,179 @@ mod tests {
         nodes.deselect();
         sync_property_editor_scope(&mut inspector, &nodes, 56.0);
         assert!(inspector.property_editor.node_id.is_none());
+
+        use super::super::property_grid::{clipboard_value, preview, Columns};
+        let exact = json!("  first\nsecond\t🦀  ");
+        assert_eq!(clipboard_value(&exact), "  first\nsecond\t🦀  ");
+        assert_eq!(preview(&exact), "  first\\nsecond\\t🦀  ");
+        assert_eq!(preview(&json!("")), "(empty string)");
+        assert_eq!(preview(&json!({"a": [1, 2]})), "{1 fields}");
+        assert_eq!(preview(&json!([1, {"nested": true}])), "[2 items]");
+        assert!(preview(&json!("🦀".repeat(121))).ends_with('…'));
+        assert_eq!(clipboard_value(&nested), nested.to_string());
+
+        nodes.select(Entity::from_bits(1), "node-1");
+        sync_property_editor_scope(&mut inspector, &nodes, 57.0);
+        inspector.node_properties = json!({"note": exact});
+        inspector.node_properties_loading = false;
+        let stored = inspector.node_properties.clone();
+        let ctx = egui::Context::default();
+        let mut time = 57.0;
+        let frame = |width: f32,
+                     events: Vec<egui::Event>,
+                     time: &mut f64,
+                     inspector: &mut InspectorFormState,
+                     ui_mgr: &mut UiManager| {
+            *time += 0.05;
+            crate::ui_shell::layout_policy::begin_frame(&ctx, true);
+            let mut actions = PropertyTableActions::default();
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 600.0),
+                    )),
+                    time: Some(*time),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    crate::ui_shell::layout_policy::begin_ui_pass(ctx);
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let columns = Columns::new(ui, ui.available_width());
+                        assert!(columns.widths[2] >= 119.9);
+                        assert!(columns.height * ctx.pixels_per_point() >= 20.0);
+                        actions = render_property_table(ui, inspector, "node-1", ui_mgr, *time);
+                    });
+                },
+            );
+            (
+                actions,
+                crate::ui_shell::layout_policy::observations(&ctx),
+                output,
+            )
+        };
+        for width in [260.0, 640.0, 1000.0] {
+            let (actions, observed, _) =
+                frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
+            assert!(actions.delete.is_none() && actions.save.is_none());
+            assert_eq!(
+                observed.controls.len(),
+                3,
+                "Edit, Copy and Delete remain visible"
+            );
+            assert!(observed
+                .controls
+                .iter()
+                .all(|control| control.rect.height() >= 24.0 && control.rect.width() >= 20.0));
+            let table = observed
+                .scrolls
+                .iter()
+                .find(|scroll| scroll.label == "Custom property table")
+                .unwrap();
+            assert!(table.clip.width() <= width);
+            if width == 260.0 {
+                assert!(table.content_size.x > table.clip.width());
+            }
+        }
+        let (_, observed, _) = frame(1000.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
+        let copy_at = observed.controls[1].rect.center();
+        let delete_at = observed.controls[2].rect.center();
+        let click = |point: egui::Pos2,
+                     time: &mut f64,
+                     inspector: &mut InspectorFormState,
+                     ui_mgr: &mut UiManager| {
+            let mut result = frame(
+                1000.0,
+                vec![egui::Event::PointerMoved(point)],
+                time,
+                inspector,
+                ui_mgr,
+            );
+            for pressed in [true, false] {
+                result = frame(
+                    1000.0,
+                    vec![egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                    time,
+                    inspector,
+                    ui_mgr,
+                );
+            }
+            result
+        };
+        let (_, _, output) = click(copy_at, &mut time, &mut inspector, &mut ui_mgr);
+        assert!(output.platform_output.commands.iter().any(|command| matches!(command, egui::OutputCommand::CopyText(text) if text == "  first\nsecond\t🦀  ")));
+        let (actions, _, _) = click(delete_at, &mut time, &mut inspector, &mut ui_mgr);
+        assert!(actions.delete.is_none(), "first Delete click only arms");
+        let (_, armed, _) = frame(1000.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
+        assert_eq!(armed.controls.len(), 4, "Confirm and Cancel replace Delete");
+        let (actions, _, _) = click(
+            armed.controls[3].rect.center(),
+            &mut time,
+            &mut inspector,
+            &mut ui_mgr,
+        );
+        assert!(actions.delete.is_none(), "Cancel must never queue deletion");
+        assert_eq!(inspector.node_properties, stored);
+        assert!(ui_mgr.drain_actions().is_empty());
+        let (_, disarmed, _) = frame(1000.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
+        assert_eq!(disarmed.controls.len(), 3);
+        click(
+            disarmed.controls[2].rect.center(),
+            &mut time,
+            &mut inspector,
+            &mut ui_mgr,
+        );
+        let (_, armed, _) = frame(1000.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
+        let (actions, _, _) = click(
+            armed.controls[2].rect.center(),
+            &mut time,
+            &mut inspector,
+            &mut ui_mgr,
+        );
+        assert_eq!(actions.delete.as_deref(), Some("note"));
+        assert_eq!(
+            inspector.node_properties, stored,
+            "confirmation only requests deletion; readback remains authoritative"
+        );
+        let (_, idle, _) = frame(1000.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
+        click(
+            idle.controls[0].rect.center(),
+            &mut time,
+            &mut inspector,
+            &mut ui_mgr,
+        );
+        assert!(inspector.property_editor.drafts.contains_key("note"));
+        inspector
+            .property_editor
+            .drafts
+            .get_mut("note")
+            .unwrap()
+            .raw = "unsaved replacement".into();
+        let (_, editing, _) = frame(1000.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
+        assert_eq!(
+            editing.controls.len(),
+            6,
+            "row actions remain beside the inline editor and Save/Cancel"
+        );
+        let (actions, _, _) = click(
+            editing.controls[5].rect.center(),
+            &mut time,
+            &mut inspector,
+            &mut ui_mgr,
+        );
+        assert_eq!(actions.cancel.as_deref(), Some("note"));
+        inspector
+            .property_editor
+            .drafts
+            .remove(actions.cancel.as_deref().unwrap());
+        assert_eq!(inspector.node_properties, stored);
+        assert!(ui_mgr.drain_actions().is_empty());
     }
 
     #[test]
