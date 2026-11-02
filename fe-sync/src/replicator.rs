@@ -1185,6 +1185,7 @@ async fn pump_live_events(
         let event = match event {
             Ok(event) => event,
             Err(e) => {
+                readiness.successful_peers.lock().unwrap_or_else(|error| error.into_inner()).clear();
                 tracing::warn!("replica event stream error: {e}");
                 continue;
             }
@@ -1877,6 +1878,30 @@ mod tests {
             snap_row.author_id, alice_endpoint_did,
             "snapshot author must equal live author for the same entry"
         );
+
+        let native_ns = hex::encode(fe_database::derive_namespace_id(&secret));
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while !bob.joined_peer_ready(&native_ns, &alice_endpoint_did) {
+                tokio::task::yield_now().await;
+            }
+        }).await.expect("actual issuer sync completion precedes the error fixture");
+        let readiness = Arc::new(JoinReadiness::default());
+        readiness.successful_peers.lock().unwrap().insert(ep_a.id());
+        let errors = futures_lite::stream::iter([Err(anyhow::anyhow!("controlled stream error"))])
+            .chain(futures_lite::stream::pending());
+        let (error_tx, _error_rx) = mpsc::channel(1);
+        let error_pump = tokio::spawn(pump_live_events(
+            Box::pin(errors), stack_b.blob_store().clone(), error_tx, readiness.clone(),
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if readiness.alive.load(Ordering::Acquire) && readiness.successful_peers.lock().unwrap().is_empty() { break; }
+                tokio::task::yield_now().await;
+            }
+        }).await.expect("a continuing errored stream invalidates earlier synchronization proof");
+        assert!(readiness.alive.load(Ordering::Acquire), "error handling continues with no stale readiness");
+        error_pump.abort();
+        assert!(error_pump.await.unwrap_err().is_cancelled());
 
         // Close must leave the swarm cleanly on both sides.
         alice.close().await.unwrap();

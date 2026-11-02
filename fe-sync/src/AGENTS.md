@@ -1963,3 +1963,9 @@ they never claim that no data changed or automatically retry. Final application
 join success is not emitted by this native transport adapter alone. The existing
 fresh-peer manifest journey now exports/imports an actual cold READ ticket and
 requires Viewer native writes to refuse, but remains unexecuted until root sweep.
+
+A live-event stream error clears all earlier successful peer synchronization
+proofs while leaving the normal event reader available for recovery. Another
+successful SyncFinished is required; an unknown missed NeighborDown or failure
+cannot preserve readiness. The existing real-transport journey drives a bounded
+continuing error stream through the actual pump and checks this invalidation.
