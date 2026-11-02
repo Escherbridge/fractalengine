@@ -516,7 +516,9 @@ class Driver:
             require("calibration" in self.schemas,"calibration field definition is unavailable", "history_coverage_unavailable")
             schema_id = self.schemas["calibration"]["field_def_id"]
             expected_revision = step["calibration_schema_versions"][name]
-            self.check(name + " independently expected calibration schema revision",schema_versions.get(schema_id),expected_revision)
+            actual_revision = schema_versions.get(schema_id)
+            require(type(actual_revision) is int,"calibration schema revision is not an integer", "history_coverage_unavailable")
+            self.check(name + " independently expected calibration schema revision",actual_revision,expected_revision)
             raw_value, time_ms = row.get("value"), row.get("recorded_at_ms")
             require(type(raw_value) in (int,float) and type(time_ms) is int, "invalid raw reading", "invalid_response")
             derived = calibration["gain"] * raw_value + calibration["bias"]
