@@ -41,7 +41,11 @@ impl Request {
         self.id == id
     }
     fn expired(&self) -> bool {
-        self.started.elapsed() > Duration::from_secs(30)
+        self.expired_at(Instant::now())
+    }
+
+    fn expired_at(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.started) > Duration::from_secs(30)
     }
 }
 
@@ -59,7 +63,7 @@ pub(crate) struct ObjectDataState {
     section: ObjectDataSection,
     history: history::HistoryState,
     measurements: measurements::MeasurementsState,
-    schema: schema::SchemaState,
+    pub(crate) schema: schema::SchemaState,
 }
 
 impl ObjectDataState {
@@ -75,7 +79,8 @@ pub(crate) fn synchronize(
     nav: &NavigationManager,
     role: &crate::plugin::LocalUserRole,
 ) {
-    if role.role.is_some()
+    let can_view = role.role.is_some_and(|role| role.can_view());
+    if can_view
         && state.target.as_ref().is_some_and(|target| {
             nodes
                 .selected
@@ -90,7 +95,9 @@ pub(crate) fn synchronize(
         return;
     }
     let target = nodes.selected.as_ref().and_then(|selected| {
-        role.role?;
+        if !can_view {
+            return None;
+        }
         let petal_id = tree.petal_id_of(&selected.node_id)?;
         if nav.active_petal_id.as_deref() != Some(petal_id) {
             return None;

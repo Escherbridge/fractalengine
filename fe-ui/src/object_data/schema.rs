@@ -4,6 +4,7 @@ use bevy_egui::egui;
 use fe_runtime::messages::{DbCommand, DbResult, FieldDefInfo};
 use fe_runtime::node_history::NodeAccessGrant;
 use serde_json::{json, Value};
+use std::time::Instant;
 
 use super::{button, error, json_view, request_error, send, Request, Target};
 use crate::accessibility::ResponseExt;
@@ -15,7 +16,12 @@ struct SchemaRequest {
     expected: Option<Value>,
 }
 
-pub(super) struct SchemaState {
+struct SchemaAttempt {
+    descriptor: Value,
+    submitted_text: String,
+}
+
+pub(crate) struct SchemaState {
     scope_index: usize,
     listed_scope: Option<String>,
     list_request: Option<Request>,
@@ -29,7 +35,7 @@ pub(super) struct SchemaState {
     dirty: bool,
     conflict: bool,
     needs_refresh: bool,
-    attempt: Option<Value>,
+    attempt: Option<SchemaAttempt>,
     error: Option<String>,
     status: Option<String>,
 }
@@ -58,6 +64,56 @@ impl Default for SchemaState {
 }
 
 impl SchemaState {
+    pub(crate) fn expire_requests(&mut self, now: Instant) {
+        if self
+            .list_request
+            .as_ref()
+            .is_some_and(|request| request.expired_at(now))
+        {
+            self.list_request = None;
+            self.error = Some("Definition list timed out. Refresh to try again.".into());
+        }
+        if self
+            .request
+            .as_ref()
+            .is_some_and(|pending| pending.request.expired_at(now))
+        {
+            self.request = None;
+            self.needs_refresh = true;
+            self.error = Some("Schema request timed out. Your draft is retained; refresh the stored descriptor before saving.".into());
+        }
+    }
+
+    pub(crate) fn edit_definition(
+        &mut self,
+        field_id: &str,
+        scope: &str,
+        sender: &crossbeam::channel::Sender<DbCommand>,
+    ) {
+        self.selected = field_id.to_owned();
+        self.listed_scope = Some(scope.to_owned());
+        self.request = None;
+        self.stored = None;
+        self.loaded = false;
+        self.dirty = false;
+        self.conflict = false;
+        self.needs_refresh = false;
+        self.attempt = None;
+        self.draft.clear();
+        self.status = None;
+        self.read(sender);
+    }
+
+    pub(crate) fn draft(&self) -> &str {
+        &self.draft
+    }
+
+    pub(crate) fn replace_draft(&mut self, text: String) {
+        self.draft = text;
+        self.dirty = true;
+        self.status = None;
+    }
+
     fn list(&mut self, scope: String, sender: &crossbeam::channel::Sender<DbCommand>) {
         self.listed_scope = Some(scope.clone());
         self.error = None;
@@ -81,7 +137,7 @@ impl SchemaState {
         }
     }
 
-    fn read(&mut self, sender: &crossbeam::channel::Sender<DbCommand>) {
+    pub(crate) fn read(&mut self, sender: &crossbeam::channel::Sender<DbCommand>) {
         let Some(scope) = self.listed_scope.clone() else {
             return;
         };
@@ -120,7 +176,12 @@ impl SchemaState {
         self.conflict = false;
     }
 
-    fn save(&mut self, sender: &crossbeam::channel::Sender<DbCommand>) {
+    pub(crate) fn save(&mut self, sender: &crossbeam::channel::Sender<DbCommand>) {
+        if !self.loaded || self.request.is_some() || self.needs_refresh || self.conflict {
+            self.error =
+                Some("Read the current stored descriptor before saving this draft.".into());
+            return;
+        }
         let result = (|| {
             if self.draft.len() > fe_sdk::property_schema::MAX_PROPERTY_BYTES {
                 return Err("Schema exceeds the 64 KiB limit.".to_owned());
@@ -162,7 +223,10 @@ impl SchemaState {
             },
         ) {
             Ok(()) => {
-                self.attempt = Some(value.clone());
+                self.attempt = Some(SchemaAttempt {
+                    descriptor: value.clone(),
+                    submitted_text: self.draft.clone(),
+                });
                 self.request = Some(SchemaRequest {
                     request,
                     field_id: self.selected.clone(),
@@ -220,7 +284,11 @@ impl SchemaState {
             let confirmed = self
                 .attempt
                 .as_ref()
-                .is_some_and(|attempt| stored.as_ref() == Some(attempt));
+                .is_some_and(|attempt| stored.as_ref() == Some(&attempt.descriptor));
+            let draft_unchanged = self
+                .attempt
+                .as_ref()
+                .is_some_and(|attempt| attempt.submitted_text == self.draft);
             let conflict = self.loaded && self.dirty && self.stored != stored && !confirmed;
             self.stored_json = stored
                 .as_ref()
@@ -230,15 +298,23 @@ impl SchemaState {
             self.loaded = true;
             self.needs_refresh = false;
             if confirmed {
-                self.status = Some(format!(
-                    "Saved descriptor revision {}",
-                    self.stored
-                        .as_ref()
-                        .and_then(|value| value["version"].as_u64())
-                        .unwrap_or(0)
-                ));
+                let revision = self
+                    .stored
+                    .as_ref()
+                    .and_then(|value| value["version"].as_u64())
+                    .unwrap_or(0);
                 self.attempt = None;
-                self.reset_draft();
+                if draft_unchanged {
+                    self.reset_draft();
+                    self.status = Some(format!("Saved descriptor revision {revision}"));
+                } else {
+                    self.dirty = true;
+                    self.conflict = false;
+                    let next = revision
+                        .checked_add(1)
+                        .map_or_else(|| "unavailable".to_owned(), |version| version.to_string());
+                    self.status = Some(format!("Saved descriptor revision {revision}. Your newer draft is retained; its next version must be {next}."));
+                }
             } else if conflict {
                 self.conflict = true;
                 self.error = Some("Stored schema changed. Your draft is retained; load the stored rules before saving.".into());
@@ -270,19 +346,7 @@ impl SchemaState {
         role: &crate::plugin::LocalUserRole,
         sender: &crossbeam::channel::Sender<DbCommand>,
     ) {
-        if self.list_request.as_ref().is_some_and(Request::expired) {
-            self.list_request = None;
-            self.error = Some("Definition list timed out. Refresh to try again.".into());
-        }
-        if self
-            .request
-            .as_ref()
-            .is_some_and(|pending| pending.request.expired())
-        {
-            self.request = None;
-            self.needs_refresh = true;
-            self.error = Some("Schema request timed out. Your draft is retained; refresh the stored descriptor before saving.".into());
-        }
+        self.expire_requests(Instant::now());
         ui.label("Enforced rules validate future property writes and reject incompatible schema revisions after checking current values.");
         ui.small("Legacy type/required/default metadata does not enforce a descriptor. Rules do not backfill values.");
         let previous_scope = self.scope_index;
@@ -356,16 +420,8 @@ impl SchemaState {
             .response
             .named(ui, "Object enforced schema definition");
         if before != self.selected {
-            self.request = None;
-            self.stored = None;
-            self.loaded = false;
-            self.dirty = false;
-            self.conflict = false;
-            self.needs_refresh = false;
-            self.attempt = None;
-            self.draft.clear();
-            self.status = None;
-            self.read(sender);
+            let selected = self.selected.clone();
+            self.edit_definition(&selected, &target.scopes[self.scope_index], sender);
         }
         if self.selected.is_empty() {
             return;
@@ -393,6 +449,11 @@ impl SchemaState {
             }
         }
         ui.small("Supported rules: type, nullable, enum, properties, required, additionalProperties, items, min/maxItems, min/maxLength, minimum, maximum. Limits: 64 KiB, depth 16, 256 rules. Unsupported keywords are rejected.");
+        ui.small(format!(
+            "Draft size: {} / {} bytes",
+            self.draft().len(),
+            fe_sdk::property_schema::MAX_PROPERTY_BYTES
+        ));
         let can_edit = role.can_manage();
         ui.add_enabled_ui(can_edit && self.request.is_none(), |ui| {
             if ui
@@ -406,8 +467,7 @@ impl SchemaState {
                 .named(ui, "Versioned enforced schema JSON")
                 .changed()
             {
-                self.dirty = true;
-                self.status = None;
+                self.replace_draft(self.draft.clone());
             }
         });
         if !can_edit {

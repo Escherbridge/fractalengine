@@ -2,7 +2,8 @@
 
 `ObjectDataState` is an Inspector read model. Selection remains in NodeManager; navigation remains in
 NavigationManager. A target consists of the selected node and its complete current ancestry. Target
-changes or unresolved access clear pending requests and cached views. Stable targets avoid per-frame
+changes, unresolved access or a role below Viewer (including `Some(RoleLevel::None)`) clear pending
+requests and cached views. Stable targets avoid per-frame
 identity allocation. Every correlated request has a fresh `ui-*` ID and a 30-second timeout.
 
 `history.rs` consumes only scoped history/replay results. Commit versions order one object; they do
@@ -25,6 +26,12 @@ dispatch. The database remains authoritative for role, scope, next revision and 
 Saving waits for the returned descriptor to equal the submitted descriptor. Errors and timeouts
 retain the draft; ambiguous outcomes require a stored readback before another save. A concurrent
 revision preserves the draft and asks the user to load current rules before saving.
+
+Each submitted schema attempt retains both its descriptor and exact submitted text. A later readback
+can confirm that attempt without replacing edits made after submission. Only an unchanged submitted
+draft resets to the next revision template. Newer or partially edited text remains intact, with the
+required next revision shown and validated before another save. Deadline evaluation takes a monotonic
+instant so existing journeys can exercise timeouts without sleeping.
 
 Ordinary GUI property writes retain their older uncorrelated command contract. Their backend errors
 appear in the persistent notice/history surface; the typed editor retains drafts and ends an

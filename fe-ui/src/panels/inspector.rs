@@ -2699,6 +2699,199 @@ mod tests {
         assert!(
             matches!(rx.try_recv().unwrap(), DbCommand::ListFieldDefs { scope } if scope == "VERSE#v-FRACTAL#f-PETAL#p")
         );
+        let definition_scope = "VERSE#v-FRACTAL#f-PETAL#p";
+        crate::object_data::route(
+            &mut inspector.object_data,
+            &DbResult::FieldDefsListed {
+                scope: definition_scope.into(),
+                field_defs: vec![fe_runtime::messages::FieldDefInfo {
+                    field_def_id: "calibration-def".into(),
+                    scope: definition_scope.into(),
+                    entity_type: "node".into(),
+                    key: "calibration".into(),
+                    value_type: "object".into(),
+                    default_val: None,
+                    created_by: "qa-owner".into(),
+                    created_at: "2026-11-01T00:00:00Z".into(),
+                }],
+            },
+        );
+        let schema_v1 =
+            json!({"version":1,"schema":{"type":"object","properties":{"gain":{"type":"number"}}}});
+        let schema_v2 = json!({"version":2,"schema":{"type":"object","properties":{"gain":{"type":"number"},"offset":{"type":"number"}}}});
+        let schema_v3 = json!({"version":3,"schema":{"type":"object","properties":{"gain":{"type":"number"},"offset":{"type":"number"},"label":{"type":"string"}}}});
+        let submitted_text = serde_json::to_string_pretty(&schema_v2).unwrap();
+        for newer_text in [
+            Some(schema_v3.to_string()),
+            Some("{\"version\":3,\"schema\":{".into()),
+            Some(format!("{submitted_text}\n  ")),
+            None,
+        ] {
+            inspector.object_data.schema.edit_definition(
+                "calibration-def",
+                definition_scope,
+                &db_sender.0,
+            );
+            let DbCommand::GetFieldSchema {
+                correlation_id: Some(read_id),
+                ..
+            } = rx.try_recv().unwrap()
+            else {
+                panic!("read the stored descriptor before editing");
+            };
+            assert!(crate::object_data::route(
+                &mut inspector.object_data,
+                &DbResult::QueryResult {
+                    data: vec![
+                        json!({"field_def_id":"calibration-def","scope":definition_scope,"enforced_schema":schema_v1})
+                    ],
+                    correlation_id: Some(read_id)
+                }
+            ));
+            inspector
+                .object_data
+                .schema
+                .replace_draft(submitted_text.clone());
+            inspector.object_data.schema.save(&db_sender.0);
+            let DbCommand::SetFieldSchema {
+                descriptor,
+                correlation_id: Some(save_id),
+                ..
+            } = rx.try_recv().unwrap()
+            else {
+                panic!("valid next revision must queue one save");
+            };
+            assert_eq!(descriptor, schema_v2);
+            inspector
+                .object_data
+                .schema
+                .expire_requests(std::time::Instant::now() + std::time::Duration::from_secs(31));
+            if let Some(newer) = &newer_text {
+                inspector.object_data.schema.replace_draft(newer.clone());
+            }
+            inspector.object_data.schema.save(&db_sender.0);
+            assert!(
+                rx.try_recv().is_err(),
+                "an ambiguous timed-out write requires readback before resubmission"
+            );
+            inspector.object_data.schema.read(&db_sender.0);
+            let DbCommand::GetFieldSchema {
+                correlation_id: Some(refresh_id),
+                ..
+            } = rx.try_recv().unwrap()
+            else {
+                panic!("refresh gets a fresh read request");
+            };
+            assert_ne!(refresh_id, save_id);
+            let refreshed = DbResult::QueryResult {
+                data: vec![
+                    json!({"field_def_id":"calibration-def","scope":definition_scope,"enforced_schema":schema_v2}),
+                ],
+                correlation_id: Some(refresh_id),
+            };
+            assert!(crate::object_data::route(
+                &mut inspector.object_data,
+                &refreshed
+            ));
+            if let Some(newer) = newer_text {
+                assert_eq!(
+                    inspector.object_data.schema.draft(),
+                    newer,
+                    "confirming an older submitted revision must preserve exact newer edits"
+                );
+                inspector.object_data.schema.save(&db_sender.0);
+                if newer == schema_v3.to_string() {
+                    assert!(
+                        matches!(rx.try_recv().unwrap(), DbCommand::SetFieldSchema { descriptor,.. } if descriptor == schema_v3)
+                    );
+                } else {
+                    assert!(
+                        rx.try_recv().is_err(),
+                        "partial JSON or stale revision cannot queue another write"
+                    );
+                }
+            } else {
+                let next: serde_json::Value =
+                    serde_json::from_str(inspector.object_data.schema.draft()).unwrap();
+                assert_eq!(
+                    next["version"], 3,
+                    "an untouched submitted draft advances to the next editable revision"
+                );
+                assert_eq!(next["schema"], schema_v2["schema"]);
+            }
+        }
+        inspector
+            .object_data
+            .activate(ObjectDataSection::Measurements);
+        native_frame(
+            640.0,
+            &mut nodes,
+            &mut inspector,
+            &mut ui_mgr,
+            &owner,
+            &mut data_time,
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "the authorized target still has cached measurements"
+        );
+        inspector.object_data.schema.read(&db_sender.0);
+        let DbCommand::GetFieldSchema {
+            correlation_id: Some(revoked_read),
+            ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("capture an in-flight read before revocation");
+        };
+        let revoked = LocalUserRole {
+            role: Some(fe_database::RoleLevel::None),
+        };
+        let (_, revoked_observations) = native_frame(
+            640.0,
+            &mut nodes,
+            &mut inspector,
+            &mut ui_mgr,
+            &revoked,
+            &mut data_time,
+        );
+        assert!(
+            !revoked_observations
+                .controls
+                .iter()
+                .any(|control| (control.rect.height() - 170.0).abs() < 0.1),
+            "revocation removes the cached chart"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "Some(RoleLevel::None) must not admit another read"
+        );
+        assert!(
+            !crate::object_data::route(
+                &mut inspector.object_data,
+                &DbResult::QueryResult {
+                    data: vec![
+                        json!({"field_def_id":"calibration-def","scope":definition_scope,"enforced_schema":schema_v2})
+                    ],
+                    correlation_id: Some(revoked_read)
+                }
+            ),
+            "a late pre-revocation reply must not repopulate the cleared state"
+        );
+        let viewer = LocalUserRole {
+            role: Some(fe_database::RoleLevel::Viewer),
+        };
+        native_frame(
+            640.0,
+            &mut nodes,
+            &mut inspector,
+            &mut ui_mgr,
+            &viewer,
+            &mut data_time,
+        );
+        assert!(
+            matches!(rx.try_recv().unwrap(), DbCommand::ReadNodeMeasurements {node_id,..} if node_id == "node-1"),
+            "restoring Viewer must perform a fresh read instead of reusing revoked data"
+        );
         nodes.select(Entity::from_bits(2), "node-2");
         native_frame(
             640.0,
