@@ -1511,37 +1511,43 @@ fn render_property_row(
             }
         });
         columns.cell(ui, 3, |ui| {
-            if ui
-                .add_enabled(
-                    !loading && !editing,
-                    egui::Button::new("Edit").min_size(egui::Vec2::splat(columns.height)),
-                )
-                .named(ui, format_args!("Edit property {key}"))
-                .clicked()
-            {
-                editor
-                    .drafts
-                    .insert(key.to_owned(), PropertyDraft::new(value));
-            }
-            if ui
-                .add(egui::Button::new("Copy").min_size(egui::Vec2::splat(columns.height)))
-                .named(ui, format_args!("Copy property {key}"))
-                .clicked()
-            {
-                ui.ctx()
-                    .copy_text(super::property_grid::clipboard_value(value));
-                ui_mgr.show_toast(format!("Copied {key}"), now);
-            }
-            ui.add_enabled_ui(!loading && !pending, |ui| {
-                if super::widgets::confirm_button(
-                    ui,
-                    ("delete-property", node_id, key),
-                    "Delete",
-                    "Confirm",
-                    format_args!("Delete property {key}"),
-                ) {
-                    actions.delete = Some(key.to_owned());
+            columns.action(ui, 0, |ui| {
+                if ui
+                    .add_enabled(
+                        !loading && !editing,
+                        egui::Button::new("Edit").min_size(egui::Vec2::splat(columns.height)),
+                    )
+                    .named(ui, format_args!("Edit property {key}"))
+                    .clicked()
+                {
+                    editor
+                        .drafts
+                        .insert(key.to_owned(), PropertyDraft::new(value));
                 }
+            });
+            columns.action(ui, 1, |ui| {
+                if ui
+                    .add(egui::Button::new("Copy").min_size(egui::Vec2::splat(columns.height)))
+                    .named(ui, format_args!("Copy property {key}"))
+                    .clicked()
+                {
+                    ui.ctx()
+                        .copy_text(super::property_grid::clipboard_value(value));
+                    ui_mgr.show_toast(format!("Copied {key}"), now);
+                }
+            });
+            columns.action(ui, 2, |ui| {
+                ui.add_enabled_ui(!loading && !pending, |ui| {
+                    if super::widgets::confirm_button(
+                        ui,
+                        ("delete-property", node_id, key),
+                        "Delete",
+                        "Confirm",
+                        format_args!("Delete property {key}"),
+                    ) {
+                        actions.delete = Some(key.to_owned());
+                    }
+                });
             });
         });
     });
@@ -2309,6 +2315,7 @@ mod tests {
         let stored = inspector.node_properties.clone();
         let ctx = egui::Context::default();
         let mut time = 57.0;
+        let right_edge = std::cell::Cell::new(false);
         let frame = |width: f32,
                      events: Vec<egui::Event>,
                      time: &mut f64,
@@ -2331,6 +2338,13 @@ mod tests {
                     crate::ui_shell::layout_policy::begin_ui_pass(ctx);
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let columns = Columns::new(ui, ui.available_width());
+                        if right_edge.replace(false) {
+                            let id = ui.make_persistent_id(("property-table", "node-1"));
+                            let mut state =
+                                egui::scroll_area::State::load(ctx, id).unwrap_or_default();
+                            state.offset.x = (columns.width() - ui.available_width()).max(0.0);
+                            state.store(ctx, id);
+                        }
                         assert!(columns.widths[2] >= 119.9);
                         assert!(columns.height * ctx.pixels_per_point() >= 20.0);
                         actions = render_property_table(ui, inspector, "node-1", ui_mgr, *time);
@@ -2343,38 +2357,13 @@ mod tests {
                 output,
             )
         };
-        for width in [260.0, 640.0, 1000.0] {
-            let (actions, observed, _) =
-                frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
-            assert!(actions.delete.is_none() && actions.save.is_none());
-            assert_eq!(
-                observed.controls.len(),
-                3,
-                "Edit, Copy and Delete remain visible"
-            );
-            assert!(observed
-                .controls
-                .iter()
-                .all(|control| control.rect.height() >= 24.0 && control.rect.width() >= 20.0));
-            let table = observed
-                .scrolls
-                .iter()
-                .find(|scroll| scroll.label == "Custom property table")
-                .unwrap();
-            assert!(table.clip.width() <= width);
-            if width == 260.0 {
-                assert!(table.content_size.x > table.clip.width());
-            }
-        }
-        let (_, observed, _) = frame(1000.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
-        let copy_at = observed.controls[1].rect.center();
-        let delete_at = observed.controls[2].rect.center();
-        let click = |point: egui::Pos2,
+        let click = |width: f32,
+                     point: egui::Pos2,
                      time: &mut f64,
                      inspector: &mut InspectorFormState,
                      ui_mgr: &mut UiManager| {
             let mut result = frame(
-                1000.0,
+                width,
                 vec![egui::Event::PointerMoved(point)],
                 time,
                 inspector,
@@ -2382,7 +2371,7 @@ mod tests {
             );
             for pressed in [true, false] {
                 result = frame(
-                    1000.0,
+                    width,
                     vec![egui::Event::PointerButton {
                         pos: point,
                         button: egui::PointerButton::Primary,
@@ -2396,13 +2385,105 @@ mod tests {
             }
             result
         };
-        let (_, _, output) = click(copy_at, &mut time, &mut inspector, &mut ui_mgr);
+        for width in [260.0, 320.0, 640.0] {
+            right_edge.set(true);
+            frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
+            let (_, before, _) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
+            let table_before = before
+                .scrolls
+                .iter()
+                .find(|scroll| scroll.label == "Custom property table")
+                .unwrap();
+            assert_eq!(before.controls.len(), 3);
+            for control in &before.controls {
+                let visible = control
+                    .rect
+                    .intersect(control.hit)
+                    .intersect(control.clip)
+                    .intersect(table_before.clip);
+                assert!(
+                    (visible.width() - control.rect.width()).abs() < 0.5,
+                    "the whole normal action must be visible at the right scroll edge"
+                );
+                assert!((visible.height() - control.rect.height()).abs() < 0.5);
+                assert!(visible.width() >= 20.0 && visible.height() >= 20.0);
+            }
+            let (actions, _, _) = click(
+                width,
+                before.controls[2].rect.center(),
+                &mut time,
+                &mut inspector,
+                &mut ui_mgr,
+            );
+            assert!(actions.delete.is_none());
+            let (_, armed, _) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
+            let table_armed = armed
+                .scrolls
+                .iter()
+                .find(|scroll| scroll.label == "Custom property table")
+                .unwrap();
+            assert_eq!(armed.controls.len(), 4);
+            assert!(
+                (table_armed.content_size.x - table_before.content_size.x).abs() < 0.5,
+                "arming cannot widen the table"
+            );
+            assert!(
+                (table_armed.offset.x - table_before.offset.x).abs() < 0.5,
+                "arming cannot move horizontal scroll"
+            );
+            for index in 0..2 {
+                assert!(
+                    (armed.controls[index].rect.left() - before.controls[index].rect.left()).abs()
+                        < 0.5,
+                    "Edit/Copy column positions must remain stable"
+                );
+                assert!(
+                    (armed.controls[index].rect.top() - before.controls[index].rect.top()).abs()
+                        < 0.5
+                );
+            }
+            for control in &armed.controls {
+                let visible = control
+                    .rect
+                    .intersect(control.hit)
+                    .intersect(control.clip)
+                    .intersect(table_armed.clip);
+                assert!(
+                    (visible.width() - control.rect.width()).abs() < 0.5,
+                    "the complete Confirm/Cancel labels and targets must fit"
+                );
+                assert!((visible.height() - control.rect.height()).abs() < 0.5);
+                assert!(visible.width() >= 20.0 && visible.height() >= 20.0);
+            }
+            let (actions, _, _) = click(
+                width,
+                armed.controls[3].rect.center(),
+                &mut time,
+                &mut inspector,
+                &mut ui_mgr,
+            );
+            assert!(actions.delete.is_none());
+            assert_eq!(inspector.node_properties, stored);
+            let (_, canceled, _) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
+            let table_canceled = canceled
+                .scrolls
+                .iter()
+                .find(|scroll| scroll.label == "Custom property table")
+                .unwrap();
+            assert!((table_canceled.content_size.x - table_before.content_size.x).abs() < 0.5);
+            assert!((table_canceled.offset.x - table_before.offset.x).abs() < 0.5);
+        }
+        let (_, observed, _) = frame(1000.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
+        let copy_at = observed.controls[1].rect.center();
+        let delete_at = observed.controls[2].rect.center();
+        let (_, _, output) = click(1000.0, copy_at, &mut time, &mut inspector, &mut ui_mgr);
         assert!(output.platform_output.commands.iter().any(|command| matches!(command, egui::OutputCommand::CopyText(text) if text == "  first\nsecond\t🦀  ")));
-        let (actions, _, _) = click(delete_at, &mut time, &mut inspector, &mut ui_mgr);
+        let (actions, _, _) = click(1000.0, delete_at, &mut time, &mut inspector, &mut ui_mgr);
         assert!(actions.delete.is_none(), "first Delete click only arms");
         let (_, armed, _) = frame(1000.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
         assert_eq!(armed.controls.len(), 4, "Confirm and Cancel replace Delete");
         let (actions, _, _) = click(
+            1000.0,
             armed.controls[3].rect.center(),
             &mut time,
             &mut inspector,
@@ -2414,6 +2495,7 @@ mod tests {
         let (_, disarmed, _) = frame(1000.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
         assert_eq!(disarmed.controls.len(), 3);
         click(
+            1000.0,
             disarmed.controls[2].rect.center(),
             &mut time,
             &mut inspector,
@@ -2421,6 +2503,7 @@ mod tests {
         );
         let (_, armed, _) = frame(1000.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
         let (actions, _, _) = click(
+            1000.0,
             armed.controls[2].rect.center(),
             &mut time,
             &mut inspector,
@@ -2433,6 +2516,7 @@ mod tests {
         );
         let (_, idle, _) = frame(1000.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
         click(
+            1000.0,
             idle.controls[0].rect.center(),
             &mut time,
             &mut inspector,
@@ -2452,6 +2536,7 @@ mod tests {
             "row actions remain beside the inline editor and Save/Cancel"
         );
         let (actions, _, _) = click(
+            1000.0,
             editing.controls[5].rect.center(),
             &mut time,
             &mut inspector,

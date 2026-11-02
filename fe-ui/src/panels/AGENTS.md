@@ -410,6 +410,15 @@ values and the armed Confirm/Cancel pair; below that width a horizontal scroll
 keeps the Inspector's viewport boundary intact. Row actions remain text buttons
 and use at least 24 points or 20 physical pixels, whichever is larger.
 
+Column and action slots allocate their exact rectangles before rendering child
+controls. Child content cannot enlarge the table's measured width. Edit and
+Copy retain their own slots; the destructive-action slot always reserves the
+full Confirm/Cancel pair and uses a vertical parent for the canonical helper's
+internal horizontal row. Its width includes the actual square-button minimum,
+with whole-point rounding. Arming and canceling therefore do not change the
+column origins or require a new horizontal scroll position. Child clipping
+uses those same slot rectangles, preserving actual leaf-response observations.
+
 Scalar previews are single-line ellipses with bounded hover text. Newlines and
 tabs are escaped for display, empty strings are explicit, and objects/arrays
 show field/item counts. Compound values expand into a bounded read-only JSON
@@ -434,7 +443,13 @@ command's `correlation_id: None`, draft/readback confirmation, stale-value
 refusal, timeout, deletion and node-scope reset. The same journey now also
 authors three-width table/target observations, exact clipboard output and
 real egui Delete arm/cancel/confirm plus Edit/cancel interactions. No new test
-function is added. Its persistence readback is an explicit model simulation;
+function is added. At 260/320/640 points it positions the native scroll container
+at the right edge, then compares content width, horizontal offset and Edit/Copy
+positions before/after arming and cancellation. It checks the complete action
+rectangles against their actual hit rectangles, child clips and table clip,
+including the full Confirm/Cancel pair; a control count alone is insufficient.
+Only this declared native container ID is used for scroll setup; widget facts
+come from the actual same-pass responses. Its persistence readback is an explicit model simulation;
 these authored assertions have not been executed in the source-only lane and
 do not prove DB persistence or backend schema enforcement. Integrated
 compilation, execution and live UI readability/a11y verification remain required.
