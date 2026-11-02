@@ -609,7 +609,7 @@ fn inspector_transform_section(
 }
 
 /// The "Portal URLs" section: `Save` pushes `UiAction::SaveNodeUrl` (commits
-/// `external_url`/`config_url` for the selected node); `Open Portal` pushes
+/// the external URL for the selected node); `Open Portal` pushes
 /// `UiAction::OpenPortal` with the current `external_url` text. See
 /// `fe-ui/src/AGENTS.md` §portal for the full chain from here to `DbCommand`.
 fn inspector_url_meta_section(
@@ -650,18 +650,9 @@ fn inspector_url_meta_section(
 
         if local_role.can_manage() {
             ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new("Config URL (admin)")
-                    .small()
-                    .color(theme::TEXT_DIM),
-            );
-            ui.add(
-                egui::TextEdit::singleline(&mut inspector.config_url)
-                    .min_size(minimum)
-                    .hint_text("https://admin.\u{2026}")
-                    .desired_width(f32::INFINITY),
-            )
-            .named(ui, "Config URL (admin)");
+            ui.add(egui::Label::new(egui::RichText::new(
+                "Config URL editing is unavailable in this Inspector. Save updates the Portal URL only."
+            ).small().color(theme::TEXT_DIM)).wrap());
         }
 
         ui.add_space(6.0);
@@ -683,7 +674,7 @@ fn inspector_url_meta_section(
                     .fill(theme::BG_SAVE)
                     .min_size(egui::vec2(ui.available_width(), 28.0)),
             )
-            .named(ui, "Save portal URLs")
+            .named(ui, "Save Portal URL")
             .on_disabled_hover_text(if node_mgr.selected.is_none() {
                 "Select a node to save its Portal URL."
             } else if !editable {
@@ -3937,7 +3928,7 @@ mod tests {
             "javascript:alert(1)",
         ] {
             polish.external_url = invalid.into();
-            let (observed, _) = surface(
+            let (observed, output) = surface(
                 false,
                 vec![],
                 &mut panel_time,
@@ -3945,13 +3936,15 @@ mod tests {
                 &polish_nodes,
                 &mut notices,
             );
+            assert!(painted(&output).contains("Config URL editing is unavailable"));
+            assert_eq!(observed.controls.len(),3,"Portal draft, Save and Open remain; ignored Config editor is absent");
             assert!(matches!(
                 crate::actions::portal::compute_save_url(&polish_nodes, &polish),
                 crate::actions::portal::SaveUrlOutcome::Blocked { .. }
             ));
             click_surface(
                 false,
-                observed.controls[2].rect.center(),
+                observed.controls[1].rect.center(),
                 &mut panel_time,
                 &mut polish,
                 &polish_nodes,
@@ -3975,7 +3968,7 @@ mod tests {
         );
         click_surface(
             false,
-            observed.controls[2].rect.center(),
+            observed.controls[1].rect.center(),
             &mut panel_time,
             &mut polish,
             &polish_nodes,

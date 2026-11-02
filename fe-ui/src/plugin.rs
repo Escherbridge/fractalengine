@@ -258,7 +258,6 @@ pub struct FieldDefEntry {
 pub struct InspectorFormState {
     active_tab: InspectorTab,
     pub external_url: String,
-    pub config_url: String,
     pub pos: [String; 3],
     pub rot: [String; 3],
     pub scale: [String; 3],
@@ -336,7 +335,6 @@ impl Default for InspectorFormState {
         Self {
             active_tab: InspectorTab::Properties,
             external_url: String::new(),
-            config_url: String::new(),
             pos: ["0.00".into(), "0.00".into(), "0.00".into()],
             rot: ["0.00".into(), "0.00".into(), "0.00".into()],
             scale: ["1.00".into(), "1.00".into(), "1.00".into()],

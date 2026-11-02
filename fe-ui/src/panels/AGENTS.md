@@ -772,3 +772,13 @@ Enter/blur. The existing native tool-options journey checks the actual Smooth bu
 Portal navigation, explicit external launch and Close have named24-point controls. Loading and
 bounded error details occupy normal layout. The panel records its actual remaining content rect;
 the native overlay follows that rect rather than the legacy fixed36-point header estimate.
+
+## Unsupported Inspector Config URL editing
+
+Caller census found InspectorFormState.config_url only in its own declaration/default and
+Inspector text editor: it had neither hydration nor a persistence consumer. That ignored buffer
+and editor are removed. Managers see an explicit unsupported explanation and the Save action
+is named Save Portal URL. The existing URL UI journey asserts the explanation and absence of
+the extra edit control before exercising Portal URL validation/save. No second URL write is
+invented. Separate model metadata DTOs/SpaceManager storage and fe-webview's component editor
+events remain outside this Inspector contract.
