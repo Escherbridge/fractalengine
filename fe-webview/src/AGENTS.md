@@ -124,3 +124,20 @@ as `Action::Manage` on scope `UI#config-tab` against the shared
 sees Config), but the decision + its log come from the engine. The `Role`
 enum itself stays until the session layer (`fe_database::session_cache` /
 `fe-policy`) exposes the canonical session role.
+
+## Canonical loopback policy correction
+
+The existing loopback intent uses typed url::Host addresses: every127/8 IPv4
+address and IPv6::1 is denied after URL canonicalization, including compact,
+numeric and bracketed spellings. IPv4-mapped and compatible IPv6 addresses pass
+through the same IPv4 checks, closing bypasses of loopback,0.0.0.0 and the
+configured private/link-local CIDRs. Those CIDRs remain10/8,172.16/12,192.168/16,
+169.254/16 andfc00::/7. No other address range is added by this correction.
+
+Domain checks deny localhost, its reserved subdomains and trailing-dot forms,
+plus explicit conventional localhost.localdomain,localhost6,localhost6.localdomain6,
+ip6-localhost andip6-loopback aliases. Ordinary public domains/IPs remain allowed
+under HTTP(S). This is literal URL validation, without DNS resolution or a DNS
+rebinding firewall claim. No QA private-origin exception is introduced. Existing
+policy tables extend canonical loopback, aliases, mapped private addresses and
+public boundary cases; source authoring is not execution evidence.

@@ -1,7 +1,19 @@
+//! Canonical literal-address URL policy; see src/AGENTS.md section security.
+
 use ipnet::IpNet;
 use std::net::IpAddr;
 
-pub const BLOCKED_HOSTS: &[&str] = &["localhost", "127.0.0.1", "::1", "0.0.0.0"];
+pub const BLOCKED_HOSTS: &[&str] = &[
+    "localhost",
+    "localhost.localdomain",
+    "localhost6",
+    "localhost6.localdomain6",
+    "ip6-localhost",
+    "ip6-loopback",
+    "127.0.0.1",
+    "::1",
+    "0.0.0.0",
+];
 
 pub const BLOCKED_RANGES: &[&str] = &[
     "10.0.0.0/8",
@@ -11,39 +23,38 @@ pub const BLOCKED_RANGES: &[&str] = &[
     "fc00::/7",
 ];
 
+fn blocked_address(address: IpAddr) -> bool {
+    address.is_loopback()
+        || matches!(address, IpAddr::V4(ip) if ip.is_unspecified())
+        || BLOCKED_RANGES.iter().any(|range| {
+            range
+                .parse::<IpNet>()
+                .is_ok_and(|net| net.contains(&address))
+        })
+}
+
 pub fn is_url_allowed(url: &url::Url) -> bool {
-    match url.scheme() {
-        "http" | "https" => {}
-        _ => return false,
+    if !matches!(url.scheme(), "http" | "https") {
+        return false;
     }
-    if let Some(host) = url.host_str() {
-        if BLOCKED_HOSTS.contains(&host) {
-            return false;
-        }
-    }
-    // Use url.host() for proper IPv6 parsing (strips brackets)
     match url.host() {
-        Some(url::Host::Ipv4(ip)) => {
-            let addr = IpAddr::V4(ip);
-            for range in BLOCKED_RANGES {
-                if let Ok(net) = range.parse::<IpNet>() {
-                    if net.contains(&addr) {
-                        return false;
-                    }
-                }
-            }
+        Some(url::Host::Domain(host)) => {
+            let host = host.trim_end_matches('.');
+            !BLOCKED_HOSTS
+                .iter()
+                .any(|blocked| host.eq_ignore_ascii_case(blocked))
+                && !host
+                    .rsplit('.')
+                    .next()
+                    .is_some_and(|label| label.eq_ignore_ascii_case("localhost"))
         }
+        Some(url::Host::Ipv4(ip)) => !blocked_address(IpAddr::V4(ip)),
         Some(url::Host::Ipv6(ip)) => {
-            let addr = IpAddr::V6(ip);
-            for range in BLOCKED_RANGES {
-                if let Ok(net) = range.parse::<IpNet>() {
-                    if net.contains(&addr) {
-                        return false;
-                    }
-                }
-            }
+            !blocked_address(IpAddr::V6(ip))
+                && ip
+                    .to_ipv4()
+                    .is_none_or(|mapped| !blocked_address(IpAddr::V4(mapped)))
         }
-        _ => {}
+        None => false,
     }
-    true
 }
