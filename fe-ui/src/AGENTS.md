@@ -1416,3 +1416,11 @@ Pen help without an obstruction and checks its absence with Data, a dialog, and 
 Settings exposes terminal reset only when its trusted startup developer capability and the binary's request sender exist. Exact RESET plus the existing confirmation queues one local host request; it never supplies runtime readiness or sends the legacy reset command. The host stops producers before admitting the final DB operation.
 
 `maintenance::clear_read_models` calls the navigation/node/tree/UI managers' reset methods and replaces form, history, query, token, path/stamp, proposal, download and residency buffers. This happens only after ordinary editor schedules have been removed. Old replies are drained without projection; no hierarchy reload or scene respawn occurs. Preferences and the guarded file-dialog provider are retained. The standalone terminal renderer owns subsequent Close/manual reopen behavior.
+
+Stamp invalidation includes StampInteractionState, StampSelectionCatalog and
+StampSelectionRequests as well as ToolPanelState's catalog mirror. The existing
+native picker/Apply journey reuses its loaded properties and outstanding save,
+queues a retained origin, calls the real invalidation, and checks late promotion
+through registered readers plus late save refusal through the production receipt
+handler. Queue reset is explicit source evidence; no-write alone does not prove
+the private queue was empty. These assertions remain unexecuted until the sweep.

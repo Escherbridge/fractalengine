@@ -909,6 +909,10 @@ mod tests {
         let commands: Vec<_> = stamp_rx.try_iter().collect();
         assert!(matches!(commands.as_slice(),[DbCommand::CommitStampOverrides {edit,..}] if edit.node_id=="t1#inst-1" && edit.instance_index==1 && edit.scale==[2.0,1.0,1.0]),
             "actual native Apply and production dispatcher emit one atomic stamp batch: {commands:?}");
+        let [DbCommand::CommitStampOverrides { correlation_id: reset_save, .. }] = commands.as_slice() else { unreachable!() };
+        let reset_save = reset_save.clone();
+        let reset_capture = late_capture.clone();
+        let reset_request = late_request.clone();
         app.insert_resource(ClickArbiter::pressed_along(Ray3d::new(
             Vec3::new(20.0, 50.0, 0.0),
             Dir3::NEG_Y,
@@ -932,6 +936,42 @@ mod tests {
             stamp_rx.try_recv().is_err(),
             "late receipts cannot resubmit or promote"
         );
+
+        let reset_stamp = crate::actions::asset::StampRef { track_node_id: "t1".into(), stamp_index: 1 };
+        let reset_origin = app.world().resource::<crate::node_manager::StampSelectionCatalog>().origin(1).unwrap();
+        {
+            let state = app.world().resource::<crate::actions::asset::StampInteractionState>();
+            assert!(state.loaded_properties(&reset_stamp).is_some());
+            assert_eq!(state.promoted_node_id(&reset_stamp), Some("t1#inst-1"));
+            assert!(state.edit_pending(), "the actual native save is still awaiting its receipt");
+        }
+        assert!(app.world().resource::<crate::panels::tool_panel::ToolPanelState>().stamp_selection_catalog.is_some());
+        app.world_mut().resource_mut::<crate::node_manager::StampSelectionRequests>().push(reset_origin);
+        crate::maintenance::clear_read_models(app.world_mut());
+        let catalog = app.world().resource::<crate::node_manager::StampSelectionCatalog>();
+        assert!(catalog.targets.is_empty() && catalog.origin(1).is_none());
+        assert!(app.world().resource::<crate::panels::tool_panel::ToolPanelState>().stamp_selection_catalog.is_none());
+        assert!(app.world().resource::<NodeManager>().selected_entity().is_none());
+        {
+            let state = app.world().resource::<crate::actions::asset::StampInteractionState>();
+            assert!(state.selected().is_none() && state.promoted_node_id(&reset_stamp).is_none());
+            assert!(state.loaded_properties(&reset_stamp).is_none() && !state.edit_pending());
+        }
+        app.insert_resource(ClickArbiter::default());
+        app.world_mut().write_message(DbResult::CheckedStampPromoted { capture: reset_capture,
+            node_id: "t1#inst-1".into(), properties: serde_json::json!({"node_kind":"stamp","path_id":"t1","owning_path_id":"t1","instance_index":1}),
+            newly_promoted: false, correlation_id: reset_request });
+        app.update();
+        app.world_mut().resource_scope(|world, mut state: Mut<crate::actions::asset::StampInteractionState>| {
+            crate::actions::asset::handle_edit_reply(&mut state,
+                &DbResult::RequestFailed { correlation_id: reset_save, error: "late save refusal".into() },
+                &mut world.resource_mut::<crate::actions::UiManager>(), 0.0);
+        });
+        let state = app.world().resource::<crate::actions::asset::StampInteractionState>();
+        assert!(state.selected().is_none() && state.loaded_properties(&reset_stamp).is_none());
+        assert!(!state.edit_pending() && state.edit_error().is_none() && state.saved_revision() == 0);
+        assert!(app.world().resource::<NodeManager>().selected_entity().is_none());
+        assert!(stamp_rx.try_recv().is_err(), "reset invalidation and late replies cannot enqueue another mutation");
     }
 
     /// A unit box centered at the origin in identity local space.

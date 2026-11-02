@@ -31,6 +31,9 @@ pub fn clear_read_models(world: &mut World) {
     reset::<crate::undo::UndoState>(world);
     reset::<crate::gis::GisPanelState>(world);
     reset::<crate::gis::PathEditorState>(world);
+    reset::<crate::actions::asset::StampInteractionState>(world);
+    reset::<crate::node_manager::StampSelectionCatalog>(world);
+    reset::<crate::node_manager::StampSelectionRequests>(world);
     reset::<crate::verse_manager::PrimitiveDescriptorCache>(world);
     reset::<crate::verse_manager::PathAssetCache>(world);
     reset::<crate::verse_manager::StampRenderIndex>(world);
