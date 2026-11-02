@@ -46,6 +46,15 @@ pub(crate) fn right_inspector(
     asset_status: &crate::asset_ops::AssetDownloadStatus,
 ) {
     sync_property_editor_scope(inspector, node_mgr, ui.ctx().input(|input| input.time));
+    synchronize_token_target(
+        inspector,
+        node_mgr
+            .selected
+            .as_ref()
+            .map(|selection| selection.node_id.as_str()),
+        &build_nav_scope(nav),
+        local_role.can_manage(),
+    );
     crate::object_data::synchronize(
         &mut inspector.object_data,
         node_mgr,
@@ -110,6 +119,7 @@ pub(crate) fn right_inspector(
                 if prev_tab == InspectorTab::ApiAccess && tab != InspectorTab::ApiAccess {
                     inspector.generated_api_token = None;
                     inspector.generated_api_token_client = None;
+                    inspector.api_token_request.cancel();
                 }
 
                 // Auto-populate scope + fetch tokens when entering API tab
@@ -624,6 +634,216 @@ fn inspector_url_meta_section(
     .observed(ui);
 }
 
+const INSPECTOR_MINT_PREFIX: &str = "ui-inspector-mint:";
+
+#[derive(Default)]
+pub(crate) struct InspectorTokenRequest {
+    node_id: Option<String>,
+    scope: String,
+    pending: Option<PendingTokenMint>,
+    error: Option<&'static str>,
+    revealed: bool,
+}
+
+struct PendingTokenMint {
+    nonce: String,
+    scope: String,
+    role: String,
+    client: Option<String>,
+    started: std::time::Instant,
+}
+
+impl InspectorTokenRequest {
+    pub(crate) fn owns(id: &str) -> bool {
+        id.starts_with(INSPECTOR_MINT_PREFIX)
+    }
+
+    fn cancel(&mut self) {
+        self.pending = None;
+        self.error = None;
+        self.revealed = false;
+    }
+
+    fn expire(&mut self, now: std::time::Instant) {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|request| now.saturating_duration_since(request.started).as_secs() >= 30)
+        {
+            self.pending = None;
+            self.error = Some("Generation was not confirmed. A token may exist; refresh the list before retrying.");
+        }
+    }
+
+    pub(crate) fn accept(
+        &mut self,
+        id: &str,
+        scope: &str,
+        role: &str,
+        client: &str,
+        now: std::time::Instant,
+    ) -> bool {
+        self.expire(now);
+        let Some(request) = self.pending.as_ref().filter(|request| request.nonce == id) else {
+            return false;
+        };
+        let matches = request.scope == scope
+            && request.role == role
+            && request
+                .client
+                .as_deref()
+                .is_none_or(|expected| expected == client);
+        self.pending = None;
+        self.revealed = false;
+        self.error = (!matches).then_some(
+            "The token reply did not match this request. Refresh the list before retrying.",
+        );
+        matches
+    }
+
+    pub(crate) fn fail(&mut self, id: &str, now: std::time::Instant) {
+        self.expire(now);
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|request| request.nonce == id)
+        {
+            self.pending = None;
+            self.error =
+                Some("Token generation failed. Check your access and client DID, then retry.");
+        }
+    }
+}
+
+pub(crate) fn synchronize_token_target(
+    inspector: &mut InspectorFormState,
+    selected: Option<&str>,
+    scope: &str,
+    can_manage: bool,
+) {
+    let changed = inspector.api_token_request.node_id.as_deref() != selected
+        || inspector.api_token_request.scope != scope;
+    if changed {
+        inspector.api_token_request = InspectorTokenRequest {
+            node_id: selected.map(str::to_owned),
+            scope: scope.to_owned(),
+            ..Default::default()
+        };
+        inspector.api_token_scope_buf = scope.to_owned();
+        inspector.api_token_client_buf.clear();
+        inspector.api_tokens.clear();
+        inspector.api_tokens_total = 0;
+        inspector.api_tokens_page = 0;
+        inspector.api_tokens_loading = false;
+    }
+    if changed || !can_manage || selected.is_none() {
+        inspector.generated_api_token = None;
+        inspector.generated_api_token_client = None;
+        inspector.api_token_request.cancel();
+    }
+}
+
+pub(crate) fn submit_inspector_token(
+    inspector: &mut InspectorFormState,
+    node_id: &str,
+    can_manage: bool,
+    db_tx: &crossbeam::channel::Sender<DbCommand>,
+    now: std::time::Instant,
+) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NONCE: AtomicU64 = AtomicU64::new(1);
+    if !can_manage
+        || inspector.api_token_request.pending.is_some()
+        || inspector.api_token_request.node_id.as_deref() != Some(node_id)
+        || inspector.api_token_scope_buf.is_empty()
+        || inspector.api_token_scope_buf != inspector.api_token_request.scope
+    {
+        return;
+    }
+    let client = inspector.api_token_client_buf.trim();
+    if !client.is_empty() && fe_identity::validate_client_did(client).is_err() {
+        inspector.api_token_request.error =
+            Some("Enter a valid ed25519 client DID or leave it blank.");
+        return;
+    }
+    let nonce = format!(
+        "{INSPECTOR_MINT_PREFIX}{}",
+        NONCE.fetch_add(1, Ordering::Relaxed)
+    );
+    let request = PendingTokenMint {
+        nonce: nonce.clone(),
+        scope: inspector.api_token_scope_buf.clone(),
+        role: inspector.api_token_role_buf.clone(),
+        client: (!client.is_empty()).then(|| client.to_owned()),
+        started: now,
+    };
+    let command = mint_command(
+        request.scope.clone(),
+        request.role.clone(),
+        inspector.api_token_expiry_buf,
+        Some(format!("node:{node_id}")),
+        client,
+        Some(nonce),
+    );
+    inspector.generated_api_token = None;
+    inspector.generated_api_token_client = None;
+    inspector.api_token_request.revealed = false;
+    inspector.api_token_request.error = None;
+    if db_tx.send(command).is_ok() {
+        inspector.api_token_request.pending = Some(request);
+    } else {
+        bevy::log::warn!("DB command channel closed during Inspector token generation");
+        inspector.api_token_request.error =
+            Some("Could not send the token request. Your inputs are kept.");
+    }
+}
+
+fn node_properties_curl(
+    address: std::net::SocketAddr,
+    node_id: &str,
+    token: &str,
+) -> Option<String> {
+    let mut url = url::Url::parse(&format!("http://{address}")).ok()?;
+    url.path_segments_mut()
+        .ok()?
+        .extend(["api", "v1", "nodes", node_id, "properties"]);
+    let quote = |text: &str| format!("'{}'", text.replace('\'', "'\\''"));
+    Some(format!(
+        "curl -sS {} -H {}",
+        quote(url.as_str()),
+        quote(&format!("Authorization: Bearer {token}"))
+    ))
+}
+
+fn token_expiry_label(raw: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+    let Ok(expiry) = chrono::DateTime::parse_from_rfc3339(raw) else {
+        return "Expiry unavailable".into();
+    };
+    let seconds = expiry.signed_duration_since(now).num_seconds();
+    if seconds <= 0 {
+        return "Expired".into();
+    }
+    if seconds < 60 {
+        return "Expires in under a minute".into();
+    }
+    let (count, unit) = if seconds < 3600 {
+        ((seconds + 59) / 60, "minute")
+    } else if seconds < 86400 {
+        ((seconds + 3599) / 3600, "hour")
+    } else {
+        ((seconds + 86399) / 86400, "day")
+    };
+    format!(
+        "Expires in {count} {unit}{}",
+        if count == 1 { "" } else { "s" }
+    )
+}
+
+fn copy_inspector_text(ui: &egui::Ui, ui_mgr: &mut UiManager, value: &str, notice: &str) {
+    ui.ctx().copy_text(value.to_owned());
+    ui_mgr.show_toast(notice, ui.input(|input| input.time));
+}
+
 fn inspector_api_access_section(
     ui: &mut egui::Ui,
     inspector: &mut InspectorFormState,
@@ -634,8 +854,14 @@ fn inspector_api_access_section(
 ) {
     let node_id = match node_mgr.selected.as_ref() {
         Some(sel) => &sel.node_id,
-        None => return,
+        None => {
+            ui.label("Select a node to manage API access and create a scoped token.");
+            return;
+        }
     };
+    inspector
+        .api_token_request
+        .expire(std::time::Instant::now());
 
     // Padded container for the entire API Access tab
     egui::Frame::NONE
@@ -652,6 +878,13 @@ fn inspector_api_access_section(
                         .italics(),
                 );
                 return;
+            }
+
+            if let Some(address) = inspector.api_endpoint {
+                crate::panels::widgets::clipped_value_copyable(ui, ui_mgr,
+                    "Local API address", &format!("http://{address}"), theme::TEXT_DIM, "Copied API address");
+            } else {
+                ui.label("The local API address is not available yet.");
             }
 
             // --- Generate Token section ---
@@ -707,8 +940,10 @@ fn inspector_api_access_section(
                 }
 
                 ui.add_space(6.0);
+                let pending = inspector.api_token_request.pending.is_some();
 
                 // Role + Expiry on separate rows for narrow panels
+                ui.add_enabled_ui(!pending, |ui| {
                 egui::Grid::new("api_token_opts")
                     .num_columns(2)
                     .spacing([8.0, 4.0])
@@ -742,6 +977,7 @@ fn inspector_api_access_section(
                             }).response.named(ui, "API token expiration");
                         ui.end_row();
                     });
+                });
 
                 // Client DID (W6-7b): blank mints a fresh client; the DB
                 // door is the authority on `client_did` — this field only
@@ -753,7 +989,7 @@ fn inspector_api_access_section(
                         .small()
                         .color(theme::TEXT_DIM),
                 );
-                ui.add(
+                ui.add_enabled(!pending,
                     egui::TextEdit::singleline(&mut inspector.api_token_client_buf)
                         .desired_width(ui.available_width())
                         .hint_text("did:key:z... (optional)")
@@ -771,24 +1007,20 @@ fn inspector_api_access_section(
                 }
 
                 ui.add_space(6.0);
+                if pending { ui.label("Creating API token…"); }
+                if let Some(error) = inspector.api_token_request.error {
+                    ui.add(egui::Label::new(egui::RichText::new(error).color(theme::STATUS_OFFLINE)).wrap());
+                }
                 if ui
                     .add_enabled(
-                        client_valid,
+                        client_valid && !pending && !inspector.api_token_scope_buf.is_empty(),
                         egui::Button::new("Generate API Token")
                             .fill(theme::BG_SAVE)
                             .min_size(egui::vec2(ui.available_width(), 28.0)),
                     ).observed(ui)
                     .clicked()
                 {
-                    db_tx
-                        .send(mint_command(
-                            inspector.api_token_scope_buf.clone(),
-                            inspector.api_token_role_buf.clone(),
-                            inspector.api_token_expiry_buf,
-                            Some(format!("node:{}", node_id)),
-                            client_trimmed,
-                        ))
-                        .ok();
+                    submit_inspector_token(inspector, node_id, local_role.can_manage(), db_tx, std::time::Instant::now());
                 }
 
                 // Show generated token (selectable, with copy buttons)
@@ -817,8 +1049,14 @@ fn inspector_api_access_section(
 
                             ui.add_space(2.0);
                             let mut display = token.clone();
+                            let reveal_label = if inspector.api_token_request.revealed { "Hide token" } else { "Reveal token" };
+                            if ui.button(reveal_label).named(ui, format_args!("{reveal_label}: generated API token")).clicked() {
+                                inspector.api_token_request.revealed = !inspector.api_token_request.revealed;
+                            }
                             ui.add(
                                 egui::TextEdit::multiline(&mut display)
+                                    .password(!inspector.api_token_request.revealed)
+                                    .interactive(false)
                                     .desired_width(ui.available_width())
                                     .desired_rows(3)
                                     .font(egui::TextStyle::Monospace),
@@ -845,28 +1083,24 @@ fn inspector_api_access_section(
                                         .named(ui, "Copy generated token client DID").on_hover_text("Copy client DID")
                                         .clicked()
                                     {
-                                        ui.ctx().copy_text(client.clone());
+                                        copy_inspector_text(ui, ui_mgr, client, "Copied token client DID");
                                     }
                                 });
                             }
 
                             ui.add_space(4.0);
-                            let now = ui.ctx().input(|i| i.time);
-
                             // Copy Token button
                             ui.horizontal(|ui| {
                                 if ui.add(egui::Button::new("\u{1F4CB} Copy Token").fill(theme::BG_BUTTON_ACTIVE).small()).named(ui, "Copy generated API token").clicked() {
-                                    ui.ctx().copy_text(token.clone());
-                                    ui_mgr.show_toast("Copied token to clipboard", now);
+                                    copy_inspector_text(ui, ui_mgr, token, "Copied token to clipboard");
                                 }
                             });
 
                             // curl command — pre-built with the actual token
                             ui.add_space(4.0);
-                            let curl_cmd = format!(
-                                "curl -s http://localhost:8765/health -H \"Authorization: Bearer {}\"",
-                                token,
-                            );
+                            if let Some(address) = inspector.api_endpoint {
+                            let preview_token = if inspector.api_token_request.revealed { token.as_str() } else { "<TOKEN>" };
+                            let curl_cmd = node_properties_curl(address, node_id, preview_token).unwrap_or_default();
                             egui::Frame::NONE
                                 .fill(egui::Color32::from_rgb(20, 20, 30))
                                 .inner_margin(egui::Margin::symmetric(6, 4))
@@ -881,11 +1115,12 @@ fn inspector_api_access_section(
                                         );
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                             if ui.add(egui::Button::new("\u{1F4CB}").fill(egui::Color32::TRANSPARENT).small())
-                                                .named(ui, "Copy API health check curl command").on_hover_text("Copy curl command")
+                                                .named(ui, "Copy selected node properties curl command").on_hover_text("Copy authenticated GET properties command")
                                                 .clicked()
                                             {
-                                                ui.ctx().copy_text(curl_cmd.clone());
-                                                ui_mgr.show_toast("Copied curl command", now);
+                                                if let Some(command) = node_properties_curl(address, node_id, token) {
+                                                    copy_inspector_text(ui, ui_mgr, &command, "Copied curl command");
+                                                }
                                             }
                                         });
                                     });
@@ -895,11 +1130,15 @@ fn inspector_api_access_section(
                                         theme::TEXT_DIM,
                                     );
                                 });
+                            } else {
+                                ui.label("Curl is unavailable until the local API reports its bound address.");
+                            }
                         });
                 }
                 if dismiss_token {
                     inspector.generated_api_token = None;
                     inspector.generated_api_token_client = None;
+                    inspector.api_token_request.revealed = false;
                 }
 
                 ui.add_space(4.0);
@@ -1022,10 +1261,10 @@ fn inspector_api_access_section(
                                     );
                                 });
                                 ui.label(
-                                    egui::RichText::new(format!("exp: {}", tok.expires_at))
+                                    egui::RichText::new(token_expiry_label(&tok.expires_at, chrono::Utc::now()))
                                         .small()
                                         .color(theme::TEXT_MUTED),
-                                );
+                                ).on_hover_text(&tok.expires_at);
                                 if let Some(ref client) = tok.client {
                                     ui.horizontal(|ui| {
                                         ui.label(
@@ -3103,6 +3342,317 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "unresolved access must not start a data read"
+        );
+
+        let panel_ctx = egui::Context::default();
+        let mut panel_time = 400.0;
+        let mut polish = InspectorFormState::default();
+        let mut polish_nodes = NodeManager::default();
+        let mut notices = UiManager::default();
+        let manager = LocalUserRole {
+            role: Some(fe_database::RoleLevel::Manager),
+        };
+        let (polish_tx, polish_rx) = crossbeam::channel::unbounded();
+        let surface = |api: bool,
+                       events: Vec<egui::Event>,
+                       time: &mut f64,
+                       form: &mut InspectorFormState,
+                       nodes: &NodeManager,
+                       notices: &mut UiManager| {
+            *time += 0.05;
+            crate::ui_shell::layout_policy::begin_frame(&panel_ctx, true);
+            let output = panel_ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000.0, 1600.0),
+                    )),
+                    time: Some(*time),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    crate::ui_shell::layout_policy::begin_ui_pass(ctx);
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        if api {
+                            inspector_api_access_section(
+                                ui, form, nodes, &polish_tx, &manager, notices,
+                            );
+                        } else {
+                            inspector_url_meta_section(ui, form, nodes, notices, &manager);
+                        }
+                    });
+                },
+            );
+            (
+                crate::ui_shell::layout_policy::observations(&panel_ctx),
+                output,
+            )
+        };
+        let painted = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .filter_map(|shape| {
+                    if let egui::epaint::Shape::Text(text) = &shape.shape {
+                        Some(text.galley.job.text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let click_surface = |api,
+                             point: egui::Pos2,
+                             time: &mut f64,
+                             form: &mut InspectorFormState,
+                             nodes: &NodeManager,
+                             notices: &mut UiManager| {
+            let mut result = surface(
+                api,
+                vec![egui::Event::PointerMoved(point)],
+                time,
+                form,
+                nodes,
+                notices,
+            );
+            for pressed in [true, false] {
+                result = surface(
+                    api,
+                    vec![egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                    time,
+                    form,
+                    nodes,
+                    notices,
+                );
+            }
+            result
+        };
+        let (_, empty) = surface(
+            true,
+            vec![],
+            &mut panel_time,
+            &mut polish,
+            &polish_nodes,
+            &mut notices,
+        );
+        assert!(painted(&empty).contains("Select a node"));
+        polish_nodes.select(Entity::from_bits(20), "polish-node");
+        for invalid in [
+            "not a URL",
+            "http://127.0.0.1/private",
+            "javascript:alert(1)",
+        ] {
+            polish.external_url = invalid.into();
+            let (observed, _) = surface(
+                false,
+                vec![],
+                &mut panel_time,
+                &mut polish,
+                &polish_nodes,
+                &mut notices,
+            );
+            assert!(matches!(
+                crate::actions::portal::compute_save_url(&polish_nodes, &polish),
+                crate::actions::portal::SaveUrlOutcome::Blocked { .. }
+            ));
+            click_surface(
+                false,
+                observed.controls[2].rect.center(),
+                &mut panel_time,
+                &mut polish,
+                &polish_nodes,
+                &mut notices,
+            );
+            assert!(notices.drain_actions().is_empty());
+            assert_eq!(polish.external_url, invalid);
+            assert_eq!(
+                polish_nodes.selected.as_ref().unwrap().node_id,
+                "polish-node"
+            );
+        }
+        polish.external_url.clear();
+        let (observed, _) = surface(
+            false,
+            vec![],
+            &mut panel_time,
+            &mut polish,
+            &polish_nodes,
+            &mut notices,
+        );
+        click_surface(
+            false,
+            observed.controls[2].rect.center(),
+            &mut panel_time,
+            &mut polish,
+            &polish_nodes,
+            &mut notices,
+        );
+        assert!(matches!(&notices.drain_actions()[..], [UiAction::SaveUrl]));
+        let scope = "VERSE#v#FRACTAL#f#PETAL#p";
+        synchronize_token_target(&mut polish, Some("polish-node"), scope, true);
+        let endpoint = fe_runtime::app::RuntimeApiEndpoint(Some("127.0.0.1:8882".parse().unwrap()));
+        polish.api_endpoint = endpoint.0;
+        let (observed, _) = surface(
+            true,
+            vec![],
+            &mut panel_time,
+            &mut polish,
+            &polish_nodes,
+            &mut notices,
+        );
+        click_surface(
+            true,
+            observed.controls[6].rect.center(),
+            &mut panel_time,
+            &mut polish,
+            &polish_nodes,
+            &mut notices,
+        );
+        let DbCommand::MintApiToken {
+            correlation_id: Some(nonce),
+            scope: sent_scope,
+            label,
+            ..
+        } = polish_rx.try_recv().unwrap()
+        else {
+            panic!("Inspector generation must send one correlated mint")
+        };
+        assert_eq!(sent_scope, scope);
+        assert_eq!(label.as_deref(), Some("node:polish-node"));
+        assert!(InspectorTokenRequest::owns(&nonce));
+        submit_inspector_token(
+            &mut polish,
+            "polish-node",
+            true,
+            &polish_tx,
+            std::time::Instant::now(),
+        );
+        assert!(
+            polish_rx.try_recv().is_err(),
+            "pending Generate cannot enqueue twice"
+        );
+        assert!(!polish.api_token_request.accept(
+            "unknown",
+            scope,
+            "viewer",
+            "client",
+            std::time::Instant::now()
+        ));
+        synchronize_token_target(&mut polish, Some("another-node"), scope, true);
+        assert!(!polish.api_token_request.accept(
+            &nonce,
+            scope,
+            "viewer",
+            "client",
+            std::time::Instant::now()
+        ));
+        assert!(polish.generated_api_token.is_none());
+        synchronize_token_target(&mut polish, Some("polish-node"), scope, true);
+        let now = std::time::Instant::now();
+        submit_inspector_token(&mut polish, "polish-node", true, &polish_tx, now);
+        let DbCommand::MintApiToken {
+            correlation_id: Some(failed_nonce),
+            ..
+        } = polish_rx.try_recv().unwrap()
+        else {
+            panic!("retry must carry a fresh nonce")
+        };
+        assert_ne!(nonce, failed_nonce);
+        polish.api_token_request.fail(&failed_nonce, now);
+        assert!(
+            polish.api_token_request.pending.is_none() && polish.api_token_request.error.is_some()
+        );
+        submit_inspector_token(&mut polish, "polish-node", true, &polish_tx, now);
+        let DbCommand::MintApiToken {
+            correlation_id: Some(expired_nonce),
+            ..
+        } = polish_rx.try_recv().unwrap()
+        else {
+            panic!("mint must stay correlated")
+        };
+        let late = now + std::time::Duration::from_secs(31);
+        polish.api_token_request.expire(late);
+        assert!(polish.api_token_request.error.is_some());
+        assert!(!polish
+            .api_token_request
+            .accept(&expired_nonce, scope, "viewer", "client", late));
+        submit_inspector_token(&mut polish, "polish-node", true, &polish_tx, now);
+        let DbCommand::MintApiToken {
+            correlation_id: Some(scope_nonce),
+            ..
+        } = polish_rx.try_recv().unwrap()
+        else {
+            panic!("mint must stay correlated")
+        };
+        assert!(!polish.api_token_request.accept(
+            &scope_nonce,
+            "VERSE#wrong",
+            "viewer",
+            "client",
+            now
+        ));
+        submit_inspector_token(&mut polish, "polish-node", true, &polish_tx, now);
+        let DbCommand::MintApiToken {
+            correlation_id: Some(valid_nonce),
+            ..
+        } = polish_rx.try_recv().unwrap()
+        else {
+            panic!("mint must stay correlated")
+        };
+        assert!(polish
+            .api_token_request
+            .accept(&valid_nonce, scope, "viewer", "client", now));
+        polish.generated_api_token = Some("private-fixture".into());
+        polish.generated_api_token_client = Some("client".into());
+        let (_, masked) = surface(
+            true,
+            vec![],
+            &mut panel_time,
+            &mut polish,
+            &polish_nodes,
+            &mut notices,
+        );
+        assert!(
+            !painted(&masked).contains("private-fixture"),
+            "unrevealed token and curl must stay masked"
+        );
+        let curl =
+            node_properties_curl(endpoint.0.unwrap(), "polish-node", "private-fixture").unwrap();
+        assert!(curl.contains("http://127.0.0.1:8882/api/v1/nodes/polish-node/properties"));
+        assert!(
+            curl.contains("Authorization: Bearer private-fixture") && !curl.contains("/health")
+        );
+        let date = chrono::DateTime::parse_from_rfc3339("2026-11-02T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(
+            token_expiry_label("2026-11-02T12:30:00Z", date),
+            "Expires in 30 minutes"
+        );
+        assert_eq!(token_expiry_label("2026-11-02T11:00:00Z", date), "Expired");
+        assert_eq!(
+            token_expiry_label("unavailable", date),
+            "Expiry unavailable"
+        );
+        synchronize_token_target(&mut polish, Some("polish-node"), "VERSE#other", true);
+        assert!(
+            polish.generated_api_token.is_none() && polish.generated_api_token_client.is_none()
+        );
+        synchronize_token_target(&mut polish, None, "", true);
+        assert!(polish.api_token_request.pending.is_none());
+        let (closed_tx, closed_rx) = crossbeam::channel::unbounded();
+        drop(closed_rx);
+        synchronize_token_target(&mut polish, Some("polish-node"), scope, true);
+        submit_inspector_token(&mut polish, "polish-node", true, &closed_tx, now);
+        assert!(
+            polish.api_token_request.pending.is_none() && polish.api_token_request.error.is_some()
         );
     }
 

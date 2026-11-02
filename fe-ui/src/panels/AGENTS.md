@@ -372,6 +372,39 @@ the active Editor role and a selected node. The action handler still validates
 again when draining the action. Opening a URL no longer logs its raw contents.
 The existing admin config-URL buffer is unchanged by this validation slice.
 
+## Inspector API access request ownership
+
+`InspectorTokenRequest` binds one mint to the current selected node and scope,
+a process-unique nonce, requested role/client and a monotonic 30-second timeout.
+Generate is disabled while pending; request inputs are retained on failure.
+Selection, scope, access loss or leaving the API tab clears pending ownership
+and generated secrets. A timeout is explicitly unconfirmed, since a token may
+have been created; late replies are discarded and the list can be refreshed.
+Backend failures render safe static text rather than echoing arbitrary payloads.
+
+`tokens::handle_api_token_minted` receives the actual current node/scope/role
+from the result dispatcher and synchronizes that target before acceptance.
+Inspector-owned mint replies and RequestFailed values are consumed even when
+late, before pending API or generic-feedback routing. Legacy uncorrelated mints
+populate only a matching Entity Settings dialog, not the Inspector. Existing
+token-list metadata replies retain their legacy protocol; this change adds
+nonce ownership to minting, not a new token-list protocol.
+
+`RuntimeApiEndpoint` is mirrored from the actual bound listener notification.
+There is no guessed port or environment-derived fallback in Inspector curl.
+The example is an authenticated GET of the selected node's properties, with
+encoded path segments and shell quoting. Tokens default to native password
+masking; the curl preview uses a placeholder until explicit Reveal. Copy Token
+and Copy curl are explicit actions, copy the exact value and show a safe toast.
+Names and notices never include token contents. Expiry uses the already locked
+chrono version for RFC3339 parsing, human relative text and full-time hover.
+
+Existing Inspector, token-result and runtime-correlation tests are extended in
+place, including invalid URL preservation/no SaveUrl, no-selection API text,
+nonce duplication/failure/timeout/target fences, masked rendering and the
+nondefault 8882 endpoint example. Readbacks are model fixtures and no tests run
+in this source-only lane; integrated compilation, DB/UI/A8 proof remain pending.
+
 ## Selected report incomplete state
 
 Volume reports distinguish pending computation from incomplete terrain coverage.

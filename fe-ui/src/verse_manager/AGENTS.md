@@ -424,3 +424,15 @@ Undo introduces no independent stamp sampler or cache format.
 PetalRequirementsLoaded and exact RequestFailed replies route into the open
 requirements dialog state. They never mutate Node/Verse scene caches, residency
 or selection. The target scope/request is checked by the dialog controller.
+
+## Inspector token result ownership
+
+The Inspector's mint uses an optional correlation ID and its form-owned
+request state. Result handlers receive the current NodeManager selection,
+NavigationManager scope and LocalUserRole before accepting a secret. Unknown,
+late, timed-out or mismatched replies owned by this UI namespace are consumed,
+never passed to another form or API waiter. Handle Inspector-owned failures
+before generic feedback; render safe static text without backend payload echo.
+The shared mint_command helper takes correlation_id last: Inspector supplies
+Some, legacy Entity Settings supplies None. The runtime mint reply family
+preserves exact-ID routing and the DB door preserves Manager authorization.

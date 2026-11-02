@@ -659,6 +659,7 @@ pub enum DbCommand {
     /// Mint a new API token and persist its metadata.
     /// Authorization is enforced server-side: caller must have Manager+ at scope.
     MintApiToken {
+        correlation_id: Option<String>,
         scope: String,
         max_role: String,
         ttl_hours: u32,
@@ -1388,6 +1389,7 @@ pub enum DbResult {
     },
     // --- API Token results ---
     ApiTokenMinted {
+        correlation_id: Option<String>,
         token: String,
         jti: String,
         scope: String,

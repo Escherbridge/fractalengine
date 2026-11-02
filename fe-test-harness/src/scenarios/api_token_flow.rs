@@ -24,6 +24,7 @@ pub fn run() -> Result<TestResult> {
         ttl_hours: 24,
         label: Some("Test Token".to_string()),
         client_did: None,
+        correlation_id: None,
     });
     let mint_result = alice.wait_for(
         |r| matches!(r, DbResult::ApiTokenMinted { .. }),
@@ -142,6 +143,7 @@ pub fn run() -> Result<TestResult> {
         ttl_hours: 1,
         label: None,
         client_did: Some(named_client.clone()),
+        correlation_id: None,
     });
     let mint2 = alice.wait_for(
         |r| matches!(r, DbResult::ApiTokenMinted { .. }),
@@ -220,6 +222,7 @@ pub fn run_edge_cases() -> Result<TestResult> {
         ttl_hours: 1,
         label: None,
         client_did: None,
+        correlation_id: None,
     });
     let empty_scope = alice
         .db_result_rx
@@ -241,6 +244,7 @@ pub fn run_edge_cases() -> Result<TestResult> {
         ttl_hours: 31 * 24, // 31 days > 30 day max
         label: None,
         client_did: None,
+        correlation_id: None,
     });
     let excess_ttl = alice
         .db_result_rx
@@ -279,6 +283,7 @@ pub fn run_edge_cases() -> Result<TestResult> {
         ttl_hours: 1,
         label: None,
         client_did: None,
+        correlation_id: None,
     });
     let mint_for_double = alice.wait_for(
         |r| matches!(r, DbResult::ApiTokenMinted { .. }),
@@ -328,6 +333,7 @@ pub fn run_edge_cases() -> Result<TestResult> {
         ttl_hours: 1,
         label: None,
         client_did: None,
+        correlation_id: None,
     });
     let mint_for_wrong_key = alice.wait_for(
         |r| matches!(r, DbResult::ApiTokenMinted { .. }),

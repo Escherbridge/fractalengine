@@ -272,6 +272,7 @@ struct PendingEntry {
 fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
     match cmd {
         DbCommand::InsertIotReadings { correlation_id, .. }
+        | DbCommand::MintApiToken { correlation_id, .. }
         | DbCommand::CreateNode { correlation_id, .. }
         | DbCommand::SetNodeProperty { correlation_id, .. }
         | DbCommand::GetNodeProperties { correlation_id, .. }
@@ -309,6 +310,7 @@ fn correlation_of_result(result: &DbResult) -> Option<&str> {
     match result {
         DbResult::NodeMaterialized { correlation_id, .. } => Some(correlation_id.as_str()),
         DbResult::IotReadingsInserted { correlation_id, .. }
+        | DbResult::ApiTokenMinted { correlation_id, .. }
         | DbResult::NodeCreated { correlation_id, .. }
         | DbResult::NodePropertySet { correlation_id, .. }
         | DbResult::NodeMutationCommitted { correlation_id, .. }
@@ -370,6 +372,7 @@ enum ReplyKind {
     FieldDefsListed,
     FieldDefUpdated,
     FieldDefDeleted,
+    ApiTokenMinted,
     QueryResult,
     IotReadingsInserted,
     PetalTerrain,
@@ -405,6 +408,7 @@ enum ReplyKind {
 fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
     use DbCommand::*;
     Some(match cmd {
+        MintApiToken { .. } => ReplyKind::ApiTokenMinted,
         Ping => ReplyKind::Pong,
         CreateVerse { .. } => ReplyKind::VerseCreated,
         CreateFractal { .. } => ReplyKind::FractalCreated,
@@ -468,6 +472,7 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
 fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
     use DbResult::*;
     Some(match result {
+        ApiTokenMinted { .. } => ReplyKind::ApiTokenMinted,
         NodeMaterialized { .. } => ReplyKind::NodeMaterialized,
         NodeMutationCommitted { .. } => ReplyKind::NodeMutationCommitted,
         NodeHistoryLoaded { .. } => ReplyKind::NodeHistoryLoaded,
@@ -1621,6 +1626,36 @@ mod tests {
             !pending.try_deliver(failed("up")),
             "the consumed entry cannot be answered twice"
         );
+
+        let mint = |id: Option<&str>| DbCommand::MintApiToken {
+            scope: "VERSE#v".into(), max_role: "viewer".into(), ttl_hours: 1,
+            label: None, client_did: None, correlation_id: id.map(str::to_owned),
+        };
+        let minted = |id: Option<&str>| DbResult::ApiTokenMinted {
+            correlation_id: id.map(str::to_owned), token: "private-fixture".into(),
+            jti: "jti".into(), scope: "VERSE#v".into(), max_role: "viewer".into(),
+            expires_at: "2026-11-02T12:00:00Z".into(), label: None, client: "client".into(),
+        };
+        let (old_tx, old_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&mint(Some("mint-old")), old_tx);
+        drop(old_rx);
+        let (new_tx, mut new_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&mint(Some("mint-new")), new_tx);
+        let (legacy_tx, mut legacy_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&mint(None), legacy_tx);
+        assert!(!pending.try_deliver(minted(Some("mint-old"))));
+        assert!(!pending.try_deliver(minted(Some("unknown"))));
+        assert!(new_rx.try_recv().is_err() && legacy_rx.try_recv().is_err());
+        assert!(pending.try_deliver(minted(Some("mint-new"))));
+        assert!(matches!(new_rx.try_recv(), Ok(DbResult::ApiTokenMinted { correlation_id: Some(id), .. }) if id == "mint-new"));
+        assert!(legacy_rx.try_recv().is_err());
+        assert!(pending.try_deliver(minted(None)));
+        assert!(matches!(legacy_rx.try_recv(), Ok(DbResult::ApiTokenMinted { correlation_id: None, .. })));
+        let (failed_tx, mut failed_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&mint(Some("mint-failed")), failed_tx);
+        assert!(pending.try_deliver(failed("mint-failed")));
+        assert!(matches!(failed_rx.try_recv(), Ok(DbResult::RequestFailed { correlation_id, .. }) if correlation_id == "mint-failed"));
+        assert!(ping_rx.try_recv().is_err(), "token replies cannot fall back to another family");
     }
 
     /// RT-CORR-EDGE: a command that never reached the DB thread must not

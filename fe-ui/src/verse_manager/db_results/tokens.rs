@@ -2,44 +2,96 @@
 //! refresh helpers. See ../AGENTS.md §db-results.
 
 use fe_runtime::app::{DbCommandSender, RevocationBroadcastSender};
-use fe_runtime::messages::{ApiTokenInfo, DbCommand};
+use fe_runtime::messages::{ApiTokenInfo, DbCommand, DbResult};
 
 use crate::actions::UiManager;
 use crate::dialogs::{ActiveDialog, ApiTokenEntry};
 use crate::plugin::InspectorFormState;
 
-/// `ApiTokenMinted`: surface the minted token (and its `client` claim, W6-7b)
-/// and refresh the token list.
+/// Route a minted token only to its owning Inspector request or legacy dialog.
 pub(super) fn handle_api_token_minted(
-    token: &str,
-    jti: &str,
-    scope: &str,
-    max_role: &str,
-    client: &str,
+    result: &DbResult,
+    selected: Option<&str>,
+    current_scope: &str,
+    can_manage: bool,
     ui_mgr: &mut UiManager,
     inspector: &mut InspectorFormState,
     db_sender: &DbCommandSender,
-) {
-    if let ActiveDialog::EntitySettings {
-        ref mut generated_api_token,
-        ref mut generated_api_token_client,
-        ..
-    } = ui_mgr.active_dialog
-    {
-        *generated_api_token = Some(token.to_string());
-        *generated_api_token_client = Some(client.to_string());
-    }
-    inspector.generated_api_token = Some(token.to_string());
-    inspector.generated_api_token_client = Some(client.to_string());
-    bevy::log::info!(
-        "API token minted: jti={} scope={} role={} client={}",
-        jti,
+) -> bool {
+    let DbResult::ApiTokenMinted {
+        token,
         scope,
         max_role,
-        client
+        client,
+        correlation_id,
+        ..
+    } = result
+    else {
+        return false;
+    };
+    if let Some(id) = correlation_id {
+        if !crate::panels::inspector::InspectorTokenRequest::owns(id) {
+            return false;
+        }
+        crate::panels::inspector::synchronize_token_target(
+            inspector,
+            selected,
+            current_scope,
+            can_manage,
+        );
+        if inspector.api_token_request.accept(
+            id,
+            scope,
+            max_role,
+            client,
+            std::time::Instant::now(),
+        ) {
+            inspector.generated_api_token = Some(token.clone());
+            inspector.generated_api_token_client = Some(client.clone());
+            refresh_inspector_tokens(db_sender, inspector);
+        }
+        return true;
+    }
+    if let ActiveDialog::EntitySettings {
+        generated_api_token,
+        generated_api_token_client,
+        api_token_scope_buf,
+        ..
+    } = &mut ui_mgr.active_dialog
+    {
+        if api_token_scope_buf == scope {
+            *generated_api_token = Some(token.clone());
+            *generated_api_token_client = Some(client.clone());
+            refresh_inspector_tokens(db_sender, inspector);
+        }
+    }
+    false
+}
+
+/// Consume Inspector mint failures by nonce without echoing backend error text.
+pub(super) fn handle_inspector_token_failure(
+    result: &DbResult,
+    selected: Option<&str>,
+    current_scope: &str,
+    can_manage: bool,
+    inspector: &mut InspectorFormState,
+) -> bool {
+    let DbResult::RequestFailed { correlation_id, .. } = result else {
+        return false;
+    };
+    if !crate::panels::inspector::InspectorTokenRequest::owns(correlation_id) {
+        return false;
+    }
+    crate::panels::inspector::synchronize_token_target(
+        inspector,
+        selected,
+        current_scope,
+        can_manage,
     );
-    // Refresh the scoped token list at current page
-    refresh_inspector_tokens(db_sender, inspector);
+    inspector
+        .api_token_request
+        .fail(correlation_id, std::time::Instant::now());
+    true
 }
 
 /// `ApiTokenRevoked`: broadcast the revocation to the API thread and refresh the list.
@@ -165,6 +217,7 @@ pub(crate) fn mint_command(
     ttl_hours: u32,
     label: Option<String>,
     client_buf: &str,
+    correlation_id: Option<String>,
 ) -> DbCommand {
     let trimmed = client_buf.trim();
     let client_did = if trimmed.is_empty() {
@@ -173,6 +226,7 @@ pub(crate) fn mint_command(
         Some(trimmed.to_string())
     };
     DbCommand::MintApiToken {
+        correlation_id,
         scope,
         max_role,
         ttl_hours,
@@ -219,6 +273,7 @@ mod tests {
             24,
             None,
             "   ",
+            None,
         );
         match blank {
             DbCommand::MintApiToken { client_did, .. } => assert_eq!(client_did, None),
@@ -231,6 +286,7 @@ mod tests {
             720,
             Some("node:n1".to_string()),
             "  did:key:zExample  ",
+            None,
         );
         match filled {
             DbCommand::MintApiToken {
@@ -244,38 +300,40 @@ mod tests {
     }
 
     #[test]
-    fn handle_api_token_minted_surfaces_the_client_for_both_mint_surfaces() {
+    fn uncorrelated_mint_surfaces_only_the_matching_dialog_client() {
         let mut ui_mgr = UiManager::default();
         ui_mgr.open_dialog(entity_settings_dialog());
         let mut inspector = InspectorFormState::default();
-        let (db_sender, _rx) = sender();
+        let (db_sender, rx) = sender();
 
+        let result = DbResult::ApiTokenMinted {
+            token: "private-fixture".into(),
+            jti: "jti-1".into(),
+            scope: "VERSE#v1".into(),
+            max_role: "viewer".into(),
+            client: "did:key:zClient1".into(),
+            expires_at: "2026-11-02T12:00:00Z".into(),
+            label: None,
+            correlation_id: None,
+        };
         handle_api_token_minted(
-            "jwt.token.value",
-            "jti-1",
-            "VERSE#v1",
-            "viewer",
-            "did:key:zClient1",
+            &result,
+            None,
+            "",
+            true,
             &mut ui_mgr,
             &mut inspector,
             &db_sender,
         );
-
-        assert_eq!(
-            inspector.generated_api_token,
-            Some("jwt.token.value".to_string())
-        );
-        assert_eq!(
-            inspector.generated_api_token_client,
-            Some("did:key:zClient1".to_string())
-        );
+        assert!(inspector.generated_api_token.is_none());
+        assert!(inspector.generated_api_token_client.is_none());
         if let ActiveDialog::EntitySettings {
             generated_api_token,
             generated_api_token_client,
             ..
         } = &ui_mgr.active_dialog
         {
-            assert_eq!(generated_api_token, &Some("jwt.token.value".to_string()));
+            assert_eq!(generated_api_token, &Some("private-fixture".to_string()));
             assert_eq!(
                 generated_api_token_client,
                 &Some("did:key:zClient1".to_string())
@@ -283,6 +341,97 @@ mod tests {
         } else {
             panic!("expected EntitySettings dialog to stay open");
         }
+        while rx.try_recv().is_ok() {}
+        crate::panels::inspector::synchronize_token_target(
+            &mut inspector,
+            Some("n1"),
+            "VERSE#v1",
+            true,
+        );
+        crate::panels::inspector::submit_inspector_token(
+            &mut inspector,
+            "n1",
+            true,
+            &db_sender.0,
+            std::time::Instant::now(),
+        );
+        let DbCommand::MintApiToken {
+            correlation_id: Some(nonce),
+            ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("Inspector mint must carry a nonce")
+        };
+        let mut correlated = result.clone();
+        if let DbResult::ApiTokenMinted {
+            correlation_id,
+            token,
+            ..
+        } = &mut correlated
+        {
+            *correlation_id = Some(format!("{nonce}-unknown"));
+            *token = "inspector-fixture".into();
+        }
+        assert!(handle_api_token_minted(
+            &correlated,
+            Some("n1"),
+            "VERSE#v1",
+            true,
+            &mut ui_mgr,
+            &mut inspector,
+            &db_sender
+        ));
+        assert!(inspector.generated_api_token.is_none());
+        if let DbResult::ApiTokenMinted { correlation_id, .. } = &mut correlated {
+            *correlation_id = Some(nonce);
+        }
+        assert!(handle_api_token_minted(
+            &correlated,
+            Some("n1"),
+            "VERSE#v1",
+            true,
+            &mut ui_mgr,
+            &mut inspector,
+            &db_sender
+        ));
+        assert_eq!(
+            inspector.generated_api_token.as_deref(),
+            Some("inspector-fixture")
+        );
+        assert_eq!(
+            inspector.generated_api_token_client.as_deref(),
+            Some("did:key:zClient1")
+        );
+        if let ActiveDialog::EntitySettings {
+            generated_api_token,
+            ..
+        } = &ui_mgr.active_dialog
+        {
+            assert_eq!(generated_api_token.as_deref(), Some("private-fixture"));
+        }
+        assert!(handle_api_token_minted(
+            &correlated,
+            Some("n2"),
+            "VERSE#v1",
+            true,
+            &mut ui_mgr,
+            &mut inspector,
+            &db_sender
+        ));
+        assert!(
+            inspector.generated_api_token.is_none()
+                && inspector.generated_api_token_client.is_none()
+        );
+        assert!(handle_api_token_minted(
+            &correlated,
+            Some("n1"),
+            "VERSE#other",
+            true,
+            &mut ui_mgr,
+            &mut inspector,
+            &db_sender
+        ));
+        assert!(inspector.generated_api_token.is_none());
     }
 
     #[test]

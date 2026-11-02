@@ -281,6 +281,7 @@ pub struct InspectorFormState {
     /// gates the Generate button — see `fe_identity::validate_client_did`).
     pub api_token_client_buf: String,
     pub api_endpoint: Option<std::net::SocketAddr>,
+    pub(crate) api_token_request: crate::panels::inspector::InspectorTokenRequest,
     pub generated_api_token: Option<String>,
     /// The just-minted token's `client` claim (requested or freshly generated).
     pub generated_api_token_client: Option<String>,
@@ -330,6 +331,7 @@ impl Default for InspectorFormState {
             api_token_expiry_buf: 720,
             api_token_client_buf: String::new(),
             api_endpoint: None,
+            api_token_request: Default::default(),
             generated_api_token: None,
             generated_api_token_client: None,
             api_tokens: Vec::new(),

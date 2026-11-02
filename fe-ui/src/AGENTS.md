@@ -1419,3 +1419,12 @@ and petal must match the reservation; the DB still fences actual stored ancestry
 Navigation comparisons allocate only when the key changes. Authored absent time
 and its existing stored zero encoding compare equivalently in display-row checks;
 the complete raw timestamp value remains unchanged in the checked write.
+
+## Inspector URL/API polish
+
+The Portal URL section validates through actions::portal::compute_save_url and
+retains invalid drafts without queueing writes. Inspector API generation owns
+one scoped nonce until matching reply, failure or timeout; selection/scope/access
+changes clear late secrets. See panels/AGENTS.md for the request/reveal/curl
+contract. plugin.rs mirrors the confirmed RuntimeApiEndpoint through its
+existing UiShellParams bundle; no default port is advertised as a listener.

@@ -1,5 +1,10 @@
 # fe-test-harness/src — harness rationale
 
+API-token mint requests and replies retain optional correlation IDs in the
+peer model. Uncorrelated scenario callers use None; correlated failures echo
+RequestFailed rather than a wildcard Error. The authorization contract is
+unchanged. Correlation preparation is source-only until the integrated sweep.
+
 Package `fractalengine-test-harness` has two targets: the P2P scenario runner
 binary (`main.rs`, §scenarios below) and a library (`lib.rs`) exposing the
 API-integration harness (§api-harness) and the in-process peer model

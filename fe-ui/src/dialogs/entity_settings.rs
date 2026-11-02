@@ -735,6 +735,7 @@ pub fn render_entity_settings_dialog(
                                 *api_token_expiry_buf,
                                 None,
                                 client_trimmed,
+                                None,
                             ))
                             .ok();
                     }

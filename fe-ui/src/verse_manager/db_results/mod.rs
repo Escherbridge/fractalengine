@@ -207,6 +207,13 @@ pub(super) fn apply_db_results(
         inspector
             .query_results
             .invalidate(nav.active_verse_id.as_deref());
+        if tokens::handle_inspector_token_failure(
+            result,
+            node_mgr.selected.as_ref().map(|selection| selection.node_id.as_str()),
+            &crate::panels::inspector::build_nav_scope(&nav),
+            local_role.can_manage(),
+            &mut inspector,
+        ) { continue; }
         match result {
             DbResult::Seeded { .. } => hierarchy::handle_seeded(&db_sender),
             DbResult::HierarchyLoaded { verses } => {
@@ -466,23 +473,17 @@ pub(super) fn apply_db_results(
                     fractal_id,
                 );
             }
-            DbResult::ApiTokenMinted {
-                token,
-                jti,
-                scope,
-                max_role,
-                client,
-                ..
-            } => tokens::handle_api_token_minted(
-                token,
-                jti,
-                scope,
-                max_role,
-                client,
-                &mut ui_mgr,
-                &mut inspector,
-                &db_sender,
-            ),
+            DbResult::ApiTokenMinted { .. } => {
+                if tokens::handle_api_token_minted(
+                    result,
+                    node_mgr.selected.as_ref().map(|selection| selection.node_id.as_str()),
+                    &crate::panels::inspector::build_nav_scope(&nav),
+                    local_role.can_manage(),
+                    &mut ui_mgr,
+                    &mut inspector,
+                    &db_sender,
+                ) { continue; }
+            }
             DbResult::ApiTokenRevoked { jti } => tokens::handle_api_token_revoked(
                 jti,
                 revocation_tx.as_deref(),

@@ -849,3 +849,12 @@ app::RuntimeApiEndpoint carries only the SocketAddr reported after the API
 listener binds. It defaults to unavailable; GUI examples must not infer an
 address from environment variables or a default port. The host owns updates,
 and the Inspector receives a form-display mirror of the confirmed address.
+
+## Token mint reply correlation
+
+MintApiToken and ApiTokenMinted echo an optional correlation ID. Inspector
+requests carry a process-unique nonce; legacy dialog/scenario callers use None.
+The DB door uses its existing correlated_failure helper, including a missing
+keypair, without changing authorization. PendingApiRequests has a dedicated
+mint reply family and exact-ID routing; a late/unknown mint never falls back
+to another waiter. GUI request IDs are consumed only by their owning form.

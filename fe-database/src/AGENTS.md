@@ -1766,3 +1766,12 @@ Petal declaration persistence lives in handlers/petal_requirements.rs. It reuses
 the ordinary atomic op-log seam, exact stored Manager/ancestry authority, raw
 document CAS and existing catalog allowlist. There is no DDL change or implicit
 residency/install policy. See handlers/AGENTS.md section Petal requirements.
+
+## Token mint reply correlation
+
+MintApiToken and ApiTokenMinted echo an optional correlation ID. Inspector
+requests carry a process-unique nonce; legacy dialog/scenario callers use None.
+The DB door uses its existing correlated_failure helper, including a missing
+keypair, without changing authorization. PendingApiRequests has a dedicated
+mint reply family and exact-ID routing; a late/unknown mint never falls back
+to another waiter. GUI request IDs are consumed only by their owning form.

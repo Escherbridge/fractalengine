@@ -687,6 +687,7 @@ impl TestPeer {
                             }
                         }
                         Ok(DbCommand::MintApiToken {
+                            correlation_id,
                             scope,
                             max_role,
                             ttl_hours,
@@ -747,6 +748,7 @@ impl TestPeer {
                                         Ok(()) => {
                                             db_result_tx
                                                 .send(DbResult::ApiTokenMinted {
+                                                    correlation_id,
                                                     token,
                                                     jti,
                                                     scope,
@@ -759,18 +761,20 @@ impl TestPeer {
                                         }
                                         Err(e) => {
                                             db_result_tx
-                                                .send(DbResult::Error(format!(
-                                                    "Store API token failed: {e}"
-                                                )))
+                                                .send(match correlation_id {
+                                                    Some(correlation_id) => DbResult::RequestFailed { correlation_id, error: format!("Store API token failed: {e}") },
+                                                    None => DbResult::Error(format!("Store API token failed: {e}")),
+                                                })
                                                 .ok();
                                         }
                                     }
                                 }
                                 Err(e) => {
                                     db_result_tx
-                                        .send(DbResult::Error(format!(
-                                            "Mint API token failed: {e}"
-                                        )))
+                                        .send(match correlation_id {
+                                            Some(correlation_id) => DbResult::RequestFailed { correlation_id, error: format!("Mint API token failed: {e}") },
+                                            None => DbResult::Error(format!("Mint API token failed: {e}")),
+                                        })
                                         .ok();
                                 }
                             }

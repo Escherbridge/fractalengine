@@ -1043,16 +1043,16 @@ pub fn spawn_db_thread_shared(
                             Err(e) => send_result(&tx, DbResult::Error(format!("Resolve local role failed: {e}"))),
                         }
                     }
-                    Ok(DbCommand::MintApiToken { scope, max_role, ttl_hours, label, client_did }) => {
+                    Ok(DbCommand::MintApiToken { scope, max_role, ttl_hours, label, client_did, correlation_id }) => {
                         let Some(ref kp) = keypair else {
-                            send_result(&tx, DbResult::Error("NodeKeypair not available for API token minting".to_string()));
+                            send_result(&tx, handlers::correlated_failure(&correlation_id, "NodeKeypair not available for API token minting".to_string()));
                             continue;
                         };
                         match handlers::api_token::mint_api_token_handler(&db, kp, &local_did, &scope, &max_role, ttl_hours, label.as_deref(), client_did.as_deref()).await {
                             Ok(minted) => {
-                                send_result(&tx, DbResult::ApiTokenMinted { token: minted.token, jti: minted.jti, scope, max_role, expires_at: minted.expires_at, label, client: minted.client });
+                                send_result(&tx, DbResult::ApiTokenMinted { correlation_id, token: minted.token, jti: minted.jti, scope, max_role, expires_at: minted.expires_at, label, client: minted.client });
                             }
-                            Err(e) => send_result(&tx, DbResult::Error(format!("Mint API token failed: {e}"))),
+                            Err(e) => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("Mint API token failed: {e}"))),
                         }
                     }
                     Ok(DbCommand::RevokeApiToken { jti, sub }) => {
