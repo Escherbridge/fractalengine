@@ -427,3 +427,14 @@ oversized externally prefilled buffers are cleared before rendering and cannot s
 
 Its actual TextEdit min_size uses the shared logical/physical target floor; interact_size alone
 does not size egui text editors. The existing Join journey reads the native response geometry.
+
+
+## Addressed Join interaction
+
+The current Join button queues the nonblocking addressed coordinator, rather than the legacy
+JoinVerseByInvite handler. Status distinguishes validation, accepted metadata, connection,
+role convergence and final ready navigation. Cancel and the native close button stop waiting
+at any phase; retained metadata/capability effects are explained inline. Input is masked and
+locked during a request. Input changes, selection changes and dialog replacement invalidate
+the generation before any reply can navigate. See ../invitations/AGENTS.md for ownership.
+This replaces the older section join-flow's legacy close-on-DB-success behavior.

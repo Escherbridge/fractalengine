@@ -586,3 +586,8 @@ The addressed invitation phase replies are consumed by their separate correlated
 workflow reader. The ordinary tree/result projection ignores them before generic
 API fallback, so a prepared source or pending membership cannot navigate, create
 a scene, satisfy an unrelated API waiter or masquerade as Joined.
+
+
+Addressed Join phase results belong to the invitation coordinator. Legacy uncorrelated join
+results cannot finish its request. Hierarchy rebuilding suppresses first-load auto-navigation
+while that coordinator owns the cursor, so intermediate admitted rows do not imply Ready.

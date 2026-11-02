@@ -147,6 +147,7 @@ pub(crate) fn handle_verse_replica_lifecycle(
     secret_store: Option<Res<fe_database::SecretStoreRes>>,
     mut last_verse: Local<Option<String>>,
     mut initialized: Local<bool>,
+    mut joined: Option<ResMut<crate::invitations::ReplicaHandoff>>,
 ) {
     let Some(ref sync) = sync_sender else { return };
 
@@ -155,7 +156,12 @@ pub(crate) fn handle_verse_replica_lifecycle(
         *initialized = true;
         // Open any verse that was already active on startup.
         if let Some(ref vid) = nav.active_verse_id {
-            open_replica(sync, vid, &verse_mgr, secret_store.as_deref());
+            let adopted = joined
+                .as_mut()
+                .is_some_and(|handoff| handoff.take_for(vid, &verse_mgr));
+            if !adopted {
+                open_replica(sync, vid, &verse_mgr, secret_store.as_deref());
+            }
         }
         return;
     }
@@ -179,7 +185,12 @@ pub(crate) fn handle_verse_replica_lifecycle(
 
     // Open the new one.
     if let Some(ref new_vid) = nav.active_verse_id {
-        open_replica(sync, new_vid, &verse_mgr, secret_store.as_deref());
+        let adopted = joined
+            .as_mut()
+            .is_some_and(|handoff| handoff.take_for(new_vid, &verse_mgr));
+        if !adopted {
+            open_replica(sync, new_vid, &verse_mgr, secret_store.as_deref());
+        }
     }
 
     *last_verse = nav.active_verse_id.clone();

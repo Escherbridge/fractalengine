@@ -284,6 +284,7 @@ pub(super) fn apply_db_results(
                     mesh_budget_exceeded,
                     &caches.residency,
                     &mut caches.ts_settings,
+                    !ui_mgr.join_flow.active(),
                 )
             }
             DbResult::VerseJoined {
@@ -910,10 +911,10 @@ mod tests {
         let (tx, rx) = sender();
         let mut nav = NavigationManager::default();
         let mut ui = UiManager::default();
-        ui.join_request.pending = true;
         ui.open_dialog(ActiveDialog::JoinDialog {
             invite_buf: "fractalengine://invite/abc".into(),
         });
+        ui.join_request.pending = true;
         hierarchy::handle_verse_joined("v2", "Joined Verse", &tx, &mut nav, &mut ui, 10.0);
         assert_eq!(nav.active_verse_id.as_deref(), Some("v2"));
         assert_eq!(nav.active_verse_name, "Joined Verse");
@@ -928,6 +929,17 @@ mod tests {
                 .is_some_and(|(msg, _)| msg.contains("Joined Verse")),
             "a success toast names the joined verse"
         );
+        ui.open_dialog(ActiveDialog::JoinDialog {invite_buf:"credential-sentinel".into()});
+        assert!(ui.join_flow.queue(fe_runtime::join_invite::JoinCredential::new("credential-sentinel".into()).unwrap()));
+        ui.join_request.start(11.0);
+        hierarchy::handle_verse_joined("late-legacy","Late legacy",&tx,&mut nav,&mut ui,11.1);
+        hierarchy::handle_join_verse_failed("foreign legacy failure",&mut ui,11.2);
+        assert_eq!(nav.active_verse_id.as_deref(),Some("v2"));
+        assert!(ui.join_flow.active() && ui.join_request.pending && ui.join_request.error.is_none());
+        assert!(rx.try_recv().is_err(), "An uncorrelated legacy reply cannot complete or disturb a correlated addressed Join");
+        ui.close_dialog();
+        assert!(!ui.join_flow.active() && !ui.join_request.pending, "Dialog replacement cancels its exact generation");
+
     }
 
     /// OD-2/M-03: a `JoinVerseFailed` while the dialog is pending reports
@@ -935,10 +947,10 @@ mod tests {
     #[test]
     fn join_failure_keeps_dialog_open_with_inline_error() {
         let mut ui = UiManager::default();
-        ui.join_request.pending = true;
         ui.open_dialog(ActiveDialog::JoinDialog {
             invite_buf: "garbage".into(),
         });
+        ui.join_request.pending = true;
         hierarchy::handle_join_verse_failed(
             "invalid invite link: must start with 'fractalengine://invite/'",
             &mut ui,

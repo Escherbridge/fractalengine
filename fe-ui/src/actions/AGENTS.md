@@ -462,3 +462,8 @@ send_or_toast tries the bounded channel once. Full means busy and definitely
 unsent; Disconnected means not connected. Neither branch logs command Debug or
 queues a mutation retry. Native import starts owned pending state only after
 acceptance. Its existing journey uses an actual full/disconnected bounded queue.
+
+The addressed Join coordinator now owns correlation, pending native channels and input revisions
+on UiManager.join_flow. join_request remains a rendered pending/error projection plus legacy
+compatibility state. Any dialog replacement cancels the current coordinator and clears the old
+request projection; a following Update performs target-scoped native cleanup.

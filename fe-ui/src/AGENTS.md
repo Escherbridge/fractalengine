@@ -1440,3 +1440,8 @@ the private queue was empty. These assertions remain unexecuted until the sweep.
 `invitations` owns nonblocking desktop issuance and join phases. Access retains one exact-target
 Owner-issued invitation, with a recipient DID selected from known peers or entered explicitly.
 See `invitations/AGENTS.md` for cross-thread ownership and credential lifetime boundaries.
+
+
+The navigation replica lifecycle accepts only a one-use handoff from the ready addressed Join
+coordinator, matched to the actual hierarchy namespace. This retains its confirmed live pipeline
+on final navigation; ordinary verse changes retain their existing close/open behavior.

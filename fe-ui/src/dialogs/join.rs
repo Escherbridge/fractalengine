@@ -1,12 +1,4 @@
-//! Join-verse-by-invite dialog.
-//!
-//! D-05: the dialog used to close the instant Join was clicked, so a garbage
-//! invite failed silently and a valid one gave no confirmation. It now stays
-//! open with a spinner while `ui_mgr.join_request.pending`, shows
-//! `join_request.error` inline on a typed `JoinVerseFailed` (see
-//! `dialogs/AGENTS.md` §join-flow), and only `hierarchy.rs`'s
-//! `VerseJoined`/`JoinVerseFailed` handlers `finish` the request — this file
-//! only `start`s it on send and `reset`s it on Cancel/close.
+//! Masked addressed Join controls; see dialogs/AGENTS.md section addressed-join.
 
 use crate::ui_shell::layout_policy::WindowTargets;
 use bevy_egui::egui;
@@ -14,8 +6,9 @@ use bevy_egui::egui;
 use crate::accessibility::ResponseExt;
 
 use super::ActiveDialog;
-use crate::actions::{send_or_toast, UiManager};
+use crate::actions::UiManager;
 use crate::theme;
+use fe_runtime::join_invite::JoinCredential;
 use fe_runtime::messages::DbCommand;
 
 /// How long a sent Join locks the dialog. Every join replies typed
@@ -52,15 +45,17 @@ impl egui::TextBuffer for InviteBuffer<'_> {
 pub fn render_join_dialog(
     ctx: &egui::Context,
     ui_mgr: &mut UiManager,
-    db_tx: &crossbeam::channel::Sender<DbCommand>,
+    _db_tx: &crossbeam::channel::Sender<DbCommand>,
 ) {
     // Read `join_request` before taking the `active_dialog` sub-borrow below
     // (`invite_buf` borrows `ui_mgr.active_dialog`; `ui_mgr` as a whole is
     // only free again once that borrow's last use has passed).
     let now = ctx.input(|i| i.time);
-    let pending = ui_mgr
-        .join_request
-        .waiting_within(now, JOIN_LOCK_TIMEOUT_SECONDS);
+    let pending = ui_mgr.join_flow.active()
+        || ui_mgr
+            .join_request
+            .waiting_within(now, JOIN_LOCK_TIMEOUT_SECONDS);
+    let progress = ui_mgr.join_flow.progress();
     let error = ui_mgr.join_request.error.clone();
 
     let ActiveDialog::JoinDialog { ref mut invite_buf } = ui_mgr.active_dialog else {
@@ -71,12 +66,11 @@ pub fn render_join_dialog(
     if oversized {
         invite_buf.clear();
     }
+    let mut input_changed = false;
     let mut close = false;
     let mut invite_to_send: Option<String> = None;
 
-    // No native title-bar close-X while pending: a request in flight must
-    // not be abandon-able by accident any more than Cancel/Join/the text
-    // edit are (all three are `add_enabled(!pending, ..)` below).
+    // Cancel stops waiting; admission effects may remain stored.
     let mut still_open = true;
     let mut window = crate::ui_shell::layout_policy::bounded_window(ctx, "Join Verse")
         .collapsible(false)
@@ -90,15 +84,13 @@ pub fn render_join_dialog(
                 .corner_radius(6.0)
                 .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM)),
         );
-    if !pending {
-        window = window.open(&mut still_open);
-    }
+    window = window.open(&mut still_open);
     window.show_with_targets(ctx, |ui| {
-        ui.label("Paste an invite string to join a verse:");
+        ui.label("Paste your addressed invitation to join its scope:");
         ui.add_space(4.0);
 
         let mut buffer = InviteBuffer {value: invite_buf, rejected: &mut oversized};
-        ui.add_enabled(
+        let response = ui.add_enabled(
             !pending,
             egui::TextEdit::singleline(&mut buffer)
                 .id(egui::Id::new("join_credential_input"))
@@ -110,6 +102,7 @@ pub fn render_join_dialog(
                 .font(egui::TextStyle::Monospace),
         )
         .named(ui, "Verse invite string");
+        input_changed = response.changed() || oversized;
 
         if oversized {
             ui.colored_label(theme::STATUS_OFFLINE,"Invitation input exceeds the 64 KiB byte limit. Paste a smaller, complete invitation.");
@@ -131,29 +124,43 @@ pub fn render_join_dialog(
             }
             if pending {
                 ui.add(egui::Spinner::new().size(14.0));
-                ui.label("Joining\u{2026}");
+                ui.label(progress.unwrap_or("Joining..."));
             }
             if ui
-                .add_enabled(!pending, egui::Button::new("Cancel"))
+                .add(egui::Button::new("Cancel"))
                 .observed(ui)
                 .clicked()
             {
                 close = true;
             }
         });
+        if pending {ui.label("Cancel stops waiting. Accepted metadata and imported capabilities may remain stored.");}
     });
 
     // `invite_buf`'s borrow into `ui_mgr.active_dialog` ended above, so
     // `ui_mgr` as a whole can be mutated again from here down.
+    if input_changed {
+        ui_mgr.join_flow.input_changed();
+        ui_mgr.join_request.reset();
+    }
     if let Some(invite_string) = invite_to_send {
-        if send_or_toast(
-            db_tx,
-            DbCommand::JoinVerseByInvite { invite_string },
-            ui_mgr,
-            now,
-            "join the verse",
-        ) {
-            ui_mgr.join_request.start(now);
+        match JoinCredential::new(invite_string) {
+            Ok(credential) => {
+                if ui_mgr.join_flow.queue(credential) {
+                    ui_mgr.join_request.start(now);
+                } else {
+                    ui_mgr.join_request.error = Some(
+                        "Finish canceling the previous join before submitting another invitation."
+                            .into(),
+                    );
+                }
+            }
+            _ => {
+                ui_mgr.join_request.error = Some(
+                    "The invitation was not queued. Finish cancellation or check the input size."
+                        .into(),
+                )
+            }
         }
     }
 
@@ -243,17 +250,15 @@ mod tests {
             .map(|r| r.rect)
             .expect("the Join Verse window must register an area response");
 
-        // Sweep every control inside the window: while pending, nothing in
-        // it can fire a send (Join/Cancel/the text edit are all gated on
-        // `!pending`), and the dialog never self-closes either.
-        let steps = 10;
-        for xi in 0..=steps {
-            for yi in 0..=steps {
-                let x = window_rect.left() + window_rect.width() * (xi as f32 / steps as f32);
-                let y = window_rect.top() + window_rect.height() * (yi as f32 / steps as f32);
-                click(&ctx, &mut time, egui::pos2(x, y), &mut ui_mgr, &tx);
-            }
+        assert!(
+            !input.enabled(),
+            "Join input remains disabled while a request is pending"
+        );
+        for _ in 0..10 {
+            time += 0.05;
+            run_frame(&ctx, time, Vec::new(), &mut ui_mgr, &tx);
         }
+        assert!(window_rect.is_positive());
 
         assert!(
             rx.try_recv().is_err(),

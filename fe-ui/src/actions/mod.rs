@@ -630,6 +630,7 @@ pub struct UiManager {
     /// and `db_results/hierarchy.rs` share one source of truth instead of
     /// each guessing the other's state from `ActiveDialog`.
     pub join_request: DialogRequestState,
+    pub(crate) join_flow: crate::invitations::JoinState,
     /// glTF Import dialog's in-flight state (D-06); `gltf_import.rs` starts
     /// it, `db_results`' `GltfImported` arm finishes it.
     pub gltf_import_request: GltfImportRequestState,
@@ -656,6 +657,7 @@ impl Default for UiManager {
             conditions: Vec::new(),
             next_notice_id: 0,
             join_request: DialogRequestState::default(),
+            join_flow: crate::invitations::JoinState::default(),
             gltf_import_request: GltfImportRequestState::default(),
         }
     }
@@ -713,6 +715,8 @@ impl UiManager {
     }
 
     fn replace_dialog(&mut self, dialog: ActiveDialog) {
+        self.join_flow.cancel();
+        self.join_request.reset();
         self.context_point_origin = None;
         self.gltf_file_lease = None;
         self.gltf_import_request.reset();
@@ -2305,6 +2309,27 @@ mod tests {
         crate::dialogs::entity_access::apply(&mut mgr,&target,&read_id,&Ok(snapshot.clone()));
         assert!(!mgr.target_access_pending());
         crate::dialogs::entity_access::role_confirmation_refresh_journey(&mut mgr,&tx,&rx,&target,&snapshot);
+        {
+            let issuer = fe_identity::NodeKeypair::generate().to_did_key();
+            let recipient = fe_identity::NodeKeypair::generate().to_did_key();
+            let (native_tx,native_rx)=crossbeam::channel::unbounded();
+            let native=fe_sync::SyncCommandSenderRes(native_tx);
+            let (captured,state)=crate::dialogs::entity_access::invitation_context(&mut mgr.active_dialog).unwrap();
+            state.recipient=recipient.clone();
+            state.synchronize(&captured,"viewer",1);
+            state.request();
+            state.drive(&captured,Some(&issuer),&tx,Some(&native));
+            let DbCommand::PrepareJoinInvite {target:prepared_target,recipient_did,request_id,role,..}=rx.try_recv().unwrap() else {panic!("The real Access coordinator must prepare an addressed invitation, never emit a bootstrap-incomplete invite")};
+            assert_eq!(prepared_target,captured);assert_eq!(recipient_did,recipient);assert_eq!(role,"viewer");
+            state.synchronize(&captured,"editor",1);
+            state.apply(&fe_runtime::messages::DbResult::JoinInvitePrepared {request_id,result:Err("old preparation".into())},&captured,Some(&issuer),Some(&native));
+            assert!(!state.busy() && state.error.is_none() && state.ready().is_none(),"A changed role invalidates the exact prior source generation");
+            assert!(native_rx.try_recv().is_err(),"Stale preparation cannot export a capability");
+            state.request();state.drive(&captured,Some(&issuer),&tx,None);
+            assert!(state.error.is_some() && !state.busy() && rx.try_recv().is_err(),"A missing native service refuses without a DB grant or automatic retry");
+            state.reset();
+        }
+
         crate::dialogs::entity_access::submit(&mut mgr,Access::Revoke {peer_did:"did:key:known-peer".into()},&tx);
         let DbCommand::EntityAccess {request_id:change_id,..}=rx.try_recv().unwrap() else{unreachable!()};
         crate::dialogs::entity_access::apply(&mut mgr,&target,&change_id,&Err("unconfirmed write".into()));

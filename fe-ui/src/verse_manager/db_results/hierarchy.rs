@@ -29,6 +29,7 @@ pub(super) fn handle_verse_joined(
     ui_mgr: &mut crate::actions::UiManager,
     now: f64,
 ) {
+    if ui_mgr.join_flow.active() {return;}
     if ui_mgr.join_request.finish() {
         if matches!(ui_mgr.active_dialog, ActiveDialog::JoinDialog { .. }) {
             ui_mgr.close_dialog();
@@ -57,6 +58,7 @@ pub(super) fn handle_join_verse_failed(
         role_label: UNRESOLVED_ROLE_LABEL,
         verse_name: None,
     };
+    if ui_mgr.join_flow.active() {return;}
     if ui_mgr.join_request.finish() {
         ui_mgr.join_request.error = Some(humanize_db_error(error, &ctx));
     } else {
@@ -105,8 +107,9 @@ pub(super) fn handle_hierarchy_loaded(
     budget_exceeded: bool,
     residency: &super::super::ResidencyLedger,
     ts_settings: &mut crate::timeseries_settings::TimeseriesSettingsState,
+    allow_initial_navigation: bool,
 ) {
-    let first_load = nav.initial_auto_navigation_allowed();
+    let first_load = allow_initial_navigation && nav.initial_auto_navigation_allowed();
 
     // M2/F6: mirror each verse's persisted timeseries settings into the
     // settings surface state (the verse row's ts_* columns are the truth).

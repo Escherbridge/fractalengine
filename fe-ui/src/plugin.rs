@@ -827,6 +827,7 @@ impl Plugin for GardenerConsolePlugin {
         app.add_plugins(crate::node_manager::NodeManagerPlugin);
         // UI-only resources (form buffers, dialog flags, etc.)
         app.init_resource::<MeshInstanceBudget>();
+        app.init_resource::<crate::invitations::ReplicaHandoff>();
         // Mesh-instance watchdog runs in Last so its gate lands before the
         // next frame's spawners (see AGENTS.md §mesh-budget).
         app.add_systems(Last, mesh_instance_watchdog.run_if(fe_runtime::maintenance::editor_running));
