@@ -9,6 +9,7 @@ import json
 import ipaddress
 import hashlib
 import math
+import ntpath
 import os
 import stat
 import sys
@@ -378,7 +379,21 @@ def command_shot(run, args):
 def portal_capture_path(run, requested):
     root = os.path.abspath(run["run_dir"])
     filename = datetime.datetime.now().strftime("%H%M%S-%f") + "-portal-native.png"
-    candidate = os.path.abspath(os.path.join(root, requested or os.path.join("shots", filename)))
+    requested = requested or os.path.join("shots", filename)
+    drive, tail = ntpath.splitdrive(requested)
+    if (drive and (len(drive) != 2 or not drive[0].isascii() or not drive[0].isalpha()
+                   or drive[1] != ":" or not tail.startswith(("\\", "/")))) or (not drive and tail.startswith(("\\", "/"))):
+        raise Refused(0, "capture_path_refused", "native Portal output needs a run-relative or absolute drive path")
+    reserved = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+    reserved.update(prefix + suffix for prefix in ("COM", "LPT") for suffix in "123456789\u00b9\u00b2\u00b3")
+    components = tail.replace("/", "\\").split("\\")
+    if drive:
+        components = components[1:]
+    if any(not part or part in (".", "..") or part.endswith((".", " "))
+           or any(ord(char) < 32 or 127 <= ord(char) < 160 or char in '<>:"|?*' for char in part)
+           or part.split(".", 1)[0].rstrip(" ").upper() in reserved for part in components):
+        raise Refused(0, "capture_path_refused", "native Portal output contains an unsafe Windows path component")
+    candidate = os.path.abspath(os.path.join(root, requested))
     try:
         inside = os.path.commonpath([root, candidate]) == root
     except ValueError:
@@ -399,8 +414,8 @@ def portal_capture_path(run, requested):
         if os.path.commonpath([os.path.realpath(root), os.path.realpath(candidate)]) != os.path.realpath(root):
             raise Refused(0, "capture_path_refused", "native Portal output escaped its run")
     inspect()
-    os.makedirs(os.path.dirname(candidate), exist_ok=True)
-    inspect()
+    if not os.path.isdir(os.path.dirname(candidate)):
+        raise Refused(0, "capture_path_refused", "native Portal output requires an existing destination directory")
     if os.path.lexists(candidate) or os.path.lexists(candidate + ".json"):
         raise Refused(0, "capture_path_refused", "native Portal output must not replace existing evidence")
     return candidate
@@ -472,10 +487,10 @@ def command_portal_fixture(run, args):
     with portal_output_lease(path):
         path = portal_capture_path(run, path)
         with open(path, "xb") as handle:
-            handle.write(raw)
-        with open(path + ".json", "x", encoding="utf-8") as handle:
-            json.dump(receipt, handle, indent=2)
-            handle.write("\n")
+            with open(path + ".json", "x", encoding="utf-8") as receipt_handle:
+                handle.write(raw)
+                json.dump(receipt, receipt_handle, indent=2)
+                receipt_handle.write("\n")
     emit(receipt)
 
 
@@ -907,7 +922,7 @@ def build_parser():
     for operation in ("observe", "second-link", "refused-third-link"):
         portal_ops.add_parser(operation)
     portal_capture = portal_ops.add_parser("capture")
-    portal_capture.add_argument("--out", help="new .png path beneath the selected run (relative paths start there)")
+    portal_capture.add_argument("--out", help="new .png beneath the selected run in an existing directory")
     portal.set_defaults(func=command_portal_fixture)
     answer = sub.add_parser("dialog-answer", help="queue a run-confined native dialog answer")
     answer.add_argument("path", nargs="?")
