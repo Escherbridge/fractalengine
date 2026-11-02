@@ -4,8 +4,8 @@ date: 2026-11-01
 status: in_progress
 source: ./handoff-20261101-qa-chain.md
 current_writer: /root
-current_slice: Focused pass14 independently reviewed; source through 5aec1d8 includes requirements, report flow, settings and Inspector; app84248 stopped; Inspector lifecycle recheck and next build pending
-parallel_code_worktrees: Access controls author; chrome/tree polish author; Inspector lifecycle independent reviewer; all code-only outside root Cargo owner
+current_slice: Pass15 independently reviewed; rich38 plus same-stage restart11 passed; all reviewed scope/Access/chrome/Inspector/terrain stacks integrated through f57867ef; no app; next stage build pending
+parallel_code_worktrees: Portal/context corrections, Paths/Data corrections, controlled-fixture deadline corrections; all code-only outside root Cargo owner
 ---
 
 # QA chain continuation
@@ -32,6 +32,46 @@ Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.
 - [ ] Push the finished goal, wait for CI success, verify release assets and publish tagged downloads/links.
 
 ## Current acceptance state
+
+### Latest checkpoint — pass15 and integrated source f57867ef
+
+- Independent evidence review supports all38 fresh rich-data functional checks
+  and all11 strict same-stage restart checks. Same stage/fingerprint/driver and
+  scenario hashes match, identities changed37120→78720, no reseed/re-ingestion,
+  exact object/history/schema/blob/local/distributed results survived. Original
+  warnings and coverage flags remain immutable. Warning580 is invalid gain;
+  warning582 identifies Beta's missing maintenance.last_service in this pass.
+- Native requirements save/reopen/Keep editing/Discard/restart, masked API mint/
+  actual8882 endpoint/secret clearing/empty state, three guarded Copy operations,
+  nested grid Edit/Copy/confirmed Delete and exact restoration passed independent
+  evidence review. Report name/method/material/volume/actions are visible in one
+  flow at1024/1280/1920. Compact grid Confirm/Cancel each have24px height and fit.
+- URL invalid-draft controls and action trace prove refusal, but a scratch before/
+  after probe queried an unused node column rather than model.external_url. That
+  query is not a durable model-URL comparison; the record needs explicit correction
+  and the next URL test must use actual model metadata. No original driver receipt
+  or hash is to be rewritten to hide an oracle limitation.
+- Root78720 and seven fresh captured descendants are absent. No app/Cargo runs at
+  this checkpoint. The next stage includes reviewed policy04ff969d, chrome through
+  b89ad09d, Inspector navigation through5bed925f, Access through140f64d3 and terrain
+  authoring throughf57867ef. Source conflicts were appended directory guides; all
+  source seams were preserved additively. Combined review/build/live remain gates.
+- Access HIGH scope-prefix and MED stale role-confirmation arms were corrected
+  before integration. Shared policy now compares parsed unequal hierarchy scopes;
+  exact opaque/global identity behavior remains unchanged. Terrain preview use and
+  computed overflow were corrected before integration; DB Editor/ancestry guards
+  execute in the same terrain write transaction. These are source approvals,
+  not executed journey claims.
+- Portal/context and Paths/Data remain isolated and mutually dependent. Review
+  found a context classification-to-first-click route gap and four Paths/Data
+  issues: curved stamp geometry, replacement-safe hydration, durable request IDs
+  and text finalization. Corrections are in progress. Controlled fixture review
+  requires absolute header/lifetime bounds and all-request admission accounting.
+  Embedded WEB needs a separately reviewed exact-origin QA capability; production
+  loopback literal policy is being corrected independently. No broad bypass exists.
+- Live Reset still requires coordinated API/sync/plugin quiescence and complete
+  cache/session invalidation. W5/W6 cleanup, S2/S5 reconciliation, full QA passes,
+  five UX audits, final tests, exact-SHA CI and tagged downloads remain unfinished.
 
 ### Latest checkpoint — focused pass14 and next integration
 
