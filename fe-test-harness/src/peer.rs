@@ -362,6 +362,7 @@ impl TestPeer {
                                             name,
                                             asset_path,
                                             position,
+                                            materialization: None,
                                             correlation_id: None,
                                         })
                                         .ok();

@@ -292,7 +292,7 @@ pub(crate) async fn import_gltf_handler(
     file_path: &str,
     position: [f32; 3],
     actor: &str,
-) -> anyhow::Result<(String, String, String)> {
+) -> anyhow::Result<(String, String, String, fe_runtime::messages::CommittedNodeMaterialization)> {
     crate::migration::mapping_inventory::record_bypass_for("ImportGltf");
     let scope = require_petal_scope(db, petal_id, "ImportGltf").await?;
     super::node_history::authorize_scope(db, &fe_runtime::node_history::NodeAccessGrant::Local,
@@ -309,15 +309,16 @@ pub(crate) async fn import_gltf_handler(
     let hash = blob_store.add_blob(&bytes).map_err(|e| anyhow::anyhow!("blob_store.add_blob failed: {e}"))?;
     let imported = super::object_creation::ImportedSceneAsset::new(name, content_type, &hash_to_hex(&hash), bytes.len())?;
     let asset_id = imported.id().to_owned();
+    let asset_path = imported.path().to_owned();
     let prepared = super::object_creation::prepare(db, super::object_creation::ObjectCreation {
         petal_id, name, asset: super::object_creation::SceneAsset::Imported(imported), position,
         rotation: vec![0.0,0.0,0.0,1.0], scale: vec![1.0;3], properties: serde_json::Map::new(),
         actor, grant: &fe_runtime::node_history::NodeAccessGrant::Local,
     }).await?;
-    let (node_id, asset_path) = super::object_creation::commit(db, prepared).await?;
-    let asset_path = asset_path.ok_or_else(|| anyhow::anyhow!("committed imported scene path unavailable"))?;
+    let current = super::object_creation::commit(db, prepared).await?;
+    let node_id = current.node.node_id.clone();
     tracing::info!(node_id, asset_id, "Imported scene metadata and initial history committed");
-    Ok((node_id, asset_id, asset_path))
+    Ok((node_id, asset_id, asset_path, current))
 }
 
 // ---------------------------------------------------------------------------
@@ -426,8 +427,8 @@ pub(crate) async fn create_node_with_asset_as(
     rotation: [f32; 3],
     scale: [f32; 3],
     actor: &str,
-) -> anyhow::Result<(String, String)> {
-    let (id, path) = super::node_history::create_object(
+) -> anyhow::Result<(String, String, fe_runtime::messages::CommittedNodeMaterialization)> {
+    let current = super::node_history::create_object_materialized_granted(
         db,
         petal_id,
         name,
@@ -437,11 +438,13 @@ pub(crate) async fn create_node_with_asset_as(
         scale.iter().map(|&v| v as f64).collect(),
         serde_json::Map::new(),
         actor,
+        &fe_runtime::node_history::NodeAccessGrant::Local,
     )
     .await?;
     Ok((
-        id,
-        path.ok_or_else(|| anyhow::anyhow!("scene asset path missing"))?,
+        current.node.node_id.clone(),
+        current.node.asset_path.clone().ok_or_else(|| anyhow::anyhow!("scene asset path missing"))?,
+        current,
     ))
 }
 
@@ -1873,7 +1876,7 @@ mod asset_ingest_tests {
         )
         .await
         .unwrap();
-        let (node_id, asset_path) = create_node_with_asset_handler(
+        let (node_id, asset_path, current) = create_node_with_asset_as(
             &db,
             "petal-1",
             "house",
@@ -1881,10 +1884,16 @@ mod asset_ingest_tests {
             [1.0, 2.0, 3.0],
             [0.5, 0.0, 0.0],
             [2.0; 3],
+            "local",
         )
         .await
         .expect("placement succeeds");
         assert_eq!(asset_path, format!("blob://{hash}.glb"));
+        assert_eq!(current.history_version,1);
+        assert_eq!(current.node.position,[1.0,2.0,3.0]);
+        assert_eq!(current.node.scale,[2.0;3]);
+        assert_eq!(current.rotation_euler,[0.5,0.0,0.0]);
+        assert!(bevy::math::Quat::from_array(current.node.rotation).dot(bevy::math::Quat::from_euler(bevy::math::EulerRot::XYZ,0.5,0.0,0.0)).abs()>1.0-1e-6);
         let mut res = db
             .query("SELECT asset_id, rotation, elevation FROM node WHERE node_id = $nid")
             .bind(("nid", node_id))
@@ -2243,4 +2252,5 @@ pub(crate) async fn create_node_with_asset_handler(
         db, petal_id, name, asset_id, position, rotation, scale, "local",
     )
     .await
+    .map(|(id, path, _)| (id, path))
 }

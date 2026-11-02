@@ -610,6 +610,7 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
                 name,
                 asset_path: format!("blob://{hash}.glb"),
                 position,
+                materialization: None,
                 correlation_id,
             }
         }

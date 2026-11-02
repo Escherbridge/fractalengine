@@ -493,3 +493,22 @@ its spawned stamp group. Selection compares this proof with the authoritative pr
 loaded editor context before admitting an entity. Cache updates preserve the last authoritative
 properties separately from live render edits; source revision changes gate catalog rebuilds. An
 old entity cannot be captured under a reflowed descriptor before the renderer replaces it.
+
+## Imported and placed object materialization
+
+GltfImported's qualified complete birth enters the existing committed snapshot
+adapter. Its routed node/asset/Petal/name/path/position must agree with the typed
+snapshot, which carries initial rotation, nonuniform scale, properties and v1.
+The manager and ordinary residency/spawn chain own materialization; there is no
+second identity-only import spawner. Repeated receipts stay one tree/entity and
+a late v1 cannot replace a newer committed version. A legacy/mismatched receipt
+requests authoritative hierarchy hydration rather than inventing a pose.
+
+The existing full App result/correlation journey now delivers actual typed asset
+birth messages through apply_db_results and the residency systems. It checks
+nonidentity initial TRS on the resident SceneRoot, duplicate and delayed receipts,
+API correlation and unqualified/mismatched fallback. This is source-authored
+component/adapter coverage, not GPU/model-load or executed QA evidence.
+
+Only a qualified GUI-origin completion can finish the native import dialog; an
+API-correlated placement retains its own waiter and cannot consume that request.

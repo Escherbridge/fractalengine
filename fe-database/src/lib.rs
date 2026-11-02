@@ -717,19 +717,10 @@ pub fn spawn_db_thread_shared(
                         let result = handlers::crud::import_gltf_handler(&db, &blob_store, &petal_id, &name, &file_path, position, &local_did).await;
                         drop(file_lease);
                         match result {
-                            Ok((node_id, asset_id, asset_path)) => {
+                            Ok((node_id, asset_id, asset_path, materialization)) => {
                                 if let Some(ref ect) = entity_change_tx {
                                     let _ = ect.send(fe_runtime::messages::SceneChange::NodeAdded {
-                                        node: fe_runtime::messages::NodeDto {
-                                            node_id: node_id.clone(),
-                                            petal_id: petal_id.clone(),
-                                            name: name.clone(),
-                                            position,
-                                            rotation: [0.0, 0.0, 0.0, 1.0],
-                                            scale: [1.0, 1.0, 1.0],
-                                            has_asset: true,
-                                            asset_path: Some(asset_path.clone()),
-                                        },
+                                        node: materialization.node.clone(),
                                     });
                                 }
                                 // FR-6: emit a NodeCreated lifecycle event for the imported node.
@@ -740,7 +731,7 @@ pub fn spawn_db_thread_shared(
                                         });
                                     }
                                 }
-                                send_result(&tx, DbResult::GltfImported { node_id, asset_id, petal_id, name, asset_path, position, correlation_id: None });
+                                send_result(&tx, DbResult::GltfImported { node_id, asset_id, petal_id, name, asset_path, position, materialization: Some(materialization), correlation_id: None });
                             }
                             Err(e) => send_result(&tx, DbResult::Error(format!("GLTF import failed: {e}"))),
                         }
@@ -779,20 +770,10 @@ pub fn spawn_db_thread_shared(
                     }
                     Ok(DbCommand::CreateNodeWithAsset { petal_id, name, asset_id, position, rotation, scale, correlation_id }) => {
                         match handlers::crud::create_node_with_asset_as(&db, &petal_id, &name, &asset_id, position, rotation, scale, &local_did).await {
-                            Ok((node_id, asset_path)) => {
+                            Ok((node_id, asset_path, materialization)) => {
                                 if let Some(ref ect) = entity_change_tx {
-                                    let quat = bevy::math::Quat::from_euler(bevy::math::EulerRot::XYZ, rotation[0], rotation[1], rotation[2]);
                                     let _ = ect.send(fe_runtime::messages::SceneChange::NodeAdded {
-                                        node: fe_runtime::messages::NodeDto {
-                                            node_id: node_id.clone(),
-                                            petal_id: petal_id.clone(),
-                                            name: name.clone(),
-                                            position,
-                                            rotation: quat.to_array(),
-                                            scale,
-                                            has_asset: true,
-                                            asset_path: Some(asset_path.clone()),
-                                        },
+                                        node: materialization.node.clone(),
                                     });
                                 }
 
@@ -803,7 +784,7 @@ pub fn spawn_db_thread_shared(
                                         });
                                     }
                                 }
-                                send_result(&tx, DbResult::GltfImported { node_id, asset_id, petal_id, name, asset_path, position, correlation_id });
+                                send_result(&tx, DbResult::GltfImported { node_id, asset_id, petal_id, name, asset_path, position, materialization: Some(materialization), correlation_id });
                             }
                             Err(e) => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("Place asset failed: {e}"))),
                         }

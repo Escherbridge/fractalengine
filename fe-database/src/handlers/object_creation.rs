@@ -36,6 +36,10 @@ impl ImportedSceneAsset {
     pub(crate) fn id(&self) -> &str {
         &self.id
     }
+
+    pub(crate) fn path(&self) -> &str {
+        &self.path
+    }
 }
 
 pub(crate) enum SceneAsset<'a> {
@@ -64,7 +68,7 @@ pub(crate) struct PreparedCreation {
     actor: String,
     schema_versions: Map<String, Value>,
     id: String,
-    asset_path: Option<String>,
+    materialization: fe_runtime::messages::CommittedNodeMaterialization,
 }
 
 fn scene_extension(content_type: &str) -> anyhow::Result<&'static str> {
@@ -195,6 +199,15 @@ pub(crate) async fn prepare(
         ("created_x".into(), json!(position[0] as f64)),
         ("created_z".into(), json!(position[2] as f64)),
     ]);
+    let snapshot: fe_runtime::node_history::NodeRowSnapshot =
+        serde_json::from_value(state.clone())?;
+    let receipt = fe_runtime::node_history::NodeMutationReceipt {
+        node_id: id.clone(),
+        history_version: 1,
+        state: snapshot,
+        persist: fe_runtime::node_history::PersistStatus::Committed,
+    };
+    let materialization = node_history::materialization(&receipt, asset_path)?;
     Ok(PreparedCreation {
         statements,
         bindings,
@@ -203,14 +216,14 @@ pub(crate) async fn prepare(
         actor: actor.to_owned(),
         schema_versions,
         id,
-        asset_path,
+        materialization,
     })
 }
 
 pub(crate) async fn commit(
     db: &Db,
     prepared: PreparedCreation,
-) -> anyhow::Result<(String, Option<String>)> {
+) -> anyhow::Result<fe_runtime::messages::CommittedNodeMaterialization> {
     let PreparedCreation {
         statements,
         mut bindings,
@@ -219,7 +232,7 @@ pub(crate) async fn commit(
         actor,
         schema_versions,
         id,
-        asset_path,
+        materialization,
     } = prepared;
     let entry = OpLogEntry {
         lamport_clock: 0,
@@ -237,5 +250,5 @@ pub(crate) async fn commit(
         bindings.extend([("created_state".into(), state), ("created_fact".into(), fact)]);
         (statements, bindings)
     }).await?;
-    Ok((id, asset_path))
+    Ok(materialization)
 }

@@ -161,6 +161,14 @@ pub(super) fn apply_db_results(
         let property_forwarded = forward_correlated_property_reply(result, &mut pending_api);
         let materialization = match result {
             DbResult::NodeMaterialized { node, .. } => Some(node.clone()),
+            DbResult::GltfImported { .. } => {
+                let current=committed::from_gltf_import(result).cloned();
+                if current.is_none() {
+                    bevy::log::warn!("Asset placement receipt needs authoritative hierarchy hydration");
+                    request_committed_hierarchy(&db_sender,&mut hierarchy_requested);
+                }
+                current
+            }
             DbResult::NodeMutationCommitted { receipt, .. } => {
                 let current = committed::from_receipt(receipt, &verse_mgr);
                 if current.is_none() {
@@ -336,26 +344,10 @@ pub(super) fn apply_db_results(
                 &mut nav,
                 &mut ui_mgr,
             ),
-            DbResult::GltfImported {
-                node_id,
-                name,
-                petal_id,
-                asset_path,
-                position,
-                ..
-            } => {
-                nodes::handle_gltf_imported(
-                    node_id,
-                    name,
-                    petal_id,
-                    asset_path,
-                    *position,
-                    &mut verse_mgr,
-                    &nav,
-                    &mut commands,
-                    &asset_server,
-                );
-                finish_gltf_import_request(name, &mut ui_mgr, caches.time.elapsed_secs_f64());
+            DbResult::GltfImported { name, correlation_id, .. } => {
+                if correlation_id.is_none() && committed::from_gltf_import(result).is_some() {
+                    finish_gltf_import_request(name, &mut ui_mgr, caches.time.elapsed_secs_f64());
+                }
             }
             DbResult::NodeCreated {
                 id,
@@ -1869,11 +1861,12 @@ mod tests {
     #[test]
     fn properties_loaded_preserves_unselected_ui_and_delivers_correlated_api_reply() {
         let mut app = App::new();
+        let (db_sender, db_commands) = sender();
         app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
             .add_message::<DbResult>()
             .init_resource::<VerseManager>()
             .init_resource::<NavigationManager>()
-            .insert_resource(sender().0)
+            .insert_resource(db_sender)
             .init_resource::<UiManager>()
             .init_resource::<crate::plugin::LocalUserRole>()
             .init_resource::<InspectorFormState>()
@@ -1930,8 +1923,8 @@ mod tests {
         app.update();
         assert!(
             matches!(reply_rx.try_recv(), Ok(DbResult::NodePropertiesLoaded {
-            node_id, correlation_id: Some(id), properties,
-        }) if node_id == "n1" && id == "api-properties" && properties == json!({"api":10}))
+                node_id, correlation_id: Some(id), properties,
+            }) if node_id == "n1" && id == "api-properties" && properties == json!({"api":10}))
         );
         let (next_tx, mut next_rx) = tokio::sync::oneshot::channel();
         app.world_mut()
@@ -1954,6 +1947,218 @@ mod tests {
             json!({"existing":"untouched"})
         );
         assert!(app.world().resource::<NodeManager>().selected.is_none());
+
+        app.init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .init_asset::<Image>()
+            .init_asset::<bevy::scene::Scene>()
+            .init_resource::<super::super::TextureRegistryRes>()
+            .init_resource::<super::super::PrimitiveMaterialAssets>()
+            .init_resource::<crate::settings::AppSettings>()
+            .init_resource::<crate::settings::PetalRenderOverride>()
+            .init_resource::<super::super::StampRenderIndex>()
+            .init_resource::<fe_runtime::diag15m::RenderPressure>()
+            .add_systems(
+                Update,
+                (
+                    super::super::residency_ledger::update_residency_ledger,
+                    super::super::petal_respawn::respawn_on_petal_change,
+                    super::super::residency_ledger::apply_node_residency,
+                )
+                    .chain()
+                    .after(apply_db_results),
+            );
+        app.insert_resource(tree());
+        app.world_mut()
+            .resource_mut::<NavigationManager>()
+            .navigate_to_petal_in_fractal("v1", "Verse", "f1", "Fractal", "p1");
+        app.world_mut()
+            .resource_mut::<crate::plugin::LocalUserRole>()
+            .role = Some(fe_policy::RoleLevel::Editor);
+        app.world_mut().spawn((
+            fe_renderer::camera::OrbitCameraController::default(),
+            Transform::default(),
+            GlobalTransform::default(),
+        ));
+        let rotation = Quat::from_euler(EulerRot::XYZ, 0.25, 0.5, 0.75).to_array();
+        let birth = fe_runtime::messages::CommittedNodeMaterialization {
+            node: fe_runtime::messages::NodeDto {
+                node_id: "placed".into(),
+                petal_id: "p1".into(),
+                name: "Placed".into(),
+                position: [3.0, 2.0, 4.0],
+                rotation,
+                scale: [2.0, 0.5, 3.0],
+                has_asset: true,
+                asset_path: Some("models/placed.glb".into()),
+            },
+            rotation_euler: [0.25, 0.5, 0.75],
+            asset_id: Some("placed-asset".into()),
+            properties: json!({}),
+            history_version: 1,
+        };
+        let placed = DbResult::GltfImported {
+            node_id: "placed".into(),
+            asset_id: "placed-asset".into(),
+            petal_id: "p1".into(),
+            name: "Placed".into(),
+            asset_path: "models/placed.glb".into(),
+            position: [3.0, 2.0, 4.0],
+            materialization: Some(birth),
+            correlation_id: Some("placement".into()),
+        };
+        let (placed_tx, mut placed_rx) = tokio::sync::oneshot::channel();
+        app.world_mut()
+            .resource_mut::<fe_runtime::app::PendingApiRequests>()
+            .enqueue_for(
+                &DbCommand::CreateNodeWithAsset {
+                    petal_id: "p1".into(),
+                    name: "Placed".into(),
+                    asset_id: "placed-asset".into(),
+                    position: [3.0, 2.0, 4.0],
+                    rotation: [0.25, 0.5, 0.75],
+                    scale: [2.0, 0.5, 3.0],
+                    correlation_id: Some("placement".into()),
+                },
+                placed_tx,
+            );
+        {
+            let mut ui = app.world_mut().resource_mut::<UiManager>();
+            ui.open_dialog(ActiveDialog::GltfImport {
+                file_path_buf: "native.glb".into(),
+                name_buf: "Native pending".into(),
+                position: [0.0; 3],
+            });
+            ui.gltf_import_request.start(0.0);
+        }
+        app.world_mut().write_message(placed.clone());
+        app.world_mut().write_message(placed.clone());
+        app.update();
+        assert!(
+            matches!(placed_rx.try_recv(),Ok(DbResult::GltfImported {materialization:Some(_),correlation_id:Some(id),..}) if id=="placement")
+        );
+        assert!(
+            app.world()
+                .resource::<UiManager>()
+                .gltf_import_request
+                .pending
+        );
+        assert!(
+            matches!(
+                app.world().resource::<UiManager>().active_dialog,
+                ActiveDialog::GltfImport { .. }
+            ),
+            "an API placement cannot complete the native import dialog's request"
+        );
+        let expected = Transform {
+            translation: Vec3::new(3.0, 2.0, 4.0),
+            rotation: Quat::from_array(rotation),
+            scale: Vec3::new(2.0, 0.5, 3.0),
+        };
+        let placed_entry = app
+            .world()
+            .resource::<VerseManager>()
+            .all_nodes()
+            .find(|node| node.id == "placed")
+            .unwrap();
+        assert_eq!(placed_entry.world_transform(), expected);
+        assert_eq!(
+            app.world()
+                .resource::<VerseManager>()
+                .all_nodes()
+                .filter(|node| node.id == "placed")
+                .count(),
+            1
+        );
+        let placed_entities: Vec<_> = app
+            .world_mut()
+            .query::<(Entity, &crate::plugin::SpawnedNodeMarker, &Transform)>()
+            .iter(app.world())
+            .filter(|(_, marker, _)| marker.node_id == "placed")
+            .map(|(entity, _, transform)| (entity, *transform))
+            .collect();
+        assert_eq!(
+            placed_entities.len(),
+            1,
+            "duplicate birth receipts cannot double-spawn a scene"
+        );
+        assert_eq!(
+            placed_entities[0].1, expected,
+            "the actual residency spawner receives initial rotation and nonuniform scale"
+        );
+        let entity = placed_entities[0].0;
+        let current:fe_runtime::node_history::NodeRowSnapshot=serde_json::from_value(json!({
+                "node_id":"placed","petal_id":"p1","display_name":"Placed","asset_id":"placed-asset","position":[9.0,2.0,4.0],"elevation":2.0,
+                "rotation":[0.25,0.5,0.75],"scale":[2.0,0.5,3.0],"interactive":true,"created_at":"test","edit_seq":1,"properties":{}
+            })).unwrap();
+        app.world_mut()
+            .write_message(DbResult::NodeMutationCommitted {
+                receipt: fe_runtime::node_history::NodeMutationReceipt {
+                    node_id: "placed".into(),
+                    history_version: 2,
+                    state: current,
+                    persist: fe_runtime::node_history::PersistStatus::Committed,
+                },
+                correlation_id: None,
+            });
+        app.world_mut().write_message(placed.clone());
+        app.update();
+        assert_eq!(
+            app.world().get::<Transform>(entity).unwrap().translation,
+            Vec3::new(9.0, 2.0, 4.0)
+        );
+        assert_eq!(
+            app.world()
+                .resource::<VerseManager>()
+                .committed_versions
+                .get("placed"),
+            Some(&2)
+        );
+        let _ = db_commands.try_iter().collect::<Vec<_>>();
+        let mut unsupported = placed.clone();
+        if let DbResult::GltfImported {
+            materialization, ..
+        } = &mut unsupported
+        {
+            *materialization = None;
+        }
+        let mut mismatched = placed;
+        if let DbResult::GltfImported {
+            materialization: Some(current),
+            ..
+        } = &mut mismatched
+        {
+            current.node.node_id = "foreign-birth".into();
+        }
+        app.world_mut().write_message(unsupported);
+        app.world_mut().write_message(mismatched);
+        app.update();
+        assert_eq!(
+            db_commands
+                .try_iter()
+                .filter(|command| matches!(command, DbCommand::LoadHierarchy))
+                .count(),
+            1
+        );
+        assert_eq!(
+            app.world().get::<Transform>(entity).unwrap().translation,
+            Vec3::new(9.0, 2.0, 4.0)
+        );
+        assert_eq!(
+            app.world()
+                .resource::<VerseManager>()
+                .all_nodes()
+                .filter(|node| node.id == "placed")
+                .count(),
+            1
+        );
+        assert!(
+            app.world()
+                .resource::<UiManager>()
+                .gltf_import_request
+                .pending,
+            "an unqualified legacy receipt cannot invent native import completion"
+        );
     }
 
     #[test]

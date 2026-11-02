@@ -1355,6 +1355,8 @@ pub enum DbResult {
         name: String,
         asset_path: String,
         position: [f32; 3],
+        /// Full committed birth; absent legacy adapters require authoritative hydration.
+        materialization: Option<CommittedNodeMaterialization>,
         /// Echoes `CreateNodeWithAsset.correlation_id`; `None` for GUI
         /// `ImportGltf` results (never routed to an API waiter).
         correlation_id: Option<String>,

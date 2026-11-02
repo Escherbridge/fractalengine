@@ -10,43 +10,6 @@ use crate::dialogs::ActiveDialog;
 use crate::gis::PathEditorState;
 use crate::navigation_manager::NavigationManager;
 
-/// `GltfImported`: add the node to the tree and spawn it when in the active petal.
-pub(super) fn handle_gltf_imported(
-    node_id: &str,
-    name: &str,
-    petal_id: &str,
-    asset_path: &str,
-    position: [f32; 3],
-    verse_mgr: &mut VerseManager,
-    nav: &NavigationManager,
-    commands: &mut Commands,
-    asset_server: &AssetServer,
-) {
-    verse_mgr.add_node(
-        petal_id,
-        NodeEntry {
-            transform: Default::default(),
-            id: node_id.to_string(),
-            name: name.to_string(),
-            has_asset: true,
-            position,
-            webpage_url: None,
-            asset_path: Some(asset_path.to_string()),
-        },
-    );
-    if nav.active_petal_id.as_deref() == Some(petal_id) {
-        super::super::spawn::spawn_node_entity(
-            commands,
-            asset_server,
-            node_id,
-            petal_id,
-            name,
-            position,
-            asset_path,
-        );
-    }
-}
-
 /// `NodeCreated`: add the node to the tree, flush a pending pen auto-create,
 /// bind an earthwork-region correlation (T3) or a dimension-callout
 /// correlation (HS-P6-CALLOUT), and re-sync the Paths tab.

@@ -179,3 +179,8 @@ Production DB authorization/read tests belong to fe-database's existing real-sto
 ## Terminal reset peer refusal
 
 The running TestPeer does not own the desktop service supervisor. It explicitly refuses the terminal-reset command with its dedicated correlated result and leaves its data unchanged. Real terminal worker exit/readback proof is in fe-database shared_handle_test, not the peer's legacy clear scaffold.
+
+The simplified peer import adapter explicitly marks its complete GUI birth
+materialization unavailable. It is not the production scoped initial-history or
+full initial-TRS receipt implementation; real-store and UI App journeys cover
+those contracts separately. Its existing API identity/correlation shape remains.

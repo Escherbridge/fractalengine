@@ -252,20 +252,20 @@ pub(crate) fn materialization(
     asset_path: Option<String>,
 ) -> anyhow::Result<fe_runtime::messages::CommittedNodeMaterialization> {
     let state = &receipt.state;
-    let rotation_euler: [f32; 3] = state
-        .rotation
-        .iter()
-        .map(|&v| v as f32)
-        .collect::<Vec<_>>()
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("created object rotation is not Euler XYZ"))?;
-    let rotation = bevy::math::Quat::from_euler(
-        bevy::math::EulerRot::XYZ,
-        rotation_euler[0],
-        rotation_euler[1],
-        rotation_euler[2],
-    )
-    .to_array();
+    let rotation = fe_runtime::node_history::stored_rotation_quaternion(&state.rotation)
+        .ok_or_else(|| anyhow::anyhow!("created object rotation is unavailable"))?;
+    let position = state.position.map(|value| value as f32);
+    let scale = state.scale.map(|value| value as f32);
+    anyhow::ensure!(
+        position.iter().chain(&scale).all(|value| value.is_finite()),
+        "created object transform exceeds render precision"
+    );
+    let rotation_euler = if let [x, y, z] = state.rotation.as_slice() {
+        [*x as f32, *y as f32, *z as f32]
+    } else {
+        let (x, y, z) = bevy::math::Quat::from_array(rotation).to_euler(bevy::math::EulerRot::XYZ);
+        [x, y, z]
+    };
     Ok(fe_runtime::messages::CommittedNodeMaterialization {
         node: fe_runtime::messages::NodeDto {
             node_id: state.node_id.clone(),
@@ -274,9 +274,9 @@ pub(crate) fn materialization(
                 .display_name
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("created object name missing"))?,
-            position: state.position.map(|v| v as f32),
+            position,
             rotation,
-            scale: state.scale.map(|v| v as f32),
+            scale,
             has_asset: state.asset_id.is_some(),
             asset_path,
         },
@@ -301,10 +301,42 @@ pub(crate) async fn create_object_granted(
     actor: &str,
     grant: &NodeAccessGrant,
 ) -> anyhow::Result<(String, Option<String>)> {
-    let prepared = super::object_creation::prepare(db, super::object_creation::ObjectCreation {
-        petal_id, name, asset: super::object_creation::SceneAsset::Existing(asset_id),
-        position, rotation, scale, properties, actor, grant,
-    }).await?;
+    let current = create_object_materialized_granted(
+        db, petal_id, name, asset_id, position, rotation, scale, properties, actor, grant,
+    )
+    .await?;
+    Ok((current.node.node_id, current.node.asset_path))
+}
+
+/// Create and return the complete predecoded current-state receipt only after commit.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_object_materialized_granted(
+    db: &Db,
+    petal_id: &str,
+    name: &str,
+    asset_id: Option<&str>,
+    position: [f32; 3],
+    rotation: Vec<f64>,
+    scale: Vec<f64>,
+    properties: serde_json::Map<String, Value>,
+    actor: &str,
+    grant: &NodeAccessGrant,
+) -> anyhow::Result<fe_runtime::messages::CommittedNodeMaterialization> {
+    let prepared = super::object_creation::prepare(
+        db,
+        super::object_creation::ObjectCreation {
+            petal_id,
+            name,
+            asset: super::object_creation::SceneAsset::Existing(asset_id),
+            position,
+            rotation,
+            scale,
+            properties,
+            actor,
+            grant,
+        },
+    )
+    .await?;
     super::object_creation::commit(db, prepared).await
 }
 

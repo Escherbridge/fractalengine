@@ -512,6 +512,7 @@ pub async fn place_asset_core(
             asset_path,
             position,
             correlation_id: Some(echoed),
+            ..
         } if echoed == correlation_id => Ok(PlacedAsset {
             node_id,
             asset_id,

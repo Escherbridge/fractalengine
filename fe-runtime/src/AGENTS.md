@@ -940,3 +940,11 @@ CheckedStampPromotion is a private typed local GUI capture, not a new public mut
 PromoteCheckedStamp carries full source properties/version, Petal/scope and world scale through
 actual DB use. CheckedStampPromoted echoes the exact request and authoritative properties only
 after its transaction; stale UI receipts cannot establish a different selection.
+
+## Complete asset birth receipts
+
+GltfImported retains its existing identity and correlation routing and may carry
+a complete CommittedNodeMaterialization. Production ImportGltf and
+CreateNodeWithAsset prepare that typed snapshot before their transaction and
+return it only after successful commit. Legacy/test-peer adapters explicitly use
+None; they do not fabricate initial history coverage or a rotation/scale.

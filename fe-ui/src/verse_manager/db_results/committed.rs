@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 use fe_runtime::messages::{CommittedNodeMaterialization, DbConfirmedTransform, NodeDto};
-use fe_runtime::node_history::{stored_rotation_quaternion, NodeMutationReceipt};
+use fe_runtime::node_history::{NodeMutationReceipt, stored_rotation_quaternion};
 
 use super::super::{NodeEntry, VerseManager};
 use crate::plugin::SpawnedNodeMarker;
@@ -11,6 +11,37 @@ pub(super) enum MaterializationOutcome {
     Applied { transform_changed: bool },
     NeedsHierarchy,
     Ignored,
+}
+
+/// Admit only a complete committed asset birth matching its routed legacy identity.
+pub(super) fn from_gltf_import(
+    result: &fe_runtime::messages::DbResult,
+) -> Option<&CommittedNodeMaterialization> {
+    let fe_runtime::messages::DbResult::GltfImported {
+        node_id,
+        asset_id,
+        petal_id,
+        name,
+        asset_path,
+        position,
+        materialization,
+        ..
+    } = result
+    else {
+        return None;
+    };
+    let current = materialization.as_ref()?;
+    let node = &current.node;
+    (current.history_version == 1
+        && node.has_asset
+        && node.node_id == *node_id
+        && node.petal_id == *petal_id
+        && node.name == *name
+        && node.position == *position
+        && current.asset_id.as_deref() == Some(asset_id.as_str())
+        && node.asset_path.as_deref() == Some(asset_path.as_str())
+        && current.properties.is_object())
+    .then_some(current)
 }
 
 pub(super) fn from_receipt(

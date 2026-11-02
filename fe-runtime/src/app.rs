@@ -1040,6 +1040,7 @@ mod tests {
             name: "n".to_string(),
             asset_path: "blob://x.glb".to_string(),
             position: [0.0; 3],
+            materialization: None,
             correlation_id: correlation_id.map(str::to_string),
         }
     }

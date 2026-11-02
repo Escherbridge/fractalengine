@@ -2072,9 +2072,12 @@ mod tests {
         let import_dir = tempfile::tempdir().unwrap();
         let import_path = import_dir.path().join("portal.gltf");
         std::fs::write(&import_path, br#"{"asset":{"version":"2.0"}}"#).unwrap();
-        let (imported_node, imported_asset, _) = crate::handlers::crud::import_gltf_handler(
+        let (imported_node, imported_asset, _, imported_current) = crate::handlers::crud::import_gltf_handler(
             &url_db, &store, "url-p", "Unique imported Portal", import_path.to_str().unwrap(), [2.0,3.0,4.0], "did:qa",
         ).await.unwrap();
+        assert_eq!(imported_current.node.node_id,imported_node);
+        assert_eq!(imported_current.history_version,1);
+        assert_eq!(imported_current.node.position,[2.0,3.0,4.0]);
         let imported_page = crate::handlers::node_history::read_granted(&url_db,&imported_node,0,200,None,&NodeAccessGrant::Local,"did:qa").await.unwrap();
         assert_eq!(imported_page["current_version"],1);
         assert_eq!(imported_page["coverage_start_version"],1);
@@ -2167,7 +2170,7 @@ mod tests {
         assert!(update_node_url_handler(&url_db,&imported_node,Some("https://example.com/viewer".into()),&url_scope,"did:url-viewer").await.is_err());
         assert_eq!(op_log_count(&url_db).await,absent_ops);
         let pending = prepare_node_url_write(&url_db,&imported_node,Some("https://example.com/first".into()),&url_scope,"did:qa").await.unwrap();
-        let (competing_node,_) = crate::handlers::crud::create_node_with_asset_as(&url_db,"url-p","shared after capture",&imported_asset,[0.0;3],[0.0;3],[1.0;3],"did:qa").await.unwrap();
+        let (competing_node,_,_) = crate::handlers::crud::create_node_with_asset_as(&url_db,"url-p","shared after capture",&imported_asset,[0.0;3],[0.0;3],[1.0;3],"did:qa").await.unwrap();
         let shared_after_capture = op_log_count(&url_db).await;
         assert!(pending.commit(&url_db).await.is_err(),"a new live reference refuses initialization at transaction use");
         assert_eq!(op_log_count(&url_db).await,shared_after_capture);

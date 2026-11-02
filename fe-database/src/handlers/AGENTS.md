@@ -254,6 +254,13 @@ ancestry, schema and journal-failure rollback across Asset/Node/fact/intention.
 These source assertions have not been executed in the author lane.
 
 
+Creation preparation also decodes the complete typed current-state snapshot
+before effects. A successful commit returns that prepared materialization; native
+import and ordinary asset placement retain it in their correlated birth reply.
+Quaternion-four and Euler-three storage both map to the same full TRS boundary,
+with finite render precision checked before commit. No post-commit decoder can
+turn a successful creation into an apparent failed creation/retry.
+
 ## Checked stamp promotion
 
 The private GUI PromoteCheckedStamp adapter captures full source properties, path version, full
@@ -282,3 +289,4 @@ real-store journey asserts these distinctions, absent terrain/default metadata p
 bounds, and intervening terrain, bounds and optional metadata changes for both prepare/use paths.
 The terrain race keeps world_scale=1, proving the fence protects the full map rather than scale
 alone. These journey extensions are authored source; root owns execution and independent review.
+
