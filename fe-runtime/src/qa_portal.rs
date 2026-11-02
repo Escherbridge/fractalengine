@@ -24,6 +24,13 @@ pub struct FixtureCommand {
     pub deadline: Instant,
 }
 
+impl FixtureCommand {
+    pub fn is_current(&self) -> bool {
+        let now = Instant::now();
+        self.deadline > now && self.deadline.duration_since(now) <= JOB_LIMIT
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FixtureObservation {

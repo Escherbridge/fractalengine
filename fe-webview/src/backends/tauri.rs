@@ -349,12 +349,16 @@ impl WebViewBackend for TauriBackend {
         #[cfg(target_os = "windows")]
         {
             let visible = self.fixture_visible();
-            return self.fixture_surface.start(
+            let result = self.fixture_surface.start(
                 &self.webview,
                 visible,
                 self.guard_unusable.get(),
                 command,
             );
+            if matches!(&result, Err(error) if error.code == "portal_script_unavailable") {
+                super::qa_navigation::abort(&self.webview, &self.guard_unusable, &self.events);
+            }
+            result
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -367,13 +371,24 @@ impl WebViewBackend for TauriBackend {
         #[cfg(target_os = "windows")]
         {
             let visible = self.fixture_visible();
-            let result =
+            let mut result =
                 self.fixture_surface
                     .poll(&self.webview, visible, self.guard_unusable.get());
-            if matches!(&result, Some(Err(_))) {
+            if let Some(Ok(completed)) = &result {
+                if !self.fixture_surface.receipt_is_current(
+                    &self.webview,
+                    self.fixture_visible(),
+                    self.guard_unusable.get(),
+                    &completed.receipt,
+                ) {
+                    result = Some(Err(fe_runtime::qa_portal::stale()));
+                }
+            }
+            if matches!(&result, Some(Err(error)) if matches!(error.code, "portal_fixture_changed" | "portal_capture_unavailable" | "portal_script_unavailable"))
+            {
                 super::qa_navigation::abort(&self.webview, &self.guard_unusable, &self.events);
             }
-            return result;
+            result
         }
         #[cfg(not(target_os = "windows"))]
         None
@@ -590,5 +605,54 @@ mod tests {
                 .any(|e| matches!(e, BackendEvent::UrlChanged(_))),
             "blocked navigation must not record a UrlChanged event"
         );
+        #[cfg(windows)]
+        {
+            use super::super::fixture_surface::{page_identity_matches, png_dimensions};
+            use fe_runtime::qa_portal::MAX_PNG_BYTES;
+            use windows::Win32::System::Com::STREAM_SEEK_SET;
+            let one = "http://127.0.0.1:49152/web/one";
+            let two = "http://127.0.0.1:49152/web/two";
+            assert!(page_identity_matches(one, 7, one, 7, false));
+            assert!(
+                !page_identity_matches(one, 7, one, 8, false),
+                "same URL after reload is a different page generation"
+            );
+            assert!(
+                !page_identity_matches(one, 7, two, 8, false),
+                "capture cannot follow navigation"
+            );
+            assert!(
+                page_identity_matches(one, 7, two, 8, true),
+                "only the fixed second-link job admits its one expected navigation"
+            );
+            assert!(!page_identity_matches(one, 7, two, 9, true));
+            assert!(!page_identity_matches(
+                one,
+                7,
+                "https://foreign.example/web/two",
+                8,
+                true
+            ));
+            assert!(png_dimensions(b"\x89PNG\r\n\x1a\ntruncated native callback").is_none());
+            let (stream, buffer) = super::super::fixture_stream::create();
+            unsafe {
+                assert!(stream.SetSize(MAX_PNG_BYTES as u64 + 1).is_err());
+                stream
+                    .Seek(MAX_PNG_BYTES as i64, STREAM_SEEK_SET, None)
+                    .unwrap();
+                assert!(stream.Write(b"x".as_ptr().cast(), 1, None).is_err());
+                assert!(
+                    buffer.lock().unwrap().bytes.is_empty(),
+                    "a rejected native write retains no out-of-bound bytes"
+                );
+                stream.Seek(0, STREAM_SEEK_SET, None).unwrap();
+                let mut written = 0;
+                assert!(stream
+                    .Write(b"PNG".as_ptr().cast(), 3, Some(&mut written))
+                    .is_ok());
+                assert_eq!(written, 3);
+                assert_eq!(buffer.lock().unwrap().bytes, b"PNG");
+            }
+        }
     }
 }

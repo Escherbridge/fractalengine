@@ -2430,6 +2430,28 @@ mod tests {
     /// caller does not cover while the job settles, no frame is taken.
     #[test]
     fn leaving_the_covered_verse_mid_settle_denies_the_capture() {
+        {
+            use crate::qa_portal_bridge::context;
+            use fe_ui::{actions::UiManager, node_manager::NodeManager, plugin::LocalUserRole, portal::PortalState};
+            let mut nav = NavigationManager::default();
+            nav.navigate_to_petal_in_fractal("v", "V", "f", "F", "p");
+            let entity = Entity::from_bits(1);
+            let mut nodes = NodeManager::default();
+            nodes.select(entity, "n");
+            let mut ui = UiManager::default();
+            ui.portal = PortalState::Open { current_url:"http://127.0.0.1:49152/web/one".into(),cached_hostname:"127.0.0.1".into(),opened_for_entity:entity };
+            let mut role = LocalUserRole { role: Some(fe_database::RoleLevel::Owner) };
+            let captured = context(&nav, &nodes, &ui, &role);
+            assert!(captured.is_some());
+            role.role = Some(fe_database::RoleLevel::Viewer);
+            assert!(context(&nav, &nodes, &ui, &role).is_none(), "role loss prevents native result release");
+            role.role = Some(fe_database::RoleLevel::Owner);
+            nav.navigate_to_petal("other");
+            assert_ne!(captured, context(&nav, &nodes, &ui, &role), "changed Petal invalidates the pending native job");
+            nav.navigate_to_petal("p");
+            ui.portal = PortalState::Closed;
+            assert!(context(&nav, &nodes, &ui, &role).is_none(), "closed Portal cannot release bytes");
+        }
         let mut h = harness((1280, 720));
         two_petal_tree(&mut h);
         let before = h.main_state();

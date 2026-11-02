@@ -13,7 +13,7 @@ pub(super) struct State {
 }
 pub(super) type Buffer = Arc<Mutex<State>>;
 
-#[implement(IStream)]
+#[implement(IStream, ISequentialStream)]
 struct BoundedStream {
     state: Buffer,
 }

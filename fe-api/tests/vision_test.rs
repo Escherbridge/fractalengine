@@ -625,7 +625,8 @@ async fn mcp_screenshot_without_args_still_uses_the_plain_bridge() {
 async fn input_injection_disabled_role_round_trip_rate_limited_headless_and_camera_lock_journey() {
     for allowed in [false, true] {
         let (qa_tx, qa_rx) = fe_runtime::qa_debug::qa_bridge();
-        let h = ApiHarness::spawn_with_input(InputSurface::new(allowed, None).with_qa_debug(qa_tx))
+        let (portal_tx, portal_rx) = fe_runtime::qa_portal::fixture_bridge();
+        let h = ApiHarness::spawn_with_input(InputSurface::new(allowed, None).with_qa_debug(qa_tx).with_portal_fixture(portal_tx))
             .await
             .expect("QA harness");
         let verse = h.seed_verse("QA verse").await.unwrap();
@@ -633,7 +634,25 @@ async fn input_injection_disabled_role_round_trip_rate_limited_headless_and_came
         let owner = h.mint_token(&scope, "owner");
         let foreign = h.mint_token("VERSE#foreign", "owner");
         let editor = h.mint_token(&scope, "editor");
+        let viewer = h.mint_token(&scope, "viewer");
         if allowed {
+            let portal_scope = scope.clone();
+            std::thread::spawn(move || {
+                while let Ok(request) = portal_rx.recv() {
+                    if request.caller_scope != portal_scope {
+                        request.reply(Err(fe_runtime::qa_debug::QaFailure::denied()));
+                        continue;
+                    }
+                    use fe_runtime::qa_portal::{FixtureObservation, FixtureReceipt, FixtureResult};
+                    let operation = request.op.operation;
+                    request.reply(Ok(FixtureResult { receipt: FixtureReceipt {
+                        scope: portal_scope.clone(), operation, popup_session: 1, page_generation: 1,
+                        url: "http://127.0.0.1:49152/web/one".into(),
+                        observation: FixtureObservation { page:"one".into(),title:"QA Portal one".into(),heading:"QA Portal one".into(),second_link:"/web/two".into(),third_link:"/web/three".into(),ready:true,invoked:false },
+                        link_invoked:false,native_refusal_observed:false,capture_source:Some("owned_webview2_capture_preview"),width:Some(1),height:Some(1),sha256:Some("0".repeat(64))
+                    }, png:Some(b"private native bytes must never escape without the live capability".to_vec()) }));
+                }
+            });
             std::thread::spawn(move || {
                 let logs = fe_runtime::qa_debug::QaLogRing::default();
                 logs.set_verse(Some(&verse));
@@ -662,6 +681,27 @@ async fn input_injection_disabled_role_round_trip_rate_limited_headless_and_came
                 }
             });
         }
+        for (suffix, method, body) in [
+            ("observe", "GET", ""),
+            ("capture", "POST", ""),
+            ("action", "POST", r#"{"operation":"activate_refused_third_link"}"#),
+        ] {
+            for (token, expected) in [(&owner, if allowed { StatusCode::CONFLICT } else { StatusCode::FORBIDDEN }),
+                (&foreign, if allowed { StatusCode::NOT_FOUND } else { StatusCode::FORBIDDEN }),
+                (&viewer, StatusCode::FORBIDDEN)] {
+                let response = h.request(Request::builder().method(method)
+                    .uri(format!("/api/v1/debug/portal-fixture/{suffix}"))
+                    .header("authorization",format!("Bearer {token}"))
+                    .header("content-type","application/json").body(Body::from(body)).unwrap()).await;
+                assert_eq!(response.status(), expected);
+                let bytes = body_bytes(response).await;
+                assert!(!String::from_utf8_lossy(&bytes).contains("private native bytes"));
+            }
+        }
+        let response = h.request(Request::builder().method("POST").uri("/api/v1/debug/portal-fixture/action")
+            .header("authorization", format!("Bearer {owner}")).header("content-type", "application/json")
+            .body(Body::from(r#"{"operation":"activate_second_link","url":"https://foreign.example/","script":"document.cookie"}"#)).unwrap()).await;
+        assert_eq!(response.status(), if allowed { StatusCode::BAD_REQUEST } else { StatusCode::FORBIDDEN });
         for (path, tool) in [
             ("ui-tree?name=Maps&interactive=1", "ui_tree"),
             ("ui-state", "ui_state"),

@@ -9,7 +9,6 @@ use sha2::{Digest, Sha256};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG;
 use webview2_com::{CapturePreviewCompletedHandler, ExecuteScriptCompletedHandler};
 use windows::core::HSTRING;
@@ -72,6 +71,25 @@ impl Default for Surface {
 }
 
 impl Surface {
+    pub(super) fn receipt_is_current(
+        &self,
+        webview: &wry::WebView,
+        visible: bool,
+        unusable: bool,
+        receipt: &FixtureReceipt,
+    ) -> bool {
+        if receipt.popup_session != self.session
+            || receipt.page_generation != self.clock.generation.get()
+        {
+            return false;
+        }
+        let valid = live_source(webview, visible, unusable).is_ok_and(|raw| raw == receipt.url)
+            && receipt
+                .width
+                .zip(receipt.height)
+                .is_none_or(|expected| dimensions(webview).ok() == Some(expected));
+        valid && receipt.page_generation == self.clock.generation.get()
+    }
     pub(super) fn cookie(&self) -> isize {
         self.session as isize
     }
@@ -89,9 +107,7 @@ impl Surface {
             ));
         }
         let raw = live_source(webview, visible, unusable)?;
-        if Instant::now() >= command.deadline
-            || command.deadline.saturating_duration_since(Instant::now()) > fixture::JOB_LIMIT
-        {
+        if !command.is_current() {
             return Err(fixture::stale());
         }
         let completion = Rc::new(RefCell::new(None));
@@ -123,7 +139,7 @@ impl Surface {
         unusable: bool,
     ) -> Option<FixtureOutcome> {
         let mut job = self.pending.take()?;
-        if !visible || unusable || Instant::now() >= job.command.deadline {
+        if !visible || unusable || !job.command.is_current() {
             return Some(Err(fixture::stale()));
         }
         let raw = match source(webview) {
@@ -135,11 +151,11 @@ impl Surface {
         let Some((origin, _)) = job.initial_url.rsplit_once("/web/") else {
             return Some(Err(fixture::stale()));
         };
-        let expected_second = format!("{origin}/web/two");
         let expected_third = format!("{origin}/web/three");
-        let same = generation == job.generation && raw == job.initial_url;
-        let second =
-            is_second && generation == job.generation.wrapping_add(1) && raw == expected_second;
+        let same = page_identity_matches(&job.initial_url, job.generation, &raw, generation, false);
+        let second = is_second
+            && !same
+            && page_identity_matches(&job.initial_url, job.generation, &raw, generation, true);
         if !same && !second {
             return Some(Err(fixture::stale()));
         }
@@ -180,13 +196,22 @@ impl Surface {
         }
         let completion = job.completion.borrow_mut().take();
         if let Some(completion) = completion {
-            if live_source(webview, visible, unusable).is_err()
-                || Instant::now() >= job.command.deadline
-            {
+            if live_source(webview, visible, unusable).is_err() || !job.command.is_current() {
                 return Some(Err(fixture::stale()));
             }
             match completion {
                 Completion::Dom(Ok(json)) => {
+                    if json == "\"fixture_document_pending\"" {
+                        if matches!(job.phase, Phase::SecondDocument) {
+                            job.phase = Phase::WaitingSecond;
+                            self.pending = Some(job);
+                            return None;
+                        }
+                        return Some(Err(fixture::failure(
+                            "portal_fixture_not_ready",
+                            "Native fixture document is still loading",
+                        )));
+                    }
                     let observation: FixtureObservation = match serde_json::from_str(&json) {
                         Ok(value) => value,
                         Err(_) => return Some(Err(document_error())),
@@ -335,6 +360,23 @@ fn source(webview: &wry::WebView) -> Result<String, QaFailure> {
     Ok(raw)
 }
 
+pub(super) fn page_identity_matches(
+    initial: &str,
+    captured: u64,
+    current: &str,
+    generation: u64,
+    allow_second: bool,
+) -> bool {
+    if captured == generation && current == initial {
+        return true;
+    }
+    allow_second
+        && generation == captured.wrapping_add(1)
+        && initial
+            .rsplit_once("/web/")
+            .is_some_and(|(origin, _)| current == format!("{origin}/web/two"))
+}
+
 fn live_source(webview: &wry::WebView, visible: bool, unusable: bool) -> Result<String, QaFailure> {
     if !visible || unusable {
         return Err(fixture::unavailable());
@@ -354,8 +396,16 @@ fn dimensions(webview: &wry::WebView) -> Result<(u32, u32), QaFailure> {
             .Bounds(&mut bounds)
             .map_err(|_| fixture::unavailable())?;
     }
-    let width = u32::try_from(bounds.right - bounds.left).map_err(|_| fixture::unavailable())?;
-    let height = u32::try_from(bounds.bottom - bounds.top).map_err(|_| fixture::unavailable())?;
+    let width = bounds
+        .right
+        .checked_sub(bounds.left)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(fixture::unavailable)?;
+    let height = bounds
+        .bottom
+        .checked_sub(bounds.top)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(fixture::unavailable)?;
     if width == 0 || height == 0 || width > MAX_DIMENSION || height > MAX_DIMENSION {
         return Err(fixture::failure(
             "portal_capture_dimensions",
@@ -416,6 +466,7 @@ fn execute(
     let script = format!(
         r#"(()=>{{
         const expected={expected}; if(location.href!==expected) return null;
+        if(document.readyState!=='complete') return 'fixture_document_pending';
         const page=location.pathname.slice(5), origin=location.origin;
         if(!['one','two'].includes(page)||location.href!==origin+'/web/'+page) return null;
         const title='QA Portal '+page, headings=document.querySelectorAll('h1'), links=document.querySelectorAll('a');

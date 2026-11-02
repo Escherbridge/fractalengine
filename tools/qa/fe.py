@@ -4,10 +4,13 @@
 import argparse
 import base64
 import datetime
+import contextlib
 import json
 import ipaddress
+import hashlib
 import math
 import os
+import stat
 import sys
 import time
 import urllib.error
@@ -24,6 +27,7 @@ CURRENT_POINTER = os.path.join(REPO_ROOT, ".qa", "current")
 # Transient refusals worth one short retry loop before reporting (rate budgets,
 # the single-flight slots, a posed capture holding the camera).
 TRANSIENT_REFUSALS = {"http_409", "window_request_busy", "ui_frame_changing", "ui_tree_not_ready",
+                      "portal_fixture_not_ready", "portal_fixture_busy",
                       "input_in_progress", "capture_in_progress", "camera_locked_by_capture"}
 RETRY_ATTEMPTS = 6
 RETRY_SLEEP_SECONDS = 1.1
@@ -369,6 +373,110 @@ def command_shot(run, args):
             except ValueError:
                 pose_header = value
     emit({"path": path, "bytes": len(raw), "token_verse": verse, "request": body, "pose": pose_header})
+
+
+def portal_capture_path(run, requested):
+    root = os.path.abspath(run["run_dir"])
+    filename = datetime.datetime.now().strftime("%H%M%S-%f") + "-portal-native.png"
+    candidate = os.path.abspath(os.path.join(root, requested or os.path.join("shots", filename)))
+    try:
+        inside = os.path.commonpath([root, candidate]) == root
+    except ValueError:
+        inside = False
+    if not inside or candidate == root or not candidate.lower().endswith(".png"):
+        raise Refused(0, "capture_path_refused", "native Portal PNG must be a new .png beneath this run")
+    def inspect():
+        cursor = candidate
+        while True:
+            if os.path.lexists(cursor):
+                info = os.lstat(cursor)
+                if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                    raise Refused(0, "capture_path_refused", "native Portal output cannot traverse redirected paths")
+            parent = os.path.dirname(cursor)
+            if parent == cursor:
+                break
+            cursor = parent
+        if os.path.commonpath([os.path.realpath(root), os.path.realpath(candidate)]) != os.path.realpath(root):
+            raise Refused(0, "capture_path_refused", "native Portal output escaped its run")
+    inspect()
+    os.makedirs(os.path.dirname(candidate), exist_ok=True)
+    inspect()
+    if os.path.lexists(candidate) or os.path.lexists(candidate + ".json"):
+        raise Refused(0, "capture_path_refused", "native Portal output must not replace existing evidence")
+    return candidate
+
+
+@contextlib.contextmanager
+def portal_output_lease(path):
+    handles = []
+    kernel = None
+    try:
+        if os.name == "nt":
+            import ctypes
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.CreateFileW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+                                          ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p]
+            kernel.CreateFileW.restype = ctypes.c_void_p
+            kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+            kernel.GetFileAttributesW.argtypes = [ctypes.c_wchar_p]
+            kernel.GetFileAttributesW.restype = ctypes.c_uint32
+            ancestors = []
+            cursor = os.path.dirname(path)
+            while True:
+                ancestors.append(cursor)
+                parent = os.path.dirname(cursor)
+                if parent == cursor:
+                    break
+                cursor = parent
+            for directory in reversed(ancestors):
+                handle = kernel.CreateFileW(directory, 0x80, 1, None, 3, 0x02200000, None)
+                if handle in (None, ctypes.c_void_p(-1).value):
+                    raise Refused(0, "capture_path_refused", "cannot retain the native capture directory boundary")
+                handles.append(handle)
+                attributes = kernel.GetFileAttributesW(directory)
+                if attributes == 0xFFFFFFFF or attributes & 0x400 or not attributes & 0x10:
+                    raise Refused(0, "capture_path_refused", "native capture directory boundary is redirected or unavailable")
+        yield
+    finally:
+        if kernel is not None:
+            for handle in reversed(handles):
+                kernel.CloseHandle(handle)
+
+
+def command_portal_fixture(run, args):
+    verse, token, _camera = resolve_token(run, args.verse)
+    base = "/api/v1/debug/portal-fixture/"
+    if args.operation == "observe":
+        _status, _headers, raw = call(run, "GET", base + "observe", token, timeout=8.0)
+        emit(decode_object(raw))
+        return
+    if args.operation != "capture":
+        operation = {"second-link":"activate_second_link", "refused-third-link":"activate_refused_third_link"}[args.operation]
+        _status, _headers, raw = call(run, "POST", base + "action", token, {"operation":operation}, timeout=8.0)
+        emit(decode_object(raw))
+        return
+    path = portal_capture_path(run, args.out)
+    _status, headers, raw = call(run, "POST", base + "capture", token, timeout=8.0)
+    try:
+        metadata = require_object(json.loads(next(value for key, value in headers.items() if key.lower() == "x-fe-portal-fixture")))
+    except (StopIteration, ValueError) as error:
+        raise Refused(0, "capture_receipt_missing", "native Portal PNG has no valid identity receipt") from error
+    if not 33 <= len(raw) <= 8 * 1024 * 1024 or raw[:8] != b"\x89PNG\r\n\x1a\n" or raw[12:16] != b"IHDR":
+        raise Refused(0, "invalid_native_png", "native Portal capture is not a bounded PNG")
+    width, height = int.from_bytes(raw[16:20], "big"), int.from_bytes(raw[20:24], "big")
+    digest = hashlib.sha256(raw).hexdigest()
+    if not (0 < width <= 2048 and 0 < height <= 2048) or metadata.get("width") != width or metadata.get("height") != height or metadata.get("sha256") != digest or metadata.get("capture_source") != "owned_webview2_capture_preview":
+        raise Refused(0, "capture_receipt_mismatch", "native PNG dimensions, source or hash do not match its receipt")
+    # Exclusive evidence creation preserves earlier captures and receipts.
+    receipt = {"path":path, "bytes":len(raw), "token_verse":verse, "native_capture":metadata}
+    with portal_output_lease(path):
+        path = portal_capture_path(run, path)
+        with open(path, "xb") as handle:
+            handle.write(raw)
+        with open(path + ".json", "x", encoding="utf-8") as handle:
+            json.dump(receipt, handle, indent=2)
+            handle.write("\n")
+    emit(receipt)
 
 
 def run_input(run, args, commands):
@@ -794,6 +902,13 @@ def build_parser():
 
     sub.add_parser("info", help="run dir, pid, fixture ids, token roles").set_defaults(func=command_info)
     sub.add_parser("camera", help="GET /api/v1/debug/camera").set_defaults(func=command_camera)
+    portal = sub.add_parser("portal-fixture", help="fixed owned native fixture page operations and CapturePreview PNG")
+    portal_ops = portal.add_subparsers(dest="operation", required=True)
+    for operation in ("observe", "second-link", "refused-third-link"):
+        portal_ops.add_parser(operation)
+    portal_capture = portal_ops.add_parser("capture")
+    portal_capture.add_argument("--out", help="new .png path beneath the selected run (relative paths start there)")
+    portal.set_defaults(func=command_portal_fixture)
     answer = sub.add_parser("dialog-answer", help="queue a run-confined native dialog answer")
     answer.add_argument("path", nargs="?")
     answer.add_argument("--cancel", action="store_true")
@@ -907,7 +1022,7 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
         run = load_run(args.run)
-        observe_logs = args.command in {"move","click","drag","key","type","scroll","dialog-answer","window"}
+        observe_logs = args.command in {"move","click","drag","key","type","scroll","dialog-answer","window","portal-fixture"}
         watermark = log_watermark(run, args.verse) if observe_logs else None
         try:
             args.func(run, args)

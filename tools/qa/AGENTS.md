@@ -743,3 +743,11 @@ cleanup of every successfully launched root and reports all cleanup failures.
 Existing stop limitations still apply after a root crash: recorded descendants
 are checked, but children born after the last snapshot cannot be proven absent.
 Fixture servers have separate ownership records and must be stopped first.
+
+## Native Portal fixture client
+
+`fe.py portal-fixture observe` reads only the fixed native fixture document facts. `second-link` invokes its actual second anchor and waits for a current observed page two. `refused-third-link` invokes the actual third anchor and reports the exact native refusal with the original page retained. Neither action submits a Navigate URL. These routes require input opt-in, Owner, the current selected Portal/Petal and a captured live helper. A loading document is a retryable refusal; wrong content is never reported as a successful page identity.
+
+`fe.py portal-fixture capture --out shots/portal-one.png` saves actual owned WebView2 CapturePreview bytes plus `portal-one.png.json`. Output is exclusively created beneath the selected run; it refuses overwrite, traversal outside the run and redirected ancestors. Windows directory handles retain that boundary across PNG/receipt creation. The client validates the native source marker, PNG dimensions and SHA-256 against the response receipt and prints paths/metadata without image base64. A capture proves the native source and bytes, not visual correctness; inspect the actual PNG independently. All four commands retain ordinary before/after log observations. The third-link negative may intentionally produce the native policy error, which still needs an explicit expected-refusal log review.
+
+For J02: open saved fixture page one in the app, observe and capture, second-link then observe/capture page two, use the actual app Back and Forward controls and repeat native observations/captures, Reload, then refused-third-link and verify its denial plus the unchanged native page. Close and ensure further native operations refuse. Input off, Viewer, foreign scope, missing/expired helper, changed page/popup/scope and callback timeout remain separate negative checkpoints. Source authoring and journey extensions are not execution evidence.

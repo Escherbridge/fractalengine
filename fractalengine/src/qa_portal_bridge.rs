@@ -9,10 +9,9 @@ use fe_ui::{
     plugin::LocalUserRole, portal::PortalState,
 };
 use fe_webview::{backend::WebViewBackend, plugin::WebViewBackendRes};
-use std::time::Instant;
 
-#[derive(PartialEq, Eq)]
-struct Context {
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Context {
     scope: String,
     entity: Entity,
     node_id: String,
@@ -37,7 +36,7 @@ pub fn install(app: &mut App, enabled: bool, rx: FixtureReceiver) {
     }
 }
 
-fn context(
+pub(crate) fn context(
     nav: &NavigationManager,
     nodes: &NodeManager,
     ui: &UiManager,
@@ -71,16 +70,22 @@ fn serve(
     role: Res<LocalUserRole>,
     view: ViewScope,
     backend: Option<NonSendMut<WebViewBackendRes>>,
+    markers: Query<&fe_ui::plugin::SpawnedNodeMarker>,
 ) {
     let mut backend = backend;
     if host.active.is_none() && host.rx.is_empty() {
         return;
     }
-    let current = context(&nav, &nodes, &ui, &role);
+    let current = context(&nav, &nodes, &ui, &role).filter(|context| {
+        markers.get(context.entity).is_ok_and(|marker| {
+            marker.node_id == context.node_id
+                && Some(marker.petal_id.as_str()) == nav.active_petal_id.as_deref()
+        })
+    });
     if let Some(job) = host.active.take() {
         let valid = current.as_ref() == Some(&job.context)
             && view.covers(&job.request.caller_scope, Some(&nav))
-            && Instant::now() < job.request.op.deadline
+            && job.request.op.is_current()
             && !job.request.reply_tx.is_closed();
         let native = backend
             .as_mut()
@@ -91,6 +96,10 @@ fn serve(
             }
             job.request.reply(Err(fixture::stale()));
         } else if let Some(result) = native.unwrap().fixture_poll() {
+            if !job.request.op.is_current() || !view.covers(&job.request.caller_scope, Some(&nav)) {
+                job.request.reply(Err(fixture::stale()));
+                return;
+            }
             let result = result.map(|mut result| {
                 result.receipt.scope = job.context.scope;
                 result
@@ -112,7 +121,7 @@ fn serve(
             request.reply(Err(fe_runtime::qa_debug::QaFailure::denied()));
             continue;
         }
-        if Instant::now() >= request.op.deadline || request.reply_tx.is_closed() {
+        if !request.op.is_current() || request.reply_tx.is_closed() {
             request.reply(Err(fixture::stale()));
             continue;
         }

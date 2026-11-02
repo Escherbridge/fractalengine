@@ -3,7 +3,7 @@
 use crate::server::ApiState;
 use axum::{
     extract::State,
-    http::{HeaderValue, StatusCode},
+    http::{HeaderValue, StatusCode, Uri},
     response::{IntoResponse, Response},
     Extension, Json,
 };
@@ -70,7 +70,7 @@ async fn admitted(
         )
     })?;
     // Authentication and lifetime may have changed while native work was pending.
-    if Instant::now() >= command.deadline {
+    if !command.is_current() {
         return Err(refusal(
             StatusCode::CONFLICT,
             "portal_fixture_timeout",
@@ -103,7 +103,7 @@ async fn admitted(
     })?;
     if crate::auth::require_scope(claims, &result.receipt.scope).is_err()
         || !fe_runtime::qa_web::allows(&result.receipt.url)
-        || Instant::now() >= command.deadline
+        || !command.is_current()
     {
         return Err(refusal(
             StatusCode::CONFLICT,
@@ -125,7 +125,11 @@ fn refusal(status: StatusCode, code: &str, message: &str) -> Response {
 pub async fn observe(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
+    uri: Uri,
 ) -> Response {
+    if uri.query().is_some() {
+        return reject_arguments(&state, &claims).await;
+    }
     match run(&state, &claims, FixtureOp::Observe).await {
         Ok(result) => Json(json!({"ok":true,"data":result.receipt})).into_response(),
         Err(error) => error,
@@ -135,6 +139,7 @@ pub async fn observe(
 pub async fn action(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
+    uri: Uri,
     body: axum::body::Bytes,
 ) -> Response {
     if let Err(error) = crate::qa_debug::QA_GATE
@@ -142,6 +147,13 @@ pub async fn action(
         .await
     {
         return refusal(error.status(), "qa_gate_refused", &error.message());
+    }
+    if uri.query().is_some() {
+        return refusal(
+            StatusCode::BAD_REQUEST,
+            "invalid_fixture_operation",
+            "Fixture operations accept no query arguments",
+        );
     }
     let action: Action = match serde_json::from_slice(&body) {
         Ok(action) => action,
@@ -172,7 +184,12 @@ pub async fn action(
 pub async fn capture(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
+    uri: Uri,
+    body: axum::body::Bytes,
 ) -> Response {
+    if uri.query().is_some() || !body.is_empty() {
+        return reject_arguments(&state, &claims).await;
+    }
     match run(&state, &claims, FixtureOp::Capture).await {
         Ok(result) => {
             let Some(png) = result.png else {
@@ -182,8 +199,16 @@ pub async fn capture(
                     "Native PNG unavailable",
                 );
             };
+            if png.len() > fe_runtime::qa_portal::MAX_PNG_BYTES {
+                return refusal(
+                    StatusCode::CONFLICT,
+                    "portal_capture_invalid",
+                    "Native PNG exceeds its byte limit",
+                );
+            }
             let Some(metadata) = serde_json::to_string(&result.receipt)
                 .ok()
+                .filter(|text| text.len() <= 4096)
                 .and_then(|s| HeaderValue::from_str(&s).ok())
             else {
                 return refusal(
@@ -200,7 +225,24 @@ pub async fn capture(
                 .headers_mut()
                 .insert("x-fe-portal-fixture", metadata);
             response
+                .headers_mut()
+                .insert("cache-control", HeaderValue::from_static("no-store"));
+            response
         }
         Err(error) => error,
+    }
+}
+
+async fn reject_arguments(state: &ApiState, claims: &ApiClaims) -> Response {
+    match crate::qa_debug::QA_GATE
+        .admit(state.input.allowed, state, claims)
+        .await
+    {
+        Err(error) => refusal(error.status(), "qa_gate_refused", &error.message()),
+        Ok(()) => refusal(
+            StatusCode::BAD_REQUEST,
+            "invalid_fixture_operation",
+            "This fixed fixture endpoint accepts no additional arguments",
+        ),
     }
 }

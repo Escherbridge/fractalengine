@@ -80,6 +80,14 @@ mod tests {
         let (late, reply_rx) = BridgeRequest::<(), u8>::new("c2", "VERSE#v", ());
         drop(reply_rx);
         late.reply(1); // must not panic: the caller timed out
+        use crate::qa_portal::{FixtureCommand, FixtureOp, JOB_LIMIT};
+        let expired = FixtureCommand { operation: FixtureOp::Capture, deadline: std::time::Instant::now() - std::time::Duration::from_secs(1) };
+        assert!(!expired.is_current(), "callback work cannot outlive its request");
+        let unbounded = FixtureCommand { operation: FixtureOp::Observe, deadline: std::time::Instant::now() + JOB_LIMIT + std::time::Duration::from_secs(1) };
+        assert!(!unbounded.is_current(), "internal callers cannot extend the fixed job lifetime");
+        for operation in ["execute_script", "navigate", "capture_host_window"] {
+            assert!(serde_json::from_value::<FixtureOp>(serde_json::json!(operation)).is_err());
+        }
     }
 
     #[test]
