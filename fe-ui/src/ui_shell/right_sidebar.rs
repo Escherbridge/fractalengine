@@ -796,19 +796,24 @@ fn render_petal_render_distance_controls(
     let editable = local_role.can_edit();
     ui.add_space(4.0);
     ui.push_id(("petal-distance", petal_id), |ui| {
-    settings_row(ui, "This petal (shared)", |ui, label| {
-        let response = ui.add_enabled(
-            editable,
-            egui::DragValue::new(&mut draft.value)
-                .speed(1.0)
-                .range(0.0..=crate::settings::RENDER_DISTANCE_MAX)
-                .update_while_editing(false)
-                .suffix(" wu"),
-        ).labelled(ui, label)
-        .on_hover_text("Durable per-petal override; 0 inherits the global value. Saved after the interaction finishes.")
-        .on_disabled_hover_text("Editor access to this petal is required to change its shared render distance.");
-        draft.observe(ui, &response);
-    });
+        settings_row(ui, "This petal (shared)", |ui, label| {
+            let response = ui
+                .add_enabled(
+                    editable,
+                    egui::DragValue::new(&mut draft.value)
+                        .speed(1.0)
+                        .range(0.0..=crate::settings::RENDER_DISTANCE_MAX)
+                        .clamp_existing_to_range(false)
+                        .update_while_editing(false)
+                        .suffix(" wu"),
+                )
+                .labelled(ui, label)
+                .on_hover_text("Shared override. 0 inherits global. Saves when editing finishes.")
+                .on_disabled_hover_text(
+                    "Editor access is required to change this petal's shared distance.",
+                );
+            draft.observe(ui, &response);
+        });
     });
     if let Some(value) = draft.next_value().filter(|_| editable) {
         if db_tx
@@ -823,7 +828,7 @@ fn render_petal_render_distance_controls(
             draft.sent(ui.input(|input| input.time));
         } else {
             bevy::log::warn!(
-                "db_tx channel closed ? SetPetalRenderDistance dropped for {petal_id}"
+                "db_tx channel closed - SetPetalRenderDistance dropped for {petal_id}"
             );
             draft.failed();
         }
@@ -990,61 +995,74 @@ fn render_timeseries_fabric_controls(
         ts_settings.settings_for(verse_id),
     );
     ui.push_id(("timeseries-settings", verse_id), |ui| {
-    ui.label(egui::RichText::new("Mode").small().color(theme::TEXT_DIM));
-    for mode in [
-        fe_runtime::timeseries::TimeseriesMode::Mirror,
-        fe_runtime::timeseries::TimeseriesMode::Sharded,
-        fe_runtime::timeseries::TimeseriesMode::Balanced,
-    ] {
-        let selected = draft.value.mode == mode;
-        if ui
-            .radio(selected, tss::mode_label(mode))
-            .observed(ui)
-            .on_hover_text(mode_tooltip(mode))
-            .clicked()
-            && !selected
-        {
-            draft.value.mode = mode;
-            draft.finish();
-        }
-    }
-    ui.add_space(4.0);
-    settings_row(ui, "Durability (R)", |ui, label| {
-        let enabled = tss::replication_slider_enabled(draft.value.mode);
-        let response = ui.add_enabled(enabled,
-            egui::Slider::new(&mut draft.value.replication_factor, 1..=tss::MAX_REPLICATION_FACTOR)
-                .integer().update_while_editing(false).suffix(" peers/shard"),
-        ).labelled_by(label.id).named(ui, "Timeseries durability replication factor")
-        .on_hover_text("Replication factor for balanced mode. Saved after release or keyboard/text finalization; placement clamps it to reachable peers.")
-        .on_disabled_hover_text("R applies to balanced mode only (sharded = one host, mirror = all).");
-        draft.observe(ui, &response);
-    });
-    ui.add_space(4.0);
-    settings_row(ui, "Bucket width", |ui, label| {
-        let response = ui
-            .add(
-                egui::DragValue::new(&mut draft.value.bucket_width_ms)
-                    .speed(60_000.0)
-                    .range(1..=u64::MAX)
-                    .update_while_editing(false)
-                    .suffix(" ms"),
-            )
-            .labelled_by(label.id)
-            .named(ui, "Timeseries bucket width in milliseconds")
-            .on_hover_text(
-                "Shard time-bucket width in milliseconds; saved after the interaction finishes.",
-            );
-        draft.observe(ui, &response);
-    });
-    ui.horizontal_wrapped(|ui| {
-        for (ms, label) in tss::BUCKET_WIDTH_PRESETS {
-            let selected = draft.value.bucket_width_ms == ms;
-            if ui.selectable_label(selected, label).observed(ui).clicked() && !selected {
-                draft.value.bucket_width_ms = ms;
+        ui.label(egui::RichText::new("Mode").small().color(theme::TEXT_DIM));
+        for mode in [
+            fe_runtime::timeseries::TimeseriesMode::Mirror,
+            fe_runtime::timeseries::TimeseriesMode::Sharded,
+            fe_runtime::timeseries::TimeseriesMode::Balanced,
+        ] {
+            let selected = draft.value.mode == mode;
+            if ui
+                .radio(selected, tss::mode_label(mode))
+                .observed(ui)
+                .on_hover_text(mode_tooltip(mode))
+                .clicked()
+                && !selected
+            {
+                draft.value.mode = mode;
                 draft.finish();
             }
         }
-    });
+        ui.add_space(4.0);
+        settings_row(ui, "Durability (R)", |ui, label| {
+            let enabled = tss::replication_slider_enabled(draft.value.mode);
+            let response = ui
+                .add_enabled(
+                    enabled,
+                    egui::Slider::new(
+                        &mut draft.value.replication_factor,
+                        1..=tss::MAX_REPLICATION_FACTOR,
+                    )
+                    .integer()
+                    .clamping(egui::SliderClamping::Edits)
+                    .update_while_editing(false)
+                    .suffix(" peers/shard"),
+                )
+                .labelled_by(label.id)
+                .named(ui, "Timeseries durability replication factor")
+                .on_hover_text(
+                    "Saves when editing finishes. Actual replicas depend on reachable peers.",
+                )
+                .on_disabled_hover_text(
+                    "R applies to balanced mode only (sharded = one host, mirror = all).",
+                );
+            draft.observe(ui, &response);
+        });
+        ui.add_space(4.0);
+        settings_row(ui, "Bucket width", |ui, label| {
+            let response = ui
+                .add(
+                    egui::DragValue::new(&mut draft.value.bucket_width_ms)
+                        .speed(60_000.0)
+                        .range(1..=u64::MAX)
+                        .clamp_existing_to_range(false)
+                        .update_while_editing(false)
+                        .suffix(" ms"),
+                )
+                .labelled_by(label.id)
+                .named(ui, "Timeseries bucket width in milliseconds")
+                .on_hover_text("Time-bucket width in milliseconds. Saves when editing finishes.");
+            draft.observe(ui, &response);
+        });
+        ui.horizontal_wrapped(|ui| {
+            for (ms, label) in tss::BUCKET_WIDTH_PRESETS {
+                let selected = draft.value.bucket_width_ms == ms;
+                if ui.selectable_label(selected, label).observed(ui).clicked() && !selected {
+                    draft.value.bucket_width_ms = ms;
+                    draft.finish();
+                }
+            }
+        });
     });
     if let Some(value) = draft.next_value() {
         if db_tx
@@ -1059,7 +1077,7 @@ fn render_timeseries_fabric_controls(
             draft.sent(ui.input(|input| input.time));
         } else {
             bevy::log::warn!(
-                "db_tx channel closed ? timeseries settings change dropped for verse {verse_id}"
+                "db_tx channel closed - timeseries settings change dropped for verse {verse_id}"
             );
             draft.failed();
         }
@@ -1232,7 +1250,9 @@ fn render_groups_controls(
     ui.add_enabled_ui(editable, |ui| {
         let groups = visibility.groups();
         let push_registry = |ui_mgr: &mut UiManager, next: Vec<crate::visibility::Group>| {
-            if !editable { return; }
+            if !editable {
+                return;
+            }
             ui_mgr.push_action(UiAction::SetGroupRegistry {
                 petal_id: petal_id.to_string(),
                 groups: next,
@@ -1257,9 +1277,13 @@ fn render_groups_controls(
             let clicked = ui
                 .add_enabled(can_add, egui::Button::new("Add group"))
                 .observed(ui)
-                .on_disabled_hover_text(if groups.len() >= MAX_VISIBILITY_GROUPS {
-                    format!("This petal already has the maximum {MAX_VISIBILITY_GROUPS} Groups.")
-                } else { "Enter a Group name first.".to_owned() })
+                .on_disabled_hover_text(if !editable {
+                    "Editor access to this petal is required.".to_owned()
+                } else if groups.len() >= MAX_VISIBILITY_GROUPS {
+                    format!("Limit: {MAX_VISIBILITY_GROUPS} Groups per petal.")
+                } else {
+                    "Enter a Group name first.".to_owned()
+                })
                 .clicked();
             if editable && can_add && (clicked || submitted) {
                 push_registry(ui_mgr, group_ops::with_group_added(groups, &new_name));
@@ -1268,7 +1292,10 @@ fn render_groups_controls(
         });
         ui.data_mut(|d| d.insert_temp(new_name_id, new_name));
         if groups.len() >= MAX_VISIBILITY_GROUPS {
-            ui.label(format!("Group limit reached: {MAX_VISIBILITY_GROUPS} per petal. Remove a Group before adding another."));
+            ui.label(format!(
+                "Limit reached: {MAX_VISIBILITY_GROUPS} Groups per petal."
+            ));
+            ui.label("Remove a Group before adding another.");
         }
         ui.add_space(6.0);
 
@@ -1288,113 +1315,130 @@ fn render_groups_controls(
         let selected_groups = selected_node_id.map(|id| visibility.node_groups(id));
         for (index, group) in groups.iter().enumerate() {
             ui.push_id((petal_id, &group.id), |ui| {
-            ui.separator();
-            ui.horizontal(|ui| {
-                let mut visible = group.visible;
-                if ui
-                    .checkbox(&mut visible, "")
-                    .named(ui, format_args!("Show visibility group {}", group.name))
-                    .on_hover_text("Show or hide every member of this Group")
-                    .changed()
-                {
-                    push_registry(
-                        ui_mgr,
-                        group_ops::with_group_visible(groups, &group.id, visible),
-                    );
-                }
-                let buffer_id = egui::Id::new(("groups_section_rename", petal_id, group.id.as_str()));
-                let mut name: String = ui
-                    .data(|d| d.get_temp(buffer_id))
-                    .unwrap_or_else(|| group.name.clone());
-                let edit = ui
-                    .add(
-                        egui::TextEdit::singleline(&mut name)
-                            .char_limit(MAX_GROUP_NAME_CHARS)
-                            .desired_width(120.0),
-                    )
-                    .named(ui, format_args!("Rename visibility group {}", group.name));
-                let escaped = (edit.has_focus() || edit.lost_focus()) && ui.input(|input| input.key_pressed(egui::Key::Escape));
-                let submitted = edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                if escaped {
-                    edit.surrender_focus();
-                    ui.data_mut(|d| d.remove::<String>(buffer_id));
-                } else if submitted {
-                    let trimmed = name.trim();
-                    if !trimmed.is_empty() && trimmed != group.name {
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let mut visible = group.visible;
+                    if ui
+                        .checkbox(&mut visible, "")
+                        .named(ui, format_args!("Show visibility group {}", group.name))
+                        .on_hover_text("Show or hide every member of this Group")
+                        .changed()
+                    {
                         push_registry(
                             ui_mgr,
-                            group_ops::with_group_renamed(groups, &group.id, trimmed),
+                            group_ops::with_group_visible(groups, &group.id, visible),
                         );
                     }
-                    ui.data_mut(|d| d.remove::<String>(buffer_id));
-                } else if edit.has_focus() {
-                    ui.data_mut(|d| d.insert_temp(buffer_id, name));
-                } else {
-                    ui.data_mut(|d| d.remove::<String>(buffer_id));
-                }
-                if ui
-                    .add_enabled(index > 0, egui::Button::new("\u{25B2}").small())
-                    .named(ui, format_args!("Move visibility group {} up", group.name))
-                    .on_hover_text("Move up")
-                    .clicked()
-                {
-                    push_registry(ui_mgr, group_ops::with_group_moved(groups, index, -1));
-                }
-                if ui
-                    .add_enabled(
-                        index + 1 < groups.len(),
-                        egui::Button::new("\u{25BC}").small(),
-                    )
-                    .named(
+                    let buffer_id =
+                        egui::Id::new(("groups_section_rename", petal_id, group.id.as_str()));
+                    let mut name: String = ui
+                        .data(|d| d.get_temp(buffer_id))
+                        .unwrap_or_else(|| group.name.clone());
+                    let edit = ui
+                        .add(
+                            egui::TextEdit::singleline(&mut name)
+                                .char_limit(MAX_GROUP_NAME_CHARS)
+                                .desired_width(120.0),
+                        )
+                        .named(ui, format_args!("Rename visibility group {}", group.name));
+                    let escaped = (edit.has_focus() || edit.lost_focus())
+                        && ui.input(|input| input.key_pressed(egui::Key::Escape));
+                    let submitted =
+                        edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                    if escaped {
+                        edit.surrender_focus();
+                        ui.data_mut(|d| d.remove::<String>(buffer_id));
+                    } else if submitted {
+                        let trimmed = name.trim();
+                        if !trimmed.is_empty() && trimmed != group.name {
+                            push_registry(
+                                ui_mgr,
+                                group_ops::with_group_renamed(groups, &group.id, trimmed),
+                            );
+                        }
+                        ui.data_mut(|d| d.remove::<String>(buffer_id));
+                    } else if edit.has_focus() {
+                        ui.data_mut(|d| d.insert_temp(buffer_id, name));
+                    } else {
+                        ui.data_mut(|d| d.remove::<String>(buffer_id));
+                    }
+                    if ui
+                        .add_enabled(index > 0, egui::Button::new("\u{25B2}").small())
+                        .named(ui, format_args!("Move visibility group {} up", group.name))
+                        .on_hover_text("Move up")
+                        .clicked()
+                    {
+                        push_registry(ui_mgr, group_ops::with_group_moved(groups, index, -1));
+                    }
+                    if ui
+                        .add_enabled(
+                            index + 1 < groups.len(),
+                            egui::Button::new("\u{25BC}").small(),
+                        )
+                        .named(
+                            ui,
+                            format_args!("Move visibility group {} down", group.name),
+                        )
+                        .on_hover_text("Move down")
+                        .clicked()
+                    {
+                        push_registry(ui_mgr, group_ops::with_group_moved(groups, index, 1));
+                    }
+                    if crate::panels::widgets::confirm_button(
                         ui,
-                        format_args!("Move visibility group {} down", group.name),
-                    )
-                    .on_hover_text("Move down")
-                    .clicked()
-                {
-                    push_registry(ui_mgr, group_ops::with_group_moved(groups, index, 1));
-                }
-                if crate::panels::widgets::confirm_button(ui, ("delete-group", petal_id, &group.id), "Delete", "Confirm delete", format_args!("Delete visibility group {}", group.name)) {
-                    push_registry(ui_mgr, group_ops::with_group_removed(groups, &group.id));
-                }
-            });
+                        ("delete-group", petal_id, &group.id),
+                        "Delete",
+                        "Confirm delete",
+                        format_args!("Delete visibility group {}", group.name),
+                    ) {
+                        push_registry(ui_mgr, group_ops::with_group_removed(groups, &group.id));
+                    }
+                });
 
-            let members = visibility.group_member_count(&group.id);
-            ui.label(
-                egui::RichText::new(if members == 0 {
-                    EMPTY_GROUP_COPY.to_string()
-                } else {
-                    format!("{members} member{}", if members == 1 { "" } else { "s" })
-                })
-                .small()
-                .color(theme::TEXT_MUTED),
-            );
+                let members = visibility.group_member_count(&group.id);
+                ui.label(
+                    egui::RichText::new(if members == 0 {
+                        EMPTY_GROUP_COPY.to_string()
+                    } else {
+                        format!("{members} member{}", if members == 1 { "" } else { "s" })
+                    })
+                    .small()
+                    .color(theme::TEXT_MUTED),
+                );
 
-            if let (Some(node_id), Some(current)) = (selected_node_id, selected_groups) {
-                let member = current.iter().any(|id| id == &group.id);
-                let label = if member {
-                    "Remove from group"
-                } else {
-                    "Add selection to group"
-                };
-                let can_join = member || current.len() < MAX_VIEW_GROUPS;
-                if ui
-                    .add_enabled(can_join, egui::Button::new(label).small())
-                    .named(ui, format_args!("{label}: {}", group.name))
-                    .on_disabled_hover_text(format!("A node can belong to at most {MAX_VIEW_GROUPS} Groups."))
-                    .clicked()
-                {
-                    if let Some(next) = group_ops::membership_with(current, &group.id, !member).filter(|_| editable) {
-                        ui_mgr.push_action(UiAction::SetNodeGroups {
-                            node_id: node_id.to_string(),
-                            groups: next,
-                        });
+                if let (Some(node_id), Some(current)) = (selected_node_id, selected_groups) {
+                    let member = current.iter().any(|id| id == &group.id);
+                    let label = if member {
+                        "Remove from group"
+                    } else {
+                        "Add selection to group"
+                    };
+                    let can_join = member || current.len() < MAX_VIEW_GROUPS;
+                    if ui
+                        .add_enabled(can_join, egui::Button::new(label).small())
+                        .named(ui, format_args!("{label}: {}", group.name))
+                        .on_disabled_hover_text(if !editable {
+                            "Editor access to this petal is required.".to_owned()
+                        } else {
+                            format!("A node can belong to at most {MAX_VIEW_GROUPS} Groups.")
+                        })
+                        .clicked()
+                    {
+                        if let Some(next) = group_ops::membership_with(current, &group.id, !member)
+                            .filter(|_| editable)
+                        {
+                            ui_mgr.push_action(UiAction::SetNodeGroups {
+                                node_id: node_id.to_string(),
+                                groups: next,
+                            });
+                        }
                     }
                 }
-            }
             });
         }
-    }).response.on_disabled_hover_text("Editor access to this petal is required to change Groups.");
+    })
+    .response
+    .on_disabled_hover_text("Editor access to this petal is required to change Groups.");
 }
 
 /// Shared SidePanel chrome (header + rail + separator + scrollable, padded
@@ -1502,7 +1546,7 @@ mod tests {
     }
 
     #[test]
-    fn residency_readout_line_reports_every_counter() {
+    fn sidebar_groups_and_durable_settings_journey() {
         let readout = ResidencyReadout {
             nodes: 12,
             stamp_groups: 3,
@@ -1512,6 +1556,615 @@ mod tests {
         assert_eq!(
             readout.line(),
             "Resident: 12 nodes · 3 stamp groups · 4 tile bundles (1.5 MiB)"
+        );
+
+        let ctx = egui::Context::default();
+        let mut time = 0.0;
+        let editor = LocalUserRole {
+            role: Some(fe_database::RoleLevel::Editor),
+        };
+        let viewer = LocalUserRole {
+            role: Some(fe_database::RoleLevel::Viewer),
+        };
+        let unresolved = LocalUserRole::default();
+        let mut notices = UiManager::default();
+        let mut visibility = VisibilityState::default();
+        visibility.replace_groups(vec![crate::visibility::Group {
+            id: "g1".into(),
+            name: "Original".into(),
+            visible: true,
+        }]);
+        let group_frame = |role: &LocalUserRole,
+                           events: Vec<egui::Event>,
+                           time: &mut f64,
+                           visibility: &VisibilityState,
+                           notices: &mut UiManager| {
+            *time += 0.05;
+            super::super::layout_policy::begin_frame(&ctx, true);
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000.0, 800.0),
+                    )),
+                    time: Some(*time),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    super::super::layout_policy::begin_ui_pass(ctx);
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        render_groups_controls(ui, notices, visibility, "p", Some("node"), role);
+                    });
+                },
+            );
+            super::super::layout_policy::observations(&ctx)
+        };
+        let group_click = |role: &LocalUserRole,
+                           point: egui::Pos2,
+                           time: &mut f64,
+                           visibility: &VisibilityState,
+                           notices: &mut UiManager| {
+            let mut observed = group_frame(
+                role,
+                vec![egui::Event::PointerMoved(point)],
+                time,
+                visibility,
+                notices,
+            );
+            for pressed in [true, false] {
+                observed = group_frame(
+                    role,
+                    vec![egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                    time,
+                    visibility,
+                    notices,
+                );
+            }
+            observed
+        };
+        for role in [&viewer, &unresolved] {
+            let observed = group_frame(role, vec![], &mut time, &visibility, &mut notices);
+            for control in observed.controls {
+                group_click(
+                    role,
+                    control.rect.center(),
+                    &mut time,
+                    &visibility,
+                    &mut notices,
+                );
+            }
+            assert!(
+                notices.drain_actions().is_empty(),
+                "every Groups mutation must refuse Viewer/unresolved roles"
+            );
+            assert_eq!(visibility.groups()[0].name, "Original");
+        }
+        let key = |key, pressed, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers,
+        };
+        let select_all = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..Default::default()
+        };
+        let observed = group_frame(&editor, vec![], &mut time, &visibility, &mut notices);
+        group_click(
+            &editor,
+            observed.controls[3].rect.center(),
+            &mut time,
+            &visibility,
+            &mut notices,
+        );
+        group_frame(
+            &editor,
+            vec![
+                key(egui::Key::A, true, select_all),
+                egui::Event::Text("Discard me".into()),
+            ],
+            &mut time,
+            &visibility,
+            &mut notices,
+        );
+        group_frame(
+            &editor,
+            vec![key(egui::Key::Escape, true, egui::Modifiers::NONE)],
+            &mut time,
+            &visibility,
+            &mut notices,
+        );
+        assert!(notices.drain_actions().is_empty());
+        assert_eq!(visibility.groups()[0].name, "Original");
+        let observed = group_frame(&editor, vec![], &mut time, &visibility, &mut notices);
+        group_click(
+            &editor,
+            observed.controls[3].rect.center(),
+            &mut time,
+            &visibility,
+            &mut notices,
+        );
+        group_frame(
+            &editor,
+            vec![
+                key(egui::Key::A, true, select_all),
+                egui::Event::Text("Renamed".into()),
+            ],
+            &mut time,
+            &visibility,
+            &mut notices,
+        );
+        assert!(
+            notices.drain_actions().is_empty(),
+            "typing a rename cannot write"
+        );
+        group_frame(
+            &editor,
+            vec![key(egui::Key::Enter, true, egui::Modifiers::NONE)],
+            &mut time,
+            &visibility,
+            &mut notices,
+        );
+        let actions = notices.drain_actions();
+        assert!(
+            matches!(&actions[..], [UiAction::SetGroupRegistry { petal_id, groups }] if petal_id == "p" && groups[0].name == "Renamed")
+        );
+        let observed = group_frame(&editor, vec![], &mut time, &visibility, &mut notices);
+        group_click(
+            &editor,
+            observed.controls[6].rect.center(),
+            &mut time,
+            &visibility,
+            &mut notices,
+        );
+        assert!(notices.drain_actions().is_empty(), "first Delete only arms");
+        let armed = group_frame(&editor, vec![], &mut time, &visibility, &mut notices);
+        group_click(
+            &editor,
+            armed.controls[7].rect.center(),
+            &mut time,
+            &visibility,
+            &mut notices,
+        );
+        assert!(notices.drain_actions().is_empty());
+        assert_eq!(visibility.groups().len(), 1);
+        let observed = group_frame(&editor, vec![], &mut time, &visibility, &mut notices);
+        group_click(
+            &editor,
+            observed.controls[6].rect.center(),
+            &mut time,
+            &visibility,
+            &mut notices,
+        );
+        let armed = group_frame(&editor, vec![], &mut time, &visibility, &mut notices);
+        group_click(
+            &editor,
+            armed.controls[6].rect.center(),
+            &mut time,
+            &visibility,
+            &mut notices,
+        );
+        let actions = notices.drain_actions();
+        assert!(
+            matches!(&actions[..], [UiAction::SetGroupRegistry { petal_id, groups }] if petal_id == "p" && groups.is_empty())
+        );
+        visibility.replace_groups(
+            (0..MAX_VISIBILITY_GROUPS)
+                .map(|index| crate::visibility::Group {
+                    id: format!("g{index}"),
+                    name: format!("Group {index}"),
+                    visible: true,
+                })
+                .collect(),
+        );
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                egui::Id::new(("groups_section_new_name", "p")),
+                "Over cap".to_owned(),
+            )
+        });
+        let full = group_frame(&editor, vec![], &mut time, &visibility, &mut notices);
+        group_click(
+            &editor,
+            full.controls[1].rect.center(),
+            &mut time,
+            &visibility,
+            &mut notices,
+        );
+        assert!(notices.drain_actions().is_empty());
+        assert_eq!(visibility.groups().len(), MAX_VISIBILITY_GROUPS);
+
+        use crate::verse_manager::{FractalEntry, PetalEntry, VerseEntry};
+        use fe_runtime::timeseries::{TimeseriesMode, VerseTimeseriesSettings};
+        let hierarchy_for = |distance| {
+            VerseManager::from_verses(vec![VerseEntry {
+                id: "v".into(),
+                name: "Verse".into(),
+                fractals: vec![FractalEntry {
+                    id: "f".into(),
+                    name: "Fractal".into(),
+                    petals: vec![PetalEntry {
+                        id: "p".into(),
+                        name: "Petal".into(),
+                        render_distance: Some(distance),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }])
+        };
+        let mut nav = NavigationManager::default();
+        nav.navigate_to_petal_in_fractal("v", "Verse", "f", "Fractal", "p");
+        let settings_ctx = egui::Context::default();
+        let mut settings_time = 100.0;
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let mut override_state = crate::settings::PetalRenderOverride::default();
+        let mut ts = crate::timeseries_settings::TimeseriesSettingsState::default();
+        let mut persisted = VerseTimeseriesSettings {
+            mode: TimeseriesMode::Balanced,
+            replication_factor: 3,
+            bucket_width_ms: 3_600_000,
+        };
+        ts.set("v", persisted);
+        let settings_frame =
+            |timeseries: bool,
+             events: Vec<egui::Event>,
+             time: &mut f64,
+             tree: &VerseManager,
+             ts: &mut crate::timeseries_settings::TimeseriesSettingsState,
+             override_state: &mut crate::settings::PetalRenderOverride| {
+                *time += 0.05;
+                super::super::layout_policy::begin_frame(&settings_ctx, true);
+                let _ = settings_ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1000.0, 800.0),
+                        )),
+                        time: Some(*time),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        super::super::layout_policy::begin_ui_pass(ctx);
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            if timeseries {
+                                render_timeseries_fabric_controls(ui, ts, &nav, &tx);
+                            } else {
+                                render_petal_render_distance_controls(
+                                    ui,
+                                    tree,
+                                    &nav,
+                                    &editor,
+                                    override_state,
+                                    &tx,
+                                );
+                            }
+                        });
+                    },
+                );
+                super::super::layout_policy::observations(&settings_ctx)
+            };
+        let drag = |timeseries,
+                    at: egui::Pos2,
+                    time: &mut f64,
+                    tree: &VerseManager,
+                    ts: &mut crate::timeseries_settings::TimeseriesSettingsState,
+                    override_state: &mut crate::settings::PetalRenderOverride| {
+            settings_frame(
+                timeseries,
+                vec![egui::Event::PointerMoved(at)],
+                time,
+                tree,
+                ts,
+                override_state,
+            );
+            settings_frame(
+                timeseries,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                time,
+                tree,
+                ts,
+                override_state,
+            );
+            for delta in [16.0, 40.0] {
+                settings_frame(
+                    timeseries,
+                    vec![egui::Event::PointerMoved(at + egui::vec2(delta, 0.0))],
+                    time,
+                    tree,
+                    ts,
+                    override_state,
+                );
+                assert!(rx.is_empty(), "durable drag frames must not write");
+            }
+            settings_frame(
+                timeseries,
+                vec![egui::Event::PointerButton {
+                    pos: at + egui::vec2(40.0, 0.0),
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                time,
+                tree,
+                ts,
+                override_state,
+            )
+        };
+        let tree = hierarchy_for(10.0);
+        persisted.replication_factor = 100;
+        ts.set("v", persisted);
+        settings_frame(
+            true,
+            vec![],
+            &mut settings_time,
+            &tree,
+            &mut ts,
+            &mut override_state,
+        );
+        assert!(
+            rx.is_empty(),
+            "opening a control must not rewrite stored out-of-range values"
+        );
+        assert_eq!(ts.settings_for("v").replication_factor, 100);
+        persisted.replication_factor = 3;
+        ts.set("v", persisted);
+        let observed = settings_frame(
+            false,
+            vec![],
+            &mut settings_time,
+            &tree,
+            &mut ts,
+            &mut override_state,
+        );
+        drag(
+            false,
+            observed.controls[0].rect.center(),
+            &mut settings_time,
+            &tree,
+            &mut ts,
+            &mut override_state,
+        );
+        let DbCommand::SetPetalRenderDistance {
+            petal_id,
+            render_distance: Some(first),
+            auth: CallerAuth::Local,
+            correlation_id: None,
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("one local durable distance command is required")
+        };
+        assert_eq!(petal_id, "p");
+        assert!(first > 10.0 && rx.is_empty());
+        let observed = settings_frame(
+            false,
+            vec![],
+            &mut settings_time,
+            &tree,
+            &mut ts,
+            &mut override_state,
+        );
+        drag(
+            false,
+            observed.controls[0].rect.center(),
+            &mut settings_time,
+            &tree,
+            &mut ts,
+            &mut override_state,
+        );
+        assert!(
+            rx.is_empty(),
+            "a newer finalized draft waits for the first stored echo"
+        );
+        let readback = hierarchy_for(first);
+        settings_frame(
+            false,
+            vec![],
+            &mut settings_time,
+            &readback,
+            &mut ts,
+            &mut override_state,
+        );
+        let DbCommand::SetPetalRenderDistance {
+            render_distance: Some(second),
+            ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("the newer draft must follow the matching stored echo")
+        };
+        assert!(second > first && rx.is_empty());
+        settings_frame(
+            false,
+            vec![],
+            &mut settings_time,
+            &readback,
+            &mut ts,
+            &mut override_state,
+        );
+        assert!(
+            rx.is_empty(),
+            "a repeated older echo cannot trigger another write"
+        );
+        let confirmed = hierarchy_for(second);
+        settings_frame(
+            false,
+            vec![],
+            &mut settings_time,
+            &confirmed,
+            &mut ts,
+            &mut override_state,
+        );
+
+        let observed = settings_frame(
+            true,
+            vec![],
+            &mut settings_time,
+            &confirmed,
+            &mut ts,
+            &mut override_state,
+        );
+        let slider_at = egui::pos2(
+            observed.controls[3].rect.left() + 24.0,
+            observed.controls[3].rect.center().y,
+        );
+        drag(
+            true,
+            slider_at,
+            &mut settings_time,
+            &confirmed,
+            &mut ts,
+            &mut override_state,
+        );
+        let DbCommand::SetVerseTimeseriesSettings {
+            verse_id,
+            mode,
+            replication_factor,
+            bucket_width_ms,
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("R release must write one configuration")
+        };
+        assert_eq!(verse_id, "v");
+        assert_eq!(mode, "balanced");
+        assert!(rx.is_empty());
+        persisted.replication_factor = replication_factor;
+        persisted.bucket_width_ms = bucket_width_ms;
+        ts.set("v", persisted);
+        settings_frame(
+            true,
+            vec![],
+            &mut settings_time,
+            &confirmed,
+            &mut ts,
+            &mut override_state,
+        );
+        let arrow = if replication_factor < crate::timeseries_settings::MAX_REPLICATION_FACTOR {
+            egui::Key::ArrowRight
+        } else {
+            egui::Key::ArrowLeft
+        };
+        settings_frame(
+            true,
+            vec![key(arrow, true, egui::Modifiers::NONE)],
+            &mut settings_time,
+            &confirmed,
+            &mut ts,
+            &mut override_state,
+        );
+        assert!(rx.is_empty(), "holding a slider key must not write");
+        settings_frame(
+            true,
+            vec![key(arrow, false, egui::Modifiers::NONE)],
+            &mut settings_time,
+            &confirmed,
+            &mut ts,
+            &mut override_state,
+        );
+        let DbCommand::SetVerseTimeseriesSettings {
+            replication_factor, ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("slider keyboard release must finalize")
+        };
+        assert!(rx.is_empty());
+        persisted.replication_factor = replication_factor;
+        ts.set("v", persisted);
+        let observed = settings_frame(
+            true,
+            vec![],
+            &mut settings_time,
+            &confirmed,
+            &mut ts,
+            &mut override_state,
+        );
+        let bucket_at = observed.controls[4].rect.center();
+        for event in [
+            egui::Event::PointerMoved(bucket_at),
+            egui::Event::PointerButton {
+                pos: bucket_at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: bucket_at,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ] {
+            settings_frame(
+                true,
+                vec![event],
+                &mut settings_time,
+                &confirmed,
+                &mut ts,
+                &mut override_state,
+            );
+        }
+        settings_frame(
+            true,
+            vec![
+                key(egui::Key::A, true, select_all),
+                egui::Event::Text("7200000".into()),
+            ],
+            &mut settings_time,
+            &confirmed,
+            &mut ts,
+            &mut override_state,
+        );
+        assert!(rx.is_empty(), "partial numeric text must not write");
+        settings_frame(
+            true,
+            vec![key(egui::Key::Enter, true, egui::Modifiers::NONE)],
+            &mut settings_time,
+            &confirmed,
+            &mut ts,
+            &mut override_state,
+        );
+        let DbCommand::SetVerseTimeseriesSettings {
+            bucket_width_ms, ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("numeric Enter must finalize")
+        };
+        assert_eq!(bucket_width_ms, 7_200_000);
+        assert!(rx.is_empty());
+        settings_time += 31.0;
+        settings_frame(
+            true,
+            vec![],
+            &mut settings_time,
+            &confirmed,
+            &mut ts,
+            &mut override_state,
+        );
+        settings_frame(
+            true,
+            vec![],
+            &mut settings_time,
+            &confirmed,
+            &mut ts,
+            &mut override_state,
+        );
+        assert!(
+            rx.is_empty(),
+            "an unconfirmed timeout keeps the draft without automatic retries"
         );
     }
 

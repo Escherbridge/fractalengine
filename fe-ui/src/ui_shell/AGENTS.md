@@ -205,7 +205,8 @@ timeseries mirrors. Numeric widgets use native `update_while_editing(false)`
 so partial text is not persisted. Pointer drag release, numeric focus loss or
 Enter, and slider keyboard key release finalize one interaction. Mode and
 bucket preset clicks finalize immediately. Session overrides remain immediate
-and local. The old manifest precedence tooltip is replaced by the actual
+and local. Ranges constrain edits, preserving existing values on render so
+opening Settings cannot silently rewrite them. The old manifest precedence tooltip is replaced by the actual
 shared-petal/session precedence.
 
 Only one write per draft may await readback. A newer finalized edit remains
@@ -228,8 +229,13 @@ unsubmitted focus loss also discards. Delete uses the shared two-step helper;
 canceling it changes no registry or membership. Registry and membership caps
 have disabled reasons, and a full registry has visible limit copy.
 
-The existing sidebar render journey is extended rather than adding test
-functions. Source parsing is not execution or persistence evidence; integrated
+The existing residency counter test retains its original assertion and becomes
+`sidebar_groups_and_durable_settings_journey`: native egui frames cover denied
+roles, rename typing/Enter/Escape, Delete arm/cancel/confirm, the Group cap,
+durable drag/channel counts, older readback plus newer drafts, slider keyboard
+release, numeric Enter and unconfirmed timeout. Stored echoes are explicit model
+fixtures, not DB persistence proof. No test function is added. Source parsing
+is not execution or persistence evidence; integrated
 compilation, the final test sweep, and live role/interaction/readback checks
 remain required.
 
