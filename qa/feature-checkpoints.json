@@ -1,6 +1,6 @@
 {
   "type": "FeatureCheckpointCatalog",
-  "catalog_source_commit": "84ca20af4a47951cf9dbd22d457526a0840291e6",
+  "catalog_source_commit": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
   "catalog_source_fingerprint": null,
   "snapshot_date": "2026-11-02",
   "execution_evidence": false,
@@ -6886,6 +6886,221 @@
       "id": "F143.watch-writer-drain-refused",
       "family": "F143",
       "reachability": "A"
+    },
+    {
+      "id": "F019.scoped-initial-baseline",
+      "family": "F019",
+      "reachability": "Y"
+    },
+    {
+      "id": "F019.initial-replay",
+      "family": "F019",
+      "reachability": "Y"
+    },
+    {
+      "id": "F019.pending-duplicate-disabled",
+      "family": "F019",
+      "reachability": "Y"
+    },
+    {
+      "id": "F019.unknown-outcome-import-disabled",
+      "family": "F019",
+      "reachability": "Y"
+    },
+    {
+      "id": "F019.unknown-outcome-cancel",
+      "family": "F019",
+      "reachability": "Y"
+    },
+    {
+      "id": "F019.late-exact-completion",
+      "family": "F019",
+      "reachability": "Y"
+    },
+    {
+      "id": "F019.wrong-request-reply-ignored",
+      "family": "F019",
+      "reachability": "Y"
+    },
+    {
+      "id": "F019.wrong-scope-reply-ignored",
+      "family": "F019",
+      "reachability": "Y"
+    },
+    {
+      "id": "F019.api-birth-not-native-completion",
+      "family": "F019",
+      "reachability": "Y"
+    },
+    {
+      "id": "F019.full-queue-no-request-ownership",
+      "family": "F019",
+      "reachability": "A"
+    },
+    {
+      "id": "F019.disconnected-queue-refused",
+      "family": "F019",
+      "reachability": "A"
+    },
+    {
+      "id": "F019.legacy-error-not-completion",
+      "family": "F019",
+      "reachability": "A"
+    },
+    {
+      "id": "F001.back-late-hierarchy-no-autoenter",
+      "family": "F001",
+      "reachability": "Y"
+    },
+    {
+      "id": "F001.navigation-late-hydration-preserved",
+      "family": "F001",
+      "reachability": "Y"
+    },
+    {
+      "id": "F001.initial-startup-fallback",
+      "family": "F001",
+      "reachability": "Y"
+    },
+    {
+      "id": "F001.hydration-suppression-no-intent",
+      "family": "F001",
+      "reachability": "A"
+    },
+    {
+      "id": "F075.unchanged-native-map-promotion",
+      "family": "F075",
+      "reachability": "Y"
+    },
+    {
+      "id": "F075.native-map-none-null-distinct",
+      "family": "F075",
+      "reachability": "A"
+    },
+    {
+      "id": "F075.map-bounds-change-refused",
+      "family": "F075",
+      "reachability": "A"
+    },
+    {
+      "id": "F075.map-metadata-change-refused",
+      "family": "F075",
+      "reachability": "A"
+    },
+    {
+      "id": "F075.map-snapshot-byte-bound",
+      "family": "F075",
+      "reachability": "A"
+    },
+    {
+      "id": "F138.unchanged-native-map-apply",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.map-terrain-same-scale-refused",
+      "family": "F138",
+      "reachability": "A"
+    },
+    {
+      "id": "F138.map-bounds-change-refused",
+      "family": "F138",
+      "reachability": "A"
+    },
+    {
+      "id": "F138.map-metadata-change-refused",
+      "family": "F138",
+      "reachability": "A"
+    },
+    {
+      "id": "F089.gltf-input-targets",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F089.create-name-target",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F089.entity-name-target",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F089.node-options-input-targets",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F089.map-input-targets",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F089.requirements-id-target",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F089.native-window-header-targets",
+      "family": "F089",
+      "reachability": "Y"
+    },
+    {
+      "id": "F089.header-body-style-restoration",
+      "family": "F089",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.native-import-atomic-baseline",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.asset-placement-initial-trs",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.creation-precondition-rollback",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.stale-birth-no-replacement",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.full-queue-hydration-retained",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.second-link-intermediate-source",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.second-link-from-two-refused",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.second-link-extra-generation-refused",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.second-link-intervening-refusal",
+      "family": "F141",
+      "reachability": "A"
+    },
+    {
+      "id": "F141.second-link-unrelated-invalidation",
+      "family": "F141",
+      "reachability": "A"
     }
   ],
   "gold_tasks": {
@@ -6918,7 +7133,11 @@
       "F013.row-delete-confirm",
       "F013.target-identity",
       "F013.inactive-scope-disabled",
-      "F013.menu-reopen-disarms"
+      "F013.menu-reopen-disarms",
+      "F001.back-late-hierarchy-no-autoenter",
+      "F001.navigation-late-hydration-preserved",
+      "F001.initial-startup-fallback",
+      "F001.hydration-suppression-no-intent"
     ],
     "G2": [
       "F019.import-success",
@@ -6958,7 +7177,19 @@
       "F028.no-pivot-promise",
       "F140.bounded-stack",
       "F024.first-explicit-save-initializes",
-      "F024.initialization-preserves-object-history"
+      "F024.initialization-preserves-object-history",
+      "F019.scoped-initial-baseline",
+      "F019.initial-replay",
+      "F019.pending-duplicate-disabled",
+      "F019.unknown-outcome-import-disabled",
+      "F019.unknown-outcome-cancel",
+      "F019.late-exact-completion",
+      "F019.wrong-request-reply-ignored",
+      "F019.wrong-scope-reply-ignored",
+      "F019.api-birth-not-native-completion",
+      "F019.full-queue-no-request-ownership",
+      "F019.disconnected-queue-refused",
+      "F019.legacy-error-not-completion"
     ],
     "G3": [
       "F034.run-button",
@@ -7058,7 +7289,12 @@
       "F136.unsupported-keyword",
       "F136.descriptor-byte-limit",
       "F136.descriptor-depth-limit",
-      "F136.descriptor-rule-limit"
+      "F136.descriptor-rule-limit",
+      "F130.native-import-atomic-baseline",
+      "F130.asset-placement-initial-trs",
+      "F130.creation-precondition-rollback",
+      "F130.stale-birth-no-replacement",
+      "F130.full-queue-hydration-retained"
     ],
     "G4": [
       "F054.raise-square-UI",
@@ -7102,7 +7338,16 @@
       "F075.viewer-read-only-selection",
       "F075.confirmed-semantic-address",
       "F075.late-receipt-after-regrant-refused",
-      "F138.apply-current-selection"
+      "F138.apply-current-selection",
+      "F075.unchanged-native-map-promotion",
+      "F075.native-map-none-null-distinct",
+      "F075.map-bounds-change-refused",
+      "F075.map-metadata-change-refused",
+      "F075.map-snapshot-byte-bound",
+      "F138.unchanged-native-map-apply",
+      "F138.map-terrain-same-scale-refused",
+      "F138.map-bounds-change-refused",
+      "F138.map-metadata-change-refused"
     ],
     "G6": [
       "F079.maximize",
@@ -7113,7 +7358,15 @@
       "F086.reset-cancel",
       "F086.reset-confirm",
       "F086.isolated-data-gone",
-      "F086.manual-reopen"
+      "F086.manual-reopen",
+      "F089.gltf-input-targets",
+      "F089.create-name-target",
+      "F089.entity-name-target",
+      "F089.node-options-input-targets",
+      "F089.map-input-targets",
+      "F089.requirements-id-target",
+      "F089.native-window-header-targets",
+      "F089.header-body-style-restoration"
     ],
     "G7": [
       "F098.generate",
@@ -7153,7 +7406,12 @@
       "F143.validator-late-append",
       "F143.validator-missing-lifecycle",
       "F143.watch-nonzero-exit-refused",
-      "F143.watch-writer-drain-refused"
+      "F143.watch-writer-drain-refused",
+      "F141.second-link-intermediate-source",
+      "F141.second-link-from-two-refused",
+      "F141.second-link-extra-generation-refused",
+      "F141.second-link-intervening-refusal",
+      "F141.second-link-unrelated-invalidation"
     ],
     "G10": [
       "F117.same-root-restart",
@@ -7181,11 +7439,14 @@
       "region": "R1",
       "journey": "J01",
       "entry": "Verse picker/tree/card enter/back; empty browser; long-name scroll",
-      "expected": "navigation IDs/names and visible cards agree",
+      "expected": "Navigation IDs/names and visible cards agree; explicit Back/navigation survives delayed hierarchy hydration, while the one initial startup fallback remains bounded",
       "requires_persistence": false,
       "sources": [
         "fe-ui/src/panels/sidebar.rs",
-        "fe-ui/src/viewport.rs"
+        "fe-ui/src/viewport.rs",
+        "fe-ui/src/navigation_manager.rs",
+        "fe-ui/src/verse_manager/db_results/hierarchy.rs",
+        "fe-ui/src/verse_manager/db_results/mod.rs"
       ]
     },
     {
@@ -7321,7 +7582,7 @@
       "id": "F013",
       "region": "R1",
       "journey": "J01",
-      "entry": "Each hierarchy row menu: Rename\u2026 / Options\u2026 / Copy ID / Delete\u2026; current/inactive exact scope",
+      "entry": "Each hierarchy row menu: Rename… / Options… / Copy ID / Delete…; current/inactive exact scope",
       "expected": "Clicked entry ID/ancestry owns the dialog, confirmations and role gate; Copy ID uses A8-safe output; selection does not substitute another target",
       "requires_persistence": false,
       "sources": [
@@ -7393,10 +7654,15 @@
       "region": "R2",
       "journey": "J02",
       "entry": "GLTF path/Browse/name/Import, valid/invalid/cancel",
-      "expected": "renderable one-node import and scoped run-local answer",
+      "expected": "One renderable committed import with exactly one scoped initial baseline and NodeCreated intention; exact native request/scope owns completion, unknown outcomes never authorize automatic resubmission",
       "requires_persistence": true,
       "sources": [
-        "fe-ui/src/dialogs/gltf_import.rs"
+        "fe-ui/src/dialogs/gltf_import.rs",
+        "fe-runtime/src/messages.rs",
+        "fe-ui/src/actions/mod.rs",
+        "fe-ui/src/verse_manager/db_results/mod.rs",
+        "fe-database/src/handlers/crud.rs",
+        "fe-database/src/handlers/object_creation.rs"
       ]
     },
     {
@@ -7404,10 +7670,12 @@
       "region": "R2",
       "journey": "J02",
       "entry": "Ground Add Empty Node / Add GLTF Model",
-      "expected": "correct world placement and parent",
+      "expected": "Correct clicked world placement and parent, complete committed initial TRS/properties/version before reload; no identity-default import materialization",
       "requires_persistence": true,
       "sources": [
-        "fe-ui/src/dialogs/context_menu.rs"
+        "fe-ui/src/dialogs/context_menu.rs",
+        "fe-ui/src/verse_manager/db_results/mod.rs",
+        "fe-database/src/handlers/object_creation.rs"
       ]
     },
     {
@@ -8040,7 +8308,7 @@
       "region": "R5",
       "journey": "J05",
       "entry": "Actual lower-tier viewport/context stamp pick, or Options one-based Stamp number / Select the rendered stamp number; checked lazy promotion and bound-node inspection",
-      "expected": "One live entity/source/generation capture across all producers; preserve F10 path-tier priority, Viewer never promotes, Editor promotion is atomically fenced and only its matching receipt binds the same entity to the durable address; stale/late/role-lost work cannot select",
+      "expected": "One live entity/source/generation capture across all producers; preserve F10 path-tier priority, Viewer never promotes, Editor promotion is atomically fenced and only its matching receipt binds the same entity to the durable address; stale/late/role-lost work cannot select; unchanged native Petal Polygon/NONE/optional metadata passes, any changed complete map row refuses atomically",
       "requires_persistence": true,
       "sources": [
         "fe-ui/src/panels/tool_panel.rs",
@@ -8053,7 +8321,8 @@
         "fe-ui/src/verse_manager/path_asset_materialize.rs",
         "fe-database/src/handlers/stamp_promotion.rs",
         "fe-runtime/src/messages.rs",
-        "fe-sdk/src/path_asset.rs"
+        "fe-sdk/src/path_asset.rs",
+        "fe-database/src/handlers/preconditions.rs"
       ]
     },
     {
@@ -8222,12 +8491,18 @@
       "region": "R6",
       "journey": "J06",
       "entry": "Every panel/modal at three sizes, long names/paths, UI scale1.25",
-      "expected": "real hit/clip/text provenance, >=45% viewport, unknowns counted",
+      "expected": "real hit/clip/text provenance, >=45% viewport, unknowns counted; actual native text and floating-window header targets meet shared minimum without changing body/popup sizing or lifecycle",
       "requires_persistence": false,
       "sources": [
         "fe-ui/src/ui_shell/layout_policy.rs",
         "fe-ui/src/viewport.rs",
-        "fe-ui/src/panels/mod.rs"
+        "fe-ui/src/panels/mod.rs",
+        "fe-ui/src/dialogs/gltf_import.rs",
+        "fe-ui/src/dialogs/create_entity.rs",
+        "fe-ui/src/dialogs/entity_settings.rs",
+        "fe-ui/src/dialogs/node_options.rs",
+        "fe-ui/src/dialogs/hexon_manager.rs",
+        "fe-ui/src/dialogs/petal_manifest.rs"
       ]
     },
     {
@@ -8315,7 +8590,7 @@
       "id": "F097",
       "region": "R7",
       "journey": "J07",
-      "entry": "Access Role to assign for <did> / Save role\u2026 / Confirm role change / revoke confirmation / Refresh entity access",
+      "entry": "Access Role to assign for <did> / Save role… / Confirm role change / revoke confirmation / Refresh entity access",
       "expected": "Effective inherited role and own-grant revocation are distinct; exact loaded request identity disarms old confirms; stored authority/owner refusal/timeout retained",
       "requires_persistence": false,
       "sources": [
@@ -8698,12 +8973,15 @@
       "region": "R3",
       "journey": "J03",
       "entry": "API: create object, commit mutation, history pages and state at explicit object version",
-      "expected": "Committed baseline and exact readbacks; property set/delete/full transform; paginated per-object history; old replay leaves current state unchanged",
+      "expected": "Committed baseline and exact readbacks; property set/delete/full transform; paginated per-object history; old replay leaves current state unchanged; ordinary native import and existing-asset placement share scoped atomic creation and complete initial committed materialization",
       "requires_persistence": true,
       "sources": [
         "fe-api/src/node_history.rs",
         "fe-runtime/src/node_history.rs",
-        "fe-database/src/handlers/node_history.rs"
+        "fe-database/src/handlers/node_history.rs",
+        "fe-database/src/handlers/object_creation.rs",
+        "fe-database/src/handlers/crud.rs",
+        "fe-ui/src/verse_manager/db_results/mod.rs"
       ]
     },
     {
@@ -8737,7 +9015,7 @@
       "id": "F133",
       "region": "R1",
       "journey": "J01",
-      "entry": "Row Appearance\u2026 for each Verse/Fractal/Petal/Node: wheel, HSV, #RRGGBB, icon, Save/Cancel/Reset",
+      "entry": "Row Appearance… for each Verse/Fractal/Petal/Node: wheel, HSV, #RRGGBB, icon, Save/Cancel/Reset",
       "expected": "Per-entry kind+stable-ID local preference; selected/ancestor/visibility state remains distinct; Save persists locally, Cancel/Escape/deleted target and invalid hex do not write",
       "requires_persistence": true,
       "sources": [
@@ -8803,7 +9081,7 @@
       "region": "R5",
       "journey": "J05",
       "entry": "Selected stamp Options XYZ scale / yaw / slide meters / Apply / Reload stored values",
-      "expected": "One checked atomic batch against captured full baseline; curved path sampler, world-scale conversion once, untouched quaternion/nonuniform axes preserved; invalid legacy draft never silently repaired",
+      "expected": "One checked atomic batch against captured full baseline; curved path sampler, world-scale conversion once, untouched quaternion/nonuniform axes preserved; invalid legacy draft never silently repaired; shared complete typed native Petal capture/use fence accepts unchanged maps and refuses changed geometry/terrain/metadata",
       "requires_persistence": true,
       "sources": [
         "fe-ui/src/panels/tool_panel.rs",
@@ -8811,7 +9089,8 @@
         "fe-ui/src/path_ops.rs",
         "fe-ui/src/node_manager/stamp_selection.rs",
         "fe-ui/src/actions/asset.rs",
-        "fe-database/src/handlers/stamp_overrides.rs"
+        "fe-database/src/handlers/stamp_overrides.rs",
+        "fe-database/src/handlers/preconditions.rs"
       ]
     },
     {
@@ -8848,7 +9127,7 @@
       "region": "R9",
       "journey": "J09",
       "entry": "Fixed owned native Portal fixture observe / second-link / refused-third-link / CapturePreview and confined output client",
-      "expected": "Actual fixed DOM and native pixels match exact popup/page/scope/helper lifetime; default-off Owner gate and current credentials rechecked at completion; exclusive confined image+receipt output, no arbitrary browser automation",
+      "expected": "Actual fixed DOM and native pixels match exact popup/page/scope/helper lifetime; default-off Owner gate and current credentials rechecked at completion; exclusive confined image+receipt output, no arbitrary browser automation; exact admitted page-one to page-two transition tolerates only its single-generation intermediate old Source and still requires fresh ready page-two DOM",
       "requires_persistence": false,
       "sources": [
         "fe-api/src/qa_portal.rs",
@@ -8856,7 +9135,9 @@
         "fractalengine/src/qa_portal_bridge.rs",
         "fe-webview/src/backends/fixture_surface.rs",
         "fe-webview/src/backends/fixture_stream.rs",
-        "tools/qa/fe.py"
+        "tools/qa/fe.py",
+        "fe-webview/src/backends/tauri.rs",
+        "fe-webview/src/backends/qa_navigation.rs"
       ]
     },
     {
@@ -8895,23 +9176,23 @@
   "checkpoint_notes": {
     "F013.row-rename": {
       "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
-      "reason": "Shared tree_entry row menus are integrated; Settings route is now labelled Options\u2026 and retains this stable semantic ID."
+      "reason": "Shared tree_entry row menus are integrated; Settings route is now labelled Options… and retains this stable semantic ID."
     },
     "F013.row-settings": {
       "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
-      "reason": "Shared tree_entry row menus are integrated; Settings route is now labelled Options\u2026 and retains this stable semantic ID."
+      "reason": "Shared tree_entry row menus are integrated; Settings route is now labelled Options… and retains this stable semantic ID."
     },
     "F013.row-copy-id": {
       "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
-      "reason": "Shared tree_entry row menus are integrated; Settings route is now labelled Options\u2026 and retains this stable semantic ID."
+      "reason": "Shared tree_entry row menus are integrated; Settings route is now labelled Options… and retains this stable semantic ID."
     },
     "F013.row-delete-cancel": {
       "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
-      "reason": "Shared tree_entry row menus are integrated; Settings route is now labelled Options\u2026 and retains this stable semantic ID."
+      "reason": "Shared tree_entry row menus are integrated; Settings route is now labelled Options… and retains this stable semantic ID."
     },
     "F013.row-delete-confirm": {
       "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
-      "reason": "Shared tree_entry row menus are integrated; Settings route is now labelled Options\u2026 and retains this stable semantic ID."
+      "reason": "Shared tree_entry row menus are integrated; Settings route is now labelled Options… and retains this stable semantic ID."
     },
     "F024.save-config-url": {
       "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
@@ -9056,13 +9337,260 @@
     "F127.atlas-model": {
       "audited_snapshot": "d7fadfa2e3ba706dbc16a42a629faac5c63f7ee9",
       "reason": "Atlas model/room/tag helper has no established production opener. Shared visibility radios used by Entity Options belong to F094; this helper presence is not another GUI route."
+    },
+    "F019.scoped-initial-baseline": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Actual fresh native import yields exactly one scoped created fact/version1 and one NodeCreated intention; initial actor, ancestry, asset and full state match the committed node. Old unavailable histories remain unchanged.",
+      "execution_status": "NOT_RUN"
+    },
+    "F019.initial-replay": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Read/replay the fresh native import at version1 and compare actual asset, properties, full position/rotation/scale before any edit; replay does not alter current state.",
+      "execution_status": "NOT_RUN"
+    },
+    "F019.pending-duplicate-disabled": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Actual pending native import disables another Import; no repeated command or false completion is emitted.",
+      "execution_status": "NOT_RUN"
+    },
+    "F019.unknown-outcome-import-disabled": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "After the real30-second deadline, show unknown outcome and retain its exact owner; Import remains disabled and no automatic resend occurs.",
+      "execution_status": "NOT_RUN"
+    },
+    "F019.unknown-outcome-cancel": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Cancel/dismiss the actual unknown-outcome dialog; an old result cannot close a subsequently opened request or claim its success.",
+      "execution_status": "NOT_RUN"
+    },
+    "F019.late-exact-completion": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "A late matching native result resolves its still-owned unknown outcome without another import; commit and selection are checked independently.",
+      "execution_status": "NOT_RUN"
+    },
+    "F019.wrong-request-reply-ignored": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Using a controlled real delayed reply, old nonce success/failure cannot complete the current native request; its pending state and draft remain owned.",
+      "execution_status": "NOT_RUN"
+    },
+    "F019.wrong-scope-reply-ignored": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Navigate/reopen while native work is pending; a reply for another captured Verse/Fractal/Petal cannot complete or select the replacement scope.",
+      "execution_status": "NOT_RUN"
+    },
+    "F019.api-birth-not-native-completion": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "While a native dialog owns a pending request, a real correlated API placement receipt cannot close or complete that dialog; its materialization remains separately authoritative.",
+      "execution_status": "NOT_RUN"
+    },
+    "F019.full-queue-no-request-ownership": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Exercise the production bounded admission path with a genuinely full command channel; try_send refuses promptly, preserves the draft and starts no request owner or import.",
+      "execution_status": "NOT_RUN"
+    },
+    "F019.disconnected-queue-refused": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "The production disconnected command channel produces a visible static refusal and no request owner; it cannot block or report import success.",
+      "execution_status": "NOT_RUN"
+    },
+    "F019.legacy-error-not-completion": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "An uncorrelated legacy/import-like error cannot finish the typed native request; no message-prefix authority.",
+      "execution_status": "NOT_RUN"
+    },
+    "F001.back-late-hierarchy-no-autoenter": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "After actual Back to an empty cursor, delayed hierarchy loading cannot select the first Verse or restore the old scene.",
+      "execution_status": "NOT_RUN"
+    },
+    "F001.navigation-late-hydration-preserved": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Receipt-triggered hierarchy hydration preserves the explicit current cursor and never invents an initial fallback selection.",
+      "execution_status": "NOT_RUN"
+    },
+    "F001.initial-startup-fallback": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "On an untouched fresh startup cursor, the first eligible hierarchy still performs its existing bounded initial selection; suppression must not remove this ordinary behavior.",
+      "execution_status": "NOT_RUN"
+    },
+    "F001.hydration-suppression-no-intent": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Read-only startup-selection suppression changes neither cursor identity nor an explicit navigation intent; use the production manager boundary.",
+      "execution_status": "NOT_RUN"
+    },
+    "F075.unchanged-native-map-promotion": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Actual GUI selection promotes on unchanged native Polygon bounds, absent terrain/default metadata and optional fields; selection binds only its matching receipt and creates no duplicate operation.",
+      "execution_status": "NOT_RUN"
+    },
+    "F075.native-map-none-null-distinct": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Run the production map capture/use path with native NONE versus explicit NULL/typed geometry; full-row native encoding preserves these distinctions and unchanged rows pass.",
+      "execution_status": "NOT_RUN"
+    },
+    "F075.map-bounds-change-refused": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Change native Petal bounds between real promotion preparation and commit; refuse with no new node/fact/intention.",
+      "execution_status": "NOT_RUN"
+    },
+    "F075.map-metadata-change-refused": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Change an optional Petal field between promotion capture/use; the complete-row fence refuses atomically.",
+      "execution_status": "NOT_RUN"
+    },
+    "F075.map-snapshot-byte-bound": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "A complete native Petal snapshot exceeding4MiB refuses before promotion or Apply effects; no truncated or partial snapshot is accepted.",
+      "execution_status": "NOT_RUN"
+    },
+    "F138.unchanged-native-map-apply": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "After actual promotion, one native Apply on the same unchanged native Polygon/NONE/optional map row commits the entire override batch once; exact readback and unrelated descriptor remain correct.",
+      "execution_status": "NOT_RUN"
+    },
+    "F138.map-terrain-same-scale-refused": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Change actual terrain between Apply preparation and use while world_scale remains1; full-row fence refuses without override/history changes.",
+      "execution_status": "NOT_RUN"
+    },
+    "F138.map-bounds-change-refused": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Change native bounds between Apply preparation and use; full-row fence refuses without override/history changes.",
+      "execution_status": "NOT_RUN"
+    },
+    "F138.map-metadata-change-refused": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Change optional Petal metadata between Apply preparation and use; full-row fence refuses without override/history changes.",
+      "execution_status": "NOT_RUN"
+    },
+    "F089.gltf-input-targets": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "At each required size/scale measure actual File Path and Display Name inputs: native response and current clipped hit rectangles meet the shared24-point/20-physical-pixel minimum; retain actual images and unknowns, not label-only evidence.",
+      "execution_status": "NOT_RUN"
+    },
+    "F089.create-name-target": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "At each required size/scale measure Create dialog name input: native response and current clipped hit rectangles meet the shared24-point/20-physical-pixel minimum; retain actual images and unknowns, not label-only evidence.",
+      "execution_status": "NOT_RUN"
+    },
+    "F089.entity-name-target": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "At each required size/scale measure Entity Options name input: native response and current clipped hit rectangles meet the shared24-point/20-physical-pixel minimum; retain actual images and unknowns, not label-only evidence.",
+      "execution_status": "NOT_RUN"
+    },
+    "F089.node-options-input-targets": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "At each required size/scale measure Node Options name and URL inputs: native response and current clipped hit rectangles meet the shared24-point/20-physical-pixel minimum; retain actual images and unknowns, not label-only evidence.",
+      "execution_status": "NOT_RUN"
+    },
+    "F089.map-input-targets": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "At each required size/scale measure map search/filter and registry URI inputs: native response and current clipped hit rectangles meet the shared24-point/20-physical-pixel minimum; retain actual images and unknowns, not label-only evidence.",
+      "execution_status": "NOT_RUN"
+    },
+    "F089.requirements-id-target": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "At each required size/scale measure manual requirements Hexon ID input: native response and current clipped hit rectangles meet the shared24-point/20-physical-pixel minimum; retain actual images and unknowns, not label-only evidence.",
+      "execution_status": "NOT_RUN"
+    },
+    "F089.native-window-header-targets": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "For every reachable show_with_targets dialog plus Data/Appearance, measure actual native Close/collapse targets at all required sizes/scales and execute close/pending/hidden lifecycle normally; no overlay or second Close substitutes.",
+      "execution_status": "NOT_RUN"
+    },
+    "F089.header-body-style-restoration": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Exercise production WindowTargets nested and no-body paths: Context style restores before body, ordinary body/popup sizing remains normal, intentional body style changes survive, and RAII restores when no body runs.",
+      "execution_status": "NOT_RUN"
+    },
+    "F130.native-import-atomic-baseline": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Invoke actual native import handler in the controlled real store: one scoped baseline and intention match Asset/Node/actor/TRS; foreign read and Viewer-before-blob-storage refuse. Not a GUI import pass.",
+      "execution_status": "NOT_RUN"
+    },
+    "F130.asset-placement-initial-trs": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Actual MCP/REST asset placement with nonidentity XYZ/full quaternion/nonuniform scale matches stored row, version1 replay and initial live ECS before reload; compare again after residency/restart. Never substitute identity defaults.",
+      "execution_status": "NOT_RUN"
+    },
+    "F130.creation-precondition-rollback": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Change actual role/ancestry/schema/asset identity or induce journal failure between ordinary creation preparation/commit; Asset/Node/fact/intention roll back together. Prewritten blob storage is not transactional and may leave an unreferenced blob.",
+      "execution_status": "NOT_RUN"
+    },
+    "F130.stale-birth-no-replacement": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Actual production materialization rejects duplicate/older/mismatched birth receipts without replacing a newer node/entity/version; missing legacy materialization requests authoritative hydration.",
+      "execution_status": "NOT_RUN"
+    },
+    "F130.full-queue-hydration-retained": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "A genuinely full bounded queue retains/coalesces the needed hierarchy read; retry on later frames after capacity returns, with no blocking or hydration loss. Explicit Back remains respected.",
+      "execution_status": "NOT_RUN"
+    },
+    "F141.second-link-intermediate-source": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Actual second-link from pageone may wait at old Source only after exact native admission of pagetwo with one generation increment and no refusal; success additionally requires actual pagetwo Source plus fresh ready fixed DOM observation.",
+      "execution_status": "NOT_RUN"
+    },
+    "F141.second-link-from-two-refused": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Start second-link verification on actual pagetwo; refuse before executing the script, never accept an old ready/self-linked document as a fresh navigation.",
+      "execution_status": "NOT_RUN"
+    },
+    "F141.second-link-extra-generation-refused": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "While actual second-link is pending, induce an extra navigation generation; it must terminate stale rather than reuse admitted destination or old DOM.",
+      "execution_status": "NOT_RUN"
+    },
+    "F141.second-link-intervening-refusal": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "An intervening native navigation refusal invalidates pending second-link verification even if the final Source later looks allowed; no successful receipt.",
+      "execution_status": "NOT_RUN"
+    },
+    "F141.second-link-unrelated-invalidation": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Geometry/history/close/cancel invalidation clears retained admitted destination; pending second-link cannot borrow it. Actual native contexts required, not simulated page flags.",
+      "execution_status": "NOT_RUN"
+    },
+    "F019.import-success": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Requires the fresh scoped initial-baseline/replay contract as well as visible geometry; old unavailable-scope entries or duplicate dispatcher facts cannot pass.",
+      "execution_status": "NOT_RUN"
+    },
+    "F020.ground-gltf-node": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Actual clicked-world import must materialize complete committed TRS/properties/version immediately through the manager path, before hierarchy reload.",
+      "execution_status": "NOT_RUN"
+    },
+    "F116.mcp-place-asset": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Use nonidentity placement and compare committed initial replay and immediate live materialization, then residency/restart; API success alone does not cover GUI F019/F020.",
+      "execution_status": "NOT_RUN"
+    },
+    "F116.rest-post-api-v1-petals-petal-id-objects": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Use nonidentity placement and compare committed initial replay and immediate live materialization, then residency/restart; API success alone does not cover GUI F019/F020.",
+      "execution_status": "NOT_RUN"
+    },
+    "F075.petal-map-change-refused": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Real promotion capture/use changes terrain while preserving world_scale=1, then bounds and optional metadata independently; refuse atomically. Unchanged native rows must also pass their separate positive checkpoint.",
+      "execution_status": "NOT_RUN"
+    },
+    "F141.second-link": {
+      "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+      "required_assertion": "Only pageone-to-pagetwo exact admitted single-generation transition may tolerate intermediate old Source. Actual pagetwo Source and fresh matching ready DOM remain mandatory; no transient-state success.",
+      "execution_status": "NOT_RUN"
     }
   },
-  "audited_source_commit": "84ca20af4a47951cf9dbd22d457526a0840291e6",
+  "audited_source_commit": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
   "pending_source_reconciliation": [
     "P2P QA-0050 repair remains isolated and is not part of this audited source. Actual two-root invite/join/role/replica and P2P transfer acceptance remains required; no completed collaboration is inferred."
   ],
   "source_acceptance_obligations": [
-    "F143.watch-nonzero-exit-refused and F143.watch-writer-drain-refused require actual root-owned native refusal experiments. Synthetic F143 validator cases provide zero application coverage and cannot replace those outcomes or actual F080.confirm-close GUI/lifecycle/native-exit proof."
+    "F143.watch-nonzero-exit-refused and F143.watch-writer-drain-refused require actual root-owned native refusal experiments. Synthetic F143 validator cases provide zero application coverage and cannot replace those outcomes or actual F080.confirm-close GUI/lifecycle/native-exit proof.",
+    "Stage20 reconciliation adds native creation/baseline/materialization, request-owner/unknown/fullqueue, startup-hydration, native map fences, native form/header and expected page navigation variants. Every new checkpoint remains NOT_RUN; source assertions and QA18/19 do not execute these repairs.",
+    "Y cases require actual current-stage GUI actions/state/images/readback. Controlled production channel/store/COM journeys may cover their A cases only; synthetic schema/receipt packets cannot substitute for native GUI or browser results."
   ]
 }

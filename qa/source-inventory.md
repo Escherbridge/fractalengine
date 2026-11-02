@@ -1,7 +1,7 @@
 ---
 type: FeatureSourceInventory
 date: 2026-11-02
-source_commit: 84ca20af4a47951cf9dbd22d457526a0840291e6
+source_commit: 44ad28da5ac33120c988bd26a8e8a79362dd15d4
 execution_status: NOT_RUN
 ---
 
@@ -11,7 +11,7 @@ This is an audited source census, not execution evidence. The final staged finge
 
 Lexical producer candidates, excluding literal cfg(test) items while preserving line numbers. Helpers/named wrappers can repeat one control; conditional production openers require manual reconciliation. Not a Rust parser, live-tree census or proof of execution.
 
-Counts: 84 UiAction variants; 684 lexical control/naming candidates; 49 MCP tools; 103 REST method/path cases. Full candidate lines and normalized-source hashes are retained in catalog-source-census.json.
+Counts: 84 UiAction variants; 678 lexical control/naming candidates; 49 MCP tools; 103 REST method/path cases. Full candidate lines and normalized-source hashes are retained in catalog-source-census.json.
 
 Candidates map to owning capability families; this is routing responsibility, not an automatic assertion that every branch is covered. A shared helper is not an extra control. Every current mandatory checkpoint still requires current-pass evidence and independent assertions.
 
@@ -25,7 +25,7 @@ Candidates map to owning capability families; this is routing responsibility, no
 | `PortalGoForward` | F025 | `fe-ui/src/panels/portal_toolbar.rs:28` |  |
 | `PortalReload` | F025 | `fe-ui/src/panels/portal_toolbar.rs:29` |  |
 | `PortalOpenExternal` | F025 | `fe-ui/src/panels/portal_toolbar.rs:52` |  |
-| `SaveNodeUrl` | F024 | `fe-ui/src/dialogs/node_options.rs:138`, `fe-ui/src/panels/inspector.rs:701` |  |
+| `SaveNodeUrl` | F024 | `fe-ui/src/dialogs/node_options.rs:139`, `fe-ui/src/panels/inspector.rs:701` |  |
 | `ApplyNodeTransform` | F018 | `fe-ui/src/panels/inspector.rs:602` |  |
 | `CreateNodeAt` | F020 | `fe-ui/src/dialogs/context_menu.rs:726` |  |
 | `SubmitQuery` | F033, F034 | `fe-ui/src/panels/query_tab.rs:184` |  |
@@ -42,22 +42,22 @@ Candidates map to owning capability families; this is routing responsibility, no
 | `HexonInstallFromRegistry` | F121 | `fe-ui/src/dialogs/hexon_manager.rs:146` |  |
 | `PetalSetMap` | F047 | `fe-ui/src/dialogs/hexon_manager.rs:364`, `fe-ui/src/dialogs/hexon_manager.rs:381` |  |
 | `PetalSetMapScale` | F048 | `fe-ui/src/dialogs/hexon_manager.rs:499`, `fe-ui/src/dialogs/hexon_manager.rs:522` |  |
-| `PetalManifestSave` | F124 | `fe-ui/src/dialogs/petal_manifest.rs:280` | Legacy intent is refused; canonical requirements controller uses correlated typed DB commands and F124 owns its rendered Save. |
+| `PetalManifestSave` | F124 | `fe-ui/src/dialogs/petal_manifest.rs:281` | Legacy intent is refused; canonical requirements controller uses correlated typed DB commands and F124 owns its rendered Save. |
 | `PetalSetRenderOverride` | F061 | No render/gesture reference in census | Legacy action enum has no current render/gesture producer; the Settings session-override surface owns F061 through its current resource path. No separate GUI action is claimed. |
 | `PetalManifestOpen` | F124 | `fe-ui/src/panels/sidebar.rs:532` |  |
 | `DownloadNodeAsset` | F026 | `fe-ui/src/panels/asset_card.rs:77` |  |
-| `GisQueryAnnotated` | F040, F042 | `fe-ui/src/panels/gis_panel.rs:408` |  |
-| `GisRefreshAnnotations` | F039 | `fe-ui/src/panels/gis_panel.rs:210` |  |
-| `GisQueryPropertyFilter` | F040 | `fe-ui/src/panels/gis_panel.rs:422` |  |
+| `GisQueryAnnotated` | F040, F042 | `fe-ui/src/panels/gis_panel.rs:409` |  |
+| `GisRefreshAnnotations` | F039 | `fe-ui/src/panels/gis_panel.rs:211` |  |
+| `GisQueryPropertyFilter` | F040 | `fe-ui/src/panels/gis_panel.rs:423` |  |
 | `GisSetLayer` | F049 | `fe-ui/src/gis/layers.rs:121`, `fe-ui/src/panels/layer_manager_card.rs:154` |  |
 | `GisSetViewMode` | F049 | `fe-ui/src/panels/layer_manager_card.rs:100` |  |
 | `GpxImportFile` | F064 | `fe-ui/src/panels/gpx_import_card.rs:45` |  |
-| `PathQueryTracks` | F063 | `fe-ui/src/node_manager/pointer/mod.rs:211`, `fe-ui/src/panels/gis_panel.rs:128`, `fe-ui/src/panels/path_editor_card.rs:193`, `fe-ui/src/panels/path_editor_card.rs:335`, `fe-ui/src/panels/tool_options.rs:175` |  |
+| `PathQueryTracks` | F063 | `fe-ui/src/node_manager/pointer/mod.rs:211`, `fe-ui/src/panels/gis_panel.rs:129`, `fe-ui/src/panels/path_editor_card.rs:193`, `fe-ui/src/panels/path_editor_card.rs:335`, `fe-ui/src/panels/tool_options.rs:175` |  |
 | `PathSelectTrack` | F063, F077 | `fe-ui/src/dialogs/context_menu.rs:853`, `fe-ui/src/dialogs/context_menu.rs:866`, `fe-ui/src/node_manager/pointer/mod.rs:79`, `fe-ui/src/panels/path_editor_card.rs:306`, `fe-ui/src/panels/tool_options.rs:200` |  |
 | `PathCreateTrack` | F063, F065 | `fe-ui/src/node_manager/path_point_interaction.rs:518`, `fe-ui/src/panels/path_editor_card.rs:159` |  |
 | `PathDeleteTrack` | F063, F077 | `fe-ui/src/panels/path_editor_card.rs:312` |  |
-| `PathAppendPoint` | F065 | `fe-ui/src/node_manager/path_point_interaction.rs:489`, `fe-ui/src/verse_manager/db_results/nodes.rs:151` |  |
-| `PathAppendSmoothPoint` | F065 | `fe-ui/src/node_manager/path_point_interaction.rs:479`, `fe-ui/src/verse_manager/db_results/nodes.rs:142` |  |
+| `PathAppendPoint` | F065 | `fe-ui/src/node_manager/path_point_interaction.rs:489`, `fe-ui/src/verse_manager/db_results/nodes.rs:114` |  |
+| `PathAppendSmoothPoint` | F065 | `fe-ui/src/node_manager/path_point_interaction.rs:479`, `fe-ui/src/verse_manager/db_results/nodes.rs:105` |  |
 | `PathSetAnchorHandles` | F067, F069 | `fe-ui/src/node_manager/path_handle_interaction.rs:353` |  |
 | `PathSetAnchorMetadata` | F139 | `fe-ui/src/panels/tool_options.rs:325` |  |
 | `PathSetAnchorCorner` | F067, F077 | `fe-ui/src/dialogs/context_menu.rs:273`, `fe-ui/src/dialogs/context_menu.rs:906`, `fe-ui/src/node_manager/path_handle_interaction.rs:362` |  |
@@ -90,7 +90,7 @@ Candidates map to owning capability families; this is routing responsibility, no
 | `SculptShapeRegion` | F053, F054 | `fe-ui/src/node_manager/terrain_authoring.rs:102`, `fe-ui/src/node_manager/terrain_authoring.rs:374`, `fe-ui/src/node_manager/terrain_authoring.rs:432` |  |
 | `SculptDeleteRegion` | F057 | `fe-ui/src/dialogs/context_menu.rs:353` |  |
 | `SaveMeasureAsCallout` | F059 | `fe-ui/src/panels/tool_options.rs:608` |  |
-| `DeleteNode` | F012, F022, F076, F077 | `fe-ui/src/dialogs/context_menu.rs:223`, `fe-ui/src/dialogs/context_menu.rs:998`, `fe-ui/src/dialogs/node_options.rs:315` |  |
+| `DeleteNode` | F012, F022, F076, F077 | `fe-ui/src/dialogs/context_menu.rs:223`, `fe-ui/src/dialogs/context_menu.rs:998`, `fe-ui/src/dialogs/node_options.rs:316` |  |
 | `DuplicateNode` | F021 | `fe-ui/src/dialogs/context_menu.rs:227` |  |
 | `RenameNode` | F012, F021, F023 | No render/gesture reference in census | Semantic rename also routes directly through Node Options/Entity Details; absence of a UiAction constructor does not retire rename. |
 | `PromoteStamp` | F075, F076 | `fe-ui/src/dialogs/context_menu.rs:841` | Actual context Promote carries the selected private scene/source origin into the same checked promotion controller. Public legacy PromoteInstance API remains a separate caller-current-index contract. |
@@ -111,15 +111,15 @@ Candidates map to owning capability families; this is routing responsibility, no
 | `fe-ui/src/atlas/tag_panel.rs` | F127 | 4 |
 | `fe-ui/src/atlas/visibility_control.rs` | F094 | 3 |
 | `fe-ui/src/dialogs/context_menu.rs` | F020, F021, F022, F027, F076, F077, F139 | 7 |
-| `fe-ui/src/dialogs/create_entity.rs` | F005 | 3 |
+| `fe-ui/src/dialogs/create_entity.rs` | F005, F089 | 2 |
 | `fe-ui/src/dialogs/entity_access.rs` | F096, F097, F098, F102, F103 | 39 |
-| `fe-ui/src/dialogs/entity_settings.rs` | F012, F093, F094, F095, F098, F102, F103 | 21 |
-| `fe-ui/src/dialogs/gltf_import.rs` | F006, F019 | 7 |
-| `fe-ui/src/dialogs/hexon_manager.rs` | F047, F048, F119, F120, F121, F122, F123 | 29 |
+| `fe-ui/src/dialogs/entity_settings.rs` | F012, F089, F093, F094, F095, F098, F102, F103 | 21 |
+| `fe-ui/src/dialogs/gltf_import.rs` | F006, F019, F089 | 5 |
+| `fe-ui/src/dialogs/hexon_manager.rs` | F047, F048, F089, F119, F120, F121, F122, F123 | 27 |
 | `fe-ui/src/dialogs/join.rs` | F099 | 5 |
-| `fe-ui/src/dialogs/node_options.rs` | F012, F013, F021, F022, F023, F024 | 13 |
+| `fe-ui/src/dialogs/node_options.rs` | F012, F013, F021, F022, F023, F024, F089 | 11 |
 | `fe-ui/src/dialogs/peer_debug.rs` | F104 | 1 |
-| `fe-ui/src/dialogs/petal_manifest.rs` | F124 | 24 |
+| `fe-ui/src/dialogs/petal_manifest.rs` | F089, F124 | 24 |
 | `fe-ui/src/object_data/history.rs` | F134 | 12 |
 | `fe-ui/src/object_data/measurements.rs` | F135 | 7 |
 | `fe-ui/src/object_data/mod.rs` | F134, F135, F136 | 6 |
@@ -146,7 +146,7 @@ Candidates map to owning capability families; this is routing responsibility, no
 | `fe-ui/src/panels/volume_report_panel.rs` | F054, F055, F056 | 7 |
 | `fe-ui/src/panels/widgets.rs` | F089 | 11 |
 | `fe-ui/src/role_chip.rs` | F087 | 1 |
-| `fe-ui/src/ui_shell/layout_policy.rs` | F089 | 1 |
+| `fe-ui/src/ui_shell/layout_policy.rs` | F089 | 2 |
 | `fe-ui/src/ui_shell/results_dock.rs` | F035, F036, F037, F038 | 12 |
 | `fe-ui/src/ui_shell/right_sidebar.rs` | F010, F011, F060, F061, F082, F083, F084, F085, F086 | 43 |
 | `fe-ui/src/ui_shell/topbar.rs` | F015, F079, F080, F081, F082, F090, F092 | 21 |
@@ -327,4 +327,4 @@ Developer Settings now owns terminal Reset (F086); only a disposable owned store
 
 Pending source reconciliation: `["P2P QA-0050 repair remains isolated and is not part of this audited source. Actual two-root invite/join/role/replica and P2P transfer acceptance remains required; no completed collaboration is inferred."]`.
 
-Additional live acceptance obligations: `["F143.watch-nonzero-exit-refused and F143.watch-writer-drain-refused require actual root-owned native refusal experiments. Synthetic F143 validator cases provide zero application coverage and cannot replace those outcomes or actual F080.confirm-close GUI/lifecycle/native-exit proof."]`.
+Additional live acceptance obligations: `["F143.watch-nonzero-exit-refused and F143.watch-writer-drain-refused require actual root-owned native refusal experiments. Synthetic F143 validator cases provide zero application coverage and cannot replace those outcomes or actual F080.confirm-close GUI/lifecycle/native-exit proof.", "Stage20 reconciliation adds native creation/baseline/materialization, request-owner/unknown/fullqueue, startup-hydration, native map fences, native form/header and expected page navigation variants. Every new checkpoint remains NOT_RUN; source assertions and QA18/19 do not execute these repairs.", "Y cases require actual current-stage GUI actions/state/images/readback. Controlled production channel/store/COM journeys may cover their A cases only; synthetic schema/receipt packets cannot substitute for native GUI or browser results."]`.
