@@ -1,26 +1,4 @@
-//! Modal manager + panel panic guard (ui_shell_architecture_20260724, FR-7).
-//!
-//! GUARD CONTRACT (`guarded`): a panel closure runs inside a per-panel quarantine.
-//! On panic the panel is disabled FOR THE SESSION (added to `disabled_panels`)
-//! and never re-run, so one broken panel cannot crash or spin the whole shell.
-//! Q-5 (ratified) UX: the panic is swallowed, `last_error` is set to a
-//! user-facing "Panel '<name>' disabled after error" string, and S3b surfaces it
-//! later as a status-bar error segment (NOT a toast). In `debug_assertions`
-//! builds the guard RE-PROPAGATES instead of catching, so developers still crash
-//! loudly with a full backtrace.
-//!
-//! CAVEAT for the orchestrator: the shipped `[profile.release]` sets
-//! `panic = "abort"`, under which `catch_unwind` is inert — the quarantine only
-//! actually runs under `panic = "unwind"` (which the test harness forces, so the
-//! tests below exercise it). See this slice's report §panic-abort.
-//!
-//! S3b (Phase 3) wired this into `panels::gardener_console`: every top-level
-//! panel/dialog/menu/toast render call runs through [`guarded`], and the
-//! transient overlay layer (dialogs/context-menu/toast) is sequenced via
-//! [`transient_order`] + [`TransientVisibility::resolve_exclusive`]. See
-//! `fe-ui/src/panels/mod.rs` and `fe-ui/src/panels/status_bar.rs` (the
-//! persistent error segment, Q-5). The `ui_shell/AGENTS.md` entry is owned by
-//! another slice / Phase 6.
+//! Panel quarantine and dialog decisions; see ui_shell/AGENTS.md.
 
 use std::collections::HashSet;
 
@@ -35,6 +13,38 @@ pub struct ModalManagerState {
     pub disabled_panels: HashSet<String>,
     /// Last user-facing guard error, surfaced by S3b as a status-bar segment (Q-5).
     pub last_error: Option<String>,
+}
+
+impl ModalManagerState {
+    /// Retry one quarantined panel without clearing unrelated failures.
+    pub fn clear_quarantine(&mut self, panel: &str) {
+        self.disabled_panels.remove(panel);
+        self.last_error = self.disabled_panels.iter().min().map(|name| {
+            format!("{} disabled after error", humanized_panel_name(name))
+        });
+    }
+}
+
+/// Readable labels for stable quarantine keys.
+pub fn humanized_panel_name(panel: &str) -> &str {
+    match panel {
+        "right.inspector" | "inspector" => "Inspector",
+        "right.options" => "Tool options",
+        "right.terrain_tools" => "Terrain tools",
+        "right.proposal_report" => "Terrain report",
+        "right.settings" => "Settings",
+        "right.maps" => "Maps",
+        "right.groups" => "Groups",
+        "portal_toolbar" => "Web page controls",
+        "left_sidebar" => "Hierarchy",
+        "topbar" => "Toolbar",
+        "viewport" => "Scene",
+        "gis_panel" => "Data",
+        "context_menu" => "Object menu",
+        "toast" => "Notifications",
+        name if name.starts_with("dialog_") => "Dialog",
+        _ => "Panel",
+    }
 }
 
 /// `&str`/`String` cover every `unwrap`/`expect`/`panic!` payload; anything else
@@ -82,7 +92,7 @@ fn guarded_catching<R>(
             let reason = panic_payload_string(&*payload);
             bevy::log::error!("panel '{name}' disabled after panic: {reason}");
             state.disabled_panels.insert(name.to_string());
-            state.last_error = Some(format!("Panel '{name}' disabled after error"));
+            state.last_error = Some(format!("{} disabled after error", humanized_panel_name(name)));
             None
         }
     }
@@ -179,19 +189,6 @@ impl TransientVisibility {
     }
 }
 
-/// FR-8 (P5) tooltip seam placeholder: decide whether to paint a widget tooltip
-/// given hover + presence of help text. Pure/trivial now; S3b/P5 replaces the
-/// body with the real egui `on_hover_text` wiring.
-///
-/// Not called yet — P5 (a later, tooltip-specific slice) wires it, out of
-/// this slice's (Phase 3/FR-7) scope. Tested (`should_show_tooltip_requires_
-/// hover_and_help`); scoped `allow` rather than deleting reserved future work.
-#[allow(dead_code)]
-#[must_use]
-pub const fn should_show_tooltip(hovered: bool, has_help: bool) -> bool {
-    hovered && has_help
-}
-
 #[derive(Clone)]
 struct ConfirmationSession {
     target: String,
@@ -283,7 +280,7 @@ mod tests {
         assert!(state.disabled_panels.contains("inspector"));
         assert_eq!(
             state.last_error.as_deref(),
-            Some("Panel 'inspector' disabled after error")
+            Some("Inspector disabled after error")
         );
     }
 
@@ -300,6 +297,14 @@ mod tests {
         });
         assert!(r.is_none());
         assert!(!invoked, "poisoned panel must not re-run f");
+        state.disabled_panels.insert("right.settings".into());
+        state.clear_quarantine("p");
+        assert_eq!(guarded_catching(&mut state, "p", || 7), Some(7));
+        assert!(state.disabled_panels.contains("right.settings"));
+        assert_eq!(state.last_error.as_deref(), Some("Settings disabled after error"));
+        state.clear_quarantine("right.settings");
+        assert!(state.disabled_panels.is_empty());
+        assert!(state.last_error.is_none());
     }
 
     #[test]
@@ -425,13 +430,6 @@ mod tests {
         .resolve_exclusive();
         assert!(v.context_menu);
         assert!(v.dialog_family_exclusive());
-    }
-
-    #[test]
-    fn should_show_tooltip_requires_hover_and_help() {
-        assert!(should_show_tooltip(true, true));
-        assert!(!should_show_tooltip(false, true));
-        assert!(!should_show_tooltip(true, false));
     }
 
     #[test]

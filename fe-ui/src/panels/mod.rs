@@ -206,40 +206,34 @@ pub fn gardener_console(
         )
     });
 
-    // Right sidebar (FR-6): portal toolbar when the portal owns the region, else
-    // the active section (Inspector by default; Options hosts the active tool's
-    // settings, Terrain Tools / Proposal Report the former floating windows).
-    // ONE guard covers all six mutually-exclusive sections — a panic anywhere
-    // in the active section quarantines the whole region, not just that
-    // section. `path_state` is `&mut` here because the Options section's Pen
-    // arm hosts the per-anchor corner editor (D8).
-    let _ = guarded(modal, "right_sidebar", || {
-        crate::ui_shell::right_sidebar::render_right_sidebar(
-            ctx,
-            right_state,
-            inspector,
-            node_mgr,
-            hierarchy,
-            ui_mgr,
-            local_role,
-            db_tx,
-            nav,
-            asset_status,
-            tool_panel,
-            path_state,
-            proposal_state,
-            sculpt_state,
-            petal_map,
-            app_settings,
-            ts_settings,
-            tool,
-            measure_state,
-            vis_state,
-            downloads,
-            render_override,
-            volume_report,
-        )
-    });
+    // Each right section owns its quarantine boundary.
+    crate::ui_shell::right_sidebar::render_right_sidebar(
+        ctx,
+        right_state,
+        inspector,
+        node_mgr,
+        hierarchy,
+        ui_mgr,
+        local_role,
+        db_tx,
+        nav,
+        asset_status,
+        tool_panel,
+        path_state,
+        proposal_state,
+        sculpt_state,
+        petal_map,
+        app_settings,
+        ts_settings,
+        tool,
+        measure_state,
+        vis_state,
+        downloads,
+        render_override,
+        volume_report,
+        modal,
+    );
+
 
     crate::ui_shell::results_dock::render(
         ctx,

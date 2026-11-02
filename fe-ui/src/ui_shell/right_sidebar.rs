@@ -294,6 +294,7 @@ pub fn render_right_sidebar(
     // `sync_volume_report_request`/`drain_volume_report_result` (PostUpdate)
     // are its sole writers.
     volume_report: &VolumeReportState,
+    modal: &mut super::modal::ModalManagerState,
 ) {
     if !super::layout_policy::can_show_right(ctx) {
         return;
@@ -301,7 +302,9 @@ pub fn render_right_sidebar(
     let portal_open = ui_mgr.portal_is_open();
     if portal_open {
         // Portal open swaps the whole right region to the portal toolbar.
-        portal_toolbar::right_portal_toolbar(ctx, ui_mgr);
+        let _ = super::modal::guarded(modal, "portal_toolbar", || {
+            portal_toolbar::right_portal_toolbar(ctx, ui_mgr);
+        });
         // Portal owns the region — drop a stale Maps carrier so it can't linger.
         clear_maps_carrier(ui_mgr);
         return;
@@ -313,7 +316,18 @@ pub fn render_right_sidebar(
     if section != Some(RightSidebarSection::Maps) {
         clear_maps_carrier(ui_mgr);
     }
-    match section {
+    let Some(current_section) = section else { return; };
+    let guard_key = section_guard_key(current_section);
+    if modal.disabled_panels.contains(guard_key) {
+        section_chrome(ctx, state, current_section, |ui| {
+            ui.colored_label(theme::NOTICE_TEXT, format!("{} is unavailable after an error.", section_label(current_section)));
+            if ui.button("Retry section").named(ui, format_args!("Retry {} section", section_label(current_section))).clicked() {
+                modal.clear_quarantine(guard_key);
+            }
+        });
+        return;
+    }
+    let _ = super::modal::guarded(modal, guard_key, || match section {
         Some(RightSidebarSection::Inspector) => render_inspector_section(
             ctx,
             state,
@@ -416,7 +430,19 @@ pub fn render_right_sidebar(
                 }),
             local_role,
         ),
-        None => {} // unreachable: portal short-circuited above
+        None => {}
+    });
+}
+
+fn section_guard_key(section: RightSidebarSection) -> &'static str {
+    match section {
+        RightSidebarSection::Inspector => "right.inspector",
+        RightSidebarSection::Options => "right.options",
+        RightSidebarSection::TerrainTools => "right.terrain_tools",
+        RightSidebarSection::ProposalReport => "right.proposal_report",
+        RightSidebarSection::Settings => "right.settings",
+        RightSidebarSection::Maps => "right.maps",
+        RightSidebarSection::Groups => "right.groups",
     }
 }
 

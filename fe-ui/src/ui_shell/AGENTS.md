@@ -159,12 +159,13 @@ topmost); `TransientVisibility::resolve_exclusive()` keeps at most one dialog
 family visible with toast independent. Rendered LAST in the pass so layering is
 preserved.
 
-**Guard granularity.** `gardener_console` guards each top-level render call
-(topbar/left/right/viewport/each dialog/context-menu/toast/gis). The
-right-sidebar guard is coarse — a panic in any one section quarantines all five
-for the session (per-section granularity is a noted follow-up, would need the
-guard threaded into `right_sidebar.rs`). `status_bar` is deliberately NOT
-guarded (it hosts the error chip).
+**Guard granularity.** Each right-sidebar section owns a stable `right.<slug>`
+quarantine key. The rail and a readable Retry surface remain available when a
+section is disabled. Retry clears only that key; unrelated failures remain in
+`disabled_panels` and the persistent error indicator. The portal toolbar has a
+separate boundary. Other top-level render calls retain their own guards. A
+Retry is an explicit user attempt, never an automatic loop. Debug fresh panics
+still propagate and release `panic=abort` still cannot be recovered in process.
 
 ## §timeseries-settings (M2/F6 — the Settings section's fabric controls)
 
