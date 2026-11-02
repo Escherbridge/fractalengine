@@ -905,11 +905,7 @@ impl UiManager {
     }
 }
 
-/// Sends a `DbCommand`, toasting an Error and warning instead of silently
-/// dropping it on a closed channel (AGENTS.md anti-pattern 6: no bare
-/// `.send(..).ok()`). `what` names the attempted action in the failure
-/// notice ("save the URL") and the log line. Returns whether the send
-/// succeeded, for a caller that has more to do only on success.
+/// Admit once without blocking the UI; see actions/AGENTS.md.
 pub(crate) fn send_or_toast(
     tx: &crossbeam::channel::Sender<fe_runtime::messages::DbCommand>,
     cmd: fe_runtime::messages::DbCommand,
@@ -917,12 +913,24 @@ pub(crate) fn send_or_toast(
     now_secs: f64,
     what: &str,
 ) -> bool {
-    if tx.send(cmd).is_err() {
-        bevy::log::warn!("send_or_toast: channel closed — {what} not sent");
-        ui_mgr.show_error(format!("Couldn't {what} — not connected"), now_secs);
-        false
-    } else {
-        true
+    match tx.try_send(cmd) {
+        Ok(()) => true,
+        Err(crossbeam::channel::TrySendError::Full(_)) => {
+            bevy::log::warn!("Database queue busy; action was not sent");
+            ui_mgr.show_error(
+                format!("Couldn't {what}: database busy; action was not sent"),
+                now_secs,
+            );
+            false
+        }
+        Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+            bevy::log::warn!("Database channel disconnected; action was not sent");
+            ui_mgr.show_error(
+                format!("Couldn't {what}: not connected; action was not sent"),
+                now_secs,
+            );
+            false
+        }
     }
 }
 

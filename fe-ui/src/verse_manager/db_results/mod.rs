@@ -27,6 +27,7 @@ use crate::navigation_manager::NavigationManager;
 /// re-materialization (see ../AGENTS.md §db-results).
 #[derive(SystemParam)]
 pub(super) struct DescriptorCaches<'w, 's> {
+    committed_hierarchy_pending: Local<'s, bool>,
     primitive: ResMut<'w, super::PrimitiveDescriptorCache>,
     path_asset: ResMut<'w, super::PathAssetCache>,
     applied: ResMut<'w, super::PathAssetApplied>,
@@ -99,17 +100,24 @@ fn forward_correlated_property_reply(
     correlated
 }
 
-fn request_committed_hierarchy(sender: &fe_runtime::app::DbCommandSender, requested: &mut bool) {
-    if *requested {
+fn request_committed_hierarchy(pending: &mut bool) {
+    *pending = true;
+}
+
+fn flush_committed_hierarchy(sender: &fe_runtime::app::DbCommandSender, pending: &mut bool) {
+    if !*pending {
         return;
     }
-    *requested = true;
-    if sender
+    match sender
         .0
-        .send(fe_runtime::messages::DbCommand::LoadHierarchy)
-        .is_err()
+        .try_send(fe_runtime::messages::DbCommand::LoadHierarchy)
     {
-        bevy::log::warn!("DB channel closed while hydrating committed object");
+        Ok(()) => *pending = false,
+        Err(crossbeam::channel::TrySendError::Full(_)) => {}
+        Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+            *pending = false;
+            bevy::log::warn!("DB channel closed while hydrating committed object");
+        }
     }
 }
 
@@ -137,7 +145,6 @@ pub(super) fn apply_db_results(
     let mut already_spawned: std::collections::HashSet<String> =
         caches.spawned.iter().map(|m| m.node_id.clone()).collect();
     let mesh_budget_exceeded = caches.mesh_budget.exceeded;
-    let mut hierarchy_requested = false;
     for result in reader.read() {
         if matches!(result, DbResult::NodeUrlUpdated { .. }) {
             crate::actions::portal::finish_url_save(&mut ui_mgr, &mut verse_mgr, &nav, &node_mgr, result, caches.time.elapsed_secs_f64(), &db_sender.0, &inspector);
@@ -165,7 +172,7 @@ pub(super) fn apply_db_results(
                 let current=committed::from_gltf_import(result).cloned();
                 if current.is_none() {
                     bevy::log::warn!("Asset placement receipt needs authoritative hierarchy hydration");
-                    request_committed_hierarchy(&db_sender,&mut hierarchy_requested);
+                    request_committed_hierarchy(&mut caches.committed_hierarchy_pending);
                 }
                 current
             }
@@ -175,7 +182,7 @@ pub(super) fn apply_db_results(
                     bevy::log::warn!(
                         "Current object receipt needs authoritative hierarchy hydration"
                     );
-                    request_committed_hierarchy(&db_sender, &mut hierarchy_requested);
+                    request_committed_hierarchy(&mut caches.committed_hierarchy_pending);
                 }
                 current
             }
@@ -195,7 +202,7 @@ pub(super) fn apply_db_results(
                     Some(transform_changed)
                 }
                 committed::MaterializationOutcome::NeedsHierarchy => {
-                    request_committed_hierarchy(&db_sender, &mut hierarchy_requested);
+                    request_committed_hierarchy(&mut caches.committed_hierarchy_pending);
                     None
                 }
                 committed::MaterializationOutcome::Ignored => None,
@@ -755,6 +762,7 @@ pub(super) fn apply_db_results(
             pending_api.try_deliver(result.clone());
         }
     }
+    flush_committed_hierarchy(&db_sender, &mut caches.committed_hierarchy_pending);
 }
 
 /// Finish only the current native import; stale committed results still hydrate above.
@@ -1955,8 +1963,8 @@ mod tests {
         app.update();
         assert!(
             matches!(reply_rx.try_recv(), Ok(DbResult::NodePropertiesLoaded {
-                    node_id, correlation_id: Some(id), properties,
-                }) if node_id == "n1" && id == "api-properties" && properties == json!({"api":10}))
+                        node_id, correlation_id: Some(id), properties,
+                    }) if node_id == "n1" && id == "api-properties" && properties == json!({"api":10}))
         );
         let (next_tx, mut next_rx) = tokio::sync::oneshot::channel();
         app.world_mut()
@@ -2129,9 +2137,9 @@ mod tests {
         );
         let entity = placed_entities[0].0;
         let current:fe_runtime::node_history::NodeRowSnapshot=serde_json::from_value(json!({
-                    "node_id":"placed","petal_id":"p1","display_name":"Placed","asset_id":"placed-asset","position":[9.0,2.0,4.0],"elevation":2.0,
-                    "rotation":[0.25,0.5,0.75],"scale":[2.0,0.5,3.0],"interactive":true,"created_at":"test","edit_seq":1,"properties":{}
-                })).unwrap();
+                        "node_id":"placed","petal_id":"p1","display_name":"Placed","asset_id":"placed-asset","position":[9.0,2.0,4.0],"elevation":2.0,
+                        "rotation":[0.25,0.5,0.75],"scale":[2.0,0.5,3.0],"interactive":true,"created_at":"test","edit_seq":1,"properties":{}
+                    })).unwrap();
         app.world_mut()
             .write_message(DbResult::NodeMutationCommitted {
                 receipt: fe_runtime::node_history::NodeMutationReceipt {
@@ -2171,9 +2179,32 @@ mod tests {
         {
             current.node.node_id = "foreign-birth".into();
         }
+        let admission = app
+            .world()
+            .resource::<fe_runtime::app::DbCommandSender>()
+            .0
+            .clone();
+        for _ in 0..8 {
+            admission
+                .try_send(DbCommand::GetNodeProperties {
+                    node_id: "queue-blocker".into(),
+                    correlation_id: None,
+                })
+                .unwrap();
+        }
         app.world_mut().write_message(unsupported);
         app.world_mut().write_message(mismatched);
         app.update();
+        let blockers: Vec<_> = db_commands.try_iter().collect();
+        assert_eq!(
+            blockers.len(),
+            8,
+            "a full bounded queue does not block result processing"
+        );
+        assert!(blockers.iter().all(|command|matches!(command,DbCommand::GetNodeProperties {node_id,..} if node_id=="queue-blocker")));
+        app.update();
+        app.update();
+
         assert_eq!(
             db_commands
                 .try_iter()

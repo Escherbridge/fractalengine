@@ -455,3 +455,10 @@ indices. The action dispatcher forwards those captures and atomic Apply drafts t
 selection controller, which rechecks live ownership/source/generation before the existing DB
 command is sent. The public legacy current-index API is separate; no actual GUI producer uses
 PromoteInstance. Make editable reveals the already selected, authoritatively bound durable node.
+
+## Nonblocking command admission
+
+send_or_toast tries the bounded channel once. Full means busy and definitely
+unsent; Disconnected means not connected. Neither branch logs command Debug or
+queues a mutation retry. Native import starts owned pending state only after
+acceptance. Its existing journey uses an actual full/disconnected bounded queue.

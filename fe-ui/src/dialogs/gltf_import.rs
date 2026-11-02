@@ -20,6 +20,29 @@ pub(crate) fn import_enabled(file_path: &str, petal_id: &str) -> bool {
 /// Bound before the request is marked as having an unknown outcome.
 const IMPORT_LOCK_TIMEOUT_SECONDS: f64 = 30.0;
 
+/// Begin ownership only for a command accepted by the database channel.
+pub(crate) fn submit_import(
+    db_tx: &crossbeam::channel::Sender<DbCommand>,
+    cmd: DbCommand,
+    ui_mgr: &mut UiManager,
+    now: f64,
+) -> bool {
+    let DbCommand::ImportGltf {
+        request: Some(owner),
+        ..
+    } = &cmd
+    else {
+        return false;
+    };
+    let owner = owner.clone();
+    if send_or_toast(db_tx, cmd, ui_mgr, now, "import the model") {
+        ui_mgr.gltf_import_request.start(owner, now);
+        true
+    } else {
+        false
+    }
+}
+
 pub fn render_gltf_import_dialog(
     ctx: &egui::Context,
     ui_mgr: &mut UiManager,
@@ -61,7 +84,6 @@ pub fn render_gltf_import_dialog(
     let can_import = import_enabled(file_path_buf, &petal_id) && target.is_some();
     let mut close = false;
     let mut import_request: Option<DbCommand> = None;
-    let mut import_owner = None;
 
     let mut still_open = true;
     let mut window = crate::ui_shell::layout_policy::bounded_window(ctx, "Import GLTF Model")
@@ -181,7 +203,7 @@ pub fn render_gltf_import_dialog(
                     nav.active_verse_id.as_deref(),
                 ) {
                     Ok(path) => {
-                        import_owner = target.map(|((verse, fractal), petal)| {
+                        let import_owner = target.map(|((verse, fractal), petal)| {
                             fe_runtime::messages::NativeImportRequest {
                                 request_id: ulid::Ulid::new().to_string(),
                                 verse_id: verse.into(),
@@ -190,7 +212,7 @@ pub fn render_gltf_import_dialog(
                             }
                         });
                         import_request = Some(DbCommand::ImportGltf {
-                            request: import_owner.clone(),
+                            request: import_owner,
                             file_lease: path.read_lease(),
                             petal_id: petal_id.clone(),
                             name: if name_buf.trim().is_empty() {
@@ -227,10 +249,8 @@ pub fn render_gltf_import_dialog(
     if let Some(error) = dialog_failure {
         ui_mgr.show_error(error, now);
     }
-    if let (Some(cmd), Some(owner)) = (import_request, import_owner) {
-        if send_or_toast(db_tx, cmd, ui_mgr, now, "import the model") {
-            ui_mgr.gltf_import_request.start(owner, now);
-        }
+    if let Some(cmd) = import_request {
+        submit_import(db_tx, cmd, ui_mgr, now);
     }
 
     if !still_open || close {
@@ -270,6 +290,53 @@ mod tests {
                 "{why}: import_enabled({file_path:?}, {petal_id:?})"
             );
         }
+
+        let (db_tx, db_rx) = crossbeam::channel::bounded(1);
+        let mut ui = UiManager::default();
+        let owner = fe_runtime::messages::NativeImportRequest {
+            request_id: "accepted-only".into(),
+            verse_id: "v".into(),
+            fractal_id: "f".into(),
+            petal_id: "p".into(),
+        };
+        let command = || DbCommand::ImportGltf {
+            request: Some(owner.clone()),
+            file_lease: None,
+            petal_id: "p".into(),
+            name: "private name".into(),
+            file_path: "private path".into(),
+            position: [0.0; 3],
+        };
+        db_tx.try_send(DbCommand::LoadHierarchy).unwrap();
+        assert!(!submit_import(&db_tx, command(), &mut ui, 1.0));
+        assert!(!ui.gltf_import_request.pending);
+        let error = ui.latest_unacknowledged_error().unwrap();
+        assert!(error.text.contains("busy") && error.text.contains("not sent"));
+        assert!(
+            !error.text.contains("private"),
+            "admission errors cannot expose the command payload"
+        );
+        assert!(matches!(db_rx.try_recv(), Ok(DbCommand::LoadHierarchy)));
+        assert!(
+            db_rx.try_recv().is_err(),
+            "a full queue never schedules automatic creation retry"
+        );
+        assert!(submit_import(&db_tx, command(), &mut ui, 2.0));
+        assert!(ui.gltf_import_request.pending);
+        assert!(
+            matches!(db_rx.try_recv(),Ok(DbCommand::ImportGltf {request:Some(request),..}) if request==owner)
+        );
+        assert!(db_rx.try_recv().is_err());
+        ui.gltf_import_request.reset();
+        drop(db_rx);
+        assert!(!submit_import(&db_tx, command(), &mut ui, 3.0));
+        assert!(!ui.gltf_import_request.pending);
+        assert!(
+            ui.latest_unacknowledged_error()
+                .unwrap()
+                .text
+                .contains("not connected")
+        );
 
         use crate::file_dialogs::{FileDialogProvider, FileDialogRequest, QaFileDialogs};
         use fe_runtime::qa_debug::{DialogAnswer, DialogAnswerBatch, DialogKind};
@@ -360,16 +427,20 @@ mod tests {
         provider
             .enqueue("v", &answer(DialogKind::Open, None, true))
             .unwrap();
-        assert!(provider
-            .enqueue(
-                "other",
-                &answer(DialogKind::Open, Some("../invalid"), false)
-            )
-            .is_err());
-        assert!(provider
-            .choose(request(DialogKind::Open))
-            .unwrap()
-            .is_none());
+        assert!(
+            provider
+                .enqueue(
+                    "other",
+                    &answer(DialogKind::Open, Some("../invalid"), false)
+                )
+                .is_err()
+        );
+        assert!(
+            provider
+                .choose(request(DialogKind::Open))
+                .unwrap()
+                .is_none()
+        );
         provider
             .enqueue("v", &answer(DialogKind::Open, None, true))
             .unwrap();
@@ -415,11 +486,13 @@ mod tests {
         provider
             .enqueue("v", &answer(DialogKind::Folder, Some("."), false))
             .unwrap();
-        assert!(provider
-            .choose(request(DialogKind::Folder))
-            .unwrap()
-            .unwrap()
-            .is_dir());
+        assert!(
+            provider
+                .choose(request(DialogKind::Folder))
+                .unwrap()
+                .unwrap()
+                .is_dir()
+        );
         drop(provider);
         std::fs::remove_dir_all(root).unwrap();
     }

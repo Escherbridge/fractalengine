@@ -518,3 +518,9 @@ dialog and captured current navigation. Stale successful births still hydrate
 above this completion gate; stale failure never changes a replacement request.
 The existing receipt App journey includes an unknown-outcome replacement, stale
 committed birth/failure, and late matching completion without another create.
+
+Committed-receipt hierarchy fallback retains one coalesced Local read request.
+The result system tries it once at the end of each frame, including frames with
+no replies. Full retains it for a later frame; accepted or disconnected clears it.
+No mutation is retried. The existing App receipt journey fills the bounded queue,
+processes multiple unsupported births, then checks one refresh after space opens.
