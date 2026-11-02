@@ -223,7 +223,7 @@ Write-QaLog "Bootstrap owner token ready (verse $($bootstrap.VerseId)) after ${t
 $liveProcess = Get-QaOwnedProcess -Identity $identity
 if (-not $liveProcess) { Fail 'New QA process exited before authenticated readiness' }
 try {
-    $ready = Invoke-WebRequest -Uri "$QaApiBase/api/v1/verses/$($bootstrap.VerseId)/fractals" -UseBasicParsing -MaximumRedirection 0 -TimeoutSec 10 -Headers @{ Authorization = "Bearer $($bootstrap.Token)" }
+    $ready = Invoke-WebRequest -Uri "$QaApiBase/api/v1/hierarchy" -UseBasicParsing -MaximumRedirection 0 -TimeoutSec 10 -Headers @{ Authorization = "Bearer $($bootstrap.Token)" }
     $readyBody = $ready.Content | ConvertFrom-Json
     if ($readyBody.ok -ne $true) { Fail 'New API did not confirm authenticated readiness' }
 } finally { $liveProcess.Dispose() }
