@@ -5,20 +5,144 @@
 use bevy::prelude::*;
 use bevy_egui::EguiContexts;
 
-use super::GestureParams;
+use super::{GestureParams, NodeSelection};
 use crate::actions::{UiAction, UiManager};
+use crate::dialogs::{node_options_prefill, ActiveDialog};
 use crate::gis::PathEditorState;
 use crate::navigation_manager::NavigationManager;
 use crate::panels::toolbar::Tool;
 use crate::panels::toolbar::TOOL_DEFS;
-use crate::plugin::ToolState;
+use crate::plugin::{CameraFocusTarget, LocalUserRole, SpawnedNodeMarker, ToolState};
 use crate::ui_shell::right_sidebar::RightSidebarState;
-use crate::verse_manager::VerseManager;
+use crate::verse_manager::{NodeEntry, VerseManager};
 use crate::visibility::{self, NodeAncestry, OverrideState, VisibilityState};
+use fe_runtime::{app::DbCommandSender, messages::DbCommand};
 
-/// Bare `B` activates Brush; `Ctrl/Cmd+B` stays the left-sidebar toggle.
-fn shortcut_allowed(tool: Tool, command_modifier: bool) -> bool {
-    tool != Tool::Brush || !command_modifier
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shortcut {
+    Activate(Tool),
+    DeleteSelection,
+    FrameSelection,
+    ToggleRightSidebar,
+}
+
+impl Shortcut {
+    fn requires_edit(self) -> bool {
+        matches!(
+            self,
+            Self::DeleteSelection
+                | Self::Activate(Tool::Move | Tool::Rotate | Tool::Scale | Tool::Pen | Tool::Brush)
+        )
+    }
+}
+
+/// Decode shortcuts once; command/Alt chords never fall through to plain tool keys.
+fn shortcut(keyboard: &ButtonInput<KeyCode>, keyboard_owned: bool) -> Option<Shortcut> {
+    if keyboard_owned {
+        return None;
+    }
+    let command = keyboard.any_pressed([
+        KeyCode::ControlLeft,
+        KeyCode::ControlRight,
+        KeyCode::SuperLeft,
+        KeyCode::SuperRight,
+    ]);
+    let alt = keyboard.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
+    let shift = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    if command && shift && !alt && keyboard.just_pressed(KeyCode::KeyB) {
+        return Some(Shortcut::ToggleRightSidebar);
+    }
+    if command || alt {
+        return None;
+    }
+    if keyboard.just_pressed(KeyCode::Delete) {
+        return Some(Shortcut::DeleteSelection);
+    }
+    if keyboard.just_pressed(KeyCode::KeyF) {
+        return Some(Shortcut::FrameSelection);
+    }
+    TOOL_DEFS
+        .iter()
+        .find(|def| keyboard.just_pressed(def.key_code))
+        .map(|def| Shortcut::Activate(def.tool))
+}
+
+/// Advisory UI gate; backend authorization remains authoritative.
+fn admit_shortcut(
+    command: Shortcut,
+    role: &LocalUserRole,
+    nav: &NavigationManager,
+    ui_mgr: &mut UiManager,
+    now: f64,
+) -> bool {
+    if command.requires_edit() && !role.can_edit() {
+        let reason = crate::panels::widgets::role_denial_reason(
+            role,
+            "Editor",
+            crate::notice::active_verse_name(nav),
+        );
+        ui_mgr.show_advisory(reason, now);
+        false
+    } else {
+        true
+    }
+}
+
+/// Resolve selection against the spawned entity and the complete current navigation ancestry.
+fn selected_node<'a>(
+    selection: Option<&NodeSelection>,
+    marker: Option<&SpawnedNodeMarker>,
+    nav: &NavigationManager,
+    hierarchy: &'a VerseManager,
+) -> Option<&'a NodeEntry> {
+    let selection = selection?;
+    let marker = marker?;
+    let petal_id = nav.active_petal_id.as_deref()?;
+    if marker.node_id != selection.node_id || marker.petal_id != petal_id {
+        return None;
+    }
+    hierarchy
+        .verses
+        .iter()
+        .find(|verse| Some(verse.id.as_str()) == nav.active_verse_id.as_deref())?
+        .fractals
+        .iter()
+        .find(|fractal| Some(fractal.id.as_str()) == nav.active_fractal_id.as_deref())?
+        .petals
+        .iter()
+        .find(|petal| petal.id == petal_id)?
+        .nodes
+        .iter()
+        .find(|node| node.id == selection.node_id)
+}
+
+/// Selection shortcuts use the existing confirmation and camera request paths.
+fn apply_selection_shortcut(
+    command: Shortcut,
+    node: &NodeEntry,
+    hierarchy: &VerseManager,
+    focus: &mut CameraFocusTarget,
+    ui_mgr: &mut UiManager,
+    db: &crossbeam::channel::Sender<DbCommand>,
+) -> Result<(), &'static str> {
+    match command {
+        Shortcut::FrameSelection => focus.target = Some((node.id.clone(), node.position)),
+        Shortcut::DeleteSelection => {
+            db.send(DbCommand::CountNodeDescendants {
+                node_id: node.id.clone(),
+            })
+            .map_err(|_| {
+                "Could not open delete confirmation: database connection is unavailable"
+            })?;
+            let mut dialog = node_options_prefill(hierarchy, &node.id);
+            if let ActiveDialog::NodeOptions { pending_delete, .. } = &mut dialog {
+                *pending_delete = true;
+            }
+            ui_mgr.open_dialog(dialog);
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// The H-key visibility verbs (hierarchy_visibility_groups D-17).
@@ -82,6 +206,7 @@ fn apply_visibility_key(
 /// highest applicable one consumes the key (D2/D3/D4-override).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EscapeRung {
+    CloseContextMenu,
     /// 0 — cancel ONLY the in-flight viewport gesture.
     CancelGesture,
     /// 0.5 — clear an active isolate/solo lens (D-17). Below a live gesture
@@ -101,13 +226,16 @@ enum EscapeRung {
 /// Resolve the staged-Escape rung. Pure — the ORDERING is the semantic, so it
 /// is unit-tested without a Bevy App.
 fn escape_rung(
+    context_menu_open: bool,
     gesture_active: bool,
     solo_active: bool,
     editing_track: bool,
     has_selection: bool,
     tool_is_select: bool,
 ) -> EscapeRung {
-    if gesture_active {
+    if context_menu_open {
+        EscapeRung::CloseContextMenu
+    } else if gesture_active {
         EscapeRung::CancelGesture
     } else if solo_active {
         EscapeRung::ClearIsolate
@@ -138,6 +266,11 @@ pub(super) fn handle_tool_shortcuts(
     nav: Res<NavigationManager>,
     hierarchy: Res<VerseManager>,
     mut ui_mgr: ResMut<UiManager>,
+    local_role: Res<LocalUserRole>,
+    mut focus: ResMut<CameraFocusTarget>,
+    spawned: Query<&SpawnedNodeMarker>,
+    db: Res<DbCommandSender>,
+    clock: Res<crate::notice::NoticeClock>,
 ) {
     // Mirror the gesture aggregate onto `NodeManager` first — even on the egui
     // early-return below — so the topbar's `InputContext` stash (and thus the
@@ -165,18 +298,83 @@ pub(super) fn handle_tool_shortcuts(
         return;
     }
 
+    let dialog_open = !matches!(
+        ui_mgr.active_dialog,
+        ActiveDialog::None | ActiveDialog::HexonManager { .. }
+    );
+    if keyboard.just_pressed(KeyCode::Escape) {
+        if !dialog_open || matches!(ui_mgr.active_dialog, ActiveDialog::ContextMenu { .. }) {
+            match escape_rung(
+                matches!(ui_mgr.active_dialog, ActiveDialog::ContextMenu { .. }),
+                gesture_active,
+                visibility.solo().is_some(),
+                path_state.editing_track_id.is_some(),
+                gestures.node_mgr.selected.is_some(),
+                tool.active_tool == Tool::Select,
+            ) {
+                EscapeRung::CloseContextMenu => ui_mgr.close_dialog(),
+                EscapeRung::CancelGesture => {
+                    gestures.cancel_all();
+                    gestures.node_mgr.gesture_active = false;
+                }
+                EscapeRung::ClearIsolate => visibility.clear_solo(),
+                EscapeRung::StopEditing => path_state.stop_editing(),
+                EscapeRung::Deselect => gestures.node_mgr.deselect(),
+                EscapeRung::ResetTool => tool.activate(Tool::Select, &mut right_sidebar),
+                EscapeRung::Rest => {}
+            }
+        }
+        return;
+    }
+    if let Some(command) = shortcut(&keyboard, dialog_open) {
+        if !admit_shortcut(
+            command,
+            &local_role,
+            &nav,
+            &mut ui_mgr,
+            clock.elapsed_secs_f64(),
+        ) {
+            return;
+        }
+        match command {
+            Shortcut::Activate(next) => tool.activate(next, &mut right_sidebar),
+            Shortcut::ToggleRightSidebar => right_sidebar.toggle_collapsed(),
+            Shortcut::FrameSelection | Shortcut::DeleteSelection => {
+                let selection = gestures.node_mgr.selected.as_ref();
+                let marker = selection.and_then(|selected| spawned.get(selected.entity).ok());
+                let node = selected_node(selection, marker, &nav, &hierarchy)
+                    .filter(|node| visibility::pickable(&node.id, &nav, &visibility));
+                if let Some(node) = node {
+                    if let Err(reason) = apply_selection_shortcut(
+                        command,
+                        node,
+                        &hierarchy,
+                        &mut focus,
+                        &mut ui_mgr,
+                        &db.0,
+                    ) {
+                        warn!("{reason}");
+                        ui_mgr.show_error(reason, clock.elapsed_secs_f64());
+                    }
+                } else {
+                    ui_mgr.show_advisory(
+                        "Select a visible node in the current petal first",
+                        clock.elapsed_secs_f64(),
+                    );
+                }
+            }
+        }
+        return;
+    }
+    if dialog_open {
+        return;
+    }
     let command_modifier = keyboard.any_pressed([
         KeyCode::ControlLeft,
         KeyCode::ControlRight,
         KeyCode::SuperLeft,
         KeyCode::SuperRight,
     ]);
-    for def in &TOOL_DEFS {
-        if keyboard.just_pressed(def.key_code) && shortcut_allowed(def.tool, command_modifier) {
-            tool.activate(def.tool, &mut right_sidebar);
-            return;
-        }
-    }
 
     if keyboard.just_pressed(KeyCode::KeyH) {
         let shift = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
@@ -204,28 +402,6 @@ pub(super) fn handle_tool_shortcuts(
             return;
         }
     }
-
-    if keyboard.just_pressed(KeyCode::Escape) {
-        match escape_rung(
-            gesture_active,
-            visibility.solo().is_some(),
-            path_state.editing_track_id.is_some(),
-            gestures.node_mgr.selected.is_some(),
-            tool.active_tool == Tool::Select,
-        ) {
-            // This system runs FIRST in the chain, so the gesture systems see
-            // the cleared resource on this very frame (no one-frame replay).
-            EscapeRung::CancelGesture => {
-                gestures.cancel_all();
-                gestures.node_mgr.gesture_active = false;
-            }
-            EscapeRung::ClearIsolate => visibility.clear_solo(),
-            EscapeRung::StopEditing => path_state.stop_editing(),
-            EscapeRung::Deselect => gestures.node_mgr.deselect(),
-            EscapeRung::ResetTool => tool.activate(Tool::Select, &mut right_sidebar),
-            EscapeRung::Rest => {}
-        }
-    }
 }
 
 #[cfg(test)]
@@ -234,23 +410,105 @@ mod tests {
 
     #[test]
     fn brush_uses_bare_b_without_stealing_sidebar_toggle() {
-        assert!(shortcut_allowed(Tool::Brush, false));
-        assert!(!shortcut_allowed(Tool::Brush, true));
-        assert!(shortcut_allowed(Tool::Pen, true));
+        for def in &TOOL_DEFS {
+            let mut keys = ButtonInput::default();
+            keys.press(def.key_code);
+            assert_eq!(shortcut(&keys, false), Some(Shortcut::Activate(def.tool)));
+            assert_eq!(shortcut(&keys, true), None, "text entry owns keyboard");
+            for modifier in [
+                KeyCode::ControlLeft,
+                KeyCode::ControlRight,
+                KeyCode::SuperLeft,
+                KeyCode::SuperRight,
+                KeyCode::AltLeft,
+                KeyCode::AltRight,
+            ] {
+                let mut modified = keys.clone();
+                modified.press(modifier);
+                assert_eq!(
+                    shortcut(&modified, false),
+                    None,
+                    "{modifier:?}+{:?}",
+                    def.tool
+                );
+            }
+            assert_eq!(
+                Shortcut::Activate(def.tool).requires_edit(),
+                !matches!(def.tool, Tool::Select | Tool::Measure)
+            );
+            let viewer = LocalUserRole {
+                role: Some(fe_database::RoleLevel::Viewer),
+            };
+            let editor = LocalUserRole {
+                role: Some(fe_database::RoleLevel::Editor),
+            };
+            let mut ui = UiManager::default();
+            let allowed = admit_shortcut(
+                Shortcut::Activate(def.tool),
+                &viewer,
+                &NavigationManager::default(),
+                &mut ui,
+                0.0,
+            );
+            assert_eq!(allowed, matches!(def.tool, Tool::Select | Tool::Measure));
+            if !allowed {
+                assert!(ui
+                    .active_notice(0.0)
+                    .unwrap()
+                    .0
+                    .text
+                    .contains("Editor role needed"));
+            }
+            assert!(admit_shortcut(
+                Shortcut::Activate(def.tool),
+                &editor,
+                &NavigationManager::default(),
+                &mut ui,
+                0.0
+            ));
+        }
+        let mut keys = ButtonInput::default();
+        keys.press(KeyCode::ControlLeft);
+        keys.press(KeyCode::ShiftLeft);
+        keys.press(KeyCode::KeyB);
+        assert_eq!(shortcut(&keys, false), Some(Shortcut::ToggleRightSidebar));
+        let mut right = RightSidebarState::default();
+        right.toggle_collapsed();
+        assert!(right.collapsed);
+        right.toggle_collapsed();
+        assert!(!right.collapsed);
+        assert_eq!(shortcut(&keys, true), None);
     }
 
     // --- staged Escape ladder: the ordering IS the contract ---
 
     #[test]
     fn rung0_gesture_wins_over_every_lower_rung() {
+        assert_eq!(
+            escape_rung(true, true, true, true, true, false),
+            EscapeRung::CloseContextMenu
+        );
+        let mut ui = UiManager::default();
+        ui.open_dialog(ActiveDialog::ContextMenu {
+            screen_pos: [0.0; 2],
+            world_pos: [0.0; 3],
+            target: None,
+            pending_delete: false,
+            descendant_count: None,
+        });
+        if escape_rung(true, true, false, false, true, false) == EscapeRung::CloseContextMenu {
+            ui.close_dialog();
+        }
+        assert!(!ui.any_dialog_open());
+
         // A live gesture consumes Escape even when a track is open, a node is
         // selected, AND a non-Select tool is active.
         assert_eq!(
-            escape_rung(true, false, true, true, false),
+            escape_rung(false, true, false, true, true, false),
             EscapeRung::CancelGesture
         );
         assert_eq!(
-            escape_rung(true, false, false, false, true),
+            escape_rung(false, true, false, false, false, true),
             EscapeRung::CancelGesture
         );
     }
@@ -267,7 +525,7 @@ mod tests {
         manager.select(Entity::from_bits(1), "n1");
         // Selected, not dragging, non-Select tool → plain deselect.
         assert_eq!(
-            escape_rung(manager.is_dragging(), false, false, true, false),
+            escape_rung(false, manager.is_dragging(), false, false, true, false),
             EscapeRung::Deselect
         );
         if let Some(ref mut sel) = manager.selected {
@@ -281,7 +539,7 @@ mod tests {
             });
         }
         assert_eq!(
-            escape_rung(manager.is_dragging(), false, false, true, false),
+            escape_rung(false, manager.is_dragging(), false, false, true, false),
             EscapeRung::CancelGesture
         );
         // …and the cancel restores the press-time transform instead of
@@ -289,12 +547,141 @@ mod tests {
         let (_, restore) = manager.cancel_axis_drag().expect("drag was live");
         assert_eq!(restore.translation, Vec3::ZERO);
         assert!(manager.is_selected());
+        use crate::verse_manager::{FractalEntry, PetalEntry, VerseEntry};
+        for (key, expected) in [
+            (KeyCode::Delete, Shortcut::DeleteSelection),
+            (KeyCode::KeyF, Shortcut::FrameSelection),
+        ] {
+            let mut keyboard = ButtonInput::default();
+            keyboard.press(key);
+            assert_eq!(shortcut(&keyboard, false), Some(expected));
+            assert_eq!(shortcut(&keyboard, true), None);
+            keyboard.press(KeyCode::ControlLeft);
+            assert_eq!(shortcut(&keyboard, false), None);
+        }
+        let node = NodeEntry {
+            id: "n1".into(),
+            name: "Selected node".into(),
+            position: [1.0, 2.0, 3.0],
+            ..Default::default()
+        };
+        let tree = VerseManager {
+            verses: vec![VerseEntry {
+                id: "v1".into(),
+                fractals: vec![FractalEntry {
+                    id: "f1".into(),
+                    petals: vec![PetalEntry {
+                        id: "p1".into(),
+                        nodes: vec![node],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let nav = NavigationManager {
+            active_verse_id: Some("v1".into()),
+            active_fractal_id: Some("f1".into()),
+            active_petal_id: Some("p1".into()),
+            ..Default::default()
+        };
+        let marker = SpawnedNodeMarker {
+            node_id: "n1".into(),
+            petal_id: "p1".into(),
+        };
+        let selected =
+            selected_node(manager.selected.as_ref(), Some(&marker), &nav, &tree).unwrap();
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let mut ui = UiManager::default();
+        let mut focus = CameraFocusTarget::default();
+        apply_selection_shortcut(
+            Shortcut::DeleteSelection,
+            selected,
+            &tree,
+            &mut focus,
+            &mut ui,
+            &tx,
+        )
+        .unwrap();
+        assert!(
+            matches!(ui.active_dialog, ActiveDialog::NodeOptions { ref node_id, pending_delete: true, descendant_count: None, .. } if node_id == "n1")
+        );
+        assert!(
+            matches!(rx.try_recv(), Ok(DbCommand::CountNodeDescendants { node_id }) if node_id == "n1")
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "Delete never sends a mutation on first press"
+        );
+        assert!(ui.drain_actions().is_empty());
+        apply_selection_shortcut(
+            Shortcut::FrameSelection,
+            selected,
+            &tree,
+            &mut focus,
+            &mut ui,
+            &tx,
+        )
+        .unwrap();
+        assert_eq!(focus.target, Some(("n1".into(), [1.0, 2.0, 3.0])));
+        assert!(!Shortcut::FrameSelection.requires_edit());
+        assert!(Shortcut::DeleteSelection.requires_edit());
+        let stale_marker = SpawnedNodeMarker {
+            petal_id: "old-petal".into(),
+            node_id: marker.node_id.clone(),
+        };
+        assert!(
+            selected_node(manager.selected.as_ref(), Some(&stale_marker), &nav, &tree).is_none()
+        );
+        let foreign_nav = NavigationManager {
+            active_verse_id: Some("other".into()),
+            ..nav
+        };
+        assert!(selected_node(
+            manager.selected.as_ref(),
+            Some(&marker),
+            &foreign_nav,
+            &tree
+        )
+        .is_none());
+        let viewer = LocalUserRole {
+            role: Some(fe_database::RoleLevel::Viewer),
+        };
+        assert!(!admit_shortcut(
+            Shortcut::DeleteSelection,
+            &viewer,
+            &foreign_nav,
+            &mut ui,
+            0.0
+        ));
+        assert!(admit_shortcut(
+            Shortcut::FrameSelection,
+            &viewer,
+            &foreign_nav,
+            &mut ui,
+            0.0
+        ));
+        assert!(selected_node(None, Some(&marker), &foreign_nav, &tree).is_none());
+        drop(rx);
+        ui.close_dialog();
+        assert!(apply_selection_shortcut(
+            Shortcut::DeleteSelection,
+            selected,
+            &tree,
+            &mut focus,
+            &mut ui,
+            &tx
+        )
+        .is_err());
+        assert!(!ui.any_dialog_open());
     }
 
     #[test]
     fn rung1_stop_editing_wins_over_deselect_and_tool_reset() {
         assert_eq!(
-            escape_rung(false, false, true, true, false),
+            escape_rung(false, false, false, true, true, false),
             EscapeRung::StopEditing
         );
     }
@@ -302,7 +689,7 @@ mod tests {
     #[test]
     fn rung2_deselect_wins_over_tool_reset() {
         assert_eq!(
-            escape_rung(false, false, false, true, false),
+            escape_rung(false, false, false, false, true, false),
             EscapeRung::Deselect
         );
     }
@@ -311,7 +698,7 @@ mod tests {
     fn rung3_resets_a_non_select_tool_when_nothing_else_is_pending() {
         // Fixes the sticky-Pen complaint (#12).
         assert_eq!(
-            escape_rung(false, false, false, false, false),
+            escape_rung(false, false, false, false, false, false),
             EscapeRung::ResetTool
         );
     }
@@ -319,7 +706,7 @@ mod tests {
     #[test]
     fn fully_at_rest_escape_does_nothing() {
         assert_eq!(
-            escape_rung(false, false, false, false, true),
+            escape_rung(false, false, false, false, false, true),
             EscapeRung::Rest
         );
     }
@@ -335,7 +722,7 @@ mod tests {
         let mut tool_is_select = false;
         let mut walked = Vec::new();
         for _ in 0..4 {
-            let rung = escape_rung(false, false, editing, selected, tool_is_select);
+            let rung = escape_rung(false, false, false, editing, selected, tool_is_select);
             walked.push(rung);
             match rung {
                 // The bridge clears the selection alongside the session (D4
@@ -346,7 +733,10 @@ mod tests {
                 }
                 EscapeRung::Deselect => selected = false,
                 EscapeRung::ResetTool => tool_is_select = true,
-                EscapeRung::CancelGesture | EscapeRung::ClearIsolate | EscapeRung::Rest => {}
+                EscapeRung::CloseContextMenu
+                | EscapeRung::CancelGesture
+                | EscapeRung::ClearIsolate
+                | EscapeRung::Rest => {}
             }
         }
         assert_eq!(
@@ -365,11 +755,11 @@ mod tests {
         // Documents WHAT D4-override buys: if `stop_editing` left the track
         // selected, rung 2 would fire on the next press for the same object.
         assert_eq!(
-            escape_rung(false, false, true, true, true),
+            escape_rung(false, false, false, true, true, true),
             EscapeRung::StopEditing
         );
         assert_eq!(
-            escape_rung(false, false, false, true, true),
+            escape_rung(false, false, false, false, true, true),
             EscapeRung::Deselect
         );
     }
@@ -380,12 +770,12 @@ mod tests {
     fn clear_isolate_sits_between_a_live_gesture_and_every_session_rung() {
         // A live drag still owns rung 0 even while isolated (F5).
         assert_eq!(
-            escape_rung(true, true, true, true, false),
+            escape_rung(false, true, true, true, true, false),
             EscapeRung::CancelGesture
         );
         // Isolate outranks an open track, a selection and a non-Select tool.
         assert_eq!(
-            escape_rung(false, true, true, true, false),
+            escape_rung(false, false, true, true, true, false),
             EscapeRung::ClearIsolate
         );
         // Walking the ladder from "isolated + track open + Pen": isolate goes
@@ -393,14 +783,14 @@ mod tests {
         let (mut solo, mut editing, mut selected, mut tool_is_select) = (true, true, true, false);
         let mut walked = Vec::new();
         for _ in 0..4 {
-            let rung = escape_rung(false, solo, editing, selected, tool_is_select);
+            let rung = escape_rung(false, false, solo, editing, selected, tool_is_select);
             walked.push(rung);
             match rung {
                 EscapeRung::ClearIsolate => solo = false,
                 EscapeRung::StopEditing => (editing, selected) = (false, false),
                 EscapeRung::Deselect => selected = false,
                 EscapeRung::ResetTool => tool_is_select = true,
-                EscapeRung::CancelGesture | EscapeRung::Rest => {}
+                EscapeRung::CloseContextMenu | EscapeRung::CancelGesture | EscapeRung::Rest => {}
             }
         }
         assert_eq!(

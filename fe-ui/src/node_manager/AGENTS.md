@@ -174,6 +174,7 @@ the aggregate for the egui side; because it is written before any gesture system
 lags both ways — stale-FALSE on the frame a gesture starts (the unsafe direction: that
 frame's right-click still opens the object menu) and stale-TRUE on the frame it releases.
 
+0. Close an open ContextMenu, preserving every gesture/selection/session underneath it.
 1. Gesture-cancel (tool-specific: pen/handle drag cancel)
    - `ClearIsolate` (D-17, "Esc clears isolate first"): clears an active solo
      lens. Implemented as first-AFTER-a-live-gesture, not literally first — a
@@ -862,3 +863,39 @@ explicit selection/deselection, normal sidebar request, or hidden-node refusal
 cancels it. Timeout reports an unavailable object instead of selecting a stale
 entity later. This wait covers deferred petal materialization and never creates
 a second selected-node store. Existing current-petal requests remain one-shot.
+## Keyboard command boundary
+
+`shortcuts.rs::shortcut` decodes plain tool keys, Delete, F and Ctrl/Cmd+Shift+B.
+Ctrl/Cmd/Alt chords never fall through to a plain tool key, including Brush;
+the documented Brush exemption is bare B instead of stealing Ctrl/Cmd+B.
+The existing H/Shift+H/Alt+H visibility reducer keeps its own modifier routing.
+Text entry owns all shortcuts, and an existing modal blocks viewport commands.
+HexonManager is the Maps section carrier rather than a modal; its mere presence
+does not block these shortcuts when its text editor does not own keyboard.
+Escape closes ContextMenu before any lower cancellation rung when no editor
+owns keyboard; other dialogs keep their keyboard and selection underneath.
+`ToolState::activate` remains the sole active-tool writer.
+
+`admit_shortcut` supplies advisory Editor gating for mutation tools and Delete
+through the shared role-denial notice. Select, Measure and F stay available as
+read/navigation commands. This gate does not replace backend authorization.
+Selection commands resolve NodeManager's selected entity against its spawned
+marker and the entire active verse/fractal/petal tree, then apply the existing
+visibility rule. Deferred old-petal entities, stale IDs and stamp instances
+without node records cannot trigger a node delete or frame another scope.
+
+Delete opens the existing NodeOptions confirmation with current name/URL,
+arms its pending-delete state, and requests only CountNodeDescendants. No
+mutation is queued by the key press. A closed DB channel leaves the dialog
+closed and produces a shared error notice. F queues CameraFocusTarget with
+the cached tree fallback; the existing focus system prefers the live transform.
+Both commands preserve NodeManager selection. Existing journeys cover modifier
+and role tables, current/stale selection, confirmation without delete, framing,
+context-first Escape and channel failure; campaign-end execution remains pending.
+
+Ctrl/Cmd+Shift+B calls RightSidebarState::toggle_collapsed. That state hides the
+section without changing its requested section or selected node. Explicit
+section toggle/reveal reopens it; tool activation therefore reveals Options
+from a collapsed state. The legacy left toggle remains bare Ctrl/Cmd+B only,
+with Shift/Alt chords and keyboard-owned editors excluded. These are session
+layout choices; no panel rendering or domain selection is duplicated here.

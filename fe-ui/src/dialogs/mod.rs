@@ -12,6 +12,7 @@ mod node_options;
 mod peer_debug;
 mod petal_manifest;
 
+pub(crate) use context_menu::node_options_prefill;
 pub use context_menu::render_context_menu;
 pub use create_entity::render_create_dialog;
 pub use entity_settings::render_entity_settings_dialog;
