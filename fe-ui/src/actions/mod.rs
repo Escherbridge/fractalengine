@@ -620,6 +620,11 @@ impl UiManager {
         }
     }
 
+    /// Whether the active target Access controller has queued or in-flight work.
+    pub fn target_access_pending(&self)->bool {
+        matches!(&self.active_dialog,ActiveDialog::EntitySettings {access,..} if access.pending_work())
+    }
+
     pub fn any_dialog_open(&self) -> bool {
         !matches!(self.active_dialog, ActiveDialog::None)
     }
@@ -2161,6 +2166,7 @@ mod tests {
         if let ActiveDialog::EntitySettings {active_tab,access,..}=&mut mgr.active_dialog {
             crate::dialogs::entity_access::select_tab(active_tab,access,crate::dialogs::SettingsTab::Access);
         }
+        assert!(mgr.target_access_pending());
         crate::dialogs::entity_access::service(&mut mgr,&tx,Some(&peers));
         let DbCommand::EntityAccess {target,request_id:read_id,action:Access::Load {peer_dids}}=rx.try_recv().unwrap() else{panic!("Expected target-bound known-peer read")};
         assert_eq!(peer_dids,vec!["did:key:known-peer"]);
@@ -2168,6 +2174,7 @@ mod tests {
         crate::dialogs::entity_access::apply(&mut mgr,&target,"foreign-nonce",&Ok(snapshot.clone()));
         if let ActiveDialog::EntitySettings {access,..}=&mgr.active_dialog {assert!(access.snapshot.is_none()&&access.waiting());}
         crate::dialogs::entity_access::apply(&mut mgr,&target,&read_id,&Ok(snapshot.clone()));
+        assert!(!mgr.target_access_pending());
         crate::dialogs::entity_access::submit(&mut mgr,Access::Revoke {peer_did:"did:key:known-peer".into()},&tx);
         let DbCommand::EntityAccess {request_id:change_id,..}=rx.try_recv().unwrap() else{unreachable!()};
         crate::dialogs::entity_access::apply(&mut mgr,&target,&change_id,&Err("unconfirmed write".into()));

@@ -1636,3 +1636,5 @@ read result and when draining projections. It cannot rely on the Undo observer
 having run first. A changed verse/fractal/petal generation refuses the late write
 and drops the old projection even if ActivePetalTerrain has not caught up. The
 current typed node ID/petal is checked again before extracting gpx_points.
+
+The existing Owner/scope/input-gated ui-state diagnostic counts queued and in-flight target Access work through UiManager::target_access_pending. It exposes only a pending boolean in ui_known, never roles, token/invite values or a new control route. The retired unrendered InviteDialog is no longer reported as an open window. DB/sync/terrain completion remains explicitly unknown.

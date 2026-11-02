@@ -401,7 +401,6 @@ fn dialog_title(dialog: &ActiveDialog) -> Option<&'static str> {
         ActiveDialog::ContextMenu { .. } => Some("Context menu"),
         ActiveDialog::GltfImport { .. } => Some("Import GLTF"),
         ActiveDialog::NodeOptions { .. } => Some("Node options"),
-        ActiveDialog::InviteDialog { .. } => Some("Invite"),
         ActiveDialog::JoinDialog { .. } => Some("Join Verse"),
         ActiveDialog::PeerDebug => Some("Peer debug"),
         ActiveDialog::HexonManager { .. } => Some("Maps"),
@@ -449,7 +448,8 @@ impl UiState<'_, '_> {
             + self.gpx.0.len()
             + self.path.0.len()
             + usize::from(self.ui.join_request.pending)
-            + usize::from(self.ui.gltf_import_request.pending);
+            + usize::from(self.ui.gltf_import_request.pending)
+            + usize::from(self.ui.target_access_pending());
         let notice = self.ui.active_notice(self.diagnostic.clock.elapsed_secs_f64()).map(|(n, _)| json!({"id":n.id,"severity":format!("{:?}",n.severity).to_ascii_lowercase(),"text":redact(&n.text)}));
         json!({"frame":frame,"coordinate_space":"physical_pixels","pixels_per_point":ppp,
             "navigation":{"verse_id":self.nav.active_verse_id,"verse_name":redact(&self.nav.active_verse_name),"fractal_id":self.nav.active_fractal_id,"fractal_name":redact(&self.nav.active_fractal_name),"petal_id":self.nav.active_petal_id,"petal_name":self.nav.active_petal_id.as_ref().and_then(|id| self.verses.find_petal(id)).map(|p| redact(&p.name))},

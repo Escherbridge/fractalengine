@@ -56,6 +56,7 @@ impl EntityAccessState {
         self.queued_read = true;
         self.error = None;
     }
+    pub(crate) fn pending_work(&self)->bool {self.waiting() || self.queued_read}
     pub(crate) fn waiting(&self) -> bool {
         self.pending.is_some()
     }
