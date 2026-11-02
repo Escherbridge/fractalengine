@@ -812,7 +812,7 @@ fn render_petal_render_distance_controls(
                 .on_disabled_hover_text(
                     "Editor access is required to change this petal's shared distance.",
                 );
-            draft.observe(ui, &response);
+            draft.observe(ui, "petal-distance", &response);
         });
     });
     if let Some(value) = draft.next_value().filter(|_| editable) {
@@ -1007,7 +1007,6 @@ fn render_timeseries_fabric_controls(
                 .observed(ui)
                 .on_hover_text(mode_tooltip(mode))
                 .clicked()
-                && !selected
             {
                 draft.value.mode = mode;
                 draft.finish();
@@ -1036,7 +1035,7 @@ fn render_timeseries_fabric_controls(
                 .on_disabled_hover_text(
                     "R applies to balanced mode only (sharded = one host, mirror = all).",
                 );
-            draft.observe(ui, &response);
+            draft.observe(ui, "replication-factor", &response);
         });
         ui.add_space(4.0);
         settings_row(ui, "Bucket width", |ui, label| {
@@ -1052,12 +1051,12 @@ fn render_timeseries_fabric_controls(
                 .labelled_by(label.id)
                 .named(ui, "Timeseries bucket width in milliseconds")
                 .on_hover_text("Time-bucket width in milliseconds. Saves when editing finishes.");
-            draft.observe(ui, &response);
+            draft.observe(ui, "bucket-width", &response);
         });
         ui.horizontal_wrapped(|ui| {
             for (ms, label) in tss::BUCKET_WIDTH_PRESETS {
                 let selected = draft.value.bucket_width_ms == ms;
-                if ui.selectable_label(selected, label).observed(ui).clicked() && !selected {
+                if ui.selectable_label(selected, label).observed(ui).clicked() {
                     draft.value.bucket_width_ms = ms;
                     draft.finish();
                 }
@@ -1881,6 +1880,7 @@ mod tests {
                 ts,
                 override_state,
             );
+            assert!(rx.is_empty(), "pressing a numeric control must not write");
             for delta in [16.0, 40.0] {
                 settings_frame(
                     timeseries,
@@ -2089,8 +2089,37 @@ mod tests {
             &mut ts,
             &mut override_state,
         );
+        let clean_bucket = observed.controls[4].rect.center();
+        for event in [
+            egui::Event::PointerMoved(clean_bucket),
+            egui::Event::PointerButton {
+                pos: clean_bucket,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: clean_bucket,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ] {
+            settings_frame(
+                true,
+                vec![event],
+                &mut settings_time,
+                &confirmed,
+                &mut ts,
+                &mut override_state,
+            );
+        }
+        assert!(
+            rx.is_empty(),
+            "clean bucket focus must not create commit eligibility"
+        );
         let slider_at = egui::pos2(
-            observed.controls[3].rect.left() + 24.0,
+            observed.controls[3].rect.left() + 48.0,
             observed.controls[3].rect.center().y,
         );
         drag(
@@ -2237,6 +2266,166 @@ mod tests {
             rx.is_empty(),
             "an unconfirmed timeout keeps the draft without automatic retries"
         );
+        let timed_out = settings_frame(
+            true,
+            vec![],
+            &mut settings_time,
+            &confirmed,
+            &mut ts,
+            &mut override_state,
+        );
+        let at = timed_out.controls[4].rect.center();
+        for event in [
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+            key(egui::Key::ArrowLeft, false, egui::Modifiers::NONE),
+        ] {
+            settings_frame(
+                true,
+                vec![event],
+                &mut settings_time,
+                &confirmed,
+                &mut ts,
+                &mut override_state,
+            );
+            assert!(
+                rx.is_empty(),
+                "focus/key release alone cannot retry a timed-out draft"
+            );
+        }
+        for pressed in [true, false] {
+            settings_frame(
+                true,
+                vec![egui::Event::PointerButton {
+                    pos: outside,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                &mut settings_time,
+                &confirmed,
+                &mut ts,
+                &mut override_state,
+            );
+            assert!(rx.is_empty(), "clean blur cannot retry a timed-out draft");
+        }
+
+        let failure_ctx = egui::Context::default();
+        let (closed_tx, closed_rx) = crossbeam::channel::unbounded();
+        drop(closed_rx);
+        let mut attempts = 0;
+        let failure_frame = |events: Vec<egui::Event>, time: &mut f64, attempts: &mut usize| {
+            *time += 0.05;
+            super::super::layout_policy::begin_frame(&failure_ctx, true);
+            let _ = failure_ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000.0, 800.0),
+                    )),
+                    time: Some(*time),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    super::super::layout_policy::begin_ui_pass(ctx);
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let id = ui.id().with("failed-setting");
+                        let mut draft =
+                            super::super::setting_draft::SettingDraft::load(ui, id, "p", 1.0_f32);
+                        let response = ui
+                            .add(egui::DragValue::new(&mut draft.value).update_while_editing(false))
+                            .named(ui, "Failed setting fixture");
+                        draft.observe(ui, "distance", &response);
+                        if let Some(value) = draft.next_value() {
+                            *attempts += 1;
+                            assert!(closed_tx
+                                .send(DbCommand::SetPetalRenderDistance {
+                                    petal_id: "p".into(),
+                                    render_distance: Some(value),
+                                    auth: CallerAuth::Local,
+                                    correlation_id: None,
+                                })
+                                .is_err());
+                            draft.failed();
+                        }
+                        draft.store(ui, id);
+                    });
+                },
+            );
+            super::super::layout_policy::observations(&failure_ctx)
+        };
+        let observed = failure_frame(vec![], &mut settings_time, &mut attempts);
+        let at = observed.controls[0].rect.center();
+        for event in [
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerMoved(at + egui::vec2(40.0, 0.0)),
+            egui::Event::PointerButton {
+                pos: at + egui::vec2(40.0, 0.0),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ] {
+            failure_frame(vec![event], &mut settings_time, &mut attempts);
+        }
+        assert_eq!(
+            attempts, 1,
+            "one finalized edit must try the closed channel once"
+        );
+        let failed = failure_frame(vec![], &mut settings_time, &mut attempts);
+        let at = failed.controls[0].rect.center();
+        for event in [
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+            key(egui::Key::ArrowLeft, false, egui::Modifiers::NONE),
+            egui::Event::PointerButton {
+                pos: outside,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: outside,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ] {
+            failure_frame(vec![event], &mut settings_time, &mut attempts);
+            assert_eq!(
+                attempts, 1,
+                "clean focus, key release and blur cannot retry a failed draft"
+            );
+        }
     }
 
     const ALL: [RightSidebarSection; 7] = ALL_SECTIONS;

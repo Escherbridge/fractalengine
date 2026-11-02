@@ -209,6 +209,16 @@ and local. Ranges constrain edits, preserving existing values on render so
 opening Settings cannot silently rewrite them. The old manifest precedence tooltip is replaced by the actual
 shared-petal/session precedence.
 
+Numeric interaction state is tracked by stable field purpose within the form,
+using each field's actual native response. Only a field with value changes can
+finalize its own interaction; an unrelated clean blur or key release creates
+no readiness. The whole configuration waits while any numeric pointer/key/text
+edit remains active or unfinished, regardless of renderer order. This prevents
+the later bucket-width blur from publishing an earlier R drag. Partial numeric
+text stays unfinished until its own Enter/blur. Explicit mode/preset clicks
+can retry an unconfirmed draft; unchanged stored configurations still emit no
+write. Failure/timeout consumes prior readiness, so clean focus/blur cannot retry.
+
 Only one write per draft may await readback. A newer finalized edit remains
 editable while the first write is pending and is submitted after that stored
 value arrives. An echo cannot replace a newer local draft. Clean drafts adopt
@@ -240,6 +250,11 @@ fixtures, not DB persistence proof. No test function is added. Source parsing
 is not execution or persistence evidence; integrated
 compilation, the final test sweep, and live role/interaction/readback checks
 remain required.
+
+The same journey also focuses the clean bucket before an R press/drag and
+asserts no press/held-frame command. Unconfirmed and closed-channel fixtures
+exercise focus/key release/blur without editing and require no retry; the
+closed-channel fixture counts actual failed sends through the shared adapter.
 
 ## §window-chrome (frameless window, 2026-10-31)
 

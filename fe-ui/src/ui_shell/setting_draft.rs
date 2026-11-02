@@ -2,6 +2,17 @@
 
 use bevy_egui::egui;
 
+const ADJUSTMENT_KEYS: [egui::Key; 8] = [
+    egui::Key::ArrowLeft,
+    egui::Key::ArrowRight,
+    egui::Key::ArrowUp,
+    egui::Key::ArrowDown,
+    egui::Key::Home,
+    egui::Key::End,
+    egui::Key::PageUp,
+    egui::Key::PageDown,
+];
+
 #[derive(Clone)]
 pub(super) struct SettingDraft<T> {
     scope: String,
@@ -11,8 +22,17 @@ pub(super) struct SettingDraft<T> {
     dirty: bool,
     ready: bool,
     editing: bool,
-    pointer_edit: bool,
+    active: bool,
+    interactions: Vec<NumericInteraction>,
     error: Option<&'static str>,
+}
+
+#[derive(Clone)]
+struct NumericInteraction {
+    field: &'static str,
+    changed: bool,
+    pointer: bool,
+    text: bool,
 }
 
 impl<T: Copy + PartialEq + Send + Sync + 'static> SettingDraft<T> {
@@ -28,11 +48,13 @@ impl<T: Copy + PartialEq + Send + Sync + 'static> SettingDraft<T> {
                 dirty: false,
                 ready: false,
                 editing: false,
-                pointer_edit: false,
+                active: false,
+                interactions: Vec::new(),
                 error: None,
             });
         draft.reconcile(stored, ui.input(|input| input.time));
         draft.editing = false;
+        draft.active = false;
         draft
     }
 
@@ -55,45 +77,75 @@ impl<T: Copy + PartialEq + Send + Sync + 'static> SettingDraft<T> {
         }
     }
 
-    pub fn observe(&mut self, ui: &egui::Ui, response: &egui::Response) {
+    pub fn observe(&mut self, ui: &egui::Ui, field: &'static str, response: &egui::Response) {
         let pointer_down = ui.input(|input| input.pointer.any_down());
+        let index = self
+            .interactions
+            .iter()
+            .position(|entry| entry.field == field)
+            .unwrap_or_else(|| {
+                self.interactions.push(NumericInteraction {
+                    field,
+                    changed: false,
+                    pointer: false,
+                    text: false,
+                });
+                self.interactions.len() - 1
+            });
+        let interaction = &mut self.interactions[index];
         if response.changed() {
             self.dirty = true;
             self.ready = false;
             self.error = None;
-            self.pointer_edit |= pointer_down;
-            if !pointer_down && !response.has_focus() {
-                self.ready = true;
-            }
+            interaction.changed = true;
+            interaction.pointer |= pointer_down;
         }
-        let keyboard_release = response.has_focus()
+        let enter = ui.input(|input| input.key_pressed(egui::Key::Enter));
+        if response.has_focus()
             && ui.input(|input| {
                 input.events.iter().any(|event| {
                     matches!(
                         event,
-                        egui::Event::Key {
-                            key: egui::Key::ArrowLeft
-                                | egui::Key::ArrowRight
-                                | egui::Key::ArrowUp
-                                | egui::Key::ArrowDown
-                                | egui::Key::Home
-                                | egui::Key::End
-                                | egui::Key::PageUp
-                                | egui::Key::PageDown,
-                            pressed: false,
-                            ..
-                        }
+                        egui::Event::Text(_)
+                            | egui::Event::Paste(_)
+                            | egui::Event::Cut
+                            | egui::Event::Key {
+                                key: egui::Key::Backspace | egui::Key::Delete,
+                                pressed: true,
+                                ..
+                            }
                     )
                 })
+            })
+        {
+            interaction.text = true;
+        }
+        if response.lost_focus() || (response.has_focus() && enter) {
+            interaction.text = false;
+        }
+        let keyboard_release = response.has_focus()
+            && ui.input(|input| {
+                input.events.iter().any(|event| {
+                    matches!(event, egui::Event::Key { key, pressed: false, .. } if ADJUSTMENT_KEYS.contains(key))
+                })
             });
-        if response.drag_stopped()
+        let keyboard_down = response.has_focus()
+            && ui.input(|input| ADJUSTMENT_KEYS.iter().any(|key| input.key_down(*key)));
+        let active = response.dragged()
+            || response.is_pointer_button_down_on()
+            || keyboard_down
+            || interaction.text;
+        self.active |= active;
+        let finished = response.drag_stopped()
             || response.lost_focus()
             || keyboard_release
-            || (response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)))
-            || (self.pointer_edit && !pointer_down)
-        {
+            || (response.has_focus() && enter)
+            || (interaction.pointer && !pointer_down)
+            || (response.changed() && !pointer_down && !response.has_focus());
+        if interaction.changed && finished && !active {
             self.ready = true;
-            self.pointer_edit = false;
+            interaction.changed = false;
+            interaction.pointer = false;
         }
         self.editing |= response.has_focus() || response.dragged();
     }
@@ -105,7 +157,15 @@ impl<T: Copy + PartialEq + Send + Sync + 'static> SettingDraft<T> {
     }
 
     pub fn next_value(&self) -> Option<T> {
-        (self.ready && self.dirty && self.pending.is_none() && self.value != self.stored)
+        (self.ready
+            && self.dirty
+            && !self.active
+            && self
+                .interactions
+                .iter()
+                .all(|entry| !entry.changed && !entry.text)
+            && self.pending.is_none()
+            && self.value != self.stored)
             .then_some(self.value)
     }
 
