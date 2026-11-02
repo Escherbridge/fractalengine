@@ -152,3 +152,24 @@ and delete sharing, active stdout alone permits its writer, and bounded evidence
 hashing and strict parsing consume the same byte buffer. The synthetic packet has
 not run and supplies no application coverage. Terminal-close evidence after root
 exit remains a separate mandatory implementation and acceptance gap.
+
+## Integrated source batch after pass17
+
+Main6875a256 integrates the Portal canonical snapshot/explicit metadata fix;
+be1afedd/7037576b integrate Path label/target/help ownership. Reset service,
+proof and desktop supervision are8a43f89e/f992cfeb/20b74543. Durable auth is
+06630fab/6ce74b78/7c20f75a. Native Portal evidence is
+c677bedb/a0b2814f/8c48c308/c78f9c8c. Source conflicts were directory-guide
+appends; both contracts were retained. Offline lock resolutionff274672 adds four
+existing-version dependency edges and removes the known unused mutable binding.
+
+Independent combined-source review found the Portal, Path, reset and native
+registration seams intact, but requires one further auth correction: repeat the
+DB-less unavailable-feed predicate after the final awaited cache read, before
+the fresh expiry check. That correction is authoring in an isolated lane and is
+mandatory before the next build/acceptance claim.
+
+Coverage464731b8/218f407b/93ffdc1d is independently source-approved. Catalog
+ca91bd44 retains its d7fadfa2 audit provenance and unexecuted status; later source
+requires another reconciliation. Stamp selection and terminal-close evidence
+are still authoring. No tests or new-stage runtime acceptance are asserted.
