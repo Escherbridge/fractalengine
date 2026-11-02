@@ -485,7 +485,7 @@ class Driver:
         rows = self.reading_rows(step["source_metric"], step["start_ms"], step["end_ms"], names)
         require(rows and len(rows) <= 128, "derivation needs 1..128 actual stored rows")
         if self.derivation_format is None:
-            self.derivation_format = "qa/" + self.spec["id"].lower() + "@1"
+            self.derivation_format = "qa.fractalengine/" + self.spec["id"].lower() + "@1"
             self.client.tool("register_device_format", {"verse_id":self.verse_id,"format_id":self.derivation_format,
                 "mime":"application/json", "description":"Explicit QA affine derivation provenance; opaque bytes, not an automatic rule engine",
                 "schema":{"type":"object","required":["source_metric","history_version","raw","gain","bias","derived"]}}, read_only=False)

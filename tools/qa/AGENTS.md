@@ -335,6 +335,11 @@ they cannot be reconstructed from old warning-only output afterward.
 
 ## §rich-data
 
+Derived provenance uses `qa.fractalengine/<scenario>@1`. The SDK device-format
+grammar requires at least two namespace labels; a single `qa` label is invalid.
+Keep failed-attempt receipts and use a fresh Petal after partial writes rather
+than repeating non-idempotent scenario steps.
+
 `scenarios/rich-fleet.json` is the editable rich-data intent and independent oracle set. Logical Alpha/Beta/Gamma
 names are mapped to actual returned object IDs. Schemas, initial objects and expected event-time arrays are data;
 the ordered steps describe explicit API operations. `rich_data_scenario.py` validates this intent before effects:
