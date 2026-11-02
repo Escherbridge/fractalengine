@@ -554,3 +554,18 @@ action used by the viewport menu. Draft fallback and volume/material/intersectio
 math are unchanged. Existing report and context-menu journeys cover the shared
 handler and stale-map/Petal/role refusals; source authoring alone does not prove
 compiled or live behavior.
+
+## Object-impact report scrolling
+
+Object-impact rows share the report section's existing outer scroll container.
+The scene snapshot already bounds this list to128 objects. An additional vertical
+viewport could retain its own offset while the outer report moved, hiding an
+object's name and method above its visible material and volume. Keeping each row
+in the surrounding flow makes its identity, method, material, volume and selection
+action move together. The target picker retains its separate bounded list.
+
+The existing TSV journey also renders five actual impact rows at1024×768,
+1280×720 and1920×1080. It seeds a legacy inner-scroll offset, checks the actual
+painted glyph bounds against their clip rectangles, verifies the first row's
+sequential fields at two outer offsets, clicks its selection action, and scrolls
+to the last row. This source extension does not establish execution or live QA.

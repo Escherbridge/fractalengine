@@ -647,16 +647,11 @@ fn render_object_impacts(
             report.excluded_non_geometric
         ));
     }
-    egui::ScrollArea::vertical()
-        .id_salt("terrain_object_impacts")
-        .max_height(280.0)
-        .show(ui, |ui| {
-            for impact in &report.objects {
-                ui.push_id(&impact.object.node_id, |ui| {
-                    render_object_impact_row(ui, impact, unit, open_node);
-                });
-            }
+    for impact in &report.objects {
+        ui.push_id(&impact.object.node_id, |ui| {
+            render_object_impact_row(ui, impact, unit, open_node);
         });
+    }
 }
 
 fn render_object_impact_row(
@@ -1429,12 +1424,146 @@ mod tests {
             tsv.contains("Footing A  B\tstructure-1\tSolid box / sampled terrain")
                 && tsv.contains("4.000\tsampled overlap")
         );
+        exercise_object_impact_layout(&result.object_impacts);
         result.items[0].cut_m3 = -f64::MAX;
         result.items[0].fill_m3 = f64::MAX;
         assert!(
             !result.is_complete() && volume_report_to_tsv(&result, &nodes).is_empty(),
             "derived per-item net must remain finite"
         );
+    }
+
+    fn exercise_object_impact_layout(report: &fe_renderer::scene_analysis::ObjectImpactReport) {
+        let mut report = report.clone();
+        let fixture = report.objects[0].clone();
+        report.excluded_non_geometric = 2;
+        report.objects = (0..5)
+            .map(|index| {
+                let mut impact = fixture.clone();
+                impact.object.node_id = format!("structure-{index}");
+                impact.object.name = format!("QA report overlap box {index}");
+                impact
+            })
+            .collect();
+
+        for (width, height) in [(1024.0, 768.0), (1280.0, 720.0), (1920.0, 1080.0)] {
+            let ctx = egui::Context::default();
+            let mut time = 1.0;
+            let mut frame = |scroll: f32, events: Vec<egui::Event>| {
+                time += 0.05;
+                crate::ui_shell::layout_policy::begin_frame(&ctx, true);
+                let mut selected = None;
+                let output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, height),
+                        )),
+                        time: Some(time),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        crate::ui_shell::layout_policy::begin_ui_pass(ctx);
+                        egui::SidePanel::right("report_layout_journey")
+                            .exact_width(320.0)
+                            .show(ctx, |ui| {
+                                crate::ui_shell::layout_policy::scroll(
+                                    ui,
+                                    "Volume report",
+                                    [true, true],
+                                    egui::ScrollArea::both()
+                                        .id_salt("report_layout_flow")
+                                        .scroll_offset(egui::vec2(0.0, scroll))
+                                        .auto_shrink([false, false]),
+                                    |ui| {
+                                        ui.add_space(350.0);
+                                        let old_id = ui.make_persistent_id("terrain_object_impacts");
+                                        let mut old = egui::scroll_area::State::default();
+                                        old.offset.y = 40.0;
+                                        old.store(ctx, old_id);
+                                        render_object_impacts(ui, &report, "m", &mut selected);
+                                    },
+                                );
+                            });
+                    },
+                );
+                (
+                    output,
+                    crate::ui_shell::layout_policy::observations(&ctx),
+                    selected,
+                )
+            };
+
+            for offset in [0.0, 120.0] {
+                frame(offset, vec![]);
+                let (output, observations, _) = frame(offset, vec![]);
+                assert_eq!(observations.scrolls.len(), 1);
+                let texts: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::epaint::Shape::Text(text) => Some((
+                            text.galley.job.text.as_str(),
+                            text.visual_bounding_rect(),
+                            shape.clip_rect,
+                        )),
+                        _ => None,
+                    })
+                    .collect();
+                let painted = |prefix: &str| {
+                    let (_, rect, clip) = texts
+                        .iter()
+                        .find(|(text, _, _)| text.starts_with(prefix))
+                        .unwrap_or_else(|| panic!("missing {prefix} at {width}x{height}"));
+                    assert!(clip.expand(0.75).contains_rect(*rect), "clipped {prefix}");
+                    *rect
+                };
+                let name = painted("QA report overlap box 0");
+                let method = painted("Solid box / sampled terrain");
+                let material = painted("Material: {");
+                let volume = painted("Overlap estimate: 4.000");
+                assert!(name.bottom() <= method.top());
+                assert!(method.bottom() <= material.top());
+                assert!(material.bottom() <= volume.top());
+
+                let button = &observations.controls[0];
+                assert!(button.allowed && button.clickable);
+                assert!(button.clip.contains_rect(button.rect));
+                let point = button.rect.center();
+                frame(offset, vec![egui::Event::PointerMoved(point)]);
+                for pressed in [true, false] {
+                    let (_, _, selected) = frame(
+                        offset,
+                        vec![egui::Event::PointerButton {
+                            pos: point,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        }],
+                    );
+                    if !pressed {
+                        assert_eq!(selected.as_deref(), Some("structure-0"));
+                    }
+                }
+            }
+            let (_, geometry, _) = frame(0.0, vec![]);
+            let scroll = &geometry.scrolls[0];
+            let bottom_offset = (scroll.content_size.y - scroll.viewport.height()).max(0.0);
+            frame(bottom_offset, vec![]);
+            let (output, observations, _) = frame(bottom_offset, vec![]);
+            assert!(output.shapes.iter().any(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text)
+                    if text.galley.job.text == "QA report overlap box 4" =>
+                {
+                    shape.clip_rect.expand(0.75).contains_rect(text.visual_bounding_rect())
+                }
+                _ => false,
+            }));
+            assert!(observations.controls[4]
+                .clip
+                .contains_rect(observations.controls[4].rect));
+        }
     }
 
     // --- resolve_volume_selection: proposal beats a stale sculpt draft ---
