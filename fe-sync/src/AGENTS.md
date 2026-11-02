@@ -1937,3 +1937,29 @@ history/readings/blob persistence passed separately.
 ## Terminal maintenance forwarders
 
 Sync shutdown closes the async command receiver, requests the crossbeam forwarder to stop, and joins it before reporting completion. Sender clones cannot retain an orphan receiver. The distributed-query bridge also exposes an owned, stop-aware variant; bounded send retries observe shutdown. Legacy convenience callers retain their previous detached lifetime.
+
+
+## Join tickets
+
+`join_ticket::NativeJoinTicket` parses the native iroh-docs ticket and checks
+canonical encoding, exact namespace and selected capability, the issuer's bound
+EndpointId/DID, at most eight peers, and bounded usable IP/relay addresses. Viewer
+requires READ, while Editor/Manager require WRITE; unsupported custom transports
+refuse. The wrapper's Debug never exposes its capability bytes. Export uses the
+actual open native document and refuses offline/mock/expired requests.
+
+Join imports capability with `import_namespace` without starting synchronization,
+then enters the ordinary gossip/open pipeline. Actual document subscription is
+installed before start_sync. Its correlated open result confirms only pipeline
+installation; readiness separately requires a live document pump and successful
+SyncFinished from the exact invited issuer on that new replica generation. A
+closed/failed pump cannot confirm readiness. The bounded per-generation peer set
+contains at most256 successful identities and clears for each new subscription.
+Host readiness must also confirm actual stored ancestry and effective role.
+
+Capability import is a persistent effect in another store. Expired/time-out or
+failed connections therefore report an unconfirmed or partially admitted outcome;
+they never claim that no data changed or automatically retry. Final application
+join success is not emitted by this native transport adapter alone. The existing
+fresh-peer manifest journey now exports/imports an actual cold READ ticket and
+requires Viewer native writes to refuse, but remains unexecuted until root sweep.

@@ -12,6 +12,18 @@ use crate::relay_config::RelayHealth;
 /// Commands sent **to** the sync thread.
 #[derive(Debug, Clone)]
 pub enum SyncCommand {
+    ExportJoinTicket {
+        request: crate::join_ticket::ExportJoinTicket,
+        reply: crossbeam::channel::Sender<crate::join_ticket::JoinTicketExported>,
+    },
+    JoinVerseReplica {
+        request: crate::join_ticket::JoinReplicaRequest,
+        reply: crossbeam::channel::Sender<crate::join_ticket::JoinReplicaOpened>,
+    },
+    InspectJoinedReplica {
+        request: crate::join_ticket::JoinReplicaRequest,
+        reply: crossbeam::channel::Sender<crate::join_ticket::JoinReplicaReadiness>,
+    },
     /// Request a blob from the network for a given verse.
     ///
     /// The sync thread will first check the local blob store; if present it

@@ -288,6 +288,23 @@ enum AnyReplicator {
 }
 
 impl VerseReplicator for AnyReplicator {
+    fn joined_peer_ready(&self, namespace_id: &str, issuer_did: &str) -> bool {
+        match self {
+            Self::Iroh(replica) => replica.joined_peer_ready(namespace_id, issuer_did),
+            Self::Virtual(_) => false,
+        }
+    }
+    fn export_join_ticket(
+        &self,
+        namespace_id: &str,
+        role: fe_database::join_invite::JoinRole,
+        issuer_did: &str,
+    ) -> ReplicatorFuture<'_, anyhow::Result<crate::join_ticket::NativeJoinTicket>> {
+        match self {
+            Self::Iroh(replica) => replica.export_join_ticket(namespace_id, role, issuer_did),
+            Self::Virtual(_) => Box::pin(async { anyhow::bail!("Native document ticket export is unavailable") }),
+        }
+    }
     fn write_row(
         &self,
         table: &str,
@@ -871,6 +888,39 @@ pub fn spawn_sync_thread_with_transport(
                     }
                     maybe_cmd = async_cmd_rx.recv() => {
                         match maybe_cmd {
+                            Some(SyncCommand::InspectJoinedReplica { request, reply }) => {
+                                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+                                let outcome = match now {
+                                    Ok(now) if request.deadline > std::time::Instant::now()
+                                        && request.invitation.revalidate(&local_did, now.as_secs()).is_ok() => {
+                                        Ok(replicas.get(&request.invitation.manifest().verse_id).is_some_and(|replica|
+                                            replica.joined_peer_ready(&request.invitation.manifest().namespace_id, request.invitation.issuer_did())))
+                                    }
+                                    _ => Err("Invitation readiness deadline or identity is invalid"),
+                                };
+                                if reply.try_send(crate::join_ticket::JoinReplicaReadiness { request_id: request.request_id, outcome }).is_err() {
+                                    tracing::debug!("Replica readiness caller is no longer waiting");
+                                }
+                            }
+                            Some(SyncCommand::ExportJoinTicket { request, reply }) => {
+                                let ticket = if request.deadline <= std::time::Instant::now() {
+                                    Err("Invitation ticket request expired")
+                                } else if request.issuer_did != local_did {
+                                    Err("Invitation transport issuer changed")
+                                } else if let Some(replica) = replicas.get(&request.verse_id) {
+                                    match tokio::time::timeout(std::time::Duration::from_secs(5), replica.export_join_ticket(
+                                        &request.namespace_id, request.role, &request.issuer_did,
+                                    )).await {
+                                        Ok(Ok(ticket)) if request.deadline > std::time::Instant::now() => Ok(ticket),
+                                        _ => Err("Native invitation ticket export is unavailable"),
+                                    }
+                                } else {
+                                    Err("Open this Verse online before generating its invitation")
+                                };
+                                if reply.try_send(crate::join_ticket::JoinTicketExported {request_id: request.request_id, ticket}).is_err() {
+                                    tracing::debug!("Invitation ticket caller is no longer waiting");
+                                }
+                            }
                             Some(SyncCommand::FetchBlob { hash, verse_id }) => {
                                 handle_fetch_blob(
                                     &blob_store,
@@ -880,12 +930,25 @@ pub fn spawn_sync_thread_with_transport(
                                     &evt_tx,
                                 );
                             }
-                            Some(SyncCommand::OpenVerseReplica {
-                                verse_id,
-                                namespace_id,
-                                namespace_secret,
-                                bootstrap_peers: cmd_peers,
-                            }) => {
+                            Some(command @ (SyncCommand::OpenVerseReplica { .. } | SyncCommand::JoinVerseReplica { .. })) => {
+                                let (verse_id, namespace_id, namespace_secret, cmd_peers, join_reply) = match command {
+                                    SyncCommand::OpenVerseReplica { verse_id, namespace_id, namespace_secret, bootstrap_peers } =>
+                                        (verse_id, namespace_id, namespace_secret, bootstrap_peers, None),
+                                    SyncCommand::JoinVerseReplica { request, reply } => {
+                                        match prepare_join_replica(&replica_transport, &request, &local_did).await {
+                                            Ok(peers) => (request.invitation.manifest().verse_id.clone(),
+                                                request.invitation.manifest().namespace_id.clone(), None, peers,
+                                                Some((request.request_id, request.deadline, request.invitation.expires_at(), reply))),
+                                            Err(reason) => {
+                                                if reply.try_send(crate::join_ticket::JoinReplicaOpened { request_id: request.request_id, outcome: Err(reason) }).is_err() {
+                                                    tracing::debug!("Replica join caller is no longer waiting");
+                                                }
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                    _ => unreachable!(),
+                                };
                                 // Merge the command's explicit peers with the
                                 // env-configured bootstrap set (deduped).
                                 let mut peers = bootstrap_peers.clone();
@@ -924,7 +987,7 @@ pub fn spawn_sync_thread_with_transport(
                                     &peers,
                                 )
                                 .await;
-                                handle_open_verse_replica(
+                                let opened = handle_open_verse_replica(
                                     &mut replicas,
                                     &mut inbound_pumps,
                                     inbound_tx.clone(),
@@ -942,6 +1005,18 @@ pub fn spawn_sync_thread_with_transport(
                                     local_declaration,
                                 )
                                 .await;
+                                if let Some((request_id, deadline, expires_at, reply)) = join_reply {
+                                    let unexpired = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).is_ok_and(|now| now.as_secs() < expires_at);
+                                    let outcome = if opened.native_ready && deadline > std::time::Instant::now() && unexpired {
+                                        Ok(())
+                                    } else {
+                                        handle_close_verse_replica(&mut replicas, &mut inbound_pumps, &verse_id).await;
+                                        Err("Replica connection is unconfirmed; invitation admission may already be stored")
+                                    };
+                                    if reply.try_send(crate::join_ticket::JoinReplicaOpened { request_id, outcome }).is_err() {
+                                        tracing::debug!("Replica join caller is no longer waiting");
+                                    }
+                                }
                                 sync_blob_access_gate(
                                     &docs_stack,
                                     &verse_id,
@@ -1616,6 +1691,34 @@ async fn reassert_own_rows(
     }
 }
 
+#[derive(Debug)]
+struct ReplicaOpenReport { native_ready: bool }
+
+async fn prepare_join_replica(
+    transport: &ReplicaTransport,
+    request: &crate::join_ticket::JoinReplicaRequest,
+    local_did: &str,
+) -> Result<Vec<String>, &'static str> {
+    if request.deadline <= std::time::Instant::now() { return Err("Invitation connection request expired"); }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "Invitation clock is unavailable")?.as_secs();
+    let ticket = crate::join_ticket::NativeJoinTicket::for_invitation(&request.invitation, local_did, now)
+        .map_err(|_| "Invitation transport identity or capability is invalid")?;
+    let ReplicaTransport::Iroh(holder) = transport else { return Err("A native online connection is required"); };
+    let client = holder.docs_client().ok_or("P2P is offline; invitation connection did not start")?;
+    let peers = ticket.peers().iter().map(serde_json::to_string).collect::<Result<Vec<_>,_>>()
+        .map_err(|_| "Invitation bootstrap addresses are unavailable")?;
+    tokio::time::timeout(std::time::Duration::from_secs(5), client.import_namespace(ticket.capability()))
+        .await.map_err(|_| "Capability import outcome is unconfirmed")?
+        .map_err(|_| "Native capability import failed")?;
+    if request.deadline <= std::time::Instant::now() { return Err("Capability imported after the connection deadline; readiness is unconfirmed"); }
+    let completed_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "Capability import may have completed; clock is unavailable")?.as_secs();
+    request.invitation.revalidate(local_did, completed_at)
+        .map_err(|_| "Capability import may have completed; invitation expired before connection")?;
+    Ok(peers)
+}
+
 /// Handle [`SyncCommand::OpenVerseReplica`].
 ///
 /// Builds the per-verse replica on the sync thread's transport: the real
@@ -1656,7 +1759,7 @@ async fn handle_open_verse_replica(
     pending: &mut PendingWrites,
     fabric: &mut VerseFabric,
     local_declaration: PeerDeclaration,
-) {
+) -> ReplicaOpenReport {
     // Close existing replica (and its inbound pump) if any.
     if let Some(old) = replicas.remove(verse_id) {
         tracing::debug!(verse_id, "Closing existing replica before re-open");
@@ -1692,18 +1795,10 @@ async fn handle_open_verse_replica(
     // with no doc (the sanctioned mock stays). An error while ONLINE is
     // recorded as a loud non-replicating replica state — never a mock
     // install (F20 finding 4).
+    let mut sync_started = false;
+    let mut subscribed = false;
     match replicator.open_document().await {
-        Ok(()) => {
-            if replicator.is_doc_backed() {
-                // Join the live sync swarm. `start_sync` runs even with no
-                // peers: the dialed side must have its sync task running to
-                // serve entries to peers that dial *us* (A2), and the
-                // bootstrap set is exactly the peers we dial out to (A9).
-                if let Err(e) = replicator.start_sync(peers.to_vec()).await {
-                    tracing::warn!(verse_id, "Replica start_sync failed: {e}");
-                }
-            }
-        }
+        Ok(()) => {}
         Err(e) => {
             if transport.is_available() {
                 // ONLINE + failed open: loud, observable, non-replicating.
@@ -1749,12 +1844,28 @@ async fn handle_open_verse_replica(
                     }
                 });
                 inbound_pumps.insert(verse_id.to_string(), pump.abort_handle());
+                subscribed = true;
             }
             Err(e) => {
                 tracing::warn!(verse_id, "Replica subscribe failed — no inbound pump: {e}");
             }
         }
     }
+
+    if replicator.is_doc_backed() && subscribed && replicator.open_error().is_none() {
+        match replicator.start_sync(peers.to_vec()).await {
+            Ok(()) => sync_started = true,
+            Err(_) => {
+                replicator.mark_open_failed("Replica synchronization could not start".into());
+                if let Some(pump) = inbound_pumps.remove(verse_id) { pump.abort(); }
+                send_sync_event(evt_tx, SyncEvent::ReplicaOpenFailed {
+                    verse_id: verse_id.to_owned(), reason: "Replica synchronization could not start".into(),
+                });
+            }
+        }
+    }
+    let native_ready = replicator.is_doc_backed() && subscribed && sync_started
+        && replicator.open_error().is_none();
 
     // F4 startup reconciliation (deadlock-free shape — see
     // seed_reconciliation's doc comment): replay the replica's current
@@ -1842,6 +1953,7 @@ async fn handle_open_verse_replica(
         }
         request_local_catalog_and_roles(db_cmd_tx, verse_id);
     }
+    ReplicaOpenReport { native_ready }
 }
 
 /// Request stored catalog recovery and local role replay after replica open; see src/AGENTS.md.
@@ -7137,6 +7249,25 @@ mod tests {
             }
         }
 
+        let (ticket_tx, ticket_rx) = crossbeam::channel::bounded(1);
+        cmd_tx.send(SyncCommand::ExportJoinTicket {
+            request: crate::join_ticket::ExportJoinTicket {
+                request_id: "read-ticket".into(), verse_id: verse_id.clone(), namespace_id: ns_id.clone(),
+                issuer_did: local_did_b.clone(), role: fe_database::join_invite::JoinRole::Viewer,
+                deadline: std::time::Instant::now()+std::time::Duration::from_secs(10),
+            }, reply: ticket_tx,
+        }).unwrap();
+        let exported = tokio::task::spawn_blocking(move || ticket_rx.recv_timeout(std::time::Duration::from_secs(10)))
+            .await.unwrap().unwrap();
+        assert_eq!(exported.request_id, "read-ticket");
+        let read_ticket = exported.ticket.expect("actual read ticket from the owning sync service");
+        assert!(read_ticket.peers().iter().any(|peer| peer.id == addr_b.id));
+        assert!(!format!("{read_ticket:?}").contains(read_ticket.encoded()));
+        assert!(crate::join_ticket::NativeJoinTicket::parse(read_ticket.encoded(), &ns_id,
+            fe_database::join_invite::JoinRole::Editor, &local_did_b).is_err(), "read ticket cannot impersonate write transport");
+        assert!(crate::join_ticket::NativeJoinTicket::parse(read_ticket.encoded(), &"ff".repeat(32),
+            fe_database::join_invite::JoinRole::Viewer, &local_did_b).is_err(), "namespace is bound");
+
         // 3) A FRESH PEER joins the namespace from a cold store and converges
         //    the manifest through the real transport.
         let secret_c = iroh::SecretKey::from_bytes(&[72u8; 32]);
@@ -7149,19 +7280,36 @@ mod tests {
                 .expect("fresh-peer docs stack"),
         );
         let holder_c = Arc::new(IrohDocsEngineHolder::online(stack_c));
+        let owner_key = fe_identity::NodeKeypair::from_bytes(&[71u8;32]).unwrap();
+        let recipient_key = fe_identity::NodeKeypair::from_bytes(&[72u8;32]).unwrap();
+        let recipient_did = recipient_key.to_did_key();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let invitation = fe_database::join_invite::JoinInvitation::issue_owner(
+            &owner_key, recipient_did.clone(), format!("VERSE#{verse_id}"), fe_database::join_invite::JoinRole::Viewer,
+            fe_database::join_invite::JoinManifest {
+                verse_id: verse_id.clone(), name: "Open-Race Verse".into(), created_by: local_did_b.clone(),
+                created_at: "2026-10-07T00:00:00Z".into(), namespace_id: ns_id.clone(), default_access: "viewer".into(),
+                ts_mode: "mirror".into(), ts_replication_factor: 1, ts_bucket_width_ms: 86_400_000,
+            }, read_ticket.encoded().into(), now, 3600,
+        ).unwrap();
+        let verified = fe_database::join_invite::JoinInvitation::parse_owner(&invitation.to_link().unwrap(), &recipient_did, now).unwrap();
+        let request = crate::join_ticket::JoinReplicaRequest {
+            request_id: "cold-read-import".into(), invitation: verified,
+            deadline: std::time::Instant::now()+std::time::Duration::from_secs(10),
+        };
+        let peers = prepare_join_replica(&ReplicaTransport::Iroh(holder_c.clone()), &request, &recipient_did)
+            .await.expect("cold recipient imports its actual read capability without a namespace write secret");
+        let peers: Vec<iroh::EndpointAddr> = peers.iter().map(|peer| serde_json::from_str(peer).unwrap()).collect();
         let fresh = IrohDocsReplicator::new(
-            verse_id.clone(),
-            ns_id.clone(),
-            ns_secret_hex.clone(),
-            "did:key:fresh-peer".to_string(),
-            holder_c,
+            verse_id.clone(), ns_id.clone(), String::new(), recipient_did, holder_c,
         );
         fresh
             .open_document()
             .await
             .expect("fresh peer imports the capability");
+        let _fresh_subscription = fresh.subscribe().await.expect("subscribe before dialing the creator");
         fresh
-            .start_sync(vec![addr_b])
+            .start_sync(peers)
             .await
             .expect("fresh peer dials the creator");
 
@@ -7184,6 +7332,14 @@ mod tests {
             converged, manifest_bytes,
             "converged manifest content matches the emitted row"
         );
+
+        assert!(fresh.write_row("node", "viewer-write-refused", b"{}").await.is_err(),
+            "a cold Viewer has READ transport only");
+        while !fresh.joined_peer_ready(&ns_id, &local_did_b) {
+            assert!(std::time::Instant::now() < deadline, "actual issuer synchronization must complete");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
 
         // 4) OWN-DOC DURABLE READ-BACK: shut the creator down cleanly, then
         //    reopen its persisted doc store read-only (secretless — F20

@@ -26,7 +26,8 @@
 //! forwarding neighbor.
 
 use fe_runtime::blob_store::BlobHash;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use bytes::Bytes;
@@ -94,6 +95,19 @@ pub fn row_is_tombstone(data: &[u8]) -> bool {
 /// Implementations must be `Send + Sync` so they can be stored in the sync
 /// thread's `HashMap<String, Box<dyn VerseReplicator>>`.
 pub trait VerseReplicator: Send + Sync {
+    fn joined_peer_ready(&self, namespace_id: &str, issuer_did: &str) -> bool {
+        let _ = (namespace_id, issuer_did);
+        false
+    }
+    fn export_join_ticket(
+        &self,
+        namespace_id: &str,
+        role: fe_database::join_invite::JoinRole,
+        issuer_did: &str,
+    ) -> ReplicatorFuture<'_, anyhow::Result<crate::join_ticket::NativeJoinTicket>> {
+        let _ = (namespace_id, role, issuer_did);
+        Box::pin(async { anyhow::bail!("This replica has no native document ticket") })
+    }
     /// Write (or overwrite) a row entry in the replica.
     ///
     /// The entry key is `"{table}/{record_id}"`. The value is the row payload
@@ -521,6 +535,21 @@ pub struct IrohDocsReplicator {
     /// `None` offline (the offline mock fallback is sanctioned) and on
     /// successful opens.
     open_failed: RwLock<Option<String>>,
+    join_readiness: RwLock<Arc<JoinReadiness>>,
+}
+
+#[derive(Default)]
+struct JoinReadiness {
+    alive: AtomicBool,
+    successful_peers: Mutex<HashSet<iroh::EndpointId>>,
+}
+
+struct JoinReadinessGuard(Arc<JoinReadiness>);
+
+impl Drop for JoinReadinessGuard {
+    fn drop(&mut self) {
+        self.0.alive.store(false, Ordering::Release);
+    }
 }
 
 impl IrohDocsReplicator {
@@ -545,6 +574,7 @@ impl IrohDocsReplicator {
             author: RwLock::new(None),
             pump: Mutex::new(None),
             open_failed: RwLock::new(None),
+            join_readiness: RwLock::new(Arc::new(JoinReadiness::default())),
         }
     }
 
@@ -737,6 +767,34 @@ impl IrohDocsReplicator {
 }
 
 impl VerseReplicator for IrohDocsReplicator {
+    fn joined_peer_ready(&self, namespace_id: &str, issuer_did: &str) -> bool {
+        if self.open_error().is_some() || !self.live_doc().is_some_and(|doc| hex::encode(doc.id().as_bytes()) == namespace_id) {
+            return false;
+        }
+        let Ok(issuer) = fe_identity::public_key_from_did_key(issuer_did) else { return false; };
+        let readiness = self.join_readiness.read().unwrap_or_else(|error| error.into_inner());
+        let ready = readiness.alive.load(Ordering::Acquire) && readiness.successful_peers.lock().unwrap_or_else(|error| error.into_inner())
+            .iter().any(|peer| peer.as_bytes() == &issuer.to_bytes());
+        ready
+    }
+    fn export_join_ticket(
+        &self,
+        namespace_id: &str,
+        role: fe_database::join_invite::JoinRole,
+        issuer_did: &str,
+    ) -> ReplicatorFuture<'_, anyhow::Result<crate::join_ticket::NativeJoinTicket>> {
+        let namespace_id = namespace_id.to_owned();
+        let issuer_did = issuer_did.to_owned();
+        Box::pin(async move {
+            anyhow::ensure!(self.open_error().is_none(), "Replica is unavailable");
+            let doc = self.live_doc().ok_or_else(|| anyhow::anyhow!("A live native replica is required"))?;
+            let mode = if role.requires_write() { iroh_docs::api::protocol::ShareMode::Write }
+                else { iroh_docs::api::protocol::ShareMode::Read };
+            let ticket = doc.share(mode, iroh_docs::api::protocol::AddrInfoOptions::RelayAndAddresses)
+                .await.map_err(|_| anyhow::anyhow!("Document ticket export failed"))?;
+            crate::join_ticket::NativeJoinTicket::parse(&ticket.to_string(), &namespace_id, role, &issuer_did)
+        })
+    }
     fn write_row(
         &self,
         table: &str,
@@ -773,10 +831,14 @@ impl VerseReplicator for IrohDocsReplicator {
                 .await
                 .map_err(|e| anyhow::anyhow!("doc subscribe: {e}"))?;
             let (tx, rx) = mpsc::channel::<RowChange>(1024);
+            if let Some(old) = self.pump.lock().unwrap_or_else(|error| error.into_inner()).take() { old.abort(); }
+            let readiness = Arc::new(JoinReadiness::default());
+            *self.join_readiness.write().unwrap_or_else(|error| error.into_inner()) = readiness.clone();
             let handle = tokio::spawn(pump_live_events(
                 Box::pin(stream),
                 stack.blob_store().clone(),
                 tx,
+                readiness,
             ));
             *self.pump.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle.abort_handle());
             Ok(rx)
@@ -1112,7 +1174,10 @@ async fn pump_live_events(
     mut stream: std::pin::Pin<Box<dyn Stream<Item = anyhow::Result<LiveEvent>> + Send>>,
     blobs: iroh_blobs::api::Store,
     out: mpsc::Sender<RowChange>,
+    readiness: Arc<JoinReadiness>,
 ) {
+    readiness.alive.store(true, Ordering::Release);
+    let _readiness_guard = JoinReadinessGuard(readiness.clone());
     // Entries whose content hash has not finished downloading yet.
     let mut pending: HashMap<iroh_blobs::Hash, Vec<PendingContent>> = HashMap::new();
 
@@ -1246,9 +1311,16 @@ async fn pump_live_events(
                 tracing::debug!(peer = %peer_did_key(&peer), "replica swarm neighbor up");
             }
             LiveEvent::NeighborDown(peer) => {
+                readiness.successful_peers.lock().unwrap_or_else(|error| error.into_inner()).remove(&peer);
                 tracing::debug!(peer = %peer_did_key(&peer), "replica swarm neighbor down");
             }
-            LiveEvent::SyncFinished(_) | LiveEvent::PendingContentReady => {
+            LiveEvent::SyncFinished(event) => {
+                let mut peers = readiness.successful_peers.lock().unwrap_or_else(|error| error.into_inner());
+                if event.result.is_ok() {
+                    if peers.len() < 256 { peers.insert(event.peer); }
+                } else { peers.remove(&event.peer); }
+            }
+            LiveEvent::PendingContentReady => {
                 tracing::debug!("replica sync progress event");
             }
         }

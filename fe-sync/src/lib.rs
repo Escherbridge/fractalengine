@@ -8,6 +8,7 @@ pub mod docs_engine;
 pub mod endpoint;
 pub mod event_outbox;
 pub mod lifecycle;
+pub mod join_ticket;
 pub mod messages;
 pub mod offline;
 pub mod p2p_store_migration;
