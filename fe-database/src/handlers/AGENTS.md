@@ -129,3 +129,7 @@ The existing Viewer-denial real-store journey now also captures then revokes an 
 ## Field definition lookup ownership
 
 `get_field_def_handler` is live internal infrastructure for checked definition mutations and enforced-schema get/set. Its callers perform their existing target authorization; retaining this lookup does not introduce a separate public single-fetch command.
+
+Checked point edits also admit exactly one removed/restored row under the same full-array CAS.
+Every surviving row remains byte-equivalent JSON, including timestamp and Bezier metadata.
+The existing operation/journal failure journey covers removal, stale/Viewer refusal and inverse restore.

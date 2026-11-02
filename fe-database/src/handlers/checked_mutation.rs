@@ -110,7 +110,7 @@ pub(crate) async fn commit(
                 typed.properties.get(key) == Some(wanted),
                 "Path changed since this edit; Undo skipped"
             );
-            validate_point_move(wanted, value)?;
+            validate_point_edit(wanted, value)?;
             let rules = field_def::capture_property_rules(db, &scope, key).await?;
             let schemas = field_def::validate_captured_property_rules(&scope, key, value, &rules)?;
             sql.push(format!(
@@ -134,7 +134,7 @@ pub(crate) async fn commit(
                 schemas,
             )
         }
-        _ => anyhow::bail!("Undo supports full transforms and single path-point moves only"),
+        _ => anyhow::bail!("Undo supports full transforms and single path-point edits only"),
     };
     let prepared = node_history::prepare_change(
         before,
@@ -215,7 +215,7 @@ pub(crate) async fn commit(
     Ok(receipt)
 }
 
-fn validate_point_move(before: &Value, after: &Value) -> anyhow::Result<()> {
+fn validate_point_edit(before: &Value, after: &Value) -> anyhow::Result<()> {
     fe_sdk::property_schema::validate_persistable_numbers(after).map_err(anyhow::Error::msg)?;
     let old = before
         .as_array()
@@ -223,7 +223,37 @@ fn validate_point_move(before: &Value, after: &Value) -> anyhow::Result<()> {
     let new = after
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("path points must be an array"))?;
-    anyhow::ensure!(old.len() == new.len(), "path point identity changed");
+    if old.len() != new.len() {
+        let (longer, shorter) = if old.len() > new.len() {
+            (old, new)
+        } else {
+            (new, old)
+        };
+        anyhow::ensure!(
+            longer.len() == shorter.len() + 1,
+            "Undo covers one removed or restored point"
+        );
+        let index = longer
+            .iter()
+            .zip(shorter)
+            .position(|(a, b)| a != b)
+            .unwrap_or(shorter.len());
+        anyhow::ensure!(
+            longer[index + 1..] == shorter[index..],
+            "surviving path rows changed"
+        );
+        let row = longer[index]
+            .as_array()
+            .filter(|row| row.len() >= 4)
+            .ok_or_else(|| anyhow::anyhow!("invalid removed or restored point"))?;
+        anyhow::ensure!(
+            row[..3]
+                .iter()
+                .all(|v| v.as_f64().is_some_and(f64::is_finite)),
+            "path point coordinates must be finite"
+        );
+        return Ok(());
+    }
     let mut changed = 0;
     for (a, b) in old.iter().zip(new) {
         let a = a

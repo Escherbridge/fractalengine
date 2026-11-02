@@ -1739,6 +1739,24 @@ mod tests {
         assert!(undone.history_version>saved.history_version);assert_eq!(undone.state.properties["gpx_points"],path_before);
         let (recovered,current)=crate::handlers::checked_mutation::resolve(&db,&undo_node,"tree-other-petal","qa-undo-point","did:qa").await.unwrap();
         assert_eq!(recovered.unwrap().history_version,saved.history_version);assert_eq!(current.properties["gpx_points"],path_before);
+        let removed_points=serde_json::json!([path_before[1].clone()]);
+        let removal=NodeMutation::PropertySet {key:"gpx_points".into(),value:removed_points.clone()};
+        let remove_guard=NodeEditPrecondition {scope:plugin_scope.clone(),history_version:Some(undone.history_version),before:NodeEditBefore::PathPoints(path_before.clone())};
+        let removed=crate::handlers::checked_mutation::commit(&db,&undo_node,&removal,&remove_guard,"qa-remove-point","did:qa").await.unwrap();
+        assert_eq!(removed.state.properties["gpx_points"],removed_points);
+        let restore_guard=NodeEditPrecondition {scope:plugin_scope.clone(),history_version:Some(removed.history_version),before:NodeEditBefore::PathPoints(removed_points.clone())};
+        let restore=NodeMutation::PropertySet {key:"gpx_points".into(),value:path_before.clone()};
+        let before_bad_removals=op_log_count(&db).await;
+        let mut changed_survivor=path_before.clone();changed_survivor[1][3]=serde_json::json!(999);
+        for (request,mutation,guard,actor) in [
+            ("qa-remove-stale",removal.clone(),remove_guard.clone(),"did:qa"),
+            ("qa-remove-viewer",restore.clone(),restore_guard.clone(),"did:tree-viewer"),
+            ("qa-remove-metadata",NodeMutation::PropertySet {key:"gpx_points".into(),value:changed_survivor},restore_guard.clone(),"did:qa"),
+            ("qa-remove-many",NodeMutation::PropertySet {key:"gpx_points".into(),value:serde_json::json!([])},remove_guard.clone(),"did:qa")
+        ] { crate::handlers::checked_mutation::commit(&db,&undo_node,&mutation,&guard,request,actor).await.expect_err("invalid removal refuses atomically"); }
+        assert_eq!(op_log_count(&db).await,before_bad_removals);
+        let restored=crate::handlers::checked_mutation::commit(&db,&undo_node,&restore,&restore_guard,"qa-restore-point","did:qa").await.unwrap();
+        assert_eq!(restored.state.properties["gpx_points"],path_before);
         let before_plugin_ops = op_log_count(&db).await;
         let invalid = vec![
             PendingOp::SetProperty {
