@@ -609,6 +609,14 @@ stage containing a hash-verified `seal_hexon.exe`. The stage builds that existin
 fe-format example serially after the other helpers and records its SHA256.
 Older stages remain valid for ordinary app launch but cannot start this fixture.
 
+Default Python discovery enumerates `Get-Command python.exe` applications in
+command precedence order and selects the first valid absolute native executable.
+Each candidate passes the same basename, real-file and reparse-ancestor checks
+as an explicit `-PythonExe`; redirected application aliases are refused. Multiple
+installed versions must never be string-joined into a single path. An invalid
+explicit path fails without falling back to another installation. Discovery
+inspects filesystem metadata only and never starts an interpreter to probe it.
+
 Preparation creates a unique `<run>/controlled-fixtures/<instance>/`. It signs
 the small existing analytical TerrainTileset through production `seal_hexon`,
 which verifies `RequireSealed` with a publisher pin before returning. A fresh

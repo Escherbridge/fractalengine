@@ -44,10 +44,30 @@ try {
     $app = Get-QaOwnedProcess -Identity $context.current.process_identity
     if (-not $app) { throw 'Start requires the exact owned app lifetime to be running' }
     $app.Dispose()
-    if (-not $PythonExe) { $PythonExe = (Get-Command python.exe -CommandType Application -ErrorAction Stop).Source }
-    if (-not [IO.Path]::IsPathRooted($PythonExe) -or -not (Test-Path -LiteralPath $PythonExe -PathType Leaf) -or
-        [IO.Path]::GetFileName($PythonExe) -notmatch '^python(?:\d+(?:\.\d+)?)?\.exe$') { throw 'PythonExe must be an absolute native Python executable' }
-    $PythonExe = (Get-Item -LiteralPath $PythonExe).FullName
+    $pythonCandidates = if ($PSBoundParameters.ContainsKey('PythonExe')) { @($PythonExe) } else {
+        @(Get-Command python.exe -CommandType Application -ErrorAction Stop | ForEach-Object { $_.Source })
+    }
+    $PythonExe = $null
+    foreach ($candidate in $pythonCandidates) {
+        if ($candidate -isnot [string] -or -not [IO.Path]::IsPathRooted($candidate) -or
+            $candidate -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+\\)' -or
+            $candidate -match '["\r\n]' -or
+            [IO.Path]::GetFileName($candidate) -notmatch '^python(?:\d+(?:\.\d+)?)?\.exe$') { continue }
+        try {
+            $executable = Get-Item -LiteralPath $candidate -Force -ErrorAction Stop
+            if ($executable.PSIsContainer -or $executable.FullName -ne [IO.Path]::GetFullPath($candidate)) { continue }
+            $redirected = $false
+            $cursor = $executable
+            while ($cursor) {
+                if ($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint) { $redirected = $true; break }
+                $cursor = if ($cursor -is [IO.FileInfo]) { $cursor.Directory } else { $cursor.Parent }
+            }
+            if ($redirected) { continue }
+            $PythonExe = $executable.FullName
+            break
+        } catch { continue }
+    }
+    if (-not $PythonExe) { throw 'PythonExe must identify an absolute native Python executable without redirected paths; supply -PythonExe explicitly if discovery finds none' }
     foreach ($path in @($PythonExe, $runDir, $PSScriptRoot)) {
         if ($path -match '["\r\n]') { throw 'Fixture process paths cannot contain quotes or line breaks' }
     }
