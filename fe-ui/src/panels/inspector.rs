@@ -224,10 +224,6 @@ fn inspector_entity_section(
 // See AGENTS.md §inspector-units.
 // ---------------------------------------------------------------------------
 
-/// Max characters shown for a custom-property value before eliding (FR-1); the
-/// full value is still copyable via the box's copy button.
-const PROP_VALUE_ELIDE_CHARS: usize = 240;
-
 // Rotation is already stored degrees-side in `inspector.rot` (inspector_sync
 // converts radians→degrees on fill; actions::transform converts back on Apply),
 // so the panel needs no rotation conversion — these wrappers exist for symmetry
@@ -1274,7 +1270,7 @@ fn submit_new_property(
         Err("Enter a property key.".to_owned())
     } else if inspector.node_properties.get(key).is_some() {
         Err(
-            "This property already exists. Use Edit on its card to preserve its stored type."
+            "This property already exists. Use Edit on its row to preserve its stored type."
                 .to_owned(),
         )
     } else {
@@ -1365,6 +1361,269 @@ fn property_value_editor(
     .inner
 }
 
+#[derive(Default)]
+struct PropertyTableActions {
+    save: Option<String>,
+    cancel: Option<String>,
+    delete: Option<String>,
+}
+
+fn render_property_table(
+    ui: &mut egui::Ui,
+    inspector: &mut InspectorFormState,
+    node_id: &str,
+    ui_mgr: &mut UiManager,
+    now: f64,
+) -> PropertyTableActions {
+    use super::property_grid::Columns;
+
+    let mut actions = PropertyTableActions::default();
+    let Some(object) = inspector
+        .node_properties
+        .as_object()
+        .filter(|o| !o.is_empty())
+    else {
+        ui.label("No custom properties");
+        return actions;
+    };
+    let columns = Columns::new(ui, ui.available_width());
+    if columns.width() > ui.available_width() {
+        ui.label(egui::RichText::new("Scroll horizontally for row actions").small());
+    }
+    crate::ui_shell::layout_policy::scroll(
+        ui,
+        "Custom property table",
+        [true, false],
+        egui::ScrollArea::horizontal()
+            .id_salt(("property-table", node_id))
+            .auto_shrink([false, true]),
+        |ui| {
+            ui.set_width(columns.width());
+            columns.row(ui, |ui| {
+                for (column, heading) in ["Key", "Type", "Value", "Actions"].into_iter().enumerate()
+                {
+                    columns.cell(ui, column, |ui| {
+                        ui.add(egui::Label::new(egui::RichText::new(heading).strong()).truncate());
+                    });
+                }
+            });
+            ui.separator();
+            for (key, value) in object {
+                ui.push_id((node_id, key), |ui| {
+                    render_property_row(
+                        ui,
+                        &columns,
+                        node_id,
+                        key,
+                        value,
+                        &mut inspector.property_editor,
+                        inspector.node_properties_loading,
+                        ui_mgr,
+                        now,
+                        &mut actions,
+                    );
+                });
+                ui.separator();
+            }
+        },
+    );
+    actions
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_property_row(
+    ui: &mut egui::Ui,
+    columns: &super::property_grid::Columns,
+    node_id: &str,
+    key: &str,
+    value: &serde_json::Value,
+    editor: &mut PropertyEditorState,
+    loading: bool,
+    ui_mgr: &mut UiManager,
+    now: f64,
+    actions: &mut PropertyTableActions,
+) {
+    let editing = editor.drafts.contains_key(key);
+    let pending = editor
+        .drafts
+        .get(key)
+        .is_some_and(|draft| draft.pending.is_some());
+    let detail_id = ui.make_persistent_id("stored-property-detail");
+    let mut expanded = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(detail_id).unwrap_or(false));
+    columns.row(ui, |ui| {
+        columns.cell(ui, 0, |ui| {
+            ui.add(
+                egui::Label::new(egui::RichText::new(key).strong().color(theme::TEXT_SECTION))
+                    .truncate(),
+            )
+            .on_hover_text(key);
+        });
+        columns.cell(ui, 1, |ui| {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(PropertyValueKind::of(value).label())
+                        .small()
+                        .color(theme::TEXT_DIM),
+                )
+                .truncate(),
+            );
+        });
+        columns.cell(ui, 2, |ui| {
+            let preview = super::property_grid::preview(value);
+            if value.is_object() || value.is_array() {
+                let marker = if expanded { "▾" } else { "▸" };
+                if ui
+                    .add_enabled(
+                        !editing,
+                        egui::Button::new(format!("{marker} {preview}"))
+                            .truncate()
+                            .min_size(egui::vec2(ui.available_width(), columns.height)),
+                    )
+                    .named(
+                        ui,
+                        format_args!(
+                            "{} stored property {key}",
+                            if expanded { "Collapse" } else { "Expand" }
+                        ),
+                    )
+                    .clicked()
+                {
+                    expanded = !expanded;
+                    ui.ctx()
+                        .data_mut(|data| data.insert_temp(detail_id, expanded));
+                }
+            } else {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(preview).monospace().small()).truncate(),
+                )
+                .on_hover_text(crate::panels::widgets::elide(
+                    &super::property_grid::clipboard_value(value),
+                    800,
+                ));
+            }
+        });
+        columns.cell(ui, 3, |ui| {
+            if ui
+                .add_enabled(
+                    !loading && !editing,
+                    egui::Button::new("Edit").min_size(egui::Vec2::splat(columns.height)),
+                )
+                .named(ui, format_args!("Edit property {key}"))
+                .clicked()
+            {
+                editor
+                    .drafts
+                    .insert(key.to_owned(), PropertyDraft::new(value));
+            }
+            if ui
+                .add(egui::Button::new("Copy").min_size(egui::Vec2::splat(columns.height)))
+                .named(ui, format_args!("Copy property {key}"))
+                .clicked()
+            {
+                ui.ctx()
+                    .copy_text(super::property_grid::clipboard_value(value));
+                ui_mgr.show_toast(format!("Copied {key}"), now);
+            }
+            ui.add_enabled_ui(!loading && !pending, |ui| {
+                if super::widgets::confirm_button(
+                    ui,
+                    ("delete-property", node_id, key),
+                    "Delete",
+                    "Confirm",
+                    format_args!("Delete property {key}"),
+                ) {
+                    actions.delete = Some(key.to_owned());
+                }
+            });
+        });
+    });
+    if let Some(draft) = editor.drafts.get_mut(key) {
+        render_property_draft(ui, key, value, draft, loading, columns.height, actions);
+    } else if expanded && (value.is_object() || value.is_array()) {
+        ui.label(
+            egui::RichText::new("Stored JSON (read only)")
+                .small()
+                .color(theme::TEXT_DIM),
+        );
+        let mut display = PropertyValueKind::format(value);
+        ui.add_enabled_ui(false, |ui| {
+            property_value_editor(
+                ui,
+                &mut display,
+                PropertyValueKind::of(value),
+                format_args!("Stored value of property {key}"),
+            );
+        });
+    }
+}
+
+fn render_property_draft(
+    ui: &mut egui::Ui,
+    key: &str,
+    value: &serde_json::Value,
+    draft: &mut PropertyDraft,
+    loading: bool,
+    target: f32,
+    actions: &mut PropertyTableActions,
+) {
+    ui.label(
+        egui::RichText::new(format!("Editing {key} ({})", draft.kind.label()))
+            .small()
+            .color(theme::TEXT_DIM),
+    );
+    ui.add_enabled_ui(draft.pending.is_none(), |ui| {
+        if property_value_editor(
+            ui,
+            &mut draft.raw,
+            draft.kind,
+            format_args!("Value of property {key}"),
+        )
+        .changed()
+        {
+            draft.error = None;
+        }
+    });
+    if let Some(error) = &draft.error {
+        ui.add(egui::Label::new(egui::RichText::new(error).color(theme::STATUS_OFFLINE)).wrap());
+    }
+    let status = if draft.pending.is_some() {
+        "Waiting for saved value..."
+    } else if draft.dirty() {
+        "Unsaved changes"
+    } else {
+        "Matches stored value"
+    };
+    ui.label(egui::RichText::new(status).small().color(theme::TEXT_DIM));
+    ui.horizontal_wrapped(|ui| {
+        let can_save =
+            !loading && draft.pending.is_none() && draft.dirty() && value == &draft.source;
+        if ui
+            .add_enabled(
+                can_save,
+                egui::Button::new("Save")
+                    .fill(theme::BG_SAVE)
+                    .min_size(egui::Vec2::splat(target)),
+            )
+            .named(ui, format_args!("Save property {key}"))
+            .clicked()
+        {
+            actions.save = Some(key.to_owned());
+        }
+        if ui
+            .add_enabled(
+                draft.pending.is_none(),
+                egui::Button::new("Cancel").min_size(egui::Vec2::splat(target)),
+            )
+            .named(ui, format_args!("Cancel editing property {key}"))
+            .clicked()
+        {
+            actions.cancel = Some(key.to_owned());
+        }
+    });
+}
+
 fn inspector_properties_section(
     ui: &mut egui::Ui,
     inspector: &mut InspectorFormState,
@@ -1414,155 +1673,14 @@ fn inspector_properties_section(
                 return;
             }
         }
-        let mut delete_key = None;
-        let mut save_key = None;
-        let mut cancel_key = None;
-        if let Some(object) = inspector.node_properties.as_object() {
-            if object.is_empty() {
-                ui.label("No custom properties");
-            }
-            for (key, value) in object {
-                ui.push_id((node_id, key), |ui| {
-                    egui::Frame::NONE
-                        .fill(theme::BG_BUTTON)
-                        .inner_margin(egui::Margin::symmetric(6, 6))
-                        .corner_radius(3.0)
-                        .show(ui, |ui| {
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(key).strong().color(theme::TEXT_SECTION),
-                                )
-                                .wrap(),
-                            );
-                            ui.label(
-                                egui::RichText::new(PropertyValueKind::of(value).label())
-                                    .small()
-                                    .color(theme::TEXT_DIM),
-                            );
-                            let editing = inspector.property_editor.drafts.contains_key(key);
-                            let pending = inspector
-                                .property_editor
-                                .drafts
-                                .get(key)
-                                .is_some_and(|draft| draft.pending.is_some());
-                            if !editing {
-                                let display = PropertyValueKind::format(value);
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(crate::panels::widgets::elide(
-                                            &display,
-                                            PROP_VALUE_ELIDE_CHARS,
-                                        ))
-                                        .monospace()
-                                        .small(),
-                                    )
-                                    .wrap(),
-                                );
-                            }
-                            ui.horizontal_wrapped(|ui| {
-                                if ui
-                                    .small_button("Copy")
-                                    .named(ui, format_args!("Copy property {key}"))
-                                    .clicked()
-                                {
-                                    ui.ctx().copy_text(match value {
-                                        serde_json::Value::String(value) => value.clone(),
-                                        value => value.to_string(),
-                                    });
-                                    ui_mgr.show_toast(format!("Copied {key}"), now);
-                                }
-                                if !editing
-                                    && ui
-                                        .add_enabled(!loading, egui::Button::new("Edit").small())
-                                        .named(ui, format_args!("Edit property {key}"))
-                                        .clicked()
-                                {
-                                    inspector
-                                        .property_editor
-                                        .drafts
-                                        .insert(key.clone(), PropertyDraft::new(value));
-                                }
-                                if ui
-                                    .add_enabled(
-                                        !loading && !pending,
-                                        egui::Button::new("Delete").small(),
-                                    )
-                                    .named(ui, format_args!("Delete property {key}"))
-                                    .clicked()
-                                {
-                                    delete_key = Some(key.clone());
-                                }
-                            });
-                            if let Some(draft) = inspector.property_editor.drafts.get_mut(key) {
-                                ui.add_enabled_ui(draft.pending.is_none(), |ui| {
-                                    if property_value_editor(
-                                        ui,
-                                        &mut draft.raw,
-                                        draft.kind,
-                                        format_args!("Value of property {key}"),
-                                    )
-                                    .changed()
-                                    {
-                                        draft.error = None;
-                                    }
-                                });
-                                if let Some(error) = &draft.error {
-                                    ui.colored_label(theme::STATUS_OFFLINE, error);
-                                }
-                                if draft.pending.is_some() {
-                                    ui.label("Waiting for saved value...");
-                                } else if draft.dirty() {
-                                    ui.label(
-                                        egui::RichText::new("Unsaved changes")
-                                            .small()
-                                            .color(theme::TEXT_DIM),
-                                    );
-                                } else {
-                                    ui.label(
-                                        egui::RichText::new("Matches stored value")
-                                            .small()
-                                            .color(theme::TEXT_DIM),
-                                    );
-                                }
-                                ui.horizontal_wrapped(|ui| {
-                                    let can_save = !loading
-                                        && draft.pending.is_none()
-                                        && draft.dirty()
-                                        && value == &draft.source;
-                                    if ui
-                                        .add_enabled(
-                                            can_save,
-                                            egui::Button::new("Save").fill(theme::BG_SAVE),
-                                        )
-                                        .named(ui, format_args!("Save property {key}"))
-                                        .clicked()
-                                    {
-                                        save_key = Some(key.clone());
-                                    }
-                                    if ui
-                                        .add_enabled(
-                                            draft.pending.is_none(),
-                                            egui::Button::new("Cancel"),
-                                        )
-                                        .named(ui, format_args!("Cancel editing property {key}"))
-                                        .clicked()
-                                    {
-                                        cancel_key = Some(key.clone());
-                                    }
-                                });
-                            }
-                        });
-                });
-                ui.add_space(4.0);
-            }
-        }
-        if let Some(key) = cancel_key {
+        let actions = render_property_table(ui, inspector, node_id, ui_mgr, now);
+        if let Some(key) = actions.cancel {
             inspector.property_editor.drafts.remove(&key);
         }
-        if let Some(key) = save_key {
+        if let Some(key) = actions.save {
             submit_property_edit(inspector, node_id, &key, ui_mgr, now);
         }
-        if let Some(key) = delete_key {
+        if let Some(key) = actions.delete {
             ui_mgr.push_action(UiAction::DeleteNodeProperty {
                 node_id: node_id.clone(),
                 key,

@@ -239,7 +239,7 @@ is set.
   `on_disabled_hover_text(role_denial_reason(..))` on the scope's response —
   see `dialogs/hexon_manager.rs`'s Remove.
 - **Two-step destructive confirm (X-06).** `confirm_button(ui, id_salt, label,
-  confirm_label) -> bool` extracts the inspector token-revoke pattern
+  confirm_label, name) -> bool` extracts the inspector token-revoke pattern
   (`inspector.rs`'s Revoke/Confirm Revoke) into one reusable widget: first
   click arms (shows `label`), a second click within 4s on `confirm_label`
   fires; the arm disarms on timeout or on any click elsewhere this frame.
@@ -397,11 +397,31 @@ remain editable after the pending write expires, even if that refresh is
 still loading; Add/Save wait for loaded stored values. Cancel discards
 only an unsent draft and is disabled while a write is awaiting confirmation.
 
-Property cards use wrapping action rows and width-bounded multiline value
-editors inside the shared layout-policy scroll seam. Nested JSON is formatted
-for editing without changing the parsed value. Each key, value, type and row
-action keeps its purpose/context name via `ResponseExt`. This slice does not
-add history, replay, charts, or field-definition enforcement.
+The property grid supersedes the earlier vertical property cards (and the
+historical copy-box presentation in §inspector-units). `property_grid` owns
+only column geometry, compact previews and exact clipboard formatting;
+the parser and draft model remain shared with Add/Save. Key, Type, Value and
+Actions columns fill the available body width. Column minima reserve readable
+values and the armed Confirm/Cancel pair; below that width a horizontal scroll
+keeps the Inspector's viewport boundary intact. Row actions remain text buttons
+and use at least 24 points or 20 physical pixels, whichever is larger.
+
+Scalar previews are single-line ellipses with bounded hover text. Newlines and
+tabs are escaped for display, empty strings are explicit, and objects/arrays
+show field/item counts. Compound values expand into a bounded read-only JSON
+view; Edit expands the existing typed editor under its own row. Copy always
+uses the full stored string verbatim or compact JSON for other kinds, never a
+preview or unsaved draft. There is no silent display-to-clipboard coercion.
+
+Every row scopes widget IDs by node id and key. Edit/Copy/Delete remain visible
+while editing; Delete uses the canonical two-step confirmation helper with
+node/key identity and contextual action names. Canceling deletion or editing
+does not change the loaded value. Native `ResponseExt` names and actual-response
+observations remain on the leaf controls, including confirm/cancel. Editors
+stay inside the shared layout-policy scroll seam; pending, dirty, conflict,
+timeout and authoritative-readback rules above remain unchanged. Add Property
+stays after the table, with its existing accessible names. This presentation
+does not add history, replay, charts, or field-definition enforcement.
 
 The existing Inspector transform test is extended as
 `inspector_transform_and_typed_property_editing_journey`: original transform

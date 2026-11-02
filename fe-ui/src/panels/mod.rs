@@ -11,6 +11,7 @@
 
 pub(crate) mod gis_panel;
 pub(crate) mod inspector;
+mod property_grid;
 pub(crate) mod property_value;
 pub(crate) mod proposal_report_panel;
 pub(crate) mod query_tab;
