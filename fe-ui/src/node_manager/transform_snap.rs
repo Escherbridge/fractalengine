@@ -76,6 +76,9 @@ impl ToolSnapSettings {
         }
         let index = axis_index(axis);
         let value = start[index] + distance;
+        if !value.is_finite() {
+            return start;
+        }
         result[index] = if self.grid_enabled {
             snap_scalar(
                 value,
@@ -106,10 +109,18 @@ impl ToolSnapSettings {
             } else {
                 factor
             };
-            return start * factor;
+            let candidate = start * factor;
+            return if candidate.is_finite() {
+                candidate
+            } else {
+                start
+            };
         }
         let index = axis_index(axis);
         let value = start[index] * factor;
+        if !value.is_finite() {
+            return start;
+        }
         let value = if self.scale_enabled {
             snap_scalar(value, self.scale_step)
         } else {

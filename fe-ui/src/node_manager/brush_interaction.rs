@@ -83,17 +83,15 @@ impl BrushGesture {
         self.scope = None;
     }
 
-    /// Read-only snapshot of the in-progress stroke for the live preview
-    /// producer (terrain_proposal_delta_viz S3): the corridor footprint comes
-    /// from the SAME `stroke_corridor_footprint` fn the release commit uses
-    /// (`stroke_action` above), so a shown preview always matches what
-    /// release would commit (plan.md §5 tripwire). Values are WORLD units —
-    /// `terrain_preview::publish_proposal_preview` converts to real meters at
-    /// the merge boundary. `None` while no stroke is active, or while the
-    /// in-progress centerline can't yet form a valid corridor (e.g. a single
-    /// degenerate sample) — same "nothing to preview yet" gate `stroke_action`
-    /// uses via `stroke_corridor_footprint`'s own `None` case.
-    pub(crate) fn preview_snapshot(&self) -> Option<crate::terrain_preview::BrushPreviewSnapshot> {
+    /// Current-scope world-unit corridor; see AGENTS.md section terrain-authoring.
+    pub(crate) fn preview_snapshot(
+        &self,
+        nav: &NavigationManager,
+        map: &PetalMapState,
+    ) -> Option<crate::terrain_preview::BrushPreviewSnapshot> {
+        if !self.scope.as_ref()?.matches(nav, map) {
+            return None;
+        }
         let stroke = self.active.as_ref()?;
         let footprint = stroke_corridor_footprint(&stroke.samples, stroke.settings.radius)?;
         Some(crate::terrain_preview::BrushPreviewSnapshot {
@@ -328,14 +326,21 @@ impl BrushGesture {
     /// pointer/arbiter pipeline — `active` has no production setter by
     /// design (encapsulated; only the accessor crosses the module boundary).
     pub(crate) fn test_with_active_stroke(
-        petal_id: &str,
+        nav: &NavigationManager,
+        map: &PetalMapState,
         samples: Vec<[f32; 2]>,
         radius: f32,
     ) -> Self {
         Self {
-            scope: None,
+            scope: super::terrain_authoring::TerrainScope::capture(
+                nav,
+                map,
+                &crate::plugin::LocalUserRole {
+                    role: Some(fe_database::RoleLevel::Editor),
+                },
+            ),
             active: Some(ActiveStroke {
-                petal_id: petal_id.to_string(),
+                petal_id: nav.active_petal_id.clone().expect("active test Petal"),
                 samples,
                 settings: BrushSnapshot {
                     radius,
@@ -467,7 +472,9 @@ mod tests {
 
     #[test]
     fn preview_snapshot_is_none_without_an_active_stroke() {
-        assert!(BrushGesture::default().preview_snapshot().is_none());
+        assert!(BrushGesture::default()
+            .preview_snapshot(&NavigationManager::default(), &PetalMapState::default())
+            .is_none());
     }
 
     #[test]
@@ -478,15 +485,23 @@ mod tests {
         // delegating) would desync this from `stroke_action`'s footprint and
         // this assertion would go red.
         let samples = vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0]];
-        let gesture = BrushGesture {
-            scope: None,
-            active: Some(ActiveStroke {
-                petal_id: "p1".to_string(),
-                samples: samples.clone(),
-                settings: snapshot("raise"),
-            }),
+        let nav = NavigationManager {
+            active_verse_id: Some("v".into()),
+            active_fractal_id: Some("f".into()),
+            active_petal_id: Some("p1".into()),
+            ..Default::default()
         };
-        let snap = gesture.preview_snapshot().expect("active stroke previews");
+        let map = PetalMapState {
+            petal_id: Some("p1".into()),
+            loaded: true,
+            terrain_json: Some(serde_json::json!({"enabled":true})),
+            ..Default::default()
+        };
+        let gesture =
+            BrushGesture::test_with_active_stroke(&nav, &map, samples.clone(), snap_radius());
+        let snap = gesture
+            .preview_snapshot(&nav, &map)
+            .expect("active stroke previews");
         let expected = stroke_corridor_footprint(&samples, snap_radius());
         assert_eq!(snap.op, "raise");
         assert_eq!(Some(snap.footprint), expected);

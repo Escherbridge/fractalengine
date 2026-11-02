@@ -24,15 +24,7 @@ use crate::terrain_proposal_state::{ProposalEditState, ProposalOp};
 use crate::ui_shell::right_sidebar::RightSidebarSection;
 use crate::ui_shell::right_sidebar::RightSidebarState;
 
-/// World-unit snapshot [`BrushGesture::preview_snapshot`] hands back: the
-/// corridor footprint is already the same polygon a release would commit. No
-/// `petal_id` here — `handle_brush_interaction` already cancels the gesture
-/// the moment the active petal diverges from the stroke's own, so the merge
-/// boundary's own (already-current) petal id is authoritative.
-/// `target_height_world`/`delta_world` are WORLD units (mirrors
-/// `BrushSnapshot`'s own convention) — [`publish_proposal_preview`] converts
-/// to real meters at the merge boundary, since `ProposalPreview::target_m`/
-/// `delta_m` are meters (fe-terrain's cut/fill math wants real units, NFR-4).
+/// Scope-checked world-unit corridor; see node_manager/AGENTS.md section terrain-authoring.
 #[derive(Debug, Clone)]
 pub(crate) struct BrushPreviewSnapshot {
     pub(crate) footprint: Vec<[f32; 2]>,
@@ -158,10 +150,10 @@ fn sculpt_shape_draft(
 /// commit would reject the stroke. World target/delta convert to meters here.
 fn brush_stroke_draft(
     brush: &BrushGesture,
-    petal_id: &str,
-    world_scale: f64,
+    nav: &NavigationManager,
+    map: &PetalMapState,
 ) -> Option<ProposalPreview> {
-    let snap = brush.preview_snapshot()?;
+    let snap = brush.preview_snapshot(nav, map)?;
     let (target, delta_slot) = brush_region_fields(
         &snap.op,
         snap.target_height_world,
@@ -172,11 +164,11 @@ fn brush_stroke_draft(
     let (target_world, delta_world, strength) =
         region_record_preview_params(&snap.op, target, delta_slot);
     Some(ProposalPreview {
-        petal_id: petal_id.to_string(),
+        petal_id: nav.active_petal_id.clone()?,
         op: snap.op,
         footprint: snap.footprint,
-        target_m: world_to_meters(target_world, world_scale),
-        delta_m: world_to_meters(delta_world, world_scale),
+        target_m: world_to_meters(target_world, map.world_scale),
+        delta_m: world_to_meters(delta_world, map.world_scale),
         strength,
         source: PreviewSource::BrushStroke,
     })
@@ -276,7 +268,7 @@ pub(crate) fn publish_proposal_preview(
     };
     let world_scale = petal_map.world_scale;
 
-    let draft = brush_stroke_draft(&brush, &petal_id, world_scale)
+    let draft = brush_stroke_draft(&brush, &nav, &petal_map)
         .or_else(|| {
             sculpt_shape_draft(
                 &sculpt,
@@ -447,8 +439,13 @@ mod tests {
         let mut app = test_app();
         arm_petal(&mut app, "p1");
         let samples = vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0]];
-        *app.world_mut().resource_mut::<BrushGesture>() =
-            BrushGesture::test_with_active_stroke("p1", samples.clone(), 1.0);
+        let gesture = BrushGesture::test_with_active_stroke(
+            app.world().resource::<NavigationManager>(),
+            app.world().resource::<PetalMapState>(),
+            samples.clone(),
+            1.0,
+        );
+        *app.world_mut().resource_mut::<BrushGesture>() = gesture;
         app.update();
         app.update();
 
@@ -472,6 +469,35 @@ mod tests {
             "preview delta = the committed delta slot"
         );
         assert_eq!(preview.strength, 1.0, "Raise records bake at full strength");
+
+        // Only the producer runs here: no Brush consumer observes these changes.
+        let original_map = app.world().resource::<PetalMapState>().clone();
+        let mut changed_maps = Vec::new();
+        let mut scale = original_map.clone();
+        scale.world_scale = 2.0;
+        changed_maps.push(scale);
+        let mut origin = original_map.clone();
+        origin.terrain_json = Some(serde_json::json!({"enabled":true,"origin":[1,2,3]}));
+        changed_maps.push(origin);
+        let mut tilesets = original_map.clone();
+        tilesets.tileset_ids.push("different-map".into());
+        changed_maps.push(tilesets);
+        let mut loading = original_map.clone();
+        loading.loaded = false;
+        changed_maps.push(loading);
+        for map in changed_maps {
+            *app.world_mut().resource_mut::<PetalMapState>() = map;
+            app.update();
+            assert!(app.world().get_resource::<ProposalPreview>().is_none());
+            *app.world_mut().resource_mut::<PetalMapState>() = original_map.clone();
+            app.update();
+            assert!(app.world().get_resource::<ProposalPreview>().is_some());
+        }
+        app.world_mut()
+            .resource_mut::<NavigationManager>()
+            .active_fractal_id = Some("other-f".into());
+        app.update();
+        assert!(app.world().get_resource::<ProposalPreview>().is_none());
     }
 
     #[test]

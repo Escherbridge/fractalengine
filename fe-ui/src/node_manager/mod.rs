@@ -1295,6 +1295,28 @@ mod tests {
         assert!((ToolSnapSettings { uniform_scale:true, ..snap }.scale_value(Vec3::new(2.0,3.0,4.0), GimbalAxis::X, 1.12)-Vec3::new(2.2,3.3,4.4)).length()<0.00001);
         assert_eq!(ToolSnapSettings { axis:TransformAxisLock::Y, ..snap }.move_position(Vec3::ONE,GimbalAxis::X,5.0,1.0),Vec3::ONE);
 
+        for enabled in [false, true] {
+            let settings = ToolSnapSettings {
+                grid_enabled: enabled,
+                scale_enabled: enabled,
+                ..Default::default()
+            };
+            let uniform = ToolSnapSettings { uniform_scale: true, ..settings };
+            for start in [
+                Vec3::new(f32::MAX, 2.0, 3.0),
+                Vec3::new(-f32::MAX, 2.0, 3.0),
+            ] {
+                assert_eq!(
+                    settings.move_position(start, GimbalAxis::X, start.x, 1.0),
+                    start
+                );
+                assert_eq!(settings.scale_value(start, GimbalAxis::X, 2.0), start);
+                assert_eq!(uniform.scale_value(start, GimbalAxis::X, 2.0), start);
+            }
+            let start = Vec3::new(1.0, f32::MAX, 3.0);
+            assert_eq!(uniform.scale_value(start, GimbalAxis::X, 2.0), start);
+        }
+
         let mut app = App::new();
         app.init_resource::<NodeManager>()
             .init_resource::<crate::undo::UndoState>()
