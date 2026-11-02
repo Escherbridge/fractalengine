@@ -148,26 +148,29 @@ pub(crate) async fn issue(
     let grant_hlc = crate::role_manager::assign_role_for_invite(db,actor,&source.recipient_did,&source.target.scope,
         role.as_str(),&captured,deadline,replication,blob_store).await
         .map_err(|_| anyhow::anyhow!("Invitation issuance is unconfirmed; a checked role grant may already be stored. Refresh Access before another change."))?;
-    let invitation = JoinInvitation::issue_owner(
-        signer,
-        source.recipient_did.clone(),
-        source.target.scope.clone(),
-        role,
-        grant_hlc,
-        captured,
-        ticket.as_str().into(),
-        now()?,
-        u64::from(source.expiry_hours) * 3600,
-    )?;
-    let credential = JoinCredential::new(invitation.to_link()?)?;
-    let expires_at =
-        JoinInvitation::parse_owner(credential.as_str(), &source.recipient_did, now()?)?
-            .expires_at();
-    Ok(IssuedInvitation {
-        source: source.clone(),
-        credential,
-        expires_at,
-    })
+    (|| -> anyhow::Result<IssuedInvitation> {
+        let invitation = JoinInvitation::issue_owner(
+            signer,
+            source.recipient_did.clone(),
+            source.target.scope.clone(),
+            role,
+            grant_hlc,
+            captured,
+            ticket.as_str().into(),
+            now()?,
+            u64::from(source.expiry_hours) * 3600,
+        )?;
+        let credential = JoinCredential::new(invitation.to_link()?)?;
+        let expires_at =
+            JoinInvitation::parse_owner(credential.as_str(), &source.recipient_did, now()?)?
+                .expires_at();
+        Ok(IssuedInvitation {
+            source: source.clone(),
+            credential,
+            expires_at,
+        })
+    })()
+    .map_err(|_| anyhow::anyhow!("Invitation issuance is unconfirmed; the checked role grant may already be stored. Refresh Access before another change; do not automatically replay issuance."))
 }
 
 fn same_identity(row: &Value, manifest: &JoinManifest) -> bool {
