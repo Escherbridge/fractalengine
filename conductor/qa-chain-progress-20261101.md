@@ -3,9 +3,9 @@ type: Campaign
 date: 2026-11-01
 status: in_progress
 source: ./handoff-20261101-qa-chain.md
-current_writer: /root/nav_clipboard_executor
-current_slice: Combined S7/property-reply/S2 build, then terrain numeric and accessibility live validation
-parallel_code_worktrees: S7 ready on qa/s7-fixture; remaining S2 names in qa/s2-complete (code-only)
+current_writer: /root
+current_slice: Native data and tree integration reviews after interrupted grid pass07; no app or Cargo running
+parallel_code_worktrees: Tree controls frozen5244c34; rich core hierarchy safety correction; native rich-data UI (code-only)
 ---
 
 # QA chain continuation
@@ -36,30 +36,53 @@ Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.
 - User priority now includes complex typed object schemas, sequential data/creation/transform simulation and
   BOTH replayable object changes and charted appended measurements (explicit async answer). Track:
   `rich_data_history_20261101`. This steering preserves the original full QA/CI/release goal.
-- Main9650d69 includes reviewed RD1 editor/S5 catalog plus W4 finite-readiness guard. Pass06 live checks are in
-  progress: automatic200fill/-100net, full16384sample coverage, explicit0/16384unavailable, restore/config300/
-  unbind/rebind/switch flows. Typed editor actual GUI/type/draft checks are still running; no final pass verdict.
+- Focused pass06 is committed in69926c4. Behavioral evidence proves automatic200fill/-100net, full16384sample
+  coverage, explicit0/16384unavailable, restore/config300/unbind/rebind/switch, five typed values, invalid input
+  without writes, a nested append, dirty-draft conflict protection and selection reload. Formal checkpoints are
+  UNKNOWN because starting log watermarks were not captured; no coverage/convergence credit was invented.
+  Root13208 and all seven recorded descendants are absent, with stop0. Aggregate3/60 was not reverified in06.
+- Client b76625c rejects clipped invisible targets and chooses measured visible hits;853ffd5 retains start/end
+  log counters and discloses potential retention gaps; independently reviewed f23576e validates ending types
+  and limits log tails to actions. The property grid is integrated asbf3a161/70a1001 and production-built.
+  Pass07 on run20261101-191920-658 was interrupted by unattributed changes and a normal window close; no grid
+  action/three-size acceptance is claimed. Root70900 and all seven recorded descendants are absent afterstop0.
+  A new live audit remains required. Live host clipboard inspection remains forbidden;
+  exact CopyText payload assertions run at the application-output seam in the final integrated journey sweep.
 - Rich core code is isolated on qa/rich-data-core: schema commitsc801125/7ea7998/139bf56/8f7870d/05fe598,
   history1fe217f and scope/identity repair2f600e8. The reviewer closed historical fact-scope, queued Scoped writes
-  and receipt identity findings, but Local role authorization needs correction before approval/merge. Backend
-  compilation and all new history live proofs remain pending.
-- A shared full NodeMaterialized message and typed receipt/history/preview results are ready for UI wiring.
-  The native history/measurement UI is not implemented yet. RD5 driver is code-only in qa/rich-data-driver,
-  with pure scenario3cc981c and redirect-safe common transport0a42c03. No scenario execution is claimed.
-- Main source/Cargo/live owner remains nav_clipboard_executor; no other lane launches apps or Cargo. The current
-  stage9650d69 compiled successfully. Pass06 is a focused live validation, not a complete coverage pass.
+  and receipt identity findings. Local role/actor repair5d6fe99 and duplicate-event cleanup1ee9c24 are now
+  independently source approved. Backend compilation and all new history live proofs remain pending.
+- Native current-state materialization/full-transform retention adapter d05e55d plus Data UI14398bb is frozen
+  in qa/rich-data-ui. Independent review confirms current-state hydration/fallback repairs, read-only history,
+  persisted measurement chart/table and enforced descriptor editing. Two medium corrections remain: clear
+  caches on resolved no-access and preserve new draft edits on late schema confirmation. Do not enable the
+  backend live before the adapter and corrections. Historical preview never writes the current scene.
+- RD5 driver is final-source-approved through6e411fd and integrated in main through4d430f0:37-step intent,
+  real API runner, safe reports, exact expected schema revisions and2000-record log-gap corrections. One offline
+  parsing/validation/redirect/retention/hostile-HTML smoke passed. Real Both/API/restart/GUI proof remains pending.
+- Tree controls are frozen5244c34 (f3f07e0,ca8b6bf,5e0689d,3be9ce2,5244c34) for independent review: explicit
+  selection/path, contextual actions, per-entry local display settings and one adjacent icon palette/circular
+  wheel/hex window with Save/Cancel/Reset. Parent Delete is temporarily disabled. Legacy DeleteEntity exists;
+  missing stored-role checks and non-atomic cascade are corrected in reviewed rich-core a8cfc9c/e54bad2/ca6d719.
+  The tree branch is rebased onto that core; the author is adding authoritative target Options details and
+  enabling legitimate confirmed parent deletion. A same-root restart seam is also frozen e128d61 for review.
+  Enable the legitimate confirmed parent action only after independent approval; disabled is not final acceptance.
+- Main source/Cargo/live owner is root after explicit nav_clipboard_executor handoff; no other lane launches
+  apps or Cargo. The grid stage70a1001 compiled successfully; no owned app/Cargo is running after pass07 cleanup.
+  Pass06 and interrupted07 are focused evidence, not complete coverage passes.
 - S7 fixtures and strict relay6176471 are integrated. Pass05 verified deterministic generation, visible terrain,
   three UI values10/20/30 and aggregate3/60, and persisted200fill/100cut. Its report needed a refresh workaround;
   W4 fixes94aea74/9650d69 are being verified in pass06. The original unselected-property API timeout QA-0022 is
-  fixed by ed65f77 and verified; typed correlation and shared REST/MCP/WS validation remain in place.
+  fixed by ed65f77 and verified; typed correlation and shared REST/MCP/WS validation remain in place. Finite
+  report guard9650d69 is independently source approved and current-stage automatic report behavior is proven.
 - S2 source compiled and actual normal OS UIA proof is committed in f6681b9: gate-off eleven named buttons and
   matching-process wall-frame comparison. Mean17.6802ms baseline versus18.1348ms active is an observed wall-time
   difference, not isolated CPU cost. Debug/input remained denied. All-panel accessibility/disabled-state coverage
   remains pending. Launcher11cb8d4 restores all nine invoking-process environment overrides.
 - S6 exact divider edges at ppp2, selection preservation and genuine pick/deselect were isolated and verified in
   pass05. Earlier zero measured layout violations retain explicit unknown coverage; compact visuals still need
-  polish. Current pass06 has grounded a real locator defect: a hidden picker option's full bounds center lies
-  outside its actual clipped hit area. The owner is repairing visible-hit selection rather than blaming parsing.
+  polish. Pass06 grounded and corrected a real locator defect: a hidden picker option's full bounds center lay
+  outside its actual clipped hit area. The failed attempt is retained as locator evidence, not a parser failure.
 - S5 f505199/536a8e6 is integrated as02682a5/694f5f8 and independently statically approved. Its922 checkpoints
   include889 currently applicable cases; new RD1/history features require reconciliation. No full coverage or
   convergence is claimed, and catalog_source_fingerprint remains null. UX audits, remaining polish, final full

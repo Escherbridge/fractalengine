@@ -33,3 +33,32 @@ REST/MCP scenario, same-root restart, and native chart/history interactions rema
 The driver author owns the two corrections in its isolated checkout. The main execution owner retains
 exclusive Cargo/application ownership. Native committed-state materialization must be integrated before
 the backend history stack is enabled in main, so API writes continue to update the live scene and Inspector.
+
+## Follow-up source verdicts
+
+Independent nav_clipboard_executor rechecked driver `6e411fd` after `a57c489`: source clean. The final
+revision guard requires an actual integer before exact expected-revision comparison; booleans and floats
+cannot use the tolerant measurement comparator. Node/commit/scope/after-state binding is preserved.
+Retention loss remains UNKNOWN with coverage_ready=false. The author reports one completed offline smoke;
+the reviewer inspected its retained AST-based cases without rerunning them. Main integration is through
+`4d430f0` (preceded by c0f31f3,96fed56,54f7457,a9cd19b,e56148b). Real Both/restart evidence remains pending.
+
+Independent tree_parent_review approved the appearance/selection slice through `5244c34` for source
+integration, with live layout/persistence pending. A medium Options gap remains: target-specific Verse access
+and Fractal description are not loaded by the new opener. A shared authoritative details seam is being authored.
+
+That reviewer found a high parent-authorization snapshot mismatch in `a8cfc9c`/`e54bad2`: permission was
+resolved separately from the snapshot fenced by the transaction. Final `ca6d719` is independently source
+approved: permission derives from the exact captured inputs later checked at transaction use. The existing
+journey meaningfully covers captured Viewer/live temporary Manager/Viewer restoration. Parent deletion must
+be enabled only on this corrected backend, with confirmed UI and live target/cascade checks still pending.
+
+Root-authored client `f23576e` is independently source approved by nav_clipboard_executor: both ending counters
+require exact nonnegative integers, and read commands no longer emit a spurious missing-action-watermark line.
+No host clipboard inspection or generic clipboard projection was added.
+
+Native UI `d05e55d` plus `14398bb` received a bounded independent harness_security_review. Unknown asset
+receipts now hydrate authoritatively, and fallback display offsets are in mesh vertices instead of logical
+transforms. The reviewer found only two medium corrections: resolved RoleLevel::None must clear Data caches,
+and late confirmation of a timed-out schema save must preserve newer draft edits. Both are being fixed;
+history/measurement/schema source approval and live acceptance remain pending their final recheck.

@@ -34,6 +34,15 @@ required. The source investigation is `.omc/research/qa-rich-data-simulation-pla
 7. An editable declarative driver proves actual API/DB behavior and produces scrubbed current-pass receipts and
    reports. Its explicit transformations are not advertised as an automatic application rule engine. Plugin
    parity requires the separately queued real host wiring; logged dummy receipts are insufficient.
+8. The Inspector presents stored custom values in a width-filling Key/Type/Value/Actions grid with Edit, Copy and
+   confirmed Delete. Nested details and editors remain bounded; narrow layouts retain reachable actions through
+   horizontal scrolling. Copy uses the stored typed value, independently of compact previews and dirty drafts.
+9. Every Verse, Fractal, Petal and Node tree entry exposes clear selection and contextual Rename, Options, Copy ID
+   and legitimate confirmed Delete. One appearance window places an icon palette beside a circular color wheel
+   and editable hex field, with a preview and Save/Cancel/Reset. Per-entry colors and icons persist as local device
+   display preferences. Selection, path and visibility remain recognizable independently of those choices.
+   Hierarchy mutations require stored authorization and an atomic cascade; temporarily disabled controls do not
+   constitute final acceptance of the requested deletion workflow.
 
 ## Independent gold scenario
 

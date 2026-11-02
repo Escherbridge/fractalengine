@@ -1,0 +1,50 @@
+﻿[
+    {
+        "pid":  70900,
+        "owned_identity_present":  false,
+        "status":  "process_id_absent",
+        "reason":  "NoProcessFoundForGivenId,Microsoft.PowerShell.Commands.GetProcessCommand"
+    },
+    {
+        "pid":  30540,
+        "owned_identity_present":  false,
+        "status":  "process_id_absent",
+        "reason":  "NoProcessFoundForGivenId,Microsoft.PowerShell.Commands.GetProcessCommand"
+    },
+    {
+        "pid":  31320,
+        "owned_identity_present":  false,
+        "status":  "process_id_absent",
+        "reason":  "NoProcessFoundForGivenId,Microsoft.PowerShell.Commands.GetProcessCommand"
+    },
+    {
+        "pid":  6356,
+        "owned_identity_present":  false,
+        "status":  "process_id_absent",
+        "reason":  "NoProcessFoundForGivenId,Microsoft.PowerShell.Commands.GetProcessCommand"
+    },
+    {
+        "pid":  44164,
+        "owned_identity_present":  false,
+        "status":  "process_id_absent",
+        "reason":  "NoProcessFoundForGivenId,Microsoft.PowerShell.Commands.GetProcessCommand"
+    },
+    {
+        "pid":  18096,
+        "owned_identity_present":  false,
+        "status":  "process_id_absent",
+        "reason":  "NoProcessFoundForGivenId,Microsoft.PowerShell.Commands.GetProcessCommand"
+    },
+    {
+        "pid":  67356,
+        "owned_identity_present":  false,
+        "status":  "process_id_absent",
+        "reason":  "NoProcessFoundForGivenId,Microsoft.PowerShell.Commands.GetProcessCommand"
+    },
+    {
+        "pid":  14984,
+        "owned_identity_present":  false,
+        "status":  "process_id_absent",
+        "reason":  "NoProcessFoundForGivenId,Microsoft.PowerShell.Commands.GetProcessCommand"
+    }
+]
