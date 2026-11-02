@@ -24,6 +24,7 @@ pub struct TauriBackend {
     /// Last URL we navigated to — skip duplicates to prevent feedback loops.
     current_url: Option<Url>,
     fixture_session: Rc<Cell<bool>>,
+    guard_unusable: Rc<Cell<bool>>,
     #[cfg(target_os = "windows")]
     popup_hwnd: isize,
 }
@@ -84,7 +85,8 @@ impl WebViewBackend for TauriBackend {
         let nav_events = events.clone();
         let load_events = events.clone();
         let fixture_session = Rc::new(Cell::new(false));
-        let nav_fixture_session = fixture_session.clone();
+        let guard_unusable = Rc::new(Cell::new(false));
+        let load_guard_unusable = guard_unusable.clone();
 
         // --- build wry WebView -------------------------------------------
 
@@ -97,15 +99,8 @@ impl WebViewBackend for TauriBackend {
             .with_visible(true)
             .with_autoplay(true)
             .with_initialization_script(trust_bar_js)
-            .with_navigation_handler(move |url: String| {
-                let allowed = decide_navigation(&url, &nav_events, nav_fixture_session.get());
-                if allowed && fe_runtime::qa_web::preview_allows(&url) {
-                    nav_fixture_session.set(true);
-                }
-                allowed
-            })
             .with_on_page_load_handler(move |event, url| {
-                if matches!(event, PageLoadEvent::Finished) {
+                if !load_guard_unusable.get() && matches!(event, PageLoadEvent::Finished) {
                     if let Ok(url) = url.parse() {
                         load_events.borrow_mut().push(BackendEvent::PageLoaded(url));
                     }
@@ -114,6 +109,10 @@ impl WebViewBackend for TauriBackend {
 
         if fe_runtime::qa_web::captured() {
             builder = builder.with_new_window_req_handler(|_, _| wry::NewWindowResponse::Deny);
+        } else {
+            builder = builder.with_navigation_handler(move |url: String| {
+                decide_navigation(&url, &nav_events, false)
+            });
         }
 
         #[cfg(target_os = "windows")]
@@ -146,9 +145,12 @@ impl WebViewBackend for TauriBackend {
                 anyhow::anyhow!("TauriBackend: build_as_child failed: {e}")
             })?;
             if fe_runtime::qa_web::captured() {
-                if let Err(error) =
-                    super::qa_navigation::install(&webview, fixture_session.clone(), events.clone())
-                {
+                if let Err(error) = super::qa_navigation::install(
+                    &webview,
+                    fixture_session.clone(),
+                    guard_unusable.clone(),
+                    events.clone(),
+                ) {
                     drop(webview);
                     win32::destroy(popup_hwnd);
                     return Err(error.context("could not install fixture redirect guard"));
@@ -178,12 +180,14 @@ impl WebViewBackend for TauriBackend {
             alive: true,
             current_url: None,
             fixture_session,
+            guard_unusable,
             #[cfg(target_os = "windows")]
             popup_hwnd,
         })
     }
 
     fn navigate(&mut self, url: &Url) -> anyhow::Result<()> {
+        self.ensure_usable()?;
         anyhow::ensure!(
             crate::security::embedded_allowed(url.as_str()),
             "Navigation blocked by URL policy or unavailable fixture helper"
@@ -206,6 +210,7 @@ impl WebViewBackend for TauriBackend {
     }
 
     fn go_back(&mut self) -> anyhow::Result<()> {
+        self.ensure_usable()?;
         tracing::info!("TauriBackend::go_back");
         self.webview
             .evaluate_script("history.back()")
@@ -214,16 +219,19 @@ impl WebViewBackend for TauriBackend {
     }
 
     fn go_forward(&mut self) -> anyhow::Result<()> {
+        self.ensure_usable()?;
         self.webview.evaluate_script("history.forward()")?;
         Ok(())
     }
 
     fn reload(&mut self) -> anyhow::Result<()> {
+        self.ensure_usable()?;
         self.webview.evaluate_script("location.reload()")?;
         Ok(())
     }
 
     fn show(&mut self) -> anyhow::Result<()> {
+        self.ensure_usable()?;
         if !self.visible {
             tracing::debug!("TauriBackend::show");
             #[cfg(target_os = "windows")]
@@ -238,6 +246,7 @@ impl WebViewBackend for TauriBackend {
     }
 
     fn hide(&mut self) -> anyhow::Result<()> {
+        self.ensure_usable()?;
         if self.visible {
             tracing::debug!("TauriBackend::hide");
             self.webview
@@ -255,6 +264,7 @@ impl WebViewBackend for TauriBackend {
     }
 
     fn reposition(&mut self, geometry: WindowGeometry) -> anyhow::Result<()> {
+        self.ensure_usable()?;
         #[cfg(target_os = "windows")]
         win32::move_window(self.popup_hwnd, &geometry);
 
@@ -273,6 +283,16 @@ impl WebViewBackend for TauriBackend {
     }
 
     fn drain_events(&mut self) -> Vec<BackendEvent> {
+        if self.guard_unusable.get() {
+            self.current_url = None;
+            self.visible = false;
+            #[cfg(target_os = "windows")]
+            win32::hide(self.popup_hwnd);
+            return std::mem::take(&mut *self.events.borrow_mut())
+                .into_iter()
+                .filter(|event| matches!(event, BackendEvent::Error(_)))
+                .collect();
+        }
         if !self.alive {
             return Vec::new();
         }
@@ -294,7 +314,17 @@ impl WebViewBackend for TauriBackend {
     }
 
     fn is_alive(&self) -> bool {
-        self.alive
+        self.alive && !self.guard_unusable.get()
+    }
+}
+
+impl TauriBackend {
+    fn ensure_usable(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.guard_unusable.get(),
+            "Browser disabled after native navigation enforcement failure; restart the application"
+        );
+        Ok(())
     }
 }
 
@@ -365,6 +395,92 @@ mod tests {
             !decide_navigation("http://127.0.0.1:49152/web/one", &events, true),
             "fixture session requires live host capability"
         );
+        #[cfg(windows)]
+        {
+            use super::super::qa_navigation::{
+                enforce, NavigationAttempt, TERMINAL_ERROR, UNCONFIRMED_ERROR,
+            };
+            struct Attempt {
+                metadata: Option<(String, bool)>,
+                fail_cancel: Option<bool>,
+                fail_stop: bool,
+                fail_close: bool,
+                calls: RefCell<Vec<&'static str>>,
+            }
+            impl NavigationAttempt for Attempt {
+                fn metadata(&self) -> Result<(String, bool), ()> {
+                    self.calls.borrow_mut().push("metadata");
+                    self.metadata.clone().ok_or(())
+                }
+                fn set_cancel(&self, cancel: bool) -> Result<(), ()> {
+                    self.calls
+                        .borrow_mut()
+                        .push(if cancel { "cancel" } else { "allow" });
+                    if self.fail_cancel == Some(cancel) {
+                        Err(())
+                    } else {
+                        Ok(())
+                    }
+                }
+                fn stop(&self) -> Result<(), ()> {
+                    self.calls.borrow_mut().push("stop");
+                    if self.fail_stop {
+                        Err(())
+                    } else {
+                        Ok(())
+                    }
+                }
+                fn close(&self) -> Result<(), ()> {
+                    self.calls.borrow_mut().push("close");
+                    if self.fail_close {
+                        Err(())
+                    } else {
+                        Ok(())
+                    }
+                }
+            }
+            for (metadata, fail_cancel, fail_stop, fail_close, expected) in [
+                (None, None, true, true, TERMINAL_ERROR),
+                (None, Some(true), false, false, TERMINAL_ERROR),
+                (
+                    Some(("https://example.com/".into(), false)),
+                    Some(false),
+                    false,
+                    false,
+                    TERMINAL_ERROR,
+                ),
+                (None, Some(true), true, false, TERMINAL_ERROR),
+                (None, Some(true), false, true, TERMINAL_ERROR),
+                (None, Some(true), true, true, UNCONFIRMED_ERROR),
+                (
+                    Some(("https://example.com/".into(), false)),
+                    Some(false),
+                    true,
+                    true,
+                    UNCONFIRMED_ERROR,
+                ),
+            ] {
+                let attempt = Attempt {
+                    metadata,
+                    fail_cancel,
+                    fail_stop,
+                    fail_close,
+                    calls: RefCell::new(Vec::new()),
+                };
+                let unusable = Cell::new(false);
+                let events = RefCell::new(vec![BackendEvent::UrlChanged(
+                    "https://stale.example/".parse().unwrap(),
+                )]);
+                enforce(&attempt, &Cell::new(false), &unusable, &events);
+                assert!(unusable.get());
+                let calls = attempt.calls.borrow();
+                assert_eq!(calls.first(), Some(&"cancel"));
+                assert_eq!(&calls[calls.len() - 2..], &["stop", "close"]);
+                assert!(
+                    matches!(&events.borrow()[..], [BackendEvent::Error(message)] if message == expected)
+                );
+            }
+        }
     }
 
     #[test]
