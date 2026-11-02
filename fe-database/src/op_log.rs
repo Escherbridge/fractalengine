@@ -2073,8 +2073,70 @@ mod tests {
         let import_path = import_dir.path().join("portal.gltf");
         std::fs::write(&import_path, br#"{"asset":{"version":"2.0"}}"#).unwrap();
         let (imported_node, imported_asset, _) = crate::handlers::crud::import_gltf_handler(
-            &url_db, &store, "url-p", "Unique imported Portal", import_path.to_str().unwrap(), [2.0,3.0,4.0],
+            &url_db, &store, "url-p", "Unique imported Portal", import_path.to_str().unwrap(), [2.0,3.0,4.0], "did:qa",
         ).await.unwrap();
+        let imported_page = crate::handlers::node_history::read_granted(&url_db,&imported_node,0,200,None,&NodeAccessGrant::Local,"did:qa").await.unwrap();
+        assert_eq!(imported_page["current_version"],1);
+        assert_eq!(imported_page["coverage_start_version"],1);
+        assert_eq!(imported_page["current_state_verified"],true);
+        assert_eq!(imported_page["entries"].as_array().unwrap().len(),1);
+        assert_eq!(imported_page["entries"][0]["op"],"baseline");
+        assert_eq!(imported_page["entries"][0]["source_did"],"did:qa");
+        assert_eq!(imported_page["entries"][0]["payload"]["scope"],url_scope);
+        let imported_replay = crate::handlers::node_history::read_granted(&url_db,&imported_node,0,200,Some(1),&NodeAccessGrant::Local,"did:qa").await.unwrap();
+        assert_eq!(imported_replay["availability"],"available");
+        assert_eq!(imported_replay["state"],crate::handlers::node_history::snapshot(&url_db,&imported_node).await.unwrap().unwrap());
+        assert_eq!(imported_replay["state"]["asset_id"],imported_asset);
+        assert_eq!(imported_replay["state"]["position"],serde_json::json!([2.0,3.0,4.0]));
+        assert_eq!(imported_replay["state"]["rotation"],serde_json::json!([0.0,0.0,0.0,1.0]));
+        assert_eq!(imported_replay["state"]["scale"],serde_json::json!([1.0,1.0,1.0]));
+        assert!(crate::handlers::node_history::read_granted(&url_db,&imported_node,0,200,Some(1),&NodeAccessGrant::Scoped("VERSE#foreign".into()),"did:qa").await.is_err());
+        let denied_store = std::sync::Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
+        let denied_handle:crate::BlobStoreHandle = denied_store.clone();
+        assert!(crate::handlers::crud::import_gltf_handler(&url_db,&denied_handle,"url-p","Viewer import",import_path.to_str().unwrap(),[0.0;3],"did:url-viewer").await.is_err());
+        assert!(denied_store.is_empty(),"Viewer import refuses before blob storage");
+        url_db.query("CREATE fractal CONTENT {fractal_id:'import-other-fractal',verse_id:'url-v',owner_did:'did:qa',name:'other',created_at:'2026-11-02'}").await.unwrap().check().unwrap();
+        for race in ["role","ancestry","schema","journal"] {
+            use crate::handlers::object_creation::{ImportedSceneAsset,ObjectCreation,SceneAsset};
+            let mut inventory=url_db.query("SELECT asset_id FROM asset ORDER BY asset_id; SELECT node_id FROM node ORDER BY node_id; SELECT log_id FROM node_log ORDER BY log_id").await.unwrap().check().unwrap();
+            let asset_rows:Vec<serde_json::Value>=inventory.take(0).unwrap();
+            let node_rows:Vec<serde_json::Value>=inventory.take(1).unwrap();
+            let fact_rows:Vec<serde_json::Value>=inventory.take(2).unwrap();
+            let ops_before=op_log_count(&url_db).await;
+            let asset=ImportedSceneAsset::new("import race","model/gltf+json",&"03".repeat(32),27).unwrap();
+            let prepared=crate::handlers::object_creation::prepare(&url_db,ObjectCreation {
+                petal_id:"url-p",name:"import race",asset:SceneAsset::Imported(asset),position:[2.0,3.0,4.0],
+                rotation:vec![0.0,0.0,0.0,1.0],scale:vec![1.0;3],
+                properties:serde_json::json!({"import_marker":"captured"}).as_object().unwrap().clone(),
+                actor:"did:qa",grant:&NodeAccessGrant::Local,
+            }).await.unwrap();
+            match race {
+                "role"=>{url_db.query("UPDATE verse SET created_by='did:changed-import-owner' WHERE verse_id='url-v'").await.unwrap().check().unwrap();}
+                "ancestry"=>{url_db.query("UPDATE petal SET fractal_id='import-other-fractal' WHERE petal_id='url-p'").await.unwrap().check().unwrap();}
+                "schema"=>{url_db.query("CREATE field_def CONTENT {field_def_id:'import-schema-race',scope:$scope,entity_type:'node',key:'import_marker',enforced_schema:{version:1,schema:{type:'string'}}}").bind(("scope",url_scope.clone())).await.unwrap().check().unwrap();}
+                _=>{url_db.query("DEFINE EVENT fail_import_baseline ON TABLE node_log WHEN $event='CREATE' AND $after.op='baseline' AND $after.payload.state.display_name='import race' THEN {THROW 'induced import journal failure'}").await.unwrap().check().unwrap();}
+            }
+            if race == "journal" {
+                let failed_store=std::sync::Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
+                let failed_handle:crate::BlobStoreHandle=failed_store.clone();
+                crate::handlers::crud::import_gltf_handler(&url_db,&failed_handle,"url-p","import race",import_path.to_str().unwrap(),[2.0,3.0,4.0],"did:qa")
+                    .await.expect_err("the actual import pipeline rolls metadata back when its baseline fails");
+                assert!(!failed_store.is_empty(),"admitted bytes precede metadata; failed metadata does not erase shared blob content");
+            } else {
+                crate::handlers::object_creation::commit(&url_db,prepared).await.expect_err("captured import refusal rolls back asset/node/baseline/intention together");
+            }
+            assert_eq!(op_log_count(&url_db).await,ops_before);
+            let mut after=url_db.query("SELECT asset_id FROM asset ORDER BY asset_id; SELECT node_id FROM node ORDER BY node_id; SELECT log_id FROM node_log ORDER BY log_id").await.unwrap().check().unwrap();
+            assert_eq!(after.take::<Vec<serde_json::Value>>(0).unwrap(),asset_rows);
+            assert_eq!(after.take::<Vec<serde_json::Value>>(1).unwrap(),node_rows);
+            assert_eq!(after.take::<Vec<serde_json::Value>>(2).unwrap(),fact_rows);
+            match race {
+                "role"=>{url_db.query("UPDATE verse SET created_by='did:qa' WHERE verse_id='url-v'").await.unwrap().check().unwrap();}
+                "ancestry"=>{url_db.query("UPDATE petal SET fractal_id='url-f' WHERE petal_id='url-p'").await.unwrap().check().unwrap();}
+                "schema"=>{url_db.query("DELETE field_def WHERE field_def_id='import-schema-race'").await.unwrap().check().unwrap();}
+                _=>{url_db.query("REMOVE EVENT fail_import_baseline ON TABLE node_log").await.unwrap().check().unwrap();}
+            }
+        }
         let missing = read_node_url_handler(&url_db,&imported_node,&url_scope,None,"did:qa").await.unwrap();
         assert_eq!(missing.storage,NodeUrlStorage::MissingModel,"ordinary imports have no implicit model metadata");
         assert!(missing.url.is_none());

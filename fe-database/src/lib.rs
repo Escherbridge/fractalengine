@@ -714,7 +714,7 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::ImportGltf { petal_id, name, file_path, position, file_lease }) => {
-                        let result = handlers::crud::import_gltf_handler(&db, &blob_store, &petal_id, &name, &file_path, position).await;
+                        let result = handlers::crud::import_gltf_handler(&db, &blob_store, &petal_id, &name, &file_path, position, &local_did).await;
                         drop(file_lease);
                         match result {
                             Ok((node_id, asset_id, asset_path)) => {
@@ -731,12 +731,6 @@ pub fn spawn_db_thread_shared(
                                             asset_path: Some(asset_path.clone()),
                                         },
                                     });
-                                }
-                                if let Err(e) = handlers::node_log::append_node_log(
-                                    &db, &node_id, "created", &local_did,
-                                    &serde_json::json!({"name": name, "position": position, "petal_id": petal_id, "asset_id": asset_id}),
-                                ).await {
-                                    tracing::warn!("node_log append failed for {node_id}: {e}");
                                 }
                                 // FR-6: emit a NodeCreated lifecycle event for the imported node.
                                 if let Ok(Some(scope)) = handlers::crud::resolve_petal_scope_handler(&db, &petal_id).await {

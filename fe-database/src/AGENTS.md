@@ -1494,6 +1494,9 @@ replication. Those paths must not be represented as validated ordinary writes.
 ## §node-history
 
 Ordinary empty/asset creation now atomically writes a complete `baseline` v1.
+Native GLTF import uses that same sealed creation boundary, including its new
+Asset metadata in the transaction and recording the actual local actor and scope;
+see handlers/AGENTS.md Ordinary creation and imported assets.
 Property set/delete and full transforms atomically commit the materialized node,
 legacy operation intention, and INSERT-only node_log facts through
 commit_operation_atomic_with. Their previous dispatcher best-effort append is

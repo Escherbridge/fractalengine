@@ -291,103 +291,32 @@ pub(crate) async fn import_gltf_handler(
     name: &str,
     file_path: &str,
     position: [f32; 3],
+    actor: &str,
 ) -> anyhow::Result<(String, String, String)> {
     crate::migration::mapping_inventory::record_bypass_for("ImportGltf");
+    let scope = require_petal_scope(db, petal_id, "ImportGltf").await?;
+    super::node_history::authorize_scope(db, &fe_runtime::node_history::NodeAccessGrant::Local,
+        actor, &scope, fe_policy::RoleLevel::Editor).await?;
+    anyhow::ensure!(!name.trim().is_empty() && name.len() <= 1024 && position.iter().all(|v| v.is_finite()),
+        "import requires a bounded name and finite position");
     let path = std::path::Path::new(file_path);
     let bytes = std::fs::read(path)
         .map_err(|e| anyhow::anyhow!("Could not read file {}: {e}", path.display()))?;
-
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("glb");
-    let content_type = if ext == "glb" {
-        "model/gltf-binary"
-    } else {
-        "model/gltf+json"
-    };
-    let size_bytes = bytes.len();
-
-    // Refuse before the bytes enter the replicated blob store
-    // (fe-runtime src/AGENTS.md §ktx2-guard).
+    let content_type = if ext == "glb" { "model/gltf-binary" } else { "model/gltf+json" };
     fe_runtime::ktx2_guard::check_asset_bytes(&bytes, Some(ext))
         .map_err(|refusal| anyhow::anyhow!("Import refused for {}: {refusal}", path.display()))?;
-
-    let hash = blob_store
-        .add_blob(&bytes)
-        .map_err(|e| anyhow::anyhow!("blob_store.add_blob failed: {e}"))?;
-    let content_hash = hash_to_hex(&hash);
-
-    let asset_id = ulid::Ulid::new().to_string();
-    let now = chrono::Utc::now().to_rfc3339();
-
-    db.query(
-        "CREATE asset CONTENT {
-            asset_id: $asset_id,
-            name: $name,
-            content_type: $content_type,
-            size_bytes: $size_bytes,
-            data: NONE,
-            content_hash: $content_hash,
-            created_at: $now,
-        }",
-    )
-    .bind(("asset_id", asset_id.clone()))
-    .bind(("name", name.to_string()))
-    .bind(("content_type", content_type.to_string()))
-    .bind(("size_bytes", size_bytes as i64))
-    .bind(("content_hash", content_hash.clone()))
-    .bind(("now", now.clone()))
-    .await?
-    .check()
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
-    tracing::info!(
-        "Imported asset: {name} ({size_bytes} bytes -> asset_id={asset_id}, hash={content_hash})"
-    );
-
-    let asset_path = format!("blob://{}.{}", content_hash, ext);
-
-    let node_id = ulid::Ulid::new().to_string();
-    tracing::info!("Creating node with GLTF: {name} ({node_id}) in petal {petal_id}");
-    // Geometry fields need the explicit SurrealQL cast; see AGENTS.md §geometry-inserts.
-    db.query(
-        "CREATE node CONTENT {
-            node_id: $node_id,
-            petal_id: $petal_id,
-            display_name: $name,
-            asset_id: $asset_id,
-            position: <geometry<point>> [$x, $z],
-            elevation: $y,
-            rotation: [0.0, 0.0, 0.0, 1.0],
-            scale: [1.0, 1.0, 1.0],
-            interactive: true,
-            created_at: $now,
-        }",
-    )
-    .bind(("node_id", node_id.clone()))
-    .bind(("petal_id", petal_id.to_string()))
-    .bind(("name", name.to_string()))
-    .bind(("asset_id", asset_id.clone()))
-    .bind(("x", position[0] as f64))
-    .bind(("z", position[2] as f64))
-    .bind(("y", position[1] as f64))
-    .bind(("now", now.clone()))
-    .await?
-    .check()
-    .map_err(|e| anyhow::anyhow!("CREATE gltf node '{name}' failed: {e}"))?;
-
-    if let Err(e) = super::node_log::append_node_log(
-        db,
-        &node_id,
-        "created",
-        "local",
-        &serde_json::json!({
-            "petal_id": petal_id, "name": name, "position": position,
-            "asset_id": asset_id, "asset_path": &asset_path,
-        }),
-    )
-    .await
-    {
-        tracing::warn!("Failed to write node_log for imported gltf node {node_id}: {e}");
-    }
-
+    let hash = blob_store.add_blob(&bytes).map_err(|e| anyhow::anyhow!("blob_store.add_blob failed: {e}"))?;
+    let imported = super::object_creation::ImportedSceneAsset::new(name, content_type, &hash_to_hex(&hash), bytes.len())?;
+    let asset_id = imported.id().to_owned();
+    let prepared = super::object_creation::prepare(db, super::object_creation::ObjectCreation {
+        petal_id, name, asset: super::object_creation::SceneAsset::Imported(imported), position,
+        rotation: vec![0.0,0.0,0.0,1.0], scale: vec![1.0;3], properties: serde_json::Map::new(),
+        actor, grant: &fe_runtime::node_history::NodeAccessGrant::Local,
+    }).await?;
+    let (node_id, asset_path) = super::object_creation::commit(db, prepared).await?;
+    let asset_path = asset_path.ok_or_else(|| anyhow::anyhow!("committed imported scene path unavailable"))?;
+    tracing::info!(node_id, asset_id, "Imported scene metadata and initial history committed");
     Ok((node_id, asset_id, asset_path))
 }
 
@@ -1859,10 +1788,11 @@ mod asset_ingest_tests {
             .await
             .expect("in-memory SurrealDB");
         db.use_ns("test").use_db("test").await.expect("ns/db");
+        crate::schema::apply_all(&db).await.expect("asset creation schema");
         db.query(
-            "CREATE verse CONTENT { verse_id: 'verse-1', name: 'v', created_by:'local' };
-             CREATE fractal CONTENT { fractal_id: 'fractal-1', verse_id: 'verse-1', name: 'f' };
-             CREATE petal CONTENT { petal_id: 'petal-1', fractal_id: 'fractal-1', name: 'p' };",
+            "CREATE verse CONTENT { verse_id: 'verse-1', name: 'v', created_by:'local', created_at:'2026-11-02' };
+             CREATE fractal CONTENT { fractal_id: 'fractal-1', verse_id: 'verse-1', owner_did:'local', name: 'f', created_at:'2026-11-02' };
+             CREATE petal CONTENT { petal_id: 'petal-1', fractal_id: 'fractal-1', name: 'p', node_id:'anchor', created_at:'2026-11-02' };",
         )
         .await
         .expect("seed scope chain");
@@ -2256,6 +2186,7 @@ mod import_gltf_ktx2_guard_tests {
             "bad-model",
             file_path.to_str().expect("utf8 path"),
             [0.0, 0.0, 0.0],
+            "owner-did",
         )
         .await
         .expect_err("a KTX2-textured GLB must be refused");

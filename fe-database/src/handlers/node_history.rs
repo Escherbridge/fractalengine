@@ -301,78 +301,11 @@ pub(crate) async fn create_object_granted(
     actor: &str,
     grant: &NodeAccessGrant,
 ) -> anyhow::Result<(String, Option<String>)> {
-    let scope = super::preconditions::require_petal_scope(db, petal_id, "CreateObject").await?;
-    authorize_scope(db, grant, actor, &scope, fe_policy::RoleLevel::Editor).await?;
-    if name.trim().is_empty()
-        || name.len() > 1024
-        || position.iter().any(|v| !v.is_finite())
-        || rotation.iter().chain(&scale).any(|v| !v.is_finite())
-    {
-        anyhow::bail!("object requires a non-empty bounded name and finite transform");
-    }
-    let mut schema_versions = serde_json::Map::new();
-    for (key, value) in &properties {
-        if let Value::Object(versions) =
-            super::field_def::validate_property_in_scope(db, &scope, key, value).await?
-        {
-            schema_versions.extend(versions);
-        }
-    }
-    let asset_path = if let Some(asset_id) = asset_id {
-        let mut response = db
-            .query("SELECT content_hash, content_type FROM asset WHERE asset_id = $id LIMIT 1")
-            .bind(("id", asset_id.to_string()))
-            .await?
-            .check()?;
-        let rows: Vec<Value> = response.take(0)?;
-        let row = rows
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("CreateObject matched no asset"))?;
-        let hash = row["content_hash"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("scene asset has no content hash"))?;
-        let ext = match row["content_type"].as_str() {
-            Some("model/gltf-binary") => "glb",
-            Some("model/gltf+json") => "gltf",
-            _ => anyhow::bail!("asset is not a scene asset"),
-        };
-        Some(format!("blob://{hash}.{ext}"))
-    } else {
-        None
-    };
-    let id = ulid::Ulid::new().to_string();
-    let state = json!({"node_id":id,"petal_id":petal_id,"display_name":name,
-        "position":position,"elevation":position[1] as f64,"rotation":rotation,"scale":scale,
-        "properties":properties,"interactive":asset_id.is_some(),"edit_seq":0,
-        "created_at":chrono::Utc::now().to_rfc3339()});
-    let mut state = state;
-    if let Some(asset) = asset_id {
-        state["asset_id"] = json!(asset);
-    }
-    check_snapshot_size(&state)?;
-    let entry = OpLogEntry {
-        lamport_clock: 0,
-        hlc_timestamp: String::new(),
-        node_id: crate::types::NodeId(id.clone()),
-        op_type: crate::types::OpType::NodeCreated,
-        payload: state.clone(),
-        sig: "00".repeat(64),
-    };
-    let actor = actor.to_string();
-    let created_id = id.clone();
-    let (mut scope_statements, mut scope_bindings) = scope_fence(&scope, None)?;
-    commit_operation_atomic_with(db, entry, move |hlc| {
-        let fact = json!({"log_id":ulid::Ulid::new().to_string(),"node_id":created_id,
-            "hlc_timestamp":hlc as i64,"op":"baseline","source_did":actor,"row_version":1,
-            "created_at":chrono::Utc::now().to_rfc3339(),"payload":{"journal_version":JOURNAL_VERSION,
-                "scope":scope,"state":state,"after_state":state,"coverage_reason":"object_created",
-                "schema_versions":schema_versions}});
-        scope_statements.extend(["CREATE node CONTENT object::extend($created_state, {position: <geometry<point>> [$created_x, $created_z]})".into(),"CREATE node_log CONTENT $created_fact".into()]);
-        scope_bindings.extend([("created_state".into(),state),("created_fact".into(),fact),
-                ("created_x".into(),json!(position[0] as f64)),("created_z".into(),json!(position[2] as f64))]);
-        (scope_statements,scope_bindings)
+    let prepared = super::object_creation::prepare(db, super::object_creation::ObjectCreation {
+        petal_id, name, asset: super::object_creation::SceneAsset::Existing(asset_id),
+        position, rotation, scale, properties, actor, grant,
     }).await?;
-    Ok((id, asset_path))
+    super::object_creation::commit(db, prepared).await
 }
 
 /// Prepared ordinary facts and their authoritative resulting state.

@@ -22,6 +22,7 @@ pub mod invite;
 pub(crate) mod local_catalog;
 pub mod iot_reading;
 pub mod node_history;
+pub(crate) mod object_creation;
 pub mod node_log;
 pub mod node_measurements;
 pub mod node_view;

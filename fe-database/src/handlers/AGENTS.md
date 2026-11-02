@@ -224,6 +224,35 @@ The join handler excludes invite_string from its instrument fields. Invites carr
 authority; source identity and the ordinary outcome provide diagnostics without
 retaining the submitted credential in parent-span formatting or log exports.
 
+## Ordinary creation and imported assets
+
+`object_creation` is the sealed preparation/commit boundary shared by ordinary
+empty/asset creation and native GLTF import. It captures the full initial node
+state, actual local Editor authority, ancestry, applicable enforced-schema rows
+and existing asset content identity. Trusted scoped API grants retain their
+existing caller-authority contract; they do not become the host's local actor.
+Preparation validates the exact captured rules; transaction guards reject changed
+authority, parent bindings, definitions or referenced asset metadata at use.
+
+Native import keeps the file lease and KTX2 admission path. It checks local Editor
+access before storing bytes, then prepares again after blob storage. New Asset
+metadata, the Node, one NodeCreated intention and one scoped baseline v1 commit in
+the same operation transaction. Post-write guards confirm node/position/history
+and imported asset content metadata. The baseline references the actual asset and
+contains initial position, stored rotation, scale and property data. No second
+dispatcher append is emitted. GltfImported/lifecycle publication follows commit.
+
+Blob storage precedes metadata preparation and is not transactional with SurrealDB.
+A failed or uncertain metadata operation may leave an unreferenced blob; this path
+does not delete blob files or claim cross-store rollback. Existing GC remains its
+own operation. Old unsupported/unscoped history is untouched, not relabeled.
+
+The existing real-store operation/journal journey now imports through the actual
+handler and checks one scoped baseline, initial replay and actual asset/TRS,
+foreign read refusal, Viewer refusal before blob storage, and queued owner,
+ancestry, schema and journal-failure rollback across Asset/Node/fact/intention.
+These source assertions have not been executed in the author lane.
+
 
 ## Checked stamp promotion
 
