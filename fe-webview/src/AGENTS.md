@@ -83,17 +83,37 @@ script on every page; do not remove.
 
 ## §tauri-commands — tauri_commands.rs
 
-Scaffolding for a future full Tauri app shell (`#[tauri::command]` handlers for
-node data / assets). Nothing registers them yet — there is no `tauri::Builder`
-in the binary; wry is used directly. `resolve_asset` canonicalizes both base
-and target to keep symlinks inside the petal asset dir.
+Only the asset helpers remain: `resolve_asset` and `get_asset_base_url`.
+Nothing registers them yet: there is no `tauri::Builder` in the binary; the
+embedded backend uses wry directly. `resolve_asset` retains lexical path checks
+and canonicalizes both base and target to confine symlinks to the petal asset dir.
 
-**VerseManager wiring gap**: the node/petal commands (`get_node_data`,
-`list_nodes_for_petal`, `notify_interaction`, `update_node_transform`,
-`update_node_url`, `list_petals`) are stubs — no VerseManager query/event path
-reaches this seam yet. Each logs via `tracing` and returns placeholder data
-(hardcoded node, empty list, or bare `Ok`) until that wiring lands;
-`resolve_asset`/`get_asset_base_url` are the only fully-functional commands.
+The six unregistered node/petal commands and their unused PetalInfo DTO were
+removed. They returned fabricated data, empty lists or successful no-op writes;
+there is no webview-JS object mutation/query bridge at this seam.
+
+## fallback-backend
+
+Backend selection remains Servo > Tauri > Stub. Stub construction warns once per
+instance that no webview backend is compiled in. The adapter can request an
+external browser launch, but owns no embedded window: is_alive is false and
+navigate reports an explicit unsupported-embedded result even when the launcher
+starts. A successful spawn proves only a launch request, never a loaded page.
+No UrlChanged or LoadComplete is emitted. The existing error event carries the
+handoff explanation or launch failure; only the latest pending error is retained.
+
+Back/show/hide/reposition return unsupported errors and do not control another
+application's window. Geometry calls do not warn or enqueue per-frame events.
+Destroy closes the adapter without closing an external browser. The original
+command-layer URL policy remains, and the fallback checks it again before the
+launcher. Windows uses explorer.exe with one URL argument instead of a command
+shell; macOS/Linux retain open/xdg-open. Spawn errors propagate and unsupported
+platforms refuse explicitly. No browser or process is launched by the amended
+existing journey: it injects a recording/failing launcher.
+
+The existing asset-path validator journeys in fe-runtime remain unchanged.
+There is no actual AppHandle-backed resolve_asset filesystem/symlink journey in
+this crate to claim as verification; its implementation is preserved verbatim.
 
 ## §tests
 

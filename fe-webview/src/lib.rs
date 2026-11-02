@@ -1,3 +1,5 @@
+//! Embedded portal backends with an explicit external-browser fallback; see src/AGENTS.md.
+
 pub mod backend;
 pub mod backends;
 pub mod ipc;

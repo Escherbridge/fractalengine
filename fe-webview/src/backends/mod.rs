@@ -16,5 +16,6 @@ pub type ActiveBackend = servo::ServoBackend;
 #[cfg(all(feature = "backend-tauri", not(feature = "backend-servo")))]
 pub type ActiveBackend = tauri::TauriBackend;
 
+/// External launcher only; it never reports an embedded page load.
 #[cfg(not(any(feature = "backend-servo", feature = "backend-tauri")))]
 pub type ActiveBackend = stub::StubBackend;
