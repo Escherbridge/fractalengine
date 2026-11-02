@@ -3,7 +3,7 @@
 //! may read Escape privately. See `node_manager/AGENTS.md` §staged-escape.
 
 use bevy::prelude::*;
-use bevy_egui::EguiContexts;
+use bevy_egui::{egui, EguiContexts};
 
 use super::{GestureParams, NodeSelection};
 use crate::actions::{UiAction, UiManager};
