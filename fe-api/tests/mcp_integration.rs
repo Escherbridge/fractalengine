@@ -45,7 +45,7 @@ use fractalengine_test_harness::api::ApiHarness;
 /// `ToolSeam::Screenshot` with `screenshot`), for 38; its folded-in
 /// `agent_input_surface_20261031` added `inject_input` (its own
 /// `ToolSeam::Input`), for 39 total.
-const EXPECTED_TOOLS: [&str; 39] = [
+const EXPECTED_TOOLS: [&str; 46] = [
     "get_hierarchy",
     "create_verse",
     "create_fractal",
@@ -70,6 +70,8 @@ const EXPECTED_TOOLS: [&str; 39] = [
     "place_asset",
     "set_property",
     "get_properties",
+    "get_field_schema",
+    "set_field_schema",
     "delete_property",
     "create_waypoint",
     "move_waypoint",
@@ -92,6 +94,11 @@ const EXPECTED_TOOLS: [&str; 39] = [
     "screenshot",
     "get_camera",
     // Folded-in agent_input_surface_20261031: GUI hosts only (synthetic-input seam, §agent-input-surface)
+    "ui_tree",
+    "dialog_answers",
+    "window",
+    "ui_state",
+    "ui_logs",
     "inject_input",
 ];
 
@@ -913,7 +920,15 @@ async fn tools_list_inventory() {
             !n.starts_with("sim_")
                 && *n != "screenshot"
                 && *n != "get_camera"
-                && *n != "inject_input"
+                && !matches!(
+                    *n,
+                    "inject_input"
+                        | "ui_tree"
+                        | "dialog_answers"
+                        | "window"
+                        | "ui_state"
+                        | "ui_logs"
+                )
         })
         .collect();
     assert_eq!(names, non_lab, "31 tools off a sim lab host");
@@ -952,7 +967,19 @@ async fn tools_list_inventory() {
     let lab_tools: Vec<&str> = EXPECTED_TOOLS
         .iter()
         .copied()
-        .filter(|n| *n != "screenshot" && *n != "get_camera" && *n != "inject_input")
+        .filter(|n| {
+            *n != "screenshot"
+                && *n != "get_camera"
+                && !matches!(
+                    *n,
+                    "inject_input"
+                        | "ui_tree"
+                        | "dialog_answers"
+                        | "window"
+                        | "ui_state"
+                        | "ui_logs"
+                )
+        })
         .collect();
     assert_eq!(listed_tools(&lab, &lab_token).await, lab_tools);
 
@@ -2048,7 +2075,7 @@ async fn every_scoped_tool_rejects_a_foreign_scope_token() {
             }),
             _ => json!({
                 "petal_id": foreign.petal, "node_id": foreign.node,
-                "fractal_id": foreign.fractal, "verse_id": foreign.verse,
+                "fractal_id": foreign.fractal, "verse_id": foreign.verse, "field_def_id": foreign.node,
             }),
         };
         let resp = call_tool(&state, &c, spec.name, args).await;
@@ -2060,7 +2087,7 @@ async fn every_scoped_tool_rejects_a_foreign_scope_token() {
         );
     }
     // 23 + set_petal_render_distance (S6) + the four CDL-SPEC10 device tools.
-    assert_eq!(scoped, 28, "every non-Global/None row is scope-checked");
+    assert_eq!(scoped, 30, "every non-Global/None row is scope-checked");
     assert!(
         model.lock().unwrap().log.is_empty(),
         "no denied call may write"
