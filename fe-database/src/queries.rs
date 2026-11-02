@@ -8,10 +8,9 @@ pub async fn create_petal(
     db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
     name: &str,
     node_id: &NodeId,
-    caller_node_id: &NodeId,
+    _caller_node_id: &NodeId,
 ) -> anyhow::Result<PetalId> {
-    // TODO: verse-level permission check for petal creation
-    let _ = caller_node_id; // RBAC skipped for creation: no petal_id exists yet
+    // Seed-only creation; see AGENTS.md section seed-petal.
     let petal_id = PetalId(ulid::Ulid::new());
     let entry = OpLogEntry {
         lamport_clock: 0,

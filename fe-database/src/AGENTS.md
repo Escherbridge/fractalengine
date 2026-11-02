@@ -1781,3 +1781,7 @@ to another waiter. GUI request IDs are consumed only by their owning form.
 Local role statements commit their operation and admitted row atomically under captured Manager/ancestry, exact verse-owner and prior statement-row fences. Ordering still uses latest_per_grantor. Ordinary repartition/materialized-role update and publication follow commit; startup repair retains its existing responsibility. This is not distributed transaction atomicity or synchronous peer delivery.
 
 The RevokeApiToken constructor census found GUI EntitySettings/Inspector and test peer/scenarios only; REST/MCP/WS has no producer or pending family. Legacy local self-revoke derives authority from the DB-thread DID and treats supplied sub only as target data; a mismatched sub refuses. The test peer mirrors this rule. Explicit target Manager-revoke manages a descendant token under its separate stored-authority fence. Remote API principals are not substituted with host identity.
+
+## seed-petal
+
+`queries::create_petal` is the seed-only constructor used by `handlers/seed.rs` to create the Genesis Petal before attaching its stored Fractal ancestry. It retains the caller argument for compatibility but does not infer ordinary interactive creation authority from that argument. Normal hierarchy creation uses the checked target handler; do not expose this bootstrap helper as an alternate authorized mutation route. The unused explicit-only `get_scope_members` helper has been removed; current Access reads retain their stored target, inherited and converged-role readback contract.

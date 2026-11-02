@@ -155,8 +155,8 @@ select branch; a hit is handled by `handle_inbound_tileset_ad` (records the
 provider, emits `SyncEvent::PeerTilesetAdvertisement`) and never reaches
 `handle_gossip_incoming`; a miss (any other frame shape — a compute envelope,
 garbage, or a pre-S3 build's frame) falls through unchanged. `SyncEvent::
-NodeTransformed` remains the one variant nothing in this crate ever emits
-(the comment below still marks a future capability). Inbound *connections*
+NodeTransformed` is an unsupported legacy unsigned variant with no current
+emitter. Inbound *connections*
 are routed by the stack's `Router`, which accepts `iroh_gossip::ALPN`
 (`/iroh-gossip/1`).
 
@@ -250,11 +250,10 @@ docs engine down.
   would leak an open replica per known doc on every legacy reopen. Any new
   code that opens a `Doc` must close it the same way.
 
-`status.rs` also carries a `TODO(iroh-1.x)` for applying inbound peer `SyncEvent::NodeTransformed`
-to the local world (currently logged, not applied). Unlike the compute plane above, nothing in
-this crate ever emits that variant today — the comment marks a future capability, not a live gap
-waiting on gossip wiring (gossip itself is wired; see §write-policy for why an unsigned networked
-transform has nowhere to enter admission yet).
+`status.rs` deliberately ignores the legacy unsigned `SyncEvent::NodeTransformed`
+variant. It has no current emitter. It must not bypass signed row admission by
+writing directly into the local world; see section write-policy for the current
+network write boundary.
 
 Runtime behavior: row bytes traverse the real network. The fe-test-harness
 scenario `two_peer_replica_sync` proves A2 end-to-end (two in-process peers
@@ -1930,3 +1929,7 @@ cover the command order and honest refusal. Source presence is not executed
 restart, fleet or timeout proof. Archived pass13 shows a real online same-key
 stack replaying 40 entries but an empty distributed plan after restart; local
 history/readings/blob persistence passed separately.
+
+## blob-store-root-permissions
+
+`FsBlobStore::new` creates or opens the root and already attempts to set Unix permissions to `0700`. Metadata and permission-write failures retain their existing best-effort behavior. This cleanup changes no permission handling, Windows ACLs, or directory initialization. The unsupported unsigned `NodeTransformed` status branch remains diagnostics only; signed row and canonical admission paths are unchanged.

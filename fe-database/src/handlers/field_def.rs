@@ -79,7 +79,6 @@ pub(crate) async fn list_field_defs_handler(
 /// Fetch a single field definition by its ID.
 ///
 /// Returns `None` if no matching row exists.
-#[allow(dead_code)] // not yet wired to a DbCommand — planned single-fetch API
 #[instrument(skip(db))]
 pub(crate) async fn get_field_def_handler(
     db: &Db,

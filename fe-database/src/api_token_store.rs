@@ -220,15 +220,3 @@ pub async fn list_tokens_by_scope(
         .collect::<Result<Vec<_>, _>>()?;
     Ok((records, total))
 }
-
-#[cfg(test)]
-mod tests {
-    // Tests require an in-memory SurrealDB instance.
-    // Deferred to integration testing phase.
-
-    #[tokio::test]
-    #[ignore = "requires in-memory SurrealDB"]
-    async fn store_and_revoke_round_trip() {
-        // TODO: set up in-memory DB, apply schema, store token, revoke, verify
-    }
-}

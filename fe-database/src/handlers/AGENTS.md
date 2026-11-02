@@ -125,3 +125,7 @@ SetPetalTerrain retains the public CallerAuth/correlation grammar. Preparation f
 The authority guards precede UPDATE inside the same commit_operation_atomic transaction as the ordinary terrain operation. The helper removes BEGIN/op-log/COMMIT slots; the final caller result is the UPDATE RETURN AFTER row even after adding guard statements. Terrain is read back from that committed row, and publication remains post-commit and best effort. The existing API and GUI success/failure correlation branches are unchanged. No strict input-vs-readback JSON equality policy or request field was added.
 
 The existing Viewer-denial real-store journey now also captures then revokes an explicit role, changes default access after capture, and reparents after capture. Each attempted use must leave terrain and op_log unchanged; a final restored-authority write verifies actual readback and publication. These assertions are source-only until the sole builder's integrated sweep. Existing whole-document replacement/cache-merge and best-effort replication semantics remain; this fence does not claim multi-peer atomicity or stale-client document CAS.
+
+## Field definition lookup ownership
+
+`get_field_def_handler` is live internal infrastructure for checked definition mutations and enforced-schema get/set. Its callers perform their existing target authorization; retaining this lookup does not introduce a separate public single-fetch command.

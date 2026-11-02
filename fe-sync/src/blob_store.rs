@@ -37,17 +37,10 @@ pub struct FsBlobStore {
 }
 
 impl FsBlobStore {
-    /// Create (or open) a blob store rooted at `root`.
-    ///
-    /// The root directory is created if it does not already exist. On Unix
-    /// systems we would normally set `0700` permissions — on Windows this is
-    /// a no-op for now (see TODO in source).
+    /// Create or open a blob store; see AGENTS.md section blob-store-root-permissions.
     pub fn new(root: PathBuf) -> anyhow::Result<Self> {
         ensure_dir(&root)?;
 
-        // TODO(phase-d): on Unix, set 0700 on root via std::os::unix::fs::PermissionsExt
-        // to restrict access to the current user. Windows ACLs handle this differently
-        // — deferred until we ship beyond local-only.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

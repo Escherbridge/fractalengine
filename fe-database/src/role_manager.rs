@@ -267,23 +267,6 @@ pub async fn revoke_role_checked(
     })
 }
 
-/// Get all peers with explicit access at a scope.
-///
-/// Returns `(peer_did, RoleLevel)` pairs. Currently only includes roles
-/// explicitly assigned at this exact scope; inherited members from parent
-/// scopes will be added in a future enhancement.
-pub async fn get_scope_members(db: &Db, scope: &str) -> anyhow::Result<Vec<(String, RoleLevel)>> {
-    let explicit = rbac::get_all_roles_for_scope(db, scope).await?;
-    let members: Vec<(String, RoleLevel)> = explicit
-        .into_iter()
-        .map(|(did, role_str)| (did, RoleLevel::from(role_str.as_str())))
-        .collect();
-
-    // TODO: Also include inherited members from parent scopes.
-
-    Ok(members)
-}
-
 /// Set the verse-level default access (`"viewer"` or `"none"`); the caller needs Manager+
 /// at the VERSE scope — a petal or fractal Manager is refused (governance lies above them).
 pub async fn set_default_access(

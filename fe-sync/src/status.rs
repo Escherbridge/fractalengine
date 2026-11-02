@@ -195,8 +195,7 @@ pub fn drain_sync_events(
                     dropped += 1;
                 }
             }
-            // Peer transform updates — applying to local nodes is deferred.
-            // TODO(iroh-1.x): apply peer NodeTransformed to the local ECS/world.
+            // Unsupported legacy unsigned transform event; no current emitter (see AGENTS.md).
             SyncEvent::NodeTransformed {
                 ref node_id,
                 ref verse_id,
@@ -205,7 +204,7 @@ pub fn drain_sync_events(
                 tracing::debug!(
                     node_id,
                     verse_id,
-                    "Received peer NodeTransformed (not yet applied)"
+                    "Ignored unsupported legacy unsigned NodeTransformed"
                 );
             }
             // M2/F6: the shard-ledger dump is a diagnostics reply (the
