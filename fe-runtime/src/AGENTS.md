@@ -834,3 +834,11 @@ correlation and typed expected transform/path-points, full scope and optional
 known history version. It cannot enter the legacy API pending family map.
 ResolveCheckedNodeMutation returns a distinct exact-request fact resolution;
 historical previews remain read-only. Ordinary public API DTOs are unchanged.
+
+## Petal requirements
+
+Shared bounded declarations support 256 entries, 64 KiB, safe unique catalog IDs
+and the existing twelve content kinds. Explicit legacy render_distance/fallback
+metadata survives updates; unknown fields refuse lossy editing. Local-only
+Get/Set commands are mandatory-correlated with no API reply family. Snapshot
+can_manage is advisory; the DB derives its actual actor and stored authority.

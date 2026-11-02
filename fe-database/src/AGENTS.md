@@ -1761,3 +1761,8 @@ Existing durable role-restart journey also checks committed Petal publication,
 Verse/Fractal/Petal recovery ordering, exact identities, private-field omission
 and Viewer no-publish. No readings, history, schema, blobs or journal facts are
 re-ingested by this command. Execution and live restart proof remain pending.
+
+Petal declaration persistence lives in handlers/petal_requirements.rs. It reuses
+the ordinary atomic op-log seam, exact stored Manager/ancestry authority, raw
+document CAS and existing catalog allowlist. There is no DDL change or implicit
+residency/install policy. See handlers/AGENTS.md section Petal requirements.

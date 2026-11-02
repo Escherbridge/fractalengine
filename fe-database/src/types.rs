@@ -44,6 +44,8 @@ pub enum OpType {
     /// `SetPetalTerrain` — closes the parity gap (campaign plan §10 C7):
     /// previously this write neither replicated nor op-logged.
     SetPetalTerrain,
+    /// Petal declaration metadata, independent of residency settings.
+    SetPetalRequirements,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

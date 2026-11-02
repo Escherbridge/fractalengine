@@ -273,8 +273,131 @@ mod tests {
             .await
             .expect("get ok");
         assert_eq!(loaded, Some(1234.5));
+        // Declarations persist independently of the residency column.
+        use crate::handlers::petal_requirements as requirements;
+        use fe_runtime::petal_requirements::{ManifestHexonEntry, PetalRequirements};
+        let before = requirements::get(&db, "owner-did", "p1").await.unwrap();
+        assert!(before.requirements.hexons.is_empty());
+        let draft = PetalRequirements {
+            hexons: vec![ManifestHexonEntry {
+                hexon_id: "terrain-v1".into(),
+                hexon_type: "TerrainTileset".into(),
+                required: true,
+            }],
+        };
+        let saved = requirements::set(&db, "owner-did", &before, &draft)
+            .await
+            .unwrap();
+        assert_eq!(saved.requirements, draft);
+        assert_eq!(
+            requirements::get(&db, "owner-did", "p1").await.unwrap(),
+            saved
+        );
+        let viewer = requirements::get(&db, "viewer-did", "p1").await.unwrap();
+        assert!(!viewer.can_manage);
+        let op_rows: Vec<serde_json::Value> = db
+            .query("SELECT * FROM op_log ORDER BY lamport_clock")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        for actor in ["viewer-did", "editor-did"] {
+            if actor == "editor-did" {
+                db_seed_role(&db, actor, "editor").await;
+            }
+            assert!(
+                requirements::set(&db, actor, &saved, &PetalRequirements::default())
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(
+            requirements::set(&db, "owner-did", &before, &PetalRequirements::default())
+                .await
+                .is_err(),
+            "stale raw document cannot overwrite a save"
+        );
+        let invalid = PetalRequirements {
+            hexons: vec![draft.hexons[0].clone(), draft.hexons[0].clone()],
+        };
+        assert!(requirements::set(&db, "owner-did", &saved, &invalid)
+            .await
+            .is_err());
+        let after_refused: Vec<serde_json::Value> = db
+            .query("SELECT * FROM op_log ORDER BY lamport_clock")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(after_refused, op_rows, "denials add no intention");
+        assert_eq!(
+            requirements::get(&db, "owner-did", "p1").await.unwrap(),
+            saved
+        );
+        db.query("DEFINE EVENT refuse_requirements ON TABLE petal WHEN $event = 'UPDATE' THEN { THROW 'induced requirements failure'; }").await.unwrap().check().unwrap();
+        assert!(
+            requirements::set(&db, "owner-did", &saved, &PetalRequirements::default())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            requirements::get(&db, "owner-did", "p1").await.unwrap(),
+            saved
+        );
+        let after_rollback: Vec<serde_json::Value> = db
+            .query("SELECT * FROM op_log ORDER BY lamport_clock")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(
+            after_rollback, op_rows,
+            "induced storage failure rolls back intention and document"
+        );
+        db.query("REMOVE EVENT refuse_requirements ON TABLE petal")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        db.query("CREATE fractal CONTENT {fractal_id:'f2',verse_id:'v1',owner_did:'owner-did',name:'F2',created_at:'2026-11-02T00:00:00Z'}; UPDATE petal SET fractal_id='f2' WHERE petal_id='p1'").await.unwrap().check().unwrap();
+        assert!(
+            requirements::set(&db, "owner-did", &saved, &PetalRequirements::default())
+                .await
+                .is_err(),
+            "old ancestry is not retargeted"
+        );
+        db.query("UPDATE petal SET fractal_id='f1',hexon_manifest=$legacy WHERE petal_id='p1'")
+            .bind((
+                "legacy",
+                serde_json::json!({"hexons":draft.hexons,"render_distance":500.0,"fallback":"sign"}),
+            ))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let legacy = requirements::get(&db, "owner-did", "p1").await.unwrap();
+        let legacy_saved = requirements::set(&db, "owner-did", &legacy, &PetalRequirements::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            legacy_saved.document.as_ref().unwrap()["render_distance"],
+            500.0
+        );
+        assert_eq!(legacy_saved.document.as_ref().unwrap()["fallback"], "sign");
+        assert_eq!(
+            get_petal_render_distance_handler(&db, "p1").await.unwrap(),
+            Some(1234.5)
+        );
+        db.query("UPDATE petal SET hexon_manifest={unknown:'hidden',hexons:[]} WHERE petal_id='p1'")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        assert!(
+            requirements::get(&db, "owner-did", "p1").await.is_err(),
+            "unknown fields refuse lossy editing"
+        );
     }
-
     #[tokio::test]
     async fn clearing_restores_inherit() {
         let db = db_with_petal("p1").await;
@@ -410,6 +533,88 @@ mod tests {
             Some(777.0)
         );
 
+        use crate::handlers::petal_requirements as requirements;
+        use fe_runtime::petal_requirements::{ManifestHexonEntry, PetalRequirements};
+        let empty = requirements::get(&author_db, "owner-did", "p1")
+            .await
+            .unwrap();
+        let draft = PetalRequirements {
+            hexons: vec![ManifestHexonEntry {
+                hexon_id: "model-v2".into(),
+                hexon_type: "Model".into(),
+                required: false,
+            }],
+        };
+        requirements::set(&author_db, "owner-did", &empty, &draft)
+            .await
+            .unwrap();
+        let declaration_bytes = fetch_row_bytes(&author_db, "p1").await;
+        let denied = apply_replicated_row_handler(
+            &peer_db,
+            "v1",
+            "petal",
+            "p1",
+            &declaration_bytes,
+            "editor-did",
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(
+                denied,
+                fe_runtime::messages::ReplicatedRowOutcome::Deferred(_)
+            ),
+            "an Editor cannot change requirements via a whole-row publication"
+        );
+        let accepted = apply_replicated_row_handler(
+            &peer_db,
+            "v1",
+            "petal",
+            "p1",
+            &declaration_bytes,
+            "owner-did",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            accepted,
+            fe_runtime::messages::ReplicatedRowOutcome::Applied
+        );
+        assert_eq!(
+            requirements::get(&peer_db, "owner-did", "p1")
+                .await
+                .unwrap()
+                .requirements,
+            draft
+        );
+        let unchanged = apply_replicated_row_handler(
+            &peer_db,
+            "v1",
+            "petal",
+            "p1",
+            &declaration_bytes,
+            "editor-did",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            unchanged,
+            fe_runtime::messages::ReplicatedRowOutcome::Applied,
+            "Editor terrain/distance updates may carry unchanged requirements"
+        );
+        let mut malformed: serde_json::Value = serde_json::from_slice(&declaration_bytes).unwrap();
+        malformed["hexon_manifest"] = serde_json::json!({"hexons":[],"hidden":"must not drop"});
+        let malformed = serde_json::to_vec(&malformed).unwrap();
+        assert_eq!(
+            apply_replicated_row_handler(&peer_db, "v1", "petal", "p1", &malformed, "owner-did", None)
+                .await
+                .unwrap(),
+            fe_runtime::messages::ReplicatedRowOutcome::Denied
+        );
+
         // Peer DB where the author has no granted role (viewer by default) —
         // the whole row is deferred (RP-3: retried once the role lands), never applied.
         let denying_peer_db = db_with_petal("p1").await;
@@ -438,7 +643,6 @@ mod tests {
             "a deferred row never touches the peer's petal"
         );
     }
-
     #[tokio::test]
     async fn an_inbound_out_of_range_value_is_denied() {
         let peer_db = db_with_petal("p1").await;

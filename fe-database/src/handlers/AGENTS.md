@@ -57,3 +57,19 @@ atomic transaction succeeds. A UI request ID is retained in the actual change
 fact. Resolve reads that exact immutable fact after current/stored scope checks;
 matching coordinates are never proof of a committed request. Existing ordinary
 API constructors and unguarded compatibility routes retain their signatures.
+
+## Petal requirements
+
+The handler stores validated declarations in existing petal.hexon_manifest. It
+does not change render_distance, fetch content or gate the scene. Viewer reads
+and Manager writes fence exact captured authority/ancestry. Set also fences
+the raw loaded document and scope; explicit legacy metadata survives. Document,
+readback equality guard and one ordinary op_log entry commit atomically. No DDL
+change, backfill or object replay coverage is implied.
+
+Committed declarations use local_catalog's existing exact Petal allowlist for
+best-effort publication and restart repair. Inbound documents meet the same
+bounded decoder. Changed requirements raise whole-row admission to Manager at
+each current/requested Petal scope. Unchanged requirements preserve the Editor
+floor for other Petal updates. Automatic installation/fetch, fallback rendering
+and residency policy remain separate product decisions.

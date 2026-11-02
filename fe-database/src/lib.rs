@@ -1501,6 +1501,25 @@ pub fn spawn_db_thread_shared(
                         ).await;
                         send_result(&tx, reply);
                     }
+                    Ok(DbCommand::GetPetalRequirements { petal_id, correlation_id }) => {
+                        let result=match handlers::petal_requirements::get(&db,&local_did,&petal_id).await {
+                            Ok(snapshot)=>DbResult::PetalRequirementsLoaded {snapshot,correlation_id},
+                            Err(error)=>DbResult::RequestFailed {error:format!("Load requirements failed: {error}"),correlation_id},
+                        };
+                        handlers::send_result(&tx,result);
+                    }
+                    Ok(DbCommand::SetPetalRequirements { expected, requirements, correlation_id }) => {
+                        let result=match handlers::petal_requirements::set(&db,&local_did,&expected,&requirements).await {
+                            Ok(snapshot)=> {
+                                if let Err(error)=handlers::local_catalog::publish_created_petal(&db,&blob_store,repl_tx.as_ref(),&local_did,&snapshot.petal_id).await {
+                                    tracing::warn!(%error,"Requirements committed; catalog publication deferred until replica recovery");
+                                }
+                                DbResult::PetalRequirementsLoaded {snapshot,correlation_id}
+                            }
+                            Err(error)=>DbResult::RequestFailed {error:format!("Save requirements failed: {error}"),correlation_id},
+                        };
+                        handlers::send_result(&tx,result);
+                    }
                     Ok(DbCommand::SetPetalTerrain { petal_id, terrain, auth, correlation_id }) => {
                         let reply = handlers::petal_terrain::set_petal_terrain_reply(&db, &local_did, petal_id, terrain, auth, repl_tx.as_ref(), &blob_store, correlation_id).await;
                         send_result(&tx, reply);

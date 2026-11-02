@@ -455,6 +455,8 @@ enum Floor {
     Write,
     /// Manager+ at the VERSE scope: verse governance fields and `device_format`.
     ManageVerse,
+    /// Manager+ at each exact current/requested Petal scope.
+    ManageScope,
 }
 
 /// What referential confinement concluded about one row.
@@ -689,6 +691,12 @@ async fn role_gate(
                 return Ok(below_threshold());
             }
         }
+        Floor::ManageScope => {
+            for scope in scopes {
+                let role = crate::role_manager::resolve_role(db, author_did, scope).await?;
+                if !role.is_at_least(fe_policy::RoleLevel::Manager) { return Ok(below_threshold()); }
+            }
+        }
         Floor::Write => {
             for scope in scopes {
                 let role = crate::role_manager::resolve_role(db, author_did, scope).await?;
@@ -852,7 +860,11 @@ async fn confine_petal(
         Some(fractal_id),
         Some(petal_id),
     )];
-    if let Some(durable) = lookup_row(db, "petal", "petal_id", petal_id, "fractal_id").await? {
+    let mut requirements_changed = row.get("hexon_manifest").is_some_and(|value| !value.is_null());
+    if let Some(durable) = lookup_row(db, "petal", "petal_id", petal_id, "fractal_id, hexon_manifest").await? {
+        if let Some(incoming) = row.get("hexon_manifest") {
+            requirements_changed = Some(incoming).filter(|v| !v.is_null()) != durable.get("hexon_manifest").filter(|v| !v.is_null());
+        }
         let Some(durable_fractal) = str_field(&durable, "fractal_id") else {
             return deny(format!("petal '{petal_id}' has no durable fractal"));
         };
@@ -872,7 +884,7 @@ async fn confine_petal(
     }
     Ok(Confined::Gate {
         scopes,
-        floor: Floor::Write,
+        floor: if requirements_changed { Floor::ManageScope } else { Floor::Write },
     })
 }
 
@@ -1206,6 +1218,13 @@ async fn apply_static_row(
 
     let mut row: serde_json::Value = serde_json::from_slice(row_bytes)
         .map_err(|e| anyhow::anyhow!("replicated row {table}/{record_id}: bad JSON: {e}"))?;
+    if table == "petal" {
+        if let Some(document) = row.get("hexon_manifest") {
+            if fe_runtime::petal_requirements::PetalRequirements::from_document(Some(document)).is_err() {
+                return Ok(ReplicatedRowOutcome::Denied);
+            }
+        }
+    }
     strip_toplevel_nulls(&mut row);
     // The SurrealDB `id` is the AUTHOR's local record identity (a `RETURN AFTER` read-back
     // carries it), never wire data: MERGEing it into an existing row fails, and on CREATE it

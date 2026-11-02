@@ -1060,6 +1060,17 @@ pub enum DbCommand {
         hexon_uri: String,
     },
     // --- Petal terrain binding ---
+    /// Read declarations using the DB thread's actual local identity.
+    GetPetalRequirements {
+        petal_id: String,
+        correlation_id: String,
+    },
+    /// Replace declarations only while the authorized document and scope still match.
+    SetPetalRequirements {
+        expected: crate::petal_requirements::PetalRequirementsSnapshot,
+        requirements: crate::petal_requirements::PetalRequirements,
+        correlation_id: String,
+    },
     /// Set or clear a petal's terrain config (None clears).
     SetPetalTerrain {
         petal_id: String,
@@ -1593,6 +1604,11 @@ pub enum DbResult {
     /// Result of `UninstallCrate`.
     CrateUninstalled {
         hexon_uri: String,
+    },
+    /// Authoritative declaration readback for one exact UI request.
+    PetalRequirementsLoaded {
+        snapshot: crate::petal_requirements::PetalRequirementsSnapshot,
+        correlation_id: String,
     },
     /// Result of Get/SetPetalTerrain — authoritative petal terrain JSON (None = no terrain).
     PetalTerrainLoaded {

@@ -13,6 +13,7 @@ pub mod messages;
 pub mod node_history;
 pub mod node_measurements;
 pub mod peer_registry;
+pub mod petal_requirements;
 pub mod plugin_host;
 pub mod qa_debug;
 pub mod safe_id;
