@@ -33,6 +33,7 @@ pub(crate) fn role_status(
         ),
         egui::Label::new(egui::RichText::new(summary).small().color(theme::TEXT_DIM))
             .truncate()
+            .selectable(false)
             .sense(egui::Sense::hover()),
     )
     .named(ui, format_args!("Current role: {label}"))

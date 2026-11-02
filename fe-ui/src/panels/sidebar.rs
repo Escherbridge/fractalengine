@@ -53,8 +53,7 @@ pub(crate) fn left_sidebar(
                     .auto_shrink([false; 2]),
                 |ui| {
                     ui.set_min_width(220.0);
-                    ui.spacing_mut().indent = 12.0;
-                    ui.spacing_mut().interact_size.y = 24.0_f32.max(20.0 / ctx.pixels_per_point());
+                    configure_tree_spacing(ui);
                     ui.add_space(4.0);
                     render_verse_tree(
                         ui,
@@ -74,6 +73,13 @@ pub(crate) fn left_sidebar(
                 },
             );
         });
+}
+
+fn configure_tree_spacing(ui: &mut egui::Ui) {
+    let minimum = 24.0_f32.max(20.0 / ui.ctx().pixels_per_point());
+    ui.spacing_mut().indent = minimum;
+    ui.spacing_mut().icon_width = minimum;
+    ui.spacing_mut().interact_size.y = minimum;
 }
 
 fn sidebar_verse_header(
@@ -153,7 +159,9 @@ fn eye_button(
             .color(theme::TREE_NODE_ICON),
     )
     .frame(false)
-    .min_size(egui::vec2(24.0, 24.0));
+    .min_size(egui::Vec2::splat(
+        24.0_f32.max(20.0 / ui.ctx().pixels_per_point()),
+    ));
     ui.add_enabled(enabled, btn)
         .named(ui, name)
         .on_hover_text(tooltip)
@@ -483,6 +491,7 @@ fn render_petals(
                 nav,
                 verse_name,
                 fractal_name,
+                &petal_name,
                 camera_focus,
                 node_mgr,
                 ui_mgr,
@@ -622,6 +631,7 @@ fn render_nodes(
     nav: &mut NavigationManager,
     verse_name: &str,
     fractal_name: &str,
+    petal_name: &str,
     camera_focus: &mut CameraFocusTarget,
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
@@ -703,7 +713,7 @@ fn render_nodes(
         let label_resp = if is_active_petal {
             label_resp
         } else {
-            label_resp.on_hover_text("Enter this petal and select the object. Hidden objects must be shown before selection.")
+            label_resp.on_hover_text(format!("Enter {petal_name} to select this object. Hidden objects must be shown before selection."))
         };
         if label_resp.clicked() {
             if is_alt && is_active_petal && local_role.can_edit() {
@@ -955,9 +965,13 @@ mod tests {
                 ..Default::default()
             };
             let mut response = None;
+            let mut toggle_response = None;
             crate::ui_shell::layout_policy::begin_frame(&ctx, true);
             let _ = ctx.run(input, |ctx| {
                 bevy_egui::egui::CentralPanel::default().show(ctx, |ui| {
+                    super::configure_tree_spacing(ui);
+                    let header = bevy_egui::egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), ui.make_persistent_id("test_tree_expansion"), true)
+                        .show_header(ui, |ui| {
                     let (name, _) = crate::panels::tree_entry::row(
                         ui,
                         crate::panels::tree_entry::Target {
@@ -995,8 +1009,14 @@ mod tests {
                         |_| {},
                     );
                     response = Some(name);
+                        });
+                    let (toggle, _, _) = header.body(|ui| ui.label("Expanded content"));
+                    toggle_response = Some(crate::accessibility::ResponseExt::named(toggle, ui, "Expand or collapse test entry"));
                 });
             });
+            let toggle = toggle_response.unwrap();
+            assert!(toggle.rect.width() >= 24.0 && toggle.rect.height() >= 24.0);
+            assert!(toggle.interact_rect.width() >= 24.0 && toggle.interact_rect.height() >= 24.0);
             let response = response.unwrap();
             assert!(response.rect.width() >= 24.0 && response.rect.height() >= 24.0);
             let observed = crate::ui_shell::layout_policy::observations(&ctx);
@@ -1004,6 +1024,276 @@ mod tests {
                 .controls
                 .iter()
                 .any(|control| control.id == response.id.value() && control.hit.width() >= 24.0));
+            for control in &observed.controls {
+                if control.clickable || control.draggable {
+                    assert!(
+                        control.hit.width() >= 24.0 && control.hit.height() >= 24.0,
+                        "tree action: {:?}",
+                        control.hit
+                    );
+                }
+            }
         }
+        use bevy_egui::egui;
+        fn texts(shape: &egui::epaint::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::epaint::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+                egui::epaint::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        texts(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let hierarchy = crate::verse_manager::VerseManager::from_verses(vec![
+            crate::verse_manager::VerseEntry {
+                id: "v".into(),
+                name: "Counted verse".into(),
+                fractals: vec![crate::verse_manager::FractalEntry {
+                    id: "f".into(),
+                    name: "Counted fractal".into(),
+                    petals: vec![
+                        crate::verse_manager::PetalEntry {
+                            id: "p".into(),
+                            name: "Counted petal".into(),
+                            nodes: vec![
+                                crate::verse_manager::NodeEntry {
+                                    id: "n1".into(),
+                                    ..Default::default()
+                                },
+                                crate::verse_manager::NodeEntry {
+                                    id: "n2".into(),
+                                    ..Default::default()
+                                },
+                            ],
+                            ..Default::default()
+                        },
+                        crate::verse_manager::PetalEntry {
+                            id: "empty".into(),
+                            name: "Empty petal".into(),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ]);
+        for width in [1024.0, 1280.0, 1920.0] {
+            for (verse, fractal, petal, expected) in [
+                (None, None, None, "Library: 2 petals \u{00b7} 2 objects"),
+                (Some("v"), None, None, "Verse: 2 petals \u{00b7} 2 objects"),
+                (
+                    Some("v"),
+                    Some("f"),
+                    None,
+                    "Fractal: 2 petals \u{00b7} 2 objects",
+                ),
+                (
+                    Some("v"),
+                    Some("f"),
+                    Some("p"),
+                    "Petal: 1 petal \u{00b7} 2 objects",
+                ),
+                (
+                    Some("v"),
+                    Some("f"),
+                    Some("empty"),
+                    "Petal: 1 petal \u{00b7} 0 objects",
+                ),
+                (
+                    Some("v"),
+                    Some("f"),
+                    Some("missing"),
+                    "Content counts unavailable",
+                ),
+            ] {
+                let ctx = egui::Context::default();
+                let nav = crate::navigation_manager::NavigationManager {
+                    active_verse_id: verse.map(str::to_owned),
+                    active_verse_name: "Counted verse".into(),
+                    active_fractal_id: fractal.map(str::to_owned),
+                    active_petal_id: petal.map(str::to_owned),
+                    ..Default::default()
+                };
+                let mut manager = crate::actions::UiManager::default();
+                let dashboard = crate::atlas::DashboardState {
+                    petal_count: 999,
+                    model_count: 999,
+                    ..Default::default()
+                };
+                crate::ui_shell::layout_policy::begin_frame(&ctx, true);
+                let output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 720.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        crate::panels::status_bar::status_bar(
+                            ctx,
+                            &dashboard,
+                            None,
+                            &nav,
+                            &mut manager,
+                            &crate::ui_shell::modal::ModalManagerState::default(),
+                            &hierarchy,
+                            &mut crate::visibility::VisibilityState::default(),
+                            &mut crate::plugin::IdentityBanner::default(),
+                            &crate::plugin::LocalUserRole {
+                                role: Some(fe_database::RoleLevel::Owner),
+                            },
+                            None,
+                        );
+                    },
+                );
+                let mut rendered = Vec::new();
+                for shape in &output.shapes {
+                    texts(&shape.shape, &mut rendered);
+                }
+                assert!(
+                    rendered.iter().any(|text| text == expected),
+                    "{width}: {rendered:?}"
+                );
+                let observed = crate::ui_shell::layout_policy::observations(&ctx);
+                for control in &observed.controls {
+                    if control.clickable || control.draggable {
+                        assert!(
+                            control.hit.width() >= 24.0 && control.hit.height() >= 24.0,
+                            "actual footer action: {:?}",
+                            control.hit
+                        );
+                    }
+                }
+                assert!(
+                    observed
+                        .controls
+                        .iter()
+                        .any(|control| control.rect.height() == 18.0
+                            && !control.clickable
+                            && !control.draggable),
+                    "role summary is informational"
+                );
+            }
+        }
+
+        fn text_rect(shape: &egui::epaint::Shape, expected: &str) -> Option<egui::Rect> {
+            match shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == expected => {
+                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                egui::epaint::Shape::Vec(shapes) => {
+                    shapes.iter().find_map(|shape| text_rect(shape, expected))
+                }
+                _ => None,
+            }
+        }
+        let ctx = egui::Context::default();
+        let mut notices = crate::actions::UiManager::default();
+        let mut time = 0.0;
+        let nav = crate::navigation_manager::NavigationManager {
+            active_verse_id: Some("v".into()),
+            active_fractal_id: Some("f".into()),
+            active_petal_id: Some("p".into()),
+            ..Default::default()
+        };
+        let mut draw = |events: Vec<egui::Event>| {
+            time += 0.05;
+            let mut name = None;
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1024.0, 768.0),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let (response, _) = crate::panels::tree_entry::row(
+                            ui,
+                            crate::panels::tree_entry::Target {
+                                kind: EntryKind::Node,
+                                id: "native-node-id",
+                                name: "Copy target",
+                                verse_id: "v",
+                                fractal_id: Some("f"),
+                                petal_id: Some("p"),
+                                url: None,
+                            },
+                            true,
+                            true,
+                            true,
+                            &nav,
+                            &crate::plugin::LocalUserRole {
+                                role: Some(fe_database::RoleLevel::Owner),
+                            },
+                            &settings,
+                            &mut notices,
+                            |ui| {
+                                super::eye_button(
+                                    ui,
+                                    crate::visibility::glyph_for_bool(true),
+                                    true,
+                                    "Hide node",
+                                    "Hide copy target",
+                                )
+                            },
+                            |_| {},
+                        );
+                        name = Some(response.rect);
+                    });
+                },
+            );
+            (output, name.unwrap())
+        };
+        let (_, name) = draw(Vec::new());
+        let at = name.center();
+        draw(vec![egui::Event::PointerMoved(at)]);
+        draw(vec![egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Secondary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        draw(vec![egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Secondary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        let (menu, _) = draw(Vec::new());
+        let copy = menu
+            .shapes
+            .iter()
+            .find_map(|shape| text_rect(&shape.shape, "Copy ID"))
+            .expect("native row menu exposes Copy ID")
+            .center();
+        draw(vec![
+            egui::Event::PointerMoved(copy),
+            egui::Event::PointerButton {
+                pos: copy,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        let (output, _) = draw(vec![egui::Event::PointerButton {
+            pos: copy,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        assert!(output.platform_output.commands.iter().any(|command| matches!(command, egui::OutputCommand::CopyText(value) if value == "native-node-id")));
+        assert_eq!(
+            notices.active_toast(time).map(|(text, _)| text),
+            Some("Copied entry ID")
+        );
+        assert_eq!(nav.active_petal_id.as_deref(), Some("p"));
     }
 }

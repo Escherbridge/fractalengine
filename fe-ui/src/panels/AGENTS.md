@@ -620,3 +620,24 @@ The existing TSV journey also renders five actual impact rows at1024×768,
 painted glyph bounds against their clip rectangles, verifies the first row's
 sequential fields at two outer offsets, clicks its selection action, and scrolls
 to the last row. This source extension does not establish execution or live QA.
+
+
+## Chrome counts, hierarchy targets and copy receipts
+
+The footer derives Petal and object counts from the loaded VerseManager tree at
+its exact navigation scope. Library/Verse/Fractal/Petal labels identify that
+scope; invalid ancestry shows unavailable rather than a stale Dashboard total.
+Objects include hidden stored nodes and are not mislabeled as loaded 3D models.
+Counting sums existing Vec lengths without a DB query or per-node allocation.
+
+Hierarchy CollapsingState keeps its existing IDs and behavior. The tree scope
+sets both indent and icon width to the shared 24-point target minimum (with the
+20-physical-pixel backstop), which enlarges the native chevron hit rectangle.
+Names still truncate with full hover; horizontal scrolling preserves deep rows.
+The role summary explicitly disables label selection, so its hover metadata is
+not advertised as a click/drag action. Real footer buttons reserve target space.
+
+widgets::copy_with_feedback is the explicit copy-and-notice seam used by the
+value widgets, hierarchy Copy ID and error details. It queues the original value
+through egui's normal output; the host's synthetic-input clipboard suppression
+remains authoritative. It never reads or writes the host clipboard directly.

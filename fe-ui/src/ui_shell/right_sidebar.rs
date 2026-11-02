@@ -1669,7 +1669,11 @@ fn section_rail(ui: &mut egui::Ui, state: &mut RightSidebarState) {
             let active = state.is_active(section);
             if ui
                 .add(
-                    egui::Button::new(glyph).fill(crate::panels::toolbar::mode_button_fill(active)),
+                    egui::Button::new(glyph)
+                        .min_size(egui::Vec2::splat(
+                            24.0_f32.max(20.0 / ui.ctx().pixels_per_point()),
+                        ))
+                        .fill(crate::panels::toolbar::mode_button_fill(active)),
                 )
                 .named(
                     ui,

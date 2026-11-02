@@ -10,6 +10,12 @@ use crate::actions::UiManager;
 use crate::plugin::LocalUserRole;
 use crate::theme;
 
+/// Queue an explicit copy through egui and show its receipt.
+pub(crate) fn copy_with_feedback(ui: &egui::Ui, ui_mgr: &mut UiManager, value: &str, toast: &str) {
+    ui.ctx().copy_text(value.to_owned());
+    ui_mgr.show_toast(toast, ui.input(|input| input.time));
+}
+
 /// Read-only, width-capped, copyable value box.
 ///
 /// The frame never exceeds `ui.available_width()` and the value wraps in
@@ -51,9 +57,7 @@ pub(crate) fn copy_value_box(
                         .on_hover_text("Copy to clipboard")
                         .clicked()
                     {
-                        ui.ctx().copy_text(copy_value.to_string());
-                        let now = ui.ctx().input(|i| i.time);
-                        ui_mgr.show_toast(toast.to_string(), now);
+                        copy_with_feedback(ui, ui_mgr, copy_value, toast);
                     }
                     right(ui);
                 });
@@ -150,9 +154,7 @@ pub(crate) fn clipped_value_copyable(
         .button_named(ui, format_args!("Copy {label}"))
         .on_hover_text(format!("{value}\n\n(click to copy)"));
     if resp.clicked() {
-        ui.ctx().copy_text(value.to_string());
-        let now = ui.ctx().input(|i| i.time);
-        ui_mgr.show_toast(toast.to_string(), now);
+        copy_with_feedback(ui, ui_mgr, value, toast);
     }
     resp
 }
@@ -465,7 +467,8 @@ mod tests {
         // Second click, on Confirm, fires.
         let mut fired_on_confirm = false;
         click_sequence(&ctx, &mut time, confirm_point, |ui| {
-            fired_on_confirm = confirm_button(ui, "row-1", "Delete", "Confirm delete", "Delete row 1");
+            fired_on_confirm =
+                confirm_button(ui, "row-1", "Delete", "Confirm delete", "Delete row 1");
         });
         assert!(fired_on_confirm, "the second click on Confirm must fire");
 
@@ -487,7 +490,8 @@ mod tests {
         // missed click.
         let mut fired_on_rearm = false;
         click_sequence(&ctx, &mut time, unarmed_rect.center(), |ui| {
-            fired_on_rearm = confirm_button(ui, "row-1", "Delete", "Confirm delete", "Delete row 1");
+            fired_on_rearm =
+                confirm_button(ui, "row-1", "Delete", "Confirm delete", "Delete row 1");
         });
         assert!(!fired_on_rearm);
         time += 5.0; // > the 4s arm window

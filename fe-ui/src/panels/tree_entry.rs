@@ -23,6 +23,7 @@ pub(crate) struct Target<'a> {
 
 #[derive(Clone, Copy)]
 enum Command {
+    CopyId,
     Appearance,
     Options,
 }
@@ -75,7 +76,7 @@ fn menu(ui: &mut egui::Ui, target: Target<'_>, can_edit: bool, command: &mut Opt
         )
         .clicked()
     {
-        ui.ctx().copy_text(target.id.to_owned());
+        *command = Some(Command::CopyId);
         ui.close();
     }
     for label in ["Rename…", "Options…"] {
@@ -232,12 +233,16 @@ pub(crate) fn row(
                             egui::vec2(target_size, target_size),
                             egui::Layout::left_to_right(egui::Align::Center),
                             |ui| {
-                                ui.menu_button("…", |ui| {
-                                    menu(ui, target, can_edit, &mut command);
-                                    extra_menu(ui);
-                                })
-                                .response
-                                .named(
+                                let (response, _) =
+                                    egui::containers::menu::MenuButton::from_button(
+                                        egui::Button::new("\u{2026}")
+                                            .min_size(egui::Vec2::splat(target_size)),
+                                    )
+                                    .ui(ui, |ui| {
+                                        menu(ui, target, can_edit, &mut command);
+                                        extra_menu(ui);
+                                    });
+                                response.named(
                                     ui,
                                     format_args!(
                                         "Options menu for {} {}",
@@ -254,14 +259,15 @@ pub(crate) fn row(
                 .inner
         })
         .inner;
-    if let Some(command) = command {
-        let dialog = match command {
-            Command::Appearance => ActiveDialog::TreeAppearance {
-                draft: AppearanceDraft::new(target.kind, target.id, target.name, settings),
-            },
-            Command::Options => target.options(),
-        };
-        ui_mgr.open_dialog(dialog);
+    match command {
+        Some(Command::CopyId) => {
+            super::widgets::copy_with_feedback(ui, ui_mgr, target.id, "Copied entry ID")
+        }
+        Some(Command::Appearance) => ui_mgr.open_dialog(ActiveDialog::TreeAppearance {
+            draft: AppearanceDraft::new(target.kind, target.id, target.name, settings),
+        }),
+        Some(Command::Options) => ui_mgr.open_dialog(target.options()),
+        None => {}
     }
     (inner, eye_clicked)
 }

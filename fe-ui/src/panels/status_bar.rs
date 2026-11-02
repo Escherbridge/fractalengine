@@ -15,6 +15,79 @@ use crate::ui_shell::modal::ModalManagerState;
 use crate::verse_manager::VerseManager;
 use crate::visibility::{self, VisibilityState};
 
+struct ContentCounts<'a> {
+    level: &'static str,
+    name: &'a str,
+    petals: usize,
+    objects: usize,
+}
+
+impl<'a> ContentCounts<'a> {
+    fn for_petals(
+        level: &'static str,
+        name: &'a str,
+        petals: impl Iterator<Item = &'a crate::verse_manager::PetalEntry>,
+    ) -> Self {
+        let (petals, objects) = petals.fold((0, 0), |(count, objects), petal| {
+            (count + 1, objects + petal.nodes.len())
+        });
+        Self {
+            level,
+            name,
+            petals,
+            objects,
+        }
+    }
+}
+
+fn content_counts<'a>(
+    hierarchy: &'a VerseManager,
+    nav: &NavigationManager,
+) -> Option<ContentCounts<'a>> {
+    let Some(verse_id) = nav.active_verse_id.as_deref() else {
+        if nav.active_fractal_id.is_some() || nav.active_petal_id.is_some() {
+            return None;
+        }
+        return Some(ContentCounts::for_petals(
+            "Library",
+            "All loaded content",
+            hierarchy
+                .verses
+                .iter()
+                .flat_map(|verse| &verse.fractals)
+                .flat_map(|fractal| &fractal.petals),
+        ));
+    };
+    let verse = hierarchy.verses.iter().find(|verse| verse.id == verse_id)?;
+    let Some(fractal_id) = nav.active_fractal_id.as_deref() else {
+        if nav.active_petal_id.is_some() {
+            return None;
+        }
+        return Some(ContentCounts::for_petals(
+            "Verse",
+            &verse.name,
+            verse.fractals.iter().flat_map(|fractal| &fractal.petals),
+        ));
+    };
+    let fractal = verse
+        .fractals
+        .iter()
+        .find(|fractal| fractal.id == fractal_id)?;
+    let Some(petal_id) = nav.active_petal_id.as_deref() else {
+        return Some(ContentCounts::for_petals(
+            "Fractal",
+            &fractal.name,
+            fractal.petals.iter(),
+        ));
+    };
+    let petal = fractal.petals.iter().find(|petal| petal.id == petal_id)?;
+    Some(ContentCounts::for_petals(
+        "Petal",
+        &petal.name,
+        std::iter::once(petal),
+    ))
+}
+
 pub(crate) fn status_bar(
     ctx: &egui::Context,
     dashboard: &DashboardState,
@@ -35,8 +108,9 @@ pub(crate) fn status_bar(
     local_role: &crate::plugin::LocalUserRole,
     node_identity: Option<&fe_identity::NodeIdentity>,
 ) {
+    let minimum = 24.0_f32.max(20.0 / ctx.pixels_per_point());
     egui::TopBottomPanel::bottom("statusbar")
-        .exact_height(22.0)
+        .exact_height(minimum + 4.0)
         .frame(
             egui::Frame::NONE
                 .fill(theme::BG_STATUSBAR)
@@ -76,7 +150,7 @@ pub(crate) fn status_bar(
                 .small()
                 .color(theme::STATUS_NORMAL);
                 if ui
-                    .small_button(peer_label)
+                    .add(egui::Button::new(peer_label).min_size(egui::Vec2::splat(minimum)))
                     .button_named(ui, "Open peer debug panel")
                     .on_hover_text("Open connection and peer details")
                     .clicked()
@@ -92,15 +166,33 @@ pub(crate) fn status_bar(
                 crate::role_chip::role_status(ui, local_role, nav, node_identity);
 
                 ui.separator();
-                // "rooms" is a legacy table with no in-app create path — not shown.
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} petals  {} models",
-                        dashboard.petal_count, dashboard.model_count
-                    ))
-                    .small()
-                    .color(theme::TEXT_MUTED),
-                );
+                if let Some(counts) = content_counts(hierarchy, nav) {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!(
+                                "{}: {} petal{} \u{00b7} {} object{}",
+                                counts.level,
+                                counts.petals,
+                                if counts.petals == 1 { "" } else { "s" },
+                                counts.objects,
+                                if counts.objects == 1 { "" } else { "s" },
+                            ))
+                            .small()
+                            .color(theme::TEXT_MUTED),
+                        )
+                        .selectable(false),
+                    )
+                    .on_hover_text(format!(
+                        "{}: {}. Counts include hidden objects in the loaded hierarchy.",
+                        counts.level, counts.name
+                    ));
+                } else {
+                    ui.label(
+                        egui::RichText::new("Content counts unavailable")
+                            .small()
+                            .color(theme::TEXT_MUTED),
+                    );
+                }
 
                 // hierarchy_visibility_groups_20260808 RATIFICATION #16: dim
                 // persistent "N hidden" chip — an abnormal-condition
@@ -147,12 +239,14 @@ pub(crate) fn status_bar(
                 if let Some(msg) = identity_banner.message.clone() {
                     ui.separator();
                     let resp = ui
-                        .add(
+                        .add_sized(
+                            [ui.available_width().min(240.0), minimum],
                             egui::Label::new(
                                 egui::RichText::new(format!("\u{26A0} {msg} (click to dismiss)"))
                                     .small()
                                     .color(theme::STATUS_OFFLINE),
                             )
+                            .truncate()
                             .sense(egui::Sense::click()),
                         )
                         .button_named(ui, "Dismiss identity warning");
@@ -173,16 +267,19 @@ pub(crate) fn status_bar(
                 if let Some((latest_id, latest_label)) = latest {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let resp = ui
-                            .add(
+                            .add_sized(
+                                [ui.available_width().min(240.0), minimum],
                                 egui::Label::new(
                                     egui::RichText::new(latest_label)
                                         .small()
                                         .color(theme::STATUS_OFFLINE),
                                 )
+                                .truncate()
                                 .sense(egui::Sense::click()),
                             )
                             .button_named(ui, "Open error history");
                         let mut dismiss_latest = false;
+                        let mut copy_notice = None;
                         egui::Popup::from_toggle_button_response(&resp)
                             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                             .show(|ui| {
@@ -203,7 +300,10 @@ pub(crate) fn status_bar(
                                             }
                                         });
                                         if ui
-                                            .small_button("Copy")
+                                            .add(
+                                                egui::Button::new("Copy")
+                                                    .min_size(egui::Vec2::splat(minimum)),
+                                            )
                                             .named(
                                                 ui,
                                                 format_args!("Copy error notice {}", notice.id),
@@ -212,11 +312,14 @@ pub(crate) fn status_bar(
                                         {
                                             let raw =
                                                 notice.detail.as_ref().unwrap_or(&notice.text);
-                                            ui.ctx().copy_text(raw.clone());
+                                            copy_notice = Some(raw.clone());
                                         }
                                         if notice.id == latest_id
                                             && ui
-                                                .small_button("Dismiss")
+                                                .add(
+                                                    egui::Button::new("Dismiss")
+                                                        .min_size(egui::Vec2::splat(minimum)),
+                                                )
                                                 .named(
                                                     ui,
                                                     format_args!(
@@ -231,6 +334,14 @@ pub(crate) fn status_bar(
                                     });
                                 }
                             });
+                        if let Some(raw) = copy_notice {
+                            super::widgets::copy_with_feedback(
+                                ui,
+                                ui_mgr,
+                                &raw,
+                                "Copied error details",
+                            );
+                        }
                         if dismiss_latest {
                             ui_mgr.dismiss_notice(latest_id);
                         }
