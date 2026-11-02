@@ -42,7 +42,7 @@ pub(crate) fn panel_descriptor(tool: Tool) -> ToolPanelDescriptor {
                 "Click a path point or segment to edit it",
                 "Click empty space to deselect",
             ],
-            options_hints: &["Selection filters (soon)", "Highlight style (soon)"],
+            options_hints: &["Use the hierarchy or viewport to select an object."],
         },
         Tool::Move => ToolPanelDescriptor {
             title: "Move",
@@ -51,19 +51,19 @@ pub(crate) fn panel_descriptor(tool: Tool) -> ToolPanelDescriptor {
                 "Drag a gimbal axis to move",
                 "Ctrl+drag a path point to change its height",
             ],
-            options_hints: &["Axis lock X / Y / Z (soon)", "Grid snap, m (soon)"],
+            options_hints: &[],
         },
         Tool::Rotate => ToolPanelDescriptor {
             title: "Rotate",
             subtitle: "Spin the selection about a gimbal ring",
             use_zone: &["Drag a gimbal ring to rotate"],
-            options_hints: &["Angle snap 45° / 90° (soon)", "Pivot (soon)"],
+            options_hints: &[],
         },
         Tool::Scale => ToolPanelDescriptor {
             title: "Scale",
             subtitle: "Resize the selection along a gimbal axis",
             use_zone: &["Drag a gimbal axis to scale"],
-            options_hints: &["Uniform / per-axis (soon)", "Snap increment (soon)"],
+            options_hints: &[],
         },
         Tool::Pen => ToolPanelDescriptor {
             title: "Pen",
@@ -207,13 +207,13 @@ mod tests {
     fn options_hints_exist_exactly_for_the_tools_without_live_controls() {
         // Never-blank (ui_ux.md §7) without double-documenting (finding #15):
         // Pen/Brush have real Options bodies, everything else needs hints.
-        for tool in [Tool::Select, Tool::Move, Tool::Rotate, Tool::Scale] {
+        for tool in [Tool::Select] {
             assert!(
                 !panel_descriptor(tool).options_hints.is_empty(),
                 "{tool:?} has no live Options controls and no hints either"
             );
         }
-        for tool in [Tool::Pen, Tool::Brush, Tool::Measure] {
+        for tool in [Tool::Move, Tool::Rotate, Tool::Scale, Tool::Pen, Tool::Brush, Tool::Measure] {
             assert!(
                 panel_descriptor(tool).options_hints.is_empty(),
                 "{tool:?} renders real controls; a hint list would be stale copy"

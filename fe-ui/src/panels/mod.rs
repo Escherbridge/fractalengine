@@ -26,6 +26,7 @@ pub(crate) mod tool_inspector;
 /// dispatcher behind `RightSidebarSection::Options` — one arm per `Tool`, each
 /// reusing an existing helper. See `panels/AGENTS.md` §tool-options.
 pub(crate) mod tool_options;
+pub(crate) mod transform_options;
 pub(crate) mod tool_panel;
 pub(crate) mod toolbar;
 pub(crate) mod tree_appearance;
@@ -474,6 +475,7 @@ mod tests {
         let mut sidebar = crate::plugin::SidebarState::default();
         let mut tool = crate::plugin::ToolState {
             active_tool: Tool::Brush,
+            ..Default::default()
         };
         let mut inspector = crate::plugin::InspectorFormState::default();
         let mut nav = NavigationManager {

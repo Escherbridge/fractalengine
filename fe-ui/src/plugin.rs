@@ -183,6 +183,7 @@ impl Default for SidebarState {
 #[derive(Resource, Default)]
 pub struct ToolState {
     pub active_tool: Tool,
+    pub snap: crate::node_manager::ToolSnapSettings,
 }
 
 impl ToolState {

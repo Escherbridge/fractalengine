@@ -969,6 +969,7 @@ mod tests {
         let ctx = egui::Context::default();
         let tool = ToolState {
             active_tool: Tool::Pen,
+            ..Default::default()
         };
         let node_mgr = crate::node_manager::NodeManager {
             gesture_active: true,

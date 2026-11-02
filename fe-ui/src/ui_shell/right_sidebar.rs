@@ -286,7 +286,7 @@ pub fn render_right_sidebar(
     // The active tool — what the Options section dispatches on, and the source
     // of the live selection/gimbal readouts. Read-only here: `activate` is the
     // single writer (`plugin.rs`).
-    tool: &ToolState,
+    tool: &mut ToolState,
     // Measure tool anchors (hexon_scale FR-9): the Options Measure arm's
     // Undo/Clear/Close/mode buttons run the same reducer as viewport clicks.
     measure_state: &mut crate::node_manager::measure::MeasureState,
@@ -538,7 +538,7 @@ fn render_inspector_section(
 fn render_options_section(
     ctx: &egui::Context,
     state: &mut RightSidebarState,
-    tool: &ToolState,
+    tool: &mut ToolState,
     node_mgr: &NodeManager,
     path_state: &mut PathEditorState,
     sculpt_state: &mut SculptToolState,
@@ -578,6 +578,7 @@ fn render_options_section(
             active_petal_id,
             measure_state,
             measure_world_scale,
+            &mut tool.snap,
         );
     });
 }

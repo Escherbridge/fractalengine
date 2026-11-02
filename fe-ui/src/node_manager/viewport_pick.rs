@@ -259,6 +259,7 @@ mod tests {
         })
         .insert_resource(ToolState {
             active_tool: Tool::Select,
+            ..Default::default()
         })
         .init_resource::<VisibilityState>()
         .init_resource::<NodeManager>()

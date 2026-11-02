@@ -45,6 +45,8 @@ mod selection;
 mod shortcuts;
 mod sidebar_sync;
 mod transform_broadcast;
+mod transform_snap;
+pub use transform_snap::{ToolSnapSettings, TransformAxisLock};
 mod viewport_pick;
 
 use bevy::prelude::*;
@@ -595,6 +597,7 @@ mod tests {
             .init_resource::<crate::visibility::VisibilityState>();
         app.insert_resource(crate::plugin::ToolState {
             active_tool: crate::panels::toolbar::Tool::Move,
+            ..Default::default()
         });
         app.insert_resource(VerseManager::from_verses(vec![VerseEntry {
             id: "v".into(),
@@ -1277,5 +1280,43 @@ mod tests {
         assert_eq!(transform.translation, Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(transform.rotation, Quat::IDENTITY);
         assert_eq!(transform.scale, Vec3::ONE);
+
+        for (value, step, expected) in [(-1.5, 1.0, -2.0), (-0.5, 1.0, -1.0), (0.5, 1.0, 1.0), (2.24, 0.5, 2.0)] {
+            assert_eq!(transform_snap::snap_scalar(value, step), expected);
+        }
+        assert_eq!(transform_snap::snap_scalar(2.25, f32::NAN), 2.25);
+        let snap = ToolSnapSettings { grid_enabled: true, angle_enabled: true, scale_enabled: true, ..Default::default() };
+        assert_eq!(snap.move_position(Vec3::new(1.0, 2.0, 3.0), GimbalAxis::X, 1.2, 2.0), Vec3::new(2.0, 2.0, 3.0));
+        assert!((snap.rotation_angle(20.0_f32.to_radians()).to_degrees() - 15.0).abs() < 0.001);
+        assert_eq!(snap.scale_value(Vec3::splat(2.0), GimbalAxis::X, 1.12), Vec3::new(2.2, 2.0, 2.0));
+        assert!((ToolSnapSettings { uniform_scale:true, ..snap }.scale_value(Vec3::new(2.0,3.0,4.0), GimbalAxis::X, 1.12)-Vec3::new(2.2,3.3,4.4)).length()<0.00001);
+        assert_eq!(ToolSnapSettings { axis:TransformAxisLock::Y, ..snap }.move_position(Vec3::ONE,GimbalAxis::X,5.0,1.0),Vec3::ONE);
+
+        let mut app = App::new();
+        app.init_resource::<NodeManager>()
+            .init_resource::<crate::undo::UndoState>()
+            .init_resource::<router::ClickArbiter>()
+            .insert_resource(crate::plugin::ToolState { active_tool:crate::panels::toolbar::Tool::Move, snap })
+            .insert_resource(crate::terrain_map::PetalMapState { loaded:true,petal_id:Some("snap-petal".into()),world_scale:2.0,..Default::default() })
+            .insert_resource(crate::navigation_manager::NavigationManager { active_petal_id:Some("snap-petal".into()),..Default::default() });
+        let mut window=Window::default();
+        window.set_cursor_position(Some(Vec2::new(6.0,0.0)));
+        app.world_mut().spawn(window);
+        app.world_mut().spawn((Camera::default(),GlobalTransform::default(),fe_renderer::camera::OrbitCameraController::default()));
+        let node=app.world_mut().spawn((Transform::from_xyz(1.0,2.0,3.0),GlobalTransform::from_translation(Vec3::new(0.0,0.0,100.0)))).id();
+        {
+            let mut manager=app.world_mut().resource_mut::<NodeManager>();
+            manager.select(node,"snap-node");
+            begin_axis_drag(&mut manager);
+        }
+        let mut buttons=ButtonInput::<MouseButton>::default();buttons.press(MouseButton::Left);buttons.clear();
+        app.insert_resource(buttons).add_systems(Update,gimbal_interaction::handle_gimbal_interaction);
+        app.update();
+        assert_eq!(app.world().get::<Transform>(node).unwrap().translation,Vec3::new(2.0,2.0,3.0));
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(MouseButton::Left);
+        app.update();
+        let manager=app.world().resource::<NodeManager>();
+        assert!(manager.selected.as_ref().unwrap().drag_committed);
+        assert_eq!(manager.pending_transform_before.as_ref().unwrap().translation,Vec3::new(1.0,2.0,3.0));
     }
 }

@@ -68,7 +68,7 @@ pub(crate) fn options_arm(tool: Tool) -> ToolOptionsArm {
 pub(crate) fn arm_has_live_controls(arm: ToolOptionsArm) -> bool {
     matches!(
         arm,
-        ToolOptionsArm::Pen | ToolOptionsArm::Brush | ToolOptionsArm::Measure
+        ToolOptionsArm::Transform | ToolOptionsArm::Pen | ToolOptionsArm::Brush | ToolOptionsArm::Measure
     )
 }
 
@@ -94,11 +94,12 @@ pub(crate) fn render(
     active_petal_id: Option<&str>,
     measure: &mut MeasureState,
     measure_world_scale: f64,
+    snap: &mut crate::node_manager::ToolSnapSettings,
 ) {
     let arm = options_arm(active_tool);
     match arm {
         ToolOptionsArm::Selection => render_select_options(ui, selection),
-        ToolOptionsArm::Transform => render_transform_options(ui, active_tool),
+        ToolOptionsArm::Transform => crate::panels::transform_options::render(ui, active_tool, snap, measure_world_scale),
         ToolOptionsArm::Pen => {
             render_pen_options(ui, tool_panel_state, path_state, ui_mgr, verse_mgr)
         }
@@ -144,23 +145,6 @@ fn render_select_options(ui: &mut egui::Ui, selection: &SelectionKind) {
                 .italics(),
         );
     }
-}
-
-/// Move/Rotate/Scale arm — names the gimbal gesture; snap/axis-lock arrive as
-/// descriptor hints via `render`'s fallback. The live "gimbal active"
-/// affordance is in the section header readout, so it is NOT repeated here.
-fn render_transform_options(ui: &mut egui::Ui, tool: Tool) {
-    let desc = panel_descriptor(tool);
-    ui.label(
-        egui::RichText::new(desc.title.to_uppercase())
-            .small()
-            .color(theme::TEXT_SECTION),
-    );
-    ui.label(
-        egui::RichText::new(desc.subtitle)
-            .small()
-            .color(theme::TEXT_MUTED),
-    );
 }
 
 /// Pen arm (D7 + D8) — the ONLY host of the pen/curve/shape controls (the
@@ -599,7 +583,7 @@ mod tests {
         assert!(arm_has_live_controls(ToolOptionsArm::Brush));
         assert!(arm_has_live_controls(ToolOptionsArm::Measure));
         assert!(!arm_has_live_controls(ToolOptionsArm::Selection));
-        assert!(!arm_has_live_controls(ToolOptionsArm::Transform));
+        assert!(arm_has_live_controls(ToolOptionsArm::Transform));
     }
 
     #[test]

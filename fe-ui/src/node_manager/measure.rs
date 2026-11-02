@@ -585,7 +585,8 @@ mod tests {
 
     fn measure_app(tool: Tool, ray: Ray3d) -> App {
         let mut app = App::new();
-        app.insert_resource(ToolState { active_tool: tool })
+        app.insert_resource(ToolState { active_tool: tool ,
+            ..Default::default()})
             .insert_resource(NavigationManager {
                 active_petal_id: Some("petal-1".into()),
                 ..Default::default()

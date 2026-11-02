@@ -920,3 +920,10 @@ Marker/vertex gestures retain PointEditOrigin through release and the next actio
 frame. Track, petal or editor-row changes drop the candidate. Marker release
 leaves authoritative editor rows untouched until confirmation. Two-point segment
 moves explicitly remain untracked, avoiding independently undoable half-gestures.
+
+
+## ?transform-snapping
+
+ToolState owns session-local ToolSnapSettings. Grid, angle and scale snapping default off; the initial grid is1m and angle15degrees. transform_snap contains the shared pure scalar/axis math. Grid rounds the dragged world-axis coordinate after converting meters through the loaded active Petal map. Missing or mismatched maps use explicitly labeled world units. Axis constraints restrict both picking and drag use; uniform scale quantizes its factor, per-axis scale quantizes only the selected component. Scale gestures remain nonzero. Invalid increments never produce nonfinite output.
+
+The entity gimbal uses these helpers during the existing live drag. Release still captures the original full Transform and enters the existing checked Undo commit once; snapping does not mutate journal history or send a second write. Individual path-point/segment gimbals keep their separate existing Pen/Paths snap contract; these object controls do not imply universal path snapping. The extended drag-restore journey exercises numeric boundary cases and an actual held gimbal followed by release capture. It is authored source until the sole builder executes it.

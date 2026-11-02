@@ -688,3 +688,7 @@ trailing actions allocate before the informational title. Clickable value rows
 and copy icons reserve the shared minimum target height/width; ordinary labels
 are unchanged. Copies still use the egui output seam, including context-owned
 footer copies, so synthetic input never bypasses A8 suppression.
+
+## ?transform-snapping
+
+transform_options renders the real Move/Rotate/Scale constraints from ToolState.snap: one axis, grid increment with current map units, angle increment, uniform/per-axis scale and scale increment. There are no Pivot, selection-filter or highlight-style promises. The descriptor keeps only real gesture instructions. The Options dispatcher passes its existing active-Petal scale and the same settings consumed by the gimbal; rendering never starts a transform or persists one.
