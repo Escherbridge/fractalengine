@@ -31,6 +31,7 @@ pub fn viewport_overlay(
     cursor_world: &ViewportCursorWorld,
     ui_mgr: &mut UiManager,
     local_role: &LocalUserRole,
+    show_viewport_hints: bool,
 ) {
     let rect = ui.available_rect_before_wrap();
     let center = rect.center();
@@ -47,6 +48,7 @@ pub fn viewport_overlay(
             cursor_world,
             ui_mgr,
             local_role,
+            show_viewport_hints,
         );
     } else if nav.active_fractal_id.is_some() {
         // === FRACTAL SELECTED: Show petal cards ===
@@ -73,6 +75,7 @@ pub fn viewport_petal_space(
     cursor_world: &ViewportCursorWorld,
     ui_mgr: &mut UiManager,
     _local_role: &LocalUserRole,
+    show_viewport_hints: bool,
 ) {
     let mut navigated = false;
     ui.scope_builder(
@@ -109,8 +112,13 @@ pub fn viewport_petal_space(
         _ if node_mgr.selected_entity().is_none()=>Some(format!("Click an object to select it. {}",toolbar::shortcut_hint_line())),
         _=>None,
     };
-    if let Some(hint) = hint {
-        viewport_hint(ui.ctx(), rect, &hint);
+    if show_viewport_hints
+        && !ui_mgr.any_dialog_open()
+        && ui.ctx().memory(|memory| memory.top_modal_layer().is_none())
+    {
+        if let Some(hint) = hint {
+            viewport_hint(ui.ctx(), rect, &hint);
+        }
     }
 
     // Right-click for context menu — use input directly to avoid stealing clicks.
@@ -723,5 +731,99 @@ pub(crate) fn browser_access_render_journey() {
                 );
             }
         }
+    }
+    for obstruction in ["none", "data", "dialog", "modal"] {
+        let ctx = egui::Context::default();
+        let mut nav = NavigationManager::default();
+        nav.navigate_to_verse("browser-v", "Verse");
+        nav.navigate_to_fractal("browser-f", "Fractal");
+        nav.navigate_to_petal("browser-p");
+        let nodes = crate::node_manager::NodeManager::default();
+        let mut manager = UiManager::default();
+        if obstruction == "dialog" {
+            manager.open_dialog(ActiveDialog::JoinDialog {
+                invite_buf: String::new(),
+            });
+        }
+        let mut last_text = String::new();
+        for step in 0..3 {
+            toolbar::stash_input_context(
+                &ctx,
+                toolbar::InputContext {
+                    active_tool: toolbar::Tool::Pen,
+                    gesture_active: false,
+                },
+            );
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1024.0, 768.0),
+                    )),
+                    time: Some(10.0 + f64::from(step) * 0.05),
+                    ..Default::default()
+                },
+                |ctx| {
+                    if obstruction == "modal" {
+                        egui::Modal::new(egui::Id::new("viewport-help-modal-journey")).show(
+                            ctx,
+                            |ui| {
+                                ui.label("Modal content");
+                            },
+                        );
+                    }
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let rect = ui.available_rect_before_wrap();
+                        viewport_petal_space(
+                            ui,
+                            &mut nav,
+                            &nodes,
+                            &hierarchy,
+                            rect,
+                            rect.center(),
+                            &ViewportCursorWorld::default(),
+                            &mut manager,
+                            &LocalUserRole::default(),
+                            obstruction != "data",
+                        );
+                    });
+                    if obstruction == "data" {
+                        egui::Window::new("Data")
+                            .fixed_pos(egui::pos2(100.0, 550.0))
+                            .show(ctx, |ui| {
+                                ui.label("Point 2 data row remains readable");
+                            });
+                    }
+                },
+            );
+            last_text = output
+                .shapes
+                .iter()
+                .filter_map(|shape| {
+                    if let egui::epaint::Shape::Text(text) = &shape.shape {
+                        Some(text.galley.job.text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+        assert_eq!(
+            last_text.contains("Pen: click terrain"),
+            obstruction == "none",
+            "viewport tool help must yield to the actual floating/modal surface: {obstruction}"
+        );
+        if obstruction == "data" {
+            assert!(last_text.contains("Point 2 data row remains readable"));
+        }
+        assert!(
+            manager.drain_actions().is_empty() && nodes.selected_entity().is_none(),
+            "hint visibility cannot queue mutations or change object selection"
+        );
+        assert_eq!(
+            toolbar::input_context(&ctx).unwrap().active_tool,
+            toolbar::Tool::Pen
+        );
     }
 }

@@ -269,6 +269,7 @@ pub fn gardener_console(
                         cursor_world,
                         ui_mgr,
                         local_role,
+                        !gis_panel.open,
                     );
                 });
             });
