@@ -17,7 +17,7 @@ pub(super) fn render_terminal(
         ui.heading("Database maintenance");
         ui.label(&status.detail);
         ui.label("Identity, preferences, installed packages and cached blobs are retained. Shared peers are not erased.");
-        ui.label("Active API sessions stop for this process. Erasing token records does not revoke previously signed credentials.");
+        ui.label("When clearing is confirmed, previously issued API credentials are retired. Active sessions stop; reopen the app to obtain new credentials.");
         if matches!(status.phase, Phase::Quiescing | Phase::Clearing) {
             ui.spinner();
             ui.label("Do not repeat the reset request.");

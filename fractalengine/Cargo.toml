@@ -67,6 +67,8 @@ rfd = { workspace = true }
 anyhow    = { workspace = true }
 surrealdb = { workspace = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
+ulid = { workspace = true }
 # PNG decode (app icon) + encode (window screenshots); same 0.25 line bevy_image
 # uses, so `Image::try_into_dynamic` output is this crate's `DynamicImage`.
 image = { version = "0.25", default-features = false, features = ["png"] }

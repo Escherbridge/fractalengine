@@ -217,3 +217,9 @@ SharedModel explain unsupported persistence inline. Bounded legacy URL values re
 ## Reset credential authority
 
 The authentication singleton is recognized as private retained metadata, outside the reset content list. Reset rotates its generation in the same fenced clear transaction; failure preserves both content and prior credential validity. Ordinary API-token mint persistence additionally fences its captured generation, preventing a signed receipt from committing across a reset. See ../AGENTS.md section api-auth-lifecycle.
+
+## Join credential tracing
+
+The join handler excludes invite_string from its instrument fields. Invites carry
+authority; source identity and the ordinary outcome provide diagnostics without
+retaining the submitted credential in parent-span formatting or log exports.

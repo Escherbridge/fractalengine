@@ -890,7 +890,7 @@ fn render_development_reset(
     settings_heading(ui, "Danger zone");
     ui.label("Reset the local database, including object data, history and API token records. This node must own every stored Verse.");
     ui.label("Identity, local preferences and cached blob files are retained. Shared peers are not erased.");
-        ui.label("Active API sessions stop for this process. Erasing token records does not revoke previously signed credentials.");
+        ui.label("When clearing is confirmed, previously issued API credentials are retired. Active sessions stop; reopen the app to obtain new credentials.");
     ui.label("This stops API, synchronization and plugins for this process. Close and reopen manually afterward.");
     match &session.reset {
         DatabaseResetState::Awaiting { .. } => { ui.label("Reset pending. Do not repeat this request."); return; }

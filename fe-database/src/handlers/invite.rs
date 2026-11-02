@@ -115,7 +115,7 @@ pub(crate) async fn generate_verse_invite_handler(
 // Join verse by invite
 // ---------------------------------------------------------------------------
 
-#[instrument(skip(db, secret_store))]
+#[instrument(skip(db, invite_string, secret_store))]
 pub(crate) async fn join_verse_by_invite_handler(
     db: &Db,
     invite_string: &str,
