@@ -2636,6 +2636,52 @@ mod tests {
         assert!(!observed.controls.is_empty());
         assert!(observed.controls.iter().all(|control| !control.allowed), "typing RESET cannot bypass runtime quiescence");
         assert!(rx.is_empty());
+
+        // Exercise the actual Paths height widget through retained text and pointer frames.
+        for finish in ["enter","blur","drag","focus"] {
+            let point_ctx=egui::Context::default();let mut point_time=0.0;let mut values=Vec::new();
+            let point_frame=|events:Vec<egui::Event>,time:&mut f64,values:&mut Vec<f32>,stored:f32| {
+                *time+=0.05;
+                super::super::layout_policy::begin_frame(&point_ctx,true);
+                let _=point_ctx.run(egui::RawInput {screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(600.0,300.0))),time:Some(*time),events,..Default::default()},|ctx| {
+                    super::super::layout_policy::begin_ui_pass(ctx);
+                    egui::CentralPanel::default().show(ctx,|ui| {
+                        if let Some(value)=crate::panels::path_editor_card::point_height_editor(ui,ui.id().with("point-height-journey"),stored,true,"Point 1 height in meters") {values.push(value);}
+                    });
+                });
+                super::super::layout_policy::observations(&point_ctx)
+            };
+            let stored=if finish=="focus" {2_000_000.0} else {0.0};
+            let observed=point_frame(vec![],&mut point_time,&mut values,stored);
+            point_frame(vec![],&mut point_time,&mut values,stored);
+            assert!(values.is_empty(),"initial display and range repair cannot write");
+            let at=observed.controls[0].hit.center();
+            point_frame(vec![egui::Event::PointerMoved(at)],&mut point_time,&mut values,stored);
+            point_frame(vec![egui::Event::PointerButton {pos:at,button:egui::PointerButton::Primary,pressed:true,modifiers:egui::Modifiers::NONE}],&mut point_time,&mut values,stored);
+            if finish=="drag" {
+                for offset in [16.0,40.0] {point_frame(vec![egui::Event::PointerMoved(at+egui::vec2(offset,0.0))],&mut point_time,&mut values,stored);assert!(values.is_empty(),"pointer-held height cannot write");}
+                point_frame(vec![egui::Event::PointerButton {pos:at+egui::vec2(40.0,0.0),button:egui::PointerButton::Primary,pressed:false,modifiers:egui::Modifiers::NONE}],&mut point_time,&mut values,stored);
+            } else {
+                point_frame(vec![egui::Event::PointerButton {pos:at,button:egui::PointerButton::Primary,pressed:false,modifiers:egui::Modifiers::NONE}],&mut point_time,&mut values,stored);
+                assert!(values.is_empty(),"focusing a numeric control is not an edit");
+                if finish!="focus" {
+                    for text in ["7","7.5"] {point_frame(vec![key(egui::Key::A,true,select_all),egui::Event::Text(text.into())],&mut point_time,&mut values,stored);assert!(values.is_empty(),"intermediate point text cannot write");}
+                }
+                if finish=="enter" {point_frame(vec![key(egui::Key::Enter,true,egui::Modifiers::NONE)],&mut point_time,&mut values,stored);}
+                else {
+                    let outside=egui::pos2(580.0,280.0);
+                    for pressed in [true,false] {point_frame(vec![egui::Event::PointerMoved(outside),egui::Event::PointerButton {pos:outside,button:egui::PointerButton::Primary,pressed,modifiers:egui::Modifiers::NONE}],&mut point_time,&mut values,stored);}
+                }
+            }
+            if finish=="focus" {assert!(values.is_empty(),"focus/blur cannot submit a clamp-only edit");}
+            else {
+                assert_eq!(values.len(),1,"one finalized interaction must enqueue one point move");
+                if finish!="drag" {assert_eq!(values[0],7.5);}
+                let confirmed=values[0];
+                for _ in 0..3 {point_frame(vec![],&mut point_time,&mut values,confirmed);}
+                assert_eq!(values.len(),1,"receipt and idle frames cannot repeat a move");
+            }
+        }
     }
 
     const ALL: [RightSidebarSection; 7] = ALL_SECTIONS;

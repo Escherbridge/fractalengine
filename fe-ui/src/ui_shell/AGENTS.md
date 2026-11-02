@@ -471,3 +471,9 @@ navigation above its one vertical body ScrollArea. Other sections retain the
 shared chrome scroll. Keep the section title/rail outside both layouts; do not
 wrap Inspector in another shell scroll or reset offsets to make tabs reachable.
 Property-grid horizontal scrolling and bounded value editors remain local.
+
+## Shared numeric interaction drafts
+
+SettingDraft is crate-visible so the Paths point-height control uses the same finalized-text,
+keyboard and pointer interaction policy as durable settings. The existing native settings
+journey also exercises the actual point widget for Enter, blur, drag and focus-only frames.

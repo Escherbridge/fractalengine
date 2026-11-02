@@ -52,7 +52,7 @@ pub struct StampOverrideEdit {
     pub history_version: Option<i64>,
     pub path_version: Option<i64>,
     pub before_properties: serde_json::Value,
-    pub path_points: Vec<[f32; 3]>,
+    pub path_anchors: Vec<fe_sdk::path_geometry::BezierAnchor>,
     pub path_descriptor: serde_json::Value,
     pub scale: [f32; 3],
     pub rotation: [f32; 4],

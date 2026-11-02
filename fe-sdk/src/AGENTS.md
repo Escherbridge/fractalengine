@@ -222,3 +222,11 @@ JSON conversions preserve nested values and integer precision across script host
 
 PluginLease is a nonserialized shared revocation flag minted by the trusted host.
 Contexts and queued admissions clone the same lease; cloning never renews it.
+
+## path geometry
+
+path_geometry owns stamp consumers' pure f32 de Casteljau anchor flattening, fixed subdivision
+and cumulative-distance order. The editor curve facade re-exports it; renderer caches, stamp
+defaults and database metric bounds share these operations without adding engine dependencies.
+Raw anchors retain relative handles. Database preparation fences the original raw rows and map
+after deriving flattened geometry, so a handle edit cannot reinterpret a previously captured arc.

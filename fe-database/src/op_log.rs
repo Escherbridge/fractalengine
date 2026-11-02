@@ -1757,6 +1757,8 @@ mod tests {
         assert_eq!(op_log_count(&db).await,before_bad_removals);
         let restored=crate::handlers::checked_mutation::commit(&db,&undo_node,&restore,&restore_guard,"qa-restore-point","did:qa").await.unwrap();
         assert_eq!(restored.state.properties["gpx_points"],path_before);
+        let stamp_points=serde_json::json!([[1.0,0.0,2.0,17.25,0.0,0.0,0.0,0.0,0.0,20.0,1.0,0.5],[8.0,2.0,9.0,29.5,-20.0,0.0,0.0,0.0,0.0,0.0,1.0,0.5]]);
+        crate::handlers::entity_property::set_entity_property_as(&db,&undo_node,"gpx_points",&stamp_points,"did:qa").await.unwrap();
         let stamp_descriptor=serde_json::json!({"asset_path":"blob://fixture.glb","spacing_mode":"fixed_count","spacing_value":0.0,"count":3,"tangent_align":true});
         crate::handlers::entity_property::set_entity_property_as(&db,&undo_node,"path_asset",&stamp_descriptor,"did:qa").await.unwrap();
         let (stamp_node,_)=crud::promote_instance_handler(&db,"tree-other-petal",&undo_node,1).await.unwrap();
@@ -1764,8 +1766,8 @@ mod tests {
         let stamp_input=fe_runtime::messages::StampOverrideEdit {
             node_id:stamp_node.clone(),path_id:undo_node.clone(),instance_index:1,scope:plugin_scope.clone(),
             history_version:None,path_version:None,before_properties:stamp_before.clone(),
-            path_points:vec![[1.0,0.0,2.0],[8.0,2.0,9.0]],path_descriptor:stamp_descriptor,
-            scale:[2.0,1.0,3.0],rotation:[0.0,0.0,0.0,1.0],arc_m:2.0,
+            path_anchors:fe_sdk::path_geometry::decode_anchor_rows(&stamp_points).unwrap(),path_descriptor:stamp_descriptor,
+            scale:[2.0,1.0,3.0],rotation:[0.0,0.0,0.0,1.0],arc_m:12.0,
         };
         for race in ["role","path","row","schema","journal"] {
             let request=format!("qa-stamp-{race}");
@@ -1795,7 +1797,7 @@ mod tests {
         let stamp_saved=crate::handlers::stamp_overrides::commit(&db,prepared).await.unwrap();
         assert_eq!(stamp_saved.state.properties["stamp.override.scale"],serde_json::json!([2.0,1.0,3.0]));
         assert_eq!(stamp_saved.state.properties["stamp.override.rotation"],serde_json::json!([0.0,0.0,0.0,1.0]));
-        assert_eq!(stamp_saved.state.properties["stamp.override.arc_m"],serde_json::json!(2.0));
+        assert_eq!(stamp_saved.state.properties["stamp.override.arc_m"],serde_json::json!(12.0));
         assert_eq!(stamp_saved.state.properties["node_kind"],"stamp");
         assert_eq!(stamp_saved.state.position,[0.0;3],"stamp save cannot bypass the position lock");
         let (stamp_receipt,stamp_current)=crate::handlers::checked_mutation::resolve(&db,&stamp_node,"tree-other-petal","qa-stamp-success","did:qa").await.unwrap();

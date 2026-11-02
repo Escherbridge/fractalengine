@@ -326,7 +326,15 @@ pub(crate) fn sync_stamp_editor(
     let Some(descriptor) = path.edited_track_path_asset.as_ref() else {
         return;
     };
-    let points: Vec<_> = path.points.iter().map(|row| row.position).collect();
+    let anchors: Vec<_> = path
+        .points
+        .iter()
+        .map(|row| (row.position, row.handle_in, row.handle_out))
+        .collect();
+    let points = fe_sdk::path_geometry::flatten_anchor_path(
+        &anchors,
+        fe_sdk::path_geometry::FLATTEN_SAMPLES_PER_SEGMENT,
+    );
     let Some((default_rotation, default_arc)) = crate::verse_manager::stamp_editor_defaults(
         &points,
         descriptor,
@@ -357,7 +365,7 @@ pub(crate) fn sync_stamp_editor(
             .get(&stamp.track_node_id)
             .copied(),
         before_properties: properties.clone(),
-        path_points: points,
+        path_anchors: anchors,
         path_descriptor: descriptor.to_json(),
         scale: ov.and_then(|v| v.scale).unwrap_or([1.0; 3]),
         rotation,

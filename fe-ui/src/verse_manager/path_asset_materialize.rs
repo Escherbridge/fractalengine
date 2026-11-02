@@ -746,6 +746,62 @@ mod tests {
             curved.points.iter().any(|p| p[2] > 0.5),
             "flattened points must bow toward the +Z handle"
         );
+        let anchors = fe_sdk::path_geometry::decode_anchor_rows(&handled["gpx_points"]).unwrap();
+        let flattened = fe_sdk::path_geometry::flatten_anchor_path(
+            &anchors,
+            fe_sdk::path_geometry::FLATTEN_SAMPLES_PER_SEGMENT,
+        );
+        assert_eq!(
+            flattened, curved.points,
+            "DB/default geometry is identical to the rendered cache"
+        );
+        for world_scale in [0.5, 1.0, 2.0] {
+            let samples = sample_transforms(&curved.points, &curved.descriptor, world_scale);
+            for (index, (position, yaw)) in samples.iter().copied().enumerate() {
+                let (rotation, arc) = super::super::path_asset_reconcile::stamp_editor_defaults(
+                    &flattened,
+                    &curved.descriptor,
+                    world_scale,
+                    index,
+                )
+                .unwrap();
+                let changed = stamp_transform(
+                    &curved.points,
+                    position,
+                    yaw,
+                    true,
+                    Some(&StampOverride {
+                        scale: Some([2.0, 1.5, 3.0]),
+                        rotation: Some(rotation),
+                        arc_offset_m: Some(arc),
+                    }),
+                    world_scale,
+                );
+                assert!(
+                    changed.translation.distance(Vec3::from_array(position)) < 0.0001,
+                    "scale-only curved Apply must preserve location"
+                );
+                assert!(
+                    changed.rotation.angle_between(Quat::from_rotation_y(yaw)) < 0.0001,
+                    "scale-only curved Apply must preserve quaternion"
+                );
+                assert_eq!(changed.scale, Vec3::new(2.0, 1.5, 3.0));
+                let restored = stamp_transform(
+                    &curved.points,
+                    position,
+                    yaw,
+                    true,
+                    Some(&StampOverride::default()),
+                    world_scale,
+                );
+                assert_eq!(restored.translation, Vec3::from_array(position));
+                assert_eq!(
+                    restored.scale,
+                    Vec3::ONE,
+                    "removed overrides restore the sampled default"
+                );
+            }
+        }
     }
 
     #[test]

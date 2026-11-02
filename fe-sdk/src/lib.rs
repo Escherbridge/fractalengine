@@ -12,6 +12,7 @@ pub mod events;
 pub mod legacy_identifier;
 pub mod node;
 pub mod path_asset;
+pub mod path_geometry;
 pub mod plugin_host;
 pub mod primitive;
 pub mod property;

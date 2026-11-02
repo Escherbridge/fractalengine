@@ -746,3 +746,10 @@ preserves the sampled location, nonuniform axes and any untouched full rotation 
 Slide values are real meters. Materialization converts them to world coordinates exactly once
 at its sampler boundary. The native controls remain backed by actual stamp selection, properties
 and atomic receipts, with an explicit pending check and stored-value reload.
+
+## Numeric point-height finalization
+
+Point height reuses the retained SettingDraft interaction controller. DragValue delays text
+updates until Enter/blur and disables implicit clamping of existing values. Pointer movement
+remains a draft until release; focus, display repair and intermediate text produce no action.
+The draft remains pending until stored state changes, suppressing idle-frame resubmission.

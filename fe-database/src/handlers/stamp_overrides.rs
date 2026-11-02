@@ -100,33 +100,16 @@ pub(crate) async fn prepare(
             == Some(scope.as_str()),
         "stamp path belongs to another scope"
     );
-    let rows = path["properties"]["gpx_points"]
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("path points unavailable"))?;
+    let anchors = fe_sdk::path_geometry::decode_anchor_rows(&path["properties"]["gpx_points"])
+        .ok_or_else(|| anyhow::anyhow!("path coordinates or handles are invalid"))?;
     anyhow::ensure!(
-        rows.len() == edit.path_points.len() && !rows.is_empty(),
-        "path points changed"
+        !anchors.is_empty() && anchors == edit.path_anchors,
+        "path coordinates or handles changed since stamp editing"
     );
-    let mut points = Vec::with_capacity(rows.len());
-    for (row, expected) in rows.iter().zip(&edit.path_points) {
-        let row = row
-            .as_array()
-            .filter(|row| row.len() >= 4)
-            .ok_or_else(|| anyhow::anyhow!("invalid path point"))?;
-        let mut point = [0.0; 3];
-        for (index, coordinate) in point.iter_mut().enumerate() {
-            *coordinate = row[index]
-                .as_f64()
-                .filter(|v| v.is_finite())
-                .ok_or_else(|| anyhow::anyhow!("invalid path coordinate"))?;
-            anyhow::ensure!(
-                expected[index].is_finite()
-                    && (*coordinate - f64::from(expected[index])).abs() <= 0.0001,
-                "path changed since stamp editing"
-            );
-        }
-        points.push(point);
-    }
+    let points = fe_sdk::path_geometry::flatten_anchor_path(
+        &anchors,
+        fe_sdk::path_geometry::FLATTEN_SAMPLES_PER_SEGMENT,
+    );
     let descriptor =
         fe_sdk::path_asset::PathAssetDescriptor::from_json(&path["properties"]["path_asset"])
             .map_err(|error| anyhow::anyhow!("path stamp descriptor unavailable: {error}"))?;
@@ -136,23 +119,13 @@ pub(crate) async fn prepare(
     );
     let scale = petal["terrain"]["world_scale"]
         .as_f64()
-        .filter(|v| v.is_finite() && *v > 0.0)
+        .map(|value| value as f32)
+        .filter(|value| value.is_finite() && *value > 0.0)
         .unwrap_or(1.0);
-    let length = points
-        .windows(2)
-        .map(|pair| {
-            pair[0]
-                .iter()
-                .zip(pair[1])
-                .map(|(a, b)| (a - b).powi(2))
-                .sum::<f64>()
-                .sqrt()
-        })
-        .sum::<f64>()
-        / scale;
+    let length = fe_sdk::path_geometry::polyline_length(&points) / scale;
     anyhow::ensure!(
-        length.is_finite() && f64::from(edit.arc_m) <= length + 0.0001,
-        "stamp slide exceeds current path length in meters"
+        length.is_finite() && edit.arc_m <= length + 0.0001,
+        "stamp slide exceeds current flattened path length in meters"
     );
     let previous = node_history::latest(db, &edit.node_id).await?;
     let path_previous = node_history::latest(db, &edit.path_id).await?;

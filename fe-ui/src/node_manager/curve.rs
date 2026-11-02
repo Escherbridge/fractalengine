@@ -220,47 +220,7 @@ pub fn rectangle(center: [f32; 3], w: f32, h: f32) -> Vec<[f32; 3]> {
     ]
 }
 
-/// Fixed cubic subdivision per handle-carrying segment when flattening bezier
-/// anchors — MUST equal fe-terrain `mesh::curve::SAMPLES_PER_SEGMENT` (mirror
-/// code; fe-ui must not depend on fe-terrain). See AGENTS.md §pen-tool.
-pub const FLATTEN_SAMPLES_PER_SEGMENT: usize = 16;
-
-/// One bezier route anchor: `(position, handle_in, handle_out)`; handles are
-/// RELATIVE meter offsets from position, `None` = no handle on that side.
-pub type BezierAnchor = ([f32; 3], Option<[f32; 3]>, Option<[f32; 3]>);
-
-/// Flatten bezier anchors into a dense polyline — mirrors fe-terrain
-/// `flatten_route` EXACTLY (see `fe-terrain/src/mesh/curve.rs` + AGENTS.md
-/// §pen-tool): a segment whose BOTH bounding handles are `None` is emitted
-/// straight (single endpoint, zero added points), a handle-carrying segment is
-/// sampled as the cubic `[P_i, P_i+out_i, P_{i+1}+in_{i+1}, P_{i+1}]`.
-pub fn flatten_anchor_path(anchors: &[BezierAnchor], samples_per_seg: usize) -> Vec<[f32; 3]> {
-    if anchors.len() < 2 {
-        return anchors.iter().map(|(p, _, _)| *p).collect();
-    }
-    let steps = samples_per_seg.max(1);
-    let mut out: Vec<[f32; 3]> = Vec::with_capacity(anchors.len());
-    out.push(anchors[0].0);
-    for pair in anchors.windows(2) {
-        let (pa, _, out_h) = pair[0];
-        let (pb, in_h, _) = pair[1];
-        match (out_h, in_h) {
-            // Straight segment: passthrough keeps all-corner tracks identical.
-            (None, None) => out.push(pb),
-            (out_h, in_h) => {
-                let c1 = add3(pa, out_h.unwrap_or([0.0; 3]));
-                let c2 = add3(pb, in_h.unwrap_or([0.0; 3]));
-                push_cubic(&mut out, [pa, c1, c2, pb], steps);
-            }
-        }
-    }
-    out
-}
-
-/// Component-wise sum of two `[f32; 3]` vectors.
-fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
+pub use fe_sdk::path_geometry::{flatten_anchor_path, BezierAnchor, FLATTEN_SAMPLES_PER_SEGMENT};
 
 /// Collinear symmetric handles for an anchor from its neighbor tangent
 /// (pen_curve_tool_20260722): direction = normalize(next − prev), a missing

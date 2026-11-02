@@ -566,34 +566,19 @@ fn render_edit_view(
                                     }
                                     // Numeric height (Bevy Y) field for this point.
                                     let id = ui.id().with(("point-height", track_id, route_key, i));
-                                    let mut draft = ui
-                                        .ctx()
-                                        .data_mut(|data| data.get_temp::<f32>(id))
-                                        .unwrap_or_else(|| {
-                                            crate::panels::widgets::world_to_meters(
-                                                point.position[1],
-                                                world_scale,
-                                            )
-                                        });
-                                    let resp = ui
-                                        .add_enabled(
-                                            can_edit,
-                                            egui::DragValue::new(&mut draft)
-                                                .speed(0.05)
-                                                .range(-1_000_000.0..=1_000_000.0)
-                                                .prefix("Y ")
-                                                .suffix(" m"),
-                                        )
-                                        .named(
-                                            ui,
-                                            format_args!("Point {} height in meters", i + 1),
-                                        );
-                                    if resp.dragged() || resp.changed() {
-                                        ui.ctx().data_mut(|data| data.insert_temp(id, draft));
-                                    }
-                                    if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+                                    let stored = crate::panels::widgets::world_to_meters(
+                                        point.position[1],
+                                        world_scale,
+                                    );
+                                    if let Some(meters) = point_height_editor(
+                                        ui,
+                                        id,
+                                        stored,
+                                        can_edit,
+                                        &format!("Point {} height in meters", i + 1),
+                                    ) {
                                         let new_y = crate::panels::widgets::meters_to_world(
-                                            draft,
+                                            meters,
                                             world_scale,
                                         );
                                         if new_y.is_finite() {
@@ -602,7 +587,6 @@ fn render_edit_view(
                                                 [point.position[0], new_y, point.position[2]],
                                             ));
                                         }
-                                        ui.ctx().data_mut(|data| data.remove::<f32>(id));
                                     }
                                 },
                             );
@@ -643,6 +627,37 @@ fn render_edit_view(
             render_annotate_form(ui, path_state, ui_mgr, track_id, index)
         });
     }
+}
+
+/// Retain numeric text until Enter/blur and pointer changes until release.
+pub(crate) fn point_height_editor(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    stored: f32,
+    editable: bool,
+    name: &str,
+) -> Option<f32> {
+    let mut draft =
+        crate::ui_shell::setting_draft::SettingDraft::load(ui, id, "path-point-height", stored);
+    let response = ui
+        .add_enabled(
+            editable,
+            egui::DragValue::new(&mut draft.value)
+                .update_while_editing(false)
+                .clamp_existing_to_range(false)
+                .speed(0.05)
+                .range(-1_000_000.0..=1_000_000.0)
+                .prefix("Y ")
+                .suffix(" m"),
+        )
+        .named(ui, name);
+    draft.observe(ui, "height", &response);
+    let value = draft.next_value().filter(|value| value.is_finite());
+    if value.is_some() {
+        draft.sent(ui.input(|input| input.time));
+    }
+    draft.store(ui, id);
+    value
 }
 
 /// track_styling_20260713: renders the color / thickness / visibility controls

@@ -309,13 +309,13 @@ pub(crate) fn apply_overrides(
         || path
             .points
             .iter()
-            .map(|row| row.position)
+            .map(|row| (row.position, row.handle_in, row.handle_out))
             .collect::<Vec<_>>()
-            != edit.path_points
+            != edit.path_anchors
     {
         return Err("Stamp, path or permissions changed; reselect and review the draft".into());
     }
-    let request_id = crate::actions::query::next_ui_query_id("stamp-save");
+    let request_id = format!("ui-stamp-save-{}", ulid::Ulid::new());
     db.0.send(DbCommand::CommitStampOverrides {
         edit: edit.clone(),
         correlation_id: request_id.clone(),
@@ -382,7 +382,9 @@ pub(crate) fn handle_edit_reply(
                 &serde_json::Value::Object(current.properties.clone()),
                 state,
             );
-            state.reconciled_baselines.insert(stamp);
+            if state.promoted_node_id(&stamp) == Some(current.node_id.as_str()) {
+                state.reconciled_baselines.insert(stamp);
+            }
             state.saved_revision = state.saved_revision.wrapping_add(1);
             state.pending_edit = None;
             state.pending_check = None;
@@ -578,38 +580,58 @@ pub(crate) fn hydrate_promoted_stamp(
     properties: &serde_json::Value,
     stamp_state: &mut StampInteractionState,
 ) {
-    if properties.get("node_kind").and_then(|v| v.as_str()) != Some("stamp") {
-        return;
+    let identity = properties
+        .get("node_kind")
+        .and_then(|value| value.as_str())
+        .filter(|kind| *kind == "stamp")
+        .and_then(|_| {
+            Some(StampRef {
+                track_node_id: properties.get("path_id")?.as_str()?.to_owned(),
+                stamp_index: usize::try_from(properties.get("instance_index")?.as_u64()?).ok()?,
+            })
+        });
+    let obsolete: Vec<_> = stamp_state
+        .promoted
+        .iter()
+        .filter_map(|(stamp, id)| {
+            (id == node_id && Some(stamp) != identity.as_ref()).then(|| stamp.clone())
+        })
+        .collect();
+    for stamp in obsolete {
+        stamp_state.promoted.remove(&stamp);
+        stamp_state.loaded_properties.remove(&stamp);
+        stamp_state.overrides.remove(&stamp);
+        stamp_state.reconciled_baselines.remove(&stamp);
+        if stamp_state.selected.as_ref() == Some(&stamp) {
+            stamp_state.selected = None;
+        }
+        if stamp_state.pending_promotion.as_ref() == Some(&stamp) {
+            stamp_state.pending_promotion = None;
+        }
     }
-    let Some(path_id) = properties.get("path_id").and_then(|v| v.as_str()) else {
+    let Some(stamp) = identity else {
         return;
     };
-    let Some(index) = properties.get("instance_index").and_then(|v| v.as_u64()) else {
-        return;
-    };
-    let stamp = StampRef {
-        track_node_id: path_id.to_string(),
-        stamp_index: index as usize,
-    };
-    stamp_state.mark_promoted(stamp.clone(), node_id.to_string());
+    stamp_state.mark_promoted(stamp.clone(), node_id.to_owned());
     stamp_state
         .loaded_properties
         .insert(stamp.clone(), properties.clone());
-    if let Some(scale) = properties
-        .get(STAMP_SCALE_KEY)
-        .and_then(json_f32_array::<3>)
-    {
-        stamp_state.override_mut(&stamp).scale = Some(scale);
-    }
-    if let Some(rotation) = properties
-        .get(STAMP_ROTATION_KEY)
-        .and_then(json_f32_array::<4>)
-    {
-        stamp_state.override_mut(&stamp).rotation = Some(rotation);
-    }
-    if let Some(arc_m) = properties.get(STAMP_ARC_KEY).and_then(|v| v.as_f64()) {
-        stamp_state.override_mut(&stamp).arc_offset_m = Some(arc_m as f32);
-    }
+    stamp_state.overrides.insert(
+        stamp,
+        StampOverride {
+            scale: properties
+                .get(STAMP_SCALE_KEY)
+                .and_then(json_f32_array::<3>),
+            rotation: properties
+                .get(STAMP_ROTATION_KEY)
+                .and_then(json_f32_array::<4>),
+            arc_offset_m: properties
+                .get(STAMP_ARC_KEY)
+                .and_then(|value| value.as_f64())
+                .map(|value| value as f32)
+                .filter(|value| value.is_finite()),
+        },
+    );
 }
 
 /// Parse a JSON `[f64; N]` array into `[f32; N]`; `None` on shape mismatch.
@@ -621,6 +643,9 @@ fn json_f32_array<const N: usize>(value: &serde_json::Value) -> Option<[f32; N]>
     let mut out = [0.0f32; N];
     for (slot, v) in out.iter_mut().zip(arr) {
         *slot = v.as_f64()? as f32;
+        if !slot.is_finite() {
+            return None;
+        }
     }
     Some(out)
 }
@@ -916,7 +941,11 @@ mod tests {
             history_version: None,
             path_version: None,
             before_properties: props.clone(),
-            path_points: path.points.iter().map(|row| row.position).collect(),
+            path_anchors: path
+                .points
+                .iter()
+                .map(|row| (row.position, row.handle_in, row.handle_out))
+                .collect(),
             path_descriptor: serde_json::json!({}),
             scale: [2.0; 3],
             rotation: [0.0, 0.0, 0.0, 1.0],
@@ -927,7 +956,7 @@ mod tests {
             role: Some(fe_database::RoleLevel::Editor),
         };
         let before = st.override_for(&stamp).cloned();
-        apply_overrides(&sender, &mut st, edit, &nav, &path, &role).unwrap();
+        apply_overrides(&sender, &mut st, edit.clone(), &nav, &path, &role).unwrap();
         let DbCommand::CommitStampOverrides { correlation_id, .. } = rx.try_recv().unwrap() else {
             panic!("one batch command required")
         };
@@ -954,7 +983,7 @@ mod tests {
         handle_edit_reply(
             &mut st,
             &fe_runtime::messages::DbResult::RequestFailed {
-                correlation_id,
+                correlation_id: correlation_id.clone(),
                 error: "denied".into(),
             },
             &mut ui,
@@ -962,6 +991,88 @@ mod tests {
         );
         assert!(!st.edit_pending() && st.edit_error() == Some("denied"));
         assert_eq!(st.override_for(&stamp), before.as_ref());
+        let mut reopened = StampInteractionState::default();
+        hydrate_promoted_stamp("path-1#inst-3", &props, &mut reopened);
+        handle_select_stamp(&mut reopened, "path-1".into(), 3);
+        apply_overrides(&sender, &mut reopened, edit, &nav, &path, &role).unwrap();
+        let DbCommand::CommitStampOverrides {
+            correlation_id: next_request,
+            ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("new session must submit its own intent")
+        };
+        let first_request = correlation_id;
+        assert_ne!(
+            first_request, next_request,
+            "reopened sessions cannot reuse persisted operation identity"
+        );
+        for request in [&first_request, &next_request] {
+            assert!(request
+                .strip_prefix("ui-stamp-save-")
+                .unwrap()
+                .parse::<ulid::Ulid>()
+                .is_ok());
+        }
+        reopened.check_edit(&sender).unwrap();
+        let DbCommand::ResolveCheckedNodeMutation {
+            correlation_id: check_request,
+            ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("exact receipt check required")
+        };
+        let cleared =
+            serde_json::json!({"node_kind":"stamp","path_id":"path-1","instance_index":3});
+        let current:fe_runtime::node_history::NodeRowSnapshot=serde_json::from_value(serde_json::json!({"node_id":"path-1#inst-3","petal_id":"p","position":[0.0,0.0,0.0],"elevation":0.0,"rotation":[0.0,0.0,0.0],"scale":[1.0,1.0,1.0],"interactive":true,"created_at":"test","edit_seq":0,"properties":cleared})).unwrap();
+        handle_edit_reply(
+            &mut reopened,
+            &fe_runtime::messages::DbResult::CheckedNodeMutationResolved {
+                node_id: current.node_id.clone(),
+                request_id: next_request,
+                receipt: None,
+                current,
+                correlation_id: check_request,
+            },
+            &mut ui,
+            1.0,
+        );
+        assert_eq!(
+            reopened.override_for(&stamp),
+            Some(&StampOverride::default()),
+            "authoritative deletion before recovery clears every old override"
+        );
+        path.edited_track_path_asset=Some(fe_sdk::path_asset::PathAssetDescriptor::from_json(&serde_json::json!({"asset_path":"blob://tree.glb","spacing_mode":"fixed_count","spacing_value":0.0,"count":4,"tangent_align":true})).unwrap());
+        let mut controls = crate::panels::tool_panel::ToolPanelState::default();
+        crate::panels::tool_panel::sync_stamp_editor(
+            &mut controls,
+            &reopened,
+            &path,
+            &nav,
+            &crate::verse_manager::VerseManager::default(),
+            &role,
+            1.0,
+        );
+        let restored = controls.stamp_edit_target.unwrap();
+        assert_eq!(restored.scale, [1.0; 3]);
+        assert_eq!(restored.arc_m, 10.0);
+        assert!(
+            bevy::math::Quat::from_array(restored.rotation).angle_between(
+                bevy::math::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)
+            ) < 0.0001
+        );
+        hydrate_promoted_stamp(
+            "path-1#inst-3",
+            &serde_json::json!({"node_kind":"ordinary"}),
+            &mut reopened,
+        );
+        assert!(
+            reopened.promoted_node_id(&stamp).is_none()
+                && reopened.override_for(&stamp).is_none()
+                && reopened.loaded_properties(&stamp).is_none()
+                && reopened.selected().is_none(),
+            "obsolete authoritative identity invalidates its complete binding"
+        );
     }
 
     #[test]

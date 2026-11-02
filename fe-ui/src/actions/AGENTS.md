@@ -396,3 +396,10 @@ current override values. Historical success does not restore historical values o
 A reconciled current baseline uses exact property CAS when its latest version is not known.
 Make editable node enters the already-promoted addressable node's Inspector; its position
 remains path-derived under existing database transform locks.
+
+## Stamp review corrections
+
+Durable stamp-save identities use fresh ULIDs; process-local query counters only correlate reads.
+Authoritative full-property hydration replaces all override options, including clearing absent
+keys, and removes obsolete bindings when node identity no longer describes that stamp. Exact
+receipt recovery hydrates current full properties before projecting new editor defaults.

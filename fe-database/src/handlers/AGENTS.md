@@ -147,3 +147,8 @@ The final fact alone carries the exact request receipt marker, so existing autho
 resolution can recover one outcome without confusing intermediate property versions.
 The single PropertySet intention records the bounded override batch; the journal retains
 three standard facts and reconstructs ordinary historical versions without a new operation grammar.
+
+Stamp metric bounds use the exact shared flattened Bezier geometry and f32 cumulative
+distances used by the renderer. Captured raw positions/handles are compared before preparation,
+and complete raw source rows still fence the transaction. Curved route distance is therefore
+validated against the visible route rather than its anchor chord.

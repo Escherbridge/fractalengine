@@ -96,20 +96,7 @@ pub(super) fn points_fingerprint(points: &[[f32; 3]]) -> u64 {
 // fe-ui-local arc-length sampler ([f32;3]-based; port of fe-terrain PathTracker)
 // ---------------------------------------------------------------------------
 
-/// Per-point cumulative distance (index 0 = 0.0) + the total path length.
-fn cumulative_distances(points: &[[f32; 3]]) -> (Vec<f32>, f32) {
-    let mut cum = Vec::with_capacity(points.len());
-    if points.is_empty() {
-        return (cum, 0.0);
-    }
-    cum.push(0.0);
-    let mut total = 0.0;
-    for pair in points.windows(2) {
-        total += distance_3d(&pair[0], &pair[1]);
-        cum.push(total);
-    }
-    (cum, total)
-}
+use fe_sdk::path_geometry::cumulative_distances;
 
 /// Interpolated position at `progress` (clamped 0..1) along the path by
 /// arc length. Empty → origin; single point → that point.
@@ -308,14 +295,6 @@ pub(super) fn sanitize_world_scale(world_scale: f32) -> f32 {
     } else {
         1.0
     }
-}
-
-/// Euclidean distance between two 3D points.
-fn distance_3d(a: &[f32; 3], b: &[f32; 3]) -> f32 {
-    let dx = b[0] - a[0];
-    let dy = b[1] - a[1];
-    let dz = b[2] - a[2];
-    (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
 #[cfg(test)]

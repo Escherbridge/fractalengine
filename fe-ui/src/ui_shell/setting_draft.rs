@@ -14,7 +14,7 @@ const ADJUSTMENT_KEYS: [egui::Key; 8] = [
 ];
 
 #[derive(Clone)]
-pub(super) struct SettingDraft<T> {
+pub(crate) struct SettingDraft<T> {
     scope: String,
     pub value: T,
     stored: T,

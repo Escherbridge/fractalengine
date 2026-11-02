@@ -1,0 +1,90 @@
+//! Shared Bezier route geometry; see src/AGENTS.md section path geometry.
+
+/// Subdivision count used by stamp consumers.
+pub const FLATTEN_SAMPLES_PER_SEGMENT: usize = 16;
+/// Position with optional relative incoming and outgoing handle offsets.
+pub type BezierAnchor = ([f32; 3], Option<[f32; 3]>, Option<[f32; 3]>);
+
+/// Flatten anchors using the same f32 de Casteljau operations for every consumer.
+pub fn flatten_anchor_path(anchors: &[BezierAnchor], samples_per_seg: usize) -> Vec<[f32; 3]> {
+    if anchors.len() < 2 {
+        return anchors.iter().map(|(point, _, _)| *point).collect();
+    }
+    let steps = samples_per_seg.max(1);
+    let mut out = Vec::with_capacity(anchors.len());
+    out.push(anchors[0].0);
+    let add = |a: [f32; 3], b: [f32; 3]| [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+    let lerp = |a: [f32; 3], b: [f32; 3], t: f32| {
+        [
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+        ]
+    };
+    for pair in anchors.windows(2) {
+        let (pa, _, out_h) = pair[0];
+        let (pb, in_h, _) = pair[1];
+        if out_h.is_none() && in_h.is_none() {
+            out.push(pb);
+            continue;
+        }
+        let c1 = add(pa, out_h.unwrap_or([0.0; 3]));
+        let c2 = add(pb, in_h.unwrap_or([0.0; 3]));
+        for sample in 1..=steps {
+            let t = sample as f32 / steps as f32;
+            let a = lerp(pa, c1, t);
+            let b = lerp(c1, c2, t);
+            let c = lerp(c2, pb, t);
+            out.push(lerp(lerp(a, b, t), lerp(b, c, t), t));
+        }
+    }
+    out
+}
+
+/// Decode the persisted compact/handled point shape, rejecting non-finite coordinates.
+pub fn decode_anchor_rows(value: &serde_json::Value) -> Option<Vec<BezierAnchor>> {
+    let read_vec = |row: &[serde_json::Value], base: usize| -> Option<[f32; 3]> {
+        let mut vector = [0.0; 3];
+        for (index, target) in vector.iter_mut().enumerate() {
+            *target = row.get(base + index)?.as_f64()? as f32;
+            if !target.is_finite() {
+                return None;
+            }
+        }
+        Some(vector)
+    };
+    value
+        .as_array()?
+        .iter()
+        .map(|value| {
+            let row = value.as_array()?;
+            let handle = |base| {
+                read_vec(row, base).filter(|vector| vector.iter().any(|v| v.abs() >= f32::EPSILON))
+            };
+            Some((read_vec(row, 0)?, handle(4), handle(7)))
+        })
+        .collect()
+}
+
+/// Cumulative world-coordinate distances with the renderer's f32 accumulation order.
+pub fn cumulative_distances(points: &[[f32; 3]]) -> (Vec<f32>, f32) {
+    let mut distances = Vec::with_capacity(points.len());
+    if points.is_empty() {
+        return (distances, 0.0);
+    }
+    let mut total = 0.0;
+    distances.push(total);
+    for pair in points.windows(2) {
+        let dx = pair[1][0] - pair[0][0];
+        let dy = pair[1][1] - pair[0][1];
+        let dz = pair[1][2] - pair[0][2];
+        total += (dx * dx + dy * dy + dz * dz).sqrt();
+        distances.push(total);
+    }
+    (distances, total)
+}
+
+/// World-coordinate polyline length using shared renderer accumulation.
+pub fn polyline_length(points: &[[f32; 3]]) -> f32 {
+    cumulative_distances(points).1
+}
