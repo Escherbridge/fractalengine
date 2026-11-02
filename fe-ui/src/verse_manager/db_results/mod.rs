@@ -140,7 +140,11 @@ pub(super) fn apply_db_results(
     let mut hierarchy_requested = false;
     for result in reader.read() {
         if matches!(result, DbResult::NodeUrlUpdated { .. }) {
-            crate::actions::portal::finish_url_save(&mut ui_mgr, &mut verse_mgr, &nav, &node_mgr, result, caches.time.elapsed_secs_f64());
+            crate::actions::portal::finish_url_save(&mut ui_mgr, &mut verse_mgr, &nav, &node_mgr, result, caches.time.elapsed_secs_f64(), &db_sender.0, &inspector);
+            continue;
+        }
+        if matches!(result, DbResult::NodeUrlRead { .. }) {
+            crate::actions::url_read_model::finish_read(&mut ui_mgr, &mut verse_mgr, &nav, &node_mgr, &mut inspector, result, caches.time.elapsed_secs_f64(), &db_sender.0);
             continue;
         }
         crate::object_data::synchronize(
@@ -170,6 +174,8 @@ pub(super) fn apply_db_results(
             _ => None,
         };
         if let Some(current) = materialization {
+            let url_model_changed = verse_mgr.url_asset_ids.get(&current.node.node_id) != Some(&current.asset_id);
+            let previous_url = verse_mgr.all_nodes().find(|node| node.id == current.node.node_id).and_then(|node| node.webpage_url.clone());
             let outcome = committed::apply(
                 &current,
                 &mut verse_mgr,
@@ -187,6 +193,13 @@ pub(super) fn apply_db_results(
                 committed::MaterializationOutcome::Ignored => None,
             };
             if let Some(transform_changed) = transform_changed {
+                if url_model_changed && (current.node.has_asset || previous_url.is_some()) && !ui_mgr.url_read_model.is_reading(&current.node.node_id) {
+                    if let Err(reason) = crate::actions::url_read_model::request_after_model_change(&db_sender.0,
+                        &mut ui_mgr, &verse_mgr, &nav, &node_mgr, &inspector, &current.node.node_id,
+                        current.asset_id.clone(), previous_url.as_deref(), caches.time.elapsed_secs_f64()) {
+                        ui_mgr.show_advisory(reason, caches.time.elapsed_secs_f64());
+                    }
+                }
                 if transform_changed && node_mgr.accept_committed_transform(&current.node.node_id) {
                     ui_mgr.show_advisory(
                         "Object updated; unfinished move cancelled",

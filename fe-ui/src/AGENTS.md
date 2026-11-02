@@ -137,9 +137,11 @@ where possible (see §portal).
 Both Inspector and Node Options validate a trimmed draft through actions::portal::validate_url
 and queue one captured SaveNodeUrl payload. The dispatcher rechecks current Petal, actual tree
 node and advisory Editor access, then retains one ULID request owner with exact scope, target,
-selection and a30-second deadline. Sending shows Saving URL. The tree and success notice change
-only for its current NodeUrlUpdated receipt; unknown, duplicate, obsolete-selection, moved-scope
-and timed-out receipts cannot confirm a different draft. A failed send never changes the tree.
+selection and a30-second deadline. Sending shows Saving URL. A current NodeUrlUpdated receipt
+owns only its success notice; a newer draft remains unsaved. Independent bounded per-node write
+owners schedule a fresh typed ReadNodeUrl even after selection or notice timeout. Only an owned
+current read updates the exact node cache; obsolete form ownership cannot discard a committed
+change. A failed send never changes the tree.
 
 The DB uses its own local identity, captured Editor authority and stored ancestry in the SAME
 atomic op/model transaction. Node asset/Petal/tombstone, model URL and exclusive live reference

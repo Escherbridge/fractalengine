@@ -77,6 +77,7 @@ pub(crate) struct PendingUrlSave {
     pub scope: String,
     pub selection: Option<String>,
     pub started: f64,
+    pub submitted: Option<String>,
 }
 
 pub(crate) fn node_scope(
@@ -131,7 +132,12 @@ pub(crate) fn save_url(
         ui.show_advisory("Wait for the current URL save confirmation", now);
         return;
     }
-    if nodes.selected.as_ref().map(|selected| selected.node_id.as_str()) != Some(node_id.as_str()) {
+    if nodes
+        .selected
+        .as_ref()
+        .map(|selected| selected.node_id.as_str())
+        != Some(node_id.as_str())
+    {
         ui.show_advisory("Select this node again before saving its URL", now);
         return;
     }
@@ -153,6 +159,11 @@ pub(crate) fn save_url(
         }
     };
     let request_id = ulid::Ulid::new().to_string();
+    let submitted = url.clone();
+    if let Err(reason) = ui.url_read_model.can_write(hierarchy, &node_id, now) {
+        ui.show_advisory(reason, now);
+        return;
+    }
     if super::send_or_toast(
         sender,
         fe_runtime::messages::DbCommand::UpdateNodeUrl {
@@ -165,6 +176,8 @@ pub(crate) fn save_url(
         now,
         "save the URL",
     ) {
+        ui.url_read_model
+            .track_write(hierarchy, &node_id, request_id.clone(), now);
         ui.pending_url_save = Some(PendingUrlSave {
             request_id,
             node_id,
@@ -174,6 +187,7 @@ pub(crate) fn save_url(
                 .as_ref()
                 .map(|selected| selected.node_id.clone()),
             started: now,
+            submitted,
         });
         ui.show_toast("Saving URL…", now);
     }
@@ -186,12 +200,18 @@ pub(crate) fn finish_url_save(
     nodes: &NodeManager,
     result: &fe_runtime::messages::DbResult,
     now: f64,
+    sender: &crossbeam::channel::Sender<fe_runtime::messages::DbCommand>,
+    inspector: &InspectorFormState,
 ) {
+    super::url_read_model::committed_write(
+        sender, ui, hierarchy, nav, nodes, inspector, result, now,
+    );
     let fe_runtime::messages::DbResult::NodeUrlUpdated {
         node_id,
         request_id,
         expected_scope,
         outcome,
+        ..
     } = result
     else {
         return;
@@ -213,14 +233,22 @@ pub(crate) fn finish_url_save(
             .as_ref()
             .map(|selected| selected.node_id.as_str())
             == pending.selection.as_deref();
+    let newer_draft =
+        inspector.external_url.trim() != pending.submitted.as_deref().unwrap_or_default();
     ui.pending_url_save = None;
     if !current {
         return;
     }
     match outcome {
-        Ok(url) => {
-            hierarchy.update_node_url(node_id, url.clone());
-            ui.show_toast("URL saved", now);
+        Ok(_) => {
+            ui.show_toast(
+                if newer_draft {
+                    "Previous URL saved; your newer draft is still unsaved"
+                } else {
+                    "URL saved"
+                },
+                now,
+            );
         }
         Err(reason) => ui.show_error(format!("URL not saved: {reason}"), now),
     }

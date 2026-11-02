@@ -415,3 +415,26 @@ path::queue_checked_corner, reserving one checked metadata intent. It never
 uses the plain asynchronous SetAnchorCorner path or changes editor rows before
 the receipt. The Path-owned journey exercises a stored-route reorder after
 dispatch and before readback, refusing any commit or projection.
+
+## URL read model
+
+url_read_model.rs coordinates independent per-node write/read owners. Each registry is capped
+at256 entries. Write owners survive form selection changes for at most300 seconds; each read
+owns a fresh ULID and30-second deadline. A newer save immediately invalidates an older read,
+and an older write completion cannot displace the newest write owner. Save notice timeout
+queues a current read; each selection also queues one. Read timeout/failure explains reselect
+recovery. Changed cache identity causes a fresh read, without treating an old snapshot as current.
+
+Write receipts never hydrate cache directly. A typed read proves actual stored node/model
+identity under DB Viewer authority. It updates only its exact cache incarnation/scope and asset
+anchor; newer current state cannot regress through an old nonce. A selected form changes only
+while its captured clean baseline is unchanged. A newer unsaved draft is preserved, including
+when a previous URL save commits. Generic committed model replacements retain a clean prior
+form baseline until their fresh typed read arrives. Neither raw legacy URL data nor user drafts
+are silently normalized by this read surface. Existing validation still refuses unsupported opens
+and saves. Normal UI rendering shows an explicit pending URL refresh cue.
+
+An exact committed-asset read that is refused may retry once without that obsolete
+asset expectation, still using the same actual Viewer-fenced node/model read. That
+read captures the node's current metadata atomically; it cannot write or impersonate
+the old model. A second refusal ends refresh with explicit reselect recovery.

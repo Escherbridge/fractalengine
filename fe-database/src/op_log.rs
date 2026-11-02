@@ -1963,6 +1963,29 @@ mod tests {
         let shared_ops = op_log_count(&url_db).await;
         assert!(crate::handlers::transform::update_node_url_handler(&url_db,&url_node,Some("https://example.com/unsafe-shared".into()),&url_scope,"did:qa").await.is_err());
         assert_eq!(op_log_count(&url_db).await,shared_ops,"shared model refuses before commit");
+        let current_url=crate::handlers::transform::read_node_url_handler(&url_db,&url_node,&url_scope,Some("url-a"),"did:url-viewer").await.unwrap();
+        assert_eq!(current_url.node_id,url_node);
+        assert_eq!(current_url.asset_id.as_deref(),Some("url-a"));
+        assert_eq!(current_url.scope,url_scope);
+        assert!(current_url.url.is_none());
+        assert!(crate::handlers::transform::read_node_url_handler(&url_db,&url_node,&url_scope,Some("wrong-asset"),"did:qa").await.is_err());
+        assert!(crate::handlers::transform::read_node_url_handler(&url_db,&url_node,"VERSE#foreign",None,"did:qa").await.is_err());
+        url_db.query("UPDATE model SET external_url='javascript:legacy-stored-value' WHERE asset_id='url-a'").await.unwrap().check().unwrap();
+        let legacy_url=crate::handlers::transform::read_node_url_handler(&url_db,&url_node,&url_scope,None,"did:qa").await.unwrap();
+        assert_eq!(legacy_url.url.as_deref(),Some("javascript:legacy-stored-value"),"bounded legacy data is returned literally, not silently normalized");
+        url_db.query("UPDATE verse SET default_access='none' WHERE verse_id='url-v'").await.unwrap().check().unwrap();
+        assert!(crate::handlers::transform::read_node_url_handler(&url_db,&url_node,&url_scope,None,"did:url-viewer").await.is_err());
+        assert!(crate::handlers::transform::read_node_url_handler(&url_db,&url_node,&url_scope,None,"did:qa").await.is_ok());
+        url_db.query("UPDATE model SET external_url=$large WHERE asset_id='url-a'").bind(("large","x".repeat(8193))).await.unwrap().check().unwrap();
+        assert!(crate::handlers::transform::read_node_url_handler(&url_db,&url_node,&url_scope,None,"did:qa").await.is_err(),"over-limit data is refused instead of returning a truncated URL");
+        url_db.query("CREATE model CONTENT {asset_id:'url-other',petal_id:'url-p',transform:{},external_url:'https://example.com/current-model'}; UPDATE node SET asset_id='url-other' WHERE node_id=$node")
+            .bind(("node",url_node.clone())).await.unwrap().check().unwrap();
+        assert!(crate::handlers::transform::read_node_url_handler(&url_db,&url_node,&url_scope,Some("url-a"),"did:qa").await.is_err());
+        let replaced=crate::handlers::transform::read_node_url_handler(&url_db,&url_node,&url_scope,None,"did:qa").await.unwrap();
+        assert_eq!(replaced.asset_id.as_deref(),Some("url-other"));
+        assert_eq!(replaced.url.as_deref(),Some("https://example.com/current-model"));
+        assert_eq!(op_log_count(&url_db).await,shared_ops,"URL reads and refused reads append no operations");
+
     }
 
     /// A fixed fake clock source for the override tests (a real test would

@@ -20,6 +20,7 @@ mod query;
 pub(crate) use query::next_ui_query_id;
 pub(crate) mod terrain_proposal;
 mod transform;
+pub(crate) mod url_read_model;
 
 use std::collections::VecDeque;
 
@@ -564,6 +565,7 @@ pub struct UiManager {
     /// Portal webview lifecycle.
     pub portal: PortalState,
     pub(crate) pending_url_save: Option<portal::PendingUrlSave>,
+    pub(crate) url_read_model: url_read_model::UrlReadModel,
     pub(crate) portal_feedback: portal::PortalFeedback,
     pub(crate) portal_content_rect: Option<bevy_egui::egui::Rect>,
     pub(crate) context_point_origin: Option<crate::undo::PointEditOrigin>,
@@ -605,6 +607,7 @@ impl Default for UiManager {
             actions: Vec::new(),
             portal: PortalState::Closed,
             pending_url_save: None,
+            url_read_model: url_read_model::UrlReadModel::default(),
             portal_feedback: portal::PortalFeedback::default(),
             portal_content_rect: None,
             context_point_origin: None,
@@ -1032,14 +1035,7 @@ pub(crate) fn process_ui_actions(
     for event in browser_events.read() {
         portal::receive_browser_event(&mut ui_mgr, &node_mgr, event, now_secs);
     }
-    if ui_mgr.pending_url_save.as_ref().is_some_and(|pending| {
-        now_secs - pending.started > 30.0
-            || nav.active_scope().as_deref() != Some(pending.scope.as_str())
-            || node_mgr.selected.as_ref().map(|selected| selected.node_id.as_str()) != pending.selection.as_deref()
-    }) {
-        ui_mgr.pending_url_save = None;
-        ui_mgr.show_advisory("URL save confirmation is no longer current; reload the object before retrying", now_secs);
-    }
+    url_read_model::maintain(&db_sender.0, &mut ui_mgr, &verse_mgr, &nav, &node_mgr, &inspector, now_secs);
 
     // Auto-close portal when the selected entity changes or is deselected.
     if portal::should_auto_close(&ui_mgr.portal, node_mgr.selected_entity()) {

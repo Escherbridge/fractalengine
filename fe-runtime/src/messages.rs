@@ -610,6 +610,13 @@ pub enum DbCommand {
         request_id: String,
         expected_scope: String,
     },
+    /// Local current URL read with an optional exact committed model anchor.
+    ReadNodeUrl {
+        node_id: String,
+        expected_scope: String,
+        expected_asset_id: Option<String>,
+        request_id: String,
+    },
     // --- Entity Settings: General config ---
     /// Read the local caller's current target settings; never an API waiter reply.
     GetEntityDetails {
@@ -1505,6 +1512,13 @@ pub enum DbResult {
         request_id: String,
         expected_scope: String,
         outcome: Result<Option<String>, String>,
+        asset_id: Option<String>,
+    },
+    NodeUrlRead {
+        node_id: String,
+        expected_scope: String,
+        request_id: String,
+        outcome: Result<NodeUrlSnapshot, String>,
     },
     /// Result of `CountNodeDescendants` — live descendants, root excluded.
     NodeDescendantCount {
@@ -1817,6 +1831,15 @@ pub struct NodeHierarchyData {
     pub petal_id: String,
     /// Portal URL from the node's associated model record, if any.
     pub webpage_url: Option<String>,
+}
+
+/// Exact node/model identity and bounded current URL from one authorized read.
+#[derive(Debug, Clone)]
+pub struct NodeUrlSnapshot {
+    pub node_id: String,
+    pub scope: String,
+    pub asset_id: Option<String>,
+    pub url: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

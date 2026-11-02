@@ -945,3 +945,6 @@ Right-click path vertex and handle targets retain editing_track_id in ContextTar
 An open context menu therefore cannot follow a later track selection by reusing its point index.
 
 Vertex/handle context classification also captures the complete PointEditOrigin at that moment. Rendering never recaptures a refreshed route for an old index.
+
+Selection sync starts a typed current Portal URL read after setting the initial stored buffer.
+It captures that clean baseline, so an asynchronous refresh cannot erase edits typed meanwhile.

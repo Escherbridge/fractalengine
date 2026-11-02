@@ -171,3 +171,7 @@ The in-process peer model explicitly ignores GetEntityDetails alongside its
 existing unsupported GUI EntitySettings commands. Real details readback and
 Viewer admission journeys use the production fe-database dispatcher/handler;
 no fake peer read is counted as that evidence.
+
+The simplified peer model explicitly refuses ReadNodeUrl with a typed unavailable reply. It
+does not own the desktop placed-model URL reader and never fabricates a successful URL snapshot.
+Production DB authorization/read tests belong to fe-database's existing real-store journey.

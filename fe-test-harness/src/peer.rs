@@ -474,6 +474,12 @@ impl TestPeer {
                         Ok(DbCommand::UpdateNodeUrl { .. }) => {
                             // Not implemented in test harness.
                         }
+                        Ok(DbCommand::ReadNodeUrl { node_id, expected_scope, request_id, .. }) => {
+                            if db_result_tx.send(DbResult::NodeUrlRead { node_id, expected_scope, request_id,
+                                outcome: Err("This test peer does not expose the desktop model URL read surface".into()) }).is_err() {
+                                tracing::warn!("DB result channel closed during unsupported model URL read");
+                            }
+                        }
                         // M2/F6 (A13): persist the verse's timeseries settings
                         // and echo the sanitized values back, mirroring the real
                         // DB handler (read-back + authoritative echo).

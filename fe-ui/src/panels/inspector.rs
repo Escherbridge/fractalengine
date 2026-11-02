@@ -647,6 +647,9 @@ fn inspector_url_meta_section(
         )
         .named(ui, "Portal URL")
         .on_disabled_hover_text("Editor access is required to edit this object's Portal URL.");
+        if node_mgr.selected.as_ref().is_some_and(|selected| ui_mgr.url_read_model.is_reading(&selected.node_id)) {
+            ui.horizontal(|ui| { ui.spinner(); ui.label("Refreshing stored Portal URL…"); });
+        }
 
         if local_role.can_manage() {
             ui.add_space(4.0);

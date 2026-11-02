@@ -169,3 +169,20 @@ AFTER sets or clears model.external_url; its row is decoded only after commit. S
 assetless nodes refuse, avoiding cross-object metadata writes or phantom success. No model-row
 replication reader exists here, so the receipt is local persistence only. Existing atomic rollback
 journey now includes URL set/clear, Viewer/scope/shared refusal and induced rollback, unexecuted.
+
+## Current Portal URL read
+
+ReadNodeUrl captures the DB thread identity's actual Viewer authority and stored ancestry, then
+fences the exact live node/Petal/asset metadata in the SAME read transaction as the model URL
+query. A write-triggered read can require that committed asset ID; an initial current read obtains
+its exact metadata anchor in the fenced transaction. The model must belong to that same Petal.
+Assetless nodes return a true absent URL. Ambiguous/missing/changed targets refuse. The reply
+carries exact node, scope and actual asset identity, without any API waiter fallback.
+
+The projection returns at most8193 Unicode scalar values plus the original scalar count, then
+refuses more than8192 bytes/scalars instead of returning a rewritten/truncated URL. A bounded
+legacy unsupported URL remains literal data so the UI can display its validation refusal. Pinned
+surrealdb-core3.0.5 source confirms string::len counts chars and string::slice accepts an exclusive
+end; the existing parser handles IF as a projection expression. This is source/API inspection,
+not a query execution claim. Existing real-store URL journey adds Viewer/scope/asset refusals,
+raw legacy read, size refusal and model replacement with no operation-log writes.

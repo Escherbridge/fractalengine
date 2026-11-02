@@ -111,6 +111,9 @@ pub struct VerseManager {
     /// node_id → (verse, fractal, petal) indices; see `node_index.rs` + AGENTS.md §node-index.
     pub(crate) node_index: std::collections::HashMap<String, (usize, usize, usize)>,
     pub(crate) committed_versions: std::collections::HashMap<String, i64>,
+    pub(crate) node_cache_epochs: std::collections::HashMap<String, u64>,
+    pub(crate) next_node_cache_epoch: u64,
+    pub(crate) url_asset_ids: std::collections::HashMap<String, Option<String>>,
 }
 
 impl VerseManager {
@@ -120,6 +123,9 @@ impl VerseManager {
             verses,
             node_index: Default::default(),
             committed_versions: Default::default(),
+            node_cache_epochs: Default::default(),
+            next_node_cache_epoch: 0,
+            url_asset_ids: Default::default(),
         };
         mgr.rebuild_node_index();
         mgr

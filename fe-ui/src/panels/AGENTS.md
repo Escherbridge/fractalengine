@@ -782,3 +782,7 @@ is named Save Portal URL. The existing URL UI journey asserts the explanation an
 the extra edit control before exercising Portal URL validation/save. No second URL write is
 invented. Separate model metadata DTOs/SpaceManager storage and fe-webview's component editor
 events remain outside this Inspector contract.
+
+The Portal URL section shows Refreshing stored Portal URL while its exact-node read is pending.
+The draft remains editable; an incoming current read updates it only if its clean baseline still
+matches. This pending cue does not imply a browser navigation or URL write.

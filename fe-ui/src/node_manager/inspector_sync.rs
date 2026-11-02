@@ -26,6 +26,9 @@ pub(super) fn sync_manager_to_inspector(
     // the transform hasn't changed this frame (e.g. freshly selected static node).
     all_query: Query<&Transform>,
     mut last_selected: Local<Option<Entity>>,
+    nav: Res<crate::navigation_manager::NavigationManager>,
+    mut ui_mgr: ResMut<crate::actions::UiManager>,
+    time: Res<crate::notice::NoticeClock>,
 ) {
     // Early return when nothing is selected.
     let Some(entity) = manager.selected_entity() else {
@@ -43,6 +46,19 @@ pub(super) fn sync_manager_to_inspector(
     if just_selected {
         if let Some(ref sel) = manager.selected {
             inspector.external_url = stored_node_url(&verse_mgr, &sel.node_id);
+            if let Err(reason) = crate::actions::url_read_model::request_current(
+                &db_sender.0,
+                &mut ui_mgr,
+                &verse_mgr,
+                &nav,
+                &manager,
+                &inspector,
+                &sel.node_id,
+                None,
+                time.elapsed_secs_f64(),
+            ) {
+                ui_mgr.show_advisory(reason, time.elapsed_secs_f64());
+            }
         }
         // Load properties for the newly selected node
         if let Some(ref sel) = manager.selected {

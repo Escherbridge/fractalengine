@@ -448,9 +448,23 @@ without moving an unmodified stamp. Metric slide overrides convert through sanit
 inside stamp_transform before sampling the world-coordinate path. The same source path/Petal
 configuration contributes to the database's atomic save fence and meter bounds.
 
-## URL receipts
+## URL receipts and cache identity
 
-NodeUrlUpdated belongs to UiManager's current URL request owner, before generic API delivery.
-Only a matching target/scope/nonce/selection within its deadline updates webpage_url and shows
-URL saved. Existing node URL journey now checks pre-ack immutability, foreign nonce, stale
-selection/scope and timeout. These source extensions are unexecuted until the integrated sweep.
+NodeUrlUpdated is consumed before generic API delivery. Its current form owner may show URL
+saved, while separate latest per-node write ownership schedules a fresh Viewer-fenced ReadNodeUrl
+even after selection changes or a notice timeout. No write receipt directly changes webpage_url.
+NodeUrlRead has exact nonce/target/scope/asset guards and updates the global current cache
+independently of the selected form. A clean unchanged form follows the read; a newer draft stays.
+
+Each manager-owned add/replacement or hierarchy-index rebuild assigns a fresh per-node cache
+incarnation. Removal discards it. Counter exhaustion leaves that node without an admissible URL
+cache identity, rather than reusing a stamp. A stale read cannot survive an identical-looking
+same-ID/path rebuild. Accepted URL reads retain the actual model asset identity; the committed
+node adapter preserves a URL only for that matching asset. An unknown/replaced model gets a
+fresh typed read, carrying the previous clean form baseline while its URL is pending. Paths and
+asset presence are invalidation hints, never proof that two asset IDs identify the same model.
+
+Existing node URL journey covers save A/select B/ack/reselect A, clean and dirty form reads,
+timeout recovery, newer-write/older-read ordering, foreign nonce/asset, model replacement and
+same-looking hierarchy rebuild. These source extensions remain unexecuted until the integrated
+sweep. No LoadHierarchy or API reply fallback is used to refresh Portal URLs.

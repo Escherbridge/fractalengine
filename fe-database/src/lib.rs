@@ -909,13 +909,21 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::UpdateNodeUrl { node_id, url, request_id, expected_scope }) => {
-                        let outcome = match handlers::transform::update_node_url_handler(&db, &node_id, url, &expected_scope, &local_did).await {
+                        let (outcome, asset_id) = match handlers::transform::update_node_url_handler(&db, &node_id, url, &expected_scope, &local_did).await {
                             Ok(row) => {
-                                Ok(row["external_url"].as_str().map(str::to_owned))
+                                (Ok(row["external_url"].as_str().map(str::to_owned)), row["asset_id"].as_str().map(str::to_owned))
                             }
-                            Err(error) => { tracing::warn!(node_id, %error, "UpdateNodeUrl refused or failed"); Err("The URL was not confirmed: this model is missing, shared, changed, or you no longer have Editor access. Reload before retrying.".to_owned()) }
+                            Err(error) => { tracing::warn!(node_id, %error, "UpdateNodeUrl refused or failed"); (Err("The URL was not confirmed: this model is missing, shared, changed, or you no longer have Editor access. Reload before retrying.".to_owned()), None) }
                         };
-                        send_result(&tx, DbResult::NodeUrlUpdated { node_id, request_id, expected_scope, outcome });
+                        send_result(&tx, DbResult::NodeUrlUpdated { node_id, request_id, expected_scope, outcome, asset_id });
+                    }
+                    Ok(DbCommand::ReadNodeUrl { node_id, expected_scope, expected_asset_id, request_id }) => {
+                        let outcome = handlers::transform::read_node_url_handler(&db, &node_id, &expected_scope, expected_asset_id.as_deref(), &local_did).await
+                            .map_err(|error| {
+                                tracing::warn!(node_id, %error, "ReadNodeUrl refused or failed");
+                                "The URL is unavailable: this node/model changed, is missing, exceeds the read limit, or Viewer access is unavailable.".to_owned()
+                            });
+                        send_result(&tx, DbResult::NodeUrlRead { node_id, expected_scope, request_id, outcome });
                     }
                     Ok(DbCommand::GetEntityDetails { entity_type, entity_id, request_id }) => {
                         let details = handlers::entity::get_entity_details_handler(&db, entity_type, &entity_id, &local_did).await

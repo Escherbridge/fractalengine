@@ -100,9 +100,14 @@ pub(super) fn apply(
         .all_nodes()
         .find(|entry| entry.id == node.node_id)
         .map(NodeEntry::world_transform);
+    let same_url_model = manager
+        .url_asset_ids
+        .get(&node.node_id)
+        .is_some_and(|asset| asset == &current.asset_id);
     let webpage_url = manager
         .all_nodes()
         .find(|entry| entry.id == node.node_id)
+        .filter(|_| same_url_model)
         .and_then(|entry| entry.webpage_url.clone());
     if !manager.upsert_node(
         &node.petal_id,
@@ -112,7 +117,7 @@ pub(super) fn apply(
             has_asset: node.has_asset,
             position: node.position,
             transform,
-            webpage_url,
+            webpage_url: webpage_url.clone(),
             asset_path: node.asset_path.clone(),
         },
     ) {
@@ -121,6 +126,9 @@ pub(super) fn apply(
             node.node_id
         );
         return MaterializationOutcome::NeedsHierarchy;
+    }
+    if same_url_model {
+        manager.confirm_node_url(&node.node_id, webpage_url, current.asset_id.clone());
     }
     manager
         .committed_versions

@@ -194,6 +194,96 @@ pub(crate) async fn update_node_url_handler(
     Ok(row)
 }
 
+/// Read current node/model URL under one captured Viewer fence.
+pub(crate) async fn read_node_url_handler(
+    db: &Db,
+    node_id: &str,
+    expected_scope: &str,
+    expected_asset_id: Option<&str>,
+    local_did: &str,
+) -> anyhow::Result<fe_runtime::messages::NodeUrlSnapshot> {
+    use serde_json::json;
+    let scope = super::crud::resolve_node_scope_handler(db, node_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("URL target is unavailable"))?;
+    anyhow::ensure!(scope == expected_scope, "URL target ancestry changed");
+    let access = super::entity::prepare_scope_permission(
+        db,
+        &scope,
+        local_did,
+        fe_policy::RoleLevel::Viewer,
+    )
+    .await?;
+    let petal = crate::parse_scope(&scope)?
+        .petal_id
+        .ok_or_else(|| anyhow::anyhow!("URL target has no Petal"))?;
+    let mut captured = db.query("SELECT node_id, petal_id, asset_id, tombstone FROM node WHERE node_id = $url_read_node")
+        .bind(("url_read_node", node_id.to_owned())).await?.check()?;
+    let nodes: Vec<serde_json::Value> = captured.take(0)?;
+    anyhow::ensure!(
+        nodes.len() == 1
+            && nodes[0]["petal_id"].as_str() == Some(petal.as_str())
+            && nodes[0]
+                .get("tombstone")
+                .is_none_or(serde_json::Value::is_null),
+        "URL node is missing, removed or moved"
+    );
+    let asset = nodes[0]["asset_id"].as_str().map(str::to_owned);
+    anyhow::ensure!(
+        expected_asset_id.is_none_or(|expected| asset.as_deref() == Some(expected)),
+        "URL node's model changed"
+    );
+    let (mut guards, mut bindings) = access.into_parts();
+    guards.push("IF (SELECT node_id, petal_id, asset_id, tombstone FROM node WHERE node_id = $url_read_node) != $url_read_nodes { THROW 'URL node identity changed'; }".into());
+    bindings.extend([
+        ("url_read_node".into(), json!(node_id)),
+        ("url_read_nodes".into(), json!(nodes)),
+        ("url_read_asset".into(), json!(asset)),
+        ("url_read_petal".into(), json!(petal)),
+    ]);
+    let result_index = guards.len() + 1;
+    let mut script = String::from("BEGIN TRANSACTION;\n");
+    for guard in guards {
+        script.push_str(&guard);
+        script.push_str(";\n");
+    }
+    script.push_str("SELECT asset_id, petal_id, IF external_url = NONE { 0 } ELSE { string::len(external_url) } AS url_length, IF external_url = NONE { NONE } ELSE { string::slice(external_url, 0, 8193) } AS external_url FROM model WHERE asset_id = $url_read_asset AND petal_id = $url_read_petal LIMIT 2;\nCOMMIT TRANSACTION;");
+    let mut query = db.query(script);
+    for binding in bindings {
+        query = query.bind(binding);
+    }
+    let mut response = query.await?.check()?;
+    let rows: Vec<serde_json::Value> = response.take(result_index)?;
+    let url = if asset.is_none() {
+        anyhow::ensure!(rows.is_empty(), "Unexpected assetless URL model");
+        None
+    } else {
+        anyhow::ensure!(
+            rows.len() == 1
+                && rows[0]["asset_id"].as_str() == asset.as_deref()
+                && rows[0]["petal_id"].as_str() == Some(petal.as_str()),
+            "URL model identity is unavailable"
+        );
+        anyhow::ensure!(
+            rows[0]["url_length"]
+                .as_u64()
+                .is_some_and(|length| length <= 8192),
+            "Stored URL exceeds the read limit"
+        );
+        match rows[0].get("external_url") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(value)) if value.len() <= 8192 => Some(value.clone()),
+            _ => anyhow::bail!("Stored URL exceeds the read limit or has an unsupported value"),
+        }
+    };
+    Ok(fe_runtime::messages::NodeUrlSnapshot {
+        node_id: node_id.to_owned(),
+        scope,
+        asset_id: asset,
+        url,
+    })
+}
+
 /// Internal local transform write compatibility entry.
 pub(crate) async fn update_node_transform_as(
     db: &Db,
