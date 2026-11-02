@@ -46,6 +46,83 @@ function Wait-QaHttp {
     return $false
 }
 
+# Bounded read-only readiness; diagnostic strings are fixed labels, never response data.
+function Wait-QaAuthenticatedReadiness {
+    param(
+        [Parameter(Mandatory)]$Identity,
+        [Parameter(Mandatory)][string]$Token,
+        [Parameter(Mandatory)][string]$VerseId,
+        [ValidateRange(1,45)][int]$TimeoutSec = 35
+    )
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $result = @{ ready = $false; attempts = 0; elapsed_ms = 0; last_http_status = $null; last_reason = 'not_started'; last_api_error = $null; terminal_reason = 'deadline_exceeded' }
+    while ($clock.Elapsed.TotalSeconds -lt $TimeoutSec) {
+        $remaining = [int][math]::Floor($TimeoutSec - $clock.Elapsed.TotalSeconds)
+        if ($remaining -lt 1) { break }
+        $owned = $null
+        $permanent = $false
+        try {
+            try { $owned = Get-QaOwnedProcess -Identity $Identity }
+            catch { $result.terminal_reason = 'process_identity_unverifiable'; break }
+            if (-not $owned) { $result.terminal_reason = 'process_exited_or_identity_changed'; break }
+            $result.attempts++
+            $result.last_http_status = $null
+            $result.last_api_error = $null
+            try {
+                $response = Invoke-WebRequest -Uri "$QaApiBase/api/v1/hierarchy" -UseBasicParsing -MaximumRedirection 0 -TimeoutSec ([math]::Min(6, $remaining)) -Headers @{ Authorization = "Bearer $Token" } -ErrorAction Stop
+                $result.last_http_status = [int]$response.StatusCode
+                $body = $null
+                try { $body = $response.Content | ConvertFrom-Json -ErrorAction Stop }
+                catch { $result.last_reason = 'invalid_json'; $permanent = $true }
+                if (-not $permanent) {
+                    if ($body -isnot [pscustomobject] -or $body.ok -isnot [bool]) {
+                        $result.last_reason = 'invalid_response_envelope'; $permanent = $true
+                    } elseif ($body.ok) {
+                        if ($body.data -isnot [array]) {
+                            $result.last_reason = 'invalid_hierarchy_shape'; $permanent = $true
+                        } elseif ($body.data | Where-Object { $_.id -ceq $VerseId }) {
+                            $result.ready = $true
+                            $result.last_reason = 'authenticated_hierarchy_ready'
+                        } else { $result.last_reason = 'bootstrap_verse_not_yet_visible' }
+                    } else {
+                        switch -CaseSensitive ($body.error) {
+                            'request timed out' { $result.last_api_error = 'request timed out' }
+                            'request cancelled' { $result.last_api_error = 'request cancelled' }
+                            'insufficient permissions' { $result.last_api_error = 'insufficient permissions'; $permanent = $true }
+                            'internal channel closed' { $result.last_api_error = 'internal channel closed'; $permanent = $true }
+                            default { $result.last_api_error = 'unrecognized_api_error'; $permanent = $true }
+                        }
+                        $result.last_reason = 'api_response_error'
+                    }
+                }
+            } catch {
+                $result.last_reason = 'http_request_failed'
+                if ($_.Exception.Response) {
+                    $result.last_http_status = [int]$_.Exception.Response.StatusCode
+                    $status = $result.last_http_status
+                    if (($status -ge 300 -and $status -lt 400) -or ($status -ge 400 -and $status -lt 500 -and $status -notin @(408,429))) { $permanent = $true }
+                }
+            }
+            if ($owned.HasExited) {
+                $result.ready = $false; $result.terminal_reason = 'process_exited'; break
+            }
+            if ($result.ready) {
+                $finalOwner = $null
+                try { $finalOwner = Get-QaOwnedProcess -Identity $Identity }
+                catch { $result.ready = $false; $result.terminal_reason = 'process_identity_unverifiable'; break }
+                if (-not $finalOwner) { $result.ready = $false; $result.terminal_reason = 'process_exited_or_identity_changed'; break }
+                $finalOwner.Dispose()
+                $result.terminal_reason = 'ready'; break
+            }
+            if ($permanent) { $result.terminal_reason = 'permanent_readiness_failure'; break }
+        } finally { if ($owned) { $owned.Dispose() } }
+        $backoff = [int][math]::Min(200, ($TimeoutSec * 1000 - $clock.ElapsedMilliseconds))
+        if ($backoff -gt 0) { Start-Sleep -Milliseconds $backoff }
+    }
+    $result.elapsed_ms = $clock.ElapsedMilliseconds
+    return $result
+}
+
 # Polls tokens.json (fe-api/AGENTS.md §qa-dev-token) until it holds an
 # "owner"-role entry for ANY verse (the bootstrap / Genesis verse on a fresh
 # DB) or, with -VerseId, for that specific verse. Returns the token string,

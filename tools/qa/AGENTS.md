@@ -450,8 +450,8 @@ may perform its ordinary startup migrations.
 
 Only `tokens.json` is removed after prior cleanup to require a fresh startup
 token emission at the same confined path. Startup waits for HTTP, a fresh
-Owner token for the prior bootstrap verse, an authenticated bounded read of
-that verse's fractals, and a still-live exact new process before handoff.
+Owner token for the prior bootstrap verse, a bounded authenticated hierarchy read containing
+that bootstrap verse, and a still-live exact new process before handoff.
 Each resumed start writes new stdout/stderr under `starts/<timestamp-guid>/`
 and records process identity, stage provenance and ready/failed status there.
 `current.json` is replaced from a pending file only after successful handoff
@@ -525,3 +525,36 @@ a resumed manifest never claims that old timing output belongs to its process.
 Windows PowerShell5.1 callers should use the direct script invocation above
 for explicit false switches rather than the external `powershell -File`
 argument format, which cannot reliably convey false switch values.
+
+### Bounded authenticated startup readiness
+
+Authenticated readiness uses only `GET /api/v1/hierarchy`, which is available
+with synthetic input enabled or disabled. The earlier GET-fractals attempt
+returned405 because that route is POST-only; the first hierarchy attempt
+returned HTTP200 with ok=false and rolled back without retaining its reason.
+Those failed starts remain historical failures, not successful restart proof.
+
+The fixed read probe polls for at most35 seconds, with a maximum6-second HTTP
+timeout clipped to the remaining whole-second budget and a200ms backoff. It
+pins/checks the exact new process identity before each request, checks the
+retained handle after each response, and verifies identity again before
+success. Handoff requires an actual boolean ok=true with an array hierarchy
+containing the existing bootstrap verse. There is no write or mutation retry.
+Only known transient API errors (`request timed out`, `request cancelled`),
+transport timeouts,408/429 and server errors can retry. Permanent HTTP auth,
+redirect/path failures, malformed responses, permission denial, a closed
+internal channel or unrecognized API errors fail closed. A temporarily empty
+hierarchy may retry within the same bound; it cannot pass as persisted data.
+
+Readiness metadata retains attempts, elapsed time, last HTTP status, static
+reason and terminal reason. API error text is preserved only on an exact
+allowlist of the four fixed strings emitted by the hierarchy handler; all
+other error text becomes `unrecognized_api_error`. Response data, headers,
+Bearer tokens and exception messages are never copied into these diagnostics.
+Failure provenance captures a fresh descendant snapshot before rollback when
+possible, keeps known identities if enumeration fails, and records capture
+start/end, status, exception type and available native error code. The failed
+start file is written before cleanup and updated with the cleanup outcome.
+`completed_for_captured_identities` does not certify children absent beyond an
+unavailable snapshot; pair it with captured identities and independent exact
+process inspection. Cleanup still runs if writing diagnostic provenance fails.

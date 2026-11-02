@@ -170,6 +170,7 @@ $proc = $null
 $identity = $null
 $handedOff = $false
 $recordedDescendants = @()
+$readiness = @{ ready = $false; terminal_reason = 'not_started' }
 try {
 $priorEnvironment = @{}
 foreach ($key in $appEnvironment.Keys) { $priorEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process') }
@@ -220,13 +221,10 @@ if (-not $bootstrap) {
 $tokenMs = $swToken.ElapsedMilliseconds
 Write-QaLog "Bootstrap owner token ready (verse $($bootstrap.VerseId)) after ${tokenMs}ms"
 
-$liveProcess = Get-QaOwnedProcess -Identity $identity
-if (-not $liveProcess) { Fail 'New QA process exited before authenticated readiness' }
-try {
-    $ready = Invoke-WebRequest -Uri "$QaApiBase/api/v1/hierarchy" -UseBasicParsing -MaximumRedirection 0 -TimeoutSec 10 -Headers @{ Authorization = "Bearer $($bootstrap.Token)" }
-    $readyBody = $ready.Content | ConvertFrom-Json
-    if ($readyBody.ok -ne $true) { Fail 'New API did not confirm authenticated readiness' }
-} finally { $liveProcess.Dispose() }
+$readiness = Wait-QaAuthenticatedReadiness -Identity $identity -Token $bootstrap.Token -VerseId $bootstrap.VerseId -TimeoutSec 35
+if (-not $readiness.ready) {
+    Fail "Authenticated hierarchy readiness failed: $($readiness.terminal_reason); status=$($readiness.last_http_status); reason=$($readiness.last_reason); api_error=$($readiness.last_api_error)"
+}
 $fixtureInfo = if ($resume) { $resume.current.fixture_detail } else { $null }
 $swFixture = [System.Diagnostics.Stopwatch]::StartNew()
 if (-not $resume -and $Fixture -ne 'none') {
@@ -255,13 +253,14 @@ $current = @{
     stage_matches_source = $stageMatchesSource
     stale_stage_allowed = [bool]$AllowStaleStage
     run_dir = $run
+    authenticated_readiness = $readiness
     bootstrap_verse_id = $bootstrap.VerseId
     fixture_detail = $fixtureInfo
     timings_ms = @{ health = $healthMs; bootstrap_token = $tokenMs; fixture_seed = $fixtureMs }
 }
 if ($resume) {
     $current.restart = @{ previous_start = (Join-Path $attemptDir 'previous-start.json'); attempt = $attemptPath; preserved_root = $run; reseeded = $false; port_changed = ($ApiPort -ne $resume.port); stale_stage_allowed = [bool]$AllowStaleStage }
-    @{ status = 'ready'; run_dir = $run; process_identity = $identity; started_at = $startedAt; stage = $stageDir; stage_manifest = $stageManifest; stage_matches_source = $stageMatchesSource; restart = $current.restart } |
+    @{ status = 'ready'; run_dir = $run; process_identity = $identity; started_at = $startedAt; stage = $stageDir; stage_manifest = $stageManifest; stage_matches_source = $stageMatchesSource; authenticated_readiness = $readiness; restart = $current.restart } |
         ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $attemptPath -Encoding utf8
 }
 $current | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $run 'current.pending.json') -Encoding utf8
@@ -272,18 +271,45 @@ $handedOff = $true
 Write-QaLog "Launch complete in $([math]::Round($swTotal.Elapsed.TotalSeconds, 1))s total. run=$run pid=$($proc.Id)"
 Write-Output $run
 } finally {
+    $failedStart = $null
     try {
+        if (-not $handedOff -and $identity) {
+            $capture = @{ status = 'not_started'; started_at = [DateTime]::UtcNow.ToString('o'); exception_type = $null; native_error_code = $null }
+            try {
+                $failureTree = @(Get-QaOwnedProcessTree -Identity $identity)
+                $known = @{}
+                foreach ($entry in (@($recordedDescendants) + @($failureTree))) {
+                    if ($entry -and [int]$entry.pid -ne [int]$identity.pid) { $known["$($entry.pid):$($entry.start_ticks)"] = $entry }
+                }
+                $recordedDescendants = @($known.Values)
+                $capture.status = if ($failureTree.Count) { 'captured' } else { 'root_gone_no_fresh_snapshot' }
+            } catch {
+                $capture.status = 'owned_tree_enumeration_failed'
+                $capture.exception_type = $_.Exception.GetType().FullName
+                if ($_.Exception -is [ComponentModel.Win32Exception]) { $capture.native_error_code = $_.Exception.NativeErrorCode }
+            }
+            $capture.completed_at = [DateTime]::UtcNow.ToString('o')
+        } else { $capture = @{ status = 'no_new_identity' } }
         if (-not $handedOff -and $attemptPath) {
-            @{ status = 'failed'; run_dir = $run; process_identity = $identity; stage = $stageDir; stage_manifest = $stageManifest; stage_matches_source = $stageMatchesSource; stale_stage_allowed = [bool]$AllowStaleStage } |
-                ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $attemptPath -Encoding utf8
+            $failedStart = @{ status = 'failed'; run_dir = $run; process_identity = $identity; descendant_identities = @($recordedDescendants); descendant_capture = $capture; authenticated_readiness = $readiness; cleanup = @{ status = 'not_attempted' }; stage = $stageDir; stage_manifest = $stageManifest; stage_matches_source = $stageMatchesSource; stale_stage_allowed = [bool]$AllowStaleStage }
+            $failedStart | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $attemptPath -Encoding utf8
         }
     } finally {
         try {
             if (-not $handedOff -and $proc) {
-                if ($identity) { Stop-QaOwnedProcessTree -Identity $identity -RecordedDescendants @($recordedDescendants) }
-                elseif (-not $proc.HasExited) {
-                    $proc.Kill()
-                    if (-not $proc.WaitForExit(15000)) { throw 'New start did not exit within rollback deadline' }
+                try {
+                    if ($failedStart) { $failedStart.cleanup.status = 'attempting' }
+                    if ($identity) { Stop-QaOwnedProcessTree -Identity $identity -RecordedDescendants @($recordedDescendants) }
+                    elseif (-not $proc.HasExited) {
+                        $proc.Kill()
+                        if (-not $proc.WaitForExit(15000)) { throw 'New start did not exit within rollback deadline' }
+                    }
+                    if ($failedStart) { $failedStart.cleanup.status = 'completed_for_captured_identities' }
+                } catch {
+                    if ($failedStart) { $failedStart.cleanup.status = 'failed'; $failedStart.cleanup.exception_type = $_.Exception.GetType().FullName }
+                    throw
+                } finally {
+                    if ($failedStart) { $failedStart | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $attemptPath -Encoding utf8 }
                 }
             }
         } finally { if ($proc) { $proc.Dispose() } }
