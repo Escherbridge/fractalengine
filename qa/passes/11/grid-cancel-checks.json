@@ -1,0 +1,74 @@
+{
+  "cancel_delete_preserves_exact_bag": true,
+  "dirty_cancel_preserves_exact_bag": true,
+  "editor_controls": [
+    {
+      "name": "Save property 00_complex",
+      "bounds": {
+        "h": 25.0,
+        "w": 34.125,
+        "x": 989.0,
+        "y": 409.5
+      },
+      "observed": {
+        "allowed": true,
+        "clickable": true,
+        "clip": {
+          "h": 585.0,
+          "w": 276.0,
+          "x": 985.0,
+          "y": 113.0
+        },
+        "draggable": false,
+        "hit": {
+          "h": 25.0,
+          "w": 34.125,
+          "x": 989.0,
+          "y": 409.5
+        },
+        "id": "7205718031152575716",
+        "layer": "LayerId { Background 5A3E }",
+        "rect": {
+          "h": 25.0,
+          "w": 34.125,
+          "x": 989.0,
+          "y": 409.5
+        }
+      }
+    },
+    {
+      "name": "Cancel editing property 00_complex",
+      "bounds": {
+        "h": 25.0,
+        "w": 46.3125,
+        "x": 1031.125,
+        "y": 409.5
+      },
+      "observed": {
+        "allowed": true,
+        "clickable": true,
+        "clip": {
+          "h": 585.0,
+          "w": 276.0,
+          "x": 985.0,
+          "y": 113.0
+        },
+        "draggable": false,
+        "hit": {
+          "h": 25.0,
+          "w": 46.3125,
+          "x": 1031.125,
+          "y": 409.5
+        },
+        "id": "5604591090528452773",
+        "layer": "LayerId { Background 5A3E }",
+        "rect": {
+          "h": 25.0,
+          "w": 46.3125,
+          "x": 1031.125,
+          "y": 409.5
+        }
+      }
+    }
+  ]
+}

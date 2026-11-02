@@ -1,0 +1,179 @@
+{
+  "pass_id": "11",
+  "run_id": "20261101-191920-658",
+  "stage_commit": "2661374adaf72cabf7149e0e688936c8c5f00320",
+  "stage_fingerprint": "2884156ECBB8822E20503B28D482618BB8D1C9DE9619AE803FF0672A50876AE2",
+  "scenario_sha256": "d14893061bb5c929bd2256dfd706b3cd88586f402fa7bb3a04845096abffa8ef",
+  "verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+  "petal_id": "01M6D0VZM9W1JPJ1ZWK0PNMH4R",
+  "driver_sha256": "71bbe3d247fd14c206c592a79605187366ecdf9d02fff803967ffbf13fa26c28",
+  "process_identity": {
+    "pid": 47816,
+    "start_ticks": "639292226955343970",
+    "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\2661374-20261102062342042\\fractalengine.exe"
+  },
+  "api_base": "http://127.0.0.1:8882",
+  "scenario": "rich-fleet-v1",
+  "data_assertions_succeeded": false,
+  "coverage_ready": false,
+  "log_review_required": false,
+  "read_only_restart_verification": false,
+  "failure": {
+    "code": "api_refused",
+    "message": "MCP tool refused"
+  },
+  "context": {
+    "path": "qa\\passes\\11\\rich-data\\20261101-191920-658\\rich-fleet-v1\\context.json",
+    "sha256": "2c89dfcdf9316e0e9bb6b67e693fef677b735daa16c289685fabae190c6ee0ca",
+    "kind": "persistence"
+  },
+  "exports": [
+    {
+      "path": "qa\\passes\\11\\rich-data\\20261101-191920-658\\rich-fleet-v1\\measurements.json",
+      "sha256": "a5338d955b09046ec0b16f3a9625b7955c763aae07dc722e474e6078745f932f",
+      "kind": "tool"
+    },
+    {
+      "path": "qa\\passes\\11\\rich-data\\20261101-191920-658\\rich-fleet-v1\\measurements.csv",
+      "sha256": "b532e2acfcc70553f1f68e6f687488960e2c4269d44af8daa9d71d09a2b67a93",
+      "kind": "tool"
+    },
+    {
+      "path": "qa\\passes\\11\\rich-data\\20261101-191920-658\\rich-fleet-v1\\trajectory.csv",
+      "sha256": "64b3cce7dbcebf355c4b955d9d83d09c8da4240a3df71570cbf554eeaa19ae45",
+      "kind": "tool"
+    },
+    {
+      "path": "qa\\passes\\11\\rich-data\\20261101-191920-658\\rich-fleet-v1\\report.html",
+      "sha256": "02f9bf07e0de0e0be466d98fe6525f84a8c71811f5456f60593038aaa7d5d9eb",
+      "kind": "tool"
+    }
+  ],
+  "receipts": [
+    {
+      "step_id": "preflight",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\11\\rich-data\\20261101-191920-658\\rich-fleet-v1\\00-preflight.json",
+        "sha256": "a3eaaded6fdc7b48ab19e2bc446fa611167e30ac65c1927c3c9b9f3920df9f4f",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "upload-scene",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\11\\rich-data\\20261101-191920-658\\rich-fleet-v1\\01-upload-scene.json",
+        "sha256": "a542ef761d295011af151f0b333f532f5e9157f9ede08385492053f17a5cea79",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "schema-calibration-v1",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\11\\rich-data\\20261101-191920-658\\rich-fleet-v1\\02-schema-calibration-v1.json",
+        "sha256": "a685d66ea883e70689b6e0f12d1e6985d2bb726ca584d87af2b61611a62a8658",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "schema-metadata-v1",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\11\\rich-data\\20261101-191920-658\\rich-fleet-v1\\03-schema-metadata-v1.json",
+        "sha256": "e9fb81621b0f6600bebd910fea32bc246a1b5a3a3663c7e98dfcb0295edf2090",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "create-alpha",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\11\\rich-data\\20261101-191920-658\\rich-fleet-v1\\04-create-alpha.json",
+        "sha256": "62058acd04479b9c043d7486556164a362acc39b9ac949536946a6f913f38365",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "create-beta",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\11\\rich-data\\20261101-191920-658\\rich-fleet-v1\\05-create-beta.json",
+        "sha256": "cd7d20cfd9302abf8eaff34b5b4c2d8dbae5faf198b61306b026ebf45953d744",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "calibrate-alpha-v2",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\11\\rich-data\\20261101-191920-658\\rich-fleet-v1\\06-calibrate-alpha-v2.json",
+        "sha256": "aee1b49e34d44cabb11f03513c149f2246d1a96f305dde676f49196c39082273",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "move-alpha-v3",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\11\\rich-data\\20261101-191920-658\\rich-fleet-v1\\07-move-alpha-v3.json",
+        "sha256": "1bfb825874261749c9862b2df2b5f2f60249be6b59ff4e13fe43f34e0cea42b5",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "move-beta-v2",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\11\\rich-data\\20261101-191920-658\\rich-fleet-v1\\08-move-beta-v2.json",
+        "sha256": "e9b8b173d17cc587c1d387f14f9c6d1760c0f205f25c71365318a9cc6fa46575",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "checkpoint-before-gamma",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\11\\rich-data\\20261101-191920-658\\rich-fleet-v1\\09-checkpoint-before-gamma.json",
+        "sha256": "c2563f1b758dddc97a88089d70bdc6a8c4791da385780e6d8cb4133ff4eab2f8",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "raw-t0",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\11\\rich-data\\20261101-191920-658\\rich-fleet-v1\\10-raw-t0.json",
+        "sha256": "855e73c8a036da0b682199808e9fb650f00356a51e59adf69ee9b0062745c857",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "derive-t0",
+      "outcome": "FAIL",
+      "artifact": {
+        "path": "qa\\passes\\11\\rich-data\\20261101-191920-658\\rich-fleet-v1\\11-derive-t0.json",
+        "sha256": "7683c372b6da2c87f499c1e99e5f812c7aa62453fedaba5e02671a7552585104",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    }
+  ],
+  "limits": [
+    "API/driver evidence only; no GUI screenshot or product chart was exercised",
+    "measurement event time differs from object commit-version order",
+    "single-host complete queries do not establish replicated durability"
+  ]
+}

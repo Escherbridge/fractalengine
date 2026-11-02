@@ -1,0 +1,208 @@
+{
+  "pass_id": "11",
+  "run_id": "20261101-191920-658",
+  "stage_commit": "2661374adaf72cabf7149e0e688936c8c5f00320",
+  "stage_fingerprint": "2884156ECBB8822E20503B28D482618BB8D1C9DE9619AE803FF0672A50876AE2",
+  "scenario_sha256": "d14893061bb5c929bd2256dfd706b3cd88586f402fa7bb3a04845096abffa8ef",
+  "verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+  "petal_id": "01M6D0VZM9W1JPJ1ZWK0PNMH4R",
+  "driver_sha256": "71bbe3d247fd14c206c592a79605187366ecdf9d02fff803967ffbf13fa26c28",
+  "process_identity": {
+    "pid": 47816,
+    "start_ticks": "639292226955343970",
+    "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\2661374-20261102062342042\\fractalengine.exe"
+  },
+  "api_base": "http://127.0.0.1:8882",
+  "step_id": "derive-t0",
+  "intent": {
+    "id": "derive-t0",
+    "op": "derive_metric",
+    "source_metric": "temperature_raw",
+    "target_metric": "temperature_calibrated",
+    "units": "C",
+    "start_ms": 1793404800000,
+    "end_ms": 1793404800001,
+    "calibration_versions": {
+      "Alpha": 2,
+      "Beta": 1
+    },
+    "calibration_schema_versions": {
+      "Alpha": 1,
+      "Beta": 1
+    }
+  },
+  "outcome": "FAIL",
+  "failure": {
+    "code": "api_refused",
+    "message": "MCP tool refused"
+  },
+  "assertions": [],
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/api/v1/debug/logs?level=warn",
+      "request": null,
+      "status": 200,
+      "response_bytes": 671,
+      "response_sha256": "1ca12db6775e3f22fdbdca585ec430f9e71b8abe7032b96c8eb6bcf85b30a318",
+      "response": {
+        "data": {
+          "active_verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+          "entries": [
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 213,
+              "target": "fe_terrain::delta_viz"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 214,
+              "target": "fe_terrain::delta_viz"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 217,
+              "target": "fe_terrain::delta_viz"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 218,
+              "target": "fe_terrain::delta_viz"
+            }
+          ],
+          "generation": 1,
+          "latest_seq": 941
+        },
+        "ok": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/query",
+      "request": {
+        "sql": "SELECT reading_id, node_id, metric, value, units, recorded_at_ms, payload_id FROM iot_reading WHERE petal_id = $p AND metric = $metric AND recorded_at_ms >= $start AND recorded_at_ms < $end AND node_id IN $nodes ORDER BY recorded_at_ms, reading_id",
+        "vars": {
+          "p": "01M6D0VZM9W1JPJ1ZWK0PNMH4R",
+          "metric": "temperature_raw",
+          "start": 1793404800000,
+          "end": 1793404800001,
+          "nodes": [
+            "01M6E820V8EK9CPY6MWGHGMK8A",
+            "01M6E821303WYAHB9EMD8BQSWD"
+          ]
+        }
+      },
+      "status": 200,
+      "response_bytes": 454,
+      "response_sha256": "2099b706a43f55a7797e6b54cfb1b300f3303121d8586187a5681270ee5c483e",
+      "response": {
+        "ok": true,
+        "data": {
+          "data": [
+            {
+              "metric": "temperature_raw",
+              "node_id": "01M6E820V8EK9CPY6MWGHGMK8A",
+              "payload_id": null,
+              "reading_id": "01M6E822JBRYEPW18DDGP4VGH9",
+              "recorded_at_ms": 1793404800000,
+              "units": "C",
+              "value": 10.0
+            },
+            {
+              "metric": "temperature_raw",
+              "node_id": "01M6E821303WYAHB9EMD8BQSWD",
+              "payload_id": null,
+              "reading_id": "01M6E822JGNYRBKKFXFHZVF9V1",
+              "recorded_at_ms": 1793404800000,
+              "units": "C",
+              "value": 20.0
+            }
+          ],
+          "crs": "PETAL-LOCAL:meters;origin=per-petal"
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/mcp",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/call",
+        "params": {
+          "name": "register_device_format",
+          "arguments": {
+            "verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+            "format_id": "qa/rich-fleet-v1@1",
+            "mime": "application/json",
+            "description": "Explicit QA affine derivation provenance; opaque bytes, not an automatic rule engine",
+            "schema": {
+              "type": "object",
+              "required": [
+                "source_metric",
+                "history_version",
+                "raw",
+                "gain",
+                "bias",
+                "derived"
+              ]
+            }
+          }
+        }
+      },
+      "status": 200,
+      "response_bytes": 164,
+      "response_sha256": "dd608a4eeaa987c085d2ade04f91a2effea472d82fdfb5b22d9ce22012a7ac1b",
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "result": {
+          "content": [
+            {
+              "text": "invalid format_id 'qa/rich-fleet-v1@1' (expected <namespace>/<name>@<major>)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/debug/logs?level=warn&since=941",
+      "request": null,
+      "status": 200,
+      "response_bytes": 112,
+      "response_sha256": "3a83332bc68c038eff998c16f047591861ce4c5fcfff099a95a42084e03d9bdc",
+      "response": {
+        "data": {
+          "active_verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+          "entries": [],
+          "generation": 1,
+          "latest_seq": 942
+        },
+        "ok": true
+      }
+    }
+  ],
+  "log_watermark": {
+    "generation": 1,
+    "seq": 941,
+    "latest_seq": 941
+  },
+  "log_end_watermark": {
+    "generation": 1,
+    "seq": 942,
+    "latest_seq": 942
+  },
+  "new_logs": [],
+  "log_generation_changed": false,
+  "log_retention_gap": false,
+  "log_retention_capacity": 2000,
+  "log_review_required": false
+}

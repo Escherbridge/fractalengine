@@ -1,0 +1,34 @@
+{
+  "live_node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+  "current_position_after_replay": [
+    6.0,
+    0.0,
+    8.0
+  ],
+  "current_gain_after_replay": 3,
+  "historical_preview": {
+    "version": 3,
+    "position": [
+      3,
+      0,
+      4
+    ],
+    "scale": [
+      1,
+      1,
+      1
+    ]
+  },
+  "measurement_series": "temperature_calibrated (C)",
+  "displayed_values": [
+    "21",
+    "23",
+    "25"
+  ],
+  "visual_judgment": "Root inspected real history/preview/chart/schema screenshots; three ascending chart points and chronological table visible. Independent review pending.",
+  "limits": [
+    "API scenario and native focused evidence are not full feature coverage",
+    "No historical preview was applied to the live scene",
+    "Same-root restart proof remains pending"
+  ]
+}

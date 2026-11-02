@@ -1,0 +1,14 @@
+{
+  "invalid_hex_save_disabled": true,
+  "saved_node_appearance": {
+    "icon": "star",
+    "rgb": [
+      56,
+      189,
+      248
+    ],
+    "hex": "#38BDF8"
+  },
+  "cancel_changed_icon_and_color_keeps_saved_settings": true,
+  "selected_node_preserved": "01M6D0VZSPGMEPRBB47TSJB80V"
+}

@@ -1,0 +1,1736 @@
+{
+  "pass_id": "11",
+  "run_id": "20261101-191920-658",
+  "stage_commit": "2661374adaf72cabf7149e0e688936c8c5f00320",
+  "stage_fingerprint": "2884156ECBB8822E20503B28D482618BB8D1C9DE9619AE803FF0672A50876AE2",
+  "scenario_sha256": "d14893061bb5c929bd2256dfd706b3cd88586f402fa7bb3a04845096abffa8ef",
+  "verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+  "petal_id": "01M6D0VZM9W1JPJ1ZWK0PNMH4R",
+  "driver_sha256": "71bbe3d247fd14c206c592a79605187366ecdf9d02fff803967ffbf13fa26c28",
+  "process_identity": {
+    "pid": 47816,
+    "start_ticks": "639292226955343970",
+    "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\2661374-20261102062342042\\fractalengine.exe"
+  },
+  "api_base": "http://127.0.0.1:8882",
+  "step_id": "checkpoint-before-gamma",
+  "intent": {
+    "id": "checkpoint-before-gamma",
+    "op": "checkpoint",
+    "expect": {
+      "Alpha": {
+        "position": [
+          3,
+          0,
+          4
+        ],
+        "properties": {
+          "calibration": {
+            "gain": 2,
+            "bias": 1,
+            "axes": [
+              "x",
+              "z"
+            ],
+            "sensor": {
+              "serial": "ALPHA-01",
+              "range": [
+                -40,
+                85
+              ]
+            }
+          },
+          "metadata": {
+            "tags": [
+              "fleet",
+              "qa"
+            ],
+            "maintenance": {
+              "due": "2026-12-01",
+              "enabled": true
+            }
+          },
+          "schema_version": 1
+        }
+      },
+      "Beta": {
+        "position": [
+          10,
+          2,
+          0
+        ],
+        "properties": {
+          "calibration": {
+            "gain": 0.5,
+            "bias": -1,
+            "axes": [
+              "x",
+              "z"
+            ],
+            "sensor": {
+              "serial": "BETA-01",
+              "range": [
+                -40,
+                85
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "outcome": "PASS",
+  "result": {
+    "cut_semantics": "explicit per-object committed-version map; not global time",
+    "objects": {
+      "Alpha": {
+        "node_id": "01M6E820V8EK9CPY6MWGHGMK8A",
+        "history_version": 3,
+        "state": {
+          "asset_id": "01M6E8206523594W3AVNFQGNTX",
+          "created_at": "2026-11-02T13:44:23.144451800+00:00",
+          "display_name": "Fleet Alpha",
+          "edit_seq": 1,
+          "elevation": 0.0,
+          "interactive": true,
+          "node_id": "01M6E820V8EK9CPY6MWGHGMK8A",
+          "petal_id": "01M6D0VZM9W1JPJ1ZWK0PNMH4R",
+          "position": [
+            3.0,
+            0.0,
+            4.0
+          ],
+          "properties": {
+            "calibration": {
+              "axes": [
+                "x",
+                "z"
+              ],
+              "bias": 1,
+              "gain": 2,
+              "sensor": {
+                "range": [
+                  -40,
+                  85
+                ],
+                "serial": "ALPHA-01"
+              }
+            },
+            "disposable_note": {
+              "remove_me": true,
+              "values": [
+                1,
+                2,
+                3
+              ]
+            },
+            "metadata": {
+              "maintenance": {
+                "due": "2026-12-01",
+                "enabled": true
+              },
+              "tags": [
+                "fleet",
+                "qa"
+              ]
+            },
+            "qa_fixture": "rich-fleet-v1",
+            "schema_version": 1,
+            "telemetry": {
+              "samples": [
+                null,
+                true,
+                {
+                  "axes": [
+                    "x",
+                    "z"
+                  ],
+                  "offset": 0.125
+                }
+              ],
+              "sequence": 9007199254740993
+            }
+          },
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "tombstone": null
+        },
+        "state_sha256": "a209da4b0fc913be801f5673cf3b762d195b034570c48c11e9e4b6c0546134ef"
+      },
+      "Beta": {
+        "node_id": "01M6E821303WYAHB9EMD8BQSWD",
+        "history_version": 2,
+        "state": {
+          "asset_id": "01M6E8206523594W3AVNFQGNTX",
+          "created_at": "2026-11-02T13:44:23.392918800+00:00",
+          "display_name": "Fleet Beta",
+          "edit_seq": 1,
+          "elevation": 2.0,
+          "interactive": true,
+          "node_id": "01M6E821303WYAHB9EMD8BQSWD",
+          "petal_id": "01M6D0VZM9W1JPJ1ZWK0PNMH4R",
+          "position": [
+            10.0,
+            2.0,
+            0.0
+          ],
+          "properties": {
+            "calibration": {
+              "axes": [
+                "x",
+                "z"
+              ],
+              "bias": -1,
+              "gain": 0.5,
+              "sensor": {
+                "range": [
+                  -40,
+                  85
+                ],
+                "serial": "BETA-01"
+              }
+            },
+            "metadata": {
+              "maintenance": {
+                "due": "2026-12-01",
+                "enabled": true
+              },
+              "tags": [
+                "fleet",
+                "qa"
+              ]
+            },
+            "qa_fixture": "rich-fleet-v1",
+            "schema_version": 1
+          },
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "tombstone": null
+        },
+        "state_sha256": "a3d18cf4d459f36ca6768077d12570712e0fea5514326b6d44942465adfbcf27"
+      }
+    }
+  },
+  "assertions": [
+    {
+      "name": "created object set at checkpoint",
+      "actual": [
+        "01M6E820V8EK9CPY6MWGHGMK8A",
+        "01M6E821303WYAHB9EMD8BQSWD"
+      ],
+      "expected": [
+        "01M6E820V8EK9CPY6MWGHGMK8A",
+        "01M6E821303WYAHB9EMD8BQSWD"
+      ],
+      "passed": true
+    },
+    {
+      "name": "Alpha committed version",
+      "actual": 3,
+      "expected": 3,
+      "passed": true
+    },
+    {
+      "name": "Alpha properties identity",
+      "actual": "01M6E820V8EK9CPY6MWGHGMK8A",
+      "expected": "01M6E820V8EK9CPY6MWGHGMK8A",
+      "passed": true
+    },
+    {
+      "name": "Alpha persisted properties",
+      "actual": {
+        "calibration": {
+          "axes": [
+            "x",
+            "z"
+          ],
+          "bias": 1,
+          "gain": 2,
+          "sensor": {
+            "range": [
+              -40,
+              85
+            ],
+            "serial": "ALPHA-01"
+          }
+        },
+        "disposable_note": {
+          "remove_me": true,
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        "metadata": {
+          "maintenance": {
+            "due": "2026-12-01",
+            "enabled": true
+          },
+          "tags": [
+            "fleet",
+            "qa"
+          ]
+        },
+        "qa_fixture": "rich-fleet-v1",
+        "schema_version": 1,
+        "telemetry": {
+          "samples": [
+            null,
+            true,
+            {
+              "axes": [
+                "x",
+                "z"
+              ],
+              "offset": 0.125
+            }
+          ],
+          "sequence": 9007199254740993
+        }
+      },
+      "expected": {
+        "calibration": {
+          "axes": [
+            "x",
+            "z"
+          ],
+          "bias": 1,
+          "gain": 2,
+          "sensor": {
+            "range": [
+              -40,
+              85
+            ],
+            "serial": "ALPHA-01"
+          }
+        },
+        "disposable_note": {
+          "remove_me": true,
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        "metadata": {
+          "maintenance": {
+            "due": "2026-12-01",
+            "enabled": true
+          },
+          "tags": [
+            "fleet",
+            "qa"
+          ]
+        },
+        "qa_fixture": "rich-fleet-v1",
+        "schema_version": 1,
+        "telemetry": {
+          "samples": [
+            null,
+            true,
+            {
+              "axes": [
+                "x",
+                "z"
+              ],
+              "offset": 0.125
+            }
+          ],
+          "sequence": 9007199254740993
+        }
+      },
+      "passed": true
+    },
+    {
+      "name": "Alpha journal version",
+      "actual": 3,
+      "expected": 3,
+      "passed": true
+    },
+    {
+      "name": "Alpha persisted position",
+      "actual": [
+        3.0,
+        0.0,
+        4.0
+      ],
+      "expected": [
+        3.0,
+        0.0,
+        4.0
+      ],
+      "passed": true
+    },
+    {
+      "name": "Alpha persisted rotation",
+      "actual": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "passed": true
+    },
+    {
+      "name": "Alpha persisted scale",
+      "actual": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "expected": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "passed": true
+    },
+    {
+      "name": "Alpha current version during history read",
+      "actual": 3,
+      "expected": 3,
+      "passed": true
+    },
+    {
+      "name": "Alpha independent checkpoint",
+      "actual": {
+        "asset_id": "01M6E8206523594W3AVNFQGNTX",
+        "created_at": "2026-11-02T13:44:23.144451800+00:00",
+        "display_name": "Fleet Alpha",
+        "edit_seq": 1,
+        "elevation": 0.0,
+        "interactive": true,
+        "node_id": "01M6E820V8EK9CPY6MWGHGMK8A",
+        "petal_id": "01M6D0VZM9W1JPJ1ZWK0PNMH4R",
+        "position": [
+          3.0,
+          0.0,
+          4.0
+        ],
+        "properties": {
+          "calibration": {
+            "axes": [
+              "x",
+              "z"
+            ],
+            "bias": 1,
+            "gain": 2,
+            "sensor": {
+              "range": [
+                -40,
+                85
+              ],
+              "serial": "ALPHA-01"
+            }
+          },
+          "disposable_note": {
+            "remove_me": true,
+            "values": [
+              1,
+              2,
+              3
+            ]
+          },
+          "metadata": {
+            "maintenance": {
+              "due": "2026-12-01",
+              "enabled": true
+            },
+            "tags": [
+              "fleet",
+              "qa"
+            ]
+          },
+          "qa_fixture": "rich-fleet-v1",
+          "schema_version": 1,
+          "telemetry": {
+            "samples": [
+              null,
+              true,
+              {
+                "axes": [
+                  "x",
+                  "z"
+                ],
+                "offset": 0.125
+              }
+            ],
+            "sequence": 9007199254740993
+          }
+        },
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "tombstone": null
+      },
+      "expected": {
+        "position": [
+          3,
+          0,
+          4
+        ],
+        "properties": {
+          "calibration": {
+            "gain": 2,
+            "bias": 1,
+            "axes": [
+              "x",
+              "z"
+            ],
+            "sensor": {
+              "serial": "ALPHA-01",
+              "range": [
+                -40,
+                85
+              ]
+            }
+          },
+          "metadata": {
+            "tags": [
+              "fleet",
+              "qa"
+            ],
+            "maintenance": {
+              "due": "2026-12-01",
+              "enabled": true
+            }
+          },
+          "schema_version": 1
+        }
+      },
+      "passed": true
+    },
+    {
+      "name": "Alpha replay matches committed snapshot",
+      "actual": {
+        "asset_id": "01M6E8206523594W3AVNFQGNTX",
+        "created_at": "2026-11-02T13:44:23.144451800+00:00",
+        "display_name": "Fleet Alpha",
+        "edit_seq": 1,
+        "elevation": 0.0,
+        "interactive": true,
+        "node_id": "01M6E820V8EK9CPY6MWGHGMK8A",
+        "petal_id": "01M6D0VZM9W1JPJ1ZWK0PNMH4R",
+        "position": [
+          3.0,
+          0.0,
+          4.0
+        ],
+        "properties": {
+          "calibration": {
+            "axes": [
+              "x",
+              "z"
+            ],
+            "bias": 1,
+            "gain": 2,
+            "sensor": {
+              "range": [
+                -40,
+                85
+              ],
+              "serial": "ALPHA-01"
+            }
+          },
+          "disposable_note": {
+            "remove_me": true,
+            "values": [
+              1,
+              2,
+              3
+            ]
+          },
+          "metadata": {
+            "maintenance": {
+              "due": "2026-12-01",
+              "enabled": true
+            },
+            "tags": [
+              "fleet",
+              "qa"
+            ]
+          },
+          "qa_fixture": "rich-fleet-v1",
+          "schema_version": 1,
+          "telemetry": {
+            "samples": [
+              null,
+              true,
+              {
+                "axes": [
+                  "x",
+                  "z"
+                ],
+                "offset": 0.125
+              }
+            ],
+            "sequence": 9007199254740993
+          }
+        },
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "tombstone": null
+      },
+      "expected": {
+        "asset_id": "01M6E8206523594W3AVNFQGNTX",
+        "created_at": "2026-11-02T13:44:23.144451800+00:00",
+        "display_name": "Fleet Alpha",
+        "edit_seq": 1,
+        "elevation": 0.0,
+        "interactive": true,
+        "node_id": "01M6E820V8EK9CPY6MWGHGMK8A",
+        "petal_id": "01M6D0VZM9W1JPJ1ZWK0PNMH4R",
+        "position": [
+          3.0,
+          0.0,
+          4.0
+        ],
+        "properties": {
+          "calibration": {
+            "axes": [
+              "x",
+              "z"
+            ],
+            "bias": 1,
+            "gain": 2,
+            "sensor": {
+              "range": [
+                -40,
+                85
+              ],
+              "serial": "ALPHA-01"
+            }
+          },
+          "disposable_note": {
+            "remove_me": true,
+            "values": [
+              1,
+              2,
+              3
+            ]
+          },
+          "metadata": {
+            "maintenance": {
+              "due": "2026-12-01",
+              "enabled": true
+            },
+            "tags": [
+              "fleet",
+              "qa"
+            ]
+          },
+          "qa_fixture": "rich-fleet-v1",
+          "schema_version": 1,
+          "telemetry": {
+            "samples": [
+              null,
+              true,
+              {
+                "axes": [
+                  "x",
+                  "z"
+                ],
+                "offset": 0.125
+              }
+            ],
+            "sequence": 9007199254740993
+          }
+        },
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "tombstone": null
+      },
+      "passed": true
+    },
+    {
+      "name": "Beta committed version",
+      "actual": 2,
+      "expected": 2,
+      "passed": true
+    },
+    {
+      "name": "Beta properties identity",
+      "actual": "01M6E821303WYAHB9EMD8BQSWD",
+      "expected": "01M6E821303WYAHB9EMD8BQSWD",
+      "passed": true
+    },
+    {
+      "name": "Beta persisted properties",
+      "actual": {
+        "calibration": {
+          "axes": [
+            "x",
+            "z"
+          ],
+          "bias": -1,
+          "gain": 0.5,
+          "sensor": {
+            "range": [
+              -40,
+              85
+            ],
+            "serial": "BETA-01"
+          }
+        },
+        "metadata": {
+          "maintenance": {
+            "due": "2026-12-01",
+            "enabled": true
+          },
+          "tags": [
+            "fleet",
+            "qa"
+          ]
+        },
+        "qa_fixture": "rich-fleet-v1",
+        "schema_version": 1
+      },
+      "expected": {
+        "calibration": {
+          "axes": [
+            "x",
+            "z"
+          ],
+          "bias": -1,
+          "gain": 0.5,
+          "sensor": {
+            "range": [
+              -40,
+              85
+            ],
+            "serial": "BETA-01"
+          }
+        },
+        "metadata": {
+          "maintenance": {
+            "due": "2026-12-01",
+            "enabled": true
+          },
+          "tags": [
+            "fleet",
+            "qa"
+          ]
+        },
+        "qa_fixture": "rich-fleet-v1",
+        "schema_version": 1
+      },
+      "passed": true
+    },
+    {
+      "name": "Beta journal version",
+      "actual": 2,
+      "expected": 2,
+      "passed": true
+    },
+    {
+      "name": "Beta persisted position",
+      "actual": [
+        10.0,
+        2.0,
+        0.0
+      ],
+      "expected": [
+        10.0,
+        2.0,
+        0.0
+      ],
+      "passed": true
+    },
+    {
+      "name": "Beta persisted rotation",
+      "actual": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "passed": true
+    },
+    {
+      "name": "Beta persisted scale",
+      "actual": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "expected": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "passed": true
+    },
+    {
+      "name": "Beta current version during history read",
+      "actual": 2,
+      "expected": 2,
+      "passed": true
+    },
+    {
+      "name": "Beta independent checkpoint",
+      "actual": {
+        "asset_id": "01M6E8206523594W3AVNFQGNTX",
+        "created_at": "2026-11-02T13:44:23.392918800+00:00",
+        "display_name": "Fleet Beta",
+        "edit_seq": 1,
+        "elevation": 2.0,
+        "interactive": true,
+        "node_id": "01M6E821303WYAHB9EMD8BQSWD",
+        "petal_id": "01M6D0VZM9W1JPJ1ZWK0PNMH4R",
+        "position": [
+          10.0,
+          2.0,
+          0.0
+        ],
+        "properties": {
+          "calibration": {
+            "axes": [
+              "x",
+              "z"
+            ],
+            "bias": -1,
+            "gain": 0.5,
+            "sensor": {
+              "range": [
+                -40,
+                85
+              ],
+              "serial": "BETA-01"
+            }
+          },
+          "metadata": {
+            "maintenance": {
+              "due": "2026-12-01",
+              "enabled": true
+            },
+            "tags": [
+              "fleet",
+              "qa"
+            ]
+          },
+          "qa_fixture": "rich-fleet-v1",
+          "schema_version": 1
+        },
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "tombstone": null
+      },
+      "expected": {
+        "position": [
+          10,
+          2,
+          0
+        ],
+        "properties": {
+          "calibration": {
+            "gain": 0.5,
+            "bias": -1,
+            "axes": [
+              "x",
+              "z"
+            ],
+            "sensor": {
+              "serial": "BETA-01",
+              "range": [
+                -40,
+                85
+              ]
+            }
+          }
+        }
+      },
+      "passed": true
+    },
+    {
+      "name": "Beta replay matches committed snapshot",
+      "actual": {
+        "asset_id": "01M6E8206523594W3AVNFQGNTX",
+        "created_at": "2026-11-02T13:44:23.392918800+00:00",
+        "display_name": "Fleet Beta",
+        "edit_seq": 1,
+        "elevation": 2.0,
+        "interactive": true,
+        "node_id": "01M6E821303WYAHB9EMD8BQSWD",
+        "petal_id": "01M6D0VZM9W1JPJ1ZWK0PNMH4R",
+        "position": [
+          10.0,
+          2.0,
+          0.0
+        ],
+        "properties": {
+          "calibration": {
+            "axes": [
+              "x",
+              "z"
+            ],
+            "bias": -1,
+            "gain": 0.5,
+            "sensor": {
+              "range": [
+                -40,
+                85
+              ],
+              "serial": "BETA-01"
+            }
+          },
+          "metadata": {
+            "maintenance": {
+              "due": "2026-12-01",
+              "enabled": true
+            },
+            "tags": [
+              "fleet",
+              "qa"
+            ]
+          },
+          "qa_fixture": "rich-fleet-v1",
+          "schema_version": 1
+        },
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "tombstone": null
+      },
+      "expected": {
+        "asset_id": "01M6E8206523594W3AVNFQGNTX",
+        "created_at": "2026-11-02T13:44:23.392918800+00:00",
+        "display_name": "Fleet Beta",
+        "edit_seq": 1,
+        "elevation": 2.0,
+        "interactive": true,
+        "node_id": "01M6E821303WYAHB9EMD8BQSWD",
+        "petal_id": "01M6D0VZM9W1JPJ1ZWK0PNMH4R",
+        "position": [
+          10.0,
+          2.0,
+          0.0
+        ],
+        "properties": {
+          "calibration": {
+            "axes": [
+              "x",
+              "z"
+            ],
+            "bias": -1,
+            "gain": 0.5,
+            "sensor": {
+              "range": [
+                -40,
+                85
+              ],
+              "serial": "BETA-01"
+            }
+          },
+          "metadata": {
+            "maintenance": {
+              "due": "2026-12-01",
+              "enabled": true
+            },
+            "tags": [
+              "fleet",
+              "qa"
+            ]
+          },
+          "qa_fixture": "rich-fleet-v1",
+          "schema_version": 1
+        },
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "tombstone": null
+      },
+      "passed": true
+    }
+  ],
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/api/v1/debug/logs?level=warn",
+      "request": null,
+      "status": 200,
+      "response_bytes": 671,
+      "response_sha256": "1ca12db6775e3f22fdbdca585ec430f9e71b8abe7032b96c8eb6bcf85b30a318",
+      "response": {
+        "data": {
+          "active_verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+          "entries": [
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 213,
+              "target": "fe_terrain::delta_viz"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 214,
+              "target": "fe_terrain::delta_viz"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 217,
+              "target": "fe_terrain::delta_viz"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 218,
+              "target": "fe_terrain::delta_viz"
+            }
+          ],
+          "generation": 1,
+          "latest_seq": 941
+        },
+        "ok": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/query",
+      "request": {
+        "sql": "SELECT node_id FROM node WHERE petal_id = $p AND properties.qa_fixture = $fixture AND tombstone = NONE",
+        "vars": {
+          "p": "01M6D0VZM9W1JPJ1ZWK0PNMH4R",
+          "fixture": "rich-fleet-v1"
+        }
+      },
+      "status": 200,
+      "response_bytes": 168,
+      "response_sha256": "10576fb566fe9408902e40b8432574671a0247a6cd004fa96feaaf5b95a0aa41",
+      "response": {
+        "ok": true,
+        "data": {
+          "data": [
+            {
+              "node_id": "01M6E820V8EK9CPY6MWGHGMK8A"
+            },
+            {
+              "node_id": "01M6E821303WYAHB9EMD8BQSWD"
+            }
+          ],
+          "crs": "PETAL-LOCAL:meters;origin=per-petal"
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6E820V8EK9CPY6MWGHGMK8A/properties",
+      "request": null,
+      "status": 200,
+      "response_bytes": 471,
+      "response_sha256": "f5912bc8f810642738a20e03be27fc10f470062cc13be452f6556e8fb52a9c3c",
+      "response": {
+        "ok": true,
+        "data": {
+          "node_id": "01M6E820V8EK9CPY6MWGHGMK8A",
+          "properties": {
+            "calibration": {
+              "axes": [
+                "x",
+                "z"
+              ],
+              "bias": 1,
+              "gain": 2,
+              "sensor": {
+                "range": [
+                  -40,
+                  85
+                ],
+                "serial": "ALPHA-01"
+              }
+            },
+            "disposable_note": {
+              "remove_me": true,
+              "values": [
+                1,
+                2,
+                3
+              ]
+            },
+            "metadata": {
+              "maintenance": {
+                "due": "2026-12-01",
+                "enabled": true
+              },
+              "tags": [
+                "fleet",
+                "qa"
+              ]
+            },
+            "qa_fixture": "rich-fleet-v1",
+            "schema_version": 1,
+            "telemetry": {
+              "samples": [
+                null,
+                true,
+                {
+                  "axes": [
+                    "x",
+                    "z"
+                  ],
+                  "offset": 0.125
+                }
+              ],
+              "sequence": 9007199254740993
+            }
+          }
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6E820V8EK9CPY6MWGHGMK8A/transform",
+      "request": null,
+      "status": 200,
+      "response_bytes": 105,
+      "response_sha256": "aef692caf11d3eaf6b29a7c1e33bd605d2dc10a565364c111a1fe90a35a09bc1",
+      "response": {
+        "ok": true,
+        "data": {
+          "position": [
+            3.0,
+            0.0,
+            4.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6E820V8EK9CPY6MWGHGMK8A/history?after_version=2&limit=1",
+      "request": null,
+      "status": 200,
+      "response_bytes": 1672,
+      "response_sha256": "383f088869590b6e212af6c7c096d68f9102a570f560b0bca383b2b57dbbe2e1",
+      "response": {
+        "ok": true,
+        "data": {
+          "coverage_start_version": 1,
+          "coverage_started_at": "2026-11-02T13:44:23.144821200+00:00",
+          "current_state_verified": true,
+          "current_version": 3,
+          "entries": [
+            {
+              "created_at": "2026-11-02T13:44:23.921488100+00:00",
+              "hlc_timestamp": 117547143261126656,
+              "log_id": "01M6E821KH0P3KZRRVTC4DKAJD",
+              "node_id": "01M6E820V8EK9CPY6MWGHGMK8A",
+              "op": "full_transform",
+              "payload": {
+                "after_state": {
+                  "asset_id": "01M6E8206523594W3AVNFQGNTX",
+                  "created_at": "2026-11-02T13:44:23.144451800+00:00",
+                  "display_name": "Fleet Alpha",
+                  "edit_seq": 1,
+                  "elevation": 0.0,
+                  "interactive": true,
+                  "node_id": "01M6E820V8EK9CPY6MWGHGMK8A",
+                  "petal_id": "01M6D0VZM9W1JPJ1ZWK0PNMH4R",
+                  "position": [
+                    3.0,
+                    0.0,
+                    4.0
+                  ],
+                  "properties": {
+                    "calibration": {
+                      "axes": [
+                        "x",
+                        "z"
+                      ],
+                      "bias": 1,
+                      "gain": 2,
+                      "sensor": {
+                        "range": [
+                          -40,
+                          85
+                        ],
+                        "serial": "ALPHA-01"
+                      }
+                    },
+                    "disposable_note": {
+                      "remove_me": true,
+                      "values": [
+                        1,
+                        2,
+                        3
+                      ]
+                    },
+                    "metadata": {
+                      "maintenance": {
+                        "due": "2026-12-01",
+                        "enabled": true
+                      },
+                      "tags": [
+                        "fleet",
+                        "qa"
+                      ]
+                    },
+                    "qa_fixture": "rich-fleet-v1",
+                    "schema_version": 1,
+                    "telemetry": {
+                      "samples": [
+                        null,
+                        true,
+                        {
+                          "axes": [
+                            "x",
+                            "z"
+                          ],
+                          "offset": 0.125
+                        }
+                      ],
+                      "sequence": 9007199254740993
+                    }
+                  },
+                  "rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                },
+                "data": {
+                  "position": [
+                    3.0,
+                    0.0,
+                    4.0
+                  ],
+                  "rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                },
+                "journal_version": 1,
+                "schema_versions": {},
+                "scope": "VERSE#01M6D0VZ11XK62MXZ61HENTBTD-FRACTAL#01M6D0VZG5ZN7XZMTXE8PWF1YT-PETAL#01M6D0VZM9W1JPJ1ZWK0PNMH4R"
+              },
+              "row_version": 3,
+              "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU"
+            }
+          ],
+          "event_time_ordering": false,
+          "journal_version": 1,
+          "next_after_version": null,
+          "node_id": "01M6E820V8EK9CPY6MWGHGMK8A",
+          "order": "per_object_commit_version",
+          "supported_operations": [
+            "baseline",
+            "property_set",
+            "property_deleted",
+            "full_transform"
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6E820V8EK9CPY6MWGHGMK8A/state?at_version=3",
+      "request": null,
+      "status": 200,
+      "response_bytes": 1188,
+      "response_sha256": "c089d1f2aa438e2e612ac9b8dd5126f6222d2f063387197284077d92b719c10f",
+      "response": {
+        "ok": true,
+        "data": {
+          "at_version": 3,
+          "availability": "available",
+          "baseline_version": 1,
+          "coverage_start_version": 1,
+          "coverage_started_at": "2026-11-02T13:44:23.144821200+00:00",
+          "current_state_verified": true,
+          "current_version": 3,
+          "event_time_ordering": false,
+          "journal_version": 1,
+          "node_id": "01M6E820V8EK9CPY6MWGHGMK8A",
+          "order": "per_object_commit_version",
+          "state": {
+            "asset_id": "01M6E8206523594W3AVNFQGNTX",
+            "created_at": "2026-11-02T13:44:23.144451800+00:00",
+            "display_name": "Fleet Alpha",
+            "edit_seq": 1,
+            "elevation": 0.0,
+            "interactive": true,
+            "node_id": "01M6E820V8EK9CPY6MWGHGMK8A",
+            "petal_id": "01M6D0VZM9W1JPJ1ZWK0PNMH4R",
+            "position": [
+              3.0,
+              0.0,
+              4.0
+            ],
+            "properties": {
+              "calibration": {
+                "axes": [
+                  "x",
+                  "z"
+                ],
+                "bias": 1,
+                "gain": 2,
+                "sensor": {
+                  "range": [
+                    -40,
+                    85
+                  ],
+                  "serial": "ALPHA-01"
+                }
+              },
+              "disposable_note": {
+                "remove_me": true,
+                "values": [
+                  1,
+                  2,
+                  3
+                ]
+              },
+              "metadata": {
+                "maintenance": {
+                  "due": "2026-12-01",
+                  "enabled": true
+                },
+                "tags": [
+                  "fleet",
+                  "qa"
+                ]
+              },
+              "qa_fixture": "rich-fleet-v1",
+              "schema_version": 1,
+              "telemetry": {
+                "samples": [
+                  null,
+                  true,
+                  {
+                    "axes": [
+                      "x",
+                      "z"
+                    ],
+                    "offset": 0.125
+                  }
+                ],
+                "sequence": 9007199254740993
+              }
+            },
+            "rotation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "tombstone": null
+          },
+          "supported_operations": [
+            "baseline",
+            "property_set",
+            "property_deleted",
+            "full_transform"
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6E821303WYAHB9EMD8BQSWD/properties",
+      "request": null,
+      "status": 200,
+      "response_bytes": 321,
+      "response_sha256": "4ccb63fa78a63d7e531426dcae1159955bf48ba87264ae272bf580b79a067783",
+      "response": {
+        "ok": true,
+        "data": {
+          "node_id": "01M6E821303WYAHB9EMD8BQSWD",
+          "properties": {
+            "calibration": {
+              "axes": [
+                "x",
+                "z"
+              ],
+              "bias": -1,
+              "gain": 0.5,
+              "sensor": {
+                "range": [
+                  -40,
+                  85
+                ],
+                "serial": "BETA-01"
+              }
+            },
+            "metadata": {
+              "maintenance": {
+                "due": "2026-12-01",
+                "enabled": true
+              },
+              "tags": [
+                "fleet",
+                "qa"
+              ]
+            },
+            "qa_fixture": "rich-fleet-v1",
+            "schema_version": 1
+          }
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6E821303WYAHB9EMD8BQSWD/transform",
+      "request": null,
+      "status": 200,
+      "response_bytes": 106,
+      "response_sha256": "1d9a1b41ec355f5d8e4af7ba1cef1d326008aa8af1b9ad408e06c56a112fe9c5",
+      "response": {
+        "ok": true,
+        "data": {
+          "position": [
+            10.0,
+            2.0,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6E821303WYAHB9EMD8BQSWD/history?after_version=1&limit=1",
+      "request": null,
+      "status": 200,
+      "response_bytes": 1523,
+      "response_sha256": "c617e1a6122462ae1048f1ea9428d04d2c261342e6cdd7f98d6ea73b539762b8",
+      "response": {
+        "ok": true,
+        "data": {
+          "coverage_start_version": 1,
+          "coverage_started_at": "2026-11-02T13:44:23.393012900+00:00",
+          "current_state_verified": true,
+          "current_version": 2,
+          "entries": [
+            {
+              "created_at": "2026-11-02T13:44:24.178868300+00:00",
+              "hlc_timestamp": 117547143277969408,
+              "log_id": "01M6E821VJWCZRFKTHJ4FHPTTJ",
+              "node_id": "01M6E821303WYAHB9EMD8BQSWD",
+              "op": "full_transform",
+              "payload": {
+                "after_state": {
+                  "asset_id": "01M6E8206523594W3AVNFQGNTX",
+                  "created_at": "2026-11-02T13:44:23.392918800+00:00",
+                  "display_name": "Fleet Beta",
+                  "edit_seq": 1,
+                  "elevation": 2.0,
+                  "interactive": true,
+                  "node_id": "01M6E821303WYAHB9EMD8BQSWD",
+                  "petal_id": "01M6D0VZM9W1JPJ1ZWK0PNMH4R",
+                  "position": [
+                    10.0,
+                    2.0,
+                    0.0
+                  ],
+                  "properties": {
+                    "calibration": {
+                      "axes": [
+                        "x",
+                        "z"
+                      ],
+                      "bias": -1,
+                      "gain": 0.5,
+                      "sensor": {
+                        "range": [
+                          -40,
+                          85
+                        ],
+                        "serial": "BETA-01"
+                      }
+                    },
+                    "metadata": {
+                      "maintenance": {
+                        "due": "2026-12-01",
+                        "enabled": true
+                      },
+                      "tags": [
+                        "fleet",
+                        "qa"
+                      ]
+                    },
+                    "qa_fixture": "rich-fleet-v1",
+                    "schema_version": 1
+                  },
+                  "rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                },
+                "data": {
+                  "position": [
+                    10.0,
+                    2.0,
+                    0.0
+                  ],
+                  "rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                },
+                "journal_version": 1,
+                "schema_versions": {},
+                "scope": "VERSE#01M6D0VZ11XK62MXZ61HENTBTD-FRACTAL#01M6D0VZG5ZN7XZMTXE8PWF1YT-PETAL#01M6D0VZM9W1JPJ1ZWK0PNMH4R"
+              },
+              "row_version": 2,
+              "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU"
+            }
+          ],
+          "event_time_ordering": false,
+          "journal_version": 1,
+          "next_after_version": null,
+          "node_id": "01M6E821303WYAHB9EMD8BQSWD",
+          "order": "per_object_commit_version",
+          "supported_operations": [
+            "baseline",
+            "property_set",
+            "property_deleted",
+            "full_transform"
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6E821303WYAHB9EMD8BQSWD/state?at_version=2",
+      "request": null,
+      "status": 200,
+      "response_bytes": 1038,
+      "response_sha256": "2b2291a1d65ed277c70a68088fac0e11baa236526bb9ed65ed7415d502f556ee",
+      "response": {
+        "ok": true,
+        "data": {
+          "at_version": 2,
+          "availability": "available",
+          "baseline_version": 1,
+          "coverage_start_version": 1,
+          "coverage_started_at": "2026-11-02T13:44:23.393012900+00:00",
+          "current_state_verified": true,
+          "current_version": 2,
+          "event_time_ordering": false,
+          "journal_version": 1,
+          "node_id": "01M6E821303WYAHB9EMD8BQSWD",
+          "order": "per_object_commit_version",
+          "state": {
+            "asset_id": "01M6E8206523594W3AVNFQGNTX",
+            "created_at": "2026-11-02T13:44:23.392918800+00:00",
+            "display_name": "Fleet Beta",
+            "edit_seq": 1,
+            "elevation": 2.0,
+            "interactive": true,
+            "node_id": "01M6E821303WYAHB9EMD8BQSWD",
+            "petal_id": "01M6D0VZM9W1JPJ1ZWK0PNMH4R",
+            "position": [
+              10.0,
+              2.0,
+              0.0
+            ],
+            "properties": {
+              "calibration": {
+                "axes": [
+                  "x",
+                  "z"
+                ],
+                "bias": -1,
+                "gain": 0.5,
+                "sensor": {
+                  "range": [
+                    -40,
+                    85
+                  ],
+                  "serial": "BETA-01"
+                }
+              },
+              "metadata": {
+                "maintenance": {
+                  "due": "2026-12-01",
+                  "enabled": true
+                },
+                "tags": [
+                  "fleet",
+                  "qa"
+                ]
+              },
+              "qa_fixture": "rich-fleet-v1",
+              "schema_version": 1
+            },
+            "rotation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "tombstone": null
+          },
+          "supported_operations": [
+            "baseline",
+            "property_set",
+            "property_deleted",
+            "full_transform"
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/debug/logs?level=warn&since=941",
+      "request": null,
+      "status": 200,
+      "response_bytes": 112,
+      "response_sha256": "30cd0cca0745bb0ec5a72d27b447415ce11fb0af39d39996dd68c615c9f69ed6",
+      "response": {
+        "data": {
+          "active_verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+          "entries": [],
+          "generation": 1,
+          "latest_seq": 941
+        },
+        "ok": true
+      }
+    }
+  ],
+  "log_watermark": {
+    "generation": 1,
+    "seq": 941,
+    "latest_seq": 941
+  },
+  "log_end_watermark": {
+    "generation": 1,
+    "seq": 941,
+    "latest_seq": 941
+  },
+  "new_logs": [],
+  "log_generation_changed": false,
+  "log_retention_gap": false,
+  "log_retention_capacity": 2000,
+  "log_review_required": false
+}

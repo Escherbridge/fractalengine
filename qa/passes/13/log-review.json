@@ -1,0 +1,25 @@
+{
+  "driver_coverage_ready_unchanged": false,
+  "functional_checks_passed": 38,
+  "expected_negative_case_warnings": [
+    {
+      "step": "reject-invalid-calibration",
+      "target": "fe_api::node_history",
+      "seq": 1327,
+      "classification": "expected_deliberate_rejection",
+      "local_log_reason": "expected Number for calibration gain",
+      "original_receipt": "qa\\passes\\13\\rich-data\\20261101-191920-658\\rich-fleet-v1\\26-reject-invalid-calibration.json",
+      "independent_review": "pending"
+    },
+    {
+      "step": "reject-incompatible-schema",
+      "target": "fe_api::property_schema",
+      "seq": 1328,
+      "classification": "expected_deliberate_rejection",
+      "local_log_reason": "required maintenance.last_service absent on existing Gamma",
+      "original_receipt": "qa\\passes\\13\\rich-data\\20261101-191920-658\\rich-fleet-v1\\27-reject-incompatible-schema.json",
+      "independent_review": "pending"
+    }
+  ],
+  "note": "Original driver summaries and hashes retained; API redaction was not bypassed. The owned local stdout was searched only for these two validator refusal messages."
+}

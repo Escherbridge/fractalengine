@@ -1,0 +1,285 @@
+{
+  "pass_id": "13",
+  "run_id": "20261101-191920-658",
+  "stage_commit": "2661374adaf72cabf7149e0e688936c8c5f00320",
+  "stage_fingerprint": "2884156ECBB8822E20503B28D482618BB8D1C9DE9619AE803FF0672A50876AE2",
+  "scenario_sha256": "d14893061bb5c929bd2256dfd706b3cd88586f402fa7bb3a04845096abffa8ef",
+  "verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+  "petal_id": "01M6E8QM621XBYQSAKFPNPDQMZ",
+  "driver_sha256": "31c5b3656841873c204a033e8dab75eee6bb5664aad8cabf73a16b9e2235ff84",
+  "process_identity": {
+    "pid": 47816,
+    "start_ticks": "639292226955343970",
+    "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\2661374-20261102062342042\\fractalengine.exe"
+  },
+  "api_base": "http://127.0.0.1:8882",
+  "step_id": "raw-t1-late",
+  "intent": {
+    "id": "raw-t1-late",
+    "op": "append_readings",
+    "metric": "temperature_raw",
+    "units": "C",
+    "recorded_at": "2026-10-31T00:00:10Z",
+    "values": {
+      "Alpha": 11,
+      "Beta": 22
+    }
+  },
+  "outcome": "PASS",
+  "result": [
+    {
+      "metric": "temperature_raw",
+      "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+      "payload_id": null,
+      "reading_id": "01M6E8RPQ55ES30VTVXDKH3D3G",
+      "recorded_at_ms": 1793404810000,
+      "units": "C",
+      "value": 11.0
+    },
+    {
+      "metric": "temperature_raw",
+      "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+      "payload_id": null,
+      "reading_id": "01M6E8RPQ5D9A55QF8BK4PX2KC",
+      "recorded_at_ms": 1793404810000,
+      "units": "C",
+      "value": 22.0
+    }
+  ],
+  "assertions": [
+    {
+      "name": "accepted reading count",
+      "actual": 2,
+      "expected": 2,
+      "passed": true
+    },
+    {
+      "name": "Alpha appended metric",
+      "actual": "temperature_raw",
+      "expected": "temperature_raw",
+      "passed": true
+    },
+    {
+      "name": "Alpha appended value",
+      "actual": 11.0,
+      "expected": 11,
+      "passed": true
+    },
+    {
+      "name": "Alpha appended units",
+      "actual": "C",
+      "expected": "C",
+      "passed": true
+    },
+    {
+      "name": "Alpha sensor event time",
+      "actual": 1793404810000,
+      "expected": 1793404810000,
+      "passed": true
+    },
+    {
+      "name": "Beta appended metric",
+      "actual": "temperature_raw",
+      "expected": "temperature_raw",
+      "passed": true
+    },
+    {
+      "name": "Beta appended value",
+      "actual": 22.0,
+      "expected": 22,
+      "passed": true
+    },
+    {
+      "name": "Beta appended units",
+      "actual": "C",
+      "expected": "C",
+      "passed": true
+    },
+    {
+      "name": "Beta sensor event time",
+      "actual": 1793404810000,
+      "expected": 1793404810000,
+      "passed": true
+    }
+  ],
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/api/v1/debug/logs?level=warn",
+      "request": null,
+      "status": 200,
+      "response_bytes": 672,
+      "response_sha256": "68c9cf1b1906868d5a9b96f7c632305f930b331927e89ecfad0fff98b5eb61c1",
+      "response": {
+        "data": {
+          "active_verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+          "entries": [
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 213,
+              "target": "fe_terrain::delta_viz"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 214,
+              "target": "fe_terrain::delta_viz"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 217,
+              "target": "fe_terrain::delta_viz"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 218,
+              "target": "fe_terrain::delta_viz"
+            }
+          ],
+          "generation": 1,
+          "latest_seq": 1322
+        },
+        "ok": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/query",
+      "request": {
+        "sql": "SELECT reading_id, node_id, metric, value, units, recorded_at_ms, payload_id FROM iot_reading WHERE petal_id = $p AND metric = $metric AND recorded_at_ms >= $start AND recorded_at_ms < $end AND node_id IN $nodes ORDER BY recorded_at_ms, reading_id",
+        "vars": {
+          "p": "01M6E8QM621XBYQSAKFPNPDQMZ",
+          "metric": "temperature_raw",
+          "start": 1793404810000,
+          "end": 1793404810001,
+          "nodes": [
+            "01M6E8RJGKPZM5N24CZB7JTEYG",
+            "01M6E8RJQJB1NFD7XN9QZAQZAW"
+          ]
+        }
+      },
+      "status": 200,
+      "response_bytes": 87,
+      "response_sha256": "4570cf28c08c60a346b35929ae828ed7fdecf25b84df8dcd6cc23d75f6cc89d3",
+      "response": {
+        "ok": true,
+        "data": {
+          "data": [],
+          "crs": "PETAL-LOCAL:meters;origin=per-petal"
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/petals/01M6E8QM621XBYQSAKFPNPDQMZ/iot/readings",
+      "request": {
+        "readings": [
+          {
+            "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+            "metric": "temperature_raw",
+            "value": 11,
+            "units": "C",
+            "recorded_at": "2026-10-31T00:00:10Z"
+          },
+          {
+            "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+            "metric": "temperature_raw",
+            "value": 22,
+            "units": "C",
+            "recorded_at": "2026-10-31T00:00:10Z"
+          }
+        ]
+      },
+      "status": 200,
+      "response_bytes": 24,
+      "response_sha256": "4938d00837efd2d89a3814e13e15fd866607b39edb6adeccf249e2fa1839ac14",
+      "response": {
+        "accepted": 2,
+        "ok": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/query",
+      "request": {
+        "sql": "SELECT reading_id, node_id, metric, value, units, recorded_at_ms, payload_id FROM iot_reading WHERE petal_id = $p AND metric = $metric AND recorded_at_ms >= $start AND recorded_at_ms < $end AND node_id IN $nodes ORDER BY recorded_at_ms, reading_id",
+        "vars": {
+          "p": "01M6E8QM621XBYQSAKFPNPDQMZ",
+          "metric": "temperature_raw",
+          "start": 1793404810000,
+          "end": 1793404810001,
+          "nodes": [
+            "01M6E8RJGKPZM5N24CZB7JTEYG",
+            "01M6E8RJQJB1NFD7XN9QZAQZAW"
+          ]
+        }
+      },
+      "status": 200,
+      "response_bytes": 454,
+      "response_sha256": "3bfcabce86a7f0a3d0c49f30e98597a8472771ca212078187093e7bc997a9c66",
+      "response": {
+        "ok": true,
+        "data": {
+          "data": [
+            {
+              "metric": "temperature_raw",
+              "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+              "payload_id": null,
+              "reading_id": "01M6E8RPQ55ES30VTVXDKH3D3G",
+              "recorded_at_ms": 1793404810000,
+              "units": "C",
+              "value": 11.0
+            },
+            {
+              "metric": "temperature_raw",
+              "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+              "payload_id": null,
+              "reading_id": "01M6E8RPQ5D9A55QF8BK4PX2KC",
+              "recorded_at_ms": 1793404810000,
+              "units": "C",
+              "value": 22.0
+            }
+          ],
+          "crs": "PETAL-LOCAL:meters;origin=per-petal"
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/debug/logs?level=warn&since=1322",
+      "request": null,
+      "status": 200,
+      "response_bytes": 113,
+      "response_sha256": "0ccde2bcb55540d31ff8c0ad1837fdcb387d0ccdc99f741b43b30b15dd79ecea",
+      "response": {
+        "data": {
+          "active_verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+          "entries": [],
+          "generation": 1,
+          "latest_seq": 1323
+        },
+        "ok": true
+      }
+    }
+  ],
+  "log_watermark": {
+    "generation": 1,
+    "seq": 1322,
+    "latest_seq": 1322
+  },
+  "log_end_watermark": {
+    "generation": 1,
+    "seq": 1323,
+    "latest_seq": 1323
+  },
+  "new_logs": [],
+  "log_generation_changed": false,
+  "log_retention_gap": false,
+  "log_retention_capacity": 2000,
+  "log_review_required": false
+}

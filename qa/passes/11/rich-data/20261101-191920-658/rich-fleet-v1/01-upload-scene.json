@@ -1,0 +1,162 @@
+{
+  "pass_id": "11",
+  "run_id": "20261101-191920-658",
+  "stage_commit": "2661374adaf72cabf7149e0e688936c8c5f00320",
+  "stage_fingerprint": "2884156ECBB8822E20503B28D482618BB8D1C9DE9619AE803FF0672A50876AE2",
+  "scenario_sha256": "d14893061bb5c929bd2256dfd706b3cd88586f402fa7bb3a04845096abffa8ef",
+  "verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+  "petal_id": "01M6D0VZM9W1JPJ1ZWK0PNMH4R",
+  "driver_sha256": "71bbe3d247fd14c206c592a79605187366ecdf9d02fff803967ffbf13fa26c28",
+  "process_identity": {
+    "pid": 47816,
+    "start_ticks": "639292226955343970",
+    "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\2661374-20261102062342042\\fractalengine.exe"
+  },
+  "api_base": "http://127.0.0.1:8882",
+  "step_id": "upload-scene",
+  "intent": {
+    "id": "upload-scene",
+    "op": "upload_asset",
+    "asset": "cube",
+    "path": "fractalengine/assets/samples/info_panel.glb"
+  },
+  "outcome": "PASS",
+  "result": {
+    "asset_id": "01M6E8206523594W3AVNFQGNTX",
+    "content_hash": "fc0c7d7c98743c1053b9d83967eb05e759d40ad5d45911ef7a1052f0526d2a1d",
+    "size_bytes": 1664,
+    "source_sha256": "ed52f7192b8311d700ac0ce80644e3852cd01537e4d62241b9acba023da3d54e"
+  },
+  "assertions": [
+    {
+      "name": "uploaded asset byte count",
+      "actual": 1664,
+      "expected": 1664,
+      "passed": true
+    },
+    {
+      "name": "uploaded asset byte hash",
+      "actual": "ed52f7192b8311d700ac0ce80644e3852cd01537e4d62241b9acba023da3d54e",
+      "expected": "ed52f7192b8311d700ac0ce80644e3852cd01537e4d62241b9acba023da3d54e",
+      "passed": true
+    }
+  ],
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/api/v1/debug/logs?level=warn",
+      "request": null,
+      "status": 200,
+      "response_bytes": 671,
+      "response_sha256": "78a276511a64a2bd5deb41ba2239a56de21f95bc52312c9b83c4313f30fa5d68",
+      "response": {
+        "data": {
+          "active_verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+          "entries": [
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 213,
+              "target": "fe_terrain::delta_viz"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 214,
+              "target": "fe_terrain::delta_viz"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 217,
+              "target": "fe_terrain::delta_viz"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 218,
+              "target": "fe_terrain::delta_viz"
+            }
+          ],
+          "generation": 1,
+          "latest_seq": 939
+        },
+        "ok": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/mcp",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+          "name": "upload_asset",
+          "arguments": {
+            "petal_id": "01M6D0VZM9W1JPJ1ZWK0PNMH4R",
+            "name": "info_panel.glb",
+            "data_base64": {
+              "omitted_encoded_bytes": 109,
+              "sha256": "b682a3d3689b19de22d99dcdb5cbc008baf23b067ecae418f8baeceaf1459520"
+            }
+          }
+        }
+      },
+      "status": 200,
+      "response_bytes": 224,
+      "response_sha256": "02d4fc899446261b195b0851b6ac50f31e42d05080db97ea8f4b8f03a2312e9d",
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "content": [
+            {
+              "text": "{\"asset_id\":\"01M6E8206523594W3AVNFQGNTX\",\"content_hash\":\"fc0c7d7c98743c1053b9d83967eb05e759d40ad5d45911ef7a1052f0526d2a1d\",\"size_bytes\":1664}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/assets/by-id/01M6E8206523594W3AVNFQGNTX",
+      "status": 200,
+      "response_bytes": 1664,
+      "response_sha256": "ed52f7192b8311d700ac0ce80644e3852cd01537e4d62241b9acba023da3d54e"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/debug/logs?level=warn&since=939",
+      "request": null,
+      "status": 200,
+      "response_bytes": 112,
+      "response_sha256": "ec7e8500d68cd29c8a2b9d0970646597d650d422bea1f8015708fc1cf3fde529",
+      "response": {
+        "data": {
+          "active_verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+          "entries": [],
+          "generation": 1,
+          "latest_seq": 940
+        },
+        "ok": true
+      }
+    }
+  ],
+  "log_watermark": {
+    "generation": 1,
+    "seq": 939,
+    "latest_seq": 939
+  },
+  "log_end_watermark": {
+    "generation": 1,
+    "seq": 940,
+    "latest_seq": 940
+  },
+  "new_logs": [],
+  "log_generation_changed": false,
+  "log_retention_gap": false,
+  "log_retention_capacity": 2000,
+  "log_review_required": false
+}

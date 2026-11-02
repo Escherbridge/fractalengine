@@ -1,0 +1,47 @@
+{
+  "same_root_restart_pid": 80424,
+  "previous_pid": 47816,
+  "all_four_exact_preferences_preserved": true,
+  "values": [
+    {
+      "kind": "verse",
+      "id": "01M6D0VZ11XK62MXZ61HENTBTD",
+      "icon": "ring",
+      "rgb": [
+        168,
+        85,
+        247
+      ]
+    },
+    {
+      "kind": "fractal",
+      "id": "01M6D0VZG5ZN7XZMTXE8PWF1YT",
+      "icon": "hexagon",
+      "rgb": [
+        34,
+        197,
+        94
+      ]
+    },
+    {
+      "kind": "petal",
+      "id": "01M6D0VZJ6383Q4HNNET8RSEYF",
+      "icon": "diamond",
+      "rgb": [
+        245,
+        158,
+        11
+      ]
+    },
+    {
+      "kind": "node",
+      "id": "01M6D0VZSPGMEPRBB47TSJB80V",
+      "icon": "star",
+      "rgb": [
+        56,
+        189,
+        248
+      ]
+    }
+  ]
+}

@@ -1,0 +1,2103 @@
+{
+  "format": "fe-rich-data-context-v1",
+  "provenance": {
+    "pass_id": "13",
+    "run_id": "20261101-191920-658",
+    "stage_commit": "2661374adaf72cabf7149e0e688936c8c5f00320",
+    "stage_fingerprint": "2884156ECBB8822E20503B28D482618BB8D1C9DE9619AE803FF0672A50876AE2",
+    "scenario_sha256": "d14893061bb5c929bd2256dfd706b3cd88586f402fa7bb3a04845096abffa8ef",
+    "verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+    "petal_id": "01M6E8QM621XBYQSAKFPNPDQMZ",
+    "driver_sha256": "31c5b3656841873c204a033e8dab75eee6bb5664aad8cabf73a16b9e2235ff84",
+    "process_identity": {
+      "pid": 47816,
+      "start_ticks": "639292226955343970",
+      "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\2661374-20261102062342042\\fractalengine.exe"
+    },
+    "api_base": "http://127.0.0.1:8882"
+  },
+  "scope": "VERSE#01M6D0VZ11XK62MXZ61HENTBTD-FRACTAL#01M6D0VZG5ZN7XZMTXE8PWF1YT-PETAL#01M6E8QM621XBYQSAKFPNPDQMZ",
+  "data_assertions_succeeded": true,
+  "log_review_required": true,
+  "started_at": "2026-11-02T13:56:41.259284+00:00",
+  "objects": {
+    "Alpha": "01M6E8RJGKPZM5N24CZB7JTEYG",
+    "Beta": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+    "Gamma": "01M6E8RN1NFTG71C0NSEVA0QYZ"
+  },
+  "versions": {
+    "Alpha": 9,
+    "Beta": 3,
+    "Gamma": 2
+  },
+  "states": {
+    "Alpha": {
+      "asset_id": "01M6E8RHWQWS17YQKWXAMXKRPD",
+      "created_at": "2026-11-02T13:56:42.131042200+00:00",
+      "display_name": "Fleet Alpha",
+      "edit_seq": 3,
+      "elevation": 0.0,
+      "interactive": true,
+      "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+      "petal_id": "01M6E8QM621XBYQSAKFPNPDQMZ",
+      "position": [
+        6.0,
+        0.0,
+        8.0
+      ],
+      "properties": {
+        "calibration": {
+          "axes": [
+            "x",
+            "z"
+          ],
+          "bias": 1,
+          "gain": 3,
+          "sensor": {
+            "range": [
+              -40,
+              85
+            ],
+            "serial": "ALPHA-01"
+          }
+        },
+        "metadata": {
+          "maintenance": {
+            "due": "2026-12-01",
+            "enabled": true,
+            "last_service": "2026-10-31"
+          },
+          "tags": [
+            "fleet",
+            "qa"
+          ]
+        },
+        "qa_fixture": "rich-fleet-v1",
+        "schema_version": 2,
+        "telemetry": {
+          "samples": [
+            null,
+            true,
+            {
+              "axes": [
+                "x",
+                "z"
+              ],
+              "offset": 0.125
+            }
+          ],
+          "sequence": 9007199254740993
+        }
+      },
+      "rotation": [
+        0.0,
+        1.5707963705062866,
+        0.0
+      ],
+      "scale": [
+        2.0,
+        1.0,
+        0.5
+      ],
+      "tombstone": null
+    },
+    "Beta": {
+      "asset_id": "01M6E8RHWQWS17YQKWXAMXKRPD",
+      "created_at": "2026-11-02T13:56:42.354709100+00:00",
+      "display_name": "Fleet Beta",
+      "edit_seq": 2,
+      "elevation": 2.0,
+      "interactive": true,
+      "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+      "petal_id": "01M6E8QM621XBYQSAKFPNPDQMZ",
+      "position": [
+        10.0,
+        2.0,
+        6.0
+      ],
+      "properties": {
+        "calibration": {
+          "axes": [
+            "x",
+            "z"
+          ],
+          "bias": -1,
+          "gain": 0.5,
+          "sensor": {
+            "range": [
+              -40,
+              85
+            ],
+            "serial": "BETA-01"
+          }
+        },
+        "metadata": {
+          "maintenance": {
+            "due": "2026-12-01",
+            "enabled": true
+          },
+          "tags": [
+            "fleet",
+            "qa"
+          ]
+        },
+        "qa_fixture": "rich-fleet-v1",
+        "schema_version": 1
+      },
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "tombstone": null
+    },
+    "Gamma": {
+      "asset_id": "01M6E8RHWQWS17YQKWXAMXKRPD",
+      "created_at": "2026-11-02T13:56:44.725333400+00:00",
+      "display_name": "Fleet Gamma",
+      "edit_seq": 1,
+      "elevation": 0.0,
+      "interactive": true,
+      "node_id": "01M6E8RN1NFTG71C0NSEVA0QYZ",
+      "petal_id": "01M6E8QM621XBYQSAKFPNPDQMZ",
+      "position": [
+        20.0,
+        0.0,
+        4.0
+      ],
+      "properties": {
+        "calibration": {
+          "axes": [
+            "x",
+            "z"
+          ],
+          "bias": 0,
+          "gain": 1,
+          "sensor": {
+            "range": [
+              -40,
+              85
+            ],
+            "serial": "GAMMA-01"
+          }
+        },
+        "metadata": {
+          "maintenance": {
+            "due": "2026-12-01",
+            "enabled": true
+          },
+          "tags": [
+            "fleet",
+            "qa"
+          ]
+        },
+        "qa_fixture": "rich-fleet-v1",
+        "schema_version": 1
+      },
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "tombstone": null
+    }
+  },
+  "state_sha256": {
+    "Alpha": "c0623422d87688a73868615a7ab8438a58319017dee3ae2290ab5298f9972047",
+    "Beta": "37434d90b1d0b01ddfe7117a53a8f89733d64089217c9d688ead6a123b4968c8",
+    "Gamma": "0bc9a3259463fba32bbf709a20b8ef0f126e32720669dc4eb0de78ab767d59c6"
+  },
+  "schemas": {
+    "calibration": {
+      "field_def_id": "01M6E8RJ14H5RYHM792FW5PM8Y",
+      "descriptor": {
+        "version": 1,
+        "schema": {
+          "type": "object",
+          "required": [
+            "gain",
+            "bias",
+            "axes",
+            "sensor"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "gain": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "bias": {
+              "type": "number",
+              "minimum": -100,
+              "maximum": 100
+            },
+            "axes": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 3,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "x",
+                  "y",
+                  "z"
+                ]
+              }
+            },
+            "sensor": {
+              "type": "object",
+              "required": [
+                "serial",
+                "range"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "serial": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                },
+                "range": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "items": {
+                    "type": "number"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "metadata": {
+      "field_def_id": "01M6E8RJ9ZP3RV0TW7PTP696NN",
+      "descriptor": {
+        "version": 2,
+        "schema": {
+          "type": "object",
+          "required": [
+            "tags",
+            "maintenance"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "tags": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 32
+              }
+            },
+            "maintenance": {
+              "type": "object",
+              "required": [
+                "due",
+                "enabled"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "due": {
+                  "type": "string",
+                  "minLength": 10,
+                  "maxLength": 10
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "last_service": {
+                  "type": "string",
+                  "minLength": 10,
+                  "maxLength": 10
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "assets": {
+    "cube": "01M6E8RHWQWS17YQKWXAMXKRPD"
+  },
+  "asset_sha256": {
+    "cube": "ed52f7192b8311d700ac0ce80644e3852cd01537e4d62241b9acba023da3d54e"
+  },
+  "trajectories": {
+    "Alpha": [
+      {
+        "version": 1,
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "version": 2,
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "version": 3,
+        "position": [
+          3.0,
+          0.0,
+          4.0
+        ]
+      },
+      {
+        "version": 4,
+        "position": [
+          3.0,
+          0.0,
+          4.0
+        ]
+      },
+      {
+        "version": 5,
+        "position": [
+          6.0,
+          0.0,
+          8.0
+        ]
+      },
+      {
+        "version": 6,
+        "position": [
+          6.0,
+          0.0,
+          8.0
+        ]
+      },
+      {
+        "version": 7,
+        "position": [
+          6.0,
+          0.0,
+          8.0
+        ]
+      },
+      {
+        "version": 8,
+        "position": [
+          6.0,
+          0.0,
+          8.0
+        ]
+      },
+      {
+        "version": 9,
+        "position": [
+          6.0,
+          0.0,
+          8.0
+        ]
+      }
+    ],
+    "Beta": [
+      {
+        "version": 1,
+        "position": [
+          10.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "version": 2,
+        "position": [
+          10.0,
+          2.0,
+          0.0
+        ]
+      },
+      {
+        "version": 3,
+        "position": [
+          10.0,
+          2.0,
+          6.0
+        ]
+      }
+    ],
+    "Gamma": [
+      {
+        "version": 1,
+        "position": [
+          20.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "version": 2,
+        "position": [
+          20.0,
+          0.0,
+          4.0
+        ]
+      }
+    ]
+  },
+  "checkpoints": {
+    "checkpoint-before-gamma": {
+      "Alpha": {
+        "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+        "history_version": 3,
+        "state": {
+          "asset_id": "01M6E8RHWQWS17YQKWXAMXKRPD",
+          "created_at": "2026-11-02T13:56:42.131042200+00:00",
+          "display_name": "Fleet Alpha",
+          "edit_seq": 1,
+          "elevation": 0.0,
+          "interactive": true,
+          "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+          "petal_id": "01M6E8QM621XBYQSAKFPNPDQMZ",
+          "position": [
+            3.0,
+            0.0,
+            4.0
+          ],
+          "properties": {
+            "calibration": {
+              "axes": [
+                "x",
+                "z"
+              ],
+              "bias": 1,
+              "gain": 2,
+              "sensor": {
+                "range": [
+                  -40,
+                  85
+                ],
+                "serial": "ALPHA-01"
+              }
+            },
+            "disposable_note": {
+              "remove_me": true,
+              "values": [
+                1,
+                2,
+                3
+              ]
+            },
+            "metadata": {
+              "maintenance": {
+                "due": "2026-12-01",
+                "enabled": true
+              },
+              "tags": [
+                "fleet",
+                "qa"
+              ]
+            },
+            "qa_fixture": "rich-fleet-v1",
+            "schema_version": 1,
+            "telemetry": {
+              "samples": [
+                null,
+                true,
+                {
+                  "axes": [
+                    "x",
+                    "z"
+                  ],
+                  "offset": 0.125
+                }
+              ],
+              "sequence": 9007199254740993
+            }
+          },
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "tombstone": null
+        },
+        "state_sha256": "01efa0d59debb633c1d48e44620390fb46266dceb68c17d711dd2a908880cdd5"
+      },
+      "Beta": {
+        "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+        "history_version": 2,
+        "state": {
+          "asset_id": "01M6E8RHWQWS17YQKWXAMXKRPD",
+          "created_at": "2026-11-02T13:56:42.354709100+00:00",
+          "display_name": "Fleet Beta",
+          "edit_seq": 1,
+          "elevation": 2.0,
+          "interactive": true,
+          "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+          "petal_id": "01M6E8QM621XBYQSAKFPNPDQMZ",
+          "position": [
+            10.0,
+            2.0,
+            0.0
+          ],
+          "properties": {
+            "calibration": {
+              "axes": [
+                "x",
+                "z"
+              ],
+              "bias": -1,
+              "gain": 0.5,
+              "sensor": {
+                "range": [
+                  -40,
+                  85
+                ],
+                "serial": "BETA-01"
+              }
+            },
+            "metadata": {
+              "maintenance": {
+                "due": "2026-12-01",
+                "enabled": true
+              },
+              "tags": [
+                "fleet",
+                "qa"
+              ]
+            },
+            "qa_fixture": "rich-fleet-v1",
+            "schema_version": 1
+          },
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "tombstone": null
+        },
+        "state_sha256": "7b42661f6826c63c88fd464db4aa25904475c3003f8407f1c73c752ec183b0c1"
+      }
+    },
+    "checkpoint-final": {
+      "Alpha": {
+        "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+        "history_version": 9,
+        "state": {
+          "asset_id": "01M6E8RHWQWS17YQKWXAMXKRPD",
+          "created_at": "2026-11-02T13:56:42.131042200+00:00",
+          "display_name": "Fleet Alpha",
+          "edit_seq": 3,
+          "elevation": 0.0,
+          "interactive": true,
+          "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+          "petal_id": "01M6E8QM621XBYQSAKFPNPDQMZ",
+          "position": [
+            6.0,
+            0.0,
+            8.0
+          ],
+          "properties": {
+            "calibration": {
+              "axes": [
+                "x",
+                "z"
+              ],
+              "bias": 1,
+              "gain": 3,
+              "sensor": {
+                "range": [
+                  -40,
+                  85
+                ],
+                "serial": "ALPHA-01"
+              }
+            },
+            "metadata": {
+              "maintenance": {
+                "due": "2026-12-01",
+                "enabled": true,
+                "last_service": "2026-10-31"
+              },
+              "tags": [
+                "fleet",
+                "qa"
+              ]
+            },
+            "qa_fixture": "rich-fleet-v1",
+            "schema_version": 2,
+            "telemetry": {
+              "samples": [
+                null,
+                true,
+                {
+                  "axes": [
+                    "x",
+                    "z"
+                  ],
+                  "offset": 0.125
+                }
+              ],
+              "sequence": 9007199254740993
+            }
+          },
+          "rotation": [
+            0.0,
+            1.5707963705062866,
+            0.0
+          ],
+          "scale": [
+            2.0,
+            1.0,
+            0.5
+          ],
+          "tombstone": null
+        },
+        "state_sha256": "c0623422d87688a73868615a7ab8438a58319017dee3ae2290ab5298f9972047"
+      },
+      "Beta": {
+        "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+        "history_version": 3,
+        "state": {
+          "asset_id": "01M6E8RHWQWS17YQKWXAMXKRPD",
+          "created_at": "2026-11-02T13:56:42.354709100+00:00",
+          "display_name": "Fleet Beta",
+          "edit_seq": 2,
+          "elevation": 2.0,
+          "interactive": true,
+          "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+          "petal_id": "01M6E8QM621XBYQSAKFPNPDQMZ",
+          "position": [
+            10.0,
+            2.0,
+            6.0
+          ],
+          "properties": {
+            "calibration": {
+              "axes": [
+                "x",
+                "z"
+              ],
+              "bias": -1,
+              "gain": 0.5,
+              "sensor": {
+                "range": [
+                  -40,
+                  85
+                ],
+                "serial": "BETA-01"
+              }
+            },
+            "metadata": {
+              "maintenance": {
+                "due": "2026-12-01",
+                "enabled": true
+              },
+              "tags": [
+                "fleet",
+                "qa"
+              ]
+            },
+            "qa_fixture": "rich-fleet-v1",
+            "schema_version": 1
+          },
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "tombstone": null
+        },
+        "state_sha256": "37434d90b1d0b01ddfe7117a53a8f89733d64089217c9d688ead6a123b4968c8"
+      },
+      "Gamma": {
+        "node_id": "01M6E8RN1NFTG71C0NSEVA0QYZ",
+        "history_version": 2,
+        "state": {
+          "asset_id": "01M6E8RHWQWS17YQKWXAMXKRPD",
+          "created_at": "2026-11-02T13:56:44.725333400+00:00",
+          "display_name": "Fleet Gamma",
+          "edit_seq": 1,
+          "elevation": 0.0,
+          "interactive": true,
+          "node_id": "01M6E8RN1NFTG71C0NSEVA0QYZ",
+          "petal_id": "01M6E8QM621XBYQSAKFPNPDQMZ",
+          "position": [
+            20.0,
+            0.0,
+            4.0
+          ],
+          "properties": {
+            "calibration": {
+              "axes": [
+                "x",
+                "z"
+              ],
+              "bias": 0,
+              "gain": 1,
+              "sensor": {
+                "range": [
+                  -40,
+                  85
+                ],
+                "serial": "GAMMA-01"
+              }
+            },
+            "metadata": {
+              "maintenance": {
+                "due": "2026-12-01",
+                "enabled": true
+              },
+              "tags": [
+                "fleet",
+                "qa"
+              ]
+            },
+            "qa_fixture": "rich-fleet-v1",
+            "schema_version": 1
+          },
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "tombstone": null
+        },
+        "state_sha256": "0bc9a3259463fba32bbf709a20b8ef0f126e32720669dc4eb0de78ab767d59c6"
+      }
+    }
+  },
+  "queries": {
+    "query-raw": {
+      "kind": "rows",
+      "metric": "temperature_raw",
+      "mode": "local",
+      "rows": [
+        {
+          "metric": "temperature_raw",
+          "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+          "payload_id": null,
+          "reading_id": "01M6E8RM0NDYME9P37VF8PGBHF",
+          "recorded_at_ms": 1793404800000,
+          "units": "C",
+          "value": 20.0
+        },
+        {
+          "metric": "temperature_raw",
+          "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+          "payload_id": null,
+          "reading_id": "01M6E8RM0NNFNKWBW20SNDVFW7",
+          "recorded_at_ms": 1793404800000,
+          "units": "C",
+          "value": 10.0
+        },
+        {
+          "metric": "temperature_raw",
+          "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+          "payload_id": null,
+          "reading_id": "01M6E8RPQ55ES30VTVXDKH3D3G",
+          "recorded_at_ms": 1793404810000,
+          "units": "C",
+          "value": 11.0
+        },
+        {
+          "metric": "temperature_raw",
+          "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+          "payload_id": null,
+          "reading_id": "01M6E8RPQ5D9A55QF8BK4PX2KC",
+          "recorded_at_ms": 1793404810000,
+          "units": "C",
+          "value": 22.0
+        },
+        {
+          "metric": "temperature_raw",
+          "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+          "payload_id": null,
+          "reading_id": "01M6E8RP0Y4GP28HHMF0P7N93K",
+          "recorded_at_ms": 1793404820000,
+          "units": "C",
+          "value": 12.0
+        },
+        {
+          "metric": "temperature_raw",
+          "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+          "payload_id": null,
+          "reading_id": "01M6E8RP0YT8VTZT4JBCACBJ11",
+          "recorded_at_ms": 1793404820000,
+          "units": "C",
+          "value": 24.0
+        }
+      ],
+      "distributed": null
+    },
+    "query-calibrated": {
+      "kind": "rows",
+      "metric": "temperature_calibrated",
+      "mode": "local",
+      "rows": [
+        {
+          "metric": "temperature_calibrated",
+          "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+          "payload_id": "01M6E8RMKM7DSJG7VZ5KS2ZQ7T",
+          "reading_id": "01M6E8RMPDQY8Z6XFV8CQNQ3Y0",
+          "recorded_at_ms": 1793404800000,
+          "units": "C",
+          "value": 21.0
+        },
+        {
+          "metric": "temperature_calibrated",
+          "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+          "payload_id": "01M6E8RMATPF2MPPVBRNBP1YFW",
+          "reading_id": "01M6E8RMPDZB6YMFE5MCDFSN6G",
+          "recorded_at_ms": 1793404800000,
+          "units": "C",
+          "value": 9.0
+        },
+        {
+          "metric": "temperature_calibrated",
+          "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+          "payload_id": "01M6E8RQ83D1HFE356ENVGBHPQ",
+          "reading_id": "01M6E8RQBA2NW1AQEDXQY6CQS0",
+          "recorded_at_ms": 1793404810000,
+          "units": "C",
+          "value": 10.0
+        },
+        {
+          "metric": "temperature_calibrated",
+          "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+          "payload_id": "01M6E8RPZH4Y1TQ2GR7Z0GTKXR",
+          "reading_id": "01M6E8RQBAR63T84TYQAGV2BGN",
+          "recorded_at_ms": 1793404810000,
+          "units": "C",
+          "value": 23.0
+        },
+        {
+          "metric": "temperature_calibrated",
+          "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+          "payload_id": "01M6E8RPG8XFV9VAFNZJ25BRY1",
+          "reading_id": "01M6E8RPJNQ0Q18Z5Z1BVJSYZ6",
+          "recorded_at_ms": 1793404820000,
+          "units": "C",
+          "value": 11.0
+        },
+        {
+          "metric": "temperature_calibrated",
+          "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+          "payload_id": "01M6E8RP9DPMSAKSPH00QATYJK",
+          "reading_id": "01M6E8RPJNZNACVP3K6M9R3WXK",
+          "recorded_at_ms": 1793404820000,
+          "units": "C",
+          "value": 25.0
+        }
+      ],
+      "distributed": null
+    },
+    "aggregate-calibrated": {
+      "kind": "aggregate",
+      "metric": "temperature_calibrated",
+      "mode": "local",
+      "rows": [
+        {
+          "avg_value": 23.0,
+          "max_value": 25.0,
+          "metric": "temperature_calibrated",
+          "min_value": 21.0,
+          "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+          "sample_count": 3,
+          "sum_value": 69.0
+        },
+        {
+          "avg_value": 10.0,
+          "max_value": 11.0,
+          "metric": "temperature_calibrated",
+          "min_value": 9.0,
+          "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+          "sample_count": 3,
+          "sum_value": 30.0
+        }
+      ],
+      "distributed": null
+    },
+    "distributed-calibrated": {
+      "kind": "aggregate",
+      "metric": "temperature_calibrated",
+      "mode": "distributed",
+      "rows": [
+        {
+          "avg_value": 23.0,
+          "max_value": 25.0,
+          "metric": "temperature_calibrated",
+          "min_value": 21.0,
+          "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+          "sample_count": 3
+        },
+        {
+          "avg_value": 10.0,
+          "max_value": 11.0,
+          "metric": "temperature_calibrated",
+          "min_value": 9.0,
+          "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+          "sample_count": 3
+        }
+      ],
+      "distributed": {
+        "covered_shards": [
+          "01M6E8QM621XBYQSAKFPNPDQMZ/01M6E8RJGKPZM5N24CZB7JTEYG/20757",
+          "01M6E8QM621XBYQSAKFPNPDQMZ/01M6E8RJQJB1NFD7XN9QZAQZAW/20757"
+        ],
+        "missing_shards": [],
+        "answered_hosts": [
+          "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU"
+        ],
+        "missing_hosts": [],
+        "mode": "mirror",
+        "replication_factor": 1,
+        "truncated": false,
+        "incomplete_shards": [],
+        "missing_holders": [],
+        "rejected_answerers": [],
+        "unverified_answerers": []
+      }
+    },
+    "half-open-window": {
+      "kind": "rows",
+      "metric": "temperature_calibrated",
+      "mode": "local",
+      "rows": [
+        {
+          "metric": "temperature_calibrated",
+          "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+          "payload_id": "01M6E8RMKM7DSJG7VZ5KS2ZQ7T",
+          "reading_id": "01M6E8RMPDQY8Z6XFV8CQNQ3Y0",
+          "recorded_at_ms": 1793404800000,
+          "units": "C",
+          "value": 21.0
+        },
+        {
+          "metric": "temperature_calibrated",
+          "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+          "payload_id": "01M6E8RMATPF2MPPVBRNBP1YFW",
+          "reading_id": "01M6E8RMPDZB6YMFE5MCDFSN6G",
+          "recorded_at_ms": 1793404800000,
+          "units": "C",
+          "value": 9.0
+        },
+        {
+          "metric": "temperature_calibrated",
+          "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+          "payload_id": "01M6E8RQ83D1HFE356ENVGBHPQ",
+          "reading_id": "01M6E8RQBA2NW1AQEDXQY6CQS0",
+          "recorded_at_ms": 1793404810000,
+          "units": "C",
+          "value": 10.0
+        },
+        {
+          "metric": "temperature_calibrated",
+          "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+          "payload_id": "01M6E8RPZH4Y1TQ2GR7Z0GTKXR",
+          "reading_id": "01M6E8RQBAR63T84TYQAGV2BGN",
+          "recorded_at_ms": 1793404810000,
+          "units": "C",
+          "value": 23.0
+        }
+      ],
+      "distributed": null
+    },
+    "latest-event-time": {
+      "kind": "latest",
+      "metric": "temperature_calibrated",
+      "mode": "distributed",
+      "rows": [
+        {
+          "hlc_timestamp": 117547191913218048,
+          "id": "iot_reading:eflzx7yqxeq1xol0b2hx",
+          "metric": "temperature_calibrated",
+          "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+          "payload_id": "01M6E8RP9DPMSAKSPH00QATYJK",
+          "petal_id": "01M6E8QM621XBYQSAKFPNPDQMZ",
+          "reading_id": "01M6E8RPJNZNACVP3K6M9R3WXK",
+          "recorded_at": "2026-10-31T00:00:20+00:00",
+          "recorded_at_ms": 1793404820000,
+          "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU",
+          "units": "C",
+          "value": 25.0
+        },
+        {
+          "hlc_timestamp": 117547191913218049,
+          "id": "iot_reading:7nxoe83o8yvs9vhrgqx3",
+          "metric": "temperature_calibrated",
+          "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+          "payload_id": "01M6E8RPG8XFV9VAFNZJ25BRY1",
+          "petal_id": "01M6E8QM621XBYQSAKFPNPDQMZ",
+          "reading_id": "01M6E8RPJNQ0Q18Z5Z1BVJSYZ6",
+          "recorded_at": "2026-10-31T00:00:20+00:00",
+          "recorded_at_ms": 1793404820000,
+          "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU",
+          "units": "C",
+          "value": 11.0
+        }
+      ],
+      "distributed": {
+        "covered_shards": [
+          "01M6E8QM621XBYQSAKFPNPDQMZ/01M6E8RJGKPZM5N24CZB7JTEYG/20757",
+          "01M6E8QM621XBYQSAKFPNPDQMZ/01M6E8RJQJB1NFD7XN9QZAQZAW/20757"
+        ],
+        "missing_shards": [],
+        "answered_hosts": [
+          "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU"
+        ],
+        "missing_hosts": [],
+        "mode": "mirror",
+        "replication_factor": 1,
+        "truncated": false,
+        "incomplete_shards": [],
+        "missing_holders": [],
+        "rejected_answerers": [],
+        "unverified_answerers": []
+      }
+    }
+  },
+  "history": {
+    "Alpha": [
+      {
+        "created_at": "2026-11-02T13:56:42.571713700+00:00",
+        "hlc_timestamp": 117547191669293056,
+        "log_id": "01M6E8RJYB82PRFQX32TKR2ZHC",
+        "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+        "op": "property_set",
+        "payload": {
+          "after_state": {
+            "asset_id": "01M6E8RHWQWS17YQKWXAMXKRPD",
+            "created_at": "2026-11-02T13:56:42.131042200+00:00",
+            "display_name": "Fleet Alpha",
+            "edit_seq": 0,
+            "elevation": 0.0,
+            "interactive": true,
+            "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+            "petal_id": "01M6E8QM621XBYQSAKFPNPDQMZ",
+            "position": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "properties": {
+              "calibration": {
+                "axes": [
+                  "x",
+                  "z"
+                ],
+                "bias": 1,
+                "gain": 2,
+                "sensor": {
+                  "range": [
+                    -40,
+                    85
+                  ],
+                  "serial": "ALPHA-01"
+                }
+              },
+              "disposable_note": {
+                "remove_me": true,
+                "values": [
+                  1,
+                  2,
+                  3
+                ]
+              },
+              "metadata": {
+                "maintenance": {
+                  "due": "2026-12-01",
+                  "enabled": true
+                },
+                "tags": [
+                  "fleet",
+                  "qa"
+                ]
+              },
+              "qa_fixture": "rich-fleet-v1",
+              "schema_version": 1,
+              "telemetry": {
+                "samples": [
+                  null,
+                  true,
+                  {
+                    "axes": [
+                      "x",
+                      "z"
+                    ],
+                    "offset": 0.125
+                  }
+                ],
+                "sequence": 9007199254740993
+              }
+            },
+            "rotation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "data": {
+            "key": "calibration",
+            "value": {
+              "axes": [
+                "x",
+                "z"
+              ],
+              "bias": 1,
+              "gain": 2,
+              "sensor": {
+                "range": [
+                  -40,
+                  85
+                ],
+                "serial": "ALPHA-01"
+              }
+            }
+          },
+          "journal_version": 1,
+          "schema_versions": {
+            "01M6E8RJ14H5RYHM792FW5PM8Y": 1
+          },
+          "scope": "VERSE#01M6D0VZ11XK62MXZ61HENTBTD-FRACTAL#01M6D0VZG5ZN7XZMTXE8PWF1YT-PETAL#01M6E8QM621XBYQSAKFPNPDQMZ"
+        },
+        "row_version": 2,
+        "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU"
+      },
+      {
+        "created_at": "2026-11-02T13:56:42.808881500+00:00",
+        "hlc_timestamp": 117547191684825088,
+        "log_id": "01M6E8RK5RJ5XA6571SPYT6VB4",
+        "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+        "op": "full_transform",
+        "payload": {
+          "after_state": {
+            "asset_id": "01M6E8RHWQWS17YQKWXAMXKRPD",
+            "created_at": "2026-11-02T13:56:42.131042200+00:00",
+            "display_name": "Fleet Alpha",
+            "edit_seq": 1,
+            "elevation": 0.0,
+            "interactive": true,
+            "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+            "petal_id": "01M6E8QM621XBYQSAKFPNPDQMZ",
+            "position": [
+              3.0,
+              0.0,
+              4.0
+            ],
+            "properties": {
+              "calibration": {
+                "axes": [
+                  "x",
+                  "z"
+                ],
+                "bias": 1,
+                "gain": 2,
+                "sensor": {
+                  "range": [
+                    -40,
+                    85
+                  ],
+                  "serial": "ALPHA-01"
+                }
+              },
+              "disposable_note": {
+                "remove_me": true,
+                "values": [
+                  1,
+                  2,
+                  3
+                ]
+              },
+              "metadata": {
+                "maintenance": {
+                  "due": "2026-12-01",
+                  "enabled": true
+                },
+                "tags": [
+                  "fleet",
+                  "qa"
+                ]
+              },
+              "qa_fixture": "rich-fleet-v1",
+              "schema_version": 1,
+              "telemetry": {
+                "samples": [
+                  null,
+                  true,
+                  {
+                    "axes": [
+                      "x",
+                      "z"
+                    ],
+                    "offset": 0.125
+                  }
+                ],
+                "sequence": 9007199254740993
+              }
+            },
+            "rotation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "data": {
+            "position": [
+              3.0,
+              0.0,
+              4.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "journal_version": 1,
+          "schema_versions": {},
+          "scope": "VERSE#01M6D0VZ11XK62MXZ61HENTBTD-FRACTAL#01M6D0VZG5ZN7XZMTXE8PWF1YT-PETAL#01M6E8QM621XBYQSAKFPNPDQMZ"
+        },
+        "row_version": 3,
+        "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU"
+      },
+      {
+        "created_at": "2026-11-02T13:56:44.518913800+00:00",
+        "hlc_timestamp": 117547191796891648,
+        "log_id": "01M6E8RMV6V1M2ZQMXB3655EKP",
+        "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+        "op": "property_set",
+        "payload": {
+          "after_state": {
+            "asset_id": "01M6E8RHWQWS17YQKWXAMXKRPD",
+            "created_at": "2026-11-02T13:56:42.131042200+00:00",
+            "display_name": "Fleet Alpha",
+            "edit_seq": 1,
+            "elevation": 0.0,
+            "interactive": true,
+            "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+            "petal_id": "01M6E8QM621XBYQSAKFPNPDQMZ",
+            "position": [
+              3.0,
+              0.0,
+              4.0
+            ],
+            "properties": {
+              "calibration": {
+                "axes": [
+                  "x",
+                  "z"
+                ],
+                "bias": 1,
+                "gain": 3,
+                "sensor": {
+                  "range": [
+                    -40,
+                    85
+                  ],
+                  "serial": "ALPHA-01"
+                }
+              },
+              "disposable_note": {
+                "remove_me": true,
+                "values": [
+                  1,
+                  2,
+                  3
+                ]
+              },
+              "metadata": {
+                "maintenance": {
+                  "due": "2026-12-01",
+                  "enabled": true
+                },
+                "tags": [
+                  "fleet",
+                  "qa"
+                ]
+              },
+              "qa_fixture": "rich-fleet-v1",
+              "schema_version": 1,
+              "telemetry": {
+                "samples": [
+                  null,
+                  true,
+                  {
+                    "axes": [
+                      "x",
+                      "z"
+                    ],
+                    "offset": 0.125
+                  }
+                ],
+                "sequence": 9007199254740993
+              }
+            },
+            "rotation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "data": {
+            "key": "calibration",
+            "value": {
+              "axes": [
+                "x",
+                "z"
+              ],
+              "bias": 1,
+              "gain": 3,
+              "sensor": {
+                "range": [
+                  -40,
+                  85
+                ],
+                "serial": "ALPHA-01"
+              }
+            }
+          },
+          "journal_version": 1,
+          "schema_versions": {
+            "01M6E8RJ14H5RYHM792FW5PM8Y": 1
+          },
+          "scope": "VERSE#01M6D0VZ11XK62MXZ61HENTBTD-FRACTAL#01M6D0VZG5ZN7XZMTXE8PWF1YT-PETAL#01M6E8QM621XBYQSAKFPNPDQMZ"
+        },
+        "row_version": 4,
+        "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU"
+      },
+      {
+        "created_at": "2026-11-02T13:56:44.947568300+00:00",
+        "hlc_timestamp": 117547191825006592,
+        "log_id": "01M6E8RN8K3RC5SHSVJ9CRVYH9",
+        "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+        "op": "full_transform",
+        "payload": {
+          "after_state": {
+            "asset_id": "01M6E8RHWQWS17YQKWXAMXKRPD",
+            "created_at": "2026-11-02T13:56:42.131042200+00:00",
+            "display_name": "Fleet Alpha",
+            "edit_seq": 2,
+            "elevation": 0.0,
+            "interactive": true,
+            "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+            "petal_id": "01M6E8QM621XBYQSAKFPNPDQMZ",
+            "position": [
+              6.0,
+              0.0,
+              8.0
+            ],
+            "properties": {
+              "calibration": {
+                "axes": [
+                  "x",
+                  "z"
+                ],
+                "bias": 1,
+                "gain": 3,
+                "sensor": {
+                  "range": [
+                    -40,
+                    85
+                  ],
+                  "serial": "ALPHA-01"
+                }
+              },
+              "disposable_note": {
+                "remove_me": true,
+                "values": [
+                  1,
+                  2,
+                  3
+                ]
+              },
+              "metadata": {
+                "maintenance": {
+                  "due": "2026-12-01",
+                  "enabled": true
+                },
+                "tags": [
+                  "fleet",
+                  "qa"
+                ]
+              },
+              "qa_fixture": "rich-fleet-v1",
+              "schema_version": 1,
+              "telemetry": {
+                "samples": [
+                  null,
+                  true,
+                  {
+                    "axes": [
+                      "x",
+                      "z"
+                    ],
+                    "offset": 0.125
+                  }
+                ],
+                "sequence": 9007199254740993
+              }
+            },
+            "rotation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "data": {
+            "position": [
+              6.0,
+              0.0,
+              8.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "journal_version": 1,
+          "schema_versions": {},
+          "scope": "VERSE#01M6D0VZ11XK62MXZ61HENTBTD-FRACTAL#01M6D0VZG5ZN7XZMTXE8PWF1YT-PETAL#01M6E8QM621XBYQSAKFPNPDQMZ"
+        },
+        "row_version": 5,
+        "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU"
+      },
+      {
+        "created_at": "2026-11-02T13:56:47.227243+00:00",
+        "hlc_timestamp": 117547191974428672,
+        "log_id": "01M6E8RQFVWH4XA7V6GG1BSJPW",
+        "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+        "op": "full_transform",
+        "payload": {
+          "after_state": {
+            "asset_id": "01M6E8RHWQWS17YQKWXAMXKRPD",
+            "created_at": "2026-11-02T13:56:42.131042200+00:00",
+            "display_name": "Fleet Alpha",
+            "edit_seq": 3,
+            "elevation": 0.0,
+            "interactive": true,
+            "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+            "petal_id": "01M6E8QM621XBYQSAKFPNPDQMZ",
+            "position": [
+              6.0,
+              0.0,
+              8.0
+            ],
+            "properties": {
+              "calibration": {
+                "axes": [
+                  "x",
+                  "z"
+                ],
+                "bias": 1,
+                "gain": 3,
+                "sensor": {
+                  "range": [
+                    -40,
+                    85
+                  ],
+                  "serial": "ALPHA-01"
+                }
+              },
+              "disposable_note": {
+                "remove_me": true,
+                "values": [
+                  1,
+                  2,
+                  3
+                ]
+              },
+              "metadata": {
+                "maintenance": {
+                  "due": "2026-12-01",
+                  "enabled": true
+                },
+                "tags": [
+                  "fleet",
+                  "qa"
+                ]
+              },
+              "qa_fixture": "rich-fleet-v1",
+              "schema_version": 1,
+              "telemetry": {
+                "samples": [
+                  null,
+                  true,
+                  {
+                    "axes": [
+                      "x",
+                      "z"
+                    ],
+                    "offset": 0.125
+                  }
+                ],
+                "sequence": 9007199254740993
+              }
+            },
+            "rotation": [
+              0.0,
+              1.5707963705062866,
+              0.0
+            ],
+            "scale": [
+              2.0,
+              1.0,
+              0.5
+            ]
+          },
+          "data": {
+            "position": [
+              6.0,
+              0.0,
+              8.0
+            ],
+            "rotation": [
+              0.0,
+              1.5707963705062866,
+              0.0
+            ],
+            "scale": [
+              2.0,
+              1.0,
+              0.5
+            ]
+          },
+          "journal_version": 1,
+          "schema_versions": {},
+          "scope": "VERSE#01M6D0VZ11XK62MXZ61HENTBTD-FRACTAL#01M6D0VZG5ZN7XZMTXE8PWF1YT-PETAL#01M6E8QM621XBYQSAKFPNPDQMZ"
+        },
+        "row_version": 6,
+        "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU"
+      },
+      {
+        "created_at": "2026-11-02T13:56:48.039236300+00:00",
+        "hlc_timestamp": 117547192027643904,
+        "log_id": "01M6E8RR97RTTKF18495Q1N12V",
+        "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+        "op": "property_set",
+        "payload": {
+          "after_state": {
+            "asset_id": "01M6E8RHWQWS17YQKWXAMXKRPD",
+            "created_at": "2026-11-02T13:56:42.131042200+00:00",
+            "display_name": "Fleet Alpha",
+            "edit_seq": 3,
+            "elevation": 0.0,
+            "interactive": true,
+            "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+            "petal_id": "01M6E8QM621XBYQSAKFPNPDQMZ",
+            "position": [
+              6.0,
+              0.0,
+              8.0
+            ],
+            "properties": {
+              "calibration": {
+                "axes": [
+                  "x",
+                  "z"
+                ],
+                "bias": 1,
+                "gain": 3,
+                "sensor": {
+                  "range": [
+                    -40,
+                    85
+                  ],
+                  "serial": "ALPHA-01"
+                }
+              },
+              "disposable_note": {
+                "remove_me": true,
+                "values": [
+                  1,
+                  2,
+                  3
+                ]
+              },
+              "metadata": {
+                "maintenance": {
+                  "due": "2026-12-01",
+                  "enabled": true,
+                  "last_service": "2026-10-31"
+                },
+                "tags": [
+                  "fleet",
+                  "qa"
+                ]
+              },
+              "qa_fixture": "rich-fleet-v1",
+              "schema_version": 1,
+              "telemetry": {
+                "samples": [
+                  null,
+                  true,
+                  {
+                    "axes": [
+                      "x",
+                      "z"
+                    ],
+                    "offset": 0.125
+                  }
+                ],
+                "sequence": 9007199254740993
+              }
+            },
+            "rotation": [
+              0.0,
+              1.5707963705062866,
+              0.0
+            ],
+            "scale": [
+              2.0,
+              1.0,
+              0.5
+            ]
+          },
+          "data": {
+            "key": "metadata",
+            "value": {
+              "maintenance": {
+                "due": "2026-12-01",
+                "enabled": true,
+                "last_service": "2026-10-31"
+              },
+              "tags": [
+                "fleet",
+                "qa"
+              ]
+            }
+          },
+          "journal_version": 1,
+          "schema_versions": {
+            "01M6E8RJ9ZP3RV0TW7PTP696NN": 2
+          },
+          "scope": "VERSE#01M6D0VZ11XK62MXZ61HENTBTD-FRACTAL#01M6D0VZG5ZN7XZMTXE8PWF1YT-PETAL#01M6E8QM621XBYQSAKFPNPDQMZ"
+        },
+        "row_version": 7,
+        "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU"
+      },
+      {
+        "created_at": "2026-11-02T13:56:48.307679500+00:00",
+        "hlc_timestamp": 117547192045207552,
+        "log_id": "01M6E8RRHK15TH40RFTMR0N19M",
+        "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+        "op": "property_set",
+        "payload": {
+          "after_state": {
+            "asset_id": "01M6E8RHWQWS17YQKWXAMXKRPD",
+            "created_at": "2026-11-02T13:56:42.131042200+00:00",
+            "display_name": "Fleet Alpha",
+            "edit_seq": 3,
+            "elevation": 0.0,
+            "interactive": true,
+            "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+            "petal_id": "01M6E8QM621XBYQSAKFPNPDQMZ",
+            "position": [
+              6.0,
+              0.0,
+              8.0
+            ],
+            "properties": {
+              "calibration": {
+                "axes": [
+                  "x",
+                  "z"
+                ],
+                "bias": 1,
+                "gain": 3,
+                "sensor": {
+                  "range": [
+                    -40,
+                    85
+                  ],
+                  "serial": "ALPHA-01"
+                }
+              },
+              "disposable_note": {
+                "remove_me": true,
+                "values": [
+                  1,
+                  2,
+                  3
+                ]
+              },
+              "metadata": {
+                "maintenance": {
+                  "due": "2026-12-01",
+                  "enabled": true,
+                  "last_service": "2026-10-31"
+                },
+                "tags": [
+                  "fleet",
+                  "qa"
+                ]
+              },
+              "qa_fixture": "rich-fleet-v1",
+              "schema_version": 2,
+              "telemetry": {
+                "samples": [
+                  null,
+                  true,
+                  {
+                    "axes": [
+                      "x",
+                      "z"
+                    ],
+                    "offset": 0.125
+                  }
+                ],
+                "sequence": 9007199254740993
+              }
+            },
+            "rotation": [
+              0.0,
+              1.5707963705062866,
+              0.0
+            ],
+            "scale": [
+              2.0,
+              1.0,
+              0.5
+            ]
+          },
+          "data": {
+            "key": "schema_version",
+            "value": 2
+          },
+          "journal_version": 1,
+          "schema_versions": {},
+          "scope": "VERSE#01M6D0VZ11XK62MXZ61HENTBTD-FRACTAL#01M6D0VZG5ZN7XZMTXE8PWF1YT-PETAL#01M6E8QM621XBYQSAKFPNPDQMZ"
+        },
+        "row_version": 8,
+        "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU"
+      },
+      {
+        "created_at": "2026-11-02T13:56:48.552208700+00:00",
+        "hlc_timestamp": 117547192061263872,
+        "log_id": "01M6E8RRS8AHGC95XV035W6W1G",
+        "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+        "op": "property_deleted",
+        "payload": {
+          "after_state": {
+            "asset_id": "01M6E8RHWQWS17YQKWXAMXKRPD",
+            "created_at": "2026-11-02T13:56:42.131042200+00:00",
+            "display_name": "Fleet Alpha",
+            "edit_seq": 3,
+            "elevation": 0.0,
+            "interactive": true,
+            "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+            "petal_id": "01M6E8QM621XBYQSAKFPNPDQMZ",
+            "position": [
+              6.0,
+              0.0,
+              8.0
+            ],
+            "properties": {
+              "calibration": {
+                "axes": [
+                  "x",
+                  "z"
+                ],
+                "bias": 1,
+                "gain": 3,
+                "sensor": {
+                  "range": [
+                    -40,
+                    85
+                  ],
+                  "serial": "ALPHA-01"
+                }
+              },
+              "metadata": {
+                "maintenance": {
+                  "due": "2026-12-01",
+                  "enabled": true,
+                  "last_service": "2026-10-31"
+                },
+                "tags": [
+                  "fleet",
+                  "qa"
+                ]
+              },
+              "qa_fixture": "rich-fleet-v1",
+              "schema_version": 2,
+              "telemetry": {
+                "samples": [
+                  null,
+                  true,
+                  {
+                    "axes": [
+                      "x",
+                      "z"
+                    ],
+                    "offset": 0.125
+                  }
+                ],
+                "sequence": 9007199254740993
+              }
+            },
+            "rotation": [
+              0.0,
+              1.5707963705062866,
+              0.0
+            ],
+            "scale": [
+              2.0,
+              1.0,
+              0.5
+            ]
+          },
+          "data": {
+            "key": "disposable_note"
+          },
+          "journal_version": 1,
+          "schema_versions": {},
+          "scope": "VERSE#01M6D0VZ11XK62MXZ61HENTBTD-FRACTAL#01M6D0VZG5ZN7XZMTXE8PWF1YT-PETAL#01M6E8QM621XBYQSAKFPNPDQMZ"
+        },
+        "row_version": 9,
+        "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU"
+      }
+    ]
+  },
+  "derivations": [
+    {
+      "source_metric": "temperature_raw",
+      "target_metric": "temperature_calibrated",
+      "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+      "history_version": 1,
+      "schema_versions": {
+        "01M6E8RJ14H5RYHM792FW5PM8Y": 1,
+        "01M6E8RJ9ZP3RV0TW7PTP696NN": 1
+      },
+      "expected_calibration_schema_revision": 1,
+      "raw": 20.0,
+      "gain": 0.5,
+      "bias": -1,
+      "formula": "gain * raw + bias",
+      "derived": 9.0,
+      "recorded_at_ms": 1793404800000,
+      "source_reading_id": "01M6E8RM0NDYME9P37VF8PGBHF",
+      "payload_id": "01M6E8RMATPF2MPPVBRNBP1YFW",
+      "asset_ids": [
+        "01M6E8RM9BWH715KQTTRVST45B"
+      ],
+      "payload_sha256": "0c7fb0a9614c0eae2a6a228392ad2fc8cd25a3fdcfc0ebc70211460c60998440"
+    },
+    {
+      "source_metric": "temperature_raw",
+      "target_metric": "temperature_calibrated",
+      "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+      "history_version": 2,
+      "schema_versions": {
+        "01M6E8RJ14H5RYHM792FW5PM8Y": 1
+      },
+      "expected_calibration_schema_revision": 1,
+      "raw": 10.0,
+      "gain": 2,
+      "bias": 1,
+      "formula": "gain * raw + bias",
+      "derived": 21.0,
+      "recorded_at_ms": 1793404800000,
+      "source_reading_id": "01M6E8RM0NNFNKWBW20SNDVFW7",
+      "payload_id": "01M6E8RMKM7DSJG7VZ5KS2ZQ7T",
+      "asset_ids": [
+        "01M6E8RMHZMSSDDKXCZD8RAJST"
+      ],
+      "payload_sha256": "7c87b01de3014db6d8ad16ca1248cdc59ccab391c825f5750e0ba83a78866263"
+    },
+    {
+      "source_metric": "temperature_raw",
+      "target_metric": "temperature_calibrated",
+      "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+      "history_version": 2,
+      "schema_versions": {
+        "01M6E8RJ14H5RYHM792FW5PM8Y": 1
+      },
+      "expected_calibration_schema_revision": 1,
+      "raw": 12.0,
+      "gain": 2,
+      "bias": 1,
+      "formula": "gain * raw + bias",
+      "derived": 25.0,
+      "recorded_at_ms": 1793404820000,
+      "source_reading_id": "01M6E8RP0Y4GP28HHMF0P7N93K",
+      "payload_id": "01M6E8RP9DPMSAKSPH00QATYJK",
+      "asset_ids": [
+        "01M6E8RP82W447RA4A9R0Q997S"
+      ],
+      "payload_sha256": "37e62166fbbfa7af7b2afccda500149148f4faa45f21a268e522e15baa31b0df"
+    },
+    {
+      "source_metric": "temperature_raw",
+      "target_metric": "temperature_calibrated",
+      "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+      "history_version": 1,
+      "schema_versions": {
+        "01M6E8RJ14H5RYHM792FW5PM8Y": 1,
+        "01M6E8RJ9ZP3RV0TW7PTP696NN": 1
+      },
+      "expected_calibration_schema_revision": 1,
+      "raw": 24.0,
+      "gain": 0.5,
+      "bias": -1,
+      "formula": "gain * raw + bias",
+      "derived": 11.0,
+      "recorded_at_ms": 1793404820000,
+      "source_reading_id": "01M6E8RP0YT8VTZT4JBCACBJ11",
+      "payload_id": "01M6E8RPG8XFV9VAFNZJ25BRY1",
+      "asset_ids": [
+        "01M6E8RPEVE4TJHH41T38S608P"
+      ],
+      "payload_sha256": "b39177652aad8e1e7362097dc3c2f3870e92fe8793ebe558f549ef9452bc6e2f"
+    },
+    {
+      "source_metric": "temperature_raw",
+      "target_metric": "temperature_calibrated",
+      "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
+      "history_version": 2,
+      "schema_versions": {
+        "01M6E8RJ14H5RYHM792FW5PM8Y": 1
+      },
+      "expected_calibration_schema_revision": 1,
+      "raw": 11.0,
+      "gain": 2,
+      "bias": 1,
+      "formula": "gain * raw + bias",
+      "derived": 23.0,
+      "recorded_at_ms": 1793404810000,
+      "source_reading_id": "01M6E8RPQ55ES30VTVXDKH3D3G",
+      "payload_id": "01M6E8RPZH4Y1TQ2GR7Z0GTKXR",
+      "asset_ids": [
+        "01M6E8RPY5ZF47AJNGC08BYMH0"
+      ],
+      "payload_sha256": "60875cd5b65888656f853cf95282b86ff4f69775bf64c2b68783994280981c69"
+    },
+    {
+      "source_metric": "temperature_raw",
+      "target_metric": "temperature_calibrated",
+      "node_id": "01M6E8RJQJB1NFD7XN9QZAQZAW",
+      "history_version": 1,
+      "schema_versions": {
+        "01M6E8RJ14H5RYHM792FW5PM8Y": 1,
+        "01M6E8RJ9ZP3RV0TW7PTP696NN": 1
+      },
+      "expected_calibration_schema_revision": 1,
+      "raw": 22.0,
+      "gain": 0.5,
+      "bias": -1,
+      "formula": "gain * raw + bias",
+      "derived": 10.0,
+      "recorded_at_ms": 1793404810000,
+      "source_reading_id": "01M6E8RPQ5D9A55QF8BK4PX2KC",
+      "payload_id": "01M6E8RQ83D1HFE356ENVGBHPQ",
+      "asset_ids": [
+        "01M6E8RQ6BAVS3GWYXR701HXCN"
+      ],
+      "payload_sha256": "654d2f99f45d665b25b6a11ab478061d13b99bab3cf34de92bef2b4b0d033b93"
+    }
+  ],
+  "derivation_format": "qa.fractalengine/rich-fleet-v1@1",
+  "completed_step_ids": [
+    "preflight",
+    "upload-scene",
+    "schema-calibration-v1",
+    "schema-metadata-v1",
+    "create-alpha",
+    "create-beta",
+    "calibrate-alpha-v2",
+    "move-alpha-v3",
+    "move-beta-v2",
+    "checkpoint-before-gamma",
+    "raw-t0",
+    "derive-t0",
+    "recalibrate-alpha-v4",
+    "create-gamma",
+    "move-alpha-v5",
+    "move-beta-v3",
+    "move-gamma-v2",
+    "raw-t2",
+    "derive-t2",
+    "raw-t1-late",
+    "derive-t1-late",
+    "rotate-scale-alpha-v6",
+    "schema-metadata-v2",
+    "metadata-alpha-v7",
+    "schema-tag-alpha-v8",
+    "delete-alpha-note-v9",
+    "reject-invalid-calibration",
+    "reject-incompatible-schema",
+    "checkpoint-final",
+    "movement-oracle",
+    "alpha-paginated-history",
+    "alpha-earlier-state",
+    "query-raw",
+    "query-calibrated",
+    "aggregate-calibrated",
+    "distributed-calibrated",
+    "half-open-window",
+    "latest-event-time"
+  ]
+}
