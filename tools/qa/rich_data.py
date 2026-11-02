@@ -36,6 +36,14 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
+def canonical_snapshot(value):
+    require(isinstance(value, dict), "journal snapshot must be an object", "invalid_response")
+    snapshot = value.copy()
+    for key in ("display_name", "asset_id", "tombstone"):
+        snapshot.setdefault(key, None)
+    return snapshot
+
+
 def driver_fingerprint():
     folder = Path(__file__).parent
     return digest({name:hashlib.sha256((folder/name).read_bytes()).hexdigest()
@@ -510,7 +518,8 @@ class Driver:
             self.check(name + " calibration fact commit",fact.get("row_version"),names[name])
             fact_payload = fact.get("payload",{})
             self.check(name + " calibration fact scope",fact_payload.get("scope"),self.scope)
-            self.check(name + " calibration fact state",fact_payload.get("after_state"),at["state"])
+            self.check(name + " calibration fact state",
+                       canonical_snapshot(fact_payload.get("after_state")), canonical_snapshot(at["state"]))
             schema_versions = fact_payload.get("schema_versions")
             require(isinstance(schema_versions, dict), "calibration schema provenance unavailable", "history_coverage_unavailable")
             require("calibration" in self.schemas,"calibration field definition is unavailable", "history_coverage_unavailable")

@@ -339,6 +339,11 @@ Derived provenance uses `qa.fractalengine/<scenario>@1`. The SDK device-format
 grammar requires at least two namespace labels; a single `qa` label is invalid.
 Keep failed-attempt receipts and use a fresh Petal after partial writes rather
 than repeating non-idempotent scenario steps.
+Raw journal snapshots and typed replay snapshots compare after shallow defaults
+for the three optional NodeRowSnapshot fields: display_name, asset_id, tombstone.
+Only absent top-level fields become null; extra keys, nested values and the
+existing numeric comparator remain unchanged. Identity/scope/version/schema
+provenance assertions are still required before writing derived measurements.
 
 `scenarios/rich-fleet.json` is the editable rich-data intent and independent oracle set. Logical Alpha/Beta/Gamma
 names are mapped to actual returned object IDs. Schemas, initial objects and expected event-time arrays are data;
