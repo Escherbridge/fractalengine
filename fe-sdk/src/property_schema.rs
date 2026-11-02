@@ -105,8 +105,29 @@ impl EnforcedPropertySchema {
     /// Validate without applying defaults, converting types, or changing the value.
     pub fn validate(&self, value: &Value) -> Result<(), String> {
         check_size(value)?;
+        check_value_depth(value, 0)?;
         self.schema.validate_at(value, "$", 0)
     }
+}
+
+fn check_value_depth(value: &Value, depth: usize) -> Result<(), String> {
+    if depth > MAX_DEPTH {
+        return Err("value exceeds depth limit 16".into());
+    }
+    match value {
+        Value::Object(object) => {
+            for child in object.values() {
+                check_value_depth(child, depth + 1)?;
+            }
+        }
+        Value::Array(array) => {
+            for child in array {
+                check_value_depth(child, depth + 1)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn check_size(value: &Value) -> Result<(), String> {
@@ -175,6 +196,7 @@ impl PropertySchema {
                 return Err("enum must contain at least one value".into());
             }
             for choice in choices {
+                check_value_depth(choice, 0)?;
                 self.validate_at(choice, "$enum", depth)?;
             }
         }

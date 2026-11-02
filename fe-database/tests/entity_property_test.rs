@@ -299,6 +299,18 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
     let mut unsupported = descriptor.clone();
     unsupported["schema"]["$ref"] = serde_json::json!("https://example.invalid/schema");
     assert!(fe_sdk::property_schema::EnforcedPropertySchema::parse(&unsupported).is_err());
+    let unconstrained = fe_sdk::property_schema::EnforcedPropertySchema::parse(
+        &serde_json::json!({"version":1,"schema":{"type":"object"}}),
+    )
+    .unwrap();
+    let mut deep = serde_json::json!(0);
+    for _ in 0..17 {
+        deep = serde_json::json!({"child":deep});
+    }
+    assert!(
+        unconstrained.validate(&deep).is_err(),
+        "additional members still obey the depth bound"
+    );
     db.cmd_tx
         .send(DbCommand::SetFieldSchema {
             field_def_id: field_def_id.clone(),
