@@ -114,10 +114,10 @@ pub fn render_entity_settings_dialog(
                     theme::BG_TAB_INACTIVE
                 };
                 if ui
-                    .add_enabled(can_write,
+                    .add_enabled(can_edit_draft && !details.loading() && details.error.is_none(),
                         egui::Button::new(egui::RichText::new("Access").color(theme::TEXT_BRIGHT))
                             .fill(acc_fill),
-                    ).observed(ui)
+                    ).observed(ui).on_disabled_hover_text("Load this entry's stored Manager role to manage access.")
                     .clicked()
                 {
                     super::entity_access::select_tab(active_tab,access,SettingsTab::Access);
@@ -129,10 +129,10 @@ pub fn render_entity_settings_dialog(
                     theme::BG_TAB_INACTIVE
                 };
                 if ui
-                    .add_enabled(can_write,
+                    .add_enabled(can_edit_draft && !details.loading() && details.error.is_none(),
                         egui::Button::new(egui::RichText::new("API").color(theme::TEXT_BRIGHT))
                             .fill(api_fill),
-                    ).observed(ui)
+                    ).observed(ui).on_disabled_hover_text("Load this entry's stored Manager role to manage API access.")
                     .clicked()
                 {
                     super::entity_access::select_tab(active_tab,access,SettingsTab::ApiAccess);

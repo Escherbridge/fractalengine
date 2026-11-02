@@ -1432,3 +1432,9 @@ existing UiShellParams bundle; no default port is advertised as a listener.
 Inspector tabs are private form state: read active_tab() and transition through
 set_active_tab(), including programmatic openers. Leaving API Access clears
 pending ownership, generated token/client and reveal state synchronously.
+
+## Hierarchy browsers and target Options
+
+viewport.rs shares one bounded card renderer across Verse/Fractal/Petal browsers. Options is always visible; it opens target-bound EntityDetails and never derives target permissions from the active navigation role. Creation remains advisory Manager-gated at the current parent and is authorized again by the DB. Stable scroll/grid IDs use hierarchy identity rather than mutable names/counts; per-card IDs preserve focus across list updates. Human ancestor buttons call NavigationManager methods and stop rendering the old branch immediately after a route change. Empty Verse browsing offers the existing Join flow. Counts name the actual hierarchy kind and peer counts remain reported observations.
+
+Petal hints use a wrapped, backed, noninteractive Area anchored inside the viewport. Tool text reflects actual Pen/Brush/Measure behavior and the shared shortcut table. These changes do not alter picking, gimbal state or terrain calculations. Existing numeric render journey invokes the browser pointer/clip flow at three sizes; authored assertions are not execution evidence.

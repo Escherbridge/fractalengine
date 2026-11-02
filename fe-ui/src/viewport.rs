@@ -74,77 +74,43 @@ pub fn viewport_petal_space(
     ui_mgr: &mut UiManager,
     _local_role: &LocalUserRole,
 ) {
-    // Breadcrumb at top of viewport (names)
-    let petal_name = find_petal_name(hierarchy, nav.active_petal_id.as_deref().unwrap_or(""));
-    let breadcrumb = format!(
-        "{} / {} / {}",
-        nav.active_verse_name, nav.active_fractal_name, petal_name
-    );
-    let mut back_clicked = false;
+    let mut navigated = false;
     ui.scope_builder(
         egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
             rect.min + egui::vec2(8.0, 4.0),
-            egui::vec2((rect.width() - 16.0).max(0.0), 28.0),
+            egui::vec2((rect.width() - 16.0).max(0.0), 70.0),
         )),
         |ui| {
-            ui.horizontal(|ui| {
-                back_clicked = ui
-                    .add_sized([52.0, 24.0], egui::Button::new("\u{25C0} Back"))
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add_sized([52.0, 26.0], egui::Button::new("Back"))
                     .named(ui, "Back to petal list")
-                    .clicked();
-                ui.add(egui::Label::new(&breadcrumb).truncate())
-                    .on_hover_text(&breadcrumb);
+                    .clicked()
+                {
+                    nav.back_from_petal();
+                    navigated = true;
+                }
+                if !navigated {
+                    navigated = breadcrumbs(ui, nav, 3, hierarchy);
+                }
             });
         },
     );
-    if back_clicked {
-        nav.back_from_petal();
+    if navigated {
+        return;
     }
-
-    // Tool hints at bottom — keys/labels come from `panels::toolbar::TOOL_DEFS`.
-    // The topbar stashed this frame's `InputContext` before we rendered.
     let input = toolbar::input_context(ui.ctx());
-    let active_tool = input.map(|i| i.active_tool);
-    let gesture_active = input.is_some_and(|i| i.gesture_active);
-    if active_tool == Some(toolbar::Tool::Pen) {
-        ui.painter().text(
-            egui::pos2(center.x, rect.max.y - 40.0),
-            egui::Align2::CENTER_CENTER,
-            "Pen: click terrain to add points  \u{2022}  drag a marker to move  \u{2022}  Ctrl+drag a marker = raise/lower height  \u{2022}  Shift/Alt+click a marker to annotate",
-            egui::FontId::proportional(12.0),
-            theme::TEXT_VIEWPORT_HINT,
-        );
-    } else if active_tool == Some(toolbar::Tool::Brush) {
-        ui.painter().text(
-            egui::pos2(center.x, rect.max.y - 40.0),
-            egui::Align2::CENTER_CENTER,
-            "Brush: press-drag to sample earthwork dabs  \u{2022}  release to commit  \u{2022}  Esc/right-click cancels the stroke",
-            egui::FontId::proportional(12.0),
-            theme::TEXT_VIEWPORT_HINT,
-        );
-    } else if active_tool == Some(toolbar::Tool::Measure) {
-        ui.painter().text(
-            egui::pos2(center.x, rect.max.y - 40.0),
-            egui::Align2::CENTER_CENTER,
-            "Measure: click the ground to place points  \u{2022}  read and copy the result in Options  \u{2022}  Esc returns to Select",
-            egui::FontId::proportional(12.0),
-            theme::TEXT_VIEWPORT_HINT,
-        );
-    } else if node_mgr.selected_entity().is_none() {
-        ui.painter().text(
-            egui::pos2(center.x, rect.max.y - 56.0),
-            egui::Align2::CENTER_CENTER,
-            "Click an object to select it",
-            egui::FontId::proportional(12.0),
-            theme::TEXT_VIEWPORT_HINT,
-        );
-        ui.painter().text(
-            egui::pos2(center.x, rect.max.y - 38.0),
-            egui::Align2::CENTER_CENTER,
-            toolbar::shortcut_hint_line(),
-            egui::FontId::proportional(12.0),
-            theme::TEXT_VIEWPORT_HINT,
-        );
+    let active_tool = input.map(|input| input.active_tool);
+    let gesture_active = input.is_some_and(|input| input.gesture_active);
+    let hint=match active_tool {
+        Some(toolbar::Tool::Pen)=>Some("Pen: click terrain to add points; drag a marker to move; Ctrl+drag raises or lowers height; Shift/Alt+click annotates.".to_owned()),
+        Some(toolbar::Tool::Brush)=>Some("Brush: press-drag to sample earthwork; release commits; Escape or right-click cancels the stroke.".to_owned()),
+        Some(toolbar::Tool::Measure)=>Some("Measure: click ground to place points; read and copy the result in Options; Escape returns to Select.".to_owned()),
+        _ if node_mgr.selected_entity().is_none()=>Some(format!("Click an object to select it. {}",toolbar::shortcut_hint_line())),
+        _=>None,
+    };
+    if let Some(hint) = hint {
+        viewport_hint(ui.ctx(), rect, &hint);
     }
 
     // Right-click for context menu — use input directly to avoid stealing clicks.
@@ -168,7 +134,174 @@ pub fn viewport_petal_space(
     }
 }
 
-/// No verse selected — verse browser + peer discovery.
+#[derive(Clone, Copy)]
+struct BrowserCard<'a> {
+    id: &'a str,
+    name: &'a str,
+    kind: EntitySettingsType,
+    verse: &'a str,
+    fractal: Option<&'a str>,
+    count: usize,
+    noun: &'static str,
+    plural: &'static str,
+}
+
+enum BrowserAction {
+    Open(usize),
+    Options(usize),
+    Create,
+    Join,
+}
+
+fn bounded_browser(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    browser_key: &str,
+    title: &str,
+    cards: &[BrowserCard<'_>],
+    new_label: &str,
+    can_create: bool,
+    show_join: bool,
+) -> Option<BrowserAction> {
+    let mut action = None;
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)),|ui| {
+        ui.set_clip_rect(ui.clip_rect().intersect(rect));
+        ui.add(egui::Label::new(egui::RichText::new(title).heading()).truncate()).on_hover_text(title);ui.add_space(6.0);
+        if show_join && ui.add_sized([120.0,26.0],egui::Button::new("Join a verse...")).named(ui,"Join a verse from browser").clicked(){action=Some(BrowserAction::Join);}
+        let area=egui::ScrollArea::vertical().id_salt(("hierarchy_browser",browser_key)).max_height(ui.available_height().max(1.0));
+        crate::ui_shell::layout_policy::scroll(ui,title,[false,true],area,|ui| {
+            let gap=12.0;let width=ui.available_width().max(1.0);
+            let columns=((width+gap)/212.0).floor().max(1.0) as usize;
+            let card_width=((width-gap*(columns.saturating_sub(1)) as f32)/columns as f32).clamp(80.0,260.0);
+            egui::Grid::new(("hierarchy_cards",browser_key)).spacing(egui::vec2(gap,gap)).show(ui,|ui| {
+                for (index,card) in cards.iter().enumerate() {
+                    ui.push_id(card.id,|ui| {
+                    egui::Frame::NONE.fill(theme::BG_PANEL).stroke(egui::Stroke::new(1.0,theme::TEXT_DIM)).corner_radius(6.0).inner_margin(egui::Margin::same(8)).show(ui,|ui| {
+                        ui.set_width((card_width-16.0).max(48.0));
+                        ui.horizontal(|ui| {
+                            let name_width=(ui.available_width()-34.0).max(24.0);
+                            if ui.add_sized([name_width,28.0],egui::Button::new(card.name).truncate()).named(ui,format_args!("Open {} {}",card.kind_name(),card.name)).on_hover_text(format!("{}\n{}",card.name,card.id)).clicked(){action=Some(BrowserAction::Open(index));}
+                            if ui.add_sized([26.0,28.0],egui::Button::new("...")).named(ui,format_args!("Options for {} {}",card.kind_name(),card.name)).on_hover_text("View stored settings, access and ownership options").clicked(){action=Some(BrowserAction::Options(index));}
+                        });
+                        ui.label(format!("{} {}",card.count,if card.count==1 {card.noun}else{card.plural}));
+                    });
+                    });
+                    if (index+1)%columns==0 {ui.end_row();}
+                }
+                let response=ui.add_enabled(can_create,egui::Button::new(new_label).min_size(egui::vec2(card_width,72.0))).named(ui,new_label).on_disabled_hover_text("Manager role at the current entry is required to create a child.");
+                if response.clicked(){action=Some(BrowserAction::Create);}
+            });
+            if cards.is_empty(){ui.label("This entry has no children yet.");}
+        });
+    });
+    action
+}
+
+impl BrowserCard<'_> {
+    fn kind_name(&self) -> &'static str {
+        match self.kind {
+            EntitySettingsType::Verse => "verse",
+            EntitySettingsType::Fractal => "fractal",
+            EntitySettingsType::Petal => "petal",
+        }
+    }
+    fn open_options(&self, ui_mgr: &mut UiManager) {
+        ui_mgr.open_dialog(crate::dialogs::entity_details::dialog(
+            self.kind,
+            self.id,
+            self.name,
+            self.verse,
+            self.fractal,
+        ));
+    }
+}
+
+fn breadcrumb_button(ui: &mut egui::Ui, name: &str, id: &str, label: &str) -> bool {
+    ui.add_sized(
+        [ui.available_width().clamp(32.0, 140.0), 26.0],
+        egui::Button::new(name).truncate(),
+    )
+    .named(ui, label)
+    .on_hover_text(format!("{name}\n{id}"))
+    .clicked()
+}
+
+fn breadcrumbs(
+    ui: &mut egui::Ui,
+    nav: &mut NavigationManager,
+    depth: u8,
+    hierarchy: &VerseManager,
+) -> bool {
+    let mut route = 0;
+    let verse = nav.active_verse_id.clone();
+    let verse_name = nav.active_verse_name.clone();
+    let fractal = nav.active_fractal_id.clone();
+    let fractal_name = nav.active_fractal_name.clone();
+    ui.horizontal_wrapped(|ui| {
+        if breadcrumb_button(ui, "Verses", "all", "Browse all verses") {
+            route = 1;
+        }
+        if let Some(id) = verse.as_deref() {
+            ui.label("/");
+            if depth > 1 {
+                if breadcrumb_button(ui, &verse_name, id, "Browse current verse fractals") {
+                    route = 2;
+                }
+            } else {
+                ui.add(egui::Label::new(&verse_name).truncate())
+                    .on_hover_text(format!("{}\n{id}", nav.active_verse_name));
+            }
+        }
+        if let Some(id) = fractal.as_deref() {
+            ui.label("/");
+            if depth > 2 {
+                if breadcrumb_button(ui, &fractal_name, id, "Browse current fractal petals") {
+                    route = 3;
+                }
+            } else {
+                ui.add(egui::Label::new(&fractal_name).truncate())
+                    .on_hover_text(format!("{fractal_name}\n{id}"));
+            }
+        }
+        if depth == 3 {
+            if let Some(id) = nav.active_petal_id.as_deref() {
+                ui.label("/");
+                ui.add(egui::Label::new(find_petal_name(hierarchy, id)).truncate())
+                    .on_hover_text(format!("{}\n{id}", find_petal_name(hierarchy, id)));
+            }
+        }
+    });
+    match route {
+        1 => nav.back_from_verse(),
+        2 => nav.navigate_to_verse(verse.unwrap(), verse_name),
+        3 => nav.navigate_to_fractal(fractal.unwrap(), fractal_name),
+        _ => return false,
+    }
+    true
+}
+
+fn viewport_hint(ctx: &egui::Context, rect: egui::Rect, text: &str) {
+    egui::Area::new(egui::Id::new("viewport_tool_hint"))
+        .order(egui::Order::Middle)
+        .interactable(false)
+        .pivot(egui::Align2::CENTER_BOTTOM)
+        .fixed_pos(egui::pos2(rect.center().x, rect.bottom() - 8.0))
+        .show(ctx, |ui| {
+            ui.set_max_width((rect.width() - 24.0).clamp(60.0, 620.0));
+            egui::Frame::NONE
+                .fill(theme::BG_PANEL)
+                .inner_margin(egui::Margin::same(8))
+                .corner_radius(4.0)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(text).color(theme::TEXT_BRIGHT))
+                            .wrap(),
+                    );
+                });
+        });
+}
+
+/// Browse verses with target-authorized Options available on every card.
 pub fn viewport_verse_browser(
     ui: &mut egui::Ui,
     nav: &mut NavigationManager,
@@ -176,618 +309,216 @@ pub fn viewport_verse_browser(
     _db_tx: &crossbeam::channel::Sender<DbCommand>,
     dashboard: &DashboardState,
     rect: egui::Rect,
-    center: egui::Pos2,
+    _center: egui::Pos2,
     ui_mgr: &mut UiManager,
-    local_role: &LocalUserRole,
+    _local_role: &LocalUserRole,
 ) {
-    // Title
-    ui.painter().text(
-        egui::pos2(center.x, rect.min.y + 30.0),
-        egui::Align2::CENTER_CENTER,
-        "FractalEngine",
-        egui::FontId::proportional(24.0),
-        theme::TEXT_STRONG,
+    let cards: Vec<_> = hierarchy
+        .verses
+        .iter()
+        .map(|verse| BrowserCard {
+            id: &verse.id,
+            name: &verse.name,
+            kind: EntitySettingsType::Verse,
+            verse: &verse.id,
+            fractal: None,
+            count: verse.fractals.len(),
+            noun: "fractal",
+            plural: "fractals",
+        })
+        .collect();
+    let title = format!(
+        "{} {} - {} reported peers",
+        cards.len(),
+        if cards.len() == 1 { "verse" } else { "verses" },
+        dashboard.peer_count
     );
-    ui.painter().text(
-        egui::pos2(center.x, rect.min.y + 55.0),
-        egui::Align2::CENTER_CENTER,
-        "Select a verse to enter, or discover peers to join",
-        egui::FontId::proportional(12.0),
-        theme::TEXT_MUTED,
-    );
-
-    // --- Your Verses section ---
-    ui.painter().text(
-        egui::pos2(rect.min.x + 20.0, rect.min.y + 85.0),
-        egui::Align2::LEFT_CENTER,
-        "Your Verses",
-        egui::FontId::proportional(14.0),
-        theme::TEXT_SECTION,
-    );
-
-    let card_w = 200.0_f32;
-    let card_h = 70.0_f32;
-    let gap = 12.0_f32;
-    let start_y = rect.min.y + 105.0;
-    let cards_per_row = ((rect.width() - 40.0) / (card_w + gap)).floor().max(1.0) as usize;
-
-    for (i, verse) in hierarchy.verses.iter().enumerate() {
-        let col = i % cards_per_row;
-        let row = i / cards_per_row;
-        let x = rect.min.x + 20.0 + col as f32 * (card_w + gap);
-        let y = start_y + row as f32 * (card_h + gap);
-        let card_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(card_w, card_h));
-
-        let mut card_clicked = false;
-        ui.scope_builder(egui::UiBuilder::new().max_rect(card_rect), |ui| {
-            let resp = ui
-                .add_sized(
-                    [card_w, card_h],
-                    egui::Button::new(
-                        egui::RichText::new(&verse.name)
-                            .strong()
-                            .size(13.0)
-                            .color(theme::TEXT_BRIGHT),
-                    )
-                    .fill(theme::BG_PANEL)
-                    .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM))
-                    .corner_radius(6.0),
-                )
-                .named(ui, format_args!("Open verse {}", verse.name));
-            if resp.clicked() {
-                card_clicked = true;
-            }
-        });
-
-        // Gear icon overlay on top-right of card (managers only)
-        let mut gear_clicked = false;
-        if local_role.can_manage() {
-            let gear_rect = egui::Rect::from_min_size(
-                egui::pos2(card_rect.right() - 26.0, card_rect.top() + 4.0),
-                egui::vec2(22.0, 22.0),
-            );
-            ui.scope_builder(egui::UiBuilder::new().max_rect(gear_rect), |ui| {
-                let gear_resp = ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("\u{2699}")
-                                .size(14.0)
-                                .color(theme::ICON_GEAR),
-                        )
-                        .fill(theme::BG_BUTTON)
-                        .corner_radius(4.0),
-                    )
-                    .named(ui, format_args!("Settings for verse {}", verse.name));
-                if gear_resp.clicked() {
-                    gear_clicked = true;
-                }
-            });
+    match bounded_browser(
+        ui,
+        rect,
+        "all-verses",
+        &title,
+        &cards,
+        "+ New Verse",
+        true,
+        true,
+    ) {
+        Some(BrowserAction::Open(index)) => {
+            nav.navigate_to_verse(cards[index].id, cards[index].name)
         }
-
-        if gear_clicked {
-            ui_mgr.open_dialog(crate::dialogs::entity_details::dialog(
-                EntitySettingsType::Verse,
-                &verse.id,
-                &verse.name,
-                &verse.id,
-                None,
-            ));
-        } else if card_clicked {
-            nav.navigate_to_verse(verse.id.clone(), verse.name.clone());
-        }
-
-        ui.painter().text(
-            egui::pos2(x + card_w / 2.0, y + card_h - 12.0),
-            egui::Align2::CENTER_CENTER,
-            format!("{} fractals", verse.fractals.len()),
-            egui::FontId::proportional(10.0),
-            theme::TEXT_MUTED,
-        );
-    }
-
-    // [+ New Verse] button
-    let new_verse_row = hierarchy.verses.len() / cards_per_row;
-    let new_verse_col = hierarchy.verses.len() % cards_per_row;
-    let new_x = rect.min.x + 20.0 + new_verse_col as f32 * (card_w + gap);
-    let new_y = start_y + new_verse_row as f32 * (card_h + gap);
-    let new_rect = egui::Rect::from_min_size(egui::pos2(new_x, new_y), egui::vec2(card_w, card_h));
-
-    ui.scope_builder(egui::UiBuilder::new().max_rect(new_rect), |ui| {
-        let resp = ui
-            .add_sized(
-                [card_w, card_h],
-                egui::Button::new(
-                    egui::RichText::new("+ New Verse")
-                        .size(13.0)
-                        .color(theme::TEXT_DIM),
-                )
-                .fill(egui::Color32::TRANSPARENT)
-                .stroke(egui::Stroke::new(1.0_f32, theme::BG_BUTTON_ALT))
-                .corner_radius(6.0),
-            )
-            .observed(ui);
-        if resp.clicked() {
-            ui_mgr.open_dialog(ActiveDialog::CreateEntity {
-                kind: CreateKind::Verse,
-                parent_id: String::new(),
-                name_buf: String::new(),
-            });
-        }
-    });
-
-    // First-run hierarchy explainer (only when there are no verses yet).
-    if hierarchy.verses.is_empty() {
-        ui.painter().text(
-            egui::pos2(rect.min.x + 20.0, start_y + card_h + 16.0),
-            egui::Align2::LEFT_CENTER,
-            "A verse holds fractals; each fractal holds petals — the 3D spaces where you build.",
-            egui::FontId::proportional(11.0),
-            theme::TEXT_MUTED,
-        );
-    }
-
-    // --- Peer Discovery section ---
-    let peer_section_y =
-        start_y + ((hierarchy.verses.len() / cards_per_row + 1) as f32) * (card_h + gap) + 20.0;
-
-    ui.painter().text(
-        egui::pos2(rect.min.x + 20.0, peer_section_y),
-        egui::Align2::LEFT_CENTER,
-        "Peer Discovery",
-        egui::FontId::proportional(14.0),
-        theme::TEXT_SECTION,
-    );
-
-    let peer_box_rect = egui::Rect::from_min_size(
-        egui::pos2(rect.min.x + 20.0, peer_section_y + 20.0),
-        egui::vec2(rect.width() - 40.0, 80.0),
-    );
-
-    ui.painter().rect(
-        peer_box_rect,
-        6.0,
-        theme::BG_PANEL,
-        egui::Stroke::new(1.0_f32, theme::BG_BUTTON_ALT),
-        egui::StrokeKind::Outside,
-    );
-
-    if dashboard.peer_count > 0 {
-        ui.painter().text(
-            peer_box_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            format!(
-                "{} peers online — browse their open verses",
-                dashboard.peer_count
-            ),
-            egui::FontId::proportional(12.0),
-            theme::TEXT_SECTION,
-        );
-    } else {
-        ui.painter().text(
-            egui::pos2(peer_box_rect.center().x, peer_box_rect.center().y - 8.0),
-            egui::Align2::CENTER_CENTER,
-            "No peers connected",
-            egui::FontId::proportional(13.0),
-            theme::TEXT_MUTED,
-        );
-        ui.painter().text(
-            egui::pos2(peer_box_rect.center().x, peer_box_rect.center().y + 12.0),
-            egui::Align2::CENTER_CENTER,
-            "Connect to the network to discover and join other verses",
-            egui::FontId::proportional(11.0),
-            theme::TEXT_DIM,
-        );
+        Some(BrowserAction::Options(index)) => cards[index].open_options(ui_mgr),
+        Some(BrowserAction::Create) => ui_mgr.open_dialog(ActiveDialog::CreateEntity {
+            kind: CreateKind::Verse,
+            parent_id: String::new(),
+            name_buf: String::new(),
+        }),
+        Some(BrowserAction::Join) => ui_mgr.open_dialog(ActiveDialog::JoinDialog {
+            invite_buf: String::new(),
+        }),
+        None => {}
     }
 }
 
-/// Verse selected — browse fractals within it.
+/// Browse an active verse's fractals through a bounded card flow.
 pub fn viewport_fractal_browser(
     ui: &mut egui::Ui,
     nav: &mut NavigationManager,
     hierarchy: &VerseManager,
     _db_tx: &crossbeam::channel::Sender<DbCommand>,
     rect: egui::Rect,
-    center: egui::Pos2,
+    _center: egui::Pos2,
     ui_mgr: &mut UiManager,
     local_role: &LocalUserRole,
 ) {
-    // Back button
-    let mut back_clicked = false;
+    let mut changed = false;
     ui.scope_builder(
         egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-            egui::pos2(rect.min.x + 8.0, rect.min.y + 4.0),
-            egui::vec2(80.0, 24.0),
+            rect.min,
+            egui::vec2(rect.width(), 60.0),
         )),
         |ui| {
-            if ui
-                .add(
-                    egui::Button::new(egui::RichText::new("\u{25C0} Verses").small())
-                        .fill(theme::BG_BUTTON),
-                )
-                .named(ui, "Back to verses")
-                .clicked()
-            {
-                back_clicked = true;
-            }
+            changed = breadcrumbs(ui, nav, 1, hierarchy);
         },
     );
-    if back_clicked {
-        nav.back_from_verse();
+    if changed {
+        return;
     }
-
-    ui.painter().text(
-        egui::pos2(center.x, rect.min.y + 35.0),
-        egui::Align2::CENTER_CENTER,
-        format!("{} — Select a Fractal", nav.active_verse_name),
-        egui::FontId::proportional(18.0),
-        theme::TEXT_STRONG,
-    );
-
-    // Breadcrumb: verse ID + name
-    if let Some(ref vid) = nav.active_verse_id {
-        let crumb = format!("verse: {} ({})", nav.active_verse_name, truncate_id(vid));
-        ui.painter().text(
-            egui::pos2(rect.min.x + 10.0, rect.min.y + 32.0),
-            egui::Align2::LEFT_CENTER,
-            crumb,
-            egui::FontId::proportional(9.0),
-            theme::TEXT_DIM,
-        );
-    }
-
-    let verse = hierarchy
+    let Some(verse) = hierarchy
         .verses
         .iter()
-        .find(|v| nav.active_verse_id.as_deref() == Some(&v.id));
-
-    if let Some(verse) = verse {
-        let card_w = 200.0_f32;
-        let card_h = 70.0_f32;
-        let gap = 12.0_f32;
-        let start_y = rect.min.y + 65.0;
-        let cards_per_row = ((rect.width() - 40.0) / (card_w + gap)).floor().max(1.0) as usize;
-
-        for (i, fractal) in verse.fractals.iter().enumerate() {
-            let col = i % cards_per_row;
-            let row = i / cards_per_row;
-            let x = rect.min.x + 20.0 + col as f32 * (card_w + gap);
-            let y = start_y + row as f32 * (card_h + gap);
-            let card_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(card_w, card_h));
-
-            let mut card_clicked = false;
-            ui.scope_builder(egui::UiBuilder::new().max_rect(card_rect), |ui| {
-                let resp = ui
-                    .add_sized(
-                        [card_w, card_h],
-                        egui::Button::new(
-                            egui::RichText::new(&fractal.name)
-                                .strong()
-                                .size(13.0)
-                                .color(theme::TEXT_BRIGHT),
-                        )
-                        .fill(theme::BG_PANEL)
-                        .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM))
-                        .corner_radius(6.0),
-                    )
-                    .named(ui, format_args!("Open fractal {}", fractal.name));
-                if resp.clicked() {
-                    card_clicked = true;
-                }
-            });
-
-            // Gear icon overlay on top-right of card (managers only)
-            let mut gear_clicked = false;
-            if local_role.can_manage() {
-                let gear_rect = egui::Rect::from_min_size(
-                    egui::pos2(card_rect.right() - 26.0, card_rect.top() + 4.0),
-                    egui::vec2(22.0, 22.0),
-                );
-                ui.scope_builder(egui::UiBuilder::new().max_rect(gear_rect), |ui| {
-                    let gear_resp = ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("\u{2699}")
-                                    .size(14.0)
-                                    .color(theme::ICON_GEAR),
-                            )
-                            .fill(theme::BG_BUTTON)
-                            .corner_radius(4.0),
-                        )
-                        .named(ui, format_args!("Settings for fractal {}", fractal.name));
-                    if gear_resp.clicked() {
-                        gear_clicked = true;
-                    }
-                });
-            }
-
-            if gear_clicked {
-                ui_mgr.open_dialog(crate::dialogs::entity_details::dialog(
-                    EntitySettingsType::Fractal,
-                    &fractal.id,
-                    &fractal.name,
-                    &verse.id,
-                    None,
-                ));
-            } else if card_clicked {
-                nav.navigate_to_fractal_in_verse(
-                    &verse.id,
-                    &verse.name,
-                    &fractal.id,
-                    &fractal.name,
-                );
-            }
-
-            ui.painter().text(
-                egui::pos2(x + card_w / 2.0, y + card_h - 12.0),
-                egui::Align2::CENTER_CENTER,
-                format!("{} petals", fractal.petals.len()),
-                egui::FontId::proportional(10.0),
-                theme::TEXT_MUTED,
-            );
+        .find(|verse| nav.active_verse_id.as_deref() == Some(&verse.id))
+    else {
+        return;
+    };
+    let cards: Vec<_> = verse
+        .fractals
+        .iter()
+        .map(|fractal| BrowserCard {
+            id: &fractal.id,
+            name: &fractal.name,
+            kind: EntitySettingsType::Fractal,
+            verse: &verse.id,
+            fractal: None,
+            count: fractal.petals.len(),
+            noun: "petal",
+            plural: "petals",
+        })
+        .collect();
+    let title = format!(
+        "{} {} in {}",
+        cards.len(),
+        if cards.len() == 1 {
+            "fractal"
+        } else {
+            "fractals"
+        },
+        verse.name
+    );
+    let body = egui::Rect::from_min_max(rect.min + egui::vec2(0.0, 62.0), rect.max);
+    match bounded_browser(
+        ui,
+        body,
+        &verse.id,
+        &title,
+        &cards,
+        "+ New Fractal",
+        local_role.can_manage(),
+        false,
+    ) {
+        Some(BrowserAction::Open(index)) => {
+            nav.navigate_to_fractal(cards[index].id, cards[index].name)
         }
-
-        // [+ New Fractal] button
-        let new_row = verse.fractals.len() / cards_per_row;
-        let new_col = verse.fractals.len() % cards_per_row;
-        let new_x = rect.min.x + 20.0 + new_col as f32 * (card_w + gap);
-        let new_y = start_y + new_row as f32 * (card_h + gap);
-        let new_rect =
-            egui::Rect::from_min_size(egui::pos2(new_x, new_y), egui::vec2(card_w, card_h));
-
-        ui.scope_builder(egui::UiBuilder::new().max_rect(new_rect), |ui| {
-            let resp = ui
-                .add_sized(
-                    [card_w, card_h],
-                    egui::Button::new(
-                        egui::RichText::new("+ New Fractal")
-                            .size(13.0)
-                            .color(theme::TEXT_DIM),
-                    )
-                    .fill(egui::Color32::TRANSPARENT)
-                    .stroke(egui::Stroke::new(1.0_f32, theme::BG_BUTTON_ALT))
-                    .corner_radius(6.0),
-                )
-                .observed(ui);
-            if resp.clicked() {
-                ui_mgr.open_dialog(ActiveDialog::CreateEntity {
-                    kind: CreateKind::Fractal,
-                    parent_id: verse.id.clone(),
-                    name_buf: String::new(),
-                });
-            }
-        });
-
-        if verse.fractals.is_empty() {
-            ui.painter().text(
-                center,
-                egui::Align2::CENTER_CENTER,
-                "No fractals yet — click + New Fractal to create one",
-                egui::FontId::proportional(14.0),
-                theme::TEXT_MUTED,
-            );
-        }
+        Some(BrowserAction::Options(index)) => cards[index].open_options(ui_mgr),
+        Some(BrowserAction::Create) => ui_mgr.open_dialog(ActiveDialog::CreateEntity {
+            kind: CreateKind::Fractal,
+            parent_id: verse.id.clone(),
+            name_buf: String::new(),
+        }),
+        _ => {}
     }
 }
 
-/// Fractal selected — browse petals, select one to enter its 3D space.
+/// Browse petals with human ancestor links and readable target Options.
 pub fn viewport_petal_browser(
     ui: &mut egui::Ui,
     nav: &mut NavigationManager,
     hierarchy: &VerseManager,
     _db_tx: &crossbeam::channel::Sender<DbCommand>,
     rect: egui::Rect,
-    center: egui::Pos2,
+    _center: egui::Pos2,
     ui_mgr: &mut UiManager,
     local_role: &LocalUserRole,
 ) {
-    // Back button
-    let mut back_clicked = false;
+    let mut changed = false;
     ui.scope_builder(
         egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-            egui::pos2(rect.min.x + 8.0, rect.min.y + 4.0),
-            egui::vec2(100.0, 24.0),
+            rect.min,
+            egui::vec2(rect.width(), 60.0),
         )),
         |ui| {
-            if ui
-                .add(
-                    egui::Button::new(egui::RichText::new("\u{25C0} Fractals").small())
-                        .fill(theme::BG_BUTTON),
-                )
-                .named(ui, "Back to fractals")
-                .clicked()
-            {
-                back_clicked = true;
-            }
+            changed = breadcrumbs(ui, nav, 2, hierarchy);
         },
     );
-    if back_clicked {
-        nav.back_from_fractal();
+    if changed {
+        return;
     }
-
-    ui.painter().text(
-        egui::pos2(center.x, rect.min.y + 35.0),
-        egui::Align2::CENTER_CENTER,
-        format!(
-            "{} / {} — Select a Petal to enter",
-            nav.active_verse_name, nav.active_fractal_name
-        ),
-        egui::FontId::proportional(18.0),
-        theme::TEXT_STRONG,
-    );
-    ui.painter().text(
-        egui::pos2(center.x, rect.min.y + 55.0),
-        egui::Align2::CENTER_CENTER,
-        "Each petal is a 3D space where objects live",
-        egui::FontId::proportional(12.0),
-        theme::TEXT_MUTED,
-    );
-
-    // Breadcrumb: verse / fractal with IDs
-    if let (Some(ref vid), Some(ref fid)) = (&nav.active_verse_id, &nav.active_fractal_id) {
-        let crumb = format!(
-            "verse: {} ({}) / fractal: {} ({})",
-            nav.active_verse_name,
-            truncate_id(vid),
-            nav.active_fractal_name,
-            truncate_id(fid),
-        );
-        ui.painter().text(
-            egui::pos2(rect.min.x + 10.0, rect.min.y + 32.0),
-            egui::Align2::LEFT_CENTER,
-            crumb,
-            egui::FontId::proportional(9.0),
-            theme::TEXT_DIM,
-        );
-    }
-
-    let fractal_data = hierarchy
+    let Some(verse) = hierarchy
         .verses
         .iter()
-        .find(|v| nav.active_verse_id.as_deref() == Some(&v.id))
-        .and_then(|v| {
-            v.fractals
-                .iter()
-                .find(|f| nav.active_fractal_id.as_deref() == Some(&f.id))
-                .map(|f| (v, f))
-        });
-
-    if let Some((verse, fractal)) = fractal_data {
-        let card_w = 180.0_f32;
-        let card_h = 80.0_f32;
-        let gap = 12.0_f32;
-        let start_y = rect.min.y + 80.0;
-        let cards_per_row = ((rect.width() - 40.0) / (card_w + gap)).floor().max(1.0) as usize;
-
-        for (i, petal) in fractal.petals.iter().enumerate() {
-            let col = i % cards_per_row;
-            let row = i / cards_per_row;
-            let x = rect.min.x + 20.0 + col as f32 * (card_w + gap);
-            let y = start_y + row as f32 * (card_h + gap);
-            let card_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(card_w, card_h));
-
-            let mut card_clicked = false;
-            ui.scope_builder(egui::UiBuilder::new().max_rect(card_rect), |ui| {
-                let resp = ui
-                    .add_sized(
-                        [card_w, card_h],
-                        egui::Button::new(
-                            egui::RichText::new(&petal.name)
-                                .strong()
-                                .size(13.0)
-                                .color(theme::TEXT_BRIGHT),
-                        )
-                        .fill(theme::BG_PANEL)
-                        .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM))
-                        .corner_radius(6.0),
-                    )
-                    .named(ui, format_args!("Open petal {}", petal.name));
-                if resp.clicked() {
-                    card_clicked = true;
-                }
-            });
-
-            // Gear icon overlay on top-right of card (managers only)
-            let mut gear_clicked = false;
-            if local_role.can_manage() {
-                let gear_rect = egui::Rect::from_min_size(
-                    egui::pos2(card_rect.right() - 26.0, card_rect.top() + 4.0),
-                    egui::vec2(22.0, 22.0),
-                );
-                ui.scope_builder(egui::UiBuilder::new().max_rect(gear_rect), |ui| {
-                    let gear_resp = ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("\u{2699}")
-                                    .size(14.0)
-                                    .color(theme::ICON_GEAR),
-                            )
-                            .fill(theme::BG_BUTTON)
-                            .corner_radius(4.0),
-                        )
-                        .named(ui, format_args!("Settings for petal {}", petal.name));
-                    if gear_resp.clicked() {
-                        gear_clicked = true;
-                    }
-                });
-            }
-
-            if gear_clicked {
-                ui_mgr.open_dialog(crate::dialogs::entity_details::dialog(
-                    EntitySettingsType::Petal,
-                    &petal.id,
-                    &petal.name,
-                    nav.active_verse_id.as_deref().unwrap_or_default(),
-                    nav.active_fractal_id.as_deref(),
-                ));
-            } else if card_clicked {
-                nav.navigate_to_petal_in_fractal(
-                    &verse.id,
-                    &verse.name,
-                    &fractal.id,
-                    &fractal.name,
-                    &petal.id,
-                );
-            }
-
-            ui.painter().text(
-                egui::pos2(x + card_w / 2.0, y + card_h - 12.0),
-                egui::Align2::CENTER_CENTER,
-                format!("{} nodes", petal.nodes.len()),
-                egui::FontId::proportional(10.0),
-                theme::TEXT_MUTED,
-            );
-        }
-
-        // [+ New Petal] button
-        let fractal_id = fractal.id.clone();
-        let new_row = fractal.petals.len() / cards_per_row;
-        let new_col = fractal.petals.len() % cards_per_row;
-        let new_x = rect.min.x + 20.0 + new_col as f32 * (card_w + gap);
-        let new_y = start_y + new_row as f32 * (card_h + gap);
-        let new_rect =
-            egui::Rect::from_min_size(egui::pos2(new_x, new_y), egui::vec2(card_w, card_h));
-
-        ui.scope_builder(egui::UiBuilder::new().max_rect(new_rect), |ui| {
-            let resp = ui
-                .add_sized(
-                    [card_w, card_h],
-                    egui::Button::new(
-                        egui::RichText::new("+ New Petal")
-                            .size(13.0)
-                            .color(theme::TEXT_DIM),
-                    )
-                    .fill(egui::Color32::TRANSPARENT)
-                    .stroke(egui::Stroke::new(1.0_f32, theme::BG_BUTTON_ALT))
-                    .corner_radius(6.0),
-                )
-                .observed(ui);
-            if resp.clicked() {
-                ui_mgr.open_dialog(ActiveDialog::CreateEntity {
-                    kind: CreateKind::Petal,
-                    parent_id: fractal_id,
-                    name_buf: String::new(),
-                });
-            }
-        });
-
-        if fractal.petals.is_empty() {
-            ui.painter().text(
-                center,
-                egui::Align2::CENTER_CENTER,
-                "No petals yet — click + New Petal to create one",
-                egui::FontId::proportional(14.0),
-                theme::TEXT_MUTED,
-            );
-        }
+        .find(|verse| nav.active_verse_id.as_deref() == Some(&verse.id))
+    else {
+        return;
+    };
+    let Some(fractal) = verse
+        .fractals
+        .iter()
+        .find(|fractal| nav.active_fractal_id.as_deref() == Some(&fractal.id))
+    else {
+        return;
+    };
+    let cards: Vec<_> = fractal
+        .petals
+        .iter()
+        .map(|petal| BrowserCard {
+            id: &petal.id,
+            name: &petal.name,
+            kind: EntitySettingsType::Petal,
+            verse: &verse.id,
+            fractal: Some(&fractal.id),
+            count: petal.nodes.len(),
+            noun: "node",
+            plural: "nodes",
+        })
+        .collect();
+    let title = format!(
+        "{} {} in {}",
+        cards.len(),
+        if cards.len() == 1 { "petal" } else { "petals" },
+        fractal.name
+    );
+    let body = egui::Rect::from_min_max(rect.min + egui::vec2(0.0, 62.0), rect.max);
+    match bounded_browser(
+        ui,
+        body,
+        &fractal.id,
+        &title,
+        &cards,
+        "+ New Petal",
+        local_role.can_manage(),
+        false,
+    ) {
+        Some(BrowserAction::Open(index)) => nav.navigate_to_petal(cards[index].id),
+        Some(BrowserAction::Options(index)) => cards[index].open_options(ui_mgr),
+        Some(BrowserAction::Create) => ui_mgr.open_dialog(ActiveDialog::CreateEntity {
+            kind: CreateKind::Petal,
+            parent_id: fractal.id.clone(),
+            name_buf: String::new(),
+        }),
+        _ => {}
     }
 }
 
-/// Find petal name by ID in the hierarchy.
-/// Truncate a ULID to its first 8 characters for compact display in breadcrumbs.
-fn truncate_id(id: &str) -> &str {
-    &id[..8.min(id.len())]
-}
-
+/// Find a petal's human name in the loaded hierarchy.
 pub fn find_petal_name(hierarchy: &VerseManager, petal_id: &str) -> String {
     for verse in &hierarchy.verses {
         for fractal in &verse.fractals {
@@ -799,4 +530,198 @@ pub fn find_petal_name(hierarchy: &VerseManager, petal_id: &str) -> String {
         }
     }
     "Unknown".to_string()
+}
+
+#[cfg(test)]
+pub(crate) fn browser_access_render_journey() {
+    use crate::verse_manager::{FractalEntry, PetalEntry, VerseEntry};
+    let mut hierarchy = VerseManager::default();
+    hierarchy.verses.push(VerseEntry {
+        id: "browser-v".into(),
+        name: "Long readable verse name ".repeat(8),
+        fractals: vec![FractalEntry {
+            id: "browser-f".into(),
+            name: "Fractal name".into(),
+            petals: vec![PetalEntry {
+                id: "browser-p".into(),
+                name: "Petal name".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    for index in 1..128 {
+        hierarchy.verses.push(VerseEntry {
+            id: format!("other-{index}"),
+            name: format!("Other verse {index}"),
+            ..Default::default()
+        });
+    }
+    let (sender, receiver) = crossbeam::channel::unbounded();
+    for size in [
+        egui::vec2(1024.0, 768.0),
+        egui::vec2(1280.0, 720.0),
+        egui::vec2(1920.0, 1080.0),
+    ] {
+        for depth in 0..3 {
+            let ctx = egui::Context::default();
+            let mut time = 0.0;
+            let mut nav = NavigationManager::default();
+            if depth > 0 {
+                nav.navigate_to_verse("browser-v", &hierarchy.verses[0].name);
+            }
+            if depth > 1 {
+                nav.navigate_to_fractal("browser-f", "Fractal name");
+            }
+            let mut manager = UiManager::default();
+            let mut frame = |events: Vec<egui::Event>,
+                             nav: &mut NavigationManager,
+                             manager: &mut UiManager,
+                             contents: &VerseManager| {
+                time += 1.0 / 60.0;
+                let _ = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                        time: Some(time),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        crate::ui_shell::layout_policy::begin_frame(ctx, true);
+                        crate::ui_shell::layout_policy::begin_ui_pass(ctx);
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            let rect = ui.available_rect_before_wrap();
+                            let center = rect.center();
+                            let unresolved = LocalUserRole::default();
+                            match depth {
+                                0 => viewport_verse_browser(
+                                    ui,
+                                    nav,
+                                    contents,
+                                    &sender,
+                                    &DashboardState::default(),
+                                    rect,
+                                    center,
+                                    manager,
+                                    &unresolved,
+                                ),
+                                1 => viewport_fractal_browser(
+                                    ui,
+                                    nav,
+                                    contents,
+                                    &sender,
+                                    rect,
+                                    center,
+                                    manager,
+                                    &unresolved,
+                                ),
+                                _ => viewport_petal_browser(
+                                    ui,
+                                    nav,
+                                    contents,
+                                    &sender,
+                                    rect,
+                                    center,
+                                    manager,
+                                    &unresolved,
+                                ),
+                            }
+                        });
+                    },
+                );
+                crate::ui_shell::layout_policy::observations(&ctx)
+            };
+            frame(vec![], &mut nav, &mut manager, &hierarchy);
+            let observed = frame(vec![], &mut nav, &mut manager, &hierarchy);
+            let options = observed
+                .controls
+                .iter()
+                .find(|control| {
+                    control.clickable
+                        && control.rect.width() <= 34.0
+                        && control.rect.height() >= 26.0
+                        && control.rect.height() <= 30.0
+                        && control.clip.contains_rect(control.hit)
+                })
+                .expect("Options remains visible for unresolved/read-only current role")
+                .hit;
+            for pressed in [true, false] {
+                frame(
+                    vec![
+                        egui::Event::PointerMoved(options.center()),
+                        egui::Event::PointerButton {
+                            pos: options.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                    &mut nav,
+                    &mut manager,
+                    &hierarchy,
+                );
+            }
+            let expected = [
+                EntitySettingsType::Verse,
+                EntitySettingsType::Fractal,
+                EntitySettingsType::Petal,
+            ][depth];
+            assert!(
+                matches!(&manager.active_dialog,ActiveDialog::EntitySettings {entity_type,..} if *entity_type==expected),
+                "Actual Options pointer click opens target details without current Manager role"
+            );
+            assert!(
+                receiver.try_recv().is_err(),
+                "Opening Options never queues a role mutation"
+            );
+            assert!(observed
+                .scrolls
+                .iter()
+                .all(|scroll| scroll.viewport.height() <= size.y
+                    && scroll.viewport.width() <= size.x));
+            if depth == 0 {
+                assert!(
+                    observed
+                        .scrolls
+                        .iter()
+                        .any(|scroll| scroll.content_size.y > scroll.viewport.height()),
+                    "A long card list has a bounded scroll viewport"
+                );
+                manager.close_dialog();
+                let empty = VerseManager::default();
+                frame(vec![], &mut nav, &mut manager, &empty);
+                let empty_frame = frame(vec![], &mut nav, &mut manager, &empty);
+                let join = empty_frame
+                    .controls
+                    .iter()
+                    .find(|control| {
+                        (control.rect.width() - 120.0).abs() < 0.1
+                            && (control.rect.height() - 26.0).abs() < 0.1
+                    })
+                    .expect("Empty browser offers Join")
+                    .hit;
+                for pressed in [true, false] {
+                    frame(
+                        vec![
+                            egui::Event::PointerMoved(join.center()),
+                            egui::Event::PointerButton {
+                                pos: join.center(),
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ],
+                        &mut nav,
+                        &mut manager,
+                        &empty,
+                    );
+                }
+                assert!(
+                    matches!(manager.active_dialog, ActiveDialog::JoinDialog { .. }),
+                    "Join opens the real existing flow"
+                );
+            }
+        }
+    }
 }

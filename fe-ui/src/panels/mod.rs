@@ -469,6 +469,7 @@ mod tests {
 
     #[test]
     fn gardener_console_render_smoke_sanitizes_all_numeric_tool_surfaces() {
+        crate::viewport::browser_access_render_journey();
         let ctx = egui::Context::default();
         let mut sidebar = crate::plugin::SidebarState::default();
         let mut tool = crate::plugin::ToolState {
