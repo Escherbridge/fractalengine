@@ -79,10 +79,6 @@ async fn admitted(
     }
     if !state.input.allowed
         || crate::auth::require_role_level(claims, fe_database::RoleLevel::Owner).is_err()
-        || state.revoked_jtis.read().await.contains(&claims.jti)
-        || std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(true, |now| now.as_secs() >= claims.exp)
     {
         return Err(refusal(
             StatusCode::FORBIDDEN,
@@ -90,6 +86,15 @@ async fn admitted(
             "QA authorization is no longer current",
         ));
     }
+    crate::auth::require_current_credential(state, claims)
+        .await
+        .map_err(|status| {
+            refusal(
+                status,
+                "qa_gate_refused",
+                "QA authorization is no longer current",
+            )
+        })?;
     let result = result.map_err(|error| {
         refusal(
             if error.code == "not_found_or_denied" {
