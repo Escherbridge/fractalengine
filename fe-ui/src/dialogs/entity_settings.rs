@@ -378,7 +378,10 @@ pub fn render_entity_settings_dialog(
                     ui.label(egui::RichText::new("Peer Access").strong());
                     access_action=super::entity_access::role_controls(ui,access,known_peers);
                     let (invite_action,copied)=super::entity_access::invite_controls(ui,access,invite_role_buf,invite_expiry_buf);
-                    access_action=invite_action.or(access_action);copied_access|=copied;
+                    if let Some(action) = invite_action {
+                        access_action = Some(action);
+                    }
+                    copied_access |= copied;
                 }
                 SettingsTab::ApiAccess => {
                     ui.label(egui::RichText::new("API Access").strong());

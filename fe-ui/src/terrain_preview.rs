@@ -13,7 +13,6 @@ use crate::actions::terrain_proposal::{brush_region_fields, SculptShapeMode, Scu
 use crate::geometry::{meters_to_world, world_to_meters};
 use crate::navigation_manager::NavigationManager;
 use crate::node_manager::brush_interaction::BrushGesture;
-use crate::panels::terrain_tools_panel::circle_footprint;
 use crate::panels::tool_options::{shape_apply_footprint, shape_region_op_fields};
 use crate::panels::tool_panel::ToolPanelState;
 use crate::panels::toolbar::Tool;

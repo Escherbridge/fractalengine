@@ -1,6 +1,6 @@
 use fe_query::{Filter, QueryBuilder, UpdateBuilder};
 
-use fe_policy::{GrantedRole, RoleStatement};
+use fe_policy::GrantedRole;
 
 use crate::query_helpers::exec_query;
 use crate::repo::Db;

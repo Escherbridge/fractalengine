@@ -14,7 +14,7 @@ pub(super) fn handle_api_token_minted(
     selected: Option<&str>,
     current_scope: &str,
     can_manage: bool,
-    ui_mgr: &mut UiManager,
+    _ui_mgr: &mut UiManager,
     inspector: &mut InspectorFormState,
     db_sender: &DbCommandSender,
 ) -> bool {
@@ -105,7 +105,7 @@ pub(super) fn handle_api_token_revoked(
 pub(super) fn handle_api_tokens_listed(
     tokens: &[ApiTokenInfo],
     total: u64,
-    ui_mgr: &mut UiManager,
+    _ui_mgr: &mut UiManager,
     inspector: &mut InspectorFormState,
 ) {
     let entries = tokens_to_entries(tokens);
@@ -118,7 +118,7 @@ pub(super) fn handle_api_tokens_listed(
 pub(super) fn handle_scoped_api_tokens_listed(
     tokens: &[ApiTokenInfo],
     total: u64,
-    ui_mgr: &mut UiManager,
+    _ui_mgr: &mut UiManager,
     inspector: &mut InspectorFormState,
 ) {
     let entries = tokens_to_entries(tokens);
@@ -210,7 +210,7 @@ pub(crate) fn mint_command(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dialogs::{ApiTokenEntry, EntitySettingsType, SettingsTab};
+    use crate::dialogs::{ActiveDialog, ApiTokenEntry, EntitySettingsType, SettingsTab};
 
     fn sender() -> (DbCommandSender, crossbeam::channel::Receiver<DbCommand>) {
         let (tx, rx) = crossbeam::channel::bounded(8);

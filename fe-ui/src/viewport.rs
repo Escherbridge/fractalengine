@@ -69,7 +69,7 @@ pub fn viewport_petal_space(
     node_mgr: &crate::node_manager::NodeManager,
     hierarchy: &VerseManager,
     rect: egui::Rect,
-    center: egui::Pos2,
+    _center: egui::Pos2,
     cursor_world: &ViewportCursorWorld,
     ui_mgr: &mut UiManager,
     _local_role: &LocalUserRole,
