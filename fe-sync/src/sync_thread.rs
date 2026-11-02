@@ -1826,21 +1826,26 @@ async fn handle_open_verse_replica(
                 .await;
             }
         }
-        request_local_role_reemit(db_cmd_tx, verse_id);
+        request_local_catalog_and_roles(db_cmd_tx, verse_id);
     }
 }
 
-/// role_propagation AC-42: ask the DB to re-emit this node's own live role statements now
-/// that `verse_id`'s replica is open (a statement published while it was closed, or evicted
-/// from [`PendingWrites`], would otherwise never reach a peer). Non-blocking: the DB loop
-/// answers through the outbound bridge, never through a channel this loop awaits.
-fn request_local_role_reemit(
+/// Request stored catalog recovery and local role replay after replica open; see src/AGENTS.md.
+fn request_local_catalog_and_roles(
     db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
     verse_id: &str,
 ) {
     let Some(tx) = db_cmd_tx else {
         return;
     };
+    if let Err(error) = tx.try_send(DbCommand::ReemitLocalVerseCatalog {
+        verse_id: verse_id.to_owned(),
+    }) {
+        tracing::warn!(
+            verse_id,
+            "local catalog recovery request not delivered: {error}"
+        );
+    }
     if let Err(e) = tx.try_send(DbCommand::ReemitLocalRoleStatements {
         verse_id: verse_id.to_string(),
     }) {
@@ -6281,6 +6286,54 @@ mod tests {
             vec!["node-1".to_string(), "verse-1".to_string()],
             "peer-authored rows ride DbCommand::ApplyReplicatedRow; own-author rows never re-apply"
         );
+
+        let local = "did:key:local";
+        let persisted = FixedSnapshot(vec![
+            change(
+                "verse",
+                "verse-1",
+                local,
+                br#"{"verse_id":"verse-1","created_by":"did:key:local","default_access":"viewer"}"#,
+            ),
+            change(
+                SHARD_TABLE,
+                "p1/a/0",
+                local,
+                &serde_json::to_vec(&serde_json::json!({
+                    "shard":"p1/a/0", "hosts":[local], "mode":"mirror", "replication_factor":1,
+                    "bucket_width_ms":60000, "range_start_ms":0, "range_end_ms":60000,
+                    "row_count":1, "size_bytes":100,
+                }))
+                .unwrap(),
+            ),
+        ]);
+        let mut restarted = VerseFabric::default();
+        seed_reconciliation(&persisted, "verse-1", local, &evt_tx, &None, &mut restarted).await;
+        assert!(!restarted.query_catalog_ready("verse-1", "p1"));
+        assert!(
+            restarted.shards.is_empty(),
+            "missing persisted Petal keeps the shard gated"
+        );
+        assert_eq!(restarted.quarantine_len(), 1);
+        handle_inbound_row_change(
+            &mut restarted,
+            "verse-1",
+            &change(
+                "petal",
+                "p1",
+                local,
+                br#"{"petal_id":"p1","fractal_id":"f1"}"#,
+            ),
+            local,
+            &evt_tx,
+            &None,
+        );
+        assert!(restarted.query_catalog_ready("verse-1", "p1"));
+        assert_eq!(restarted.quarantine_len(), 0);
+        assert_eq!(
+            restarted.shards["p1/a/0"].row_count, 1,
+            "catalog restoration admits the persisted ledger without re-ingesting or counting readings"
+        );
     }
 
     /// An empty replica (nothing ever replicated in) is a silent no-op.
@@ -6429,13 +6482,14 @@ mod tests {
             !matches!(evt_rx.try_recv(), Ok(SyncEvent::ReplicaOpenFailed { .. })),
             "no ReplicaOpenFailed when the stack is offline (mock is sanctioned)"
         );
-        // An empty mock snapshot applies nothing; the one DB command is the AC-42 request to
-        // re-emit this node's own role statements now that the replica is open.
+        // An empty mock snapshot requests stored catalog repair before the role replay.
+        assert!(matches!(db_rx.try_recv(),
+            Ok(DbCommand::ReemitLocalVerseCatalog { verse_id }) if verse_id == "verse-offline"));
         match db_rx.try_recv() {
             Ok(DbCommand::ReemitLocalRoleStatements { verse_id }) => {
                 assert_eq!(verse_id, "verse-offline")
             }
-            other => panic!("expected only the role re-emit request, got {other:?}"),
+            other => panic!("expected the role replay after catalog recovery, got {other:?}"),
         }
         assert!(
             db_rx.try_recv().is_err(),

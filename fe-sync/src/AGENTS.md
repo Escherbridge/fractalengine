@@ -1904,3 +1904,29 @@ hash — stays open over this ALPN to anyone who knows its 256-bit hash,
 exactly as before. Closing THAT needs a membership-keyed filter for every
 hash this ALPN serves, or namespace rotation — out of this item's scope;
 it is a separate, still-open trigger.
+
+
+## distributed-catalog-restart
+
+A fresh fabric must restore owner plus Petal-to-Fractal ancestry before a
+production distributed query is admitted. An unresolved catalog now returns
+an explicit not-ready outcome, rather than a zero-target empty success. A
+known Petal with no ledger can still legitimately yield an empty plan. This
+checks knowledge, not caller authorization; existing API scope and sync role
+admission remain in force.
+
+Replica open requests the bounded DB-authorized local catalog re-emit before
+its existing role-statement replay. The repair restores Verse/Fractal/Petal
+rows from stored Manager-fenced readback, including runs created before Petal
+publication was fixed. The normal own-author bookkeeping seam maps the Petal
+and reevaluates quarantined ledger rows through existing role admission; it
+never bypasses that admission or re-ingests local readings. Viewer-only nodes
+cannot sign a reconstructed catalog and rely on admitted replica convergence.
+
+The existing reconciliation journey models own persisted ledger plus missing
+Petal, not-ready state, and recovery after the own catalog row arrives without
+changing reading counts. Existing runtime/backpressure and durable DB journeys
+cover the command order and honest refusal. Source presence is not executed
+restart, fleet or timeout proof. Archived pass13 shows a real online same-key
+stack replaying 40 entries but an empty distributed plan after restart; local
+history/readings/blob persistence passed separately.

@@ -896,6 +896,13 @@ pub fn submit_distributed_query(
         );
         return;
     };
+    if !fabric.query_catalog_ready(&request.verse_id, request.spec.petal_id()) {
+        transport.reply(
+            &call.reply,
+            error_outcome("distributed catalog is not ready for this Petal; restore its owner and ancestry first"),
+        );
+        return;
+    }
     let plan = match plan_distributed_query(
         &request.verse_id,
         &request.spec,
@@ -1717,7 +1724,26 @@ mod tests {
 
     #[test]
     fn plan_empty_ledger_is_an_empty_plan() {
-        let fabric = VerseFabric::default();
+        let mut fabric = VerseFabric::default();
+        assert!(!fabric.query_catalog_ready("v-1", "p1"));
+        fabric.note_local_verse_row(
+            "v-1",
+            &serde_json::json!({
+                "created_by": "did:local", "default_access": "viewer",
+            }),
+            "did:local",
+        );
+        assert!(
+            !fabric.query_catalog_ready("v-1", "p1"),
+            "owner alone is not a restored catalog"
+        );
+        fabric.note_local_petal_row(
+            "v-1",
+            &serde_json::json!({
+                "petal_id": "p1", "fractal_id": "f1",
+            }),
+        );
+        assert!(fabric.query_catalog_ready("v-1", "p1"));
         let plan =
             plan_distributed_query("v-1", &agg_spec(0, 1_000), &fabric, "did:local").unwrap();
         assert!(plan.target_shards.is_empty());
@@ -3764,8 +3790,48 @@ mod tests {
             })
             .expect("pre-fill the event channel");
         let transport = DistributedTransport::new("did:local".into(), None, evt_tx);
+        let (reply, unavailable) = crossbeam::channel::bounded(1);
+        submit_distributed_query(
+            &transport,
+            &HashMap::from([("v-1".to_owned(), VerseFabric::default())]),
+            &HashMap::new(),
+            DistributedQueryCall {
+                request: fe_runtime::distributed_query::DistributedQueryRequest {
+                    request_id: "not-restored".into(),
+                    verse_id: "v-1".into(),
+                    spec: agg_spec(0, 60_000),
+                    timeout_ms: 500,
+                    row_cap: 0,
+                },
+                reply,
+            },
+        );
+        let unavailable = unavailable
+            .try_recv()
+            .expect("unrestored catalog refuses immediately");
+        assert!(
+            unavailable
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("not ready"))
+        );
+        assert!(unavailable.rows.is_empty() && unavailable.meta.covered_shards.is_empty());
         let mut fabrics = HashMap::new();
-        fabrics.insert("v-1".to_string(), VerseFabric::default());
+        let mut restored = VerseFabric::default();
+        restored.note_local_verse_row(
+            "v-1",
+            &serde_json::json!({
+                "created_by": "did:local", "default_access": "viewer",
+            }),
+            "did:local",
+        );
+        restored.note_local_petal_row(
+            "v-1",
+            &serde_json::json!({
+                "petal_id": "p1", "fractal_id": "f1",
+            }),
+        );
+        fabrics.insert("v-1".to_string(), restored);
 
         let call = |id: &str| {
             let (reply, rx) = crossbeam::channel::bounded(1);

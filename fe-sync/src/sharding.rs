@@ -1694,6 +1694,11 @@ impl VerseFabric {
         }
     }
 
+    /// Whether a known owner and Petal mapping make distributed planning meaningful.
+    pub fn query_catalog_ready(&self, verse_id: &str, petal_id: &str) -> bool {
+        self.owner_did.is_some() && self.petal_scope(verse_id, petal_id).is_some()
+    }
+
     /// Serialize the fabric for `SyncCommand::GetShardLedger` (diagnostics,
     /// harness assertions — the fabric is otherwise sync-thread-internal).
     pub fn to_dump_json(&self) -> serde_json::Value {
