@@ -321,3 +321,10 @@ correlation and failure/conflict handling, real catalog feeding, and P2P
 replication/hydration. Keep residency distance owned by Settings; requirements
 Save must not write its hidden legacy render_distance field. The legacy save
 action is rejected with a shared error notice and has no DB sender.
+
+Context-menu Clear Properties opens Node Options rather than directly queuing
+the clear action. The target-bound confirmation remains the only touched
+clear entry point. Editing the requirements add-ID/type controls also marks
+the dialog dirty before Add is pressed; Close/X therefore cannot silently
+drop that input. Copy JSON includes table requirements only and explicitly
+excludes unapplied Add fields, with a visible Add instruction and copy notice.

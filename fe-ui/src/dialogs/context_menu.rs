@@ -668,7 +668,7 @@ fn render_target_menu(
                 }
             }
             // --- node-scoped verbs (shared `verb_action` map) ---
-            Verb::EditProperties | Verb::Duplicate | Verb::ClearProperties => {
+            Verb::EditProperties | Verb::Duplicate => {
                 if let Some(id) = &node_backed {
                     if render_target_verb_button(ui, verb, &target.hit, true) {
                         outcome.actions.extend(verb_action(verb, id, false));
@@ -676,7 +676,7 @@ fn render_target_menu(
                     }
                 }
             }
-            Verb::Rename => {
+            Verb::Rename | Verb::ClearProperties => {
                 if let Some(id) = &node_backed {
                     if render_target_verb_button(ui, verb, &target.hit, true) {
                         // The Node Options Name field is the rename surface

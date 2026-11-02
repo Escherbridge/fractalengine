@@ -157,13 +157,15 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
                     .selected_text(if add_hexon_id_buf.is_empty() { "Choose an installed hexon" } else { add_hexon_id_buf.as_str() })
                     .show_ui(ui, |ui| {
                         for id in available_hexon_ids.iter().filter(|id| !id.trim().is_empty()) {
-                            if ui.selectable_value(add_hexon_id_buf, id.clone(), id).named(ui, format_args!("Choose installed hexon {id}")).clicked() { manual = false; }
+                            let choice = ui.selectable_value(add_hexon_id_buf, id.clone(), id).named(ui, format_args!("Choose installed hexon {id}"));
+                            if choice.changed() { *dirty = true; }
+                            if choice.clicked() { manual = false; }
                         }
                     }).response.named(ui, "Installed hexon choices");
                 ui.checkbox(&mut manual, "Enter another ID manually").observed(ui);
             }
             if manual {
-                ui.add(egui::TextEdit::singleline(add_hexon_id_buf).hint_text("hexon-id").desired_width(ui.available_width())).named(ui, "Hexon ID to add");
+                if ui.add(egui::TextEdit::singleline(add_hexon_id_buf).hint_text("hexon-id").desired_width(ui.available_width())).named(ui, "Hexon ID to add").changed() { *dirty = true; }
             }
             ctx.data_mut(|data| data.insert_temp(scope.with("manual_id"), manual));
             ui.horizontal_wrapped(|ui| {
@@ -172,7 +174,9 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
                 egui::ComboBox::from_id_salt(scope.with("hexon_type"))
                     .selected_text(if add_hexon_type_buf.is_empty() { "Choose type" } else { add_hexon_type_buf.as_str() })
                     .show_ui(ui, |ui| {
-                        for kind in TYPES { ui.selectable_value(add_hexon_type_buf, kind.to_string(), kind).observed(ui); }
+                        for kind in TYPES {
+                            if ui.selectable_value(add_hexon_type_buf, kind.to_string(), kind).observed(ui).changed() { *dirty = true; }
+                        }
                     }).response.named(ui, "Hexon type to add");
                 let duplicate = manifest.hexons.iter().any(|entry| entry.hexon_id == add_hexon_id_buf.trim());
                 let can_add = !add_hexon_id_buf.trim().is_empty() && !duplicate && TYPES.contains(&add_hexon_type_buf.as_str());
@@ -183,6 +187,8 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
                     *dirty = true;
                 }
             });
+
+            ui.label(egui::RichText::new("Click Add to include the ID and type fields in the requirements JSON.").small().color(theme::TEXT_DIM));
 
             // --- Sharing hint ---
             ui.add_space(12.0);
@@ -243,7 +249,7 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
     }
     if copied_json {
         ui_mgr.show_toast(
-            "Requirements JSON copied; the draft is not saved",
+            "Requirements JSON copied; unapplied Add fields are excluded and the draft is not saved",
             ctx.input(|input| input.time),
         );
     }
