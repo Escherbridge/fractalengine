@@ -630,6 +630,22 @@ pub fn spawn_db_thread_shared(
                 let cmd = rx.recv();
                 let cmd_start = std::time::Instant::now();
                 match cmd {
+                    Ok(DbCommand::PluginRead {admission,request,reply}) => {
+                        let result=handlers::plugin_host::read(&db,&admission,request,&local_did).await.map_err(|error|error.to_string());
+                        if let Err(error)=reply.send(result) {tracing::warn!(%error,"plugin read receiver closed");}
+                    }
+                    Ok(DbCommand::PluginCommit {admission,ops,reply}) => {
+                        let result=match handlers::plugin_host::commit(&db,&admission,&ops,&local_did).await {
+                            Ok(outcome)=>{
+                                handlers::plugin_host::publish(&outcome,handlers::plugin_host::EffectSinks {
+                                    results:&tx,scene:entity_change_tx.as_ref(),lifecycle:&lifecycle_tx,replication:repl_tx.as_ref(),blobs:&blob_store,
+                                });
+                                Ok(fe_runtime::plugin_host::PluginReply::Committed(outcome.receipt))
+                            }
+                            Err(error)=>Err(error.to_string()),
+                        };
+                        if let Err(error)=reply.send(result) {tracing::warn!(%error,"plugin commit receiver closed; outcome may require reconciliation");}
+                    }
                     Ok(DbCommand::Ping) => {
                         send_result(&tx, DbResult::Pong);
                     }

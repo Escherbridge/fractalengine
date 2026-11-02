@@ -1119,7 +1119,7 @@ async fn read_node_lifecycle_meta(
 }
 
 /// Build the durable tombstone marker object stamped onto a soft-deleted row.
-fn tombstone_marker(hlc: u64, source_did: &str) -> serde_json::Value {
+pub(crate) fn tombstone_marker(hlc: u64, source_did: &str) -> serde_json::Value {
     serde_json::json!({
         "hlc": hlc,
         "source_did": source_did,

@@ -1633,3 +1633,33 @@ Petal ancestry, rejects globally ambiguous hierarchy/node IDs, authorizes Viewer
 presence under exact live ancestors, then rechecks ancestry and role. Unknown/moved/foreign uniformly fail.
 At most64 IDs and4096 UTF-8 JSON bytes per preview return; oversize remains explicitly truncated/unavailable.
 This read changes no object, operation journal or history. Full editing uses the existing typed property flow.
+
+## Plugin host
+
+PluginRead and PluginCommit carry host-minted PluginAdmission (no Deserialize)
+and embedded typed reply senders, so plugin results never share API waiters.
+The initial scope handshake pins a full stored petal ancestry; subsequent requests
+refuse reparented scopes. Every use checks admitted capability/property/scope
+patterns plus the actual DB local DID's current Viewer/Editor floor. The shared
+hierarchy permission snapshot now accepts a role floor; parent mutations retain
+Manager and identical snapshot guards. Reads fence that exact authority and
+ancestry inside their read transaction and recheck permission after materializing.
+
+A plugin batch stages its complete ordered changes before writing. Property
+validation uses the exact captured field definitions, then fences those rows,
+initial node fields/geometry, journal cursors and captured authority inside the
+same existing atomic operation transaction. Repeated changes on a node use
+node_history::prepare_change, sharing the ordinary baseline, reducer, size and
+monotonic-version contract. A PluginTransaction intention records the actual
+ordered batch; schema, state, intention and journal either all commit or roll back.
+The host never uses ElevatedQuery or caller SQL for this path.
+
+V1 DeleteNode is a real soft tombstone for plain nodes. Path/stamp nodes or nodes
+with dependent children refuse before effects, including dependencies introduced
+by another staged operation. Its plugin_tombstone journal fact is explicitly
+unsupported by historical replay; the earlier supported baseline stays readable.
+No tombstone replay coverage is invented. Post-commit publishing uses existing
+scene, lifecycle, GUI materialization/cache and P2P row seams. PluginNodeRemoved
+is GUI-only and cannot claim an API NodeDeleted waiter. Replication remains the
+existing best-effort transport, not a guarantee of peer delivery or distributed
+transaction atomicity.

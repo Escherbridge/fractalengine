@@ -124,7 +124,7 @@ fn unavailable_fact(node_id: &str, version: i64) -> Value {
         "source_did":"","payload":{"availability":"unavailable_scope"},"row_version":version,"created_at":""})
 }
 
-fn check_snapshot_size(value: &Value) -> anyhow::Result<()> {
+pub(crate) fn check_snapshot_size(value: &Value) -> anyhow::Result<()> {
     if serde_json::to_vec(value)?.len() > fe_sdk::property_schema::MAX_PROPERTY_BYTES {
         anyhow::bail!("covered object snapshot exceeds 65536 bytes");
     }
@@ -141,7 +141,7 @@ pub(crate) async fn snapshot(db: &Db, node_id: &str) -> anyhow::Result<Option<Va
     rows.into_iter().next().map(normalize_snapshot).transpose()
 }
 
-fn normalize_snapshot(mut row: Value) -> anyhow::Result<Value> {
+pub(crate) fn normalize_snapshot(mut row: Value) -> anyhow::Result<Value> {
     let coordinates = row["position"]["coordinates"]
         .as_array()
         .filter(|c| c.len() == 2)
@@ -157,7 +157,7 @@ fn normalize_snapshot(mut row: Value) -> anyhow::Result<Value> {
     Ok(row)
 }
 
-async fn latest(db: &Db, node_id: &str) -> anyhow::Result<Option<Value>> {
+pub(crate) async fn latest(db: &Db, node_id: &str) -> anyhow::Result<Option<Value>> {
     let mut response = db
         .query(
             "SELECT * OMIT id FROM node_log WHERE node_id = $id ORDER BY row_version DESC LIMIT 1",
@@ -375,6 +375,67 @@ pub(crate) async fn create_object_granted(
     Ok((id, asset_path))
 }
 
+/// Prepared ordinary facts and their authoritative resulting state.
+pub(crate) struct PreparedChange {
+    pub after: Value,
+    pub version: i64,
+    pub facts: Vec<(String, i64, Value)>,
+}
+
+/// Prepare the same baseline/reducer/version contract for one write or an atomic batch.
+pub(crate) fn prepare_change(
+    before: Value,
+    previous: Option<&Value>,
+    scope: &str,
+    op: &str,
+    data: Value,
+    schema_versions: Value,
+) -> anyhow::Result<PreparedChange> {
+    let last_version = previous.map(row_version).transpose()?.unwrap_or(0);
+    let continuous = previous.is_some_and(|row| {
+        row["payload"]["journal_version"] == JOURNAL_VERSION
+            && row["payload"]["scope"].as_str() == Some(scope)
+            && row["payload"]["after_state"] == before
+    });
+    let baseline_version = last_version
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("node version exhausted"))?;
+    let version = baseline_version
+        .checked_add(i64::from(!continuous))
+        .ok_or_else(|| anyhow::anyhow!("node version exhausted"))?;
+    let mut after = before.clone();
+    if op == "plugin_tombstone" {
+        after["tombstone"] = data["marker"].clone();
+    } else {
+        reduce_change(&mut after, op, &data)?;
+    }
+    if op == "full_transform" {
+        after["edit_seq"] = json!(before["edit_seq"]
+            .as_i64()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("transform edit sequence exhausted"))?);
+        after["elevation"] = data["position"][1].clone();
+    }
+    check_snapshot_size(&before)?;
+    check_snapshot_size(&after)?;
+    let mut facts = Vec::new();
+    if !continuous {
+        facts.push(("baseline".to_string(), baseline_version, json!({
+            "journal_version": JOURNAL_VERSION, "scope": scope,
+            "after_state": before, "state": before,
+            "coverage_reason": if previous.is_none() { "first_covered_mutation" } else { "legacy_or_uncovered_interval" }
+        })));
+    }
+    facts.push((
+        op.to_string(),
+        version,
+        json!({"journal_version": JOURNAL_VERSION,
+        "scope": scope, "data": data, "after_state": after, "schema_versions": schema_versions}),
+    ));
+    Ok(PreparedChange {after, version, facts})
+}
+
 /// Commit the materialized change, intention, baseline and journal facts together.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn commit_mutation(
@@ -394,44 +455,9 @@ pub(crate) async fn commit_mutation(
         .ok_or_else(|| anyhow::anyhow!("node not found"))?;
     let scope = authorized_node_scope(db, &node_id, grant, actor).await?;
     let previous = latest(db, &node_id).await?;
-    let last_version = previous.as_ref().map(row_version).transpose()?.unwrap_or(0);
-    let continuous = previous.as_ref().is_some_and(|row| {
-        row["payload"]["journal_version"] == JOURNAL_VERSION
-            && row["payload"]["scope"].as_str() == Some(scope.as_str())
-            && row["payload"]["after_state"] == before
-    });
-    let baseline_version = last_version
-        .checked_add(1)
-        .ok_or_else(|| anyhow::anyhow!("node version exhausted"))?;
-    let version = baseline_version
-        .checked_add(i64::from(!continuous))
-        .ok_or_else(|| anyhow::anyhow!("node version exhausted"))?;
-    let mut after = before.clone();
-    reduce_change(&mut after, op, &data)?;
-    if op == "full_transform" {
-        after["edit_seq"] = json!(before["edit_seq"]
-            .as_i64()
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("transform edit sequence exhausted"))?);
-        after["elevation"] = data["position"][1].clone();
-    }
-    check_snapshot_size(&before)?;
-    check_snapshot_size(&after)?;
-    let mut facts = Vec::new();
-    if !continuous {
-        facts.push(("baseline", baseline_version, json!({
-            "journal_version": JOURNAL_VERSION, "scope": scope,
-            "after_state": before, "state": before,
-            "coverage_reason": if previous.is_none() { "first_covered_mutation" } else { "legacy_or_uncovered_interval" }
-        })));
-    }
-    facts.push((
-        op,
-        version,
-        json!({"journal_version": JOURNAL_VERSION,
-        "scope": scope, "data": data, "after_state": after, "schema_versions": schema_versions}),
-    ));
+    let prepared = prepare_change(before, previous.as_ref(), &scope, op, data, schema_versions)?;
+    let version = prepared.version;
+    let facts = prepared.facts;
     let actor = actor.to_string();
     let (mut scope_statements, scope_bindings) = scope_fence(&scope, Some(&node_id))?;
     commit_operation_atomic_with(db, entry, move |hlc| {

@@ -351,7 +351,8 @@ pub(super) fn apply_db_results(
                 &mut caches.earthwork_map,
                 &mut caches.callout_map,
             ),
-            DbResult::NodeDeleted { node_id, petal_id } => nodes::handle_node_deleted(
+            DbResult::NodeDeleted { node_id, petal_id }
+            | DbResult::PluginNodeRemoved { node_id, petal_id } => nodes::handle_node_deleted(
                 node_id,
                 petal_id,
                 &mut verse_mgr,

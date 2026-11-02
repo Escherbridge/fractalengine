@@ -468,6 +468,18 @@ impl CallerAuth {
 
 #[derive(Debug, Clone)]
 pub enum DbCommand {
+    /// Trusted plugin read with a private typed reply channel.
+    PluginRead {
+        admission: crate::plugin_host::PluginAdmission,
+        request: crate::plugin_host::PluginRead,
+        reply: crossbeam::channel::Sender<Result<crate::plugin_host::PluginReply,String>>,
+    },
+    /// An admitted atomic plugin batch; queued work is never a commit receipt.
+    PluginCommit {
+        admission: crate::plugin_host::PluginAdmission,
+        ops: Vec<fe_sdk::plugin_host::PendingOp>,
+        reply: crossbeam::channel::Sender<Result<crate::plugin_host::PluginReply,String>>,
+    },
     Ping,
     Seed,
     Shutdown,
@@ -1163,6 +1175,8 @@ pub enum DeferralReason {
 
 #[derive(Debug, Clone, Message)]
 pub enum DbResult {
+    /// GUI-only committed plugin removal; it has no pending API reply family.
+    PluginNodeRemoved { node_id: String, petal_id: String },
     Pong,
     Seeded {
         petal_name: String,

@@ -15,6 +15,10 @@ pub(crate) struct ParentMutation {
 }
 
 impl ParentMutation {
+    pub(crate) fn into_parts(self) -> (Vec<String>,Vec<(String,Value)>) {
+        (self.guards,self.bindings)
+    }
+
     pub(crate) async fn commit(
         self,
         db: &Db,
@@ -87,7 +91,15 @@ async fn prepare_parent_access(
     };
     anyhow::ensure!(target == Some(entity_id), "invalid hierarchy target scope");
 
-    let mut scopes = vec![scope.clone()];
+    prepare_scope_permission(db,&scope,local_did,required).await
+}
+
+/// Capture and fence one stored scope's authority at the requested role floor.
+pub(crate) async fn prepare_scope_permission(
+    db: &Db,scope: &str,local_did: &str,required: fe_policy::RoleLevel,
+) -> anyhow::Result<ParentMutation> {
+    let parts=crate::parse_scope(scope)?;
+    let mut scopes = vec![scope.to_string()];
     while let Some(parent) = crate::parent_scope(scopes.last().unwrap()) {
         scopes.push(parent);
     }
@@ -128,7 +140,7 @@ async fn prepare_parent_access(
     Ok(ParentMutation {
         guards,
         bindings,
-        scope,
+        scope: scope.to_owned(),
         role,
     })
 }

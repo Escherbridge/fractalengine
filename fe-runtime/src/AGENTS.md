@@ -796,3 +796,12 @@ surface or API waiter can use this as a reply to an unrelated command.
 Requests bind expected canonical scope, Petal and1..64 distinct IDs; dispatcher supplies local identity. Replies
 preserve bounded JSON, explicit absent/truncated states and primitive presence only. Adoption binds nonce,
 complete requested ID set and current scope. No public generic property reader or material guess is added.
+
+
+## Typed plugin DB bridge
+
+plugin_host::PluginAdmission has private host-minted fields and no request-body
+deserializer. PluginRead/PluginCommit use a per-request embedded typed sender,
+matching the existing direct request/reply pattern. They do not enter the API
+pending-family map. PluginNodeRemoved is an unsolicited GUI-only result with no
+request family. The DB always resolves local identity itself.

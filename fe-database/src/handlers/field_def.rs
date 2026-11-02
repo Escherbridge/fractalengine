@@ -188,16 +188,32 @@ pub(crate) async fn validate_property_in_scope(
     key: &str,
     value: &serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
+    let rows = capture_property_rules(db,key).await?;
+    validate_captured_property_rules(scope,key,value,&rows)
+}
+
+pub(crate) const PROPERTY_RULES_SQL: &str = "SELECT field_def_id, scope, enforced_schema FROM field_def WHERE entity_type = 'node' AND key = $key AND enforced_schema != NONE ORDER BY field_def_id, scope";
+
+pub(crate) async fn capture_property_rules(db: &Db,key: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+    let mut response=db.query(PROPERTY_RULES_SQL).bind(("key",key.to_string())).await?.check()?;
+    Ok(response.take(0)?)
+}
+
+/// Validate only the exact definition snapshot that a caller can fence at commit.
+pub(crate) fn validate_captured_property_rules(
+    scope: &str,key: &str,value: &serde_json::Value,rows: &[serde_json::Value],
+) -> anyhow::Result<serde_json::Value> {
     validate_json_numbers(value)?;
-    let mut response = db.query("SELECT field_def_id, scope, enforced_schema FROM field_def WHERE entity_type = 'node' AND key = $key AND enforced_schema != NONE")
-        .bind(("key", key.to_string())).await?.check()?;
-    let rows: Vec<serde_json::Value> = response.take(0)?;
     let mut versions = serde_json::Map::new();
     for row in rows {
         let definition_scope = row["scope"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("definition scope missing"))?;
-        if crate::scope_contains(definition_scope, scope) {
+        let resource=crate::parse_scope(scope)?;
+        let rule=crate::parse_scope(definition_scope)?;
+        if rule.verse_id==resource.verse_id
+            && rule.fractal_id.as_ref().is_none_or(|id|resource.fractal_id.as_ref()==Some(id))
+            && rule.petal_id.as_ref().is_none_or(|id|resource.petal_id.as_ref()==Some(id)) {
             let descriptor = parse_descriptor(&row["enforced_schema"])?;
             descriptor
                 .validate(value)

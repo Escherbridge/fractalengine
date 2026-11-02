@@ -406,3 +406,9 @@ The active dialog's target, request nonce, canonical stored scope and ancestry
 must all match before any form buffer is hydrated. Matching rename, default-
 access and description acknowledgements request a fresh stored-details read;
 late acknowledgements for another open target do not change that form.
+
+## Plugin removals
+
+The GUI-only PluginNodeRemoved result shares the existing committed node-removal
+manager/cache adapter. It deliberately has no API reply family, so background
+plugin soft deletes cannot satisfy a pending legacy DeleteNode request.

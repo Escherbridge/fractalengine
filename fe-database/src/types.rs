@@ -9,6 +9,8 @@ pub struct RoleId(pub String);
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum OpType {
+    /// One admitted atomic batch from a trusted plugin instance.
+    PluginTransaction,
     CreatePetal,
     CreateRoom,
     PlaceModel,
