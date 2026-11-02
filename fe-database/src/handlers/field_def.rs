@@ -216,12 +216,25 @@ pub(crate) async fn set_field_schema_handler(
     db: &Db,
     field_def_id: &str,
     value: &serde_json::Value,
+    grant: &fe_runtime::node_history::NodeAccessGrant,
+    local_did: &str,
 ) -> anyhow::Result<serde_json::Value> {
     validate_json_numbers(value)?;
     let descriptor = parse_descriptor(value)?;
     let row = get_field_def_handler(db, field_def_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("field definition not found"))?;
+    let definition_scope = row["scope"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("definition scope missing"))?;
+    super::node_history::authorize_scope(
+        db,
+        grant,
+        local_did,
+        definition_scope,
+        fe_policy::RoleLevel::Manager,
+    )
+    .await?;
     if row["entity_type"].as_str() != Some("node") {
         anyhow::bail!("enforced property schemas currently support node definitions only");
     }
@@ -265,6 +278,26 @@ pub(crate) async fn set_field_schema_handler(
     rows.into_iter()
         .next()
         .ok_or_else(|| anyhow::anyhow!("field definition disappeared"))
+}
+
+/// Read schema metadata after checking current stored scope and local Viewer permission.
+pub(crate) async fn get_field_schema_handler(
+    db: &Db,
+    field_def_id: &str,
+    grant: &fe_runtime::node_history::NodeAccessGrant,
+    local_did: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let row = get_field_def_handler(db, field_def_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("not found or not permitted"))?;
+    let scope = row["scope"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("definition scope missing"))?;
+    super::node_history::authorize_scope(db, grant, local_did, scope, fe_policy::RoleLevel::Viewer)
+        .await?;
+    Ok(
+        serde_json::json!({"field_def_id":row["field_def_id"],"scope":scope,"key":row["key"],"enforced_schema":row.get("enforced_schema"),"schema_revisions":row.get("schema_revisions")}),
+    )
 }
 
 async fn scoped_nodes(db: &Db, scope: &str) -> anyhow::Result<Vec<serde_json::Value>> {

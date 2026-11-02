@@ -1556,6 +1556,28 @@ unavailable_interval markers: only requested node identity and cursor version ar
 retained, with no original payload, log id, actor, HLC or timestamp. Replay refuses
 an unauthorized baseline or interval with unavailable_scope and no state. Coverage
 start metadata is omitted when the initial baseline is outside the caller grant.
-The local desktop may inspect facts in any valid retained scope, but unknown-scope
-legacy payloads are still redacted. Historical reads never infer ownership from
+The local desktop must currently hold Viewer at each retained fact scope;
+unknown-scope and no-longer-readable payloads are redacted. Historical reads never infer ownership from
 only the object's present location.
+
+
+### Local identity and role floors
+
+Local is an internal routing mode, not an authority grant. The DB command loop
+resolves Local actors from its actual local_did and ignores the command actor_did
+label. The committed core and ordinary local compatibility write helpers require
+Editor through the existing require_node_role/node_role_at path at the actual
+stored scope. This includes create, property set/delete, and full transform.
+Node-view writes carry their already-authorized real subject and scope through
+the same core, without a literal local placeholder. Scoped API requests retain
+their validated upstream token-role behavior; opaque API subjects are not treated
+as local users or looked up as local DIDs.
+
+Local history admission, each retained fact/baseline, and version replay require
+current Viewer permission for the DB-resolved local identity. Revoking access to
+an earlier scope redacts those facts even while the local user can read the
+object's current scope. Local SetFieldSchema requires Manager at the stored
+definition scope; GetFieldSchema requires Viewer. Both dedicated commands carry
+NodeAccessGrant, and API constructs Scoped from validated claims. Ordinary
+metadata-only legacy definition constructors stay compatible; active enforced
+definitions keep their earlier update/delete protections.

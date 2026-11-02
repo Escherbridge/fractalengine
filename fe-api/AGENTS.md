@@ -2199,3 +2199,12 @@ History page coverage and every entry identify the requested node; state preview
 also match the requested version and snapshot node. Property wrappers return
 success only after these checks, rather than manufacturing success from the
 requested id when the DB replied for another object.
+
+
+Dedicated Local object commands derive actor from the DB-thread identity and
+require stored Editor permission. Local history checks stored Viewer permission
+on the current scope and each past fact scope. Local schema writes/reads require
+Manager/Viewer respectively. Schema GET/PUT/MCP now use grant-bound
+GetFieldSchema/SetFieldSchema DB requests; API creates Scoped from validated
+claims and preserves authenticated opaque-principal capability behavior. Replies
+still validate exact correlation and field-definition identity.

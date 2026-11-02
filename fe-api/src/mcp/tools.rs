@@ -443,7 +443,12 @@ pub(super) fn get_properties(call: ToolCall<'_>) -> ToolFuture<'_> {
 
 pub(super) fn get_field_schema(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
-        crate::property_schema::get_core(call.state, str_arg(call.args, "field_def_id")).await
+        crate::property_schema::get_core(
+            call.state,
+            call.claims,
+            str_arg(call.args, "field_def_id"),
+        )
+        .await
     })
 }
 
@@ -522,8 +527,13 @@ pub(super) fn set_field_schema(call: ToolCall<'_>) -> ToolFuture<'_> {
             .get("descriptor")
             .cloned()
             .ok_or("descriptor required")?;
-        crate::property_schema::set_core(call.state, str_arg(call.args, "field_def_id"), descriptor)
-            .await
+        crate::property_schema::set_core(
+            call.state,
+            call.claims,
+            str_arg(call.args, "field_def_id"),
+            descriptor,
+        )
+        .await
     })
 }
 

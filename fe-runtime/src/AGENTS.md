@@ -765,3 +765,10 @@ from validated token claims; the desktop adapter explicitly supplies Local.
 UnavailableScope is a read-only history availability value; foreign or unknown
 facts carry static unavailable_interval entries with no original payload. The
 public REST envelope and committed materialization DTO shapes are unchanged.
+
+
+Local now resolves the real DB-thread local identity and checks stored roles;
+it never trusts a supplied actor label. Local write/read/schema floors are
+Editor/Viewer/Manager. SetFieldSchema also requires grant; GetFieldSchema is the
+correlated Viewer descriptor-read command. API schema GET/PUT still return the
+same JSON payloads. The enum remains non-deserializable from request bodies.

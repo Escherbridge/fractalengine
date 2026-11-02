@@ -6,7 +6,7 @@ use serde_json::Value;
 /// Trusted admission context, constructed by API auth or the local desktop.
 #[derive(Debug, Clone)]
 pub enum NodeAccessGrant {
-    /// Internal desktop command; never deserialized from an HTTP/MCP body.
+    /// Internal desktop command; DB resolves local identity and checks stored roles.
     Local,
     /// Validated token grant, rechecked against stored ancestry at DB use.
     Scoped(String),

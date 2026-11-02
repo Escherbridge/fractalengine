@@ -7,7 +7,7 @@ use axum::{
     Extension, Json,
 };
 use fe_identity::api_token::ApiClaims;
-use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
+use fe_runtime::messages::{DbCommand, DbResult};
 use serde_json::{json, Value};
 
 use crate::{server::ApiState, types::ApiResponse};
@@ -25,50 +25,62 @@ pub(crate) async fn definition_scope(state: &ApiState, id: &str) -> Option<Strin
     .map(str::to_string)
 }
 
-pub(crate) async fn get_core(state: &ApiState, id: &str) -> Result<Value, String> {
-    let rows = crate::gis::run_select(state,
-        "SELECT field_def_id, scope, key, enforced_schema, schema_revisions FROM field_def WHERE field_def_id = $id LIMIT 1",
-        vec![("id".into(), json!(id))]).await.ok_or("operation failed")?;
-    rows.into_iter()
-        .next()
-        .ok_or_else(|| crate::rest::NOT_FOUND_OR_DENIED.into())
+pub(crate) async fn get_core(
+    state: &ApiState,
+    claims: &ApiClaims,
+    id: &str,
+) -> Result<Value, String> {
+    schema_round_trip(state, id, |correlation_id| DbCommand::GetFieldSchema {
+        field_def_id: id.to_string(),
+        grant: fe_runtime::node_history::NodeAccessGrant::Scoped(claims.scope.clone()),
+        correlation_id: Some(correlation_id),
+    })
+    .await
 }
 
 pub(crate) async fn set_core(
     state: &ApiState,
+    claims: &ApiClaims,
     id: &str,
     descriptor: Value,
 ) -> Result<Value, String> {
     fe_sdk::property_schema::EnforcedPropertySchema::parse(&descriptor)?;
+    schema_round_trip(state, id, |correlation_id| DbCommand::SetFieldSchema {
+        field_def_id: id.to_string(),
+        descriptor,
+        grant: fe_runtime::node_history::NodeAccessGrant::Scoped(claims.scope.clone()),
+        correlation_id: Some(correlation_id),
+    })
+    .await
+}
+
+async fn schema_round_trip(
+    state: &ApiState,
+    id: &str,
+    command: impl FnOnce(String) -> DbCommand,
+) -> Result<Value, String> {
     let correlation_id = ulid::Ulid::new().to_string();
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    state
-        .api_cmd_tx
-        .send(ApiCommand::DbRequest {
-            cmd: DbCommand::SetFieldSchema {
-                field_def_id: id.to_string(),
-                descriptor,
-                correlation_id: Some(correlation_id.clone()),
-            },
-            reply_tx,
-        })
-        .map_err(|_| "internal channel closed")?;
-    match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-        Ok(Ok(DbResult::QueryResult {
+    match crate::rest::db_round_trip(state, command(correlation_id.clone())).await? {
+        DbResult::QueryResult {
             mut data,
             correlation_id: Some(echoed),
-        })) if echoed == correlation_id && data.len() == 1 => Ok(data.remove(0)),
-        Ok(Ok(DbResult::RequestFailed {
+        } if echoed == correlation_id
+            && data.len() == 1
+            && data[0]["field_def_id"].as_str() == Some(id) =>
+        {
+            Ok(data.remove(0))
+        }
+        DbResult::RequestFailed {
             error,
             correlation_id: echoed,
-        })) if echoed == correlation_id => {
-            tracing::warn!(%error, "field schema refused");
+        } if echoed == correlation_id => {
+            tracing::warn!(%error,"field schema refused");
             if error.contains("integer exceeds supported signed 64-bit storage range") {
                 return Err("integer exceeds supported signed 64-bit storage range".into());
             }
-            Err("schema revision refused; existing values, defaults and consecutive version must remain valid".into())
+            Err("schema revision refused; check permissions, stored values/defaults and consecutive version".into())
         }
-        _ => Err("schema commit was not confirmed; read back before retrying".into()),
+        _ => Err("schema reply not confirmed; read back before retrying".into()),
     }
 }
 
@@ -90,7 +102,7 @@ pub async fn get(
     Path(id): Path<String>,
 ) -> Json<ApiResponse<Value>> {
     let result = match authorized(&state, &claims, &id, "viewer").await {
-        Ok(()) => get_core(&state, &id).await,
+        Ok(()) => get_core(&state, &claims, &id).await,
         Err(error) => Err(error),
     };
     Json(match result {
@@ -106,7 +118,7 @@ pub async fn put(
     Json(descriptor): Json<Value>,
 ) -> Json<ApiResponse<Value>> {
     let result = match authorized(&state, &claims, &id, "manager").await {
-        Ok(()) => set_core(&state, &id, descriptor).await,
+        Ok(()) => set_core(&state, &claims, &id, descriptor).await,
         Err(error) => Err(error),
     };
     Json(match result {

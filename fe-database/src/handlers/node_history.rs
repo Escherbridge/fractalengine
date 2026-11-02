@@ -28,15 +28,32 @@ fn require_grant(grant: &NodeAccessGrant, scope: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub(crate) async fn authorize_scope(
+    db: &Db,
+    grant: &NodeAccessGrant,
+    local_did: &str,
+    scope: &str,
+    floor: fe_policy::RoleLevel,
+) -> anyhow::Result<()> {
+    require_grant(grant, scope)?;
+    if matches!(grant, NodeAccessGrant::Local) {
+        crate::require_node_role(db, local_did, scope, floor, "Object operation")
+            .await
+            .map_err(anyhow::Error::msg)?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn authorized_node_scope(
     db: &Db,
     node_id: &str,
     grant: &NodeAccessGrant,
+    local_did: &str,
 ) -> anyhow::Result<String> {
     let scope = super::crud::resolve_node_scope_handler(db, node_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("not found or not permitted"))?;
-    require_grant(grant, &scope)?;
+    authorize_scope(db, grant, local_did, &scope, fe_policy::RoleLevel::Editor).await?;
     Ok(scope)
 }
 
@@ -68,7 +85,13 @@ pub(crate) fn scope_fence(
     Ok((statements, bindings))
 }
 
-fn fact_is_authorized(row: &Value, node_id: &str, grant: &NodeAccessGrant) -> bool {
+async fn fact_is_authorized(
+    db: &Db,
+    row: &Value,
+    node_id: &str,
+    grant: &NodeAccessGrant,
+    local_did: &str,
+) -> bool {
     if row["node_id"].as_str() != Some(node_id)
         || row["payload"]["journal_version"] != JOURNAL_VERSION
     {
@@ -77,7 +100,10 @@ fn fact_is_authorized(row: &Value, node_id: &str, grant: &NodeAccessGrant) -> bo
     let Some(scope) = row["payload"]["scope"].as_str() else {
         return false;
     };
-    if require_grant(grant, scope).is_err() {
+    if authorize_scope(db, grant, local_did, scope, fe_policy::RoleLevel::Viewer)
+        .await
+        .is_err()
+    {
         return false;
     }
     let Ok(parts) = crate::parse_scope(scope) else {
@@ -176,6 +202,7 @@ pub(crate) async fn receipt(
     )?)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn read_reply(
     db: &Db,
     node_id: &str,
@@ -183,11 +210,21 @@ pub(crate) async fn read_reply(
     limit: usize,
     at_version: Option<i64>,
     grant: &NodeAccessGrant,
+    local_did: &str,
     correlation_id: Option<String>,
 ) -> fe_runtime::messages::DbResult {
     use fe_runtime::messages::DbResult;
     let result = async {
-        let value = read_granted(db, node_id, after_version, limit, at_version, grant).await?;
+        let value = read_granted(
+            db,
+            node_id,
+            after_version,
+            limit,
+            at_version,
+            grant,
+            local_did,
+        )
+        .await?;
         Ok::<_, anyhow::Error>(if at_version.is_some() {
             DbResult::NodeStateAtVersionLoaded {
                 state: serde_json::from_value(value)?,
@@ -265,7 +302,7 @@ pub(crate) async fn create_object_granted(
     grant: &NodeAccessGrant,
 ) -> anyhow::Result<(String, Option<String>)> {
     let scope = super::preconditions::require_petal_scope(db, petal_id, "CreateObject").await?;
-    require_grant(grant, &scope)?;
+    authorize_scope(db, grant, actor, &scope, fe_policy::RoleLevel::Editor).await?;
     if name.trim().is_empty()
         || name.len() > 1024
         || position.iter().any(|v| !v.is_finite())
@@ -355,7 +392,7 @@ pub(crate) async fn commit_mutation(
     let before = snapshot(db, &node_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("node not found"))?;
-    let scope = authorized_node_scope(db, &node_id, grant).await?;
+    let scope = authorized_node_scope(db, &node_id, grant, actor).await?;
     let previous = latest(db, &node_id).await?;
     let last_version = previous.as_ref().map(row_version).transpose()?.unwrap_or(0);
     let continuous = previous.as_ref().is_some_and(|row| {
@@ -463,6 +500,7 @@ pub(crate) async fn read_granted(
     limit: usize,
     at_version: Option<i64>,
     grant: &NodeAccessGrant,
+    local_did: &str,
 ) -> anyhow::Result<Value> {
     if after_version < 0 || !(1..=200).contains(&limit) || at_version.is_some_and(|v| v < 1) {
         anyhow::bail!("invalid history bounds");
@@ -482,26 +520,35 @@ pub(crate) async fn read_granted(
             .ok_or_else(|| anyhow::anyhow!("not found or not permitted"))?
             .to_string()
     };
-    require_grant(grant, &admitted_scope)?;
+    authorize_scope(
+        db,
+        grant,
+        local_did,
+        &admitted_scope,
+        fe_policy::RoleLevel::Viewer,
+    )
+    .await?;
     let current_version = row_version(&latest)?;
     let mut baseline_response = db.query("SELECT * OMIT id FROM node_log WHERE node_id = $id AND op = 'baseline' AND payload.journal_version = 1 ORDER BY row_version ASC LIMIT 1")
         .bind(("id", node_id.to_string())).await?.check()?;
     let baselines: Vec<Value> = baseline_response.take(0)?;
-    let baseline = baselines
-        .first()
-        .filter(|row| fact_is_authorized(row, node_id, grant));
+    let baseline = match baselines.first() {
+        Some(row) if fact_is_authorized(db, row, node_id, grant, local_did).await => Some(row),
+        _ => None,
+    };
     let coverage_start = baseline.map(row_version).transpose()?;
     let mut metadata = json!({"node_id":node_id, "journal_version": JOURNAL_VERSION,
         "current_version":current_version, "coverage_start_version":coverage_start,
         "coverage_started_at":baseline.and_then(|b|b.get("created_at")),
         "supported_operations":["baseline","property_set","property_deleted","full_transform"],
         "order":"per_object_commit_version", "event_time_ordering":false});
-    let current_matches = snapshot(db, node_id).await?.is_some_and(|state| {
-        fact_is_authorized(&latest, node_id, grant) && latest["payload"]["after_state"] == state
-    });
+    let latest_authorized = fact_is_authorized(db, &latest, node_id, grant, local_did).await;
+    let current_matches = snapshot(db, node_id)
+        .await?
+        .is_some_and(|state| latest_authorized && latest["payload"]["after_state"] == state);
     metadata["current_state_verified"] = json!(current_matches);
     if let Some(target) = at_version {
-        return replay(db, node_id, target, metadata, grant).await;
+        return replay(db, node_id, target, metadata, grant, local_did).await;
     }
     let mut response = db.query("SELECT * OMIT id FROM node_log WHERE node_id = $id AND row_version > $after ORDER BY row_version ASC LIMIT $limit")
         .bind(("id", node_id.to_string())).bind(("after", after_version)).bind(("limit", (limit + 1) as i64)).await?.check()?;
@@ -516,16 +563,14 @@ pub(crate) async fn read_granted(
     } else {
         Value::Null
     };
-    let visible_rows: Vec<Value> = rows
-        .into_iter()
-        .map(|row| {
-            if fact_is_authorized(&row, node_id, grant) {
-                Ok(row)
-            } else {
-                Ok(unavailable_fact(node_id, row_version(&row)?))
-            }
-        })
-        .collect::<anyhow::Result<_>>()?;
+    let mut visible_rows = Vec::with_capacity(rows.len());
+    for row in rows {
+        if fact_is_authorized(db, &row, node_id, grant, local_did).await {
+            visible_rows.push(row);
+        } else {
+            visible_rows.push(unavailable_fact(node_id, row_version(&row)?));
+        }
+    }
     metadata["entries"] = json!(visible_rows);
     Ok(metadata)
 }
@@ -536,6 +581,7 @@ async fn replay(
     target: i64,
     mut metadata: Value,
     grant: &NodeAccessGrant,
+    local_did: &str,
 ) -> anyhow::Result<Value> {
     metadata["at_version"] = json!(target);
     let mut response = db.query("SELECT * OMIT id FROM node_log WHERE node_id = $id AND op = 'baseline' AND payload.journal_version = 1 AND row_version <= $target ORDER BY row_version DESC LIMIT 1")
@@ -545,7 +591,7 @@ async fn replay(
         metadata["availability"] = json!("before_coverage");
         return Ok(metadata);
     };
-    if !fact_is_authorized(baseline, node_id, grant) {
+    if !fact_is_authorized(db, baseline, node_id, grant, local_did).await {
         metadata["availability"] = json!("unavailable_scope");
         return Ok(metadata);
     }
@@ -561,7 +607,7 @@ async fn replay(
             break;
         }
         for row in &rows {
-            if !fact_is_authorized(row, node_id, grant) {
+            if !fact_is_authorized(db, row, node_id, grant, local_did).await {
                 metadata["availability"] = json!("unavailable_scope");
                 return Ok(metadata);
             }
@@ -647,6 +693,7 @@ pub(crate) async fn read(
     after_version: i64,
     limit: usize,
     at_version: Option<i64>,
+    local_did: &str,
 ) -> anyhow::Result<Value> {
     read_granted(
         db,
@@ -655,6 +702,7 @@ pub(crate) async fn read(
         limit,
         at_version,
         &NodeAccessGrant::Local,
+        local_did,
     )
     .await
 }

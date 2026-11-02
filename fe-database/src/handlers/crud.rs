@@ -1691,7 +1691,7 @@ mod delete_node_tests {
             .expect("in-memory SurrealDB");
         db.use_ns("test").use_db("test").await.expect("ns/db");
         db.query(
-            "CREATE verse CONTENT { verse_id: 'verse-1', name: 'v' };
+            "CREATE verse CONTENT { verse_id: 'verse-1', name: 'v', created_by:'local' };
              CREATE fractal CONTENT { fractal_id: 'fractal-1', verse_id: 'verse-1', name: 'f' };
              CREATE petal CONTENT { petal_id: 'petal-1', fractal_id: 'fractal-1', name: 'p' };",
         )
@@ -1787,7 +1787,7 @@ mod cascade_batch_update_tests {
             .expect("in-memory SurrealDB");
         db.use_ns("test").use_db("test").await.expect("ns/db");
         db.query(
-            "CREATE verse CONTENT { verse_id: 'verse-1', name: 'v' };
+            "CREATE verse CONTENT { verse_id: 'verse-1', name: 'v', created_by:'local' };
              CREATE fractal CONTENT { fractal_id: 'fractal-1', verse_id: 'verse-1', name: 'f' };
              CREATE petal CONTENT { petal_id: 'petal-1', fractal_id: 'fractal-1', name: 'p' };",
         )
@@ -1868,7 +1868,7 @@ mod asset_ingest_tests {
             .expect("in-memory SurrealDB");
         db.use_ns("test").use_db("test").await.expect("ns/db");
         db.query(
-            "CREATE verse CONTENT { verse_id: 'verse-1', name: 'v' };
+            "CREATE verse CONTENT { verse_id: 'verse-1', name: 'v', created_by:'local' };
              CREATE fractal CONTENT { fractal_id: 'fractal-1', verse_id: 'verse-1', name: 'f' };
              CREATE petal CONTENT { petal_id: 'petal-1', fractal_id: 'fractal-1', name: 'p' };",
         )
@@ -2085,12 +2085,12 @@ mod tombstone_atomicity_tests {
         .check()
         .expect("seed scope chain statements");
         crate::op_log::init_hlc(0);
-        let root = create_node_handler(&db, "petal-1", "root", [0.0, 0.0, 0.0])
+        let root = create_node_as(&db, "petal-1", "root", [0.0, 0.0, 0.0], "did:key:z6MkA")
             .await
             .expect("create root");
         let mut ids = vec![root.clone()];
         for name in ["child-a", "child-b"] {
-            let child = create_node_handler(&db, "petal-1", name, [1.0, 0.0, 0.0])
+            let child = create_node_as(&db, "petal-1", name, [1.0, 0.0, 0.0], "did:key:z6MkA")
                 .await
                 .expect("create child");
             db.query("UPDATE node SET properties.parent_id = $root WHERE node_id = $child")

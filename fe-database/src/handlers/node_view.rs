@@ -7,7 +7,7 @@ use tracing::instrument;
 use fe_runtime::messages::NodeViewDto;
 
 use crate::handlers::entity_property::{
-    delete_entity_property_handler, get_entity_properties_handler, set_entity_property_handler,
+    delete_entity_property_granted, get_entity_properties_handler, set_entity_property_granted,
 };
 use crate::repo::Db;
 
@@ -101,20 +101,40 @@ pub(crate) async fn set_node_view_handler(
     node_id: &str,
     state: Option<&str>,
     groups: Option<&[String]>,
+    actor: &str,
+    grant: &fe_runtime::node_history::NodeAccessGrant,
 ) -> anyhow::Result<NodeViewDto> {
     match state {
-        Some("auto") => delete_entity_property_handler(db, node_id, VIEW_STATE_KEY).await?,
+        Some("auto") => {
+            delete_entity_property_granted(db, node_id, VIEW_STATE_KEY, actor, grant).await?
+        }
         Some(state) => {
-            set_entity_property_handler(db, node_id, VIEW_STATE_KEY, &serde_json::json!(state))
-                .await?
+            set_entity_property_granted(
+                db,
+                node_id,
+                VIEW_STATE_KEY,
+                &serde_json::json!(state),
+                actor,
+                grant,
+            )
+            .await?
         }
         None => {}
     }
     match groups {
-        Some([]) => delete_entity_property_handler(db, node_id, VIEW_GROUPS_KEY).await?,
+        Some([]) => {
+            delete_entity_property_granted(db, node_id, VIEW_GROUPS_KEY, actor, grant).await?
+        }
         Some(groups) => {
-            set_entity_property_handler(db, node_id, VIEW_GROUPS_KEY, &serde_json::json!(groups))
-                .await?
+            set_entity_property_granted(
+                db,
+                node_id,
+                VIEW_GROUPS_KEY,
+                &serde_json::json!(groups),
+                actor,
+                grant,
+            )
+            .await?
         }
         None => {}
     }

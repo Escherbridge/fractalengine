@@ -21,7 +21,7 @@ pub(crate) async fn set_entity_property_granted(
     grant: &fe_runtime::node_history::NodeAccessGrant,
 ) -> anyhow::Result<()> {
     require_node_exists(db, node_id, "SetNodeProperty").await?;
-    super::node_history::authorized_node_scope(db, node_id, grant).await?;
+    super::node_history::authorized_node_scope(db, node_id, grant, actor).await?;
 
     let schema_versions = super::field_def::validate_property(db, node_id, key, value).await?;
     let data = serde_json::json!({"key":key,"value":value});
@@ -103,7 +103,7 @@ pub(crate) async fn delete_entity_property_granted(
     grant: &fe_runtime::node_history::NodeAccessGrant,
 ) -> anyhow::Result<()> {
     require_node_exists(db, node_id, "DeleteNodeProperty").await?;
-    super::node_history::authorized_node_scope(db, node_id, grant).await?;
+    super::node_history::authorized_node_scope(db, node_id, grant, actor).await?;
 
     let data = serde_json::json!({"key":key});
     let entry = OpLogEntry {
@@ -119,25 +119,6 @@ pub(crate) async fn delete_entity_property_granted(
         vec![("node_id".into(), serde_json::json!(node_id)), ("key".into(), serde_json::json!(key))],
         actor, "property_deleted", data, serde_json::json!({}), grant).await?;
     Ok(())
-}
-
-/// Local compatibility entry point for node-view writes.
-pub(crate) async fn set_entity_property_handler(
-    db: &Db,
-    node_id: &str,
-    key: &str,
-    value: &serde_json::Value,
-) -> anyhow::Result<()> {
-    set_entity_property_as(db, node_id, key, value, "local").await
-}
-
-/// Local compatibility entry point for node-view removals.
-pub(crate) async fn delete_entity_property_handler(
-    db: &Db,
-    node_id: &str,
-    key: &str,
-) -> anyhow::Result<()> {
-    delete_entity_property_as(db, node_id, key, "local").await
 }
 
 /// Internal local property write compatibility entry.

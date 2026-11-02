@@ -290,6 +290,7 @@ fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
         | DbCommand::ListDevicePayloads { correlation_id, .. }
         | DbCommand::RawQuery { correlation_id, .. }
         | DbCommand::SetFieldSchema { correlation_id, .. }
+        | DbCommand::GetFieldSchema { correlation_id, .. }
         | DbCommand::CommitNodeMutation { correlation_id, .. }
         | DbCommand::CreateObject { correlation_id, .. }
         | DbCommand::ReadNodeHistory { correlation_id, .. } => correlation_id.as_deref(),
@@ -422,7 +423,7 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
         ListFieldDefs { .. } => ReplyKind::FieldDefsListed,
         UpdateFieldDef { .. } => ReplyKind::FieldDefUpdated,
         DeleteFieldDef { .. } => ReplyKind::FieldDefDeleted,
-        RawQuery { .. } | SetFieldSchema { .. } => ReplyKind::QueryResult,
+        RawQuery { .. } | SetFieldSchema { .. } | GetFieldSchema { .. } => ReplyKind::QueryResult,
         CommitNodeMutation { .. } | CreateObject { .. } => ReplyKind::NodeMutationCommitted,
         ReadNodeHistory {
             at_version: Some(_),

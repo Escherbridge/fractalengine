@@ -304,6 +304,18 @@ async fn require_node_role(
     }
 }
 
+/// Local command actor is the resolved application identity, never the supplied label.
+fn object_command_actor<'a>(
+    grant: &fe_runtime::node_history::NodeAccessGrant,
+    local_did: &'a str,
+    asserted_actor: &'a str,
+) -> &'a str {
+    match grant {
+        fe_runtime::node_history::NodeAccessGrant::Local => local_did,
+        fe_runtime::node_history::NodeAccessGrant::Scoped(_) => asserted_actor,
+    }
+}
+
 /// The scope a replicated petal write lands in, when the petal is known.
 async fn replicated_petal_scope(
     db: &crate::repo::Db,
@@ -1398,14 +1410,16 @@ pub fn spawn_db_thread_shared(
                                 break 'reply handlers::correlated_failure(&correlation_id, format!("SetNodeView: cannot resolve scope for {node_id}"));
                             };
                             let ctx = lifecycle_auth_context(&db, &local_did, &auth, &scope).await;
-                            let decision = fe_policy::authorize_node_edit(&ctx, &fe_policy::Scope::new(scope));
+                            let decision = fe_policy::authorize_node_edit(&ctx, &fe_policy::Scope::new(scope.clone()));
                             if !decision.is_allow() {
                                 break 'reply handlers::correlated_failure(&correlation_id, format!(
                                     "SetNodeView denied for {}: {}", ctx.subject_label(),
                                     decision.reason().unwrap_or("unauthorized"),
                                 ));
                             }
-                            match handlers::node_view::set_node_view_handler(&db, &node_id, state.as_deref(), groups.as_deref()).await {
+                            let view_grant = if matches!(auth,fe_runtime::messages::CallerAuth::Local) {fe_runtime::node_history::NodeAccessGrant::Local} else {fe_runtime::node_history::NodeAccessGrant::Scoped(scope)};
+                            let view_actor = ctx.subject_label();
+                            match handlers::node_view::set_node_view_handler(&db, &node_id, state.as_deref(), groups.as_deref(),&view_actor,&view_grant).await {
                                 Ok(view) => {
                                     if let Some(ref ect) = entity_change_tx {
                                         let written = [
@@ -1516,20 +1530,28 @@ pub fn spawn_db_thread_shared(
                             Err(e) => send_result(&tx, DbResult::Error(format!("Update field def failed: {e}"))),
                         }
                     }
-                    Ok(DbCommand::SetFieldSchema { field_def_id, descriptor, correlation_id }) => {
-                        let reply = match handlers::field_def::set_field_schema_handler(&db, &field_def_id, &descriptor).await {
+                    Ok(DbCommand::GetFieldSchema {field_def_id,grant,correlation_id}) => {
+                        let reply = match handlers::field_def::get_field_schema_handler(&db,&field_def_id,&grant,&local_did).await {
+                            Ok(row) => DbResult::QueryResult {data:vec![row],correlation_id},
+                            Err(error) => handlers::correlated_failure(&correlation_id,format!("Get field schema failed: {error}")),
+                        };
+                        send_result(&tx,reply);
+                    }
+                    Ok(DbCommand::SetFieldSchema { field_def_id, descriptor, grant, correlation_id }) => {
+                        let reply = match handlers::field_def::set_field_schema_handler(&db, &field_def_id, &descriptor,&grant,&local_did).await {
                             Ok(row) => DbResult::QueryResult { data: vec![row], correlation_id },
                             Err(e) => handlers::correlated_failure(&correlation_id, format!("Set field schema failed: {e}")),
                         };
                         send_result(&tx, reply);
                     }
                     Ok(DbCommand::ReadNodeHistory { node_id, after_version, limit, at_version, grant, correlation_id }) => {
-                        let reply = handlers::node_history::read_reply(&db,&node_id,after_version,limit,at_version,&grant,correlation_id).await;
+                        let reply = handlers::node_history::read_reply(&db,&node_id,after_version,limit,at_version,&grant,&local_did,correlation_id).await;
                         send_result(&tx, reply);
                     }
                     Ok(DbCommand::CreateObject { petal_id, input, actor_did, grant, correlation_id }) => {
+                        let actor = object_command_actor(&grant,&local_did,&actor_did);
                         let outcome = handlers::node_history::create_object_granted(&db, &petal_id, &input.name, input.asset_id.as_deref(), input.position,
-                            input.rotation.iter().map(|v|f64::from(*v)).collect(), input.scale.iter().map(|v|f64::from(*v)).collect(), input.properties, &actor_did,&grant).await;
+                            input.rotation.iter().map(|v|f64::from(*v)).collect(), input.scale.iter().map(|v|f64::from(*v)).collect(), input.properties, actor,&grant).await;
                         match outcome {
                             Ok((node_id, asset_path)) => {
                                 if let Some(ref ect) = entity_change_tx {
@@ -1555,11 +1577,12 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::CommitNodeMutation { node_id, mutation, actor_did, grant, correlation_id }) => {
+                        let actor = object_command_actor(&grant,&local_did,&actor_did);
                         use fe_runtime::messages::NodeMutation;
                         let outcome = match &mutation {
-                            NodeMutation::PropertySet { key, value } => handlers::entity_property::set_entity_property_granted(&db, &node_id, key, value, &actor_did,&grant).await,
-                            NodeMutation::PropertyDeleted { key } => handlers::entity_property::delete_entity_property_granted(&db, &node_id, key, &actor_did,&grant).await,
-                            NodeMutation::FullTransform { position, rotation, scale } => handlers::transform::update_node_transform_granted(&db, &node_id, *position, *rotation, *scale, &actor_did,&grant).await,
+                            NodeMutation::PropertySet { key, value } => handlers::entity_property::set_entity_property_granted(&db, &node_id, key, value, actor,&grant).await,
+                            NodeMutation::PropertyDeleted { key } => handlers::entity_property::delete_entity_property_granted(&db, &node_id, key, actor,&grant).await,
+                            NodeMutation::FullTransform { position, rotation, scale } => handlers::transform::update_node_transform_granted(&db, &node_id, *position, *rotation, *scale, actor,&grant).await,
                         };
                         match outcome {
                             Ok(()) => {

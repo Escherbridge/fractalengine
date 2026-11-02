@@ -19,7 +19,7 @@ pub(crate) async fn update_node_transform_granted(
     grant: &fe_runtime::node_history::NodeAccessGrant,
 ) -> anyhow::Result<()> {
     require_node_exists(db, node_id, "UpdateNodeTransform").await?;
-    super::node_history::authorized_node_scope(db, node_id, grant).await?;
+    super::node_history::authorized_node_scope(db, node_id, grant, actor).await?;
     if position
         .iter()
         .chain(&rotation)

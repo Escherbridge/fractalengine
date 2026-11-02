@@ -399,6 +399,7 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
         .send(DbCommand::SetFieldSchema {
             field_def_id: field_def_id.clone(),
             descriptor: descriptor.clone(),
+            grant: fe_runtime::node_history::NodeAccessGrant::Local,
             correlation_id: Some("schema-v1".into()),
         })
         .unwrap();
@@ -422,6 +423,7 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
         .send(DbCommand::SetFieldSchema {
             field_def_id: field_def_id.clone(),
             descriptor: incompatible,
+            grant: fe_runtime::node_history::NodeAccessGrant::Local,
             correlation_id: Some("schema-incompatible".into()),
         })
         .unwrap();

@@ -811,6 +811,13 @@ pub enum DbCommand {
     SetFieldSchema {
         field_def_id: String,
         descriptor: serde_json::Value,
+        grant: crate::node_history::NodeAccessGrant,
+        correlation_id: Option<String>,
+    },
+    /// Read one enforced descriptor with DB-time scope/local-role checks.
+    GetFieldSchema {
+        field_def_id: String,
+        grant: crate::node_history::NodeAccessGrant,
         correlation_id: Option<String>,
     },
     /// Committed actor-attributed ordinary mutation; API actor comes from the validated principal.

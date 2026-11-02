@@ -595,12 +595,12 @@ mod tests {
             before_count,
             "journal failure rolls back intention too"
         );
-        let page = crate::handlers::node_history::read(&db, &node_id, 0, 200, None)
+        let page = crate::handlers::node_history::read(&db, &node_id, 0, 200, None, "did:qa")
             .await
             .unwrap();
         assert_eq!(page["entries"].as_array().unwrap().len(), 5);
         assert_eq!(page["current_version"], 5);
-        let replay = crate::handlers::node_history::read(&db, &node_id, 0, 1, Some(3))
+        let replay = crate::handlers::node_history::read(&db, &node_id, 0, 1, Some(3), "did:qa")
             .await
             .unwrap();
         assert_eq!(replay["availability"], "available");
@@ -623,7 +623,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let gap = crate::handlers::node_history::read(&db, &node_id, 0, 1, Some(6))
+        let gap = crate::handlers::node_history::read(&db, &node_id, 0, 1, Some(6), "did:qa")
             .await
             .unwrap();
         assert_eq!(gap["availability"], "unavailable_scope");
@@ -637,9 +637,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let restarted_epoch = crate::handlers::node_history::read(&db, &node_id, 0, 1, Some(7))
-            .await
-            .unwrap();
+        let restarted_epoch =
+            crate::handlers::node_history::read(&db, &node_id, 0, 1, Some(7), "did:qa")
+                .await
+                .unwrap();
         assert_eq!(restarted_epoch["availability"], "available");
         assert_eq!(restarted_epoch["baseline_version"], 7);
         let legacy_id = "legacy-history-node";
@@ -655,9 +656,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let unavailable = crate::handlers::node_history::read(&db, legacy_id, 0, 1, Some(99))
-            .await
-            .unwrap();
+        let unavailable =
+            crate::handlers::node_history::read(&db, legacy_id, 0, 1, Some(99), "did:qa")
+                .await
+                .unwrap();
         assert_eq!(unavailable["coverage_start_version"], 100);
         assert_eq!(unavailable["availability"], "before_coverage");
         assert!(unavailable.get("state").is_none());
@@ -682,7 +684,8 @@ mod tests {
                 0,
                 1,
                 None,
-                &NodeAccessGrant::Scoped("VERSE#history".into())
+                &NodeAccessGrant::Scoped("VERSE#history".into()),
+                "did:qa"
             )
             .await
             .is_err(),
@@ -759,7 +762,7 @@ mod tests {
         assert!(queued_nodes.is_empty());
         assert_eq!(op_log_count(&db).await, count_before_denial);
         assert_eq!(
-            crate::handlers::node_history::read(&db, &node_id, 0, 1, None)
+            crate::handlers::node_history::read(&db, &node_id, 0, 1, None, "did:qa")
                 .await
                 .unwrap()["current_version"],
             8
@@ -791,15 +794,16 @@ mod tests {
         .await
         .expect_err("queued create grant must match the current petal ancestry");
         assert_eq!(op_log_count(&db).await, count_before_denial);
-        assert!(
-            crate::handlers::node_history::read_granted(&db, &node_id, 0, 200, None, &grant_a)
-                .await
-                .is_err()
-        );
-        let old_page =
-            crate::handlers::node_history::read_granted(&db, &node_id, 0, 1, None, &grant_b)
-                .await
-                .unwrap();
+        assert!(crate::handlers::node_history::read_granted(
+            &db, &node_id, 0, 200, None, &grant_a, "did:qa"
+        )
+        .await
+        .is_err());
+        let old_page = crate::handlers::node_history::read_granted(
+            &db, &node_id, 0, 1, None, &grant_b, "did:qa",
+        )
+        .await
+        .unwrap();
         assert_eq!(old_page["entries"][0]["op"], "unavailable_interval");
         assert_eq!(
             old_page["entries"][0]["payload"],
@@ -807,10 +811,17 @@ mod tests {
         );
         assert_eq!(old_page["entries"][0]["source_did"], "");
         assert!(old_page["coverage_started_at"].is_null());
-        let old_state =
-            crate::handlers::node_history::read_granted(&db, &node_id, 0, 1, Some(3), &grant_b)
-                .await
-                .unwrap();
+        let old_state = crate::handlers::node_history::read_granted(
+            &db,
+            &node_id,
+            0,
+            1,
+            Some(3),
+            &grant_b,
+            "did:qa",
+        )
+        .await
+        .unwrap();
         assert_eq!(old_state["availability"], "unavailable_scope");
         assert!(old_state.get("state").is_none());
         crate::handlers::entity_property::set_entity_property_granted(
@@ -823,10 +834,17 @@ mod tests {
         )
         .await
         .unwrap();
-        let new_state =
-            crate::handlers::node_history::read_granted(&db, &node_id, 0, 1, Some(10), &grant_b)
-                .await
-                .unwrap();
+        let new_state = crate::handlers::node_history::read_granted(
+            &db,
+            &node_id,
+            0,
+            1,
+            Some(10),
+            &grant_b,
+            "did:qa",
+        )
+        .await
+        .unwrap();
         assert_eq!(new_state["availability"], "available");
         assert_eq!(new_state["baseline_version"], 9);
         assert_eq!(new_state["state"]["properties"]["calibration"]["gain"], 5);
@@ -839,10 +857,11 @@ mod tests {
         )
         .await
         .unwrap();
-        let unknown_page =
-            crate::handlers::node_history::read_granted(&db, &node_id, 10, 1, None, &grant_b)
-                .await
-                .unwrap();
+        let unknown_page = crate::handlers::node_history::read_granted(
+            &db, &node_id, 10, 1, None, &grant_b, "did:qa",
+        )
+        .await
+        .unwrap();
         assert_eq!(unknown_page["entries"][0]["op"], "unavailable_interval");
         assert!(!unknown_page.to_string().contains("must-not-leak"));
         assert!(!unknown_page.to_string().contains("secret-old-actor"));
@@ -852,16 +871,329 @@ mod tests {
             .unwrap()
             .check()
             .unwrap();
-        assert!(
-            crate::handlers::node_history::read_granted(&db, &node_id, 0, 1, None, &grant_a)
-                .await
-                .is_err()
-        );
-        let retained =
-            crate::handlers::node_history::read_granted(&db, &node_id, 0, 1, None, &grant_b)
-                .await
-                .unwrap();
+        assert!(crate::handlers::node_history::read_granted(
+            &db, &node_id, 0, 1, None, &grant_a, "did:qa"
+        )
+        .await
+        .is_err());
+        let retained = crate::handlers::node_history::read_granted(
+            &db, &node_id, 0, 1, None, &grant_b, "did:qa",
+        )
+        .await
+        .unwrap();
         assert_eq!(retained["entries"][0]["op"], "unavailable_interval");
+
+        let local_user = "did:local-history-user";
+        assert_eq!(
+            crate::object_command_actor(&NodeAccessGrant::Local, local_user, "spoofed-owner"),
+            local_user
+        );
+        assert_eq!(
+            crate::object_command_actor(&grant_b, local_user, "opaque-api-subject"),
+            "opaque-api-subject"
+        );
+        db.query(
+            "CREATE role:local_history_role_a CONTENT {peer_did:$did,scope:$scope,role:'viewer'}",
+        )
+        .bind(("did", local_user))
+        .bind(("scope", scope_a.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        let local_before = crate::handlers::node_history::snapshot(&db, legacy_id)
+            .await
+            .unwrap();
+        let local_op_count = op_log_count(&db).await;
+        let local_refusals = [
+            crate::handlers::entity_property::set_entity_property_as(
+                &db,
+                legacy_id,
+                "calibration",
+                &serde_json::json!({"gain":999}),
+                local_user,
+            )
+            .await,
+            crate::handlers::entity_property::delete_entity_property_as(
+                &db,
+                legacy_id,
+                "calibration",
+                local_user,
+            )
+            .await,
+            crate::handlers::transform::update_node_transform_as(
+                &db, legacy_id, [9.0; 3], [0.0; 3], [1.0; 3], local_user,
+            )
+            .await,
+            crate::handlers::node_history::create_object_granted(
+                &db,
+                "history-petal",
+                "local-viewer-create",
+                None,
+                [0.0; 3],
+                vec![0.0; 3],
+                vec![1.0; 3],
+                serde_json::Map::new(),
+                local_user,
+                &NodeAccessGrant::Local,
+            )
+            .await
+            .map(|_| ()),
+        ];
+        assert!(
+            local_refusals.into_iter().all(|result| result.is_err()),
+            "local Viewer cannot write ordinary objects"
+        );
+        assert_eq!(
+            crate::handlers::node_history::snapshot(&db, legacy_id)
+                .await
+                .unwrap(),
+            local_before
+        );
+        assert_eq!(op_log_count(&db).await, local_op_count);
+        let local_read = crate::handlers::node_history::read_granted(
+            &db,
+            legacy_id,
+            100,
+            1,
+            None,
+            &NodeAccessGrant::Local,
+            local_user,
+        )
+        .await
+        .unwrap();
+        assert_eq!(local_read["current_version"], 101);
+        let denied_creates: Vec<serde_json::Value> = db
+            .query("SELECT node_id FROM node WHERE display_name='local-viewer-create'")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert!(denied_creates.is_empty());
+        let local_definition = crate::handlers::field_def::create_field_def_handler(
+            &db,
+            &scope_a,
+            "node",
+            "schema_local",
+            "object",
+            None,
+            "did:qa",
+        )
+        .await
+        .unwrap();
+        let local_descriptor = serde_json::json!({"version":1,"schema":{"type":"object","properties":{"label":{"type":"string"}}}});
+        let viewer_descriptor = crate::handlers::field_def::get_field_schema_handler(
+            &db,
+            &local_definition,
+            &NodeAccessGrant::Local,
+            local_user,
+        )
+        .await
+        .unwrap();
+        assert!(viewer_descriptor["enforced_schema"].is_null());
+        crate::handlers::field_def::set_field_schema_handler(
+            &db,
+            &local_definition,
+            &local_descriptor,
+            &NodeAccessGrant::Local,
+            local_user,
+        )
+        .await
+        .expect_err("local Viewer cannot install a schema");
+        assert!(crate::handlers::field_def::get_field_schema_handler(
+            &db,
+            &local_definition,
+            &NodeAccessGrant::Local,
+            local_user
+        )
+        .await
+        .unwrap()["enforced_schema"]
+            .is_null());
+        db.query("UPDATE role:local_history_role_a SET role='editor'")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let mut initial_properties = serde_json::Map::new();
+        initial_properties.insert("secret".into(), serde_json::json!("old-local-scope-secret"));
+        let (local_node, _) = crate::handlers::node_history::create_object_granted(
+            &db,
+            "history-petal",
+            "local-editor-create",
+            None,
+            [0.0; 3],
+            vec![0.0; 3],
+            vec![1.0; 3],
+            initial_properties,
+            local_user,
+            &NodeAccessGrant::Local,
+        )
+        .await
+        .unwrap();
+        let local_birth = crate::handlers::node_history::read_granted(
+            &db,
+            &local_node,
+            0,
+            1,
+            None,
+            &NodeAccessGrant::Local,
+            local_user,
+        )
+        .await
+        .unwrap();
+        assert_eq!(local_birth["entries"][0]["source_did"], local_user);
+        crate::handlers::entity_property::set_entity_property_as(
+            &db,
+            &local_node,
+            "counter",
+            &serde_json::json!(1),
+            local_user,
+        )
+        .await
+        .unwrap();
+        crate::handlers::field_def::set_field_schema_handler(
+            &db,
+            &local_definition,
+            &local_descriptor,
+            &NodeAccessGrant::Local,
+            local_user,
+        )
+        .await
+        .expect_err("local Editor cannot install a schema");
+        db.query("UPDATE role:local_history_role_a SET role='manager'")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        crate::handlers::field_def::set_field_schema_handler(
+            &db,
+            &local_definition,
+            &local_descriptor,
+            &NodeAccessGrant::Local,
+            local_user,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            crate::handlers::field_def::get_field_schema_handler(
+                &db,
+                &local_definition,
+                &NodeAccessGrant::Local,
+                local_user
+            )
+            .await
+            .unwrap()["enforced_schema"],
+            local_descriptor
+        );
+        db.query(
+            "CREATE role:local_history_role_b CONTENT {peer_did:$did,scope:$scope,role:'editor'};
+            UPDATE node SET petal_id='history-petal-b' WHERE node_id=$id",
+        )
+        .bind(("did", local_user))
+        .bind((
+            "scope",
+            crate::build_scope(
+                "history-verse",
+                Some("history-fractal"),
+                Some("history-petal-b"),
+            ),
+        ))
+        .bind(("id", local_node.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        crate::handlers::entity_property::set_entity_property_as(
+            &db,
+            &local_node,
+            "counter",
+            &serde_json::json!(2),
+            local_user,
+        )
+        .await
+        .unwrap();
+        db.query("UPDATE role:local_history_role_a SET role='none'; UPDATE role:local_history_role_b SET role='viewer'")
+            .await.unwrap().check().unwrap();
+        let revoked_page = crate::handlers::node_history::read_granted(
+            &db,
+            &local_node,
+            0,
+            2,
+            None,
+            &NodeAccessGrant::Local,
+            local_user,
+        )
+        .await
+        .unwrap();
+        assert!(revoked_page["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry["op"] == "unavailable_interval"));
+        assert!(!revoked_page.to_string().contains("old-local-scope-secret"));
+        let revoked_state = crate::handlers::node_history::read_granted(
+            &db,
+            &local_node,
+            0,
+            1,
+            Some(2),
+            &NodeAccessGrant::Local,
+            local_user,
+        )
+        .await
+        .unwrap();
+        assert_eq!(revoked_state["availability"], "unavailable_scope");
+        assert!(revoked_state.get("state").is_none());
+        assert!(
+            crate::handlers::field_def::get_field_schema_handler(
+                &db,
+                &local_definition,
+                &NodeAccessGrant::Local,
+                local_user
+            )
+            .await
+            .is_err(),
+            "current petal read permission cannot expose a revoked past scope's descriptor"
+        );
+        let current_local_state = crate::handlers::node_history::read_granted(
+            &db,
+            &local_node,
+            0,
+            1,
+            Some(4),
+            &NodeAccessGrant::Local,
+            local_user,
+        )
+        .await
+        .unwrap();
+        assert_eq!(current_local_state["availability"], "available");
+        let after_demotion = op_log_count(&db).await;
+        crate::handlers::entity_property::set_entity_property_as(
+            &db,
+            &local_node,
+            "counter",
+            &serde_json::json!(999),
+            local_user,
+        )
+        .await
+        .expect_err("demoted local identity cannot keep writing");
+        assert_eq!(op_log_count(&db).await, after_demotion);
+        crate::handlers::entity_property::set_entity_property_granted(
+            &db,
+            &local_node,
+            "counter",
+            &serde_json::json!(3),
+            "opaque-api-subject",
+            &grant_b,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            crate::handlers::node_history::committed_receipt(&db, &local_node)
+                .await
+                .unwrap()["history_version"],
+            5
+        );
     }
 
     /// A fixed fake clock source for the override tests (a real test would
