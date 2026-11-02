@@ -1566,6 +1566,7 @@ mod tests {
             screen_pos: [0.0, 0.0],
             world_pos: [0.0; 3],
             target: Some(ContextTarget {
+                petal_id: None,
                 hit: HitTarget::Node(Entity::from_bits(1)),
                 node_id: Some("n1".into()),
                 stamp: None,

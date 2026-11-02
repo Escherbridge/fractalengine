@@ -1016,6 +1016,23 @@ mod tests {
             &mut sidebar,
             true
         ));
+        let mut other_nav = NavigationManager::default();
+        other_nav.navigate_to_petal("petal-B".into());
+        let mut other_map = map.clone();
+        other_map.petal_id = Some("petal-B".into());
+        assert!(
+            !open_terrain_report(
+                "p1",
+                "r1",
+                &other_nav,
+                &other_map,
+                &mut proposals,
+                &mut sidebar,
+                true,
+            ),
+            "a queued old-Petal action cannot open a same-ID target in the destination"
+        );
+        assert_eq!(proposals.selected.as_deref(), Some("p2"));
         for _ in 0..2 {
             assert!(open_terrain_report(
                 "p1",

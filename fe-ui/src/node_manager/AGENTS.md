@@ -899,3 +899,12 @@ section toggle/reveal reopens it; tool activation therefore reveals Options
 from a collapsed state. The legacy left toggle remains bare Ctrl/Cmd+B only,
 with Shift/Alt chords and keyboard-owned editors excluded. These are session
 layout choices; no panel rendering or domain selection is duplicated here.
+
+## Context-menu ownership lifetime
+
+`write_target` pins the current Petal once when classification completes for
+all hit tiers. This is immutable menu metadata, independent of node or terrain
+selection. Context-menu rendering closes a classified menu after a Petal change;
+terrain report actions carry this classified owner and cannot adopt a same-ID
+target in the newly active Petal. Existing classification and report journeys
+cover pinning, stale-menu closure and queued-action refusal.

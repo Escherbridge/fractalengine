@@ -52,6 +52,7 @@ pub(super) fn resolve_context_target(
         if let Some(track) = hit.stamp_track {
             if let Some((_, index)) = parse_stamp_marker_id(&hit.node_id) {
                 return ContextTarget {
+                    petal_id: None,
                     hit: HitTarget::Stamp(hit.entity),
                     node_id: None,
                     stamp: Some((track, index)),
@@ -59,6 +60,7 @@ pub(super) fn resolve_context_target(
             }
         }
         return ContextTarget {
+            petal_id: None,
             hit: HitTarget::Node(hit.entity),
             node_id: Some(hit.node_id),
             stamp: None,
@@ -66,12 +68,14 @@ pub(super) fn resolve_context_target(
     }
     if let Some((track, index, entity)) = ground_stamp {
         return ContextTarget {
+            petal_id: None,
             hit: HitTarget::Stamp(entity),
             node_id: None,
             stamp: Some((track, index)),
         };
     }
     ContextTarget {
+        petal_id: None,
         hit: HitTarget::Empty,
         node_id: None,
         stamp: None,
@@ -219,8 +223,9 @@ fn pick_ground_region(terrain_json: Option<&serde_json::Value>, point: [f32; 2])
 /// if the dialog closed or moved on between classification and this write
 /// (defensive — classification runs the same frame it opens, but never
 /// assume the dialog variant is still `ContextMenu`).
-fn write_target(ui_mgr: &mut UiManager, resolved: ContextTarget) {
+fn write_target(ui_mgr: &mut UiManager, petal_id: Option<&str>, mut resolved: ContextTarget) {
     if let ActiveDialog::ContextMenu { target, .. } = &mut ui_mgr.active_dialog {
+        resolved.petal_id = petal_id.map(str::to_owned);
         *target = Some(resolved);
     }
 }
@@ -309,7 +314,9 @@ pub(super) fn classify_context_menu(
             ) {
                 write_target(
                     &mut ui_mgr,
+                    active_petal,
                     ContextTarget {
+                        petal_id: None,
                         hit: HitTarget::PathHandle { idx, side },
                         node_id: None,
                         stamp: None,
@@ -325,7 +332,9 @@ pub(super) fn classify_context_menu(
             ) {
                 write_target(
                     &mut ui_mgr,
+                    active_petal,
                     ContextTarget {
+                        petal_id: None,
                         hit: HitTarget::PathVertex { idx },
                         node_id: None,
                         stamp: None,
@@ -430,7 +439,9 @@ pub(super) fn classify_context_menu(
             if let Some(idx) = nearest_segment_xz(&points, hit_point) {
                 write_target(
                     &mut ui_mgr,
+                    active_petal,
                     ContextTarget {
+                        petal_id: None,
                         hit: HitTarget::PathSegment { idx },
                         node_id: Some(hit.node_id.clone()),
                         stamp: None,
@@ -468,7 +479,9 @@ pub(super) fn classify_context_menu(
         if let Some(id) = pick_ground_proposal(&proposal_state.proposals, [world[0], world[2]]) {
             write_target(
                 &mut ui_mgr,
+                active_petal,
                 ContextTarget {
+                    petal_id: None,
                     hit: HitTarget::TerrainProposal { id },
                     node_id: None,
                     stamp: None,
@@ -484,7 +497,9 @@ pub(super) fn classify_context_menu(
         if let Some(id) = pick_ground_region(doc, [world[0], world[2]]) {
             write_target(
                 &mut ui_mgr,
+                active_petal,
                 ContextTarget {
+                    petal_id: None,
                     hit: HitTarget::EarthworkRegion { id },
                     node_id: None,
                     stamp: None,
@@ -495,7 +510,7 @@ pub(super) fn classify_context_menu(
     }
 
     let resolved = resolve_context_target(best.map(|(_, hit)| hit), ground_stamp);
-    write_target(&mut ui_mgr, resolved);
+    write_target(&mut ui_mgr, active_petal, resolved);
 }
 
 /// Nearest active-petal stamp within [`STAMP_PICK_RADIUS_M`] of ground point
@@ -552,6 +567,18 @@ mod tests {
         assert_eq!(target.hit, HitTarget::Node(entity(1)));
         assert_eq!(target.node_id.as_deref(), Some("n1"));
         assert!(target.stamp.is_none());
+        let mut ui = UiManager::default();
+        ui.open_dialog(ActiveDialog::ContextMenu {
+            screen_pos: [0.0; 2],
+            world_pos: [0.0; 3],
+            target: None,
+            pending_delete: false,
+            descendant_count: None,
+        });
+        write_target(&mut ui, Some("petal-A"), target);
+        assert!(matches!(&ui.active_dialog,
+            ActiveDialog::ContextMenu { target: Some(target), .. }
+                if target.petal_id.as_deref() == Some("petal-A")));
     }
 
     #[test]

@@ -298,15 +298,31 @@ pub(crate) fn edit_region_actions(verb: Verb, hit: &HitTarget) -> Option<[UiActi
 }
 
 /// Scoped, read-only terrain report routing for either ground-overlay target.
-pub(crate) fn terrain_report_action(hit: &HitTarget, petal_id: Option<&str>) -> Option<UiAction> {
-    let id = match hit {
+pub(crate) fn terrain_report_action(
+    target: &ContextTarget,
+    active_petal: Option<&str>,
+) -> Option<UiAction> {
+    if target.petal_id.as_deref() != active_petal {
+        return None;
+    }
+    let id = match &target.hit {
         HitTarget::TerrainProposal { id } | HitTarget::EarthworkRegion { id } => id,
         _ => return None,
     };
     Some(UiAction::OpenTerrainReport {
-        petal_id: petal_id?.to_owned(),
+        petal_id: target.petal_id.clone()?,
         id: id.clone(),
     })
+}
+
+fn close_stale_context_menu(ui_mgr: &mut UiManager, active_petal: Option<&str>) -> bool {
+    let stale = matches!(&ui_mgr.active_dialog,
+        ActiveDialog::ContextMenu { target: Some(target), .. }
+            if target.petal_id.as_deref() != active_petal);
+    if stale {
+        ui_mgr.close_dialog();
+    }
+    stale
 }
 
 /// Ground-overlay delete routing (proposals aren't nodes — `DeleteNode`/cascade
@@ -468,6 +484,9 @@ pub fn render_context_menu(
     db_tx: &crossbeam::channel::Sender<DbCommand>,
     active_petal: Option<&str>,
 ) {
+    if close_stale_context_menu(ui_mgr, active_petal) {
+        return;
+    }
     let ActiveDialog::ContextMenu {
         ref screen_pos,
         ref world_pos,
@@ -701,7 +720,7 @@ fn render_target_menu(
                 }
             }
             Verb::ReportVolume => {
-                let action = terrain_report_action(&target.hit, active_petal);
+                let action = terrain_report_action(target, active_petal);
                 if render_target_gated_verb_button(
                     ui,
                     verb,
@@ -1209,11 +1228,41 @@ mod tests {
             HitTarget::TerrainProposal { id: "p2".into() },
             HitTarget::EarthworkRegion { id: "r1".into() },
         ] {
-            assert!(matches!(terrain_report_action(&hit, Some("petal-1")),
-                Some(UiAction::OpenTerrainReport { petal_id, .. }) if petal_id == "petal-1"));
-            assert!(terrain_report_action(&hit, None).is_none());
+            let target = ContextTarget {
+                petal_id: Some("petal-A".into()),
+                hit,
+                node_id: None,
+                stamp: None,
+            };
+            assert!(matches!(terrain_report_action(&target, Some("petal-A")),
+                Some(UiAction::OpenTerrainReport { petal_id, .. }) if petal_id == "petal-A"));
+            assert!(terrain_report_action(&target, None).is_none());
+            assert!(
+                terrain_report_action(&target, Some("petal-B")).is_none(),
+                "A/p1 menu cannot bind to B/p1 after navigation"
+            );
+            let mut ui = UiManager::default();
+            ui.open_dialog(ActiveDialog::ContextMenu {
+                screen_pos: [0.0; 2],
+                world_pos: [0.0; 3],
+                target: Some(target),
+                pending_delete: false,
+                descendant_count: None,
+            });
+            assert!(!close_stale_context_menu(&mut ui, Some("petal-A")));
+            assert!(close_stale_context_menu(&mut ui, Some("petal-B")));
+            assert!(matches!(ui.active_dialog, ActiveDialog::None));
         }
-        assert!(terrain_report_action(&HitTarget::Empty, Some("petal-1")).is_none());
+        assert!(terrain_report_action(
+            &ContextTarget {
+                petal_id: Some("petal-A".into()),
+                hit: HitTarget::Empty,
+                node_id: None,
+                stamp: None,
+            },
+            Some("petal-A")
+        )
+        .is_none());
         for v in [
             Verb::CreateNode,
             Verb::Delete,
@@ -1301,6 +1350,7 @@ mod tests {
     fn context_target_payloads_construct_for_every_backed_kind() {
         // Node-backed target: node verbs key on `node_id`.
         let node = ContextTarget {
+            petal_id: None,
             hit: HitTarget::Node(entity(1)),
             node_id: Some("n1".into()),
             stamp: None,
@@ -1308,6 +1358,7 @@ mod tests {
         assert_eq!(node.node_id.as_deref(), Some("n1"));
         // Stamp-backed target: stamp verbs key on `(track, index)`.
         let stamp = ContextTarget {
+            petal_id: None,
             hit: HitTarget::Stamp(entity(2)),
             node_id: None,
             stamp: Some(("track-1".into(), 4)),
@@ -1494,7 +1545,16 @@ mod tests {
                 let routed = edit_region_actions(verb, &region).is_some()
                     || proposal_delete_action(&region).is_some() && verb == Verb::Delete
                     || verb == Verb::ReportVolume
-                        && terrain_report_action(&region, Some("petal-1")).is_some()
+                        && terrain_report_action(
+                            &ContextTarget {
+                                petal_id: Some("petal-1".into()),
+                                hit: region.clone(),
+                                node_id: None,
+                                stamp: None,
+                            },
+                            Some("petal-1"),
+                        )
+                        .is_some()
                     || matches!(verb, Verb::CopyApi | Verb::Report);
                 assert!(routed, "{region:?} verb {verb:?} has no routing");
             }

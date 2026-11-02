@@ -85,6 +85,8 @@ pub struct ApiTokenEntry {
 /// See `dialogs/AGENTS.md` §context-menu.
 #[derive(Debug, Clone)]
 pub struct ContextTarget {
+    /// Petal owning this classified hit for the lifetime of the menu.
+    pub petal_id: Option<String>,
     /// Classification driving `context_menu::menu_for`.
     pub hit: crate::node_manager::HitTarget,
     /// The object's node id when the hit is node-backed (node / track).

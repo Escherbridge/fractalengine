@@ -335,3 +335,10 @@ Report Volume is independent of the API egress seam. Both palette proposals
 and Brush regions queue `OpenTerrainReport` with the render pass's active Petal;
 the action handler revalidates map ownership, target existence and Viewer access.
 Copy API and ordinary Report / Query retain their existing egress behavior.
+
+Classified ContextTarget metadata pins the hit's owning Petal for the menu's
+lifetime. Navigation to another Petal closes the classified menu before any
+verb renders. Report routing also compares the pinned owner with the current
+Petal and emits the pinned owner in its typed action; it never rebinds an old
+hit ID to a new Petal. The action handler independently refuses queued commands
+after navigation, including a same-ID target in the destination.
