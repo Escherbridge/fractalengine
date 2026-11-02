@@ -103,3 +103,26 @@ Lock resolution, compile and native journey execution are still required.
 Pass16 focused runtime artifacts and a truthful limitations list are in
 qa/passes/16/verdict.json. Independent evidence review and combined-source checks
 remain pending; this record does not approve full coverage, convergence or release.
+
+
+## Pass16 independent evidence and combined source approval
+
+The independent verifier supports all19 focused derived pass16 checks, measured
+330.75px compact body scrolling with fixed y154/h24 tabs, scoped token controls,
+fixture receipts and exact cleanup records. All12 startup line hashes were
+recomputed. Eleven WARN lines and the duplicate logger ERROR remain explicit;
+no clean-log or GPU-validation claim. The served corrupt body was not retained
+separately, so its member-difference claim relies on the inspected capture oracle
+and receipt. Original failed attempts and coverage limits remain visible.
+
+Independent design review found a duplicate Nav signature/call in the Path/terrain
+merge. Root8d2df989 removes exactly those two lines; the verifier independently
+approved that correction. Loggerd9440e39/main4aaa0a27 passed separate source review.
+
+Portal670b8808/main6386868b passed both security/read-model and design rechecks:
+its Viewer-fenced current reads hydrate the exact cache independently of form
+ownership, preserve newer drafts and reject replaced/rebuilt targets. All reviewed
+Path/Portal/WEB seams on maind7fadfa2 passed combined security review. The offline
+resolver updated only three dependency edges, with no version upgrades; root
+05285dd7 commits them and six whitespace-only changed lines. Stage build is now
+running; no compilation or live acceptance is implied by these source verdicts.
