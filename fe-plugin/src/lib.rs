@@ -233,6 +233,7 @@ impl Plugin for PluginHostPlugin {
 
         // Add drain system
         app.add_systems(Update, drain_plugin_results);
+        app.add_systems(Last,shutdown_plugin_contexts);
     }
 }
 
@@ -240,16 +241,24 @@ impl Plugin for PluginHostPlugin {
 /// them, sending results back.
 async fn plugin_thread_loop(cmd_rx: Receiver<PluginCommand>, result_tx: Sender<PluginResult>,contexts:scene_host::PluginContexts) {
     loop {
-        match cmd_rx.recv() {
+        if contexts.is_closed() {break;}
+        match cmd_rx.recv_timeout(std::time::Duration::from_millis(100)) {
             Ok(cmd) => {
                 handle_plugin_command(cmd, &result_tx,&contexts);
             }
-            Err(_) => {
+            Err(crossbeam::channel::RecvTimeoutError::Timeout)=>continue,
+            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
                 // Channel closed — Bevy is shutting down
                 tracing::info!("Plugin command channel closed, shutting down");
                 break;
             }
         }
+    }
+}
+
+fn shutdown_plugin_contexts(mut exit:MessageReader<bevy::app::AppExit>,contexts:Res<scene_host::PluginContexts>) {
+    if exit.read().next().is_some() {
+        if let Err(error)=contexts.shutdown() {tracing::warn!(%error,"plugin host shutdown failed");}
     }
 }
 

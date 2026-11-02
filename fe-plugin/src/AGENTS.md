@@ -189,3 +189,8 @@ an admitted context. Scene host functions enforce grants at call time (the older
 storage/query registration gates remain unchanged). Rhai scene property conversion
 rejects non-finite/custom values and depth over 16 instead of silently storing
 null; explicit unit/null remains JSON null.
+
+AppExit shuts the instance registry, revokes all direct clones, and prevents new
+bindings. The command worker polls shutdown at a bounded interval rather than
+relying on channel disconnection: admitted contexts themselves hold senders.
+This breaks the active-context sender/worker lifetime cycle on application exit.

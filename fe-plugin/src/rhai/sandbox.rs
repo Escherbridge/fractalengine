@@ -250,6 +250,19 @@ mod tests {
             result_rx.recv().unwrap(),
             PluginResult::Error { .. }
         ));
+        contexts.shutdown().unwrap();
+        assert!(
+            _other.get_node("n1").is_err(),
+            "host shutdown revokes the remaining direct contexts"
+        );
+        assert!(contexts
+            .bind(
+                "after-shutdown".into(),
+                "p1".into(),
+                CapabilityToken::mint("after-shutdown", &manifest),
+                commands
+            )
+            .is_err());
     }
 
     #[test]

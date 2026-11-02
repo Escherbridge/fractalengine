@@ -45,6 +45,7 @@ pub trait SceneBackendFactory: Send + Sync {
 pub struct PluginContexts {
     contexts: Arc<Mutex<HashMap<String, PluginContext>>>,
     factory: Option<Arc<dyn SceneBackendFactory>>,
+    closed: Arc<AtomicBool>,
 }
 
 impl PluginContexts {
@@ -62,6 +63,9 @@ impl PluginContexts {
         capabilities: CapabilityToken,
         tx: crossbeam::channel::Sender<PluginCommand>,
     ) -> Result<PluginContext, String> {
+        if self.is_closed() {
+            return Err("plugin host is shutting down".into());
+        }
         if capabilities.plugin_id != plugin_id {
             return Err("plugin token belongs to another instance".into());
         }
@@ -73,6 +77,9 @@ impl PluginContexts {
             .contexts
             .lock()
             .map_err(|_| "plugin context registry lock poisoned")?;
+        if self.is_closed() {
+            return Err("plugin host is shutting down".into());
+        }
         if contexts
             .values()
             .any(|existing| existing.plugin_id() == context.plugin_id())
@@ -100,11 +107,32 @@ impl PluginContexts {
     }
 
     pub(crate) fn resolve(&self, session: &PluginSession) -> Result<PluginContext, String> {
+        if self.is_closed() {
+            return Err("plugin host is shutting down".into());
+        }
         self.contexts
             .lock()
             .map_err(|_| "plugin context registry lock poisoned")?
             .get(&session.id)
             .cloned()
             .ok_or_else(|| "plugin origin is not admitted".into())
+    }
+
+    /// Revoke all instances and stop accepting work when the application exits.
+    pub fn shutdown(&self) -> Result<(), String> {
+        self.closed.store(true, Ordering::Release);
+        let mut contexts = self
+            .contexts
+            .lock()
+            .map_err(|_| "plugin context registry lock poisoned")?;
+        for context in contexts.values() {
+            context.session.revoke();
+        }
+        contexts.clear();
+        Ok(())
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
     }
 }
