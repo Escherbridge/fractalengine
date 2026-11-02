@@ -108,6 +108,7 @@ impl RightSidebarSection {
 /// or in-panel rail click). `None` means "no explicit toggle" → selection-default.
 #[derive(Resource, Default, Debug, Clone)]
 pub struct RightSidebarState {
+    pub collapsed: bool,
     pub requested: Option<RightSidebarSection>,
     /// Settings-section residency readout, refreshed by `update_residency_readout`.
     pub residency: ResidencyReadout,
@@ -156,14 +157,20 @@ pub fn update_residency_readout(
 }
 
 impl RightSidebarState {
+    /// Hide/show the section without changing the request or node selection.
+    pub fn toggle_collapsed(&mut self) {
+        self.collapsed = !self.collapsed;
+    }
+
     /// Toggle a section: request it, or clear it if already active (never-double —
     /// requesting a new section replaces, it does not stack).
     pub fn toggle(&mut self, section: RightSidebarSection) {
-        self.requested = if self.requested == Some(section) {
+        self.requested = if !self.collapsed && self.requested == Some(section) {
             None
         } else {
             Some(section)
         };
+        self.collapsed = false;
     }
 
     /// Whether `section` is the explicitly-requested one.
@@ -176,6 +183,7 @@ impl RightSidebarState {
     /// the write `UiAction::RevealSection` performs, so an addressed surface
     /// behaves the same whether it is asked for once or ten times.
     pub fn reveal(&mut self, section: RightSidebarSection) {
+        self.collapsed = false;
         self.requested = Some(section);
     }
 
@@ -209,8 +217,8 @@ pub fn section_label(section: RightSidebarSection) -> &'static str {
     }
 }
 
-/// Decide the active section. Precedence: portal > explicit toggle >
-/// selection-default. Returns `None` ONLY when the portal owns the region — a
+/// Decide the active section. Precedence: portal/collapse > explicit toggle >
+/// selection-default. Returns `None` when collapsed or the portal owns the region — a
 /// true short-circuit, no section rail underneath. Outside the portal the
 /// Inspector is the never-blank fallback. D10: it no longer self-collapses when
 /// nothing is selected — the resting app must still show the section rail, and
@@ -220,8 +228,8 @@ pub fn active_section(
     selection_present: bool,
     portal_open: bool,
 ) -> Option<RightSidebarSection> {
-    if portal_open {
-        return None; // portal toolbar owns the right region
+    if portal_open || state.collapsed {
+        return None; // portal toolbar or explicit collapse owns the region
     }
     if let Some(section) = state.requested {
         return Some(section); // explicit toggle beats the selection-default
@@ -1595,7 +1603,18 @@ mod tests {
     #[test]
     fn reveal_is_idempotent_unlike_toggle() {
         let mut s = RightSidebarState::default();
+        s.reveal(RightSidebarSection::Maps);
+        s.toggle_collapsed();
+        assert_eq!(active_section(&s, true, false), None);
+        assert_eq!(s.requested, Some(RightSidebarSection::Maps));
+        s.toggle_collapsed();
+        assert_eq!(
+            active_section(&s, true, false),
+            Some(RightSidebarSection::Maps)
+        );
+        s.toggle_collapsed();
         s.reveal(RightSidebarSection::TerrainTools);
+        assert!(!s.collapsed);
         assert!(s.is_active(RightSidebarSection::TerrainTools));
         // A second reveal of the SAME surface keeps it open (an addressed
         // surface must not close because it was addressed twice).

@@ -610,7 +610,14 @@ pub fn render_topbar(
 ) {
     // FR-3 (D-A11): keyboard shortcut for the user-sticky left-sidebar toggle
     // (Ctrl/Cmd+B). Flips session-scoped intent; the manager honors it verbatim.
-    if ctx.input(|i| i.key_pressed(egui::Key::B) && i.modifiers.command) {
+    if !ctx.wants_keyboard_input()
+        && ctx.input(|i| {
+            i.key_pressed(egui::Key::B)
+                && i.modifiers.command
+                && !i.modifiers.shift
+                && !i.modifiers.alt
+        })
+    {
         left.user_intent = !left.user_intent;
     }
 
@@ -752,7 +759,9 @@ mod tests {
     fn tool_button_press_routes_through_the_single_activation_writer() {
         // Mirrors the button arm: no Brush special case survives here.
         let (mut tool, mut right) = (ToolState::default(), RightSidebarState::default());
+        right.toggle_collapsed();
         tool.activate(Tool::Brush, &mut right);
+        assert!(!right.collapsed, "explicit activation reveals Options");
         assert_eq!(tool.active_tool, Tool::Brush);
         assert!(right.is_active(RightSidebarSection::Options));
         tool.activate(Tool::Brush, &mut right);
