@@ -234,3 +234,22 @@ absence or exact existing stamp identity and enforced creation schemas are check
 transaction as the ordinary NodePromoted operation and row. Existing stamps return confirmed full
 properties through a guarded read transaction without creating another operation. The legacy public
 PromoteInstance caller-current-index contract remains separate.
+
+
+## stamp-map-snapshots
+
+Checked GUI stamp promotion and atomic Apply share preconditions::PETAL_TYPED_SNAPSHOT_SQL.
+Capture selects the full native Petal document as server-side CBOR/base64 alongside its ordinary
+row fields; metric scale comes from that same row. The use-time transaction repeats exactly that
+expression and compares the encoded string, including record identity and every stored field.
+Only the string crosses JSON bindings, so native bounds geometry and absent optional fields do
+not become GeoJSON objects or NULL in the fence. Snapshots above 4 MiB are refused. This does
+not replace the independent current Editor, ancestry, source path/version, schema or target checks.
+
+The pinned SurrealDB 3.0.5 source uses sorted BTreeMap object keys, separate NONE/NULL tags,
+integer/float/decimal encodings, typed record IDs and typed geometry in its CBOR serializer.
+The expression uses $this (the original CursorDoc), not a JSON re-encoding or a hash. The existing
+real-store journey asserts these distinctions, absent terrain/default metadata plus native Polygon
+bounds, and intervening terrain, bounds and optional metadata changes for both prepare/use paths.
+The terrain race keeps world_scale=1, proving the fence protects the full map rather than scale
+alone. These journey extensions are authored source; root owns execution and independent review.

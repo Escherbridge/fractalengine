@@ -1776,25 +1776,54 @@ mod tests {
         crate::handlers::entity_property::set_entity_property_as(&db,&undo_node,"gpx_points",&stamp_points,"did:qa").await.unwrap();
         let stamp_descriptor=serde_json::json!({"asset_path":"blob://fixture.glb","spacing_mode":"fixed_count","spacing_value":0.0,"count":3,"tangent_align":true});
         crate::handlers::entity_property::set_entity_property_as(&db,&undo_node,"path_asset",&stamp_descriptor,"did:qa").await.unwrap();
+        let stamp_bounds=serde_json::json!({"type":"Polygon","coordinates":[[[-10.0,-10.0],[10.0,-10.0],[10.0,10.0],[-10.0,10.0],[-10.0,-10.0]]]});
+        db.query("UPDATE petal SET terrain=NONE, description=NONE, hexon_manifest=NONE, visibility_groups=NONE, view_hidden=NONE, render_distance=NONE, bounds=<geometry<polygon>> $bounds WHERE petal_id='tree-other-petal'")
+            .bind(("bounds",stamp_bounds.clone())).await.unwrap().check().unwrap();
+        let petal_rows: Vec<serde_json::Value> = db.query("SELECT *, terrain=NONE AS terrain_absent, description=NONE AS description_absent, visibility_groups=NONE AS groups_absent FROM petal WHERE petal_id='tree-other-petal'")
+            .await.unwrap().check().unwrap().take(0).unwrap();
+        assert_eq!(petal_rows[0]["terrain_absent"],true,"exercise actual Surreal NONE rather than a JSON null terrain");
+        assert_eq!(petal_rows[0]["description_absent"],true);
+        assert_eq!(petal_rows[0]["groups_absent"],true);
+        assert_eq!(petal_rows[0]["visibility"],"private");
+        assert_eq!(petal_rows[0]["tags"],serde_json::json!([]));
+        assert_eq!(petal_rows[0]["bounds"]["type"],"Polygon","native bounds reproduce the ordinary created Petal");
+        for (left,right) in [
+            ("{value:NONE}","{value:NULL}"),
+            ("<int> 1","<float> 1"),
+            ("<decimal> 1","<float> 1"),
+            ("<geometry<point>> [1.0,2.0]","[1.0,2.0]"),
+            ("petal:typed_snapshot","'petal:typed_snapshot'"),
+        ] {
+            let snapshot=crate::handlers::preconditions::PETAL_TYPED_SNAPSHOT_SQL;
+            let distinct: bool=db.query(format!("RETURN {} != {};",snapshot.replace("$this",left),snapshot.replace("$this",right)))
+                .await.unwrap().check().unwrap().take(0).unwrap();
+            assert!(distinct,"typed snapshot must preserve {left} versus {right}");
+        }
         let promotion_source=crate::handlers::entity_property::get_entity_properties_handler(&db,&undo_node).await.unwrap();
         let promotion=fe_runtime::messages::CheckedStampPromotion {
             path_id:undo_node.clone(),petal_id:"tree-other-petal".into(),scope:plugin_scope.clone(),instance_index:1,
             path_version:None,before_properties:promotion_source.clone(),world_scale:1.0,
         };
         let promotion_node=format!("{undo_node}#inst-1");
-        for race in ["role","path","descriptor","points","collision","schema","journal"] {
+        for race in ["role","path","descriptor","points","terrain","bounds","metadata","collision","schema","journal"] {
             let prepared=crate::handlers::stamp_promotion::prepare(&db,&promotion,&format!("qa-promotion-{race}"),"did:qa").await.unwrap();
             match race {
                 "role"=>{db.query("UPDATE verse SET created_by='did:other' WHERE verse_id='tree-10'").await.unwrap().check().unwrap();}
                 "path"=>{db.query("UPDATE node SET petal_id='tree-petal' WHERE node_id=$id").bind(("id",undo_node.clone())).await.unwrap().check().unwrap();}
                 "descriptor"=>{db.query("UPDATE node SET properties.path_asset.count=2 WHERE node_id=$id").bind(("id",undo_node.clone())).await.unwrap().check().unwrap();}
                 "points"=>{db.query("UPDATE node SET properties.gpx_points=$points WHERE node_id=$id").bind(("id",undo_node.clone())).bind(("points",serde_json::json!([[8.0,2.0,9.0,29.5],[1.0,0.0,2.0,17.25]]))).await.unwrap().check().unwrap();}
+                "terrain"=>{db.query("UPDATE petal SET terrain={world_scale:1.0,origin:{lat:0.0,lon:0.0},tileset_hexon_uris:[]} WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
+                "bounds"=>{db.query("UPDATE petal SET bounds=<geometry<polygon>> {type:'Polygon',coordinates:[[[-20.0,-20.0],[20.0,-20.0],[20.0,20.0],[-20.0,20.0],[-20.0,-20.0]]]} WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
+                "metadata"=>{db.query("UPDATE petal SET view_hidden=false WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
                 "collision"=>{db.query("CREATE node CONTENT {node_id:$id,petal_id:'tree-other-petal',properties:{node_kind:'ordinary'}}").bind(("id",promotion_node.clone())).await.unwrap().check().unwrap();}
                 "schema"=>{db.query("CREATE field_def CONTENT {field_def_id:'qa-promotion-schema',scope:$scope,entity_type:'node',key:'node_kind',enforced_schema:{version:1,schema:{type:'string'}}}").bind(("scope",plugin_scope.clone())).await.unwrap().check().unwrap();}
                 _=>{db.query("DEFINE EVENT fail_checked_promotion ON TABLE node WHEN $after.properties.node_kind='stamp' THEN { THROW 'induced promotion row failure' }").await.unwrap().check().unwrap();}
             }
             let before_ops=op_log_count(&db).await;
-            crate::handlers::stamp_promotion::commit(&db,prepared).await.expect_err("checked GUI promotion race must roll back");
+            let refused=crate::handlers::stamp_promotion::commit(&db,prepared).await.expect_err("checked GUI promotion race must roll back");
+            if matches!(race,"terrain"|"bounds"|"metadata") {
+                assert!(format!("{refused:#}").contains("stamp map changed during promotion"),"the real map fence must refuse {race}: {refused:#}");
+            }
             assert_eq!(op_log_count(&db).await,before_ops);
             let rows:Vec<serde_json::Value>=db.query("SELECT node_id FROM node WHERE node_id=$id").bind(("id",promotion_node.clone())).await.unwrap().take(0).unwrap();
             assert_eq!(rows.len(),usize::from(race=="collision"),"refusal cannot leak a promoted node");
@@ -1802,6 +1831,9 @@ mod tests {
                 "role"=>{db.query("UPDATE verse SET created_by='did:qa' WHERE verse_id='tree-10'").await.unwrap().check().unwrap();}
                 "path"=>{db.query("UPDATE node SET petal_id='tree-other-petal' WHERE node_id=$id").bind(("id",undo_node.clone())).await.unwrap().check().unwrap();}
                 "descriptor"|"points"=>{db.query("UPDATE node SET properties=$properties WHERE node_id=$id").bind(("id",undo_node.clone())).bind(("properties",promotion_source.clone())).await.unwrap().check().unwrap();}
+                "terrain"=>{db.query("UPDATE petal SET terrain=NONE WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
+                "bounds"=>{db.query("UPDATE petal SET bounds=<geometry<polygon>> $bounds WHERE petal_id='tree-other-petal'").bind(("bounds",stamp_bounds.clone())).await.unwrap().check().unwrap();}
+                "metadata"=>{db.query("UPDATE petal SET view_hidden=NONE WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
                 "collision"=>{db.query("DELETE node WHERE node_id=$id").bind(("id",promotion_node.clone())).await.unwrap().check().unwrap();}
                 "schema"=>{db.query("DELETE field_def WHERE field_def_id='qa-promotion-schema'").await.unwrap().check().unwrap();}
                 _=>{db.query("REMOVE EVENT fail_checked_promotion ON TABLE node").await.unwrap().check().unwrap();}
@@ -1825,19 +1857,25 @@ mod tests {
             path_anchors:fe_sdk::path_geometry::decode_anchor_rows(&stamp_points).unwrap(),path_descriptor:stamp_descriptor,
             scale:[2.0,1.0,3.0],rotation:[0.0,0.0,0.0,1.0],arc_m:12.0,
         };
-        for race in ["role","path","row","schema","journal"] {
+        for race in ["role","path","row","terrain","bounds","metadata","schema","journal"] {
             let request=format!("qa-stamp-{race}");
             let prepared=crate::handlers::stamp_overrides::prepare(&db,&stamp_input,&request,"did:qa").await.unwrap();
             match race {
                 "role"=>{db.query("UPDATE verse SET created_by='did:other' WHERE verse_id='tree-10'").await.unwrap().check().unwrap();}
                 "path"=>{db.query("UPDATE node SET petal_id='tree-petal' WHERE node_id=$id").bind(("id",undo_node.clone())).await.unwrap().check().unwrap();}
                 "row"=>{db.query("UPDATE node SET interactive=false WHERE node_id=$id").bind(("id",stamp_node.clone())).await.unwrap().check().unwrap();}
+                "terrain"=>{db.query("UPDATE petal SET terrain={world_scale:1.0,origin:{lat:0.0,lon:0.0},tileset_hexon_uris:[]} WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
+                "bounds"=>{db.query("UPDATE petal SET bounds=<geometry<polygon>> {type:'Polygon',coordinates:[[[-20.0,-20.0],[20.0,-20.0],[20.0,20.0],[-20.0,20.0],[-20.0,-20.0]]]} WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
+                "metadata"=>{db.query("UPDATE petal SET view_hidden=false WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
                 "schema"=>{db.query("CREATE field_def CONTENT {field_def_id:'qa-stamp-schema-race',scope:$scope,entity_type:'node',key:'stamp.override.scale',enforced_schema:{version:1,schema:{type:'array'}}}").bind(("scope",plugin_scope.clone())).await.unwrap().check().unwrap();}
                 _=>{db.query("DEFINE EVENT fail_stamp_fact ON TABLE node_log WHEN $after.payload.stamp_batch_id='qa-stamp-journal' AND $after.payload.data.key='stamp.override.rotation' THEN { THROW 'induced second stamp fact failure' }").await.unwrap().check().unwrap();}
             }
             let before_ops=op_log_count(&db).await;
             let before_history=crate::handlers::node_history::latest(&db,&stamp_node).await.unwrap();
-            crate::handlers::stamp_overrides::commit(&db,prepared).await.expect_err("captured stamp batch race must roll back entirely");
+            let refused=crate::handlers::stamp_overrides::commit(&db,prepared).await.expect_err("captured stamp batch race must roll back entirely");
+            if matches!(race,"terrain"|"bounds"|"metadata") {
+                assert!(format!("{refused:#}").contains("map changed during save"),"the real map fence must refuse {race}: {refused:#}");
+            }
             assert_eq!(op_log_count(&db).await,before_ops);
             assert_eq!(crate::handlers::node_history::latest(&db,&stamp_node).await.unwrap(),before_history);
             assert_eq!(crate::handlers::entity_property::get_entity_properties_handler(&db,&stamp_node).await.unwrap(),stamp_before);
@@ -1845,6 +1883,9 @@ mod tests {
                 "role"=>{db.query("UPDATE verse SET created_by='did:qa' WHERE verse_id='tree-10'").await.unwrap().check().unwrap();}
                 "path"=>{db.query("UPDATE node SET petal_id='tree-other-petal' WHERE node_id=$id").bind(("id",undo_node.clone())).await.unwrap().check().unwrap();}
                 "row"=>{db.query("UPDATE node SET interactive=true WHERE node_id=$id").bind(("id",stamp_node.clone())).await.unwrap().check().unwrap();}
+                "terrain"=>{db.query("UPDATE petal SET terrain=NONE WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
+                "bounds"=>{db.query("UPDATE petal SET bounds=<geometry<polygon>> $bounds WHERE petal_id='tree-other-petal'").bind(("bounds",stamp_bounds.clone())).await.unwrap().check().unwrap();}
+                "metadata"=>{db.query("UPDATE petal SET view_hidden=NONE WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
                 "schema"=>{db.query("DELETE field_def WHERE field_def_id='qa-stamp-schema-race'").await.unwrap().check().unwrap();}
                 _=>{db.query("REMOVE EVENT fail_stamp_fact ON TABLE node_log").await.unwrap().check().unwrap();}
             }

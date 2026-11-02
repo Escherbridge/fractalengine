@@ -1,6 +1,22 @@
-//! Cheap target checks required before a log-first mutation is appended.
+//! Shared target checks and exact typed row fences for log-first mutations.
 
 use crate::repo::Db;
+
+/// Exact typed Petal row encoding; see handlers/AGENTS.md section stamp-map-snapshots.
+pub(crate) const PETAL_TYPED_SNAPSHOT_SQL: &str =
+    "encoding::base64::encode(encoding::cbor::encode($this))";
+
+/// Extract a bounded server-encoded snapshot from the same row used for metric scale.
+pub(crate) fn petal_typed_snapshot(row: &serde_json::Value) -> anyhow::Result<&str> {
+    let snapshot = row["stamp_petal_snapshot"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("stamp map snapshot unavailable"))?;
+    anyhow::ensure!(
+        !snapshot.is_empty() && snapshot.len() <= 4 * 1024 * 1024,
+        "stamp map snapshot exceeds limit"
+    );
+    Ok(snapshot)
+}
 
 /// Require a node target to exist before its mutation enters the operation log.
 pub(crate) async fn require_node_exists(

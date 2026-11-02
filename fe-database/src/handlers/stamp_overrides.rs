@@ -1,6 +1,6 @@
 //! Atomic path-locked stamp editing; see handlers/AGENTS.md section stamp-overrides.
 
-use super::{crud, entity, field_def, node_history};
+use super::{crud, entity, field_def, node_history, preconditions};
 use crate::{
     repo::Db,
     types::{NodeId, OpLogEntry, OpType},
@@ -65,7 +65,7 @@ pub(crate) async fn prepare(
     let permission =
         entity::prepare_scope_permission(db, &scope, actor, fe_policy::RoleLevel::Editor).await?;
     let (mut statements, mut bindings) = permission.into_parts();
-    let mut read = db.query("SELECT * OMIT id FROM node WHERE node_id=$stamp; SELECT * OMIT id FROM node WHERE node_id=$path; SELECT * OMIT id FROM petal WHERE petal_id=$petal")
+    let mut read = db.query(format!("SELECT * OMIT id FROM node WHERE node_id=$stamp; SELECT * OMIT id FROM node WHERE node_id=$path; SELECT *, {} AS stamp_petal_snapshot FROM petal WHERE petal_id=$petal", preconditions::PETAL_TYPED_SNAPSHOT_SQL))
         .bind(("stamp",edit.node_id.clone())).bind(("path",edit.path_id.clone()))
         .bind(("petal",crate::parse_scope(&scope)?.petal_id.ok_or_else(|| anyhow::anyhow!("missing petal"))?)).await?.check()?;
     let nodes: Vec<Value> = read.take(0)?;
@@ -77,7 +77,8 @@ pub(crate) async fn prepare(
     );
     let raw = nodes[0].clone();
     let path = paths[0].clone();
-    let petal = petals[0].clone();
+    let petal = &petals[0];
+    let petal_snapshot = preconditions::petal_typed_snapshot(petal)?;
     anyhow::ensure!(
         raw.get("tombstone").is_none_or(Value::is_null)
             && path.get("tombstone").is_none_or(Value::is_null),
@@ -156,7 +157,7 @@ pub(crate) async fn prepare(
         "IF array::len((SELECT VALUE node_id FROM node WHERE node_id=$stamp_node AND position=<geometry<point>> [$stamp_x,$stamp_z])) != 1 { THROW 'stamp position changed'; }".into(),
         "IF (SELECT * OMIT id, position FROM node WHERE node_id=$stamp_path) != $stamp_path_before { THROW 'path changed during save'; }".into(),
         "IF array::len((SELECT VALUE node_id FROM node WHERE node_id=$stamp_path AND position=<geometry<point>> [$stamp_path_x,$stamp_path_z])) != 1 { THROW 'path position changed'; }".into(),
-        "IF (SELECT * OMIT id FROM petal WHERE petal_id=$stamp_petal) != $stamp_petal_before { THROW 'map changed during save'; }".into(),
+        format!("IF (SELECT VALUE {} FROM petal WHERE petal_id=$stamp_petal) != $stamp_petal_before {{ THROW 'map changed during save'; }}", preconditions::PETAL_TYPED_SNAPSHOT_SQL),
         "IF (SELECT * OMIT id FROM node_log WHERE node_id=$stamp_node ORDER BY row_version DESC LIMIT 1) != $stamp_history { THROW 'stamp version changed during save'; }".into(),
         "IF (SELECT * OMIT id FROM node_log WHERE node_id=$stamp_path ORDER BY row_version DESC LIMIT 1) != $stamp_path_history { THROW 'path version changed during save'; }".into(),
         "IF array::len((SELECT VALUE log_id FROM node_log WHERE node_id=$stamp_node AND payload.stamp_request_id=$stamp_request)) != 0 { THROW 'stamp request already committed'; }".into(),
@@ -171,7 +172,7 @@ pub(crate) async fn prepare(
         ("stamp_path_z".into(), path_state["position"][2].clone()),
         ("stamp_path_before".into(), json!([path_fence])),
         ("stamp_petal".into(), raw["petal_id"].clone()),
-        ("stamp_petal_before".into(), json!([petal])),
+        ("stamp_petal_before".into(), json!([petal_snapshot])),
         (
             "stamp_history".into(),
             json!(previous.iter().collect::<Vec<_>>()),

@@ -1,6 +1,6 @@
 //! Checked GUI stamp promotion; see handlers/AGENTS.md section checked-stamp-promotion.
 
-use super::{crud, entity, field_def, node_history};
+use super::{crud, entity, field_def, node_history, preconditions};
 use crate::{
     repo::Db,
     types::{NodeId, OpLogEntry, OpType},
@@ -50,7 +50,7 @@ pub(crate) async fn prepare(
         entity::prepare_scope_permission(db, &scope, actor, fe_policy::RoleLevel::Editor).await?;
     let (mut statements, mut bindings) = permission.into_parts();
     let node_id = format!("{}#inst-{}", capture.path_id, capture.instance_index);
-    let mut read = db.query("SELECT * OMIT id FROM node WHERE node_id=$path; SELECT * OMIT id FROM petal WHERE petal_id=$petal; SELECT * OMIT id FROM node WHERE node_id=$stamp")
+    let mut read = db.query(format!("SELECT * OMIT id FROM node WHERE node_id=$path; SELECT *, {} AS stamp_petal_snapshot FROM petal WHERE petal_id=$petal; SELECT * OMIT id FROM node WHERE node_id=$stamp", preconditions::PETAL_TYPED_SNAPSHOT_SQL))
         .bind(("path",capture.path_id.clone())).bind(("petal",capture.petal_id.clone())).bind(("stamp",node_id.clone())).await?.check()?;
     let paths: Vec<Value> = read.take(0)?;
     let petals: Vec<Value> = read.take(1)?;
@@ -60,7 +60,8 @@ pub(crate) async fn prepare(
         "stamp source or target is ambiguous"
     );
     let path = paths[0].clone();
-    let petal = petals[0].clone();
+    let petal = &petals[0];
+    let petal_snapshot = preconditions::petal_typed_snapshot(petal)?;
     anyhow::ensure!(
         path.get("tombstone").is_none_or(Value::is_null)
             && path["petal_id"] == capture.petal_id
@@ -112,7 +113,7 @@ pub(crate) async fn prepare(
     statements.extend([
         "IF (SELECT * OMIT id, position FROM node WHERE node_id=$promotion_path) != $promotion_path_before { THROW 'stamp source changed during promotion'; }".into(),
         "IF array::len((SELECT VALUE node_id FROM node WHERE node_id=$promotion_path AND position=<geometry<point>> [$promotion_x,$promotion_z])) != 1 { THROW 'stamp source position changed'; }".into(),
-        "IF (SELECT * OMIT id FROM petal WHERE petal_id=$promotion_petal) != $promotion_petal_before { THROW 'stamp map changed during promotion'; }".into(),
+        format!("IF (SELECT VALUE {} FROM petal WHERE petal_id=$promotion_petal) != $promotion_petal_before {{ THROW 'stamp map changed during promotion'; }}", preconditions::PETAL_TYPED_SNAPSHOT_SQL),
         "IF (SELECT * OMIT id FROM node_log WHERE node_id=$promotion_path ORDER BY row_version DESC LIMIT 1) != $promotion_history { THROW 'stamp source version changed during promotion'; }".into(),
     ]);
     bindings.extend([
@@ -121,7 +122,7 @@ pub(crate) async fn prepare(
         ("promotion_x".into(), state["position"][0].clone()),
         ("promotion_z".into(), state["position"][2].clone()),
         ("promotion_petal".into(), json!(capture.petal_id)),
-        ("promotion_petal_before".into(), json!([petal])),
+        ("promotion_petal_before".into(), json!([petal_snapshot])),
         (
             "promotion_history".into(),
             json!(prior.iter().collect::<Vec<_>>()),
