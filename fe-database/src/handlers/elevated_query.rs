@@ -25,7 +25,7 @@ pub const ELEVATED_DIFF_MAX_ROWS: usize = 20_000;
 /// `validate_elevated_sql` fast-fails against; this DB-side check is the
 /// authority — it runs before any snapshot, query or op-log work (fe-api
 /// AGENTS.md §elevated-query; fe-database/src/AGENTS.md §handlers).
-pub const MAX_ELEVATED_STATEMENTS: usize = 32;
+pub use fe_query::sql_guard::MAX_ELEVATED_STATEMENTS;
 
 /// Write tables the inbound replication applier handles, with their domain id field.
 const REPLICATED_TABLES: [(&str, &str); 3] = [

@@ -2208,3 +2208,11 @@ Manager/Viewer respectively. Schema GET/PUT/MCP now use grant-bound
 GetFieldSchema/SetFieldSchema DB requests; API creates Scoped from validated
 claims and preserves authenticated opaque-principal capability behavior. Replies
 still validate exact correlation and field-definition identity.
+
+
+Scoped desktop SELECT extraction: src/query_guard.rs re-exports the pure
+fe_query::sql_guard implementation and retains its async transport/authorization
+pipeline. Existing REST/MCP/export/share/elevated guard semantics, row/byte/rate
+limits and DB timeouts are unchanged. Pure guard journeys live with the moved
+module; API semaphore/transport testing remains here. The desktop's narrower
+petal-only sources/function vocabulary is enforced only by the new DB handler.

@@ -278,3 +278,24 @@ feature-gated path that never gets its own build silently bitrots).
   `ObservationHexonSummary`, window-membership selection, and the §5.2 hydration cross-check between
   a hexon's actual contents and its signed payload (this module only validates the hexon against
   *itself* — the container and Parquet profile — never against a payload it has no access to).
+
+
+## sql-guard
+
+sql_guard is the existing pure fe-api query guard extracted without changing
+its read/elevated/export/share dialect or FROM-substitution semantics. API
+query_guard re-exports its public surface; async caller role/rate, DB handles,
+channel concurrency, export response budgets and bridge error mapping stay in
+fe-api. Existing pure guard journeys moved with private helpers, and the API
+transport-permit journey stays at the original seam. There is no database or
+SurrealDB parser dependency here. MAX_ELEVATED_STATEMENTS has one definition
+here, re-exported by the database's existing public path.
+
+PreparedSql::only_reads_petal_scoped_tables lets desktop callers reject API
+metadata sources that are intentionally not petal-filtered. It is additional
+desktop policy, not a change to existing API semantics. The database owns
+stored Viewer authorization, snapshot fences, native parser statement checks,
+request/response limits and the smaller desktop function vocabulary. Moving
+this scanner does not turn it into a full parser or expose a fictitious public
+SurrealQL AST visitor. Scope rewriting remains the existing validated source
+replacement, not a user-supplied WHERE suffix or regex substitution.
