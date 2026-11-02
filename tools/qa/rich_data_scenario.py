@@ -21,7 +21,7 @@ OP_FIELDS = {
     "delete_property": {"object", "key", "expect_version"},
     "transform": {"object", "position", "rotation", "scale", "expect_version"},
     "append_readings": {"metric", "units", "recorded_at", "values"},
-    "derive_metric": {"source_metric", "target_metric", "units", "start_ms", "end_ms", "calibration_versions"},
+    "derive_metric": {"source_metric", "target_metric", "units", "start_ms", "end_ms", "calibration_versions", "calibration_schema_versions"},
     "query_metrics": {"metric", "start_ms", "end_ms", "oracle", "kind", "mode", "mcp_parity"},
     "checkpoint": {"expect"},
     "state_at": {"object", "version", "expect", "mcp_parity"},
@@ -245,6 +245,12 @@ def load_scenario(path):
             require(all(type(value) in (int, float) and abs(value) <= 1e12 for value in step["values"].values()),
                     "readings exceed the QA driver numeric bound of 1e12")
         if op == "derive_metric":
+            schema_versions = step["calibration_schema_versions"]
+            require(isinstance(schema_versions,dict) and set(schema_versions) == set(step["calibration_versions"]),
+                    "each calibration anchor needs an independently declared schema revision")
+            require("calibration" in revisions,"calibration schema must be installed before derivation")
+            for revision in schema_versions.values():
+                integer(revision,1,revisions["calibration"],"expected calibration schema revision")
             for name, version in step["calibration_versions"].items():
                 integer(version, 1, 2**63-1, "calibration history version")
                 require(version <= versions[name], "calibration references a future declared commit")

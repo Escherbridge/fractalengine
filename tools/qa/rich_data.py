@@ -22,6 +22,14 @@ from rich_data_scenario import NAME, ULID, ScenarioError, equal_json, epoch_ms, 
 SECRET_KEY = re.compile(r"^(authorization|password|secret|private_key|api_token|access_token|refresh_token|invite_link)$", re.I)
 BEARER = re.compile(r"\bBearer\s+[^\s\"<>]+", re.I)
 JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")
+LOG_RETENTION_CAPACITY = 2000
+
+
+def log_retention_gap(before, after):
+    valid = all(type(mark.get(key)) is int and mark[key] >= 0
+                for mark in (before,after) for key in ("generation","seq"))
+    return (not valid or before["generation"] != after["generation"]
+            or not 0 <= after["seq"]-before["seq"] <= LOG_RETENTION_CAPACITY)
 
 
 def digest(value):
@@ -160,7 +168,10 @@ class Client:
                 payload = payload["data"]
             if not isinstance(payload, dict) or not isinstance(payload.get("entries"), list):
                 return {"unavailable_reason":"debug log projection unavailable"}, []
-            return {"generation":payload["generation"], "seq":payload.get("latest_seq", 0)}, payload["entries"]
+            if not all(type(payload.get(key)) is int and payload[key] >= 0 for key in ("generation","latest_seq")):
+                return {"unavailable_reason":"debug log sequence bounds unavailable"}, []
+            return {"generation":payload["generation"],"seq":payload["latest_seq"],
+                    "latest_seq":payload["latest_seq"]}, payload["entries"]
         except ApiFailure:
             return {"unavailable_reason":"debug log projection refused or unavailable"}, []
         except ScenarioError as error:
@@ -485,6 +496,8 @@ class Driver:
             name = reverse.get(row.get("node_id"))
             require(name in names, "unexpected derivation anchor", "invalid_response")
             at = self.state_at(name, names[name])
+            self.check(name + " calibration snapshot node", at["state"].get("node_id"),self.objects[name])
+            self.check(name + " calibration snapshot petal", at["state"].get("petal_id"),self.petal_id)
             calibration = at["state"].get("properties", {}).get("calibration")
             require(isinstance(calibration, dict) and all(type(calibration.get(key)) in (int,float) for key in ("gain","bias")),
                     "historical calibration is not numeric", "invalid_response")
@@ -492,18 +505,26 @@ class Driver:
             self.coverage(page, self.objects[name])
             require(isinstance(page.get("entries"), list) and len(page["entries"]) == 1
                     and page["entries"][0].get("row_version") == names[name], "calibration fact is missing", "history_coverage_unavailable")
-            schema_versions = page["entries"][0].get("payload", {}).get("schema_versions")
+            fact = page["entries"][0]
+            self.check(name + " calibration fact node",fact.get("node_id"),self.objects[name])
+            self.check(name + " calibration fact commit",fact.get("row_version"),names[name])
+            fact_payload = fact.get("payload",{})
+            self.check(name + " calibration fact scope",fact_payload.get("scope"),self.scope)
+            self.check(name + " calibration fact state",fact_payload.get("after_state"),at["state"])
+            schema_versions = fact_payload.get("schema_versions")
             require(isinstance(schema_versions, dict), "calibration schema provenance unavailable", "history_coverage_unavailable")
-            if "calibration" in self.schemas:
-                schema_id = self.schemas["calibration"]["field_def_id"]
-                require(type(schema_versions.get(schema_id)) is int, "selected calibration version lacks its schema revision", "history_coverage_unavailable")
+            require("calibration" in self.schemas,"calibration field definition is unavailable", "history_coverage_unavailable")
+            schema_id = self.schemas["calibration"]["field_def_id"]
+            expected_revision = step["calibration_schema_versions"][name]
+            self.check(name + " independently expected calibration schema revision",schema_versions.get(schema_id),expected_revision)
             raw_value, time_ms = row.get("value"), row.get("recorded_at_ms")
             require(type(raw_value) in (int,float) and type(time_ms) is int, "invalid raw reading", "invalid_response")
             derived = calibration["gain"] * raw_value + calibration["bias"]
             require(math.isfinite(derived) and abs(derived) <= 1e15, "affine result exceeds the QA driver numeric bound")
             timestamp = (datetime.datetime(1970,1,1,tzinfo=datetime.timezone.utc)+datetime.timedelta(milliseconds=time_ms)).isoformat().replace("+00:00","Z")
             record = {"source_metric":step["source_metric"],"target_metric":step["target_metric"],"node_id":self.objects[name],
-                      "history_version":names[name],"schema_versions":schema_versions,"raw":raw_value,
+                      "history_version":names[name],"schema_versions":schema_versions,
+                      "expected_calibration_schema_revision":expected_revision,"raw":raw_value,
                       "gain":calibration["gain"],"bias":calibration["bias"],"formula":"gain * raw + bias",
                       "derived":derived,"recorded_at_ms":time_ms,"source_reading_id":row.get("reading_id")}
             payload_bytes = json.dumps(record, sort_keys=True, allow_nan=False).encode()
@@ -685,10 +706,12 @@ class Driver:
         if failure:
             receipt["outcome"] = "FAIL"
         generation_changed = "generation" in watermark and after.get("generation") != watermark["generation"]
-        needs_review = bool(new_logs) or "unavailable_reason" in watermark or "unavailable_reason" in after or generation_changed
+        retention_gap = log_retention_gap(watermark,after)
+        needs_review = bool(new_logs) or "unavailable_reason" in watermark or "unavailable_reason" in after or retention_gap
         self.log_review |= needs_review
         receipt.update(assertions=self.assertions,requests=self.client.requests,log_watermark=watermark,
-                       new_logs=new_logs,log_generation_changed=generation_changed,log_review_required=needs_review)
+                       log_end_watermark=after,new_logs=new_logs,log_generation_changed=generation_changed,
+                       log_retention_gap=retention_gap,log_retention_capacity=LOG_RETENTION_CAPACITY,log_review_required=needs_review)
         artifact = self.evidence.write("%02d-%s" % (number,step["id"]), receipt, "persistence")
         self.receipts.append({"step_id":step["id"],"outcome":receipt["outcome"],"artifact":artifact,
                               "log_review_required":needs_review})
@@ -701,6 +724,7 @@ class Driver:
             record.update(checkpoint=checkpoint,outcome=outcome,
                           commands=[subprocess.list2cmdline([sys.executable,*sys.argv])+" [step "+step["id"]+"]"],
                           assertions=self.assertions,artifacts=artifacts,log_watermark=watermark,
+                          log_end_watermark=after,log_retention_gap=retention_gap,
                           new_logs=new_logs,reason=("API operation failed" if failure else "Log evidence needs independent review") if outcome != "PASS" else None)
             self.coverage_records.append(record)
         print(json.dumps({"step_id":step["id"],"outcome":receipt["outcome"],"artifact":artifact["path"],

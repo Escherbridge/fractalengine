@@ -32,7 +32,9 @@ Missing owned scope/assets or controlled same-root restart evidence are explicit
 3. Append raw A10/11/12,B20/22/24 at T0/T1/T2, delivered T0,T2,T1. T0=1793404800000 UTC epoch ms; T1/T2 are
    10/20seconds later. Explicit affine steps read historical A v2/B v1 calibration, persist opaque provenance
    bytes referencing source reading/object version/schema revision, verify stored hashes, then append derived
-   scalars. Current gain3 must not alter the old gain2 result. This is driver computation, with no automatic
+   scalars only after checking the fact's node/commit/scope/after-state identity and independently declared
+   calibration schema revision1 for each anchor. Merely receiving an integer revision is insufficient.
+   Current gain3 must not alter the old gain2 result. This is driver computation, with no automatic
    rule engine, HLC override or declared effective-time object mutation.
 4. Require six raw/six derived rows. Chronological calibrated arrays are A[21,23,25],B[9,10,11], means23/10,
    sums69/30. A total-only99 is invalid because raw fleet sum is also99. Check local/distributed per-anchor
@@ -45,6 +47,8 @@ Missing owned scope/assets or controlled same-root restart evidence are explicit
 6. Review actual current-pass/run receipts, context JSON, measurement JSON/CSV, trajectory CSV and offline HTML.
    Event-time charts and version-state selectors use observations only. The report is not product chart UI.
    New logs/gaps remain UNKNOWN pending independent review. Merge one final reviewed candidate per checkpoint;
+   retain before/after global sequence bounds: a delta over2000 can hide an evicted warning despite an empty
+   warn/error list and unchanged generation, so it remains UNKNOWN rather than PASS.
    initial/restart files overlap, so never concatenate duplicate IDs or borrow prior-pass successes.
 7. Main records exact owned process/root identity, stops/relaunches the same root and refreshes current.json
    with actual new process identity. Re-run identical options plus `--verify-state <absolute-context.json>`.

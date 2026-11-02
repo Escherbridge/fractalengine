@@ -383,6 +383,9 @@ remain within `qa/passes/<pass>/rich-data/<run>/<scenario>/`; step receipts, con
 commit/fingerprint, scenario digest and a fingerprint of all driver/transport/report modules. Tokens must live
 inside the owned run, and requests/artifacts scrub encoded payloads and credentials. A log gap, generation
 change or new warn/error leaves coverage UNKNOWN for independent review even when the data assertions succeed.
+Both log sequence bounds are preserved. A regressed/invalid bound, changed generation or delta over the2000-entry
+ring capacity also leaves coverage UNKNOWN: info-level traffic can evict an earlier warning even when the filtered
+warn/error response is empty. An empty response alone never establishes uninterrupted diagnostic coverage.
 `coverage-candidates.jsonl` is partial API evidence, never a whole-pass acceptance claim; merge only one final
 reviewed record per checkpoint into the current pass ledger. It does not produce GUI PASS records.
 
@@ -403,3 +406,8 @@ Repeated query views of the same reading ID share one export row; distinct readi
 duplicates cannot disappear. JSON embedded in HTML escapes `<` and Unicode line separators; dynamic labels and
 states use DOM textContent, never HTML interpolation. No CDN, network fetch, API token or expected oracle point
 is embedded. Failed executions still export the actual partial observations and clearly label incompleteness.
+
+Each affine step independently declares `calibration_schema_versions` per anchor (revision1 in the example).
+The selected fact must match its requested node/committed version/scope and replayed after-state, and its schema
+revision must equal the declared expectation before provenance bytes or derived readings are written. Integer
+presence or copying whatever revision the server returned is insufficient provenance evidence.
