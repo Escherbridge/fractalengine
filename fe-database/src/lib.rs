@@ -1659,6 +1659,25 @@ pub fn spawn_db_thread_shared(
                             Err(error) => send_result(&tx,handlers::correlated_failure(&correlation_id,format!("Create object refused: {error}"))),
                         }
                     }
+                    Ok(DbCommand::CommitStampOverrides {edit,correlation_id}) => {
+                        let outcome=async {
+                            let prepared=handlers::stamp_overrides::prepare(&db,&edit,&correlation_id,&local_did).await?;
+                            handlers::stamp_overrides::commit(&db,prepared).await
+                        }.await;
+                        match outcome {
+                            Ok(receipt)=>{
+                                if let Some(ref ect)=entity_change_tx {
+                                    for key in ["stamp.override.scale","stamp.override.rotation","stamp.override.arc_m"] {
+                                        if ect.send(fe_runtime::messages::SceneChange::PropertyChanged {node_id:receipt.node_id.clone(),petal_id:receipt.state.petal_id.clone(),key:key.into(),value:receipt.state.properties[key].clone()}).is_err() {
+                                            tracing::warn!(node_id=receipt.node_id,"committed stamp scene receiver closed");
+                                        }
+                                    }
+                                }
+                                send_result(&tx,DbResult::NodeMutationCommitted {receipt,correlation_id:Some(correlation_id)});
+                            }
+                            Err(error)=>send_result(&tx,DbResult::RequestFailed {error:format!("Stamp edit refused: {error:#}"),correlation_id}),
+                        }
+                    }
                     Ok(DbCommand::CommitCheckedNodeMutation {node_id,mutation,expected,correlation_id}) => {
                         match handlers::checked_mutation::commit(&db,&node_id,&mutation,&expected,&correlation_id,&local_did).await {
                             Ok(receipt)=>{

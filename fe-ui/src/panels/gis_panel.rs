@@ -401,6 +401,7 @@ fn run_query(
     world_scale: f64,
 ) {
     gis_state.results.clear();
+    gis_state.query_completed = false;
     gis_state.last_error = None;
     match gis_state.mode {
         GisQueryMode::Annotated => {
@@ -450,6 +451,7 @@ fn run_query(
                     annotation_color: None,
                 })
                 .collect();
+            gis_state.query_completed = true;
         }
     }
 }
@@ -464,7 +466,7 @@ fn render_results(
     render_result_rows(
         ui,
         &gis_state.results,
-        !gis_state.query_pending && gis_state.last_error.is_none(),
+        gis_state.query_completed && !gis_state.query_pending && gis_state.last_error.is_none(),
         node_mgr,
         camera_focus,
         world_scale,

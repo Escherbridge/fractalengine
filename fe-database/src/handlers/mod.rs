@@ -2,6 +2,7 @@
 //! fe-database/src/AGENTS.md §handlers).
 
 pub(crate) mod checked_mutation;
+pub(crate) mod stamp_overrides;
 pub mod admin;
 pub mod api_token;
 pub mod asset_backfill;

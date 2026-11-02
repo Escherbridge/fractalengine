@@ -19,6 +19,7 @@ fn submit_query(
 ) {
     let request_id = crate::actions::query::next_ui_query_id("gis");
     gis_state.query_pending = true;
+    gis_state.query_completed = false;
     gis_state.query_request_id = Some(request_id.clone());
     gis_state.last_error = None;
     if db_sender

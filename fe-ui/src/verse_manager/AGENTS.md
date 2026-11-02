@@ -440,3 +440,10 @@ preserves exact-ID routing and the DB door preserves Manager authorization.
 Mint acceptance also requires the actual Inspector API tab. Target synchronization
 discards pending ownership outside that tab before handling either success or
 failure, even if the selected node and scope have not changed.
+
+## Stamp editor projection
+
+`stamp_editor_defaults` reuses sample_progresses and tangent_yaw to initialize editable fields
+without moving an unmodified stamp. Metric slide overrides convert through sanitized world_scale
+inside stamp_transform before sampling the world-coordinate path. The same source path/Petal
+configuration contributes to the database's atomic save fence and meter bounds.

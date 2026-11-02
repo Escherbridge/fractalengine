@@ -133,3 +133,17 @@ The existing Viewer-denial real-store journey now also captures then revokes an 
 Checked point edits also admit exactly one removed/restored row under the same full-array CAS.
 Every surviving row remains byte-equivalent JSON, including timestamp and Bezier metadata.
 The existing operation/journal failure journey covers removal, stale/Viewer refusal and inverse restore.
+
+## stamp-overrides
+
+`stamp_overrides::prepare` seals actual local Editor authority, full ancestry, stamped node
+identity/owner path/index, complete before-properties, known versions, exact source path and
+Petal map rows, and each enforced-schema snapshot. A separately consumable prepared value
+lets the existing real-store journey change those rows between capture and mutation use.
+`commit` writes the three existing flat override keys and sequential ordinary property_set
+facts in one transaction using the ordinary operation commit boundary. Failure on the second
+fact rolls back every property, fact and intention. No position/rotation/scale column is written.
+The final fact alone carries the exact request receipt marker, so existing authorized receipt
+resolution can recover one outcome without confusing intermediate property versions.
+The single PropertySet intention records the bounded override batch; the journal retains
+three standard facts and reconstructs ordinary historical versions without a new operation grammar.

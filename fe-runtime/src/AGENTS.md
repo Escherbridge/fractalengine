@@ -862,3 +862,10 @@ to another waiter. GUI request IDs are consumed only by their owning form.
 ## Local EntityAccess
 
 EntityAccess is a local desktop command with an explicit EntityType/id/full scope and fresh request ID. Its actor is always the DB thread identity. It is not a serialized HTTP/MCP request and adds no API pending-reply family. EntityAccessFinished is consumed only by its exact open-dialog request. Snapshots contain bounded metadata and effective roles; custom Debug output redacts generated invite/token credentials. Secret mint receipts are accepted only while the matching target's API tab remains active.
+
+## Stamp override batch
+
+CommitStampOverrides is a local editor-only command carrying loaded stamp properties, exact
+path identity and points, optional known versions, full scope and three finite draft fields.
+It does not extend the public NodeMutation JSON grammar. Its single correlated ordinary
+NodeMutationCommitted reply contains the final state after all three facts commit together.

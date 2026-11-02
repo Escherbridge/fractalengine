@@ -1757,6 +1757,50 @@ mod tests {
         assert_eq!(op_log_count(&db).await,before_bad_removals);
         let restored=crate::handlers::checked_mutation::commit(&db,&undo_node,&restore,&restore_guard,"qa-restore-point","did:qa").await.unwrap();
         assert_eq!(restored.state.properties["gpx_points"],path_before);
+        let stamp_descriptor=serde_json::json!({"asset_path":"blob://fixture.glb","spacing_mode":"fixed_count","spacing_value":0.0,"count":3,"tangent_align":true});
+        crate::handlers::entity_property::set_entity_property_as(&db,&undo_node,"path_asset",&stamp_descriptor,"did:qa").await.unwrap();
+        let (stamp_node,_)=crud::promote_instance_handler(&db,"tree-other-petal",&undo_node,1).await.unwrap();
+        let stamp_before=crate::handlers::entity_property::get_entity_properties_handler(&db,&stamp_node).await.unwrap();
+        let stamp_input=fe_runtime::messages::StampOverrideEdit {
+            node_id:stamp_node.clone(),path_id:undo_node.clone(),instance_index:1,scope:plugin_scope.clone(),
+            history_version:None,path_version:None,before_properties:stamp_before.clone(),
+            path_points:vec![[1.0,0.0,2.0],[8.0,2.0,9.0]],path_descriptor:stamp_descriptor,
+            scale:[2.0,1.0,3.0],rotation:[0.0,0.0,0.0,1.0],arc_m:2.0,
+        };
+        for race in ["role","path","row","schema","journal"] {
+            let request=format!("qa-stamp-{race}");
+            let prepared=crate::handlers::stamp_overrides::prepare(&db,&stamp_input,&request,"did:qa").await.unwrap();
+            match race {
+                "role"=>{db.query("UPDATE verse SET created_by='did:other' WHERE verse_id='tree-10'").await.unwrap().check().unwrap();}
+                "path"=>{db.query("UPDATE node SET petal_id='tree-petal' WHERE node_id=$id").bind(("id",undo_node.clone())).await.unwrap().check().unwrap();}
+                "row"=>{db.query("UPDATE node SET interactive=false WHERE node_id=$id").bind(("id",stamp_node.clone())).await.unwrap().check().unwrap();}
+                "schema"=>{db.query("CREATE field_def CONTENT {field_def_id:'qa-stamp-schema-race',scope:$scope,entity_type:'node',key:'stamp.override.scale',enforced_schema:{version:1,schema:{type:'array'}}}").bind(("scope",plugin_scope.clone())).await.unwrap().check().unwrap();}
+                _=>{db.query("DEFINE EVENT fail_stamp_fact ON TABLE node_log WHEN $after.payload.stamp_batch_id='qa-stamp-journal' AND $after.payload.data.key='stamp.override.rotation' THEN { THROW 'induced second stamp fact failure' }").await.unwrap().check().unwrap();}
+            }
+            let before_ops=op_log_count(&db).await;
+            let before_history=crate::handlers::node_history::latest(&db,&stamp_node).await.unwrap();
+            crate::handlers::stamp_overrides::commit(&db,prepared).await.expect_err("captured stamp batch race must roll back entirely");
+            assert_eq!(op_log_count(&db).await,before_ops);
+            assert_eq!(crate::handlers::node_history::latest(&db,&stamp_node).await.unwrap(),before_history);
+            assert_eq!(crate::handlers::entity_property::get_entity_properties_handler(&db,&stamp_node).await.unwrap(),stamp_before);
+            match race {
+                "role"=>{db.query("UPDATE verse SET created_by='did:qa' WHERE verse_id='tree-10'").await.unwrap().check().unwrap();}
+                "path"=>{db.query("UPDATE node SET petal_id='tree-other-petal' WHERE node_id=$id").bind(("id",undo_node.clone())).await.unwrap().check().unwrap();}
+                "row"=>{db.query("UPDATE node SET interactive=true WHERE node_id=$id").bind(("id",stamp_node.clone())).await.unwrap().check().unwrap();}
+                "schema"=>{db.query("DELETE field_def WHERE field_def_id='qa-stamp-schema-race'").await.unwrap().check().unwrap();}
+                _=>{db.query("REMOVE EVENT fail_stamp_fact ON TABLE node_log").await.unwrap().check().unwrap();}
+            }
+        }
+        let prepared=crate::handlers::stamp_overrides::prepare(&db,&stamp_input,"qa-stamp-success","did:qa").await.unwrap();
+        let stamp_saved=crate::handlers::stamp_overrides::commit(&db,prepared).await.unwrap();
+        assert_eq!(stamp_saved.state.properties["stamp.override.scale"],serde_json::json!([2.0,1.0,3.0]));
+        assert_eq!(stamp_saved.state.properties["stamp.override.rotation"],serde_json::json!([0.0,0.0,0.0,1.0]));
+        assert_eq!(stamp_saved.state.properties["stamp.override.arc_m"],serde_json::json!(2.0));
+        assert_eq!(stamp_saved.state.properties["node_kind"],"stamp");
+        assert_eq!(stamp_saved.state.position,[0.0;3],"stamp save cannot bypass the position lock");
+        let (stamp_receipt,stamp_current)=crate::handlers::checked_mutation::resolve(&db,&stamp_node,"tree-other-petal","qa-stamp-success","did:qa").await.unwrap();
+        assert_eq!(stamp_receipt.unwrap().history_version,stamp_saved.history_version);
+        assert_eq!(stamp_current.properties,stamp_saved.state.properties);
         let before_plugin_ops = op_log_count(&db).await;
         let invalid = vec![
             PendingOp::SetProperty {

@@ -737,3 +737,12 @@ content. Shared layer controls and path edits advertise Editor access; local rul
 available to viewers, and DB authorization remains authoritative. Data and export source tabs use
 the shared tab fill; export can reset to the actual running API endpoint explicitly. Shared copy
 widgets retain the A8 clipboard guard and toast behavior.
+
+## Stamp fields
+
+One Apply owns scale XYZ, yaw and slide together. Opening the editor derives untouched yaw
+and metric arc from the same pure sampler used by materialization; editing scale therefore
+preserves the sampled location, nonuniform axes and any untouched full rotation quaternion.
+Slide values are real meters. Materialization converts them to world coordinates exactly once
+at its sampler boundary. The native controls remain backed by actual stamp selection, properties
+and atomic receipts, with an explicit pending check and stored-value reload.

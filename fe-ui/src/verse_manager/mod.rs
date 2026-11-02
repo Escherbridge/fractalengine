@@ -16,6 +16,7 @@ mod lifecycle_events;
 mod node_index;
 mod path_asset_materialize;
 mod path_asset_reconcile;
+pub(crate) use path_asset_reconcile::stamp_editor_defaults;
 mod petal_respawn;
 mod primitive_materialize;
 mod primitive_reconcile;

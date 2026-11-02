@@ -264,7 +264,8 @@ fn render_track_list(
                                             cancel_delete = true;
                                         }
                                         if ui
-                                            .add(
+                                            .add_enabled(
+                                                can_edit,
                                                 egui::Button::new(
                                                     egui::RichText::new("Confirm Delete")
                                                         .small()
@@ -284,7 +285,7 @@ fn render_track_list(
                                             to_delete = Some(row.node_id.clone());
                                         }
                                     } else if ui
-                                        .small_button("Delete")
+                                        .add_enabled(can_edit, egui::Button::new("Delete").small())
                                         .named(ui, format_args!("Delete path {}", row.name))
                                         .clicked()
                                     {

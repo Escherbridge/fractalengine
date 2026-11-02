@@ -383,3 +383,16 @@ authorized current row. Full point order and metadata must still match before on
 mutation is sent; the DB transaction rechecks scope, version, before JSON and actual authority.
 No UI row is removed optimistically. The existing receipt/reconciliation projection updates route
 rendering and supports checked Undo/Redo with the original untouched point metadata.
+
+## Atomic stamp editor
+
+The stamp editor projects the existing viewport selection, never the edited path's arbitrary
+index. Promotion loads stored properties; Apply pins that baseline, navigation, path, versions
+and all draft fields. It submits one typed local command and leaves the live cache unchanged.
+Only its matching final receipt updates normal committed-state hydration. Failed saves retain
+the draft; explicit Reload invalidates the old baseline before requesting current properties.
+Check save result resolves the exact request after a lost confirmation, then loads the authorized
+current override values. Historical success does not restore historical values over later edits.
+A reconciled current baseline uses exact property CAS when its latest version is not known.
+Make editable node enters the already-promoted addressable node's Inspector; its position
+remains path-derived under existing database transform locks.

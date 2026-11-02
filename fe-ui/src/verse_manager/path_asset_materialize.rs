@@ -48,7 +48,11 @@ pub struct PathAssetCache {
 
 impl PathAssetCache {
     #[cfg(test)]
-    pub(crate) fn cached_point_positions(&self,track_id:&str)->Option<&[[f32;3]]> {self.entries.get(track_id).map(|entry|entry.points.as_slice())}
+    pub(crate) fn cached_point_positions(&self, track_id: &str) -> Option<&[[f32; 3]]> {
+        self.entries
+            .get(track_id)
+            .map(|entry| entry.points.as_slice())
+    }
 
     /// Cached entry for a track, if its properties carried a stampable path.
     pub(super) fn get(&self, track_id: &str) -> Option<&PathAssetCacheEntry> {
@@ -332,10 +336,12 @@ fn stamp_transform(
     default_yaw: f32,
     tangent_align: bool,
     ov: Option<&StampOverride>,
+    world_scale: f32,
 ) -> Transform {
     let (mut position, mut yaw) = (default_position, default_yaw);
     if let Some(arc_m) = ov.and_then(|o| o.arc_offset_m) {
-        (position, yaw) = transform_at_arc_length(points, arc_m);
+        (position, yaw) =
+            transform_at_arc_length(points, arc_m * sanitize_world_scale(world_scale));
     }
     let mut transform = Transform::from_xyz(position[0], position[1], position[2]);
     if tangent_align {
@@ -558,6 +564,7 @@ pub(super) fn materialize_path_assets(
                 yaw,
                 entry.descriptor.tangent_align,
                 ov_by_index.get(&i).copied(),
+                world_scale,
             );
             positions.push(transform.translation.to_array());
             stamp_indices.push(i as u32);
@@ -1020,11 +1027,16 @@ mod tests {
             arc_offset_m: Some(7.5),
             ..Default::default()
         };
-        let t = stamp_transform(&points, [0.0, 0.0, 0.0], 0.0, true, Some(&ov));
+        let t = stamp_transform(&points, [0.0, 0.0, 0.0], 0.0, true, Some(&ov), 1.0);
         assert!(
             (t.translation.x - 7.5).abs() < 1e-3,
             "slide to 7.5 m along +X, got {:?}",
             t.translation
+        );
+        let metric = stamp_transform(&points, [0.0; 3], 0.0, true, Some(&ov), 2.0);
+        assert!(
+            (metric.translation.x - 15.0).abs() < 1e-3,
+            "7.5 meters maps to 15 world units at scale 2"
         );
         // Yaw is re-derived at the new offset (still +X → FRAC_PI_2).
         let (axis, angle) = t.rotation.to_axis_angle();
@@ -1037,7 +1049,7 @@ mod tests {
             arc_offset_m: Some(999.0),
             ..Default::default()
         };
-        let t = stamp_transform(&points, [0.0, 0.0, 0.0], 0.0, false, Some(&ov_far));
+        let t = stamp_transform(&points, [0.0, 0.0, 0.0], 0.0, false, Some(&ov_far), 1.0);
         assert!((t.translation.x - 20.0).abs() < 1e-3, "clamped to total");
     }
 
@@ -1056,6 +1068,7 @@ mod tests {
             std::f32::consts::PI,
             true,
             Some(&ov),
+            1.0,
         );
         let expected = Quat::from_xyzw(0.0, FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2);
         assert!(
@@ -1068,7 +1081,7 @@ mod tests {
             rotation: Some([0.0; 4]),
             ..Default::default()
         };
-        let t = stamp_transform(&points, [5.0, 0.0, 0.0], 0.5, true, Some(&ov_zero));
+        let t = stamp_transform(&points, [5.0, 0.0, 0.0], 0.5, true, Some(&ov_zero), 1.0);
         assert!(
             t.rotation.angle_between(Quat::from_rotation_y(0.5)) < 1e-3,
             "zero quat must not replace the default"
@@ -1082,10 +1095,10 @@ mod tests {
             scale: Some([2.0, 3.0, 4.0]),
             ..Default::default()
         };
-        let t = stamp_transform(&points, [5.0, 0.0, 0.0], 0.0, false, Some(&ov));
+        let t = stamp_transform(&points, [5.0, 0.0, 0.0], 0.0, false, Some(&ov), 1.0);
         assert_eq!(t.scale, Vec3::new(2.0, 3.0, 4.0));
         // No override → identity scale and the path-derived position.
-        let t = stamp_transform(&points, [5.0, 0.0, 0.0], 0.0, false, None);
+        let t = stamp_transform(&points, [5.0, 0.0, 0.0], 0.0, false, None, 1.0);
         assert_eq!(t.scale, Vec3::ONE);
         assert_eq!(t.translation, Vec3::new(5.0, 0.0, 0.0));
     }

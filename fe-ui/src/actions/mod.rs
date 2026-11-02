@@ -319,6 +319,14 @@ pub enum UiAction {
         track_node_id: String,
         stamp_index: usize,
     },
+    /// Open the explicitly selected, already-promoted stamp in the Inspector.
+    InspectStampNode {node_id:String},
+    /// Resolve the exact pending stamp save receipt.
+    CheckStampSave,
+    /// Refresh the selected stamp baseline through normal property hydration.
+    DownloadStampProperties {node_id:String},
+    /// Apply every stamp editor field as one atomic, receipt-owned batch.
+    ApplyStampOverrides { edit: fe_runtime::messages::StampOverrideEdit },
     /// Set a stamp's per-node scale override (T2 FR-3). Position stays
     /// path-derived; only scale/rotation are overridable.
     SetStampScale {
@@ -1268,6 +1276,11 @@ pub(crate) fn process_ui_actions(
                 handle_out,
                 smoothness,
             } => {
+                if !active_path_edit_allowed(&local_role,&nav,&verse_mgr,&path_state,&track_node_id)
+                    || path_state.points.get(index).is_none() {
+                    ui_mgr.show_advisory("Path changed or Editor access is unavailable; edit skipped",now_secs);
+                    continue;
+                }
                 path::set_anchor_handles(
                     &mut path_ops,
                     &mut path_state,
@@ -1283,6 +1296,11 @@ pub(crate) fn process_ui_actions(
                 index,
                 corner,
             } => {
+                if !active_path_edit_allowed(&local_role,&nav,&verse_mgr,&path_state,&track_node_id)
+                    || path_state.points.get(index).is_none() {
+                    ui_mgr.show_advisory("Path changed or Editor access is unavailable; edit skipped",now_secs);
+                    continue;
+                }
                 path::set_anchor_corner(
                     &mut path_ops,
                     &mut path_state,
@@ -1292,9 +1310,7 @@ pub(crate) fn process_ui_actions(
                 );
             }
             UiAction::PathRemovePoint { track_node_id, index, origin } => {
-                let editable = local_role.role.is_some_and(|role| role.can_edit())
-                    && verse_mgr.find_petal(nav.active_petal_id.as_deref().unwrap_or_default())
-                        .is_some_and(|petal| petal.nodes.iter().any(|node| node.id == track_node_id));
+                let editable = active_path_edit_allowed(&local_role,&nav,&verse_mgr,&path_state,&track_node_id);
                 if !editable || !origin.matches(&path_state, &nav) {
                     ui_mgr.show_advisory("Path changed or Editor access is unavailable; removal skipped", now_secs);
                     continue;
@@ -1451,6 +1467,30 @@ pub(crate) fn process_ui_actions(
                         track_node_id: pending.track_node_id,
                         stamp_index: pending.stamp_index,
                     });
+                }
+            }
+            UiAction::InspectStampNode {node_id} => {
+                if stamp_state.selected().is_some_and(|stamp|stamp_state.promoted_node_id(stamp)==Some(node_id.as_str())) {
+                    if let Some(petal_id)=nav.active_petal_id.as_deref() {
+                        node_mgr.request_select_after_navigation(&node_id,petal_id);
+                        right_sidebar.reveal_slug("inspector");
+                    }
+                }
+            }
+            UiAction::CheckStampSave => {
+                if let Err(error)=stamp_state.check_edit(&db_sender) {ui_mgr.show_error(error,now_secs);}
+            }
+            UiAction::DownloadStampProperties {node_id} => {
+                if stamp_state.selected().is_some_and(|stamp| stamp_state.promoted_node_id(stamp)==Some(node_id.as_str())) {
+                    tool_panel.stamp_edit_target=None;
+                    stamp_state.forget_baseline(&node_id);
+                    send_or_toast(&db_sender.0,DbCommand::GetNodeProperties {node_id,correlation_id:None},&mut ui_mgr,now_secs,"reload stamp values");
+                }
+            }
+            UiAction::ApplyStampOverrides { edit } => {
+                match asset::apply_overrides(&db_sender,&mut stamp_state,edit,&nav,&path_state,&local_role) {
+                    Ok(())=>ui_mgr.show_toast("Saving stamp changes...",now_secs),
+                    Err(error)=>ui_mgr.show_error(error,now_secs),
                 }
             }
             UiAction::SetStampScale {
@@ -2402,6 +2442,16 @@ mod tests {
             "deleting a DIFFERENT track must not touch the active editing session"
         );
     }
+}
+
+fn active_path_edit_allowed(
+    role:&crate::plugin::LocalUserRole, nav:&crate::navigation_manager::NavigationManager,
+    hierarchy:&crate::verse_manager::VerseManager, state:&crate::gis::PathEditorState, track:&str,
+) -> bool {
+    role.role.is_some_and(|role|role.can_edit()) && state.editing_track_id.as_deref()==Some(track)
+        && nav.active_scope().is_some()
+        && hierarchy.find_petal(nav.active_petal_id.as_deref().unwrap_or_default())
+            .is_some_and(|petal|petal.nodes.iter().any(|node|node.id==track))
 }
 
 fn queue_checked_point(

@@ -22,7 +22,10 @@ pub(super) fn route_query_reply(
         gis_panel.query_request_id = None;
         gis_panel.query_pending = false;
         match reply {
-            Ok(data) => gis_panel.results = crate::gis::parse_gis_rows(data),
+            Ok(data) => {
+                gis_panel.results = crate::gis::parse_gis_rows(data);
+                gis_panel.query_completed = true;
+            }
             Err(error) => gis_panel.last_error = Some(error.to_string()),
         }
     } else if gis_panel.annotations.request_id.as_deref() == Some(id) {
@@ -68,6 +71,7 @@ pub(super) fn handle_query_result(
     if gis_panel.query_pending {
         gis_panel.results = crate::gis::parse_gis_rows(data);
         gis_panel.query_pending = false;
+        gis_panel.query_completed = true;
     } else if path_state.tracks_pending {
         crate::actions::path::apply_track_rows(path_state, crate::gis::parse_gis_rows(data));
     }

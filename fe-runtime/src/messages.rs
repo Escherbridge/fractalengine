@@ -42,6 +42,23 @@ pub enum NodeMutation {
     },
 }
 
+/// Local editor snapshot for one atomic, path-locked stamp override save.
+#[derive(Debug, Clone)]
+pub struct StampOverrideEdit {
+    pub node_id: String,
+    pub path_id: String,
+    pub instance_index: usize,
+    pub scope: String,
+    pub history_version: Option<i64>,
+    pub path_version: Option<i64>,
+    pub before_properties: serde_json::Value,
+    pub path_points: Vec<[f32; 3]>,
+    pub path_descriptor: serde_json::Value,
+    pub scale: [f32; 3],
+    pub rotation: [f32; 4],
+    pub arc_m: f32,
+}
+
 /// Re-exported so callers that depend on `fe-runtime` but not directly on
 /// `fe-sdk` (fe-sim, fe-api, fe-test-harness) can construct
 /// `InsertIotReadings`/`InsertDevicePayloads.source_class` without a new
@@ -468,6 +485,8 @@ impl CallerAuth {
 
 #[derive(Debug, Clone)]
 pub enum DbCommand {
+    /// Commit scale, rotation and slide together under current stamp/route authority.
+    CommitStampOverrides { edit: StampOverrideEdit, correlation_id: String },
     /// Local editor mutation with atomic expected-state and version checks.
     CommitCheckedNodeMutation {
         node_id: String,

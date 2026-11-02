@@ -159,6 +159,7 @@ pub fn gardener_console(
     crate::ui_shell::layout_policy::apply_style(ctx);
     // Repair conditional editor state; see `panels/AGENTS.md` §numeric-boundary.
     path_editor_card::sanitize_path_editor_numeric_state(path_state);
+    tool_panel::sync_stamp_editor(tool_panel,stamp_state,path_state,nav,hierarchy,local_role,petal_map.world_scale);
 
     // Topbar (FR-4): tool switcher, deselect, Data/Tools/Settings/Maps.
     let _ = guarded(modal, "topbar", || {

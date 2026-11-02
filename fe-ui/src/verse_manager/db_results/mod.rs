@@ -149,6 +149,7 @@ pub(super) fn apply_db_results(
         if crate::object_data::route(&mut inspector.object_data, result) {
             continue;
         }
+        crate::actions::asset::handle_edit_reply(&mut caches.stamp_state,result,&mut ui_mgr,caches.time.elapsed_secs_f64());
         let property_forwarded = forward_correlated_property_reply(result, &mut pending_api);
         let materialization = match result {
             DbResult::NodeMaterialized { node, .. } => Some(node.clone()),

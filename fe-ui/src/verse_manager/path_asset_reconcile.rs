@@ -261,6 +261,26 @@ pub(super) fn sample_transforms(
         .collect()
 }
 
+/// Preserve an untouched stamp's sampled yaw and metric arc when opening its editor.
+pub(crate) fn stamp_editor_defaults(
+    points: &[[f32; 3]],
+    descriptor: &PathAssetDescriptor,
+    world_scale: f32,
+    index: usize,
+) -> Option<([f32; 4], f32)> {
+    let (cumdist, total) = cumulative_distances(points);
+    let progress = *sample_progresses(points, descriptor, total, world_scale).get(index)?;
+    let yaw = if descriptor.tangent_align {
+        tangent_yaw(points, &cumdist, total, progress)
+    } else {
+        0.0
+    };
+    Some((
+        bevy::math::Quat::from_rotation_y(yaw).to_array(),
+        progress * total / sanitize_world_scale(world_scale),
+    ))
+}
+
 /// `(position, yaw)` at absolute arc length `arc_m` (petal-local meters, N-1)
 /// along the flattened polyline, clamped to `[0, total]` — the T2 FR-3
 /// "slide along path" re-sample the materializer applies for a stamp's

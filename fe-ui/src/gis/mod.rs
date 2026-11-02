@@ -82,6 +82,7 @@ pub struct GisPanelState {
     pub results: Vec<GisResultRow>,
     /// `true` while a `RawQuery` round-trip issued by this panel is in flight.
     pub query_pending: bool,
+    pub query_completed: bool,
     /// Correlation id of the in-flight panel query; only the reply echoing it
     /// lands here (`verse_manager::db_results::query::route_query_reply`).
     pub query_request_id: Option<String>,
@@ -105,6 +106,7 @@ impl Default for GisPanelState {
             annotations: AnnotationResults::default(),
             results: Vec::new(),
             query_pending: false,
+            query_completed: false,
             query_request_id: None,
             last_error: None,
             egress: egress_strings::EgressCardState::default(),
@@ -119,6 +121,7 @@ impl GisPanelState {
             self.annotations = AnnotationResults::default();
             self.results.clear();
             self.query_pending = false;
+            self.query_completed = false;
             self.query_request_id = None;
             self.last_error = None;
         }

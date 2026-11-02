@@ -132,9 +132,7 @@ impl TerrainToolMode {
         TerrainToolMode::Fill,
     ];
 
-    /// Map to the cross-worker `ProposalOp` (owned by `terrain_proposal_state`,
-    /// w4b). TODO(ultrapilot): confirm variant names line up 1:1 once that
-    /// module lands; adjust this match if they diverge.
+    /// Map the UI operation to the stored proposal contract.
     pub fn to_proposal_op(self) -> crate::terrain_proposal_state::ProposalOp {
         use crate::terrain_proposal_state::ProposalOp;
         match self {
@@ -205,6 +203,11 @@ pub struct ToolPanelState {
     /// Arc-length "slide along path" offset in real METERS (FR-3, Q-1). N-1:
     /// meters only — no `world_scale` in the buffer.
     pub stamp_arc_m: f32,
+    pub(crate) stamp_edit_target: Option<fe_runtime::messages::StampOverrideEdit>,
+    pub(crate) stamp_save_pending: bool,
+    pub(crate) stamp_can_edit: bool,
+    stamp_saved_revision: u64,
+    stamp_feedback: Option<String>,
 }
 
 const MAX_DISTANCE_INPUT: f32 = 1_000_000.0;
@@ -277,6 +280,89 @@ impl ToolPanelState {
     pub fn drain_pending(&mut self) -> Vec<UiAction> {
         std::mem::take(&mut self.pending_actions)
     }
+}
+
+/// Project the real viewport stamp selection into editable draft buffers.
+pub(crate) fn sync_stamp_editor(
+    state: &mut ToolPanelState,
+    stamps: &crate::actions::asset::StampInteractionState,
+    path: &PathEditorState,
+    nav: &crate::navigation_manager::NavigationManager,
+    hierarchy: &VerseManager,
+    role: &crate::plugin::LocalUserRole,
+    world_scale: f64,
+) {
+    state.stamp_save_pending = stamps.edit_pending();
+    state.stamp_can_edit = role.role.is_some_and(|role| role.can_edit());
+    state.stamp_feedback = stamps.edit_error().map(str::to_owned);
+    let selected = stamps.selected();
+    let same = state.stamp_edit_target.as_ref().is_some_and(|edit| {
+        selected.is_some_and(|stamp| {
+            edit.path_id == stamp.track_node_id && edit.instance_index == stamp.stamp_index
+        }) && nav.active_scope().as_deref() == Some(edit.scope.as_str())
+            && path.editing_track_id.as_deref() == Some(edit.path_id.as_str())
+    });
+    if !same || state.stamp_saved_revision != stamps.saved_revision() {
+        state.stamp_edit_target = None;
+        state.stamp_saved_revision = stamps.saved_revision();
+    }
+    if state.stamp_edit_target.is_some() || state.stamp_save_pending {
+        return;
+    }
+    let Some(stamp) = selected
+        .filter(|stamp| path.editing_track_id.as_deref() == Some(stamp.track_node_id.as_str()))
+    else {
+        return;
+    };
+    let Some(node_id) = stamps.promoted_node_id(stamp) else {
+        return;
+    };
+    let Some(properties) = stamps.loaded_properties(stamp) else {
+        return;
+    };
+    let Some(scope) = nav.active_scope() else {
+        return;
+    };
+    let Some(descriptor) = path.edited_track_path_asset.as_ref() else {
+        return;
+    };
+    let points: Vec<_> = path.points.iter().map(|row| row.position).collect();
+    let Some((default_rotation, default_arc)) = crate::verse_manager::stamp_editor_defaults(
+        &points,
+        descriptor,
+        world_scale as f32,
+        stamp.stamp_index,
+    ) else {
+        return;
+    };
+    let ov = stamps.override_for(stamp);
+    let rotation = ov.and_then(|v| v.rotation).unwrap_or(default_rotation);
+    state.stamp_yaw_deg = bevy::math::Quat::from_array(rotation)
+        .to_euler(bevy::math::EulerRot::YXZ)
+        .0
+        .to_degrees();
+    state.stamp_edit_index = stamp.stamp_index.min(u32::MAX as usize) as u32;
+    state.stamp_edit_target = Some(fe_runtime::messages::StampOverrideEdit {
+        node_id: node_id.into(),
+        path_id: stamp.track_node_id.clone(),
+        instance_index: stamp.stamp_index,
+        scope,
+        history_version: if stamps.baseline_version_unknown(stamp) {
+            None
+        } else {
+            hierarchy.committed_versions.get(node_id).copied()
+        },
+        path_version: hierarchy
+            .committed_versions
+            .get(&stamp.track_node_id)
+            .copied(),
+        before_properties: properties.clone(),
+        path_points: points,
+        path_descriptor: descriptor.to_json(),
+        scale: ov.and_then(|v| v.scale).unwrap_or([1.0; 3]),
+        rotation,
+        arc_m: ov.and_then(|v| v.arc_offset_m).unwrap_or(default_arc),
+    });
 }
 
 /// Path-asset stamp controls. Called directly by `tool_options`'s Pen arm (the
@@ -411,134 +497,64 @@ pub(crate) fn yaw_to_quat(yaw_rad: f32) -> [f32; 4] {
     [0.0, half.sin(), 0.0, half.cos()]
 }
 
-/// FR-2/FR-3 per-stamp editor (T2). Emits `SelectStamp`/`PromoteStamp` and the
-/// scale/rotate/slide override actions for `track_id`'s stamp at
-/// `state.stamp_edit_index`. Free translate is intentionally absent — position
-/// stays path-derived; "Slide" is the only reposition (Q-1). Values are real
-/// units (scale factor, degrees, meters) — N-1: no `world_scale` here.
+/// Edits one viewport-selected stamp and sends one atomic save intent.
 fn render_stamp_editor(
     ui: &mut egui::Ui,
     state: &mut ToolPanelState,
     ui_mgr: &mut UiManager,
     track_id: String,
 ) {
-    state.sanitize_numeric_state();
-
-    ui.label(
-        egui::RichText::new("Selected Stamp")
-            .strong()
-            .color(theme::TEXT_SECTION),
-    );
-    ui.add_space(4.0);
-
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Index").small().color(theme::TEXT_DIM));
-        ui.add(egui::DragValue::new(&mut state.stamp_edit_index).range(0..=u32::MAX))
-            .named(ui, "Stamp index (zero based)")
-            .on_hover_text("Which stamp along the path to edit (0-based)");
+    ui.strong("Selected stamp");
+    ui.label("Use Select in the viewport to pick a stamp; its position stays on the path.");
+    if let Some(error) = &state.stamp_feedback {
+        ui.colored_label(theme::STATUS_OFFLINE, error);
+    }
+    let Some(edit) = state
+        .stamp_edit_target
+        .as_mut()
+        .filter(|edit| edit.path_id == track_id)
+    else {
+        ui.label("Pick a stamp on this path. Its stored node data loads before editing.");
+        return;
+    };
+    ui.label(format!("Stamp {}", edit.instance_index + 1));
+    ui.add_enabled_ui(state.stamp_can_edit && !state.stamp_save_pending,|ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Scale");
+            for (axis,value) in ["X","Y","Z"].into_iter().zip(&mut edit.scale) {
+                ui.add(egui::DragValue::new(value).range(0.01..=MAX_SCALE_INPUT).speed(0.05).prefix(format!("{axis} ")))
+                    .named(ui,format_args!("Selected stamp {axis} scale multiplier"));
+            }
+        });
+        if ui.add(egui::DragValue::new(&mut state.stamp_yaw_deg).range(-MAX_ANGLE_INPUT_DEG..=MAX_ANGLE_INPUT_DEG).speed(1.0).suffix(" deg"))
+            .named(ui,"Selected stamp yaw in degrees").changed() {
+            edit.rotation=yaw_to_quat(state.stamp_yaw_deg.to_radians());
+        }
+        ui.add(egui::DragValue::new(&mut edit.arc_m).range(0.0..=MAX_DISTANCE_INPUT).speed(0.1).suffix(" m"))
+            .named(ui,"Selected stamp distance along path in meters");
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Apply").named(ui,"Apply all stamp changes").clicked() {
+                ui_mgr.push_action(UiAction::ApplyStampOverrides {edit:edit.clone()});
+            }
+            if ui.button("Reload stored values").named(ui,"Reload selected stamp values").clicked() {
+                ui_mgr.push_action(UiAction::DownloadStampProperties {node_id:edit.node_id.clone()});
+            }
+            if ui.button("Make editable node").named(ui,"Inspect selected editable stamp node")
+                .on_hover_text("Picking a stamp makes it an addressable node. Inspect its properties; its position remains path-derived.").clicked() {
+                ui_mgr.push_action(UiAction::InspectStampNode {node_id:edit.node_id.clone()});
+            }
+        });
+    }).response.on_disabled_hover_text("Editor access is required; wait for any current save receipt");
+    if state.stamp_save_pending {
+        ui.label("Saving stamp changes; confirmation is pending.");
         if ui
-            .button("Select")
-            .named(ui, format_args!("Select stamp {}", state.stamp_edit_index))
-            .on_hover_text("Select this stamp as an individual node (promotes on first select)")
+            .button("Check save result")
+            .named(ui, "Check pending stamp save receipt")
             .clicked()
         {
-            ui_mgr.push_action(UiAction::SelectStamp {
-                track_node_id: track_id.clone(),
-                stamp_index: state.stamp_edit_index as usize,
-            });
+            ui_mgr.push_action(UiAction::CheckStampSave);
         }
-        if ui
-            .button("Promote")
-            .named(
-                ui,
-                format_args!("Promote stamp {} to node", state.stamp_edit_index),
-            )
-            .on_hover_text("Materialize this stamp as an addressable node (T1 promotion)")
-            .clicked()
-        {
-            ui_mgr.push_action(UiAction::PromoteStamp {
-                track_node_id: track_id.clone(),
-                stamp_index: state.stamp_edit_index as usize,
-            });
-        }
-    });
-    ui.add_space(4.0);
-
-    // Scale override (uniform) — position stays path-derived (no translate handle).
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Scale").small().color(theme::TEXT_DIM));
-        ui.add(
-            egui::DragValue::new(&mut state.stamp_scale)
-                .speed(0.05)
-                .range(0.01..=MAX_SCALE_INPUT),
-        )
-        .named(ui, "Selected stamp scale multiplier");
-        if ui.button("Apply").named(ui, "Apply stamp scale").clicked() {
-            let s = state.stamp_scale;
-            ui_mgr.push_action(UiAction::SetStampScale {
-                track_node_id: track_id.clone(),
-                stamp_index: state.stamp_edit_index as usize,
-                scale: [s, s, s],
-            });
-        }
-    });
-
-    // Rotation override — yaw about +Y, entered in degrees.
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("Rotate (°)")
-                .small()
-                .color(theme::TEXT_DIM),
-        );
-        ui.add(
-            egui::DragValue::new(&mut state.stamp_yaw_deg)
-                .speed(1.0)
-                .range(-MAX_ANGLE_INPUT_DEG..=MAX_ANGLE_INPUT_DEG),
-        )
-        .named(ui, "Selected stamp rotation in degrees");
-        if ui
-            .button("Apply")
-            .named(ui, "Apply stamp rotation")
-            .clicked()
-        {
-            let quat = yaw_to_quat(state.stamp_yaw_deg.to_radians());
-            ui_mgr.push_action(UiAction::SetStampRotation {
-                track_node_id: track_id.clone(),
-                stamp_index: state.stamp_edit_index as usize,
-                rotation: quat,
-            });
-        }
-    });
-
-    // Slide along path — 1-D arc-length reposition in real meters (Q-1).
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("Slide (m)")
-                .small()
-                .color(theme::TEXT_DIM),
-        );
-        ui.add(
-            egui::DragValue::new(&mut state.stamp_arc_m)
-                .speed(0.1)
-                .range(0.0..=MAX_DISTANCE_INPUT)
-                .suffix(" m"),
-        )
-        .named(ui, "Selected stamp distance along path in meters")
-        .on_hover_text(
-            "Reposition the stamp along its curve by arc length (free translate stays off)",
-        );
-        if ui
-            .button("Apply")
-            .named(ui, "Apply stamp distance along path")
-            .clicked()
-        {
-            ui_mgr.push_action(UiAction::SlideStampAlongPath {
-                track_node_id: track_id.clone(),
-                stamp_index: state.stamp_edit_index as usize,
-                arc_length: state.stamp_arc_m,
-            });
-        }
-    });
+    }
 }
 
 /// Resolve an edited track's display name from the Paths-tab track list,
@@ -1080,8 +1096,6 @@ mod tests {
         assert_eq!(labels.len(), TerrainToolMode::ALL.len());
     }
 
-    // TODO(ultrapilot): depends on `crate::terrain_proposal_state::ProposalOp`
-    // (w4b) — will compile once that module lands. Locks the FR-5 op mapping.
     #[test]
     fn terrain_tool_mode_maps_1to1_onto_proposal_op() {
         use crate::terrain_proposal_state::ProposalOp;

@@ -78,6 +78,12 @@ pub struct StampInteractionState {
     /// `NodeManager.selected` and `PathEditorState.editing_track_id` (N-3): a
     /// stamp selection is its own authority until promotion yields a node id.
     selected: Option<StampRef>,
+    loaded_properties: HashMap<StampRef, serde_json::Value>,
+    pending_edit: Option<(String, fe_runtime::messages::StampOverrideEdit)>,
+    saved_revision: u64,
+    pending_check: Option<String>,
+    reconciled_baselines: std::collections::HashSet<StampRef>,
+    edit_error: Option<String>,
     /// A stamp select that has not yet been promoted — drained by the UI, which
     /// queues `UiAction::PromoteStamp` (routes to T1 `PromoteInstance` via the
     /// T4 `node::handle_promote_stamp` handler; N-5: the UI never asserts a role).
@@ -91,6 +97,54 @@ pub struct StampInteractionState {
 }
 
 impl StampInteractionState {
+    pub(crate) fn baseline_version_unknown(&self, stamp: &StampRef) -> bool {
+        self.reconciled_baselines.contains(stamp)
+    }
+    pub(crate) fn check_edit(&mut self, db: &DbCommandSender) -> Result<(), String> {
+        let Some((request, edit)) = self.pending_edit.as_ref() else {
+            return Err("No stamp save is pending".into());
+        };
+        if self.pending_check.is_some() {
+            return Err("A stamp receipt check is already pending".into());
+        }
+        let correlation_id = crate::actions::query::next_ui_query_id("stamp-check");
+        let petal_id = edit
+            .scope
+            .rsplit_once("-PETAL#")
+            .map(|(_, id)| id.to_owned())
+            .ok_or("Stamp save scope is unavailable")?;
+        db.0.send(DbCommand::ResolveCheckedNodeMutation {
+            node_id: edit.node_id.clone(),
+            petal_id,
+            request_id: request.clone(),
+            correlation_id: correlation_id.clone(),
+        })
+        .map_err(|_| "Database connection closed; stamp receipt remains unknown")?;
+        self.pending_check = Some(correlation_id);
+        Ok(())
+    }
+    pub(crate) fn edit_pending(&self) -> bool {
+        self.pending_edit.is_some()
+    }
+    pub(crate) fn saved_revision(&self) -> u64 {
+        self.saved_revision
+    }
+    pub(crate) fn edit_error(&self) -> Option<&str> {
+        self.edit_error.as_deref()
+    }
+    pub(crate) fn loaded_properties(&self, stamp: &StampRef) -> Option<&serde_json::Value> {
+        self.loaded_properties.get(stamp)
+    }
+    pub(crate) fn forget_baseline(&mut self, node_id: &str) {
+        if let Some(stamp) = self
+            .promoted
+            .iter()
+            .find_map(|(stamp, id)| (id == node_id).then(|| stamp.clone()))
+        {
+            self.loaded_properties.remove(&stamp);
+        }
+    }
+
     /// The currently individually-selected stamp, if any. Read by the
     /// right-click context menu to mark its stamp header (T4).
     pub(crate) fn selected(&self) -> Option<&StampRef> {
@@ -157,6 +211,8 @@ impl StampInteractionState {
     /// dropped). Positions are re-derived by re-running the sampler for the new
     /// count — this only fixes the identity→override binding. Idempotent-safe.
     pub(crate) fn reflow_after_delete(&mut self, track: &str, deleted_index: usize) {
+        self.loaded_properties
+            .retain(|stamp, _| stamp.track_node_id != track);
         self.overrides =
             remap_after_delete(std::mem::take(&mut self.overrides), track, deleted_index);
         self.promoted =
@@ -229,6 +285,139 @@ pub(crate) fn handle_select_stamp(
         stamp_state.pending_promotion = Some(stamp.clone());
     }
     stamp_state.selected = Some(stamp);
+}
+
+/// Queue one typed batch without changing the live stamp cache.
+pub(crate) fn apply_overrides(
+    db: &DbCommandSender,
+    state: &mut StampInteractionState,
+    edit: fe_runtime::messages::StampOverrideEdit,
+    nav: &crate::navigation_manager::NavigationManager,
+    path: &crate::gis::PathEditorState,
+    role: &crate::plugin::LocalUserRole,
+) -> Result<(), String> {
+    let stamp = StampRef::new(edit.path_id.clone(), edit.instance_index);
+    if state.edit_pending() {
+        return Err("Wait for the current stamp save receipt".into());
+    }
+    if !role.role.is_some_and(|role| role.can_edit())
+        || nav.active_scope().as_deref() != Some(edit.scope.as_str())
+        || state.selected() != Some(&stamp)
+        || state.promoted_node_id(&stamp) != Some(edit.node_id.as_str())
+        || state.loaded_properties(&stamp) != Some(&edit.before_properties)
+        || path.editing_track_id.as_deref() != Some(edit.path_id.as_str())
+        || path
+            .points
+            .iter()
+            .map(|row| row.position)
+            .collect::<Vec<_>>()
+            != edit.path_points
+    {
+        return Err("Stamp, path or permissions changed; reselect and review the draft".into());
+    }
+    let request_id = crate::actions::query::next_ui_query_id("stamp-save");
+    db.0.send(DbCommand::CommitStampOverrides {
+        edit: edit.clone(),
+        correlation_id: request_id.clone(),
+    })
+    .map_err(|_| "Database connection closed; stamp save was not queued")?;
+    state.pending_edit = Some((request_id, edit));
+    state.edit_error = None;
+    Ok(())
+}
+
+/// Match only this save's final receipt or refusal; never infer success from values.
+pub(crate) fn handle_edit_reply(
+    state: &mut StampInteractionState,
+    result: &fe_runtime::messages::DbResult,
+    ui: &mut crate::actions::UiManager,
+    now: f64,
+) {
+    use fe_runtime::messages::DbResult;
+    let Some((request, _)) = state.pending_edit.as_ref() else {
+        return;
+    };
+    let relevant = match result {
+        DbResult::NodeMutationCommitted {
+            correlation_id: Some(id),
+            ..
+        } => id == request,
+        DbResult::CheckedNodeMutationResolved { request_id, .. } => request_id == request,
+        DbResult::RequestFailed { correlation_id, .. } => {
+            correlation_id == request || state.pending_check.as_ref() == Some(correlation_id)
+        }
+        _ => false,
+    };
+    if !relevant {
+        return;
+    }
+    let (request, edit) = state.pending_edit.clone().unwrap();
+    match result {
+        DbResult::NodeMutationCommitted {
+            receipt,
+            correlation_id: Some(id),
+        } if id == &request && receipt.node_id == edit.node_id => {
+            state.saved_revision = state.saved_revision.wrapping_add(1);
+            state
+                .reconciled_baselines
+                .remove(&StampRef::new(edit.path_id, edit.instance_index));
+            state.pending_edit = None;
+            state.pending_check = None;
+            state.edit_error = None;
+            ui.show_toast("Stamp changes saved", now);
+        }
+        DbResult::CheckedNodeMutationResolved {
+            request_id,
+            correlation_id,
+            current,
+            receipt,
+            ..
+        } if request_id == &request
+            && state.pending_check.as_ref() == Some(correlation_id)
+            && current.node_id == edit.node_id =>
+        {
+            let stamp = StampRef::new(edit.path_id, edit.instance_index);
+            hydrate_promoted_stamp(
+                &current.node_id,
+                &serde_json::Value::Object(current.properties.clone()),
+                state,
+            );
+            state.reconciled_baselines.insert(stamp);
+            state.saved_revision = state.saved_revision.wrapping_add(1);
+            state.pending_edit = None;
+            state.pending_check = None;
+            state.edit_error = None;
+            if receipt.is_some() {
+                ui.show_toast("Stamp save confirmed; current stored values loaded", now);
+            } else {
+                ui.show_advisory(
+                    "Stamp save did not commit; current stored values loaded",
+                    now,
+                );
+            }
+        }
+        DbResult::RequestFailed {
+            correlation_id,
+            error,
+        } if correlation_id == &request => {
+            state.edit_error = Some(error.clone());
+            state.pending_edit = None;
+            state.pending_check = None;
+            ui.show_error(error, now);
+        }
+        DbResult::RequestFailed {
+            correlation_id,
+            error,
+        } if state.pending_check.as_ref() == Some(correlation_id) => {
+            state.edit_error = Some(format!("Save outcome remains unknown: {error}"));
+            state.pending_check = None;
+            ui.show_error(
+                "Stamp receipt check failed; save outcome remains unknown",
+                now,
+            );
+        }
+        _ => {}
+    }
 }
 
 /// Wave 1: T2 FR-3 — persist a stamp's per-node scale override. Position stays
@@ -327,6 +516,16 @@ pub(crate) fn handle_node_promoted(
     };
     stamp_state.mark_promoted(stamp.clone(), node_id.to_string());
     flush_buffered_overrides(db_sender, stamp_state, &stamp);
+    if db_sender
+        .0
+        .send(DbCommand::GetNodeProperties {
+            node_id: node_id.into(),
+            correlation_id: None,
+        })
+        .is_err()
+    {
+        bevy::log::warn!("stamp property load was not dispatched");
+    }
 }
 
 /// Write each buffered (`Some`) override field of `stamp` to its promoted node
@@ -393,6 +592,9 @@ pub(crate) fn hydrate_promoted_stamp(
         stamp_index: index as usize,
     };
     stamp_state.mark_promoted(stamp.clone(), node_id.to_string());
+    stamp_state
+        .loaded_properties
+        .insert(stamp.clone(), properties.clone());
     if let Some(scale) = properties
         .get(STAMP_SCALE_KEY)
         .and_then(json_f32_array::<3>)
@@ -636,6 +838,9 @@ mod tests {
             }
             other => panic!("expected buffered arc flush, got {other:?}"),
         }
+        assert!(
+            matches!(rx.try_recv(),Ok(DbCommand::GetNodeProperties {node_id,..}) if node_id=="node-2")
+        );
         assert!(rx.try_recv().is_err(), "untouched rotation never writes");
         assert_eq!(
             st.promoted_node_id(&StampRef {
@@ -651,6 +856,9 @@ mod tests {
         let (tx, rx) = sender();
         let mut st = StampInteractionState::default();
         handle_node_promoted(&tx, &mut st, "node-0", "t", 0);
+        assert!(
+            matches!(rx.try_recv(),Ok(DbCommand::GetNodeProperties {node_id,..}) if node_id=="node-0")
+        );
         assert!(rx.try_recv().is_err(), "no overrides → no property writes");
         assert!(st.is_promoted(&StampRef {
             track_node_id: "t".into(),
@@ -683,6 +891,77 @@ mod tests {
         assert_eq!(ov.scale, Some([1.5, 1.0, 1.5]), "DB overwrites in-memory");
         assert_eq!(ov.rotation, Some([0.0, 1.0, 0.0, 0.0]));
         assert_eq!(ov.arc_offset_m, Some(4.25));
+        let mut nav = crate::navigation_manager::NavigationManager::default();
+        nav.navigate_to_verse("v", "verse");
+        nav.navigate_to_fractal("f", "fractal");
+        nav.navigate_to_petal("p");
+        let mut path = crate::gis::PathEditorState::default();
+        path.start_editing("path-1".into());
+        path.points = vec![
+            crate::gis::PathPointRow {
+                position: [0.0; 3],
+                ..Default::default()
+            },
+            crate::gis::PathPointRow {
+                position: [10.0, 0.0, 0.0],
+                ..Default::default()
+            },
+        ];
+        handle_select_stamp(&mut st, "path-1".into(), 3);
+        let edit = fe_runtime::messages::StampOverrideEdit {
+            node_id: "path-1#inst-3".into(),
+            path_id: "path-1".into(),
+            instance_index: 3,
+            scope: nav.active_scope().unwrap(),
+            history_version: None,
+            path_version: None,
+            before_properties: props.clone(),
+            path_points: path.points.iter().map(|row| row.position).collect(),
+            path_descriptor: serde_json::json!({}),
+            scale: [2.0; 3],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            arc_m: 5.0,
+        };
+        let (sender, rx) = sender();
+        let role = crate::plugin::LocalUserRole {
+            role: Some(fe_database::RoleLevel::Editor),
+        };
+        let before = st.override_for(&stamp).cloned();
+        apply_overrides(&sender, &mut st, edit, &nav, &path, &role).unwrap();
+        let DbCommand::CommitStampOverrides { correlation_id, .. } = rx.try_recv().unwrap() else {
+            panic!("one batch command required")
+        };
+        assert_eq!(
+            st.override_for(&stamp),
+            before.as_ref(),
+            "queueing cannot preview partial overrides"
+        );
+        assert!(st.edit_pending() && rx.try_recv().is_err());
+        let mut ui = crate::actions::UiManager::default();
+        handle_edit_reply(
+            &mut st,
+            &fe_runtime::messages::DbResult::RequestFailed {
+                correlation_id: "foreign".into(),
+                error: "other".into(),
+            },
+            &mut ui,
+            0.0,
+        );
+        assert!(
+            st.edit_pending(),
+            "foreign failures cannot consume the save"
+        );
+        handle_edit_reply(
+            &mut st,
+            &fe_runtime::messages::DbResult::RequestFailed {
+                correlation_id,
+                error: "denied".into(),
+            },
+            &mut ui,
+            0.0,
+        );
+        assert!(!st.edit_pending() && st.edit_error() == Some("denied"));
+        assert_eq!(st.override_for(&stamp), before.as_ref());
     }
 
     #[test]
