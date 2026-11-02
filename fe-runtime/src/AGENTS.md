@@ -826,3 +826,11 @@ ReemitLocalVerseCatalog is an internal fire-and-forget replica-open request.
 The database uses its actual local identity and stored Manager authority to
 re-publish current Verse/Fractal/Petal catalog rows. It carries no caller role,
 SQL, data or API reply and grants no authority. Readings are never re-ingested.
+
+## Checked editor operations
+
+CommitCheckedNodeMutation is a local-only editor command with mandatory exact
+correlation and typed expected transform/path-points, full scope and optional
+known history version. It cannot enter the legacy API pending family map.
+ResolveCheckedNodeMutation returns a distinct exact-request fact resolution;
+historical previews remain read-only. Ordinary public API DTOs are unchanged.

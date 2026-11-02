@@ -1,6 +1,7 @@
 //! Extracted DB dispatch-loop command handlers (domain map:
 //! fe-database/src/AGENTS.md §handlers).
 
+pub(crate) mod checked_mutation;
 pub mod admin;
 pub mod api_token;
 pub mod asset_backfill;

@@ -728,6 +728,26 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
     assert!(
         matches!(db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap(), DbResult::SceneMaterialsLoaded { materials, .. } if materials.values[0].truncated && materials.values[0].material_json.is_none())
     );
+    use fe_runtime::node_history::{NodeEditBefore, NodeEditPrecondition, NodeTransformValue};
+    db.cmd_tx.send(DbCommand::GetNodeTransform {node_id:node_id.clone()}).unwrap();
+    let original=match db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap() {
+        DbResult::NodeTransformLoaded {position,rotation,scale,..}=>NodeTransformValue {position:position.map(f64::from),rotation:bevy::math::Quat::from_euler(bevy::math::EulerRot::XYZ,rotation[0],rotation[1],rotation[2]).to_array(),scale:scale.map(f64::from)},
+        other=>panic!("expected current transform: {other:?}"),
+    };
+    let expected=NodeEditPrecondition {scope:scope.clone(),history_version:None,before:NodeEditBefore::Transform(original.clone())};
+    let change=fe_runtime::messages::NodeMutation::FullTransform {position:[12.0,3.0,8.0],rotation:[0.2,0.4,0.6],scale:[2.0,3.0,4.0]};
+    db.cmd_tx.send(DbCommand::CommitCheckedNodeMutation {node_id:node_id.clone(),mutation:change.clone(),expected:expected.clone(),correlation_id:"checked-edit-one".into()}).unwrap();
+    let saved=match db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap() {
+        DbResult::NodeMutationCommitted {receipt,correlation_id}=>{assert_eq!(correlation_id.as_deref(),Some("checked-edit-one")); assert_eq!(receipt.state.position,[12.0,3.0,8.0]);receipt},
+        other=>panic!("expected persisted checked transform: {other:?}"),
+    };
+    db.cmd_tx.send(DbCommand::CommitCheckedNodeMutation {node_id:node_id.clone(),mutation:change,expected,correlation_id:"checked-stale".into()}).unwrap();
+    assert!(matches!(db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap(),DbResult::RequestFailed {correlation_id,..} if correlation_id=="checked-stale"));
+    db.cmd_tx.send(DbCommand::ResolveCheckedNodeMutation {node_id:node_id.clone(),petal_id:petal_id.clone(),request_id:"checked-edit-one".into(),correlation_id:"checked-resolve".into()}).unwrap();
+    assert!(matches!(db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap(),DbResult::CheckedNodeMutationResolved {receipt:Some(receipt),..} if receipt.history_version==saved.history_version && receipt.state.position==saved.state.position));
+    let rotation=bevy::math::Quat::from_array(original.rotation).to_euler(bevy::math::EulerRot::XYZ);
+    db.cmd_tx.send(DbCommand::CommitCheckedNodeMutation {node_id:node_id.clone(),mutation:fe_runtime::messages::NodeMutation::FullTransform {position:original.position.map(|v|v as f32),rotation:[rotation.0,rotation.1,rotation.2],scale:original.scale.map(|v|v as f32)},expected:NodeEditPrecondition {scope:scope.clone(),history_version:Some(saved.history_version),before:NodeEditBefore::Transform(NodeTransformValue::from_row(&saved.state).unwrap())},correlation_id:"checked-undo-one".into()}).unwrap();
+    assert!(matches!(db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap(),DbResult::NodeMutationCommitted {receipt,..} if receipt.history_version>saved.history_version && NodeTransformValue::from_row(&receipt.state).unwrap().matches(&original)));
     assert!(
         hierarchy_contains_node(&db, &node_id),
         "the live node is present before delete"

@@ -468,6 +468,20 @@ impl CallerAuth {
 
 #[derive(Debug, Clone)]
 pub enum DbCommand {
+    /// Local editor mutation with atomic expected-state and version checks.
+    CommitCheckedNodeMutation {
+        node_id: String,
+        mutation: NodeMutation,
+        expected: crate::node_history::NodeEditPrecondition,
+        correlation_id: String,
+    },
+    /// Resolve a previously enqueued editor request by its exact immutable fact.
+    ResolveCheckedNodeMutation {
+        node_id: String,
+        petal_id: String,
+        request_id: String,
+        correlation_id: String,
+    },
     /// Trusted plugin read with a private typed reply channel.
     PluginRead {
         admission: crate::plugin_host::PluginAdmission,
@@ -1185,6 +1199,13 @@ pub enum DeferralReason {
 
 #[derive(Debug, Clone, Message)]
 pub enum DbResult {
+    /// Exact persisted outcome for a prior local editor request, never a coordinate guess.
+    CheckedNodeMutationResolved {
+        node_id: String,
+        request_id: String,
+        receipt: Option<crate::node_history::NodeMutationReceipt>,
+        correlation_id: String,
+    },
     /// GUI-only committed plugin removal; it has no pending API reply family.
     PluginNodeRemoved { node_id: String, petal_id: String },
     Pong,

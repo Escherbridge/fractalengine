@@ -1615,6 +1615,28 @@ pub fn spawn_db_thread_shared(
                             Err(error) => send_result(&tx,handlers::correlated_failure(&correlation_id,format!("Create object refused: {error}"))),
                         }
                     }
+                    Ok(DbCommand::CommitCheckedNodeMutation {node_id,mutation,expected,correlation_id}) => {
+                        match handlers::checked_mutation::commit(&db,&node_id,&mutation,&expected,&correlation_id,&local_did).await {
+                            Ok(receipt)=>{
+                                if let Some(ref ect)=entity_change_tx {
+                                    let change=match &mutation {
+                                        fe_runtime::messages::NodeMutation::FullTransform {position,rotation,scale}=>fe_runtime::messages::SceneChange::NodeTransform {node_id:node_id.clone(),petal_id:receipt.state.petal_id.clone(),position:*position,rotation:*rotation,scale:*scale},
+                                        fe_runtime::messages::NodeMutation::PropertySet {key,value}=>fe_runtime::messages::SceneChange::PropertyChanged {node_id:node_id.clone(),petal_id:receipt.state.petal_id.clone(),key:key.clone(),value:value.clone()},
+                                        _=>unreachable!(),
+                                    };
+                                    if ect.send(change).is_err() {tracing::warn!(node_id,"checked mutation scene receiver closed");}
+                                }
+                                send_result(&tx,DbResult::NodeMutationCommitted {receipt,correlation_id:Some(correlation_id)});
+                            }
+                            Err(error)=>send_result(&tx,DbResult::RequestFailed {error:format!("Edit refused: {error:#}"),correlation_id}),
+                        }
+                    }
+                    Ok(DbCommand::ResolveCheckedNodeMutation {node_id,petal_id,request_id,correlation_id})=>{
+                        match handlers::checked_mutation::resolve(&db,&node_id,&petal_id,&request_id,&local_did).await {
+                            Ok(receipt)=>send_result(&tx,DbResult::CheckedNodeMutationResolved {node_id,request_id,receipt,correlation_id}),
+                            Err(error)=>send_result(&tx,DbResult::RequestFailed {error:format!("Edit reconciliation unavailable: {error:#}"),correlation_id}),
+                        }
+                    }
                     Ok(DbCommand::CommitNodeMutation { node_id, mutation, actor_did, grant, correlation_id }) => {
                         let actor = object_command_actor(&grant,&local_did,&actor_did);
                         use fe_runtime::messages::NodeMutation;

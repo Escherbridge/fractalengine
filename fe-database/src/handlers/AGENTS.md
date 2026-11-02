@@ -42,3 +42,18 @@ instead of silently truncating. SELECTs have 5s DB timeouts. This is bounded loc
 catalog repair, not permission to publish arbitrary foreign rows or reconstruct
 historical grants. Existing replication backpressure can still drop a publish;
 failed/missing ancestry remains not-ready and is recoverable on another open.
+
+## editor-undo
+
+checked_mutation is a local-only compare-and-swap seam for full transforms and
+one path point's position. It uses the ordinary reducer/journal and atomic op
+commit, with captured Editor authority, exact ancestry/row/latest-fact/schema
+fences before effects. Quaternions compare by orientation with 1e-4 position/
+scale and 1e-6 dot tolerances; the final transaction fences exact captured data.
+Path point edits preserve the complete JSON row metadata and array identity.
+
+Receipts decode prepared after-state before commit and return only after the
+atomic transaction succeeds. A UI request ID is retained in the actual change
+fact. Resolve reads that exact immutable fact after current/stored scope checks;
+matching coordinates are never proof of a committed request. Existing ordinary
+API constructors and unguarded compatibility routes retain their signatures.

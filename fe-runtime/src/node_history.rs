@@ -125,3 +125,63 @@ pub struct NodeStateAtVersion {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<NodeRowSnapshot>,
 }
+
+/// Typed full transform used by editor compare-and-swap commands.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeTransformValue {
+    pub position: [f64; 3],
+    pub rotation: [f32; 4],
+    pub scale: [f64; 3],
+}
+
+impl NodeTransformValue {
+    /// Compare finite transforms with sign-equivalent quaternion orientation.
+    pub fn matches(&self, other: &Self) -> bool {
+        use bevy::math::Quat;
+        let finite = |value: &Self| {
+            value
+                .position
+                .iter()
+                .chain(&value.scale)
+                .all(|v| v.is_finite())
+                && value.rotation.iter().all(|v| v.is_finite())
+                && Quat::from_array(value.rotation).length_squared() > f32::EPSILON
+        };
+        finite(self)
+            && finite(other)
+            && self
+                .position
+                .iter()
+                .zip(other.position)
+                .chain(self.scale.iter().zip(other.scale))
+                .all(|(left, right)| (*left - right).abs() <= 0.0001)
+            && Quat::from_array(self.rotation)
+                .normalize()
+                .dot(Quat::from_array(other.rotation).normalize())
+                .abs()
+                >= 1.0 - 0.000001
+    }
+    /// Decode the shared persisted transform representation.
+    pub fn from_row(row: &NodeRowSnapshot) -> Option<Self> {
+        Some(Self {
+            position: row.position,
+            rotation: stored_rotation_quaternion(&row.rotation)?,
+            scale: row.scale,
+        })
+    }
+}
+
+/// Relevant state required before an editor operation may commit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum NodeEditBefore {
+    Transform(NodeTransformValue),
+    PathPoints(Value),
+}
+
+/// Editor-only compare-and-swap precondition, checked again inside the transaction.
+#[derive(Debug, Clone)]
+pub struct NodeEditPrecondition {
+    pub scope: String,
+    pub history_version: Option<i64>,
+    pub before: NodeEditBefore,
+}
