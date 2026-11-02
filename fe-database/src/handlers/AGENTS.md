@@ -261,6 +261,10 @@ Quaternion-four and Euler-three storage both map to the same full TRS boundary,
 with finite render precision checked before commit. No post-commit decoder can
 turn a successful creation into an apparent failed creation/retry.
 
+Native import dialog ownership is echoed independently of asset/node commit and
+authorization. It is not a grant or an extra persistence boundary. Native failure
+is typed so a message prefix cannot finish a later request.
+
 ## Checked stamp promotion
 
 The private GUI PromoteCheckedStamp adapter captures full source properties, path version, full
@@ -289,4 +293,6 @@ real-store journey asserts these distinctions, absent terrain/default metadata p
 bounds, and intervening terrain, bounds and optional metadata changes for both prepare/use paths.
 The terrain race keeps world_scale=1, proving the fence protects the full map rather than scale
 alone. These journey extensions are authored source; root owns execution and independent review.
+
+
 

@@ -1034,6 +1034,7 @@ mod tests {
 
     fn gltf_imported(correlation_id: Option<&str>) -> DbResult {
         DbResult::GltfImported {
+            request: None,
             node_id: "n".to_string(),
             asset_id: "a".to_string(),
             petal_id: "p".to_string(),

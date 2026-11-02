@@ -78,14 +78,12 @@ condition chips.
   were three labelers that disagreed ("Visitor" vs lowercase "viewer" as a
   guess for an unknown role vs "—"). With an unresolved role the denial reads
   "Editor role needed[ in {verse}] to {verb}" — never "You're a —".
-- **`DialogRequestState`** (`pending`/`error`/`sent_at`, with
-  `start`/`finish`/`reset`/`waiting_within`) is the single source of truth a
-  dialog and its reply arm share — `join_request` (Join, finished by
-  `db_results/hierarchy.rs`) and `gltf_import_request` (glTF Import, finished
-  by `db_results/mod.rs::finish_gltf_import_request`). See
-  `dialogs/AGENTS.md` §dialog-requests. (It was `JoinRequestState` with only
-  `pending`/`error` until the W1 advocate pass gave Import the same shape in
-  place of its egui-temp lock, which the reply arm could not clear.)
+- **Owned dialog requests.** Join retains `DialogRequestState`. Native import
+  uses `GltfImportRequestState`: exact request nonce and captured Verse/Fractal/
+  Petal must match the active dialog/navigation before success or typed failure
+  can consume it. Replacing or closing a dialog drops import ownership. A timeout
+  keeps the request pending with a visible unknown outcome; Import stays disabled,
+  Cancel/close become available, and no retry is queued. See dialogs/AGENTS.md.
 - **Extracted arm bodies.** `open_portal` (P-01) and `open_path_in_options`
   (D-12) are the `OpenPortal`/`PathSelectTrack` arm bodies as named fns: the
   dispatcher calls them and the tests drive them, so a test can no longer

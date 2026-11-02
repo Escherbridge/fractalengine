@@ -713,7 +713,7 @@ pub fn spawn_db_thread_shared(
                             Err(e) => send_result(&tx, handlers::correlated_failure(&correlation_id,format!("Create node failed: {e}"))),
                         }
                     }
-                    Ok(DbCommand::ImportGltf { petal_id, name, file_path, position, file_lease }) => {
+                    Ok(DbCommand::ImportGltf { request, petal_id, name, file_path, position, file_lease }) => {
                         let result = handlers::crud::import_gltf_handler(&db, &blob_store, &petal_id, &name, &file_path, position, &local_did).await;
                         drop(file_lease);
                         match result {
@@ -731,9 +731,9 @@ pub fn spawn_db_thread_shared(
                                         });
                                     }
                                 }
-                                send_result(&tx, DbResult::GltfImported { node_id, asset_id, petal_id, name, asset_path, position, materialization: Some(materialization), correlation_id: None });
+                                send_result(&tx, DbResult::GltfImported { request, node_id, asset_id, petal_id, name, asset_path, position, materialization: Some(materialization), correlation_id: None });
                             }
-                            Err(e) => send_result(&tx, DbResult::Error(format!("GLTF import failed: {e}"))),
+                            Err(e) => send_result(&tx, DbResult::ImportGltfFailed { request, message: format!("GLTF import failed: {e}") }),
                         }
                     }
                     // F13 API asset ingest: metadata only — bytes were stored API-side.
@@ -784,7 +784,7 @@ pub fn spawn_db_thread_shared(
                                         });
                                     }
                                 }
-                                send_result(&tx, DbResult::GltfImported { node_id, asset_id, petal_id, name, asset_path, position, materialization: Some(materialization), correlation_id });
+                                send_result(&tx, DbResult::GltfImported { request: None, node_id, asset_id, petal_id, name, asset_path, position, materialization: Some(materialization), correlation_id });
                             }
                             Err(e) => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("Place asset failed: {e}"))),
                         }

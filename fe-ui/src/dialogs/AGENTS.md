@@ -44,19 +44,12 @@ set local flags/owned values (`Option<DbCommand>`, `bool`); then act on
 `ui_mgr` again only after `.show()` returns, once the field-borrow's last use
 has passed.
 
-## §dialog-requests — one in-flight shape for Join and Import
+## Dialog requests
 
-A dialog that must stay open until its DB reply lands keeps its round-trip in
-an `actions::DialogRequestState` on `UiManager` (`join_request`,
-`gltf_import_request`) — never in egui temp memory, because the reply arm in
-`verse_manager/db_results` has no egui context to clear it with. Lifecycle:
-the dialog `start(now)`s it only after `send_or_toast` succeeds; the reply arm
-`finish()`es it (true only for a request this dialog sent) and closes the
-dialog only while that dialog is still the active one; Cancel/close
-`reset()`s it. A dialog whose failure arrives as an uncorrelated
-`DbResult::Error` bounds its lock with `waiting_within(now, timeout)`.
-Both dialogs bound it (30 s): even a typed reply never comes if the DB thread
-died mid-request, and a lock without a bound leaves no Cancel and no close-X.
+Join uses `DialogRequestState`; native import uses the owned request described
+below. Both keep their request on UiManager so database replies can reconcile it.
+Only successful channel submission starts a request. Closing or replacing a
+native import dialog invalidates that dialog's ownership, not the database work.
 
 ## §join-flow (D-05, W1-S4/W1-S2)
 
@@ -70,20 +63,24 @@ accidentally abandoned mid-air — only a `VerseJoined`/`JoinVerseFailed` reply
 or an explicit Cancel while *not* pending ends it. The lock lifts after
 `JOIN_LOCK_TIMEOUT_SECONDS` (30 s) if no reply arrives at all.
 
-## §gltf-import-flow (D-06, W1-S4)
+## Native glTF import ownership
 
-`gltf_import.rs::import_enabled(file_path, petal_id)` is the pure gate for
-Import (both must be non-blank). A click no longer closes the dialog; it
-`start`s `ui_mgr.gltf_import_request`, locks the fields and shows
-"Importing…". `db_results/mod.rs::finish_gltf_import_request` (called from the
-`GltfImported` arm) closes the dialog and toasts "Imported {name}". A failed
-import replies with an uncorrelated `DbResult::Error("GLTF import failed:
-…")`; `db_results/query.rs::handle_error` recognizes that prefix and, when
-the dialog's request is in flight, finishes it with the humanized reason as
-`gltf_import_request.error`, rendered inline so the user can fix the path and
-retry at once. `IMPORT_LOCK_TIMEOUT_SECONDS` (30 s) is only the no-reply
-safety net. The Position row reads in meters from the petal `world_scale`
-that `panels/mod.rs` threads in.
+`gltf_import.rs` captures a unique local request nonce and the selected Verse,
+Fractal and Petal. ImportGltf success and typed ImportGltfFailed echo that owner.
+The capture is UI routing metadata and grants no database authority; actual local
+DID, full ancestry, role and schema checks remain in the atomic creation path.
+Only the exact pending request, still-active Import dialog and matching current
+navigation can close on success or show an inline failure. API placements and
+legacy string-prefix errors cannot consume a native request. Stale committed
+successes still hydrate through the committed manager/residency path without
+closing or navigating a replacement dialog. Stale failures enter error history.
+
+At 30 seconds without a reply, the request remains pending with a visible unknown
+outcome. Import stays disabled; Cancel and close are available. The text asks the
+user to refresh and check for the object before another import. No automatic retry
+runs. A late matching result can resolve the unknown outcome. A definite matching
+failure unlocks the dialog so the path can be corrected and explicitly submitted.
+Position is displayed in meters using the active Petal world scale.
 
 ## §create-entity-flow (D-07, L-06, W1-S4)
 

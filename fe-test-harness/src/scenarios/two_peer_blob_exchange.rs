@@ -42,6 +42,7 @@ pub fn run() -> Result<TestResult> {
     std::fs::write(&glb_path, &glb_bytes)?;
 
     alice.send(DbCommand::ImportGltf {
+        request: None,
         file_lease: None,
         petal_id,
         name: "ExchangeTestCube".into(),

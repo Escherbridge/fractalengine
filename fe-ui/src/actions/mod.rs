@@ -496,11 +496,7 @@ pub enum UiAction {
     },
 }
 
-/// In-flight round-trip of a dialog that stays open until its DB reply lands
-/// (OD-2) — shared by Join (`join_request`) and glTF Import
-/// (`gltf_import_request`). The dialog `start`s it on a successful send; the
-/// `db_results` reply arm `finish`es it. See `fe-ui/src/actions/AGENTS.md`
-/// §notices "Dialog requests".
+/// Join dialog round-trip state; see actions/AGENTS.md.
 #[derive(Debug, Clone, Default)]
 pub struct DialogRequestState {
     pub pending: bool,
@@ -534,6 +530,54 @@ impl DialogRequestState {
     /// `finish`es it.
     pub fn waiting_within(&self, now_secs: f64, timeout_secs: f64) -> bool {
         self.pending && now_secs - self.sent_at < timeout_secs
+    }
+}
+
+/// Native import state with exact request and navigation ownership.
+#[derive(Debug, Clone, Default)]
+pub struct GltfImportRequestState {
+    pub pending: bool,
+    pub error: Option<String>,
+    pub sent_at: f64,
+    request: Option<fe_runtime::messages::NativeImportRequest>,
+    pub outcome_unknown: bool,
+}
+
+impl GltfImportRequestState {
+    pub fn start(&mut self, request: fe_runtime::messages::NativeImportRequest, now: f64) {
+        *self = Self {
+            pending: true,
+            sent_at: now,
+            request: Some(request),
+            ..Self::default()
+        };
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn expire(&mut self, now: f64, timeout: f64) {
+        if self.pending && now - self.sent_at >= timeout {
+            self.outcome_unknown = true;
+            self.error = Some("Import outcome is unknown. Refresh the scene and check for the object before starting another import.".into());
+        }
+    }
+
+    pub fn finish(
+        &mut self,
+        request: &fe_runtime::messages::NativeImportRequest,
+        nav: &crate::navigation_manager::NavigationManager,
+    ) -> bool {
+        let owns = self.pending
+            && self.request.as_ref() == Some(request)
+            && nav.active_verse_id.as_deref() == Some(request.verse_id.as_str())
+            && nav.active_fractal_id.as_deref() == Some(request.fractal_id.as_str())
+            && nav.active_petal_id.as_deref() == Some(request.petal_id.as_str());
+        if owns {
+            self.reset();
+        }
+        owns
     }
 }
 
@@ -588,7 +632,7 @@ pub struct UiManager {
     pub join_request: DialogRequestState,
     /// glTF Import dialog's in-flight state (D-06); `gltf_import.rs` starts
     /// it, `db_results`' `GltfImported` arm finishes it.
-    pub gltf_import_request: DialogRequestState,
+    pub gltf_import_request: GltfImportRequestState,
 }
 
 impl Default for UiManager {
@@ -612,7 +656,7 @@ impl Default for UiManager {
             conditions: Vec::new(),
             next_notice_id: 0,
             join_request: DialogRequestState::default(),
-            gltf_import_request: DialogRequestState::default(),
+            gltf_import_request: GltfImportRequestState::default(),
         }
     }
 }
@@ -671,6 +715,7 @@ impl UiManager {
     fn replace_dialog(&mut self, dialog: ActiveDialog) {
         self.context_point_origin = None;
         self.gltf_file_lease = None;
+        self.gltf_import_request.reset();
         self.active_dialog = dialog;
     }
 

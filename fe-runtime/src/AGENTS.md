@@ -948,3 +948,9 @@ a complete CommittedNodeMaterialization. Production ImportGltf and
 CreateNodeWithAsset prepare that typed snapshot before their transaction and
 return it only after successful commit. Legacy/test-peer adapters explicitly use
 None; they do not fabricate initial history coverage or a rotation/scale.
+
+## Native import reply ownership
+
+NativeImportRequest carries a local nonce and captured hierarchy for dialog routing
+only. ImportGltf echoes it on success and typed ImportGltfFailed; these have no API
+correlation and cannot claim an API placement waiter. Legacy/test senders use None.

@@ -344,11 +344,16 @@ pub(super) fn apply_db_results(
                 &mut nav,
                 &mut ui_mgr,
             ),
-            DbResult::GltfImported { name, correlation_id, .. } => {
-                if correlation_id.is_none() && committed::from_gltf_import(result).is_some() {
-                    finish_gltf_import_request(name, &mut ui_mgr, caches.time.elapsed_secs_f64());
+            DbResult::GltfImported {
+                request: Some(request), name, correlation_id: None, petal_id, ..
+            } => {
+                if request.petal_id == *petal_id && committed::from_gltf_import(result).is_some() {
+                    finish_gltf_import_request(request, name, &mut ui_mgr, &nav, caches.time.elapsed_secs_f64());
                 }
             }
+            DbResult::ImportGltfFailed { request, message } => query::handle_import_failure(
+                request.as_ref(), message, &mut ui_mgr, &local_role, &nav, caches.time.elapsed_secs_f64(),
+            ),
             DbResult::NodeCreated {
                 id,
                 petal_id,
@@ -752,17 +757,20 @@ pub(super) fn apply_db_results(
     }
 }
 
-/// D-06: a `GltfImported` that answers the Import dialog's own request
-/// closes it and confirms; an import from elsewhere (API, drop) leaves the
-/// dialogs alone. Same shape as `hierarchy::handle_verse_joined`.
-fn finish_gltf_import_request(name: &str, ui_mgr: &mut crate::actions::UiManager, now: f64) {
-    if ui_mgr.gltf_import_request.finish() {
-        if matches!(
-            ui_mgr.active_dialog,
-            crate::dialogs::ActiveDialog::GltfImport { .. }
-        ) {
-            ui_mgr.close_dialog();
-        }
+/// Finish only the current native import; stale committed results still hydrate above.
+fn finish_gltf_import_request(
+    request: &fe_runtime::messages::NativeImportRequest,
+    name: &str,
+    ui_mgr: &mut crate::actions::UiManager,
+    nav: &NavigationManager,
+    now: f64,
+) {
+    if matches!(
+        ui_mgr.active_dialog,
+        crate::dialogs::ActiveDialog::GltfImport { .. }
+    ) && ui_mgr.gltf_import_request.finish(request, nav)
+    {
+        ui_mgr.close_dialog();
         ui_mgr.show_toast(format!("Imported {name}"), now);
     }
 }
@@ -925,42 +933,66 @@ mod tests {
     /// an import nobody in this dialog asked for leaves the open dialog be.
     #[test]
     fn gltf_import_reply_closes_only_the_dialog_that_asked() {
-        let gltf_dialog = || ActiveDialog::GltfImport {
+        let dialog = || ActiveDialog::GltfImport {
             file_path_buf: "model.glb".into(),
             name_buf: "Model".into(),
             position: [0.0; 3],
         };
-        // (import dialog still the active one, request sent by it, closes)
-        for (import_dialog_active, dialog_requested, closes) in [
-            (true, true, true),
-            (true, false, false),
-            (false, true, false),
-        ] {
-            let mut ui = UiManager::default();
-            ui.open_dialog(if import_dialog_active {
-                gltf_dialog()
-            } else {
-                ActiveDialog::JoinDialog {
-                    invite_buf: String::new(),
-                }
-            });
-            if dialog_requested {
-                ui.gltf_import_request.start(1.0);
-            }
-            finish_gltf_import_request("Model", &mut ui, 2.0);
-            let case = format!("active={import_dialog_active} requested={dialog_requested}");
-            assert_eq!(
-                matches!(ui.active_dialog, ActiveDialog::None),
-                closes,
-                "{case}"
-            );
-            assert!(!ui.gltf_import_request.pending, "{case}");
-            assert_eq!(
-                ui.active_toast(2.0).map(|(msg, _)| msg.to_string()),
-                dialog_requested.then(|| "Imported Model".to_string()),
-                "{case}"
-            );
-        }
+        let request = fe_runtime::messages::NativeImportRequest {
+            request_id: "old".into(),
+            verse_id: "v1".into(),
+            fractal_id: "f1".into(),
+            petal_id: "p1".into(),
+        };
+        let mut nav = NavigationManager::default();
+        nav.navigate_to_petal_in_fractal("v1", "Verse", "f1", "Fractal", "p1");
+        let mut ui = UiManager::default();
+        ui.open_dialog(dialog());
+        ui.gltf_import_request.start(request.clone(), 1.0);
+        ui.gltf_import_request.expire(32.0, 30.0);
+        assert!(ui.gltf_import_request.pending && ui.gltf_import_request.outcome_unknown);
+        assert!(
+            ui.gltf_import_request
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("unknown")
+        );
+        finish_gltf_import_request(&request, "Model", &mut ui, &nav, 33.0);
+        assert!(matches!(ui.active_dialog, ActiveDialog::None));
+        assert_eq!(
+            ui.active_toast(33.0).map(|(msg, _)| msg.to_string()),
+            Some("Imported Model".into())
+        );
+        ui.open_dialog(dialog());
+        ui.gltf_import_request.start(request.clone(), 34.0);
+        ui.open_dialog(dialog());
+        let current = fe_runtime::messages::NativeImportRequest {
+            request_id: "new".into(),
+            ..request.clone()
+        };
+        ui.gltf_import_request.start(current.clone(), 35.0);
+        finish_gltf_import_request(&request, "Old", &mut ui, &nav, 36.0);
+        assert!(
+            ui.gltf_import_request.pending
+                && matches!(ui.active_dialog, ActiveDialog::GltfImport { .. })
+        );
+        nav.navigate_to_petal("p2");
+        finish_gltf_import_request(&current, "Wrong target", &mut ui, &nav, 36.0);
+        assert!(ui.gltf_import_request.pending);
+        nav.navigate_to_petal("p1");
+        finish_gltf_import_request(&current, "Current", &mut ui, &nav, 37.0);
+        assert!(matches!(ui.active_dialog, ActiveDialog::None));
+        ui.open_dialog(dialog());
+        ui.gltf_import_request.start(request.clone(), 38.0);
+        ui.open_dialog(ActiveDialog::JoinDialog {
+            invite_buf: String::new(),
+        });
+        finish_gltf_import_request(&request, "Old", &mut ui, &nav, 39.0);
+        assert!(
+            !ui.gltf_import_request.pending
+                && matches!(ui.active_dialog, ActiveDialog::JoinDialog { .. })
+        );
     }
 
     /// A foreign `JoinVerseFailed` (no dialog open, or already closed) must
@@ -1923,8 +1955,8 @@ mod tests {
         app.update();
         assert!(
             matches!(reply_rx.try_recv(), Ok(DbResult::NodePropertiesLoaded {
-                node_id, correlation_id: Some(id), properties,
-            }) if node_id == "n1" && id == "api-properties" && properties == json!({"api":10}))
+                    node_id, correlation_id: Some(id), properties,
+                }) if node_id == "n1" && id == "api-properties" && properties == json!({"api":10}))
         );
         let (next_tx, mut next_rx) = tokio::sync::oneshot::channel();
         app.world_mut()
@@ -1998,6 +2030,7 @@ mod tests {
             history_version: 1,
         };
         let placed = DbResult::GltfImported {
+            request: None,
             node_id: "placed".into(),
             asset_id: "placed-asset".into(),
             petal_id: "p1".into(),
@@ -2029,7 +2062,15 @@ mod tests {
                 name_buf: "Native pending".into(),
                 position: [0.0; 3],
             });
-            ui.gltf_import_request.start(0.0);
+            ui.gltf_import_request.start(
+                fe_runtime::messages::NativeImportRequest {
+                    request_id: "native-current".into(),
+                    verse_id: "v1".into(),
+                    fractal_id: "f1".into(),
+                    petal_id: "p1".into(),
+                },
+                0.0,
+            );
         }
         app.world_mut().write_message(placed.clone());
         app.world_mut().write_message(placed.clone());
@@ -2088,9 +2129,9 @@ mod tests {
         );
         let entity = placed_entities[0].0;
         let current:fe_runtime::node_history::NodeRowSnapshot=serde_json::from_value(json!({
-                "node_id":"placed","petal_id":"p1","display_name":"Placed","asset_id":"placed-asset","position":[9.0,2.0,4.0],"elevation":2.0,
-                "rotation":[0.25,0.5,0.75],"scale":[2.0,0.5,3.0],"interactive":true,"created_at":"test","edit_seq":1,"properties":{}
-            })).unwrap();
+                    "node_id":"placed","petal_id":"p1","display_name":"Placed","asset_id":"placed-asset","position":[9.0,2.0,4.0],"elevation":2.0,
+                    "rotation":[0.25,0.5,0.75],"scale":[2.0,0.5,3.0],"interactive":true,"created_at":"test","edit_seq":1,"properties":{}
+                })).unwrap();
         app.world_mut()
             .write_message(DbResult::NodeMutationCommitted {
                 receipt: fe_runtime::node_history::NodeMutationReceipt {
@@ -2158,6 +2199,106 @@ mod tests {
                 .gltf_import_request
                 .pending,
             "an unqualified legacy receipt cannot invent native import completion"
+        );
+        let previous = fe_runtime::messages::NativeImportRequest {
+            request_id: "native-current".into(),
+            verse_id: "v1".into(),
+            fractal_id: "f1".into(),
+            petal_id: "p1".into(),
+        };
+        let replacement = fe_runtime::messages::NativeImportRequest {
+            request_id: "native-replacement".into(),
+            ..previous.clone()
+        };
+        {
+            let mut ui = app.world_mut().resource_mut::<UiManager>();
+            ui.open_dialog(ActiveDialog::GltfImport {
+                file_path_buf: "replacement.glb".into(),
+                name_buf: "Replacement".into(),
+                position: [0.0; 3],
+            });
+            ui.gltf_import_request.start(replacement.clone(), 1.0);
+            ui.gltf_import_request.expire(32.0, 30.0);
+        }
+        let mut late = DbResult::GltfImported {
+            request: Some(previous.clone()),
+            node_id: "late-import".into(),
+            asset_id: "placed-asset".into(),
+            petal_id: "p1".into(),
+            name: "Late import".into(),
+            asset_path: "models/placed.glb".into(),
+            position: [3.0, 2.0, 4.0],
+            materialization: Some(fe_runtime::messages::CommittedNodeMaterialization {
+                node: fe_runtime::messages::NodeDto {
+                    node_id: "late-import".into(),
+                    petal_id: "p1".into(),
+                    name: "Late import".into(),
+                    position: [3.0, 2.0, 4.0],
+                    rotation,
+                    scale: [2.0, 0.5, 3.0],
+                    has_asset: true,
+                    asset_path: Some("models/placed.glb".into()),
+                },
+                rotation_euler: [0.25, 0.5, 0.75],
+                asset_id: Some("placed-asset".into()),
+                properties: json!({}),
+                history_version: 1,
+            }),
+            correlation_id: None,
+        };
+        app.world_mut().write_message(late.clone());
+        app.world_mut().write_message(DbResult::ImportGltfFailed {
+            request: Some(previous),
+            message: "GLTF import failed: stale request".into(),
+        });
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<VerseManager>()
+                .all_nodes()
+                .filter(|node| node.id == "late-import")
+                .count(),
+            1,
+            "the committed old import still hydrates the authoritative tree"
+        );
+        let ui = app.world().resource::<UiManager>();
+        assert!(ui.gltf_import_request.pending && ui.gltf_import_request.outcome_unknown);
+        assert!(
+            ui.gltf_import_request
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("unknown")
+        );
+        assert!(
+            matches!(&ui.active_dialog,ActiveDialog::GltfImport {name_buf,..} if name_buf=="Replacement")
+        );
+        assert_eq!(
+            app.world()
+                .resource::<NavigationManager>()
+                .active_petal_id
+                .as_deref(),
+            Some("p1")
+        );
+        if let DbResult::GltfImported { request, .. } = &mut late {
+            *request = Some(replacement);
+        }
+        app.world_mut().write_message(late);
+        app.update();
+        assert!(
+            matches!(
+                app.world().resource::<UiManager>().active_dialog,
+                ActiveDialog::None
+            ),
+            "a late but matching success resolves the unknown outcome without another import"
+        );
+        assert_eq!(
+            app.world()
+                .resource::<VerseManager>()
+                .all_nodes()
+                .filter(|node| node.id == "late-import")
+                .count(),
+            1
         );
     }
 

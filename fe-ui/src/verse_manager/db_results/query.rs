@@ -106,18 +106,29 @@ pub(super) fn handle_error(
         );
     }
     let ctx = DenialContext::new(local_role, active_verse_name(nav));
-    // D-06: a failed import has no typed reply, so its prefix is what lets
-    // the Import dialog that asked unlock and say why, like Join does.
-    if msg.starts_with(GLTF_IMPORT_FAILED_PREFIX) && ui_mgr.gltf_import_request.finish() {
-        ui_mgr.gltf_import_request.error = Some(humanize_db_error(msg, &ctx));
-        return;
-    }
     ui_mgr.show_db_error(msg, &ctx, now);
 }
 
-/// Prefix of the uncorrelated `DbResult::Error` an `ImportGltf` failure
-/// replies with (`fe-database/src/lib.rs`, the `ImportGltf` arm).
-const GLTF_IMPORT_FAILED_PREFIX: &str = "GLTF import failed";
+/// Route native import failure only to the exact active request and target.
+pub(super) fn handle_import_failure(
+    request: Option<&fe_runtime::messages::NativeImportRequest>,
+    message: &str,
+    ui_mgr: &mut UiManager,
+    local_role: &LocalUserRole,
+    nav: &NavigationManager,
+    now: f64,
+) {
+    let ctx = DenialContext::new(local_role, active_verse_name(nav));
+    if matches!(
+        ui_mgr.active_dialog,
+        crate::dialogs::ActiveDialog::GltfImport { .. }
+    ) && request.is_some_and(|request| ui_mgr.gltf_import_request.finish(request, nav))
+    {
+        ui_mgr.gltf_import_request.error = Some(humanize_db_error(message, &ctx));
+    } else {
+        ui_mgr.show_db_error(message, &ctx, now);
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -129,45 +140,73 @@ mod tests {
     /// general notice instead.
     #[test]
     fn gltf_import_failure_unlocks_only_the_dialog_that_asked() {
-        let cases = [
-            ("GLTF import failed: file not found: a.glb", false, true),
-            ("Load hierarchy failed: disk full", true, false),
-        ];
-        for (raw, still_pending, inline) in cases {
-            let mut ui_mgr = UiManager::default();
-            ui_mgr.open_dialog(ActiveDialog::GltfImport {
+        let mut nav = NavigationManager::default();
+        nav.navigate_to_petal_in_fractal("v", "Verse", "f", "Fractal", "p");
+        let request = fe_runtime::messages::NativeImportRequest {
+            request_id: "current".into(),
+            verse_id: "v".into(),
+            fractal_id: "f".into(),
+            petal_id: "p".into(),
+        };
+        for (incoming, owned) in [
+            (Some(request.clone()), true),
+            (
+                Some(fe_runtime::messages::NativeImportRequest {
+                    request_id: "old".into(),
+                    ..request.clone()
+                }),
+                false,
+            ),
+            (None, false),
+        ] {
+            let mut ui = UiManager::default();
+            ui.open_dialog(ActiveDialog::GltfImport {
                 file_path_buf: "a.glb".into(),
                 name_buf: String::new(),
                 position: [0.0; 3],
             });
-            ui_mgr.gltf_import_request.start(1.0);
-            handle_error(
-                raw,
-                &mut PathEditorState::default(),
-                &mut ui_mgr,
+            ui.gltf_import_request.start(request.clone(), 1.0);
+            handle_import_failure(
+                incoming.as_ref(),
+                "GLTF import failed: file not found: a.glb",
+                &mut ui,
                 &LocalUserRole::default(),
-                &NavigationManager::default(),
+                &nav,
                 2.0,
             );
-            assert_eq!(ui_mgr.gltf_import_request.pending, still_pending, "{raw}");
-            assert_eq!(
-                ui_mgr
-                    .gltf_import_request
-                    .error
-                    .as_deref()
-                    .is_some_and(|e| e.contains("file not found")),
-                inline,
-                "{raw}"
-            );
-            assert_eq!(
-                ui_mgr.latest_unacknowledged_error().is_some(),
-                !inline,
-                "{raw}"
-            );
-            assert!(matches!(
-                ui_mgr.active_dialog,
-                ActiveDialog::GltfImport { .. }
-            ));
+            assert_eq!(ui.gltf_import_request.pending, !owned);
+            assert_eq!(ui.gltf_import_request.error.is_some(), owned);
+            assert_eq!(ui.latest_unacknowledged_error().is_some(), !owned);
+            assert!(matches!(ui.active_dialog, ActiveDialog::GltfImport { .. }));
         }
+        let mut ui = UiManager::default();
+        ui.open_dialog(ActiveDialog::GltfImport {
+            file_path_buf: "a.glb".into(),
+            name_buf: String::new(),
+            position: [0.0; 3],
+        });
+        ui.gltf_import_request.start(request.clone(), 1.0);
+        handle_error(
+            "GLTF import failed: legacy unowned error",
+            &mut PathEditorState::default(),
+            &mut ui,
+            &LocalUserRole::default(),
+            &nav,
+            2.0,
+        );
+        assert!(
+            ui.gltf_import_request.pending && ui.gltf_import_request.error.is_none(),
+            "a legacy prefix cannot claim a native request"
+        );
+        nav.navigate_to_petal("other");
+        handle_import_failure(
+            Some(&request),
+            "GLTF import failed: old scope",
+            &mut ui,
+            &LocalUserRole::default(),
+            &nav,
+            3.0,
+        );
+        assert!(ui.gltf_import_request.pending);
     }
 }

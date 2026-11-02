@@ -512,3 +512,9 @@ component/adapter coverage, not GPU/model-load or executed QA evidence.
 
 Only a qualified GUI-origin completion can finish the native import dialog; an
 API-correlated placement retains its own waiter and cannot consume that request.
+
+Native import completion additionally requires its exact nonce, active Import
+dialog and captured current navigation. Stale successful births still hydrate
+above this completion gate; stale failure never changes a replacement request.
+The existing receipt App journey includes an unknown-outcome replacement, stale
+committed birth/failure, and late matching completion without another create.

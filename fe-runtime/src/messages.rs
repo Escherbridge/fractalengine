@@ -3,6 +3,15 @@ use bevy::prelude::Message;
 /// Operation-owned input-file and ancestry handles retained through a read.
 pub type FileReadLease = std::sync::Arc<Vec<std::fs::File>>;
 
+/// Local dialog ownership; this capture grants no database authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeImportRequest {
+    pub request_id: String,
+    pub verse_id: String,
+    pub fractal_id: String,
+    pub petal_id: String,
+}
+
 /// Initial ordinary object state, validated before the atomic creation commit.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -553,6 +562,7 @@ pub enum DbCommand {
         correlation_id: Option<String>,
     },
     ImportGltf {
+        request: Option<NativeImportRequest>,
         file_lease: Option<FileReadLease>,
         petal_id: String,
         name: String,
@@ -1348,7 +1358,13 @@ pub enum DbResult {
         /// where the node actually landed.
         position: [f32; 3],
     },
+    /// Native import failure retains its originating dialog ownership.
+    ImportGltfFailed {
+        request: Option<NativeImportRequest>,
+        message: String,
+    },
     GltfImported {
+        request: Option<NativeImportRequest>,
         node_id: String,
         asset_id: String,
         petal_id: String,

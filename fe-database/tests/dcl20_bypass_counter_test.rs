@@ -250,6 +250,7 @@ async fn each_dcl20_mutation_records_exactly_one_bypass_of_its_own_kind() {
     let before = snapshot_counts();
     let op_log_before = h.op_log_count().await;
     h.send(DbCommand::ImportGltf {
+        request: None,
         file_lease: None,
         petal_id: petal_id.clone(),
         name: "Imported".into(),
@@ -263,8 +264,8 @@ async fn each_dcl20_mutation_records_exactly_one_bypass_of_its_own_kind() {
     assert_only_this_kind_bypassed(before, snapshot_counts(), "ImportGltf");
     assert_eq!(
         h.op_log_count().await,
-        op_log_before,
-        "ImportGltf: the bypass counter added no op_log row"
+        op_log_before + 1,
+        "ImportGltf records one atomic object creation operation independently of its bypass counter"
     );
 
     // --- RenameNode -------------------------------------------------------
@@ -449,6 +450,7 @@ async fn a_ktx2_refused_import_still_records_its_bypass() {
     std::fs::write(&glb_path, ktx2_glb_bytes()).expect("write ktx2 glb fixture");
     let before = snapshot_counts();
     h.send(DbCommand::ImportGltf {
+        request: None,
         file_lease: None,
         petal_id,
         name: "Refused".into(),
@@ -460,7 +462,7 @@ async fn a_ktx2_refused_import_still_records_its_bypass() {
         // the error message quotes the path, so the `ktx2` half of this OR
         // passed for ANY refusal of this file, not only the RUSTSEC one —
         // narrowed to the one assertion that actually pins the guard.
-        DbResult::Error(e) => assert!(
+        DbResult::ImportGltfFailed { message: e, .. } => assert!(
             e.contains("RUSTSEC-2026-0344"),
             "the refusal must name the KTX2 guard's advisory, got: {e}"
         ),

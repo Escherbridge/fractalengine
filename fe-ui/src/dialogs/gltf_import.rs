@@ -1,18 +1,11 @@
-//! GLTF model import dialog.
-//!
-//! D-06: Import used to close unconditionally even on empty input, and a
-//! failed import was log-only — "succeeding" visibly while doing nothing.
-//! Import is now disabled until [`import_enabled`] holds, and a click keeps
-//! the dialog open with a spinner ("Importing…") until `db_results`'
-//! `GltfImported` arm finishes `ui_mgr.gltf_import_request` and closes it
-//! (see `dialogs/AGENTS.md` §gltf-import-flow).
+//! Native glTF import dialog; see dialogs/AGENTS.md.
 
 use bevy_egui::egui;
 
 use crate::accessibility::ResponseExt;
 
 use super::ActiveDialog;
-use crate::actions::{send_or_toast, UiManager};
+use crate::actions::{UiManager, send_or_toast};
 use crate::navigation_manager::NavigationManager;
 use crate::panels::widgets;
 use crate::theme;
@@ -24,10 +17,7 @@ pub(crate) fn import_enabled(file_path: &str, petal_id: &str) -> bool {
     !file_path.trim().is_empty() && !petal_id.trim().is_empty()
 }
 
-/// How long an "Importing…" lock is honored before this dialog re-enables
-/// itself. A failed import finishes the request through
-/// `db_results/query.rs::handle_error`, so this only fires when no reply
-/// arrives at all (the DB thread died mid-request).
+/// Bound before the request is marked as having an unknown outcome.
 const IMPORT_LOCK_TIMEOUT_SECONDS: f64 = 30.0;
 
 pub fn render_gltf_import_dialog(
@@ -44,9 +34,16 @@ pub fn render_gltf_import_dialog(
     // through `file_path_buf`/`name_buf`/`position` must end before `ui_mgr`
     // as a whole can be passed to `send_or_toast`/`close_dialog` again).
     let now = ctx.input(|i| i.time);
-    let importing = ui_mgr
+    ui_mgr
         .gltf_import_request
-        .waiting_within(now, IMPORT_LOCK_TIMEOUT_SECONDS);
+        .expire(now, IMPORT_LOCK_TIMEOUT_SECONDS);
+    let pending = ui_mgr.gltf_import_request.pending;
+    let importing = pending && !ui_mgr.gltf_import_request.outcome_unknown;
+    let target = nav
+        .active_verse_id
+        .as_deref()
+        .zip(nav.active_fractal_id.as_deref())
+        .zip(nav.active_petal_id.as_deref());
     let error = ui_mgr.gltf_import_request.error.clone();
     let file_dialogs = ui_mgr.file_dialogs.clone();
     let mut dialog_failure = None;
@@ -61,9 +58,10 @@ pub fn render_gltf_import_dialog(
         return;
     };
 
-    let can_import = import_enabled(file_path_buf, &petal_id);
+    let can_import = import_enabled(file_path_buf, &petal_id) && target.is_some();
     let mut close = false;
     let mut import_request: Option<DbCommand> = None;
+    let mut import_owner = None;
 
     let mut still_open = true;
     let mut window = crate::ui_shell::layout_policy::bounded_window(ctx, "Import GLTF Model")
@@ -97,7 +95,8 @@ pub fn render_gltf_import_dialog(
                 )
                 .labelled(ui, &path_label);
                 if ui
-                    .add(egui::Button::new("Browse...").fill(theme::BG_BUTTON)).observed(ui)
+                    .add(egui::Button::new("Browse...").fill(theme::BG_BUTTON))
+                    .observed(ui)
                     .clicked()
                 {
                     match file_dialogs.choose(crate::file_dialogs::FileDialogRequest {
@@ -170,9 +169,10 @@ pub fn render_gltf_import_dialog(
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
-                    !importing && can_import,
+                    !pending && can_import,
                     egui::Button::new("Import").fill(theme::BG_SAVE),
-                ).observed(ui)
+                )
+                .observed(ui)
                 .clicked()
             {
                 match file_dialogs.lease_path(
@@ -181,7 +181,16 @@ pub fn render_gltf_import_dialog(
                     nav.active_verse_id.as_deref(),
                 ) {
                     Ok(path) => {
+                        import_owner = target.map(|((verse, fractal), petal)| {
+                            fe_runtime::messages::NativeImportRequest {
+                                request_id: ulid::Ulid::new().to_string(),
+                                verse_id: verse.into(),
+                                fractal_id: fractal.into(),
+                                petal_id: petal.into(),
+                            }
+                        });
                         import_request = Some(DbCommand::ImportGltf {
+                            request: import_owner.clone(),
                             file_lease: path.read_lease(),
                             petal_id: petal_id.clone(),
                             name: if name_buf.trim().is_empty() {
@@ -201,7 +210,8 @@ pub fn render_gltf_import_dialog(
                 .add_enabled(
                     !importing,
                     egui::Button::new("Cancel").fill(theme::BG_BUTTON),
-                ).observed(ui)
+                )
+                .observed(ui)
                 .clicked()
             {
                 close = true;
@@ -217,9 +227,9 @@ pub fn render_gltf_import_dialog(
     if let Some(error) = dialog_failure {
         ui_mgr.show_error(error, now);
     }
-    if let Some(cmd) = import_request {
+    if let (Some(cmd), Some(owner)) = (import_request, import_owner) {
         if send_or_toast(db_tx, cmd, ui_mgr, now, "import the model") {
-            ui_mgr.gltf_import_request.start(now);
+            ui_mgr.gltf_import_request.start(owner, now);
         }
     }
 

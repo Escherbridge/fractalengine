@@ -336,6 +336,7 @@ impl TestPeer {
                             }
                         }
                         Ok(DbCommand::ImportGltf {
+                            request,
                             petal_id,
                             name,
                             file_path,
@@ -356,6 +357,7 @@ impl TestPeer {
                                 Ok((node_id, asset_id, asset_path)) => {
                                     db_result_tx
                                         .send(DbResult::GltfImported {
+                                            request: request.clone(),
                                             node_id,
                                             asset_id,
                                             petal_id,
@@ -369,9 +371,7 @@ impl TestPeer {
                                 }
                                 Err(e) => {
                                     db_result_tx
-                                        .send(DbResult::Error(format!(
-                                            "GLTF import failed: {e}"
-                                        )))
+                                        .send(DbResult::ImportGltfFailed { request, message: format!("GLTF import failed: {e}") })
                                         .ok();
                                 }
                             }

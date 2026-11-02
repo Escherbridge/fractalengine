@@ -604,6 +604,7 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
                 properties: Default::default(),
             });
             DbResult::GltfImported {
+                request: None,
                 node_id,
                 asset_id,
                 petal_id,
