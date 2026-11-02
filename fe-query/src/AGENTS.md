@@ -299,3 +299,14 @@ request/response limits and the smaller desktop function vocabulary. Moving
 this scanner does not turn it into a full parser or expose a fictitious public
 SurrealQL AST visitor. Scope rewriting remains the existing validated source
 replacement, not a user-supplied WHERE suffix or regex substitution.
+
+Security follow-up: the pinned SurrealDB 3.0.5 kind parser accepts TABLE and
+RECORD nested through option/array and literal object/array casts. A projected
+Table value can become an unscoped iterator source, bypassing FROM rewriting.
+The shared constructor gate now conservatively refuses whole-word TABLE and
+RECORD anywhere, including quoted data/field names. This is a deliberate API
+security behavior change after extraction, not preserved legacy semantics.
+Ordinary numeric < and <= comparisons remain allowed. A narrower cast policy
+needs a reviewed engine/lexer boundary; quote-only angle parsing is insufficient
+because regex/string contents can confuse cast boundaries. Existing guard
+journeys cover direct/nested/literal-kind casts and this conservative refusal.

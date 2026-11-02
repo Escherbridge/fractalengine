@@ -2216,3 +2216,10 @@ pipeline. Existing REST/MCP/export/share/elevated guard semantics, row/byte/rate
 limits and DB timeouts are unchanged. Pure guard journeys live with the moved
 module; API semaphore/transport testing remains here. The desktop's narrower
 petal-only sources/function vocabulary is enforced only by the new DB handler.
+
+Scoped-query security follow-up changes the shared guard: whole-word TABLE and
+RECORD are now refused anywhere, including field/string uses, to close native
+Table/Record casts (also nested literal object/array kinds) bypassing source
+rewriting. This deliberate security delta follows the semantics-preserving
+extraction above. Ordinary numeric less-than comparisons remain accepted; no
+new token/Owner exemption or broader API authority is introduced.

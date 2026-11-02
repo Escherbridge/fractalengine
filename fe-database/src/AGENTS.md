@@ -1741,3 +1741,14 @@ reads. Quoted metadata words are conservatively refused too; any wider desktop
 dialect belongs in the reviewed decision ledger. API guard semantics and trusted
 programmatic callers remain unchanged. The existing refusal journey covers these
 projection and incoming/outgoing/bidirectional graph forms.
+
+Security follow-up: desktop lexical admission refuses every unquoted <,
+including all native casts, versioned ML calls and less-than operators. Quoted
+angle text remains data subject to shared forbidden-word restrictions. This closes cast-to-Table iterator sources and
+ml::name<version>(args), which does not use the usual name-followed-by-parenthesis
+function spelling. Less-than operators/casts are explicit decision-ledger
+restrictions pending a reviewed lexer; callers can currently use reversed >
+comparisons. The shared API guard separately refuses whole-word TABLE/RECORD
+(including data/field uses) to close nested capability casts without removing
+ordinary API comparisons. Existing real-store and pure refusal journeys were
+extended; source-only validation is not runtime proof.

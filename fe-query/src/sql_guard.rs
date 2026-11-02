@@ -694,6 +694,12 @@ fn reject_record_constructors(canonical: &str, upper: &str) -> Result<(), String
     // `strip_comments` first (R5): see its doc for why this is independent
     // belt-and-suspenders, not the primary defense.
     let scanned = strip_comments(upper);
+    if ["TABLE", "RECORD"]
+        .iter()
+        .any(|word| contains_word(&scanned, word))
+    {
+        return Err("table/record syntax is not allowed in queries".into());
+    }
     let compact: String = scanned.chars().filter(|c| !c.is_whitespace()).collect();
     for needle in [
         "TYPE::THING",
@@ -991,10 +997,12 @@ mod tests {
             validate_select_sql("SELECT * FROM node WHERE id IN (SELECT id FROM session_cache)")
                 .unwrap_err();
         assert!(err.contains("SESSION_CACHE"), "{err}");
-        assert!(validate_select_sql(
-            "SELECT * FROM node WHERE id IN (SELECT anchor_node_id FROM iot_reading)"
-        )
-        .is_ok());
+        assert!(
+            validate_select_sql(
+                "SELECT * FROM node WHERE id IN (SELECT anchor_node_id FROM iot_reading)"
+            )
+            .is_ok()
+        );
         assert!(validate_select_sql("SELECT * FROM (SELECT * FROM node)").is_ok());
     }
 
@@ -1168,16 +1176,49 @@ mod tests {
             "SELECT role:victim.* AS leak FROM verse",
             "SELECT api_token:..1 AS leak FROM verse",
             "SELECT type::field('x') FROM verse",
+            "SELECT /'/ AS pattern, <table>'role' FROM node",
+            "SELECT '<table>' AS text FROM verse",
+            "SELECT properties.table FROM verse",
         ] {
             assert!(
                 prepare_scoped_sql(sql, &p(&["P1"]), GuardMode::Query).is_err(),
                 "should reject: {sql}"
             );
         }
+        for cast in [
+            "<table>'role'",
+            "< TaBlE >'ro' + 'le'",
+            "<array<table>>['role']",
+            "<option<table>>'role'",
+            "<{ entry: table }>{ entry: 'role' }",
+            "<[table]>['role']",
+            "<array<option< ReCoRd >>>['no' + 'de:x']",
+            "<[record]>['no' + 'de:x']",
+            "<array<{ entry: table }>>[{ entry: 'role' }]",
+            "<{ entry: record }>{ entry: 'no' + 'de:x' }",
+            "< { a: '>', entry: table } >{ a: '>', entry: 'role' }",
+        ] {
+            let sql = format!("SELECT {cast} AS leak FROM verse");
+            for mode in [GuardMode::Query, GuardMode::Egress, GuardMode::Export] {
+                assert_eq!(
+                    prepare_scoped_sql(&sql, &p(&["P1"]), mode).unwrap_err(),
+                    "table/record syntax is not allowed in queries",
+                    "{sql}",
+                );
+            }
+            let elevated_sql = format!("SELECT {cast} AS leak FROM node");
+            assert_eq!(
+                validate_elevated_sql(&elevated_sql, ELEVATED_TABLES).unwrap_err(),
+                "table/record syntax is not allowed in queries",
+                "{elevated_sql}",
+            );
+        }
         // Not record ids: datetimes (digit-led), spaced object keys, `::` paths,
         // and literals of whitelisted unscoped tables (already FROM-readable) —
         // except `verse`, whose literal would bypass the capability rewrite.
         for sql in [
+            "SELECT 'angle < data' AS text FROM verse",
+            "SELECT * FROM verse WHERE size < 5 AND size <= 6 AND size > 0",
             "SELECT * FROM verse WHERE created_at > '2026-01-01T00:00:00Z'",
             "SELECT { k: 1 } AS o, string::lowercase(name) AS n FROM verse",
             "SELECT fractal:abc.name AS n FROM verse",
@@ -1208,12 +1249,14 @@ mod tests {
             }
         }
         // Query mode keeps (scoped) subqueries.
-        assert!(prepare_scoped_sql(
-            "SELECT *, (SELECT * FROM iot_reading) AS x FROM node",
-            &p(&["P1"]),
-            GuardMode::Query
-        )
-        .is_ok());
+        assert!(
+            prepare_scoped_sql(
+                "SELECT *, (SELECT * FROM iot_reading) AS x FROM node",
+                &p(&["P1"]),
+                GuardMode::Query
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1471,12 +1514,14 @@ mod tests {
         // The pre-existing (comment-free) obfuscation — string concatenation
         // only — must stay rejected too: the needle scan still catches a
         // bare `type::thing(...)` with no comment involved.
-        assert!(prepare_scoped_sql(
-            "SELECT type::thing('no' + 'de', 'x').* FROM verse",
-            &p(&["P1"]),
-            GuardMode::Query
-        )
-        .is_err());
+        assert!(
+            prepare_scoped_sql(
+                "SELECT type::thing('no' + 'de', 'x').* FROM verse",
+                &p(&["P1"]),
+                GuardMode::Query
+            )
+            .is_err()
+        );
     }
 
     /// Belt-and-suspenders (R5): `reject_record_constructors`'s needle scan

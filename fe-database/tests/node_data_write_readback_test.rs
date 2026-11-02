@@ -246,12 +246,33 @@ fn node_data_written_on_both_planes_reads_back_through_query_tab_raw_query() {
         h.run_query_tab_sql(&petal_id, "SELECT 'string::repeat(' AS marker FROM node");
     assert_eq!(literal_rows.len(), 1);
     assert_eq!(literal_rows[0]["marker"], "string::repeat(");
+    let angle_text = h.run_query_tab_sql(&petal_id, "SELECT '<string>' AS marker FROM node");
+    assert_eq!(angle_text[0]["marker"], "<string>");
     let aggregate = h.run_query_tab_sql(
         &petal_id,
         "SELECT math::sum(value) AS total FROM iot_reading GROUP ALL",
     );
     assert_eq!(aggregate[0]["total"].as_f64(), Some(72.5));
     for (index, sql) in [
+        "SELECT * FROM (SELECT VALUE <table>'role' FROM node LIMIT 1)",
+        "SELECT * FROM (SELECT VALUE <TABLE>('no'+'de') FROM node LIMIT 1)",
+        "SELECT < TaBlE >'role' FROM node",
+        "SELECT <array<table>>['role'] FROM node",
+        "SELECT <option<table>>'role' FROM node",
+        "SELECT <{ entry: table }>{ entry: 'role' } FROM node",
+        "SELECT <[table]>['role'] FROM node",
+        "SELECT <array<option< ReCoRd >>>['no' + 'de:x'] FROM node",
+        "SELECT <[record]>['no' + 'de:x'] FROM node",
+        "SELECT < { a: '>', entry: table } >{ a: '>', entry: 'role' } FROM node",
+        "SELECT /'/ AS pattern, <table>'role' FROM node",
+        "SELECT <array<{ entry: table }>>[{ entry: 'role' }] FROM node",
+        "SELECT <{ entry: record }>{ entry: 'no' + 'de:x' } FROM node",
+        "SELECT <string>42 FROM node",
+        "SELECT <array<option<string>>>['x'] FROM node",
+        "SELECT ml::probe<1.0.0>([1]) FROM node",
+        "SELECT ml::probe < 1.0.0 > ([1]) FROM node",
+        "SELECT * FROM node WHERE elevation < 5",
+        "SELECT * FROM node WHERE elevation <= 5",
         "SELECT * FROM node /* comment */",
         "SELECT * FROM type::thing('node','x')",
         "SELECT node:secret.* FROM node",

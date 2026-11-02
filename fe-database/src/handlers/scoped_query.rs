@@ -284,9 +284,13 @@ fn validate_expression_tokens(sql: &str, vars: &HashMap<String, Value>) -> Resul
             }
             continue;
         }
-        if (chars[i] == '-' && chars.get(i + 1) == Some(&'>'))
-            || (chars[i] == '<' && chars.get(i + 1) == Some(&'-'))
-        {
+        if chars[i] == '<' {
+            return Err(
+                "casts, versioned calls and less-than syntax are not allowed in desktop queries"
+                    .into(),
+            );
+        }
+        if chars[i] == '-' && chars.get(i + 1) == Some(&'>') {
             return Err("graph traversal is not allowed in desktop queries".into());
         }
         if !chars[i].is_ascii()
