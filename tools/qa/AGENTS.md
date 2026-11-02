@@ -558,3 +558,25 @@ start file is written before cleanup and updated with the cleanup outcome.
 `completed_for_captured_identities` does not certify children absent beyond an
 unavailable snapshot; pair it with captured identities and independent exact
 process inspection. Cleanup still runs if writing diagnostic provenance fails.
+
+Scroll geometry version2 adds `viewport`, `content_rect` and `parent_id` to
+ui-tree layout scroll observations, retaining `clip` as the actual child Ui
+painting clip. The checker follows exact AccessKit content-ID/parent ancestry;
+wide clips never associate a parent header or neighboring table by position.
+Range is content_size versus viewport on enabled axes, not versus a clip that
+an ancestor might shrink. Content bounds describe layout, not a scissor.
+Local control clips stricter than every known scroll clip remain measured
+clipping violations; an ancestor's scroll range cannot reveal a control past
+its own moving local scissor. Existing hit-target and truncation rules remain.
+Legacy observations without the additive fields, or unresolved parent chains,
+produce explicit unknown geometry instead of false scroll clipping or PASS.
+Old clients may ignore new fields; new clients must not reinterpret historical
+inner_rect-derived clip observations as actual painting evidence.
+
+On enabled axes, historical inner_rect/parent intersections are lower bounds
+on the old child painting clip; disabled-axis scrollbar reservations make
+that inference unsafe. Exact-chain legacy enabled-axis observations can still
+prove a local control scissor stricter than the lower bound (armed Cancel),
+while their own visibility/range interpretation remains explicitly unknown.
+Different observed control/scroll layers also remain unknown and cannot lend
+scroll range to each other. Actual locator hit/clip intersection is unchanged.

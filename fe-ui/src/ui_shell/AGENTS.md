@@ -317,3 +317,23 @@ plus native window grips. Camera input and NodeManager's single pointer arbiter 
 egui conversion and foreground-area gate. Hovered gimbal picking reuses that arbiter. A fresh divider
 press therefore belongs to resizing before egui has an actively held pointer, while interior picking
 continues normally. This also avoids comparing logical window pixels directly with scaled egui points.
+
+
+Scroll geometry version2 distinguishes three facts from pinned egui0.33.3:
+`clip` is the actual content Ui painting clip captured inside the ScrollArea;
+`viewport` is ScrollAreaOutput.inner_rect, used only for range computation;
+`content_rect` is the final content Ui minimum rectangle. The output viewport
+is captured before ScrollArea::end expands disabled axes, so a horizontal-only
+area may paint tall content below that viewport while still inside its real
+child/ancestor clip. Never derive paint clipping by intersecting inner_rect.
+`content_id` and `parent_id` are actual Ui unique IDs, not spatial association.
+All rectangles share one layer-to-global transform here; the host scales once
+to physical screenshot pixels. Control observations retain their own actual
+clip/hit geometry, including stricter local scissors within a scroll body.
+
+Source basis: egui0.33.3 `containers/scroll_area.rs::{begin,show_viewport_dyn,end}`
+in the pinned registry source. `begin` sets the actual child's clip per axis,
+`show_viewport_dyn` saves the initial inner_rect, and `end` adjusts disabled-axis
+size after content layout. The existing headless layout journey now retains
+fully visible lower rows, parent-hidden rows and a stricter Cancel scissor as
+separate telemetry cases; execution and fresh live checker proof are pending.

@@ -28,24 +28,59 @@ def analyze(tree, state):
         if not bounds:
             unknown.append({"id":node["id"], "reason":"missing_bounds"})
             continue
-        ancestors, parent, seen = [], node.get("parent"), set()
+        ancestors, clip_sources, unresolved_scrolls, parent, seen = [], [], [], node.get("parent"), set()
         while parent and parent not in seen:
             seen.add(parent)
             if parent in scrolls:
-                ancestors.append(scrolls[parent])
+                scroll = scrolls[parent]
+                container = by_id.get(parent)
+                if not all(key in scroll for key in ("viewport", "content_rect", "parent_id")):
+                    unresolved_scrolls.append("legacy_scroll_geometry")
+                    if container:
+                        # Enabled-axis historical viewport intersections bound the child clip from within.
+                        clip_sources.append(scroll)
+                elif not container or container.get("parent") != scroll["parent_id"]:
+                    unresolved_scrolls.append("scroll_parent_unresolved")
+                else:
+                    ancestors.append(scroll)
+                    clip_sources.append(scroll)
             parent = by_id.get(parent, {}).get("parent")
         entry = {"id":node["id"],"name":node.get("name"),"bounds":bounds,"panel":ancestors[0]["label"] if ancestors else "window/chrome or uninstrumented region"}
         facts = controls.get(node["id"])
         if facts and not facts["allowed"]:
             intentional.append(dict(entry, reason="modal_background"))
             continue
+        for reason in sorted(set(unresolved_scrolls)):
+            unknown.append(dict(entry, reason=reason))
+        if facts and any(scroll["layer"] != facts["layer"] for scroll in clip_sources):
+            unknown.append(dict(entry, reason="scroll_layer_unresolved"))
+            ancestors = [scroll for scroll in ancestors if scroll["layer"] == facts["layer"]]
+            clip_sources = [scroll for scroll in clip_sources if scroll["layer"] == facts["layer"]]
         reachable_scroll = False
         blocked_clip = False
+        local_control_clip = False
+        if facts:
+            for axis, size, start in [(0,"w","x"),(1,"h","y")]:
+                if not outside(facts["rect"], facts["clip"], axis):
+                    continue
+                axis_sources = [scroll for scroll in clip_sources if "viewport" in scroll or scroll.get("axes", [False, False])[axis]]
+                if not axis_sources:
+                    unknown.append(dict(entry, reason="control_clip_scroll_path_uninstrumented"))
+                    continue
+                clip_start = max(scroll["clip"][start] for scroll in axis_sources)
+                clip_end = min(scroll["clip"][start] + scroll["clip"][size] for scroll in axis_sources)
+                rect_end = facts["rect"][start] + facts["rect"][size]
+                actual_end = facts["clip"][start] + facts["clip"][size]
+                if ((facts["rect"][start] < facts["clip"][start] - 1 and facts["clip"][start] > clip_start + 1)
+                        or (rect_end > actual_end + 1 and actual_end < clip_end - 1)):
+                    # A local scissor moves with its control; scrolling an ancestor cannot reveal it.
+                    local_control_clip = True
+                    blocked_clip = True
         effective = dict(bounds)
         for scroll in ancestors:
             for axis, size in [(0,"w"),(1,"h")]:
                 if outside(effective,scroll["clip"],axis):
-                    if scroll.get("axes",[False,True])[axis] and scroll["content_size"][axis] > scroll["clip"][size] + 1:
+                    if scroll.get("axes",[False,True])[axis] and scroll["content_size"][axis] > scroll["viewport"][size] + 1:
                         reachable_scroll = True
                         start = "x" if axis == 0 else "y"
                         end = min(effective[start] + effective[size],scroll["clip"][start] + scroll["clip"][size])
@@ -54,7 +89,7 @@ def analyze(tree, state):
                     else:
                         blocked_clip = True
         if blocked_clip:
-            violations.append(dict(entry,reason="clipped_without_scroll_range"))
+            violations.append(dict(entry,reason="clipped_without_scroll_range",clip_source="control" if local_control_clip else "scroll"))
             continue
         if reachable_scroll:
             intentional.append(dict(entry,reason="scroll_content"))
@@ -97,7 +132,7 @@ def analyze(tree, state):
         for entry in entries:
             panel = panels.setdefault(entry.get("panel","window"),{"violations":0,"unknown":0,"intentional_scroll_content":0})
             panel[kind] += 1
-    return {"frame":tree.get("frame"),"state_frame":state.get("frame"),"layout_pass":layout.get("pass"),"window":window,
+    return {"frame":tree.get("frame"),"state_frame":state.get("frame"),"layout_pass":layout.get("pass"),"scroll_geometry_version":layout.get("scroll_geometry_version"),"window":window,
         "viewport":viewport,"viewport_share":share,"panels":panels,"violations":violations,"unknown":unknown,
         "intentional_scroll_content":intentional,"observed_controls":len(controls),"observed_texts":len(texts),
         "unknown_texts":unknown_texts,"coverage_complete":False,

@@ -109,9 +109,9 @@ fn prepare_accessibility(
 fn layout_snapshot(ctx: &bevy_egui::egui::Context, ppp: f32) -> Value {
     let o = fe_ui::ui_shell::layout_policy::observations(ctx);
     let physical = |r: bevy_egui::egui::Rect| json!({"x":r.min.x*ppp,"y":r.min.y*ppp,"w":r.width()*ppp,"h":r.height()*ppp});
-    json!({"pass":o.pass,"scrolls":o.scrolls.iter().map(|s| json!({
-        "content_id":s.content_id.to_string(), "label":s.label,"axes":s.axes,
-        "clip":physical(s.clip),"offset":[s.offset.x*ppp,s.offset.y*ppp],
+    json!({"pass":o.pass,"scroll_geometry_version":2,"scrolls":o.scrolls.iter().map(|s| json!({
+        "content_id":s.content_id.to_string(), "parent_id":s.parent_id.to_string(), "label":s.label,"axes":s.axes,
+        "clip":physical(s.clip),"viewport":physical(s.viewport),"content_rect":physical(s.content_rect),"offset":[s.offset.x*ppp,s.offset.y*ppp],
         "content_size":[s.content_size.x*ppp,s.content_size.y*ppp],"layer":s.layer
     })).collect::<Vec<_>>(),"controls":o.controls.iter().map(|c| json!({
         "id":c.id.to_string(),"rect":physical(c.rect),"hit":physical(c.hit),"clip":physical(c.clip),

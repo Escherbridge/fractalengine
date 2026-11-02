@@ -14,9 +14,12 @@ pub struct LayoutObservations {
 #[derive(Clone)]
 pub struct ScrollObservation {
     pub content_id: u64,
+    pub parent_id: u64,
     pub axes: [bool; 2],
     pub label: String,
     pub clip: egui::Rect,
+    pub viewport: egui::Rect,
+    pub content_rect: egui::Rect,
     pub offset: egui::Vec2,
     pub content_size: egui::Vec2,
     pub layer: String,
@@ -57,25 +60,38 @@ pub fn scroll<R>(
             .is_some_and(|o| o.enabled)
     });
     let mut content_id = 0;
+    let parent_id = ui.unique_id().value();
+    let mut clip = egui::Rect::NOTHING;
+    let mut content_rect = egui::Rect::NOTHING;
     let width = ui.available_width();
     let layer = ui.layer_id();
     let output = area.show(ui, |ui| {
         content_id = ui.unique_id().value();
+        clip = ui.clip_rect();
         ui.set_max_width((width - 12.0).max(40.0));
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
         ui.spacing_mut().text_edit_width = ui.available_width().min(200.0);
-        body(ui)
+        let inner = body(ui);
+        content_rect = ui.min_rect();
+        inner
     });
     if enabled {
+        let global = ui
+            .ctx()
+            .layer_transform_to_global(layer)
+            .unwrap_or_default();
         ui.ctx().data_mut(|data| {
             let observations = data.get_temp_mut_or_default::<LayoutObservations>(key());
             observations.scrolls.push(ScrollObservation {
                 content_id,
+                parent_id,
                 axes,
                 label: label.to_owned(),
-                clip: output.inner_rect.intersect(ui.clip_rect()),
-                offset: output.state.offset,
-                content_size: output.content_size,
+                clip: global * clip,
+                viewport: global * output.inner_rect,
+                content_rect: global * content_rect,
+                offset: output.state.offset * global.scaling,
+                content_size: output.content_size * global.scaling,
                 layer: format!("{layer:?}"),
             });
         });

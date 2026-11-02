@@ -124,6 +124,133 @@ mod tests {
                 "effective collapse must not change user intent"
             );
         }
+        use super::super::layout_policy;
+        for parent_height in [600.0, 130.0] {
+            let ctx = egui::Context::default();
+            layout_policy::begin_frame(&ctx, true);
+            let mut lower_row = None;
+            let mut cancel = None;
+            let mut header = None;
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(600.0, 800.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    layout_policy::begin_ui_pass(ctx);
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        layout_policy::scroll(
+                            ui,
+                            "parent",
+                            [false, true],
+                            egui::ScrollArea::vertical()
+                                .max_height(parent_height)
+                                .auto_shrink([false, false]),
+                            |ui| {
+                                header = Some(ui.button("Parent header"));
+                                layout_policy::scroll(
+                                    ui,
+                                    "horizontal tall rows",
+                                    [true, false],
+                                    egui::ScrollArea::horizontal()
+                                        .max_height(80.0)
+                                        .auto_shrink([false, false]),
+                                    |ui| {
+                                        for row in 0..12 {
+                                            let response = ui.add_sized(
+                                                [340.0, 24.0],
+                                                egui::Button::new(format!("Delete {row}")),
+                                            );
+                                            layout_policy::record_response(ui, &response);
+                                            if row == 5 {
+                                                lower_row = Some(response);
+                                            }
+                                        }
+                                    },
+                                );
+                                if parent_height > 500.0 {
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(70.0, 30.0),
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            let clip = egui::Rect::from_min_size(
+                                                ui.min_rect().min,
+                                                egui::vec2(70.0, 30.0),
+                                            )
+                                            .intersect(ui.clip_rect());
+                                            ui.set_clip_rect(clip);
+                                            ui.add_sized(
+                                                [60.0, 24.0],
+                                                egui::Button::new("Confirm"),
+                                            );
+                                            let response = ui.add_sized(
+                                                [60.0, 24.0],
+                                                egui::Button::new("Cancel"),
+                                            );
+                                            layout_policy::record_response(ui, &response);
+                                            cancel = Some(response);
+                                        },
+                                    );
+                                }
+                            },
+                        );
+                    });
+                },
+            );
+            let observations = layout_policy::observations(&ctx);
+            let horizontal = observations
+                .scrolls
+                .iter()
+                .find(|s| s.label == "horizontal tall rows")
+                .unwrap();
+            let parent = observations
+                .scrolls
+                .iter()
+                .find(|s| s.label == "parent")
+                .unwrap();
+            let response = lower_row.unwrap();
+            let control = observations
+                .controls
+                .iter()
+                .find(|c| c.id == response.id.value())
+                .unwrap();
+            assert!(
+                response.rect.min.y > horizontal.viewport.max.y,
+                "the old inner_rect would report false clipping"
+            );
+            assert!(horizontal.content_rect.contains_rect(response.rect));
+            assert!(horizontal.clip.max.y <= parent.clip.max.y);
+            assert_eq!(horizontal.parent_id, parent.content_id);
+            assert_ne!(horizontal.content_id, horizontal.parent_id);
+            assert!(
+                header.unwrap().rect.max.y < horizontal.content_rect.min.y,
+                "parent headers are not scroll content"
+            );
+            if parent_height > 500.0 {
+                assert!(horizontal.clip.contains_rect(response.rect));
+                assert!(control.clip.contains_rect(control.rect));
+                let cancel = cancel.unwrap();
+                let cancel = observations
+                    .controls
+                    .iter()
+                    .find(|c| c.id == cancel.id.value())
+                    .unwrap();
+                assert!(
+                    !cancel.clip.contains_rect(cancel.rect),
+                    "the real armed Cancel scissor must stay visible in telemetry"
+                );
+                assert!(cancel.clip.max.x < parent.clip.max.x);
+            } else {
+                assert!(!horizontal.clip.contains_rect(response.rect));
+                assert!(
+                    !control.clip.intersects(control.rect),
+                    "parent-hidden rows remain unreachable at the current offset"
+                );
+            }
+        }
     }
 
     #[test]
