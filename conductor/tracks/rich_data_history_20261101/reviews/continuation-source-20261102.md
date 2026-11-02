@@ -173,3 +173,19 @@ Coverage464731b8/218f407b/93ffdc1d is independently source-approved. Catalog
 ca91bd44 retains its d7fadfa2 audit provenance and unexecuted status; later source
 requires another reconciliation. Stamp selection and terminal-close evidence
 are still authoring. No tests or new-stage runtime acceptance are asserted.
+
+Independent review approved the narrow final-cache correction539bb064, now
+main07852fad. Both cache reads share the JTI/unavailable-feed predicate; fresh
+expiry remains last. The authored lock-interleaving journey remains unexecuted.
+The same reviewer approved checked stamp DB2ebabc40, nowb1ff72df, including raw
+source/position, actual permission, history, descriptor, sampler index, Petal,
+target identity/absence and creation-schema transaction fences. GUI producer and
+selection binding approval is still required. One exact duplicate incoming guide
+section was removed during its inspected append-only merge.
+
+The configured production compile in qa18-compile2.log reached the binary but
+failed on missing direct serde/ulid dependencies. Main462f9a70 declares those
+existing workspace packages and their two lock edges; it also corrects conditional
+confirmed-clear credential copy and excludes submitted invite_string from tracing.
+Those narrow root changes await separate review. The preliminary compile used the
+wrong profile and was interrupted; no success or test evidence is inferred from it.
