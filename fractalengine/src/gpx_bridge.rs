@@ -1237,7 +1237,8 @@ pub fn drain_path_ops(
         }
         match op {
             PathOp::CheckedMovePoint { track_node_id, request_id }
-            | PathOp::CheckedRemovePoint { track_node_id, request_id } => {
+            | PathOp::CheckedRemovePoint { track_node_id, request_id }
+            | PathOp::CheckedAnchorMetadata { track_node_id, request_id } => {
                 let unsettled = pending
                     .reads
                     .get(&track_node_id)

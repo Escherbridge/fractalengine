@@ -179,6 +179,9 @@ impl CornerKind {
     }
 }
 
+/// Optional relative handles and their bounded smoothness for one anchor edit.
+pub(crate) type AnchorHandles = (Option<[f32; 3]>, Option<[f32; 3]>, f32);
+
 /// Handle-length fraction of the min neighbor gap at smoothness 1 (~1/3, the
 /// classic cubic tangent — mirrors `node_manager::curve::derive_symmetric_handles`).
 pub(crate) const SMOOTHNESS_K: f32 = 1.0 / 3.0;

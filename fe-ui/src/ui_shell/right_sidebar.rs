@@ -369,6 +369,7 @@ pub fn render_right_sidebar(
             ui_mgr,
             hierarchy,
             nav.active_petal_id.as_deref(),
+            nav,
             measure_state,
             crate::node_manager::measure::measure_world_scale(
                 petal_map,
@@ -553,6 +554,7 @@ fn render_options_section(
     ui_mgr: &mut UiManager,
     verse_mgr: &VerseManager,
     active_petal_id: Option<&str>,
+    nav:&NavigationManager,
     measure_state: &mut crate::node_manager::measure::MeasureState,
     measure_world_scale: f64,
     nav:&NavigationManager,

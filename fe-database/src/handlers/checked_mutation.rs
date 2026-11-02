@@ -258,21 +258,54 @@ fn validate_point_edit(before: &Value, after: &Value) -> anyhow::Result<()> {
     for (a, b) in old.iter().zip(new) {
         let a = a
             .as_array()
+            .filter(|row| row.len() >= 4)
             .ok_or_else(|| anyhow::anyhow!("invalid path point"))?;
         let b = b
             .as_array()
+            .filter(|row| row.len() >= 4)
             .ok_or_else(|| anyhow::anyhow!("invalid path point"))?;
-        anyhow::ensure!(
-            a.len() >= 4 && a.len() == b.len() && a[3..] == b[3..],
-            "path point metadata changed"
-        );
         anyhow::ensure!(
             b[..3]
                 .iter()
-                .all(|v| v.as_f64().is_some_and(f64::is_finite)),
+                .all(|value| value.as_f64().is_some_and(f64::is_finite)),
             "path point coordinates must be finite"
         );
-        changed += usize::from(a[..3] != b[..3]);
+        if a == b {
+            continue;
+        }
+        changed += 1;
+        if a[..3] != b[..3] {
+            anyhow::ensure!(
+                a.len() == b.len() && a[3..] == b[3..],
+                "point move changed metadata"
+            );
+        } else {
+            let canonical = |row: &[Value]| {
+                let mut row = row.to_vec();
+                if row.len() == 4 {
+                    row.resize(12, json!(0.0));
+                }
+                row
+            };
+            let a = canonical(a);
+            let b = canonical(b);
+            anyhow::ensure!(
+                a.len() >= 12 && a.len() == b.len() && a[..4] == b[..4] && a[12..] == b[12..],
+                "anchor edit changed untouched point fields"
+            );
+            anyhow::ensure!(
+                b[4..10]
+                    .iter()
+                    .all(|value| value.as_f64().is_some_and(f64::is_finite))
+                    && b[10]
+                        .as_f64()
+                        .is_some_and(|value| [0.0, 1.0, 2.0].contains(&value))
+                    && b[11]
+                        .as_f64()
+                        .is_some_and(|value| value.is_finite() && (0.0..=1.0).contains(&value)),
+                "invalid bounded anchor metadata"
+            );
+        }
     }
     anyhow::ensure!(changed == 1, "Undo covers one changed path point");
     Ok(())

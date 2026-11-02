@@ -403,3 +403,11 @@ Durable stamp-save identities use fresh ULIDs; process-local query counters only
 Authoritative full-property hydration replaces all override options, including clearing absent
 keys, and removes obsolete bindings when node identity no longer describes that stamp. Exact
 receipt recovery hydrates current full properties before projecting new editor defaults.
+
+## Checked corner metadata
+
+queue_checked_corner accepts the original PointEditOrigin and reuses the existing pure corner
+toggle rules, including derived handles where required. It reserves one combined metadata edit
+without changing editor rows. The same full route and navigation survive the asynchronous stored
+read; changed order or metadata refuses before any write. Ordinary Pen corner/smoothness controls
+produce one combined typed intent rather than separate corner/handle writes competing for Undo.

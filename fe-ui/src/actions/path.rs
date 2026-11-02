@@ -170,6 +170,7 @@ pub(crate) fn set_anchor_handles(
 
 /// Sets anchor `index`'s corner classification in the local buffer and queues
 /// the op. Out-of-range index still queues (bridge is source of truth).
+#[cfg(test)]
 pub(crate) fn set_anchor_corner(
     path_ops: &mut PendingPathOps,
     path_state: &mut PathEditorState,
@@ -187,6 +188,80 @@ pub(crate) fn set_anchor_corner(
         index,
         corner_code: corner.to_code(),
     });
+}
+
+/// Admit an original-context corner edit and retain its route through the async receipt path.
+pub(crate) fn queue_checked_corner(
+    undo: &mut crate::undo::UndoState,
+    nav: &crate::navigation_manager::NavigationManager,
+    hierarchy: &crate::verse_manager::VerseManager,
+    ops: &mut PendingPathOps,
+    state: &PathEditorState,
+    track: String,
+    index: usize,
+    corner: CornerKind,
+    origin: &crate::undo::PointEditOrigin,
+) -> Result<Option<String>, String> {
+    let row = state.points.get(index).ok_or("Path point is unavailable")?;
+    let prev = index
+        .checked_sub(1)
+        .and_then(|index| state.points.get(index))
+        .map(|row| row.position);
+    let next = state.points.get(index + 1).map(|row| row.position);
+    let outcome = crate::panels::path_editor_card::corner_toggle_outcome(row, corner, prev, next);
+    queue_checked_metadata(
+        undo,
+        nav,
+        hierarchy,
+        ops,
+        state,
+        track,
+        index,
+        outcome.corner,
+        outcome.handles,
+        origin,
+    )
+}
+
+/// Queue one bounded row-metadata intent, retaining every untouched raw row field.
+pub(crate) fn queue_checked_metadata(
+    undo: &mut crate::undo::UndoState,
+    nav: &crate::navigation_manager::NavigationManager,
+    hierarchy: &crate::verse_manager::VerseManager,
+    ops: &mut PendingPathOps,
+    state: &PathEditorState,
+    track: String,
+    index: usize,
+    corner: Option<CornerKind>,
+    handles: Option<crate::gis::AnchorHandles>,
+    origin: &crate::undo::PointEditOrigin,
+) -> Result<Option<String>, String> {
+    if !origin.matches(state, nav)
+        || state.editing_track_id.as_deref() != Some(track.as_str())
+        || !nav
+            .active_petal_id
+            .as_deref()
+            .and_then(|id| hierarchy.find_petal(id))
+            .is_some_and(|petal| petal.nodes.iter().any(|node| node.id == track))
+    {
+        return Err("Path selection, scope or route changed; anchor edit skipped".into());
+    }
+    let request = undo.reserve_path_metadata(
+        nav,
+        &track,
+        index,
+        corner,
+        handles,
+        hierarchy.committed_versions.get(&track).copied(),
+        &state.points,
+    )?;
+    if let Some(request_id) = &request {
+        ops.0.push(PathOp::CheckedAnchorMetadata {
+            track_node_id: track,
+            request_id: request_id.clone(),
+        });
+    }
+    Ok(request)
 }
 
 /// Removes point `index` from both the local buffer and queues the op.

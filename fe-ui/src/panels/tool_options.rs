@@ -106,6 +106,7 @@ pub(crate) fn render(
             verse_mgr,
             active_petal_id,
             measure_world_scale,
+            nav,
         ),
         ToolOptionsArm::Brush => {
             render_brush_options(ui, sculpt_state, ui_mgr, authoring, nav, map, role)
@@ -257,6 +258,7 @@ fn render_pen_options(
     verse_mgr: &VerseManager,
     active_petal: Option<&str>,
     world_scale: f64,
+    nav: &crate::navigation_manager::NavigationManager,
 ) {
     render_pen_picker(ui, path_state, ui_mgr, verse_mgr, active_petal, world_scale);
     if path_state.editing_track_id.as_deref().is_some_and(|id| {
@@ -271,7 +273,7 @@ fn render_pen_options(
     ui.add_space(6.0);
     ui.separator();
     ui.add_space(6.0);
-    render_corner_editor(ui, path_state, ui_mgr);
+    render_corner_editor(ui, path_state, ui_mgr,nav);
     ui.add_space(6.0);
     ui.separator();
     ui.add_space(6.0);
@@ -288,6 +290,7 @@ fn render_corner_editor(
     ui: &mut egui::Ui,
     path_state: &mut PathEditorState,
     ui_mgr: &mut UiManager,
+    nav:&crate::navigation_manager::NavigationManager,
 ) {
     let Some(track_id) = path_state.editing_track_id.clone() else {
         ui.label(
@@ -311,23 +314,15 @@ fn render_corner_editor(
         );
         return;
     };
-    let (to_corner, to_handles) =
-        path_editor_card::render_corner_settings(ui, &mut path_state.points, idx);
-    if let Some(corner) = to_corner {
-        ui_mgr.push_action(UiAction::PathSetAnchorCorner {
-            track_node_id: track_id.clone(),
-            index: idx,
-            corner,
-        });
-    }
-    if let Some((handle_in, handle_out, smoothness)) = to_handles {
-        ui_mgr.push_action(UiAction::PathSetAnchorHandles {
-            track_node_id: track_id,
-            index: idx,
-            handle_in,
-            handle_out,
-            smoothness,
-        });
+    let route_key=crate::undo::PointEditOrigin::confirmation_key(path_state,nav);
+    let origin_id=ui.id().with(("corner-edit-origin",route_key));
+    let origin=ui.data(|data|data.get_temp::<std::sync::Arc<crate::undo::PointEditOrigin>>(origin_id))
+        .or_else(||crate::undo::PointEditOrigin::capture(path_state,nav).map(std::sync::Arc::new));
+    let Some(origin)=origin else {return;};
+    ui.data_mut(|data|data.insert_temp(origin_id,origin.clone()));
+    let (corner,handles)=ui.push_id(route_key,|ui|path_editor_card::render_corner_settings(ui,&path_state.points,idx)).inner;
+    if corner.is_some() || handles.is_some() {
+        ui_mgr.push_action(UiAction::PathSetAnchorMetadata {track_node_id:track_id,index:idx,corner,handles,origin:(*origin).clone()});
     }
 }
 
@@ -690,6 +685,27 @@ mod tests {
         assert!(arm_has_live_controls(ToolOptionsArm::Measure));
         assert!(!arm_has_live_controls(ToolOptionsArm::Selection));
         assert!(arm_has_live_controls(ToolOptionsArm::Transform));
+        let ctx=egui::Context::default();let mut time=0.0;
+        let mut nav=crate::navigation_manager::NavigationManager::default();
+        nav.navigate_to_verse("v","verse");nav.navigate_to_fractal("f","fractal");nav.navigate_to_petal("p");
+        let mut path=PathEditorState::default();path.start_editing("track".into());
+        path.points=vec![[0.0,0.0,0.0],[2.0,0.0,0.0],[4.0,0.0,1.0]].into_iter().map(|position|crate::gis::PathPointRow {position,..Default::default()}).collect();
+        path.selected_point=Some(1);let original=path.points.clone();let mut manager=UiManager::default();
+        let frame=|events:Vec<egui::Event>,time:&mut f64,path:&mut PathEditorState,manager:&mut UiManager| {
+            *time+=0.05;crate::ui_shell::layout_policy::begin_frame(&ctx,true);
+            let _=ctx.run(egui::RawInput {screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(700.0,500.0))),time:Some(*time),events,..Default::default()},|ctx| {
+                crate::ui_shell::layout_policy::begin_ui_pass(ctx);
+                egui::CentralPanel::default().show(ctx,|ui|render_corner_editor(ui,path,manager,&nav));
+            });
+            crate::ui_shell::layout_policy::observations(&ctx)
+        };
+        let observed=frame(vec![],&mut time,&mut path,&mut manager);
+        let smooth=observed.controls[1].hit.center();
+        for pressed in [true,false] {frame(vec![egui::Event::PointerMoved(smooth),egui::Event::PointerButton {pos:smooth,button:egui::PointerButton::Primary,pressed,modifiers:egui::Modifiers::NONE}],&mut time,&mut path,&mut manager);}
+        assert_eq!(path.points,original,"actual Corner widget edits a draft, never authoritative rows");
+        let actions=manager.drain_actions();
+        let [UiAction::PathSetAnchorMetadata {corner:Some(crate::gis::CornerKind::Smooth),handles:Some(_),origin,..}]=actions.as_slice() else {panic!("one combined checked corner/handles intent is required")};
+        assert!(origin.matches(&path,&nav),"the original route accompanies the finalized UI intent");
     }
 
     #[test]

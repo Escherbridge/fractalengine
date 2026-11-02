@@ -91,11 +91,21 @@ enum Origin {
     Redo,
 }
 #[derive(Debug, Clone)]
+enum PointChange {
+    Move([f32; 3]),
+    Remove,
+    Metadata {
+        corner: Option<crate::gis::CornerKind>,
+        handles: Option<crate::gis::AnchorHandles>,
+    },
+}
+
+#[derive(Debug, Clone)]
 struct PathDraft {
     node_id: String,
     index: usize,
     before: [f32; 3],
-    after: Option<[f32; 3]>,
+    change: PointChange,
     version: Option<i64>,
     rows: Vec<crate::gis::PathPointRow>,
 }
@@ -119,6 +129,26 @@ fn navigation_key(nav: &NavigationManager) -> Option<[&str; 3]> {
     ])
 }
 
+fn point_context_key(
+    track: Option<&str>,
+    navigation: Option<[&str; 3]>,
+    points: &[crate::gis::PathPointRow],
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    navigation.hash(&mut hash);
+    track.hash(&mut hash);
+    for row in points {
+        row.position.map(f32::to_bits).hash(&mut hash);
+        row.time_seconds.map(f64::to_bits).hash(&mut hash);
+        row.handle_in.map(|v| v.map(f32::to_bits)).hash(&mut hash);
+        row.handle_out.map(|v| v.map(f32::to_bits)).hash(&mut hash);
+        row.corner.to_code().to_bits().hash(&mut hash);
+        row.smoothness.to_bits().hash(&mut hash);
+    }
+    hash.finish()
+}
+
 /// Gesture context retained before a path editor buffer can change.
 #[derive(Debug, Clone)]
 pub struct PointEditOrigin {
@@ -132,19 +162,11 @@ impl PointEditOrigin {
         state: &crate::gis::PathEditorState,
         nav: &NavigationManager,
     ) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        navigation_key(nav).hash(&mut hash);
-        state.editing_track_id.hash(&mut hash);
-        for row in &state.points {
-            row.position.map(f32::to_bits).hash(&mut hash);
-            row.time_seconds.map(f64::to_bits).hash(&mut hash);
-            row.handle_in.map(|v| v.map(f32::to_bits)).hash(&mut hash);
-            row.handle_out.map(|v| v.map(f32::to_bits)).hash(&mut hash);
-            row.corner.to_code().to_bits().hash(&mut hash);
-            row.smoothness.to_bits().hash(&mut hash);
-        }
-        hash.finish()
+        point_context_key(
+            state.editing_track_id.as_deref(),
+            navigation_key(nav),
+            &state.points,
+        )
     }
 
     pub(crate) fn capture(
@@ -394,7 +416,7 @@ impl UndoState {
                 node_id: node_id.into(),
                 index,
                 before,
-                after: Some(after),
+                change: PointChange::Move(after),
                 version,
                 rows: rows.to_vec(),
             }),
@@ -426,7 +448,7 @@ impl UndoState {
                 node_id: node_id.into(),
                 index,
                 before,
-                after: None,
+                change: PointChange::Remove,
                 version,
                 rows: rows.to_vec(),
             }),
@@ -435,6 +457,57 @@ impl UndoState {
             conflict: false,
         });
         Ok(id)
+    }
+    /// Reserve one anchor metadata edit against its complete original route.
+    pub(crate) fn reserve_path_metadata(
+        &mut self,
+        nav: &NavigationManager,
+        node_id: &str,
+        index: usize,
+        corner: Option<crate::gis::CornerKind>,
+        handles: Option<crate::gis::AnchorHandles>,
+        version: Option<i64>,
+        rows: &[crate::gis::PathPointRow],
+    ) -> Result<Option<String>, String> {
+        self.sync(nav);
+        self.ready()?;
+        let row = rows.get(index).ok_or("Path point is unavailable")?;
+        if corner.is_none_or(|kind| kind == row.corner)
+            && handles.is_none_or(|value| value == (row.handle_in, row.handle_out, row.smoothness))
+        {
+            return Ok(None);
+        }
+        if let Some((hin, hout, smoothness)) = handles {
+            if !smoothness.is_finite()
+                || !(0.0..=1.0).contains(&smoothness)
+                || hin
+                    .iter()
+                    .chain(hout.iter())
+                    .flatten()
+                    .any(|v| !v.is_finite())
+            {
+                return Err("Anchor metadata must be finite and smoothness must be 0..=1".into());
+            }
+        }
+        let id = request_id();
+        self.pending = Some(Pending {
+            request_id: id.clone(),
+            resolve_id: None,
+            generation: self.generation,
+            entry: None,
+            path: Some(PathDraft {
+                node_id: node_id.into(),
+                index,
+                before: row.position,
+                change: PointChange::Metadata { corner, handles },
+                version,
+                rows: rows.to_vec(),
+            }),
+            origin: Origin::Normal,
+            started: Instant::now(),
+            conflict: false,
+        });
+        Ok(Some(id))
     }
     /// Authorize a current-state read before preparing a reserved point mutation.
     pub fn path_read_command(&self, id: &str) -> Result<DbCommand, String> {
@@ -492,7 +565,7 @@ impl UndoState {
         }
         if stored_rows != expected_rows {
             return Err(
-                "Path point order or metadata changed since the gesture; move skipped".into(),
+                "Path point order or metadata changed since the gesture; edit skipped".into(),
             );
         }
         let mut after = before.clone();
@@ -501,22 +574,47 @@ impl UndoState {
             .and_then(|rows| rows.get_mut(draft.index))
             .and_then(Value::as_array_mut)
             .filter(|row| row.len() >= 4)
-            .ok_or("Path point identity changed; move skipped")?;
+            .ok_or("Path point identity changed; edit skipped")?;
         if !row[..3].iter().zip(draft.before).all(|(a, b)| {
             a.as_f64()
                 .is_some_and(|a| (a - f64::from(b)).abs() <= 0.0001)
         }) {
-            return Err("Path point changed since the gesture; move skipped".into());
+            return Err("Path point changed since the gesture; edit skipped".into());
         }
-        if let Some(position) = draft.after {
-            for (target, value) in row[..3].iter_mut().zip(position) {
-                *target = serde_json::json!(value as f64);
+        match draft.change {
+            PointChange::Move(position) => {
+                for (target, value) in row[..3].iter_mut().zip(position) {
+                    *target = serde_json::json!(value as f64);
+                }
             }
-        } else {
-            after
-                .as_array_mut()
-                .ok_or("Path points are unavailable")?
-                .remove(draft.index);
+            PointChange::Remove => {
+                after
+                    .as_array_mut()
+                    .ok_or("Path points are unavailable")?
+                    .remove(draft.index);
+            }
+            PointChange::Metadata { corner, handles } => {
+                if row.len() == 4 {
+                    row.resize(12, serde_json::json!(0.0));
+                }
+                if row.len() < 12 {
+                    return Err("Anchor metadata row shape is unsupported".into());
+                }
+                if let Some(kind) = corner {
+                    row[10] = serde_json::json!(kind.to_code());
+                }
+                if let Some((hin, hout, smoothness)) = handles {
+                    for (start, handle) in [(4, hin), (7, hout)] {
+                        for (target, value) in row[start..start + 3]
+                            .iter_mut()
+                            .zip(handle.unwrap_or([0.0; 3]))
+                        {
+                            *target = serde_json::json!(value as f64);
+                        }
+                    }
+                    row[11] = serde_json::json!(smoothness as f64);
+                }
+            }
         }
         let entry = Entry {
             node_id: draft.node_id,
@@ -537,7 +635,7 @@ impl UndoState {
             },
             correlation_id: id.into(),
         })
-        .map_err(|_| "Database connection closed; move was not queued")?;
+        .map_err(|_| "Database connection closed; point edit was not queued")?;
         self.pending.as_mut().unwrap().entry = Some(entry);
         Ok(())
     }
@@ -903,7 +1001,7 @@ pub(crate) fn observe_results(
         .is_some_and(|p| p.started.elapsed() > SAVE_TIMEOUT && p.entry.is_none())
     {
         undo.pending = None;
-        ui.show_error("Path read timed out; no point move was sent", now);
+        ui.show_error("Path read timed out; no point edit was sent", now);
     }
     if undo.pending.as_ref().is_some_and(|p| {
         p.started.elapsed() > SAVE_TIMEOUT && p.resolve_id.is_none() && p.entry.is_some()

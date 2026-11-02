@@ -152,3 +152,10 @@ Stamp metric bounds use the exact shared flattened Bezier geometry and f32 cumul
 distances used by the renderer. Captured raw positions/handles are compared before preparation,
 and complete raw source rows still fence the transaction. Curved route distance is therefore
 validated against the visible route rather than its anchor chord.
+
+Checked anchor metadata admits one changed point only: XYZ, timestamp, all other rows and any
+unknown trailing fields remain exact. The bounded slots are relative incoming/outgoing handles,
+corner code 0/1/2 and smoothness 0..=1. Compact four-slot rows may gain canonical default metadata;
+exact Undo can restore the original compact shape. Position moves still require untouched metadata.
+The existing receipt journey reorders a route after dispatch before readback and proves no write or
+projection; the real-store journey checks metadata inverse and rejects timestamp/multi-row rewrites.

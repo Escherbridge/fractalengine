@@ -19,6 +19,11 @@ pub enum PathOp {
         track_node_id: String,
         request_id: String,
     },
+    /// Commit one reserved anchor metadata edit through exact route receipts.
+    CheckedAnchorMetadata {
+        track_node_id: String,
+        request_id: String,
+    },
     /// Create a new (empty) track node named `name` under `petal_id`.
     /// `correlation_id` is `Some` only for the Pen auto-create path, which
     /// generates a fe-ui-side id (`gis::next_pen_correlation_id`) so the bridge

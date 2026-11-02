@@ -1757,6 +1757,21 @@ mod tests {
         assert_eq!(op_log_count(&db).await,before_bad_removals);
         let restored=crate::handlers::checked_mutation::commit(&db,&undo_node,&restore,&restore_guard,"qa-restore-point","did:qa").await.unwrap();
         assert_eq!(restored.state.properties["gpx_points"],path_before);
+        let mut metadata_after=path_before.clone();metadata_after[0][10]=serde_json::json!(0.0);
+        let metadata_guard=NodeEditPrecondition {scope:plugin_scope.clone(),history_version:Some(restored.history_version),before:NodeEditBefore::PathPoints(path_before.clone())};
+        let metadata=NodeMutation::PropertySet {key:"gpx_points".into(),value:metadata_after.clone()};
+        let metadata_saved=crate::handlers::checked_mutation::commit(&db,&undo_node,&metadata,&metadata_guard,"qa-anchor-metadata","did:qa").await.unwrap();
+        assert_eq!(metadata_saved.state.properties["gpx_points"],metadata_after);
+        let metadata_inverse=NodeEditPrecondition {scope:plugin_scope.clone(),history_version:Some(metadata_saved.history_version),before:NodeEditBefore::PathPoints(metadata_after.clone())};
+        let unchanged=op_log_count(&db).await;
+        let mut bad_timestamp=path_before.clone();bad_timestamp[0][3]=serde_json::json!(999.0);
+        let mut bad_second_row=path_before.clone();bad_second_row[1]=serde_json::json!([8.0,2.0,9.0,29.5,0.0,0.0,0.0,0.0,0.0,0.0,1.0,0.5]);
+        for (request,value) in [("qa-anchor-time",bad_timestamp),("qa-anchor-many",bad_second_row)] {
+            crate::handlers::checked_mutation::commit(&db,&undo_node,&NodeMutation::PropertySet {key:"gpx_points".into(),value},&metadata_inverse,request,"did:qa").await.expect_err("metadata edit cannot rewrite timestamp or multiple anchors");
+        }
+        assert_eq!(op_log_count(&db).await,unchanged);
+        let metadata_restored=crate::handlers::checked_mutation::commit(&db,&undo_node,&NodeMutation::PropertySet {key:"gpx_points".into(),value:path_before.clone()},&metadata_inverse,"qa-anchor-inverse","did:qa").await.unwrap();
+        assert_eq!(metadata_restored.state.properties["gpx_points"],path_before);
         let stamp_points=serde_json::json!([[1.0,0.0,2.0,17.25,0.0,0.0,0.0,0.0,0.0,20.0,1.0,0.5],[8.0,2.0,9.0,29.5,-20.0,0.0,0.0,0.0,0.0,0.0,1.0,0.5]]);
         crate::handlers::entity_property::set_entity_property_as(&db,&undo_node,"gpx_points",&stamp_points,"did:qa").await.unwrap();
         let stamp_descriptor=serde_json::json!({"asset_path":"blob://fixture.glb","spacing_mode":"fixed_count","spacing_value":0.0,"count":3,"tangent_align":true});

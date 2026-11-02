@@ -834,6 +834,29 @@ mod tests {
             [1.0, 0.0, 2.0, 17.25, -0.5, 0.0, 0.0, 0.5, 0.0, 0.0, 2.0, 0.6],
             [8.0, 2.0, 9.0, 29.5]
         ]);
+        for reordered in [false,true] {
+            let mut state=crate::gis::PathEditorState::default();state.start_editing("node-1".into());
+            state.points=crate::gis::decode_gpx_points(&points);
+            let original=state.points.clone();
+            let origin=crate::undo::PointEditOrigin::capture(&state,&proof_nav).unwrap();
+            let mut corner_undo=crate::undo::UndoState::default();let mut corner_ops=crate::path_ops::PendingPathOps::default();
+            let id=crate::actions::path::queue_checked_corner(&mut corner_undo,&proof_nav,app.world().resource::<VerseManager>(),&mut corner_ops,&state,"node-1".into(),0,crate::gis::CornerKind::Corner,&origin).unwrap().unwrap();
+            assert_eq!(state.points,original,"Corner dispatch cannot mutate authoritative editor rows");
+            assert!(matches!(&corner_ops.0[..],[crate::path_ops::PathOp::CheckedAnchorMetadata {request_id,..}] if request_id==&id));
+            assert!(matches!(corner_undo.path_read_command(&id).unwrap(),DbCommand::ResolveCheckedNodeMutation {..}));
+            let mut stored=points.clone();if reordered {stored.as_array_mut().unwrap().swap(0,1);}
+            let current:fe_runtime::node_history::NodeRowSnapshot=serde_json::from_value(serde_json::json!({"node_id":"node-1","petal_id":"p","position":[0.0,0.0,0.0],"elevation":0.0,"rotation":[0.0,0.0,0.0],"scale":[1.0,1.0,1.0],"interactive":false,"created_at":"test","edit_seq":3,"properties":{"gpx_points":stored}})).unwrap();
+            let (tx,corner_rx)=crossbeam::channel::unbounded();
+            let result=corner_undo.commit_path(&proof_nav,&id,&current,&tx);
+            if reordered {assert!(result.is_err() && corner_rx.try_recv().is_err(),"reorder after dispatch before readback cannot write to a reused index");}
+            else {
+                result.unwrap();let DbCommand::CommitCheckedNodeMutation {mutation:NodeMutation::PropertySet {value,..},expected,..}=corner_rx.try_recv().unwrap() else {panic!("checked corner commit required")};
+                let mut wanted=points.clone();wanted[0][10]=serde_json::json!(0.0);
+                assert_eq!(value,wanted,"only the intended corner field changes");
+                assert!(matches!(expected.before,fe_runtime::node_history::NodeEditBefore::PathPoints(ref before) if before==&points));
+            }
+            assert!(corner_undo.take_path_projection(&proof_nav).is_none(),"no corner projection before authoritative receipt");
+        }
         let removal_rows = crate::gis::decode_gpx_points(&points);
         for stale in [false, true] {
             let mut removal = crate::undo::UndoState::default();

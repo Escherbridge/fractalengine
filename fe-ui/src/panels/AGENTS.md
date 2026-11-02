@@ -753,3 +753,11 @@ Point height reuses the retained SettingDraft interaction controller. DragValue 
 updates until Enter/blur and disables implicit clamping of existing values. Pointer movement
 remains a draft until release; focus, display repair and intermediate text produce no action.
 The draft remains pending until stored state changes, suppressing idle-frame resubmission.
+
+## Corner draft authority
+
+Corner controls keep one temporary selected-row draft under the captured complete route identity.
+The original navigation/route capture is retained through pointer frames; route changes replace
+the widget identity. Finalization emits one corner/handles patch and leaves authoritative points
+unchanged until a matching checked receipt projects them. Numeric smoothness text finalizes at
+Enter/blur. The existing native tool-options journey checks the actual Smooth button and one intent.

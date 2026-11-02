@@ -195,6 +195,8 @@ pub enum UiAction {
         handle_out: Option<[f32; 3]>,
         smoothness: f32,
     },
+    /// Persist one finalized corner/handles gesture against its original route.
+    PathSetAnchorMetadata {track_node_id:String,index:usize,corner:Option<crate::gis::CornerKind>,handles:Option<crate::gis::AnchorHandles>,origin:crate::undo::PointEditOrigin},
     /// Set anchor `index`'s corner classification in place.
     PathSetAnchorCorner {
         track_node_id: String,
@@ -1291,23 +1293,18 @@ pub(crate) fn process_ui_actions(
                     smoothness,
                 );
             }
-            UiAction::PathSetAnchorCorner {
-                track_node_id,
-                index,
-                corner,
-            } => {
-                if !active_path_edit_allowed(&local_role,&nav,&verse_mgr,&path_state,&track_node_id)
-                    || path_state.points.get(index).is_none() {
-                    ui_mgr.show_advisory("Path changed or Editor access is unavailable; edit skipped",now_secs);
-                    continue;
+            UiAction::PathSetAnchorMetadata {track_node_id,index,corner,handles,origin} => {
+                if !active_path_edit_allowed(&local_role,&nav,&verse_mgr,&path_state,&track_node_id) {ui_mgr.show_advisory("Editor access is unavailable or path changed",now_secs);continue;}
+                match path::queue_checked_metadata(&mut undo,&nav,&verse_mgr,&mut path_ops,&path_state,track_node_id,index,corner,handles,&origin) {
+                    Ok(Some(_))=>ui_mgr.show_toast("Saving anchor metadata...",now_secs),Ok(None)=>{},Err(error)=>ui_mgr.show_advisory(error,now_secs),
                 }
-                path::set_anchor_corner(
-                    &mut path_ops,
-                    &mut path_state,
-                    track_node_id,
-                    index,
-                    corner,
-                );
+            }
+            UiAction::PathSetAnchorCorner {track_node_id,index,corner} => {
+                if !active_path_edit_allowed(&local_role,&nav,&verse_mgr,&path_state,&track_node_id) {ui_mgr.show_advisory("Editor access is unavailable or path changed",now_secs);continue;}
+                let Some(origin)=crate::undo::PointEditOrigin::capture(&path_state,&nav) else {continue;};
+                match path::queue_checked_corner(&mut undo,&nav,&verse_mgr,&mut path_ops,&path_state,track_node_id,index,corner,&origin) {
+                    Ok(Some(_))=>ui_mgr.show_toast("Saving path corner...",now_secs),Ok(None)=>{},Err(error)=>ui_mgr.show_advisory(error,now_secs),
+                }
             }
             UiAction::PathRemovePoint { track_node_id, index, origin } => {
                 let editable = active_path_edit_allowed(&local_role,&nav,&verse_mgr,&path_state,&track_node_id);

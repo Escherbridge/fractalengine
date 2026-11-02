@@ -1645,3 +1645,7 @@ The existing Owner/scope/input-gated ui-state diagnostic counts queued and in-fl
 route writes must drain first, stale requests are discarded by editor generation, and the bridge
 projects only the Undo controller's matching authoritative receipt. The complete persisted point
 array is the CAS input; removal preserves every field of all surviving stored rows.
+
+CheckedAnchorMetadata shares the exact checked route read/commit path with move/removal; its
+original context remains inside Undo until the asynchronous read matches. No legacy index-only
+SetAnchorCorner op is emitted by the context or ordinary Corner control after admission.

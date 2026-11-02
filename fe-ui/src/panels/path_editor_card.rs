@@ -651,11 +651,44 @@ pub(crate) fn point_height_editor(
                 .suffix(" m"),
         )
         .named(ui, name);
-    draft.observe(ui, "height", &response);
+    let intent_id = id.with("point-user-intent");
+    let mut user_edit = ui
+        .data(|data| data.get_temp::<bool>(intent_id))
+        .unwrap_or(false);
+    user_edit |= response.dragged()
+        || ((response.has_focus() || response.lost_focus())
+            && ui.input(|input| {
+                input.events.iter().any(|event| match event {
+                    egui::Event::Text(_) | egui::Event::Paste(_) | egui::Event::Cut => true,
+                    egui::Event::Key {
+                        key, pressed: true, ..
+                    } => matches!(
+                        key,
+                        egui::Key::Backspace
+                            | egui::Key::Delete
+                            | egui::Key::ArrowUp
+                            | egui::Key::ArrowDown
+                            | egui::Key::ArrowLeft
+                            | egui::Key::ArrowRight
+                            | egui::Key::Home
+                            | egui::Key::End
+                            | egui::Key::PageUp
+                            | egui::Key::PageDown
+                    ),
+                    _ => false,
+                })
+            }));
+    if user_edit {
+        draft.observe(ui, "height", &response);
+    } else {
+        draft.value = stored;
+    }
     let value = draft.next_value().filter(|value| value.is_finite());
     if value.is_some() {
         draft.sent(ui.input(|input| input.time));
+        user_edit = false;
     }
+    ui.data_mut(|data| data.insert_temp(intent_id, user_edit));
     draft.store(ui, id);
     value
 }
@@ -917,18 +950,18 @@ fn zero_handle_kind_revert(
 }
 
 /// Deferred `PathSetAnchorHandles` payload: `(handle_in, handle_out, smoothness)`.
-pub(crate) type HandlesPersist = (Option<[f32; 3]>, Option<[f32; 3]>, f32);
+pub(crate) type HandlesPersist = crate::gis::AnchorHandles;
 
 /// What a corner-toggle click does to the row buffer and the persist queue.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct CornerToggleOutcome {
+pub(crate) struct CornerToggleOutcome {
     /// Kind the row buffer shows after the click (may differ from the clicked
     /// kind when no handles are derivable — see `zero_handle_kind_revert`).
     effective: CornerKind,
     /// `PathSetAnchorCorner` persist signal, when the kind changed.
-    corner: Option<CornerKind>,
+    pub(crate) corner: Option<CornerKind>,
     /// `PathSetAnchorHandles` persist signal.
-    handles: Option<HandlesPersist>,
+    pub(crate) handles: Option<HandlesPersist>,
 }
 
 /// Ratified Q5 toggle outcome, NON-destructive: an anchor whose handles are
@@ -936,7 +969,7 @@ struct CornerToggleOutcome {
 /// re-derive fires ONLY from the broken/asymmetric grey-out state (at the
 /// geometry READBACK, not the stored scalar) or on a handle-less anchor (at
 /// the 0.5 floor). See `fe-ui/src/AGENTS.md` §path-editor. Pure.
-fn corner_toggle_outcome(
+pub(crate) fn corner_toggle_outcome(
     row: &PathPointRow,
     clicked: CornerKind,
     prev: Option<[f32; 3]>,
@@ -983,7 +1016,7 @@ fn corner_toggle_outcome(
 /// §path-editor.
 pub(crate) fn render_corner_settings(
     ui: &mut egui::Ui,
-    points: &mut [PathPointRow],
+    points: &[PathPointRow],
     idx: usize,
 ) -> (Option<CornerKind>, Option<HandlesPersist>) {
     // Copy the neighbor positions before mutably borrowing the row itself.
@@ -992,9 +1025,14 @@ pub(crate) fn render_corner_settings(
         .and_then(|i| points.get(i))
         .map(|p| p.position);
     let next = points.get(idx + 1).map(|p| p.position);
-    let Some(row) = points.get_mut(idx) else {
+    let Some(stored) = points.get(idx) else {
         return (None, None);
     };
+    let draft_id = ui.id().with(("anchor-metadata-draft", idx));
+    let mut draft = ui
+        .data(|data| data.get_temp::<PathPointRow>(draft_id))
+        .unwrap_or_else(|| stored.clone());
+    let row = &mut draft;
 
     let mut to_corner: Option<CornerKind> = None;
     let mut to_handles: Option<HandlesPersist> = None;
@@ -1049,7 +1087,7 @@ pub(crate) fn render_corner_settings(
                     // Seed from geometry truth when handles exist — the stored
                     // scalar may be stale (drag-created anchors).
                     let mut s = slider_seed(row.handle_in, row.handle_out, min_gap, row.smoothness);
-                    let resp = ui.add(egui::Slider::new(&mut s, 0.0..=1.0).step_by(0.01)).named(ui, format_args!("Vertex {idx} smoothness"));
+                    let resp = ui.add(egui::Slider::new(&mut s, 0.0..=1.0).step_by(0.01).update_while_editing(false)).named(ui, format_args!("Vertex {idx} smoothness"));
                     if resp.changed() {
                         // Live feedback every frame: derive collinear symmetric
                         // handles into the buffer; persist only on release below.
@@ -1120,6 +1158,7 @@ pub(crate) fn render_corner_settings(
             }
         });
 
+    ui.data_mut(|data| data.insert_temp(draft_id, draft));
     (to_corner, to_handles)
 }
 
