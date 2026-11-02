@@ -27,52 +27,10 @@ pub(crate) async fn set_petal_terrain_handler(
     repl_tx: Option<&ReplicationSender>,
     blob_store: &BlobStoreHandle,
 ) -> anyhow::Result<Option<serde_json::Value>> {
-    let scope = crate::handlers::crud::resolve_petal_scope_handler(db, petal_id)
-        .await
-        .map_err(|e| anyhow::anyhow!("SetPetalTerrain: scope lookup failed: {e}"))?
-        .ok_or_else(|| anyhow::anyhow!("SetPetalTerrain: no petal {petal_id}"))?;
-    authorize_edit(db, local_did, auth, scope.clone(), "SetPetalTerrain")
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
-    // S8b: the writer satisfies the strictest reader — a terrain peers would
-    // deny on receipt is refused here too, before the op-log or any mutation.
-    if let Some(config) = terrain {
-        if !crate::handlers::replicated_row::is_valid_inbound_petal_terrain(config) {
-            anyhow::bail!(
-                "SetPetalTerrain: terrain fails the shared shape check (tileset ids, cache_dir, size)"
-            );
-        }
-    }
-    let entry = OpLogEntry {
-        lamport_clock: 0,
-        hlc_timestamp: String::new(),
-        node_id: NodeId(petal_id.to_string()),
-        op_type: OpType::SetPetalTerrain,
-        payload: serde_json::json!({ "petal_id": petal_id, "terrain": terrain }),
-        sig: "00".repeat(64),
-    };
-    let (statement, bindings): (String, Vec<(String, serde_json::Value)>) = match terrain {
-        Some(config) => (
-            "UPDATE petal SET terrain = $config WHERE petal_id = $pid RETURN AFTER".to_string(),
-            vec![
-                ("config".to_string(), config.clone()),
-                ("pid".to_string(), serde_json::json!(petal_id)),
-            ],
-        ),
-        None => (
-            "UPDATE petal SET terrain = NONE WHERE petal_id = $pid RETURN AFTER".to_string(),
-            vec![("pid".to_string(), serde_json::json!(petal_id))],
-        ),
-    };
-    let (_, mut statement_rows) =
-        commit_operation_atomic(db, entry, std::slice::from_ref(&statement), bindings)
-            .await
-            .map_err(|e| anyhow::anyhow!("SetPetalTerrain failed: {e:#}"))?;
-    let rows = statement_rows.pop().unwrap_or_default();
-    let Some(row) = rows.into_iter().next() else {
-        anyhow::bail!("SetPetalTerrain: no petal row matched");
-    };
-    let stored = row.get("terrain").filter(|v| !v.is_null()).cloned();
+    let prepared = prepare_terrain_write(db, local_did, auth, petal_id, terrain).await?;
+    let scope = prepared.scope.clone();
+    let row = prepared.commit(db).await?;
+    let stored = row.get("terrain").filter(|value| !value.is_null()).cloned();
 
     // Replicate the read-back row — best-effort: a verse/scope lookup failure
     // never fails the write itself (the DB mutation already committed).
@@ -90,6 +48,81 @@ pub(crate) async fn set_petal_terrain_handler(
         }
     }
     Ok(stored)
+}
+
+struct PreparedTerrainWrite {
+    scope: String,
+    petal: String,
+    terrain: Option<serde_json::Value>,
+    authority: super::entity::ParentMutation,
+}
+
+/// Capture the actual local writer's authority and exact target ancestry.
+async fn prepare_terrain_write(
+    db: &Db,
+    local_did: &str,
+    auth: &CallerAuth,
+    petal: &str,
+    terrain: Option<&serde_json::Value>,
+) -> anyhow::Result<PreparedTerrainWrite> {
+    let scope = super::crud::resolve_petal_scope_handler(db, petal)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("SetPetalTerrain: no petal {petal}"))?;
+    authorize_edit(db, local_did, auth, scope.clone(), "SetPetalTerrain")
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let authority = super::entity::prepare_scope_permission(
+        db,
+        &scope,
+        local_did,
+        fe_policy::RoleLevel::Editor,
+    )
+    .await?;
+    if let Some(config) = terrain {
+        anyhow::ensure!(
+            super::replicated_row::is_valid_inbound_petal_terrain(config),
+            "SetPetalTerrain: terrain fails the shared shape check (tileset ids, cache_dir, size)"
+        );
+    }
+    Ok(PreparedTerrainWrite {
+        scope,
+        petal: petal.into(),
+        terrain: terrain.cloned(),
+        authority,
+    })
+}
+
+impl PreparedTerrainWrite {
+    /// Fence authority, append the ordinary operation and read back its mutation atomically.
+    async fn commit(self, db: &Db) -> anyhow::Result<serde_json::Value> {
+        let entry = OpLogEntry {
+            lamport_clock: 0,
+            hlc_timestamp: String::new(),
+            node_id: NodeId(self.petal.clone()),
+            op_type: OpType::SetPetalTerrain,
+            payload: serde_json::json!({"petal_id":self.petal,"terrain":self.terrain}),
+            sig: "00".repeat(64),
+        };
+        let (mut statements, mut bindings) = self.authority.into_parts();
+        bindings.push(("pid".into(), serde_json::json!(self.petal)));
+        statements.push(match self.terrain {
+            Some(config) => {
+                bindings.push(("config".into(), config));
+                "UPDATE petal SET terrain=$config WHERE petal_id=$pid RETURN AFTER".into()
+            }
+            None => "UPDATE petal SET terrain=NONE WHERE petal_id=$pid RETURN AFTER".into(),
+        });
+        let (_, mut rows) = commit_operation_atomic(db, entry, &statements, bindings)
+            .await
+            .map_err(|error| anyhow::anyhow!("SetPetalTerrain failed: {error:#}"))?;
+        // The final caller slot is UPDATE; BEGIN and op-log slots are removed by the helper.
+        let rows = rows.pop().unwrap_or_default();
+        anyhow::ensure!(
+            rows.len() == 1,
+            "SetPetalTerrain committed but readback is unavailable; inspect before retrying"
+        );
+        Ok(rows.into_iter().next().unwrap())
+    }
 }
 
 /// The DB thread's reply to `SetPetalTerrain`: the stored terrain echoing
@@ -481,5 +514,87 @@ mod tests {
         assert_eq!(get_petal_terrain_handler(&db, "p1").await.unwrap(), None);
         assert_eq!(op_log_count(&db).await, before, "no op-log entry");
         assert!(repl_rx.try_recv().is_err(), "nothing was replicated");
+
+        db.query("CREATE role CONTENT {scope:'VERSE#v1-FRACTAL#f1-PETAL#p1',peer_did:'editor-did',role:'editor'}").await.unwrap().check().unwrap();
+        let prepared =
+            prepare_terrain_write(&db, "editor-did", &CallerAuth::Local, "p1", Some(&terrain))
+                .await
+                .unwrap();
+        db.query("DELETE role WHERE peer_did='editor-did'")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let error = prepared
+            .commit(&db)
+            .await
+            .expect_err("revocation after capture must refuse the same atomic mutation");
+        assert!(format!("{error:#}").contains("authority changed"));
+        assert_eq!(get_petal_terrain_handler(&db, "p1").await.unwrap(), None);
+        assert_eq!(
+            op_log_count(&db).await,
+            before,
+            "authority fence failure rolls back the ordinary operation"
+        );
+
+        db.query("UPDATE verse SET default_access='editor' WHERE verse_id='v1'")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let prepared =
+            prepare_terrain_write(&db, "viewer-did", &CallerAuth::Local, "p1", Some(&terrain))
+                .await
+                .unwrap();
+        db.query("UPDATE verse SET default_access='viewer' WHERE verse_id='v1'")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        assert!(
+            prepared.commit(&db).await.is_err(),
+            "captured default access is fenced as well as explicit roles"
+        );
+        assert_eq!(get_petal_terrain_handler(&db, "p1").await.unwrap(), None);
+        assert_eq!(op_log_count(&db).await, before);
+
+        let prepared =
+            prepare_terrain_write(&db, "owner-did", &CallerAuth::Local, "p1", Some(&terrain))
+                .await
+                .unwrap();
+        db.query("CREATE fractal CONTENT {fractal_id:'f2',verse_id:'v1',owner_did:'owner-did',name:'F2',created_at:'2026-10-11T00:00:00Z'}; UPDATE petal SET fractal_id='f2' WHERE petal_id='p1'").await.unwrap().check().unwrap();
+        let error = prepared
+            .commit(&db)
+            .await
+            .expect_err("reparent after capture must refuse the same atomic mutation");
+        assert!(format!("{error:#}").contains("ancestry changed"));
+        assert_eq!(get_petal_terrain_handler(&db, "p1").await.unwrap(), None);
+        assert_eq!(op_log_count(&db).await, before);
+        assert!(
+            repl_rx.try_recv().is_err(),
+            "no refused plan can publish a terrain row"
+        );
+        db.query("UPDATE petal SET fractal_id='f1' WHERE petal_id='p1'")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let readback = set_petal_terrain_handler(
+            &db,
+            "owner-did",
+            &CallerAuth::Local,
+            "p1",
+            Some(&terrain),
+            Some(&repl_tx),
+            &blob_store,
+        )
+        .await
+        .unwrap();
+        assert_eq!(readback, Some(terrain));
+        assert_eq!(op_log_count(&db).await, before + 1);
+        assert!(
+            repl_rx.try_recv().is_ok(),
+            "only the successful committed readback is published"
+        );
     }
 }
