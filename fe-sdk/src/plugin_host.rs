@@ -44,14 +44,25 @@ impl PluginLease {
 pub enum PendingOp {
     /// Replace one node property.
     SetProperty {
+        /// Existing node in the admitted petal.
         node_id: String,
+        /// Admitted property key to replace.
         key: String,
+        /// Complete replacement value, preserving its JSON type.
         value: Value,
     },
     /// Create a data node in the bound petal.
-    CreateNode { petal_id: String, name: String },
+    CreateNode {
+        /// Exact petal bound to the admitted instance.
+        petal_id: String,
+        /// Display name for the new data node.
+        name: String,
+    },
     /// Soft-delete an existing node through its lifecycle path.
-    DeleteNode { node_id: String },
+    DeleteNode {
+        /// Existing plain node admitted for lifecycle deletion.
+        node_id: String,
+    },
 }
 
 /// An exact property predicate, compared without numeric coercion.
