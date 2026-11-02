@@ -60,3 +60,12 @@ the exception that retains one definitely-unsent close until queue space is avai
 a new Join until the close has entered the same FIFO behind the old open. Disconnection keeps
 cleanup unconfirmed. Cancel and deadline checks remain runnable even when either worker queue
 is full. Existing GUI journeys use actual full bounded DB/native channels, without workers.
+
+
+## Late hierarchy loads after cancellation
+
+A successfully queued admission retains the navigation intent revision independently of the
+active dialog/attempt. Cancel, failure and replacement do not erase that guard. Every initial
+hierarchy selection consults it, so a late joined row cannot select itself after the dialog closes
+on an empty store. NavigationManager records explicit navigation/back intents; a changed revision
+permits the next ordinary initial-navigation lifecycle. Terminal read-model reset clears the guard.

@@ -15,6 +15,7 @@ pub struct NavigationManager {
     pub active_fractal_id: Option<String>,
     pub active_fractal_name: String,
     pub active_petal_id: Option<String>,
+    pub(crate) intent_revision: u64,
     /// Set through manager methods; public for existing struct-update callers.
     #[doc(hidden)]
     pub initial_auto_navigation_suppressed: bool,
@@ -31,8 +32,17 @@ impl NavigationManager {
         self.initial_auto_navigation_suppressed = true;
     }
 
+    pub(crate) fn intent_revision(&self) -> u64 {
+        self.intent_revision
+    }
+
+    fn record_intent(&mut self) {
+        self.intent_revision = self.intent_revision.wrapping_add(1);
+    }
+
     /// Enter a verse. Clears fractal and petal selection.
     pub fn navigate_to_verse(&mut self, id: impl Into<String>, name: impl Into<String>) {
+        self.record_intent();
         self.suppress_initial_auto_navigation();
         self.active_verse_id = Some(id.into());
         self.active_verse_name = name.into();
@@ -43,6 +53,7 @@ impl NavigationManager {
 
     /// Enter a fractal within the current verse. Clears petal selection.
     pub fn navigate_to_fractal(&mut self, id: impl Into<String>, name: impl Into<String>) {
+        self.record_intent();
         self.suppress_initial_auto_navigation();
         self.active_fractal_id = Some(id.into());
         self.active_fractal_name = name.into();
@@ -51,6 +62,7 @@ impl NavigationManager {
 
     /// Enter a petal within the current fractal.
     pub fn navigate_to_petal(&mut self, id: impl Into<String>) {
+        self.record_intent();
         self.suppress_initial_auto_navigation();
         self.active_petal_id = Some(id.into());
     }
@@ -102,11 +114,13 @@ impl NavigationManager {
     }
 
     pub fn back_from_petal(&mut self) {
+        self.record_intent();
         self.suppress_initial_auto_navigation();
         self.active_petal_id = None;
     }
 
     pub fn back_from_fractal(&mut self) {
+        self.record_intent();
         self.suppress_initial_auto_navigation();
         self.active_fractal_id = None;
         self.active_fractal_name.clear();
@@ -114,6 +128,7 @@ impl NavigationManager {
     }
 
     pub fn back_from_verse(&mut self) {
+        self.record_intent();
         self.suppress_initial_auto_navigation();
         self.active_verse_id = None;
         self.active_verse_name.clear();

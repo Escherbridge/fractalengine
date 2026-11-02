@@ -79,6 +79,7 @@ pub(crate) struct JoinState {
     attempt: Option<Attempt>,
     submitted_nonces: std::collections::HashSet<String>,
     cleanup_verse: Option<String>,
+    admission_navigation_revision: Option<u64>,
     pub error: Option<&'static str>,
     status: Option<&'static str>,
 }
@@ -91,6 +92,12 @@ pub(crate) struct ReadyJoin {
 }
 
 impl JoinState {
+    pub(crate) fn retain_admission_navigation(&mut self, nav: &NavigationManager) {
+        self.admission_navigation_revision = Some(nav.intent_revision());
+    }
+    pub(crate) fn allow_initial_navigation(&self, nav: &NavigationManager) -> bool {
+        !self.active() && self.admission_navigation_revision != Some(nav.intent_revision())
+    }
     pub fn active(&self) -> bool {
         self.input.is_some() || self.attempt.is_some()
     }
@@ -276,6 +283,7 @@ impl JoinState {
                 self.fail("The database is unavailable. Nothing was submitted.");
                 return None;
             }
+            self.retain_admission_navigation(nav);
             self.submitted_nonces.insert(invitation.nonce().into());
             self.attempt = Some(Attempt {
                 generation,

@@ -273,6 +273,7 @@ pub(super) fn apply_db_results(
             DbResult::HierarchyLoaded { verses } => {
                 // Phase 4: the persisted verse/fractal/petal eyes ride the tree.
                 crate::visibility::groups::hydrate_scope_hidden(&mut caches.visibility, verses);
+                let allow_initial_navigation = ui_mgr.join_flow.allow_initial_navigation(&nav);
                 hierarchy::handle_hierarchy_loaded(
                     verses,
                     &mut verse_mgr,
@@ -284,7 +285,7 @@ pub(super) fn apply_db_results(
                     mesh_budget_exceeded,
                     &caches.residency,
                     &mut caches.ts_settings,
-                    !ui_mgr.join_flow.active(),
+                    allow_initial_navigation,
                 )
             }
             DbResult::VerseJoined {
@@ -1210,14 +1211,32 @@ mod tests {
             }],
         }];
         let mut nav = NavigationManager::default();
-        hierarchy::select_initial_navigation(&[empty.clone(), populated], &mut nav);
+        hierarchy::select_initial_navigation(&[empty.clone(), populated], &mut nav, true);
         assert_eq!(nav.active_verse_name, "Populated");
         assert_eq!(
             nav.active_scope().as_deref(),
             Some("VERSE#populated-verse-FRACTAL#f-PETAL#p")
         );
-        hierarchy::select_initial_navigation(&[empty], &mut nav);
+        hierarchy::select_initial_navigation(&[empty.clone()], &mut nav, true);
         assert_eq!(nav.active_scope().as_deref(), Some("VERSE#empty-verse"));
+        let mut nav = NavigationManager::default();
+        let mut ui = UiManager::default();
+        ui.open_dialog(ActiveDialog::JoinDialog {invite_buf:"submitted-invitation".into()});
+        ui.join_flow.retain_admission_navigation(&nav);
+        ui.close_dialog();
+        assert!(!ui.join_flow.active());
+        let allow = ui.join_flow.allow_initial_navigation(&nav);
+        hierarchy::select_initial_navigation(&[empty.clone()],&mut nav,allow);
+        assert!(nav.active_verse_id.is_none(),"Cancel retains suppression when a late admitted HierarchyLoaded reaches an empty cursor");
+        let allow = ui.join_flow.allow_initial_navigation(&nav);
+        hierarchy::select_initial_navigation(&[empty.clone()],&mut nav,allow);
+        assert!(nav.active_verse_id.is_none(),"Additional uncorrelated reloads cannot resurrect a canceled join");
+        nav.navigate_to_verse("chosen","Chosen explicitly");nav.back_from_verse();
+        assert!(ui.join_flow.allow_initial_navigation(&nav),"An explicit navigation lifecycle changes the admission cursor revision");
+        let allow = ui.join_flow.allow_initial_navigation(&nav);
+        hierarchy::select_initial_navigation(&[empty],&mut nav,allow);
+        assert_eq!(nav.active_verse_id.as_deref(),Some("empty-verse"));
+
     }
 
     #[test]

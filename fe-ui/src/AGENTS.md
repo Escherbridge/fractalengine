@@ -1445,3 +1445,8 @@ See `invitations/AGENTS.md` for cross-thread ownership and credential lifetime b
 The navigation replica lifecycle accepts only a one-use handoff from the ready addressed Join
 coordinator, matched to the actual hierarchy namespace. This retains its confirmed live pipeline
 on final navigation; ordinary verse changes retain their existing close/open behavior.
+
+
+NavigationManager owns a monotonic intent revision alongside its cursor. Addressed admission
+captures that revision to suppress late initial hierarchy navigation even after Cancel, until an
+explicit navigation/back action begins a new cursor lifecycle. Call manager methods for intents.

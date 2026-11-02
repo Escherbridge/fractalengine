@@ -119,9 +119,7 @@ pub(super) fn handle_hierarchy_loaded(
 
     // Auto-navigate before rebuilding the tree so spawn uses the
     // correct active_petal_id on this same event (single round-trip).
-    if first_load {
-        select_initial_navigation(verses, nav);
-    }
+    select_initial_navigation(verses, nav, first_load);
 
     let active_petal = nav.active_petal_id.clone();
 
@@ -251,7 +249,9 @@ pub(super) fn handle_hierarchy_loaded(
 pub(super) fn select_initial_navigation(
     verses: &[VerseHierarchyData],
     nav: &mut NavigationManager,
+    allowed: bool,
 ) {
+    if !allowed {return;}
     for verse in verses {
         for fractal in &verse.fractals {
             if let Some(petal) = fractal
