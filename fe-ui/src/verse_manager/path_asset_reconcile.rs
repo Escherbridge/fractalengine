@@ -107,48 +107,7 @@ pub(super) fn points_fingerprint(points: &[[f32; 3]]) -> u64 {
 // fe-ui-local arc-length sampler ([f32;3]-based; port of fe-terrain PathTracker)
 // ---------------------------------------------------------------------------
 
-use fe_sdk::path_geometry::cumulative_distances;
-
-/// Interpolated position at `progress` (clamped 0..1) along the path by
-/// arc length. Empty → origin; single point → that point.
-fn position_at_progress(
-    points: &[[f32; 3]],
-    cumdist: &[f32],
-    total: f32,
-    progress: f32,
-) -> [f32; 3] {
-    match points.len() {
-        0 => return [0.0, 0.0, 0.0],
-        1 => return points[0],
-        _ => {}
-    }
-    let target = progress.clamp(0.0, 1.0) * total;
-
-    // Last cumulative distance <= target; clamp to a valid segment.
-    let mut seg = cumdist
-        .iter()
-        .position(|&d| d > target)
-        .unwrap_or(points.len() - 1)
-        .saturating_sub(1);
-    seg = seg.min(points.len() - 2);
-
-    let seg_start = cumdist[seg];
-    let seg_end = cumdist[seg + 1];
-    let seg_len = seg_end - seg_start;
-    let t = if seg_len > 1e-9 {
-        (target - seg_start) / seg_len
-    } else {
-        0.0
-    };
-
-    let a = &points[seg];
-    let b = &points[seg + 1];
-    [
-        a[0] + (b[0] - a[0]) * t,
-        a[1] + (b[1] - a[1]) * t,
-        a[2] + (b[2] - a[2]) * t,
-    ]
-}
+use fe_sdk::path_geometry::{cumulative_distances, position_at_progress};
 
 /// Hard cap on instances per stamp so a tiny spacing / huge count can't spawn
 /// millions of scene entities and wedge the renderer. Sampling saturates here.

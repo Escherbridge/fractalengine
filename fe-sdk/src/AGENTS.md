@@ -237,3 +237,12 @@ after deriving flattened geometry, so a handle edit cannot reinterpret a previou
 path_asset::sample_progresses supplies identical bounded instance identities to the UI renderer
 and checked GUI promotion validator, including one-point paths, endpoint fallback, metric spacing
 and the 4096 cap. Path geometry flattening and f32 length accumulation remain shared as well.
+
+## Shared path position interpolation
+
+`path_geometry::position_at_progress` is the existing pure f32 arc-length sampler
+extracted from native path-asset reconciliation. Both rendered stamps and checked
+selection captures now call the same implementation; empty/single/degenerate paths,
+clamping and segment-boundary behavior are unchanged. Its cumulative distances come
+from the existing shared accumulator. The native reconciliation journeys remain the
+behavior checks for that sampler. This adds no engine dependency to the SDK.

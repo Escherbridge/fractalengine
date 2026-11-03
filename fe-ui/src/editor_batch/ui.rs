@@ -1,6 +1,6 @@
 //! Shared selection and group controls; see editor_batch/AGENTS.md.
 
-use super::{affine_edits, EditorBatchState};
+use super::affine_edits;
 use crate::{
     accessibility::ResponseExt,
     actions::{UiAction, UiManager},

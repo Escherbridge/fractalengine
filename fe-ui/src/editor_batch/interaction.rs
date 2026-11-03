@@ -73,7 +73,7 @@ impl SelectionInteraction {
             }
             Ok(center)
         });
-        let capability = |tool, uniform_scale| -> Result<(), String> {
+        let capability = |tool: Tool, uniform_scale: bool| -> Result<(), String> {
             if capture.members.iter().any(super::source::closed_path) {
                 return Err(super::source::CLOSED_PATH_REASON.into());
             }
