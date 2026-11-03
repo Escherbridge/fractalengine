@@ -43,6 +43,7 @@ fe-format = { path = "../fe-format" }
 # the "gate built but never wired" finding for the HTTP partial-fetch half).
 fe-hexon = { path = "../fe-hexon", features = ["remote"] }
 fe-runtime = { path = "../fe-runtime" }
+fe-sdk = { path = "../fe-sdk" }
 fe-plugin = { path = "../fe-plugin" }
 fe-network = { path = "../fe-network" }
 fe-database = { path = "../fe-database" }
