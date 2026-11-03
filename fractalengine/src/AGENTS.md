@@ -1849,3 +1849,8 @@ product guards permit one ordinary Click per pass; no flattened second reader,
 HTTP authorization change, direct UiAction injection or capture/helper is added.
 Focus remains unsupported. See `native_accessibility/AGENTS.md` for source/queue
 limits, lifecycle and authored existing-journey coverage.
+## Scene-asset-publication-audit
+
+qa_debug_bridge's AssetAuditPending owns at most one metadata read. Existing QA current-context and same-frame navigation gates admit it; the owner additionally captures cursor identities and NavigationManager intent_revision. Submission uses bounded DB try_send without a generic blocking API DB round trip. Each host poll refuses closed/expired/navigation-changed/out-of-scope owners, then matches only SceneAssetPublicationRead with the exact nonce and expected node/operation shape. Foreign/wrong-family/late results never consume a newer owner. No native review/adoption state is read or changed, and successful DTO conversion performs no scene projection or demand enqueue.
+
+The DB enforces fresh stored caller/local Owner and full native-state fences; this host owner is correlation/lifetime control, not authorization. The private eight-second deadline survives both queued hops. A timed-out read can finish harmlessly on the single DB worker but its late reply has no live slot. Audit metadata is not file, render, peer delivery or local-history proof.

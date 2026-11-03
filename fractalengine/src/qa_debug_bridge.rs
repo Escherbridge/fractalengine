@@ -30,6 +30,110 @@ struct QaHost {
     logs: QaLogRing,
 }
 
+#[derive(Resource, Default)]
+struct AssetAuditPending(Option<AssetAuditOwner>);
+
+struct AssetAuditOwner {
+    request: fe_runtime::bridge::BridgeRequest<QaOp, fe_runtime::qa_debug::QaResult>,
+    deadline: std::time::Instant,
+    navigation: (Option<String>, Option<String>, Option<String>),
+    revision: u64,
+}
+
+impl AssetAuditPending {
+    fn poll<'a>(
+        &mut self,
+        results: impl Iterator<Item = &'a fe_runtime::messages::DbResult>,
+        nav: &NavigationManager,
+        covers: impl Fn(&str) -> bool,
+    ) {
+        if self.0.as_ref().is_some_and(|owner| {
+            owner.request.reply_tx.is_closed()
+                || owner.deadline <= std::time::Instant::now()
+                || owner.revision != nav.intent_revision
+                || owner.navigation != cursor(nav)
+                || !covers(&owner.request.caller_scope)
+        }) {
+            if let Some(owner) = self.0.take() {
+                owner
+                    .request
+                    .reply(Err(audit_failure("scene_asset_audit_expired")));
+            }
+        }
+        for result in results {
+            if let fe_runtime::messages::DbResult::SceneAssetPublicationRead {
+                correlation_id,
+                result,
+            } = result
+            {
+                if self
+                    .0
+                    .as_ref()
+                    .is_some_and(|owner| owner.request.correlation_id == *correlation_id)
+                {
+                    let owner = self.0.take().unwrap();
+                    let outcome = match result {
+                        Ok(output)
+                            if owner.deadline > std::time::Instant::now()
+                                && output.request_nonce == *correlation_id
+                                && matches!(&owner.request.op,QaOp::SceneAssetPublication(input) if input.node_id==output.node_id && input.caller.scope==owner.request.caller_scope && input.operation_id.as_deref()==output.adoption_operation.as_ref().map(|op|op.operation_id.as_str())) =>
+                        {
+                            serde_json::to_value(output)
+                                .map_err(|_| audit_failure("scene_asset_audit_unavailable"))
+                        }
+                        _ => Err(audit_failure("scene_asset_audit_unavailable")),
+                    };
+                    owner.request.reply(outcome);
+                }
+            }
+        }
+    }
+    fn submit(
+        &mut self,
+        request: fe_runtime::bridge::BridgeRequest<QaOp, fe_runtime::qa_debug::QaResult>,
+        db: &crossbeam::channel::Sender<fe_runtime::messages::DbCommand>,
+        nav: &NavigationManager,
+    ) {
+        if let QaOp::SceneAssetPublication(input) = &request.op {
+            if self.0.is_some() {
+                request.reply(Err(audit_failure("scene_asset_audit_busy")));
+                return;
+            }
+            if !input.is_current()
+                || !input.validate_ids()
+                || input.caller.scope != request.caller_scope
+                || request.reply_tx.is_closed()
+            {
+                request.reply(Err(audit_failure("scene_asset_audit_expired")));
+                return;
+            }
+            let command = fe_runtime::messages::DbCommand::ReadSceneAssetPublication {
+                request: input.clone(),
+                correlation_id: request.correlation_id.clone(),
+            };
+            let deadline = input.deadline;
+            match db.try_send(command) {
+                Ok(()) => {
+                    self.0 = Some(AssetAuditOwner {
+                        request,
+                        deadline,
+                        navigation: cursor(nav),
+                        revision: nav.intent_revision,
+                    })
+                }
+                Err(_) => request.reply(Err(audit_failure("scene_asset_audit_busy"))),
+            }
+        }
+    }
+}
+
+fn audit_failure(code: &'static str) -> QaFailure {
+    QaFailure {
+        code,
+        message: "Scene asset audit unavailable, changed, unauthorized or busy",
+    }
+}
+
 #[derive(Resource)]
 struct QaEnabled(bool);
 
@@ -62,6 +166,7 @@ pub fn install(
     app.insert_resource(QaHost { rx, logs });
     app.insert_resource(QaControls { dialogs, listener });
     app.init_resource::<FrameNavigation>();
+    app.init_resource::<AssetAuditPending>();
     app.add_systems(
         PreUpdate,
         prepare_accessibility
@@ -488,7 +593,13 @@ fn serve(
     >,
     windows: Query<&Window, With<PrimaryWindow>>,
     controls: Res<QaControls>,
+    db: Res<fe_runtime::app::DbCommandSender>,
+    mut audit: ResMut<AssetAuditPending>,
+    mut results: MessageReader<fe_runtime::messages::DbResult>,
 ) {
+    audit.poll(results.read(), &state.nav, |scope| {
+        view.covers(scope, Some(&state.nav))
+    });
     host.logs.set_verse(state.nav.active_verse_id.as_deref());
     for request in host.rx.try_iter().take(32) {
         if !view.covers(&request.caller_scope, Some(&state.nav)) {
@@ -500,6 +611,14 @@ fn serve(
                 code: "ui_frame_changing",
                 message: "navigation changed during this UI frame; retry",
             }));
+            continue;
+        }
+        if matches!(&request.op, QaOp::SceneAssetPublication(_)) {
+            if contexts.iter().count() != 1 {
+                request.reply(Err(audit_failure("ui_unavailable")));
+                continue;
+            }
+            audit.submit(request, &db.0, &state.nav);
             continue;
         }
         if let QaOp::DialogAnswers(batch) = &request.op {
@@ -603,6 +722,7 @@ fn serve(
                     Ok(json!({"accepted":true,"action":action}))
                 }
             }
+            QaOp::SceneAssetPublication(_) => Err(audit_failure("scene_asset_audit_unavailable")),
             QaOp::DialogAnswers(_) => Err(QaFailure {
                 code: "qa_operation_unavailable",
                 message: "dialog operation unavailable in this frame",
@@ -610,4 +730,128 @@ fn serve(
         };
         request.reply(result);
     }
+}
+
+#[cfg(test)]
+pub(crate) fn check_asset_audit_ownership() {
+    use fe_runtime::{
+        bridge::BridgeRequest,
+        messages::{DbCommand, DbResult},
+        scene_asset::*,
+    };
+    let mut nav = NavigationManager::default();
+    nav.navigate_to_verse("v", "Verse");
+    let request = |nonce: &str| {
+        BridgeRequest::new(
+            nonce,
+            "VERSE#v",
+            QaOp::SceneAssetPublication(SceneAssetAuditRequest {
+                node_id: "audit-node".into(),
+                operation_id: None,
+                caller: SceneAssetAuditCaller {
+                    did: "did:key:fixture".into(),
+                    scope: "VERSE#v".into(),
+                    role_ceiling: "owner".into(),
+                },
+                deadline: std::time::Instant::now() + SCENE_ASSET_AUDIT_LIMIT,
+            }),
+        )
+    };
+    let result = |nonce: &str| DbResult::SceneAssetPublicationRead {
+        correlation_id: nonce.into(),
+        result: Err(SceneAssetAuditFailure::Unavailable),
+    };
+    let one = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    let two = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+    let mut pending = AssetAuditPending::default();
+    let (db, rx) = crossbeam::channel::bounded(1);
+    db.try_send(DbCommand::Ping).unwrap();
+    let (input, mut answer) = request(one);
+    pending.submit(input, &db, &nav);
+    assert_eq!(
+        answer.try_recv().unwrap().result.unwrap_err().code,
+        "scene_asset_audit_busy"
+    );
+    assert!(pending.0.is_none());
+    rx.try_recv().unwrap();
+    let (input, mut answer) = request(one);
+    pending.submit(input, &db, &nav);
+    assert!(
+        matches!(rx.try_recv().unwrap(),DbCommand::ReadSceneAssetPublication {correlation_id,..} if correlation_id==one)
+    );
+    let (input, mut busy) = request(two);
+    pending.submit(input, &db, &nav);
+    assert_eq!(
+        busy.try_recv().unwrap().result.unwrap_err().code,
+        "scene_asset_audit_busy"
+    );
+    pending.poll(
+        [
+            result(two),
+            DbResult::QueryResult {
+                data: vec![],
+                correlation_id: Some(one.into()),
+            },
+        ]
+        .iter(),
+        &nav,
+        |_| true,
+    );
+    assert!(
+        answer.try_recv().is_err(),
+        "wrong ID/family cannot consume the owner"
+    );
+    pending.poll([result(one)].iter(), &nav, |_| true);
+    assert_eq!(
+        answer.try_recv().unwrap().result.unwrap_err().code,
+        "scene_asset_audit_unavailable"
+    );
+    let (input, mut newer) = request(two);
+    pending.submit(input, &db, &nav);
+    rx.try_recv().unwrap();
+    pending.poll([result(one)].iter(), &nav, |_| true);
+    assert!(
+        newer.try_recv().is_err(),
+        "late prior reply cannot consume a new owner"
+    );
+    pending.0.as_mut().unwrap().deadline =
+        std::time::Instant::now() - std::time::Duration::from_secs(1);
+    pending.poll([result(two)].iter(), &nav, |_| true);
+    assert_eq!(
+        newer.try_recv().unwrap().result.unwrap_err().code,
+        "scene_asset_audit_expired"
+    );
+    for mode in ["scope", "navigation", "closed"] {
+        let (input, mut reply) = request(one);
+        pending.submit(input, &db, &nav);
+        rx.try_recv().unwrap();
+        if mode == "navigation" {
+            nav.navigate_to_verse("changed", "Changed");
+        }
+        if mode == "closed" {
+            reply.close();
+        }
+        pending.poll(std::iter::empty(), &nav, |_| mode != "scope");
+        assert!(pending.0.is_none());
+        if mode != "closed" {
+            assert_eq!(
+                reply.try_recv().unwrap().result.unwrap_err().code,
+                "scene_asset_audit_expired"
+            );
+        }
+        nav.navigate_to_verse("v", "Verse");
+    }
+    let (mut input, mut reply) = request(one);
+    input.caller_scope = "VERSE#foreign".into();
+    pending.submit(input, &db, &nav);
+    assert!(reply.try_recv().unwrap().result.is_err());
+    assert!(rx.try_recv().is_err());
+    drop(rx);
+    let (input, mut reply) = request(one);
+    pending.submit(input, &db, &nav);
+    assert_eq!(
+        reply.try_recv().unwrap().result.unwrap_err().code,
+        "scene_asset_audit_busy"
+    );
+    assert!(pending.0.is_none());
 }

@@ -5996,6 +5996,384 @@ mod tests {
                 .unwrap();
             assert_eq!(rx.try_iter().count(), 2);
 
+            // The QA audit is metadata-only and independently fences the persisted graph/intention.
+            {
+                use crate::handlers::scene_asset_audit as audit;
+                use fe_runtime::scene_asset::{
+                    SceneAssetAuditCaller, SceneAssetAuditRequest, SceneAssetField,
+                    SCENE_ASSET_AUDIT_LIMIT,
+                };
+                let audit_db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+                    .await
+                    .unwrap();
+                audit_db
+                    .use_ns("typed-audit")
+                    .use_db("typed-audit")
+                    .await
+                    .unwrap();
+                let owner = fe_identity::new_client_did();
+                let reader = fe_identity::new_client_did();
+                let nonce = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+                let bytes = br#"{"asset":{"version":"2.0"}}"#;
+                let hash = crate::hash_to_hex(blake3::hash(bytes).as_bytes());
+                audit_db.query("CREATE verse CONTENT {verse_id:'audit-v',created_by:$owner,default_access:'viewer'}; CREATE fractal CONTENT {fractal_id:'audit-f',verse_id:'audit-v'}; CREATE petal CONTENT {petal_id:'audit-p',fractal_id:'audit-f'}; CREATE asset CONTENT {asset_id:'audit-a',content_hash:$hash,content_type:'model/gltf+json',size_bytes:$size}; CREATE node CONTENT {node_id:'audit-one',petal_id:'audit-p',asset_id:'audit-a',properties:{samples:[1,2,null]}}; CREATE node CONTENT {node_id:'audit-two',petal_id:'audit-p',asset_id:'audit-a',tombstone:'retained'}")
+                    .bind(("owner",owner.clone())).bind(("hash",hash.clone())).bind(("size",bytes.len() as u64)).await.unwrap().check().unwrap();
+                let request = || SceneAssetAuditRequest {
+                    node_id: "audit-one".into(),
+                    operation_id: None,
+                    caller: SceneAssetAuditCaller {
+                        did: owner.clone(),
+                        scope: "VERSE#audit-v".into(),
+                        role_ceiling: "owner".into(),
+                    },
+                    deadline: std::time::Instant::now() + SCENE_ASSET_AUDIT_LIMIT,
+                };
+                let baseline = audit::prepare(&audit_db, &request(), nonce, &owner)
+                    .await
+                    .unwrap()
+                    .finish(&audit_db)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    baseline
+                        .references
+                        .iter()
+                        .map(|r| r.node_id.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["audit-one", "audit-two"]
+                );
+                assert_eq!(baseline.owner_did, SceneAssetField::Absent);
+                assert_eq!(baseline.asset_petal_id, SceneAssetField::Absent);
+                assert_eq!(baseline.publication_provenance, SceneAssetField::Absent);
+                assert!(baseline.adoption_operation.is_none());
+                assert!(!baseline.bytes_verified_by_this_read);
+                assert_eq!(
+                    audit::prepare(&audit_db, &request(), nonce, &owner)
+                        .await
+                        .unwrap()
+                        .finish(&audit_db)
+                        .await
+                        .unwrap(),
+                    baseline,
+                    "repeated read changes no state or intention"
+                );
+                let mut denied = request();
+                denied.caller.role_ceiling = "manager".into();
+                assert!(audit::prepare(&audit_db, &denied, nonce, &owner)
+                    .await
+                    .is_err());
+                denied = request();
+                denied.caller.scope = "VERSE#other".into();
+                assert!(audit::prepare(&audit_db, &denied, nonce, &owner)
+                    .await
+                    .is_err());
+                denied = request();
+                denied.caller.did = reader.clone();
+                assert!(
+                    audit::prepare(&audit_db, &denied, nonce, &owner)
+                        .await
+                        .is_err(),
+                    "token ceiling does not grant stored caller Owner"
+                );
+                assert!(
+                    audit::prepare(&audit_db, &request(), nonce, &reader)
+                        .await
+                        .is_err(),
+                    "local Viewer cannot borrow caller Owner"
+                );
+                audit_db
+                    .query(
+                        "CREATE role CONTENT {peer_did:$reader,scope:'VERSE#audit-v',role:'owner'}",
+                    )
+                    .bind(("reader", reader.clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                denied = request();
+                denied.caller.did = reader.clone();
+                let distinct = audit::prepare(&audit_db, &denied, nonce, &owner)
+                    .await
+                    .unwrap();
+                audit_db
+                    .query("DELETE role WHERE peer_did=$reader")
+                    .bind(("reader", reader.clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                assert!(
+                    distinct.finish(&audit_db).await.is_err(),
+                    "distinct caller Owner must survive through final transaction"
+                );
+                audit_db
+                    .query("CREATE asset:audit_duplicate CONTENT {asset_id:'audit-a'}")
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                assert!(
+                    audit::prepare(&audit_db, &request(), nonce, &owner)
+                        .await
+                        .is_err(),
+                    "duplicate asset identity refuses"
+                );
+                audit_db
+                    .query("DELETE asset:audit_duplicate")
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                for field in ["owner_did", "petal_id", "publication_provenance"] {
+                    audit_db
+                        .query(format!(
+                            "UPDATE asset SET {field}=NULL WHERE asset_id='audit-a'"
+                        ))
+                        .await
+                        .unwrap()
+                        .check()
+                        .unwrap();
+                    assert!(
+                        audit::prepare(&audit_db, &request(), nonce, &owner)
+                            .await
+                            .is_err(),
+                        "NULL is not the strict absent baseline"
+                    );
+                    audit_db
+                        .query(format!(
+                            "UPDATE asset SET {field}=NONE WHERE asset_id='audit-a'"
+                        ))
+                        .await
+                        .unwrap()
+                        .check()
+                        .unwrap();
+                }
+                for mutation in [
+                    "UPDATE asset SET content_type='changed' WHERE asset_id='audit-a'",
+                    "UPDATE node SET properties={changed:true} WHERE node_id='audit-two'",
+                    "CREATE node CONTENT {node_id:'audit-hidden',petal_id:'audit-p',asset_id:'audit-a',tombstone:'retained'}",
+                    "CREATE model CONTENT {model_id:'audit-model',asset_id:'audit-a',petal_id:'audit-p'}",
+                    "CREATE device_payload CONTENT {payload_id:'audit-payload',asset_ids:['audit-a']}",
+                    "CREATE op_log CONTENT {op_type:'SceneAssetAdopted',node_id:'audit-one',payload:{asset_id:'audit-a'}}",
+                    "UPDATE verse SET created_by='did:other' WHERE verse_id='audit-v'",
+                    "UPDATE petal SET fractal_id='foreign' WHERE petal_id='audit-p'",
+                ] {
+                    let prepared=audit::prepare(&audit_db,&request(),nonce,&owner).await.unwrap();
+                    audit_db.query(mutation).await.unwrap().check().unwrap();
+                    assert!(prepared.finish(&audit_db).await.is_err(),"changed metadata/ref/model/payload/op/role/ancestry must refuse a stale witness");
+                    audit_db.query("UPDATE asset SET content_type='model/gltf+json' WHERE asset_id='audit-a'; DELETE node WHERE node_id='audit-hidden'; DELETE model; DELETE device_payload; DELETE op_log; UPDATE verse SET created_by=$owner WHERE verse_id='audit-v'; UPDATE petal SET fractal_id='audit-f' WHERE petal_id='audit-p'").bind(("owner",owner.clone())).await.unwrap().check().unwrap();
+                }
+                audit_db.query("CREATE node CONTENT {node_id:'audit-one',petal_id:'other',asset_id:'different'}").await.unwrap().check().unwrap();
+                assert!(audit::prepare(&audit_db, &request(), nonce, &owner)
+                    .await
+                    .is_err());
+                audit_db
+                    .query("DELETE node WHERE asset_id='different'")
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                audit_db.query("CREATE model CONTENT {model_id:'foreign',asset_id:'audit-a',petal_id:'other'}").await.unwrap().check().unwrap();
+                assert!(audit::prepare(&audit_db, &request(), nonce, &owner)
+                    .await
+                    .is_err());
+                audit_db
+                    .query("DELETE model")
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                audit_db.query("CREATE model CONTENT {model_id:'local',asset_id:'audit-a',petal_id:'audit-p'}").await.unwrap().check().unwrap();
+                assert!(audit::prepare(&audit_db, &request(), nonce, &owner)
+                    .await
+                    .unwrap()
+                    .finish(&audit_db)
+                    .await
+                    .unwrap()
+                    .model_state_digest
+                    .is_some());
+                audit_db.query("CREATE model CONTENT {model_id:'duplicate',asset_id:'audit-a',petal_id:'audit-p'}").await.unwrap().check().unwrap();
+                assert!(audit::prepare(&audit_db, &request(), nonce, &owner)
+                    .await
+                    .is_err());
+                audit_db.query("DELETE model; CREATE node CONTENT {node_id:'foreign-ref',asset_id:'audit-a',petal_id:'other'}").await.unwrap().check().unwrap();
+                assert!(audit::prepare(&audit_db, &request(), nonce, &owner)
+                    .await
+                    .is_err());
+                audit_db
+                    .query("DELETE node WHERE node_id='foreign-ref'")
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                for index in 0..254 {
+                    audit_db.query("CREATE node CONTENT {node_id:$id,petal_id:'audit-p',asset_id:'audit-a'}").bind(("id",format!("overflow-{index:03}"))).await.unwrap().check().unwrap();
+                }
+                assert_eq!(
+                    audit::prepare(&audit_db, &request(), nonce, &owner)
+                        .await
+                        .unwrap()
+                        .finish(&audit_db)
+                        .await
+                        .unwrap()
+                        .references
+                        .len(),
+                    256
+                );
+                audit_db.query("CREATE node CONTENT {node_id:'overflow-254',petal_id:'audit-p',asset_id:'audit-a'}").await.unwrap().check().unwrap();
+                assert!(
+                    audit::prepare(&audit_db, &request(), nonce, &owner)
+                        .await
+                        .is_err(),
+                    "257 complete refs cannot be truncated to256"
+                );
+                audit_db
+                    .query("DELETE node WHERE string::starts_with(node_id,'overflow-')")
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                audit_db.query("UPDATE node SET properties={large:string::repeat('x',100000)} WHERE node_id='audit-two'").await.unwrap().check().unwrap();
+                assert!(
+                    audit::prepare(&audit_db, &request(), nonce, &owner)
+                        .await
+                        .is_err(),
+                    "opaque full rows have a native size bound"
+                );
+                audit_db
+                    .query("UPDATE node SET properties=NONE WHERE node_id='audit-two'")
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                let mut expected = request();
+                expected.operation_id = Some(nonce.into());
+                assert!(
+                    audit::prepare(&audit_db, &expected, nonce, &owner)
+                        .await
+                        .is_err(),
+                    "missing requested operation is not synthesized"
+                );
+                let disk_dir = tempfile::tempdir().unwrap();
+                let disk: crate::BlobStoreHandle = std::sync::Arc::new(DiskSceneBlobs {
+                    root: disk_dir.path().to_owned(),
+                });
+                disk.add_blob(bytes).unwrap();
+                let candidate = crate::handlers::scene_asset_adoption::read(
+                    &audit_db,
+                    &disk,
+                    "audit-one",
+                    &owner,
+                )
+                .await
+                .unwrap();
+                let receipt = crate::handlers::scene_asset_adoption::adopt(
+                    &audit_db,
+                    &disk,
+                    &candidate,
+                    &owner,
+                    "audit-actual-adoption",
+                )
+                .await
+                .unwrap();
+                expected = request();
+                expected.operation_id = Some(receipt.operation_id.clone());
+                let adopted = audit::prepare(&audit_db, &expected, nonce, &owner)
+                    .await
+                    .unwrap()
+                    .finish(&audit_db)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    adopted.references, baseline.references,
+                    "adoption does not mutate node rows"
+                );
+                assert_eq!(
+                    adopted
+                        .adoption_operation
+                        .as_ref()
+                        .unwrap()
+                        .provenance
+                        .adopter_did,
+                    owner
+                );
+                assert_eq!(
+                    adopted
+                        .adoption_operation
+                        .as_ref()
+                        .unwrap()
+                        .provenance
+                        .adopted_at,
+                    receipt.adopted_at
+                );
+                assert!(
+                    audit::prepare(&audit_db, &request(), nonce, &owner)
+                        .await
+                        .is_err(),
+                    "post-adoption cannot masquerade as a zero-operation baseline"
+                );
+                let mut wrong = expected.clone();
+                wrong.operation_id = Some(nonce.into());
+                assert!(
+                    audit::prepare(&audit_db, &wrong, nonce, &owner)
+                        .await
+                        .is_err(),
+                    "wrong receipt ID cannot select the asset's actual operation"
+                );
+                let mut other_reference = expected.clone();
+                other_reference.node_id = "audit-two".into();
+                assert!(
+                    audit::prepare(&audit_db, &other_reference, nonce, &owner)
+                        .await
+                        .is_err(),
+                    "tombstoned path target is not live even though included in complete refs"
+                );
+                audit_db
+                    .query("UPDATE node SET tombstone=NONE WHERE node_id='audit-two'")
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                assert!(
+                    audit::prepare(&audit_db, &other_reference, nonce, &owner)
+                        .await
+                        .unwrap()
+                        .finish(&audit_db)
+                        .await
+                        .is_ok(),
+                    "operation origin can be another member"
+                );
+                audit_db.query("CREATE op_log:audit_extra CONTENT {op_type:'SceneAssetAdopted',payload:{asset_id:'audit-a'}}").await.unwrap().check().unwrap();
+                assert!(
+                    audit::prepare(&audit_db, &expected, nonce, &owner)
+                        .await
+                        .is_err(),
+                    "duplicate operation set refuses rather than selecting one"
+                );
+                audit_db
+                    .query("DELETE op_log:audit_extra")
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                let prepared = audit::prepare(&audit_db, &expected, nonce, &owner)
+                    .await
+                    .unwrap();
+                audit_db.query("UPDATE op_log SET payload.provenance.adopted_at='2026-01-01T00:00:00Z' WHERE op_type='SceneAssetAdopted'").await.unwrap().check().unwrap();
+                assert!(prepared.finish(&audit_db).await.is_err());
+                assert!(audit::prepare(&audit_db, &expected, nonce, &owner)
+                    .await
+                    .is_err());
+                let mut expired = request();
+                expired.deadline = std::time::Instant::now() - std::time::Duration::from_secs(1);
+                assert_eq!(
+                    audit::read(&audit_db, &expired, nonce, &owner)
+                        .await
+                        .unwrap_err(),
+                    fe_runtime::scene_asset::SceneAssetAuditFailure::Expired
+                );
+            }
+
             // Legacy local availability does not invent upload ownership; adoption is explicit.
             {
                 mod fixture_glb {

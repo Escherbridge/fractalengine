@@ -115,3 +115,118 @@ pub fn verify_scene_asset_bytes(
         .map_err(|error| anyhow::anyhow!("scene asset refused: {error}"))?;
     Ok(())
 }
+
+/// Private metadata-only audit protocol; see AGENTS.md scene-asset-publication-audit.
+pub const SCENE_ASSET_AUDIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(8);
+pub const SCENE_ASSET_AUDIT_RESPONSE_MAX: usize = 256 * 1024;
+pub const SCENE_ASSET_AUDIT_INTERNAL_MAX: usize = 4 * 1024 * 1024;
+
+#[derive(Debug, Clone)]
+pub struct SceneAssetAuditCaller {
+    pub did: String,
+    pub scope: String,
+    pub role_ceiling: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SceneAssetAuditRequest {
+    pub node_id: String,
+    pub operation_id: Option<String>,
+    pub caller: SceneAssetAuditCaller,
+    pub deadline: Instant,
+}
+impl SceneAssetAuditRequest {
+    pub fn is_current(&self) -> bool {
+        let now = Instant::now();
+        self.deadline > now && self.deadline <= now + SCENE_ASSET_AUDIT_LIMIT
+    }
+    pub fn validate_ids(&self) -> bool {
+        crate::safe_id::is_safe_path_id(&self.node_id)
+            && self
+                .operation_id
+                .as_ref()
+                .is_none_or(|id| is_canonical_audit_ulid(id))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "state", content = "value", rename_all = "snake_case")]
+pub enum SceneAssetField<T> {
+    Absent,
+    Null,
+    Value(T),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SceneAssetAuditProvenance {
+    pub kind: String,
+    pub operation_id: String,
+    pub adopter_did: String,
+    pub adopted_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SceneAssetAuditReference {
+    pub node_id: String,
+    pub petal_id: String,
+    pub state_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SceneAssetAuditOperation {
+    pub operation_id: String,
+    pub op_type: String,
+    pub node_id: String,
+    pub scope: String,
+    pub asset_id: String,
+    pub content_hash: String,
+    pub content_type: String,
+    pub size_bytes: u64,
+    pub provenance: SceneAssetAuditProvenance,
+    pub state_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SceneAssetPublicationAudit {
+    pub protocol_version: u8,
+    pub request_nonce: String,
+    pub digest_algorithm: String,
+    pub node_id: String,
+    pub asset_id: String,
+    pub petal_id: String,
+    pub scope: String,
+    pub content_hash: String,
+    pub content_type: String,
+    pub size_bytes: u64,
+    pub owner_did: SceneAssetField<String>,
+    pub asset_petal_id: SceneAssetField<String>,
+    pub publication_provenance: SceneAssetField<SceneAssetAuditProvenance>,
+    pub asset_state_digest: String,
+    pub references: Vec<SceneAssetAuditReference>,
+    pub model_state_digest: Option<String>,
+    pub payload_reference_count: u8,
+    pub adoption_operation: Option<SceneAssetAuditOperation>,
+    pub bytes_verified_by_this_read: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SceneAssetAuditFailure {
+    Unavailable,
+    Expired,
+    Busy,
+    InvalidRequest,
+}
+
+/// Canonical uppercase Crockford ULID, including its 128-bit leading-digit bound.
+pub fn is_canonical_audit_ulid(id: &str) -> bool {
+    id.len() == 26
+        && id.as_bytes()[0] <= b'7'
+        && id
+            .bytes()
+            .all(|b| b"0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(&b))
+}

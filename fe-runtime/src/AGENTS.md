@@ -1102,3 +1102,9 @@ SceneAssetTransferPurpose::Publish binds exact asset_id and petal_id; Fetch and 
 remain digest lookups under current stored authority. verify_blob_file performs
 constant-memory regular-file BLAKE3 verification bounded by an exact captured metadata
 size plus one byte. Run it on blocking IO, never a per-frame path or sync select loop.
+
+## Scene-asset-publication-audit
+
+SceneAssetAuditRequest is private, non-deserializable middleware-derived caller DID/scope/role-ceiling plus one node, optional exact operation ULID and an eight-second monotonic deadline. It asserts no stored role. QaOp carries it over the existing capacity32 QA bridge; the host owns one pending audit and forwards ReadSceneAssetPublication with try_send to the bounded DB channel. SceneAssetPublicationRead is a distinct typed success/failure and correlated reply family. Native candidate/adoption/replica reads retain their separate owners. Wrong IDs/families, duplicate/late replies and closed owners cannot produce a newer audit.
+
+The version1 DTO contains only whitelisted metadata, native Absent/Null/Value states, complete sorted reference IDs/digests, optional model digest, zero payload witness and zero-or-one exact adoption operation. Its digest algorithm is explicitly blake3-base64-surreal-cbor-v1: server BLAKE3 over the UTF-8 canonical base64 encoding of the complete native CBOR row, not a JSON reconstruction or content-file digest. It contains no raw CBOR, arbitrary properties, adoption request ID, signature, key, path or local history version. bytes_verified_by_this_read is always false. A nonce is freshness/correlation metadata, never a reusable mutation permit.

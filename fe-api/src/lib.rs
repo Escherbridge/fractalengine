@@ -31,6 +31,7 @@ pub mod property_schema;
 pub mod qa_debug;
 pub mod qa_invitation;
 pub mod qa_portal;
+pub mod qa_scene_asset;
 pub mod query_guard;
 pub mod render_distance;
 pub mod rest;

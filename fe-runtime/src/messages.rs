@@ -506,6 +506,10 @@ impl CallerAuth {
 
 #[derive(Debug, Clone)]
 pub enum DbCommand {
+    ReadSceneAssetPublication {
+        request: crate::scene_asset::SceneAssetAuditRequest,
+        correlation_id: String,
+    },
     ReadSceneAssetAdoption { node_id: String, request_id: String },
     AdoptSceneAsset { candidate: crate::scene_asset::SceneAssetAdoptionCandidate, request_id: String },
     /// Private bounded current admission; no public route, mutation or peer effect.
@@ -1339,6 +1343,13 @@ pub enum DeferralReason {
 
 #[derive(Debug, Clone, Message)]
 pub enum DbResult {
+    SceneAssetPublicationRead {
+        correlation_id: String,
+        result: Result<
+            crate::scene_asset::SceneAssetPublicationAudit,
+            crate::scene_asset::SceneAssetAuditFailure,
+        >,
+    },
     SceneAssetAdoptionCandidate { node_id: String, request_id: String, result: Result<crate::scene_asset::SceneAssetAdoptionCandidate,String> },
     SceneAssetAdopted { request_id: String, result: Result<crate::scene_asset::SceneAssetAdoptionReceipt,String> },
     /// Emitted after the corresponding current result, without a local-history claim.

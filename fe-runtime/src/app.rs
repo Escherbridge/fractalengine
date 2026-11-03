@@ -312,7 +312,8 @@ struct PendingEntry {
 /// that echo one on their reply (see [`PendingApiRequests::try_deliver`]).
 fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
     match cmd {
-        DbCommand::ReadEditorBatch { correlation_id, .. }
+        DbCommand::ReadSceneAssetPublication { correlation_id, .. }
+        | DbCommand::ReadEditorBatch { correlation_id, .. }
         | DbCommand::CommitCheckedEditorBatch { correlation_id, .. }
         | DbCommand::ResolveCheckedEditorBatch { correlation_id, .. } => Some(correlation_id.as_str()),
         DbCommand::InsertIotReadings { correlation_id, .. }
@@ -353,7 +354,8 @@ fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
 /// The correlation id a reply echoes (mirror of [`correlation_of_command`]).
 fn correlation_of_result(result: &DbResult) -> Option<&str> {
     match result {
-        DbResult::EditorBatchLoaded { correlation_id, .. }
+        DbResult::SceneAssetPublicationRead { correlation_id, .. }
+        | DbResult::EditorBatchLoaded { correlation_id, .. }
         | DbResult::EditorBatchCommitted { correlation_id, .. }
         | DbResult::EditorBatchResolved { correlation_id, .. } => Some(correlation_id.as_str()),
         DbResult::NodeMaterialized { correlation_id, .. } => Some(correlation_id.as_str()),
@@ -397,6 +399,7 @@ fn correlation_of_result(result: &DbResult) -> Option<&str> {
 /// never name a kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ReplyKind {
+    SceneAssetPublicationRead,
     EditorBatchLoaded,
     EditorBatchCommitted,
     EditorBatchResolved,
@@ -459,6 +462,7 @@ enum ReplyKind {
 fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
     use DbCommand::*;
     Some(match cmd {
+        ReadSceneAssetPublication { .. } => ReplyKind::SceneAssetPublicationRead,
         ReadEditorBatch { .. } => ReplyKind::EditorBatchLoaded,
         CommitCheckedEditorBatch { .. } => ReplyKind::EditorBatchCommitted,
         ResolveCheckedEditorBatch { .. } => ReplyKind::EditorBatchResolved,
@@ -526,6 +530,7 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
 fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
     use DbResult::*;
     Some(match result {
+        SceneAssetPublicationRead { .. } => ReplyKind::SceneAssetPublicationRead,
         EditorBatchLoaded { .. } => ReplyKind::EditorBatchLoaded,
         EditorBatchCommitted { .. } => ReplyKind::EditorBatchCommitted,
         EditorBatchResolved { .. } => ReplyKind::EditorBatchResolved,
@@ -1885,6 +1890,44 @@ mod tests {
         assert!(reply_kind_of_result(&read).is_none());
         assert!(correlation_of_result(&read).is_none());
         assert!(!pending.try_deliver(read));
+        let audit = DbCommand::ReadSceneAssetPublication {
+            request: crate::scene_asset::SceneAssetAuditRequest {
+                node_id: "audit-node".into(),
+                operation_id: None,
+                caller: crate::scene_asset::SceneAssetAuditCaller {
+                    did: "did:key:fixture".into(),
+                    scope: "VERSE#v".into(),
+                    role_ceiling: "owner".into(),
+                },
+                deadline: std::time::Instant::now() + crate::scene_asset::SCENE_ASSET_AUDIT_LIMIT,
+            },
+            correlation_id: "audit-owned".into(),
+        };
+        let (audit_tx, mut audit_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&audit, audit_tx);
+        let audit_result = |id: &str| DbResult::SceneAssetPublicationRead {
+            correlation_id: id.into(),
+            result: Err(crate::scene_asset::SceneAssetAuditFailure::Unavailable),
+        };
+        assert!(!pending.try_deliver(audit_result("unknown-audit")));
+        assert!(audit_rx.try_recv().is_err());
+        assert!(!pending.try_deliver(DbResult::QueryResult {
+            data: vec![],
+            correlation_id: Some("audit-owned".into())
+        }));
+        assert!(
+            audit_rx.try_recv().is_err(),
+            "wrong family cannot consume audit ownership"
+        );
+        assert!(pending.try_deliver(audit_result("audit-owned")));
+        assert!(matches!(
+            audit_rx.try_recv(),
+            Ok(DbResult::SceneAssetPublicationRead { .. })
+        ));
+        assert!(
+            !pending.try_deliver(audit_result("audit-owned")),
+            "duplicate/late audit has no waiter"
+        );
 
         assert!(
             legacy_rx.try_recv().is_err(),
@@ -2002,6 +2045,26 @@ mod tests {
     #[test]
     fn reply_kind_mapping_is_consistent_for_every_awaited_command() {
         let mut cases: Vec<(DbCommand, DbResult)> = vec![
+            (
+                DbCommand::ReadSceneAssetPublication {
+                    request: crate::scene_asset::SceneAssetAuditRequest {
+                        node_id: "audit-node".into(),
+                        operation_id: None,
+                        caller: crate::scene_asset::SceneAssetAuditCaller {
+                            did: "did:key:fixture".into(),
+                            scope: "VERSE#v".into(),
+                            role_ceiling: "owner".into(),
+                        },
+                        deadline: std::time::Instant::now()
+                            + crate::scene_asset::SCENE_ASSET_AUDIT_LIMIT,
+                    },
+                    correlation_id: "audit-correlation".into(),
+                },
+                DbResult::SceneAssetPublicationRead {
+                    correlation_id: "audit-correlation".into(),
+                    result: Err(crate::scene_asset::SceneAssetAuditFailure::Unavailable),
+                },
+            ),
             (DbCommand::Ping, DbResult::Pong),
             (
                 DbCommand::CreateVerse {

@@ -635,6 +635,15 @@ async fn input_injection_disabled_role_round_trip_rate_limited_headless_and_came
         let foreign = h.mint_token("VERSE#foreign", "owner");
         let editor = h.mint_token(&scope, "editor");
         let viewer = h.mint_token(&scope, "viewer");
+        let revoked_audit_jti = ulid::Ulid::new().to_string();
+        let revoked_audit = fe_identity::api_token::mint_api_token(
+            &h.keypair,
+            &scope,
+            "owner",
+            3600,
+            &revoked_audit_jti,
+        )
+        .unwrap();
         if allowed {
             let portal_scope = scope.clone();
             std::thread::spawn(move || {
@@ -653,6 +662,7 @@ async fn input_injection_disabled_role_round_trip_rate_limited_headless_and_came
                     }, png:Some(b"private native bytes must never escape without the live capability".to_vec()) }));
                 }
             });
+            let audit_state = h.state.clone();
             std::thread::spawn(move || {
                 let logs = fe_runtime::qa_debug::QaLogRing::default();
                 logs.set_verse(Some(&verse));
@@ -662,6 +672,74 @@ async fn input_injection_disabled_role_round_trip_rate_limited_headless_and_came
                         Err(fe_runtime::qa_debug::QaFailure::denied())
                     } else {
                         Ok(match &request.op {
+                            fe_runtime::qa_debug::QaOp::SceneAssetPublication(input) => {
+                                use fe_runtime::scene_asset::*;
+                                assert_eq!(input.caller.scope, request.caller_scope);
+                                assert_eq!(input.caller.role_ceiling, "owner");
+                                assert!(input.is_current() && input.validate_ids());
+                                if input.node_id == "audit-revoked" {
+                                    audit_state
+                                        .revoked_jtis
+                                        .blocking_write()
+                                        .insert(revoked_audit_jti.clone());
+                                }
+                                let proof = input.operation_id.as_ref().map(|id| {
+                                    SceneAssetAuditProvenance {
+                                        kind: "explicit_local_copy_adoption".into(),
+                                        operation_id: id.clone(),
+                                        adopter_did: input.caller.did.clone(),
+                                        adopted_at: "2026-11-03T00:00:00Z".into(),
+                                    }
+                                });
+                                let operation =
+                                    proof.as_ref().map(|proof| SceneAssetAuditOperation {
+                                        operation_id: proof.operation_id.clone(),
+                                        op_type: "SceneAssetAdopted".into(),
+                                        node_id: input.node_id.clone(),
+                                        scope: input.caller.scope.clone(),
+                                        asset_id: "audit-asset".into(),
+                                        content_hash: "1".repeat(64),
+                                        content_type: "model/gltf-binary".into(),
+                                        size_bytes: 1664,
+                                        provenance: proof.clone(),
+                                        state_digest: "2".repeat(64),
+                                    });
+                                let output = SceneAssetPublicationAudit {
+                                    protocol_version: 1,
+                                    request_nonce: if input.node_id == "audit-wrong-nonce" {
+                                        "foreign".into()
+                                    } else {
+                                        request.correlation_id.clone()
+                                    },
+                                    digest_algorithm: "blake3-base64-surreal-cbor-v1".into(),
+                                    node_id: input.node_id.clone(),
+                                    asset_id: "audit-asset".into(),
+                                    petal_id: "audit-petal".into(),
+                                    scope: if input.node_id == "audit-wrong-scope" {
+                                        "VERSE#foreign".into()
+                                    } else {
+                                        input.caller.scope.clone()
+                                    },
+                                    content_hash: "1".repeat(64),
+                                    content_type: "model/gltf-binary".into(),
+                                    size_bytes: 1664,
+                                    owner_did: SceneAssetField::Absent,
+                                    asset_petal_id: proof
+                                        .as_ref()
+                                        .map_or(SceneAssetField::Absent, |_| {
+                                            SceneAssetField::Value("audit-petal".into())
+                                        }),
+                                    publication_provenance: proof
+                                        .map_or(SceneAssetField::Absent, SceneAssetField::Value),
+                                    asset_state_digest: "3".repeat(64),
+                                    references: vec![],
+                                    model_state_digest: None,
+                                    payload_reference_count: 0,
+                                    adoption_operation: operation,
+                                    bytes_verified_by_this_read: false,
+                                };
+                                serde_json::to_value(output).unwrap()
+                            }
                             fe_runtime::qa_debug::QaOp::UiTree(_) => {
                                 json!({"coordinate_space":"physical_pixels","nodes":[{"name":"Maps","bounds":{"x":800,"y":10,"w":55,"h":20}}]})
                             }
@@ -816,6 +894,29 @@ async fn input_injection_disabled_role_round_trip_rate_limited_headless_and_came
                 )
                 .await;
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        for (path,token,expected) in [
+            ("audit-baseline/scene-asset-publication",&owner,if allowed {StatusCode::OK}else{StatusCode::FORBIDDEN}),
+            ("audit-baseline/scene-asset-publication?operation_id=01ARZ3NDEKTSV4RRFFQ69G5FAV",&owner,if allowed {StatusCode::OK}else{StatusCode::FORBIDDEN}),
+            ("audit-baseline/scene-asset-publication",&viewer,StatusCode::FORBIDDEN),
+            ("audit-baseline/scene-asset-publication",&foreign,if allowed {StatusCode::CONFLICT}else{StatusCode::FORBIDDEN}),
+            ("audit-wrong-nonce/scene-asset-publication",&owner,if allowed {StatusCode::CONFLICT}else{StatusCode::FORBIDDEN}),
+            ("audit-wrong-scope/scene-asset-publication",&owner,StatusCode::FORBIDDEN),
+            ("audit-revoked/scene-asset-publication",&revoked_audit,if allowed {StatusCode::UNAUTHORIZED}else{StatusCode::FORBIDDEN}),
+            ("audit-baseline/scene-asset-publication?asset_id=enumerate",&owner,if allowed {StatusCode::BAD_REQUEST}else{StatusCode::FORBIDDEN}),
+            ("audit-baseline/scene-asset-publication?operation_id=01ARZ3NDEKTSV4RRFFQ69G5FAV&operation_id=01ARZ3NDEKTSV4RRFFQ69G5FAV",&owner,if allowed {StatusCode::BAD_REQUEST}else{StatusCode::FORBIDDEN}),
+            ("audit-baseline/scene-asset-publication?operation_id=not-a-ulid",&owner,if allowed {StatusCode::BAD_REQUEST}else{StatusCode::FORBIDDEN}),
+        ] {
+            let response=h.request(Request::builder().uri(format!("/api/v1/debug/nodes/{path}")).header("authorization",format!("Bearer {token}")).body(Body::empty()).unwrap()).await;
+            assert_eq!(response.status(),expected,"{path}");
+            assert_eq!(response.headers()["cache-control"],"no-store");
+            let value:serde_json::Value=serde_json::from_slice(&body_bytes(response).await).unwrap();
+            if expected==StatusCode::OK {
+                assert_eq!(value["data"]["bytes_verified_by_this_read"],false);
+                assert_eq!(value["data"]["owner_did"]["state"],"absent");
+                assert_eq!(value["data"]["adoption_operation"].is_null(),!path.contains("operation_id="));
+            }
         }
     }
     let click =

@@ -51,6 +51,7 @@ impl LogFilter {
 
 #[derive(Clone, Debug)]
 pub enum QaOp {
+    SceneAssetPublication(crate::scene_asset::SceneAssetAuditRequest),
     UiTree(TreeFilter),
     UiState,
     Logs(LogFilter),

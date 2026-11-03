@@ -1330,6 +1330,7 @@ mod tests {
     /// caller. Every assertion goes red if its branch inverts.
     #[test]
     fn synthetic_input_replays_as_real_bevy_input_and_refuses_at_arrival_and_at_use() {
+        crate::qa_debug_bridge::check_asset_audit_ownership();
         let mut protected = batch(vec![click(10.0, 10.0),InputCommand::TextEntry {text:"fractalengine://join/v1/protected-fixture".into()},click(20.0,20.0)],0,false).validate().unwrap();
         protected.require_join_lease("join-input-fixture").unwrap();
         let frames=plan_batch(&protected,UVec2::splat(100)).unwrap();

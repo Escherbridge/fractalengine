@@ -1753,6 +1753,10 @@ pub fn spawn_db_thread_shared(
                             Err(error)=>send_result(&tx,DbResult::RequestFailed {error:format!("Stamp edit refused: {error:#}"),correlation_id}),
                         }
                     }
+                    Ok(DbCommand::ReadSceneAssetPublication {request,correlation_id}) => {
+                        let result=handlers::scene_asset_audit::read(&db,&request,&correlation_id,&local_did).await;
+                        send_result(&tx,DbResult::SceneAssetPublicationRead {correlation_id,result});
+                    }
                     Ok(DbCommand::ReadSceneAssetAdoption {node_id,request_id}) => {
                         let result=if request_id.is_empty() || request_id.len()>128 {Err(anyhow::anyhow!("invalid adoption request"))}
                             else {handlers::scene_asset_adoption::read(&db,&blob_store,&node_id,&local_did).await};
